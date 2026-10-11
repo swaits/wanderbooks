@@ -15,15 +15,15 @@ pub struct Currency([u8; 3]);
 
 impl Currency {
     /// US dollar.
-    pub const USD: Currency = Currency([b'U', b'S', b'D']);
+    pub const USD: Currency = Currency(*b"USD");
     /// Euro.
-    pub const EUR: Currency = Currency([b'E', b'U', b'R']);
+    pub const EUR: Currency = Currency(*b"EUR");
     /// British pound.
-    pub const GBP: Currency = Currency([b'G', b'B', b'P']);
+    pub const GBP: Currency = Currency(*b"GBP");
     /// Swiss franc.
-    pub const CHF: Currency = Currency([b'C', b'H', b'F']);
+    pub const CHF: Currency = Currency(*b"CHF");
     /// Japanese yen.
-    pub const JPY: Currency = Currency([b'J', b'P', b'Y']);
+    pub const JPY: Currency = Currency(*b"JPY");
 
     /// Parse and validate a three-letter code. Input is uppercased, so
     /// `"usd"` and `"USD"` both work; `"US"` or `"USDD"` fail.

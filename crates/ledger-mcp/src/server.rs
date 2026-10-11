@@ -3,7 +3,7 @@
 
 use crate::policy::ReceiptPolicy;
 use crate::types::*;
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 use ledger_core::{
     AccountId, AccountType, AssetStatus, Currency, DocumentLine, DocumentStatus, JournalEntry,
     Ledger, Money, NewAsset, PeriodStatus, Side, accumulated_depreciation, book_value,
@@ -129,6 +129,22 @@ fn resolve_account(store: &Store, account: &str) -> Result<AccountId, String> {
         .ok_or_else(|| format!("unknown account {account:?}: use an id or code from books.chart"))
 }
 
+/// Resolve a class by id or name (case-insensitive).
+fn resolve_class(store: &Store, class: &str) -> Result<u32, String> {
+    if let Ok(id) = class.parse::<u32>()
+        && store.ledger().get_class(id).is_some()
+    {
+        return Ok(id);
+    }
+    store
+        .ledger()
+        .find_class_by_name(class)
+        .map(|c| c.id)
+        .ok_or_else(|| {
+            format!("unknown class {class:?}: use an id or name from books.list_classes")
+        })
+}
+
 fn money(n: Decimal) -> String {
     // Decimal's Display never emits floats or "-0" for exact values.
     n.to_string()
@@ -225,11 +241,28 @@ fn movement_through(ledger: &Ledger, account: AccountId, through: NaiveDate) -> 
 
 /// Net movement of one account over entries in `[from, to]`, normal side.
 fn movement_in(ledger: &Ledger, account: AccountId, from: NaiveDate, to: NaiveDate) -> Decimal {
+    movement_in_class(ledger, account, from, to, None)
+}
+
+/// Signed movement of an account in its normal side over a date range,
+/// optionally filtered to one class. `None` class matches all lines
+/// (including untagged ones); `Some(id)` matches only lines tagged with it.
+fn movement_in_class(
+    ledger: &Ledger,
+    account: AccountId,
+    from: NaiveDate,
+    to: NaiveDate,
+    class_id: Option<u32>,
+) -> Decimal {
     let movement: Decimal = ledger
         .posted_entries()
         .filter(|e| e.date() >= from && e.date() <= to)
         .flat_map(|e| e.lines())
         .filter(|l| l.account == account)
+        .filter(|l| match class_id {
+            None => true,
+            Some(cid) => l.class_id == Some(cid),
+        })
         .map(|l| match l.side {
             Side::Debit => l.amount.amount,
             Side::Credit => -l.amount.amount,
@@ -330,7 +363,7 @@ impl BooksServer {
 
     #[tool(
         name = "books.profit_and_loss",
-        description = "Profit and loss for a period: revenue, expenses, net income. Dates are YYYY-MM-DD; omit for all time.",
+        description = "Profit and loss for a period: revenue, expenses, net income. Dates are YYYY-MM-DD; omit for all time. Pass class (name or id) to filter to one division.",
         annotations(read_only_hint = true)
     )]
     async fn profit_and_loss(
@@ -351,6 +384,10 @@ impl BooksServer {
         if end < start {
             return Err("end is before start".to_string());
         }
+        let class_id = match p.class {
+            Some(c) => Some(resolve_class(&store, &c)?),
+            None => None,
+        };
         let mut revenue = Decimal::ZERO;
         let mut expenses = Decimal::ZERO;
         for a in ledger.chart().all() {
@@ -358,8 +395,12 @@ impl BooksServer {
                 continue;
             }
             match a.account_type {
-                AccountType::Revenue => revenue += movement_in(ledger, a.id, start, end),
-                AccountType::Expense => expenses += movement_in(ledger, a.id, start, end),
+                AccountType::Revenue => {
+                    revenue += movement_in_class(ledger, a.id, start, end, class_id)
+                }
+                AccountType::Expense => {
+                    expenses += movement_in_class(ledger, a.id, start, end, class_id)
+                }
                 _ => {}
             }
         }
@@ -512,7 +553,7 @@ impl BooksServer {
 
     #[tool(
         name = "books.add_line",
-        description = "Add one line to a draft entry. Amount is a decimal string, never a float. The entry must balance before posting. For foreign-currency lines, pass foreign_currency, foreign_amount, and fx_rate (foreign -> base); the base amount is computed as foreign_amount * fx_rate."
+        description = "Add one line to a draft entry. Amount is a decimal string, never a float. The entry must balance before posting. For foreign-currency lines, pass foreign_currency, foreign_amount, and fx_rate (foreign -> base); the base amount is computed as foreign_amount * fx_rate. Pass class (name or id) to tag the line for divisional tracking."
     )]
     async fn add_line(
         &self,
@@ -545,6 +586,21 @@ impl BooksServer {
             let currency = store.base_currency();
             store
                 .add_line(p.entry_id, account, side, Money::new(amount, currency))
+                .map_err(|e| e.to_string())?;
+        }
+        // Class tag, if requested. The line just added is the last one.
+        if let Some(class_ref) = p.class {
+            let class_id = resolve_class(&store, &class_ref)?;
+            let line_index = store
+                .ledger()
+                .get_entry(p.entry_id)
+                .ok_or_else(|| format!("unknown entry {}", p.entry_id))?
+                .lines()
+                .len()
+                .checked_sub(1)
+                .ok_or_else(|| "entry has no lines".to_string())?;
+            store
+                .set_line_class(p.entry_id, line_index, Some(class_id))
                 .map_err(|e| e.to_string())?;
         }
         Ok(Json(AddLineOut { ok: true }))
@@ -2087,6 +2143,306 @@ impl BooksServer {
             .map_err(|e| e.to_string())?;
         Ok(Json(SetFxRateOut { ok: true }))
     }
+
+    // ------------------------------------------------------------------
+    // Payroll (accounting only — the caller supplies every number; no tax tables)
+    // ------------------------------------------------------------------
+
+    #[tool(
+        name = "books.run_payroll",
+        description = "Run payroll for a pay date. Each line carries one employee's gross pay and every withholding/deduction as decimal strings — the engine cuts one balanced entry (Dr Salary & Wage Expense, Dr Payroll Tax Expense for the employer share, Cr the withholding payables, Cr cash for net pay). Auto-creates the 61xx/21xx accounts. All amounts are decimal strings, never floats."
+    )]
+    async fn run_payroll(
+        &self,
+        params: Parameters<RunPayrollParams>,
+    ) -> Result<Json<RunPayrollOut>, String> {
+        let p = params.0;
+        let mut store = self.lock()?;
+        let cash = resolve_account(&store, &p.cash_account)?;
+        let lines: Vec<ledger_store::PayrollLineInput> = p
+            .lines
+            .into_iter()
+            .map(|l| {
+                Ok(ledger_core::PayrollLine {
+                    employee_name: l.employee_name,
+                    gross_pay: parse_amount(&l.gross_pay)?,
+                    federal_withholding: parse_amount(&l.federal_withholding)?,
+                    state_withholding: parse_amount(&l.state_withholding)?,
+                    ss_employee: parse_amount(&l.ss_employee)?,
+                    medicare_employee: parse_amount(&l.medicare_employee)?,
+                    ss_employer: parse_amount(&l.ss_employer)?,
+                    medicare_employer: parse_amount(&l.medicare_employer)?,
+                    other_deductions: parse_amount(&l.other_deductions)?,
+                })
+            })
+            .collect::<Result<_, String>>()?;
+        let run_id = store
+            .run_payroll(parse_date(&p.date)?, lines, cash)
+            .map_err(|e| e.to_string())?;
+        let run = store
+            .ledger()
+            .get_payroll_run(run_id)
+            .ok_or_else(|| format!("payroll run {run_id} not found after creation"))?;
+        let total_gross: Decimal = run.lines.iter().map(|l| l.gross_pay).sum();
+        let total_net: Decimal = run.lines.iter().map(|l| l.net_pay()).sum();
+        Ok(Json(RunPayrollOut {
+            run_id,
+            entry_id: run.entry_id,
+            total_gross: money(total_gross),
+            total_net: money(total_net),
+        }))
+    }
+
+    #[tool(
+        name = "books.remit_payroll_taxes",
+        description = "Remit all outstanding payroll tax payables (federal/state withholding, SS, Medicare, other deductions) to cash in one balanced entry."
+    )]
+    async fn remit_payroll_taxes(
+        &self,
+        params: Parameters<RemitPayrollTaxesParams>,
+    ) -> Result<Json<RemitPayrollTaxesOut>, String> {
+        let p = params.0;
+        let mut store = self.lock()?;
+        let cash = resolve_account(&store, &p.cash_account)?;
+        // Total before remitting, for the response.
+        let mut total = Decimal::ZERO;
+        for code in ["2110", "2120", "2130", "2140", "2150"] {
+            if let Some(a) = store.ledger().chart().find_by_code(code) {
+                total += store
+                    .ledger()
+                    .account_balance(a.id)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        let entry_id = store
+            .remit_payroll_taxes(parse_date(&p.date)?, cash)
+            .map_err(|e| e.to_string())?;
+        Ok(Json(RemitPayrollTaxesOut {
+            entry_id,
+            total: money(total),
+        }))
+    }
+
+    #[tool(
+        name = "books.list_payroll_runs",
+        description = "List payroll runs in id order: date, employee count, totals, and the posted entry id.",
+        annotations(read_only_hint = true)
+    )]
+    async fn list_payroll_runs(&self) -> Result<Json<ListPayrollRunsOut>, String> {
+        let store = self.lock()?;
+        let runs = store
+            .list_payroll_runs()
+            .into_iter()
+            .map(|r| {
+                let total_gross: Decimal = r.lines.iter().map(|l| l.gross_pay).sum();
+                PayrollRunOut {
+                    id: r.id,
+                    date: r.date.to_string(),
+                    employee_count: r.lines.len(),
+                    total_gross: money(total_gross),
+                    entry_id: r.entry_id,
+                }
+            })
+            .collect();
+        Ok(Json(ListPayrollRunsOut { runs }))
+    }
+
+    // ------------------------------------------------------------------
+    // Classes (divisional tracking)
+    // ------------------------------------------------------------------
+
+    #[tool(
+        name = "books.add_class",
+        description = "Add a tracking class for divisional P&L (e.g. an app, website, or channel). Tag journal lines with it via books.add_line's class param, then report per division."
+    )]
+    async fn add_class(
+        &self,
+        params: Parameters<AddClassParams>,
+    ) -> Result<Json<AddClassOut>, String> {
+        let p = params.0;
+        let mut store = self.lock()?;
+        let id = store.add_class(&p.name).map_err(|e| e.to_string())?;
+        Ok(Json(AddClassOut { id }))
+    }
+
+    #[tool(
+        name = "books.list_classes",
+        description = "List tracking classes in id order.",
+        annotations(read_only_hint = true)
+    )]
+    async fn list_classes(&self) -> Result<Json<ListClassesOut>, String> {
+        let store = self.lock()?;
+        let classes = store
+            .list_classes()
+            .into_iter()
+            .map(|c| ClassOut {
+                id: c.id,
+                name: c.name.clone(),
+            })
+            .collect();
+        Ok(Json(ListClassesOut { classes }))
+    }
+
+    #[tool(
+        name = "books.profit_and_loss_by_class",
+        description = "P&L broken down by tracking class for a period, plus an unclassified row for untagged lines. Dates are YYYY-MM-DD; omit for all time.",
+        annotations(read_only_hint = true)
+    )]
+    async fn profit_and_loss_by_class(
+        &self,
+        params: Parameters<ProfitAndLossParams>,
+    ) -> Result<Json<ProfitAndLossByClassOut>, String> {
+        let p = params.0;
+        let store = self.lock()?;
+        let ledger = store.ledger();
+        let start = match p.start {
+            Some(s) => parse_date(&s)?,
+            None => NaiveDate::from_ymd_opt(1, 1, 1).unwrap(),
+        };
+        let end = match p.end {
+            Some(s) => parse_date(&s)?,
+            None => chrono::Utc::now().date_naive(),
+        };
+        if end < start {
+            return Err("end is before start".to_string());
+        }
+        // Per-class P&L over the date range: accumulate line by line.
+        use std::collections::HashMap;
+        #[derive(Default)]
+        struct Acc {
+            revenue: Decimal,
+            expenses: Decimal,
+        }
+        let mut by_class: HashMap<Option<u32>, Acc> = HashMap::new();
+        for entry in ledger.posted_entries() {
+            if entry.date() < start || entry.date() > end {
+                continue;
+            }
+            for line in entry.lines() {
+                let account = match ledger.chart().get(line.account) {
+                    Some(a) if !a.placeholder => a,
+                    _ => continue,
+                };
+                let signed = match line.side {
+                    Side::Debit => line.amount.amount,
+                    Side::Credit => -line.amount.amount,
+                };
+                // Normal-side positive.
+                let normal = match account.account_type.normal_side() {
+                    Side::Debit => signed,
+                    Side::Credit => -signed,
+                };
+                let acc = by_class.entry(line.class_id).or_default();
+                match account.account_type {
+                    AccountType::Revenue => acc.revenue += normal,
+                    AccountType::Expense => acc.expenses += normal,
+                    _ => {}
+                }
+            }
+        }
+        // Sort: named classes by name, unclassified last.
+        let mut rows: Vec<(Option<String>, Acc)> = by_class
+            .into_iter()
+            .map(|(cid, acc)| {
+                let name = cid
+                    .and_then(|id| ledger.get_class(id))
+                    .map(|c| c.name.clone());
+                (name, acc)
+            })
+            // Drop rows with no P&L movement.
+            .filter(|(_, acc)| !acc.revenue.is_zero() || !acc.expenses.is_zero())
+            .collect();
+        rows.sort_by(|a, b| match (&a.0, &b.0) {
+            (Some(x), Some(y)) => x.cmp(y),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        });
+        let classes = rows
+            .into_iter()
+            .map(|(class, acc)| ClassPnlOut {
+                class,
+                revenue: money(acc.revenue),
+                expenses: money(acc.expenses),
+                net_income: money(acc.revenue - acc.expenses),
+            })
+            .collect();
+        Ok(Json(ProfitAndLossByClassOut {
+            start: start.to_string(),
+            end: end.to_string(),
+            classes,
+        }))
+    }
+
+    // ------------------------------------------------------------------
+    // CPA handoff package
+    // ------------------------------------------------------------------
+
+    #[tool(
+        name = "books.export_cpa_package",
+        description = "Build the CPA handoff package as a zip (base64): trial-balance.xlsx, general-ledger.xlsx (every posted line), profit-and-loss.pdf, balance-sheet.pdf. The as_of date defaults to today; the P&L covers the fiscal year to date.",
+        annotations(read_only_hint = true)
+    )]
+    async fn export_cpa_package(
+        &self,
+        params: Parameters<ExportCpaPackageParams>,
+    ) -> Result<Json<ExportCpaPackageOut>, String> {
+        use ledger_import::{XlsxReport, report_to_xlsx};
+        let p = params.0;
+        let as_of = match p.as_of {
+            Some(s) => parse_date(&s)?,
+            None => chrono::Utc::now().date_naive(),
+        };
+        let store = self.lock()?;
+        let ledger = store.ledger();
+
+        // Fiscal year to date for the P&L: Jan 1 of the as_of year.
+        let fy_start = NaiveDate::from_ymd_opt(as_of.year(), 1, 1).unwrap();
+
+        // 1. Trial balance XLSX.
+        let tb = ledger_core::reports::trial_balance(ledger);
+        let tb_xlsx = report_to_xlsx(&XlsxReport::TrialBalance(&tb)).map_err(|e| e.to_string())?;
+
+        // 2. General ledger XLSX (every posted line).
+        let gl_xlsx =
+            report_to_xlsx(&XlsxReport::GeneralLedger(ledger)).map_err(|e| e.to_string())?;
+
+        // 3. P&L PDF (fiscal year to date).
+        let pnl_pdf =
+            ledger_import::profit_and_loss_pdf(ledger, &fy_start.to_string(), &as_of.to_string())
+                .map_err(|e| e.to_string())?;
+
+        // 4. Balance sheet PDF.
+        let bs_pdf = ledger_import::balance_sheet_pdf(ledger, &as_of.to_string())
+            .map_err(|e| e.to_string())?;
+        drop(store);
+
+        // Zip it.
+        let mut zip_buf = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_buf));
+            let opts = zip::write::SimpleFileOptions::default();
+            for (name, bytes) in [
+                ("trial-balance.xlsx", tb_xlsx.as_slice()),
+                ("general-ledger.xlsx", gl_xlsx.as_slice()),
+                ("profit-and-loss.pdf", pnl_pdf.as_slice()),
+                ("balance-sheet.pdf", bs_pdf.as_slice()),
+            ] {
+                zip.start_file(name, opts).map_err(|e| e.to_string())?;
+                use std::io::Write;
+                zip.write_all(bytes).map_err(|e| e.to_string())?;
+            }
+            zip.finish().map_err(|e| e.to_string())?;
+        }
+
+        Ok(Json(ExportCpaPackageOut {
+            file_name: format!("cpa-package-{as_of}.zip"),
+            content_base64: base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                &zip_buf,
+            ),
+        }))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2415,6 +2771,7 @@ impl BooksServer {
                     .profit_and_loss(Parameters(ProfitAndLossParams {
                         start: None,
                         end: None,
+                        class: None,
                     }))
                     .await?;
                 serde_json::to_string_pretty(&out).map_err(|e| e.to_string())

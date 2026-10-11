@@ -100,10 +100,10 @@ impl ChartOfAccounts {
         if self.by_code.contains_key(code) {
             return Err(LedgerError::DuplicateAccountCode(code.to_string()));
         }
-        if let Some(p) = parent {
-            if !self.accounts.contains_key(&p) {
-                return Err(LedgerError::UnknownParentAccount(p));
-            }
+        if let Some(p) = parent
+            && !self.accounts.contains_key(&p)
+        {
+            return Err(LedgerError::UnknownParentAccount(p));
         }
         self.by_code.insert(code.to_string(), id);
         self.accounts.insert(

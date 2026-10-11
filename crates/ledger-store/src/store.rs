@@ -12,9 +12,11 @@ use crate::journal::{JournalLine, JournalWriter, read_and_verify_journal};
 use crate::schema;
 use chrono::{Months, NaiveDate};
 use ledger_core::{
-    AccountId, AccountType, AssetId, AssetStatus, BillId, Currency, CustomerId, DocumentLine,
-    EntryId, EntryStatus, InvoiceId, Ledger, LedgerError, Money, NewAsset, PeriodId, Side,
-    VendorId, arap, reports,
+    AccountId, AccountType, AssetId, AssetStatus, BillId, Class, ClassId, Currency, CustomerId,
+    DocumentLine, EntryId, EntryStatus, InvoiceId, Ledger, LedgerError, Money, NewAsset,
+    PayrollLine, PayrollRun, PayrollRunId, PeriodId, Side, VendorId, arap,
+    payroll::{PayrollAccounts, payroll_entry_plan, payroll_remit_plan},
+    reports,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use rust_decimal::Decimal;
@@ -114,6 +116,11 @@ pub struct Attachment {
     /// UTC timestamp when filed.
     pub created_at: String,
 }
+
+/// Input to [`Store::run_payroll`]: one employee's gross pay and every
+/// withholding and deduction. The engine's [`PayrollLine`], aliased so the
+/// write-path signature reads as input rather than stored state.
+pub type PayrollLineInput = PayrollLine;
 
 /// The store: one writer, one data directory.
 ///
@@ -1406,6 +1413,273 @@ impl Store {
     }
 
     // ------------------------------------------------------------------
+    // Payroll
+    // ------------------------------------------------------------------
+
+    /// Ensure the seven payroll chart accounts (`6100`/`6110`/`2110`–`2150`)
+    /// through the journaled account path. The ledger's internal ensure
+    /// then no-ops, which keeps replay deterministic: every account
+    /// creation is an `account.added` event.
+    fn ensure_payroll_accounts(&mut self) -> Result<PayrollAccounts, StoreError> {
+        Ok(PayrollAccounts {
+            salary_expense: self.ensure_control_account(
+                "6100",
+                "Salary & Wage Expense",
+                AccountType::Expense,
+            )?,
+            payroll_tax_expense: self.ensure_control_account(
+                "6110",
+                "Payroll Tax Expense",
+                AccountType::Expense,
+            )?,
+            federal_payable: self.ensure_control_account(
+                "2110",
+                "Federal Withholding Payable",
+                AccountType::Liability,
+            )?,
+            state_payable: self.ensure_control_account(
+                "2120",
+                "State Withholding Payable",
+                AccountType::Liability,
+            )?,
+            ss_payable: self.ensure_control_account(
+                "2130",
+                "SS Tax Payable",
+                AccountType::Liability,
+            )?,
+            medicare_payable: self.ensure_control_account(
+                "2140",
+                "Medicare Tax Payable",
+                AccountType::Liability,
+            )?,
+            other_payable: self.ensure_control_account(
+                "2150",
+                "Other Deductions Payable",
+                AccountType::Liability,
+            )?,
+        })
+    }
+
+    /// Run payroll: validate, journal the auto-posted entry (Dr Salary &
+    /// Wage Expense for gross, Dr Payroll Tax Expense for the employer FICA
+    /// share, Cr the `2110`–`2150` payables, Cr cash for net pay) through
+    /// the standard entry flow, then journal `payroll.run` with the run's
+    /// detail. Accounting only — no tax tables; every withholding number
+    /// comes from the caller.
+    pub fn run_payroll(
+        &mut self,
+        date: NaiveDate,
+        lines: Vec<PayrollLineInput>,
+        cash_account: AccountId,
+    ) -> Result<PayrollRunId, StoreError> {
+        // Pure pre-validation mirroring Ledger::run_payroll, so the journal
+        // writes below cannot be followed by a failed mutation.
+        self.ledger.validate_payroll(date, &lines, cash_account)?;
+        let accounts = self.ensure_payroll_accounts()?;
+        let run_id = self.ledger.next_payroll_run_id();
+        let entry_id = self.ledger.next_entry_id();
+        let base = self.base_currency;
+        let plan = payroll_entry_plan(&lines, accounts, cash_account, base);
+        let description = format!("Payroll {date}");
+        let mut journaled = Vec::with_capacity(plan.len() + 3);
+        journaled.push(self.append_journal(
+            "entry.created",
+            json!({
+                "id": entry_id,
+                "date": date.to_string(),
+                "description": description,
+            }),
+        )?);
+        for (account, side, amount) in &plan {
+            journaled.push(self.append_journal(
+                "entry.line_added",
+                json!({
+                    "id": entry_id,
+                    "account": account,
+                    "side": match side {
+                        Side::Debit => "debit",
+                        Side::Credit => "credit",
+                    },
+                    "amount": amount.amount.to_string(),
+                    "currency": amount.currency.code(),
+                }),
+            )?);
+        }
+        journaled.push(self.append_journal(
+            "entry.posted",
+            json!({
+                "id": entry_id,
+                "date": date.to_string(),
+                "description": description,
+                "reversal_of": Option::<u64>::None,
+                "lines": plan.iter().map(|(a, s, m)| plain_line_json(*a, *s, *m)).collect::<Vec<_>>(),
+            }),
+        )?);
+        journaled.push(self.append_journal(
+            "payroll.run",
+            json!({
+                "id": run_id,
+                "date": date.to_string(),
+                "lines": lines.iter().map(payroll_line_json).collect::<Vec<_>>(),
+                "entry_id": entry_id,
+            }),
+        )?);
+        let live = self.ledger.run_payroll(date, lines, cash_account)?;
+        debug_assert_eq!(live, run_id, "id allocator diverged from journal");
+        debug_assert_eq!(
+            self.ledger
+                .get_payroll_run(live)
+                .expect("payroll run exists")
+                .entry_id,
+            entry_id,
+            "payroll entry diverged from journal"
+        );
+        for line in &journaled {
+            apply_line_to_sqlite(&self.conn, line)?;
+        }
+        Ok(live)
+    }
+
+    /// Remit payroll taxes: journal the payoff entry (Dr each payable with
+    /// a non-zero balance, Cr cash for the total) through the standard
+    /// entry flow, then post it through the ledger. Fails before journaling
+    /// anything when nothing is owed.
+    pub fn remit_payroll_taxes(
+        &mut self,
+        date: NaiveDate,
+        cash_account: AccountId,
+    ) -> Result<EntryId, StoreError> {
+        // Pure pre-validation mirroring Ledger::remit_payroll_taxes.
+        if self.ledger.chart().get(cash_account).is_none() {
+            return Err(LedgerError::UnknownAccount(cash_account).into());
+        }
+        let payables = self.ledger.payroll_tax_payables();
+        let total: Decimal = payables.iter().map(|(_, b)| *b).sum();
+        if total.is_zero() {
+            return Err(LedgerError::NothingToRemit.into());
+        }
+        if let Some(pid) = self.ledger.closed_period_containing(date) {
+            return Err(LedgerError::ClosedPeriod(pid, date.to_string()).into());
+        }
+        let entry_id = self.ledger.next_entry_id();
+        let base = self.base_currency;
+        let plan = payroll_remit_plan(&payables, cash_account, base);
+        let description = format!("Payroll tax remittance {date}");
+        let mut journaled = Vec::with_capacity(plan.len() + 2);
+        journaled.push(self.append_journal(
+            "entry.created",
+            json!({
+                "id": entry_id,
+                "date": date.to_string(),
+                "description": description,
+            }),
+        )?);
+        for (account, side, amount) in &plan {
+            journaled.push(self.append_journal(
+                "entry.line_added",
+                json!({
+                    "id": entry_id,
+                    "account": account,
+                    "side": match side {
+                        Side::Debit => "debit",
+                        Side::Credit => "credit",
+                    },
+                    "amount": amount.amount.to_string(),
+                    "currency": amount.currency.code(),
+                }),
+            )?);
+        }
+        journaled.push(self.append_journal(
+            "entry.posted",
+            json!({
+                "id": entry_id,
+                "date": date.to_string(),
+                "description": description,
+                "reversal_of": Option::<u64>::None,
+                "lines": plan.iter().map(|(a, s, m)| plain_line_json(*a, *s, *m)).collect::<Vec<_>>(),
+            }),
+        )?);
+        let live = self.ledger.remit_payroll_taxes(date, cash_account)?;
+        debug_assert_eq!(live, entry_id, "id allocator diverged from journal");
+        for line in &journaled {
+            apply_line_to_sqlite(&self.conn, line)?;
+        }
+        Ok(live)
+    }
+
+    /// All payroll runs, in id order.
+    pub fn list_payroll_runs(&self) -> Vec<PayrollRun> {
+        self.ledger
+            .list_payroll_runs()
+            .into_iter()
+            .cloned()
+            .collect()
+    }
+
+    // ------------------------------------------------------------------
+    // Classes
+    // ------------------------------------------------------------------
+
+    /// Add a class (division) for line-level P&L tracking. Journaled as
+    /// `class.added`.
+    pub fn add_class(&mut self, name: &str) -> Result<ClassId, StoreError> {
+        // The engine's only failure mode is an empty name; replicate it so
+        // the journal write cannot be followed by a failed mutation.
+        if name.trim().is_empty() {
+            return Err(LedgerError::EmptyClassName.into());
+        }
+        let id = self.ledger.next_class_id();
+        let line = self.append_journal("class.added", json!({ "id": id, "name": name }))?;
+        let live = self.ledger.add_class(name)?;
+        debug_assert_eq!(live, id, "id allocator diverged from journal");
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(live)
+    }
+
+    /// All classes, in id order.
+    pub fn list_classes(&self) -> Vec<Class> {
+        self.ledger.list_classes().into_iter().cloned().collect()
+    }
+
+    /// Tag a draft entry's line with a class, or clear it with `None`.
+    /// Journaled as `entry.line_class_set`. Draft-only: the ledger rejects
+    /// posted entries, and this checks before journaling.
+    pub fn set_line_class(
+        &mut self,
+        entry_id: EntryId,
+        line_index: usize,
+        class_id: Option<ClassId>,
+    ) -> Result<(), StoreError> {
+        // Draft-only check via the ledger, before anything is journaled.
+        let entry = self
+            .ledger
+            .get_entry(entry_id)
+            .ok_or(LedgerError::UnknownEntry(entry_id))?;
+        if entry.status() != EntryStatus::Draft {
+            return Err(LedgerError::PostedEntryImmutable.into());
+        }
+        if let Some(cid) = class_id
+            && self.ledger.get_class(cid).is_none()
+        {
+            return Err(LedgerError::UnknownClass(cid).into());
+        }
+        if line_index >= entry.lines().len() {
+            return Err(LedgerError::LineIndexOutOfRange(line_index, entry_id).into());
+        }
+        let line = self.append_journal(
+            "entry.line_class_set",
+            json!({
+                "entry_id": entry_id,
+                "line_index": line_index as u64,
+                "class_id": class_id,
+            }),
+        )?;
+        self.ledger.set_line_class(entry_id, line_index, class_id)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
     // Blobs and attachments
     // ------------------------------------------------------------------
 
@@ -1656,6 +1930,31 @@ impl Store {
                     .into(),
             ));
         }
+        // Classes and payroll runs are master data the snapshot also
+        // ignores; compare them explicitly the same way.
+        let classes_of = |l: &Ledger| l.list_classes().into_iter().cloned().collect::<Vec<_>>();
+        let (ca, cb, cc) = (
+            classes_of(&replayed),
+            classes_of(&self.ledger),
+            classes_of(&c),
+        );
+        if ca != cb || ca != cc {
+            return Err(StoreError::VerifyMismatch(
+                "class list diverged between journal, live ledger, and sqlite projection".into(),
+            ));
+        }
+        let runs_of = |l: &Ledger| {
+            l.list_payroll_runs()
+                .into_iter()
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let (pa, pb, pc) = (runs_of(&replayed), runs_of(&self.ledger), runs_of(&c));
+        if pa != pb || pa != pc {
+            return Err(StoreError::VerifyMismatch(
+                "payroll runs diverged between journal, live ledger, and sqlite projection".into(),
+            ));
+        }
         Ok(())
     }
 
@@ -1736,6 +2035,17 @@ impl Store {
                 )));
             }
         }
+        // Classes: master data in id order, before entries (lines may
+        // reference them).
+        let mut class_stmt = self
+            .conn
+            .prepare("SELECT id, name FROM classes ORDER BY id")?;
+        let class_rows =
+            class_stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+        for c in class_rows {
+            let (id, name) = c?;
+            ledger.replay_class(id as u32, name)?;
+        }
         let mut estmt = self
             .conn
             .prepare("SELECT id, date, description, reversal_of FROM entries ORDER BY id")?;
@@ -1770,7 +2080,7 @@ impl Store {
                         )));
                     }
                     let mut lstmt = self.conn.prepare(
-                        "SELECT account_id, side, amount, currency FROM lines WHERE entry_id = ? ORDER BY id",
+                        "SELECT account_id, side, amount, currency, class_id FROM lines WHERE entry_id = ? ORDER BY id",
                     )?;
                     let lrows = lstmt.query_map(params![id], |r| {
                         Ok((
@@ -1778,10 +2088,11 @@ impl Store {
                             r.get::<_, String>(1)?,
                             r.get::<_, String>(2)?,
                             r.get::<_, String>(3)?,
+                            r.get::<_, Option<i64>>(4)?,
                         ))
                     })?;
-                    for lr in lrows {
-                        let (account, side, amount, currency) = lr?;
+                    for (idx, lr) in lrows.enumerate() {
+                        let (account, side, amount, currency, class_id) = lr?;
                         ledger.add_line(
                             got,
                             account as u64,
@@ -1795,6 +2106,10 @@ impl Store {
                                 })?,
                             ),
                         )?;
+                        // Draft-only tagging, before the post below.
+                        if let Some(cid) = class_id {
+                            ledger.set_line_class(got, idx, Some(cid as u32))?;
+                        }
                     }
                     ledger.post_entry(got)?;
                 }
@@ -1883,6 +2198,57 @@ impl Store {
                 )?;
             }
         }
+        // Payroll runs: id order; lines in insertion order. Amounts are
+        // TEXT in SQLite, so they parse here with exact Decimal math.
+        let parse_payroll_amount = |s: String| {
+            s.parse()
+                .map_err(|_| StoreError::JournalCorrupt(format!("bad payroll amount {s}")))
+        };
+        let mut run_stmt = self
+            .conn
+            .prepare("SELECT id, date, entry_id FROM payroll_runs ORDER BY id")?;
+        let run_rows = run_stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })?;
+        for r in run_rows {
+            let (id, date, entry_id) = r?;
+            let mut pl_stmt = self.conn.prepare(
+                "SELECT employee_name, gross_pay, federal_withholding, state_withholding, ss_employee, medicare_employee, ss_employer, medicare_employer, other_deductions FROM payroll_lines WHERE run_id = ? ORDER BY id",
+            )?;
+            let pl_rows = pl_stmt.query_map(params![id], |lr| {
+                Ok((
+                    lr.get::<_, String>(0)?,
+                    lr.get::<_, String>(1)?,
+                    lr.get::<_, String>(2)?,
+                    lr.get::<_, String>(3)?,
+                    lr.get::<_, String>(4)?,
+                    lr.get::<_, String>(5)?,
+                    lr.get::<_, String>(6)?,
+                    lr.get::<_, String>(7)?,
+                    lr.get::<_, String>(8)?,
+                ))
+            })?;
+            let mut lines = Vec::new();
+            for lr in pl_rows {
+                let (name, gross, fed, state, ss_e, med_e, ss_r, med_r, other) = lr?;
+                lines.push(PayrollLine {
+                    employee_name: name,
+                    gross_pay: parse_payroll_amount(gross)?,
+                    federal_withholding: parse_payroll_amount(fed)?,
+                    state_withholding: parse_payroll_amount(state)?,
+                    ss_employee: parse_payroll_amount(ss_e)?,
+                    medicare_employee: parse_payroll_amount(med_e)?,
+                    ss_employer: parse_payroll_amount(ss_r)?,
+                    medicare_employer: parse_payroll_amount(med_r)?,
+                    other_deductions: parse_payroll_amount(other)?,
+                });
+            }
+            ledger.replay_payroll_run(id as u64, parse_date(&date)?, lines, entry_id as u64)?;
+        }
         Ok(ledger)
     }
 }
@@ -1917,6 +2283,16 @@ fn journal_line_json(l: &ledger_core::JournalLine) -> Value {
     if let Some(fa) = l.foreign_amount {
         obj.insert("foreign_amount".to_string(), Value::String(fa.to_string()));
     }
+    // Class tags ride the line JSON so the projection learns them when the
+    // entry posts (drafts never touch the projection). Journals written
+    // before classes existed carry no such lines; readers treat missing as
+    // unclassified.
+    if let Some(c) = l.class_id {
+        obj.insert(
+            "class_id".to_string(),
+            Value::Number(serde_json::Number::from(c)),
+        );
+    }
     v
 }
 
@@ -1928,6 +2304,7 @@ fn plain_line_json(account: AccountId, side: Side, amount: Money) -> Value {
         amount,
         foreign_currency: None,
         foreign_amount: None,
+        class_id: None,
     })
 }
 
@@ -1964,12 +2341,68 @@ fn flip_line_json(l: &ledger_core::JournalLine) -> Value {
         Side::Debit => "credit",
         Side::Credit => "debit",
     };
-    json!({
+    let mut v = json!({
         "account": l.account,
         "side": side,
         "amount": l.amount.amount.to_string(),
         "currency": l.amount.currency.code(),
+    });
+    // Reversals offset the original line for line: carry the class so
+    // divisional P&L nets correctly (mirrors journal_line_json).
+    if let Some(c) = l.class_id
+        && let Some(obj) = v.as_object_mut()
+    {
+        obj.insert(
+            "class_id".to_string(),
+            Value::Number(serde_json::Number::from(c)),
+        );
+    }
+    v
+}
+
+/// One payroll line as journal JSON. Amounts are decimal strings, never
+/// floats.
+fn payroll_line_json(l: &PayrollLine) -> Value {
+    json!({
+        "employee_name": l.employee_name,
+        "gross_pay": l.gross_pay.to_string(),
+        "federal_withholding": l.federal_withholding.to_string(),
+        "state_withholding": l.state_withholding.to_string(),
+        "ss_employee": l.ss_employee.to_string(),
+        "medicare_employee": l.medicare_employee.to_string(),
+        "ss_employer": l.ss_employer.to_string(),
+        "medicare_employer": l.medicare_employer.to_string(),
+        "other_deductions": l.other_deductions.to_string(),
     })
+}
+
+/// Parse the `lines` array of a `payroll.run` journal payload back into
+/// payroll lines.
+fn parse_payroll_lines(p: &Value) -> Result<Vec<PayrollLine>, StoreError> {
+    let arr = p
+        .get("lines")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| StoreError::JournalCorrupt("missing 'lines'".into()))?;
+    arr.iter()
+        .map(|l| {
+            let amount = |key: &str| {
+                get_str(l, key)?
+                    .parse()
+                    .map_err(|_| StoreError::JournalCorrupt(format!("bad payroll amount '{key}'")))
+            };
+            Ok(PayrollLine {
+                employee_name: get_str(l, "employee_name")?.to_string(),
+                gross_pay: amount("gross_pay")?,
+                federal_withholding: amount("federal_withholding")?,
+                state_withholding: amount("state_withholding")?,
+                ss_employee: amount("ss_employee")?,
+                medicare_employee: amount("medicare_employee")?,
+                ss_employer: amount("ss_employer")?,
+                medicare_employer: amount("medicare_employer")?,
+                other_deductions: amount("other_deductions")?,
+            })
+        })
+        .collect()
 }
 
 fn parse_side(s: &str) -> Result<Side, StoreError> {
@@ -2298,6 +2731,29 @@ fn replay_line_into_ledger(
                     .map_err(|_| StoreError::JournalCorrupt("bad rate".into()))?,
             )?;
         }
+        "payroll.run" => {
+            // The entry was already rebuilt by the standard entry handlers;
+            // this only restores the run record, without re-posting.
+            ledger.replay_payroll_run(
+                get_u64(p, "id")?,
+                parse_date(get_str(p, "date")?)?,
+                parse_payroll_lines(p)?,
+                get_u64(p, "entry_id")?,
+            )?;
+        }
+        "class.added" => {
+            ledger.replay_class(get_u64(p, "id")? as u32, get_str(p, "name")?.to_string())?;
+        }
+        "entry.line_class_set" => {
+            // Journaled while the entry was a draft, so at replay time the
+            // draft exists and takes the class. Missing/null class_id
+            // clears the tag.
+            ledger.set_line_class(
+                get_u64(p, "entry_id")?,
+                get_u64(p, "line_index")? as usize,
+                p.get("class_id").and_then(|v| v.as_u64()).map(|v| v as u32),
+            )?;
+        }
         other => {
             return Err(StoreError::JournalCorrupt(format!(
                 "unknown line type: {other}"
@@ -2391,7 +2847,7 @@ fn apply_line_to_sqlite(conn: &Connection, line: &JournalLine) -> Result<(), Sto
                 .ok_or_else(|| StoreError::JournalCorrupt("entry.posted without lines".into()))?
             {
                 conn.execute(
-                    "INSERT INTO lines(entry_id, account_id, side, amount, currency, foreign_currency, foreign_amount) VALUES (?,?,?,?,?,?,?)",
+                    "INSERT INTO lines(entry_id, account_id, side, amount, currency, foreign_currency, foreign_amount, class_id) VALUES (?,?,?,?,?,?,?,?)",
                     params![
                         get_u64(p, "id")? as i64,
                         get_u64(l, "account")? as i64,
@@ -2400,6 +2856,7 @@ fn apply_line_to_sqlite(conn: &Connection, line: &JournalLine) -> Result<(), Sto
                         get_str(l, "currency")?,
                         l.get("foreign_currency").and_then(|v| v.as_str()),
                         l.get("foreign_amount").and_then(|v| v.as_str()),
+                        l.get("class_id").and_then(|v| v.as_u64()).map(|v| v as i64),
                     ],
                 )?;
             }
@@ -2420,7 +2877,7 @@ fn apply_line_to_sqlite(conn: &Connection, line: &JournalLine) -> Result<(), Sto
                 .ok_or_else(|| StoreError::JournalCorrupt("entry.reversed without lines".into()))?
             {
                 conn.execute(
-                    "INSERT INTO lines(entry_id, account_id, side, amount, currency, foreign_currency, foreign_amount) VALUES (?,?,?,?,?,?,?)",
+                    "INSERT INTO lines(entry_id, account_id, side, amount, currency, foreign_currency, foreign_amount, class_id) VALUES (?,?,?,?,?,?,?,?)",
                     params![
                         get_u64(p, "id")? as i64,
                         get_u64(l, "account")? as i64,
@@ -2429,6 +2886,7 @@ fn apply_line_to_sqlite(conn: &Connection, line: &JournalLine) -> Result<(), Sto
                         get_str(l, "currency")?,
                         l.get("foreign_currency").and_then(|v| v.as_str()),
                         l.get("foreign_amount").and_then(|v| v.as_str()),
+                        l.get("class_id").and_then(|v| v.as_u64()).map(|v| v as i64),
                     ],
                 )?;
             }
@@ -2538,7 +2996,7 @@ fn apply_line_to_sqlite(conn: &Connection, line: &JournalLine) -> Result<(), Sto
                     StoreError::JournalCorrupt("period.closed entry without lines".into())
                 })? {
                     conn.execute(
-                        "INSERT INTO lines(entry_id, account_id, side, amount, currency, foreign_currency, foreign_amount) VALUES (?,?,?,?,?,?,?)",
+                        "INSERT INTO lines(entry_id, account_id, side, amount, currency, foreign_currency, foreign_amount, class_id) VALUES (?,?,?,?,?,?,?,?)",
                         params![
                             eid,
                             get_u64(l, "account")? as i64,
@@ -2547,6 +3005,7 @@ fn apply_line_to_sqlite(conn: &Connection, line: &JournalLine) -> Result<(), Sto
                             get_str(l, "currency")?,
                             l.get("foreign_currency").and_then(|v| v.as_str()),
                             l.get("foreign_amount").and_then(|v| v.as_str()),
+                            l.get("class_id").and_then(|v| v.as_u64()).map(|v| v as i64),
                         ],
                     )?;
                 }
@@ -2644,6 +3103,56 @@ fn apply_line_to_sqlite(conn: &Connection, line: &JournalLine) -> Result<(), Sto
                     get_str(p, "currency")?,
                     get_str(p, "date")?,
                     get_str(p, "rate")?,
+                ],
+            )?;
+        }
+        "payroll.run" => {
+            // The entry itself arrived through the standard entry events
+            // journaled just before this line; this records the run.
+            let run_id = get_u64(p, "id")? as i64;
+            conn.execute(
+                "INSERT INTO payroll_runs(id, date, entry_id) VALUES (?,?,?)",
+                params![run_id, get_str(p, "date")?, get_u64(p, "entry_id")? as i64,],
+            )?;
+            for l in parse_payroll_lines(p)? {
+                conn.execute(
+                    "INSERT INTO payroll_lines(run_id, employee_name, gross_pay, federal_withholding, state_withholding, ss_employee, medicare_employee, ss_employer, medicare_employer, other_deductions) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    params![
+                        run_id,
+                        l.employee_name,
+                        l.gross_pay.to_string(),
+                        l.federal_withholding.to_string(),
+                        l.state_withholding.to_string(),
+                        l.ss_employee.to_string(),
+                        l.medicare_employee.to_string(),
+                        l.ss_employer.to_string(),
+                        l.medicare_employer.to_string(),
+                        l.other_deductions.to_string(),
+                    ],
+                )?;
+            }
+        }
+        "class.added" => {
+            conn.execute(
+                "INSERT INTO classes(id, name) VALUES (?,?)",
+                params![get_u64(p, "id")? as i64, get_str(p, "name")?],
+            )?;
+        }
+        "entry.line_class_set" => {
+            // Journaled while the entry is a draft, so the projection
+            // usually has no lines row yet (drafts never touch the
+            // projection): the UPDATE is a no-op then, and the class lands
+            // through the entry.posted payload's per-line class_id. When a
+            // row does exist, the UPDATE applies directly. Rows are
+            // inserted in line order, so OFFSET maps line_index to the row.
+            let class_id: Option<i64> =
+                p.get("class_id").and_then(|v| v.as_u64()).map(|v| v as i64);
+            conn.execute(
+                "UPDATE lines SET class_id = ? WHERE id = (SELECT id FROM lines WHERE entry_id = ? ORDER BY id LIMIT 1 OFFSET ?)",
+                params![
+                    class_id,
+                    get_u64(p, "entry_id")? as i64,
+                    get_u64(p, "line_index")? as i64,
                 ],
             )?;
         }

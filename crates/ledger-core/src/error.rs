@@ -131,4 +131,13 @@ pub enum LedgerError {
     /// purchase_date + useful life overflows the date range.
     #[error("purchase date plus useful life overflows the calendar")]
     AssetDateOverflow,
+
+    /// Cash-flow period end is before period start.
+    #[error("invalid date range: end {end} is before start {start}")]
+    InvalidDateRange {
+        /// Period start, YYYY-MM-DD.
+        start: String,
+        /// Period end, YYYY-MM-DD.
+        end: String,
+    },
 }

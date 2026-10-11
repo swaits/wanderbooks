@@ -3,57 +3,50 @@
 ## Phase 1 — Semantics core (done)
 
 The engine: money, accounts, journal, ledger commands, trial balance, P&L,
-balance sheet, golden files, property tests, and the docs an agent needs to
-work here (AGENTS.md, requirements, architecture, oracle, parity, glossary).
-Parity floor: 6 done.
+balance sheet, cash flow, fixed assets with depreciation, golden files,
+property tests, mutation testing, fuzzing, and the docs an agent needs to
+work here. Parity floor: 12 done.
 
-## Phase 2 — AI-first interface (now)
+## Phase 2 — AI-first interface (done)
 
 The primary interface is MCP, not a cloned GUI (the owner's call, 2026-10-10).
 
-- `ledger-store`: SQLite persistence, append-only triggers, amounts as TEXT,
-  event log, migrations, rebuild-from-log verify. Spec: `docs/receipt-store.md`.
-- Blob store: content-addressed receipts and documents, attachment metadata,
-  Drive backfill script.
-- `ledger-mcp`: stdio transport first, Streamable HTTP later; narrow tools,
-  preview-before-post, digest, read-only resources, the agent operating
-  contract in the tool descriptions. Spec: `docs/mcp-interface.md`.
-- Capability parity vs the GSheet+GDrive system: `docs/capability-parity.md`.
-- Parallel run with the sheet; cutover per the cutover rule.
-- Done when: every specced capability-parity row is covered, a month of
-  parallel run diffs clean, the owner approves the cutover.
+- `ledger-store`: append-only hash-chained JSONL journal (source of truth),
+  SQLite as disposable projection with auto-rebuild, content-addressed
+  blob store, durable drafts.
+- `ledger-mcp`: 27 tools over stdio and Streamable HTTP, preview-before-post,
+  server-side receipt policy (>$25) with anti-splitting, asset management,
+  digest for human review, read-only resources.
+- `ledger-import`: QuickBooks CSV import (bank, chart), IIF and XLSX export.
+- Capability parity 12 of 12 vs the GSheet+GDrive system.
+- Parallel run with the sheet; cutover per the cutover rule
+  (`docs/parallel-run.md`).
 
-## Phase 3 — Oracle harness
+## Phase 3 — Oracle harness (next)
 
-- `ledger-import`: QuickBooks CSV read-only import (bank transactions, chart
-  of accounts)
-- `ledger-export`: CSV, XLSX, and IIF renderers (IIF for QuickBooks Desktop,
-  which many CPAs still run)
-- `ledger-oracle`: fixture books through our engine and GnuCash headless
-  (fed via QIF/OFX or its Python bindings — mechanism TBD at implementation),
-  automatic `snapshot()` diffing via `cargo xtask oracle`
+- `ledger-oracle`: fixture books through our engine and GnuCash headless,
+  automatic `snapshot()` diffing.
 - Parity catalog becomes machine-readable; CI enforces the non-regression
-  floor
+  floor.
 - Done when: a fixture book produces byte-identical snapshots from both
-  engines with zero manual steps
+  engines with zero manual steps.
 
 ## Phase 4 — Read-only GUI
 
-- Consumes the `ledger-store` event log: live updates via tail/SSE — the
-  answer to "watch its files to update live."
+- Consumes the `ledger-store` event log: live updates — the answer to
+  "watch its files to update live."
 - egui or web; a dumb client holding no accounting logic.
 - This is the trust layer for humans (the owner, the other member, the CPA), not the
   primary interface. Read-only at first; editing stays with the agent.
 
 ## Phase 5 — Workflow parity
 
-- A/R and A/P workflows, bank reconciliation, budgets, scheduled transactions
-- Multi-currency with FX translation
-- Period close and cash flow (engine R-FUTURE items) land as their phases
-  demand, not before
+- A/R and A/P workflows, bank reconciliation, budgets, scheduled transactions.
+- Multi-currency with FX translation.
+- Period close.
 - The goal: a self-hosted bookkeeping system with a tested claim to
   semantic parity with GnuCash and capability parity with the old
-  GSheet+GDrive workflow — no SaaS subscription required
+  GSheet+GDrive workflow — no SaaS subscription required.
 
 ## Explicitly not on the roadmap
 

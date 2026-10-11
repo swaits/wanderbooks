@@ -5,7 +5,7 @@
 //! is the current version.
 
 /// Current schema version.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// Migrations, in order. `MIGRATIONS[i]` migrates from version `i` to `i+1`.
 pub const MIGRATIONS: &[&str] = &[
@@ -144,5 +144,33 @@ CREATE INDEX IF NOT EXISTS idx_invoices_customer ON invoices(customer_id);
 CREATE INDEX IF NOT EXISTS idx_bills_vendor ON bills(vendor_id);
 ALTER TABLE lines ADD COLUMN foreign_currency TEXT;
 ALTER TABLE lines ADD COLUMN foreign_amount TEXT;
+"#,
+    r#"
+-- v4: classes, payroll runs, and class_id on lines. Amounts are TEXT,
+-- never REAL.
+CREATE TABLE IF NOT EXISTS classes(
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS payroll_runs(
+  id INTEGER PRIMARY KEY,
+  date TEXT NOT NULL,
+  entry_id INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS payroll_lines(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id INTEGER NOT NULL,
+  employee_name TEXT NOT NULL,
+  gross_pay TEXT NOT NULL,
+  federal_withholding TEXT NOT NULL,
+  state_withholding TEXT NOT NULL,
+  ss_employee TEXT NOT NULL,
+  medicare_employee TEXT NOT NULL,
+  ss_employer TEXT NOT NULL,
+  medicare_employer TEXT NOT NULL,
+  other_deductions TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_payroll_lines_run ON payroll_lines(run_id);
+ALTER TABLE lines ADD COLUMN class_id INTEGER;
 "#,
 ];

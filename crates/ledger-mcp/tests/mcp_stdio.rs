@@ -134,7 +134,7 @@ fn mcp_end_to_end_over_stdio() {
     // Tool listing: 23 narrow tools, chart is read-only.
     let list = mcp.request("tools/list", json!({}));
     let tools = list["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 27, "expected 27 tools, got {}", tools.len());
+    assert_eq!(tools.len(), 48, "expected 48 tools, got {}", tools.len());
     let chart = tools.iter().find(|t| t["name"] == "books.chart").unwrap();
     assert_eq!(chart["annotations"]["readOnlyHint"], true);
     assert!(

@@ -74,10 +74,9 @@ interface is MCP, not a cloned GUI. The first storage + MCP slice is done
    Remaining from the spec: MCP *resources* (rmcp 3.x has no resource
    macros; hand-roll `list_resources`/`read_resource` next), Streamable HTTP
    transport, XLSX/IIF export formats.
-4. **Capability parity** (`docs/capability-parity.md`): 10 of 12 rows
-   covered; cash flow (engine R-FUTURE-3) and full CPA export (xlsx/iif)
-   remain. Then the month-long parallel run against the GSheet; cutover per
-   the cutover rule.
+4. **Capability parity** (`docs/capability-parity.md`): 11 of 12 rows
+   covered; full CPA export (xlsx/iif) remains. Then the month-long parallel
+   run against the GSheet; cutover per the cutover rule.
 5. Then: oracle harness (GnuCash diff), read-only GUI on the event log,
    workflow parity.
 
@@ -107,3 +106,38 @@ interface is MCP, not a cloned GUI. The first storage + MCP slice is done
   JSONL journal (fsync per append; tamper-evident; git-backup-friendly),
   SQLite is a disposable projection rebuilt from it, blobs stay
   content-addressed. Single write path: journal → fsync → apply to SQLite.
+- 2026-10-10: Draft durability (house decision). Drafts are **durable**, not
+  ephemeral: `entry.created` + `entry.line_added` journal lines record the
+  draft as the agent builds it, so drafts and their attached receipts survive
+  restarts. Drafts never touch the SQLite projection until posted. Rationale:
+  the journal is the source of truth (phantom `entry.created` lines without
+  draft lines were the worst of both worlds), and the draft → attach receipts
+  → post workflow spans multiple MCP calls.
+- 2026-10-10: Corrupt SQLite heals itself. If the projection fails
+  `integrity_check` (or isn't a database at all), `Store::open` quarantines
+  it to `wanderbooks.corrupt.<timestamp>` and rebuilds from the journal,
+  instead of failing open. WAL/SHM are dropped as derived state.
+- 2026-10-10: Cash flow statement (R-FUTURE-3) done. Engine
+  `reports::cash_flow` (indirect method) + `books.cash_flow` MCP tool (24
+  tools total). Disposals identified structurally; gains/losses move from
+  operating to investing; the three sections always reconcile to the net
+  change in the designated cash accounts. Two invariant tests, including a
+  full purchase → depreciate → dispose cycle.
+- 2026-10-10: MCP resources done (hand-rolled `list_resources` /
+  `read_resource`: chart, trial-balance, balance-sheet, profit-and-loss,
+  digest, receipts). `#[tool_handler]` must sit on the `impl ServerHandler`
+  block, not the inherent impl — misplacing it silently drops all tools.
+- 2026-10-10: QuickBooks interop (R-FUTURE-4) done. New `ledger-import`
+  crate: QBO bank CSV parse (3-col and 4-col layouts), chart CSV parse,
+  IIF journal generation, XLSX report generation (rust_xlsxwriter, MIT).
+  MCP: `books.import_bank_csv` (drafts + categorization rules),
+  `books.import_chart_csv` (all-or-nothing), `books.export` gains `xlsx`
+  (base64) and `iif` formats plus `cash_flow` report. 26 tools total.
+  Capability parity 12 of 12 rows covered.
+- 2026-10-10: Streamable HTTP transport done. `ledger-mcp --http ADDR`
+  serves MCP at `/mcp` via rmcp's tower StreamableHttpService (axum).
+  27 tools total. Verified with curl: initialize returns SSE stream.
+- 2026-10-10: Drive backfill path done. `books.import_local_file` reads a
+  file from the server's filesystem into the blob store (receipt/document).
+  The agent downloads from Drive via the CLI, then calls this — Drive
+  credentials never enter the server.

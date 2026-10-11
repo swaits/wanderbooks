@@ -12,3 +12,4 @@ chrono = "0.4"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 rust_xlsxwriter = "0.90"
+printpdf = "0.12.8"

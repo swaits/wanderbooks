@@ -1,0 +1,125 @@
+//! Exact money: [`Decimal`] amounts paired with an ISO 4217 currency code.
+//!
+//! There is no float anywhere in this module, and there never will be.
+//! [`Money`] arithmetic is checked: adding different currencies is an error,
+//! not a guess.
+
+use crate::LedgerError;
+use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
+use std::fmt;
+
+/// An ISO 4217 alpha-3 currency code, stored as three uppercase ASCII bytes.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Currency([u8; 3]);
+
+impl Currency {
+    /// US dollar.
+    pub const USD: Currency = Currency([b'U', b'S', b'D']);
+    /// Euro.
+    pub const EUR: Currency = Currency([b'E', b'U', b'R']);
+    /// British pound.
+    pub const GBP: Currency = Currency([b'G', b'B', b'P']);
+    /// Swiss franc.
+    pub const CHF: Currency = Currency([b'C', b'H', b'F']);
+    /// Japanese yen.
+    pub const JPY: Currency = Currency([b'J', b'P', b'Y']);
+
+    /// Parse and validate a three-letter code. Input is uppercased, so
+    /// `"usd"` and `"USD"` both work; `"US"` or `"USDD"` fail.
+    pub fn new(code: &str) -> Result<Self, LedgerError> {
+        let bytes = code.as_bytes();
+        if bytes.len() != 3 || !bytes.iter().all(|b| b.is_ascii_alphabetic()) {
+            return Err(LedgerError::InvalidCurrencyCode(code.to_string()));
+        }
+        let mut upper = [0u8; 3];
+        for (i, b) in bytes.iter().enumerate() {
+            upper[i] = b.to_ascii_uppercase();
+        }
+        Ok(Currency(upper))
+    }
+
+    /// The three-letter code, e.g. `"USD"`.
+    pub fn code(&self) -> &str {
+        std::str::from_utf8(&self.0).expect("currency codes are ASCII by construction")
+    }
+}
+
+impl fmt::Debug for Currency {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Currency({})", self.code())
+    }
+}
+
+impl fmt::Display for Currency {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.code())
+    }
+}
+
+/// An exact decimal amount in a specific currency.
+///
+/// `Money` is `Copy` and cheap: pass it by value. All arithmetic is checked
+/// for currency agreement and returns [`LedgerError::CurrencyMismatch`]
+/// rather than silently converting.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Money {
+    /// The exact amount. Never a float.
+    pub amount: Decimal,
+    /// The currency this amount is denominated in.
+    pub currency: Currency,
+}
+
+impl Money {
+    /// Build money from an exact decimal amount.
+    pub fn new(amount: Decimal, currency: Currency) -> Self {
+        Self { amount, currency }
+    }
+
+    /// Zero in the given currency.
+    pub fn zero(currency: Currency) -> Self {
+        Self {
+            amount: Decimal::ZERO,
+            currency,
+        }
+    }
+
+    /// True when the amount is exactly zero.
+    pub fn is_zero(&self) -> bool {
+        self.amount.is_zero()
+    }
+
+    fn check_currency(&self, other: &Money) -> Result<(), LedgerError> {
+        if self.currency != other.currency {
+            return Err(LedgerError::CurrencyMismatch {
+                expected: self.currency.code().to_string(),
+                found: other.currency.code().to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Add two money values. Fails on currency mismatch.
+    pub fn checked_add(self, rhs: Money) -> Result<Money, LedgerError> {
+        self.check_currency(&rhs)?;
+        Ok(Money::new(self.amount + rhs.amount, self.currency))
+    }
+
+    /// Subtract two money values. Fails on currency mismatch.
+    pub fn checked_sub(self, rhs: Money) -> Result<Money, LedgerError> {
+        self.check_currency(&rhs)?;
+        Ok(Money::new(self.amount - rhs.amount, self.currency))
+    }
+}
+
+impl fmt::Debug for Money {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} {}", self.amount, self.currency)
+    }
+}
+
+impl fmt::Display for Money {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} {}", self.amount, self.currency)
+    }
+}

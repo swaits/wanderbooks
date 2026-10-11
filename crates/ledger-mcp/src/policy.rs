@@ -106,4 +106,71 @@ impl ReceiptPolicy {
             self.threshold()
         )
     }
+
+    /// Normalize a description for split detection.
+    fn normalize_description(desc: &str) -> String {
+        desc.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+    }
+
+    /// Debit account ids of an entry, sorted.
+    fn debit_accounts(entry: &JournalEntry) -> Vec<u64> {
+        let mut ids: Vec<u64> = entry
+            .lines()
+            .iter()
+            .filter(|l| l.side == Side::Debit)
+            .map(|l| l.account)
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    }
+
+    /// Detect a potential threshold split: posted entries on the same date
+    /// with the same normalized description and debit accounts, whose
+    /// combined debits with this entry exceed the threshold while this
+    /// entry alone does not. Returns the matching posted entry ids.
+    ///
+    /// This is the anti-gaming rule: splitting a $100 purchase into four
+    /// $25 entries does not dodge the receipt policy. Same-day,
+    /// same-description, same-accounts is the signature; recurring spending
+    /// spread across days is not flagged.
+    pub fn split_group(&self, ledger: &Ledger, entry_id: u64, entry: &JournalEntry) -> Vec<u64> {
+        let debits = Self::entry_debits(entry);
+        if debits > self.threshold() {
+            return Vec::new(); // Normal policy already applies.
+        }
+        let desc = Self::normalize_description(entry.description());
+        let accounts = Self::debit_accounts(entry);
+        let date = entry.date();
+        let mut group = Vec::new();
+        let mut total = debits;
+        for other in ledger.posted_entries() {
+            if other.id() == entry_id {
+                continue;
+            }
+            if other.date() != date {
+                continue;
+            }
+            if Self::normalize_description(other.description()) != desc {
+                continue;
+            }
+            if Self::debit_accounts(other) != accounts {
+                continue;
+            }
+            // Reversals are exempt from the policy; don't count them.
+            if other.reversal_of().is_some() {
+                continue;
+            }
+            group.push(other.id());
+            total += Self::entry_debits(other);
+        }
+        if !group.is_empty() && total > self.threshold() {
+            group
+        } else {
+            Vec::new()
+        }
+    }
 }

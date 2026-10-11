@@ -1,0 +1,27 @@
+[package]
+name = "ledger-mcp"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "MCP server for wanderbooks: the AI-first bookkeeping interface over ledger-store."
+
+[[bin]]
+name = "ledger-mcp"
+path = "src/main.rs"
+
+[dependencies]
+ledger-core = { path = "../ledger-core" }
+ledger-store = { path = "../ledger-store" }
+rust_decimal = "1"
+rmcp = { version = "3", features = ["server", "transport-io", "schemars"] }
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+chrono = "0.4"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "sync"] }
+
+[lints]
+workspace = true

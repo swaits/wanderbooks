@@ -8,7 +8,7 @@ Statuses: `done` = implemented + invariant-tested + golden-covered.
 `partial` = implemented but missing tests or goldens. `todo` = not started.
 No other statuses.
 
-**Floor: 6 done** (2026-10-10, initial commit).
+**Floor: 10 done** (2026-10-10; fixed-asset register added).
 
 | Area | GnuCash reference | Status | Notes |
 |---|---|---|---|
@@ -21,6 +21,7 @@ No other statuses.
 | Profit & loss | Reports → Income Statement | done | golden-covered |
 | Reversing entries | Reverse transaction | done | linked via `reversal_of` |
 | Canonical report snapshots (JSON) | — (our oracle format) | done | `reports::snapshot` |
+| Fixed-asset register + straight-line depreciation | Fixed Asset register | done | `assets.rs`; golden-covered schedule; idempotent runs; disposal with gain/loss |
 | Cash flow statement (indirect) | Reports → Cash Flow | todo | R-FUTURE-3 |
 | Period close / retained earnings | Close books | todo | R-FUTURE-2 |
 | Multi-currency + FX translation | Multi-currency accts | todo | R-FUTURE-1 |

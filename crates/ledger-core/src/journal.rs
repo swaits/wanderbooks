@@ -29,8 +29,18 @@ pub struct JournalLine {
     pub account: AccountId,
     /// Which side of the entry this line is on.
     pub side: Side,
-    /// The exact amount. Never zero (rejected at validation).
+    /// The exact amount, in the ledger's base currency. Never zero (rejected
+    /// at validation).
     pub amount: Money,
+    /// For foreign-currency lines: the original currency. `None` for base-
+    /// currency lines. When set, `amount` is the base-currency equivalent
+    /// converted at the line's rate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foreign_currency: Option<Currency>,
+    /// For foreign-currency lines: the original foreign amount. `None` for
+    /// base-currency lines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foreign_amount: Option<Decimal>,
 }
 
 /// A balanced set of journal lines with a date and a description.

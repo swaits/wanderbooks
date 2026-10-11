@@ -1,14 +1,12 @@
-# STATUS — 2026-10-10 (evening: asset slice + testing initiative)
+# STATUS — 2026-10-11 (all 10 natural next steps done; repo now public)
 
 ## Where we are
 
-Phase 1 (semantics core) is done and green. The first storage + MCP slice
-is built, tested, and green. The **fixed-asset slice** is built, tested,
-and green. A testing initiative (property + mutation + fuzz) is underway
-on `ledger-core`.
+All ten natural next steps are done, tested, and pushed. The repo is now
+public. Parity is 12 of 12 against the spreadsheet workflow.
 
 **Done:**
-- Repo `swaits/wanderbooks` created on git.swaits.com (private).
+- Repo `swaits/wanderbooks` on git.swaits.com (public as of 2026-10-11).
 - `ledger-core` 0.1.0: `Money` (exact Decimal + ISO currency), five account
   types with normal sides, chart of accounts (codes, hierarchy,
   placeholders), journal entries with full validation, `Ledger` command

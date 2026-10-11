@@ -1,9 +1,74 @@
 # Receipt & document store + persistence spec
 
-Two coupled pieces: where the bytes live (content-addressed blob store) and
-where the facts live (SQLite via `ledger-store`). Both are immutable-first,
+Three pieces: the **journal** (the source of truth), the **blob store**
+(the bytes), and **SQLite** (the queryable projection). All immutable-first,
 matching the ledger's philosophy: the books never forget, and neither does
 the filing cabinet.
+
+## The journal: the source of truth
+
+SQLite is the query engine, not the source of truth. The source of truth is
+an **append-only journal of domain events**: one JSON object per line
+(JSONL), hash-chained. This is the deliberate answer to "insanely durable,
+easily backupable, journable":
+
+- **Durable.** Every state change is an immutable fact appended to
+  `journal.jsonl`, fsync'd per append. Each line carries the SHA-256 of the
+  previous line's canonical bytes (`prev`), forming a tamper-evident chain:
+  bit rot, torn writes, and casual editing are detected on read/verify, not
+  discovered at tax time. Honest scope: this detects corruption and casual
+  tampering. It does not stop a determined attacker with full write access
+  from rewriting the chain — nothing local does.
+- **Backupable.** The backup is `cp -r $WANDERBOOKS_DATA /backup`: the
+  journal file plus the blob directory. Plain files, no WAL-file timing
+  windows, no special backup API. A torn tail from a mid-copy is detectable
+  (the last line fails hash/parse) and recoverable (truncate to the last
+  good seq — the projection never saw it). Better: the journal is
+  git-friendly, so an optional `wanderbooks backup` that commits it to a
+  private git repo gives versioned, distributed, deduplicated backup with
+  full history.
+- **Journable.** It literally is a journal: `{seq, ts, type, payload, prev}`.
+  Greppable, diffable, replayable. The audit trail isn't a feature bolted
+  on — it's the storage format.
+
+### Write path
+
+There is exactly one write path: **append to the journal, fsync, then apply
+to SQLite.** No dual writes, no background applier thread (the volume
+doesn't justify it): the MCP server appends, fsyncs, applies the new lines
+to the projection synchronously, and returns. A crash between append and
+apply is safe — on startup the applier replays every journal line with
+`seq > last_applied_seq`.
+
+### Line format
+
+```json
+{"seq": 42, "ts": "2026-10-10T18:20:00Z", "type": "entry.posted",
+ "payload": { "...": "..." }, "prev": "abc123..."}
+```
+
+- `seq`: 1-based, gapless, assigned by the writer.
+- `ts`: UTC, RFC 3339. Recorded, never trusted for ordering (`seq` orders).
+- `type`: `account.added`, `entry.posted`, `entry.reversed`,
+  `receipt.attached`, `receipt.linked`, `document.filed`.
+- `payload`: the full domain facts (account fields, entry with lines, blob
+  sha, ...). Everything the applier needs; nothing it must look up elsewhere.
+- `prev`: hex SHA-256 of the previous line's canonical JSON (keys sorted, no
+  whitespace). The genesis line uses `"prev": "000...0"` (64 zeros).
+
+### Drafts are not journaled
+
+Draft entries are ephemeral: they live in the MCP server's memory and are
+**not** journaled until posted. The journal records facts, not intentions.
+A draft that never posts leaves no trace — which is correct.
+
+### Verification
+
+`wanderbooks verify` (a `ledger-store` API, later a CLI subcommand):
+re-read the journal, recompute the hash chain, replay every line into a fresh
+in-memory `Ledger`, and compare its reports against the SQLite projection's.
+Any mismatch is a loud failure. Run it on startup (cheap at this scale) and
+before backups.
 
 ## Blob store
 
@@ -35,51 +100,38 @@ the filing cabinet.
   posting *requires* a receipt is decided by the MCP layer's receipt policy
   (`docs/mcp-interface.md`), which reads the `attachments` table.
 
-## `ledger-store` (SQLite)
+## `ledger-store`: the SQLite projection
+
+SQLite is the read-optimized projection of the journal. Queries, reports,
+the MCP server's reads, and the future GUI all hit SQLite — and SQLite is
+**disposable by design**: `rebuild` drops it and replays the journal.
+Suspected corruption is fixed by rebuild, never by forensics.
 
 - **Location.** `$WANDERBOOKS_DATA/wanderbooks.db`, falling back to
-  `~/.local/share/wanderbooks/wanderbooks.db`. Blobs live next to it under
-  `$WANDERBOOKS_DATA/blobs/`. WAL mode on.
-- **Schema.**
-  - `meta(key TEXT PK, value TEXT)` — `schema_version`, `base_currency`.
-  - `accounts(id INTEGER PK, code TEXT UNIQUE, name TEXT, type TEXT,
-    parent INTEGER NULL, placeholder INTEGER, currency TEXT)`.
-  - `entries(id INTEGER PK, date TEXT, description TEXT, status TEXT,
-    reversal_of INTEGER NULL)`.
-  - `lines(id INTEGER PK, entry_id INTEGER, account_id INTEGER, side TEXT,
-    amount TEXT, currency TEXT)`. **Amounts are TEXT (decimal strings).
-    Never REAL.** This is load-bearing: a REAL column would silently
-    reintroduce binary floats into the money path.
-  - `blobs`, `attachments` as above.
-  - `events(seq INTEGER PK AUTOINCREMENT, type TEXT, payload TEXT,
-    created_at TEXT)` — appended on every mutation: account added, entry
-    posted, entry reversed, receipt attached, document filed. Payload is JSON.
-- **Append-only enforcement.** Application code never UPDATEs or DELETEs
-  `entries`/`lines`/`blobs`. Belt and suspenders: SQLite triggers abort any
-  such statement:
-  ```sql
-  CREATE TRIGGER no_update_entries BEFORE UPDATE ON entries BEGIN
-    SELECT RAISE(ABORT, 'entries are immutable; post a reversing entry');
-  END;
-  ```
-  Same shape for `lines` (UPDATE and DELETE) and `blobs`.
-- **The event log is the live-update mechanism.** The future read-only GUI
-  does not poll the database and does not watch the filesystem: it tails
-  `events` (poll `WHERE seq > ?`, later SSE over the HTTP transport). This
-  is the correct answer to "watch its files to update live" — watch the
-  event stream, not the files.
+  `~/.local/share/wanderbooks/wanderbooks.db`. The journal lives next to it
+  at `$WANDERBOOKS_DATA/journal.jsonl`; blobs under
+  `$WANDERBOOKS_DATA/blobs/`. WAL mode on, `synchronous=FULL`,
+  `integrity_check` on startup.
+- **Schema.** `meta(key, value)` — `schema_version`, `base_currency`,
+  `last_applied_seq`; `accounts`, `entries`, `lines`, `blobs`, `attachments`
+  as above; `events(seq, type, payload, created_at)` — the applier's output,
+  a queryable mirror of the journal stream and the feed the future GUI
+  tails. (Poll `WHERE seq > ?`; later SSE over the HTTP transport. This is
+  the correct answer to "watch its files to update live" — watch the event
+  stream, not the files.)
+- **Amounts as TEXT, never REAL.** Unchanged and still load-bearing: a REAL
+  column would silently reintroduce binary floats into the money path.
+- **Append-only, three layers.** (1) The engine's API never mutates posted
+  state. (2) The journal is append-only by file discipline plus the hash
+  chain. (3) The applier only ever INSERTs into the projection. The SQLite
+  triggers from the earlier draft are deliberately dropped: they protected
+  the projection, which is disposable — the journal is the trust anchor, and
+  piling mechanisms on the disposable layer adds complexity without adding
+  safety. Simplicity is a durability feature too.
 - **Migrations.** Numbered SQL files, applied in order, bumping
-  `meta.schema_version`. The store opens read-write only after migrations
-  are current; a newer schema version than the binary understands is a
-  hard error, not a guess.
-
-## Rebuildability
-
-The database is a cache, not the source of truth. The source of truth is:
-the append-only entry log + the blob store. `ledger-store` must be able to
-rebuild every report from those two. (A `verify` subcommand that replays the
-log and compares against live reports is a good acceptance test for the
-crate.)
+  `meta.schema_version`. Every migration is tested by rebuilding a
+  projection from the journal and comparing reports before/after. A newer
+  schema version than the binary understands is a hard error, not a guess.
 
 ## Migration from Google Drive
 

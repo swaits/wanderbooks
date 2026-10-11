@@ -27,4 +27,6 @@ pub mod store;
 pub use blob::BlobStore;
 pub use error::StoreError;
 pub use journal::{GENESIS_PREV, JournalLine, JournalWriter};
-pub use store::{Attachment, DB_FILE, EntryRow, EventRow, JOURNAL_FILE, Store};
+pub use store::{
+    Attachment, DB_FILE, DepreciationRun, DisposalPreview, EntryRow, EventRow, JOURNAL_FILE, Store,
+};

@@ -25,8 +25,12 @@ The primary interface is MCP, not a cloned GUI (the owner's call, 2026-10-10).
 
 ## Phase 3 — Oracle harness
 
-- `ledger-import`: GnuCash XML read-only import
-- `ledger-oracle`: fixture books through our engine and GnuCash headless,
+- `ledger-import`: QuickBooks CSV read-only import (bank transactions, chart
+  of accounts)
+- `ledger-export`: CSV, XLSX, and IIF renderers (IIF for QuickBooks Desktop,
+  which many CPAs still run)
+- `ledger-oracle`: fixture books through our engine and GnuCash headless
+  (fed via QIF/OFX or its Python bindings — mechanism TBD at implementation),
   automatic `snapshot()` diffing via `cargo xtask oracle`
 - Parity catalog becomes machine-readable; CI enforces the non-regression
   floor

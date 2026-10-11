@@ -56,11 +56,14 @@ apply is safe — on startup the applier replays every journal line with
 - `prev`: hex SHA-256 of the previous line's canonical JSON (keys sorted, no
   whitespace). The genesis line uses `"prev": "000...0"` (64 zeros).
 
-### Drafts are not journaled
+### Drafts are journaled (durable)
 
-Draft entries are ephemeral: they live in the MCP server's memory and are
-**not** journaled until posted. The journal records facts, not intentions.
-A draft that never posts leaves no trace — which is correct.
+Draft entries are durable: `entry.created` and `entry.line_added` journal
+lines record the draft as the agent builds it, so drafts (and receipts
+attached to them) survive server restarts. Drafts never touch the SQLite
+projection until posted — reports only see posted entries. A draft that
+never posts leaves its `created`/`line_added` lines in the journal, which
+is correct: the journal records what happened, including abandoned work.
 
 ### Verification
 

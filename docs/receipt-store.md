@@ -31,6 +31,9 @@ the filing cabinet.
     plus `receipts`.
 - Documents filed via `books.file_document` and receipts via
   `books.attach_receipt` share the blob store; they differ only in metadata.
+- The store is policy-free: it records attachments faithfully. Whether a
+  posting *requires* a receipt is decided by the MCP layer's receipt policy
+  (`docs/mcp-interface.md`), which reads the `attachments` table.
 
 ## `ledger-store` (SQLite)
 

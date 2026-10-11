@@ -63,12 +63,8 @@ requirement conflict, the requirement wins.
 
 ## Explicitly future work
 
-- **R-FUTURE-1 — Multi-currency.** Per-account currencies, entry-level FX
-  rates, translation gains/losses, reporting in a presentation currency.
-- **R-FUTURE-2 — Periods and close.** Fiscal years/periods, closing entries
-  that move P&L balances to retained earnings, locked periods.
-- **R-FUTURE-5 — A/R and A/P workflows** (invoices, bills, payments, aging).
-- **R-FUTURE-6 — Budgets and scheduled transactions.**
+- **R-FUTURE-6 — Budgets and scheduled transactions.** (Budgets explicitly
+  declined as bloat; scheduled transactions remain future.)
 
 ## Promoted from future (done)
 
@@ -76,6 +72,19 @@ requirement conflict, the requirement wins.
   `ledger-core::reports::cash_flow` + `books.cash_flow`.
 - **R-? — QuickBooks-compatible import/export.** Was R-FUTURE-4.
   `ledger-import` crate: CSV bank/chart import, IIF and XLSX export.
+- **R-? — Multi-currency (foreign-currency lines).** Was R-FUTURE-1.
+  `JournalLine` carries optional foreign currency/amount; `amount` is the
+  base-currency equivalent. `Ledger::add_line_fx`, `Ledger::set_fx_rate`.
+  Reports work in base currency. (Full per-account currencies and translation
+  remain future.)
+- **R-? — Periods and close.** Was R-FUTURE-2.
+  `ledger-core::periods`: `create_period`, `close_period` (posts closing
+  entry to `3999` Retained Earnings), closed periods reject new entries.
+- **R-? — A/R and A/P workflows.** Was R-FUTURE-5.
+  `ledger-core::arap`: customers, vendors, invoices, bills, payments,
+  AR/AP aging. MCP tools for the full workflow.
+- **R-? — Bank reconciliation.** Cleared flags on posted lines,
+  `reconciliation_report` with uncleared-line detail.
 
 ## Non-goals (all phases of the engine)
 

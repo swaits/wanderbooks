@@ -33,4 +33,7 @@ pub use error::LedgerError;
 pub use journal::{EntryId, EntryStatus, JournalEntry, JournalLine};
 pub use ledger::Ledger;
 pub use money::{Currency, Money};
-pub use reports::{BalanceSheet, ProfitAndLoss, TrialBalance, TrialBalanceLine};
+pub use reports::{
+    BalanceSheet, CashFlowLine, CashFlowParams, CashFlowStatement, ProfitAndLoss, TrialBalance,
+    TrialBalanceLine, cash_flow,
+};

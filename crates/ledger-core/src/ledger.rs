@@ -7,10 +7,10 @@
 //! audit trail and what will make the future oracle harness trustworthy.
 
 use crate::{
-    AccountId, AccountType, ChartOfAccounts, Currency, EntryId, EntryStatus, JournalEntry,
-    JournalLine, LedgerError, Money, Side,
+    AccountId, AccountType, Asset, AssetId, AssetStatus, ChartOfAccounts, Currency, EntryId,
+    EntryStatus, JournalEntry, JournalLine, LedgerError, Money, NewAsset, Side, assets,
 };
-use chrono::NaiveDate;
+use chrono::{Months, NaiveDate};
 use rust_decimal::Decimal;
 use std::collections::HashMap;
 
@@ -22,8 +22,11 @@ pub struct Ledger {
     entries: HashMap<EntryId, JournalEntry>,
     /// Entry ids in posting order: the append-only log.
     order: Vec<EntryId>,
+    /// Fixed-asset register: master data, journaled like accounts.
+    assets: HashMap<AssetId, Asset>,
     next_account_id: AccountId,
     next_entry_id: EntryId,
+    next_asset_id: AssetId,
 }
 
 impl Ledger {
@@ -34,8 +37,10 @@ impl Ledger {
             chart: ChartOfAccounts::default(),
             entries: HashMap::new(),
             order: Vec::new(),
+            assets: HashMap::new(),
             next_account_id: 1,
             next_entry_id: 1,
+            next_asset_id: 1,
         }
     }
 
@@ -52,6 +57,13 @@ impl Ledger {
     /// See [`Self::next_account_id`].
     pub fn next_entry_id(&self) -> EntryId {
         self.next_entry_id
+    }
+
+    /// The id the next fixed asset registered will receive.
+    ///
+    /// See [`Self::next_account_id`].
+    pub fn next_asset_id(&self) -> AssetId {
+        self.next_asset_id
     }
 
     /// The currency every account and line in this ledger uses.
@@ -196,6 +208,116 @@ impl Ledger {
     /// Posted entries in posting order: the append-only log.
     pub fn posted_entries(&self) -> impl Iterator<Item = &JournalEntry> + '_ {
         self.order.iter().filter_map(|id| self.entries.get(id))
+    }
+
+    // ------------------------------------------------------------------
+    // Fixed assets
+    // ------------------------------------------------------------------
+
+    /// Pure pre-validation for [`Self::register_asset`]: every check that
+    /// does not mutate, so journaling stores can validate before journaling.
+    pub fn validate_new_asset(&self, new: &NewAsset) -> Result<(), LedgerError> {
+        if new.description.trim().is_empty() {
+            return Err(LedgerError::EmptyAssetDescription);
+        }
+        if new.cost.amount <= Decimal::ZERO {
+            return Err(LedgerError::InvalidAssetCost(new.cost.amount));
+        }
+        if new.cost.currency != self.base_currency {
+            return Err(LedgerError::CurrencyMismatch {
+                expected: self.base_currency.code().to_string(),
+                found: new.cost.currency.code().to_string(),
+            });
+        }
+        if new.salvage_value.amount < Decimal::ZERO || new.salvage_value.amount >= new.cost.amount {
+            return Err(LedgerError::InvalidSalvageValue(new.salvage_value.amount));
+        }
+        if new.salvage_value.currency != self.base_currency {
+            return Err(LedgerError::CurrencyMismatch {
+                expected: self.base_currency.code().to_string(),
+                found: new.salvage_value.currency.code().to_string(),
+            });
+        }
+        if new.useful_life_months < 1 {
+            return Err(LedgerError::InvalidUsefulLife(new.useful_life_months));
+        }
+        // The schedule walks every month of the asset's life; a purchase
+        // date near the end of the calendar would overflow date arithmetic
+        // (and hang or panic the schedule). Reject it up front.
+        if new
+            .purchase_date
+            .checked_add_months(Months::new(new.useful_life_months))
+            .is_none()
+        {
+            return Err(LedgerError::AssetDateOverflow);
+        }
+        assets::validate_asset_accounts(
+            &self.chart,
+            new.cost_account,
+            new.accum_depr_account,
+            new.expense_account,
+        )
+    }
+
+    /// Register a fixed asset. Validates the economics (positive cost,
+    /// salvage below cost, at least one month of life, base currency) and
+    /// the account links (asset/asset/expense types, three distinct
+    /// accounts).
+    pub fn register_asset(&mut self, new: NewAsset) -> Result<AssetId, LedgerError> {
+        self.validate_new_asset(&new)?;
+        let id = self.next_asset_id;
+        self.next_asset_id += 1;
+        self.assets.insert(
+            id,
+            Asset {
+                id,
+                description: new.description,
+                purchase_date: new.purchase_date,
+                cost: new.cost,
+                salvage_value: new.salvage_value,
+                useful_life_months: new.useful_life_months,
+                method: crate::DepreciationMethod::StraightLine,
+                cost_account: new.cost_account,
+                accum_depr_account: new.accum_depr_account,
+                expense_account: new.expense_account,
+                status: AssetStatus::Active,
+            },
+        );
+        Ok(id)
+    }
+
+    /// Look up a fixed asset.
+    pub fn get_asset(&self, id: AssetId) -> Option<&Asset> {
+        self.assets.get(&id)
+    }
+
+    /// All registered assets, in registration order.
+    pub fn registered_assets(&self) -> impl Iterator<Item = &Asset> + '_ {
+        let mut ids: Vec<AssetId> = self.assets.keys().copied().collect();
+        ids.sort_unstable();
+        ids.into_iter().filter_map(|id| self.assets.get(&id))
+    }
+
+    /// Mark an asset disposed. The disposal *entry* is posted through the
+    /// normal machinery by the caller; this records the lifecycle change.
+    pub fn dispose_asset(
+        &mut self,
+        id: AssetId,
+        date: NaiveDate,
+        proceeds: Money,
+    ) -> Result<(), LedgerError> {
+        if proceeds.currency != self.base_currency {
+            return Err(LedgerError::CurrencyMismatch {
+                expected: self.base_currency.code().to_string(),
+                found: proceeds.currency.code().to_string(),
+            });
+        }
+        let asset = self.assets.get(&id).ok_or(LedgerError::UnknownAsset(id))?;
+        // Pure math validates activeness, proceeds sign, and date order.
+        crate::disposal_amounts(asset, date, proceeds)?;
+        self.assets.get_mut(&id).expect("asset exists").status =
+            AssetStatus::Disposed { date, proceeds };
+        Ok(())
     }
 
     /// Signed net movement of an account across all posted entries:

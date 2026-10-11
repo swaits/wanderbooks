@@ -33,3 +33,12 @@ No other statuses.
 
 Workflow/UI parity (QuickBooks/Xero reference) gets its own catalog when the
 egui phase starts; semantics come first.
+
+## Capability parity (AI-first phase)
+
+Semantic parity (above) is about *correctness*: the engine computes the
+right numbers. Capability parity is about *usefulness*: can the new system
+do everything the GSheet+GDrive system does today? Tracked separately in
+`docs/capability-parity.md`, with its own cutover rule (parallel run +
+Stephen's approval). The two catalogs converge: when both are green, the
+sheet retires.

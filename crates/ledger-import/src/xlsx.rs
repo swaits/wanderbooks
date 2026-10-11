@@ -4,6 +4,7 @@
 //! a money path. All accounting math stays `Decimal`; the conversion happens
 //! when writing a cell, rounded to cents.
 
+use ledger_core::Ledger;
 use ledger_core::reports::{BalanceSheet, CashFlowStatement, ProfitAndLoss, TrialBalance};
 use rust_decimal::Decimal;
 use rust_xlsxwriter::{Format, Workbook};
@@ -20,6 +21,9 @@ pub enum XlsxReport<'a> {
     BalanceSheet(&'a BalanceSheet, String),
     /// Cash flow statement.
     CashFlow(&'a CashFlowStatement),
+    /// General ledger: every posted journal line. Needs the ledger for
+    /// account names and class names.
+    GeneralLedger(&'a Ledger),
 }
 
 /// XLSX errors.
@@ -175,6 +179,61 @@ pub fn report_to_xlsx(report: &XlsxReport<'_>) -> Result<Vec<u8>, XlsxError> {
             sheet
                 .write_number_with_format(row, 1, dec_to_f64(cf.net_change_in_cash), &money_fmt)
                 .unwrap();
+        }
+        XlsxReport::GeneralLedger(ledger) => {
+            sheet.write_string(row, 0, "General Ledger").unwrap();
+            row += 1;
+            for (i, h) in [
+                "Date",
+                "Entry",
+                "Description",
+                "Account Code",
+                "Account Name",
+                "Class",
+                "Debit",
+                "Credit",
+            ]
+            .iter()
+            .enumerate()
+            {
+                sheet
+                    .write_string_with_format(row, i as u16, *h, &bold)
+                    .unwrap();
+            }
+            row += 1;
+            for entry in ledger.posted_entries() {
+                for line in entry.lines() {
+                    let account = ledger.chart().get(line.account);
+                    let (code, name) = match account {
+                        Some(a) => (a.code.as_str(), a.name.as_str()),
+                        None => ("?", "?"),
+                    };
+                    let class_name = line
+                        .class_id
+                        .and_then(|cid| ledger.get_class(cid))
+                        .map(|c| c.name.as_str())
+                        .unwrap_or("");
+                    let (debit, credit) = match line.side {
+                        ledger_core::Side::Debit => (line.amount.amount, Decimal::ZERO),
+                        ledger_core::Side::Credit => (Decimal::ZERO, line.amount.amount),
+                    };
+                    sheet
+                        .write_string(row, 0, entry.date().to_string())
+                        .unwrap();
+                    sheet.write_number(row, 1, entry.id() as f64).unwrap();
+                    sheet.write_string(row, 2, entry.description()).unwrap();
+                    sheet.write_string(row, 3, code).unwrap();
+                    sheet.write_string(row, 4, name).unwrap();
+                    sheet.write_string(row, 5, class_name).unwrap();
+                    sheet
+                        .write_number_with_format(row, 6, dec_to_f64(debit), &money_fmt)
+                        .unwrap();
+                    sheet
+                        .write_number_with_format(row, 7, dec_to_f64(credit), &money_fmt)
+                        .unwrap();
+                    row += 1;
+                }
+            }
         }
     }
 

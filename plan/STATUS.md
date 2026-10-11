@@ -24,22 +24,23 @@ first engine slice is built, tested, and green.
 
 ## Next arcs (in order)
 
-1. **Period close** (R-FUTURE-2): fiscal periods, closing entries moving P&L
-   to retained earnings, locked periods. Parity: balance sheet then reports
-   retained earnings instead of folded current earnings.
-2. **Cash flow, indirect method** (R-FUTURE-3): from P&L + balance-sheet
-   deltas. Golden-covered.
-3. **Property tests graduate**: `proptest` with shrinking for the randomized
-   invariant test; new properties for close and cash flow.
-4. **GnuCash XML import** (R-FUTURE-4, read-only): parse GnuCash files into
-   fixture books. This unblocks the oracle harness.
-5. **Oracle harness** (`ledger-oracle`, `cargo xtask oracle`): run fixture
-   books through our engine and GnuCash headless, diff snapshots
-   automatically. Parity catalog becomes machine-checked; CI enforces the
-   floor.
-6. **egui app shell** (`books-app`): command-driven UI, native + WASM,
-   screenshot-in-the-loop per the storytold protocol. Workflow parity catalog
-   (QuickBooks/Xero reference) starts here.
+The project went AI-first on 2026-10-10 (the owner's call): the primary
+interface is MCP, not a cloned GUI. The engine roadmap (period close, cash
+flow, proptest) continues as needed, but the next *phase* is the interface:
+
+1. **`ledger-store`** (`docs/receipt-store.md`): SQLite persistence,
+   append-only triggers, TEXT amounts, event log, migrations,
+   rebuild-from-log verify.
+2. **Blob store**: content-addressed receipts/documents, attachment metadata,
+   Drive backfill script.
+3. **`ledger-mcp`** (`docs/mcp-interface.md`): stdio transport first;
+   narrow tools with preview-before-post; digest; read-only resources; the
+   agent operating contract in the tool descriptions.
+4. **Capability parity** (`docs/capability-parity.md`): build every specced
+   row, then the month-long parallel run against the GSheet; cutover per
+   the cutover rule.
+5. Then: oracle harness (GnuCash diff), read-only GUI on the event log,
+   workflow parity.
 
 ## Decisions log
 
@@ -51,3 +52,9 @@ first engine slice is built, tested, and green.
   never prints "-0". (Caught by the golden test on day one; the oracle works.)
 - 2026-10-10: License MIT OR Apache-2.0, matching the storytold projects.
   GnuCash clean-room boundary documented in `docs/oracle.md`.
+- 2026-10-10: AI-first pivot (the owner). Primary interface is MCP
+  (`docs/mcp-interface.md`), not a cloned GUI. Receipts/documents become a
+  content-addressed blob store (`docs/receipt-store.md`). Parity target for
+  the phase is the GSheet+GDrive system (`docs/capability-parity.md`), with
+  a parallel-run cutover rule. GUI drops to read-only, event-log-driven,
+  phase 4.

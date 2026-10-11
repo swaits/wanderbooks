@@ -223,3 +223,53 @@ in the server's tool descriptions, so the model reads it at use time):
 Bank feeds, payment processing, payroll, tax filing, multi-user authN/Z, the
 GUI (it consumes the event log in a later phase). Cash flow reporting is
 R-FUTURE-3 and rides the engine roadmap, not the MCP layer.
+
+## Tools — periods
+
+- `books.create_period { name, start, end }` → `{ period_id }`.
+  Dates are YYYY-MM-DD, inclusive.
+- `books.close_period { period_id, confirmed? }` → without confirmation:
+  `{ status: "preview", lines: [...] }` showing the closing lines and posts
+  nothing; with `confirmed: true`: posts the closing entry (revenue debited
+  to zero, expenses credited to zero, net to `3999` Retained Earnings) and
+  marks the period closed. Closed periods reject new entries.
+- `books.list_periods {}` → `{ periods: [{ id, name, start, end, status,
+  closing_entry }] }`.
+
+## Tools — bank reconciliation
+
+- `books.mark_cleared { entry_id, line_index, cleared }` → `{ ok }`.
+  Only posted lines can be marked; the flag is workflow metadata, not
+  accounting data (posted entries stay immutable).
+- `books.reconcile { account, statement_date, statement_balance }` →
+  `{ account_code, book_balance, cleared_balance, statement_balance,
+  difference, uncleared_lines: [{ entry_id, line_index, date, description,
+  side, amount }] }`. `difference` is cleared − statement; zero means
+  reconciled.
+
+## Tools — A/R and A/P
+
+- `books.add_customer { name }` → `{ id }`.
+- `books.add_vendor { name }` → `{ id }`.
+- `books.create_invoice { party_id, date, due_date, lines: [{ description,
+  amount }] }` → `{ id, total, entry_id }`. Auto-posts Dr `1200` Accounts
+  Receivable / Cr `4000` Revenue.
+- `books.create_bill { party_id, date, due_date, lines }` → `{ id, total,
+  entry_id }`. Auto-posts Dr `6999` General Expenses / Cr `2000` Accounts
+  Payable.
+- `books.receive_payment { document_id, date, amount, cash_account }` →
+  `{ entry_id, remaining, status }`. Posts Dr Cash / Cr A/R.
+- `books.pay_bill { document_id, date, amount, cash_account }` →
+  `{ entry_id, remaining, status }`. Posts Dr A/P / Cr Cash.
+- `books.ar_aging { as_of }` → `{ rows: [{ name, current, days_30, days_60,
+  days_90, days_90_plus, total }] }`.
+- `books.ap_aging { as_of }` → same, per vendor.
+
+## Tools — foreign exchange
+
+- `books.add_line` gains optional `foreign_currency`, `foreign_amount`,
+  `fx_rate`. When set, the base amount is `foreign_amount * fx_rate`; the
+  foreign original is stored on the line for reference. Reports work in
+  base currency.
+- `books.set_fx_rate { currency, date, rate }` → `{ ok }`. Records a
+  historical rate for reference; lines store their own rate at entry time.

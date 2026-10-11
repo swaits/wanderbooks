@@ -4,8 +4,6 @@ Canonical double-entry bookkeeping, rebuilt from scratch — the storytold way:
 an engine verified against oracles, with automated parity tracking, on its
 way to becoming a self-hosted bookkeeping app that never charges rent.
 
-Private while it cooks.
-
 ## Status
 
 Phase 1: the semantics engine. `ledger-core` implements the accounting laws

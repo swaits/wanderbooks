@@ -10,7 +10,11 @@ use ledger_core::{
 };
 use ledger_store::Store;
 use rmcp::handler::server::wrapper::{Json, Parameters};
-use rmcp::model::{Implementation, ServerCapabilities, ServerConfig};
+use rmcp::model::{
+    Implementation, ListResourcesResult, ReadResourceRequestParams, ReadResourceResponse,
+    ReadResourceResult, Resource, ResourceContents, ServerCapabilities, ServerConfig,
+};
+use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ServerHandler, tool, tool_handler, tool_router};
 use rust_decimal::Decimal;
 use std::sync::{Arc, Mutex};
@@ -37,6 +41,12 @@ impl BooksServer {
             store: Arc::new(Mutex::new(store)),
             policy,
         }
+    }
+
+    /// Build the server around a shared store (for HTTP: each connection
+    /// gets a handle to the same store).
+    pub fn new_shared(store: Arc<Mutex<Store>>, policy: ReceiptPolicy) -> Self {
+        Self { store, policy }
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Store>, String> {
@@ -408,8 +418,81 @@ impl BooksServer {
     }
 
     #[tool(
+        name = "books.cash_flow",
+        description = "Cash flow statement (indirect method) for a period: net income, depreciation add-back, working-capital changes, investing (asset purchases, disposal proceeds), financing. The three sections reconcile to the net change in the given cash accounts.",
+        annotations(read_only_hint = true)
+    )]
+    async fn cash_flow(
+        &self,
+        params: Parameters<CashFlowParams>,
+    ) -> Result<Json<CashFlowOut>, String> {
+        let p = params.0;
+        let store = self.lock()?;
+        let ledger = store.ledger();
+        let start = match p.start {
+            Some(s) => parse_date(&s)?,
+            None => NaiveDate::from_ymd_opt(1, 1, 1).unwrap(),
+        };
+        let end = match p.end {
+            Some(s) => parse_date(&s)?,
+            None => chrono::Utc::now().date_naive(),
+        };
+        // Resolve cash and financing account codes to ids.
+        let mut cash_accounts = Vec::new();
+        for code in &p.cash_accounts {
+            let id = ledger
+                .chart()
+                .find_by_code(code)
+                .map(|a| a.id)
+                .ok_or_else(|| format!("unknown cash account code: {code}"))?;
+            cash_accounts.push(id);
+        }
+        if cash_accounts.is_empty() {
+            return Err("at least one cash account code is required".to_string());
+        }
+        let mut financing_accounts = Vec::new();
+        for code in &p.financing_accounts {
+            let id = ledger
+                .chart()
+                .find_by_code(code)
+                .map(|a| a.id)
+                .ok_or_else(|| format!("unknown financing account code: {code}"))?;
+            financing_accounts.push(id);
+        }
+        let stmt = ledger_core::cash_flow(
+            ledger,
+            &ledger_core::CashFlowParams {
+                start,
+                end,
+                cash_accounts,
+                financing_accounts,
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        let line = |l: &ledger_core::CashFlowLine| CashFlowLineOut {
+            label: l.label.clone(),
+            amount: money(l.amount),
+        };
+        Ok(Json(CashFlowOut {
+            start: stmt.start.to_string(),
+            end: stmt.end.to_string(),
+            net_income: money(stmt.net_income),
+            depreciation: money(stmt.depreciation),
+            working_capital: stmt.working_capital.iter().map(line).collect(),
+            cash_from_operations: money(stmt.cash_from_operations),
+            investing: stmt.investing.iter().map(line).collect(),
+            cash_from_investing: money(stmt.cash_from_investing),
+            financing: stmt.financing.iter().map(line).collect(),
+            cash_from_financing: money(stmt.cash_from_financing),
+            net_change_in_cash: money(stmt.net_change_in_cash),
+            cash_beginning: money(stmt.cash_beginning),
+            cash_ending: money(stmt.cash_ending),
+        }))
+    }
+
+    #[tool(
         name = "books.draft_entry",
-        description = "Start a draft journal entry. Drafts are not journaled until posted; add lines with books.add_line."
+        description = "Start a draft journal entry. Drafts are journaled and survive restarts, but don't affect reports until posted; add lines with books.add_line."
     )]
     async fn draft_entry(
         &self,
@@ -484,8 +567,14 @@ impl BooksServer {
                 ));
             }
         }
-        let receipt_required = self.policy.receipt_required(store.ledger(), &entry);
+        let mut receipt_required = self.policy.receipt_required(store.ledger(), &entry);
         let receipts = preview_receipts(&store, p.entry_id)?;
+        // Anti-splitting: if this entry looks like part of a split group,
+        // the receipt policy applies to the group total.
+        let split_group = self.policy.split_group(store.ledger(), p.entry_id, &entry);
+        if !split_group.is_empty() {
+            receipt_required = true;
+        }
         let receipt_missing = receipt_required && receipts.is_empty();
         let out = PostEntryOut {
             status: "preview".to_string(),
@@ -497,17 +586,41 @@ impl BooksServer {
             receipts,
             receipt_required,
             receipt_missing,
+            split_detected: split_group.clone(),
         };
         if !p.confirmed.unwrap_or(false) {
             return Ok(Json(out));
         }
         if receipt_missing {
-            return Err(format!(
-                "receipt_required: entry {} moves {} in debits ({}); attach a receipt with books.attach_receipt before posting",
-                p.entry_id,
-                money(total),
-                self.policy.describe()
-            ));
+            let split_note = if split_group.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " Anti-splitting: this looks like part of a split group with entries {:?}; the policy applies to the group total.",
+                    split_group
+                )
+            };
+            return Err(ReceiptRequiredError {
+                code: "receipt_required".to_string(),
+                message: format!(
+                    "entry {} moves {} in debits ({}); attach a receipt with books.attach_receipt before posting.{}",
+                    p.entry_id,
+                    money(total),
+                    self.policy.describe(),
+                    split_note
+                ),
+                entry_id: Some(p.entry_id),
+                asset_id: None,
+                debits: total.to_string(),
+                policy: self.policy.describe(),
+                remedy_tool: "books.attach_receipt".to_string(),
+                remedy_hint: format!(
+                    "attach a receipt to entry {} with books.attach_receipt, then retry books.post_entry with confirmed=true",
+                    p.entry_id
+                ),
+                split_group,
+            }
+            .to_tool_error());
         }
         store.post_entry(p.entry_id).map_err(|e| e.to_string())?;
         let mut posted = out;
@@ -874,28 +987,214 @@ impl BooksServer {
     }
 
     #[tool(
+        name = "books.import_bank_csv",
+        description = "Import a QuickBooks-style bank/credit-card CSV (Date,Description,Amount or Date,Description,Expense,Income). Creates one DRAFT entry per transaction: bank account on one side, categorized offset on the other (via rules or default_offset_code). Review with books.digest, then post."
+    )]
+    async fn import_bank_csv(
+        &self,
+        params: Parameters<ImportBankCsvParams>,
+    ) -> Result<Json<ImportBankCsvOut>, String> {
+        let p = params.0;
+        let txns = ledger_import::parse_bank_csv(&p.csv_text).map_err(|e| e.to_string())?;
+        let mut store = self.lock()?;
+        let bank = store
+            .ledger()
+            .chart()
+            .find_by_code(&p.bank_account_code)
+            .map(|a| (a.id, a.code.clone()))
+            .ok_or_else(|| format!("unknown bank account code: {}", p.bank_account_code))?;
+        let default_offset = store
+            .ledger()
+            .chart()
+            .find_by_code(&p.default_offset_code)
+            .map(|a| (a.id, a.code.clone()))
+            .ok_or_else(|| format!("unknown offset account code: {}", p.default_offset_code))?;
+        // Resolve rule account codes upfront.
+        let mut rules: Vec<(String, (ledger_core::AccountId, String))> = Vec::new();
+        for (pattern, code) in &p.rules {
+            let (id, c) = store
+                .ledger()
+                .chart()
+                .find_by_code(code)
+                .map(|a| (a.id, a.code.clone()))
+                .ok_or_else(|| format!("unknown rule account code: {code}"))?;
+            rules.push((pattern.to_lowercase(), (id, c)));
+        }
+        let mut imported = Vec::new();
+        for txn in txns {
+            let desc_lower = txn.description.to_lowercase();
+            let (offset_id, offset_code) = rules
+                .iter()
+                .find(|(pat, _)| desc_lower.contains(pat))
+                .map(|(_, v)| v.clone())
+                .unwrap_or_else(|| default_offset.clone());
+            let amount = Money::new(txn.amount.abs(), store.ledger().base_currency());
+            let entry_id = store
+                .create_entry(txn.date, &format!("Bank import — {}", txn.description))
+                .map_err(|e| e.to_string())?;
+            // Money in: debit bank, credit offset. Money out: reverse.
+            let (bank_side, offset_side) = if txn.amount > Decimal::ZERO {
+                (Side::Debit, Side::Credit)
+            } else {
+                (Side::Credit, Side::Debit)
+            };
+            store
+                .add_line(entry_id, bank.0, bank_side, amount)
+                .map_err(|e| e.to_string())?;
+            store
+                .add_line(entry_id, offset_id, offset_side, amount)
+                .map_err(|e| e.to_string())?;
+            imported.push(ImportedTxnOut {
+                entry_id,
+                date: txn.date.to_string(),
+                description: txn.description.clone(),
+                amount: money(txn.amount),
+                offset_account: offset_code,
+            });
+        }
+        let count = imported.len();
+        Ok(Json(ImportBankCsvOut { imported, count }))
+    }
+
+    #[tool(
+        name = "books.import_chart_csv",
+        description = "Import a chart of accounts from CSV (header: code,name,type,parent_code). Types: asset, liability, equity, revenue, expense. Parents must come before children. Fails on the first bad row; nothing is half-imported."
+    )]
+    async fn import_chart_csv(
+        &self,
+        params: Parameters<ImportChartCsvParams>,
+    ) -> Result<Json<ImportChartCsvOut>, String> {
+        let p = params.0;
+        let rows = ledger_import::parse_chart_csv(&p.csv_text).map_err(|e| e.to_string())?;
+        let mut store = self.lock()?;
+        // Validate all rows first: nothing is half-imported.
+        for row in &rows {
+            if store.ledger().chart().find_by_code(&row.code).is_some() {
+                return Err(format!("duplicate account code: {}", row.code));
+            }
+        }
+        let mut created = Vec::new();
+        for row in rows {
+            let account_type = match row.account_type.as_str() {
+                "asset" => AccountType::Asset,
+                "liability" => AccountType::Liability,
+                "equity" => AccountType::Equity,
+                "revenue" => AccountType::Revenue,
+                "expense" => AccountType::Expense,
+                _ => return Err(format!("bad account type: {}", row.account_type)),
+            };
+            let parent = match &row.parent_code {
+                Some(code) => Some(
+                    store
+                        .ledger()
+                        .chart()
+                        .find_by_code(code)
+                        .map(|a| a.id)
+                        .ok_or_else(|| format!("unknown parent code: {code}"))?,
+                ),
+                None => None,
+            };
+            store
+                .add_account(&row.code, &row.name, account_type, parent, false)
+                .map_err(|e| e.to_string())?;
+            created.push(row.code.clone());
+        }
+        let count = created.len();
+        Ok(Json(ImportChartCsvOut { created, count }))
+    }
+
+    #[tool(
+        name = "books.import_local_file",
+        description = "Import a file from the server's local filesystem into the blob store (receipt or document). Used for backfills: the agent downloads from Google Drive (or elsewhere) to a temp path, then calls this. Path must be absolute."
+    )]
+    async fn import_local_file(
+        &self,
+        params: Parameters<ImportLocalFileParams>,
+    ) -> Result<Json<ImportLocalFileOut>, String> {
+        let p = params.0;
+        let path = std::path::Path::new(&p.path);
+        if !path.is_absolute() {
+            return Err("path must be absolute".to_string());
+        }
+        let bytes = std::fs::read(path).map_err(|e| format!("read {}: {e}", p.path))?;
+        if bytes.len() > 25 * 1024 * 1024 {
+            return Err("file exceeds 25 MB limit".to_string());
+        }
+        let file_name = p.file_name.unwrap_or_else(|| {
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("file")
+                .to_string()
+        });
+        let mime_type = mime_guess::from_path(path)
+            .first_or_octet_stream()
+            .to_string();
+        let mut store = self.lock()?;
+        let (attachment_id, sha256, deduplicated) = match p.category.as_str() {
+            "receipt" => store
+                .attach_receipt(p.entry_id, &file_name, &mime_type, &bytes, p.description.as_deref())
+                .map_err(|e| e.to_string())?,
+            "document" => {
+                let cat = p.document_category.as_deref().unwrap_or("other");
+                store
+                    .file_document(cat, &file_name, &mime_type, &bytes, p.description.as_deref())
+                    .map_err(|e| e.to_string())?
+            }
+            _ => return Err("category must be \"receipt\" or \"document\"".to_string()),
+        };
+        Ok(Json(ImportLocalFileOut {
+            attachment_id,
+            sha256,
+            deduplicated,
+            file_name,
+        }))
+    }
+
+    #[tool(
         name = "books.export",
-        description = "Export a report as CSV or JSON. Reports: journal (every posted entry with lines), trial_balance, profit_and_loss, balance_sheet.",
+        description = "Export a report. Formats: csv, json, xlsx (base64), iif (journal only, for QuickBooks Desktop). Reports: journal, trial_balance, profit_and_loss, balance_sheet, cash_flow.",
         annotations(read_only_hint = true)
     )]
     async fn export(&self, params: Parameters<ExportParams>) -> Result<Json<ExportOut>, String> {
         let p = params.0;
         let format = p.format.to_lowercase();
-        if format != "csv" && format != "json" {
+        if !["csv", "json", "xlsx", "iif"].contains(&format.as_str()) {
             return Err(format!(
-                "bad format {:?}: expected \"csv\" or \"json\"",
+                "bad format {:?}: expected \"csv\", \"json\", \"xlsx\", or \"iif\"",
                 p.format
             ));
         }
         let report = p.report.to_lowercase();
+        if format == "iif" && report != "journal" {
+            return Err("iif format is only valid for the journal report".to_string());
+        }
+        if format == "xlsx" {
+            let bytes = self.export_xlsx(&report, &p)?;
+            return Ok(Json(ExportOut {
+                format,
+                report,
+                content: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes),
+                content_encoding: Some("base64".to_string()),
+            }));
+        }
+        if format == "iif" {
+            let content = self.export_iif()?;
+            return Ok(Json(ExportOut {
+                format,
+                report,
+                content,
+                content_encoding: None,
+            }));
+        }
         let content = match report.as_str() {
             "journal" => self.export_journal(&format)?,
             "trial_balance" => self.export_trial_balance(&format)?,
             "profit_and_loss" => self.export_pnl(&format, p.start.as_deref(), p.end.as_deref())?,
             "balance_sheet" => self.export_balance_sheet(&format, p.as_of.as_deref())?,
+            "cash_flow" => self.export_cash_flow(&format, &p)?,
             _ => {
                 return Err(format!(
-                    "bad report {:?}: expected journal, trial_balance, profit_and_loss, or balance_sheet",
+                    "bad report {:?}: expected journal, trial_balance, profit_and_loss, balance_sheet, or cash_flow",
                     p.report
                 ));
             }
@@ -904,7 +1203,120 @@ impl BooksServer {
             format,
             report,
             content,
+            content_encoding: None,
         }))
+    }
+
+    /// Render a report to XLSX bytes via ledger-import.
+    fn export_xlsx(&self, report: &str, p: &ExportParams) -> Result<Vec<u8>, String> {
+        use ledger_import::{XlsxReport, report_to_xlsx};
+        let store = self.lock()?;
+        let ledger = store.ledger();
+        // Build owned report data first (all report structs are owned).
+        enum Owned {
+            Tb(ledger_core::reports::TrialBalance),
+            Pnl(ledger_core::reports::ProfitAndLoss, String, String),
+            Bs(ledger_core::reports::BalanceSheet, String),
+            Cf(ledger_core::reports::CashFlowStatement),
+        }
+        let owned = match report {
+            "trial_balance" => Owned::Tb(reports::trial_balance(ledger)),
+            "profit_and_loss" => {
+                let start = match &p.start {
+                    Some(s) => parse_date(s)?,
+                    None => NaiveDate::from_ymd_opt(1, 1, 1).unwrap(),
+                };
+                let end = match &p.end {
+                    Some(s) => parse_date(s)?,
+                    None => chrono::Utc::now().date_naive(),
+                };
+                Owned::Pnl(
+                    reports::profit_and_loss(ledger).map_err(|e| e.to_string())?,
+                    start.to_string(),
+                    end.to_string(),
+                )
+            }
+            "balance_sheet" => {
+                let as_of = match &p.as_of {
+                    Some(s) => parse_date(s)?,
+                    None => chrono::Utc::now().date_naive(),
+                };
+                // Engine balance_sheet is as-of now; xlsx uses the same.
+                // (The books.balance_sheet tool does as-of via movement_through.)
+                Owned::Bs(
+                    reports::balance_sheet(ledger).map_err(|e| e.to_string())?,
+                    as_of.to_string(),
+                )
+            }
+            "cash_flow" => {
+                let mut cash_accounts = Vec::new();
+                for code in &p.cash_accounts {
+                    let id = ledger
+                        .chart()
+                        .find_by_code(code)
+                        .map(|a| a.id)
+                        .ok_or_else(|| format!("unknown cash account code: {code}"))?;
+                    cash_accounts.push(id);
+                }
+                if cash_accounts.is_empty() {
+                    return Err("cash_accounts is required for cash_flow".to_string());
+                }
+                let start = match &p.start {
+                    Some(s) => parse_date(s)?,
+                    None => NaiveDate::from_ymd_opt(1, 1, 1).unwrap(),
+                };
+                let end = match &p.end {
+                    Some(s) => parse_date(s)?,
+                    None => chrono::Utc::now().date_naive(),
+                };
+                Owned::Cf(
+                    ledger_core::cash_flow(
+                        ledger,
+                        &ledger_core::CashFlowParams {
+                            start,
+                            end,
+                            cash_accounts,
+                            financing_accounts: vec![],
+                        },
+                    )
+                    .map_err(|e| e.to_string())?,
+                )
+            }
+            _ => {
+                return Err(format!(
+                    "bad report {report:?} for xlsx: expected trial_balance, profit_and_loss, balance_sheet, or cash_flow"
+                ));
+            }
+        };
+        let xlsx_report = match &owned {
+            Owned::Tb(tb) => XlsxReport::TrialBalance(tb),
+            Owned::Pnl(pl, s, e) => XlsxReport::ProfitAndLoss(pl, s.clone(), e.clone()),
+            Owned::Bs(bs, a) => XlsxReport::BalanceSheet(bs, a.clone()),
+            Owned::Cf(cf) => XlsxReport::CashFlow(cf),
+        };
+        report_to_xlsx(&xlsx_report).map_err(|e| e.to_string())
+    }
+
+    /// Render the journal as IIF text via ledger-import.
+    fn export_iif(&self) -> Result<String, String> {
+        use ledger_import::{IifEntry, journal_to_iif};
+        let store = self.lock()?;
+        let ledger = store.ledger();
+        let account_names = |id: ledger_core::AccountId| {
+            ledger
+                .chart()
+                .get(id)
+                .map(|a| a.name.clone())
+                .unwrap_or_default()
+        };
+        let entries: Vec<IifEntry<'_>> = ledger
+            .posted_entries()
+            .map(|e| IifEntry {
+                entry: e,
+                account_names: &account_names,
+            })
+            .collect();
+        Ok(journal_to_iif(&entries))
     }
 
     // ------------------------------------------------------------------
@@ -1173,12 +1585,25 @@ impl BooksServer {
         }
         let attachment_ids = p.receipt_attachment_ids.unwrap_or_default();
         if receipt_required && attachment_ids.is_empty() {
-            return Err(format!(
-                "receipt_required: disposing {} moves {} in debits ({}); file the bill of sale with books.file_document, then retry with receipt_attachment_ids",
-                asset.description,
-                money(debits),
-                self.policy.describe()
-            ));
+            return Err(ReceiptRequiredError {
+                code: "receipt_required".to_string(),
+                message: format!(
+                    "disposing {} moves {} in debits ({}); file the bill of sale with books.file_document, then retry with receipt_attachment_ids",
+                    asset.description,
+                    money(debits),
+                    self.policy.describe()
+                ),
+                entry_id: None,
+                asset_id: Some(p.asset_id),
+                debits: debits.to_string(),
+                policy: self.policy.describe(),
+                remedy_tool: "books.file_document".to_string(),
+                remedy_hint:
+                    "file the bill of sale with books.file_document, then retry books.dispose_asset with confirmed=true and receipt_attachment_ids=[<id>]"
+                        .to_string(),
+                split_group: Vec::new(),
+            }
+            .to_tool_error());
         }
         let entry_id = store
             .dispose_asset(
@@ -1380,6 +1805,111 @@ impl BooksServer {
             money(current_earnings)
         ))
     }
+
+    fn export_cash_flow(&self, format: &str, p: &ExportParams) -> Result<String, String> {
+        let store = self.lock()?;
+        let ledger = store.ledger();
+        let mut cash_accounts = Vec::new();
+        for code in &p.cash_accounts {
+            let id = ledger
+                .chart()
+                .find_by_code(code)
+                .map(|a| a.id)
+                .ok_or_else(|| format!("unknown cash account code: {code}"))?;
+            cash_accounts.push(id);
+        }
+        if cash_accounts.is_empty() {
+            return Err("cash_accounts is required for cash_flow".to_string());
+        }
+        let start = match &p.start {
+            Some(s) => parse_date(s)?,
+            None => NaiveDate::from_ymd_opt(1, 1, 1).unwrap(),
+        };
+        let end = match &p.end {
+            Some(s) => parse_date(s)?,
+            None => chrono::Utc::now().date_naive(),
+        };
+        let stmt = ledger_core::cash_flow(
+            ledger,
+            &ledger_core::CashFlowParams {
+                start,
+                end,
+                cash_accounts,
+                financing_accounts: vec![],
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        if format == "json" {
+            return serde_json::to_string_pretty(&serde_json::json!({
+                "start": stmt.start.to_string(), "end": stmt.end.to_string(),
+                "net_income": money(stmt.net_income),
+                "depreciation": money(stmt.depreciation),
+                "working_capital": stmt.working_capital.iter().map(|l| serde_json::json!({
+                    "label": l.label, "amount": money(l.amount),
+                })).collect::<Vec<_>>(),
+                "cash_from_operations": money(stmt.cash_from_operations),
+                "investing": stmt.investing.iter().map(|l| serde_json::json!({
+                    "label": l.label, "amount": money(l.amount),
+                })).collect::<Vec<_>>(),
+                "cash_from_investing": money(stmt.cash_from_investing),
+                "financing": stmt.financing.iter().map(|l| serde_json::json!({
+                    "label": l.label, "amount": money(l.amount),
+                })).collect::<Vec<_>>(),
+                "cash_from_financing": money(stmt.cash_from_financing),
+                "net_change_in_cash": money(stmt.net_change_in_cash),
+                "cash_beginning": money(stmt.cash_beginning),
+                "cash_ending": money(stmt.cash_ending),
+            }))
+            .map_err(|e| e.to_string());
+        }
+        let mut csv = String::from("section,label,amount\n");
+        csv.push_str(&format!(
+            "operating,Net income,{}\n",
+            money(stmt.net_income)
+        ));
+        csv.push_str(&format!(
+            "operating,Depreciation,{}\n",
+            money(stmt.depreciation)
+        ));
+        for l in &stmt.working_capital {
+            csv.push_str(&format!(
+                "operating,{},{}\n",
+                csv_escape(&l.label),
+                money(l.amount)
+            ));
+        }
+        csv.push_str(&format!(
+            "operating,Cash from operations,{}\n",
+            money(stmt.cash_from_operations)
+        ));
+        for l in &stmt.investing {
+            csv.push_str(&format!(
+                "investing,{},{}\n",
+                csv_escape(&l.label),
+                money(l.amount)
+            ));
+        }
+        csv.push_str(&format!(
+            "investing,Cash from investing,{}\n",
+            money(stmt.cash_from_investing)
+        ));
+        for l in &stmt.financing {
+            csv.push_str(&format!(
+                "financing,{},{}\n",
+                csv_escape(&l.label),
+                money(l.amount)
+            ));
+        }
+        csv.push_str(&format!(
+            "financing,Cash from financing,{}\n",
+            money(stmt.cash_from_financing)
+        ));
+        csv.push_str(&format!(
+            "reconciliation,Net change in cash,{}\n",
+            money(stmt.net_change_in_cash)
+        ));
+        Ok(csv)
+    }
 }
 
 fn csv_escape(s: &str) -> String {
@@ -1394,14 +1924,142 @@ fn csv_escape(s: &str) -> String {
 // ServerHandler
 // ---------------------------------------------------------------------------
 
+impl BooksServer {
+    /// Render a resource URI to its JSON text. Used by `read_resource`.
+    async fn resource_text(&self, uri: &str) -> Result<String, String> {
+        // Split off the query string for URIs like books://digest?since=...
+        let (path, query) = match uri.split_once('?') {
+            Some((p, q)) => (p, q),
+            None => (uri, ""),
+        };
+        match path {
+            "books://chart" => {
+                let Json(out) = self.chart().await?;
+                serde_json::to_string_pretty(&out).map_err(|e| e.to_string())
+            }
+            "books://reports/trial-balance" => {
+                let Json(out) = self.trial_balance().await?;
+                serde_json::to_string_pretty(&out).map_err(|e| e.to_string())
+            }
+            "books://reports/balance-sheet" => {
+                let Json(out) = self
+                    .balance_sheet(Parameters(BalanceSheetParams { as_of: None }))
+                    .await?;
+                serde_json::to_string_pretty(&out).map_err(|e| e.to_string())
+            }
+            "books://reports/profit-and-loss" => {
+                let Json(out) = self
+                    .profit_and_loss(Parameters(ProfitAndLossParams {
+                        start: None,
+                        end: None,
+                    }))
+                    .await?;
+                serde_json::to_string_pretty(&out).map_err(|e| e.to_string())
+            }
+            "books://digest" => {
+                let since = query
+                    .split('&')
+                    .find_map(|kv| kv.strip_prefix("since="))
+                    .unwrap_or("")
+                    .to_string();
+                let Json(out) = self.digest(Parameters(DigestParams { since })).await?;
+                serde_json::to_string_pretty(&out).map_err(|e| e.to_string())
+            }
+            _ if path.starts_with("books://receipts/") => {
+                let id: u64 = path
+                    .strip_prefix("books://receipts/")
+                    .unwrap_or("")
+                    .parse()
+                    .map_err(|_| format!("bad receipt resource URI: {uri}"))?;
+                let Json(out) = self
+                    .get_receipt(Parameters(GetReceiptParams { attachment_id: id }))
+                    .await?;
+                serde_json::to_string_pretty(&out).map_err(|e| e.to_string())
+            }
+            _ => Err(format!("unknown resource: {uri}")),
+        }
+    }
+}
+
 #[tool_handler]
 impl ServerHandler for BooksServer {
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_instructions(INSTRUCTIONS)
-            .with_server_info(Implementation::new(
-                "wanderbooks",
-                env!("CARGO_PKG_VERSION"),
-            ))
+        ServerConfig::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build(),
+        )
+        .with_instructions(INSTRUCTIONS)
+        .with_server_info(Implementation::new(
+            "wanderbooks",
+            env!("CARGO_PKG_VERSION"),
+        ))
+    }
+
+    async fn list_resources(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, rmcp::ErrorData> {
+        let mk = |uri: &str, name: &str, title: &str, description: &str| {
+            let mut r = Resource::new(uri, name);
+            r.title = Some(title.to_string());
+            r.description = Some(description.to_string());
+            r.mime_type = Some("application/json".to_string());
+            r
+        };
+        let resources = vec![
+            mk(
+                "books://chart",
+                "chart",
+                "Chart of accounts",
+                "All accounts with codes, types, and hierarchy.",
+            ),
+            mk(
+                "books://reports/trial-balance",
+                "trial-balance",
+                "Trial balance",
+                "Current trial balance, debits equal credits.",
+            ),
+            mk(
+                "books://reports/balance-sheet",
+                "balance-sheet",
+                "Balance sheet",
+                "Assets, liabilities, equity.",
+            ),
+            mk(
+                "books://reports/profit-and-loss",
+                "profit-and-loss",
+                "Profit and loss",
+                "Revenue, expenses, net income.",
+            ),
+            mk(
+                "books://digest",
+                "digest",
+                "Activity digest",
+                "What changed in the books. Optional ?since=YYYY-MM-DD query.",
+            ),
+        ];
+        Ok(ListResourcesResult::with_all_items(resources))
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResponse, rmcp::ErrorData> {
+        let uri = request.uri.clone();
+        let text = self.resource_text(&uri).await.map_err(|e| {
+            rmcp::ErrorData::resource_not_found(uri.clone(), Some(serde_json::json!({"reason": e})))
+        })?;
+        Ok(ReadResourceResponse::Complete(ReadResourceResult::new(
+            vec![ResourceContents::TextResourceContents {
+                uri,
+                mime_type: Some("application/json".to_string()),
+                text,
+                meta: None,
+            }],
+        )))
     }
 }

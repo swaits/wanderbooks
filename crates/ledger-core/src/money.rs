@@ -123,3 +123,40 @@ impl fmt::Display for Money {
         write!(f, "{} {}", self.amount, self.currency)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn usd(amount: Decimal) -> Money {
+        Money::new(amount, Currency::USD)
+    }
+
+    fn d(cents: i64) -> Decimal {
+        Decimal::new(cents, 2)
+    }
+
+    #[test]
+    fn checked_arithmetic() {
+        assert_eq!(
+            usd(d(1050)).checked_add(usd(d(425))).unwrap().amount,
+            d(1475)
+        );
+        assert_eq!(
+            usd(d(1050)).checked_sub(usd(d(425))).unwrap().amount,
+            d(625)
+        );
+        // Subtraction is not division, and not addition.
+        assert_ne!(
+            usd(d(1000)).checked_sub(usd(d(200))).unwrap().amount,
+            d(500)
+        );
+    }
+
+    #[test]
+    fn checked_arithmetic_rejects_currency_mismatch() {
+        let eur = Money::new(d(100), Currency::EUR);
+        assert!(usd(d(100)).checked_add(eur).is_err());
+        assert!(usd(d(100)).checked_sub(eur).is_err());
+    }
+}

@@ -67,15 +67,15 @@ requirement conflict, the requirement wins.
   rates, translation gains/losses, reporting in a presentation currency.
 - **R-FUTURE-2 — Periods and close.** Fiscal years/periods, closing entries
   that move P&L balances to retained earnings, locked periods.
-- **R-FUTURE-3 — Cash flow statement** (indirect method).
-- **R-FUTURE-4 — QuickBooks-compatible import/export.** Import: CSV bank/
-  credit-card transactions (QBO's upload layout) and CSV chart of accounts.
-  Export: CSV and XLSX reports, IIF journal entries (for QuickBooks Desktop,
-  which many CPAs still run). GnuCash XML is deliberately *not* a product
-  format — GnuCash remains the behavioral oracle (see `docs/oracle.md`),
-  not a file-format target.
 - **R-FUTURE-5 — A/R and A/P workflows** (invoices, bills, payments, aging).
 - **R-FUTURE-6 — Budgets and scheduled transactions.**
+
+## Promoted from future (done)
+
+- **R-? — Cash flow statement** (indirect method). Was R-FUTURE-3.
+  `ledger-core::reports::cash_flow` + `books.cash_flow`.
+- **R-? — QuickBooks-compatible import/export.** Was R-FUTURE-4.
+  `ledger-import` crate: CSV bank/chart import, IIF and XLSX export.
 
 ## Non-goals (all phases of the engine)
 

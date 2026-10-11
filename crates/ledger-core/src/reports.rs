@@ -4,9 +4,10 @@
 //! (`docs/oracle.md`) diffs: the same fixture books through two engines must
 //! produce byte-identical [`snapshot`] output.
 
-use crate::{AccountType, Ledger, LedgerError};
+use crate::{AccountType, Class, ClassId, JournalLine, Ledger, LedgerError};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 /// One line of a trial balance.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -96,17 +97,118 @@ impl ProfitAndLoss {
 
 /// Build the profit and loss statement from all posted entries.
 pub fn profit_and_loss(ledger: &Ledger) -> Result<ProfitAndLoss, LedgerError> {
+    profit_and_loss_filtered(ledger, None)
+}
+
+/// Build the profit and loss statement, optionally filtered to one class.
+///
+/// With `None` every line counts and the result is identical to
+/// [`profit_and_loss`]. With `Some(class)` only lines tagged with that
+/// class count. Unlike the account-at-a-time accumulation this works line
+/// by line, because classes live on lines: each line contributes its signed
+/// amount (positive on the account's normal side) to its account type's
+/// total.
+pub fn profit_and_loss_filtered(
+    ledger: &Ledger,
+    class_id: Option<ClassId>,
+) -> Result<ProfitAndLoss, LedgerError> {
+    profit_and_loss_where(ledger, &|line| match class_id {
+        None => true,
+        Some(c) => line.class_id == Some(c),
+    })
+}
+
+/// P&L for one class. `class: None` is the unclassified bucket: lines with
+/// no class tag.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ClassProfitAndLoss {
+    /// The class, or `None` for unclassified lines.
+    pub class: Option<Class>,
+    /// That bucket's profit and loss.
+    pub profit_and_loss: ProfitAndLoss,
+}
+
+/// Profit and loss broken down by class: one row per class that has any P&L
+/// lines, plus an unclassified row when untagged P&L lines exist. Rows are
+/// sorted by class name; the unclassified row comes last.
+///
+/// The rows partition the ledger: summing every row's revenue and expenses
+/// reproduces [`profit_and_loss`].
+pub fn profit_and_loss_by_class(ledger: &Ledger) -> Result<Vec<ClassProfitAndLoss>, LedgerError> {
+    // Which classes actually have P&L lines, and whether any P&L line is
+    // unclassified. Balance-sheet-only classes get no row.
+    let mut buckets: BTreeSet<Option<ClassId>> = BTreeSet::new();
+    for entry in ledger.posted_entries() {
+        for line in entry.lines() {
+            let account = ledger
+                .chart()
+                .get(line.account)
+                .ok_or(LedgerError::UnknownAccount(line.account))?;
+            if account.placeholder {
+                continue;
+            }
+            if !matches!(
+                account.account_type,
+                AccountType::Revenue | AccountType::Expense
+            ) {
+                continue;
+            }
+            buckets.insert(line.class_id);
+        }
+    }
+    let mut classes: Vec<&Class> = buckets
+        .iter()
+        .filter_map(|c| c.and_then(|id| ledger.get_class(id)))
+        .collect();
+    classes.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut rows = Vec::with_capacity(classes.len() + 1);
+    for class in classes {
+        let id = class.id;
+        rows.push(ClassProfitAndLoss {
+            class: Some(class.clone()),
+            profit_and_loss: profit_and_loss_where(ledger, &|line| line.class_id == Some(id))?,
+        });
+    }
+    if buckets.contains(&None) {
+        rows.push(ClassProfitAndLoss {
+            class: None,
+            profit_and_loss: profit_and_loss_where(ledger, &|line| line.class_id.is_none())?,
+        });
+    }
+    Ok(rows)
+}
+
+/// P&L over the posted lines accepted by `include`. Each line contributes
+/// its signed amount — positive on the account's normal side — to its
+/// account type's total.
+fn profit_and_loss_where(
+    ledger: &Ledger,
+    include: &dyn Fn(&JournalLine) -> bool,
+) -> Result<ProfitAndLoss, LedgerError> {
     let mut revenue = Decimal::ZERO;
     let mut expenses = Decimal::ZERO;
-    for account in ledger.chart().all() {
-        if account.placeholder {
-            continue;
-        }
-        let balance = ledger.account_balance(account.id)?;
-        match account.account_type {
-            AccountType::Revenue => revenue += balance,
-            AccountType::Expense => expenses += balance,
-            _ => {}
+    for entry in ledger.posted_entries() {
+        for line in entry.lines() {
+            if !include(line) {
+                continue;
+            }
+            let account = ledger
+                .chart()
+                .get(line.account)
+                .ok_or(LedgerError::UnknownAccount(line.account))?;
+            if account.placeholder {
+                continue;
+            }
+            let signed = if line.side == account.account_type.normal_side() {
+                line.amount.amount
+            } else {
+                -line.amount.amount
+            };
+            match account.account_type {
+                AccountType::Revenue => revenue += signed,
+                AccountType::Expense => expenses += signed,
+                _ => {}
+            }
         }
     }
     Ok(ProfitAndLoss { revenue, expenses })

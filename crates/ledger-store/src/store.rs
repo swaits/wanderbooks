@@ -10,11 +10,13 @@ use crate::blob::BlobStore;
 use crate::error::StoreError;
 use crate::journal::{JournalLine, JournalWriter, read_and_verify_journal};
 use crate::schema;
+use chrono::{Months, NaiveDate};
 use ledger_core::{
-    AccountId, AccountType, Currency, EntryId, EntryStatus, Ledger, LedgerError, Money, Side,
-    reports,
+    AccountId, AccountType, AssetId, AssetStatus, Currency, EntryId, EntryStatus, Ledger,
+    LedgerError, Money, NewAsset, Side, reports,
 };
 use rusqlite::{Connection, OptionalExtension, params};
+use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
@@ -48,6 +50,45 @@ pub struct EventRow {
     pub payload: Value,
     /// UTC timestamp.
     pub created_at: String,
+}
+
+/// The outcome of posting one month of depreciation for one asset.
+#[derive(Clone, Debug)]
+pub struct DepreciationRun {
+    /// Asset id.
+    pub asset_id: u64,
+    /// Calendar month, "YYYY-MM".
+    pub period: String,
+    /// Amount posted, exact cents.
+    pub amount: Decimal,
+    /// The posted entry's id.
+    pub entry_id: u64,
+    /// True when this period was already posted (idempotent no-op).
+    pub already_posted: bool,
+}
+
+/// The outcome of disposing an asset, computed without posting anything.
+/// The MCP layer previews this; [`Store::dispose_asset`] posts it.
+#[derive(Clone, Debug)]
+pub struct DisposalPreview {
+    /// Asset id.
+    pub asset_id: u64,
+    /// Disposal date.
+    pub date: chrono::NaiveDate,
+    /// Proceeds.
+    pub proceeds: Money,
+    /// Accumulated depreciation that will be cleared: already posted plus
+    /// the final partial period.
+    pub accumulated: Decimal,
+    /// Depreciation auto-posted for the final partial period. Zero when the
+    /// disposal month was already posted.
+    pub final_depreciation: Decimal,
+    /// Book value at disposal.
+    pub book_value: Decimal,
+    /// proceeds − book_value. Positive is a gain.
+    pub gain_loss: Decimal,
+    /// The disposal month, "YYYY-MM".
+    pub period: String,
 }
 
 /// Attachment metadata (bytes live in the blob store).
@@ -450,6 +491,377 @@ impl Store {
     }
 
     // ------------------------------------------------------------------
+    // Fixed assets
+    // ------------------------------------------------------------------
+
+    /// Register a fixed asset. Journaled as `asset.registered`.
+    pub fn register_asset(&mut self, new: NewAsset) -> Result<AssetId, StoreError> {
+        // Pure pre-validation so the journal write cannot be followed by a
+        // failed mutation.
+        self.ledger.validate_new_asset(&new)?;
+        let id = self.ledger.next_asset_id();
+        let line = self.append_journal(
+            "asset.registered",
+            json!({
+                "id": id,
+                "description": new.description,
+                "purchase_date": new.purchase_date.to_string(),
+                "cost": { "amount": new.cost.amount.to_string(), "currency": new.cost.currency.code() },
+                "salvage_value": { "amount": new.salvage_value.amount.to_string(), "currency": new.salvage_value.currency.code() },
+                "useful_life_months": new.useful_life_months,
+                "method": "straight_line",
+                "cost_account": new.cost_account,
+                "accum_depr_account": new.accum_depr_account,
+                "expense_account": new.expense_account,
+            }),
+        )?;
+        let live = self.ledger.register_asset(new)?;
+        debug_assert_eq!(live, id, "id allocator diverged from journal");
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(live)
+    }
+
+    /// Was depreciation already posted for this asset and period?
+    fn depreciation_posted_entry(
+        &self,
+        asset_id: AssetId,
+        period: &str,
+    ) -> Result<Option<(u64, Decimal)>, StoreError> {
+        let row: Option<(i64, String)> = self
+            .conn
+            .query_row(
+                "SELECT entry_id, amount FROM asset_depreciation WHERE asset_id = ? AND period = ?",
+                params![asset_id as i64, period],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        row.map(|(eid, amount)| {
+            let amount = amount
+                .parse()
+                .map_err(|_| StoreError::JournalCorrupt(format!("bad amount {amount}")))?;
+            Ok((eid as u64, amount))
+        })
+        .transpose()
+    }
+
+    /// Sum of depreciation amounts posted for an asset. Summed in Rust with
+    /// exact Decimal math: amounts are TEXT in SQLite, so SQLite must not
+    /// sum them (REAL would lose pennies).
+    fn asset_depreciation_total(&self, asset_id: AssetId) -> Result<Decimal, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT amount FROM asset_depreciation WHERE asset_id = ?")?;
+        let amounts = stmt.query_map(params![asset_id as i64], |r| r.get::<_, String>(0))?;
+        let mut total = Decimal::ZERO;
+        for a in amounts {
+            let s: String = a?;
+            total += s
+                .parse::<Decimal>()
+                .map_err(|_| StoreError::JournalCorrupt(format!("bad amount {s}")))?;
+        }
+        Ok(total)
+    }
+
+    /// Post one month of depreciation for one asset. Idempotent: running it
+    /// twice for the same period returns the original entry.
+    ///
+    /// Depreciation is an allocation, not money movement, so it is exempt
+    /// from the receipt policy by construction: the registered asset and its
+    /// schedule are the supporting documentation.
+    pub fn run_depreciation(
+        &mut self,
+        asset_id: AssetId,
+        period: &str,
+    ) -> Result<DepreciationRun, StoreError> {
+        if let Some((entry_id, amount)) = self.depreciation_posted_entry(asset_id, period)? {
+            return Ok(DepreciationRun {
+                asset_id,
+                period: period.to_string(),
+                amount,
+                entry_id,
+                already_posted: true,
+            });
+        }
+        let asset = self
+            .ledger
+            .get_asset(asset_id)
+            .ok_or(LedgerError::UnknownAsset(asset_id))?
+            .clone();
+        if asset.status != AssetStatus::Active {
+            return Err(LedgerError::AssetAlreadyDisposed(asset_id).into());
+        }
+        let (year, month) = parse_period(period)?;
+        let period_end = last_day_of_month(year, month);
+        let sched = ledger_core::depreciation_schedule(&asset, period_end);
+        let line = sched.iter().find(|l| l.period == period).ok_or_else(|| {
+            StoreError::JournalCorrupt(format!(
+                "period {period} is outside asset {asset_id}'s depreciable life"
+            ))
+        })?;
+        let amount = line.amount;
+        debug_assert!(amount > Decimal::ZERO);
+
+        let entry_id = self.create_entry(
+            period_end,
+            &format!("Depreciation — {} — {period}", asset.description),
+        )?;
+        self.add_line(
+            entry_id,
+            asset.expense_account,
+            Side::Debit,
+            Money::new(amount, self.base_currency),
+        )?;
+        self.add_line(
+            entry_id,
+            asset.accum_depr_account,
+            Side::Credit,
+            Money::new(amount, self.base_currency),
+        )?;
+        self.post_entry(entry_id)?;
+        let dline = self.append_journal(
+            "asset.depreciation_posted",
+            json!({
+                "asset_id": asset_id,
+                "period": period,
+                "entry_id": entry_id,
+                "amount": amount.to_string(),
+            }),
+        )?;
+        apply_line_to_sqlite(&self.conn, &dline)?;
+        Ok(DepreciationRun {
+            asset_id,
+            period: period.to_string(),
+            amount,
+            entry_id,
+            already_posted: false,
+        })
+    }
+
+    /// Compute a disposal without posting. Pure reads plus the posted-vs-
+    /// scheduled reconciliation that [`Store::dispose_asset`] performs.
+    pub fn dispose_preview(
+        &self,
+        asset_id: AssetId,
+        date: chrono::NaiveDate,
+        proceeds: Money,
+    ) -> Result<DisposalPreview, StoreError> {
+        let asset = self
+            .ledger
+            .get_asset(asset_id)
+            .ok_or(LedgerError::UnknownAsset(asset_id))?;
+        if asset.status != AssetStatus::Active {
+            return Err(LedgerError::AssetAlreadyDisposed(asset_id).into());
+        }
+        if proceeds.amount < Decimal::ZERO {
+            return Err(LedgerError::NegativeProceeds(proceeds.amount).into());
+        }
+        if proceeds.currency != self.base_currency {
+            return Err(LedgerError::CurrencyMismatch {
+                expected: self.base_currency.code().to_string(),
+                found: proceeds.currency.code().to_string(),
+            }
+            .into());
+        }
+        if date < asset.purchase_date {
+            return Err(LedgerError::DisposalBeforePurchase(date.to_string()).into());
+        }
+        let period = date.format("%Y-%m").to_string();
+        let posted = self.asset_depreciation_total(asset_id)?;
+        let target = ledger_core::accumulated_depreciation(asset, date);
+        let already = self.depreciation_posted_entry(asset_id, &period)?.is_some();
+        let final_depreciation = if already {
+            Decimal::ZERO
+        } else {
+            (target - posted).max(Decimal::ZERO)
+        };
+        let accumulated = posted + final_depreciation;
+        let book_value = asset.cost.amount - accumulated;
+        Ok(DisposalPreview {
+            asset_id,
+            date,
+            proceeds,
+            accumulated,
+            final_depreciation,
+            book_value,
+            gain_loss: proceeds.amount - book_value,
+            period,
+        })
+    }
+
+    /// Dispose of an asset: auto-post any unposted depreciation through the
+    /// disposal date, then post the disposal entry (clear cost and
+    /// accumulated depreciation, record proceeds and gain/loss) and mark
+    /// the asset disposed. Returns the disposal entry's id.
+    ///
+    /// The auto-post matters: the disposal entry must clear exactly the
+    /// accumulated depreciation the books actually carry, not the schedule's
+    /// theoretical number. If the agent already ran depreciation for the
+    /// disposal month, that posted amount is the books' truth.
+    pub fn dispose_asset(
+        &mut self,
+        asset_id: AssetId,
+        date: chrono::NaiveDate,
+        proceeds: Money,
+        proceeds_account: AccountId,
+        gain_loss_account: AccountId,
+    ) -> Result<EntryId, StoreError> {
+        let asset = self
+            .ledger
+            .get_asset(asset_id)
+            .ok_or(LedgerError::UnknownAsset(asset_id))?
+            .clone();
+        // The receiving account holds cash (or a receivable): an asset.
+        // The gain/loss account is a revenue or expense account.
+        for (id, role) in [
+            (proceeds_account, "proceeds"),
+            (gain_loss_account, "gain/loss"),
+        ] {
+            let a = self
+                .ledger
+                .chart()
+                .get(id)
+                .ok_or(LedgerError::UnknownAccount(id))?;
+            if a.placeholder {
+                return Err(LedgerError::PlaceholderAccount(a.code.clone()).into());
+            }
+            let ok = match role {
+                "proceeds" => a.account_type == AccountType::Asset,
+                _ => {
+                    a.account_type == AccountType::Revenue || a.account_type == AccountType::Expense
+                }
+            };
+            if !ok {
+                return Err(LedgerError::AssetAccountWrongType {
+                    code: a.code.clone(),
+                    role: "disposal",
+                    expected: if role == "proceeds" {
+                        "asset"
+                    } else {
+                        "revenue or expense"
+                    },
+                    found: match a.account_type {
+                        AccountType::Asset => "asset",
+                        AccountType::Liability => "liability",
+                        AccountType::Equity => "equity",
+                        AccountType::Revenue => "revenue",
+                        AccountType::Expense => "expense",
+                    },
+                }
+                .into());
+            }
+        }
+        if proceeds.amount < Decimal::ZERO {
+            return Err(LedgerError::NegativeProceeds(proceeds.amount).into());
+        }
+        if proceeds.currency != self.base_currency {
+            return Err(LedgerError::CurrencyMismatch {
+                expected: self.base_currency.code().to_string(),
+                found: proceeds.currency.code().to_string(),
+            }
+            .into());
+        }
+        if asset.status != AssetStatus::Active {
+            return Err(LedgerError::AssetAlreadyDisposed(asset_id).into());
+        }
+        if date < asset.purchase_date {
+            return Err(LedgerError::DisposalBeforePurchase(date.to_string()).into());
+        }
+        let base = self.base_currency;
+
+        // One source of truth for the math: the preview computes the
+        // posted-vs-scheduled reconciliation; posting follows it.
+        let preview = self.dispose_preview(asset_id, date, proceeds)?;
+        let accumulated = preview.accumulated;
+        let gain_loss = preview.gain_loss;
+        if preview.final_depreciation > Decimal::ZERO {
+            let diff = preview.final_depreciation;
+            let eid = self.create_entry(
+                date,
+                &format!(
+                    "Depreciation — {} — {} (final)",
+                    asset.description, preview.period
+                ),
+            )?;
+            self.add_line(
+                eid,
+                asset.expense_account,
+                Side::Debit,
+                Money::new(diff, base),
+            )?;
+            self.add_line(
+                eid,
+                asset.accum_depr_account,
+                Side::Credit,
+                Money::new(diff, base),
+            )?;
+            self.post_entry(eid)?;
+            let dline = self.append_journal(
+                "asset.depreciation_posted",
+                json!({
+                    "asset_id": asset_id,
+                    "period": preview.period,
+                    "entry_id": eid,
+                    "amount": diff.to_string(),
+                }),
+            )?;
+            apply_line_to_sqlite(&self.conn, &dline)?;
+        }
+
+        let entry_id = self.create_entry(
+            date,
+            &format!("Disposal — {} — {}", asset.description, date),
+        )?;
+        self.add_line(
+            entry_id,
+            asset.accum_depr_account,
+            Side::Debit,
+            Money::new(accumulated, base),
+        )?;
+        self.add_line(
+            entry_id,
+            proceeds_account,
+            Side::Debit,
+            Money::new(proceeds.amount, base),
+        )?;
+        self.add_line(
+            entry_id,
+            asset.cost_account,
+            Side::Credit,
+            Money::new(asset.cost.amount, base),
+        )?;
+        if gain_loss > Decimal::ZERO {
+            self.add_line(
+                entry_id,
+                gain_loss_account,
+                Side::Credit,
+                Money::new(gain_loss, base),
+            )?;
+        } else if gain_loss < Decimal::ZERO {
+            self.add_line(
+                entry_id,
+                gain_loss_account,
+                Side::Debit,
+                Money::new(-gain_loss, base),
+            )?;
+        }
+        self.post_entry(entry_id)?;
+        let line = self.append_journal(
+            "asset.disposed",
+            json!({
+                "asset_id": asset_id,
+                "date": date.to_string(),
+                "proceeds": { "amount": proceeds.amount.to_string(), "currency": proceeds.currency.code() },
+                "proceeds_account": proceeds_account,
+                "gain_loss_account": gain_loss_account,
+                "entry_id": entry_id,
+            }),
+        )?;
+        self.ledger.dispose_asset(asset_id, date, proceeds)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(entry_id)
+    }
+
+    // ------------------------------------------------------------------
     // Blobs and attachments
     // ------------------------------------------------------------------
 
@@ -690,6 +1102,16 @@ impl Store {
                 "sqlite projection diverged from journal".into(),
             ));
         }
+        // The accounting snapshot ignores the asset register, so compare it
+        // explicitly: journal replay, live ledger, and projection must agree.
+        let assets_of = |l: &Ledger| l.registered_assets().cloned().collect::<Vec<_>>();
+        let (ra, rb, rc) = (assets_of(&replayed), assets_of(&self.ledger), assets_of(&c));
+        if ra != rb || ra != rc {
+            return Err(StoreError::VerifyMismatch(
+                "asset register diverged between journal, live ledger, and sqlite projection"
+                    .into(),
+            ));
+        }
         Ok(())
     }
 
@@ -834,6 +1256,89 @@ impl Store {
                 }
             }
         }
+        // Assets: registration order is id order; disposal is a per-row flag.
+        let mut astmt = self.conn.prepare(
+            "SELECT id, description, purchase_date, cost_amount, cost_currency, salvage_amount, salvage_currency, useful_life_months, method, cost_account, accum_depr_account, expense_account, status, disposed_date, proceeds_amount FROM assets ORDER BY id",
+        )?;
+        let assets = astmt.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, String>(6)?,
+                r.get::<_, i64>(7)?,
+                r.get::<_, String>(8)?,
+                r.get::<_, i64>(9)?,
+                r.get::<_, i64>(10)?,
+                r.get::<_, i64>(11)?,
+                r.get::<_, String>(12)?,
+                r.get::<_, Option<String>>(13)?,
+                r.get::<_, Option<String>>(14)?,
+            ))
+        })?;
+        for a in assets {
+            let (
+                id,
+                description,
+                purchase_date,
+                cost_amount,
+                cost_currency,
+                salvage_amount,
+                salvage_currency,
+                life_months,
+                method,
+                cost_account,
+                accum_depr_account,
+                expense_account,
+                status,
+                disposed_date,
+                proceeds_amount,
+            ) = a?;
+            if method != "straight_line" {
+                return Err(StoreError::JournalCorrupt(format!(
+                    "unknown method {method}"
+                )));
+            }
+            let parse_amt = |s: &str, c: &str| -> Result<Money, StoreError> {
+                Ok(Money::new(
+                    s.parse()
+                        .map_err(|_| StoreError::JournalCorrupt(format!("bad amount {s}")))?,
+                    Currency::new(c)
+                        .map_err(|_| StoreError::JournalCorrupt(format!("bad currency {c}")))?,
+                ))
+            };
+            let got = ledger.register_asset(NewAsset {
+                description,
+                purchase_date: parse_date(&purchase_date)?,
+                cost: parse_amt(&cost_amount, &cost_currency)?,
+                salvage_value: parse_amt(&salvage_amount, &salvage_currency)?,
+                useful_life_months: life_months as u32,
+                cost_account: cost_account as u64,
+                accum_depr_account: accum_depr_account as u64,
+                expense_account: expense_account as u64,
+            })?;
+            if got != id as u64 {
+                return Err(StoreError::ReplayMismatch(format!(
+                    "asset id: sqlite says {id}, replay got {got}"
+                )));
+            }
+            if status == "disposed" {
+                let date = disposed_date
+                    .as_deref()
+                    .ok_or_else(|| StoreError::JournalCorrupt("disposed without date".into()))?;
+                let proceeds = proceeds_amount.as_deref().ok_or_else(|| {
+                    StoreError::JournalCorrupt("disposed without proceeds".into())
+                })?;
+                ledger.dispose_asset(
+                    got,
+                    parse_date(date)?,
+                    parse_amt(proceeds, &cost_currency)?,
+                )?;
+            }
+        }
         Ok(ledger)
     }
 }
@@ -879,6 +1384,42 @@ fn parse_side(s: &str) -> Result<Side, StoreError> {
 fn parse_date(s: &str) -> Result<chrono::NaiveDate, StoreError> {
     chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
         .map_err(|_| StoreError::JournalCorrupt(format!("bad date {s}")))
+}
+
+/// Parse a nested {"amount","currency"} money object.
+fn parse_money(p: &Value, key: &str) -> Result<Money, StoreError> {
+    let o = p
+        .get(key)
+        .ok_or_else(|| StoreError::JournalCorrupt(format!("missing '{key}'")))?;
+    Ok(Money::new(
+        get_str(o, "amount")?
+            .parse()
+            .map_err(|_| StoreError::JournalCorrupt("bad amount".into()))?,
+        Currency::new(get_str(o, "currency")?)
+            .map_err(|_| StoreError::JournalCorrupt("bad currency".into()))?,
+    ))
+}
+
+/// Parse a calendar-month period "YYYY-MM".
+fn parse_period(period: &str) -> Result<(i32, u32), StoreError> {
+    let err = || StoreError::JournalCorrupt(format!("bad period '{period}': want YYYY-MM"));
+    let mut parts = period.split('-');
+    let year: i32 = parts.next().ok_or_else(err)?.parse().map_err(|_| err())?;
+    let month: u32 = parts.next().ok_or_else(err)?.parse().map_err(|_| err())?;
+    if parts.next().is_some() || year < 1 || !(1..=12).contains(&month) {
+        return Err(err());
+    }
+    Ok((year, month))
+}
+
+/// Last calendar day of a month.
+fn last_day_of_month(year: i32, month: u32) -> NaiveDate {
+    let first = NaiveDate::from_ymd_opt(year, month, 1).expect("valid period");
+    first
+        .checked_add_months(Months::new(1))
+        .expect("month arithmetic")
+        .pred_opt()
+        .expect("month arithmetic")
 }
 
 fn get_u64(p: &Value, key: &str) -> Result<u64, StoreError> {
@@ -981,6 +1522,36 @@ fn replay_line_into_ledger(
         }
         "receipt.attached" | "receipt.linked" | "document.filed" => {
             // Not accounting state; the projection records them.
+        }
+        "asset.registered" => {
+            let want = get_u64(p, "id")?;
+            let got = ledger.register_asset(NewAsset {
+                description: get_str(p, "description")?.to_string(),
+                purchase_date: parse_date(get_str(p, "purchase_date")?)?,
+                cost: parse_money(p, "cost")?,
+                salvage_value: parse_money(p, "salvage_value")?,
+                useful_life_months: get_u64(p, "useful_life_months")? as u32,
+                cost_account: get_u64(p, "cost_account")?,
+                accum_depr_account: get_u64(p, "accum_depr_account")?,
+                expense_account: get_u64(p, "expense_account")?,
+            })?;
+            if got != want {
+                return Err(StoreError::ReplayMismatch(format!(
+                    "asset id: journal says {want}, replay got {got}"
+                )));
+            }
+        }
+        "asset.depreciation_posted" => {
+            // The entry itself was journaled as entry.created/entry.posted;
+            // this line is idempotency bookkeeping for the projection.
+        }
+        "asset.disposed" => {
+            let id = get_u64(p, "asset_id")?;
+            ledger.dispose_asset(
+                id,
+                parse_date(get_str(p, "date")?)?,
+                parse_money(p, "proceeds")?,
+            )?;
         }
         other => {
             return Err(StoreError::JournalCorrupt(format!(
@@ -1096,6 +1667,50 @@ fn apply_line_to_sqlite(conn: &Connection, line: &JournalLine) -> Result<(), Sto
                 params![
                     get_u64(p, "entry_id")? as i64,
                     get_u64(p, "attachment_id")? as i64,
+                ],
+            )?;
+        }
+        "asset.registered" => {
+            let cost = &p["cost"];
+            let salvage = &p["salvage_value"];
+            conn.execute(
+                "INSERT INTO assets(id, description, purchase_date, cost_amount, cost_currency, salvage_amount, salvage_currency, useful_life_months, method, cost_account, accum_depr_account, expense_account, status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                params![
+                    get_u64(p, "id")? as i64,
+                    get_str(p, "description")?,
+                    get_str(p, "purchase_date")?,
+                    get_str(cost, "amount")?,
+                    get_str(cost, "currency")?,
+                    get_str(salvage, "amount")?,
+                    get_str(salvage, "currency")?,
+                    get_u64(p, "useful_life_months")? as i64,
+                    get_str(p, "method")?,
+                    get_u64(p, "cost_account")? as i64,
+                    get_u64(p, "accum_depr_account")? as i64,
+                    get_u64(p, "expense_account")? as i64,
+                    "active",
+                ],
+            )?;
+        }
+        "asset.depreciation_posted" => {
+            conn.execute(
+                "INSERT OR IGNORE INTO asset_depreciation(asset_id, period, entry_id, amount) VALUES (?,?,?,?)",
+                params![
+                    get_u64(p, "asset_id")? as i64,
+                    get_str(p, "period")?,
+                    get_u64(p, "entry_id")? as i64,
+                    get_str(p, "amount")?,
+                ],
+            )?;
+        }
+        "asset.disposed" => {
+            let proceeds = &p["proceeds"];
+            conn.execute(
+                "UPDATE assets SET status = 'disposed', disposed_date = ?, proceeds_amount = ? WHERE id = ?",
+                params![
+                    get_str(p, "date")?,
+                    get_str(proceeds, "amount")?,
+                    get_u64(p, "asset_id")? as i64,
                 ],
             )?;
         }

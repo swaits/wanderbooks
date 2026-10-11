@@ -5,8 +5,9 @@ use crate::policy::ReceiptPolicy;
 use crate::types::*;
 use chrono::NaiveDate;
 use ledger_core::{
-    AccountId, AccountType, AssetStatus, JournalEntry, Ledger, Money, NewAsset, Side,
-    accumulated_depreciation, book_value, depreciation_schedule, reports,
+    AccountId, AccountType, AssetStatus, Currency, DocumentLine, DocumentStatus, JournalEntry,
+    Ledger, Money, NewAsset, PeriodStatus, Side, accumulated_depreciation, book_value,
+    depreciation_schedule, reports,
 };
 use ledger_store::Store;
 use rmcp::handler::server::wrapper::{Json, Parameters};
@@ -511,7 +512,7 @@ impl BooksServer {
 
     #[tool(
         name = "books.add_line",
-        description = "Add one line to a draft entry. Amount is a decimal string, never a float. The entry must balance before posting."
+        description = "Add one line to a draft entry. Amount is a decimal string, never a float. The entry must balance before posting. For foreign-currency lines, pass foreign_currency, foreign_amount, and fx_rate (foreign -> base); the base amount is computed as foreign_amount * fx_rate."
     )]
     async fn add_line(
         &self,
@@ -520,19 +521,32 @@ impl BooksServer {
         let p = params.0;
         let mut store = self.lock()?;
         let account = resolve_account(&store, &p.account)?;
-        let amount = parse_amount(&p.amount)?;
-        if amount <= Decimal::ZERO {
-            return Err("amount must be positive".to_string());
+        let side = parse_side(&p.side)?;
+        // Foreign-currency line?
+        if p.foreign_currency.is_some() || p.foreign_amount.is_some() || p.fx_rate.is_some() {
+            let fc = p
+                .foreign_currency
+                .ok_or("foreign_currency is required for fx lines")?;
+            let fa = p
+                .foreign_amount
+                .ok_or("foreign_amount is required for fx lines")?;
+            let rate = p.fx_rate.ok_or("fx_rate is required for fx lines")?;
+            let currency = Currency::new(&fc).map_err(|e| e.to_string())?;
+            let foreign_amount = parse_amount(&fa)?;
+            let fx_rate = parse_amount(&rate)?;
+            store
+                .add_line_fx(p.entry_id, account, side, currency, foreign_amount, fx_rate)
+                .map_err(|e| e.to_string())?;
+        } else {
+            let amount = parse_amount(&p.amount)?;
+            if amount <= Decimal::ZERO {
+                return Err("amount must be positive".to_string());
+            }
+            let currency = store.base_currency();
+            store
+                .add_line(p.entry_id, account, side, Money::new(amount, currency))
+                .map_err(|e| e.to_string())?;
         }
-        let currency = store.base_currency();
-        store
-            .add_line(
-                p.entry_id,
-                account,
-                parse_side(&p.side)?,
-                Money::new(amount, currency),
-            )
-            .map_err(|e| e.to_string())?;
         Ok(Json(AddLineOut { ok: true }))
     }
 
@@ -1132,12 +1146,24 @@ impl BooksServer {
         let mut store = self.lock()?;
         let (attachment_id, sha256, deduplicated) = match p.category.as_str() {
             "receipt" => store
-                .attach_receipt(p.entry_id, &file_name, &mime_type, &bytes, p.description.as_deref())
+                .attach_receipt(
+                    p.entry_id,
+                    &file_name,
+                    &mime_type,
+                    &bytes,
+                    p.description.as_deref(),
+                )
                 .map_err(|e| e.to_string())?,
             "document" => {
                 let cat = p.document_category.as_deref().unwrap_or("other");
                 store
-                    .file_document(cat, &file_name, &mime_type, &bytes, p.description.as_deref())
+                    .file_document(
+                        cat,
+                        &file_name,
+                        &mime_type,
+                        &bytes,
+                        p.description.as_deref(),
+                    )
                     .map_err(|e| e.to_string())?
             }
             _ => return Err("category must be \"receipt\" or \"document\"".to_string()),
@@ -1623,6 +1649,443 @@ impl BooksServer {
         posted.status = "posted".to_string();
         posted.entry_id = entry_id;
         Ok(Json(posted))
+    }
+
+    // ------------------------------------------------------------------
+    // Periods
+    // ------------------------------------------------------------------
+
+    #[tool(
+        name = "books.create_period",
+        description = "Create an accounting period (month, quarter, year). Dates are YYYY-MM-DD, inclusive."
+    )]
+    async fn create_period(
+        &self,
+        params: Parameters<CreatePeriodParams>,
+    ) -> Result<Json<CreatePeriodOut>, String> {
+        let p = params.0;
+        let mut store = self.lock()?;
+        let id = store
+            .create_period(&p.name, parse_date(&p.start)?, parse_date(&p.end)?)
+            .map_err(|e| e.to_string())?;
+        Ok(Json(CreatePeriodOut { period_id: id }))
+    }
+
+    #[tool(
+        name = "books.close_period",
+        description = "Close an accounting period. Without confirmed=true, returns a preview of the closing entry (revenue/expense zeroed to Retained Earnings) and closes nothing. With confirmed=true, posts the closing entry and marks the period closed. Closed periods reject new entries."
+    )]
+    async fn close_period(
+        &self,
+        params: Parameters<ClosePeriodParams>,
+    ) -> Result<Json<ClosePeriodOut>, String> {
+        let p = params.0;
+        let mut store = self.lock()?;
+        // Verify the period exists.
+        if store.ledger().get_period(p.period_id).is_none() {
+            return Err(format!("unknown period {}", p.period_id));
+        }
+        if !p.confirmed {
+            // Preview: compute what the closing entry would look like
+            // without mutating. We do this by inspecting revenue/expense
+            // balances directly.
+            let mut lines = Vec::new();
+            let mut accounts: Vec<_> = store.ledger().chart().all().collect();
+            accounts.sort_by(|a, b| a.code.cmp(&b.code));
+            for account in accounts {
+                match account.account_type {
+                    AccountType::Revenue | AccountType::Expense => {
+                        let movement = store.ledger().account_movement(account.id);
+                        if movement.is_zero() {
+                            continue;
+                        }
+                        let (side, amount) = if movement > Decimal::ZERO {
+                            ("credit", movement)
+                        } else {
+                            ("debit", -movement)
+                        };
+                        lines.push(format!("{} {} {} to zero", side, account.code, amount));
+                    }
+                    _ => {}
+                }
+            }
+            return Ok(Json(ClosePeriodOut {
+                status: "preview".to_string(),
+                period_id: p.period_id,
+                closing_entry: None,
+                lines,
+            }));
+        }
+        let closing = store.close_period(p.period_id).map_err(|e| e.to_string())?;
+        // Build line descriptions from the posted closing entry.
+        let mut lines = Vec::new();
+        if let Some(eid) = closing {
+            if let Some(entry) = store.ledger().get_entry(eid) {
+                for line in entry.lines() {
+                    let code = store
+                        .ledger()
+                        .chart()
+                        .get(line.account)
+                        .map(|a| a.code.clone())
+                        .unwrap_or_default();
+                    lines.push(format!("{:?} {} {}", line.side, code, line.amount.amount));
+                }
+            }
+        }
+        Ok(Json(ClosePeriodOut {
+            status: "closed".to_string(),
+            period_id: p.period_id,
+            closing_entry: closing,
+            lines,
+        }))
+    }
+
+    #[tool(
+        name = "books.list_periods",
+        description = "List all accounting periods with their status."
+    )]
+    async fn list_periods(&self) -> Result<Json<ListPeriodsOut>, String> {
+        let store = self.lock()?;
+        let periods = store
+            .ledger()
+            .list_periods()
+            .into_iter()
+            .map(|p| PeriodOut {
+                id: p.id,
+                name: p.name.clone(),
+                start: p.start.to_string(),
+                end: p.end.to_string(),
+                status: match p.status {
+                    PeriodStatus::Open => "open".to_string(),
+                    PeriodStatus::Closed => "closed".to_string(),
+                },
+                closing_entry: p.closing_entry,
+            })
+            .collect();
+        Ok(Json(ListPeriodsOut { periods }))
+    }
+
+    // ------------------------------------------------------------------
+    // Bank reconciliation
+    // ------------------------------------------------------------------
+
+    #[tool(
+        name = "books.mark_cleared",
+        description = "Mark a posted entry's line as cleared (or uncleared) for bank reconciliation. Only posted lines can be marked."
+    )]
+    async fn mark_cleared(
+        &self,
+        params: Parameters<MarkClearedParams>,
+    ) -> Result<Json<MarkClearedOut>, String> {
+        let p = params.0;
+        let mut store = self.lock()?;
+        store
+            .mark_cleared(p.entry_id, p.line_index, p.cleared)
+            .map_err(|e| e.to_string())?;
+        Ok(Json(MarkClearedOut { ok: true }))
+    }
+
+    #[tool(
+        name = "books.reconcile",
+        description = "Reconcile a bank/cash account against a statement. Returns book balance, cleared balance, statement balance, the difference (zero means reconciled), and the list of uncleared lines."
+    )]
+    async fn reconcile(
+        &self,
+        params: Parameters<ReconcileParams>,
+    ) -> Result<Json<ReconcileOut>, String> {
+        let p = params.0;
+        let store = self.lock()?;
+        let account = resolve_account(&store, &p.account)?;
+        let report = store
+            .ledger()
+            .reconciliation_report(
+                account,
+                parse_date(&p.statement_date)?,
+                parse_amount(&p.statement_balance)?,
+            )
+            .map_err(|e| e.to_string())?;
+        let code = store
+            .ledger()
+            .chart()
+            .get(account)
+            .map(|a| a.code.clone())
+            .unwrap_or_default();
+        let uncleared = report
+            .uncleared_lines
+            .into_iter()
+            .map(|l| UnclearedLineOut {
+                entry_id: l.entry_id,
+                line_index: l.line_index,
+                date: l.date.to_string(),
+                description: l.description,
+                side: match l.side {
+                    Side::Debit => "debit".to_string(),
+                    Side::Credit => "credit".to_string(),
+                },
+                amount: l.amount.to_string(),
+            })
+            .collect();
+        Ok(Json(ReconcileOut {
+            account_code: code,
+            book_balance: report.book_balance.to_string(),
+            cleared_balance: report.cleared_balance.to_string(),
+            statement_balance: report.statement_balance.to_string(),
+            difference: report.difference.to_string(),
+            uncleared_lines: uncleared,
+        }))
+    }
+
+    // ------------------------------------------------------------------
+    // A/R and A/P
+    // ------------------------------------------------------------------
+
+    #[tool(
+        name = "books.add_customer",
+        description = "Add a customer for accounts receivable."
+    )]
+    async fn add_customer(
+        &self,
+        params: Parameters<AddPartyParams>,
+    ) -> Result<Json<AddPartyOut>, String> {
+        let p = params.0;
+        let mut store = self.lock()?;
+        let id = store.add_customer(&p.name).map_err(|e| e.to_string())?;
+        Ok(Json(AddPartyOut { id }))
+    }
+
+    #[tool(
+        name = "books.add_vendor",
+        description = "Add a vendor for accounts payable."
+    )]
+    async fn add_vendor(
+        &self,
+        params: Parameters<AddPartyParams>,
+    ) -> Result<Json<AddPartyOut>, String> {
+        let p = params.0;
+        let mut store = self.lock()?;
+        let id = store.add_vendor(&p.name).map_err(|e| e.to_string())?;
+        Ok(Json(AddPartyOut { id }))
+    }
+
+    #[tool(
+        name = "books.create_invoice",
+        description = "Create a sales invoice. Auto-posts Dr Accounts Receivable / Cr Revenue. Lines are {description, amount} with decimal-string amounts."
+    )]
+    async fn create_invoice(
+        &self,
+        params: Parameters<CreateDocumentParams>,
+    ) -> Result<Json<CreateDocumentOut>, String> {
+        let p = params.0;
+        let mut store = self.lock()?;
+        let lines: Vec<DocumentLine> = p
+            .lines
+            .into_iter()
+            .map(|l| {
+                Ok(DocumentLine {
+                    description: l.description,
+                    amount: parse_amount(&l.amount)?,
+                })
+            })
+            .collect::<Result<_, String>>()?;
+        let id = store
+            .create_invoice(
+                p.party_id,
+                parse_date(&p.date)?,
+                parse_date(&p.due_date)?,
+                lines,
+            )
+            .map_err(|e| e.to_string())?;
+        let inv = store
+            .ledger()
+            .get_invoice(id)
+            .ok_or_else(|| format!("invoice {id} not found after creation"))?;
+        Ok(Json(CreateDocumentOut {
+            id,
+            total: inv.total().to_string(),
+            entry_id: inv.entry_id,
+        }))
+    }
+
+    #[tool(
+        name = "books.create_bill",
+        description = "Create a vendor bill. Auto-posts Dr General Expenses / Cr Accounts Payable. Lines are {description, amount} with decimal-string amounts."
+    )]
+    async fn create_bill(
+        &self,
+        params: Parameters<CreateDocumentParams>,
+    ) -> Result<Json<CreateDocumentOut>, String> {
+        let p = params.0;
+        let mut store = self.lock()?;
+        let lines: Vec<DocumentLine> = p
+            .lines
+            .into_iter()
+            .map(|l| {
+                Ok(DocumentLine {
+                    description: l.description,
+                    amount: parse_amount(&l.amount)?,
+                })
+            })
+            .collect::<Result<_, String>>()?;
+        let id = store
+            .create_bill(
+                p.party_id,
+                parse_date(&p.date)?,
+                parse_date(&p.due_date)?,
+                lines,
+            )
+            .map_err(|e| e.to_string())?;
+        let bill = store
+            .ledger()
+            .get_bill(id)
+            .ok_or_else(|| format!("bill {id} not found after creation"))?;
+        Ok(Json(CreateDocumentOut {
+            id,
+            total: bill.total().to_string(),
+            entry_id: bill.entry_id,
+        }))
+    }
+
+    #[tool(
+        name = "books.receive_payment",
+        description = "Record a customer payment against an invoice. Posts Dr Cash / Cr A/R."
+    )]
+    async fn receive_payment(
+        &self,
+        params: Parameters<PaymentParams>,
+    ) -> Result<Json<PaymentOut>, String> {
+        let p = params.0;
+        let mut store = self.lock()?;
+        let cash = resolve_account(&store, &p.cash_account)?;
+        let entry_id = store
+            .receive_payment(
+                p.document_id,
+                parse_date(&p.date)?,
+                parse_amount(&p.amount)?,
+                cash,
+            )
+            .map_err(|e| e.to_string())?;
+        let inv = store
+            .ledger()
+            .get_invoice(p.document_id)
+            .ok_or_else(|| format!("invoice {} not found", p.document_id))?;
+        Ok(Json(PaymentOut {
+            entry_id,
+            remaining: inv.balance().to_string(),
+            status: match inv.status {
+                DocumentStatus::Open => "open".to_string(),
+                DocumentStatus::Partial => "partial".to_string(),
+                DocumentStatus::Paid => "paid".to_string(),
+            },
+        }))
+    }
+
+    #[tool(
+        name = "books.pay_bill",
+        description = "Pay a vendor bill. Posts Dr A/P / Cr Cash."
+    )]
+    async fn pay_bill(
+        &self,
+        params: Parameters<PaymentParams>,
+    ) -> Result<Json<PaymentOut>, String> {
+        let p = params.0;
+        let mut store = self.lock()?;
+        let cash = resolve_account(&store, &p.cash_account)?;
+        let entry_id = store
+            .pay_bill(
+                p.document_id,
+                parse_date(&p.date)?,
+                parse_amount(&p.amount)?,
+                cash,
+            )
+            .map_err(|e| e.to_string())?;
+        let bill = store
+            .ledger()
+            .get_bill(p.document_id)
+            .ok_or_else(|| format!("bill {} not found", p.document_id))?;
+        Ok(Json(PaymentOut {
+            entry_id,
+            remaining: bill.balance().to_string(),
+            status: match bill.status {
+                DocumentStatus::Open => "open".to_string(),
+                DocumentStatus::Partial => "partial".to_string(),
+                DocumentStatus::Paid => "paid".to_string(),
+            },
+        }))
+    }
+
+    #[tool(
+        name = "books.ar_aging",
+        description = "A/R aging report as of a date: outstanding balances per customer, bucketed by days past due (current, 30, 60, 90, 90+)."
+    )]
+    async fn ar_aging(&self, params: Parameters<AgingParams>) -> Result<Json<AgingOut>, String> {
+        let p = params.0;
+        let store = self.lock()?;
+        let rows = store
+            .ledger()
+            .ar_aging(parse_date(&p.as_of)?)
+            .into_iter()
+            .map(|r| {
+                let total = r.total().to_string();
+                AgingRowOut {
+                    name: r.name,
+                    current: r.current.to_string(),
+                    days_30: r.days_30.to_string(),
+                    days_60: r.days_60.to_string(),
+                    days_90: r.days_90.to_string(),
+                    days_90_plus: r.days_90_plus.to_string(),
+                    total,
+                }
+            })
+            .collect();
+        Ok(Json(AgingOut { rows }))
+    }
+
+    #[tool(
+        name = "books.ap_aging",
+        description = "A/P aging report as of a date: outstanding balances per vendor, bucketed by days past due (current, 30, 60, 90, 90+)."
+    )]
+    async fn ap_aging(&self, params: Parameters<AgingParams>) -> Result<Json<AgingOut>, String> {
+        let p = params.0;
+        let store = self.lock()?;
+        let rows = store
+            .ledger()
+            .ap_aging(parse_date(&p.as_of)?)
+            .into_iter()
+            .map(|r| {
+                let total = r.total().to_string();
+                AgingRowOut {
+                    name: r.name,
+                    current: r.current.to_string(),
+                    days_30: r.days_30.to_string(),
+                    days_60: r.days_60.to_string(),
+                    days_90: r.days_90.to_string(),
+                    days_90_plus: r.days_90_plus.to_string(),
+                    total,
+                }
+            })
+            .collect();
+        Ok(Json(AgingOut { rows }))
+    }
+
+    // ------------------------------------------------------------------
+    // Foreign exchange
+    // ------------------------------------------------------------------
+
+    #[tool(
+        name = "books.set_fx_rate",
+        description = "Record a historical FX rate: how much base currency one unit of the foreign currency buys on the given date. For reference; lines store their own rate at entry time."
+    )]
+    async fn set_fx_rate(
+        &self,
+        params: Parameters<SetFxRateParams>,
+    ) -> Result<Json<SetFxRateOut>, String> {
+        let p = params.0;
+        let mut store = self.lock()?;
+        let currency = Currency::new(&p.currency).map_err(|e| e.to_string())?;
+        store
+            .set_fx_rate(currency, parse_date(&p.date)?, parse_amount(&p.rate)?)
+            .map_err(|e| e.to_string())?;
+        Ok(Json(SetFxRateOut { ok: true }))
     }
 }
 

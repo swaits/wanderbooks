@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = ["crates/ledger-core"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://git.swaits.com/swaits/wanderbooks"
+
+[workspace.lints.rust]
+missing_docs = "warn"

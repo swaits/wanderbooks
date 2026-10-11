@@ -96,6 +96,9 @@ pub struct ProfitAndLossParams {
     pub start: Option<String>,
     /// Period end, YYYY-MM-DD. Defaults to today.
     pub end: Option<String>,
+    /// Optional class name or id to filter to one division.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class: Option<String>,
 }
 
 /// Result of `books.profit_and_loss`.
@@ -328,6 +331,10 @@ pub struct AddLineParams {
     /// and foreign_amount. The base amount is foreign_amount * fx_rate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fx_rate: Option<String>,
+    /// Optional class name or id to tag this line for divisional tracking.
+    /// Applied after the line is added; only valid on draft entries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class: Option<String>,
 }
 
 /// Result of `books.add_line`.
@@ -1236,4 +1243,173 @@ pub struct SetFxRateParams {
 pub struct SetFxRateOut {
     /// Always true on success.
     pub ok: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Payroll (accounting only — no tax tables; the caller supplies all numbers)
+// ---------------------------------------------------------------------------
+
+/// One employee's payroll numbers. All amounts are decimal strings.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PayrollLineIn {
+    /// Employee name.
+    pub employee_name: String,
+    /// Gross pay, decimal string.
+    pub gross_pay: String,
+    /// Federal withholding, decimal string.
+    pub federal_withholding: String,
+    /// State withholding, decimal string.
+    pub state_withholding: String,
+    /// Employee Social Security, decimal string.
+    pub ss_employee: String,
+    /// Employee Medicare, decimal string.
+    pub medicare_employee: String,
+    /// Employer Social Security, decimal string.
+    pub ss_employer: String,
+    /// Employer Medicare, decimal string.
+    pub medicare_employer: String,
+    /// Other deductions (401k, insurance, etc.), decimal string.
+    pub other_deductions: String,
+}
+
+/// Parameters for `books.run_payroll`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RunPayrollParams {
+    /// Pay date, YYYY-MM-DD.
+    pub date: String,
+    /// Cash account id or code the net pay comes from.
+    pub cash_account: String,
+    /// One entry per employee.
+    pub lines: Vec<PayrollLineIn>,
+}
+
+/// Output of `books.run_payroll`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RunPayrollOut {
+    /// Payroll run id.
+    pub run_id: u64,
+    /// The posted journal entry id.
+    pub entry_id: u64,
+    /// Total gross pay, decimal string.
+    pub total_gross: String,
+    /// Total net pay, decimal string.
+    pub total_net: String,
+}
+
+/// Parameters for `books.remit_payroll_taxes`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RemitPayrollTaxesParams {
+    /// Remittance date, YYYY-MM-DD.
+    pub date: String,
+    /// Cash account id or code the remittance comes from.
+    pub cash_account: String,
+}
+
+/// Output of `books.remit_payroll_taxes`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RemitPayrollTaxesOut {
+    /// The posted journal entry id.
+    pub entry_id: u64,
+    /// Total remitted, decimal string.
+    pub total: String,
+}
+
+/// One payroll run for `books.list_payroll_runs`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PayrollRunOut {
+    /// Run id.
+    pub id: u64,
+    /// Pay date, YYYY-MM-DD.
+    pub date: String,
+    /// Number of employees.
+    pub employee_count: usize,
+    /// Total gross, decimal string.
+    pub total_gross: String,
+    /// The posted journal entry id.
+    pub entry_id: u64,
+}
+
+/// Output of `books.list_payroll_runs`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ListPayrollRunsOut {
+    /// Runs in id order.
+    pub runs: Vec<PayrollRunOut>,
+}
+
+// ---------------------------------------------------------------------------
+// Classes (divisional tracking)
+// ---------------------------------------------------------------------------
+
+/// Parameters for `books.add_class`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AddClassParams {
+    /// Class name, e.g. "Rondo".
+    pub name: String,
+}
+
+/// Output of `books.add_class`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AddClassOut {
+    /// Class id.
+    pub id: u32,
+}
+
+/// One class for `books.list_classes`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ClassOut {
+    /// Class id.
+    pub id: u32,
+    /// Class name.
+    pub name: String,
+}
+
+/// Output of `books.list_classes`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ListClassesOut {
+    /// Classes in id order.
+    pub classes: Vec<ClassOut>,
+}
+
+/// One class's P&L for `books.profit_and_loss_by_class`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ClassPnlOut {
+    /// Class name, or null for unclassified lines.
+    pub class: Option<String>,
+    /// Revenue, decimal string.
+    pub revenue: String,
+    /// Expenses, decimal string.
+    pub expenses: String,
+    /// Net income, decimal string.
+    pub net_income: String,
+}
+
+/// Output of `books.profit_and_loss_by_class`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ProfitAndLossByClassOut {
+    /// Period start, YYYY-MM-DD.
+    pub start: String,
+    /// Period end, YYYY-MM-DD.
+    pub end: String,
+    /// One row per class (plus unclassified).
+    pub classes: Vec<ClassPnlOut>,
+}
+
+// ---------------------------------------------------------------------------
+// CPA handoff package
+// ---------------------------------------------------------------------------
+
+/// Parameters for `books.export_cpa_package`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ExportCpaPackageParams {
+    /// As-of date, YYYY-MM-DD. Defaults to today.
+    pub as_of: Option<String>,
+}
+
+/// Output of `books.export_cpa_package`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ExportCpaPackageOut {
+    /// File name, e.g. "cpa-package-2026-10-11.zip".
+    pub file_name: String,
+    /// The zip, base64-encoded.
+    pub content_base64: String,
 }

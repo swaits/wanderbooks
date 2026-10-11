@@ -39,6 +39,21 @@ impl Ledger {
         }
     }
 
+    /// The id the next account added will receive.
+    ///
+    /// Exposed for journaling stores that record the id before mutating.
+    /// The value is only stable if no other mutation intervenes.
+    pub fn next_account_id(&self) -> AccountId {
+        self.next_account_id
+    }
+
+    /// The id the next journal entry created will receive.
+    ///
+    /// See [`Self::next_account_id`].
+    pub fn next_entry_id(&self) -> EntryId {
+        self.next_entry_id
+    }
+
     /// The currency every account and line in this ledger uses.
     pub fn base_currency(&self) -> Currency {
         self.base_currency
@@ -76,10 +91,8 @@ impl Ledger {
     pub fn create_entry(&mut self, date: NaiveDate, description: &str) -> EntryId {
         let id = self.next_entry_id;
         self.next_entry_id += 1;
-        self.entries.insert(
-            id,
-            JournalEntry::draft(id, date, description.to_string()),
-        );
+        self.entries
+            .insert(id, JournalEntry::draft(id, date, description.to_string()));
         id
     }
 

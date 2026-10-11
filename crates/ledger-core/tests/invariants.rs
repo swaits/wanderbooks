@@ -11,7 +11,9 @@
 
 use chrono::NaiveDate;
 use ledger_core::reports::{balance_sheet, profit_and_loss, snapshot, trial_balance};
-use ledger_core::{AccountId, AccountType, Currency, EntryStatus, Ledger, LedgerError, Money, Side};
+use ledger_core::{
+    AccountId, AccountType, Currency, EntryStatus, Ledger, LedgerError, Money, Side,
+};
 use rust_decimal::Decimal;
 
 // ---------------------------------------------------------------------------
@@ -49,15 +51,29 @@ struct Company {
 
 fn fixture_company() -> Company {
     let mut ledger = Ledger::new(Currency::USD);
-    let cash = ledger.add_account("1000", "Cash", AccountType::Asset, None, false).unwrap();
+    let cash = ledger
+        .add_account("1000", "Cash", AccountType::Asset, None, false)
+        .unwrap();
     let ar = ledger
-        .add_account("1200", "Accounts Receivable", AccountType::Asset, None, false)
+        .add_account(
+            "1200",
+            "Accounts Receivable",
+            AccountType::Asset,
+            None,
+            false,
+        )
         .unwrap();
     let equipment = ledger
         .add_account("1500", "Equipment", AccountType::Asset, None, false)
         .unwrap();
     let ap = ledger
-        .add_account("2000", "Accounts Payable", AccountType::Liability, None, false)
+        .add_account(
+            "2000",
+            "Accounts Payable",
+            AccountType::Liability,
+            None,
+            false,
+        )
         .unwrap();
     let equity = ledger
         .add_account("3000", "Owner's Equity", AccountType::Equity, None, false)
@@ -70,32 +86,51 @@ fn fixture_company() -> Company {
         .unwrap();
 
     // Owner invests $10,000 cash.
-    post(&mut ledger, date(2), "Owner investment", &[
-        (cash, Side::Debit, 10_000),
-        (equity, Side::Credit, 10_000),
-    ]);
+    post(
+        &mut ledger,
+        date(2),
+        "Owner investment",
+        &[(cash, Side::Debit, 10_000), (equity, Side::Credit, 10_000)],
+    );
     // Buy equipment for $2,500 cash.
-    post(&mut ledger, date(5), "Buy equipment", &[
-        (equipment, Side::Debit, 2_500),
-        (cash, Side::Credit, 2_500),
-    ]);
+    post(
+        &mut ledger,
+        date(5),
+        "Buy equipment",
+        &[(equipment, Side::Debit, 2_500), (cash, Side::Credit, 2_500)],
+    );
     // Bill a client $4,000.
-    post(&mut ledger, date(10), "Invoice client", &[
-        (ar, Side::Debit, 4_000),
-        (revenue, Side::Credit, 4_000),
-    ]);
+    post(
+        &mut ledger,
+        date(10),
+        "Invoice client",
+        &[(ar, Side::Debit, 4_000), (revenue, Side::Credit, 4_000)],
+    );
     // Pay January rent, $800.
-    post(&mut ledger, date(15), "January rent", &[
-        (rent, Side::Debit, 800),
-        (cash, Side::Credit, 800),
-    ]);
+    post(
+        &mut ledger,
+        date(15),
+        "January rent",
+        &[(rent, Side::Debit, 800), (cash, Side::Credit, 800)],
+    );
     // Collect $1,500 of receivables.
-    post(&mut ledger, date(20), "Client payment", &[
-        (cash, Side::Debit, 1_500),
-        (ar, Side::Credit, 1_500),
-    ]);
+    post(
+        &mut ledger,
+        date(20),
+        "Client payment",
+        &[(cash, Side::Debit, 1_500), (ar, Side::Credit, 1_500)],
+    );
 
-    Company { ledger, cash, ar, equipment, _ap: ap, equity, revenue, rent }
+    Company {
+        ledger,
+        cash,
+        ar,
+        equipment,
+        _ap: ap,
+        equity,
+        revenue,
+        rent,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -108,7 +143,9 @@ fn unbalanced_entry_is_rejected() {
     let mut ledger = c.ledger;
     let id = ledger.create_entry(date(21), "Bad entry");
     ledger.add_line(id, c.cash, Side::Debit, usd(100)).unwrap();
-    ledger.add_line(id, c.equity, Side::Credit, usd(99)).unwrap();
+    ledger
+        .add_line(id, c.equity, Side::Credit, usd(99))
+        .unwrap();
     let err = ledger.post_entry(id).unwrap_err();
     assert_eq!(
         err,
@@ -135,7 +172,9 @@ fn zero_amount_line_is_rejected() {
     let id = ledger.create_entry(date(21), "Zero line");
     ledger.add_line(id, c.cash, Side::Debit, usd(100)).unwrap();
     ledger.add_line(id, c.cash, Side::Debit, usd(0)).unwrap();
-    ledger.add_line(id, c.equity, Side::Credit, usd(100)).unwrap();
+    ledger
+        .add_line(id, c.equity, Side::Credit, usd(100))
+        .unwrap();
     assert_eq!(
         ledger.post_entry(id).unwrap_err(),
         LedgerError::ZeroAmountLine
@@ -148,7 +187,9 @@ fn unknown_account_is_rejected() {
     let mut ledger = c.ledger;
     let id = ledger.create_entry(date(21), "Ghost account");
     ledger.add_line(id, c.cash, Side::Debit, usd(100)).unwrap();
-    ledger.add_line(id, 999_999, Side::Credit, usd(100)).unwrap();
+    ledger
+        .add_line(id, 999_999, Side::Credit, usd(100))
+        .unwrap();
     assert_eq!(
         ledger.post_entry(id).unwrap_err(),
         LedgerError::UnknownAccount(999_999)
@@ -164,7 +205,9 @@ fn placeholder_account_is_rejected() {
         .unwrap();
     let id = ledger.create_entry(date(21), "Post to header");
     ledger.add_line(id, header, Side::Debit, usd(100)).unwrap();
-    ledger.add_line(id, c.equity, Side::Credit, usd(100)).unwrap();
+    ledger
+        .add_line(id, c.equity, Side::Credit, usd(100))
+        .unwrap();
     assert_eq!(
         ledger.post_entry(id).unwrap_err(),
         LedgerError::PlaceholderAccount("100".to_string())
@@ -207,12 +250,16 @@ fn posted_entry_is_immutable() {
     let mut ledger = c.ledger;
     let id = ledger.create_entry(date(21), "To post");
     ledger.add_line(id, c.cash, Side::Debit, usd(50)).unwrap();
-    ledger.add_line(id, c.equity, Side::Credit, usd(50)).unwrap();
+    ledger
+        .add_line(id, c.equity, Side::Credit, usd(50))
+        .unwrap();
     ledger.post_entry(id).unwrap();
 
     // Cannot add lines after posting.
     assert_eq!(
-        ledger.add_line(id, c.cash, Side::Debit, usd(1)).unwrap_err(),
+        ledger
+            .add_line(id, c.cash, Side::Debit, usd(1))
+            .unwrap_err(),
         LedgerError::PostedEntryImmutable
     );
     // Cannot post twice.
@@ -233,7 +280,9 @@ fn reversal_nets_to_zero_and_links_back() {
     ledger.post_entry(id).unwrap();
     assert_eq!(ledger.account_movement(c.rent), Decimal::from(1300));
 
-    let rev = ledger.reverse_entry(id, date(22), "Reverse mistake").unwrap();
+    let rev = ledger
+        .reverse_entry(id, date(22), "Reverse mistake")
+        .unwrap();
     let rev_entry = ledger.get_entry(rev).unwrap();
     assert_eq!(rev_entry.reversal_of(), Some(id));
     assert_eq!(rev_entry.status(), EntryStatus::Posted);
@@ -319,7 +368,15 @@ fn random_balanced_journals_preserve_invariants() {
     let mut rng = Lcg(0x1234_5678_9abc_def0);
     let c = fixture_company();
     let mut ledger = c.ledger;
-    let accounts = [c.cash, c.ar, c.equipment, c._ap, c.equity, c.revenue, c.rent];
+    let accounts = [
+        c.cash,
+        c.ar,
+        c.equipment,
+        c._ap,
+        c.equity,
+        c.revenue,
+        c.rent,
+    ];
 
     for i in 0..300u32 {
         let total = rng.next(100_000) + 100;
@@ -361,4 +418,56 @@ fn golden_fixture_company_reports() {
     let golden: serde_json::Value =
         serde_json::from_str(include_str!("golden/fixture_company.json")).unwrap();
     assert_eq!(snap, golden);
+}
+
+#[test]
+fn parent_account_validation() {
+    let mut ledger = Ledger::new(Currency::USD);
+    // Unknown parent is rejected.
+    let err = ledger
+        .add_account("1100", "Child", AccountType::Asset, Some(999), false)
+        .unwrap_err();
+    assert_eq!(err, LedgerError::UnknownParentAccount(999));
+    // A real parent works, and the child records it.
+    let parent = ledger
+        .add_account("1000", "Parent", AccountType::Asset, None, true)
+        .unwrap();
+    let child = ledger
+        .add_account("1100", "Child", AccountType::Asset, Some(parent), false)
+        .unwrap();
+    assert_eq!(ledger.chart().get(child).unwrap().parent, Some(parent));
+    // Chart accessors report honestly.
+    assert!(Ledger::new(Currency::USD).chart().is_empty());
+    assert!(!ledger.chart().is_empty());
+    assert_eq!(ledger.chart().len(), 2);
+    assert!(ledger.chart().find_by_code("1000").is_some());
+    assert!(ledger.chart().find_by_code("nope").is_none());
+}
+
+#[test]
+fn account_type_balance_sheet_predicate() {
+    assert!(AccountType::Asset.is_balance_sheet());
+    assert!(AccountType::Liability.is_balance_sheet());
+    assert!(AccountType::Equity.is_balance_sheet());
+    assert!(!AccountType::Revenue.is_balance_sheet());
+    assert!(!AccountType::Expense.is_balance_sheet());
+}
+
+#[test]
+fn entry_movements_sum_to_zero() {
+    let mut c = fixture_company();
+    let cash = c.cash;
+    let revenue = c.revenue;
+    let id = c.ledger.create_entry(date(15), "sale");
+    c.ledger.add_line(id, cash, Side::Debit, usd(1000)).unwrap();
+    c.ledger
+        .add_line(id, revenue, Side::Credit, usd(1000))
+        .unwrap();
+    c.ledger.post_entry(id).unwrap();
+    let entry = c.ledger.get_entry(id).unwrap();
+    let m = entry.movements();
+    assert_eq!(m[&cash], Decimal::new(100000, 2));
+    assert_eq!(m[&revenue], Decimal::new(-100000, 2));
+    let total: Decimal = m.values().copied().sum();
+    assert_eq!(total, Decimal::ZERO);
 }

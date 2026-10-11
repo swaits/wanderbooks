@@ -2,8 +2,8 @@
 
 ## Where we are
 
-Phase 1 (semantics core) is underway. The repo exists, is private, and the
-first engine slice is built, tested, and green.
+Phase 1 (semantics core) is done and green. The first storage + MCP slice
+is now built, tested, and green too.
 
 **Done:**
 - Repo `swaits/wanderbooks` created on git.swaits.com (private).
@@ -17,27 +17,47 @@ first engine slice is built, tested, and green.
 - 14 tests green: validation rejections, posted-entry immutability,
   reversal semantics, the accounting laws on a fixture company, a 300-entry
   randomized invariant test, and the first golden file.
+- `ledger-store` 0.1.0: the source of truth is an append-only, hash-chained
+  JSONL journal (fsync per append; tamper-evident); content-addressed
+  SHA-256 blob store (immutable, deduplicated, hash-verified on read);
+  SQLite as a *disposable* projection (TEXT amounts, WAL, `synchronous=FULL`,
+  `integrity_check` on open). Single write path: validate → journal →
+  mutate → apply. `verify` replays the journal and diffs reports three ways;
+  `rebuild` drops SQLite and replays; a missing database heals on open.
+  7 tests green: round-trip, tamper detection, torn-tail truncation,
+  rebuild, blob dedup/corruption detection, unbalanced-post rejection.
+- `ledger-mcp` 0.1.0: stdio server on official rmcp 3.5 (18 narrow typed
+  tools, amounts as decimal strings, `initialize.instructions` carrying the
+  agent operating contract). Draft → add lines → preview → confirmed post;
+  server-side receipt policy (strictly greater than $25, per-account
+  overrides, typed `receipt_required` rejection); digest; search; CSV/JSON
+  export; period P&L and as-of balance sheet. End-to-end stdio protocol test
+  green (initialize → 18 tools → draft → preview → receipt_required →
+  attach → post → reports → digest → reverse).
+- 22 tests green workspace-wide; `cargo fmt` clean; clippy clean except one
+  pre-existing phase-1 style lint on a public engine signature.
 - Docs: AGENTS.md (operating manual), requirements, architecture, oracle
-  design, parity catalog (floor: 6 done), glossary. Plan: this file + roadmap.
+  design, parity catalog (floor: 6 done), glossary, mcp-interface,
+  receipt-store (journal design), capability-parity (10 of 12 rows covered).
+  Plan: this file + roadmap.
 
 **In progress:** nothing — the next arcs are queued below, unstarted.
 
 ## Next arcs (in order)
 
 The project went AI-first on 2026-10-10 (Stephen's call): the primary
-interface is MCP, not a cloned GUI. The engine roadmap (period close, cash
-flow, proptest) continues as needed, but the next *phase* is the interface:
+interface is MCP, not a cloned GUI. The first storage + MCP slice is done
+(arcs 1–3 below). What remains:
 
-1. **`ledger-store`** (`docs/receipt-store.md`): SQLite persistence,
-   append-only triggers, TEXT amounts, event log, migrations,
-   rebuild-from-log verify.
-2. **Blob store**: content-addressed receipts/documents, attachment metadata,
-   Drive backfill script.
-3. **`ledger-mcp`** (`docs/mcp-interface.md`): stdio transport first;
-   narrow tools with preview-before-post; digest; read-only resources; the
-   agent operating contract in the tool descriptions.
-4. **Capability parity** (`docs/capability-parity.md`): build every specced
-   row, then the month-long parallel run against the GSheet; cutover per
+1. ~~**`ledger-store`**~~ done — journal + blob store + SQLite projection.
+2. ~~**Blob store**~~ done — folded into `ledger-store`.
+3. ~~**`ledger-mcp`**~~ done — 18 tools, receipt policy, digest, export.
+   Remaining from the spec: MCP *resources* (rmcp 3.x has no resource
+   macros; hand-roll `list_resources`/`read_resource` next), Streamable HTTP
+   transport, XLSX/IIF export formats.
+4. **Capability parity** (`docs/capability-parity.md`): 10 of 12 rows
+   covered; cash flow (engine R-FUTURE-3) and full CPA export (xlsx/iif)
+   remain. Then the month-long parallel run against the GSheet; cutover per
    the cutover rule.
 5. Then: oracle harness (GnuCash diff), read-only GUI on the event log,
    workflow parity.

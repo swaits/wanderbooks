@@ -19,10 +19,12 @@
 pub mod account;
 pub mod arap;
 pub mod assets;
+pub mod classes;
 pub mod error;
 pub mod journal;
 pub mod ledger;
 pub mod money;
+pub mod payroll;
 pub mod periods;
 pub mod reports;
 
@@ -35,12 +37,14 @@ pub use assets::{
     Asset, AssetId, AssetStatus, DepreciationMethod, DisposalAmounts, NewAsset, ScheduleLine,
     accumulated_depreciation, book_value, depreciation_schedule, disposal_amounts,
 };
+pub use classes::{Class, ClassId};
 pub use error::LedgerError;
 pub use journal::{EntryId, EntryStatus, JournalEntry, JournalLine};
 pub use ledger::{Ledger, ReconciliationReport, UnclearedLine};
 pub use money::{Currency, Money};
+pub use payroll::{PayrollLine, PayrollRun, PayrollRunId};
 pub use periods::{Period, PeriodId, PeriodStatus};
 pub use reports::{
-    BalanceSheet, CashFlowLine, CashFlowParams, CashFlowStatement, ProfitAndLoss, TrialBalance,
-    TrialBalanceLine, cash_flow,
+    BalanceSheet, CashFlowLine, CashFlowParams, CashFlowStatement, ClassProfitAndLoss,
+    ProfitAndLoss, TrialBalance, TrialBalanceLine, cash_flow,
 };

@@ -222,4 +222,32 @@ pub enum LedgerError {
     /// and the engine disagree about event ordering.
     #[error("replay id mismatch: journal says {0}, allocator expects {1}")]
     ReplayIdMismatch(u64, u64),
+
+    /// A payroll run must have at least one employee line.
+    #[error("payroll run must have at least one line")]
+    EmptyPayroll,
+
+    /// Payroll amounts must not be negative.
+    #[error("payroll amount must not be negative, got {0}")]
+    NegativePayrollAmount(Decimal),
+
+    /// Net pay went negative: withholdings exceed gross for this employee.
+    #[error("payroll net pay for '{0}' is negative")]
+    NegativeNetPay(String),
+
+    /// No payroll tax payables are outstanding: nothing to remit.
+    #[error("no payroll tax payables to remit")]
+    NothingToRemit,
+
+    /// The referenced payroll run does not exist.
+    #[error("unknown payroll run id {0}")]
+    UnknownPayrollRun(u64),
+
+    /// Class names must not be empty.
+    #[error("class name must not be empty")]
+    EmptyClassName,
+
+    /// The referenced class does not exist.
+    #[error("unknown class id {0}")]
+    UnknownClass(u32),
 }

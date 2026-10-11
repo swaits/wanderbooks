@@ -113,6 +113,153 @@ pub struct ProfitAndLossOut {
     pub net_income: String,
 }
 
+/// Parameters for `books.cash_flow`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CashFlowParams {
+    /// Period start, YYYY-MM-DD. Defaults to the beginning of time.
+    pub start: Option<String>,
+    /// Period end, YYYY-MM-DD. Defaults to today.
+    pub end: Option<String>,
+    /// Account codes treated as cash (e.g. `["1000", "1010"]`). Required:
+    /// the statement reconciles to the net change in these accounts.
+    pub cash_accounts: Vec<String>,
+    /// Account codes for liabilities treated as financing (debt).
+    /// Defaults to empty: liabilities are operating working capital.
+    #[serde(default)]
+    pub financing_accounts: Vec<String>,
+}
+
+/// One cash flow line.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct CashFlowLineOut {
+    /// Human label.
+    pub label: String,
+    /// Signed amount, decimal string. Positive = inflow.
+    pub amount: String,
+}
+
+/// Result of `books.cash_flow`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct CashFlowOut {
+    /// Period start, YYYY-MM-DD.
+    pub start: String,
+    /// Period end, YYYY-MM-DD.
+    pub end: String,
+    /// Period net income, decimal string.
+    pub net_income: String,
+    /// Non-cash depreciation added back, decimal string.
+    pub depreciation: String,
+    /// Working-capital adjustments.
+    pub working_capital: Vec<CashFlowLineOut>,
+    /// Cash from operations, decimal string.
+    pub cash_from_operations: String,
+    /// Investing flows (purchases, disposal proceeds).
+    pub investing: Vec<CashFlowLineOut>,
+    /// Cash from investing, decimal string.
+    pub cash_from_investing: String,
+    /// Financing flows (equity, designated debt).
+    pub financing: Vec<CashFlowLineOut>,
+    /// Cash from financing, decimal string.
+    pub cash_from_financing: String,
+    /// Net change in cash, decimal string.
+    pub net_change_in_cash: String,
+    /// Cash balance at period start, decimal string.
+    pub cash_beginning: String,
+    /// Cash balance at period end, decimal string.
+    pub cash_ending: String,
+}
+
+/// Parameters for `books.import_bank_csv`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ImportBankCsvParams {
+    /// The CSV text (QBO bank upload layout: Date,Description,Amount or
+    /// Date,Description,Expense,Income).
+    pub csv_text: String,
+    /// Account code for the bank account (the offset side of each entry).
+    pub bank_account_code: String,
+    /// Account code for the default offset (e.g. an expense account).
+    /// Used when no rule matches.
+    pub default_offset_code: String,
+    /// Optional categorization rules: { "pattern": "account_code" }.
+    /// First case-insensitive substring match on the description wins.
+    #[serde(default)]
+    pub rules: std::collections::HashMap<String, String>,
+}
+
+/// One imported bank transaction (as a draft entry).
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ImportedTxnOut {
+    /// Draft entry id.
+    pub entry_id: u64,
+    /// Transaction date, YYYY-MM-DD.
+    pub date: String,
+    /// Bank description.
+    pub description: String,
+    /// Signed amount, decimal string.
+    pub amount: String,
+    /// Account code used for the offset.
+    pub offset_account: String,
+}
+
+/// Result of `books.import_bank_csv`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ImportBankCsvOut {
+    /// Drafts created (one per transaction).
+    pub imported: Vec<ImportedTxnOut>,
+    /// Number of transactions imported.
+    pub count: usize,
+}
+
+/// Parameters for `books.import_chart_csv`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ImportChartCsvParams {
+    /// The CSV text: code,name,type,parent_code with a header row.
+    pub csv_text: String,
+}
+
+/// Result of `books.import_chart_csv`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ImportChartCsvOut {
+    /// Account codes created, in order.
+    pub created: Vec<String>,
+    /// Number of accounts created.
+    pub count: usize,
+}
+
+/// Parameters for `books.import_local_file`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ImportLocalFileParams {
+    /// Absolute path to the file on the server's filesystem.
+    pub path: String,
+    /// "receipt" or "document".
+    pub category: String,
+    /// Entry id to attach to (receipts only). Omit to file unlinked.
+    #[serde(default)]
+    pub entry_id: Option<u64>,
+    /// Document category for documents: formation, legal, tax, accounting, other.
+    #[serde(default)]
+    pub document_category: Option<String>,
+    /// Override the file name (defaults to the path's file name).
+    #[serde(default)]
+    pub file_name: Option<String>,
+    /// Optional description.
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+/// Result of `books.import_local_file`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ImportLocalFileOut {
+    /// Attachment id.
+    pub attachment_id: u64,
+    /// SHA-256 hex of the content.
+    pub sha256: String,
+    /// True if the content was already stored (deduplicated).
+    pub deduplicated: bool,
+    /// File name used.
+    pub file_name: String,
+}
+
 /// Parameters for `books.balance_sheet`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct BalanceSheetParams {
@@ -244,6 +391,10 @@ pub struct PostEntryOut {
     /// True when a receipt is required but none is attached. Posting with
     /// confirmed=true fails in this state.
     pub receipt_missing: bool,
+    /// Posted entry ids that look like they split this entry to dodge the
+    /// receipt threshold (same date, description, and debit accounts).
+    /// Empty when no split is detected.
+    pub split_detected: Vec<u64>,
 }
 
 /// Parameters for `books.reverse_entry`.
@@ -544,16 +695,21 @@ pub struct DigestOut {
 /// Parameters for `books.export`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ExportParams {
-    /// "csv" or "json".
+    /// "csv", "json", "xlsx", or "iif". XLSX is base64-encoded; IIF is only
+    /// valid with report "journal".
     pub format: String,
-    /// "journal", "trial_balance", "profit_and_loss", or "balance_sheet".
+    /// "journal", "trial_balance", "profit_and_loss", "balance_sheet", or
+    /// "cash_flow".
     pub report: String,
-    /// Period start for profit_and_loss, YYYY-MM-DD.
+    /// Period start for profit_and_loss and cash_flow, YYYY-MM-DD.
     pub start: Option<String>,
-    /// Period end for profit_and_loss, YYYY-MM-DD.
+    /// Period end for profit_and_loss and cash_flow, YYYY-MM-DD.
     pub end: Option<String>,
     /// As-of date for balance_sheet, YYYY-MM-DD.
     pub as_of: Option<String>,
+    /// Cash account codes for cash_flow (required for that report).
+    #[serde(default)]
+    pub cash_accounts: Vec<String>,
 }
 
 /// Result of `books.export`.
@@ -563,8 +719,12 @@ pub struct ExportOut {
     pub format: String,
     /// The requested report.
     pub report: String,
-    /// The exported content.
+    /// The exported content. Base64-encoded when `content_encoding` is
+    /// "base64" (XLSX); otherwise raw text.
     pub content: String,
+    /// "base64" for XLSX, otherwise absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_encoding: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -762,4 +922,40 @@ pub struct DisposeAssetOut {
     pub lines: Vec<PreviewLine>,
     /// True when posting requires a receipt (bill of sale) first.
     pub receipt_required: bool,
+}
+
+/// Structured machine-readable tool error for receipt policy rejections.
+///
+/// Tool errors surface as strings in MCP; this serializes to JSON so
+/// clients can match on `code` instead of parsing prose. The human-readable
+/// `message` is still included for logs and chat.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ReceiptRequiredError {
+    /// Stable machine-readable code: always `"receipt_required"`.
+    pub code: String,
+    /// Human-readable explanation with the remedy.
+    pub message: String,
+    /// The entry (or asset) that needs the receipt. Set for entries.
+    pub entry_id: Option<u64>,
+    /// The asset being disposed. Set for disposals.
+    pub asset_id: Option<u64>,
+    /// Total debits moved, decimal string.
+    pub debits: String,
+    /// The policy that triggered, e.g. "strictly greater than $25.00".
+    pub policy: String,
+    /// Tool to call to satisfy the requirement.
+    pub remedy_tool: String,
+    /// Concrete next step for the agent.
+    pub remedy_hint: String,
+    /// When the requirement was triggered by anti-splitting detection: the
+    /// ids of the posted entries this entry appears to split.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub split_group: Vec<u64>,
+}
+
+impl ReceiptRequiredError {
+    /// Serialize to the string form returned as the MCP tool error.
+    pub fn to_tool_error(&self) -> String {
+        serde_json::to_string(self).unwrap_or_else(|_| self.message.clone())
+    }
 }

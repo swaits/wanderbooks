@@ -63,3 +63,8 @@ flow, proptest) continues as needed, but the next *phase* is the interface:
   *behavioral* oracle only. Receipt enforcement is server-side policy in the
   MCP layer (threshold + per-account overrides, typed `receipt_required`
   error, checklist in every preview); the engine stays policy-free.
+- 2026-10-10: Storage durability (the owner). SQLite is the query engine, not
+  the source of truth: the source of truth is an append-only, hash-chained
+  JSONL journal (fsync per append; tamper-evident; git-backup-friendly),
+  SQLite is a disposable projection rebuilt from it, blobs stay
+  content-addressed. Single write path: journal → fsync → apply to SQLite.

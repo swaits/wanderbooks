@@ -8,9 +8,14 @@
 
 use crate::{
     AccountId, AccountType, AgingRow, Asset, AssetId, AssetStatus, Bill, BillId, ChartOfAccounts,
-    Currency, Customer, CustomerId, DocumentLine, DocumentStatus, EntryId, EntryStatus, Invoice,
-    InvoiceId, JournalEntry, JournalLine, LedgerError, Money, NewAsset, Period, PeriodId,
-    PeriodStatus, Side, Vendor, VendorId, arap, assets, periods,
+    Class, ClassId, Currency, Customer, CustomerId, DocumentLine, DocumentStatus, EntryId,
+    EntryStatus, Invoice, InvoiceId, JournalEntry, JournalLine, LedgerError, Money, NewAsset,
+    Period, PeriodId, PeriodStatus, Side, Vendor, VendorId, arap, assets,
+    payroll::{
+        PayrollAccounts, PayrollLine, PayrollRun, PayrollRunId, payroll_entry_plan,
+        payroll_remit_plan, validate_payroll_lines,
+    },
+    periods,
 };
 use chrono::{Months, NaiveDate};
 use rust_decimal::Decimal;
@@ -76,6 +81,10 @@ pub struct Ledger {
     cleared: HashMap<(EntryId, usize), bool>,
     /// Historical FX rates for reference: (currency, date) -> rate (foreign -> base).
     fx_rates: HashMap<(Currency, NaiveDate), Decimal>,
+    /// Payroll runs.
+    payroll_runs: HashMap<PayrollRunId, PayrollRun>,
+    /// Classes for divisional P&L tracking.
+    classes: HashMap<ClassId, Class>,
     next_account_id: AccountId,
     next_entry_id: EntryId,
     next_asset_id: AssetId,
@@ -84,6 +93,8 @@ pub struct Ledger {
     next_vendor_id: VendorId,
     next_invoice_id: InvoiceId,
     next_bill_id: BillId,
+    next_payroll_run_id: PayrollRunId,
+    next_class_id: ClassId,
 }
 
 impl Ledger {
@@ -102,6 +113,8 @@ impl Ledger {
             bills: HashMap::new(),
             cleared: HashMap::new(),
             fx_rates: HashMap::new(),
+            payroll_runs: HashMap::new(),
+            classes: HashMap::new(),
             next_account_id: 1,
             next_entry_id: 1,
             next_asset_id: 1,
@@ -110,6 +123,8 @@ impl Ledger {
             next_vendor_id: 1,
             next_invoice_id: 1,
             next_bill_id: 1,
+            next_payroll_run_id: 1,
+            next_class_id: 1,
         }
     }
 
@@ -168,6 +183,20 @@ impl Ledger {
     /// See [`Self::next_account_id`].
     pub fn next_bill_id(&self) -> BillId {
         self.next_bill_id
+    }
+
+    /// The id the next payroll run will receive.
+    ///
+    /// See [`Self::next_account_id`].
+    pub fn next_payroll_run_id(&self) -> PayrollRunId {
+        self.next_payroll_run_id
+    }
+
+    /// The id the next class added will receive.
+    ///
+    /// See [`Self::next_account_id`].
+    pub fn next_class_id(&self) -> ClassId {
+        self.next_class_id
     }
 
     /// The currency every account and line in this ledger uses.
@@ -274,6 +303,7 @@ impl Ledger {
             amount,
             foreign_currency: None,
             foreign_amount: None,
+            class_id: None,
         });
         Ok(())
     }
@@ -316,6 +346,7 @@ impl Ledger {
             amount: Money::new(base_amount, base),
             foreign_currency: Some(foreign_currency),
             foreign_amount: Some(foreign_amount),
+            class_id: None,
         });
         Ok(())
     }
@@ -368,12 +399,17 @@ impl Ledger {
             return Err(LedgerError::EntryNotPosted(entry));
         }
         let id = self.create_entry(date, description);
-        for line in original.lines() {
+        for (idx, line) in original.lines().iter().enumerate() {
             let flipped = match line.side {
                 Side::Debit => Side::Credit,
                 Side::Credit => Side::Debit,
             };
             self.add_line(id, line.account, flipped, line.amount)?;
+            // The reversal offsets the original line for line: carry the
+            // class so divisional P&L nets correctly.
+            if line.class_id.is_some() {
+                self.set_line_class(id, idx, line.class_id)?;
+            }
         }
         self.entries
             .get_mut(&id)
@@ -1281,5 +1317,275 @@ impl Ledger {
         } else {
             balance
         })
+    }
+
+    // ------------------------------------------------------------------
+    // Payroll
+    // ------------------------------------------------------------------
+
+    /// Pure pre-validation for [`Self::run_payroll`]: every check that does
+    /// not mutate, so journaling stores can validate before journaling.
+    pub fn validate_payroll(
+        &self,
+        date: NaiveDate,
+        lines: &[PayrollLine],
+        cash_account: AccountId,
+    ) -> Result<(), LedgerError> {
+        validate_payroll_lines(lines)?;
+        self.chart
+            .get(cash_account)
+            .ok_or(LedgerError::UnknownAccount(cash_account))?;
+        if let Some(pid) = self.closed_period_containing(date) {
+            return Err(LedgerError::ClosedPeriod(pid, date.to_string()));
+        }
+        Ok(())
+    }
+
+    /// Resolve the seven payroll chart accounts by code, creating them when
+    /// missing. Journaling stores ensure these through their own journaled
+    /// path first; this then no-ops and replay stays deterministic.
+    fn payroll_accounts(&mut self) -> PayrollAccounts {
+        PayrollAccounts {
+            salary_expense: self.ensure_account(
+                "6100",
+                "Salary & Wage Expense",
+                AccountType::Expense,
+            ),
+            payroll_tax_expense: self.ensure_account(
+                "6110",
+                "Payroll Tax Expense",
+                AccountType::Expense,
+            ),
+            federal_payable: self.ensure_account(
+                "2110",
+                "Federal Withholding Payable",
+                AccountType::Liability,
+            ),
+            state_payable: self.ensure_account(
+                "2120",
+                "State Withholding Payable",
+                AccountType::Liability,
+            ),
+            ss_payable: self.ensure_account("2130", "SS Tax Payable", AccountType::Liability),
+            medicare_payable: self.ensure_account(
+                "2140",
+                "Medicare Tax Payable",
+                AccountType::Liability,
+            ),
+            other_payable: self.ensure_account(
+                "2150",
+                "Other Deductions Payable",
+                AccountType::Liability,
+            ),
+        }
+    }
+
+    /// Run payroll: validate, auto-create the payroll chart accounts, and
+    /// post one balanced entry — Dr `6100` Salary & Wage Expense for gross,
+    /// Dr `6110` Payroll Tax Expense for the employer FICA share, Cr the
+    /// `2110`–`2150` payables for withholdings and deductions, Cr cash for
+    /// net pay. Zero totals are skipped, never posted as zero-amount lines.
+    ///
+    /// Accounting only: there are no tax tables here. Every withholding
+    /// number is supplied by the caller.
+    pub fn run_payroll(
+        &mut self,
+        date: NaiveDate,
+        lines: Vec<PayrollLine>,
+        cash_account: AccountId,
+    ) -> Result<PayrollRunId, LedgerError> {
+        self.validate_payroll(date, &lines, cash_account)?;
+        let accounts = self.payroll_accounts();
+        let entry = self.try_create_entry(date, &format!("Payroll {date}"))?;
+        for (account, side, amount) in
+            payroll_entry_plan(&lines, accounts, cash_account, self.base_currency)
+        {
+            self.add_line(entry, account, side, amount)?;
+        }
+        self.post_entry(entry)?;
+        let id = self.next_payroll_run_id;
+        self.next_payroll_run_id += 1;
+        self.payroll_runs.insert(
+            id,
+            PayrollRun {
+                id,
+                date,
+                lines,
+                entry_id: entry,
+            },
+        );
+        Ok(id)
+    }
+
+    /// Current balances of the payroll tax payable accounts (`2110`–`2150`),
+    /// in code order. Accounts that don't exist yet count as zero and are
+    /// skipped, as are zero balances. Balances are normal-side: positive
+    /// means owed.
+    pub fn payroll_tax_payables(&self) -> Vec<(AccountId, Decimal)> {
+        let mut out = Vec::new();
+        for code in ["2110", "2120", "2130", "2140", "2150"] {
+            let Some(account) = self.chart.find_by_code(code) else {
+                continue;
+            };
+            // The code resolved, so the balance lookup cannot fail.
+            let balance = self.account_balance(account.id).unwrap_or(Decimal::ZERO);
+            if !balance.is_zero() {
+                out.push((account.id, balance));
+            }
+        }
+        out
+    }
+
+    /// Remit payroll taxes: pay the `2110`–`2150` payables out of cash.
+    /// Posts one entry — Dr each payable for its balance, Cr cash for the
+    /// total. Fails with [`LedgerError::NothingToRemit`] when nothing is
+    /// owed, and rejects dates in closed periods.
+    pub fn remit_payroll_taxes(
+        &mut self,
+        date: NaiveDate,
+        cash_account: AccountId,
+    ) -> Result<EntryId, LedgerError> {
+        self.chart
+            .get(cash_account)
+            .ok_or(LedgerError::UnknownAccount(cash_account))?;
+        let payables = self.payroll_tax_payables();
+        let total: Decimal = payables.iter().map(|(_, b)| *b).sum();
+        if total.is_zero() {
+            return Err(LedgerError::NothingToRemit);
+        }
+        if let Some(pid) = self.closed_period_containing(date) {
+            return Err(LedgerError::ClosedPeriod(pid, date.to_string()));
+        }
+        let entry = self.try_create_entry(date, &format!("Payroll tax remittance {date}"))?;
+        for (account, side, amount) in
+            payroll_remit_plan(&payables, cash_account, self.base_currency)
+        {
+            self.add_line(entry, account, side, amount)?;
+        }
+        self.post_entry(entry)?;
+        Ok(entry)
+    }
+
+    /// All payroll runs, in id order.
+    pub fn list_payroll_runs(&self) -> Vec<&PayrollRun> {
+        let mut ids: Vec<PayrollRunId> = self.payroll_runs.keys().copied().collect();
+        ids.sort_unstable();
+        ids.into_iter()
+            .filter_map(|id| self.payroll_runs.get(&id))
+            .collect()
+    }
+
+    /// Look up a payroll run.
+    pub fn get_payroll_run(&self, id: PayrollRunId) -> Option<&PayrollRun> {
+        self.payroll_runs.get(&id)
+    }
+
+    /// Record a payroll run without posting: replay support for journaling
+    /// stores. The run's entry was already rebuilt from its own
+    /// `entry.created` / `entry.line_added` / `entry.posted` events; this
+    /// only restores the run record. The id must be the next payroll run
+    /// id — anything else means the journal and the allocator disagree.
+    #[doc(hidden)]
+    pub fn replay_payroll_run(
+        &mut self,
+        id: PayrollRunId,
+        date: NaiveDate,
+        lines: Vec<PayrollLine>,
+        entry_id: EntryId,
+    ) -> Result<(), LedgerError> {
+        if id != self.next_payroll_run_id {
+            return Err(LedgerError::ReplayIdMismatch(id, self.next_payroll_run_id));
+        }
+        self.next_payroll_run_id += 1;
+        self.payroll_runs.insert(
+            id,
+            PayrollRun {
+                id,
+                date,
+                lines,
+                entry_id,
+            },
+        );
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // Classes
+    // ------------------------------------------------------------------
+
+    /// Add a class (division) for line-level P&L tracking. Returns its id.
+    pub fn add_class(&mut self, name: &str) -> Result<ClassId, LedgerError> {
+        if name.trim().is_empty() {
+            return Err(LedgerError::EmptyClassName);
+        }
+        let id = self.next_class_id;
+        self.next_class_id += 1;
+        self.classes.insert(
+            id,
+            Class {
+                id,
+                name: name.to_string(),
+            },
+        );
+        Ok(id)
+    }
+
+    /// Look up a class.
+    pub fn get_class(&self, id: ClassId) -> Option<&Class> {
+        self.classes.get(&id)
+    }
+
+    /// All classes, in id order.
+    pub fn list_classes(&self) -> Vec<&Class> {
+        let mut ids: Vec<ClassId> = self.classes.keys().copied().collect();
+        ids.sort_unstable();
+        ids.into_iter()
+            .filter_map(|id| self.classes.get(&id))
+            .collect()
+    }
+
+    /// Find a class by name, case-insensitive.
+    pub fn find_class_by_name(&self, name: &str) -> Option<&Class> {
+        self.classes
+            .values()
+            .find(|c| c.name.eq_ignore_ascii_case(name))
+    }
+
+    /// Tag a draft entry's line with a class, or clear it with `None`.
+    /// Draft-only: posted entries are immutable, so their classes are
+    /// frozen at posting time.
+    pub fn set_line_class(
+        &mut self,
+        entry: EntryId,
+        line_index: usize,
+        class_id: Option<ClassId>,
+    ) -> Result<(), LedgerError> {
+        if let Some(cid) = class_id
+            && !self.classes.contains_key(&cid)
+        {
+            return Err(LedgerError::UnknownClass(cid));
+        }
+        let e = self.draft_mut(entry)?;
+        if line_index >= e.lines().len() {
+            return Err(LedgerError::LineIndexOutOfRange(line_index, entry));
+        }
+        e.set_line_class(line_index, class_id);
+        Ok(())
+    }
+
+    /// Record a class without allocating: replay support for journaling
+    /// stores. The id must be the next class id — anything else means the
+    /// journal and the allocator disagree.
+    #[doc(hidden)]
+    pub fn replay_class(&mut self, id: ClassId, name: String) -> Result<(), LedgerError> {
+        if id != self.next_class_id {
+            return Err(LedgerError::ReplayIdMismatch(
+                id as u64,
+                self.next_class_id as u64,
+            ));
+        }
+        self.next_class_id += 1;
+        self.classes.insert(id, Class { id, name });
+        Ok(())
     }
 }

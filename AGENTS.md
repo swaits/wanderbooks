@@ -104,6 +104,9 @@ clone, with status. Rules:
 | `docs/architecture.md` | Crate layout, command pattern, dependency rules |
 | `docs/oracle.md` | How we prove correctness: golden files, property tests, GnuCash diffing |
 | `docs/parity.md` | Feature catalog and the non-regression floor |
+| `docs/capability-parity.md` | Parity vs the GSheet+GDrive system + the cutover rule |
+| `docs/mcp-interface.md` | The MCP tool surface: the primary interface spec |
+| `docs/receipt-store.md` | Blob store + `ledger-store` SQLite persistence spec |
 | `docs/glossary.md` | Debit/credit and friends, for agents new to accounting |
 | `plan/STATUS.md` | Where the project stands right now |
 | `plan/roadmap.md` | Phase plan: semantics → oracle harness → egui app → workflow parity |

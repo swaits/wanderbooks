@@ -566,3 +566,200 @@ pub struct ExportOut {
     /// The exported content.
     pub content: String,
 }
+
+// ---------------------------------------------------------------------------
+// Fixed assets
+// ---------------------------------------------------------------------------
+
+/// Parameters for `books.register_asset`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RegisterAssetParams {
+    /// What it is, e.g. "2023 Sprinter van".
+    pub description: String,
+    /// Purchase date, YYYY-MM-DD. Depreciation starts here.
+    pub purchase_date: String,
+    /// Capitalized cost, decimal string, e.g. "60000.00".
+    pub cost: String,
+    /// Expected residual value, decimal string. Defaults to "0".
+    pub salvage_value: Option<String>,
+    /// Useful life in months, at least 1.
+    pub useful_life_months: u32,
+    /// Cost account (asset), id or code.
+    pub cost_account: String,
+    /// Accumulated depreciation account (asset, contra), id or code.
+    pub accum_depr_account: String,
+    /// Depreciation expense account, id or code.
+    pub expense_account: String,
+}
+
+/// Result of `books.register_asset`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct RegisterAssetOut {
+    /// The new asset's id.
+    pub asset_id: u64,
+}
+
+/// One month of a depreciation schedule.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ScheduleLineOut {
+    /// Calendar month, "YYYY-MM".
+    pub period: String,
+    /// Depreciation for the month, decimal string.
+    pub amount: String,
+    /// Accumulated depreciation through this month, decimal string.
+    pub accumulated: String,
+    /// Book value after this month, decimal string.
+    pub book_value: String,
+}
+
+/// Parameters for `books.asset_schedule`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AssetScheduleParams {
+    /// Asset id.
+    pub asset_id: u64,
+    /// Run the schedule through this date, YYYY-MM-DD. Defaults to the end
+    /// of the asset's depreciable life.
+    pub through: Option<String>,
+}
+
+/// Result of `books.asset_schedule`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct AssetScheduleOut {
+    /// Asset id.
+    pub asset_id: u64,
+    /// Asset description.
+    pub description: String,
+    /// Cost, decimal string.
+    pub cost: String,
+    /// Salvage value, decimal string.
+    pub salvage_value: String,
+    /// Useful life in months.
+    pub useful_life_months: u32,
+    /// "active" or "disposed".
+    pub status: String,
+    /// Month-by-month schedule.
+    pub schedule: Vec<ScheduleLineOut>,
+}
+
+/// One asset in `books.list_assets`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct AssetSummary {
+    /// Asset id.
+    pub asset_id: u64,
+    /// Asset description.
+    pub description: String,
+    /// Purchase date, YYYY-MM-DD.
+    pub purchase_date: String,
+    /// Cost, decimal string.
+    pub cost: String,
+    /// Useful life in months.
+    pub useful_life_months: u32,
+    /// "active" or "disposed".
+    pub status: String,
+    /// Accumulated depreciation through today, decimal string.
+    pub accumulated: String,
+    /// Book value today, decimal string.
+    pub book_value: String,
+}
+
+/// Result of `books.list_assets`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ListAssetsOut {
+    /// All registered assets.
+    pub assets: Vec<AssetSummary>,
+}
+
+/// Parameters for `books.run_depreciation`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RunDepreciationParams {
+    /// Calendar month, "YYYY-MM".
+    pub period: String,
+    /// Asset id. Omit to run depreciation for every active asset.
+    pub asset_id: Option<u64>,
+}
+
+/// One asset's depreciation run.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct DepreciationRunOut {
+    /// Asset id.
+    pub asset_id: u64,
+    /// Asset description.
+    pub description: String,
+    /// Calendar month posted.
+    pub period: String,
+    /// Amount posted, decimal string.
+    pub amount: String,
+    /// The posted entry's id.
+    pub entry_id: u64,
+    /// True when this period was already posted (idempotent no-op).
+    pub already_posted: bool,
+}
+
+/// Result of `books.run_depreciation`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct RunDepreciationOut {
+    /// One result per asset run.
+    pub runs: Vec<DepreciationRunOut>,
+    /// Assets skipped by a run-all because the period is outside their
+    /// depreciable life.
+    pub skipped: Vec<SkippedDepreciation>,
+}
+
+/// An asset skipped by a run-all depreciation.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SkippedDepreciation {
+    /// Asset id.
+    pub asset_id: u64,
+    /// Asset description.
+    pub description: String,
+    /// Why it was skipped.
+    pub reason: String,
+}
+
+/// Parameters for `books.dispose_asset`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DisposeAssetParams {
+    /// Asset id.
+    pub asset_id: u64,
+    /// Disposal date, YYYY-MM-DD.
+    pub date: String,
+    /// Cash (or receivable) received, decimal string.
+    pub proceeds: String,
+    /// Account receiving the proceeds (asset, e.g. bank), id or code.
+    pub proceeds_account: String,
+    /// Gain/loss account (revenue or expense), id or code.
+    pub gain_loss_account: String,
+    /// Attachment ids (filed via books.file_document, e.g. the bill of
+    /// sale) to link to the disposal entry on posting. Required when the
+    /// receipt policy applies.
+    pub receipt_attachment_ids: Option<Vec<u64>>,
+    /// Confirm the disposal. Without confirmed=true returns a preview and
+    /// posts nothing.
+    pub confirmed: Option<bool>,
+}
+
+/// Result of `books.dispose_asset`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct DisposeAssetOut {
+    /// "preview" or "posted".
+    pub status: String,
+    /// Asset id.
+    pub asset_id: u64,
+    /// The disposal entry's id (0 in preview).
+    pub entry_id: u64,
+    /// Accumulated depreciation being cleared, decimal string.
+    pub accumulated: String,
+    /// Book value at disposal, decimal string.
+    pub book_value: String,
+    /// Proceeds, decimal string.
+    pub proceeds: String,
+    /// Gain (positive) or loss (negative), decimal string.
+    pub gain_loss: String,
+    /// Depreciation auto-posted for the final partial period, decimal string
+    /// ("0" when the period was already posted).
+    pub final_depreciation: String,
+    /// The disposal entry's lines with resulting balances.
+    pub lines: Vec<PreviewLine>,
+    /// True when posting requires a receipt (bill of sale) first.
+    pub receipt_required: bool,
+}

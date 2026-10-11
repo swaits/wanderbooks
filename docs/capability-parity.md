@@ -16,13 +16,13 @@ Statuses: `covered` (built and tested), `partial` (built, known gaps listed),
 | 2 | Chart of accounts | engine + `books.chart` (with live balances) | covered |
 | 3 | Live P&L tab | engine + `books.profit_and_loss` | covered |
 | 4 | Live Balance Sheet tab | engine + `books.balance_sheet` | covered |
-| 5 | Live Cash Flow tab | engine R-FUTURE-3 | future |
+| 5 | Live Cash Flow tab | engine `cash_flow` (indirect) + `books.cash_flow` | covered |
 | 6 | Transaction Journal as append-only log | engine posting log + `books.search_entries` | covered |
 | 7 | Receipt storage in Drive | blob store + `books.attach_receipt` / `link_receipt` | covered |
 | 8 | Document filing by category (01 Formation / 02 Legal / 03 Tax / 04 Accounting) | `books.file_document` | covered |
 | 9 | Ad-hoc questions ("what did we spend on X?") | `search_entries` + reports; the AI itself is the query layer | covered |
 | 10 | Human review of what the assistant recorded | `books.digest` | covered |
-| 11 | CPA-ready export of the books | `books.export` (csv/json now; xlsx/iif planned) | partial |
+| 11 | CPA-ready export of the books | `books.export` (csv/json/xlsx/iif; xlsx is base64) | covered |
 | 12 | Company email filing (every company email → Drive folder) | out of books scope; the existing mail-filing automation keeps running unchanged | — |
 
 ## Notes

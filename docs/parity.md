@@ -22,11 +22,11 @@ No other statuses.
 | Reversing entries | Reverse transaction | done | linked via `reversal_of` |
 | Canonical report snapshots (JSON) | — (our oracle format) | done | `reports::snapshot` |
 | Fixed-asset register + straight-line depreciation | Fixed Asset register | done | `assets.rs`; golden-covered schedule; idempotent runs; disposal with gain/loss |
-| Cash flow statement (indirect) | Reports → Cash Flow | todo | R-FUTURE-3 |
+| Cash flow statement (indirect) | Reports → Cash Flow | done | R-FUTURE-3 |
 | Period close / retained earnings | Close books | todo | R-FUTURE-2 |
 | Multi-currency + FX translation | Multi-currency accts | todo | R-FUTURE-1 |
-| QuickBooks CSV import (bank txns, chart of accounts) | Banking → Upload | todo | R-FUTURE-4 |
-| QuickBooks IIF + XLSX export | Export / reports | todo | R-FUTURE-4 |
+| QuickBooks CSV import (bank txns, chart of accounts) | Banking → Upload | done | R-FUTURE-4 |
+| QuickBooks IIF + XLSX export | Export / reports | done | R-FUTURE-4 |
 | A/R invoices + payments + aging | Business → Invoices | todo | R-FUTURE-5 |
 | A/P bills + payments + aging | Business → Bills | todo | R-FUTURE-5 |
 | Budgets | Budgets | todo | R-FUTURE-6 |

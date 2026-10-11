@@ -54,6 +54,21 @@ impl Mcp {
         resp
     }
 
+    fn request_raw(&mut self, method: &str, params: Value) -> Value {
+        let id = self.next_id;
+        self.next_id += 1;
+        let msg = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+        writeln!(self.stdin, "{msg}").unwrap();
+        self.stdin.flush().unwrap();
+        let mut line = String::new();
+        self.stdout
+            .read_line(&mut line)
+            .expect("read response line");
+        let resp: Value = serde_json::from_str(&line).expect("parse response");
+        assert_eq!(resp["id"], id, "id mismatch in {resp}");
+        resp
+    }
+
     fn notify(&mut self, method: &str) {
         let msg = json!({"jsonrpc": "2.0", "method": method, "params": {}});
         writeln!(self.stdin, "{msg}").unwrap();
@@ -119,7 +134,7 @@ fn mcp_end_to_end_over_stdio() {
     // Tool listing: 23 narrow tools, chart is read-only.
     let list = mcp.request("tools/list", json!({}));
     let tools = list["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 23, "expected 23 tools, got {}", tools.len());
+    assert_eq!(tools.len(), 27, "expected 27 tools, got {}", tools.len());
     let chart = tools.iter().find(|t| t["name"] == "books.chart").unwrap();
     assert_eq!(chart["annotations"]["readOnlyHint"], true);
     assert!(
@@ -189,7 +204,9 @@ fn mcp_end_to_end_over_stdio() {
         "books.post_entry",
         json!({"entry_id": entry_id, "confirmed": true}),
     );
-    assert!(err.contains("receipt_required"), "got: {err}");
+    let err_json: serde_json::Value = serde_json::from_str(&err).unwrap();
+    assert_eq!(err_json["code"], "receipt_required");
+    assert_eq!(err_json["remedy_tool"], "books.attach_receipt");
 
     // Attach the receipt, then the confirmed post succeeds.
     let png = base64_like(b"fake-png-bytes");
@@ -374,7 +391,9 @@ fn mcp_assets_end_to_end_over_stdio() {
             "confirmed": true,
         }),
     );
-    assert!(err.contains("receipt_required"), "got: {err}");
+    let err_json: serde_json::Value = serde_json::from_str(&err).unwrap();
+    assert_eq!(err_json["code"], "receipt_required");
+    assert_eq!(err_json["remedy_tool"], "books.file_document");
 
     // File the bill of sale, then confirm with its attachment id.
     let bill = mcp.call(
@@ -423,6 +442,153 @@ fn mcp_assets_end_to_end_over_stdio() {
     assert_eq!(tb["balanced"], true);
 }
 
+#[test]
+fn mcp_receipt_policy_rejects_split_entries() {
+    let dir = test_dir("split");
+    let mut mcp = Mcp::spawn(&dir);
+    let init = mcp.request(
+        "initialize",
+        json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+        }),
+    );
+    assert_eq!(init["result"]["serverInfo"]["name"], "wanderbooks");
+    mcp.notify("notifications/initialized");
+
+    for (code, name, typ) in [("1000", "Cash", "asset"), ("6000", "Meals", "expense")] {
+        mcp.call(
+            "books.add_account",
+            json!({"code": code, "name": name, "account_type": typ}),
+        );
+    }
+    // Post a $25 entry (at the threshold, no receipt needed) and attach a
+    // receipt to it so the setup is clean.
+    let e1 = mcp.call(
+        "books.draft_entry",
+        json!({"date": "2026-03-01", "description": "Client dinner"}),
+    );
+    let id1 = e1["entry_id"].as_u64().unwrap();
+    mcp.call(
+        "books.add_line",
+        json!({"entry_id": id1, "account": "6000", "side": "debit", "amount": "25.00"}),
+    );
+    mcp.call(
+        "books.add_line",
+        json!({"entry_id": id1, "account": "1000", "side": "credit", "amount": "25.00"}),
+    );
+    let p1 = mcp.call(
+        "books.post_entry",
+        json!({"entry_id": id1, "confirmed": true}),
+    );
+    assert_eq!(p1["status"], "posted");
+
+    // A second $25 entry, same day, same description, same accounts: the
+    // group totals $50, so the policy bites.
+    let e2 = mcp.call(
+        "books.draft_entry",
+        json!({"date": "2026-03-01", "description": "Client dinner"}),
+    );
+    let id2 = e2["entry_id"].as_u64().unwrap();
+    mcp.call(
+        "books.add_line",
+        json!({"entry_id": id2, "account": "6000", "side": "debit", "amount": "25.00"}),
+    );
+    mcp.call(
+        "books.add_line",
+        json!({"entry_id": id2, "account": "1000", "side": "credit", "amount": "25.00"}),
+    );
+    let preview = mcp.call("books.post_entry", json!({"entry_id": id2}));
+    assert_eq!(preview["receipt_required"], true);
+    assert_eq!(preview["split_detected"].as_array().unwrap().len(), 1);
+    assert_eq!(preview["split_detected"][0], id1);
+
+    // Confirming without a receipt fails with the structured error.
+    let err = mcp.call_err(
+        "books.post_entry",
+        json!({"entry_id": id2, "confirmed": true}),
+    );
+    let err_json: serde_json::Value = serde_json::from_str(&err).unwrap();
+    assert_eq!(err_json["code"], "receipt_required");
+    assert_eq!(err_json["split_group"].as_array().unwrap().len(), 1);
+
+    // A different description is not a split: posts fine.
+    let e3 = mcp.call(
+        "books.draft_entry",
+        json!({"date": "2026-03-01", "description": "Taxi to airport"}),
+    );
+    let id3 = e3["entry_id"].as_u64().unwrap();
+    mcp.call(
+        "books.add_line",
+        json!({"entry_id": id3, "account": "6000", "side": "debit", "amount": "25.00"}),
+    );
+    mcp.call(
+        "books.add_line",
+        json!({"entry_id": id3, "account": "1000", "side": "credit", "amount": "25.00"}),
+    );
+    let p3 = mcp.call(
+        "books.post_entry",
+        json!({"entry_id": id3, "confirmed": true}),
+    );
+    assert_eq!(p3["status"], "posted");
+}
+
+#[test]
+fn mcp_resources_over_stdio() {
+    let dir = test_dir("resources");
+    let mut mcp = Mcp::spawn(&dir);
+    let init = mcp.request(
+        "initialize",
+        json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+        }),
+    );
+    assert_eq!(init["result"]["serverInfo"]["name"], "wanderbooks");
+    // Resources are advertised.
+    assert_eq!(init["result"]["capabilities"]["resources"].is_null(), false);
+    mcp.notify("notifications/initialized");
+
+    mcp.call(
+        "books.add_account",
+        json!({"code": "1000", "name": "Cash", "account_type": "asset"}),
+    );
+
+    // List resources.
+    let list = mcp.request("resources/list", json!({}));
+    let uris: Vec<&str> = list["result"]["resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["uri"].as_str().unwrap())
+        .collect();
+    assert!(uris.contains(&"books://chart"));
+    assert!(uris.contains(&"books://reports/trial-balance"));
+    assert!(uris.contains(&"books://reports/balance-sheet"));
+    assert!(uris.contains(&"books://reports/profit-and-loss"));
+    assert!(uris.contains(&"books://digest"));
+
+    // Read the chart and trial balance as resources.
+    let chart = mcp.request("resources/read", json!({"uri": "books://chart"}));
+    let text = chart["result"]["contents"][0]["text"].as_str().unwrap();
+    let chart_json: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(chart_json["accounts"].as_array().unwrap().len(), 1);
+
+    let tb = mcp.request(
+        "resources/read",
+        json!({"uri": "books://reports/trial-balance"}),
+    );
+    let tb_text = tb["result"]["contents"][0]["text"].as_str().unwrap();
+    let tb_json: serde_json::Value = serde_json::from_str(tb_text).unwrap();
+    assert_eq!(tb_json["balanced"], true);
+
+    // Unknown resource → JSON-RPC error.
+    let resp = mcp.request_raw("resources/read", json!({"uri": "books://nope"}));
+    assert!(resp.get("error").is_some());
+}
+
 fn base64_like(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();
@@ -440,4 +606,38 @@ fn base64_like(bytes: &[u8]) -> String {
         }
     }
     out
+}
+
+#[test]
+fn mcp_import_export_over_stdio() {
+    let dir = test_dir("import_export");
+    let mut mcp = Mcp::spawn(&dir);
+    mcp.request(
+        "initialize",
+        json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+        }),
+    );
+    mcp.notify("notifications/initialized");
+
+    let chart = mcp.call(
+        "books.import_chart_csv",
+        json!({"csv_text": "code,name,type,parent_code\n1000,Cash,asset,\n4000,Revenue,revenue,\n"}),
+    );
+    assert_eq!(chart["count"], 2);
+
+    let iif = mcp.call(
+        "books.export",
+        json!({"format": "iif", "report": "journal"}),
+    );
+    assert!(iif["content"].as_str().unwrap().contains("!TRNS"));
+
+    let xlsx = mcp.call(
+        "books.export",
+        json!({"format": "xlsx", "report": "trial_balance"}),
+    );
+    assert_eq!(xlsx["content_encoding"], "base64");
+    assert!(xlsx["content"].as_str().unwrap().starts_with("UEs"));
 }

@@ -27,8 +27,14 @@ pub struct JournalLine {
     pub seq: u64,
     /// UTC timestamp, RFC 3339. Recorded, never trusted for ordering.
     pub ts: String,
-    /// Event type: `account.added`, `entry.created`, `entry.posted`,
-    /// `receipt.attached`, `receipt.linked`, `document.filed`.
+    /// Event type: `account.added`, `entry.created`, `entry.line_added`,
+    /// `entry.posted`, `entry.reversed`, `entry.line_class_set`,
+    /// `receipt.attached`, `receipt.linked`, `document.filed`,
+    /// `asset.registered`, `asset.depreciation_posted`, `asset.disposed`,
+    /// `period.created`, `period.closed`, `line.cleared`, `customer.added`,
+    /// `vendor.added`, `invoice.created`, `bill.created`,
+    /// `invoice.payment_received`, `bill.paid`, `fx.rate_set`,
+    /// `payroll.run`, `class.added`, `store.created`.
     #[serde(rename = "type")]
     pub line_type: String,
     /// The full domain facts. Everything a replay needs.

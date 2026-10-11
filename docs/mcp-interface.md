@@ -80,6 +80,10 @@ below.
   `reports::snapshot` trial-balance section).
 - `books.balance_sheet {}` → canonical JSON.
 - `books.profit_and_loss {}` → canonical JSON.
+- `books.cash_flow { start?, end?, cash_accounts: ["1000"], financing_accounts? }`
+  → indirect-method cash flow statement. `cash_accounts` are the reconciling
+  accounts (required); the three sections always sum to their net change.
+  Disposal gains/losses move from operating to investing automatically.
 - `books.digest { since: "2026-10-01" }`
   → `{ entries_posted: [...], totals_by_account: [...] }`. The human review
   surface: "what did the AI do with my books lately." The digest is the
@@ -137,33 +141,65 @@ posting.
   receipt checklist (`attached: [...]`, `required_but_missing: bool`), so the
   human sees it before confirming.
 - **Hard error.** Confirming a posting that violates the policy fails with a
-  typed error: `{ "error": "receipt_required", "entry_id": …, "missing": …,
-  "policy": "require_receipts_above = 25.00 USD" }`. The agent's job then is
-  to get the receipt attached (ask the human for it) and re-confirm — not to
-  shrink the amount or split the entry to dodge the threshold. The tool
-  description says this explicitly; gaming the policy is a correctness
+  structured, machine-readable error (JSON in the tool-error string):
+  `{ "code": "receipt_required", "message": "…", "entry_id": 5,
+  "debits": "100.00", "policy": "strictly greater than $25.00",
+  "remedy_tool": "books.attach_receipt",
+  "remedy_hint": "…" }`. Clients match on `code`, not prose. The agent's job
+  then is to get the receipt attached (ask the human for it) and re-confirm
+  — not to shrink the amount or split the entry to dodge the threshold. The
+  tool description says this explicitly; gaming the policy is a correctness
   violation, and the append-only audit log would show it anyway.
+- **Anti-splitting.** Posting an entry triggers a split check: posted
+  entries on the same date with the same normalized description and debit
+  accounts are grouped, and if the group total exceeds the threshold while
+  the entry alone does not, a receipt is required. The preview surfaces
+  `split_detected: [...]`, and the error names the group. Same-day,
+  same-description, same-accounts is the signature; recurring spending
+  spread across days is not flagged.
 - **Below the threshold**, receipts are still expected per the operating
   contract ("a material entry without its source document is incomplete")
   but not hard-required — the preview checklist keeps them visible.
 
 ## Tools — export
 
-- `books.export { format: "csv" | "json", scope: "journal" | "trial-balance" |
-  "profit-and-loss" | "balance-sheet" | "chart" }` → `{ content_base64,
-  file_name }`. CPA-ready output. `xlsx` and `iif` (QuickBooks Desktop
-  journal entries) arrive with R-FUTURE-4 via the `ledger-export` crate.
+- `books.export { format: "csv" | "json" | "xlsx" | "iif", report: "journal" |
+  "trial_balance" | "profit_and_loss" | "balance_sheet" | "cash_flow" }` →
+  `{ content, content_encoding? }`. CPA-ready output. `xlsx` is base64-encoded;
+  `iif` is journal-only (QuickBooks Desktop). Cash flow needs `cash_accounts`.
+
+## Tools — import
+
+- `books.import_bank_csv { csv_text, bank_account_code, default_offset_code,
+  rules? }` → creates one draft per transaction (QBO upload layout).
+  `rules` maps description substrings to account codes.
+- `books.import_chart_csv { csv_text }` → creates accounts from
+  `code,name,type,parent_code` CSV. All-or-nothing.
+- `books.import_local_file { path, category: "receipt" | "document", ... }`
+  → imports a file from the server's filesystem. The Drive backfill path:
+  the agent downloads from Google Drive via the CLI to a temp path, then
+  calls this. Keeps Drive credentials out of the server.
+
+## Transports
+
+- **stdio** (default): `ledger-mcp --data-dir PATH`. For local agents.
+- **Streamable HTTP**: `ledger-mcp --data-dir PATH --http 127.0.0.1:8080`.
+  Serves MCP at `http://127.0.0.1:8080/mcp` via rmcp's tower integration.
+  For network clients; bind to loopback unless you know what you're doing.
 
 ## Resources (read-only)
+
+Hand-rolled on `ServerHandler` (rmcp 3.x has no resource macros):
+`list_resources` advertises, `read_resource` renders.
 
 - `books://chart`
 - `books://reports/trial-balance`, `books://reports/balance-sheet`,
   `books://reports/profit-and-loss`
 - `books://digest?since=2026-10-01`
-- `books://receipts/{id}` — receipt bytes with metadata
+- `books://receipts/{id}` — receipt metadata + base64 bytes
 
 Resources exist so read-only clients (dashboards, the future read-only GUI,
-auditors) never need tool credentials.
+auditors) never need tool credentials. Tested end-to-end over stdio.
 
 ## The agent operating contract
 

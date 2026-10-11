@@ -1,9 +1,11 @@
-# STATUS — 2026-10-10
+# STATUS — 2026-10-10 (evening: asset slice + testing initiative)
 
 ## Where we are
 
 Phase 1 (semantics core) is done and green. The first storage + MCP slice
-is now built, tested, and green too.
+is built, tested, and green. The **fixed-asset slice** is built, tested,
+and green. A testing initiative (property + mutation + fuzz) is underway
+on `ledger-core`.
 
 **Done:**
 - Repo `swaits/wanderbooks` created on git.swaits.com (private).
@@ -26,20 +28,37 @@ is now built, tested, and green too.
   `rebuild` drops SQLite and replays; a missing database heals on open.
   7 tests green: round-trip, tamper detection, torn-tail truncation,
   rebuild, blob dedup/corruption detection, unbalanced-post rejection.
-- `ledger-mcp` 0.1.0: stdio server on official rmcp 3.5 (18 narrow typed
+- `ledger-mcp` 0.1.0: stdio server on official rmcp 3.5 (23 narrow typed
   tools, amounts as decimal strings, `initialize.instructions` carrying the
   agent operating contract). Draft → add lines → preview → confirmed post;
   server-side receipt policy (strictly greater than $25, per-account
   overrides, typed `receipt_required` rejection); digest; search; CSV/JSON
-  export; period P&L and as-of balance sheet. End-to-end stdio protocol test
-  green (initialize → 18 tools → draft → preview → receipt_required →
-  attach → post → reports → digest → reverse).
-- 22 tests green workspace-wide; `cargo fmt` clean; clippy clean except one
+  export; period P&L and as-of balance sheet; fixed-asset tools (register,
+  schedule, list, run-depreciation, dispose with preview). End-to-end stdio
+  protocol tests green (initialize → tools → draft → preview →
+  receipt_required → attach → post → reports → digest → reverse; and a full
+  asset flow: register → schedule → idempotent runs → disposal preview →
+  receipt_required → bill-of-sale → confirmed disposal → gain posted).
+- **Fixed assets** (`ledger-core` + `ledger-store` + `ledger-mcp`):
+  fixed-asset register (description, purchase date, cost, salvage, useful
+  life, linked cost/accumulated-depreciation/expense accounts), straight-line
+  book depreciation with day-prorated partial months and a final-month
+  true-up so the lifetime total is exactly (cost − salvage), idempotent
+  monthly runs, disposal with auto-posted final depreciation and gain/loss.
+  Tax depreciation stays with the CPA. Tests: 10 asset unit tests
+  (ledger-core), 6 store tests, 7 property tests, MCP e2e.
+- **Testing initiative** (in progress): `proptest` property suite on
+  `ledger-core` (trial balance always balances, A = L + E, reversals restore
+  zero, posted-entry immutability, JSON round-trip, depreciation exactness —
+  the last caught a real month-length-drift bug, fixed with the final-month
+  true-up); `cargo-mutants` run on `ledger-core` (228 mutants); `cargo-fuzz`
+  targets (journal-line parsing, entry validation, op sequences) scaffolded.
+- 40+ tests green workspace-wide; `cargo fmt` clean; clippy clean except one
   pre-existing phase-1 style lint on a public engine signature.
 - Docs: AGENTS.md (operating manual), requirements, architecture, oracle
-  design, parity catalog (floor: 6 done), glossary, mcp-interface,
-  receipt-store (journal design), capability-parity (10 of 12 rows covered).
-  Plan: this file + roadmap.
+  design, parity catalog (floor: 10 done), glossary, mcp-interface (incl. the
+  5 asset tools), receipt-store (journal design), capability-parity
+  (10 of 12 rows covered). Plan: this file + roadmap.
 
 **In progress:** nothing — the next arcs are queued below, unstarted.
 

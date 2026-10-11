@@ -7,22 +7,22 @@ the Transaction Journal) together with the Drive folder, operated through an
 AI assistant. Every capability below must be reachable through MCP tools
 before the sheet retires.
 
-Statuses: `covered` (the engine already does it), `specced` (designed in
-this phase, not yet built), `future` (on the engine roadmap).
+Statuses: `covered` (built and tested), `partial` (built, known gaps listed),
+`specced` (designed, not yet built), `future` (on the roadmap).
 
 | # | Today's capability | wanderbooks equivalent | Status |
 |---|---|---|---|
-| 1 | Record a double-entry transaction (Transaction Journal row) | `books.draft_entry` / `add_line` / `post_entry` (engine: `Ledger`) | specced |
-| 2 | Chart of accounts | engine + `books.chart` (with live balances) | specced |
-| 3 | Live P&L tab | engine + `books.profit_and_loss` | specced |
-| 4 | Live Balance Sheet tab | engine + `books.balance_sheet` | specced |
+| 1 | Record a double-entry transaction (Transaction Journal row) | `books.draft_entry` / `add_line` / `post_entry` (engine: `Ledger`) | covered |
+| 2 | Chart of accounts | engine + `books.chart` (with live balances) | covered |
+| 3 | Live P&L tab | engine + `books.profit_and_loss` | covered |
+| 4 | Live Balance Sheet tab | engine + `books.balance_sheet` | covered |
 | 5 | Live Cash Flow tab | engine R-FUTURE-3 | future |
-| 6 | Transaction Journal as append-only log | engine posting log + `books.search_entries` | specced |
-| 7 | Receipt storage in Drive | blob store + `books.attach_receipt` / `link_receipt` | specced |
-| 8 | Document filing by category (01 Formation / 02 Legal / 03 Tax / 04 Accounting) | `books.file_document` | specced |
-| 9 | Ad-hoc questions ("what did we spend on X?") | `search_entries` + reports; the AI itself is the query layer | specced |
-| 10 | Human review of what the assistant recorded | `books.digest` | specced |
-| 11 | CPA-ready export of the books | `books.export` (csv/json now; xlsx/iif planned) | specced |
+| 6 | Transaction Journal as append-only log | engine posting log + `books.search_entries` | covered |
+| 7 | Receipt storage in Drive | blob store + `books.attach_receipt` / `link_receipt` | covered |
+| 8 | Document filing by category (01 Formation / 02 Legal / 03 Tax / 04 Accounting) | `books.file_document` | covered |
+| 9 | Ad-hoc questions ("what did we spend on X?") | `search_entries` + reports; the AI itself is the query layer | covered |
+| 10 | Human review of what the assistant recorded | `books.digest` | covered |
+| 11 | CPA-ready export of the books | `books.export` (csv/json now; xlsx/iif planned) | partial |
 | 12 | Company email filing (every company email → Drive folder) | out of books scope; the existing mail-filing automation keeps running unchanged | — |
 
 ## Notes

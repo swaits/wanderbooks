@@ -1,0 +1,14 @@
+[package]
+name = "ledger-import"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+ledger-core = { path = "../ledger-core" }
+csv = "1"
+rust_decimal = "1"
+chrono = "0.4"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+rust_xlsxwriter = "0.90"

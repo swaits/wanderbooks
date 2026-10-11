@@ -5,7 +5,7 @@
 //! is the current version.
 
 /// Current schema version.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// Migrations, in order. `MIGRATIONS[i]` migrates from version `i` to `i+1`.
 pub const MIGRATIONS: &[&str] = &[
@@ -89,5 +89,60 @@ CREATE TABLE IF NOT EXISTS asset_depreciation(
   amount TEXT NOT NULL,
   PRIMARY KEY (asset_id, period)
 );
+"#,
+    r#"
+-- v3: accounting periods, A/R + A/P, cleared-line flags, FX rates, and
+-- foreign-currency columns on lines. Amounts are TEXT, never REAL.
+CREATE TABLE IF NOT EXISTS periods(
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  start TEXT NOT NULL,
+  end TEXT NOT NULL,
+  status TEXT NOT NULL,
+  closing_entry INTEGER NULL
+);
+CREATE TABLE IF NOT EXISTS customers(
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS vendors(
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS invoices(
+  id INTEGER PRIMARY KEY,
+  customer_id INTEGER NOT NULL,
+  date TEXT NOT NULL,
+  due_date TEXT NOT NULL,
+  lines_json TEXT NOT NULL,
+  amount_paid TEXT NOT NULL,
+  status TEXT NOT NULL,
+  entry_id INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS bills(
+  id INTEGER PRIMARY KEY,
+  vendor_id INTEGER NOT NULL,
+  date TEXT NOT NULL,
+  due_date TEXT NOT NULL,
+  lines_json TEXT NOT NULL,
+  amount_paid TEXT NOT NULL,
+  status TEXT NOT NULL,
+  entry_id INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS cleared_lines(
+  entry_id INTEGER NOT NULL,
+  line_index INTEGER NOT NULL,
+  PRIMARY KEY (entry_id, line_index)
+);
+CREATE TABLE IF NOT EXISTS fx_rates(
+  currency TEXT NOT NULL,
+  date TEXT NOT NULL,
+  rate TEXT NOT NULL,
+  PRIMARY KEY (currency, date)
+);
+CREATE INDEX IF NOT EXISTS idx_invoices_customer ON invoices(customer_id);
+CREATE INDEX IF NOT EXISTS idx_bills_vendor ON bills(vendor_id);
+ALTER TABLE lines ADD COLUMN foreign_currency TEXT;
+ALTER TABLE lines ADD COLUMN foreign_amount TEXT;
 "#,
 ];

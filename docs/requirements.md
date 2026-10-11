@@ -50,6 +50,17 @@ requirement conflict, the requirement wins.
 - **R-12 — Command surface.** All mutations go through `Ledger` methods.
   There is no second way to change the books.
 
+## Receipt policy (MCP phase)
+
+- **R-13 — Receipt enforcement.** The MCP layer (not the engine — the engine
+  stays policy-free) enforces a configurable receipt policy: postings at or
+  above a threshold (`require_receipts_above`, default `"25.00"` in base
+  currency) must have at least one attached receipt, with per-account
+  overrides. `post_entry` with `confirmed: true` refuses with a typed
+  `receipt_required` error otherwise. The draft preview always includes the
+  receipt checklist (`attached: [...]`, `required_but_missing: bool`), so the
+  human sees it before confirming. Full spec: `docs/mcp-interface.md`.
+
 ## Explicitly future work
 
 - **R-FUTURE-1 — Multi-currency.** Per-account currencies, entry-level FX
@@ -57,7 +68,12 @@ requirement conflict, the requirement wins.
 - **R-FUTURE-2 — Periods and close.** Fiscal years/periods, closing entries
   that move P&L balances to retained earnings, locked periods.
 - **R-FUTURE-3 — Cash flow statement** (indirect method).
-- **R-FUTURE-4 — GnuCash XML import** (read-only; feeds the oracle harness).
+- **R-FUTURE-4 — QuickBooks-compatible import/export.** Import: CSV bank/
+  credit-card transactions (QBO's upload layout) and CSV chart of accounts.
+  Export: CSV and XLSX reports, IIF journal entries (for QuickBooks Desktop,
+  which many CPAs still run). GnuCash XML is deliberately *not* a product
+  format — GnuCash remains the behavioral oracle (see `docs/oracle.md`),
+  not a file-format target.
 - **R-FUTURE-5 — A/R and A/P workflows** (invoices, bills, payments, aging).
 - **R-FUTURE-6 — Budgets and scheduled transactions.**
 

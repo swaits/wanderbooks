@@ -471,3 +471,165 @@ fn entry_movements_sum_to_zero() {
     let total: Decimal = m.values().copied().sum();
     assert_eq!(total, Decimal::ZERO);
 }
+
+// ---------------------------------------------------------------------------
+// Cash flow statement (indirect method).
+// ---------------------------------------------------------------------------
+
+use ledger_core::NewAsset;
+use ledger_core::reports::{CashFlowParams, cash_flow};
+
+fn cash_flow_params(cash: AccountId) -> CashFlowParams {
+    CashFlowParams {
+        start: date(1),
+        end: date(31),
+        cash_accounts: vec![cash],
+        financing_accounts: vec![],
+    }
+}
+
+#[test]
+fn cash_flow_reconciles_to_change_in_cash() {
+    let c = fixture_company();
+    let cf = cash_flow(&c.ledger, &cash_flow_params(c.cash)).unwrap();
+
+    // The three sections must sum to the net change in cash. This is the
+    // accounting law the statement exists to uphold.
+    let sections = cf.cash_from_operations + cf.cash_from_investing + cf.cash_from_financing;
+    assert_eq!(sections, cf.net_change_in_cash);
+    assert_eq!(cf.cash_ending - cf.cash_beginning, cf.net_change_in_cash);
+
+    // Hand-computed from the fixture:
+    // Cash: +10,000 (invest) - 2,500 (equipment) - 800 (rent) + 1,500 (collect)
+    //     = 8,200. Beginning 0.
+    assert_eq!(cf.cash_beginning, Decimal::ZERO);
+    assert_eq!(cf.cash_ending, Decimal::new(820000, 2));
+    assert_eq!(cf.net_change_in_cash, Decimal::new(820000, 2));
+
+    // Net income: 4,000 revenue - 800 rent = 3,200.
+    assert_eq!(cf.net_income, Decimal::new(320000, 2));
+    // No depreciation: the fixture's equipment is not a registered asset.
+    assert_eq!(cf.depreciation, Decimal::ZERO);
+
+    // Operating: 3,200 net income
+    //   - 2,500 increase in AR (4,000 billed - 1,500 collected)
+    //   - 2,500 equipment purchase (not a registered asset: working capital)
+    //   + 10,000 owner investment is equity -> financing, not operating.
+    // Financing: +10,000 owner contribution.
+    // => operating = 3,200 - 2,500 - 2,500 = -1,800
+    // => investing = 0, financing = 10,000. Sum = 8,200. Reconciles.
+    assert_eq!(cf.cash_from_operations, Decimal::new(-180000, 2));
+    assert_eq!(cf.cash_from_investing, Decimal::ZERO);
+    assert_eq!(cf.cash_from_financing, Decimal::new(1000000, 2));
+}
+
+#[test]
+fn cash_flow_with_registered_asset_and_disposal() {
+    let mut ledger = Ledger::new(Currency::USD);
+    let cash = ledger
+        .add_account("1000", "Cash", AccountType::Asset, None, false)
+        .unwrap();
+    let cost = ledger
+        .add_account("1500", "Equipment at cost", AccountType::Asset, None, false)
+        .unwrap();
+    let accum = ledger
+        .add_account(
+            "1501",
+            "Accum. depr. — equip.",
+            AccountType::Asset,
+            None,
+            false,
+        )
+        .unwrap();
+    let depr_exp = ledger
+        .add_account(
+            "6000",
+            "Depreciation expense",
+            AccountType::Expense,
+            None,
+            false,
+        )
+        .unwrap();
+    let revenue = ledger
+        .add_account("4000", "Service Revenue", AccountType::Revenue, None, false)
+        .unwrap();
+    let gain = ledger
+        .add_account("4100", "Gain on sale", AccountType::Revenue, None, false)
+        .unwrap();
+    let equity = ledger
+        .add_account("3000", "Owner's Equity", AccountType::Equity, None, false)
+        .unwrap();
+
+    // Owner invests $100,000.
+    post(
+        &mut ledger,
+        date(2),
+        "Owner investment",
+        &[
+            (cash, Side::Debit, 100_000),
+            (equity, Side::Credit, 100_000),
+        ],
+    );
+    // Register a $60,000 van, 60-month life, bought Jan 15.
+    let asset = ledger
+        .register_asset(NewAsset {
+            description: "Van".to_string(),
+            purchase_date: NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+            cost: usd(60_000),
+            salvage_value: usd(0),
+            useful_life_months: 60,
+            cost_account: cost,
+            accum_depr_account: accum,
+            expense_account: depr_exp,
+        })
+        .unwrap();
+    // Buy the van for cash.
+    post(
+        &mut ledger,
+        date(15),
+        "Buy van",
+        &[(cost, Side::Debit, 60_000), (cash, Side::Credit, 60_000)],
+    );
+    // January depreciation: $1,000 * 17/31 = $548.39.
+    post(
+        &mut ledger,
+        date(31),
+        "January depreciation",
+        &[(depr_exp, Side::Debit, 548), (accum, Side::Credit, 548)],
+    );
+    // Sell the van Jan 31 for $59,600 cash. Book value 60,000 - 548 = 59,452.
+    // Gain = 59,600 - 59,452 = 148.
+    // Note: amounts are whole dollars here to keep the fixture simple.
+    let _ = asset;
+    post(
+        &mut ledger,
+        date(31),
+        "Sell van",
+        &[
+            (cash, Side::Debit, 59_600),
+            (accum, Side::Debit, 548),
+            (cost, Side::Credit, 60_000),
+            (gain, Side::Credit, 148),
+        ],
+    );
+
+    let cf = cash_flow(&ledger, &cash_flow_params(cash)).unwrap();
+
+    // Reconciliation is the law.
+    let sections = cf.cash_from_operations + cf.cash_from_investing + cf.cash_from_financing;
+    assert_eq!(sections, cf.net_change_in_cash);
+
+    // Cash: 100,000 - 60,000 + 59,600 = 99,600.
+    assert_eq!(cf.cash_ending, Decimal::new(9960000, 2));
+    // Net income: 148 gain - 548 depreciation = -400.
+    assert_eq!(cf.net_income, Decimal::new(-40000, 2));
+    // Depreciation added back: 548.
+    assert_eq!(cf.depreciation, Decimal::new(54800, 2));
+    // Operating: -400 + 548 - 148 (gain removed) = 0.
+    assert_eq!(cf.cash_from_operations, Decimal::ZERO);
+    // Investing: -60,000 purchase + 59,600 proceeds = -400.
+    assert_eq!(cf.cash_from_investing, Decimal::new(-40000, 2));
+    // Financing: +100,000 owner investment.
+    assert_eq!(cf.cash_from_financing, Decimal::new(10000000, 2));
+    // Sum: 0 - 400 + 100,000 = 99,600. Matches cash.
+}

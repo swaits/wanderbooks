@@ -4,7 +4,7 @@
 //! total credits. Entries are born as drafts, validated, then posted. Posting
 //! is one-way; a posted entry can only be corrected by a reversing entry.
 
-use crate::{AccountId, ChartOfAccounts, Currency, LedgerError, Money, Side};
+use crate::{AccountId, ChartOfAccounts, ClassId, Currency, LedgerError, Money, Side};
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -41,6 +41,12 @@ pub struct JournalLine {
     /// base-currency lines.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub foreign_amount: Option<Decimal>,
+    /// Divisional tracking: which class (department, location, job) this
+    /// line belongs to. `None` means unclassified. Set on drafts only via
+    /// [`crate::Ledger::set_line_class`]; posted lines are immutable, so
+    /// their classes are frozen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class_id: Option<ClassId>,
 }
 
 /// A balanced set of journal lines with a date and a description.
@@ -101,6 +107,12 @@ impl JournalEntry {
     /// Append a line. Only while drafted; only via [`crate::Ledger`].
     pub(crate) fn push_line(&mut self, line: JournalLine) {
         self.lines.push(line);
+    }
+
+    /// Tag a line with a class (or clear it). Only while drafted; only via
+    /// [`crate::Ledger::set_line_class`].
+    pub(crate) fn set_line_class(&mut self, index: usize, class_id: Option<ClassId>) {
+        self.lines[index].class_id = class_id;
     }
 
     /// Mark posted. Only via [`crate::Ledger`], after [`Self::validate`].

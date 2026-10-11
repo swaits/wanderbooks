@@ -316,7 +316,18 @@ pub struct AddLineParams {
     /// "debit" or "credit".
     pub side: String,
     /// Exact decimal amount as a string, e.g. "123.45". Never a float.
+    /// For foreign-currency lines, this is ignored; use foreign_amount + fx_rate.
     pub amount: String,
+    /// Optional foreign currency code (e.g. "EUR") for a foreign-currency line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foreign_currency: Option<String>,
+    /// Optional foreign amount, decimal string. Requires foreign_currency and fx_rate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foreign_amount: Option<String>,
+    /// Optional FX rate (foreign -> base), decimal string. Requires foreign_currency
+    /// and foreign_amount. The base amount is foreign_amount * fx_rate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fx_rate: Option<String>,
 }
 
 /// Result of `books.add_line`.
@@ -958,4 +969,271 @@ impl ReceiptRequiredError {
     pub fn to_tool_error(&self) -> String {
         serde_json::to_string(self).unwrap_or_else(|_| self.message.clone())
     }
+}
+
+// ---------------------------------------------------------------------------
+// Periods
+// ---------------------------------------------------------------------------
+
+/// Parameters for `books.create_period`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CreatePeriodParams {
+    /// Human name, e.g. "2026-10" or "Q4 2026".
+    pub name: String,
+    /// First date in the period, YYYY-MM-DD (inclusive).
+    pub start: String,
+    /// Last date in the period, YYYY-MM-DD (inclusive).
+    pub end: String,
+}
+
+/// Output of `books.create_period`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CreatePeriodOut {
+    /// The new period's id.
+    pub period_id: u64,
+}
+
+/// Parameters for `books.close_period`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ClosePeriodParams {
+    /// The period to close.
+    pub period_id: u64,
+    /// Without confirmed=true, returns a preview (closing lines) and closes
+    /// nothing. With confirmed=true, posts the closing entry and closes.
+    #[serde(default)]
+    pub confirmed: bool,
+}
+
+/// Output of `books.close_period`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ClosePeriodOut {
+    /// "preview" or "closed".
+    pub status: String,
+    /// The period id.
+    pub period_id: u64,
+    /// The closing entry's id (if any was needed).
+    pub closing_entry: Option<u64>,
+    /// Human-readable summary of the closing lines.
+    pub lines: Vec<String>,
+}
+
+/// One period in `books.list_periods`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PeriodOut {
+    /// Period id.
+    pub id: u64,
+    /// Human name.
+    pub name: String,
+    /// Start date, YYYY-MM-DD.
+    pub start: String,
+    /// End date, YYYY-MM-DD.
+    pub end: String,
+    /// "open" or "closed".
+    pub status: String,
+    /// Closing entry id, if closed with one.
+    pub closing_entry: Option<u64>,
+}
+
+/// Output of `books.list_periods`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ListPeriodsOut {
+    /// All periods, in creation order.
+    pub periods: Vec<PeriodOut>,
+}
+
+// ---------------------------------------------------------------------------
+// Bank reconciliation
+// ---------------------------------------------------------------------------
+
+/// Parameters for `books.mark_cleared`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MarkClearedParams {
+    /// Entry id containing the line.
+    pub entry_id: u64,
+    /// Zero-based index of the line within the entry.
+    pub line_index: usize,
+    /// True to mark cleared, false to unmark.
+    pub cleared: bool,
+}
+
+/// Output of `books.mark_cleared`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MarkClearedOut {
+    /// Always true on success.
+    pub ok: bool,
+}
+
+/// Parameters for `books.reconcile`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ReconcileParams {
+    /// Account id or code (e.g. "1000") to reconcile.
+    pub account: String,
+    /// Statement date, YYYY-MM-DD.
+    pub statement_date: String,
+    /// Statement balance, decimal string.
+    pub statement_balance: String,
+}
+
+/// One uncleared line in the reconciliation report.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct UnclearedLineOut {
+    /// Entry id.
+    pub entry_id: u64,
+    /// Line index within the entry.
+    pub line_index: usize,
+    /// Entry date, YYYY-MM-DD.
+    pub date: String,
+    /// Entry description.
+    pub description: String,
+    /// "debit" or "credit".
+    pub side: String,
+    /// Amount, decimal string.
+    pub amount: String,
+}
+
+/// Output of `books.reconcile`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ReconcileOut {
+    /// Account code.
+    pub account_code: String,
+    /// Book balance (all posted lines), decimal string.
+    pub book_balance: String,
+    /// Cleared balance (cleared lines on/before statement date), decimal string.
+    pub cleared_balance: String,
+    /// Statement balance, decimal string.
+    pub statement_balance: String,
+    /// cleared_balance - statement_balance. Zero means reconciled.
+    pub difference: String,
+    /// Uncleared lines on/before the statement date.
+    pub uncleared_lines: Vec<UnclearedLineOut>,
+}
+
+// ---------------------------------------------------------------------------
+// A/R and A/P
+// ---------------------------------------------------------------------------
+
+/// Parameters for `books.add_customer` / `books.add_vendor`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AddPartyParams {
+    /// Customer or vendor name.
+    pub name: String,
+}
+
+/// Output of `books.add_customer` / `books.add_vendor`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AddPartyOut {
+    /// The new party's id.
+    pub id: u64,
+}
+
+/// One line on an invoice or bill.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DocumentLineParam {
+    /// Description of the goods/services.
+    pub description: String,
+    /// Line amount, decimal string.
+    pub amount: String,
+}
+
+/// Parameters for `books.create_invoice` / `books.create_bill`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CreateDocumentParams {
+    /// Customer id (invoice) or vendor id (bill).
+    pub party_id: u64,
+    /// Document date, YYYY-MM-DD.
+    pub date: String,
+    /// Due date, YYYY-MM-DD.
+    pub due_date: String,
+    /// Line items.
+    pub lines: Vec<DocumentLineParam>,
+}
+
+/// Output of `books.create_invoice` / `books.create_bill`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CreateDocumentOut {
+    /// The new document's id.
+    pub id: u64,
+    /// Total amount, decimal string.
+    pub total: String,
+    /// The auto-posted journal entry's id.
+    pub entry_id: u64,
+}
+
+/// Parameters for `books.receive_payment` / `books.pay_bill`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PaymentParams {
+    /// Invoice id (receive_payment) or bill id (pay_bill).
+    pub document_id: u64,
+    /// Payment date, YYYY-MM-DD.
+    pub date: String,
+    /// Payment amount, decimal string.
+    pub amount: String,
+    /// Cash account id or code.
+    pub cash_account: String,
+}
+
+/// Output of `books.receive_payment` / `books.pay_bill`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PaymentOut {
+    /// The payment journal entry's id.
+    pub entry_id: u64,
+    /// Remaining balance, decimal string.
+    pub remaining: String,
+    /// "open", "partial", or "paid".
+    pub status: String,
+}
+
+/// Parameters for `books.ar_aging` / `books.ap_aging`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AgingParams {
+    /// As-of date, YYYY-MM-DD.
+    pub as_of: String,
+}
+
+/// One row of an aging report.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AgingRowOut {
+    /// Customer or vendor name.
+    pub name: String,
+    /// Not yet due, decimal string.
+    pub current: String,
+    /// 1-30 days past due, decimal string.
+    pub days_30: String,
+    /// 31-60 days past due, decimal string.
+    pub days_60: String,
+    /// 61-90 days past due, decimal string.
+    pub days_90: String,
+    /// Over 90 days past due, decimal string.
+    pub days_90_plus: String,
+    /// Total outstanding, decimal string.
+    pub total: String,
+}
+
+/// Output of `books.ar_aging` / `books.ap_aging`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AgingOut {
+    /// Rows, one per party with an outstanding balance.
+    pub rows: Vec<AgingRowOut>,
+}
+
+// ---------------------------------------------------------------------------
+// Foreign exchange
+// ---------------------------------------------------------------------------
+
+/// Parameters for `books.set_fx_rate`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SetFxRateParams {
+    /// Foreign currency code, e.g. "EUR".
+    pub currency: String,
+    /// Rate date, YYYY-MM-DD.
+    pub date: String,
+    /// Rate: how much base currency one unit of foreign buys, decimal string.
+    pub rate: String,
+}
+
+/// Output of `books.set_fx_rate`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SetFxRateOut {
+    /// Always true on success.
+    pub ok: bool,
 }

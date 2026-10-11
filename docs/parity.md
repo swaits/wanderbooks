@@ -31,6 +31,9 @@ No other statuses.
 | QuickBooks IIF + XLSX export | Export / reports | done | R-FUTURE-4 |
 | A/R invoices + payments + aging | Business → Invoices | done | R-FUTURE-5 |
 | A/P bills + payments + aging | Business → Bills | done | R-FUTURE-5 |
+| Payroll runs (accounting only, no tax tables) + tax remittance | Payroll | done | — |
+| Tracking classes (divisional P&L) | Class tracking | done | — |
+| CPA handoff package (TB + GL xlsx, P&L + BS pdf, zip) | Reports → export | done | — |
 | Budgets | Budgets | todo | R-FUTURE-6 (declined as bloat) |
 | Scheduled transactions | Scheduled txns | todo | R-FUTURE-6 |
 | Automated GnuCash diff harness | — (our `xtask oracle`) | todo | roadmap phase 3 |

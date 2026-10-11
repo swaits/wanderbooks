@@ -85,6 +85,17 @@ requirement conflict, the requirement wins.
   AR/AP aging. MCP tools for the full workflow.
 - **R-? — Bank reconciliation.** Cleared flags on posted lines,
   `reconciliation_report` with uncleared-line detail.
+- **R-? — Payroll (accounting only).** `ledger-core::payroll`:
+  `run_payroll` posts one balanced entry (Dr 6100 gross, Dr 6110 employer
+  FICA, Cr 2110–2150 payables, Cr cash net); `remit_payroll_taxes` clears
+  the payables. No tax tables — the caller supplies every number.
+- **R-? — Tracking classes (divisional P&L).** `ledger-core::classes`:
+  `JournalLine.class_id`, `add_class`, `set_line_class` (drafts only),
+  `profit_and_loss_filtered`, `profit_and_loss_by_class`. Shared costs are
+  split explicitly across lines at entry time.
+- **R-? — CPA handoff package.** `books.export_cpa_package`: zip with
+  trial-balance XLSX, general-ledger XLSX (every posted line), P&L and
+  balance-sheet PDFs (printpdf, MIT).
 
 ## Non-goals (all phases of the engine)
 

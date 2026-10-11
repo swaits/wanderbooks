@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/ledger-core"]
+members = ["crates/ledger-core", "crates/ledger-store", "crates/ledger-mcp"]
 
 [workspace.package]
 edition = "2024"

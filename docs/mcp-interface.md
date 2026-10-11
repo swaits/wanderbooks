@@ -273,3 +273,40 @@ R-FUTURE-3 and rides the engine roadmap, not the MCP layer.
   base currency.
 - `books.set_fx_rate { currency, date, rate }` → `{ ok }`. Records a
   historical rate for reference; lines store their own rate at entry time.
+
+## Tools — payroll (accounting only)
+
+No tax tables: the caller supplies every number; the engine cuts correct
+entries.
+
+- `books.run_payroll { date, cash_account, lines: [{ employee_name,
+  gross_pay, federal_withholding, state_withholding, ss_employee,
+  medicare_employee, ss_employer, medicare_employer, other_deductions }] }`
+  → `{ run_id, entry_id, total_gross, total_net }`. One balanced entry:
+  Dr 6100 Salary & Wage Expense (gross), Dr 6110 Payroll Tax Expense
+  (employer SS + Medicare), Cr 2110–2150 withholding payables, Cr cash
+  (net). Auto-creates the 61xx/21xx accounts. Respects closed periods.
+- `books.remit_payroll_taxes { date, cash_account }` → `{ entry_id, total }`.
+  Clears every payroll payable to cash in one entry.
+- `books.list_payroll_runs` → `{ runs: [{ id, date, employee_count,
+  total_gross, entry_id }] }`.
+
+## Tools — classes (divisional tracking)
+
+- `books.add_class { name }` → `{ id }`. E.g. "Rondo", "Coach vs Coach".
+- `books.list_classes` → `{ classes: [{ id, name }] }`.
+- `books.add_line` gains optional `class` (name or id): tags the new line.
+  Shared costs are split explicitly across lines at entry time.
+- `books.profit_and_loss` gains optional `class` filter.
+- `books.profit_and_loss_by_class { start, end }` → per-class revenue,
+  expenses, net income, plus an unclassified row. Reversals carry their
+  class so divisional P&L nets correctly.
+
+## Tools — CPA handoff
+
+- `books.export_cpa_package { as_of? }` → `{ file_name, content_base64 }`.
+  A zip with `trial-balance.xlsx`, `general-ledger.xlsx` (every posted
+  line: date, entry, description, account, class, debit, credit),
+  `profit-and-loss.pdf` (fiscal year to date, per-account detail), and
+  `balance-sheet.pdf` (per-account detail). What the CPA needs; they never
+  log into the system.

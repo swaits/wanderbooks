@@ -5,10 +5,11 @@
 //! is the current version.
 
 /// Current schema version.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Migrations, in order. `MIGRATIONS[i]` migrates from version `i` to `i+1`.
-pub const MIGRATIONS: &[&str] = &[r#"
+pub const MIGRATIONS: &[&str] = &[
+    r#"
 CREATE TABLE IF NOT EXISTS meta(
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -61,4 +62,32 @@ CREATE TABLE IF NOT EXISTS events(
 CREATE INDEX IF NOT EXISTS idx_lines_entry ON lines(entry_id);
 CREATE INDEX IF NOT EXISTS idx_entries_date ON entries(date);
 CREATE INDEX IF NOT EXISTS idx_attachments_entry ON attachments(entry_id);
-"#];
+"#,
+    r#"
+-- v2: fixed-asset register and depreciation runs.
+CREATE TABLE IF NOT EXISTS assets(
+  id INTEGER PRIMARY KEY,
+  description TEXT NOT NULL,
+  purchase_date TEXT NOT NULL,
+  cost_amount TEXT NOT NULL,
+  cost_currency TEXT NOT NULL,
+  salvage_amount TEXT NOT NULL,
+  salvage_currency TEXT NOT NULL,
+  useful_life_months INTEGER NOT NULL,
+  method TEXT NOT NULL,
+  cost_account INTEGER NOT NULL,
+  accum_depr_account INTEGER NOT NULL,
+  expense_account INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  disposed_date TEXT NULL,
+  proceeds_amount TEXT NULL
+);
+CREATE TABLE IF NOT EXISTS asset_depreciation(
+  asset_id INTEGER NOT NULL,
+  period TEXT NOT NULL,
+  entry_id INTEGER NOT NULL,
+  amount TEXT NOT NULL,
+  PRIMARY KEY (asset_id, period)
+);
+"#,
+];

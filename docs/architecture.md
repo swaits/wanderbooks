@@ -54,7 +54,7 @@ The core is a pure domain library and stays that way.
 
 | Crate | Purpose | Depends on |
 |---|---|---|
-| `ledger-store` | SQLite persistence of the entry log | `ledger-core` |
+| `ledger-store` | Journal (hash-chained JSONL) + SQLite projection, blob store | `ledger-core` |
 | `ledger-import` | QuickBooks CSV read-only import (bank transactions, chart of accounts) | `ledger-core` |
 | `ledger-export` | Format renderers: CSV, XLSX, IIF journal entries (QuickBooks Desktop) | `ledger-core` |
 | `ledger-oracle` | Diff harness: our engine vs GnuCash on fixture books | `ledger-core`, `ledger-import` |

@@ -89,8 +89,8 @@ impl Mcp {
     }
 }
 
-fn test_dir() -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("ledger-mcp-test-{}", std::process::id()));
+fn test_dir(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("ledger-mcp-test-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -98,7 +98,7 @@ fn test_dir() -> std::path::PathBuf {
 
 #[test]
 fn mcp_end_to_end_over_stdio() {
-    let dir = test_dir();
+    let dir = test_dir("main");
     let mut mcp = Mcp::spawn(&dir);
 
     // Initialize: the server identifies itself and delivers the contract.
@@ -116,10 +116,10 @@ fn mcp_end_to_end_over_stdio() {
     assert!(instructions.contains("decimal strings"));
     mcp.notify("notifications/initialized");
 
-    // Tool listing: 16 narrow tools, chart is read-only.
+    // Tool listing: 23 narrow tools, chart is read-only.
     let list = mcp.request("tools/list", json!({}));
     let tools = list["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 18, "expected 18 tools, got {}", tools.len());
+    assert_eq!(tools.len(), 23, "expected 23 tools, got {}", tools.len());
     let chart = tools.iter().find(|t| t["name"] == "books.chart").unwrap();
     assert_eq!(chart["annotations"]["readOnlyHint"], true);
     assert!(
@@ -256,8 +256,174 @@ fn mcp_end_to_end_over_stdio() {
     assert_eq!(tb2["total_debits"], "0");
 }
 
+#[test]
+fn mcp_assets_end_to_end_over_stdio() {
+    let dir = test_dir("assets");
+    let mut mcp = Mcp::spawn(&dir);
+    let init = mcp.request(
+        "initialize",
+        json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+        }),
+    );
+    assert_eq!(init["result"]["serverInfo"]["name"], "wanderbooks");
+    mcp.notify("notifications/initialized");
+
+    // Chart for the asset: cost, contra, expense, bank, gain.
+    for (code, name, typ) in [
+        ("1500", "Equipment", "asset"),
+        ("1501", "Accumulated Depreciation", "asset"),
+        ("6100", "Depreciation Expense", "expense"),
+        ("1000", "Bank", "asset"),
+        ("4900", "Gain on Disposal", "revenue"),
+    ] {
+        mcp.call(
+            "books.add_account",
+            json!({"code": code, "name": name, "account_type": typ}),
+        );
+    }
+
+    // Register the van: 60,000, 60-month life, bought 2026-01-15.
+    let reg = mcp.call(
+        "books.register_asset",
+        json!({
+            "description": "Sprinter van",
+            "purchase_date": "2026-01-15",
+            "cost": "60000.00",
+            "useful_life_months": 60,
+            "cost_account": "1500",
+            "accum_depr_account": "1501",
+            "expense_account": "6100",
+        }),
+    );
+    let asset_id = reg["asset_id"].as_u64().unwrap();
+
+    // Schedule: 61 calendar months, lifetime total exactly 60,000.
+    let sched = mcp.call("books.asset_schedule", json!({"asset_id": asset_id}));
+    let lines = sched["schedule"].as_array().unwrap();
+    assert_eq!(lines.len(), 61);
+    assert_eq!(lines[0]["period"], "2026-01");
+    assert_eq!(lines[0]["amount"], "548.39");
+    assert_eq!(lines[60]["period"], "2031-01");
+    let total: f64 = lines
+        .iter()
+        .map(|l| l["amount"].as_str().unwrap().parse::<f64>().unwrap())
+        .sum();
+    assert!((total - 60000.0).abs() < 0.005, "total was {total}");
+    assert_eq!(sched["status"], "active");
+
+    // List: one active asset.
+    let list = mcp.call("books.list_assets", json!({}));
+    assert_eq!(list["assets"].as_array().unwrap().len(), 1);
+    assert_eq!(list["assets"][0]["status"], "active");
+
+    // Run January: posts 548.39.
+    let run1 = mcp.call(
+        "books.run_depreciation",
+        json!({"period": "2026-01", "asset_id": asset_id}),
+    );
+    assert_eq!(run1["runs"][0]["amount"], "548.39");
+    assert_eq!(run1["runs"][0]["already_posted"], false);
+    let entry_id = run1["runs"][0]["entry_id"].as_u64().unwrap();
+
+    // Idempotent: second run returns the same entry.
+    let run2 = mcp.call(
+        "books.run_depreciation",
+        json!({"period": "2026-01", "asset_id": asset_id}),
+    );
+    assert_eq!(run2["runs"][0]["already_posted"], true);
+    assert_eq!(run2["runs"][0]["entry_id"], entry_id);
+
+    // Run-all for February: picks up the van, posts a full 1,000.
+    let run_all = mcp.call("books.run_depreciation", json!({"period": "2026-02"}));
+    assert_eq!(run_all["runs"][0]["amount"], "1000.00");
+    assert_eq!(run_all["skipped"].as_array().unwrap().len(), 0);
+    // And again: already posted.
+    let run_all2 = mcp.call("books.run_depreciation", json!({"period": "2026-02"}));
+    assert_eq!(run_all2["runs"][0]["already_posted"], true);
+
+    // Dispose preview: book value 60000 − 1548.39 = 58451.61;
+    // proceeds 60000 → gain 1548.39. Receipt required.
+    let preview = mcp.call(
+        "books.dispose_asset",
+        json!({
+            "asset_id": asset_id,
+            "date": "2026-02-28",
+            "proceeds": "60000",
+            "proceeds_account": "1000",
+            "gain_loss_account": "4900",
+        }),
+    );
+    assert_eq!(preview["status"], "preview");
+    assert_eq!(preview["book_value"], "58451.61");
+    assert_eq!(preview["gain_loss"], "1548.39");
+    assert_eq!(preview["final_depreciation"], "0");
+    assert_eq!(preview["receipt_required"], true);
+
+    // Confirmed without the bill of sale: rejected.
+    let err = mcp.call_err(
+        "books.dispose_asset",
+        json!({
+            "asset_id": asset_id,
+            "date": "2026-02-28",
+            "proceeds": "60000",
+            "proceeds_account": "1000",
+            "gain_loss_account": "4900",
+            "confirmed": true,
+        }),
+    );
+    assert!(err.contains("receipt_required"), "got: {err}");
+
+    // File the bill of sale, then confirm with its attachment id.
+    let bill = mcp.call(
+        "books.file_document",
+        json!({
+            "category": "legal",
+            "file_name": "bill-of-sale.pdf",
+            "mime_type": "application/pdf",
+            "content_base64": base64_like(b"fake bill of sale"),
+        }),
+    );
+    let aid = bill["attachment_id"].as_u64().unwrap();
+    let posted = mcp.call(
+        "books.dispose_asset",
+        json!({
+            "asset_id": asset_id,
+            "date": "2026-02-28",
+            "proceeds": "60000",
+            "proceeds_account": "1000",
+            "gain_loss_account": "4900",
+            "confirmed": true,
+            "receipt_attachment_ids": [aid],
+        }),
+    );
+    assert_eq!(posted["status"], "posted");
+    assert_eq!(posted["gain_loss"], "1548.39");
+
+    // The bill of sale is linked to the disposal entry.
+    let receipts = mcp.call(
+        "books.list_receipts",
+        json!({"entry_id": posted["entry_id"]}),
+    );
+    assert_eq!(receipts["receipts"].as_array().unwrap().len(), 1);
+
+    // Asset is disposed; further depreciation is refused.
+    let list2 = mcp.call("books.list_assets", json!({}));
+    assert_eq!(list2["assets"][0]["status"], "disposed");
+    let err2 = mcp.call_err(
+        "books.run_depreciation",
+        json!({"period": "2026-03", "asset_id": asset_id}),
+    );
+    assert!(err2.contains("disposed"), "got: {err2}");
+
+    // The books still balance.
+    let tb = mcp.call("books.trial_balance", json!({}));
+    assert_eq!(tb["balanced"], true);
+}
+
 fn base64_like(bytes: &[u8]) -> String {
-    // Minimal base64 for the test (no external crate in dev-deps).
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();
     for chunk in bytes.chunks(3) {

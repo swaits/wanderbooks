@@ -185,7 +185,23 @@ impl Store {
         let lines = read_and_verify_journal(&journal_path)?;
         let journal = JournalWriter::from_lines(&journal_path, &lines)?;
         let db_path = data_dir.join(DB_FILE);
-        let fresh_db = !db_path.exists();
+        let mut fresh_db = !db_path.exists();
+        if !fresh_db && !Self::db_file_healthy(&db_path) {
+            // The projection is corrupt. The journal is the source of truth,
+            // so quarantine the damaged file (for forensics) and rebuild.
+            let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+            let quarantine = db_path.with_extension(format!("corrupt.{stamp}"));
+            std::fs::rename(&db_path, &quarantine).map_err(StoreError::Io)?;
+            // WAL/SHM are derived state; drop them so they can't contaminate
+            // the rebuild.
+            let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+            let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+            eprintln!(
+                "wanderbooks: sqlite projection failed integrity_check; quarantined to {} and rebuilding from journal",
+                quarantine.display()
+            );
+            fresh_db = true;
+        }
         let conn = Self::open_conn(&db_path)?;
         Self::migrate(&conn)?;
         let base_currency = if fresh_db {
@@ -240,13 +256,19 @@ impl Store {
         conn.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;",
         )?;
-        let check: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
-        if check != "ok" {
-            return Err(StoreError::JournalCorrupt(format!(
-                "sqlite integrity_check failed: {check}"
-            )));
-        }
         Ok(conn)
+    }
+
+    /// True when the SQLite file at `db_path` passes `integrity_check`.
+    /// Any failure (missing file, not a database, corruption) counts as
+    /// unhealthy. Opens a throwaway connection without touching pragmas.
+    fn db_file_healthy(db_path: &Path) -> bool {
+        let conn = match Connection::open(db_path) {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+        let check: Result<String, _> = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0));
+        matches!(check, Ok(s) if s == "ok")
     }
 
     fn migrate(conn: &Connection) -> Result<(), StoreError> {
@@ -414,8 +436,10 @@ impl Store {
         Ok(live)
     }
 
-    /// Add a line to a draft entry. Draft state is ephemeral and is not
-    /// journaled; only the posted entry hits the journal.
+    /// Add a line to a draft entry. Drafts are durable: the line is
+    /// journaled as `entry.line_added`, so drafts (and their receipts)
+    /// survive restarts. Drafts never touch the SQLite projection until
+    /// posted.
     pub fn add_line(
         &mut self,
         entry: EntryId,
@@ -424,6 +448,20 @@ impl Store {
         amount: Money,
     ) -> Result<(), StoreError> {
         self.ledger.add_line(entry, account, side, amount)?;
+        let line = self.append_journal(
+            "entry.line_added",
+            json!({
+                "id": entry,
+                "account": account,
+                "side": match side {
+                    Side::Debit => "debit",
+                    Side::Credit => "credit",
+                },
+                "amount": amount.amount.to_string(),
+                "currency": amount.currency.code(),
+            }),
+        )?;
+        apply_line_to_sqlite(&self.conn, &line)?;
         Ok(())
     }
 
@@ -1484,25 +1522,45 @@ fn replay_line_into_ledger(
                 )));
             }
         }
+        "entry.line_added" => {
+            let id = get_u64(p, "id")?;
+            ledger.add_line(
+                id,
+                get_u64(p, "account")?,
+                parse_side(get_str(p, "side")?)?,
+                Money::new(
+                    get_str(p, "amount")?
+                        .parse()
+                        .map_err(|_| StoreError::JournalCorrupt("bad amount".into()))?,
+                    Currency::new(get_str(p, "currency")?)?,
+                ),
+            )?;
+        }
         "entry.posted" => {
             let id = get_u64(p, "id")?;
-            // The draft was created by the entry.created line; add lines, post.
-            for l in p
-                .get("lines")
-                .and_then(|v| v.as_array())
-                .ok_or_else(|| StoreError::JournalCorrupt("entry.posted without lines".into()))?
-            {
-                ledger.add_line(
-                    id,
-                    get_u64(l, "account")?,
-                    parse_side(get_str(l, "side")?)?,
-                    Money::new(
-                        get_str(l, "amount")?
-                            .parse()
-                            .map_err(|_| StoreError::JournalCorrupt("bad amount".into()))?,
-                        Currency::new(get_str(l, "currency")?)?,
-                    ),
-                )?;
+            // New journals build the draft via entry.line_added events; old
+            // journals (pre-durable-drafts) only have the lines in the
+            // posted payload. If the draft already has lines, just post.
+            let has_lines = ledger
+                .get_entry(id)
+                .map(|e| !e.lines().is_empty())
+                .unwrap_or(false);
+            if !has_lines {
+                for l in p.get("lines").and_then(|v| v.as_array()).ok_or_else(|| {
+                    StoreError::JournalCorrupt("entry.posted without lines".into())
+                })? {
+                    ledger.add_line(
+                        id,
+                        get_u64(l, "account")?,
+                        parse_side(get_str(l, "side")?)?,
+                        Money::new(
+                            get_str(l, "amount")?
+                                .parse()
+                                .map_err(|_| StoreError::JournalCorrupt("bad amount".into()))?,
+                            Currency::new(get_str(l, "currency")?)?,
+                        ),
+                    )?;
+                }
             }
             ledger.post_entry(id)?;
         }
@@ -1584,6 +1642,9 @@ fn apply_line_to_sqlite(conn: &Connection, line: &JournalLine) -> Result<(), Sto
             )?;
         }
         "entry.created" => {}
+        // Draft lines are durable in the journal but never touch the
+        // projection until posted.
+        "entry.line_added" => {}
         "entry.posted" => {
             conn.execute(
                 "INSERT INTO entries(id, date, description, status, reversal_of) VALUES (?,?,?,'posted',?)",

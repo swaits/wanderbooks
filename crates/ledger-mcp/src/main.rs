@@ -36,14 +36,16 @@ fn default_data_dir() -> PathBuf {
 }
 
 fn print_usage() {
-    eprintln!("usage: ledger-mcp [--data-dir PATH] [--config PATH]");
+    eprintln!("usage: ledger-mcp [--data-dir PATH] [--config PATH] [--http ADDR]");
     eprintln!("  --data-dir  directory holding journal.jsonl (default ~/.local/share/wanderbooks)");
     eprintln!("  --config    JSON config file (default <data-dir>/config.json, optional)");
+    eprintln!("  --http      serve over Streamable HTTP at ADDR (e.g. 127.0.0.1:8080) instead of stdio");
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut data_dir = default_data_dir();
     let mut config_path: Option<PathBuf> = None;
+    let mut http_addr: Option<String> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -52,6 +54,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--config" => {
                 config_path = Some(PathBuf::from(args.next().ok_or("--config needs a path")?));
+            }
+            "--http" => {
+                http_addr = Some(args.next().ok_or("--http needs an address")?);
             }
             "--help" | "-h" => {
                 print_usage();
@@ -88,15 +93,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     store
         .verify()
         .map_err(|e| format!("store verify failed: {e}"))?;
-    eprintln!("ledger-mcp: store verified, serving over stdio");
 
-    let server = BooksServer::new(store, config.receipt_policy);
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
+    if let Some(addr) = http_addr {
+        eprintln!("ledger-mcp: store verified, serving Streamable HTTP on {addr}");
+        rt.block_on(serve_http(addr, store, config.receipt_policy))?;
+        return Ok(());
+    }
+
+    eprintln!("ledger-mcp: store verified, serving over stdio");
+    let server = BooksServer::new(store, config.receipt_policy);
     rt.block_on(async {
         let running = server.serve(stdio()).await?;
         let _ = running.waiting().await;
         Ok::<(), Box<dyn std::error::Error>>(())
     })
+}
+
+/// Serve MCP over Streamable HTTP (for network clients).
+async fn serve_http(
+    addr: String,
+    store: Store,
+    policy: ReceiptPolicy,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use rmcp::transport::streamable_http_server::{
+        StreamableHttpService, session::local::LocalSessionManager,
+    };
+    use std::sync::Arc;
+
+    let store = Arc::new(std::sync::Mutex::new(store));
+    let service = StreamableHttpService::new(
+        move || {
+            let server = server::BooksServer::new_shared(store.clone(), policy.clone());
+            Ok(server)
+        },
+        Arc::new(LocalSessionManager::default()),
+        Default::default(),
+    );
+
+    let router = axum::Router::new().nest_service("/mcp", service);
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    eprintln!("ledger-mcp: listening on http://{addr}/mcp");
+    axum::serve(listener, router).await?;
+    Ok(())
 }

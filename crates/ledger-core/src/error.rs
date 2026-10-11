@@ -140,4 +140,86 @@ pub enum LedgerError {
         /// Period end, YYYY-MM-DD.
         end: String,
     },
+
+    /// The referenced accounting period does not exist.
+    #[error("unknown period id {0}")]
+    UnknownPeriod(u64),
+
+    /// The accounting period is already closed.
+    #[error("period {0} is already closed")]
+    PeriodAlreadyClosed(u64),
+
+    /// Period end is before period start.
+    #[error("invalid period: end {end} is before start {start}")]
+    InvalidPeriodRange {
+        /// Period start, YYYY-MM-DD.
+        start: String,
+        /// Period end, YYYY-MM-DD.
+        end: String,
+    },
+
+    /// A draft entry exists with a date inside the period being closed.
+    #[error("cannot close period {0}: draft entries exist with dates in the period")]
+    DraftsInPeriod(u64),
+
+    /// Entries cannot be created or posted in a closed period.
+    #[error("period {0} is closed; entries dated {1} are rejected")]
+    ClosedPeriod(u64, String),
+
+    /// The referenced customer does not exist.
+    #[error("unknown customer id {0}")]
+    UnknownCustomer(u64),
+
+    /// The referenced vendor does not exist.
+    #[error("unknown vendor id {0}")]
+    UnknownVendor(u64),
+
+    /// The referenced invoice does not exist.
+    #[error("unknown invoice id {0}")]
+    UnknownInvoice(u64),
+
+    /// The referenced bill does not exist.
+    #[error("unknown bill id {0}")]
+    UnknownBill(u64),
+
+    /// Invoice/bill must have at least one line.
+    #[error("invoice/bill must have at least one line")]
+    EmptyDocumentLines,
+
+    /// Invoice/bill line amounts must be positive.
+    #[error("document line amount must be positive, got {0}")]
+    InvalidDocumentLineAmount(Decimal),
+
+    /// Payment amount must be positive.
+    #[error("payment amount must be positive, got {0}")]
+    InvalidPaymentAmount(Decimal),
+
+    /// Payment exceeds the remaining balance.
+    #[error("payment of {0} exceeds remaining balance of {1}")]
+    Overpayment(Decimal, Decimal),
+
+    /// Invoice/bill due date is before its date.
+    #[error("due date {0} is before document date")]
+    DueBeforeDate(String),
+
+    /// Line index out of range for cleared-flag update.
+    #[error("line index {0} out of range for entry {1}")]
+    LineIndexOutOfRange(usize, u64),
+
+    /// Cannot set a cleared flag on a draft entry's line.
+    #[error("cannot mark cleared on draft entry {0}; only posted lines can clear")]
+    ClearedOnDraft(u64),
+
+    /// FX rate must be positive.
+    #[error("fx rate must be positive, got {0}")]
+    InvalidFxRate(Decimal),
+
+    /// FX line requires both foreign currency and foreign amount.
+    #[error("fx line requires foreign currency, foreign amount, and fx rate")]
+    IncompleteFxLine,
+
+    /// Replay recorded an id the allocator was not expecting: the journal
+    /// and the engine disagree about event ordering.
+    #[error("replay id mismatch: journal says {0}, allocator expects {1}")]
+    ReplayIdMismatch(u64, u64),
 }

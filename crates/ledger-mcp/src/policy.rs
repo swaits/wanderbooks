@@ -73,21 +73,30 @@ impl ReceiptPolicy {
     /// True when posting this entry requires at least one receipt.
     pub fn receipt_required(&self, ledger: &Ledger, entry: &JournalEntry) -> bool {
         let codes = self.account_codes(ledger, entry);
+        let refs: Vec<&str> = codes.iter().map(|s| s.as_str()).collect();
+        self.receipt_required_for(&refs, Self::entry_debits(entry))
+    }
+
+    /// True when an entry touching these account codes with this debit total
+    /// requires at least one receipt. The code-level check behind
+    /// [`Self::receipt_required`], for postings (like disposals) computed
+    /// without a draft entry in hand.
+    pub fn receipt_required_for(&self, codes: &[&str], debits: Decimal) -> bool {
         // Per-account override: any line in a required account → required.
         if codes
             .iter()
-            .any(|c| self.receipt_required_accounts.iter().any(|r| r == c))
+            .any(|c| self.receipt_required_accounts.iter().any(|r| r == *c))
         {
             return true;
         }
         // Strictly greater than the threshold (owner: ">$25").
-        if Self::entry_debits(entry) <= self.threshold() {
+        if debits <= self.threshold() {
             return false;
         }
         // Exempt only when every line is in an exempt account.
         !codes
             .iter()
-            .all(|c| self.receipt_exempt_accounts.iter().any(|e| e == c))
+            .all(|c| self.receipt_exempt_accounts.iter().any(|e| e == *c))
     }
 
     /// Human-readable policy summary for previews and errors.

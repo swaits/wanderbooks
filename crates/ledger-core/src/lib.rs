@@ -17,6 +17,7 @@
 //!   (`docs/oracle.md`) possible.
 
 pub mod account;
+pub mod assets;
 pub mod error;
 pub mod journal;
 pub mod ledger;
@@ -24,6 +25,10 @@ pub mod money;
 pub mod reports;
 
 pub use account::{Account, AccountId, AccountType, ChartOfAccounts, Side};
+pub use assets::{
+    Asset, AssetId, AssetStatus, DepreciationMethod, DisposalAmounts, NewAsset, ScheduleLine,
+    accumulated_depreciation, book_value, depreciation_schedule, disposal_amounts,
+};
 pub use error::LedgerError;
 pub use journal::{EntryId, EntryStatus, JournalEntry, JournalLine};
 pub use ledger::Ledger;

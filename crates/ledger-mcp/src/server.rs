@@ -4,7 +4,10 @@
 use crate::policy::ReceiptPolicy;
 use crate::types::*;
 use chrono::NaiveDate;
-use ledger_core::{AccountId, AccountType, JournalEntry, Ledger, Money, Side, reports};
+use ledger_core::{
+    AccountId, AccountType, AssetStatus, JournalEntry, Ledger, Money, NewAsset, Side,
+    accumulated_depreciation, book_value, depreciation_schedule, reports,
+};
 use ledger_store::Store;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::{Implementation, ServerCapabilities, ServerConfig};
@@ -13,7 +16,7 @@ use rust_decimal::Decimal;
 use std::sync::{Arc, Mutex};
 
 /// The agent operating contract, delivered via initialize.
-const INSTRUCTIONS: &str = "You are the bookkeeping agent for these books. The engine enforces the accounting; you enforce the workflow.\n\nRULES\n- Money is exact decimal. Always pass amounts as decimal strings (\"123.45\"), never floats.\n- Never post directly. The flow is draft (books.draft_entry) -> add lines (books.add_line) -> preview (books.post_entry without confirmed) -> review the preview -> post (books.post_entry with confirmed=true).\n- Every entry must balance: debits equal credits, exactly. Every line needs a real account from books.chart. The engine rejects anything else.\n- Receipts: any entry moving more than $25.00 in debits needs at least one receipt attached (books.attach_receipt) before posting. The server rejects the post otherwise. This is enforced, not a suggestion.\n- Never invent accounts. If the account you need does not exist, add it with books.add_account first.\n- Corrections go through books.reverse_entry. Posted entries are immutable; there is no edit.\n- After posting, check books.digest to review what changed, so a human can review too.\n- Amounts in every response are decimal strings. Treat them as exact.";
+const INSTRUCTIONS: &str = "You are the bookkeeping agent for these books. The engine enforces the accounting; you enforce the workflow.\n\nRULES\n- Money is exact decimal. Always pass amounts as decimal strings (\"123.45\"), never floats.\n- Never post directly. The flow is draft (books.draft_entry) -> add lines (books.add_line) -> preview (books.post_entry without confirmed) -> review the preview -> post (books.post_entry with confirmed=true).\n- Every entry must balance: debits equal credits, exactly. Every line needs a real account from books.chart. The engine rejects anything else.\n- Receipts: any entry moving more than $25.00 in debits needs at least one receipt attached (books.attach_receipt) before posting. The server rejects the post otherwise. This is enforced, not a suggestion.\n- Never invent accounts. If the account you need does not exist, add it with books.add_account first.\n- Corrections go through books.reverse_entry. Posted entries are immutable; there is no edit.\n- After posting, check books.digest to review what changed, so a human can review too.\n- Amounts in every response are decimal strings. Treat them as exact.\n- Fixed assets: register with books.register_asset, inspect with books.asset_schedule and books.list_assets, post monthly depreciation with books.run_depreciation (exempt from the receipt policy; the schedule is the evidence), and dispose with books.dispose_asset (preview first; the bill of sale is the receipt). Depreciation is straight-line, book basis only - tax depreciation stays with the CPA.";
 
 /// Max receipt/document upload: 25 MB.
 const MAX_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
@@ -63,6 +66,28 @@ fn parse_side(s: &str) -> Result<Side, String> {
         "credit" => Ok(Side::Credit),
         _ => Err(format!("bad side {s:?}: expected \"debit\" or \"credit\"")),
     }
+}
+
+/// Parse a calendar-month period "YYYY-MM".
+fn parse_period_mcp(period: &str) -> Result<(i32, u32), String> {
+    let err = || format!("bad period {period:?}: expected YYYY-MM");
+    let mut parts = period.split('-');
+    let year: i32 = parts.next().ok_or_else(err)?.parse().map_err(|_| err())?;
+    let month: u32 = parts.next().ok_or_else(err)?.parse().map_err(|_| err())?;
+    if parts.next().is_some() || year < 1 || !(1..=12).contains(&month) {
+        return Err(err());
+    }
+    Ok((year, month))
+}
+
+/// Last calendar day of a month.
+fn last_day_of_month(year: i32, month: u32) -> NaiveDate {
+    let first = NaiveDate::from_ymd_opt(year, month, 1).expect("valid period");
+    first
+        .checked_add_months(chrono::Months::new(1))
+        .expect("month arithmetic")
+        .pred_opt()
+        .expect("month arithmetic")
 }
 
 fn parse_account_type(s: &str) -> Result<AccountType, String> {
@@ -880,6 +905,299 @@ impl BooksServer {
             report,
             content,
         }))
+    }
+
+    // ------------------------------------------------------------------
+    // Fixed assets
+    // ------------------------------------------------------------------
+
+    #[tool(
+        name = "books.register_asset",
+        description = "Register a fixed asset (equipment, vehicles, buildings). Links three accounts: cost (asset), accumulated depreciation (asset, contra), depreciation expense. Depreciation is straight-line, book basis only — tax depreciation (MACRS, Section 179) stays with the CPA."
+    )]
+    async fn register_asset(
+        &self,
+        params: Parameters<RegisterAssetParams>,
+    ) -> Result<Json<RegisterAssetOut>, String> {
+        let p = params.0;
+        let mut store = self.lock()?;
+        let base = store.ledger().base_currency();
+        let cost_account = resolve_account(&store, &p.cost_account)?;
+        let accum_depr_account = resolve_account(&store, &p.accum_depr_account)?;
+        let expense_account = resolve_account(&store, &p.expense_account)?;
+        let asset_id = store
+            .register_asset(NewAsset {
+                description: p.description,
+                purchase_date: parse_date(&p.purchase_date)?,
+                cost: Money::new(parse_amount(&p.cost)?, base),
+                salvage_value: Money::new(
+                    parse_amount(p.salvage_value.as_deref().unwrap_or("0"))?,
+                    base,
+                ),
+                useful_life_months: p.useful_life_months,
+                cost_account,
+                accum_depr_account,
+                expense_account,
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(Json(RegisterAssetOut { asset_id }))
+    }
+
+    #[tool(
+        name = "books.asset_schedule",
+        description = "Month-by-month straight-line depreciation schedule for an asset: period, amount, accumulated, book value. Partial first and last months are prorated by days; the lifetime total is exactly cost minus salvage.",
+        annotations(read_only_hint = true)
+    )]
+    async fn asset_schedule(
+        &self,
+        params: Parameters<AssetScheduleParams>,
+    ) -> Result<Json<AssetScheduleOut>, String> {
+        let p = params.0;
+        let store = self.lock()?;
+        let asset = store
+            .ledger()
+            .get_asset(p.asset_id)
+            .ok_or_else(|| format!("unknown asset {}", p.asset_id))?
+            .clone();
+        // The schedule clamps to the depreciation end internally, so an
+        // unbounded default just means "the whole life".
+        let through = match p.through {
+            Some(t) => parse_date(&t)?,
+            None => NaiveDate::MAX,
+        };
+        let schedule = depreciation_schedule(&asset, through)
+            .into_iter()
+            .map(|l| ScheduleLineOut {
+                period: l.period,
+                amount: money(l.amount),
+                accumulated: money(l.accumulated),
+                book_value: money(l.book_value),
+            })
+            .collect();
+        Ok(Json(AssetScheduleOut {
+            asset_id: asset.id,
+            description: asset.description.clone(),
+            cost: money(asset.cost.amount),
+            salvage_value: money(asset.salvage_value.amount),
+            useful_life_months: asset.useful_life_months,
+            status: match asset.status {
+                AssetStatus::Active => "active".to_string(),
+                AssetStatus::Disposed { .. } => "disposed".to_string(),
+            },
+            schedule,
+        }))
+    }
+
+    #[tool(
+        name = "books.list_assets",
+        description = "List all registered fixed assets with accumulated depreciation and book value as of today.",
+        annotations(read_only_hint = true)
+    )]
+    async fn list_assets(&self) -> Result<Json<ListAssetsOut>, String> {
+        let store = self.lock()?;
+        let today = chrono::Utc::now().date_naive();
+        let assets = store
+            .ledger()
+            .registered_assets()
+            .map(|a| AssetSummary {
+                asset_id: a.id,
+                description: a.description.clone(),
+                purchase_date: a.purchase_date.to_string(),
+                cost: money(a.cost.amount),
+                useful_life_months: a.useful_life_months,
+                status: match a.status {
+                    AssetStatus::Active => "active".to_string(),
+                    AssetStatus::Disposed { .. } => "disposed".to_string(),
+                },
+                accumulated: money(accumulated_depreciation(a, today)),
+                book_value: money(book_value(a, today)),
+            })
+            .collect();
+        Ok(Json(ListAssetsOut { assets }))
+    }
+
+    #[tool(
+        name = "books.run_depreciation",
+        description = "Post one month of depreciation (Dr Depreciation Expense / Cr Accumulated Depreciation) for one asset, or for every active asset when asset_id is omitted. Idempotent: re-running a posted period returns the original entry instead of double-posting. Depreciation is an allocation, not money movement, so it is exempt from the receipt policy; the registered asset and its schedule are the evidence."
+    )]
+    async fn run_depreciation(
+        &self,
+        params: Parameters<RunDepreciationParams>,
+    ) -> Result<Json<RunDepreciationOut>, String> {
+        let p = params.0;
+        let (py, pm) = parse_period_mcp(&p.period)?;
+        let mut store = self.lock()?;
+        let targets: Vec<(u64, String)> = match p.asset_id {
+            Some(id) => {
+                let a = store
+                    .ledger()
+                    .get_asset(id)
+                    .ok_or_else(|| format!("unknown asset {id}"))?;
+                vec![(id, a.description.clone())]
+            }
+            None => store
+                .ledger()
+                .registered_assets()
+                .filter(|a| a.status == AssetStatus::Active)
+                .map(|a| (a.id, a.description.clone()))
+                .collect(),
+        };
+        let mut runs = Vec::with_capacity(targets.len());
+        let mut skipped = Vec::new();
+        for (id, description) in targets {
+            // Run-all skips assets whose depreciable life doesn't touch the
+            // period instead of failing the whole batch.
+            if p.asset_id.is_none()
+                && let Some(asset) = store.ledger().get_asset(id)
+            {
+                let period_end = last_day_of_month(py, pm);
+                let touches = depreciation_schedule(asset, period_end)
+                    .iter()
+                    .any(|l| l.period == p.period);
+                if !touches {
+                    skipped.push(SkippedDepreciation {
+                        asset_id: id,
+                        description,
+                        reason: format!(
+                            "period {} is outside the asset's depreciable life",
+                            p.period
+                        ),
+                    });
+                    continue;
+                }
+            }
+            let r = store
+                .run_depreciation(id, &p.period)
+                .map_err(|e| e.to_string())?;
+            runs.push(DepreciationRunOut {
+                asset_id: r.asset_id,
+                description,
+                period: r.period,
+                amount: money(r.amount),
+                entry_id: r.entry_id,
+                already_posted: r.already_posted,
+            });
+        }
+        Ok(Json(RunDepreciationOut { runs, skipped }))
+    }
+
+    #[tool(
+        name = "books.dispose_asset",
+        description = "Dispose of a fixed asset (sell or retire). Without confirmed=true returns a preview — book value, gain/loss, the auto-posted final depreciation, and the disposal entry's lines — and posts nothing. With confirmed=true posts the disposal entry (plus any missing final-period depreciation) after enforcing the receipt policy: file the bill of sale with books.file_document first and pass its attachment ids as receipt_attachment_ids."
+    )]
+    async fn dispose_asset(
+        &self,
+        params: Parameters<DisposeAssetParams>,
+    ) -> Result<Json<DisposeAssetOut>, String> {
+        let p = params.0;
+        let mut store = self.lock()?;
+        let date = parse_date(&p.date)?;
+        let base = store.ledger().base_currency();
+        let proceeds = Money::new(parse_amount(&p.proceeds)?, base);
+        let proceeds_account = resolve_account(&store, &p.proceeds_account)?;
+        let gain_loss_account = resolve_account(&store, &p.gain_loss_account)?;
+        let asset = store
+            .ledger()
+            .get_asset(p.asset_id)
+            .ok_or_else(|| format!("unknown asset {}", p.asset_id))?
+            .clone();
+        let preview = store
+            .dispose_preview(p.asset_id, date, proceeds)
+            .map_err(|e| e.to_string())?;
+
+        // The would-be disposal entry's lines, for the preview and the
+        // receipt-policy check.
+        let mut raw: Vec<(AccountId, Side, Money)> = vec![
+            (
+                asset.accum_depr_account,
+                Side::Debit,
+                Money::new(preview.accumulated, base),
+            ),
+            (proceeds_account, Side::Debit, proceeds),
+            (asset.cost_account, Side::Credit, asset.cost),
+        ];
+        if preview.gain_loss > Decimal::ZERO {
+            raw.push((
+                gain_loss_account,
+                Side::Credit,
+                Money::new(preview.gain_loss, base),
+            ));
+        } else if preview.gain_loss < Decimal::ZERO {
+            raw.push((
+                gain_loss_account,
+                Side::Debit,
+                Money::new(-preview.gain_loss, base),
+            ));
+        }
+        // Disposals are money movement: the bill of sale is the receipt.
+        let chart = store.ledger().chart();
+        let code_of = |id: AccountId| {
+            chart
+                .get(id)
+                .map(|a| a.code.clone())
+                .ok_or_else(|| format!("unknown account {id}"))
+        };
+        let codes: Vec<String> = [
+            asset.accum_depr_account,
+            proceeds_account,
+            asset.cost_account,
+            gain_loss_account,
+        ]
+        .iter()
+        .map(|id| code_of(*id))
+        .collect::<Result<_, _>>()?;
+        let code_refs: Vec<&str> = codes.iter().map(|s| s.as_str()).collect();
+        let debits = preview.accumulated
+            + proceeds.amount
+            + if preview.gain_loss < Decimal::ZERO {
+                -preview.gain_loss
+            } else {
+                Decimal::ZERO
+            };
+        let receipt_required = self.policy.receipt_required_for(&code_refs, debits);
+
+        let out = DisposeAssetOut {
+            status: "preview".to_string(),
+            asset_id: p.asset_id,
+            entry_id: 0,
+            accumulated: money(preview.accumulated),
+            book_value: money(preview.book_value),
+            proceeds: money(proceeds.amount),
+            gain_loss: money(preview.gain_loss),
+            final_depreciation: money(preview.final_depreciation),
+            lines: preview_lines_for(&store, &raw)?,
+            receipt_required,
+        };
+        if !p.confirmed.unwrap_or(false) {
+            return Ok(Json(out));
+        }
+        let attachment_ids = p.receipt_attachment_ids.unwrap_or_default();
+        if receipt_required && attachment_ids.is_empty() {
+            return Err(format!(
+                "receipt_required: disposing {} moves {} in debits ({}); file the bill of sale with books.file_document, then retry with receipt_attachment_ids",
+                asset.description,
+                money(debits),
+                self.policy.describe()
+            ));
+        }
+        let entry_id = store
+            .dispose_asset(
+                p.asset_id,
+                date,
+                proceeds,
+                proceeds_account,
+                gain_loss_account,
+            )
+            .map_err(|e| e.to_string())?;
+        for aid in &attachment_ids {
+            store
+                .link_receipt(*aid, entry_id)
+                .map_err(|e| e.to_string())?;
+        }
+        let mut posted = out;
+        posted.status = "posted".to_string();
+        posted.entry_id = entry_id;
+        Ok(Json(posted))
     }
 }
 

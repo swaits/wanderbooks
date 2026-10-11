@@ -22,7 +22,7 @@ this phase, not yet built), `future` (on the engine roadmap).
 | 8 | Document filing by category (01 Formation / 02 Legal / 03 Tax / 04 Accounting) | `books.file_document` | specced |
 | 9 | Ad-hoc questions ("what did we spend on X?") | `search_entries` + reports; the AI itself is the query layer | specced |
 | 10 | Human review of what the assistant recorded | `books.digest` | specced |
-| 11 | CPA-ready export of the books | `books.export` (csv/json) | specced |
+| 11 | CPA-ready export of the books | `books.export` (csv/json now; xlsx/iif planned) | specced |
 | 12 | Company email filing (every company email → Drive folder) | out of books scope; the existing mail-filing automation keeps running unchanged | — |
 
 ## Notes

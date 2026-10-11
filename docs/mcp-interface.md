@@ -29,6 +29,17 @@ layer.
    laptop). Bearer token, binds 127.0.0.1 or the tailnet interface only.
    Binding 0.0.0.0 is an explicit human decision, never a default.
 
+## Server instructions
+
+The MCP `initialize` response carries an `instructions` string: the agent
+operating contract (below) in condensed form. The model reads it at the start
+of every session, before any tool call. Tool descriptions repeat the relevant
+fragment at the point of use (`post_entry`'s description states the
+preview-before-post rule; `attach_receipt`'s states the receipt rule). Prose
+guidance is therefore delivered twice — once at session start, once at the
+tool — but it is guidance, not enforcement. Enforcement is the receipt policy
+below.
+
 ## Tool design principles
 
 - **Narrow tools, explicit arguments.** No "do what I mean" tools. The agent
@@ -56,8 +67,10 @@ layer.
   → `{ lines: [...], totals: { debits, credits, balanced } }`. Running totals
   after every line: the agent watches the entry balance in real time.
 - `books.post_entry { entry_id, confirmed }` → without confirmation:
-  `{ preview: { lines, resulting_balances } }`; with confirmation: validates,
-  posts, returns `{ entry, balances_changed: [{ code, before, after }] }`.
+  `{ preview: { lines, resulting_balances, receipts: { attached: [...],
+  required_but_missing: bool } } }`; with confirmation: validates (including
+  the receipt policy), posts, returns `{ entry, balances_changed: [{ code,
+  before, after }] }`.
 - `books.reverse_entry { entry_id, date, description, confirmed }` → same
   preview/confirm pattern as post.
 - `books.get_entry { entry_id }` → full entry with lines.
@@ -86,11 +99,38 @@ layer.
   description? }` → `{ document_id, sha256, deduplicated }`. The Drive-folder
   replacement (today's 01 Formation / 02 Legal / 03 Tax / 04 Accounting).
 
+## Receipt enforcement
+
+Prose tells the model to attach receipts; the policy makes it true. The
+engine stays policy-free (it knows nothing of receipts) — enforcement lives
+in the MCP layer, which reads the `attachments` table before confirming a
+posting.
+
+- **Policy config** (server config file, not per-call): `require_receipts_above`
+  (default `"25.00"` in base currency), plus `receipt_required_accounts`
+  (account codes that always require receipts, e.g. meals and travel) and
+  `receipt_exempt_accounts` (e.g. automated bank fees). Human-edited and
+  versioned with the deployment.
+- **Preview.** Every `post_entry` / `reverse_entry` preview includes the
+  receipt checklist (`attached: [...]`, `required_but_missing: bool`), so the
+  human sees it before confirming.
+- **Hard error.** Confirming a posting that violates the policy fails with a
+  typed error: `{ "error": "receipt_required", "entry_id": …, "missing": …,
+  "policy": "require_receipts_above = 25.00 USD" }`. The agent's job then is
+  to get the receipt attached (ask the human for it) and re-confirm — not to
+  shrink the amount or split the entry to dodge the threshold. The tool
+  description says this explicitly; gaming the policy is a correctness
+  violation, and the append-only audit log would show it anyway.
+- **Below the threshold**, receipts are still expected per the operating
+  contract ("a material entry without its source document is incomplete")
+  but not hard-required — the preview checklist keeps them visible.
+
 ## Tools — export
 
 - `books.export { format: "csv" | "json", scope: "journal" | "trial-balance" |
   "profit-and-loss" | "balance-sheet" | "chart" }` → `{ content_base64,
-  file_name }`. CPA-ready output. GnuCash XML arrives with R-FUTURE-4.
+  file_name }`. CPA-ready output. `xlsx` and `iif` (QuickBooks Desktop
+  journal entries) arrive with R-FUTURE-4 via the `ledger-export` crate.
 
 ## Resources (read-only)
 
@@ -113,7 +153,8 @@ in the server's tool descriptions, so the model reads it at use time):
    in prose.
 3. **Attach receipts at record time.** A material entry without its source
    document is an incomplete entry. File first, link later if the entry
-   isn't ready.
+   isn't ready. Postings at or above the receipt policy threshold *cannot*
+   post without one — the server refuses with `receipt_required`.
 4. **When unsure of categorization, draft and ask.** A draft is cheap; a
    wrong posting is a reversal. Never guess-post.
 5. **The digest is the receipt for your work.** After a batch of bookkeeping,

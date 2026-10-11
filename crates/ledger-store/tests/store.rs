@@ -268,13 +268,82 @@ fn unbalanced_entry_never_reaches_the_journal() {
     store.add_line(e, equity, Side::Credit, usd(99)).unwrap();
     assert!(store.post_entry(e).is_err());
 
-    // The failed post journaled nothing: only entry.created was added.
+    // The failed post journaled nothing new: the draft creation and its
+    // two lines were already journaled (durable drafts); entry.posted was not.
     let seq_after = JournalWriter::open(&dir.join(ledger_store::JOURNAL_FILE))
         .unwrap()
         .next_seq();
-    assert_eq!(seq_after, seq_before + 1);
+    assert_eq!(seq_after, seq_before + 3);
     // And a fresh open sees a clean, balanced book.
     drop(store);
     let store = Store::open(&dir).unwrap();
+    store.verify().unwrap();
+}
+
+#[test]
+fn draft_lines_survive_reopen() {
+    // Drafts are durable: build a draft, close the store, reopen, and the
+    // draft comes back with its lines intact.
+    let dir = test_dir("draft-durable");
+    let (cash, revenue);
+    let draft_id;
+    {
+        let mut store = build_books(&dir);
+        cash = store.ledger().chart().find_by_code("1000").unwrap().id;
+        revenue = store.ledger().chart().find_by_code("4000").unwrap().id;
+        draft_id = store
+            .create_entry(
+                NaiveDate::from_ymd_opt(2026, 2, 1).unwrap(),
+                "unposted sale",
+            )
+            .unwrap();
+        store
+            .add_line(draft_id, cash, Side::Debit, usd(250))
+            .unwrap();
+        store
+            .add_line(draft_id, revenue, Side::Credit, usd(250))
+            .unwrap();
+        // Draft is not posted: trial balance only sees the posted entry.
+        let tb = ledger_core::reports::trial_balance(store.ledger());
+        assert_eq!(tb.total_debits, Decimal::from(14000));
+    }
+    // Reopen: the draft and its lines are back.
+    let mut store = Store::open(&dir).unwrap();
+    let draft = store.ledger().get_entry(draft_id).unwrap();
+    assert_eq!(draft.lines().len(), 2);
+    assert_eq!(draft.status(), ledger_core::EntryStatus::Draft);
+    // Post it after reopen: works, and the books balance.
+    store.post_entry(draft_id).unwrap();
+    let tb = ledger_core::reports::trial_balance(store.ledger());
+    assert_eq!(tb.total_debits, Decimal::from(14250));
+    assert_eq!(tb.total_credits, Decimal::from(14250));
+    store.verify().unwrap();
+}
+
+#[test]
+fn corrupt_projection_is_quarantined_and_rebuilt() {
+    let dir = test_dir("corrupt-projection");
+    {
+        let _store = build_books(&dir);
+    }
+    // Corrupt the SQLite file with garbage.
+    let db_path = dir.join(ledger_store::DB_FILE);
+    std::fs::write(&db_path, b"this is not a sqlite database at all").unwrap();
+    // Reopen heals from the journal instead of failing.
+    let store = Store::open(&dir).unwrap();
+    // The damaged file was quarantined for forensics.
+    let quarantined: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with("wanderbooks.corrupt.")
+        })
+        .collect();
+    assert_eq!(quarantined.len(), 1);
+    // The books are intact and verify clean.
+    let tb = ledger_core::reports::trial_balance(store.ledger());
+    assert_eq!(tb.total_debits, Decimal::from(14000));
     store.verify().unwrap();
 }

@@ -1,47 +1,68 @@
 # wanderbooks
 
-Canonical double-entry bookkeeping, rebuilt from scratch — the storytold way:
-an engine verified against oracles, with automated parity tracking, on its
-way to becoming a self-hosted bookkeeping app that never charges rent.
+Canonical double-entry bookkeeping, rebuilt from scratch. The engine is
+verified against oracles, parity is tracked automatically, and the primary
+interface is AI-first: you talk to an agent, the agent drives the books
+through MCP. Self-hosted, no rent.
+
+## What it is
+
+- **`ledger-core`** — the semantics engine. Exact decimal money, five
+  account types, balanced journal entries, immutable posted log with
+  reversing entries, trial balance, P&L, balance sheet, indirect-method
+  cash flow, fixed-asset register with straight-line depreciation.
+- **`ledger-store`** — durable storage. The source of truth is an
+  append-only, hash-chained JSONL journal; SQLite is a disposable
+  projection rebuilt from it; receipts live in a content-addressed blob
+  store. Drafts are durable, corrupt projections self-heal.
+- **`ledger-mcp`** — the AI-first interface. 27 MCP tools over stdio or
+  Streamable HTTP: draft → preview → post workflow, server-side receipt
+  policy (>$25), anti-splitting detection, asset management, digest for
+  human review, plus read-only resources for dashboards.
+- **`ledger-import`** — QuickBooks interop. Import bank/credit-card CSVs
+  and chart-of-accounts CSVs; export IIF journal entries (for QuickBooks
+  Desktop) and XLSX reports.
+
+## Verification
+
+This is the storytold way applied to accounting: agents verify against
+oracles, never ship what they haven't demonstrated.
+
+- 70 workspace tests: invariant tests encoding accounting law, golden-file
+  report snapshots, property tests (proptest), end-to-end MCP stdio tests.
+- Mutation testing via cargo-mutants; fuzzing via cargo-fuzz (11.5M+
+  executions, zero crashes).
+- GnuCash is the behavioral oracle (never a code source — clean room,
+  MIT OR Apache-2.0).
 
 ## Status
 
-Phase 1: the semantics engine. `ledger-core` implements the accounting laws
-in Rust — exact decimal money, five account types, balanced journal entries,
-immutable posted log with reversing entries, trial balance, P&L, and balance
-sheet — with 14 invariant tests and golden-file report snapshots.
+Parity is 12 of 12 against the spreadsheet workflow it replaces
+(`docs/capability-parity.md`). The parallel-run plan
+(`docs/parallel-run.md`) is written; the Google Sheet stays the system of
+record until a clean month and explicit cutover approval.
 
 See [`plan/STATUS.md`](plan/STATUS.md) for where things stand and
-[`plan/roadmap.md`](plan/roadmap.md) for where they're going.
+[`plan/roadmap.md`](plan/roadmap.md) for where it's going.
 
 ## Quickstart
 
 ```bash
-cargo test
+cargo test          # whole suite
+cargo run -p ledger-mcp -- --data-dir /tmp/books   # MCP server over stdio
 ```
-
-That's the whole test suite: validation rejections, immutability, the
-accounting equation on a fixture company, a 300-entry randomized invariant
-test, and the golden oracle test.
 
 ## Layout
 
 ```
-crates/ledger-core/   # the engine: money, accounts, journal, ledger, reports
-docs/                 # requirements, architecture, oracle design, parity, glossary
-plan/                 # STATUS.md, roadmap.md
-AGENTS.md             # operating manual for agents working here
+crates/ledger-core/    # engine: money, accounts, journal, ledger, reports
+crates/ledger-store/   # journal + SQLite projection + blob store
+crates/ledger-mcp/     # MCP server: 27 tools, resources, receipt policy
+crates/ledger-import/  # QBO CSV import, IIF/XLSX export
+docs/                  # requirements, architecture, oracle, parity, glossary
+plan/                  # STATUS.md, roadmap.md
+AGENTS.md              # operating manual for agents working here
 ```
-
-## The idea, briefly
-
-storytold/ArtCraft showed that agents can clone full applications with the
-right machinery: screenshot-in-the-loop verification, render oracles, and
-automated parity floors. `wanderbooks` adapts that pipeline to bookkeeping,
-where the oracle is semantic instead of visual — GnuCash (open source, open
-formats) is both the spec and the reference implementation we diff against,
-and two engines fed the same books must produce byte-identical reports.
-Details in [`docs/oracle.md`](docs/oracle.md).
 
 ## License
 

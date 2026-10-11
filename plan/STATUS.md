@@ -58,3 +58,8 @@ flow, proptest) continues as needed, but the next *phase* is the interface:
   the phase is the GSheet+GDrive system (`docs/capability-parity.md`), with
   a parallel-run cutover rule. GUI drops to read-only, event-log-driven,
   phase 4.
+- 2026-10-10: Import/export targets QuickBooks formats (CSV, IIF, XLSX) —
+  "could not give a single shit about GnuCash XML." GnuCash stays the
+  *behavioral* oracle only. Receipt enforcement is server-side policy in the
+  MCP layer (threshold + per-account overrides, typed `receipt_required`
+  error, checklist in every preview); the engine stays policy-free.

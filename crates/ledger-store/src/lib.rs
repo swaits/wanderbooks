@@ -28,5 +28,6 @@ pub use blob::BlobStore;
 pub use error::StoreError;
 pub use journal::{GENESIS_PREV, JournalLine, JournalWriter};
 pub use store::{
-    Attachment, DB_FILE, DepreciationRun, DisposalPreview, EntryRow, EventRow, JOURNAL_FILE, Store,
+    Attachment, DB_FILE, DepreciationRun, DisposalPreview, EntryRow, EventRow, JOURNAL_FILE,
+    PayrollLineInput, Store,
 };

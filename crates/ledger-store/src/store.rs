@@ -12,8 +12,9 @@ use crate::journal::{JournalLine, JournalWriter, read_and_verify_journal};
 use crate::schema;
 use chrono::{Months, NaiveDate};
 use ledger_core::{
-    AccountId, AccountType, AssetId, AssetStatus, Currency, EntryId, EntryStatus, Ledger,
-    LedgerError, Money, NewAsset, Side, reports,
+    AccountId, AccountType, AssetId, AssetStatus, BillId, Currency, CustomerId, DocumentLine,
+    EntryId, EntryStatus, InvoiceId, Ledger, LedgerError, Money, NewAsset, PeriodId, Side,
+    VendorId, arap, reports,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use rust_decimal::Decimal;
@@ -900,6 +901,511 @@ impl Store {
     }
 
     // ------------------------------------------------------------------
+    // Accounting periods
+    // ------------------------------------------------------------------
+
+    /// Create an accounting period. Journaled as `period.created`.
+    pub fn create_period(
+        &mut self,
+        name: &str,
+        start: NaiveDate,
+        end: NaiveDate,
+    ) -> Result<PeriodId, StoreError> {
+        // Pure pre-validation so the journal write cannot be followed by a
+        // failed mutation.
+        ledger_core::periods::validate_period_range(start, end)?;
+        let id = self.ledger.next_period_id();
+        let line = self.append_journal(
+            "period.created",
+            json!({
+                "id": id,
+                "name": name,
+                "start": start.to_string(),
+                "end": end.to_string(),
+            }),
+        )?;
+        let live = self.ledger.create_period(name, start, end)?;
+        debug_assert_eq!(live, id, "id allocator diverged from journal");
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(live)
+    }
+
+    /// Close an accounting period, auto-posting the closing entry (revenue
+    /// and expense accounts zeroed into Retained Earnings). Journaled as
+    /// `period.closed` with the closing entry's id and its full detail
+    /// (date, description, lines).
+    ///
+    /// The closing entry is part of the close: it is NOT separately
+    /// journaled as entry.created/entry.posted. Its detail rides in the
+    /// period.closed payload so the SQLite projection can record it; the
+    /// detail only exists after the close, so unlike most mutations this
+    /// journals after mutating (the pre-close validation makes a failed
+    /// close impossible, so the journal cannot be left behind). Replay
+    /// re-runs the deterministic close logic and checks the closing entry
+    /// id against the journal.
+    pub fn close_period(&mut self, id: PeriodId) -> Result<Option<EntryId>, StoreError> {
+        // Pure pre-validation: a doomed close journals nothing, not even
+        // the Retained Earnings account creation below.
+        self.ledger.preview_close_period(id)?;
+        // Retained Earnings must exist before the close so its creation (if
+        // needed) is journaled as account.added; the close's own ensure
+        // then no-ops and replay stays deterministic.
+        self.ensure_control_account("3999", "Retained Earnings", AccountType::Equity)?;
+        let closing_entry = self.ledger.close_period(id)?;
+        let entry_detail = match closing_entry {
+            Some(eid) => {
+                let e = self
+                    .ledger
+                    .get_entry(eid)
+                    .expect("close just posted the closing entry");
+                Some(json!({
+                    "id": eid,
+                    "date": e.date().to_string(),
+                    "description": e.description(),
+                    "lines": e.lines().iter().map(journal_line_json).collect::<Vec<_>>(),
+                }))
+            }
+            None => None,
+        };
+        let line = self.append_journal(
+            "period.closed",
+            json!({
+                "id": id,
+                "closing_entry": closing_entry,
+                "entry": entry_detail,
+            }),
+        )?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(closing_entry)
+    }
+
+    // ------------------------------------------------------------------
+    // Bank reconciliation
+    // ------------------------------------------------------------------
+
+    /// Mark a posted entry's line cleared (or uncleared) for bank
+    /// reconciliation. Journaled as `line.cleared`.
+    pub fn mark_cleared(
+        &mut self,
+        entry_id: EntryId,
+        line_index: usize,
+        cleared: bool,
+    ) -> Result<(), StoreError> {
+        self.ledger.mark_cleared(entry_id, line_index, cleared)?;
+        let line = self.append_journal(
+            "line.cleared",
+            json!({
+                "entry_id": entry_id,
+                "line_index": line_index as u64,
+                "cleared": cleared,
+            }),
+        )?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // Accounts receivable / payable
+    // ------------------------------------------------------------------
+
+    /// Fetch a control account by code, creating it through the journaled
+    /// account path when missing. The ledger's internal ensure_account
+    /// then no-ops, which keeps replay deterministic: every account
+    /// creation is an `account.added` event.
+    fn ensure_control_account(
+        &mut self,
+        code: &str,
+        name: &str,
+        account_type: AccountType,
+    ) -> Result<AccountId, StoreError> {
+        if let Some(a) = self.ledger.chart().find_by_code(code) {
+            return Ok(a.id);
+        }
+        self.add_account(code, name, account_type, None, false)
+    }
+
+    /// Journal an auto-posted two-line entry (debit one account, credit
+    /// another for the same amount) through the standard entry.created /
+    /// entry.line_added / entry.posted flow. Returns the predicted entry id
+    /// and the journaled lines; the caller mutates the ledger afterwards
+    /// and applies the lines to SQLite.
+    fn journal_auto_entry(
+        &mut self,
+        date: NaiveDate,
+        description: &str,
+        debit_account: AccountId,
+        credit_account: AccountId,
+        amount: Decimal,
+    ) -> Result<(EntryId, Vec<JournalLine>), StoreError> {
+        let entry_id = self.ledger.next_entry_id();
+        let base = self.base_currency;
+        let mut journaled = Vec::with_capacity(4);
+        journaled.push(self.append_journal(
+            "entry.created",
+            json!({
+                "id": entry_id,
+                "date": date.to_string(),
+                "description": description,
+            }),
+        )?);
+        for (account, side) in [(debit_account, Side::Debit), (credit_account, Side::Credit)] {
+            journaled.push(self.append_journal(
+                "entry.line_added",
+                json!({
+                    "id": entry_id,
+                    "account": account,
+                    "side": match side {
+                        Side::Debit => "debit",
+                        Side::Credit => "credit",
+                    },
+                    "amount": amount.to_string(),
+                    "currency": base.code(),
+                }),
+            )?);
+        }
+        journaled.push(self.append_journal(
+            "entry.posted",
+            json!({
+                "id": entry_id,
+                "date": date.to_string(),
+                "description": description,
+                "reversal_of": Option::<u64>::None,
+                "lines": [
+                    plain_line_json(debit_account, Side::Debit, Money::new(amount, base)),
+                    plain_line_json(credit_account, Side::Credit, Money::new(amount, base)),
+                ],
+            }),
+        )?);
+        Ok((entry_id, journaled))
+    }
+
+    /// Add a customer. Journaled as `customer.added`.
+    pub fn add_customer(&mut self, name: &str) -> Result<CustomerId, StoreError> {
+        // The engine's only failure mode is an empty name; replicate it so
+        // the journal write cannot be followed by a failed mutation.
+        if name.trim().is_empty() {
+            return Err(LedgerError::EmptyAssetDescription.into());
+        }
+        let id = self.ledger.next_customer_id();
+        let line = self.append_journal("customer.added", json!({ "id": id, "name": name }))?;
+        let live = self.ledger.add_customer(name)?;
+        debug_assert_eq!(live, id, "id allocator diverged from journal");
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(live)
+    }
+
+    /// Add a vendor. Journaled as `vendor.added`.
+    pub fn add_vendor(&mut self, name: &str) -> Result<VendorId, StoreError> {
+        if name.trim().is_empty() {
+            return Err(LedgerError::EmptyAssetDescription.into());
+        }
+        let id = self.ledger.next_vendor_id();
+        let line = self.append_journal("vendor.added", json!({ "id": id, "name": name }))?;
+        let live = self.ledger.add_vendor(name)?;
+        debug_assert_eq!(live, id, "id allocator diverged from journal");
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(live)
+    }
+
+    /// Create a sales invoice. The auto-posted entry (Dr A/R, Cr Revenue)
+    /// is journaled first through the standard entry flow, then the
+    /// invoice itself as `invoice.created`.
+    pub fn create_invoice(
+        &mut self,
+        customer_id: CustomerId,
+        date: NaiveDate,
+        due_date: NaiveDate,
+        lines: Vec<DocumentLine>,
+    ) -> Result<InvoiceId, StoreError> {
+        // Pure pre-validation mirroring Ledger::create_invoice, so the
+        // journal writes below cannot be followed by a failed mutation.
+        // (The auto-posted entry balances by construction and its accounts
+        // are ensured below.)
+        if self.ledger.get_customer(customer_id).is_none() {
+            return Err(LedgerError::UnknownCustomer(customer_id).into());
+        }
+        arap::validate_lines(&lines)?;
+        arap::validate_due_date(date, due_date)?;
+        if let Some(pid) = self.ledger.closed_period_containing(date) {
+            return Err(LedgerError::ClosedPeriod(pid, date.to_string()).into());
+        }
+        let ar = self.ensure_control_account("1200", "Accounts Receivable", AccountType::Asset)?;
+        let revenue = self.ensure_control_account("4000", "Revenue", AccountType::Revenue)?;
+        let invoice_id = self.ledger.next_invoice_id();
+        let total: Decimal = lines.iter().map(|l| l.amount).sum();
+        let description = format!("Invoice {invoice_id}");
+        let (entry_id, mut journaled) =
+            self.journal_auto_entry(date, &description, ar, revenue, total)?;
+        let doc_lines: Vec<Value> = lines.iter().map(document_line_json).collect();
+        journaled.push(self.append_journal(
+            "invoice.created",
+            json!({
+                "id": invoice_id,
+                "customer_id": customer_id,
+                "date": date.to_string(),
+                "due_date": due_date.to_string(),
+                "lines": doc_lines,
+                "entry_id": entry_id,
+            }),
+        )?);
+        let live = self
+            .ledger
+            .create_invoice(customer_id, date, due_date, lines)?;
+        debug_assert_eq!(live, invoice_id, "id allocator diverged from journal");
+        debug_assert_eq!(
+            self.ledger
+                .get_invoice(live)
+                .expect("invoice exists")
+                .entry_id,
+            entry_id,
+            "invoice entry diverged from journal"
+        );
+        for line in &journaled {
+            apply_line_to_sqlite(&self.conn, line)?;
+        }
+        Ok(live)
+    }
+
+    /// Create a vendor bill. The auto-posted entry (Dr General Expenses, Cr
+    /// A/P) is journaled first through the standard entry flow, then the
+    /// bill itself as `bill.created`.
+    pub fn create_bill(
+        &mut self,
+        vendor_id: VendorId,
+        date: NaiveDate,
+        due_date: NaiveDate,
+        lines: Vec<DocumentLine>,
+    ) -> Result<BillId, StoreError> {
+        if self.ledger.get_vendor(vendor_id).is_none() {
+            return Err(LedgerError::UnknownVendor(vendor_id).into());
+        }
+        arap::validate_lines(&lines)?;
+        arap::validate_due_date(date, due_date)?;
+        if let Some(pid) = self.ledger.closed_period_containing(date) {
+            return Err(LedgerError::ClosedPeriod(pid, date.to_string()).into());
+        }
+        let expense =
+            self.ensure_control_account("6999", "General Expenses", AccountType::Expense)?;
+        let ap = self.ensure_control_account("2000", "Accounts Payable", AccountType::Liability)?;
+        let bill_id = self.ledger.next_bill_id();
+        let total: Decimal = lines.iter().map(|l| l.amount).sum();
+        let description = format!("Bill {bill_id}");
+        let (entry_id, mut journaled) =
+            self.journal_auto_entry(date, &description, expense, ap, total)?;
+        let doc_lines: Vec<Value> = lines.iter().map(document_line_json).collect();
+        journaled.push(self.append_journal(
+            "bill.created",
+            json!({
+                "id": bill_id,
+                "vendor_id": vendor_id,
+                "date": date.to_string(),
+                "due_date": due_date.to_string(),
+                "lines": doc_lines,
+                "entry_id": entry_id,
+            }),
+        )?);
+        let live = self.ledger.create_bill(vendor_id, date, due_date, lines)?;
+        debug_assert_eq!(live, bill_id, "id allocator diverged from journal");
+        debug_assert_eq!(
+            self.ledger.get_bill(live).expect("bill exists").entry_id,
+            entry_id,
+            "bill entry diverged from journal"
+        );
+        for line in &journaled {
+            apply_line_to_sqlite(&self.conn, line)?;
+        }
+        Ok(live)
+    }
+
+    /// Record a customer payment against an invoice. The payment entry (Dr
+    /// cash, Cr A/R) is journaled through the standard entry flow first,
+    /// then `invoice.payment_received`.
+    pub fn receive_payment(
+        &mut self,
+        invoice_id: InvoiceId,
+        date: NaiveDate,
+        amount: Decimal,
+        cash_account: AccountId,
+    ) -> Result<EntryId, StoreError> {
+        // Pure pre-validation mirroring Ledger::receive_payment, plus the
+        // account checks post_entry would perform: a failed post after the
+        // journal writes would leave the journal ahead of the ledger.
+        if amount <= Decimal::ZERO {
+            return Err(LedgerError::InvalidPaymentAmount(amount).into());
+        }
+        let balance = self
+            .ledger
+            .get_invoice(invoice_id)
+            .ok_or(LedgerError::UnknownInvoice(invoice_id))?
+            .balance();
+        if amount > balance {
+            return Err(LedgerError::Overpayment(amount, balance).into());
+        }
+        if let Some(pid) = self.ledger.closed_period_containing(date) {
+            return Err(LedgerError::ClosedPeriod(pid, date.to_string()).into());
+        }
+        let cash = self
+            .ledger
+            .chart()
+            .get(cash_account)
+            .ok_or(LedgerError::UnknownAccount(cash_account))?;
+        if cash.placeholder {
+            return Err(LedgerError::PlaceholderAccount(cash.code.clone()).into());
+        }
+        let ar = self.ensure_control_account("1200", "Accounts Receivable", AccountType::Asset)?;
+        let description = format!("Payment on invoice {invoice_id}");
+        let (entry_id, mut journaled) =
+            self.journal_auto_entry(date, &description, cash_account, ar, amount)?;
+        journaled.push(self.append_journal(
+            "invoice.payment_received",
+            json!({
+                "invoice_id": invoice_id,
+                "date": date.to_string(),
+                "amount": amount.to_string(),
+                "cash_account": cash_account,
+                "entry_id": entry_id,
+            }),
+        )?);
+        let live = self
+            .ledger
+            .receive_payment(invoice_id, date, amount, cash_account)?;
+        debug_assert_eq!(live, entry_id, "id allocator diverged from journal");
+        for line in &journaled {
+            apply_line_to_sqlite(&self.conn, line)?;
+        }
+        Ok(live)
+    }
+
+    /// Pay a vendor bill. The payment entry (Dr A/P, Cr cash) is journaled
+    /// through the standard entry flow first, then `bill.paid`.
+    pub fn pay_bill(
+        &mut self,
+        bill_id: BillId,
+        date: NaiveDate,
+        amount: Decimal,
+        cash_account: AccountId,
+    ) -> Result<EntryId, StoreError> {
+        if amount <= Decimal::ZERO {
+            return Err(LedgerError::InvalidPaymentAmount(amount).into());
+        }
+        let balance = self
+            .ledger
+            .get_bill(bill_id)
+            .ok_or(LedgerError::UnknownBill(bill_id))?
+            .balance();
+        if amount > balance {
+            return Err(LedgerError::Overpayment(amount, balance).into());
+        }
+        if let Some(pid) = self.ledger.closed_period_containing(date) {
+            return Err(LedgerError::ClosedPeriod(pid, date.to_string()).into());
+        }
+        let cash = self
+            .ledger
+            .chart()
+            .get(cash_account)
+            .ok_or(LedgerError::UnknownAccount(cash_account))?;
+        if cash.placeholder {
+            return Err(LedgerError::PlaceholderAccount(cash.code.clone()).into());
+        }
+        let ap = self.ensure_control_account("2000", "Accounts Payable", AccountType::Liability)?;
+        let description = format!("Payment on bill {bill_id}");
+        let (entry_id, mut journaled) =
+            self.journal_auto_entry(date, &description, ap, cash_account, amount)?;
+        journaled.push(self.append_journal(
+            "bill.paid",
+            json!({
+                "bill_id": bill_id,
+                "date": date.to_string(),
+                "amount": amount.to_string(),
+                "cash_account": cash_account,
+                "entry_id": entry_id,
+            }),
+        )?);
+        let live = self.ledger.pay_bill(bill_id, date, amount, cash_account)?;
+        debug_assert_eq!(live, entry_id, "id allocator diverged from journal");
+        for line in &journaled {
+            apply_line_to_sqlite(&self.conn, line)?;
+        }
+        Ok(live)
+    }
+
+    // ------------------------------------------------------------------
+    // Foreign exchange
+    // ------------------------------------------------------------------
+
+    /// Record a historical FX rate (foreign -> base) for reference.
+    /// Journaled as `fx.rate_set`.
+    pub fn set_fx_rate(
+        &mut self,
+        currency: Currency,
+        date: NaiveDate,
+        rate: Decimal,
+    ) -> Result<(), StoreError> {
+        self.ledger.set_fx_rate(currency, date, rate)?;
+        let line = self.append_journal(
+            "fx.rate_set",
+            json!({
+                "currency": currency.code(),
+                "date": date.to_string(),
+                "rate": rate.to_string(),
+            }),
+        )?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
+    /// Add a foreign-currency line to a draft entry. The base-currency
+    /// amount is stored alongside the foreign original and the rate used.
+    /// Journaled as `entry.line_added` with the fx fields
+    /// (`foreign_currency`, `foreign_amount`, `fx_rate`).
+    pub fn add_line_fx(
+        &mut self,
+        entry_id: EntryId,
+        account: AccountId,
+        side: Side,
+        foreign_currency: Currency,
+        foreign_amount: Decimal,
+        fx_rate: Decimal,
+    ) -> Result<(), StoreError> {
+        self.ledger.add_line_fx(
+            entry_id,
+            account,
+            side,
+            foreign_currency,
+            foreign_amount,
+            fx_rate,
+        )?;
+        // Read back the stored base amount rather than recomputing it: the
+        // journal must carry exactly what the ledger holds.
+        let stored = self
+            .ledger
+            .get_entry(entry_id)
+            .expect("entry exists after add_line_fx")
+            .lines()
+            .last()
+            .expect("line was just added")
+            .amount;
+        let line = self.append_journal(
+            "entry.line_added",
+            json!({
+                "id": entry_id,
+                "account": account,
+                "side": match side {
+                    Side::Debit => "debit",
+                    Side::Credit => "credit",
+                },
+                "amount": stored.amount.to_string(),
+                "currency": stored.currency.code(),
+                "foreign_currency": foreign_currency.code(),
+                "foreign_amount": foreign_amount.to_string(),
+                "fx_rate": fx_rate.to_string(),
+            }),
+        )?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
     // Blobs and attachments
     // ------------------------------------------------------------------
 
@@ -1390,12 +1896,67 @@ fn journal_line_json(l: &ledger_core::JournalLine) -> Value {
         Side::Debit => "debit",
         Side::Credit => "credit",
     };
-    json!({
+    let mut v = json!({
         "account": l.account,
         "side": side,
         "amount": l.amount.amount.to_string(),
         "currency": l.amount.currency.code(),
+    });
+    // Foreign-currency provenance, when the line carries it. Journals
+    // written before foreign-currency lines existed have no such lines;
+    // readers treat missing fields as None.
+    let obj = v
+        .as_object_mut()
+        .expect("journal_line_json builds an object");
+    if let Some(fc) = l.foreign_currency {
+        obj.insert(
+            "foreign_currency".to_string(),
+            Value::String(fc.code().to_string()),
+        );
+    }
+    if let Some(fa) = l.foreign_amount {
+        obj.insert("foreign_amount".to_string(), Value::String(fa.to_string()));
+    }
+    v
+}
+
+/// A plain base-currency line, serialized through the one line-JSON path.
+fn plain_line_json(account: AccountId, side: Side, amount: Money) -> Value {
+    journal_line_json(&ledger_core::JournalLine {
+        account,
+        side,
+        amount,
+        foreign_currency: None,
+        foreign_amount: None,
     })
+}
+
+/// One invoice/bill document line as journal JSON. Amounts are decimal
+/// strings, never floats.
+fn document_line_json(l: &DocumentLine) -> Value {
+    json!({
+        "description": l.description,
+        "amount": l.amount.to_string(),
+    })
+}
+
+/// Parse the `lines` array of an invoice/bill journal payload back into
+/// document lines.
+fn parse_document_lines(p: &Value) -> Result<Vec<DocumentLine>, StoreError> {
+    let arr = p
+        .get("lines")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| StoreError::JournalCorrupt("missing 'lines'".into()))?;
+    arr.iter()
+        .map(|l| {
+            Ok(DocumentLine {
+                description: get_str(l, "description")?.to_string(),
+                amount: get_str(l, "amount")?
+                    .parse()
+                    .map_err(|_| StoreError::JournalCorrupt("bad line amount".into()))?,
+            })
+        })
+        .collect()
 }
 
 fn flip_line_json(l: &ledger_core::JournalLine) -> Value {
@@ -1524,17 +2085,39 @@ fn replay_line_into_ledger(
         }
         "entry.line_added" => {
             let id = get_u64(p, "id")?;
-            ledger.add_line(
-                id,
-                get_u64(p, "account")?,
-                parse_side(get_str(p, "side")?)?,
-                Money::new(
-                    get_str(p, "amount")?
+            let account = get_u64(p, "account")?;
+            let side = parse_side(get_str(p, "side")?)?;
+            let amount: Decimal = get_str(p, "amount")?
+                .parse()
+                .map_err(|_| StoreError::JournalCorrupt("bad amount".into()))?;
+            let currency = Currency::new(get_str(p, "currency")?)
+                .map_err(|_| StoreError::JournalCorrupt("bad currency".into()))?;
+            // The fx fields are optional: journals written before
+            // foreign-currency lines existed carry none, and replay as
+            // plain base-currency lines.
+            match p.get("foreign_currency").and_then(|v| v.as_str()) {
+                Some(fc) => {
+                    let foreign_amount: Decimal = get_str(p, "foreign_amount")?
                         .parse()
-                        .map_err(|_| StoreError::JournalCorrupt("bad amount".into()))?,
-                    Currency::new(get_str(p, "currency")?)?,
-                ),
-            )?;
+                        .map_err(|_| StoreError::JournalCorrupt("bad foreign amount".into()))?;
+                    let fx_rate: Decimal = get_str(p, "fx_rate")?
+                        .parse()
+                        .map_err(|_| StoreError::JournalCorrupt("bad fx rate".into()))?;
+                    ledger.add_line_fx(
+                        id,
+                        account,
+                        side,
+                        Currency::new(fc).map_err(|_| {
+                            StoreError::JournalCorrupt("bad foreign currency".into())
+                        })?,
+                        foreign_amount,
+                        fx_rate,
+                    )?;
+                }
+                None => {
+                    ledger.add_line(id, account, side, Money::new(amount, currency))?;
+                }
+            }
         }
         "entry.posted" => {
             let id = get_u64(p, "id")?;
@@ -1611,6 +2194,110 @@ fn replay_line_into_ledger(
                 parse_money(p, "proceeds")?,
             )?;
         }
+        "period.created" => {
+            let want = get_u64(p, "id")?;
+            let got = ledger.create_period(
+                get_str(p, "name")?,
+                parse_date(get_str(p, "start")?)?,
+                parse_date(get_str(p, "end")?)?,
+            )?;
+            if got != want {
+                return Err(StoreError::ReplayMismatch(format!(
+                    "period id: journal says {want}, replay got {got}"
+                )));
+            }
+        }
+        "period.closed" => {
+            let id = get_u64(p, "id")?;
+            let want = p.get("closing_entry").and_then(|v| v.as_u64());
+            // Deterministic: the close re-derives the closing entry from
+            // the replayed state, so it must match the journaled id. The
+            // journaled entry detail is for the projection; the ledger
+            // re-derives the entry itself.
+            let got = ledger.close_period(id)?;
+            if got != want {
+                return Err(StoreError::ReplayMismatch(format!(
+                    "closing entry: journal says {want:?}, replay got {got:?}"
+                )));
+            }
+        }
+        "line.cleared" => {
+            ledger.mark_cleared(
+                get_u64(p, "entry_id")?,
+                get_u64(p, "line_index")? as usize,
+                p.get("cleared").and_then(|v| v.as_bool()).unwrap_or(false),
+            )?;
+        }
+        "customer.added" => {
+            let want = get_u64(p, "id")?;
+            let got = ledger.add_customer(get_str(p, "name")?)?;
+            if got != want {
+                return Err(StoreError::ReplayMismatch(format!(
+                    "customer id: journal says {want}, replay got {got}"
+                )));
+            }
+        }
+        "vendor.added" => {
+            let want = get_u64(p, "id")?;
+            let got = ledger.add_vendor(get_str(p, "name")?)?;
+            if got != want {
+                return Err(StoreError::ReplayMismatch(format!(
+                    "vendor id: journal says {want}, replay got {got}"
+                )));
+            }
+        }
+        "invoice.created" => {
+            // The entry was already rebuilt by the standard entry handlers;
+            // this only restores the invoice record, without re-posting.
+            ledger.replay_invoice(
+                get_u64(p, "id")?,
+                get_u64(p, "customer_id")?,
+                parse_date(get_str(p, "date")?)?,
+                parse_date(get_str(p, "due_date")?)?,
+                parse_document_lines(p)?,
+                get_u64(p, "entry_id")?,
+            )?;
+        }
+        "bill.created" => {
+            ledger.replay_bill(
+                get_u64(p, "id")?,
+                get_u64(p, "vendor_id")?,
+                parse_date(get_str(p, "date")?)?,
+                parse_date(get_str(p, "due_date")?)?,
+                parse_document_lines(p)?,
+                get_u64(p, "entry_id")?,
+            )?;
+        }
+        "invoice.payment_received" => {
+            // The payment entry was already rebuilt; this only moves the
+            // invoice's paid amount and status.
+            ledger.replay_invoice_payment(
+                get_u64(p, "invoice_id")?,
+                get_str(p, "amount")?
+                    .parse()
+                    .map_err(|_| StoreError::JournalCorrupt("bad amount".into()))?,
+                get_u64(p, "entry_id")?,
+            )?;
+        }
+        "bill.paid" => {
+            ledger.replay_bill_payment(
+                get_u64(p, "bill_id")?,
+                get_str(p, "amount")?
+                    .parse()
+                    .map_err(|_| StoreError::JournalCorrupt("bad amount".into()))?,
+                get_u64(p, "entry_id")?,
+            )?;
+        }
+        "fx.rate_set" => {
+            ledger.set_fx_rate(
+                Currency::new(get_str(p, "currency")?)
+                    .map_err(|_| StoreError::JournalCorrupt("bad currency".into()))?,
+                parse_date(get_str(p, "date")?)?,
+                get_str(p, "rate")?
+                    .parse()
+                    .map_err(|_| StoreError::JournalCorrupt("bad rate".into()))?,
+            )?;
+        }
         other => {
             return Err(StoreError::JournalCorrupt(format!(
                 "unknown line type: {other}"
@@ -1620,9 +2307,52 @@ fn replay_line_into_ledger(
     Ok(())
 }
 
+/// Apply a payment to an invoice or bill row in the SQLite projection:
+/// bump `amount_paid` and re-derive the status. Amounts are TEXT in
+/// SQLite, so the math happens here in Rust with exact Decimals.
+/// `table` is `invoices` or `bills`; an internal constant, never user input.
+fn apply_document_payment(
+    conn: &Connection,
+    table: &str,
+    id: u64,
+    amount: Decimal,
+) -> Result<(), StoreError> {
+    let (paid_str, lines_json): (String, String) = conn.query_row(
+        &format!("SELECT amount_paid, lines_json FROM {table} WHERE id = ?"),
+        params![id as i64],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let paid: Decimal = paid_str
+        .parse()
+        .map_err(|_| StoreError::JournalCorrupt(format!("bad amount_paid {paid_str}")))?;
+    let new_paid = paid + amount;
+    let lines: Vec<Value> = serde_json::from_str(&lines_json)
+        .map_err(|_| StoreError::JournalCorrupt("bad lines_json".into()))?;
+    let mut total = Decimal::ZERO;
+    for l in &lines {
+        total += get_str(l, "amount")?
+            .parse::<Decimal>()
+            .map_err(|_| StoreError::JournalCorrupt("bad line amount".into()))?;
+    }
+    let status = if new_paid.is_zero() {
+        "open"
+    } else if new_paid >= total {
+        "paid"
+    } else {
+        "partial"
+    };
+    conn.execute(
+        &format!("UPDATE {table} SET amount_paid = ?, status = ? WHERE id = ?"),
+        params![new_paid.to_string(), status, id as i64],
+    )?;
+    Ok(())
+}
+
 /// Apply one journal line to the SQLite projection: INSERTs plus the events
-/// mirror, then advance `last_applied_seq`. The applier only ever INSERTs
-/// (and one UPDATE for receipt linking).
+/// mirror, then advance `last_applied_seq`. The applier is a pure function
+/// of the journal line: INSERTs for new facts, targeted UPDATEs/DELETEs
+/// for lifecycle changes (receipt linking, disposal, period close,
+/// cleared flags, document payments, fx rate updates).
 fn apply_line_to_sqlite(conn: &Connection, line: &JournalLine) -> Result<(), StoreError> {
     let p = &line.payload;
     match line.line_type.as_str() {
@@ -1661,13 +2391,15 @@ fn apply_line_to_sqlite(conn: &Connection, line: &JournalLine) -> Result<(), Sto
                 .ok_or_else(|| StoreError::JournalCorrupt("entry.posted without lines".into()))?
             {
                 conn.execute(
-                    "INSERT INTO lines(entry_id, account_id, side, amount, currency) VALUES (?,?,?,?,?)",
+                    "INSERT INTO lines(entry_id, account_id, side, amount, currency, foreign_currency, foreign_amount) VALUES (?,?,?,?,?,?,?)",
                     params![
                         get_u64(p, "id")? as i64,
                         get_u64(l, "account")? as i64,
                         get_str(l, "side")?,
                         get_str(l, "amount")?,
                         get_str(l, "currency")?,
+                        l.get("foreign_currency").and_then(|v| v.as_str()),
+                        l.get("foreign_amount").and_then(|v| v.as_str()),
                     ],
                 )?;
             }
@@ -1688,13 +2420,15 @@ fn apply_line_to_sqlite(conn: &Connection, line: &JournalLine) -> Result<(), Sto
                 .ok_or_else(|| StoreError::JournalCorrupt("entry.reversed without lines".into()))?
             {
                 conn.execute(
-                    "INSERT INTO lines(entry_id, account_id, side, amount, currency) VALUES (?,?,?,?,?)",
+                    "INSERT INTO lines(entry_id, account_id, side, amount, currency, foreign_currency, foreign_amount) VALUES (?,?,?,?,?,?,?)",
                     params![
                         get_u64(p, "id")? as i64,
                         get_u64(l, "account")? as i64,
                         get_str(l, "side")?,
                         get_str(l, "amount")?,
                         get_str(l, "currency")?,
+                        l.get("foreign_currency").and_then(|v| v.as_str()),
+                        l.get("foreign_amount").and_then(|v| v.as_str()),
                     ],
                 )?;
             }
@@ -1772,6 +2506,144 @@ fn apply_line_to_sqlite(conn: &Connection, line: &JournalLine) -> Result<(), Sto
                     get_str(p, "date")?,
                     get_str(proceeds, "amount")?,
                     get_u64(p, "asset_id")? as i64,
+                ],
+            )?;
+        }
+        "period.created" => {
+            conn.execute(
+                "INSERT INTO periods(id, name, start, end, status, closing_entry) VALUES (?,?,?,?,?,?)",
+                params![
+                    get_u64(p, "id")? as i64,
+                    get_str(p, "name")?,
+                    get_str(p, "start")?,
+                    get_str(p, "end")?,
+                    "open",
+                    Option::<i64>::None,
+                ],
+            )?;
+        }
+        "period.closed" => {
+            // The closing entry rides in the payload (it is not separately
+            // journaled as entry.created/entry.posted): record it like any
+            // posted entry so the projection stays complete, then mark the
+            // period row closed.
+            if !p.get("entry").map(|v| v.is_null()).unwrap_or(true) {
+                let e = &p["entry"];
+                let eid = get_u64(e, "id")? as i64;
+                conn.execute(
+                    "INSERT INTO entries(id, date, description, status, reversal_of) VALUES (?,?,?,'posted',NULL)",
+                    params![eid, get_str(e, "date")?, get_str(e, "description")?],
+                )?;
+                for l in e.get("lines").and_then(|v| v.as_array()).ok_or_else(|| {
+                    StoreError::JournalCorrupt("period.closed entry without lines".into())
+                })? {
+                    conn.execute(
+                        "INSERT INTO lines(entry_id, account_id, side, amount, currency, foreign_currency, foreign_amount) VALUES (?,?,?,?,?,?,?)",
+                        params![
+                            eid,
+                            get_u64(l, "account")? as i64,
+                            get_str(l, "side")?,
+                            get_str(l, "amount")?,
+                            get_str(l, "currency")?,
+                            l.get("foreign_currency").and_then(|v| v.as_str()),
+                            l.get("foreign_amount").and_then(|v| v.as_str()),
+                        ],
+                    )?;
+                }
+            }
+            conn.execute(
+                "UPDATE periods SET status = 'closed', closing_entry = ? WHERE id = ?",
+                params![
+                    p.get("closing_entry")
+                        .and_then(|v| v.as_u64())
+                        .map(|v| v as i64),
+                    get_u64(p, "id")? as i64,
+                ],
+            )?;
+        }
+        "line.cleared" => {
+            let entry_id = get_u64(p, "entry_id")? as i64;
+            let line_index = get_u64(p, "line_index")? as i64;
+            if p.get("cleared").and_then(|v| v.as_bool()).unwrap_or(false) {
+                conn.execute(
+                    "INSERT OR IGNORE INTO cleared_lines(entry_id, line_index) VALUES (?, ?)",
+                    params![entry_id, line_index],
+                )?;
+            } else {
+                conn.execute(
+                    "DELETE FROM cleared_lines WHERE entry_id = ? AND line_index = ?",
+                    params![entry_id, line_index],
+                )?;
+            }
+        }
+        "customer.added" => {
+            conn.execute(
+                "INSERT INTO customers(id, name) VALUES (?, ?)",
+                params![get_u64(p, "id")? as i64, get_str(p, "name")?],
+            )?;
+        }
+        "vendor.added" => {
+            conn.execute(
+                "INSERT INTO vendors(id, name) VALUES (?, ?)",
+                params![get_u64(p, "id")? as i64, get_str(p, "name")?],
+            )?;
+        }
+        "invoice.created" => {
+            let lines = p.get("lines").ok_or_else(|| {
+                StoreError::JournalCorrupt("invoice.created without lines".into())
+            })?;
+            conn.execute(
+                "INSERT INTO invoices(id, customer_id, date, due_date, lines_json, amount_paid, status, entry_id) VALUES (?,?,?,?,?,?,?,?)",
+                params![
+                    get_u64(p, "id")? as i64,
+                    get_u64(p, "customer_id")? as i64,
+                    get_str(p, "date")?,
+                    get_str(p, "due_date")?,
+                    lines.to_string(),
+                    "0",
+                    "open",
+                    get_u64(p, "entry_id")? as i64,
+                ],
+            )?;
+        }
+        "bill.created" => {
+            let lines = p
+                .get("lines")
+                .ok_or_else(|| StoreError::JournalCorrupt("bill.created without lines".into()))?;
+            conn.execute(
+                "INSERT INTO bills(id, vendor_id, date, due_date, lines_json, amount_paid, status, entry_id) VALUES (?,?,?,?,?,?,?,?)",
+                params![
+                    get_u64(p, "id")? as i64,
+                    get_u64(p, "vendor_id")? as i64,
+                    get_str(p, "date")?,
+                    get_str(p, "due_date")?,
+                    lines.to_string(),
+                    "0",
+                    "open",
+                    get_u64(p, "entry_id")? as i64,
+                ],
+            )?;
+        }
+        "invoice.payment_received" => {
+            let amount: Decimal = get_str(p, "amount")?
+                .parse()
+                .map_err(|_| StoreError::JournalCorrupt("bad amount".into()))?;
+            apply_document_payment(conn, "invoices", get_u64(p, "invoice_id")?, amount)?;
+        }
+        "bill.paid" => {
+            let amount: Decimal = get_str(p, "amount")?
+                .parse()
+                .map_err(|_| StoreError::JournalCorrupt("bad amount".into()))?;
+            apply_document_payment(conn, "bills", get_u64(p, "bill_id")?, amount)?;
+        }
+        "fx.rate_set" => {
+            conn.execute(
+                "INSERT INTO fx_rates(currency, date, rate) VALUES (?,?,?) \
+                 ON CONFLICT(currency, date) DO UPDATE SET rate=excluded.rate",
+                params![
+                    get_str(p, "currency")?,
+                    get_str(p, "date")?,
+                    get_str(p, "rate")?,
                 ],
             )?;
         }

@@ -26,13 +26,34 @@ recomputing the goldens *by hand from accounting principles* and documenting
 the recomputation in the commit. This is the seed of everything below.
 
 **Layer 2 — Property tests (live now, growing).**
-`random_balanced_journals_preserve_invariants` posts hundreds of random
-balanced entries and asserts the accounting laws still hold: trial balance
-balances, the accounting equation holds, and the sum of all account movements
-is exactly zero. New invariants get new properties. (Later: graduate to
-`proptest` with shrinking.)
+`crates/ledger-core/tests/properties.rs` uses `proptest` (with shrinking)
+to assert the accounting laws over hundreds of random inputs: trial balance
+always balances, the accounting equation holds, reversals restore zero,
+posted entries are immutable and JSON-round-trip clean, and depreciation
+schedules are exact to the penny. This layer caught a real bug on its second
+case: partial first/final months in different-length calendar months don't
+complement, so the lifetime total drifted by cents (fixed with the
+final-month true-up in `depreciation_schedule`).
 
-**Layer 3 — GnuCash diff harness (roadmap phase 3).** A `ledger-oracle` crate
+**Layer 3 — Mutation testing (live now).** `cargo mutants -p ledger-core`
+(228 mutants as of 2026-10-10: 159 caught, 28 unviable, 2 timeouts from
+induced infinite loops, 39 missed). Every *missed* mutant is triaged:
+real gaps get new tests (this pass added parent-account validation,
+wrong-typed asset links, zero-proceeds disposal, two-asset ids, 1-month
+life, `Money` arithmetic, `is_balance_sheet`, `movements()`), equivalent
+mutants are documented as such (e.g. `days_held > 0` vs `>=`: the zero
+case is unreachable), and untestable-by-construction mutants are noted
+(e.g. `TrialBalance::balanced -> true`: the engine cannot produce an
+unbalanced ledger to falsify it).
+
+**Layer 4 — Fuzzing (live now).** `cargo fuzz` targets in `fuzz/`
+(nightly, libfuzzer): `fuzz_journal_line` (journal parsing never panics;
+canonical form is a fixed point), `fuzz_entry_validate` (a validated entry
+always balances exactly), `fuzz_op_sequence` (arbitrary op sequences via
+`arbitrary`; the trial balance always balances). 11.5M execs, zero crashes
+as of 2026-10-10. Corpora persist in `fuzz/corpus/` for regression.
+
+**Layer 5 — GnuCash diff harness (roadmap phase 3).** A `ledger-oracle` crate
 will run fixture books through our engine and through GnuCash headless, then
 diff `snapshot()` output automatically — `cargo xtask oracle`. This is the
 direct analog of storytold's `cargo xtask corpus` / `oracle_diff`. Note the

@@ -24,7 +24,8 @@ No other statuses.
 | Cash flow statement (indirect) | Reports → Cash Flow | todo | R-FUTURE-3 |
 | Period close / retained earnings | Close books | todo | R-FUTURE-2 |
 | Multi-currency + FX translation | Multi-currency accts | todo | R-FUTURE-1 |
-| GnuCash XML import (read-only) | File format | todo | feeds oracle harness; R-FUTURE-4 |
+| QuickBooks CSV import (bank txns, chart of accounts) | Banking → Upload | todo | R-FUTURE-4 |
+| QuickBooks IIF + XLSX export | Export / reports | todo | R-FUTURE-4 |
 | A/R invoices + payments + aging | Business → Invoices | todo | R-FUTURE-5 |
 | A/P bills + payments + aging | Business → Bills | todo | R-FUTURE-5 |
 | Budgets | Budgets | todo | R-FUTURE-6 |

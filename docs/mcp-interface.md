@@ -85,6 +85,28 @@ below.
   surface: "what did the AI do with my books lately." The digest is the
   answer to "trust, but verify."
 
+## Tools — fixed assets
+
+Straight-line **book** depreciation only; tax depreciation stays with the
+CPA. Partial first/final months prorated by days; the final month trues up
+so the lifetime total is exactly (cost − salvage).
+
+- `books.register_asset { description, purchase_date, cost, salvage_value?,
+  useful_life_months, cost_account, accum_depr_account, expense_account }`
+  → `{ asset_id }`. Accounts resolved by id or code.
+- `books.asset_schedule { asset_id }`
+  → `{ status, schedule: [{ period, amount, accumulated, book_value }] }`.
+- `books.list_assets {}` → assets with status and current book values.
+- `books.run_depreciation { period: "YYYY-MM", asset_id? }`
+  → per-asset `{ entry_id, amount, already_posted }`, plus `skipped` for
+  assets outside their useful life. Idempotent per asset and period.
+- `books.dispose_asset { asset_id, date, proceeds, proceeds_account,
+  gain_loss_account, confirmed?, receipt_attachment_ids? }` → without
+  confirmation: `{ status: "preview", ... }` and posts nothing; with
+  `confirmed: true`: auto-posts missing final-period depreciation, then
+  posts the balanced disposal entry. Subject to receipt policy (bill of
+  sale); monthly depreciation is exempt as an allocation.
+
 ## Tools — receipts & documents
 
 - `books.attach_receipt { entry_id?, file_name, mime_type, content_base64 }`

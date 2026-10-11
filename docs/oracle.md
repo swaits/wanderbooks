@@ -33,11 +33,15 @@ is exactly zero. New invariants get new properties. (Later: graduate to
 `proptest` with shrinking.)
 
 **Layer 3 — GnuCash diff harness (roadmap phase 3).** A `ledger-oracle` crate
-will: import fixture books into GnuCash's XML format (or drive GnuCash
-headless), run both engines, and diff `snapshot()` output automatically —
-`cargo xtask oracle`. This is the direct analog of storytold's
-`cargo xtask corpus` / `oracle_diff`. Until it exists, Layers 1 and 2 are
-the oracle, and they are not optional.
+will run fixture books through our engine and through GnuCash headless, then
+diff `snapshot()` output automatically — `cargo xtask oracle`. This is the
+direct analog of storytold's `cargo xtask corpus` / `oracle_diff`. Note the
+distinction: GnuCash is the *behavioral* oracle, not a file-format target
+(Stephen: "for file format import/export I could not give a single shit
+about GnuCash XML — QBO is all that matters"). The harness feeds fixtures to
+GnuCash via whatever it imports reliably (QIF/OFX) or its Python bindings;
+the exact mechanism is decided at implementation time. Until the harness
+exists, Layers 1 and 2 are the oracle, and they are not optional.
 
 ## What the oracle does NOT cover (yet)
 

@@ -75,4 +75,60 @@ pub enum LedgerError {
     /// Any attempt to mutate a posted entry: add lines, delete it, edit it.
     #[error("cannot modify a posted entry; post a reversing entry instead")]
     PostedEntryImmutable,
+
+    /// The referenced fixed asset does not exist.
+    #[error("unknown asset id {0}")]
+    UnknownAsset(u64),
+
+    /// Asset descriptions must not be empty.
+    #[error("asset description must not be empty")]
+    EmptyAssetDescription,
+
+    /// Asset cost must be positive.
+    #[error("asset cost must be positive, got {0}")]
+    InvalidAssetCost(Decimal),
+
+    /// Salvage value must be non-negative and less than cost.
+    #[error("salvage value must be between zero and cost, got {0}")]
+    InvalidSalvageValue(Decimal),
+
+    /// Useful life must be at least one month.
+    #[error("useful life must be at least one month, got {0}")]
+    InvalidUsefulLife(u32),
+
+    /// The asset was already disposed.
+    #[error("asset {0} is already disposed")]
+    AssetAlreadyDisposed(u64),
+
+    /// Asset account links must have the right types: cost and accumulated
+    /// depreciation are asset accounts, the depreciation expense account is
+    /// an expense account.
+    #[error("account '{code}' has type {found}, but the asset {role} account must be {expected}")]
+    AssetAccountWrongType {
+        /// Account code.
+        code: String,
+        /// Role the account was given: "cost", "accumulated depreciation", or
+        /// "depreciation expense".
+        role: &'static str,
+        /// The type it must be.
+        expected: &'static str,
+        /// The type it has.
+        found: &'static str,
+    },
+
+    /// Disposal proceeds must not be negative.
+    #[error("disposal proceeds must not be negative, got {0}")]
+    NegativeProceeds(Decimal),
+
+    /// Disposal date must not precede the purchase date.
+    #[error("disposal date {0} is before the purchase date")]
+    DisposalBeforePurchase(String),
+
+    /// The three asset account links must be three distinct accounts.
+    #[error("asset account links must be distinct; account id {0} is linked twice")]
+    DuplicateAssetAccount(u64),
+
+    /// purchase_date + useful life overflows the date range.
+    #[error("purchase date plus useful life overflows the calendar")]
+    AssetDateOverflow,
 }

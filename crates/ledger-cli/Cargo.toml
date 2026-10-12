@@ -1,0 +1,18 @@
+[package]
+name = "ledger-cli"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "wanderbooks CLI: scaffold new books directories (mise.toml + AGENT.md)."
+
+[[bin]]
+name = "wanderbooks"
+path = "src/main.rs"
+
+[dev-dependencies]
+toml = "1"
+tempfile = "3"
+
+[lints]
+workspace = true

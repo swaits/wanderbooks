@@ -115,6 +115,10 @@ pub struct Attachment {
     pub description: Option<String>,
     /// UTC timestamp when filed.
     pub created_at: String,
+    /// UTC timestamp when withdrawn, if it was.
+    pub withdrawn_at: Option<String>,
+    /// Why it was withdrawn, if it was.
+    pub withdrawn_reason: Option<String>,
 }
 
 /// Input to [`Store::run_payroll`]: one employee's gross pay and every
@@ -1757,7 +1761,10 @@ impl Store {
         Ok((id, sha, dedup))
     }
 
-    /// Link a previously filed receipt to an entry.
+    /// Link a previously filed (unlinked) receipt to an entry. A receipt
+    /// already linked elsewhere must be unlinked first, so moving evidence
+    /// off an entry always goes through [`Store::unlink_receipt`] and its
+    /// recorded reason.
     pub fn link_receipt(
         &mut self,
         attachment_id: u64,
@@ -1766,20 +1773,96 @@ impl Store {
         self.ledger
             .get_entry(entry_id)
             .ok_or(LedgerError::UnknownEntry(entry_id))?;
-        let exists: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM attachments WHERE id = ?",
-            params![attachment_id as i64],
-            |r| r.get(0),
-        )?;
-        if exists == 0 {
-            return Err(StoreError::UnknownAttachment(attachment_id));
-        }
+        self.check_linkable(attachment_id)?;
         let line = self.append_journal(
             "receipt.linked",
             json!({ "attachment_id": attachment_id, "entry_id": entry_id }),
         )?;
         apply_line_to_sqlite(&self.conn, &line)?;
         Ok(())
+    }
+
+    /// Fail unless the attachment exists, is unlinked, and is not
+    /// withdrawn: the precondition of [`Store::link_receipt`], checkable
+    /// before posting anything that will link it.
+    pub fn check_linkable(&self, attachment_id: u64) -> Result<(), StoreError> {
+        let (entry_id, withdrawn) = self.attachment_state(attachment_id)?;
+        if withdrawn {
+            return Err(StoreError::AttachmentWithdrawn(attachment_id));
+        }
+        if let Some(eid) = entry_id {
+            return Err(StoreError::AttachmentLinked(attachment_id, eid));
+        }
+        Ok(())
+    }
+
+    /// Detach a receipt from its entry, recording why. The attachment stays
+    /// filed (unlinked) and can be linked again or withdrawn. The journal
+    /// keeps both the link and the unlink: the evidence history is
+    /// append-only even when the current evidence set changes. Returns the
+    /// entry it was linked to.
+    ///
+    /// Policy-free like the rest of the store: whether an entry may be left
+    /// without a receipt is the MCP layer's call.
+    pub fn unlink_receipt(
+        &mut self,
+        attachment_id: u64,
+        reason: &str,
+    ) -> Result<EntryId, StoreError> {
+        let reason = reason.trim();
+        if reason.is_empty() {
+            return Err(StoreError::ReasonRequired);
+        }
+        let (entry_id, withdrawn) = self.attachment_state(attachment_id)?;
+        if withdrawn {
+            return Err(StoreError::AttachmentWithdrawn(attachment_id));
+        }
+        let entry_id = entry_id.ok_or(StoreError::AttachmentNotLinked(attachment_id))?;
+        let line = self.append_journal(
+            "receipt.unlinked",
+            json!({ "attachment_id": attachment_id, "entry_id": entry_id, "reason": reason }),
+        )?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(entry_id)
+    }
+
+    /// Withdraw a receipt or document, recording why: it drops out of
+    /// listings and can never be linked again. Nothing is deleted: the bytes
+    /// stay in the blob store and the journal keeps the filing and the
+    /// withdrawal. A linked receipt must be unlinked first.
+    pub fn withdraw_attachment(
+        &mut self,
+        attachment_id: u64,
+        reason: &str,
+    ) -> Result<(), StoreError> {
+        let reason = reason.trim();
+        if reason.is_empty() {
+            return Err(StoreError::ReasonRequired);
+        }
+        self.check_linkable(attachment_id)?;
+        let line = self.append_journal(
+            "attachment.withdrawn",
+            json!({ "attachment_id": attachment_id, "reason": reason }),
+        )?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
+    /// `(linked entry, withdrawn?)` for an attachment.
+    fn attachment_state(&self, attachment_id: u64) -> Result<(Option<EntryId>, bool), StoreError> {
+        self.conn
+            .query_row(
+                "SELECT entry_id, withdrawn_at IS NOT NULL FROM attachments WHERE id = ?",
+                params![attachment_id as i64],
+                |r| {
+                    Ok((
+                        r.get::<_, Option<i64>>(0)?.map(|v| v as EntryId),
+                        r.get::<_, bool>(1)?,
+                    ))
+                },
+            )
+            .optional()?
+            .ok_or(StoreError::UnknownAttachment(attachment_id))
     }
 
     /// List attachments, optionally filtered to one entry.
@@ -1789,7 +1872,8 @@ impl Store {
     ) -> Result<Vec<Attachment>, StoreError> {
         let mut sql = String::from(
             "SELECT a.id, a.blob_sha, a.entry_id, a.category, b.original_name, b.mime_type, \
-             b.size_bytes, a.description, a.created_at FROM attachments a \
+             b.size_bytes, a.description, a.created_at, a.withdrawn_at, a.withdrawn_reason \
+             FROM attachments a \
              JOIN blobs b ON b.sha256 = a.blob_sha",
         );
         if entry_id.is_some() {
@@ -2594,7 +2678,11 @@ fn replay_line_into_ledger(
                 )));
             }
         }
-        "receipt.attached" | "receipt.linked" | "document.filed" => {
+        "receipt.attached"
+        | "receipt.linked"
+        | "receipt.unlinked"
+        | "document.filed"
+        | "attachment.withdrawn" => {
             // Not accounting state; the projection records them.
         }
         "asset.registered" => {
@@ -2923,6 +3011,22 @@ fn apply_line_to_sqlite(conn: &Connection, line: &JournalLine) -> Result<(), Sto
                 ],
             )?;
         }
+        "receipt.unlinked" => {
+            conn.execute(
+                "UPDATE attachments SET entry_id = NULL WHERE id = ?",
+                params![get_u64(p, "attachment_id")? as i64],
+            )?;
+        }
+        "attachment.withdrawn" => {
+            conn.execute(
+                "UPDATE attachments SET withdrawn_at = ?, withdrawn_reason = ? WHERE id = ?",
+                params![
+                    line.ts,
+                    get_str(p, "reason")?,
+                    get_u64(p, "attachment_id")? as i64,
+                ],
+            )?;
+        }
         "asset.registered" => {
             let cost = &p["cost"];
             let salvage = &p["salvage_value"];
@@ -3184,5 +3288,7 @@ fn row_to_attachment(r: &rusqlite::Row) -> rusqlite::Result<Attachment> {
         size_bytes: r.get::<_, i64>(6)? as u64,
         description: r.get(7)?,
         created_at: r.get(8)?,
+        withdrawn_at: r.get(9)?,
+        withdrawn_reason: r.get(10)?,
     })
 }

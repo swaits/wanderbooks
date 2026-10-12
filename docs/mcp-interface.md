@@ -117,8 +117,22 @@ so the lifetime total is exactly (cost − salvage).
   → `{ receipt_id, sha256, deduplicated, size_bytes }`. `entry_id` is
   optional: a receipt can be filed before its entry exists.
 - `books.link_receipt { receipt_id, entry_id }` → link a previously filed
-  receipt to its entry.
-- `books.list_receipts { entry_id? }` → metadata list (no bytes).
+  (unlinked, not withdrawn) receipt to its entry. A receipt linked elsewhere
+  must be unlinked first.
+- `books.unlink_receipt { attachment_id, reason }` → `{ ok, entry_id,
+  remaining_receipts }`. Detaches a receipt from its entry; it stays filed,
+  unlinked. Journaled as `receipt.unlinked` with the reason. Subject to the
+  receipt policy: an entry that requires a receipt cannot be left with none
+  (`receipt_required` error, remedy `books.attach_receipt`), so replacing a
+  receipt is attach-new, then unlink-old.
+- `books.withdraw_attachment { attachment_id, reason }` → `{ ok }`. Retires
+  an unlinked receipt or a filed document: hidden from listings, never
+  linkable again. Journaled as `attachment.withdrawn`; the bytes stay in the
+  blob store. Nothing in the evidence trail is ever erased — receipts change
+  by new events, the same way entries change by reversals.
+- `books.list_receipts { entry_id?, include_withdrawn? }` → metadata list
+  (no bytes), each with `withdrawn` / `withdrawn_reason`. Withdrawn
+  attachments are omitted unless `include_withdrawn` is true.
 - `books.get_receipt { receipt_id }` → `{ metadata, content_base64 }`.
 - `books.file_document { category: "formation" | "legal" | "tax" |
   "accounting" | "other", file_name, mime_type, content_base64,

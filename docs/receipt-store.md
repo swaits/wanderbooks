@@ -50,7 +50,9 @@ apply is safe — on startup the applier replays every journal line with
 - `seq`: 1-based, gapless, assigned by the writer.
 - `ts`: UTC, RFC 3339. Recorded, never trusted for ordering (`seq` orders).
 - `type`: `account.added`, `entry.posted`, `entry.reversed`,
-  `receipt.attached`, `receipt.linked`, `document.filed`.
+  `receipt.attached`, `receipt.linked`, `receipt.unlinked`,
+  `document.filed`, `attachment.withdrawn` (plus the A/R, A/P, asset,
+  period, payroll, and class events listed on `JournalLine`).
 - `payload`: the full domain facts (account fields, entry with lines, blob
   sha, ...). Everything the applier needs; nothing it must look up elsewhere.
 - `prev`: hex SHA-256 of the previous line's canonical JSON (keys sorted, no
@@ -99,6 +101,14 @@ before backups.
     plus `receipts`.
 - Documents filed via `books.file_document` and receipts via
   `books.attach_receipt` share the blob store; they differ only in metadata.
+- **Receipts change by events, never by edits.** `receipt.unlinked`
+  (`attachment_id`, `entry_id`, `reason`) detaches a receipt from its entry;
+  `attachment.withdrawn` (`attachment_id`, `reason`) retires an unlinked
+  receipt or a document (`withdrawn_at`, `withdrawn_reason` columns, schema
+  v5). Linking requires an unlinked, non-withdrawn attachment, so evidence
+  only leaves an entry through a recorded unlink. Blobs are untouched: a
+  withdrawn file is still hash-verified and readable, and the journal shows
+  when it was filed, linked, unlinked, and withdrawn, and why.
 - The store is policy-free: it records attachments faithfully. Whether a
   posting *requires* a receipt is decided by the MCP layer's receipt policy
   (`docs/mcp-interface.md`), which reads the `attachments` table.

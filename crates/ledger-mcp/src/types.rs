@@ -503,11 +503,51 @@ pub struct LinkReceiptOut {
     pub ok: bool,
 }
 
+/// Parameters for `books.unlink_receipt`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct UnlinkReceiptParams {
+    /// Attachment id of the linked receipt.
+    pub attachment_id: u64,
+    /// Why it is being unlinked, recorded in the journal (e.g. "replaced by
+    /// the PDF render, attachment 9").
+    pub reason: String,
+}
+
+/// Result of `books.unlink_receipt`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct UnlinkReceiptOut {
+    /// True when unlinked.
+    pub ok: bool,
+    /// The entry it was unlinked from.
+    pub entry_id: u64,
+    /// Receipts still linked to that entry.
+    pub remaining_receipts: u64,
+}
+
+/// Parameters for `books.withdraw_attachment`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct WithdrawAttachmentParams {
+    /// Attachment id of an unlinked receipt or a filed document.
+    pub attachment_id: u64,
+    /// Why it is being withdrawn, recorded in the journal.
+    pub reason: String,
+}
+
+/// Result of `books.withdraw_attachment`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct WithdrawAttachmentOut {
+    /// True when withdrawn.
+    pub ok: bool,
+}
+
 /// Parameters for `books.list_receipts`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListReceiptsParams {
     /// Filter to one entry. Omit for all.
     pub entry_id: Option<u64>,
+    /// Include withdrawn attachments. Default false.
+    #[serde(default)]
+    pub include_withdrawn: Option<bool>,
 }
 
 /// One receipt or document.
@@ -529,6 +569,10 @@ pub struct ReceiptOut {
     pub size_bytes: u64,
     /// Description, if any.
     pub description: Option<String>,
+    /// True when withdrawn (only listed with include_withdrawn).
+    pub withdrawn: bool,
+    /// Why it was withdrawn, if it was.
+    pub withdrawn_reason: Option<String>,
 }
 
 /// Result of `books.list_receipts`.

@@ -134,7 +134,7 @@ fn mcp_end_to_end_over_stdio() {
     // Tool listing: 23 narrow tools, chart is read-only.
     let list = mcp.request("tools/list", json!({}));
     let tools = list["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 48, "expected 48 tools, got {}", tools.len());
+    assert_eq!(tools.len(), 50, "expected 50 tools, got {}", tools.len());
     let chart = tools.iter().find(|t| t["name"] == "books.chart").unwrap();
     assert_eq!(chart["annotations"]["readOnlyHint"], true);
     assert!(
@@ -532,6 +532,141 @@ fn mcp_receipt_policy_rejects_split_entries() {
         json!({"entry_id": id3, "confirmed": true}),
     );
     assert_eq!(p3["status"], "posted");
+}
+
+#[test]
+fn mcp_receipt_corrections_over_stdio() {
+    let dir = test_dir("receipt-corrections");
+    let mut mcp = Mcp::spawn(&dir);
+    mcp.request(
+        "initialize",
+        json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+        }),
+    );
+    mcp.notify("notifications/initialized");
+    for (code, name, typ) in [("1000", "Cash", "asset"), ("6000", "Software", "expense")] {
+        mcp.call(
+            "books.add_account",
+            json!({"code": code, "name": name, "account_type": typ}),
+        );
+    }
+    let post = |mcp: &mut Mcp, desc: &str, amount: &str, receipt: &[u8]| -> (u64, u64) {
+        let e = mcp.call(
+            "books.draft_entry",
+            json!({"date": "2026-04-01", "description": desc}),
+        );
+        let id = e["entry_id"].as_u64().unwrap();
+        mcp.call(
+            "books.add_line",
+            json!({"entry_id": id, "account": "6000", "side": "debit", "amount": amount}),
+        );
+        mcp.call(
+            "books.add_line",
+            json!({"entry_id": id, "account": "1000", "side": "credit", "amount": amount}),
+        );
+        let att = mcp.call(
+            "books.attach_receipt",
+            json!({"entry_id": id, "file_name": "receipt.eml", "mime_type": "message/rfc822",
+                   "content_base64": base64_like(receipt)}),
+        );
+        let posted = mcp.call(
+            "books.post_entry",
+            json!({"entry_id": id, "confirmed": true}),
+        );
+        assert_eq!(posted["status"], "posted");
+        (id, att["attachment_id"].as_u64().unwrap())
+    };
+
+    // A $100 entry whose only receipt is an .eml.
+    let (big, eml) = post(&mut mcp, "Annual license", "100.00", b"eml-bytes");
+
+    // Unlinking its only receipt would break the policy: refused, with the remedy.
+    let err = mcp.call_err(
+        "books.unlink_receipt",
+        json!({"attachment_id": eml, "reason": "replacing with PDF"}),
+    );
+    let err_json: serde_json::Value = serde_json::from_str(&err).unwrap();
+    assert_eq!(err_json["code"], "receipt_required");
+    assert_eq!(err_json["entry_id"], big);
+    assert_eq!(err_json["remedy_tool"], "books.attach_receipt");
+
+    // Replace: attach the PDF first, then unlink the .eml.
+    let pdf = mcp.call(
+        "books.attach_receipt",
+        json!({"entry_id": big, "file_name": "receipt.pdf", "mime_type": "application/pdf",
+               "content_base64": base64_like(b"pdf-bytes")}),
+    )["attachment_id"]
+        .as_u64()
+        .unwrap();
+    let un = mcp.call(
+        "books.unlink_receipt",
+        json!({"attachment_id": eml, "reason": "replaced by the PDF render"}),
+    );
+    assert_eq!(un["entry_id"], big);
+    assert_eq!(un["remaining_receipts"], 1);
+
+    // A linked receipt can't be withdrawn; an unlinked one can, with a reason.
+    let err = mcp.call_err(
+        "books.withdraw_attachment",
+        json!({"attachment_id": pdf, "reason": "x"}),
+    );
+    assert!(err.contains("unlink it first"), "{err}");
+    let err = mcp.call_err(
+        "books.withdraw_attachment",
+        json!({"attachment_id": eml, "reason": " "}),
+    );
+    assert!(err.contains("reason"), "{err}");
+    mcp.call(
+        "books.withdraw_attachment",
+        json!({"attachment_id": eml, "reason": "file PDFs, not .eml"}),
+    );
+
+    // Listings hide the withdrawn .eml unless asked; the entry keeps the PDF.
+    let listed = mcp.call("books.list_receipts", json!({}));
+    let ids: Vec<u64> = listed["receipts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["attachment_id"].as_u64().unwrap())
+        .collect();
+    assert_eq!(ids, vec![pdf]);
+    let all = mcp.call("books.list_receipts", json!({"include_withdrawn": true}));
+    let gone = all["receipts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["attachment_id"] == eml)
+        .unwrap()
+        .clone();
+    assert_eq!(gone["withdrawn"], true);
+    assert_eq!(gone["withdrawn_reason"], "file PDFs, not .eml");
+    assert_eq!(gone["entry_id"], serde_json::Value::Null);
+    let entry = mcp.call("books.get_entry", json!({"entry_id": big}));
+    assert_eq!(entry["receipts"].as_array().unwrap().len(), 1);
+    assert_eq!(entry["receipts"][0]["attachment_id"], pdf);
+    // A withdrawn attachment can never be linked again.
+    let err = mcp.call_err(
+        "books.link_receipt",
+        json!({"attachment_id": eml, "entry_id": big}),
+    );
+    assert!(err.contains("withdrawn"), "{err}");
+
+    // Under the threshold, the last receipt may go.
+    let (small, small_eml) = post(&mut mcp, "Domain renewal", "10.00", b"small-eml");
+    let un = mcp.call(
+        "books.unlink_receipt",
+        json!({"attachment_id": small_eml, "reason": "wrong file"}),
+    );
+    assert_eq!(un["entry_id"], small);
+    assert_eq!(un["remaining_receipts"], 0);
+
+    // The books never moved.
+    let tb = mcp.call("books.trial_balance", json!({}));
+    assert_eq!(tb["balanced"], true);
+    assert_eq!(tb["total_debits"], "110.00");
 }
 
 #[test]

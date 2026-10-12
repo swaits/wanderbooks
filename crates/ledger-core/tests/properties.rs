@@ -9,7 +9,10 @@ use chrono::NaiveDate;
 use ledger_core::{
     AccountType, Currency, Ledger, Money, NewAsset, Side, accumulated_depreciation, book_value,
     depreciation_schedule,
-    reports::{balance_sheet, trial_balance},
+    reports::{
+        balance_sheet, balance_sheet_as_of, profit_and_loss, profit_and_loss_for_period,
+        trial_balance,
+    },
 };
 use proptest::prelude::*;
 use rust_decimal::Decimal;
@@ -134,6 +137,52 @@ proptest! {
         let (ledger, _) = build_ledger(&chart, &entries);
         let bs = balance_sheet(&ledger).unwrap();
         prop_assert_eq!(bs.assets, bs.liabilities + bs.equity);
+    }
+
+    /// Period P&Ls partition the year: split anywhere, the two halves sum
+    /// to the whole, and the whole is the life-of-ledger P&L.
+    #[test]
+    fn prop_period_pnl_partitions((chart, entries) in arb_ops(), split in 0u32..365) {
+        let (ledger, _) = build_ledger(&chart, &entries);
+        let jan1 = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        let dec31 = NaiveDate::from_ymd_opt(2026, 12, 31).unwrap();
+        let cut = jan1 + chrono::Days::new(split as u64);
+        let first = profit_and_loss_for_period(&ledger, jan1, cut, None).unwrap();
+        let rest = if cut < dec31 {
+            Some(profit_and_loss_for_period(&ledger, cut.succ_opt().unwrap(), dec31, None).unwrap())
+        } else {
+            None
+        };
+        let whole = profit_and_loss_for_period(&ledger, jan1, dec31, None).unwrap();
+        let (r2, e2) = rest.map_or((Decimal::ZERO, Decimal::ZERO), |p| (p.total_revenue, p.total_expenses));
+        prop_assert_eq!(first.total_revenue + r2, whole.total_revenue);
+        prop_assert_eq!(first.total_expenses + e2, whole.total_expenses);
+        let all = profit_and_loss(&ledger).unwrap();
+        prop_assert_eq!((whole.total_revenue, whole.total_expenses), (all.revenue, all.expenses));
+    }
+
+    /// The accounting equation holds as of every date, and a period's net
+    /// income is exactly the change in current earnings across it.
+    #[test]
+    fn prop_balance_sheet_as_of_balances((chart, entries) in arb_ops(), a in 0u32..365, b in 0u32..365) {
+        let (ledger, _) = build_ledger(&chart, &entries);
+        let jan1 = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        let (lo, hi) = (a.min(b), a.max(b));
+        let start = jan1 + chrono::Days::new(lo as u64);
+        let end = jan1 + chrono::Days::new(hi as u64);
+        let before = balance_sheet_as_of(&ledger, start.pred_opt().unwrap()).unwrap();
+        let after = balance_sheet_as_of(&ledger, end).unwrap();
+        prop_assert!(before.balanced());
+        prop_assert!(after.balanced());
+        let pnl = profit_and_loss_for_period(&ledger, start, end, None).unwrap();
+        prop_assert_eq!(after.current_earnings - before.current_earnings, pnl.net_income());
+        // Past the last entry, as-of agrees with the life-of-ledger sheet.
+        let all = balance_sheet(&ledger).unwrap();
+        let last = balance_sheet_as_of(&ledger, NaiveDate::from_ymd_opt(2026, 12, 31).unwrap()).unwrap();
+        prop_assert_eq!(
+            (last.total_assets, last.total_liabilities, last.total_equity),
+            (all.assets, all.liabilities, all.equity)
+        );
     }
 
     /// Every posted entry balances on its own, exactly.

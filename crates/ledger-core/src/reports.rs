@@ -4,10 +4,11 @@
 //! (`docs/oracle.md`) diffs: the same fixture books through two engines must
 //! produce byte-identical [`snapshot`] output.
 
-use crate::{AccountType, Class, ClassId, JournalLine, Ledger, LedgerError};
+use crate::{AccountType, Class, ClassId, JournalEntry, JournalLine, Ledger, LedgerError};
+use chrono::NaiveDate;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// One line of a trial balance.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -78,8 +79,8 @@ pub fn trial_balance(ledger: &Ledger) -> TrialBalance {
     }
 }
 
-/// Profit and loss: revenue and expenses for the life of the ledger.
-/// (Period filtering is R-FUTURE work; see `docs/requirements.md` R-7.)
+/// Profit and loss: revenue and expenses for the life of the ledger. For a
+/// date range, with a line per account, use [`profit_and_loss_for_period`].
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProfitAndLoss {
     /// Total revenue (credit-normal balances, reported positive).
@@ -265,6 +266,200 @@ pub fn balance_sheet(ledger: &Ledger) -> Result<BalanceSheet, LedgerError> {
     })
 }
 
+/// One account's line on a financial statement.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct StatementLine {
+    /// Account code, e.g. `"6000"`.
+    pub code: String,
+    /// Account name.
+    pub name: String,
+    /// Amount on the account's normal side: positive is a normal balance
+    /// (or movement), negative a contra one.
+    pub amount: Decimal,
+}
+
+/// Profit and loss for a date range, with a line per account.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProfitAndLossStatement {
+    /// First date, inclusive.
+    pub start: NaiveDate,
+    /// Last date, inclusive.
+    pub end: NaiveDate,
+    /// Revenue accounts with movement in the range, by code.
+    pub revenue: Vec<StatementLine>,
+    /// Expense accounts with movement in the range, by code.
+    pub expenses: Vec<StatementLine>,
+    /// Sum of the revenue lines.
+    pub total_revenue: Decimal,
+    /// Sum of the expense lines.
+    pub total_expenses: Decimal,
+}
+
+impl ProfitAndLossStatement {
+    /// Revenue minus expenses. Positive is profit.
+    pub fn net_income(&self) -> Decimal {
+        self.total_revenue - self.total_expenses
+    }
+}
+
+/// Balance sheet as of a date, with a line per account.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BalanceSheetStatement {
+    /// The as-of date, inclusive.
+    pub as_of: NaiveDate,
+    /// Asset accounts with a balance, by code.
+    pub assets: Vec<StatementLine>,
+    /// Liability accounts with a balance, by code.
+    pub liabilities: Vec<StatementLine>,
+    /// Equity accounts with a balance, by code (current earnings excluded).
+    pub equity: Vec<StatementLine>,
+    /// Revenue minus expenses through `as_of` not yet closed to retained
+    /// earnings. Shown as its own equity line.
+    pub current_earnings: Decimal,
+    /// Sum of the asset lines.
+    pub total_assets: Decimal,
+    /// Sum of the liability lines.
+    pub total_liabilities: Decimal,
+    /// Sum of the equity lines plus current earnings.
+    pub total_equity: Decimal,
+}
+
+impl BalanceSheetStatement {
+    /// The accounting equation: assets == liabilities + equity, exactly.
+    pub fn balanced(&self) -> bool {
+        self.total_assets == self.total_liabilities + self.total_equity
+    }
+}
+
+/// Normal-side amount per account over the posted lines accepted by
+/// `include(entry, line)`, as statement lines keyed (and so sorted) by
+/// code, skipping placeholders and zero amounts.
+fn statement_lines(
+    ledger: &Ledger,
+    include: &dyn Fn(&JournalEntry, &JournalLine) -> bool,
+) -> Result<BTreeMap<String, (AccountType, StatementLine)>, LedgerError> {
+    let mut movement: BTreeMap<crate::AccountId, Decimal> = BTreeMap::new();
+    for entry in ledger.posted_entries() {
+        for line in entry.lines() {
+            if !include(entry, line) {
+                continue;
+            }
+            let signed = match line.side {
+                crate::Side::Debit => line.amount.amount,
+                crate::Side::Credit => -line.amount.amount,
+            };
+            *movement.entry(line.account).or_default() += signed;
+        }
+    }
+    let mut out = BTreeMap::new();
+    for (id, m) in movement {
+        let account = ledger
+            .chart()
+            .get(id)
+            .ok_or(LedgerError::UnknownAccount(id))?;
+        if account.placeholder || m.is_zero() {
+            continue;
+        }
+        let amount = match account.account_type.normal_side() {
+            crate::Side::Debit => m,
+            crate::Side::Credit => -m,
+        };
+        out.insert(
+            account.code.clone(),
+            (
+                account.account_type,
+                StatementLine {
+                    code: account.code.clone(),
+                    name: account.name.clone(),
+                    amount,
+                },
+            ),
+        );
+    }
+    Ok(out)
+}
+
+/// Profit and loss for `[start, end]`, optionally for one class (`None`
+/// counts every line). Closing entries are excluded: they move a period's
+/// earnings into retained earnings, so counting them would report a closed
+/// period as breaking even.
+pub fn profit_and_loss_for_period(
+    ledger: &Ledger,
+    start: NaiveDate,
+    end: NaiveDate,
+    class_id: Option<ClassId>,
+) -> Result<ProfitAndLossStatement, LedgerError> {
+    if end < start {
+        return Err(LedgerError::InvalidDateRange {
+            start: start.to_string(),
+            end: end.to_string(),
+        });
+    }
+    let closings = ledger.closing_entry_ids();
+    let lines = statement_lines(ledger, &|entry, line| {
+        entry.date() >= start
+            && entry.date() <= end
+            && !closings.contains(&entry.id())
+            && class_id.is_none_or(|c| line.class_id == Some(c))
+    })?;
+    let mut revenue = Vec::new();
+    let mut expenses = Vec::new();
+    for (typ, line) in lines.into_values() {
+        match typ {
+            AccountType::Revenue => revenue.push(line),
+            AccountType::Expense => expenses.push(line),
+            _ => {}
+        }
+    }
+    let total_revenue = revenue.iter().map(|l| l.amount).sum();
+    let total_expenses = expenses.iter().map(|l| l.amount).sum();
+    Ok(ProfitAndLossStatement {
+        start,
+        end,
+        revenue,
+        expenses,
+        total_revenue,
+        total_expenses,
+    })
+}
+
+/// Balance sheet as of `as_of`: every posted entry dated on or before it.
+/// Revenue and expense not yet closed to retained earnings appear as
+/// current earnings inside equity, so the accounting equation holds on
+/// every date, before and after closes.
+pub fn balance_sheet_as_of(
+    ledger: &Ledger,
+    as_of: NaiveDate,
+) -> Result<BalanceSheetStatement, LedgerError> {
+    let lines = statement_lines(ledger, &|entry, _| entry.date() <= as_of)?;
+    let mut assets = Vec::new();
+    let mut liabilities = Vec::new();
+    let mut equity = Vec::new();
+    let mut current_earnings = Decimal::ZERO;
+    for (typ, line) in lines.into_values() {
+        match typ {
+            AccountType::Asset => assets.push(line),
+            AccountType::Liability => liabilities.push(line),
+            AccountType::Equity => equity.push(line),
+            AccountType::Revenue => current_earnings += line.amount,
+            AccountType::Expense => current_earnings -= line.amount,
+        }
+    }
+    let total_assets = assets.iter().map(|l| l.amount).sum();
+    let total_liabilities = liabilities.iter().map(|l| l.amount).sum();
+    let total_equity = equity.iter().map(|l| l.amount).sum::<Decimal>() + current_earnings;
+    Ok(BalanceSheetStatement {
+        as_of,
+        assets,
+        liabilities,
+        equity,
+        current_earnings,
+        total_assets,
+        total_liabilities,
+        total_equity,
+    })
+}
+
 /// Render the three core reports as canonical JSON for oracle diffing.
 ///
 /// Amounts are decimal strings (never floats, never locale-formatted), lines
@@ -406,11 +601,14 @@ pub fn cash_flow(
     let financing_set: HashSet<crate::AccountId> =
         params.financing_accounts.iter().copied().collect();
 
-    // Movement helpers: debits minus credits over a date predicate.
+    // Movement helpers: debits minus credits over a date predicate. Closing
+    // entries are skipped: a close moves earnings into retained earnings,
+    // which is neither net income nor an owner flow.
+    let closings = ledger.closing_entry_ids();
     let movement_where = |account: crate::AccountId, pred: &dyn Fn(chrono::NaiveDate) -> bool| {
         let mut total = Decimal::ZERO;
         for entry in ledger.posted_entries() {
-            if !pred(entry.date()) {
+            if !pred(entry.date()) || closings.contains(&entry.id()) {
                 continue;
             }
             for line in entry.lines() {

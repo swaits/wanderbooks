@@ -34,10 +34,19 @@ requirement conflict, the requirement wins.
   total credits (the `balanced()` check).
 - **R-8 — Balance sheet.** Assets, liabilities, equity grouped by account
   type. The accounting equation holds exactly: assets = liabilities + equity.
-  Because period close (R-FUTURE-2) doesn't exist yet, current earnings (net
-  income to date) are folded into equity so the equation holds on a live book.
-- **R-9 — Profit and loss.** Revenue and expenses for the life of the ledger,
-  with net income. Period filtering arrives with R-FUTURE-2.
+  Current earnings (revenue minus expenses not yet closed to retained
+  earnings) are folded into equity so the equation holds on a live book.
+  `balance_sheet_as_of` gives the statement as of any date, a line per
+  account, counting every entry dated on or before it (closing entries
+  included: after a close the earnings sit in retained earnings).
+- **R-9 — Profit and loss.** Revenue and expenses with net income.
+  `profit_and_loss_for_period` scopes it to a date range (optionally one
+  class), a line per account, and **excludes closing entries**: a close moves
+  earnings into retained earnings and must not make a closed period read as
+  break-even. The cash flow statement excludes closing entries for the same
+  reason. Period P&Ls partition: split a range anywhere and the halves sum
+  to the whole, and a range's net income equals the change in current
+  earnings across it (property-tested).
 - **R-10 — Canonical snapshots.** `reports::snapshot()` renders the three
   core reports as deterministic JSON (decimal strings, sorted lines, fixed
   keys). Two engines fed the same books must produce identical output. This

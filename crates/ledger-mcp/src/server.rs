@@ -1,10 +1,10 @@
 //! The MCP server: narrow typed tools over the store, with the receipt
 //! policy enforced server-side.
 
-use crate::company::Company;
 use crate::policy::ReceiptPolicy;
 use crate::types::*;
 use chrono::NaiveDate;
+use ledger_config::Company;
 use ledger_core::{
     AccountId, AccountType, AssetStatus, Currency, DocumentLine, DocumentStatus, JournalEntry,
     Ledger, Money, NewAsset, PeriodStatus, Side, accumulated_depreciation, book_value,

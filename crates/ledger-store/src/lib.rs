@@ -22,11 +22,13 @@ pub mod blob;
 pub mod error;
 pub mod journal;
 pub mod schema;
+pub mod snapshot;
 pub mod store;
 
 pub use blob::BlobStore;
 pub use error::StoreError;
 pub use journal::{GENESIS_PREV, JournalLine, JournalWriter};
+pub use snapshot::Snapshot;
 pub use store::{
     Attachment, DB_FILE, DepreciationRun, DisposalPreview, EntryRow, EventRow, JOURNAL_FILE,
     PayrollLineInput, Store,

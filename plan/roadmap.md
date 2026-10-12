@@ -31,7 +31,9 @@ The primary interface is MCP, not a cloned GUI (the owner's call, 2026-10-10).
 - Done when: a fixture book produces byte-identical snapshots from both
   engines with zero manual steps.
 
-## Phase 4 — Read-only GUI
+## Phase 4 — Read-only GUI (first version done, 2026-10-12)
+
+`ledger-gui`: see `plan/gui.md` for the design and what's built.
 
 - Consumes the `ledger-store` event log: live updates — the answer to
   "watch its files to update live."

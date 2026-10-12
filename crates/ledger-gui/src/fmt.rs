@@ -1,0 +1,184 @@
+//! Formatting money, dates, and counts. Amounts are exact decimals in and
+//! exact strings out: nothing here rounds except `compact`, which says so.
+
+use chrono::NaiveDate;
+use rust_decimal::Decimal;
+
+/// Thousands separators, two decimals, a true minus sign: `−1,234.56`.
+pub fn money(d: Decimal) -> String {
+    let neg = d.is_sign_negative() && !d.is_zero();
+    let s = group(d.abs().round_dp(2));
+    if neg { format!("\u{2212}{s}") } else { s }
+}
+
+/// Accounting style: negatives in parentheses, `(1,234.56)`.
+pub fn accounting(d: Decimal) -> String {
+    if d.is_sign_negative() && !d.is_zero() {
+        format!("({})", group(d.abs().round_dp(2)))
+    } else {
+        group(d.round_dp(2))
+    }
+}
+
+/// With the currency sign: `$1,234.56`, `−$12.00`.
+pub fn dollars(d: Decimal) -> String {
+    let neg = d.is_sign_negative() && !d.is_zero();
+    let s = format!("${}", group(d.abs().round_dp(2)));
+    if neg { format!("\u{2212}{s}") } else { s }
+}
+
+/// Rounded for chart axes and tight tiles: `$1.2k`, `$3.4M`, `$950`.
+pub fn compact(d: Decimal) -> String {
+    let f: f64 = d.try_into().unwrap_or(0.0);
+    let (neg, a) = (f < 0.0, f.abs());
+    let s = if a >= 1_000_000.0 {
+        format!("${:.1}M", a / 1_000_000.0)
+    } else if a >= 10_000.0 {
+        format!("${:.0}k", a / 1_000.0)
+    } else if a >= 1_000.0 {
+        format!("${:.1}k", a / 1_000.0)
+    } else {
+        format!("${a:.0}")
+    };
+    if neg { format!("\u{2212}{s}") } else { s }
+}
+
+fn group(d: Decimal) -> String {
+    let s = format!("{:.2}", d);
+    let (int, frac) = s.split_once('.').unwrap_or((&s, "00"));
+    let mut out = String::new();
+    for (i, c) in int.chars().enumerate() {
+        if i > 0 && (int.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    format!("{out}.{frac}")
+}
+
+/// A percent change from `prev` to `now`, if `prev` isn't zero.
+pub fn pct_change(prev: Decimal, now: Decimal) -> Option<f64> {
+    if prev.is_zero() {
+        return None;
+    }
+    let p: f64 = prev.try_into().ok()?;
+    let n: f64 = now.try_into().ok()?;
+    Some((n - p) / p.abs() * 100.0)
+}
+
+/// `Oct 12, 2026`.
+pub fn date(d: NaiveDate) -> String {
+    d.format("%b %-d, %Y").to_string()
+}
+
+/// `Oct 12`.
+pub fn date_short(d: NaiveDate) -> String {
+    d.format("%b %-d").to_string()
+}
+
+/// `Oct 2026`.
+pub fn month(d: NaiveDate) -> String {
+    d.format("%b %Y").to_string()
+}
+
+/// `1 receipt`, `3 receipts`.
+pub fn count(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
+/// An RFC 3339 timestamp from the journal, shown as local-ish UTC text:
+/// `Oct 11, 2026 18:04 UTC`.
+pub fn timestamp(ts: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(ts)
+        .map(|t| t.format("%b %-d, %Y %H:%M UTC").to_string())
+        .unwrap_or_else(|_| ts.to_string())
+}
+
+/// Bytes as `12.3 KB`.
+pub fn bytes(n: u64) -> String {
+    let f = n as f64;
+    if f >= 1_048_576.0 {
+        format!("{:.1} MB", f / 1_048_576.0)
+    } else if f >= 1024.0 {
+        format!("{:.1} KB", f / 1024.0)
+    } else {
+        format!("{n} B")
+    }
+}
+
+/// `snake_case_key` as `Snake case key`, for settings shown as labels,
+/// keeping acronyms upper case (`ein` → `EIN`).
+pub fn label(key: &str) -> String {
+    const ACRONYMS: [&str; 9] = [
+        "ein", "duns", "irs", "cpa", "llc", "tin", "ssn", "id", "url",
+    ];
+    let words: Vec<String> = key
+        .split(['_', ' '])
+        .filter(|w| !w.is_empty())
+        .enumerate()
+        .map(|(i, w)| {
+            if ACRONYMS.contains(&w.to_lowercase().as_str()) {
+                w.to_uppercase()
+            } else if i == 0 {
+                let mut c = w.chars();
+                c.next()
+                    .map(|f| f.to_uppercase().collect::<String>() + c.as_str())
+                    .unwrap_or_default()
+            } else {
+                w.to_string()
+            }
+        })
+        .collect();
+    words.join(" ")
+}
+
+/// A `CamelCase` enum name as words: `PrepaidExpense` → `Prepaid expense`.
+pub fn words(debug: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in debug.chars().enumerate() {
+        if c.is_uppercase() && i > 0 {
+            out.push(' ');
+            out.extend(c.to_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The tax return a form enum stands for.
+pub fn tax_form(f: ledger_core::TaxForm) -> &'static str {
+    match f {
+        ledger_core::TaxForm::ScheduleC => "Schedule C (Form 1040)",
+        ledger_core::TaxForm::Form1065 => "Form 1065 (partnership)",
+        ledger_core::TaxForm::Form1120S => "Form 1120-S (S corporation)",
+        ledger_core::TaxForm::Form1120 => "Form 1120 (C corporation)",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    fn dec(s: &str) -> Decimal {
+        Decimal::from_str(s).unwrap()
+    }
+
+    #[test]
+    fn money_formats() {
+        assert_eq!(money(dec("1234567.5")), "1,234,567.50");
+        assert_eq!(money(dec("-12")), "\u{2212}12.00");
+        assert_eq!(money(dec("0")), "0.00");
+        assert_eq!(money(dec("-0.00")), "0.00");
+        assert_eq!(accounting(dec("-207.68")), "(207.68)");
+        assert_eq!(dollars(dec("999.999")), "$1,000.00");
+        assert_eq!(compact(dec("1234")), "$1.2k");
+        assert_eq!(compact(dec("-25000")), "\u{2212}$25k");
+        assert_eq!(compact(dec("950.4")), "$950");
+        assert_eq!(label("state_entity_number"), "State entity number");
+        assert_eq!(label("ein"), "EIN");
+        assert_eq!(label("irs_name_control"), "IRS name control");
+        assert_eq!(words("PrepaidExpense"), "Prepaid expense");
+    }
+}

@@ -1,0 +1,68 @@
+//! Live updates: a change written to the books (by the MCP server, in
+//! practice) reaches the GUI's view model on its own, without a restart,
+//! and the changed entry is marked fresh.
+
+use chrono::NaiveDate;
+use ledger_core::{AccountType, Currency, Money, Side};
+use ledger_gui::data::{Loader, Source, Update};
+use ledger_store::Store;
+use rust_decimal::Decimal;
+use std::time::{Duration, Instant};
+
+#[test]
+fn a_change_in_another_process_shows_up_live() {
+    let dir = std::env::temp_dir().join(format!("ledger-gui-live-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let data = dir.join("books-data");
+    let mut store = Store::create(&data, Currency::USD).unwrap();
+    let cash = store
+        .add_account("1000", "Checking", AccountType::Asset, None, false)
+        .unwrap();
+    let equity = store
+        .add_account("3000", "Capital", AccountType::Equity, None, false)
+        .unwrap();
+    drop(store);
+
+    let ctx = egui::Context::default();
+    let loader = Loader::spawn(
+        Source {
+            data_dir: data.clone(),
+            books_toml: None,
+            today: NaiveDate::from_ymd_opt(2026, 10, 12),
+        },
+        ctx,
+    );
+    let first = match loader.wait(Duration::from_secs(10)) {
+        Some(Update::Books(b)) => b,
+        _ => panic!("no initial load"),
+    };
+    assert_eq!(first.kpis.cash, Decimal::ZERO);
+
+    // The writer (the MCP server's store) posts an entry.
+    let started = Instant::now();
+    let mut store = Store::open(&data).unwrap();
+    let d = NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
+    let e = store.create_entry(d, "Owner contribution").unwrap();
+    let m = Money::new(Decimal::from(2500), Currency::USD);
+    store.add_line(e, cash, Side::Debit, m).unwrap();
+    store.add_line(e, equity, Side::Credit, m).unwrap();
+    store.post_entry(e).unwrap();
+    drop(store);
+
+    // The GUI sees it, without being asked.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut seen = None;
+    while Instant::now() < deadline {
+        if let Some(Update::Books(b)) = loader.wait(Duration::from_millis(200))
+            && b.kpis.cash == Decimal::from(2500)
+        {
+            seen = Some(b);
+            break;
+        }
+    }
+    let b = seen.expect("the posted entry never reached the GUI");
+    assert!(b.fresh.contains(&e), "the new entry is highlighted as new");
+    assert!(b.seq() > first.seq());
+    eprintln!("live update arrived in {:?}", started.elapsed());
+    let _ = std::fs::remove_dir_all(&dir);
+}

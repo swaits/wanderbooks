@@ -25,6 +25,14 @@ impl BlobStore {
         })
     }
 
+    /// Open an existing blob store for reading, creating nothing. A
+    /// missing directory just means no blobs yet.
+    pub fn open_read_only(root: &Path) -> Self {
+        Self {
+            root: root.to_path_buf(),
+        }
+    }
+
     fn path_for(&self, sha_hex: &str) -> PathBuf {
         self.root
             .join(&sha_hex[0..2])

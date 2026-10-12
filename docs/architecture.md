@@ -58,7 +58,6 @@ The core is a pure domain library and stays that way.
 | `ledger-import` | QuickBooks CSV read-only import (bank transactions, chart of accounts) | `ledger-core` |
 | `ledger-export` | Format renderers: CSV, XLSX, IIF journal entries (QuickBooks Desktop) | `ledger-core` |
 | `ledger-oracle` | Diff harness: our engine vs GnuCash on fixture books | `ledger-core`, `ledger-import` |
-| `books-app` | egui UI (native + WASM), command-driven | `ledger-core`, `ledger-store` |
 
 Dependency direction is always inward toward `ledger-core`. Nothing in the
 core may depend on a future crate. UI concerns (formatting, locale, widgets)
@@ -71,3 +70,13 @@ types, and a type system that makes invalid states (mutable posted entries,
 float money) unrepresentable. The storytold pipeline this project is modeled
 on is Rust + egui for the same reasons; when the UI crate arrives it will be
 one codebase compiling to native and WASM.
+
+## The GUI (`ledger-gui`)
+
+Read-only by construction: it opens a `ledger_store::Snapshot` (journal
+verified and replayed into its own `Ledger`, projected into a private
+in-memory SQLite, blobs read through the verifying store) and never writes
+to the data directory. A loader thread watches the directory and applies
+appended journal lines; the UI renders an immutable view model rebuilt per
+change. Statements and series come from `ledger-core` (`reports`,
+`analysis`); the GUI only arranges them. See `plan/gui.md`.

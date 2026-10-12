@@ -1,0 +1,387 @@
+//! Charts, painted directly: a balance line (step-shaped, because a
+//! balance holds until the next transaction), grouped bars, ranked
+//! horizontal bars, and sparklines. Every point answers hover with its
+//! exact value; bars report clicks so they can drill down.
+
+use crate::fmt;
+use crate::theme::{self, pal};
+use chrono::NaiveDate;
+use egui::{
+    Align2, Color32, CornerRadius, Painter, Pos2, Rect, Sense, Shape, Stroke, Ui, pos2, vec2,
+};
+use rust_decimal::Decimal;
+
+fn f(d: Decimal) -> f64 {
+    d.try_into().unwrap_or(0.0)
+}
+
+/// "Nice" axis ticks covering [lo, hi].
+fn ticks(lo: f64, hi: f64, n: usize) -> Vec<f64> {
+    let span = (hi - lo).max(1e-9);
+    let raw = span / n as f64;
+    let mag = 10f64.powf(raw.log10().floor());
+    let step = [1.0, 2.0, 2.5, 5.0, 10.0]
+        .iter()
+        .map(|m| m * mag)
+        .find(|s| span / s <= n as f64)
+        .unwrap_or(10.0 * mag);
+    let start = (lo / step).floor() * step;
+    let mut v = vec![start];
+    // Up to the first tick at or above the top, so the data never pokes
+    // past the last gridline.
+    while *v.last().expect("non-empty") < hi - step * 1e-9 {
+        let next = v.last().expect("non-empty") + step;
+        v.push(next);
+    }
+    v
+}
+
+fn money_label(v: f64) -> String {
+    fmt::compact(Decimal::from_f64_retain(v).unwrap_or_default())
+}
+
+/// A balance over time as a step line with a soft fill. `points` are
+/// (date, balance at end of day), ascending; the line runs to `until`.
+pub fn balance_line(ui: &mut Ui, points: &[(NaiveDate, Decimal)], until: NaiveDate, height: f32) {
+    let p = pal(ui.ctx());
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
+    let painter = ui.painter_at(rect);
+    if points.is_empty() {
+        painter.text(
+            rect.center(),
+            Align2::CENTER_CENTER,
+            "No cash activity yet",
+            theme::regular(12.5),
+            p.faint,
+        );
+        return;
+    }
+    let first = points[0].0;
+    let last = until.max(points[points.len() - 1].0);
+    let days = ((last - first).num_days().max(1)) as f64;
+    let vals: Vec<f64> = points.iter().map(|(_, v)| f(*v)).collect();
+    let lo = vals.iter().cloned().fold(0.0f64, f64::min);
+    let hi = vals.iter().cloned().fold(f64::MIN, f64::max).max(lo + 1.0);
+    let ts = ticks(lo, hi, 4);
+    let (lo, hi) = (ts[0].min(lo), ts[ts.len() - 1].max(hi));
+    let plot = Rect::from_min_max(rect.min + vec2(52.0, 6.0), rect.max - vec2(8.0, 22.0));
+    let x =
+        |d: NaiveDate| plot.left() + ((d - first).num_days() as f64 / days) as f32 * plot.width();
+    let y = |v: f64| plot.bottom() - ((v - lo) / (hi - lo)) as f32 * plot.height();
+    for t in &ts {
+        let yy = y(*t);
+        painter.line_segment(
+            [pos2(plot.left(), yy), pos2(plot.right(), yy)],
+            Stroke::new(1.0, p.border),
+        );
+        painter.text(
+            pos2(plot.left() - 8.0, yy),
+            Align2::RIGHT_CENTER,
+            money_label(*t),
+            theme::regular(11.0),
+            p.faint,
+        );
+    }
+    // X labels: first, last, and a few between.
+    let n_labels = 4;
+    for i in 0..=n_labels {
+        let d = first + chrono::Days::new(((days * i as f64) / n_labels as f64).round() as u64);
+        let align = match i {
+            0 => Align2::LEFT_TOP,
+            i if i == n_labels => Align2::RIGHT_TOP,
+            _ => Align2::CENTER_TOP,
+        };
+        painter.text(
+            pos2(x(d), plot.bottom() + 6.0),
+            align,
+            fmt::date_short(d),
+            theme::regular(11.0),
+            p.faint,
+        );
+    }
+    // Step path.
+    let mut line: Vec<Pos2> = Vec::new();
+    for (i, (d, v)) in points.iter().enumerate() {
+        let px = x(*d);
+        if i > 0 {
+            line.push(pos2(px, line.last().unwrap().y));
+        }
+        line.push(pos2(px, y(f(*v))));
+    }
+    line.push(pos2(x(last), line.last().unwrap().y));
+    let base = y(0.0f64.clamp(lo, hi));
+    let mut fill = line.clone();
+    fill.push(pos2(x(last), base));
+    fill.push(pos2(x(first), base));
+    let soft = Color32::from_rgba_unmultiplied(p.accent.r(), p.accent.g(), p.accent.b(), 28);
+    // Fill: one mesh of strips under each flat step (the outline may be
+    // non-convex). A mesh has no anti-aliased edges, so strips meet without
+    // seams.
+    let mut mesh = egui::Mesh::default();
+    for w in line.windows(2) {
+        if (w[0].y - w[1].y).abs() < 0.01 && w[1].x > w[0].x {
+            mesh.add_colored_rect(
+                Rect::from_min_max(
+                    pos2(w[0].x, w[0].y.min(base)),
+                    pos2(w[1].x, w[0].y.max(base)),
+                ),
+                soft,
+            );
+        }
+    }
+    painter.add(Shape::mesh(mesh));
+    let _ = fill;
+    painter.add(Shape::line(line.clone(), Stroke::new(2.0, p.accent)));
+    // Hover: the balance on the hovered day.
+    if let Some(hp) = resp.hover_pos()
+        && plot.x_range().contains(hp.x)
+    {
+        let frac = ((hp.x - plot.left()) / plot.width()) as f64;
+        let day = first + chrono::Days::new((frac * days).round() as u64);
+        let bal = points
+            .iter()
+            .take_while(|(d, _)| *d <= day)
+            .last()
+            .map(|(_, v)| *v);
+        if let Some(b) = bal {
+            let hx = x(day);
+            painter.line_segment(
+                [pos2(hx, plot.top()), pos2(hx, plot.bottom())],
+                Stroke::new(1.0, p.faint),
+            );
+            painter.circle_filled(pos2(hx, y(f(b))), 4.0, p.accent);
+            tooltip(
+                &painter,
+                pos2(hx, plot.top()),
+                &fmt::date(day),
+                &fmt::dollars(b),
+                p.surface,
+                p.border,
+                p.text,
+                p.muted,
+                rect,
+            );
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn tooltip(
+    painter: &Painter,
+    at: Pos2,
+    title: &str,
+    value: &str,
+    bg: Color32,
+    border: Color32,
+    fg: Color32,
+    muted: Color32,
+    bounds: Rect,
+) {
+    let t1 = painter.layout_no_wrap(title.to_string(), theme::regular(11.5), muted);
+    let t2 = painter.layout_no_wrap(value.to_string(), theme::semibold(13.0), fg);
+    let w = t1.size().x.max(t2.size().x) + 16.0;
+    let h = t1.size().y + t2.size().y + 12.0;
+    let mut r = Rect::from_min_size(pos2(at.x + 8.0, at.y), vec2(w, h));
+    if r.right() > bounds.right() {
+        r = r.translate(vec2(-w - 16.0, 0.0));
+    }
+    painter.rect(
+        r,
+        CornerRadius::same(6),
+        bg,
+        Stroke::new(1.0, border),
+        egui::StrokeKind::Inside,
+    );
+    painter.galley(r.min + vec2(8.0, 6.0), t1.clone(), muted);
+    painter.galley(r.min + vec2(8.0, 6.0 + t1.size().y), t2, fg);
+}
+
+/// One group of bars on a [`bar_chart`].
+pub struct BarGroup {
+    pub label: String,
+    pub values: Vec<Decimal>,
+}
+
+/// Grouped bars (e.g. income and spending per month), with a legend.
+/// Returns the clicked group, if any.
+pub fn bar_chart(
+    ui: &mut Ui,
+    groups: &[BarGroup],
+    series: &[(&str, Color32)],
+    height: f32,
+) -> Option<usize> {
+    let p = pal(ui.ctx());
+    ui.horizontal(|ui| {
+        for (name, color) in series {
+            let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
+            ui.painter().rect_filled(r, CornerRadius::same(3), *color);
+            ui.label(
+                egui::RichText::new(*name)
+                    .font(theme::regular(12.0))
+                    .color(p.muted),
+            );
+            ui.add_space(8.0);
+        }
+    });
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::click());
+    let painter = ui.painter_at(rect);
+    if groups.is_empty() {
+        return None;
+    }
+    let all: Vec<f64> = groups
+        .iter()
+        .flat_map(|g| g.values.iter().map(|v| f(*v)))
+        .collect();
+    let lo = all.iter().cloned().fold(0.0f64, f64::min);
+    let hi = all.iter().cloned().fold(0.0f64, f64::max).max(lo + 1.0);
+    let ts = ticks(lo, hi, 4);
+    let (lo, hi) = (ts[0].min(lo), ts[ts.len() - 1].max(hi));
+    let plot = Rect::from_min_max(rect.min + vec2(52.0, 6.0), rect.max - vec2(4.0, 22.0));
+    let y = |v: f64| plot.bottom() - ((v - lo) / (hi - lo)) as f32 * plot.height();
+    for t in &ts {
+        let yy = y(*t);
+        painter.line_segment(
+            [pos2(plot.left(), yy), pos2(plot.right(), yy)],
+            Stroke::new(1.0, p.border),
+        );
+        painter.text(
+            pos2(plot.left() - 8.0, yy),
+            Align2::RIGHT_CENTER,
+            money_label(*t),
+            theme::regular(11.0),
+            p.faint,
+        );
+    }
+    let gw = plot.width() / groups.len() as f32;
+    let n = series.len().max(1) as f32;
+    let bw = ((gw * 0.7) / n).min(28.0);
+    let mut clicked = None;
+    let hover = resp.hover_pos();
+    for (gi, g) in groups.iter().enumerate() {
+        let gx = plot.left() + gw * gi as f32;
+        let grect = Rect::from_min_max(pos2(gx, plot.top()), pos2(gx + gw, plot.bottom()));
+        let hovered = hover.is_some_and(|h| grect.contains(h));
+        if hovered {
+            painter.rect_filled(grect, CornerRadius::same(6), p.hover);
+        }
+        let total_w = bw * n + 3.0 * (n - 1.0);
+        let start = gx + (gw - total_w) / 2.0;
+        for (si, v) in g.values.iter().enumerate() {
+            let color = series.get(si).map(|s| s.1).unwrap_or(p.accent);
+            let x0 = start + si as f32 * (bw + 3.0);
+            let (y0, y1) = (y(0.0), y(f(*v)));
+            let r = Rect::from_min_max(
+                pos2(x0, y0.min(y1)),
+                pos2(x0 + bw, y0.max(y1).max(y0.min(y1) + 1.0)),
+            );
+            painter.rect_filled(
+                r,
+                CornerRadius {
+                    nw: 3,
+                    ne: 3,
+                    sw: 0,
+                    se: 0,
+                },
+                color,
+            );
+        }
+        painter.text(
+            pos2(gx + gw / 2.0, plot.bottom() + 6.0),
+            Align2::CENTER_TOP,
+            &g.label,
+            theme::regular(11.0),
+            p.faint,
+        );
+        if hovered {
+            let lines: Vec<String> = series
+                .iter()
+                .zip(&g.values)
+                .map(|((name, _), v)| format!("{name}: {}", fmt::dollars(*v)))
+                .collect();
+            tooltip(
+                &painter,
+                pos2(gx + gw / 2.0, plot.top()),
+                &g.label,
+                &lines.join("\n"),
+                p.surface,
+                p.border,
+                p.text,
+                p.muted,
+                rect,
+            );
+            if resp.clicked() {
+                clicked = Some(gi);
+            }
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+    }
+    clicked
+}
+
+/// Ranked horizontal bars with labels and exact amounts. Returns the
+/// clicked row.
+pub fn hbars(ui: &mut Ui, rows: &[(String, Decimal)], color: Color32) -> Option<usize> {
+    let p = pal(ui.ctx());
+    let max = rows
+        .iter()
+        .map(|(_, v)| f(*v).abs())
+        .fold(0.0, f64::max)
+        .max(1e-9);
+    let mut clicked = None;
+    for (i, (label, v)) in rows.iter().enumerate() {
+        let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
+        let painter = ui.painter_at(rect);
+        if resp.hovered() {
+            painter.rect_filled(rect, CornerRadius::same(6), p.hover);
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        let amount = fmt::dollars(*v);
+        let ag = painter.layout_no_wrap(amount, theme::regular(13.0), p.text);
+        let label_w = (rect.width() * 0.38).min(220.0);
+        let lg = painter.layout(label.clone(), theme::regular(13.0), p.text, label_w);
+        painter.galley(
+            pos2(rect.left() + 6.0, rect.center().y - lg.size().y / 2.0),
+            lg,
+            p.text,
+        );
+        let bar_left = rect.left() + label_w + 14.0;
+        let bar_max = rect.right() - ag.size().x - 18.0 - bar_left;
+        let w = (f(*v).abs() / max) as f32 * bar_max.max(0.0);
+        let bar = Rect::from_min_size(
+            pos2(bar_left, rect.center().y - 6.0),
+            vec2(w.max(2.0), 12.0),
+        );
+        painter.rect_filled(bar, CornerRadius::same(3), color);
+        painter.galley(
+            pos2(
+                rect.right() - ag.size().x - 6.0,
+                rect.center().y - ag.size().y / 2.0,
+            ),
+            ag,
+            p.text,
+        );
+        if resp.clicked() {
+            clicked = Some(i);
+        }
+    }
+    clicked
+}
+
+/// A tiny trend line.
+pub fn sparkline(painter: &Painter, rect: Rect, values: &[f64], color: Color32) {
+    let lo = values.iter().cloned().fold(f64::MAX, f64::min);
+    let hi = values.iter().cloned().fold(f64::MIN, f64::max);
+    let span = (hi - lo).max(1e-9);
+    let n = values.len().max(2) - 1;
+    let pts: Vec<Pos2> = values
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            pos2(
+                rect.left() + rect.width() * i as f32 / n as f32,
+                rect.bottom() - ((v - lo) / span) as f32 * rect.height(),
+            )
+        })
+        .collect();
+    painter.add(Shape::line(pts, Stroke::new(1.5, color)));
+}

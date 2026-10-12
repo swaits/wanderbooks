@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 pub const JOURNAL_FILE: &str = "journal.jsonl";
 /// File names inside the data directory.
 pub const DB_FILE: &str = "wanderbooks.db";
-const BLOBS_DIR: &str = "blobs";
+pub(crate) const BLOBS_DIR: &str = "blobs";
 
 /// One row of an entry listing.
 #[derive(Clone, Debug)]
@@ -283,7 +283,7 @@ impl Store {
         matches!(check, Ok(s) if s == "ok")
     }
 
-    fn migrate(conn: &Connection) -> Result<(), StoreError> {
+    pub(crate) fn migrate(conn: &Connection) -> Result<(), StoreError> {
         let mut v = Self::current_version(conn)?;
         if v > schema::SCHEMA_VERSION {
             return Err(StoreError::SchemaTooNew(v, schema::SCHEMA_VERSION));
@@ -2106,36 +2106,12 @@ impl Store {
         &self,
         entry_id: Option<EntryId>,
     ) -> Result<Vec<Attachment>, StoreError> {
-        let mut sql = String::from(
-            "SELECT a.id, a.blob_sha, a.entry_id, a.category, b.original_name, b.mime_type, \
-             b.size_bytes, a.description, a.created_at, a.withdrawn_at, a.withdrawn_reason \
-             FROM attachments a \
-             JOIN blobs b ON b.sha256 = a.blob_sha",
-        );
-        if entry_id.is_some() {
-            sql.push_str(" WHERE a.entry_id = ?");
-        }
-        sql.push_str(" ORDER BY a.id");
-        let mut stmt = self.conn.prepare(&sql)?;
-        let rows: Vec<Attachment> = match entry_id {
-            Some(eid) => stmt
-                .query_map(params![eid as i64], row_to_attachment)?
-                .collect::<Result<_, _>>()?,
-            None => stmt
-                .query_map([], row_to_attachment)?
-                .collect::<Result<_, _>>()?,
-        };
-        Ok(rows)
+        query_attachments(&self.conn, entry_id)
     }
 
     /// Read attachment bytes, verifying the SHA-256.
     pub fn attachment_bytes(&self, attachment_id: u64) -> Result<Vec<u8>, StoreError> {
-        let sha: String = self.conn.query_row(
-            "SELECT blob_sha FROM attachments WHERE id = ?",
-            params![attachment_id as i64],
-            |r| r.get(0),
-        )?;
-        self.blobs.get(&sha)
+        read_attachment_bytes(&self.conn, &self.blobs, attachment_id)
     }
 
     // ------------------------------------------------------------------
@@ -2795,7 +2771,7 @@ fn get_str<'a>(p: &'a Value, key: &str) -> Result<&'a str, StoreError> {
 /// Replay one journal line into a ledger, asserting recorded ids. Used by
 /// hydration, `verify`, and `rebuild`: the journal is the script, the engine
 /// is the actor.
-fn replay_line_into_ledger(
+pub(crate) fn replay_line_into_ledger(
     ledger: &mut Ledger,
     line: &JournalLine,
     base_currency: Currency,
@@ -3376,7 +3352,10 @@ fn check_replayed_entry(
     Ok(())
 }
 
-fn apply_line_to_sqlite(conn: &Connection, line: &JournalLine) -> Result<(), StoreError> {
+pub(crate) fn apply_line_to_sqlite(
+    conn: &Connection,
+    line: &JournalLine,
+) -> Result<(), StoreError> {
     let p = &line.payload;
     match line.line_type.as_str() {
         "store.created" => {}
@@ -3793,6 +3772,47 @@ fn apply_line_to_sqlite(conn: &Connection, line: &JournalLine) -> Result<(), Sto
         params![line.seq.to_string()],
     )?;
     Ok(())
+}
+
+/// Attachments in the projection, optionally only one entry's, by id.
+pub(crate) fn query_attachments(
+    conn: &Connection,
+    entry_id: Option<EntryId>,
+) -> Result<Vec<Attachment>, StoreError> {
+    let mut sql = String::from(
+        "SELECT a.id, a.blob_sha, a.entry_id, a.category, b.original_name, b.mime_type, \
+         b.size_bytes, a.description, a.created_at, a.withdrawn_at, a.withdrawn_reason \
+         FROM attachments a \
+         JOIN blobs b ON b.sha256 = a.blob_sha",
+    );
+    if entry_id.is_some() {
+        sql.push_str(" WHERE a.entry_id = ?");
+    }
+    sql.push_str(" ORDER BY a.id");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows: Vec<Attachment> = match entry_id {
+        Some(eid) => stmt
+            .query_map(params![eid as i64], row_to_attachment)?
+            .collect::<Result<_, _>>()?,
+        None => stmt
+            .query_map([], row_to_attachment)?
+            .collect::<Result<_, _>>()?,
+    };
+    Ok(rows)
+}
+
+/// An attachment's bytes, verified against its SHA-256.
+pub(crate) fn read_attachment_bytes(
+    conn: &Connection,
+    blobs: &BlobStore,
+    attachment_id: u64,
+) -> Result<Vec<u8>, StoreError> {
+    let sha: String = conn.query_row(
+        "SELECT blob_sha FROM attachments WHERE id = ?",
+        params![attachment_id as i64],
+        |r| r.get(0),
+    )?;
+    blobs.get(&sha)
 }
 
 fn row_to_attachment(r: &rusqlite::Row) -> rusqlite::Result<Attachment> {

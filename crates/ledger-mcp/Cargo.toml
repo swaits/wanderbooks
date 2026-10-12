@@ -14,6 +14,7 @@ path = "src/main.rs"
 ledger-core = { path = "../ledger-core" }
 ledger-store = { path = "../ledger-store" }
 ledger-import = { path = "../ledger-import" }
+ledger-config = { path = "../ledger-config" }
 base64 = "0.22"
 mime_guess = "2"
 rust_decimal = "1"

@@ -9,7 +9,7 @@
 //! receipt threshold) come from the books dir's `wanderbooks.toml`, by
 //! default the one next to the data dir.
 
-mod company;
+use ledger_config as company;
 mod policy;
 mod server;
 mod types;

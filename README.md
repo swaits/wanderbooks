@@ -15,13 +15,21 @@ through MCP. Self-hosted, no rent.
   append-only, hash-chained JSONL journal; SQLite is a disposable
   projection rebuilt from it; receipts live in a content-addressed blob
   store. Drafts are durable, corrupt projections self-heal.
-- **`ledger-mcp`** — the AI-first interface. 27 MCP tools over stdio or
+- **`ledger-mcp`** — the AI-first interface. 64 MCP tools over stdio or
   Streamable HTTP: draft → preview → post workflow, server-side receipt
   policy (>$25), anti-splitting detection, asset management, digest for
   human review, plus read-only resources for dashboards.
 - **`ledger-import`** — QuickBooks interop. Import bank/credit-card CSVs
   and chart-of-accounts CSVs; export IIF journal entries (for QuickBooks
   Desktop) and XLSX reports.
+- **`ledger-config`** — the company settings in a books dir's
+  `wanderbooks.toml`.
+- **`ledger-gui`** — the read-only desktop view for owners and their
+  accountant (egui). Answers first (cash, runway, profit, what needs
+  attention), then every number drills down to its lines, its entry, the
+  rendered receipt, and the journal history. Follows the journal live:
+  a change the agent makes appears in milliseconds. `--demo` opens a
+  realistic demo company.
 
 ## Verification
 
@@ -51,6 +59,7 @@ See [`plan/STATUS.md`](plan/STATUS.md) for where things stand and
 cargo test          # whole suite
 cargo run -p ledger-cli -- init ~/books/acme   # scaffold a books dir: mise.toml + AGENT.md
 cargo run -p ledger-mcp -- --data-dir /tmp/books   # MCP server over stdio
+cargo run -p ledger-gui -- --demo                   # the desktop view, on a demo company
 ```
 Then `cd ~/books/acme`: `mise trust && mise install`, `mise run build`,
 `mise run mcp-add`, and start `claude` — the agent onboards from AGENT.md.
@@ -60,8 +69,10 @@ Then `cd ~/books/acme`: `mise trust && mise install`, `mise run build`,
 ```
 crates/ledger-core/    # engine: money, accounts, journal, ledger, reports
 crates/ledger-store/   # journal + SQLite projection + blob store
-crates/ledger-mcp/     # MCP server: 27 tools, resources, receipt policy
+crates/ledger-mcp/     # MCP server: 64 tools, resources, receipt policy
 crates/ledger-import/  # QBO CSV import, IIF/XLSX export
+crates/ledger-config/  # wanderbooks.toml company settings
+crates/ledger-gui/     # read-only live desktop view (egui)
 docs/                  # requirements, architecture, oracle, parity, glossary
 plan/                  # STATUS.md, roadmap.md
 AGENTS.md              # operating manual for agents working here

@@ -17,6 +17,7 @@
 //!   (`docs/oracle.md`) possible.
 
 pub mod account;
+pub mod analysis;
 pub mod arap;
 pub mod assets;
 pub mod classes;

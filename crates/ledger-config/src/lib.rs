@@ -35,6 +35,9 @@ pub struct Company {
     /// `[books] close_sweep`: equity accounts (draws, dividends,
     /// distributions) a close zeroes into `close_into`.
     pub close_sweep: Vec<String>,
+    /// Every simple `[company]` setting (name, EIN, formation date, ...),
+    /// in file order, as written: the full profile for display.
+    pub profile: Vec<(String, String)>,
 }
 
 /// One member of a multi-member LLC.
@@ -61,6 +64,7 @@ impl Default for Company {
             tax_form: None,
             close_into: None,
             close_sweep: Vec::new(),
+            profile: Vec::new(),
         }
     }
 }
@@ -89,6 +93,10 @@ pub struct BooksSettings {
     pub company: Company,
     /// `[books] receipt_threshold`, validated as a decimal string.
     pub receipt_threshold: Option<String>,
+    /// `[books] cash_accounts`: account codes that hold cash (bank,
+    /// savings, cash on hand), for cash reports and dashboards. Empty:
+    /// callers decide (e.g. by account name).
+    pub cash_accounts: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -124,6 +132,8 @@ struct BooksSection {
     close_into: Option<String>,
     #[serde(default)]
     close_sweep: Vec<String>,
+    #[serde(default)]
+    cash_accounts: Vec<String>,
 }
 
 /// The return a federal tax classification files: "partnership" → 1065,
@@ -238,9 +248,27 @@ pub fn parse(text: &str) -> Result<BooksSettings, String> {
         }
         None => None,
     };
+    let table: toml::Table = toml::from_str(text).map_err(|e| e.to_string())?;
+    if let Some(toml::Value::Table(c)) = table.get("company") {
+        company.profile = c
+            .iter()
+            .filter_map(|(k, v)| {
+                let s = match v {
+                    toml::Value::String(s) => s.clone(),
+                    toml::Value::Integer(i) => i.to_string(),
+                    toml::Value::Float(f) => f.to_string(),
+                    toml::Value::Boolean(b) => b.to_string(),
+                    toml::Value::Datetime(d) => d.to_string(),
+                    _ => return None,
+                };
+                Some((k.clone(), s))
+            })
+            .collect();
+    }
     Ok(BooksSettings {
         company,
         receipt_threshold,
+        cash_accounts: raw.books.cash_accounts,
     })
 }
 
@@ -304,6 +332,23 @@ mod tests {
             parse("[company]\nname = \"\"\n").unwrap().company.name,
             "Unnamed company"
         );
+    }
+
+    #[test]
+    fn keeps_the_whole_profile_in_order() {
+        let s = parse(
+            "[company]\nname = \"Acme LLC\"\nein = \"12-3456789\"\nformed = \"2026-10-04\"\n[books]\ncash_accounts = [\"1000\", \"1010\"]\n",
+        )
+        .unwrap();
+        assert_eq!(
+            s.company.profile,
+            [
+                ("name".to_string(), "Acme LLC".to_string()),
+                ("ein".to_string(), "12-3456789".to_string()),
+                ("formed".to_string(), "2026-10-04".to_string()),
+            ]
+        );
+        assert_eq!(s.cash_accounts, ["1000", "1010"]);
     }
 
     #[test]

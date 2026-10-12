@@ -249,3 +249,21 @@ interface is MCP, not a cloned GUI. The first storage + MCP slice is done
   Journal events vendor.1099_set and entry.vendor_set. Schema v7. 64 tools.
   Also: requirements and parity no longer list finished R-FUTURE work as
   future (only budgets remain, declined).
+- 2026-10-12: ledger-gui, the read-only desktop view (egui 0.36, wgpu).
+  Overview (the answer in a sentence, KPI tiles with honest comparisons,
+  cash chart, needs-attention with copyable agent prompts, recent
+  activity), Cash (accounts, in/out, burn and runway, coming up), Profit
+  (by month with margin, spending vs. its recent average, by customer and
+  class), Transactions (search, filters, cash direction, detail with
+  lines, the rendered receipt via hayro, and journal history), Reports
+  (P&L, balance sheet, cash flow, owners' equity, trial balance, GL, tax
+  summary, 1099, agings; date presets, month/quarter/year columns, prior
+  period/year comparison, % of income, drill-down to the account register
+  for exactly those dates, copy as TSV), Accounts and registers,
+  Documents, Company, Journal (every event, hash, payload), Ctrl+K
+  palette, back/forward, light/dark. Live: notify-driven, ~30 ms from
+  write to screen. Engine additions: ledger-store Snapshot (read-only,
+  incremental, torn-tail tolerant), ledger-core analysis (intervals,
+  balance series and history, P&L by interval, flows), ledger-config
+  (extracted from ledger-mcp; full profile, cash_accounts). Fonts: Inter
+  with tnum frozen in and private-use glyphs removed (Phosphor icons).

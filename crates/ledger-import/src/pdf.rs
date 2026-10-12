@@ -1,123 +1,184 @@
-//! PDF financial statements for the CPA handoff package.
+//! PDF financial statements, typeset with Typst.
 //!
-//! Simple, correct, readable — not pretty. Uses printpdf (MIT) with built-in
-//! Helvetica. Amounts are exact decimals rendered as strings; no floats.
+//! [`crate::report`] lays a statement out as rows; this module hands those
+//! rows to `templates/statement.typ` as JSON data (`sys.inputs.data`) and
+//! renders the PDF. Amounts arrive already split by
+//! [`crate::report::amount_parts`] — Typst never does arithmetic on money,
+//! and labels are data, never markup. Fonts are bundled (`typst-assets`),
+//! so output doesn't depend on what's installed, and it is deterministic:
+//! the same statement renders to the same bytes.
 
-use crate::report::{ReportMeta, RowKind, Statement, format_amount};
-use printpdf::{
-    BuiltinFont, Color, Mm, Op, PdfDocument, PdfFontHandle, PdfPage, PdfSaveOptions, Point, Pt,
-    Rgb, TextItem,
-};
+use crate::report::{ReportMeta, RowKind, Statement, amount_parts};
+use std::sync::OnceLock;
 use thiserror::Error;
+use typst::foundations::{Dict, IntoValue};
+use typst_as_lib::{TypstEngine, TypstTemplateMainFile};
+use typst_layout::PagedDocument;
 
 /// PDF rendering errors.
 #[derive(Debug, Error)]
 pub enum PdfError {
-    /// printpdf failed to save.
+    /// Typst failed to compile the statement.
+    #[error("pdf typesetting failed: {0}")]
+    Compile(String),
+    /// The PDF writer failed.
     #[error("pdf save failed: {0}")]
     Save(String),
 }
 
-fn text_ops(
-    title: &str,
-    subtitle: &str,
-    rows: &[(String, String)],
-    totals: &[(String, String)],
-) -> Vec<Op> {
-    let mut ops = vec![
-        Op::StartTextSection,
-        Op::SetTextCursor {
-            pos: Point::new(Mm(20.0), Mm(280.0)),
-        },
-        Op::SetFont {
-            font: PdfFontHandle::Builtin(BuiltinFont::HelveticaBold),
-            size: Pt(18.0),
-        },
-        Op::SetLineHeight { lh: Pt(22.0) },
-        Op::SetFillColor {
-            col: Color::Rgb(Rgb {
-                r: 0.0,
-                g: 0.0,
-                b: 0.0,
-                icc_profile: None,
-            }),
-        },
-        Op::ShowText {
-            items: vec![TextItem::Text(title.to_string())],
-        },
-        Op::AddLineBreak,
-        Op::SetFont {
-            font: PdfFontHandle::Builtin(BuiltinFont::Helvetica),
-            size: Pt(11.0),
-        },
-        Op::SetLineHeight { lh: Pt(14.0) },
-        Op::ShowText {
-            items: vec![TextItem::Text(subtitle.to_string())],
-        },
-        Op::AddLineBreak,
-        Op::AddLineBreak,
-    ];
+static TEMPLATE: &str = include_str!("../templates/statement.typ");
 
-    for (label, amount) in rows {
-        // Label left, amount right-ish via padding. Monospace would be
-        // nicer; Helvetica with padding is readable enough for a CPA file.
-        let line = format!("{:<50} {:>14}", label, amount);
-        ops.push(Op::ShowText {
-            items: vec![TextItem::Text(line)],
-        });
-        ops.push(Op::AddLineBreak);
-    }
-
-    if !totals.is_empty() {
-        ops.push(Op::AddLineBreak);
-        ops.push(Op::SetFont {
-            font: PdfFontHandle::Builtin(BuiltinFont::HelveticaBold),
-            size: Pt(11.0),
-        });
-        for (label, amount) in totals {
-            let line = format!("{:<50} {:>14}", label, amount);
-            ops.push(Op::ShowText {
-                items: vec![TextItem::Text(line)],
-            });
-            ops.push(Op::AddLineBreak);
-        }
-    }
-
-    ops.push(Op::EndTextSection);
-    ops
+/// The engine, built once: parsing the bundled fonts is the expensive part.
+fn engine() -> &'static TypstEngine<TypstTemplateMainFile> {
+    static ENGINE: OnceLock<TypstEngine<TypstTemplateMainFile>> = OnceLock::new();
+    ENGINE.get_or_init(|| {
+        TypstEngine::builder()
+            .main_file(TEMPLATE)
+            .fonts(typst_assets::fonts())
+            .build()
+    })
 }
 
-fn save_pdf(title: &str, ops: Vec<Op>) -> Result<Vec<u8>, PdfError> {
-    let mut doc = PdfDocument::new(title);
-    let page = PdfPage::new(Mm(210.0), Mm(297.0), ops);
-    let bytes = doc
-        .with_pages(vec![page])
-        .save(&PdfSaveOptions::default(), &mut Vec::new());
-    Ok(bytes)
+/// The template's input: the statement with every amount formatted.
+pub fn template_data(st: &Statement, meta: &ReportMeta) -> serde_json::Value {
+    let kind = |k: RowKind| match k {
+        RowKind::Section => "section",
+        RowKind::Line => "line",
+        RowKind::Subtotal => "subtotal",
+        RowKind::Total => "total",
+        RowKind::Spacer => "spacer",
+    };
+    serde_json::json!({
+        "company": meta.company,
+        "title": st.title,
+        "period": st.period,
+        "footer": format!("Prepared from journal through seq {}", meta.journal_seq),
+        "rows": st.rows.iter().map(|r| serde_json::json!({
+            "kind": kind(r.kind),
+            "label": r.label,
+            "rule": r.rule_above,
+            "amount": r.amount.map(|a| {
+                let p = amount_parts(a);
+                serde_json::json!({
+                    "digits": p.digits,
+                    "negative": p.negative,
+                    "zero": p.zero,
+                    "currency": r.currency,
+                })
+            }),
+        })).collect::<Vec<_>>(),
+    })
+}
+
+/// Typeset a statement into a document (pages, before PDF encoding).
+fn typeset(st: &Statement, meta: &ReportMeta) -> Result<PagedDocument, PdfError> {
+    let mut inputs = Dict::new();
+    inputs.insert(
+        "data".into(),
+        template_data(st, meta).to_string().into_value(),
+    );
+    engine()
+        .compile_with_input(inputs)
+        .output
+        .map_err(|e| PdfError::Compile(format!("{e:?}")))
 }
 
 /// Render a laid-out statement (see [`crate::report`]) as a PDF.
 pub fn statement_pdf(st: &Statement, meta: &ReportMeta) -> Result<Vec<u8>, PdfError> {
-    let mut rows = Vec::new();
-    let mut totals = Vec::new();
-    for r in &st.rows {
-        let amount = r.amount.map(format_amount).unwrap_or_default();
-        match r.kind {
-            RowKind::Spacer => rows.push((String::new(), String::new())),
-            RowKind::Section => rows.push((r.label.to_uppercase(), String::new())),
-            RowKind::Line => rows.push((format!("  {}", r.label), amount)),
-            RowKind::Subtotal | RowKind::Total => rows.push((r.label.clone(), amount)),
+    let doc = typeset(st, meta)?;
+    typst_pdf::pdf(&doc, &typst_pdf::PdfOptions::default())
+        .map_err(|e| PdfError::Save(format!("{e:?}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::report::{Row, profit_and_loss};
+    use chrono::NaiveDate;
+    use ledger_core::reports::{ProfitAndLossStatement, StatementLine};
+    use rust_decimal::Decimal;
+
+    fn meta() -> ReportMeta {
+        ReportMeta {
+            company: "Test Co".to_string(),
+            journal_seq: 42,
         }
     }
-    totals.push((
-        format!("Prepared from journal through seq {}", meta.journal_seq),
-        String::new(),
-    ));
-    let ops = text_ops(
-        &format!("{} — {}", meta.company, st.title),
-        &st.period,
-        &rows,
-        &totals,
-    );
-    save_pdf(&st.title, ops)
+
+    fn pl() -> ProfitAndLossStatement {
+        let line = |code: &str, name: &str, cents| StatementLine {
+            code: code.to_string(),
+            name: name.to_string(),
+            amount: Decimal::new(cents, 2),
+        };
+        ProfitAndLossStatement {
+            start: NaiveDate::from_ymd_opt(2026, 10, 4).unwrap(),
+            end: NaiveDate::from_ymd_opt(2026, 10, 11).unwrap(),
+            revenue: vec![],
+            expenses: vec![
+                line("6000", "Organizational Costs", 5900),
+                line("6400", "Memberships & Licenses", 10638),
+            ],
+            total_revenue: Decimal::ZERO,
+            total_expenses: Decimal::new(16538, 2),
+        }
+    }
+
+    /// The exact data the template typesets: hand-checked, like a golden.
+    #[test]
+    fn template_data_is_exact() {
+        let data = template_data(&profit_and_loss(&pl()), &meta());
+        assert_eq!(
+            data,
+            serde_json::json!({
+                "company": "Test Co",
+                "title": "Profit and Loss",
+                "period": "October 4 – October 11, 2026",
+                "footer": "Prepared from journal through seq 42",
+                "rows": [
+                    {"kind": "section", "label": "Revenue", "rule": false, "amount": null},
+                    {"kind": "subtotal", "label": "Total revenue", "rule": false, "amount":
+                        {"digits": "", "negative": false, "zero": true, "currency": true}},
+                    {"kind": "spacer", "label": "", "rule": false, "amount": null},
+                    {"kind": "section", "label": "Expenses", "rule": false, "amount": null},
+                    {"kind": "line", "label": "6000 Organizational Costs", "rule": false, "amount":
+                        {"digits": "59.00", "negative": false, "zero": false, "currency": true}},
+                    {"kind": "line", "label": "6400 Memberships & Licenses", "rule": false, "amount":
+                        {"digits": "106.38", "negative": false, "zero": false, "currency": false}},
+                    {"kind": "subtotal", "label": "Total expenses", "rule": true, "amount":
+                        {"digits": "165.38", "negative": false, "zero": false, "currency": true}},
+                    {"kind": "spacer", "label": "", "rule": false, "amount": null},
+                    {"kind": "total", "label": "Net income", "rule": true, "amount":
+                        {"digits": "165.38", "negative": true, "zero": false, "currency": true}},
+                ],
+            })
+        );
+    }
+
+    #[test]
+    fn renders_a_pdf_deterministically() {
+        let st = profit_and_loss(&pl());
+        let a = statement_pdf(&st, &meta()).unwrap();
+        assert!(a.starts_with(b"%PDF"));
+        assert_eq!(a, statement_pdf(&st, &meta()).unwrap());
+    }
+
+    /// Labels are data: Typst markup characters print literally, and a
+    /// statement too long for one page flows onto more instead of being cut.
+    #[test]
+    fn markup_is_inert_and_long_statements_paginate() {
+        let mut st = profit_and_loss(&pl());
+        st.rows = (0..200)
+            .map(|i| Row {
+                kind: RowKind::Line,
+                label: format!("#{i} *not bold* $x$ <label> @ref [link] \\ #panic()"),
+                amount: Some(Decimal::new(i, 0)),
+                currency: false,
+                rule_above: false,
+            })
+            .collect();
+        let doc = typeset(&st, &meta()).unwrap();
+        assert!(doc.pages().len() > 1, "200 rows should span pages");
+        assert!(statement_pdf(&st, &meta()).unwrap().starts_with(b"%PDF"));
+    }
 }

@@ -669,7 +669,11 @@ pub fn cash_flow(
         format!("{} {}", a.code, a.name)
     };
 
-    for account in ledger.chart().all() {
+    // By code: the chart iterates in hash order, and a statement's lines
+    // must come out in the same order every time.
+    let mut accounts: Vec<_> = ledger.chart().all().collect();
+    accounts.sort_by(|a, b| a.code.cmp(&b.code));
+    for account in accounts {
         if account.placeholder {
             continue;
         }

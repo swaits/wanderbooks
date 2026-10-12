@@ -913,7 +913,7 @@ fn mcp_period_statements_over_stdio() {
         "books.import_chart_csv",
         json!({"csv_text": "code,name,type,parent_code\n1000,Cash,asset,\n3000,Capital,equity,\n4000,Sales,revenue,\n6000,Software,expense,\n"}),
     );
-    let mut post = |mcp: &mut Mcp, date: &str, dr: &str, cr: &str, amount: &str| {
+    let post = |mcp: &mut Mcp, date: &str, dr: &str, cr: &str, amount: &str| {
         let e = mcp.call(
             "books.draft_entry",
             json!({"date": date, "description": "x"}),

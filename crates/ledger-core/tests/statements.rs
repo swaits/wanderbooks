@@ -221,3 +221,47 @@ fn a_closed_period_still_reports_its_earnings() {
     assert_eq!(cf.cash_from_financing, dec(10_000));
     assert_eq!(cf.net_change_in_cash, dec(11_700));
 }
+
+/// Cash flow lines come out in account-code order, every time. (The chart
+/// iterates in hash order; the statement must not.)
+#[test]
+fn cash_flow_lines_are_in_code_order() {
+    for _ in 0..20 {
+        let mut l = Ledger::new(Currency::USD);
+        let cash = l
+            .add_account("1000", "Cash", AccountType::Asset, None, false)
+            .unwrap();
+        let mut owners = Vec::new();
+        for code in ["3005", "3001", "3009", "3000", "3003"] {
+            owners.push(
+                l.add_account(code, code, AccountType::Equity, None, false)
+                    .unwrap(),
+            );
+        }
+        for o in &owners {
+            post(&mut l, d(3, 1), "Contribution", cash, *o, 100);
+        }
+        let cf = cash_flow(
+            &l,
+            &CashFlowParams {
+                start: d(1, 1),
+                end: d(12, 31),
+                cash_accounts: vec![cash],
+                financing_accounts: vec![],
+            },
+        )
+        .unwrap();
+        // Labels read "Owner contributions — 3000 3000" (code, then name).
+        let codes: Vec<&str> = cf
+            .financing
+            .iter()
+            .map(|f| f.label.rsplit(' ').next().unwrap())
+            .collect();
+        assert_eq!(
+            codes,
+            ["3000", "3001", "3003", "3005", "3009"],
+            "{:?}",
+            cf.financing
+        );
+    }
+}

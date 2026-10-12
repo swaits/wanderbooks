@@ -46,6 +46,8 @@ pub use payroll::{PayrollLine, PayrollRun, PayrollRunId};
 pub use periods::{Period, PeriodId, PeriodStatus};
 pub use reports::{
     BalanceSheet, BalanceSheetStatement, CashFlowLine, CashFlowParams, CashFlowStatement,
-    ClassProfitAndLoss, ProfitAndLoss, ProfitAndLossStatement, StatementLine, TrialBalance,
-    TrialBalanceLine, balance_sheet_as_of, cash_flow, profit_and_loss_for_period,
+    ClassProfitAndLoss, GeneralLedger, LedgerAccount, LedgerPosting, MemberCapital,
+    MemberEquityColumn, MembersEquityStatement, ProfitAndLoss, ProfitAndLossStatement,
+    StatementLine, TrialBalance, TrialBalanceLine, balance_sheet_as_of, cash_flow, general_ledger,
+    members_equity, profit_and_loss_for_period, trial_balance_as_of,
 };

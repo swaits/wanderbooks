@@ -132,6 +132,10 @@ pub enum LedgerError {
     #[error("purchase date plus useful life overflows the calendar")]
     AssetDateOverflow,
 
+    /// Partnership members are misconfigured (shares, capital accounts).
+    #[error("invalid members: {0}")]
+    InvalidMembers(String),
+
     /// Cash-flow period end is before period start.
     #[error("invalid date range: end {end} is before start {start}")]
     InvalidDateRange {

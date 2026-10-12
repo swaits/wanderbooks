@@ -18,10 +18,11 @@ use ledger_core::reports::{
     balance_sheet, balance_sheet_as_of, profit_and_loss, profit_and_loss_for_period,
 };
 use ledger_core::{
-    AccountId, AccountType, CashFlowParams, ClassId, Currency, Ledger, Money, Side, StatementLine,
-    cash_flow,
+    AccountId, AccountType, CashFlowParams, ClassId, Currency, Ledger, LedgerError, MemberCapital,
+    Money, Side, StatementLine, cash_flow, general_ledger, members_equity, trial_balance_as_of,
 };
 use rust_decimal::Decimal;
+use std::str::FromStr;
 
 fn d(m: u32, day: u32) -> NaiveDate {
     NaiveDate::from_ymd_opt(2026, m, day).unwrap()
@@ -264,4 +265,271 @@ fn cash_flow_lines_are_in_code_order() {
             cf.financing
         );
     }
+}
+
+fn cents(s: &str) -> Decimal {
+    Decimal::from_str(s).unwrap()
+}
+
+#[test]
+fn trial_balance_is_as_of_the_date() {
+    let b = books(false);
+    // Jan 31: Dr cash 11,700 and rent 800; Cr capital 10,000 and revenue 2,500.
+    let tb = trial_balance_as_of(&b.ledger, d(1, 31));
+    let rows: Vec<(&str, Decimal, Decimal)> = tb
+        .lines
+        .iter()
+        .map(|l| (l.code.as_str(), l.debit, l.credit))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("1000", dec(11_700), dec(0)),
+            ("3000", dec(0), dec(10_000)),
+            ("4000", dec(0), dec(2_500)),
+            ("6100", dec(800), dec(0)),
+        ]
+    );
+    assert_eq!(
+        (tb.total_debits, tb.total_credits),
+        (dec(12_500), dec(12_500))
+    );
+}
+
+#[test]
+fn general_ledger_runs_balances_by_account() {
+    let b = books(false);
+    let gl = general_ledger(&b.ledger, d(2, 1), d(2, 28)).unwrap();
+    let codes: Vec<&str> = gl.accounts.iter().map(|a| a.code.as_str()).collect();
+    // Every account with a beginning balance or February activity, by code.
+    assert_eq!(codes, ["1000", "2000", "3000", "4000", "6000", "6100"]);
+
+    let cash = &gl.accounts[0];
+    assert_eq!(cash.beginning_balance, dec(11_700));
+    let p: Vec<(Decimal, Decimal, &str, Decimal)> = cash
+        .postings
+        .iter()
+        .map(|p| (p.debit, p.credit, p.split.as_str(), p.balance))
+        .collect();
+    assert_eq!(
+        p,
+        [
+            (dec(1_000), dec(0), "4000 Revenue", dec(12_700)),
+            (dec(0), dec(120), "2000 Card", dec(12_580)),
+        ]
+    );
+    assert_eq!(cash.ending_balance, dec(12_580));
+
+    // The card: borrowed 120, paid 120, back to zero (credit-normal).
+    let card = &gl.accounts[1];
+    assert_eq!(card.beginning_balance, dec(0));
+    assert_eq!(card.postings[0].balance, dec(120));
+    assert_eq!(card.ending_balance, dec(0));
+    // Capital: no February activity, still listed with its balance.
+    assert!(gl.accounts[2].postings.is_empty());
+    assert_eq!(gl.accounts[2].ending_balance, dec(10_000));
+
+    // Every ending balance ties to the trial balance as of the end.
+    let tb = trial_balance_as_of(&b.ledger, d(2, 28));
+    for a in &gl.accounts {
+        let tb_line = tb.lines.iter().find(|l| l.code == a.code);
+        let tb_amount = tb_line.map_or(Decimal::ZERO, |l| l.debit - l.credit);
+        let normal = match a.account_type {
+            AccountType::Asset | AccountType::Expense => a.ending_balance,
+            _ => -a.ending_balance,
+        };
+        assert_eq!(tb_amount, normal, "account {}", a.code);
+    }
+}
+
+#[test]
+fn general_ledger_marks_compound_entries_as_split() {
+    let mut l = Ledger::new(Currency::USD);
+    let cash = l
+        .add_account("1000", "Cash", AccountType::Asset, None, false)
+        .unwrap();
+    let card = l
+        .add_account("2000", "Card", AccountType::Liability, None, false)
+        .unwrap();
+    let soft = l
+        .add_account("6000", "Software", AccountType::Expense, None, false)
+        .unwrap();
+    // Dr software 100 / Cr cash 60 / Cr card 40: one debit, split credits.
+    let e = l.create_entry(d(3, 1), "Annual license, paid two ways");
+    l.add_line(e, soft, Side::Debit, usd(100)).unwrap();
+    l.add_line(e, cash, Side::Credit, usd(60)).unwrap();
+    l.add_line(e, card, Side::Credit, usd(40)).unwrap();
+    l.post_entry(e).unwrap();
+    let gl = general_ledger(&l, d(1, 1), d(12, 31)).unwrap();
+    let split_of = |code: &str| {
+        let a = gl.accounts.iter().find(|a| a.code == code).unwrap();
+        (a.postings[0].split.clone(), a.postings[0].entry_id)
+    };
+    // The debit side has two other accounts; each credit has one.
+    assert_eq!(split_of("6000"), ("-Split-".to_string(), e));
+    assert_eq!(split_of("1000"), ("6000 Software".to_string(), e));
+    assert_eq!(split_of("2000"), ("6000 Software".to_string(), e));
+}
+
+/// Two members, 50/50: Alice and Bob. January: Alice puts in 600, Bob 400;
+/// revenue 1,000; expense 333.33, so net income 666.67, which doesn't split
+/// evenly. February: Bob takes a 100 distribution; revenue 100.01.
+fn partnership(close_january: bool) -> (Ledger, Vec<MemberCapital>) {
+    let mut l = Ledger::new(Currency::USD);
+    let cash = l
+        .add_account("1000", "Cash", AccountType::Asset, None, false)
+        .unwrap();
+    let alice = l
+        .add_account("3000", "Capital — Alice", AccountType::Equity, None, false)
+        .unwrap();
+    let bob = l
+        .add_account("3001", "Capital — Bob", AccountType::Equity, None, false)
+        .unwrap();
+    let rev = l
+        .add_account("4000", "Revenue", AccountType::Revenue, None, false)
+        .unwrap();
+    let exp = l
+        .add_account("6000", "Expense", AccountType::Expense, None, false)
+        .unwrap();
+    let money = |s: &str| Money::new(cents(s), Currency::USD);
+    let post = |l: &mut Ledger, date, dr, cr, amt: &str| {
+        let e = l.create_entry(date, "x");
+        l.add_line(e, dr, Side::Debit, money(amt)).unwrap();
+        l.add_line(e, cr, Side::Credit, money(amt)).unwrap();
+        l.post_entry(e).unwrap();
+    };
+    post(&mut l, d(1, 2), cash, alice, "600");
+    post(&mut l, d(1, 2), cash, bob, "400");
+    post(&mut l, d(1, 10), cash, rev, "1000");
+    post(&mut l, d(1, 20), exp, cash, "333.33");
+    if close_january {
+        let jan = l.create_period("2026-01", d(1, 1), d(1, 31)).unwrap();
+        l.close_period(jan).unwrap();
+    }
+    post(&mut l, d(2, 5), bob, cash, "100");
+    post(&mut l, d(2, 9), cash, rev, "100.01");
+    let half = cents("0.5");
+    let members = vec![
+        MemberCapital {
+            name: "Alice".into(),
+            capital_account: alice,
+            share: half,
+        },
+        MemberCapital {
+            name: "Bob".into(),
+            capital_account: bob,
+            share: half,
+        },
+    ];
+    (l, members)
+}
+
+#[test]
+fn members_equity_rolls_capital_forward_and_ties_to_the_balance_sheet() {
+    for close in [false, true] {
+        let (l, members) = partnership(close);
+        // January: 666.67 splits 333.34 / 333.33 (half a cent rounds up for
+        // Alice; Bob gets the remainder so the total is exact).
+        let jan = members_equity(&l, d(1, 1), d(1, 31), &members).unwrap();
+        let row = |c: &ledger_core::MemberEquityColumn| {
+            (
+                c.beginning,
+                c.contributions,
+                c.net_income,
+                c.distributions,
+                c.ending,
+            )
+        };
+        assert_eq!(
+            row(&jan.members[0]),
+            (
+                cents("0"),
+                cents("600"),
+                cents("333.34"),
+                cents("0"),
+                cents("933.34")
+            )
+        );
+        assert_eq!(
+            row(&jan.members[1]),
+            (
+                cents("0"),
+                cents("400"),
+                cents("333.33"),
+                cents("0"),
+                cents("733.33")
+            )
+        );
+        assert_eq!(jan.total.ending, cents("1666.67"));
+        assert_eq!(
+            jan.total.ending,
+            balance_sheet_as_of(&l, d(1, 31)).unwrap().total_equity
+        );
+
+        // February begins where January ended, whether or not January was
+        // closed to retained earnings. 100.01 splits 50.01 / 50.00.
+        let feb = members_equity(&l, d(2, 1), d(2, 28), &members).unwrap();
+        assert_eq!(
+            row(&feb.members[0]),
+            (
+                cents("933.34"),
+                cents("0"),
+                cents("50.01"),
+                cents("0"),
+                cents("983.35")
+            )
+        );
+        assert_eq!(
+            row(&feb.members[1]),
+            (
+                cents("733.33"),
+                cents("0"),
+                cents("50.00"),
+                cents("100"),
+                cents("683.33")
+            )
+        );
+        assert_eq!(feb.total.ending, cents("1666.68"));
+        assert_eq!(
+            feb.total.ending,
+            balance_sheet_as_of(&l, d(2, 28)).unwrap().total_equity
+        );
+        assert!(
+            feb.members.iter().all(|m| m.other.is_zero()),
+            "close={close}"
+        );
+    }
+}
+
+#[test]
+fn members_must_be_configured_correctly() {
+    let (l, mut members) = partnership(false);
+    members[1].share = cents("0.4");
+    assert!(matches!(
+        members_equity(&l, d(1, 1), d(1, 31), &members),
+        Err(LedgerError::InvalidMembers(_))
+    ));
+    members[1].share = cents("0.5");
+    members[1].capital_account = members[0].capital_account;
+    assert!(matches!(
+        members_equity(&l, d(1, 1), d(1, 31), &members),
+        Err(LedgerError::InvalidMembers(_))
+    ));
+}
+
+#[test]
+fn cash_flow_lines_name_their_account() {
+    let (l, _) = partnership(false);
+    let cf = cash_flow(
+        &l,
+        &CashFlowParams {
+            start: d(1, 1),
+            end: d(12, 31),
+            cash_accounts: vec![1],
+            financing_accounts: vec![],
+        },
+    )
+    .unwrap();
+    let accounts: Vec<Option<&str>> = cf.financing.iter().map(|f| f.account.as_deref()).collect();
+    assert_eq!(accounts, [Some("3000"), Some("3001")]);
 }

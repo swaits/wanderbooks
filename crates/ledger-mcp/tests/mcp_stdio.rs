@@ -15,10 +15,15 @@ struct Mcp {
 
 impl Mcp {
     fn spawn(data_dir: &std::path::Path) -> Self {
+        Self::spawn_with(data_dir, &[])
+    }
+
+    fn spawn_with(data_dir: &std::path::Path, extra: &[&std::ffi::OsStr]) -> Self {
         let bin = env!("CARGO_BIN_EXE_ledger-mcp");
         let mut child = Command::new(bin)
             .arg("--data-dir")
             .arg(data_dir)
+            .args(extra)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -877,4 +882,100 @@ fn mcp_statement_pdfs_and_cpa_package_over_stdio() {
     let mut cf = Vec::new();
     std::io::Read::read_to_end(&mut zip.by_name("cash-flow.pdf").unwrap(), &mut cf).unwrap();
     assert!(cf.starts_with(b"%PDF"));
+}
+
+#[test]
+fn mcp_period_statements_over_stdio() {
+    let dir = test_dir("period-statements");
+    // A rejected receipt policy would show up as a failed post below: the
+    // toml lowers the threshold from 25.00 to 5.00.
+    let toml = dir.join("wanderbooks.toml");
+    std::fs::write(
+        &toml,
+        "[company]\nname = \"Test Co\"\nfiscal_year_start = \"02-01\"\n[books]\nreceipt_threshold = \"5.00\"\n",
+    )
+    .unwrap();
+    let data = dir.join("books-data");
+    let mut mcp = Mcp::spawn_with(
+        &data,
+        &[std::ffi::OsStr::new("--books-toml"), toml.as_os_str()],
+    );
+    mcp.request(
+        "initialize",
+        json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+        }),
+    );
+    mcp.notify("notifications/initialized");
+    mcp.call(
+        "books.import_chart_csv",
+        json!({"csv_text": "code,name,type,parent_code\n1000,Cash,asset,\n3000,Capital,equity,\n4000,Sales,revenue,\n6000,Software,expense,\n"}),
+    );
+    let mut post = |mcp: &mut Mcp, date: &str, dr: &str, cr: &str, amount: &str| {
+        let e = mcp.call(
+            "books.draft_entry",
+            json!({"date": date, "description": "x"}),
+        );
+        let id = e["entry_id"].as_u64().unwrap();
+        mcp.call(
+            "books.add_line",
+            json!({"entry_id": id, "account": dr, "side": "debit", "amount": amount}),
+        );
+        mcp.call(
+            "books.add_line",
+            json!({"entry_id": id, "account": cr, "side": "credit", "amount": amount}),
+        );
+        id
+    };
+    let id = post(&mut mcp, "2026-01-02", "1000", "3000", "1000.00");
+    // 1000.00 > 5.00 (the toml threshold): a receipt is required.
+    let err = mcp.call_err(
+        "books.post_entry",
+        json!({"entry_id": id, "confirmed": true}),
+    );
+    assert!(err.contains("5.00"), "{err}");
+    mcp.call(
+        "books.attach_receipt",
+        json!({"entry_id": id, "file_name": "r.pdf", "mime_type": "application/pdf",
+               "content_base64": base64_like(b"r")}),
+    );
+    mcp.call(
+        "books.post_entry",
+        json!({"entry_id": id, "confirmed": true}),
+    );
+    for (date, dr, cr, amt) in [
+        ("2026-01-20", "1000", "4000", "4.00"),
+        ("2026-02-05", "6000", "1000", "3.00"),
+        ("2026-02-09", "1000", "4000", "2.50"),
+    ] {
+        let id = post(&mut mcp, date, dr, cr, amt);
+        mcp.call(
+            "books.post_entry",
+            json!({"entry_id": id, "confirmed": true}),
+        );
+    }
+
+    // February only: 2.50 sales, 3.00 software.
+    let feb = mcp.call(
+        "books.profit_and_loss",
+        json!({"start": "2026-02-01", "end": "2026-02-28"}),
+    );
+    assert_eq!(feb["revenue"], "2.50");
+    assert_eq!(feb["expenses"], "3.00");
+    assert_eq!(feb["net_income"], "-0.50");
+    assert_eq!(feb["expense_accounts"][0]["code"], "6000");
+    assert_eq!(feb["expense_accounts"][0]["amount"], "3.00");
+    // No start: the statement begins at the first entry, not year 1.
+    let all = mcp.call("books.profit_and_loss", json!({"end": "2026-02-28"}));
+    assert_eq!(all["start"], "2026-01-02");
+    assert_eq!(all["revenue"], "6.50");
+
+    // As of Jan 31: cash 1,004.00 = capital 1,000.00 + earnings 4.00.
+    let jan = mcp.call("books.balance_sheet", json!({"as_of": "2026-01-31"}));
+    assert_eq!(jan["assets"], "1004.00");
+    assert_eq!(jan["current_earnings"], "4.00");
+    assert_eq!(jan["equity_accounts"][0]["amount"], "1000.00");
+    assert_eq!(jan["balanced"], true);
 }

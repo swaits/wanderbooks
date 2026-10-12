@@ -1,14 +1,16 @@
 //! The MCP server: narrow typed tools over the store, with the receipt
 //! policy enforced server-side.
 
+use crate::company::Company;
 use crate::policy::ReceiptPolicy;
 use crate::types::*;
-use chrono::{Datelike, NaiveDate};
+use chrono::NaiveDate;
 use ledger_core::{
     AccountId, AccountType, AssetStatus, Currency, DocumentLine, DocumentStatus, JournalEntry,
     Ledger, Money, NewAsset, PeriodStatus, Side, accumulated_depreciation, book_value,
     depreciation_schedule, reports,
 };
+use ledger_import::ReportMeta;
 use ledger_store::Store;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::{
@@ -33,6 +35,7 @@ const MAX_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
 pub struct BooksServer {
     store: Arc<Mutex<Store>>,
     policy: ReceiptPolicy,
+    company: Company,
 }
 
 impl BooksServer {
@@ -41,13 +44,32 @@ impl BooksServer {
         Self {
             store: Arc::new(Mutex::new(store)),
             policy,
+            company: Company::default(),
         }
     }
 
     /// Build the server around a shared store (for HTTP: each connection
     /// gets a handle to the same store).
     pub fn new_shared(store: Arc<Mutex<Store>>, policy: ReceiptPolicy) -> Self {
-        Self { store, policy }
+        Self {
+            store,
+            policy,
+            company: Company::default(),
+        }
+    }
+
+    /// Set the company (name for report headers, fiscal year).
+    pub fn with_company(mut self, company: Company) -> Self {
+        self.company = company;
+        self
+    }
+
+    /// Header and provenance for a rendered report.
+    fn report_meta(&self, store: &Store) -> ReportMeta {
+        ReportMeta {
+            company: self.company.name.clone(),
+            journal_seq: store.journal_seq(),
+        }
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Store>, String> {
@@ -283,14 +305,7 @@ fn cash_flow_statement(
         return Err("cash_accounts is required for the cash flow statement".to_string());
     }
     let financing_accounts = resolve(financing_codes, "financing")?;
-    let start = match start {
-        Some(s) => parse_date(s)?,
-        None => NaiveDate::from_ymd_opt(1, 1, 1).unwrap(),
-    };
-    let end = match end {
-        Some(s) => parse_date(s)?,
-        None => chrono::Utc::now().date_naive(),
-    };
+    let (start, end) = statement_range(ledger, start, end)?;
     ledger_core::cash_flow(
         ledger,
         &ledger_core::CashFlowParams {
@@ -303,50 +318,13 @@ fn cash_flow_statement(
     .map_err(|e| e.to_string())
 }
 
-/// Net movement of one account over entries on or before `through`, in the
-/// account's normal side.
-fn movement_through(ledger: &Ledger, account: AccountId, through: NaiveDate) -> Decimal {
-    let movement: Decimal = ledger
-        .posted_entries()
-        .filter(|e| e.date() <= through)
-        .flat_map(|e| e.lines())
-        .filter(|l| l.account == account)
-        .map(|l| match l.side {
-            Side::Debit => l.amount.amount,
-            Side::Credit => -l.amount.amount,
-        })
-        .sum();
-    let account = ledger.chart().get(account).expect("account exists");
-    match account.account_type.normal_side() {
-        Side::Debit => movement,
-        Side::Credit => -movement,
-    }
-}
-
 /// Net movement of one account over entries in `[from, to]`, normal side.
 fn movement_in(ledger: &Ledger, account: AccountId, from: NaiveDate, to: NaiveDate) -> Decimal {
-    movement_in_class(ledger, account, from, to, None)
-}
-
-/// Signed movement of an account in its normal side over a date range,
-/// optionally filtered to one class. `None` class matches all lines
-/// (including untagged ones); `Some(id)` matches only lines tagged with it.
-fn movement_in_class(
-    ledger: &Ledger,
-    account: AccountId,
-    from: NaiveDate,
-    to: NaiveDate,
-    class_id: Option<u32>,
-) -> Decimal {
     let movement: Decimal = ledger
         .posted_entries()
         .filter(|e| e.date() >= from && e.date() <= to)
         .flat_map(|e| e.lines())
         .filter(|l| l.account == account)
-        .filter(|l| match class_id {
-            None => true,
-            Some(cid) => l.class_id == Some(cid),
-        })
         .map(|l| match l.side {
             Side::Debit => l.amount.amount,
             Side::Credit => -l.amount.amount,
@@ -357,6 +335,70 @@ fn movement_in_class(
         Side::Debit => movement,
         Side::Credit => -movement,
     }
+}
+
+fn today() -> NaiveDate {
+    chrono::Utc::now().date_naive()
+}
+
+/// Resolve a statement's date range: `end` defaults to today and `start` to
+/// the first posted entry (where "from the beginning" really begins, so no
+/// statement says "0001-01-01"), or to `end` for empty books.
+fn statement_range(
+    ledger: &Ledger,
+    start: Option<&str>,
+    end: Option<&str>,
+) -> Result<(NaiveDate, NaiveDate), String> {
+    let end = match end {
+        Some(s) => parse_date(s)?,
+        None => today(),
+    };
+    let start = match start {
+        Some(s) => parse_date(s)?,
+        None => ledger
+            .posted_entries()
+            .map(|e| e.date())
+            .min()
+            .map_or(end, |first| first.min(end)),
+    };
+    if end < start {
+        return Err("end is before start".to_string());
+    }
+    Ok((start, end))
+}
+
+/// Profit and loss for a range (see [`statement_range`]), optionally one class.
+fn pnl_statement(
+    ledger: &Ledger,
+    start: Option<&str>,
+    end: Option<&str>,
+    class_id: Option<ledger_core::ClassId>,
+) -> Result<ledger_core::ProfitAndLossStatement, String> {
+    let (start, end) = statement_range(ledger, start, end)?;
+    ledger_core::profit_and_loss_for_period(ledger, start, end, class_id).map_err(|e| e.to_string())
+}
+
+/// Balance sheet as of a date (default today).
+fn bs_statement(
+    ledger: &Ledger,
+    as_of: Option<&str>,
+) -> Result<ledger_core::BalanceSheetStatement, String> {
+    let as_of = match as_of {
+        Some(s) => parse_date(s)?,
+        None => today(),
+    };
+    ledger_core::balance_sheet_as_of(ledger, as_of).map_err(|e| e.to_string())
+}
+
+fn lines_out(lines: &[ledger_core::StatementLine]) -> Vec<StatementLineOut> {
+    lines
+        .iter()
+        .map(|l| StatementLineOut {
+            code: l.code.clone(),
+            name: l.name.clone(),
+            amount: money(l.amount),
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -456,44 +498,24 @@ impl BooksServer {
     ) -> Result<Json<ProfitAndLossOut>, String> {
         let p = params.0;
         let store = self.lock()?;
-        let ledger = store.ledger();
-        let start = match p.start {
-            Some(s) => parse_date(&s)?,
-            None => NaiveDate::from_ymd_opt(1, 1, 1).unwrap(),
-        };
-        let end = match p.end {
-            Some(s) => parse_date(&s)?,
-            None => chrono::Utc::now().date_naive(),
-        };
-        if end < start {
-            return Err("end is before start".to_string());
-        }
-        let class_id = match p.class {
-            Some(c) => Some(resolve_class(&store, &c)?),
+        let class_id = match &p.class {
+            Some(c) => Some(resolve_class(&store, c)?),
             None => None,
         };
-        let mut revenue = Decimal::ZERO;
-        let mut expenses = Decimal::ZERO;
-        for a in ledger.chart().all() {
-            if a.placeholder {
-                continue;
-            }
-            match a.account_type {
-                AccountType::Revenue => {
-                    revenue += movement_in_class(ledger, a.id, start, end, class_id)
-                }
-                AccountType::Expense => {
-                    expenses += movement_in_class(ledger, a.id, start, end, class_id)
-                }
-                _ => {}
-            }
-        }
+        let pl = pnl_statement(
+            store.ledger(),
+            p.start.as_deref(),
+            p.end.as_deref(),
+            class_id,
+        )?;
         Ok(Json(ProfitAndLossOut {
-            start: start.to_string(),
-            end: end.to_string(),
-            revenue: money(revenue),
-            expenses: money(expenses),
-            net_income: money(revenue - expenses),
+            start: pl.start.to_string(),
+            end: pl.end.to_string(),
+            revenue: money(pl.total_revenue),
+            expenses: money(pl.total_expenses),
+            net_income: money(pl.net_income()),
+            revenue_accounts: lines_out(&pl.revenue),
+            expense_accounts: lines_out(&pl.expenses),
         }))
     }
 
@@ -508,38 +530,17 @@ impl BooksServer {
     ) -> Result<Json<BalanceSheetOut>, String> {
         let p = params.0;
         let store = self.lock()?;
-        let ledger = store.ledger();
-        let as_of = match p.as_of {
-            Some(s) => parse_date(&s)?,
-            None => chrono::Utc::now().date_naive(),
-        };
-        let mut assets = Decimal::ZERO;
-        let mut liabilities = Decimal::ZERO;
-        let mut equity = Decimal::ZERO;
-        let mut revenue = Decimal::ZERO;
-        let mut expenses = Decimal::ZERO;
-        for a in ledger.chart().all() {
-            if a.placeholder {
-                continue;
-            }
-            let m = movement_through(ledger, a.id, as_of);
-            match a.account_type {
-                AccountType::Asset => assets += m,
-                AccountType::Liability => liabilities += m,
-                AccountType::Equity => equity += m,
-                AccountType::Revenue => revenue += m,
-                AccountType::Expense => expenses += m,
-            }
-        }
-        let current_earnings = revenue - expenses;
-        equity += current_earnings;
+        let bs = bs_statement(store.ledger(), p.as_of.as_deref())?;
         Ok(Json(BalanceSheetOut {
-            as_of: as_of.to_string(),
-            assets: money(assets),
-            liabilities: money(liabilities),
-            equity: money(equity),
-            current_earnings: money(current_earnings),
-            balanced: assets == liabilities + equity,
+            as_of: bs.as_of.to_string(),
+            assets: money(bs.total_assets),
+            liabilities: money(bs.total_liabilities),
+            equity: money(bs.total_equity),
+            current_earnings: money(bs.current_earnings),
+            balanced: bs.balanced(),
+            asset_accounts: lines_out(&bs.assets),
+            liability_accounts: lines_out(&bs.liabilities),
+            equity_accounts: lines_out(&bs.equity),
         }))
     }
 
@@ -1437,48 +1438,23 @@ impl BooksServer {
         }))
     }
 
-    /// Render a report to XLSX bytes via ledger-import.
-    fn export_xlsx(&self, report: &str, p: &ExportParams) -> Result<Vec<u8>, String> {
-        use ledger_import::{XlsxReport, report_to_xlsx};
-        let store = self.lock()?;
-        let ledger = store.ledger();
-        // Build owned report data first (all report structs are owned).
-        enum Owned {
-            Tb(ledger_core::reports::TrialBalance),
-            Pnl(ledger_core::reports::ProfitAndLoss, String, String),
-            Bs(ledger_core::reports::BalanceSheet, String),
-            Cf(ledger_core::reports::CashFlowStatement),
-        }
-        let owned = match report {
-            "trial_balance" => Owned::Tb(reports::trial_balance(ledger)),
-            "profit_and_loss" => {
-                let start = match &p.start {
-                    Some(s) => parse_date(s)?,
-                    None => NaiveDate::from_ymd_opt(1, 1, 1).unwrap(),
-                };
-                let end = match &p.end {
-                    Some(s) => parse_date(s)?,
-                    None => chrono::Utc::now().date_naive(),
-                };
-                Owned::Pnl(
-                    reports::profit_and_loss(ledger).map_err(|e| e.to_string())?,
-                    start.to_string(),
-                    end.to_string(),
-                )
-            }
-            "balance_sheet" => {
-                let as_of = match &p.as_of {
-                    Some(s) => parse_date(s)?,
-                    None => chrono::Utc::now().date_naive(),
-                };
-                // Engine balance_sheet is as-of now; xlsx uses the same.
-                // (The books.balance_sheet tool does as-of via movement_through.)
-                Owned::Bs(
-                    reports::balance_sheet(ledger).map_err(|e| e.to_string())?,
-                    as_of.to_string(),
-                )
-            }
-            "cash_flow" => Owned::Cf(cash_flow_statement(
+    /// Lay out a financial statement for rendering, from export params.
+    fn layout_statement(
+        &self,
+        ledger: &Ledger,
+        report: &str,
+        p: &ExportParams,
+    ) -> Result<ledger_import::Statement, String> {
+        use ledger_import::report;
+        Ok(match report {
+            "profit_and_loss" => report::profit_and_loss(&pnl_statement(
+                ledger,
+                p.start.as_deref(),
+                p.end.as_deref(),
+                None,
+            )?),
+            "balance_sheet" => report::balance_sheet(&bs_statement(ledger, p.as_of.as_deref())?),
+            "cash_flow" => report::cash_flow(&cash_flow_statement(
                 ledger,
                 p.start.as_deref(),
                 p.end.as_deref(),
@@ -1487,47 +1463,35 @@ impl BooksServer {
             )?),
             _ => {
                 return Err(format!(
-                    "bad report {report:?} for xlsx: expected trial_balance, profit_and_loss, balance_sheet, or cash_flow"
+                    "bad report {report:?}: expected profit_and_loss, balance_sheet, or cash_flow"
                 ));
             }
-        };
-        let xlsx_report = match &owned {
-            Owned::Tb(tb) => XlsxReport::TrialBalance(tb),
-            Owned::Pnl(pl, s, e) => XlsxReport::ProfitAndLoss(pl, s.clone(), e.clone()),
-            Owned::Bs(bs, a) => XlsxReport::BalanceSheet(bs, a.clone()),
-            Owned::Cf(cf) => XlsxReport::CashFlow(cf),
-        };
-        report_to_xlsx(&xlsx_report).map_err(|e| e.to_string())
+        })
+    }
+
+    /// Render a report to XLSX bytes via ledger-import.
+    fn export_xlsx(&self, report: &str, p: &ExportParams) -> Result<Vec<u8>, String> {
+        use ledger_import::{XlsxReport, report_to_xlsx};
+        let store = self.lock()?;
+        let meta = self.report_meta(&store);
+        let ledger = store.ledger();
+        if report == "trial_balance" {
+            let tb = reports::trial_balance(ledger);
+            return report_to_xlsx(&XlsxReport::TrialBalance(&tb), &meta)
+                .map_err(|e| e.to_string());
+        }
+        let st = self.layout_statement(ledger, report, p)?;
+        report_to_xlsx(&XlsxReport::Statement(&st), &meta).map_err(|e| e.to_string())
     }
 
     /// Render a financial statement to PDF bytes via ledger-import.
     fn export_pdf(&self, report: &str, p: &ExportParams) -> Result<Vec<u8>, String> {
         let store = self.lock()?;
-        let ledger = store.ledger();
-        let today = || chrono::Utc::now().date_naive().to_string();
-        match report {
-            "profit_and_loss" => ledger_import::profit_and_loss_pdf(
-                ledger,
-                p.start.as_deref().unwrap_or("0001-01-01"),
-                &p.end.clone().unwrap_or_else(today),
-            ),
-            "balance_sheet" => {
-                ledger_import::balance_sheet_pdf(ledger, &p.as_of.clone().unwrap_or_else(today))
-            }
-            "cash_flow" => ledger_import::cash_flow_pdf(&cash_flow_statement(
-                ledger,
-                p.start.as_deref(),
-                p.end.as_deref(),
-                &p.cash_accounts,
-                &p.financing_accounts,
-            )?),
-            _ => {
-                return Err(format!(
-                    "bad report {report:?} for pdf: expected profit_and_loss, balance_sheet, or cash_flow"
-                ));
-            }
-        }
-        .map_err(|e| e.to_string())
+        let meta = self.report_meta(&store);
+        let st = self
+            .layout_statement(store.ledger(), report, p)
+            .map_err(|e| e.replace("bad report", "bad report for pdf"))?;
+        ledger_import::statement_pdf(&st, &meta).map_err(|e| e.to_string())
     }
 
     /// Render the journal as IIF text via ledger-import.
@@ -2541,44 +2505,42 @@ impl BooksServer {
         &self,
         params: Parameters<ExportCpaPackageParams>,
     ) -> Result<Json<ExportCpaPackageOut>, String> {
-        use ledger_import::{XlsxReport, report_to_xlsx};
+        use ledger_import::{XlsxReport, report, report_to_xlsx, statement_pdf};
         let p = params.0;
         let as_of = match p.as_of {
             Some(s) => parse_date(&s)?,
-            None => chrono::Utc::now().date_naive(),
+            None => today(),
         };
         let store = self.lock()?;
+        let meta = self.report_meta(&store);
         let ledger = store.ledger();
 
-        // Fiscal year to date for the P&L: Jan 1 of the as_of year.
-        let fy_start = NaiveDate::from_ymd_opt(as_of.year(), 1, 1).unwrap();
+        // Fiscal year to date, per wanderbooks.toml's fiscal_year_start.
+        let (fy_start, _) = self.company.fiscal_year_containing(as_of);
+        let (fy_start, as_of_s) = (fy_start.to_string(), as_of.to_string());
+        let xlsx = |r: XlsxReport<'_>| report_to_xlsx(&r, &meta).map_err(|e| e.to_string());
+        let pdf =
+            |st: ledger_import::Statement| statement_pdf(&st, &meta).map_err(|e| e.to_string());
 
-        // 1. Trial balance XLSX.
-        let tb = ledger_core::reports::trial_balance(ledger);
-        let tb_xlsx = report_to_xlsx(&XlsxReport::TrialBalance(&tb)).map_err(|e| e.to_string())?;
-
-        // 2. General ledger XLSX (every posted line).
-        let gl_xlsx =
-            report_to_xlsx(&XlsxReport::GeneralLedger(ledger)).map_err(|e| e.to_string())?;
-
-        // 3. P&L PDF (fiscal year to date).
-        let pnl_pdf =
-            ledger_import::profit_and_loss_pdf(ledger, &fy_start.to_string(), &as_of.to_string())
-                .map_err(|e| e.to_string())?;
-
-        // 4. Balance sheet PDF.
-        let bs_pdf = ledger_import::balance_sheet_pdf(ledger, &as_of.to_string())
-            .map_err(|e| e.to_string())?;
-
-        // 5. Cash flow PDF (fiscal year to date, like the P&L).
-        let cf = cash_flow_statement(
+        let tb_xlsx = xlsx(XlsxReport::TrialBalance(&reports::trial_balance(ledger)))?;
+        let gl_xlsx = xlsx(XlsxReport::GeneralLedger(ledger))?;
+        let pnl_pdf = pdf(report::profit_and_loss(&pnl_statement(
             ledger,
-            Some(&fy_start.to_string()),
-            Some(&as_of.to_string()),
+            Some(&fy_start),
+            Some(&as_of_s),
+            None,
+        )?))?;
+        let bs_pdf = pdf(report::balance_sheet(&bs_statement(
+            ledger,
+            Some(&as_of_s),
+        )?))?;
+        let cf_pdf = pdf(report::cash_flow(&cash_flow_statement(
+            ledger,
+            Some(&fy_start),
+            Some(&as_of_s),
             &p.cash_accounts,
             &p.financing_accounts,
-        )?;
-        let cf_pdf = ledger_import::cash_flow_pdf(&cf).map_err(|e| e.to_string())?;
+        )?))?;
         drop(store);
 
         // Zip it.
@@ -2708,86 +2670,75 @@ impl BooksServer {
         end: Option<&str>,
     ) -> Result<String, String> {
         let store = self.lock()?;
-        let ledger = store.ledger();
-        let start_d = match start {
-            Some(s) => parse_date(s)?,
-            None => NaiveDate::from_ymd_opt(1, 1, 1).unwrap(),
-        };
-        let end_d = match end {
-            Some(s) => parse_date(s)?,
-            None => chrono::Utc::now().date_naive(),
-        };
-        let mut revenue = Decimal::ZERO;
-        let mut expenses = Decimal::ZERO;
-        for a in ledger.chart().all() {
-            if a.placeholder {
-                continue;
-            }
-            match a.account_type {
-                AccountType::Revenue => revenue += movement_in(ledger, a.id, start_d, end_d),
-                AccountType::Expense => expenses += movement_in(ledger, a.id, start_d, end_d),
-                _ => {}
-            }
-        }
+        let pl = pnl_statement(store.ledger(), start, end, None)?;
         if format == "json" {
             return serde_json::to_string_pretty(&serde_json::json!({
-                "start": start_d.to_string(), "end": end_d.to_string(),
-                "revenue": money(revenue), "expenses": money(expenses),
-                "net_income": money(revenue - expenses),
+                "start": pl.start.to_string(), "end": pl.end.to_string(),
+                "revenue_accounts": lines_out(&pl.revenue),
+                "expense_accounts": lines_out(&pl.expenses),
+                "revenue": money(pl.total_revenue), "expenses": money(pl.total_expenses),
+                "net_income": money(pl.net_income()),
             }))
             .map_err(|e| e.to_string());
         }
-        Ok(format!(
-            "metric,amount\nrevenue,{}\nexpenses,{}\nnet_income,{}\n",
-            money(revenue),
-            money(expenses),
-            money(revenue - expenses)
-        ))
+        let mut csv = String::from("section,code,name,amount\n");
+        for (section, lines) in [("revenue", &pl.revenue), ("expenses", &pl.expenses)] {
+            for l in lines {
+                csv.push_str(&format!(
+                    "{section},{},{},{}\n",
+                    csv_escape(&l.code),
+                    csv_escape(&l.name),
+                    money(l.amount)
+                ));
+            }
+        }
+        csv.push_str(&format!(
+            "total,,revenue,{}\ntotal,,expenses,{}\ntotal,,net_income,{}\n",
+            money(pl.total_revenue),
+            money(pl.total_expenses),
+            money(pl.net_income())
+        ));
+        Ok(csv)
     }
 
     fn export_balance_sheet(&self, format: &str, as_of: Option<&str>) -> Result<String, String> {
         let store = self.lock()?;
-        let ledger = store.ledger();
-        let as_of_d = match as_of {
-            Some(s) => parse_date(s)?,
-            None => chrono::Utc::now().date_naive(),
-        };
-        let mut assets = Decimal::ZERO;
-        let mut liabilities = Decimal::ZERO;
-        let mut equity = Decimal::ZERO;
-        let mut revenue = Decimal::ZERO;
-        let mut expenses = Decimal::ZERO;
-        for a in ledger.chart().all() {
-            if a.placeholder {
-                continue;
-            }
-            let m = movement_through(ledger, a.id, as_of_d);
-            match a.account_type {
-                AccountType::Asset => assets += m,
-                AccountType::Liability => liabilities += m,
-                AccountType::Equity => equity += m,
-                AccountType::Revenue => revenue += m,
-                AccountType::Expense => expenses += m,
-            }
-        }
-        let current_earnings = revenue - expenses;
-        equity += current_earnings;
+        let bs = bs_statement(store.ledger(), as_of)?;
         if format == "json" {
             return serde_json::to_string_pretty(&serde_json::json!({
-                "as_of": as_of_d.to_string(),
-                "assets": money(assets), "liabilities": money(liabilities),
-                "equity": money(equity), "current_earnings": money(current_earnings),
-                "balanced": assets == liabilities + equity,
+                "as_of": bs.as_of.to_string(),
+                "asset_accounts": lines_out(&bs.assets),
+                "liability_accounts": lines_out(&bs.liabilities),
+                "equity_accounts": lines_out(&bs.equity),
+                "assets": money(bs.total_assets), "liabilities": money(bs.total_liabilities),
+                "equity": money(bs.total_equity), "current_earnings": money(bs.current_earnings),
+                "balanced": bs.balanced(),
             }))
             .map_err(|e| e.to_string());
         }
-        Ok(format!(
-            "metric,amount\nassets,{}\nliabilities,{}\nequity,{}\ncurrent_earnings,{}\n",
-            money(assets),
-            money(liabilities),
-            money(equity),
-            money(current_earnings)
-        ))
+        let mut csv = String::from("section,code,name,amount\n");
+        for (section, lines) in [
+            ("assets", &bs.assets),
+            ("liabilities", &bs.liabilities),
+            ("equity", &bs.equity),
+        ] {
+            for l in lines {
+                csv.push_str(&format!(
+                    "{section},{},{},{}\n",
+                    csv_escape(&l.code),
+                    csv_escape(&l.name),
+                    money(l.amount)
+                ));
+            }
+        }
+        csv.push_str(&format!(
+            "equity,,current_earnings,{}\ntotal,,assets,{}\ntotal,,liabilities,{}\ntotal,,equity,{}\n",
+            money(bs.current_earnings),
+            money(bs.total_assets),
+            money(bs.total_liabilities),
+            money(bs.total_equity)
+        ));
+        Ok(csv)
     }
 
     fn export_cash_flow(&self, format: &str, p: &ExportParams) -> Result<String, String> {

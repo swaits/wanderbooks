@@ -550,7 +550,7 @@ fn cash_flow_with_registered_asset_and_disposal() {
             false,
         )
         .unwrap();
-    let revenue = ledger
+    ledger
         .add_account("4000", "Service Revenue", AccountType::Revenue, None, false)
         .unwrap();
     let gain = ledger

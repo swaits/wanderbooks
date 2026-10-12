@@ -7,10 +7,10 @@
 //! audit trail and what will make the future oracle harness trustworthy.
 
 use crate::{
-    AccountId, AccountType, AgingRow, Asset, AssetId, AssetStatus, Bill, BillId, ChartOfAccounts,
-    Class, ClassId, Currency, Customer, CustomerId, DocumentLine, DocumentStatus, EntryId,
-    EntryStatus, Invoice, InvoiceId, JournalEntry, JournalLine, LedgerError, Money, NewAsset,
-    Period, PeriodId, PeriodStatus, Side, Vendor, VendorId, arap, assets,
+    Account, AccountId, AccountType, AgingRow, Asset, AssetId, AssetStatus, Bill, BillId,
+    ChartOfAccounts, Class, ClassId, Currency, Customer, CustomerId, DocumentLine, DocumentStatus,
+    EntryId, EntryStatus, Invoice, InvoiceId, JournalEntry, JournalLine, LedgerError, Money,
+    NewAsset, Period, PeriodId, PeriodStatus, Side, Vendor, VendorId, arap, assets,
     payroll::{
         PayrollAccounts, PayrollLine, PayrollRun, PayrollRunId, payroll_entry_plan,
         payroll_remit_plan, validate_payroll_lines,
@@ -220,15 +220,15 @@ impl Ledger {
     ) -> Result<AccountId, LedgerError> {
         let id = self.next_account_id;
         self.next_account_id += 1;
-        self.chart.add(
+        self.chart.add(Account {
             id,
-            code,
-            name,
+            code: code.to_string(),
+            name: name.to_string(),
             account_type,
             parent,
             placeholder,
-            self.base_currency,
-        )?;
+            currency: self.base_currency,
+        })?;
         Ok(id)
     }
 

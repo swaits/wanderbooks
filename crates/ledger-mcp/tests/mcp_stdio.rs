@@ -688,7 +688,7 @@ fn mcp_resources_over_stdio() {
     );
     assert_eq!(init["result"]["serverInfo"]["name"], "wanderbooks");
     // Resources are advertised.
-    assert_eq!(init["result"]["capabilities"]["resources"].is_null(), false);
+    assert!(!init["result"]["capabilities"]["resources"].is_null());
     mcp.notify("notifications/initialized");
 
     mcp.call(

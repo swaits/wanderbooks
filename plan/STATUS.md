@@ -51,8 +51,9 @@ public. Parity is 12 of 12 against the spreadsheet workflow.
   the last caught a real month-length-drift bug, fixed with the final-month
   true-up); `cargo-mutants` run on `ledger-core` (228 mutants); `cargo-fuzz`
   targets (journal-line parsing, entry validation, op sequences) scaffolded.
-- 40+ tests green workspace-wide; `cargo fmt` clean; clippy clean except one
-  pre-existing phase-1 style lint on a public engine signature.
+- 120+ tests green workspace-wide; `cargo fmt` clean; `cargo clippy
+  --workspace --all-targets` clean, zero warnings (a hard rule: Stephen,
+  2026-10-11).
 - Docs: AGENTS.md (operating manual), requirements, architecture, oracle
   design, parity catalog (floor: 10 done), glossary, mcp-interface (incl. the
   5 asset tools), receipt-store (journal design), capability-parity

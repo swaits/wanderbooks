@@ -84,40 +84,20 @@ pub struct ChartOfAccounts {
 impl ChartOfAccounts {
     /// Register an account. Codes must be unique and non-empty; a parent, if
     /// given, must already exist.
-    pub fn add(
-        &mut self,
-        id: AccountId,
-        code: &str,
-        name: &str,
-        account_type: AccountType,
-        parent: Option<AccountId>,
-        placeholder: bool,
-        currency: Currency,
-    ) -> Result<(), LedgerError> {
-        if code.is_empty() {
+    pub fn add(&mut self, account: Account) -> Result<(), LedgerError> {
+        if account.code.is_empty() {
             return Err(LedgerError::EmptyAccountCode);
         }
-        if self.by_code.contains_key(code) {
-            return Err(LedgerError::DuplicateAccountCode(code.to_string()));
+        if self.by_code.contains_key(&account.code) {
+            return Err(LedgerError::DuplicateAccountCode(account.code));
         }
-        if let Some(p) = parent
+        if let Some(p) = account.parent
             && !self.accounts.contains_key(&p)
         {
             return Err(LedgerError::UnknownParentAccount(p));
         }
-        self.by_code.insert(code.to_string(), id);
-        self.accounts.insert(
-            id,
-            Account {
-                id,
-                code: code.to_string(),
-                name: name.to_string(),
-                account_type,
-                parent,
-                placeholder,
-                currency,
-            },
-        );
+        self.by_code.insert(account.code.clone(), account.id);
+        self.accounts.insert(account.id, account);
         Ok(())
     }
 

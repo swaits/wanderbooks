@@ -60,6 +60,19 @@ The primary interface is MCP, not a cloned GUI (the owner's call, 2026-10-10).
     invoices this month), an invoice table (number, customer, dates,
     currency, home and foreign amounts, balance, totals), expenses by
     category by month, invoices by status per month.
+  - **QuickBooks Online dashboard**: invoices (unpaid in the last year,
+    overdue vs. not yet due; paid in the last 30 days, deposited vs. not),
+    expenses by category (donut, last month), bank account balances (book
+    vs. bank, items to review), profit and loss (net income, income vs.
+    expenses bars), sales trend (line, by quarter).
+  - **KPI tiles with comparison** (QuickBooks accounting dashboard): income,
+    cost of goods sold, expenses, net profit, each with % change vs. the
+    previous 30 days; an auto date-range picker; cash balance over time
+    with a trend line; revenue by month, stacked.
+  - **Cash-flow dashboard**: bank balance, debtors, burn rate, cash runway
+    (days) tiles; income vs. expenses for the last six months; a net cash
+    flow forecast with a confidence band; A/P and A/R aging by days past
+    due (the engine already computes both agings); total burn over time.
 
 ## Phase 5 — Workflow parity
 

@@ -568,6 +568,16 @@ impl Ledger {
         self.periods.get(&id)
     }
 
+    /// Ids of every period-closing entry. Period statements (P&L, cash
+    /// flow) exclude them: a close moves earnings into retained earnings; it
+    /// earns and spends nothing, so counting it would zero out the period.
+    pub fn closing_entry_ids(&self) -> std::collections::BTreeSet<EntryId> {
+        self.periods
+            .values()
+            .filter_map(|p| p.closing_entry)
+            .collect()
+    }
+
     /// All periods, in creation order.
     pub fn list_periods(&self) -> Vec<&Period> {
         let mut ids: Vec<PeriodId> = self.periods.keys().copied().collect();

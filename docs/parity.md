@@ -19,6 +19,8 @@ No other statuses.
 | Trial balance | Reports → Trial Balance | done | golden-covered |
 | Balance sheet (A = L + E) | Reports → Balance Sheet | done | current earnings folded in pre-close; golden-covered |
 | Profit & loss | Reports → Income Statement | done | golden-covered |
+| P&L for a date range, line per account (closing entries excluded) | Reports → Income Statement (custom dates) | partial | hand-verified fixture + property tests; no golden file yet |
+| Balance sheet as of a date, line per account | Reports → Balance Sheet (as of) | partial | hand-verified fixture + property tests; no golden file yet |
 | Reversing entries | Reverse transaction | done | linked via `reversal_of` |
 | Canonical report snapshots (JSON) | — (our oracle format) | done | `reports::snapshot` |
 | Fixed-asset register + straight-line depreciation | Fixed Asset register | done | `assets.rs`; golden-covered schedule; idempotent runs; disposal with gain/loss |

@@ -45,6 +45,7 @@ pub use money::{Currency, Money};
 pub use payroll::{PayrollLine, PayrollRun, PayrollRunId};
 pub use periods::{Period, PeriodId, PeriodStatus};
 pub use reports::{
-    BalanceSheet, CashFlowLine, CashFlowParams, CashFlowStatement, ClassProfitAndLoss,
-    ProfitAndLoss, TrialBalance, TrialBalanceLine, cash_flow,
+    BalanceSheet, BalanceSheetStatement, CashFlowLine, CashFlowParams, CashFlowStatement,
+    ClassProfitAndLoss, ProfitAndLoss, ProfitAndLossStatement, StatementLine, TrialBalance,
+    TrialBalanceLine, balance_sheet_as_of, cash_flow, profit_and_loss_for_period,
 };

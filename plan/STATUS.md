@@ -178,3 +178,14 @@ interface is MCP, not a cloned GUI. The first storage + MCP slice is done
   report headers, `fiscal_year_start` for fiscal YTD (end derived), and
   `receipt_threshold` (it was silently ignored before). Reports carry
   "Prepared from journal through seq N".
+- 2026-10-11: PDFs are typeset with Typst (typst 0.15 via typst-as-lib,
+  fonts bundled by typst-assets; printpdf removed). One template,
+  `ledger-import/templates/statement.typ`, takes the laid-out statement as
+  JSON data (labels are never markup). US accounting presentation in PDF
+  and XLSX alike: tabular figures, "$" on each section's first amount and
+  on totals, negatives in parentheses with the closing paren hanging so
+  decimal points align, zero as a dash, single rule over sums, double rule
+  under totals, amounts never bold (bold figures are wider). Pages flow
+  with a repeated header and "Page n of m". Core's cash flow now orders
+  lines by account code (it followed HashMap order, so line order could
+  change between runs).

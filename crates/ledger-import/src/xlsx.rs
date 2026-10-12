@@ -40,7 +40,12 @@ impl From<rust_xlsxwriter::XlsxError> for XlsxError {
     }
 }
 
-const MONEY: &str = "#,##0.00;(#,##0.00)";
+/// Excel's Accounting format, with and without the currency symbol: "$"
+/// pinned left, digits right, negatives in parentheses with the closing
+/// parenthesis hanging (`_)` reserves its width on positives, so decimal
+/// points line up), zero as a dash.
+const ACCOUNTING: &str = r#"_(* #,##0.00_);_(* (#,##0.00);_(* "-"??_);_(@_)"#;
+const ACCOUNTING_USD: &str = r#"_($* #,##0.00_);_($* (#,##0.00);_($* "-"??_);_(@_)"#;
 
 /// Company name, title, and period across the top; returns the next row.
 fn header(
@@ -77,8 +82,11 @@ pub fn report_to_xlsx(report: &XlsxReport<'_>, meta: &ReportMeta) -> Result<Vec<
     let mut workbook = Workbook::new();
     let sheet = workbook.add_worksheet();
     let bold = Format::new().set_bold();
-    let money = Format::new().set_num_format(MONEY);
-    let money_bold = money.clone().set_bold();
+    let money = Format::new().set_num_format(ACCOUNTING);
+    let usd = Format::new().set_num_format(ACCOUNTING_USD);
+    // Totals are marked by rules, not bold: bold figures are wider and would
+    // break the decimal column.
+    let usd_bold = usd.clone();
 
     match report {
         XlsxReport::TrialBalance(tb) => {
@@ -95,7 +103,10 @@ pub fn report_to_xlsx(report: &XlsxReport<'_>, meta: &ReportMeta) -> Result<Vec<
                 sheet.write_number_with_format(row, 3, dec_to_f64(line.credit), &money)?;
                 row += 1;
             }
-            let total = money_bold.clone().set_border_top(FormatBorder::Thin);
+            let total = usd_bold
+                .clone()
+                .set_border_top(FormatBorder::Thin)
+                .set_border_bottom(FormatBorder::Double);
             sheet.write_string_with_format(row, 1, "Total", &bold)?;
             sheet.write_number_with_format(row, 2, dec_to_f64(tb.total_debits), &total)?;
             sheet.write_number_with_format(row, 3, dec_to_f64(tb.total_credits), &total)?;
@@ -108,8 +119,8 @@ pub fn report_to_xlsx(report: &XlsxReport<'_>, meta: &ReportMeta) -> Result<Vec<
             sheet.set_name(&st.title)?;
             let mut row = header(sheet, meta, &st.title, Some(&st.period))?;
             let line_label = Format::new().set_indent(1);
-            let subtotal = money_bold.clone().set_border_top(FormatBorder::Thin);
-            let total = money_bold
+            let subtotal = usd_bold.clone().set_border_top(FormatBorder::Thin);
+            let total = usd_bold
                 .clone()
                 .set_border_top(FormatBorder::Thin)
                 .set_border_bottom(FormatBorder::Double);
@@ -123,13 +134,15 @@ pub fn report_to_xlsx(report: &XlsxReport<'_>, meta: &ReportMeta) -> Result<Vec<
                     RowKind::Line => {
                         sheet.write_string_with_format(row, 0, &r.label, &line_label)?;
                         if let Some(a) = amount {
-                            sheet.write_number_with_format(row, 1, a, &money)?;
+                            let fmt = if r.currency { &usd } else { &money };
+                            sheet.write_number_with_format(row, 1, a, fmt)?;
                         }
                     }
                     RowKind::Subtotal => {
                         sheet.write_string_with_format(row, 0, &r.label, &bold)?;
                         if let Some(a) = amount {
-                            sheet.write_number_with_format(row, 1, a, &subtotal)?;
+                            let fmt = if r.rule_above { &subtotal } else { &usd_bold };
+                            sheet.write_number_with_format(row, 1, a, fmt)?;
                         }
                     }
                     RowKind::Total => {

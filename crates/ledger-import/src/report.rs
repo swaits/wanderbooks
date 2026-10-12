@@ -46,6 +46,14 @@ pub struct Row {
     pub label: String,
     /// Amount, when the row has one.
     pub amount: Option<Decimal>,
+    /// Print a currency sign with the amount: US accounting style puts "$"
+    /// on the first amount under each section heading and on every
+    /// subtotal and total.
+    pub currency: bool,
+    /// Draw a single rule above the amount: the "sum of the above" line.
+    /// Totals always have one; a subtotal only when amounts sit above it
+    /// (an empty section gets no rule over nothing).
+    pub rule_above: bool,
 }
 
 /// A laid-out financial statement.
@@ -64,6 +72,71 @@ fn row(kind: RowKind, label: impl Into<String>, amount: Option<Decimal>) -> Row 
         kind,
         label: label.into(),
         amount,
+        currency: false,
+        rule_above: false,
+    }
+}
+
+/// Finish a statement: mark which amounts carry the currency sign and which
+/// get a rule above.
+fn statement(title: &str, period: String, mut rows: Vec<Row>) -> Statement {
+    let mut first_in_section = true;
+    let mut above: Option<RowKind> = None;
+    for r in &mut rows {
+        r.rule_above = match r.kind {
+            RowKind::Total => true,
+            RowKind::Subtotal => matches!(above, Some(RowKind::Line | RowKind::Subtotal)),
+            _ => false,
+        };
+        if r.kind != RowKind::Spacer {
+            above = Some(r.kind);
+        }
+        match r.kind {
+            RowKind::Section => first_in_section = true,
+            RowKind::Subtotal | RowKind::Total => r.currency = true,
+            RowKind::Line if r.amount.is_some() && first_in_section => {
+                r.currency = true;
+                first_in_section = false;
+            }
+            RowKind::Line | RowKind::Spacer => {}
+        }
+    }
+    Statement {
+        title: title.to_string(),
+        period,
+        rows,
+    }
+}
+
+/// An amount split for column alignment: the digits, and whether it is a
+/// negative (printed in parentheses) or zero (printed as a dash). Renderers
+/// right-align `digits` and reserve the closing parenthesis's width on every
+/// row, so decimal points line up whether or not a value is negative.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct AmountParts {
+    /// "1,234.56" — absolute value, grouped, two decimals. Empty for zero.
+    pub digits: String,
+    /// Below zero.
+    pub negative: bool,
+    /// Exactly zero (after rounding to cents).
+    pub zero: bool,
+}
+
+/// Split an amount for aligned accounting display. Exact: no floats.
+pub fn amount_parts(d: Decimal) -> AmountParts {
+    let rounded = d.round_dp(2);
+    if rounded.is_zero() {
+        return AmountParts {
+            digits: String::new(),
+            negative: false,
+            zero: true,
+        };
+    }
+    let text = format_amount(rounded.abs());
+    AmountParts {
+        digits: text,
+        negative: rounded.is_sign_negative(),
+        zero: false,
     }
 }
 
@@ -110,11 +183,7 @@ pub fn profit_and_loss(pl: &ProfitAndLossStatement) -> Statement {
     ));
     rows.push(spacer());
     rows.push(row(RowKind::Total, "Net income", Some(pl.net_income())));
-    Statement {
-        title: "Profit and Loss".to_string(),
-        period: period_label(pl.start, pl.end),
-        rows,
-    }
+    statement("Profit and Loss", period_label(pl.start, pl.end), rows)
 }
 
 /// Lay out a balance sheet.
@@ -153,11 +222,11 @@ pub fn balance_sheet(bs: &BalanceSheetStatement) -> Statement {
         "Total liabilities and equity",
         Some(bs.total_liabilities + bs.total_equity),
     ));
-    Statement {
-        title: "Balance Sheet".to_string(),
-        period: format!("As of {}", long_date(bs.as_of)),
+    statement(
+        "Balance Sheet",
+        format!("As of {}", long_date(bs.as_of)),
         rows,
-    }
+    )
 }
 
 /// Lay out a cash flow statement (indirect method).
@@ -195,7 +264,7 @@ pub fn cash_flow(cf: &CashFlowStatement) -> Statement {
     ));
     rows.push(spacer());
     rows.push(row(
-        RowKind::Total,
+        RowKind::Subtotal,
         "Net change in cash",
         Some(cf.net_change_in_cash),
     ));
@@ -209,11 +278,11 @@ pub fn cash_flow(cf: &CashFlowStatement) -> Statement {
         "Cash at end of period",
         Some(cf.cash_ending),
     ));
-    Statement {
-        title: "Statement of Cash Flows".to_string(),
-        period: period_label(cf.start, cf.end),
+    statement(
+        "Statement of Cash Flows",
+        period_label(cf.start, cf.end),
         rows,
-    }
+    )
 }
 
 /// "October 11, 2026".
@@ -270,6 +339,49 @@ mod tests {
         assert_eq!(format_amount(dec("1000")), "1,000.00");
         assert_eq!(format_amount(dec("1234567.891")), "1,234,567.89");
         assert_eq!(format_amount(dec("-100000")), "(100,000.00)");
+    }
+
+    #[test]
+    fn amounts_split_for_alignment() {
+        let p = amount_parts(dec("-1234.5"));
+        assert_eq!(
+            (p.digits.as_str(), p.negative, p.zero),
+            ("1,234.50", true, false)
+        );
+        assert!(amount_parts(dec("0.004")).zero);
+        assert_eq!(amount_parts(dec("207.68")).digits, "207.68");
+    }
+
+    #[test]
+    fn currency_signs_go_on_first_lines_and_totals() {
+        let rows = vec![
+            section("Assets"),
+            row(RowKind::Line, "a", Some(dec("1"))),
+            row(RowKind::Line, "b", Some(dec("2"))),
+            row(RowKind::Subtotal, "t", Some(dec("3"))),
+            spacer(),
+            section("Equity"),
+            row(RowKind::Line, "c", Some(dec("3"))),
+            row(RowKind::Total, "T", Some(dec("3"))),
+        ];
+        let st = statement("X", String::new(), rows);
+        let signs: Vec<bool> = st.rows.iter().map(|r| r.currency).collect();
+        assert_eq!(signs, [false, true, false, true, false, false, true, true]);
+        let rules: Vec<bool> = st.rows.iter().map(|r| r.rule_above).collect();
+        assert_eq!(
+            rules,
+            [false, false, false, true, false, false, false, true]
+        );
+        // A subtotal straight under its heading (empty section): no rule.
+        let empty = statement(
+            "Y",
+            String::new(),
+            vec![
+                section("Investing"),
+                row(RowKind::Subtotal, "t", Some(dec("0"))),
+            ],
+        );
+        assert!(!empty.rows[1].rule_above);
     }
 
     #[test]

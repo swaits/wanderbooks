@@ -104,6 +104,8 @@ pub struct Ledger {
     /// Recurring entries.
     recurring: std::collections::BTreeMap<RecurringId, RecurringEntry>,
     next_recurring_id: RecurringId,
+    /// Who each entry paid or was billed by, for 1099 reporting.
+    entry_vendors: HashMap<EntryId, VendorId>,
 }
 
 impl Ledger {
@@ -138,6 +140,7 @@ impl Ledger {
             next_schedule_id: 1,
             recurring: std::collections::BTreeMap::new(),
             next_recurring_id: 1,
+            entry_vendors: HashMap::new(),
         }
     }
 
@@ -635,6 +638,10 @@ impl Ledger {
             .ok_or(LedgerError::UnknownEntry(id))?
             .mark_reversal_of(entry);
         self.post_entry(id)?;
+        // A reversed payment un-pays the vendor: carry the tag.
+        if let Some(v) = self.entry_vendor(entry) {
+            self.entry_vendors.insert(id, v);
+        }
         Ok(id)
     }
 
@@ -1127,6 +1134,8 @@ impl Ledger {
             Vendor {
                 id,
                 name: name.to_string(),
+                form_1099: None,
+                tin_on_file: false,
             },
         );
         Ok(id)
@@ -1140,6 +1149,53 @@ impl Ledger {
     /// Look up a vendor.
     pub fn get_vendor(&self, id: VendorId) -> Option<&Vendor> {
         self.vendors.get(&id)
+    }
+
+    /// Set which information return a vendor gets (or none), and whether
+    /// their W-9 is on file.
+    pub fn set_vendor_1099(
+        &mut self,
+        id: VendorId,
+        form: Option<crate::form1099::Form1099>,
+        tin_on_file: bool,
+    ) -> Result<(), LedgerError> {
+        let v = self
+            .vendors
+            .get_mut(&id)
+            .ok_or(LedgerError::UnknownVendor(id))?;
+        v.form_1099 = form;
+        v.tin_on_file = tin_on_file;
+        Ok(())
+    }
+
+    /// Tag an entry (draft or posted) with the vendor it paid or was billed
+    /// by, or clear the tag. The tag is reporting metadata, like a receipt
+    /// link: it changes no amounts, so posted entries may be tagged.
+    pub fn set_entry_vendor(
+        &mut self,
+        entry: EntryId,
+        vendor: Option<VendorId>,
+    ) -> Result<(), LedgerError> {
+        if !self.entries.contains_key(&entry) {
+            return Err(LedgerError::UnknownEntry(entry));
+        }
+        match vendor {
+            Some(v) => {
+                if !self.vendors.contains_key(&v) {
+                    return Err(LedgerError::UnknownVendor(v));
+                }
+                self.entry_vendors.insert(entry, v);
+            }
+            None => {
+                self.entry_vendors.remove(&entry);
+            }
+        }
+        Ok(())
+    }
+
+    /// The vendor an entry is tagged with.
+    pub fn entry_vendor(&self, entry: EntryId) -> Option<VendorId> {
+        self.entry_vendors.get(&entry).copied()
     }
 
     /// All customers, in id order.
@@ -1254,6 +1310,7 @@ impl Ledger {
                 entry_id: entry,
             },
         );
+        self.entry_vendors.insert(entry, vendor_id);
         Ok(id)
     }
 
@@ -1336,6 +1393,7 @@ impl Ledger {
         let b = self.bills.get_mut(&bill_id).expect("bill exists");
         b.amount_paid += amount;
         b.status = arap::derive_status(b.amount_paid, b.total());
+        self.entry_vendors.insert(entry, bill.vendor_id);
         Ok(entry)
     }
 
@@ -1403,6 +1461,7 @@ impl Ledger {
                 entry_id,
             },
         );
+        self.entry_vendors.insert(entry_id, vendor_id);
         Ok(())
     }
 
@@ -1437,13 +1496,14 @@ impl Ledger {
         amount: Decimal,
         entry_id: EntryId,
     ) -> Result<(), LedgerError> {
-        let _ = entry_id;
         let bill = self
             .bills
             .get_mut(&bill_id)
             .ok_or(LedgerError::UnknownBill(bill_id))?;
         bill.amount_paid += amount;
         bill.status = arap::derive_status(bill.amount_paid, bill.total());
+        let vendor = bill.vendor_id;
+        self.entry_vendors.insert(entry_id, vendor);
         Ok(())
     }
 

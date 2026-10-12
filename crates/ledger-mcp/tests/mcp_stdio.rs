@@ -139,7 +139,7 @@ fn mcp_end_to_end_over_stdio() {
     // Tool listing: 23 narrow tools, chart is read-only.
     let list = mcp.request("tools/list", json!({}));
     let tools = list["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 60, "expected 60 tools, got {}", tools.len());
+    assert_eq!(tools.len(), 64, "expected 64 tools, got {}", tools.len());
     let chart = tools.iter().find(|t| t["name"] == "books.chart").unwrap();
     assert_eq!(chart["annotations"]["readOnlyHint"], true);
     assert!(
@@ -1452,4 +1452,100 @@ fn mcp_payout_gross_up_over_stdio() {
             ("App B".into(), "425.00".into())
         ]
     );
+}
+
+#[test]
+fn mcp_vendor_1099_over_stdio() {
+    let dir = test_dir("form1099");
+    let init = |mcp: &mut Mcp| {
+        mcp.request(
+            "initialize",
+            json!({
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+            }),
+        );
+        mcp.notify("notifications/initialized");
+    };
+    let mut mcp = Mcp::spawn(&dir);
+    init(&mut mcp);
+    for (code, name, typ) in [
+        ("1000", "Bank", "asset"),
+        ("6000", "Contract Labor", "expense"),
+    ] {
+        mcp.call(
+            "books.add_account",
+            json!({"code": code, "name": name, "account_type": typ}),
+        );
+    }
+    mcp.call("books.add_vendor", json!({"name": "Dana Designs"}));
+    let v = mcp.call(
+        "books.set_vendor_1099",
+        json!({"vendor": "dana designs", "form_1099": "nec"}),
+    );
+    assert_eq!(v["form_1099"], "1099-NEC");
+    let err = mcp.call_err(
+        "books.set_vendor_1099",
+        json!({"vendor": "Dana Designs", "form_1099": "k"}),
+    );
+    assert!(err.contains("nec, misc, or none"), "{err}");
+
+    // A 2,500.00 check to Dana, tagged at draft time.
+    let e = mcp.call(
+        "books.draft_entry",
+        json!({"date": "2026-05-01", "description": "Logo", "vendor": "Dana Designs"}),
+    );
+    let id = e["entry_id"].as_u64().unwrap();
+    for (account, side) in [("6000", "debit"), ("1000", "credit")] {
+        mcp.call(
+            "books.add_line",
+            json!({"entry_id": id, "account": account, "side": side, "amount": "2500.00"}),
+        );
+    }
+    mcp.call(
+        "books.attach_receipt",
+        json!({
+            "entry_id": id,
+            "file_name": "invoice.pdf",
+            "mime_type": "application/pdf",
+            "content_base64": base64_like(b"%PDF-1.4 invoice"),
+        }),
+    );
+    mcp.call(
+        "books.post_entry",
+        json!({"entry_id": id, "confirmed": true}),
+    );
+    let got = mcp.call("books.get_entry", json!({"entry_id": id}));
+    assert_eq!(got["vendor"], "Dana Designs");
+
+    let r = mcp.call("books.vendor_1099", json!({"year": 2026}));
+    assert_eq!(r["threshold"], "2000.00");
+    assert_eq!(r["vendors"][0]["paid"], "2500.00");
+    assert_eq!(r["vendors"][0]["reportable"], true);
+    assert_eq!(r["missing_w9"], json!(["Dana Designs"]));
+    // An override above what was paid: not reportable.
+    let high = mcp.call(
+        "books.vendor_1099",
+        json!({"year": 2026, "threshold": "3000"}),
+    );
+    assert_eq!(high["vendors"][0]["reportable"], false);
+    // W-9 arrives.
+    mcp.call(
+        "books.set_vendor_1099",
+        json!({"vendor": "Dana Designs", "form_1099": "nec", "tin_on_file": true}),
+    );
+    drop(mcp);
+
+    let mut mcp = Mcp::spawn(&dir);
+    init(&mut mcp);
+    let r = mcp.call("books.vendor_1099", json!({"year": 2026}));
+    assert_eq!(r["vendors"][0]["paid"], "2500.00");
+    assert_eq!(r["missing_w9"], json!([]));
+    // Clearing the tag removes the payment.
+    mcp.call("books.set_entry_vendor", json!({"entry_id": id}));
+    let r = mcp.call("books.vendor_1099", json!({"year": 2026}));
+    assert_eq!(r["vendors"][0]["paid"], "0.00");
+    let vendors = mcp.call("books.list_vendors", json!({}));
+    assert_eq!(vendors["vendors"][0]["tin_on_file"], true);
 }

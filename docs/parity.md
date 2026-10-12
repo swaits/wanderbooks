@@ -29,7 +29,6 @@ No other statuses.
 | Canonical report snapshots (JSON) | — (our oracle format) | done | `reports::snapshot` |
 | Fixed-asset register + straight-line depreciation | Fixed Asset register | done | `assets.rs`; golden-covered schedule; idempotent runs; disposal with gain/loss |
 | Cash flow statement (indirect) | Reports → Cash Flow | done | R-FUTURE-3 |
-| Period close / retained earnings | Close books | todo | R-FUTURE-2 |
 | Foreign-currency lines (base + foreign stored) | Multi-currency accts | done | R-FUTURE-1 |
 | Period close (closing entry to Retained Earnings) | Close books | done | R-FUTURE-2 |
 | Bank reconciliation (cleared flags + report) | Reconcile | done | — |
@@ -43,6 +42,7 @@ No other statuses.
 | Budgets | Budgets | todo | R-FUTURE-6 (declined as bloat) |
 | Scheduled transactions (recurring entries → drafts) | Scheduled txns / Recurring transactions | partial | hand-verified fixture incl. month-end dates; drafts only, by design |
 | Payout gross-up (deposit → revenue, fees, adjustments) | Bank deposit with fee lines; Xero/QBO Stripe & Shopify integrations | partial | hand-verified fixture incl. classes and a negative payout; no statement parsers yet |
+| 1099 vendor tracking + year-end worksheet | Vendors → Track payments for 1099; 1099 report | partial | hand-verified fixture (bill payments, card exclusion, reversal, year boundary); no golden file yet |
 | Prepaid expense + deferred revenue amortization | Amortization schedules (Xero/QBO add-ons) | partial | hand-verified fixture, to the cent; no golden file yet |
 | Automated GnuCash diff harness | — (our `xtask oracle`) | todo | roadmap phase 3 |
 

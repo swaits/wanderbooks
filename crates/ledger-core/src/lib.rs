@@ -21,6 +21,7 @@ pub mod arap;
 pub mod assets;
 pub mod classes;
 pub mod error;
+pub mod form1099;
 pub mod journal;
 pub mod ledger;
 pub mod money;
@@ -42,6 +43,7 @@ pub use assets::{
 };
 pub use classes::{Class, ClassId};
 pub use error::LedgerError;
+pub use form1099::{Form1099, Vendor1099Line, Vendor1099Report, vendor_1099_report};
 pub use journal::{EntryId, EntryStatus, JournalEntry, JournalLine};
 pub use ledger::{Ledger, ReconciliationReport, UnclearedLine};
 pub use money::{Currency, Money};

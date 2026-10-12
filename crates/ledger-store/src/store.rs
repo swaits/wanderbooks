@@ -1952,6 +1952,51 @@ impl Store {
         Ok(())
     }
 
+    /// Set which 1099 a vendor gets (or none) and whether its W-9 is on
+    /// file. Journaled as `vendor.1099_set`.
+    pub fn set_vendor_1099(
+        &mut self,
+        vendor: VendorId,
+        form: Option<ledger_core::Form1099>,
+        tin_on_file: bool,
+    ) -> Result<(), StoreError> {
+        self.ledger
+            .get_vendor(vendor)
+            .ok_or(LedgerError::UnknownVendor(vendor))?;
+        let line = self.append_journal(
+            "vendor.1099_set",
+            json!({ "vendor_id": vendor, "form_1099": form, "tin_on_file": tin_on_file }),
+        )?;
+        self.ledger.set_vendor_1099(vendor, form, tin_on_file)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
+    /// Tag an entry with the vendor it paid, or clear the tag. Journaled as
+    /// `entry.vendor_set`.
+    pub fn set_entry_vendor(
+        &mut self,
+        entry: EntryId,
+        vendor: Option<VendorId>,
+    ) -> Result<(), StoreError> {
+        // Validate first, so nothing invalid is journaled.
+        self.ledger
+            .get_entry(entry)
+            .ok_or(LedgerError::UnknownEntry(entry))?;
+        if let Some(v) = vendor {
+            self.ledger
+                .get_vendor(v)
+                .ok_or(LedgerError::UnknownVendor(v))?;
+        }
+        let line = self.append_journal(
+            "entry.vendor_set",
+            json!({ "entry_id": entry, "vendor_id": vendor }),
+        )?;
+        self.ledger.set_entry_vendor(entry, vendor)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
     /// Link a previously filed (unlinked) receipt to an entry. A receipt
     /// already linked elsewhere must be unlinked first, so moving evidence
     /// off an entry always goes through [`Store::unlink_receipt`] and its
@@ -2948,6 +2993,27 @@ fn replay_line_into_ledger(
                 )));
             }
         }
+        "vendor.1099_set" => {
+            let form = match p.get("form_1099").and_then(|v| v.as_str()) {
+                Some(s) => Some(ledger_core::Form1099::parse(s).ok_or_else(|| {
+                    StoreError::JournalCorrupt("vendor.1099_set form_1099".into())
+                })?),
+                None => None,
+            };
+            ledger.set_vendor_1099(
+                get_u64(p, "vendor_id")?,
+                form,
+                p.get("tin_on_file")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+            )?;
+        }
+        "entry.vendor_set" => {
+            ledger.set_entry_vendor(
+                get_u64(p, "entry_id")?,
+                p.get("vendor_id").and_then(|v| v.as_u64()),
+            )?;
+        }
         "account.tax_set" => {
             let pct = match p.get("deductible_percent").and_then(|v| v.as_str()) {
                 Some(s) => Some(s.parse().map_err(|_| {
@@ -3363,6 +3429,12 @@ fn apply_line_to_sqlite(conn: &Connection, line: &JournalLine) -> Result<(), Sto
             }
         }
         "entry.reversed" => {
+            // A reversed payment un-pays the vendor: carry the tag.
+            conn.execute(
+                "INSERT OR REPLACE INTO entry_vendors(entry_id, vendor_id) \
+                 SELECT ?, vendor_id FROM entry_vendors WHERE entry_id = ?",
+                params![get_u64(p, "id")? as i64, get_u64(p, "reverses")? as i64],
+            )?;
             conn.execute(
                 "INSERT INTO entries(id, date, description, status, reversal_of) VALUES (?,?,?,'posted',?)",
                 params![
@@ -3424,6 +3496,32 @@ fn apply_line_to_sqlite(conn: &Connection, line: &JournalLine) -> Result<(), Sto
                 ],
             )?;
         }
+        "vendor.1099_set" => {
+            conn.execute(
+                "UPDATE vendors SET form_1099 = ?, tin_on_file = ? WHERE id = ?",
+                params![
+                    p.get("form_1099").and_then(|v| v.as_str()),
+                    p.get("tin_on_file")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                    get_u64(p, "vendor_id")? as i64,
+                ],
+            )?;
+        }
+        "entry.vendor_set" => match p.get("vendor_id").and_then(|v| v.as_u64()) {
+            Some(v) => {
+                conn.execute(
+                    "INSERT OR REPLACE INTO entry_vendors(entry_id, vendor_id) VALUES (?, ?)",
+                    params![get_u64(p, "entry_id")? as i64, v as i64],
+                )?;
+            }
+            None => {
+                conn.execute(
+                    "DELETE FROM entry_vendors WHERE entry_id = ?",
+                    params![get_u64(p, "entry_id")? as i64],
+                )?;
+            }
+        },
         "account.tax_set" => {
             conn.execute(
                 "UPDATE accounts SET tax_category = ?, deductible_percent = ? WHERE id = ?",
@@ -3591,6 +3689,13 @@ fn apply_line_to_sqlite(conn: &Connection, line: &JournalLine) -> Result<(), Sto
                     get_u64(p, "entry_id")? as i64,
                 ],
             )?;
+            conn.execute(
+                "INSERT OR REPLACE INTO entry_vendors(entry_id, vendor_id) VALUES (?, ?)",
+                params![
+                    get_u64(p, "entry_id")? as i64,
+                    get_u64(p, "vendor_id")? as i64
+                ],
+            )?;
         }
         "invoice.payment_received" => {
             let amount: Decimal = get_str(p, "amount")?
@@ -3603,6 +3708,14 @@ fn apply_line_to_sqlite(conn: &Connection, line: &JournalLine) -> Result<(), Sto
                 .parse()
                 .map_err(|_| StoreError::JournalCorrupt("bad amount".into()))?;
             apply_document_payment(conn, "bills", get_u64(p, "bill_id")?, amount)?;
+            conn.execute(
+                "INSERT OR REPLACE INTO entry_vendors(entry_id, vendor_id) \
+                 SELECT ?, vendor_id FROM bills WHERE id = ?",
+                params![
+                    get_u64(p, "entry_id")? as i64,
+                    get_u64(p, "bill_id")? as i64
+                ],
+            )?;
         }
         "fx.rate_set" => {
             conn.execute(

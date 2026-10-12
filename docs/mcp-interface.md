@@ -176,6 +176,28 @@ through the policy.
   naming the difference. A draft: attach the payout statement, preview,
   post. Platform-agnostic; format-specific statement parsers can feed it.
 
+## Tools — 1099 tracking
+
+Payments are counted as cash: credits minus debits to asset accounts on
+entries tagged with the vendor. Card payments move no asset (the card
+processor's 1099-K covers them), so they drop out; reversals of tagged
+entries carry the tag and net out. Thresholds: $600 for payments through
+2025, $2,000 from 2026 (indexed for inflation after 2026); always
+overridable, always for the CPA to confirm. TINs are never stored, only
+whether a W-9 is on file.
+
+- `books.list_vendors {}` → `{ vendors: [{ id, name, form_1099?,
+  tin_on_file }] }`.
+- `books.set_vendor_1099 { vendor, form_1099: "nec" | "misc" | "none",
+  tin_on_file? }` → the vendor. `vendor` is an id or a name.
+- `books.set_entry_vendor { entry_id, vendor? }` → the entry (as
+  `books.get_entry`, which now shows `vendor`). Omitting `vendor` clears
+  the tag. Metadata only: posted entries may be tagged. `books.draft_entry`
+  takes `vendor` too; bills and their payments are tagged automatically.
+- `books.vendor_1099 { year, threshold? }` → `{ year, threshold, vendors:
+  [{ vendor_id, name, form_1099?, tin_on_file, paid, reportable }],
+  missing_w9, notes }`.
+
 ## Tools — receipts & documents
 
 - `books.attach_receipt { entry_id?, file_name, mime_type, content_base64 }`

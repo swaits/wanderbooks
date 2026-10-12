@@ -23,7 +23,7 @@ use rust_decimal::Decimal;
 use std::sync::{Arc, Mutex};
 
 /// The agent operating contract, delivered via initialize.
-const INSTRUCTIONS: &str = "You are the bookkeeping agent for these books. The engine enforces the accounting; you enforce the workflow.\n\nRULES\n- Money is exact decimal. Always pass amounts as decimal strings (\"123.45\"), never floats.\n- Never post directly. The flow is draft (books.draft_entry) -> add lines (books.add_line) -> preview (books.post_entry without confirmed) -> review the preview -> post (books.post_entry with confirmed=true).\n- Every entry must balance: debits equal credits, exactly. Every line needs a real account from books.chart. The engine rejects anything else.\n- Receipts: any entry moving more than $25.00 in debits needs at least one receipt attached (books.attach_receipt) before posting. The server rejects the post otherwise. This is enforced, not a suggestion.\n- Never invent accounts. If the account you need does not exist, add it with books.add_account first.\n- Corrections go through books.reverse_entry. Posted entries are immutable; there is no edit.\n- Receipt corrections: receipts can change, but nothing is erased. To replace one, attach the new receipt, then books.unlink_receipt the old (with a reason); retire unwanted receipts or documents with books.withdraw_attachment (with a reason). The journal keeps every step.\n- After posting, check books.digest to review what changed, so a human can review too.\n- Amounts in every response are decimal strings. Treat them as exact.\n- Fixed assets: register with books.register_asset, inspect with books.asset_schedule and books.list_assets, post monthly depreciation with books.run_depreciation (exempt from the receipt policy; the schedule is the evidence), and dispose with books.dispose_asset (preview first; the bill of sale is the receipt). Depreciation is straight-line, book basis only - tax depreciation stays with the CPA.\n- Prepaid expenses and deferred revenue: record the original payment (with its receipt), then books.create_schedule; books.run_schedules posts the monthly amortization (preview first; exempt from the receipt policy like depreciation). Recurring entries (books.create_recurring, books.run_recurring) only ever create drafts: attach each actual receipt and post through the normal preview.\n- Platform payouts (app stores, payment processors, marketplaces): never book the net deposit as revenue. books.record_payout grosses it up (gross revenue, fees, adjustments) into a draft and refuses unless it reconciles to the cent; attach the payout statement, then preview and post.";
+const INSTRUCTIONS: &str = "You are the bookkeeping agent for these books. The engine enforces the accounting; you enforce the workflow.\n\nRULES\n- Money is exact decimal. Always pass amounts as decimal strings (\"123.45\"), never floats.\n- Never post directly. The flow is draft (books.draft_entry) -> add lines (books.add_line) -> preview (books.post_entry without confirmed) -> review the preview -> post (books.post_entry with confirmed=true).\n- Every entry must balance: debits equal credits, exactly. Every line needs a real account from books.chart. The engine rejects anything else.\n- Receipts: any entry moving more than $25.00 in debits needs at least one receipt attached (books.attach_receipt) before posting. The server rejects the post otherwise. This is enforced, not a suggestion.\n- Never invent accounts. If the account you need does not exist, add it with books.add_account first.\n- Corrections go through books.reverse_entry. Posted entries are immutable; there is no edit.\n- Receipt corrections: receipts can change, but nothing is erased. To replace one, attach the new receipt, then books.unlink_receipt the old (with a reason); retire unwanted receipts or documents with books.withdraw_attachment (with a reason). The journal keeps every step.\n- After posting, check books.digest to review what changed, so a human can review too.\n- Amounts in every response are decimal strings. Treat them as exact.\n- Fixed assets: register with books.register_asset, inspect with books.asset_schedule and books.list_assets, post monthly depreciation with books.run_depreciation (exempt from the receipt policy; the schedule is the evidence), and dispose with books.dispose_asset (preview first; the bill of sale is the receipt). Depreciation is straight-line, book basis only - tax depreciation stays with the CPA.\n- Prepaid expenses and deferred revenue: record the original payment (with its receipt), then books.create_schedule; books.run_schedules posts the monthly amortization (preview first; exempt from the receipt policy like depreciation). Recurring entries (books.create_recurring, books.run_recurring) only ever create drafts: attach each actual receipt and post through the normal preview.\n- Platform payouts (app stores, payment processors, marketplaces): never book the net deposit as revenue. books.record_payout grosses it up (gross revenue, fees, adjustments) into a draft and refuses unless it reconciles to the cent; attach the payout statement, then preview and post.\n- 1099s: mark contractors and landlords with books.set_vendor_1099 (and whether their W-9 is on file; never store a TIN), and tag every payment to them with its vendor (books.draft_entry vendor, or books.set_entry_vendor; books.pay_bill tags automatically). books.vendor_1099 is the year-end worksheet for the CPA.";
 
 /// Max receipt/document upload: 25 MB.
 const MAX_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
@@ -316,6 +316,32 @@ fn resolve_account(store: &Store, account: &str) -> Result<AccountId, String> {
 }
 
 /// Resolve a class by id or name (case-insensitive).
+fn resolve_vendor(store: &Store, vendor: &str) -> Result<u64, String> {
+    if let Ok(id) = vendor.parse::<u64>()
+        && store.ledger().get_vendor(id).is_some()
+    {
+        return Ok(id);
+    }
+    let matches: Vec<u64> = store
+        .ledger()
+        .list_vendors()
+        .into_iter()
+        .filter(|v| v.name.eq_ignore_ascii_case(vendor.trim()))
+        .map(|v| v.id)
+        .collect();
+    match matches.as_slice() {
+        [id] => Ok(*id),
+        [] => Err(format!(
+            "unknown vendor {vendor:?}: add it with books.add_vendor"
+        )),
+        _ => Err(format!("several vendors are named {vendor:?}: pass the id")),
+    }
+}
+
+fn form_1099_label(form: Option<ledger_core::Form1099>) -> Option<String> {
+    form.map(|f| f.label().to_string())
+}
+
 fn resolve_class(store: &Store, class: &str) -> Result<u32, String> {
     if let Ok(id) = class.parse::<u32>()
         && store.ledger().get_class(id).is_some()
@@ -814,9 +840,19 @@ impl BooksServer {
     ) -> Result<Json<DraftEntryOut>, String> {
         let p = params.0;
         let mut store = self.lock()?;
+        let vendor = p
+            .vendor
+            .as_deref()
+            .map(|v| resolve_vendor(&store, v))
+            .transpose()?;
         let id = store
             .create_entry(parse_date(&p.date)?, &p.description)
             .map_err(|e| e.to_string())?;
+        if vendor.is_some() {
+            store
+                .set_entry_vendor(id, vendor)
+                .map_err(|e| e.to_string())?;
+        }
         Ok(Json(DraftEntryOut {
             entry_id: id,
             status: "draft".to_string(),
@@ -1287,6 +1323,11 @@ impl BooksServer {
             lines,
             total: money(ReceiptPolicy::entry_debits(&entry)),
             receipts: preview_receipts(&store, p.entry_id)?,
+            vendor: store
+                .ledger()
+                .entry_vendor(p.entry_id)
+                .and_then(|v| store.ledger().get_vendor(v))
+                .map(|v| v.name.clone()),
         }))
     }
 
@@ -1743,6 +1784,147 @@ impl BooksServer {
             deposit: money(totals.deposit),
             lines: described,
             next: "Attach the payout statement (books.attach_receipt), then preview and post with books.post_entry.".to_string(),
+        }))
+    }
+
+    #[tool(
+        name = "books.list_vendors",
+        description = "Vendors, with which 1099 each gets and whether its W-9 is on file.",
+        annotations(read_only_hint = true)
+    )]
+    async fn list_vendors(&self) -> Result<Json<ListVendorsOut>, String> {
+        let store = self.lock()?;
+        Ok(Json(ListVendorsOut {
+            vendors: store
+                .ledger()
+                .list_vendors()
+                .into_iter()
+                .map(|v| VendorOut {
+                    id: v.id,
+                    name: v.name.clone(),
+                    form_1099: form_1099_label(v.form_1099),
+                    tin_on_file: v.tin_on_file,
+                })
+                .collect(),
+        }))
+    }
+
+    #[tool(
+        name = "books.set_vendor_1099",
+        description = "Mark which information return a vendor gets: \"nec\" (1099-NEC: contractors, freelancers, attorneys), \"misc\" (1099-MISC: rent, royalties, prizes), or \"none\" (corporations generally, merchants, anyone paid only by card). Record whether a W-9 is on file; never store the TIN itself. Ask the human when unsure; the CPA confirms."
+    )]
+    async fn set_vendor_1099(
+        &self,
+        params: Parameters<SetVendor1099Params>,
+    ) -> Result<Json<VendorOut>, String> {
+        let p = params.0;
+        let mut store = self.lock()?;
+        let id = resolve_vendor(&store, &p.vendor)?;
+        let form = match p.form_1099.trim().to_lowercase().as_str() {
+            "none" | "" => None,
+            other => Some(
+                ledger_core::Form1099::parse(other)
+                    .ok_or_else(|| format!("form_1099 {other:?}: expected nec, misc, or none"))?,
+            ),
+        };
+        store
+            .set_vendor_1099(id, form, p.tin_on_file)
+            .map_err(|e| e.to_string())?;
+        let v = store.ledger().get_vendor(id).expect("exists");
+        Ok(Json(VendorOut {
+            id,
+            name: v.name.clone(),
+            form_1099: form_1099_label(v.form_1099),
+            tin_on_file: v.tin_on_file,
+        }))
+    }
+
+    #[tool(
+        name = "books.set_entry_vendor",
+        description = "Tag an entry (draft or posted) with the vendor it paid, for 1099 tracking, or omit vendor to clear the tag. Reporting metadata only: amounts never change. books.pay_bill tags its payments automatically; books.draft_entry takes a vendor too."
+    )]
+    async fn set_entry_vendor(
+        &self,
+        params: Parameters<SetEntryVendorParams>,
+    ) -> Result<Json<GetEntryOut>, String> {
+        let p = params.0;
+        {
+            let mut store = self.lock()?;
+            let vendor = p
+                .vendor
+                .as_deref()
+                .map(|v| resolve_vendor(&store, v))
+                .transpose()?;
+            store
+                .set_entry_vendor(p.entry_id, vendor)
+                .map_err(|e| e.to_string())?;
+        }
+        self.get_entry(Parameters(GetEntryParams {
+            entry_id: p.entry_id,
+        }))
+        .await
+    }
+
+    #[tool(
+        name = "books.vendor_1099",
+        description = "1099 worksheet for a calendar year: cash paid to each vendor (credits minus debits to asset accounts on entries tagged with the vendor, so card payments, which the card processor reports on 1099-K, are excluded), which vendors are reportable (marked NEC/MISC and paid at least the threshold: $600 through 2025, $2,000 from 2026), and which are missing a W-9. For the CPA to confirm.",
+        annotations(read_only_hint = true)
+    )]
+    async fn vendor_1099(
+        &self,
+        params: Parameters<Vendor1099Params>,
+    ) -> Result<Json<Vendor1099Out>, String> {
+        let p = params.0;
+        let threshold = p.threshold.as_deref().map(parse_amount).transpose()?;
+        let store = self.lock()?;
+        let r = ledger_core::vendor_1099_report(store.ledger(), p.year, threshold);
+        let missing_w9 = r
+            .vendors
+            .iter()
+            .filter(|v| v.reportable && !v.tin_on_file)
+            .map(|v| v.name.clone())
+            .collect();
+        let untagged = store
+            .ledger()
+            .posted_entries()
+            .filter(|e| {
+                chrono::Datelike::year(&e.date()) == p.year
+                    && store.ledger().entry_vendor(e.id()).is_none()
+            })
+            .count();
+        let mut notes = vec![
+            "Only entries tagged with a vendor count (books.set_entry_vendor; books.pay_bill tags automatically).".to_string(),
+            "Corporations are generally exempt, except attorneys' fees and medical payments; royalties report at $10. Confirm with the CPA.".to_string(),
+        ];
+        if p.year > 2026 {
+            notes.push(format!(
+                "The $2,000 threshold is indexed for inflation after 2026; confirm the {} amount and pass threshold to override.",
+                p.year
+            ));
+        }
+        if untagged > 0 {
+            notes.push(format!(
+                "{untagged} posted entries in {} have no vendor tag; review any that paid contractors or rent.",
+                p.year
+            ));
+        }
+        Ok(Json(Vendor1099Out {
+            year: r.year,
+            threshold: money(r.threshold),
+            vendors: r
+                .vendors
+                .into_iter()
+                .map(|v| Vendor1099LineOut {
+                    vendor_id: v.vendor_id,
+                    name: v.name,
+                    form_1099: form_1099_label(v.form),
+                    tin_on_file: v.tin_on_file,
+                    paid: money(v.paid),
+                    reportable: v.reportable,
+                })
+                .collect(),
+            missing_w9,
+            notes,
         }))
     }
 

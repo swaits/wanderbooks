@@ -42,6 +42,14 @@ pub struct Vendor {
     pub id: VendorId,
     /// Display name.
     pub name: String,
+    /// The information return this vendor gets, if any (see
+    /// [`crate::form1099`]).
+    #[serde(default)]
+    pub form_1099: Option<crate::form1099::Form1099>,
+    /// A W-9 (taxpayer identification number) is on file. The number
+    /// itself is never stored here.
+    #[serde(default)]
+    pub tin_on_file: bool,
 }
 
 /// Payment status of an invoice or bill.

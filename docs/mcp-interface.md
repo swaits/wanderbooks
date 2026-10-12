@@ -177,10 +177,12 @@ posting.
 
 ## Tools — export
 
-- `books.export { format: "csv" | "json" | "xlsx" | "iif", report: "journal" |
-  "trial_balance" | "profit_and_loss" | "balance_sheet" | "cash_flow" }` →
-  `{ content, content_encoding? }`. CPA-ready output. `xlsx` is base64-encoded;
-  `iif` is journal-only (QuickBooks Desktop). Cash flow needs `cash_accounts`.
+- `books.export { format: "csv" | "json" | "xlsx" | "pdf" | "iif", report:
+  "journal" | "trial_balance" | "profit_and_loss" | "balance_sheet" |
+  "cash_flow", start?, end?, as_of?, cash_accounts?, financing_accounts? }` →
+  `{ content, content_encoding? }`. CPA-ready output. `xlsx` and `pdf` are
+  base64-encoded; `pdf` covers the three financial statements; `iif` is
+  journal-only (QuickBooks Desktop). Cash flow needs `cash_accounts`.
 
 ## Tools — import
 
@@ -318,9 +320,11 @@ entries.
 
 ## Tools — CPA handoff
 
-- `books.export_cpa_package { as_of? }` → `{ file_name, content_base64 }`.
-  A zip with `trial-balance.xlsx`, `general-ledger.xlsx` (every posted
-  line: date, entry, description, account, class, debit, credit),
-  `profit-and-loss.pdf` (fiscal year to date, per-account detail), and
-  `balance-sheet.pdf` (per-account detail). What the CPA needs; they never
+- `books.export_cpa_package { as_of?, cash_accounts, financing_accounts? }`
+  → `{ file_name, content_base64 }`. A zip with `trial-balance.xlsx`,
+  `general-ledger.xlsx` (every posted line: date, entry, description,
+  account, class, debit, credit), `profit-and-loss.pdf` (fiscal year to
+  date, per-account detail), `balance-sheet.pdf` (per-account detail), and
+  `cash-flow.pdf` (fiscal year to date, indirect method, reconciled to
+  `cash_accounts`). What the CPA needs; they never
   log into the system.

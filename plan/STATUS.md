@@ -161,3 +161,12 @@ interface is MCP, not a cloned GUI. The first storage + MCP slice is done
   closes a silent path for moving a receipt off a posted entry; disposals
   check their receipt ids before posting. Schema v5. First real use: swapping
   the migrated Wanderland Labs `.eml` receipts for their PDF renders.
+- 2026-10-11: The cash flow statement is a first-class output everywhere the
+  other two statements are: `cash_flow_pdf` in ledger-import, a `pdf`
+  format on `books.export` (P&L, balance sheet, cash flow), and
+  `cash-flow.pdf` in the CPA package, which now requires `cash_accounts`
+  (the statement reconciles to them). Known gaps, next: the P&L and balance
+  sheet PDF/XLSX ignore start/end/as_of (all-time balances under the
+  requested label; core needs period-scoped statements); P&L and balance
+  sheet XLSX are totals-only; PDF amounts don't align (padding in a
+  proportional font), no company name, negatives as "-x".

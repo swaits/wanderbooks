@@ -757,8 +757,9 @@ pub struct DigestOut {
 /// Parameters for `books.export`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ExportParams {
-    /// "csv", "json", "xlsx", or "iif". XLSX is base64-encoded; IIF is only
-    /// valid with report "journal".
+    /// "csv", "json", "xlsx", "pdf", or "iif". XLSX and PDF are
+    /// base64-encoded; PDF covers profit_and_loss, balance_sheet, and
+    /// cash_flow; IIF is only valid with report "journal".
     pub format: String,
     /// "journal", "trial_balance", "profit_and_loss", "balance_sheet", or
     /// "cash_flow".
@@ -772,6 +773,10 @@ pub struct ExportParams {
     /// Cash account codes for cash_flow (required for that report).
     #[serde(default)]
     pub cash_accounts: Vec<String>,
+    /// Liability account codes treated as financing (debt) for cash_flow.
+    /// Defaults to empty: liabilities are operating working capital.
+    #[serde(default)]
+    pub financing_accounts: Vec<String>,
 }
 
 /// Result of `books.export`.
@@ -782,9 +787,9 @@ pub struct ExportOut {
     /// The requested report.
     pub report: String,
     /// The exported content. Base64-encoded when `content_encoding` is
-    /// "base64" (XLSX); otherwise raw text.
+    /// "base64" (XLSX, PDF); otherwise raw text.
     pub content: String,
-    /// "base64" for XLSX, otherwise absent.
+    /// "base64" for XLSX and PDF, otherwise absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content_encoding: Option<String>,
 }
@@ -1447,6 +1452,14 @@ pub struct ProfitAndLossByClassOut {
 pub struct ExportCpaPackageParams {
     /// As-of date, YYYY-MM-DD. Defaults to today.
     pub as_of: Option<String>,
+    /// Cash account codes the cash flow statement reconciles to (required),
+    /// e.g. `["1000"]`.
+    #[serde(default)]
+    pub cash_accounts: Vec<String>,
+    /// Liability account codes treated as financing (debt). Defaults to
+    /// empty: liabilities are operating working capital.
+    #[serde(default)]
+    pub financing_accounts: Vec<String>,
 }
 
 /// Output of `books.export_cpa_package`.

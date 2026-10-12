@@ -612,3 +612,74 @@ fn schedules_and_recurring_entries_replay_exactly() {
     assert!(store.run_schedules(date(2, 28)).unwrap().is_empty());
     assert!(store.run_recurring(date(2, 28)).unwrap().is_empty());
 }
+
+#[test]
+fn vendor_1099_tags_replay_and_project() {
+    use ledger_core::arap::DocumentLine;
+    use ledger_core::{Form1099, vendor_1099_report};
+    let dir = test_dir("form1099");
+    let mut store = Store::create(&dir, Currency::USD).unwrap();
+    let cash = store
+        .add_account("1000", "Cash", AccountType::Asset, None, false)
+        .unwrap();
+    let labor = store
+        .add_account("6000", "Contract Labor", AccountType::Expense, None, false)
+        .unwrap();
+    let dana = store.add_vendor("Dana").unwrap();
+    store
+        .set_vendor_1099(dana, Some(Form1099::Nec), true)
+        .unwrap();
+    let d = |m, day| NaiveDate::from_ymd_opt(2026, m, day).unwrap();
+    let bill = store
+        .create_bill(
+            dana,
+            d(3, 1),
+            d(3, 31),
+            vec![DocumentLine {
+                description: "Design".into(),
+                amount: Decimal::from(1500),
+            }],
+        )
+        .unwrap();
+    store
+        .pay_bill(bill, d(3, 20), Decimal::from(1500), cash)
+        .unwrap();
+    let e = store.create_entry(d(6, 1), "Dana, June").unwrap();
+    store.add_line(e, labor, Side::Debit, usd(700)).unwrap();
+    store.add_line(e, cash, Side::Credit, usd(700)).unwrap();
+    store.post_entry(e).unwrap();
+    store.set_entry_vendor(e, Some(dana)).unwrap();
+    let dup = store.create_entry(d(6, 2), "Dana, duplicate").unwrap();
+    store.add_line(dup, labor, Side::Debit, usd(700)).unwrap();
+    store.add_line(dup, cash, Side::Credit, usd(700)).unwrap();
+    store.post_entry(dup).unwrap();
+    store.set_entry_vendor(dup, Some(dana)).unwrap();
+    store.reverse_entry(dup, d(6, 3), "duplicate").unwrap();
+    let before = vendor_1099_report(store.ledger(), 2026, None);
+    assert_eq!(before.vendors[0].paid, Decimal::from(2200));
+    assert!(before.vendors[0].reportable);
+    drop(store);
+
+    // Reopen (replay), then rebuild the projection from scratch.
+    for rebuild in [false, true] {
+        if rebuild {
+            std::fs::remove_file(dir.join(ledger_store::DB_FILE)).unwrap();
+        }
+        let store = Store::open(&dir).unwrap();
+        assert_eq!(vendor_1099_report(store.ledger(), 2026, None), before);
+        let conn = rusqlite::Connection::open(dir.join(ledger_store::DB_FILE)).unwrap();
+        let tagged: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM entry_vendors WHERE vendor_id = ?",
+                [dana as i64],
+                |r| r.get(0),
+            )
+            .unwrap();
+        // Bill, its payment, June, the duplicate, and its reversal.
+        assert_eq!(tagged, 5);
+        let form: String = conn
+            .query_row("SELECT form_1099 FROM vendors", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(form, "nec");
+    }
+}

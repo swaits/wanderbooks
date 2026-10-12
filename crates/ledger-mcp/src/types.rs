@@ -291,6 +291,90 @@ pub struct RecordPayoutOut {
     pub next: String,
 }
 
+/// A vendor.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct VendorOut {
+    /// Vendor id.
+    pub id: u64,
+    /// Name.
+    pub name: String,
+    /// "1099-NEC", "1099-MISC", or absent.
+    pub form_1099: Option<String>,
+    /// W-9 on file.
+    pub tin_on_file: bool,
+}
+
+/// Result of `books.list_vendors`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ListVendorsOut {
+    /// Vendors, by id.
+    pub vendors: Vec<VendorOut>,
+}
+
+/// Parameters for `books.set_vendor_1099`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SetVendor1099Params {
+    /// Vendor id or name.
+    pub vendor: String,
+    /// "nec" (contractors, attorneys), "misc" (rent, royalties, other), or
+    /// "none" (corporations, most merchants).
+    pub form_1099: String,
+    /// A W-9 is on file (the TIN itself is never stored).
+    #[serde(default)]
+    pub tin_on_file: bool,
+}
+
+/// Parameters for `books.set_entry_vendor`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SetEntryVendorParams {
+    /// Entry id (draft or posted).
+    pub entry_id: u64,
+    /// Vendor id or name; omit to clear the tag.
+    pub vendor: Option<String>,
+}
+
+/// Parameters for `books.vendor_1099`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct Vendor1099Params {
+    /// Calendar year of payment.
+    pub year: i32,
+    /// Override the reporting threshold, decimal string (default: $600
+    /// through 2025, $2,000 from 2026).
+    pub threshold: Option<String>,
+}
+
+/// One vendor's year.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct Vendor1099LineOut {
+    /// Vendor id.
+    pub vendor_id: u64,
+    /// Name.
+    pub name: String,
+    /// "1099-NEC", "1099-MISC", or absent.
+    pub form_1099: Option<String>,
+    /// W-9 on file.
+    pub tin_on_file: bool,
+    /// Cash paid in the year, decimal string.
+    pub paid: String,
+    /// Marked for a 1099 and paid at least the threshold.
+    pub reportable: bool,
+}
+
+/// Result of `books.vendor_1099`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct Vendor1099Out {
+    /// Calendar year.
+    pub year: i32,
+    /// Threshold applied, decimal string.
+    pub threshold: String,
+    /// Vendors marked for a 1099 or paid in the year.
+    pub vendors: Vec<Vendor1099LineOut>,
+    /// Reportable vendors without a W-9 on file: request one.
+    pub missing_w9: Vec<String>,
+    /// Caveats for the human and CPA.
+    pub notes: Vec<String>,
+}
+
 /// Parameters for `books.chart_template`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ChartTemplateParams {
@@ -638,6 +722,8 @@ pub struct DraftEntryParams {
     pub date: String,
     /// Description of what happened.
     pub description: String,
+    /// The vendor this entry pays (id or name), for 1099 tracking.
+    pub vendor: Option<String>,
 }
 
 /// Result of `books.draft_entry`.
@@ -996,6 +1082,8 @@ pub struct GetEntryOut {
     pub total: String,
     /// Attached receipts.
     pub receipts: Vec<PreviewReceipt>,
+    /// The vendor the entry is tagged with, for 1099 tracking.
+    pub vendor: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

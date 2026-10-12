@@ -5,7 +5,7 @@
 //! is the current version.
 
 /// Current schema version.
-pub const SCHEMA_VERSION: u32 = 6;
+pub const SCHEMA_VERSION: u32 = 7;
 
 /// Migrations, in order. `MIGRATIONS[i]` migrates from version `i` to `i+1`.
 pub const MIGRATIONS: &[&str] = &[
@@ -185,5 +185,15 @@ ALTER TABLE attachments ADD COLUMN withdrawn_reason TEXT;
 -- and how much of it is deductible). Percent is TEXT, never REAL.
 ALTER TABLE accounts ADD COLUMN tax_category TEXT;
 ALTER TABLE accounts ADD COLUMN deductible_percent TEXT;
+"#,
+    r#"
+-- v7: 1099 tracking: which return each vendor gets, whether its W-9 is on
+-- file (never the TIN itself), and the vendor each entry paid.
+ALTER TABLE vendors ADD COLUMN form_1099 TEXT;
+ALTER TABLE vendors ADD COLUMN tin_on_file INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE IF NOT EXISTS entry_vendors(
+  entry_id INTEGER PRIMARY KEY,
+  vendor_id INTEGER NOT NULL
+);
 "#,
 ];

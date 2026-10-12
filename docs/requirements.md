@@ -23,7 +23,8 @@ requirement conflict, the requirement wins.
   organize the chart and reject postings.
 - **R-5 — Single currency per ledger (day one).** Every account and every
   journal line uses the ledger's base currency. Anything else is rejected,
-  not converted. Multi-currency with translation is R-FUTURE-1.
+  not converted, unless the line records its foreign currency, amount, and
+  rate (R-FUTURE-1, done: see below).
 - **R-6 — Line hygiene.** Zero-amount lines are rejected, not ignored.
   Unknown accounts are rejected. Single-line entries are rejected.
 
@@ -104,8 +105,8 @@ requirement conflict, the requirement wins.
 
 ## Explicitly future work
 
-- **R-FUTURE-6 — Budgets and scheduled transactions.** (Budgets explicitly
-  declined as bloat; scheduled transactions remain future.)
+- **R-FUTURE-6 — Budgets.** Explicitly declined as bloat. (Scheduled
+  transactions, the other half of R-FUTURE-6, are done: see below.)
 
 ## Promoted from future (done)
 
@@ -143,6 +144,12 @@ requirement conflict, the requirement wins.
 - **R-? — Payout gross-up.** Platform deposits are recorded gross:
   revenue, fees, and adjustments, reconciled to the deposit to the cent,
   as a draft that carries the payout statement as its receipt.
+- **R-? — 1099 tracking.** Vendors carry the information return they get
+  and whether a W-9 is on file (never the TIN). Entries carry the vendor
+  they paid; bills, bill payments, and reversals carry it automatically.
+  The year's worksheet counts cash paid (asset-account credits minus
+  debits), so card payments are excluded, against a year-dependent,
+  overridable threshold. Schema v7.
 - **R-? — A/R and A/P workflows.** Was R-FUTURE-5.
   `ledger-core::arap`: customers, vendors, invoices, bills, payments,
   AR/AP aging. MCP tools for the full workflow.

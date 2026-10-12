@@ -241,3 +241,11 @@ interface is MCP, not a cloned GUI. The first storage + MCP slice is done
   attached as the receipt. Pure core logic (payouts.rs), no new journal
   events (it journals as a draft and lines). 60 tools. Statement parsers
   (Apple, Google, Stripe) wait for sample files.
+- 2026-10-11: 1099 tracking. Vendors get form_1099 (NEC/MISC) and
+  tin_on_file (never the TIN); entries get an optional vendor tag (bills,
+  bill payments, and reversals inherit it). books.vendor_1099 counts cash
+  paid per vendor per calendar year against $600 (≤2025) / $2,000 (2026+,
+  OBBBA) or an override, and lists reportable vendors missing a W-9.
+  Journal events vendor.1099_set and entry.vendor_set. Schema v7. 64 tools.
+  Also: requirements and parity no longer list finished R-FUTURE work as
+  future (only budgets remain, declined).

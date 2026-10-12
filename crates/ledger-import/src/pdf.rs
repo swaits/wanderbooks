@@ -4,9 +4,10 @@
 //! rows to `templates/statement.typ` as JSON data (`sys.inputs.data`) and
 //! renders the PDF. Amounts arrive already split by
 //! [`crate::report::amount_parts`] — Typst never does arithmetic on money,
-//! and labels are data, never markup. Fonts are bundled (`typst-assets`),
-//! so output doesn't depend on what's installed, and it is deterministic:
-//! the same statement renders to the same bytes.
+//! and labels are data, never markup. The font (Inter, SIL OFL 1.1; see
+//! `fonts/Inter-LICENSE.txt`) is bundled, so output doesn't depend on
+//! what's installed, and it is deterministic: the same statement and
+//! report metadata render to the same bytes.
 
 use crate::report::{ReportMeta, RowKind, Statement, amount_parts};
 use std::sync::OnceLock;
@@ -27,6 +28,11 @@ pub enum PdfError {
 }
 
 static TEMPLATE: &str = include_str!("../templates/statement.typ");
+static INTER: [&[u8]; 3] = [
+    include_bytes!("../fonts/Inter-Regular.ttf"),
+    include_bytes!("../fonts/Inter-SemiBold.ttf"),
+    include_bytes!("../fonts/Inter-Bold.ttf"),
+];
 
 /// The engine, built once: parsing the bundled fonts is the expensive part.
 fn engine() -> &'static TypstEngine<TypstTemplateMainFile> {
@@ -34,15 +40,17 @@ fn engine() -> &'static TypstEngine<TypstTemplateMainFile> {
     ENGINE.get_or_init(|| {
         TypstEngine::builder()
             .main_file(TEMPLATE)
-            .fonts(typst_assets::fonts())
+            .fonts(INTER)
             .build()
     })
 }
 
-/// The template's input: the statement with every amount formatted.
+/// The template's input: the statement with every amount split for
+/// alignment.
 pub fn template_data(st: &Statement, meta: &ReportMeta) -> serde_json::Value {
     let kind = |k: RowKind| match k {
         RowKind::Section => "section",
+        RowKind::Subheading => "subheading",
         RowKind::Line => "line",
         RowKind::Subtotal => "subtotal",
         RowKind::Total => "total",
@@ -52,20 +60,17 @@ pub fn template_data(st: &Statement, meta: &ReportMeta) -> serde_json::Value {
         "company": meta.company,
         "title": st.title,
         "period": st.period,
-        "footer": format!("Prepared from journal through seq {}", meta.journal_seq),
+        "footer": meta.footer(),
+        "columns": st.columns,
         "rows": st.rows.iter().map(|r| serde_json::json!({
             "kind": kind(r.kind),
             "label": r.label,
             "rule": r.rule_above,
-            "amount": r.amount.map(|a| {
+            "currency": r.currency,
+            "amounts": r.amounts.iter().map(|a| a.map(|a| {
                 let p = amount_parts(a);
-                serde_json::json!({
-                    "digits": p.digits,
-                    "negative": p.negative,
-                    "zero": p.zero,
-                    "currency": r.currency,
-                })
-            }),
+                serde_json::json!({ "digits": p.digits, "negative": p.negative })
+            })).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
     })
 }
@@ -101,6 +106,8 @@ mod tests {
     fn meta() -> ReportMeta {
         ReportMeta {
             company: "Test Co".to_string(),
+            basis: "Accrual".to_string(),
+            prepared_on: NaiveDate::from_ymd_opt(2026, 10, 11).unwrap(),
             journal_seq: 42,
         }
     }
@@ -127,6 +134,7 @@ mod tests {
     /// The exact data the template typesets: hand-checked, like a golden.
     #[test]
     fn template_data_is_exact() {
+        let amt = |digits: &str, negative: bool| serde_json::json!([{"digits": digits, "negative": negative}]);
         let data = template_data(&profit_and_loss(&pl()), &meta());
         assert_eq!(
             data,
@@ -134,22 +142,18 @@ mod tests {
                 "company": "Test Co",
                 "title": "Profit and Loss",
                 "period": "October 4 – October 11, 2026",
-                "footer": "Prepared from journal through seq 42",
+                "footer": "Accrual basis · Prepared Sunday, October 11, 2026 · Journal seq 42",
+                "columns": ["Total"],
                 "rows": [
-                    {"kind": "section", "label": "Revenue", "rule": false, "amount": null},
-                    {"kind": "subtotal", "label": "Total revenue", "rule": false, "amount":
-                        {"digits": "", "negative": false, "zero": true, "currency": true}},
-                    {"kind": "spacer", "label": "", "rule": false, "amount": null},
-                    {"kind": "section", "label": "Expenses", "rule": false, "amount": null},
-                    {"kind": "line", "label": "6000 Organizational Costs", "rule": false, "amount":
-                        {"digits": "59.00", "negative": false, "zero": false, "currency": true}},
-                    {"kind": "line", "label": "6400 Memberships & Licenses", "rule": false, "amount":
-                        {"digits": "106.38", "negative": false, "zero": false, "currency": false}},
-                    {"kind": "subtotal", "label": "Total expenses", "rule": true, "amount":
-                        {"digits": "165.38", "negative": false, "zero": false, "currency": true}},
-                    {"kind": "spacer", "label": "", "rule": false, "amount": null},
-                    {"kind": "total", "label": "Net income", "rule": true, "amount":
-                        {"digits": "165.38", "negative": true, "zero": false, "currency": true}},
+                    {"kind": "section", "label": "Revenue", "rule": false, "currency": false, "amounts": []},
+                    {"kind": "subtotal", "label": "Total revenue", "rule": false, "currency": true, "amounts": amt("0.00", false)},
+                    {"kind": "spacer", "label": "", "rule": false, "currency": false, "amounts": []},
+                    {"kind": "section", "label": "Expenses", "rule": false, "currency": false, "amounts": []},
+                    {"kind": "line", "label": "6000 Organizational Costs", "rule": false, "currency": false, "amounts": amt("59.00", false)},
+                    {"kind": "line", "label": "6400 Memberships & Licenses", "rule": false, "currency": false, "amounts": amt("106.38", false)},
+                    {"kind": "subtotal", "label": "Total expenses", "rule": true, "currency": true, "amounts": amt("165.38", false)},
+                    {"kind": "spacer", "label": "", "rule": false, "currency": false, "amounts": []},
+                    {"kind": "total", "label": "Net income (loss)", "rule": true, "currency": true, "amounts": amt("165.38", true)},
                 ],
             })
         );
@@ -172,7 +176,7 @@ mod tests {
             .map(|i| Row {
                 kind: RowKind::Line,
                 label: format!("#{i} *not bold* $x$ <label> @ref [link] \\ #panic()"),
-                amount: Some(Decimal::new(i, 0)),
+                amounts: vec![Some(Decimal::new(i, 0))],
                 currency: false,
                 rule_above: false,
             })

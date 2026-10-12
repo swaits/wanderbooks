@@ -27,7 +27,11 @@ layer.
 `--data-dir`; override with `--books-toml PATH`): `[company] name` heads
 every report, `[company] fiscal_year_start` ("MM-DD", default "01-01";
 the year's end is derived, never stored) defines fiscal-year-to-date for the
-CPA package, and `[books] receipt_threshold` sets the receipt policy unless
+CPA package and the balance sheet's net income line, `[[company.members]]`
+(`name`, `share` as "50%" or "0.5", `capital_account` code; shares must sum
+to 100%) drives the statement of members' equity, `[books]
+accounting_basis` ("accrual" or "cash", default accrual) labels report
+footers, and `[books] receipt_threshold` sets the receipt policy unless
 `config.json` sets `receipt_policy`.
 
 ## Transports
@@ -85,8 +89,8 @@ below.
 - `books.get_entry { entry_id }` → full entry with lines.
 - `books.search_entries { account?, date_from?, date_to?, text?, limit?, offset? }`
   → entries with lines, newest first. `limit` caps at 100.
-- `books.trial_balance {}` → canonical JSON (same shape as
-  `reports::snapshot` trial-balance section).
+- `books.trial_balance { as_of? }` → `as_of`, lines, totals, `balanced`
+  (the trial balance as of the date, default today).
 - `books.balance_sheet { as_of? }` → totals (`assets`, `liabilities`,
   `equity`, `current_earnings`, `balanced`) plus `asset_accounts`,
   `liability_accounts`, `equity_accounts` (`{code, name, amount}`), as of
@@ -192,12 +196,27 @@ posting.
 
 ## Tools — export
 
-- `books.export { format: "csv" | "json" | "xlsx" | "pdf" | "iif", report:
-  "journal" | "trial_balance" | "profit_and_loss" | "balance_sheet" |
-  "cash_flow", start?, end?, as_of?, cash_accounts?, financing_accounts? }` →
-  `{ content, content_encoding? }`. CPA-ready output. `xlsx` and `pdf` are
-  base64-encoded; `pdf` covers the three financial statements; `iif` is
-  journal-only (QuickBooks Desktop). Cash flow needs `cash_accounts`.
+- `books.export { format, report, start?, end?, as_of?, cash_accounts?,
+  financing_accounts? }` → `{ content, content_encoding? }`.
+  - Reports: `profit_and_loss`, `balance_sheet`, `cash_flow` (needs
+    `cash_accounts`), `trial_balance`, `members_equity` (statement of
+    changes in members' equity; members from `wanderbooks.toml`),
+    `general_ledger` (by account: beginning balance, postings with running
+    balance and split, ending balance), `general_journal` (alias
+    `journal`: every entry, line by line, in date order).
+  - Formats: `pdf` and `xlsx` (base64) for the five statements; `xlsx`,
+    `csv`, `json` for every report; `iif` for the journal (QuickBooks
+    Desktop).
+  - Dates: period reports take `start` (default: first entry) and `end`
+    (default: today, local time); `balance_sheet` and `trial_balance`
+    take `as_of`.
+  - Presentation (PDF and XLSX alike, QuickBooks-style): centered company,
+    title, and period; a column-header row; "$" on subtotals and totals;
+    negatives in parentheses with decimal points aligned; a rule above every
+    sum and a double rule under statement totals; a footer with the
+    accounting basis, preparation date, and journal seq. Multi-member LLCs
+    get "Members' equity" with members named; the balance sheet separates
+    retained earnings from the fiscal year's net income (loss).
 
 ## Tools — import
 
@@ -336,10 +355,9 @@ entries.
 ## Tools — CPA handoff
 
 - `books.export_cpa_package { as_of?, cash_accounts, financing_accounts? }`
-  → `{ file_name, content_base64 }`. A zip with `trial-balance.xlsx`,
-  `general-ledger.xlsx` (every posted line: date, entry, description,
-  account, class, debit, credit), `profit-and-loss.pdf` (fiscal year to
-  date, per-account detail), `balance-sheet.pdf` (per-account detail), and
-  `cash-flow.pdf` (fiscal year to date, indirect method, reconciled to
-  `cash_accounts`). What the CPA needs; they never
-  log into the system.
+  → `{ file_name, content_base64 }`. A zip with the full set, each
+  statement as PDF and XLSX: `profit-and-loss`, `balance-sheet`,
+  `cash-flow` (reconciled to `cash_accounts`), `members-equity`
+  (multi-member LLCs), `trial-balance`; plus `general-ledger.xlsx` and
+  `general-journal.xlsx`. Period reports cover the fiscal year to date.
+  What the CPA needs; they never log into the system.

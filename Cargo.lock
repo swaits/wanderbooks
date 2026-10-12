@@ -1894,7 +1894,6 @@ dependencies = [
  "thiserror",
  "typst",
  "typst-as-lib",
- "typst-assets",
  "typst-layout",
  "typst-pdf",
 ]

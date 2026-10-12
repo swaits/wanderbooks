@@ -20,5 +20,5 @@ pub use bank_csv::{BankTransaction, parse_bank_csv};
 pub use chart_csv::{ChartRow, parse_chart_csv};
 pub use iif::{IifEntry, journal_to_iif};
 pub use pdf::{PdfError, statement_pdf};
-pub use report::{ReportMeta, Row, RowKind, Statement, format_amount};
+pub use report::{Member, ReportMeta, Row, RowKind, Statement, format_amount};
 pub use xlsx::{XlsxReport, report_to_xlsx};

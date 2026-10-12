@@ -38,6 +38,28 @@ The primary interface is MCP, not a cloned GUI (Stephen's call, 2026-10-10).
 - egui or web; a dumb client holding no accounting logic.
 - This is the trust layer for humans (Stephen, Kat, the CPA), not the
   primary interface. Read-only at first; editing stays with the agent.
+- Design references (Stephen, 2026-10-11; screenshots shared in session,
+  described here):
+  - **Reports with a date range and a column interval** (QuickBooks
+    Desktop's P&L: From/To plus Columns = Year/Quarter/Month/...): any
+    statement split into one column per interval plus TOTAL, to see the
+    books over time. The multi-column statement layout in
+    `ledger-import::report` already renders this shape; the GUI (and the
+    exports) need a per-interval builder over the period-scoped core
+    statements.
+  - **Financial dashboard** (Coupler.io's QuickBooks dashboard): P&L,
+    balance sheet, and cash flow overview tables with Last month / Month to
+    date / Year to date columns, each beside charts — income vs. COGS +
+    expenses vs. earnings bars; stacked assets vs. liabilities + equity;
+    cash at end of period; net cash change.
+  - **Business overview** (QuickBooks Online home): cards for cash balance
+    with a trend, expenses by category (donut), profit and loss (income
+    vs. expenses), invoices (unpaid, overdue, paid), sales trend, and bank
+    account balances.
+  - **Revenue dashboard** (Coupler.io): KPI tiles (paid, overdue, open
+    invoices this month), an invoice table (number, customer, dates,
+    currency, home and foreign amounts, balance, totals), expenses by
+    category by month, invoices by status per month.
 
 ## Phase 5 — Workflow parity
 

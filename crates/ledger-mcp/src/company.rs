@@ -2,9 +2,11 @@
 //!
 //! `wanderbooks init` writes that file next to `books-data/`; onboarding
 //! fills in `[company]`. The server reads the company name (report headers),
-//! the fiscal year start (fiscal-year-to-date reports), and
-//! `[books] receipt_threshold` (the receipt policy, unless `config.json`
-//! sets one). The fiscal year *end* is never stored: it is the day before
+//! the fiscal year start (fiscal-year-to-date reports), the members of a
+//! multi-member LLC (`[[company.members]]`: name, share, capital account —
+//! for the statement of members' equity), `[books] accounting_basis`
+//! (report footers), and `[books] receipt_threshold` (the receipt policy,
+//! unless `config.json` sets one). The fiscal year *end* is never stored: it is the day before
 //! the next start, so the two can't disagree.
 
 use chrono::{Datelike, NaiveDate};
@@ -19,6 +21,21 @@ pub struct Company {
     pub name: String,
     /// Month and day the fiscal year starts. Default January 1.
     pub fiscal_year_start: (u32, u32),
+    /// Members of a multi-member LLC; empty for other entities.
+    pub members: Vec<Member>,
+    /// "Accrual" or "Cash", for report footers. Default "Accrual".
+    pub basis: String,
+}
+
+/// One member of a multi-member LLC.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Member {
+    /// Name, as it appears on reports.
+    pub name: String,
+    /// Share of income, e.g. 0.50.
+    pub share: Decimal,
+    /// Code of their capital account in the chart.
+    pub capital_account: String,
 }
 
 impl Default for Company {
@@ -26,6 +43,8 @@ impl Default for Company {
         Self {
             name: "Unnamed company".to_string(),
             fiscal_year_start: (1, 1),
+            members: Vec::new(),
+            basis: "Accrual".to_string(),
         }
     }
 }
@@ -68,11 +87,35 @@ struct BooksToml {
 struct CompanyToml {
     name: Option<String>,
     fiscal_year_start: Option<String>,
+    #[serde(default)]
+    members: Vec<MemberToml>,
+}
+
+#[derive(Deserialize)]
+struct MemberToml {
+    name: String,
+    share: String,
+    capital_account: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
 struct BooksSection {
     receipt_threshold: Option<String>,
+    accounting_basis: Option<String>,
+}
+
+/// Parse a share: "50%" or "0.5".
+fn parse_share(name: &str, s: &str) -> Result<Decimal, String> {
+    let s = s.trim();
+    let bad = || format!("member {name}: share {s:?} must be like \"50%\" or \"0.5\"");
+    let share = match s.strip_suffix('%') {
+        Some(pct) => pct.trim().parse::<Decimal>().map_err(|_| bad())? / Decimal::from(100),
+        None => s.parse::<Decimal>().map_err(|_| bad())?,
+    };
+    if share <= Decimal::ZERO || share > Decimal::ONE {
+        return Err(bad());
+    }
+    Ok(share)
 }
 
 /// Parse `"MM-DD"`. February 29 is rejected: a fiscal year must start on a
@@ -96,6 +139,35 @@ pub fn parse(text: &str) -> Result<BooksSettings, String> {
     }
     if let Some(fy) = raw.company.fiscal_year_start {
         company.fiscal_year_start = parse_month_day(fy.trim())?;
+    }
+    for m in raw.company.members {
+        let share = parse_share(&m.name, &m.share)?;
+        let capital_account = m
+            .capital_account
+            .filter(|c| !c.trim().is_empty())
+            .ok_or_else(|| format!("member {}: capital_account is required", m.name))?;
+        company.members.push(Member {
+            name: m.name.trim().to_string(),
+            share,
+            capital_account: capital_account.trim().to_string(),
+        });
+    }
+    if !company.members.is_empty() {
+        let total: Decimal = company.members.iter().map(|m| m.share).sum();
+        if total != Decimal::ONE {
+            return Err(format!("member shares sum to {total}, not 100%"));
+        }
+    }
+    if let Some(basis) = raw.books.accounting_basis {
+        company.basis = match basis.trim().to_lowercase().as_str() {
+            "accrual" => "Accrual".to_string(),
+            "cash" => "Cash".to_string(),
+            other => {
+                return Err(format!(
+                    "accounting_basis {other:?}: expected accrual or cash"
+                ));
+            }
+        };
     }
     let receipt_threshold = match raw.books.receipt_threshold {
         Some(t) => {
@@ -172,6 +244,42 @@ mod tests {
             parse("[company]\nname = \"\"\n").unwrap().company.name,
             "Unnamed company"
         );
+    }
+
+    #[test]
+    fn reads_members_and_basis() {
+        let s = parse(
+            "[company]\n[[company.members]]\nname = \"Stephen Waits\"\nshare = \"50%\"\ncapital_account = \"3000\"\n[[company.members]]\nname = \"Katherine Pendergast\"\nshare = \"0.5\"\ncapital_account = \"3001\"\n[books]\naccounting_basis = \"cash\"\n",
+        )
+        .unwrap();
+        let half = Decimal::new(5, 1);
+        assert_eq!(
+            s.company.members,
+            vec![
+                Member {
+                    name: "Stephen Waits".into(),
+                    share: half,
+                    capital_account: "3000".into()
+                },
+                Member {
+                    name: "Katherine Pendergast".into(),
+                    share: half,
+                    capital_account: "3001".into()
+                },
+            ]
+        );
+        assert_eq!(s.company.basis, "Cash");
+        assert_eq!(parse("").unwrap().company.basis, "Accrual");
+        // Shares must add up; every member needs a capital account.
+        let two = |a: &str, b: &str| {
+            format!(
+                "[company]\n[[company.members]]\nname = \"A\"\nshare = \"{a}\"\ncapital_account = \"3000\"\n[[company.members]]\nname = \"B\"\nshare = \"{b}\"\ncapital_account = \"3001\"\n"
+            )
+        };
+        assert!(parse(&two("50%", "40%")).is_err());
+        assert!(parse(&two("60%", "40%")).is_ok());
+        assert!(parse("[company]\n[[company.members]]\nname = \"A\"\nshare = \"100%\"\n").is_err());
+        assert!(parse("[books]\naccounting_basis = \"modified\"\n").is_err());
     }
 
     #[test]

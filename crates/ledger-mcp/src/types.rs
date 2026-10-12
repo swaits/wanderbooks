@@ -76,9 +76,19 @@ pub struct TrialBalanceLineOut {
     pub credit: String,
 }
 
+/// Parameters for `books.trial_balance`.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct TrialBalanceParams {
+    /// As of this date, YYYY-MM-DD. Defaults to today.
+    #[serde(default)]
+    pub as_of: Option<String>,
+}
+
 /// Result of `books.trial_balance`.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct TrialBalanceOut {
+    /// The as-of date, YYYY-MM-DD.
+    pub as_of: String,
     /// Lines in code order.
     pub lines: Vec<TrialBalanceLineOut>,
     /// Sum of the debit column, decimal string.

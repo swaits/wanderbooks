@@ -190,3 +190,18 @@ interface is MCP, not a cloned GUI. The first storage + MCP slice is done
   with a repeated header and "Page n of m". Core's cash flow now orders
   lines by account code (it followed HashMap order, so line order could
   change between runs).
+- 2026-10-11: The canonical report set. Core gained the general ledger by
+  account (running balances; QuickBooks' "split" = the opposite side of the
+  entry, "-Split-" when several accounts), the trial balance as of a date,
+  and the statement of changes in members' equity (capital roll-forward per
+  member, allocation by share to the cent, ties to balance-sheet equity).
+  The entry-ordered listing is now correctly called the general journal.
+  Reports render QuickBooks-style (Stephen's reference): Inter (bundled,
+  OFL) instead of the typst-assets serif fonts, centered title block, a
+  column-header row, multi-column statements (trial balance Debit/Credit,
+  one column per member), "$" on sums, rules above sums, a double rule
+  under totals, zero as 0.00, entity terms (Members' equity, Net income
+  (loss), standard cash-flow wording) and an "Accrual basis · Prepared …"
+  footer. "Today" is local time, not UTC (evening exports were dated
+  tomorrow).
+

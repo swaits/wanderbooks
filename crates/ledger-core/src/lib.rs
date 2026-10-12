@@ -27,6 +27,7 @@ pub mod money;
 pub mod payroll;
 pub mod periods;
 pub mod reports;
+pub mod tax;
 
 pub use account::{Account, AccountId, AccountType, ChartOfAccounts, Side};
 pub use arap::{
@@ -51,3 +52,4 @@ pub use reports::{
     StatementLine, TrialBalance, TrialBalanceLine, balance_sheet_as_of, cash_flow, general_ledger,
     members_equity, profit_and_loss_for_period, trial_balance_as_of,
 };
+pub use tax::{TaxCategory, TaxForm, TaxKind, TaxSummary, TaxSummaryLine, tax_summary};

@@ -218,6 +218,25 @@ posting.
     get "Members' equity" with members named; the balance sheet separates
     retained earnings from the fiscal year's net income (loss).
 
+## Tools — tax categories
+
+- `books.tax_categories {}` → `{ form?, categories: [{ key, label, kind,
+  default_deductible_percent, note }] }`: where an account can land on the
+  income tax return, filtered to the business's return when known
+  (`[company] tax_form`, or derived from `tax_classification`). Stable
+  semantic keys (`meals`, `guaranteed_payments`, `commissions_fees`, ...),
+  never form line numbers, which change by year.
+- `books.set_tax_category { account, category?, deductible_percent? }`:
+  map a revenue or expense account to a category (null clears),
+  optionally overriding its deductible percent. Journaled as
+  `account.tax_set`.
+- `books.export { report: "tax_summary" }`: book vs. tax amounts by
+  category, the difference where they disagree (meals 50%, penalties 0%),
+  and every P&L account still uncategorized. In the CPA package for the
+  fiscal year to date.
+- `books.import_chart_csv` accepts an optional fifth `tax_category` column,
+  validated before anything is created.
+
 ## Tools — import
 
 - `books.import_bank_csv { csv_text, bank_account_code, default_offset_code,

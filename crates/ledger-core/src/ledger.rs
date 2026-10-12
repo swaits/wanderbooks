@@ -228,8 +228,53 @@ impl Ledger {
             parent,
             placeholder,
             currency: self.base_currency,
+            tax_category: None,
+            deductible_percent: None,
         })?;
         Ok(id)
+    }
+
+    /// Set (or clear, with `None`) an account's tax category, and optionally
+    /// override the category's deductible percent (0 to 100). The category
+    /// must fit the account's type (see [`crate::tax::check_category`]).
+    pub fn set_account_tax(
+        &mut self,
+        account: AccountId,
+        category: Option<&str>,
+        deductible_percent: Option<Decimal>,
+    ) -> Result<(), LedgerError> {
+        self.check_account_tax(account, category, deductible_percent)?;
+        self.chart
+            .set_tax(account, category.map(str::to_string), deductible_percent)
+    }
+
+    /// The validation behind [`Self::set_account_tax`], for stores that
+    /// journal before mutating.
+    pub fn check_account_tax(
+        &self,
+        account: AccountId,
+        category: Option<&str>,
+        deductible_percent: Option<Decimal>,
+    ) -> Result<(), LedgerError> {
+        let a = self
+            .chart
+            .get(account)
+            .ok_or(LedgerError::UnknownAccount(account))?;
+        if let Some(key) = category {
+            crate::tax::check_category(key, a.account_type, None)?;
+        } else if deductible_percent.is_some() {
+            return Err(LedgerError::InvalidTaxCategory(
+                "a deductible percent needs a tax category".to_string(),
+            ));
+        }
+        if let Some(p) = deductible_percent
+            && (p < Decimal::ZERO || p > Decimal::from(100))
+        {
+            return Err(LedgerError::InvalidTaxCategory(format!(
+                "deductible percent {p} must be between 0 and 100"
+            )));
+        }
+        Ok(())
     }
 
     /// Start a draft journal entry. Returns its id.

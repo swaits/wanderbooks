@@ -1789,6 +1789,30 @@ impl Store {
         Ok((id, sha, dedup))
     }
 
+    /// Set (or clear) an account's tax category and deductible percent.
+    /// Journaled as `account.tax_set`.
+    pub fn set_account_tax(
+        &mut self,
+        account: AccountId,
+        category: Option<&str>,
+        deductible_percent: Option<Decimal>,
+    ) -> Result<(), StoreError> {
+        self.ledger
+            .check_account_tax(account, category, deductible_percent)?;
+        let line = self.append_journal(
+            "account.tax_set",
+            json!({
+                "account_id": account,
+                "tax_category": category,
+                "deductible_percent": deductible_percent.map(|p| p.to_string()),
+            }),
+        )?;
+        self.ledger
+            .set_account_tax(account, category, deductible_percent)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
     /// Link a previously filed (unlinked) receipt to an entry. A receipt
     /// already linked elsewhere must be unlinked first, so moving evidence
     /// off an entry always goes through [`Store::unlink_receipt`] and its
@@ -2712,6 +2736,19 @@ fn replay_line_into_ledger(
                 )));
             }
         }
+        "account.tax_set" => {
+            let pct = match p.get("deductible_percent").and_then(|v| v.as_str()) {
+                Some(s) => Some(s.parse().map_err(|_| {
+                    StoreError::JournalCorrupt("account.tax_set deductible_percent".into())
+                })?),
+                None => None,
+            };
+            ledger.set_account_tax(
+                get_u64(p, "account_id")?,
+                p.get("tax_category").and_then(|v| v.as_str()),
+                pct,
+            )?;
+        }
         "receipt.attached"
         | "receipt.linked"
         | "receipt.unlinked"
@@ -3071,6 +3108,16 @@ fn apply_line_to_sqlite(conn: &Connection, line: &JournalLine) -> Result<(), Sto
                 params![
                     get_u64(p, "entry_id")? as i64,
                     get_u64(p, "attachment_id")? as i64,
+                ],
+            )?;
+        }
+        "account.tax_set" => {
+            conn.execute(
+                "UPDATE accounts SET tax_category = ?, deductible_percent = ? WHERE id = ?",
+                params![
+                    p.get("tax_category").and_then(|v| v.as_str()),
+                    p.get("deductible_percent").and_then(|v| v.as_str()),
+                    get_u64(p, "account_id")? as i64,
                 ],
             )?;
         }

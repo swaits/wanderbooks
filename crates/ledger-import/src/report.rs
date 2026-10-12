@@ -400,6 +400,85 @@ pub fn members_equity(me: &MembersEquityStatement) -> Statement {
     )
 }
 
+/// Lay out the tax summary: book and tax amounts by tax category, the
+/// difference where they disagree (meals at 50%, penalties at 0%), and any
+/// account still needing a category.
+pub fn tax_summary(ts: &ledger_core::TaxSummary) -> Statement {
+    let diff = |b: Decimal, t: Decimal| if b == t { None } else { Some(b - t) };
+    let lines = |ls: &[ledger_core::TaxSummaryLine]| -> Vec<Row> {
+        ls.iter()
+            .map(|l| {
+                let codes: Vec<&str> = l
+                    .accounts
+                    .iter()
+                    .map(|a| a.split_whitespace().next().unwrap_or(""))
+                    .collect();
+                row(
+                    RowKind::Line,
+                    format!("{} ({})", l.label, codes.join(", ")),
+                    vec![Some(l.book), Some(l.tax), diff(l.book, l.tax)],
+                )
+            })
+            .collect()
+    };
+    let total = |kind, label: &str, ls: &[ledger_core::TaxSummaryLine]| {
+        let b: Decimal = ls.iter().map(|l| l.book).sum();
+        let t: Decimal = ls.iter().map(|l| l.tax).sum();
+        row(kind, label, vec![Some(b), Some(t), diff(b, t)])
+    };
+    let mut rows = vec![section("Income")];
+    rows.extend(lines(&ts.income));
+    rows.push(total(RowKind::Subtotal, "Total income", &ts.income));
+    if !ts.cost_of_goods.is_empty() {
+        rows.push(spacer());
+        rows.push(section("Cost of goods sold"));
+        rows.extend(lines(&ts.cost_of_goods));
+        rows.push(total(
+            RowKind::Subtotal,
+            "Total cost of goods sold",
+            &ts.cost_of_goods,
+        ));
+    }
+    rows.push(spacer());
+    rows.push(section("Deductions"));
+    rows.extend(lines(&ts.deductions));
+    rows.push(total(RowKind::Subtotal, "Total deductions", &ts.deductions));
+    rows.push(spacer());
+    rows.push(row(
+        RowKind::Total,
+        "Income less deductions",
+        vec![
+            Some(ts.book_net()),
+            Some(ts.tax_net()),
+            diff(ts.book_net(), ts.tax_net()),
+        ],
+    ));
+    if !ts.uncategorized.is_empty() {
+        rows.push(spacer());
+        rows.push(section("Not yet categorized"));
+        rows.push(subheading(
+            "Assign each a tax category (books.set_tax_category); not included above:",
+        ));
+        rows.extend(ts.uncategorized.iter().map(|u| {
+            row(
+                RowKind::Line,
+                u.account.clone(),
+                vec![Some(u.book), None, None],
+            )
+        }));
+    }
+    let title = match ts.form {
+        Some(f) => format!("Tax Summary ({} categories)", f.label()),
+        None => "Tax Summary".to_string(),
+    };
+    statement(
+        &title,
+        period_label(ts.start, ts.end),
+        &["Book", "Tax", "Difference"],
+        rows,
+    )
+}
+
 /// "October 11, 2026".
 pub fn long_date(d: NaiveDate) -> String {
     d.format("%B %-d, %Y").to_string()

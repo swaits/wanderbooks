@@ -6,6 +6,7 @@
 //! grouping on type, so getting this right is the whole game.
 
 use crate::{Currency, LedgerError};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -72,6 +73,14 @@ pub struct Account {
     pub placeholder: bool,
     /// Day one: always the ledger's base currency (see R-5).
     pub currency: Currency,
+    /// Tax category key (see [`crate::tax`]), for revenue and expense
+    /// accounts.
+    #[serde(default)]
+    pub tax_category: Option<String>,
+    /// Percent deductible, overriding the category's default (e.g. 50 for
+    /// meals, 0 for penalties).
+    #[serde(default)]
+    pub deductible_percent: Option<Decimal>,
 }
 
 /// The registry of accounts. Owns id allocation for accounts it holds.
@@ -114,6 +123,22 @@ impl ChartOfAccounts {
     /// Iterate over all accounts (order unspecified; sort by code for display).
     pub fn all(&self) -> impl Iterator<Item = &Account> {
         self.accounts.values()
+    }
+
+    /// Set (or clear) an account's tax category and deductible percent.
+    pub fn set_tax(
+        &mut self,
+        id: AccountId,
+        category: Option<String>,
+        deductible_percent: Option<Decimal>,
+    ) -> Result<(), LedgerError> {
+        let a = self
+            .accounts
+            .get_mut(&id)
+            .ok_or(LedgerError::UnknownAccount(id))?;
+        a.tax_category = category;
+        a.deductible_percent = deductible_percent;
+        Ok(())
     }
 
     /// Number of accounts in the chart.

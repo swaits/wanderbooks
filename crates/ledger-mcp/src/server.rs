@@ -512,6 +512,8 @@ impl BooksServer {
                 } else {
                     balance
                 }),
+                tax_category: a.tax_category.clone(),
+                deductible_percent: a.deductible_percent.map(|p| p.to_string()),
             });
         }
         Ok(Json(ChartOut {
@@ -1360,6 +1362,66 @@ impl BooksServer {
     }
 
     #[tool(
+        name = "books.tax_categories",
+        description = "The tax categories an account can map to (where it lands on the income tax return), filtered to the business's return when wanderbooks.toml says which (tax_form or tax_classification). Each has a default deductible percent (meals 50, nondeductible 0) and guidance. Categories are stable keys, not form line numbers.",
+        annotations(read_only_hint = true)
+    )]
+    async fn tax_categories(&self) -> Result<Json<TaxCategoriesOut>, String> {
+        let form = self.company.tax_form;
+        let categories = ledger_core::tax::CATEGORIES
+            .iter()
+            .filter(|c| form.is_none_or(|f| c.forms.contains(&f)))
+            .map(|c| TaxCategoryOut {
+                key: c.key.to_string(),
+                label: c.label.to_string(),
+                kind: match c.kind {
+                    ledger_core::TaxKind::Income => "income",
+                    ledger_core::TaxKind::CostOfGoods => "cost_of_goods",
+                    ledger_core::TaxKind::Deduction => "deduction",
+                }
+                .to_string(),
+                default_deductible_percent: c.default_deductible_percent,
+                note: c.note.to_string(),
+            })
+            .collect();
+        Ok(Json(TaxCategoriesOut {
+            form: form.map(|f| f.label().to_string()),
+            categories,
+        }))
+    }
+
+    #[tool(
+        name = "books.set_tax_category",
+        description = "Map a revenue or expense account to a tax category (see books.tax_categories), optionally overriding its deductible percent; category null clears it. Drives the tax_summary report."
+    )]
+    async fn set_tax_category(
+        &self,
+        params: Parameters<SetTaxCategoryParams>,
+    ) -> Result<Json<SetTaxCategoryOut>, String> {
+        let p = params.0;
+        let mut store = self.lock()?;
+        let id = resolve_account(&store, &p.account)?;
+        let pct = match &p.deductible_percent {
+            Some(s) => Some(parse_amount(s)?),
+            None => None,
+        };
+        if let Some(cat) = &p.category {
+            let t = store
+                .ledger()
+                .chart()
+                .get(id)
+                .expect("resolved")
+                .account_type;
+            ledger_core::tax::check_category(cat, t, self.company.tax_form)
+                .map_err(|e| e.to_string())?;
+        }
+        store
+            .set_account_tax(id, p.category.as_deref(), pct)
+            .map_err(|e| e.to_string())?;
+        Ok(Json(SetTaxCategoryOut { ok: true }))
+    }
+
+    #[tool(
         name = "books.import_chart_csv",
         description = "Import a chart of accounts from CSV (header: code,name,type,parent_code). Types: asset, liability, equity, revenue, expense. Parents must come before children. Fails on the first bad row; nothing is half-imported."
     )]
@@ -1371,9 +1433,25 @@ impl BooksServer {
         let rows = ledger_import::parse_chart_csv(&p.csv_text).map_err(|e| e.to_string())?;
         let mut store = self.lock()?;
         // Validate all rows first: nothing is half-imported.
+        let parse_type = |t: &str| match t {
+            "asset" => Ok(AccountType::Asset),
+            "liability" => Ok(AccountType::Liability),
+            "equity" => Ok(AccountType::Equity),
+            "revenue" => Ok(AccountType::Revenue),
+            "expense" => Ok(AccountType::Expense),
+            _ => Err(format!("bad account type: {t}")),
+        };
         for row in &rows {
             if store.ledger().chart().find_by_code(&row.code).is_some() {
                 return Err(format!("duplicate account code: {}", row.code));
+            }
+            if let Some(cat) = &row.tax_category {
+                ledger_core::tax::check_category(
+                    cat,
+                    parse_type(&row.account_type)?,
+                    self.company.tax_form,
+                )
+                .map_err(|e| format!("{}: {e}", row.code))?;
             }
         }
         let mut created = Vec::new();
@@ -1397,9 +1475,14 @@ impl BooksServer {
                 ),
                 None => None,
             };
-            store
+            let id = store
                 .add_account(&row.code, &row.name, account_type, parent, false)
                 .map_err(|e| e.to_string())?;
+            if let Some(cat) = &row.tax_category {
+                store
+                    .set_account_tax(id, Some(cat), None)
+                    .map_err(|e| e.to_string())?;
+            }
             created.push(row.code.clone());
         }
         let count = created.len();
@@ -1510,12 +1593,13 @@ impl BooksServer {
             "trial_balance" => self.export_trial_balance(&format, p.as_of.as_deref())?,
             "general_ledger" => self.export_general_ledger(&format, &p)?,
             "members_equity" => self.export_members_equity(&format, &p)?,
+            "tax_summary" => self.export_tax_summary(&format, &p)?,
             "profit_and_loss" => self.export_pnl(&format, p.start.as_deref(), p.end.as_deref())?,
             "balance_sheet" => self.export_balance_sheet(&format, p.as_of.as_deref())?,
             "cash_flow" => self.export_cash_flow(&format, &p)?,
             _ => {
                 return Err(format!(
-                    "bad report {:?}: expected general_journal, general_ledger, trial_balance, profit_and_loss, balance_sheet, cash_flow, or members_equity",
+                    "bad report {:?}: expected general_journal, general_ledger, trial_balance, profit_and_loss, balance_sheet, cash_flow, members_equity, or tax_summary",
                     p.report
                 ));
             }
@@ -1566,6 +1650,13 @@ impl BooksServer {
                 };
                 report::trial_balance(&reports::trial_balance_as_of(ledger, as_of), as_of)
             }
+            "tax_summary" => {
+                let (start, end) = statement_range(ledger, p.start.as_deref(), p.end.as_deref())?;
+                report::tax_summary(
+                    &ledger_core::tax_summary(ledger, start, end, self.company.tax_form)
+                        .map_err(|e| e.to_string())?,
+                )
+            }
             "members_equity" => {
                 let (start, end) = statement_range(ledger, p.start.as_deref(), p.end.as_deref())?;
                 let me =
@@ -1575,7 +1666,7 @@ impl BooksServer {
             }
             _ => {
                 return Err(format!(
-                    "bad report {report:?}: expected profit_and_loss, balance_sheet, cash_flow, trial_balance, or members_equity"
+                    "bad report {report:?}: expected profit_and_loss, balance_sheet, cash_flow, trial_balance, members_equity, or tax_summary"
                 ));
             }
         })
@@ -2685,6 +2776,13 @@ impl BooksServer {
             statements.push(("members-equity", report::members_equity(&me)));
         }
         statements.push((
+            "tax-summary",
+            report::tax_summary(
+                &ledger_core::tax_summary(ledger, fy, as_of, self.company.tax_form)
+                    .map_err(|e| e.to_string())?,
+            ),
+        ));
+        statements.push((
             "trial-balance",
             report::trial_balance(&reports::trial_balance_as_of(ledger, as_of), as_of),
         ));
@@ -2873,6 +2971,60 @@ impl BooksServer {
                 money(a.total_debits),
                 money(a.total_credits),
                 money(a.ending_balance)
+            ));
+        }
+        Ok(csv)
+    }
+
+    fn export_tax_summary(&self, format: &str, p: &ExportParams) -> Result<String, String> {
+        let store = self.lock()?;
+        let ledger = store.ledger();
+        let (start, end) = statement_range(ledger, p.start.as_deref(), p.end.as_deref())?;
+        let ts = ledger_core::tax_summary(ledger, start, end, self.company.tax_form)
+            .map_err(|e| e.to_string())?;
+        let line = |l: &ledger_core::TaxSummaryLine| {
+            serde_json::json!({
+                "category": l.category, "label": l.label, "accounts": l.accounts,
+                "book": money(l.book), "tax": money(l.tax),
+            })
+        };
+        if format == "json" {
+            return serde_json::to_string_pretty(&serde_json::json!({
+                "start": ts.start.to_string(), "end": ts.end.to_string(),
+                "form": ts.form.map(|f| f.label()),
+                "income": ts.income.iter().map(line).collect::<Vec<_>>(),
+                "cost_of_goods": ts.cost_of_goods.iter().map(line).collect::<Vec<_>>(),
+                "deductions": ts.deductions.iter().map(line).collect::<Vec<_>>(),
+                "uncategorized": ts.uncategorized.iter().map(|u| serde_json::json!({
+                    "account": u.account, "book": money(u.book),
+                })).collect::<Vec<_>>(),
+                "book_net": money(ts.book_net()),
+                "tax_net": money(ts.tax_net()),
+            }))
+            .map_err(|e| e.to_string());
+        }
+        let mut csv = String::from("section,category,label,accounts,book,tax\n");
+        for (section, lines) in [
+            ("income", &ts.income),
+            ("cost_of_goods", &ts.cost_of_goods),
+            ("deductions", &ts.deductions),
+        ] {
+            for l in lines {
+                csv.push_str(&format!(
+                    "{section},{},{},{},{},{}\n",
+                    l.category,
+                    csv_escape(&l.label),
+                    csv_escape(&l.accounts.join("; ")),
+                    money(l.book),
+                    money(l.tax)
+                ));
+            }
+        }
+        for u in &ts.uncategorized {
+            csv.push_str(&format!(
+                "uncategorized,,,{},{},\n",
+                csv_escape(&u.account),
+                money(u.book)
             ));
         }
         Ok(csv)

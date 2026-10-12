@@ -139,7 +139,7 @@ fn mcp_end_to_end_over_stdio() {
     // Tool listing: 23 narrow tools, chart is read-only.
     let list = mcp.request("tools/list", json!({}));
     let tools = list["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 50, "expected 50 tools, got {}", tools.len());
+    assert_eq!(tools.len(), 52, "expected 52 tools, got {}", tools.len());
     let chart = tools.iter().find(|t| t["name"] == "books.chart").unwrap();
     assert_eq!(chart["annotations"]["readOnlyHint"], true);
     assert!(
@@ -882,6 +882,8 @@ fn mcp_statement_pdfs_and_cpa_package_over_stdio() {
             "general-ledger.xlsx",
             "profit-and-loss.pdf",
             "profit-and-loss.xlsx",
+            "tax-summary.pdf",
+            "tax-summary.xlsx",
             "trial-balance.pdf",
             "trial-balance.xlsx"
         ]
@@ -899,7 +901,7 @@ fn mcp_period_statements_over_stdio() {
     let toml = dir.join("wanderbooks.toml");
     std::fs::write(
         &toml,
-        "[company]\nname = \"Test Co\"\nfiscal_year_start = \"02-01\"\n[[company.members]]\nname = \"Owner\"\nshare = \"100%\"\ncapital_account = \"3000\"\n[books]\nreceipt_threshold = \"5.00\"\n",
+        "[company]\nname = \"Test Co\"\nfiscal_year_start = \"02-01\"\ntax_classification = \"partnership\"\n[[company.members]]\nname = \"Owner\"\nshare = \"100%\"\ncapital_account = \"3000\"\n[books]\nreceipt_threshold = \"5.00\"\n",
     )
     .unwrap();
     let data = dir.join("books-data");
@@ -1055,4 +1057,66 @@ fn mcp_period_statements_over_stdio() {
     assert_eq!(me["total"]["contributions"], "1000.00");
     assert_eq!(me["total"]["net_income"], "4.00");
     assert_eq!(me["total"]["ending"], "1004.00");
+
+    // Tax categories: filtered to the partnership return.
+    let cats = mcp.call("books.tax_categories", json!({}));
+    assert_eq!(cats["form"], "Form 1065");
+    let keys: Vec<&str> = cats["categories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["key"].as_str().unwrap())
+        .collect();
+    assert!(keys.contains(&"guaranteed_payments"));
+    assert!(
+        !keys.contains(&"officer_compensation"),
+        "a corporate category"
+    );
+    mcp.call(
+        "books.set_tax_category",
+        json!({"account": "4000", "category": "gross_receipts"}),
+    );
+    mcp.call(
+        "books.set_tax_category",
+        json!({"account": "6000", "category": "other_deductions"}),
+    );
+    let err = mcp.call_err(
+        "books.set_tax_category",
+        json!({"account": "4000", "category": "meals"}),
+    );
+    assert!(err.contains("expense"), "{err}");
+    let chart = mcp.call("books.chart", json!({}));
+    let sales = chart["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["code"] == "4000")
+        .unwrap()
+        .clone();
+    assert_eq!(sales["tax_category"], "gross_receipts");
+    // Jan-Feb: 6.50 of sales, 3.00 of software, all categorized.
+    let ts = mcp.call(
+        "books.export",
+        json!({"format": "json", "report": "tax_summary", "start": "2026-01-01", "end": "2026-02-28"}),
+    );
+    let ts: serde_json::Value = serde_json::from_str(ts["content"].as_str().unwrap()).unwrap();
+    assert_eq!(ts["form"], "Form 1065");
+    assert_eq!(ts["income"][0]["book"], "6.50");
+    assert_eq!(ts["deductions"][0]["category"], "other_deductions");
+    assert_eq!(ts["uncategorized"].as_array().unwrap().len(), 0);
+    assert_eq!(ts["tax_net"], "3.50");
+    // A chart import validates categories before creating anything.
+    let err = mcp.call_err(
+        "books.import_chart_csv",
+        json!({"csv_text": "code,name,type,parent_code,tax_category\n6100,Meals,expense,,meals\n4100,Fees,revenue,,commissions_fees\n"}),
+    );
+    assert!(err.contains("4100"), "{err}");
+    let chart = mcp.call("books.chart", json!({}));
+    assert!(
+        chart["accounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|a| a["code"] != "6100")
+    );
 }

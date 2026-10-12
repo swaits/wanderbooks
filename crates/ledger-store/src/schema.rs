@@ -5,7 +5,7 @@
 //! is the current version.
 
 /// Current schema version.
-pub const SCHEMA_VERSION: u32 = 5;
+pub const SCHEMA_VERSION: u32 = 6;
 
 /// Migrations, in order. `MIGRATIONS[i]` migrates from version `i` to `i+1`.
 pub const MIGRATIONS: &[&str] = &[
@@ -179,5 +179,11 @@ ALTER TABLE lines ADD COLUMN class_id INTEGER;
 -- keeps the filing and the withdrawal.
 ALTER TABLE attachments ADD COLUMN withdrawn_at TEXT;
 ALTER TABLE attachments ADD COLUMN withdrawn_reason TEXT;
+"#,
+    r#"
+-- v6: tax categories on accounts (where each account lands on the return,
+-- and how much of it is deductible). Percent is TEXT, never REAL.
+ALTER TABLE accounts ADD COLUMN tax_category TEXT;
+ALTER TABLE accounts ADD COLUMN deductible_percent TEXT;
 "#,
 ];

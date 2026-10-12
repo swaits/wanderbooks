@@ -24,16 +24,19 @@ pub struct ChartRow {
     pub account_type: String,
     /// Parent account code, if any.
     pub parent_code: Option<String>,
+    /// Optional fifth column: the tax category key (see
+    /// `ledger_core::tax`).
+    pub tax_category: Option<String>,
 }
 
 /// Parse errors.
 #[derive(Debug, Error, PartialEq)]
 pub enum ChartCsvError {
-    /// Wrong column count.
-    #[error("expected 4 columns (code,name,type,parent_code), found {0}")]
-    BadColumnCount(usize),
+    /// Wrong column count: (found, expected by the header).
+    #[error("expected {1} columns to match the header, found {0}")]
+    BadColumnCount(usize, usize),
     /// Missing or bad header.
-    #[error("bad header: expected code,name,type,parent_code")]
+    #[error("bad header: expected code,name,type,parent_code[,tax_category]")]
     BadHeader,
     /// Unknown account type.
     #[error("bad account type {0:?}: expected asset, liability, equity, revenue, or expense")]
@@ -48,9 +51,11 @@ pub enum ChartCsvError {
 pub fn parse_chart_csv(text: &str) -> Result<Vec<ChartRow>, ChartCsvError> {
     let mut reader = csv::ReaderBuilder::new()
         .has_headers(false)
+        .flexible(true)
         .trim(csv::Trim::All)
         .from_reader(text.as_bytes());
     let mut out = Vec::new();
+    let mut width = 4;
     for (idx, record) in reader.records().enumerate() {
         let record = record.map_err(|e| ChartCsvError::Csv(e.to_string()))?;
         let fields: Vec<&str> = record.iter().collect();
@@ -59,13 +64,17 @@ pub fn parse_chart_csv(text: &str) -> Result<Vec<ChartRow>, ChartCsvError> {
         }
         if idx == 0 {
             let lower: Vec<String> = fields.iter().map(|f| f.to_lowercase()).collect();
-            if lower != ["code", "name", "type", "parent_code"] {
+            width = if lower == ["code", "name", "type", "parent_code"] {
+                4
+            } else if lower == ["code", "name", "type", "parent_code", "tax_category"] {
+                5
+            } else {
                 return Err(ChartCsvError::BadHeader);
-            }
+            };
             continue;
         }
-        if fields.len() != 4 {
-            return Err(ChartCsvError::BadColumnCount(fields.len()));
+        if fields.len() != width {
+            return Err(ChartCsvError::BadColumnCount(fields.len(), width));
         }
         let account_type = fields[2].to_lowercase();
         match account_type.as_str() {
@@ -82,6 +91,11 @@ pub fn parse_chart_csv(text: &str) -> Result<Vec<ChartRow>, ChartCsvError> {
             } else {
                 Some(parent_code.to_string())
             },
+            tax_category: fields
+                .get(4)
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
         });
     }
     Ok(out)
@@ -99,6 +113,20 @@ mod tests {
         assert_eq!(rows[0].parent_code, None);
         assert_eq!(rows[1].parent_code, Some("1000".to_string()));
         assert_eq!(rows[2].account_type, "revenue");
+    }
+
+    #[test]
+    fn parses_optional_tax_category_column() {
+        let csv = "code,name,type,parent_code,tax_category\n4000,Sales,revenue,,gross_receipts\n1000,Cash,asset,,\n";
+        let rows = parse_chart_csv(csv).unwrap();
+        assert_eq!(rows[0].tax_category.as_deref(), Some("gross_receipts"));
+        assert_eq!(rows[1].tax_category, None);
+        // Rows must match the header's width.
+        let short = "code,name,type,parent_code,tax_category\n1000,Cash,asset,\n";
+        assert_eq!(
+            parse_chart_csv(short),
+            Err(ChartCsvError::BadColumnCount(4, 5))
+        );
     }
 
     #[test]

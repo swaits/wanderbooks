@@ -776,3 +776,105 @@ fn mcp_import_export_over_stdio() {
     assert_eq!(xlsx["content_encoding"], "base64");
     assert!(xlsx["content"].as_str().unwrap().starts_with("UEs"));
 }
+
+#[test]
+fn mcp_statement_pdfs_and_cpa_package_over_stdio() {
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let dir = test_dir("statement-pdfs");
+    let mut mcp = Mcp::spawn(&dir);
+    mcp.request(
+        "initialize",
+        json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+        }),
+    );
+    mcp.notify("notifications/initialized");
+    mcp.call(
+        "books.import_chart_csv",
+        json!({"csv_text": "code,name,type,parent_code\n1000,Cash,asset,\n3000,Owner Capital,equity,\n6000,Software,expense,\n"}),
+    );
+    for (desc, debit, credit, amount) in [
+        ("Owner contribution", "1000", "3000", "1000.00"),
+        ("Domain", "6000", "1000", "12.00"),
+    ] {
+        let e = mcp.call(
+            "books.draft_entry",
+            json!({"date": "2026-10-05", "description": desc}),
+        );
+        let id = e["entry_id"].as_u64().unwrap();
+        mcp.call(
+            "books.add_line",
+            json!({"entry_id": id, "account": debit, "side": "debit", "amount": amount}),
+        );
+        mcp.call(
+            "books.add_line",
+            json!({"entry_id": id, "account": credit, "side": "credit", "amount": amount}),
+        );
+        mcp.call(
+            "books.attach_receipt",
+            json!({"entry_id": id, "file_name": "r.pdf", "mime_type": "application/pdf",
+                   "content_base64": base64_like(desc.as_bytes())}),
+        );
+        mcp.call(
+            "books.post_entry",
+            json!({"entry_id": id, "confirmed": true}),
+        );
+    }
+
+    // All three statements export as PDF.
+    for (report, extra) in [
+        ("profit_and_loss", json!({})),
+        ("balance_sheet", json!({})),
+        ("cash_flow", json!({"cash_accounts": ["1000"]})),
+    ] {
+        let mut args = json!({"format": "pdf", "report": report});
+        args.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let out = mcp.call("books.export", args);
+        assert_eq!(out["content_encoding"], "base64");
+        let bytes = b64.decode(out["content"].as_str().unwrap()).unwrap();
+        assert!(bytes.starts_with(b"%PDF"), "{report} is not a PDF");
+    }
+    // The cash flow statement reconciles to named cash accounts: required.
+    let err = mcp.call_err(
+        "books.export",
+        json!({"format": "pdf", "report": "cash_flow"}),
+    );
+    assert!(err.contains("cash_accounts"), "{err}");
+    let err = mcp.call_err(
+        "books.export",
+        json!({"format": "pdf", "report": "trial_balance"}),
+    );
+    assert!(err.contains("for pdf"), "{err}");
+
+    // The CPA package carries all three statements.
+    let err = mcp.call_err("books.export_cpa_package", json!({"as_of": "2026-10-31"}));
+    assert!(err.contains("cash_accounts"), "{err}");
+    let pkg = mcp.call(
+        "books.export_cpa_package",
+        json!({"as_of": "2026-10-31", "cash_accounts": ["1000"]}),
+    );
+    let zip_bytes = b64.decode(pkg["content_base64"].as_str().unwrap()).unwrap();
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes)).unwrap();
+    let mut names: Vec<String> = (0..zip.len())
+        .map(|i| zip.by_index(i).unwrap().name().unwrap().to_string())
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        [
+            "balance-sheet.pdf",
+            "cash-flow.pdf",
+            "general-ledger.xlsx",
+            "profit-and-loss.pdf",
+            "trial-balance.xlsx"
+        ]
+    );
+    let mut cf = Vec::new();
+    std::io::Read::read_to_end(&mut zip.by_name("cash-flow.pdf").unwrap(), &mut cf).unwrap();
+    assert!(cf.starts_with(b"%PDF"));
+}

@@ -256,6 +256,53 @@ fn preview_receipts(store: &Store, entry_id: u64) -> Result<Vec<PreviewReceipt>,
         .collect())
 }
 
+/// Build the cash flow statement from account codes, as the exports need it:
+/// `start` defaults to the beginning of time, `end` to today, and at least
+/// one cash account is required (the statement reconciles to them).
+fn cash_flow_statement(
+    ledger: &Ledger,
+    start: Option<&str>,
+    end: Option<&str>,
+    cash_codes: &[String],
+    financing_codes: &[String],
+) -> Result<ledger_core::reports::CashFlowStatement, String> {
+    let resolve = |codes: &[String], what: &str| -> Result<Vec<AccountId>, String> {
+        codes
+            .iter()
+            .map(|code| {
+                ledger
+                    .chart()
+                    .find_by_code(code)
+                    .map(|a| a.id)
+                    .ok_or_else(|| format!("unknown {what} account code: {code}"))
+            })
+            .collect()
+    };
+    let cash_accounts = resolve(cash_codes, "cash")?;
+    if cash_accounts.is_empty() {
+        return Err("cash_accounts is required for the cash flow statement".to_string());
+    }
+    let financing_accounts = resolve(financing_codes, "financing")?;
+    let start = match start {
+        Some(s) => parse_date(s)?,
+        None => NaiveDate::from_ymd_opt(1, 1, 1).unwrap(),
+    };
+    let end = match end {
+        Some(s) => parse_date(s)?,
+        None => chrono::Utc::now().date_naive(),
+    };
+    ledger_core::cash_flow(
+        ledger,
+        &ledger_core::CashFlowParams {
+            start,
+            end,
+            cash_accounts,
+            financing_accounts,
+        },
+    )
+    .map_err(|e| e.to_string())
+}
+
 /// Net movement of one account over entries on or before `through`, in the
 /// account's normal side.
 fn movement_through(ledger: &Ledger, account: AccountId, through: NaiveDate) -> Decimal {
@@ -1331,15 +1378,15 @@ impl BooksServer {
 
     #[tool(
         name = "books.export",
-        description = "Export a report. Formats: csv, json, xlsx (base64), iif (journal only, for QuickBooks Desktop). Reports: journal, trial_balance, profit_and_loss, balance_sheet, cash_flow.",
+        description = "Export a report. Formats: csv, json, xlsx (base64), pdf (base64; profit_and_loss, balance_sheet, cash_flow), iif (journal only, for QuickBooks Desktop). Reports: journal, trial_balance, profit_and_loss, balance_sheet, cash_flow. cash_flow needs cash_accounts.",
         annotations(read_only_hint = true)
     )]
     async fn export(&self, params: Parameters<ExportParams>) -> Result<Json<ExportOut>, String> {
         let p = params.0;
         let format = p.format.to_lowercase();
-        if !["csv", "json", "xlsx", "iif"].contains(&format.as_str()) {
+        if !["csv", "json", "xlsx", "pdf", "iif"].contains(&format.as_str()) {
             return Err(format!(
-                "bad format {:?}: expected \"csv\", \"json\", \"xlsx\", or \"iif\"",
+                "bad format {:?}: expected \"csv\", \"json\", \"xlsx\", \"pdf\", or \"iif\"",
                 p.format
             ));
         }
@@ -1347,8 +1394,12 @@ impl BooksServer {
         if format == "iif" && report != "journal" {
             return Err("iif format is only valid for the journal report".to_string());
         }
-        if format == "xlsx" {
-            let bytes = self.export_xlsx(&report, &p)?;
+        if format == "xlsx" || format == "pdf" {
+            let bytes = if format == "xlsx" {
+                self.export_xlsx(&report, &p)?
+            } else {
+                self.export_pdf(&report, &p)?
+            };
             return Ok(Json(ExportOut {
                 format,
                 report,
@@ -1427,40 +1478,13 @@ impl BooksServer {
                     as_of.to_string(),
                 )
             }
-            "cash_flow" => {
-                let mut cash_accounts = Vec::new();
-                for code in &p.cash_accounts {
-                    let id = ledger
-                        .chart()
-                        .find_by_code(code)
-                        .map(|a| a.id)
-                        .ok_or_else(|| format!("unknown cash account code: {code}"))?;
-                    cash_accounts.push(id);
-                }
-                if cash_accounts.is_empty() {
-                    return Err("cash_accounts is required for cash_flow".to_string());
-                }
-                let start = match &p.start {
-                    Some(s) => parse_date(s)?,
-                    None => NaiveDate::from_ymd_opt(1, 1, 1).unwrap(),
-                };
-                let end = match &p.end {
-                    Some(s) => parse_date(s)?,
-                    None => chrono::Utc::now().date_naive(),
-                };
-                Owned::Cf(
-                    ledger_core::cash_flow(
-                        ledger,
-                        &ledger_core::CashFlowParams {
-                            start,
-                            end,
-                            cash_accounts,
-                            financing_accounts: vec![],
-                        },
-                    )
-                    .map_err(|e| e.to_string())?,
-                )
-            }
+            "cash_flow" => Owned::Cf(cash_flow_statement(
+                ledger,
+                p.start.as_deref(),
+                p.end.as_deref(),
+                &p.cash_accounts,
+                &p.financing_accounts,
+            )?),
             _ => {
                 return Err(format!(
                     "bad report {report:?} for xlsx: expected trial_balance, profit_and_loss, balance_sheet, or cash_flow"
@@ -1474,6 +1498,36 @@ impl BooksServer {
             Owned::Cf(cf) => XlsxReport::CashFlow(cf),
         };
         report_to_xlsx(&xlsx_report).map_err(|e| e.to_string())
+    }
+
+    /// Render a financial statement to PDF bytes via ledger-import.
+    fn export_pdf(&self, report: &str, p: &ExportParams) -> Result<Vec<u8>, String> {
+        let store = self.lock()?;
+        let ledger = store.ledger();
+        let today = || chrono::Utc::now().date_naive().to_string();
+        match report {
+            "profit_and_loss" => ledger_import::profit_and_loss_pdf(
+                ledger,
+                p.start.as_deref().unwrap_or("0001-01-01"),
+                &p.end.clone().unwrap_or_else(today),
+            ),
+            "balance_sheet" => {
+                ledger_import::balance_sheet_pdf(ledger, &p.as_of.clone().unwrap_or_else(today))
+            }
+            "cash_flow" => ledger_import::cash_flow_pdf(&cash_flow_statement(
+                ledger,
+                p.start.as_deref(),
+                p.end.as_deref(),
+                &p.cash_accounts,
+                &p.financing_accounts,
+            )?),
+            _ => {
+                return Err(format!(
+                    "bad report {report:?} for pdf: expected profit_and_loss, balance_sheet, or cash_flow"
+                ));
+            }
+        }
+        .map_err(|e| e.to_string())
     }
 
     /// Render the journal as IIF text via ledger-import.
@@ -2480,7 +2534,7 @@ impl BooksServer {
 
     #[tool(
         name = "books.export_cpa_package",
-        description = "Build the CPA handoff package as a zip (base64): trial-balance.xlsx, general-ledger.xlsx (every posted line), profit-and-loss.pdf, balance-sheet.pdf. The as_of date defaults to today; the P&L covers the fiscal year to date.",
+        description = "Build the CPA handoff package as a zip (base64): trial-balance.xlsx, general-ledger.xlsx (every posted line), profit-and-loss.pdf, balance-sheet.pdf, cash-flow.pdf. cash_accounts (e.g. [\"1000\"]) is required: the cash flow statement reconciles to them. The as_of date defaults to today; the P&L and cash flow cover the fiscal year to date.",
         annotations(read_only_hint = true)
     )]
     async fn export_cpa_package(
@@ -2515,6 +2569,16 @@ impl BooksServer {
         // 4. Balance sheet PDF.
         let bs_pdf = ledger_import::balance_sheet_pdf(ledger, &as_of.to_string())
             .map_err(|e| e.to_string())?;
+
+        // 5. Cash flow PDF (fiscal year to date, like the P&L).
+        let cf = cash_flow_statement(
+            ledger,
+            Some(&fy_start.to_string()),
+            Some(&as_of.to_string()),
+            &p.cash_accounts,
+            &p.financing_accounts,
+        )?;
+        let cf_pdf = ledger_import::cash_flow_pdf(&cf).map_err(|e| e.to_string())?;
         drop(store);
 
         // Zip it.
@@ -2527,6 +2591,7 @@ impl BooksServer {
                 ("general-ledger.xlsx", gl_xlsx.as_slice()),
                 ("profit-and-loss.pdf", pnl_pdf.as_slice()),
                 ("balance-sheet.pdf", bs_pdf.as_slice()),
+                ("cash-flow.pdf", cf_pdf.as_slice()),
             ] {
                 zip.start_file(name, opts).map_err(|e| e.to_string())?;
                 use std::io::Write;

@@ -3,6 +3,7 @@
 //! Simple, correct, readable — not pretty. Uses printpdf (MIT) with built-in
 //! Helvetica. Amounts are exact decimals rendered as strings; no floats.
 
+use ledger_core::reports::CashFlowStatement;
 use ledger_core::{AccountType, Ledger};
 use printpdf::{
     BuiltinFont, Color, Mm, Op, PdfDocument, PdfFontHandle, PdfPage, PdfSaveOptions, Point, Pt,
@@ -202,4 +203,60 @@ pub fn balance_sheet_pdf(ledger: &Ledger, as_of: &str) -> Result<Vec<u8>, PdfErr
 
     let ops = text_ops("Balance Sheet", &format!("As of {}", as_of), &rows, &totals);
     save_pdf("Balance Sheet", ops)
+}
+
+/// Render a cash flow statement PDF (indirect method): operating (net
+/// income, depreciation add-back, working-capital changes), investing, and
+/// financing sections, then the net change reconciled to beginning and
+/// ending cash. Takes the computed statement, so the period and cash
+/// accounts are whatever the caller chose.
+pub fn cash_flow_pdf(cf: &CashFlowStatement) -> Result<Vec<u8>, PdfError> {
+    let line = |l: &ledger_core::reports::CashFlowLine| (format!("  {}", l.label), money(l.amount));
+    let mut rows = vec![("OPERATING ACTIVITIES".to_string(), "".to_string())];
+    rows.push(("  Net income".to_string(), money(cf.net_income)));
+    if !cf.depreciation.is_zero() {
+        rows.push((
+            "  Depreciation (non-cash)".to_string(),
+            money(cf.depreciation),
+        ));
+    }
+    rows.extend(cf.working_capital.iter().map(line));
+    rows.push((
+        "Net cash from operating activities".to_string(),
+        money(cf.cash_from_operations),
+    ));
+    rows.push(("".to_string(), "".to_string()));
+    rows.push(("INVESTING ACTIVITIES".to_string(), "".to_string()));
+    rows.extend(cf.investing.iter().map(line));
+    rows.push((
+        "Net cash from investing activities".to_string(),
+        money(cf.cash_from_investing),
+    ));
+    rows.push(("".to_string(), "".to_string()));
+    rows.push(("FINANCING ACTIVITIES".to_string(), "".to_string()));
+    rows.extend(cf.financing.iter().map(line));
+    rows.push((
+        "Net cash from financing activities".to_string(),
+        money(cf.cash_from_financing),
+    ));
+
+    let totals = vec![
+        (
+            "Net change in cash".to_string(),
+            money(cf.net_change_in_cash),
+        ),
+        (
+            "Cash at beginning of period".to_string(),
+            money(cf.cash_beginning),
+        ),
+        ("Cash at end of period".to_string(), money(cf.cash_ending)),
+    ];
+
+    let ops = text_ops(
+        "Statement of Cash Flows",
+        &format!("{} to {}", cf.start, cf.end),
+        &rows,
+        &totals,
+    );
+    save_pdf("Statement of Cash Flows", ops)
 }

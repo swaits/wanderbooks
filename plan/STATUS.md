@@ -214,4 +214,11 @@ interface is MCP, not a cloned GUI. The first storage + MCP slice is done
   accounts carry allocated earnings; the members'-equity statement treats
   those closes as income, not contributions, and the balance sheet shows
   only unallocated earnings. Replay now checks closing lines, not just ids.
+- 2026-10-11: Tax categories (the owner: wanderbooks is a general MCP-first
+  accounting application, so features ship for every small business, not
+  when the first company needs them). Accounts map to stable categories rather than
+  form line numbers; each category knows its returns and default
+  deductible percent; the tax summary shows book vs. tax by category and
+  every uncategorized account. tax_form comes from config or the tax
+  classification. Schema v6.
 

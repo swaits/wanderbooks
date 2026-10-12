@@ -65,6 +65,14 @@ requirement conflict, the requirement wins.
   to the cent, the last member absorbing rounding, so every row's total is
   exact. Any equity change the roll-forward doesn't explain is shown as
   "other", never hidden.
+- **R-9d — Tax categories.** Revenue and expense accounts map to stable
+  tax categories (`ledger_core::tax::CATEGORIES`: key, label, income /
+  cost of goods / deduction, the returns it appears on — Schedule C, 1065,
+  1120-S, 1120 — default deductible percent, guidance), with an optional
+  per-account deductible percent. `tax_summary(start, end, form)` groups
+  the P&L by category with book and deductible amounts and lists
+  uncategorized accounts. Book basis only: no tax depreciation, basis, or
+  filing; not tax advice.
 - **R-10 — Canonical snapshots.** `reports::snapshot()` renders the three
   core reports as deterministic JSON (decimal strings, sorted lines, fixed
   keys). Two engines fed the same books must produce identical output. This

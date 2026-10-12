@@ -48,6 +48,53 @@ pub struct ChartAccount {
     /// Current balance in the account's normal side, as a decimal string.
     /// Positive means a normal balance.
     pub balance: String,
+    /// Tax category key, if assigned.
+    pub tax_category: Option<String>,
+    /// Deductible percent override, if any.
+    pub deductible_percent: Option<String>,
+}
+
+/// Parameters for `books.set_tax_category`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SetTaxCategoryParams {
+    /// Account code (or id).
+    pub account: String,
+    /// Tax category key from `books.tax_categories`; null clears it.
+    pub category: Option<String>,
+    /// Percent deductible, overriding the category default (decimal
+    /// string, 0 to 100), e.g. "100" for a fully deductible company party.
+    pub deductible_percent: Option<String>,
+}
+
+/// Result of `books.set_tax_category`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SetTaxCategoryOut {
+    /// True when set.
+    pub ok: bool,
+}
+
+/// One tax category.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct TaxCategoryOut {
+    /// Stable key.
+    pub key: String,
+    /// Label.
+    pub label: String,
+    /// "income", "cost_of_goods", or "deduction".
+    pub kind: String,
+    /// Percent deductible by default.
+    pub default_deductible_percent: u32,
+    /// Guidance.
+    pub note: String,
+}
+
+/// Result of `books.tax_categories`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct TaxCategoriesOut {
+    /// The return the categories are filtered to, if configured.
+    pub form: Option<String>,
+    /// Categories.
+    pub categories: Vec<TaxCategoryOut>,
 }
 
 /// Result of `books.chart`.

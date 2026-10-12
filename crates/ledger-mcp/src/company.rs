@@ -25,6 +25,9 @@ pub struct Company {
     pub members: Vec<Member>,
     /// "Accrual" or "Cash", for report footers. Default "Accrual".
     pub basis: String,
+    /// The income tax return the business files, if known: from
+    /// `tax_form`, else from `tax_classification`.
+    pub tax_form: Option<ledger_core::TaxForm>,
 }
 
 /// One member of a multi-member LLC.
@@ -45,6 +48,7 @@ impl Default for Company {
             fiscal_year_start: (1, 1),
             members: Vec::new(),
             basis: "Accrual".to_string(),
+            tax_form: None,
         }
     }
 }
@@ -87,6 +91,8 @@ struct BooksToml {
 struct CompanyToml {
     name: Option<String>,
     fiscal_year_start: Option<String>,
+    tax_form: Option<String>,
+    tax_classification: Option<String>,
     #[serde(default)]
     members: Vec<MemberToml>,
 }
@@ -102,6 +108,24 @@ struct MemberToml {
 struct BooksSection {
     receipt_threshold: Option<String>,
     accounting_basis: Option<String>,
+}
+
+/// The return a federal tax classification files: "partnership" → 1065,
+/// "s corporation" → 1120-S, "c corporation" → 1120, "sole proprietorship"
+/// or "disregarded entity" → Schedule C. Unrecognized: unknown.
+fn form_for_classification(c: &str) -> Option<ledger_core::TaxForm> {
+    let c = c.to_lowercase();
+    if c.contains("partnership") {
+        Some(ledger_core::TaxForm::Form1065)
+    } else if c.contains("s corp") || c.contains("s-corp") || c.contains("s_corp") {
+        Some(ledger_core::TaxForm::Form1120S)
+    } else if c.contains("c corp") || c.contains("c-corp") || c.contains("c_corp") {
+        Some(ledger_core::TaxForm::Form1120)
+    } else if c.contains("sole") || c.contains("disregarded") {
+        Some(ledger_core::TaxForm::ScheduleC)
+    } else {
+        None
+    }
 }
 
 /// Parse a share: "50%" or "0.5".
@@ -158,6 +182,14 @@ pub fn parse(text: &str) -> Result<BooksSettings, String> {
             return Err(format!("member shares sum to {total}, not 100%"));
         }
     }
+    company.tax_form =
+        match (&raw.company.tax_form, &raw.company.tax_classification) {
+            (Some(f), _) => Some(ledger_core::TaxForm::parse(f).ok_or_else(|| {
+                format!("tax_form {f:?}: expected schedule_c, 1065, 1120s, or 1120")
+            })?),
+            (None, Some(c)) => form_for_classification(c),
+            (None, None) => None,
+        };
     if let Some(basis) = raw.books.accounting_basis {
         company.basis = match basis.trim().to_lowercase().as_str() {
             "accrual" => "Accrual".to_string(),
@@ -280,6 +312,34 @@ mod tests {
         assert!(parse(&two("60%", "40%")).is_ok());
         assert!(parse("[company]\n[[company.members]]\nname = \"A\"\nshare = \"100%\"\n").is_err());
         assert!(parse("[books]\naccounting_basis = \"modified\"\n").is_err());
+    }
+
+    #[test]
+    fn tax_form_from_setting_or_classification() {
+        use ledger_core::TaxForm;
+        let form = |toml: &str| parse(toml).unwrap().company.tax_form;
+        assert_eq!(
+            form("[company]\ntax_form = \"1120s\"\n"),
+            Some(TaxForm::Form1120S)
+        );
+        assert_eq!(
+            form("[company]\ntax_classification = \"partnership\"\n"),
+            Some(TaxForm::Form1065)
+        );
+        assert_eq!(
+            form("[company]\ntax_classification = \"S corporation\"\n"),
+            Some(TaxForm::Form1120S)
+        );
+        assert_eq!(
+            form("[company]\ntax_classification = \"disregarded entity\"\n"),
+            Some(TaxForm::ScheduleC)
+        );
+        assert_eq!(
+            form("[company]\ntax_classification = \"partnership\"\ntax_form = \"1120\"\n"),
+            Some(TaxForm::Form1120)
+        );
+        assert_eq!(form(""), None);
+        assert!(parse("[company]\ntax_form = \"990\"\n").is_err());
     }
 
     #[test]

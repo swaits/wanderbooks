@@ -132,6 +132,11 @@ pub enum LedgerError {
     #[error("purchase date plus useful life overflows the calendar")]
     AssetDateOverflow,
 
+    /// A tax category doesn't exist, doesn't fit the account, or has a bad
+    /// deductible percent.
+    #[error("invalid tax category: {0}")]
+    InvalidTaxCategory(String),
+
     /// Partnership members are misconfigured (shares, capital accounts).
     #[error("invalid members: {0}")]
     InvalidMembers(String),

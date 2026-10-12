@@ -229,4 +229,9 @@ interface is MCP, not a cloned GUI. The first storage + MCP slice is done
   and close into it. CloseTo became RetainedEarnings { sweep } / Account
   { into, sweep } / Members([MemberClose]); journals without a target, or
   with the old plain "retained_earnings", still replay.
-
+- 2026-10-11: Schedules. Prepaid expenses and deferred revenue amortize
+  monthly on month ends, to the cent; runs are previewed, idempotent, and
+  exempt from the receipt policy (the schedule is the evidence). Recurring
+  entries generate drafts, never posts. Journal events schedule.registered,
+  schedule.posted (with the full entry, checked on replay),
+  recurring.registered, recurring.generated. No schema change. 59 tools.

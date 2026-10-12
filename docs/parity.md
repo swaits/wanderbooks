@@ -41,7 +41,8 @@ No other statuses.
 | Tracking classes (divisional P&L) | Class tracking | done | — |
 | CPA handoff package (TB + GL xlsx, P&L + BS pdf, zip) | Reports → export | done | — |
 | Budgets | Budgets | todo | R-FUTURE-6 (declined as bloat) |
-| Scheduled transactions | Scheduled txns | todo | R-FUTURE-6 |
+| Scheduled transactions (recurring entries → drafts) | Scheduled txns / Recurring transactions | partial | hand-verified fixture incl. month-end dates; drafts only, by design |
+| Prepaid expense + deferred revenue amortization | Amortization schedules (Xero/QBO add-ons) | partial | hand-verified fixture, to the cent; no golden file yet |
 | Automated GnuCash diff harness | — (our `xtask oracle`) | todo | roadmap phase 3 |
 
 Workflow/UI parity (QuickBooks/Xero reference) gets its own catalog when the

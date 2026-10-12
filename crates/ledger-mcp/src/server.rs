@@ -23,7 +23,7 @@ use rust_decimal::Decimal;
 use std::sync::{Arc, Mutex};
 
 /// The agent operating contract, delivered via initialize.
-const INSTRUCTIONS: &str = "You are the bookkeeping agent for these books. The engine enforces the accounting; you enforce the workflow.\n\nRULES\n- Money is exact decimal. Always pass amounts as decimal strings (\"123.45\"), never floats.\n- Never post directly. The flow is draft (books.draft_entry) -> add lines (books.add_line) -> preview (books.post_entry without confirmed) -> review the preview -> post (books.post_entry with confirmed=true).\n- Every entry must balance: debits equal credits, exactly. Every line needs a real account from books.chart. The engine rejects anything else.\n- Receipts: any entry moving more than $25.00 in debits needs at least one receipt attached (books.attach_receipt) before posting. The server rejects the post otherwise. This is enforced, not a suggestion.\n- Never invent accounts. If the account you need does not exist, add it with books.add_account first.\n- Corrections go through books.reverse_entry. Posted entries are immutable; there is no edit.\n- Receipt corrections: receipts can change, but nothing is erased. To replace one, attach the new receipt, then books.unlink_receipt the old (with a reason); retire unwanted receipts or documents with books.withdraw_attachment (with a reason). The journal keeps every step.\n- After posting, check books.digest to review what changed, so a human can review too.\n- Amounts in every response are decimal strings. Treat them as exact.\n- Fixed assets: register with books.register_asset, inspect with books.asset_schedule and books.list_assets, post monthly depreciation with books.run_depreciation (exempt from the receipt policy; the schedule is the evidence), and dispose with books.dispose_asset (preview first; the bill of sale is the receipt). Depreciation is straight-line, book basis only - tax depreciation stays with the CPA.";
+const INSTRUCTIONS: &str = "You are the bookkeeping agent for these books. The engine enforces the accounting; you enforce the workflow.\n\nRULES\n- Money is exact decimal. Always pass amounts as decimal strings (\"123.45\"), never floats.\n- Never post directly. The flow is draft (books.draft_entry) -> add lines (books.add_line) -> preview (books.post_entry without confirmed) -> review the preview -> post (books.post_entry with confirmed=true).\n- Every entry must balance: debits equal credits, exactly. Every line needs a real account from books.chart. The engine rejects anything else.\n- Receipts: any entry moving more than $25.00 in debits needs at least one receipt attached (books.attach_receipt) before posting. The server rejects the post otherwise. This is enforced, not a suggestion.\n- Never invent accounts. If the account you need does not exist, add it with books.add_account first.\n- Corrections go through books.reverse_entry. Posted entries are immutable; there is no edit.\n- Receipt corrections: receipts can change, but nothing is erased. To replace one, attach the new receipt, then books.unlink_receipt the old (with a reason); retire unwanted receipts or documents with books.withdraw_attachment (with a reason). The journal keeps every step.\n- After posting, check books.digest to review what changed, so a human can review too.\n- Amounts in every response are decimal strings. Treat them as exact.\n- Fixed assets: register with books.register_asset, inspect with books.asset_schedule and books.list_assets, post monthly depreciation with books.run_depreciation (exempt from the receipt policy; the schedule is the evidence), and dispose with books.dispose_asset (preview first; the bill of sale is the receipt). Depreciation is straight-line, book basis only - tax depreciation stays with the CPA.\n- Prepaid expenses and deferred revenue: record the original payment (with its receipt), then books.create_schedule; books.run_schedules posts the monthly amortization (preview first; exempt from the receipt policy like depreciation). Recurring entries (books.create_recurring, books.run_recurring) only ever create drafts: attach each actual receipt and post through the normal preview.";
 
 /// Max receipt/document upload: 25 MB.
 const MAX_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
@@ -500,6 +500,48 @@ fn statement_range(
         return Err("end is before start".to_string());
     }
     Ok((start, end))
+}
+
+fn schedule_out(ledger: &Ledger, s: &ledger_core::AmortizationSchedule) -> ScheduleOut {
+    let code = |id| {
+        ledger
+            .chart()
+            .get(id)
+            .map(|a| a.code.clone())
+            .unwrap_or_default()
+    };
+    ScheduleOut {
+        schedule_id: s.id,
+        description: s.description.clone(),
+        kind: match s.kind {
+            ledger_core::ScheduleKind::PrepaidExpense => "prepaid_expense",
+            ledger_core::ScheduleKind::DeferredRevenue => "deferred_revenue",
+        }
+        .to_string(),
+        balance_account: code(s.balance_account),
+        pl_account: code(s.pl_account),
+        total: money(s.total.amount),
+        remaining: money(s.remaining()),
+        months: ledger_core::schedules::amortization_plan(s.total.amount, s.start, s.months)
+            .into_iter()
+            .map(|(d, a)| ScheduleMonthOut {
+                date: d.to_string(),
+                amount: money(a),
+                posted: s.posted.contains(&d),
+            })
+            .collect(),
+    }
+}
+
+fn recurring_out(r: &ledger_core::RecurringEntry) -> RecurringOut {
+    RecurringOut {
+        recurring_id: r.id,
+        description: r.description.clone(),
+        frequency: format!("{:?}", r.frequency).to_lowercase(),
+        start: r.start.to_string(),
+        end: r.end.map(|e| e.to_string()),
+        generated: r.generated.iter().map(|d| d.to_string()).collect(),
+    }
 }
 
 /// Profit and loss for a range (see [`statement_range`]), optionally one class.
@@ -1414,6 +1456,216 @@ impl BooksServer {
         }
         let count = imported.len();
         Ok(Json(ImportBankCsvOut { imported, count }))
+    }
+
+    #[tool(
+        name = "books.create_schedule",
+        description = "Spread a prepaid expense (asset expensed monthly, e.g. a year of insurance paid up front) or deferred revenue (liability earned monthly, e.g. an annual subscription collected up front) evenly over the months it covers, to the cent (the last month absorbs rounding). Record the original payment first (Dr prepaid / Cr cash, with its receipt; or Dr cash / Cr deferred revenue). Returns the monthly plan; post it with books.run_schedules."
+    )]
+    async fn create_schedule(
+        &self,
+        params: Parameters<CreateScheduleParams>,
+    ) -> Result<Json<ScheduleOut>, String> {
+        let p = params.0;
+        let mut store = self.lock()?;
+        let kind = match p.kind.as_str() {
+            "prepaid_expense" => ledger_core::ScheduleKind::PrepaidExpense,
+            "deferred_revenue" => ledger_core::ScheduleKind::DeferredRevenue,
+            other => {
+                return Err(format!(
+                    "kind {other:?}: expected prepaid_expense or deferred_revenue"
+                ));
+            }
+        };
+        let currency = store.ledger().base_currency();
+        let balance_account = resolve_account(&store, &p.balance_account)?;
+        let pl_account = resolve_account(&store, &p.pl_account)?;
+        let id = store
+            .register_schedule(ledger_core::NewSchedule {
+                description: p.description,
+                kind,
+                total: Money::new(parse_amount(&p.total)?, currency),
+                start: parse_date(&p.start)?,
+                months: p.months,
+                balance_account,
+                pl_account,
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(Json(schedule_out(
+            store.ledger(),
+            store.ledger().get_schedule(id).expect("registered"),
+        )))
+    }
+
+    #[tool(
+        name = "books.list_schedules",
+        description = "Amortization schedules (prepaid expenses, deferred revenue): each month's amount, what has posted, and what remains.",
+        annotations(read_only_hint = true)
+    )]
+    async fn list_schedules(&self) -> Result<Json<ListSchedulesOut>, String> {
+        let store = self.lock()?;
+        let ledger = store.ledger();
+        Ok(Json(ListSchedulesOut {
+            schedules: ledger
+                .schedules()
+                .map(|s| schedule_out(ledger, s))
+                .collect(),
+        }))
+    }
+
+    #[tool(
+        name = "books.run_schedules",
+        description = "Post every amortization schedule's months ending on or before `through` (default today) that haven't posted. Idempotent: a month posts once. Without confirmed=true, returns the postings it would make. Exempt from the receipt policy: the schedule is the evidence (the original payment carries the receipt)."
+    )]
+    async fn run_schedules(
+        &self,
+        params: Parameters<RunSchedulesParams>,
+    ) -> Result<Json<RunSchedulesOut>, String> {
+        let p = params.0;
+        let through = match &p.through {
+            Some(s) => parse_date(s)?,
+            None => today(),
+        };
+        let mut store = self.lock()?;
+        let mut due: Vec<(NaiveDate, u64, Decimal)> = store
+            .ledger()
+            .schedules()
+            .flat_map(|s| s.due(through).into_iter().map(move |(d, a)| (d, s.id, a)))
+            .collect();
+        due.sort();
+        let describe = |store: &Store, id: u64, date: NaiveDate| -> Result<String, String> {
+            Ok(store
+                .ledger()
+                .preview_schedule_month(id, date)
+                .map_err(|e| e.to_string())?
+                .1)
+        };
+        if !p.confirmed {
+            let postings = due
+                .into_iter()
+                .map(|(date, id, amount)| {
+                    Ok(SchedulePostingOut {
+                        schedule_id: id,
+                        date: date.to_string(),
+                        description: describe(&store, id, date)?,
+                        amount: money(amount),
+                        entry_id: None,
+                    })
+                })
+                .collect::<Result<_, String>>()?;
+            return Ok(Json(RunSchedulesOut {
+                status: "preview".to_string(),
+                postings,
+            }));
+        }
+        let mut postings = Vec::new();
+        for (date, id, amount) in due {
+            let description = describe(&store, id, date)?;
+            let entry = store
+                .post_schedule_month(id, date)
+                .map_err(|e| e.to_string())?;
+            postings.push(SchedulePostingOut {
+                schedule_id: id,
+                date: date.to_string(),
+                description,
+                amount: money(amount),
+                entry_id: Some(entry),
+            });
+        }
+        Ok(Json(RunSchedulesOut {
+            status: "posted".to_string(),
+            postings,
+        }))
+    }
+
+    #[tool(
+        name = "books.create_recurring",
+        description = "A recurring entry (rent, a subscription, a loan payment): balanced lines and a frequency (weekly, monthly, quarterly, yearly) from a start date, optionally ending. books.run_recurring turns due occurrences into drafts, never posted entries: attach each actual receipt and post through the normal preview."
+    )]
+    async fn create_recurring(
+        &self,
+        params: Parameters<CreateRecurringParams>,
+    ) -> Result<Json<RecurringOut>, String> {
+        let p = params.0;
+        let mut store = self.lock()?;
+        let currency = store.ledger().base_currency();
+        let frequency = ledger_core::Frequency::parse(&p.frequency).ok_or_else(|| {
+            format!(
+                "frequency {:?}: expected weekly, monthly, quarterly, or yearly",
+                p.frequency
+            )
+        })?;
+        let lines = p
+            .lines
+            .iter()
+            .map(|l| {
+                Ok((
+                    resolve_account(&store, &l.account)?,
+                    parse_side(&l.side)?,
+                    Money::new(parse_amount(&l.amount)?, currency),
+                ))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let id = store
+            .register_recurring(ledger_core::NewRecurring {
+                description: p.description,
+                lines,
+                frequency,
+                start: parse_date(&p.start)?,
+                end: match &p.end {
+                    Some(e) => Some(parse_date(e)?),
+                    None => None,
+                },
+            })
+            .map_err(|e| e.to_string())?;
+        let r = store
+            .ledger()
+            .recurring_entries()
+            .find(|r| r.id == id)
+            .expect("registered");
+        Ok(Json(recurring_out(r)))
+    }
+
+    #[tool(
+        name = "books.list_recurring",
+        description = "Recurring entries and the occurrences generated so far.",
+        annotations(read_only_hint = true)
+    )]
+    async fn list_recurring(&self) -> Result<Json<ListRecurringOut>, String> {
+        let store = self.lock()?;
+        Ok(Json(ListRecurringOut {
+            recurring: store
+                .ledger()
+                .recurring_entries()
+                .map(recurring_out)
+                .collect(),
+        }))
+    }
+
+    #[tool(
+        name = "books.run_recurring",
+        description = "Turn every recurring entry's occurrences on or before `through` (default today) into drafts. Idempotent: an occurrence generates once. Each draft then goes through the normal flow: attach the receipt, preview, post."
+    )]
+    async fn run_recurring(
+        &self,
+        params: Parameters<RunRecurringParams>,
+    ) -> Result<Json<RunRecurringOut>, String> {
+        let through = match &params.0.through {
+            Some(s) => parse_date(s)?,
+            None => today(),
+        };
+        let mut store = self.lock()?;
+        let drafts = store
+            .run_recurring(through)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|(id, date, entry)| RecurringDraftOut {
+                recurring_id: id,
+                date: date.to_string(),
+                entry_id: entry,
+            })
+            .collect();
+        Ok(Json(RunRecurringOut { drafts }))
     }
 
     #[tool(

@@ -132,6 +132,11 @@ pub enum LedgerError {
     #[error("purchase date plus useful life overflows the calendar")]
     AssetDateOverflow,
 
+    /// An amortization schedule or recurring entry is invalid, unknown, or
+    /// already posted for that date.
+    #[error("invalid schedule: {0}")]
+    InvalidSchedule(String),
+
     /// A tax category doesn't exist, doesn't fit the account, or has a bad
     /// deductible percent.
     #[error("invalid tax category: {0}")]

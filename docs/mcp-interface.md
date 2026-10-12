@@ -133,6 +133,35 @@ so the lifetime total is exactly (cost − salvage).
   posts the balanced disposal entry. Subject to receipt policy (bill of
   sale); monthly depreciation is exempt as an allocation.
 
+## Tools — schedules and recurring entries
+
+Amortization spreads a prepaid expense (asset → expense) or deferred
+revenue (liability → revenue) evenly over the months it covers, posting on
+each month end, to the cent (the last month absorbs rounding). Like
+depreciation, the schedule is the evidence: its postings are exempt from
+the receipt policy (the original payment carries the receipt). Recurring
+entries never post: they generate drafts, so every real receipt still goes
+through the policy.
+
+- `books.create_schedule { kind: "prepaid_expense" | "deferred_revenue",
+  description, total, start, months, balance_account, pl_account }` →
+  `{ schedule_id, ..., total, remaining, months: [{ date, amount, posted }] }`.
+  Prepaid needs an asset and an expense account; deferred revenue a
+  liability and a revenue account.
+- `books.list_schedules {}` → `{ schedules: [...] }`, same shape.
+- `books.run_schedules { through?, confirmed? }` → `{ status: "preview" |
+  "posted", postings: [{ schedule_id, date, description, amount,
+  entry_id? }] }`: every unposted month ending on or before `through`
+  (default today). Idempotent; closed periods are refused.
+- `books.create_recurring { description, frequency: "weekly" | "monthly" |
+  "quarterly" | "yearly", start, end?, lines: [{ account, side, amount }] }`
+  → `{ recurring_id, ..., generated: [] }`. Lines must balance. Monthly and
+  longer occurrences are computed from the start date each time, so a
+  month-end start stays on month ends (Jan 31, Feb 28, Mar 31).
+- `books.list_recurring {}` → `{ recurring: [...] }`.
+- `books.run_recurring { through? }` → `{ drafts: [{ recurring_id, date,
+  entry_id }] }`: one draft per occurrence on or before `through`, once.
+
 ## Tools — receipts & documents
 
 - `books.attach_receipt { entry_id?, file_name, mime_type, content_base64 }`

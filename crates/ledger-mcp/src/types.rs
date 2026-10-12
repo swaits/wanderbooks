@@ -54,6 +54,175 @@ pub struct ChartAccount {
     pub deductible_percent: Option<String>,
 }
 
+/// Parameters for `books.create_schedule`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CreateScheduleParams {
+    /// "prepaid_expense" (asset expensed monthly) or "deferred_revenue"
+    /// (liability earned monthly).
+    pub kind: String,
+    /// What it is, e.g. "2027 liability insurance".
+    pub description: String,
+    /// Amount to spread, decimal string.
+    pub total: String,
+    /// Any date in the first month covered, YYYY-MM-DD.
+    pub start: String,
+    /// Months covered.
+    pub months: u32,
+    /// Prepaid (asset) or deferred revenue (liability) account code.
+    pub balance_account: String,
+    /// Expense or revenue account code.
+    pub pl_account: String,
+}
+
+/// One month of a schedule.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ScheduleMonthOut {
+    /// Month-end date the posting lands on.
+    pub date: String,
+    /// Amount, decimal string.
+    pub amount: String,
+    /// True once posted.
+    pub posted: bool,
+}
+
+/// An amortization schedule.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ScheduleOut {
+    /// Schedule id.
+    pub schedule_id: u64,
+    /// Description.
+    pub description: String,
+    /// "prepaid_expense" or "deferred_revenue".
+    pub kind: String,
+    /// Balance-sheet account code.
+    pub balance_account: String,
+    /// P&L account code.
+    pub pl_account: String,
+    /// Total, decimal string.
+    pub total: String,
+    /// Not yet recognized, decimal string.
+    pub remaining: String,
+    /// Every month.
+    pub months: Vec<ScheduleMonthOut>,
+}
+
+/// Result of `books.list_schedules`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ListSchedulesOut {
+    /// Schedules.
+    pub schedules: Vec<ScheduleOut>,
+}
+
+/// Parameters for `books.run_schedules`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RunSchedulesParams {
+    /// Post months ending on or before this date (default today).
+    pub through: Option<String>,
+    /// Without true, a preview: nothing posts.
+    #[serde(default)]
+    pub confirmed: bool,
+}
+
+/// One posting from a schedule run.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SchedulePostingOut {
+    /// Schedule id.
+    pub schedule_id: u64,
+    /// Month-end date.
+    pub date: String,
+    /// Entry description.
+    pub description: String,
+    /// Amount, decimal string.
+    pub amount: String,
+    /// The posted entry (absent in a preview).
+    pub entry_id: Option<u64>,
+}
+
+/// Result of `books.run_schedules`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct RunSchedulesOut {
+    /// "preview" or "posted".
+    pub status: String,
+    /// Postings due (preview) or made.
+    pub postings: Vec<SchedulePostingOut>,
+}
+
+/// One line of a recurring entry.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RecurringLineParam {
+    /// Account code.
+    pub account: String,
+    /// "debit" or "credit".
+    pub side: String,
+    /// Decimal string.
+    pub amount: String,
+}
+
+/// Parameters for `books.create_recurring`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CreateRecurringParams {
+    /// Description for each generated draft.
+    pub description: String,
+    /// "weekly", "monthly", "quarterly", or "yearly".
+    pub frequency: String,
+    /// First occurrence, YYYY-MM-DD (monthly and longer repeat on this day,
+    /// clamped to month end).
+    pub start: String,
+    /// Last date an occurrence may fall on, YYYY-MM-DD; omit for none.
+    pub end: Option<String>,
+    /// Balanced lines.
+    pub lines: Vec<RecurringLineParam>,
+}
+
+/// A recurring entry.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct RecurringOut {
+    /// Recurring entry id.
+    pub recurring_id: u64,
+    /// Description.
+    pub description: String,
+    /// Frequency.
+    pub frequency: String,
+    /// First occurrence.
+    pub start: String,
+    /// Last date, if it ends.
+    pub end: Option<String>,
+    /// Occurrences generated so far.
+    pub generated: Vec<String>,
+}
+
+/// Result of `books.list_recurring`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ListRecurringOut {
+    /// Recurring entries.
+    pub recurring: Vec<RecurringOut>,
+}
+
+/// Parameters for `books.run_recurring`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RunRecurringParams {
+    /// Generate occurrences on or before this date (default today).
+    pub through: Option<String>,
+}
+
+/// One draft from a recurring run.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct RecurringDraftOut {
+    /// Recurring entry id.
+    pub recurring_id: u64,
+    /// Occurrence date.
+    pub date: String,
+    /// The draft entry to review, attach a receipt to, and post.
+    pub entry_id: u64,
+}
+
+/// Result of `books.run_recurring`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct RunRecurringOut {
+    /// Drafts created.
+    pub drafts: Vec<RecurringDraftOut>,
+}
+
 /// Parameters for `books.chart_template`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ChartTemplateParams {

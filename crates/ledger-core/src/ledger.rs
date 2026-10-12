@@ -6,6 +6,9 @@
 //! is no other way to change the books, which is what makes the ledger an
 //! audit trail and what will make the future oracle harness trustworthy.
 
+use crate::schedules::{
+    self, AmortizationSchedule, NewRecurring, NewSchedule, RecurringEntry, RecurringId, ScheduleId,
+};
 use crate::{
     Account, AccountId, AccountType, AgingRow, Asset, AssetId, AssetStatus, Bill, BillId,
     ChartOfAccounts, Class, ClassId, Currency, Customer, CustomerId, DocumentLine, DocumentStatus,
@@ -95,6 +98,12 @@ pub struct Ledger {
     next_bill_id: BillId,
     next_payroll_run_id: PayrollRunId,
     next_class_id: ClassId,
+    /// Amortization schedules (prepaid expenses, deferred revenue).
+    schedules: std::collections::BTreeMap<ScheduleId, AmortizationSchedule>,
+    next_schedule_id: ScheduleId,
+    /// Recurring entries.
+    recurring: std::collections::BTreeMap<RecurringId, RecurringEntry>,
+    next_recurring_id: RecurringId,
 }
 
 impl Ledger {
@@ -125,7 +134,172 @@ impl Ledger {
             next_bill_id: 1,
             next_payroll_run_id: 1,
             next_class_id: 1,
+            schedules: std::collections::BTreeMap::new(),
+            next_schedule_id: 1,
+            recurring: std::collections::BTreeMap::new(),
+            next_recurring_id: 1,
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Amortization schedules and recurring entries
+    // ------------------------------------------------------------------
+
+    /// Register an amortization schedule. Returns its id.
+    pub fn register_schedule(&mut self, new: NewSchedule) -> Result<ScheduleId, LedgerError> {
+        schedules::validate_schedule(&new, &self.chart)?;
+        let id = self.next_schedule_id;
+        self.next_schedule_id += 1;
+        self.schedules.insert(
+            id,
+            AmortizationSchedule {
+                id,
+                description: new.description,
+                kind: new.kind,
+                total: new.total,
+                start: new.start,
+                months: new.months,
+                balance_account: new.balance_account,
+                pl_account: new.pl_account,
+                posted: Default::default(),
+            },
+        );
+        Ok(id)
+    }
+
+    /// The id the next schedule will receive (for journaling stores).
+    pub fn next_schedule_id(&self) -> ScheduleId {
+        self.next_schedule_id
+    }
+
+    /// All schedules, by id.
+    pub fn schedules(&self) -> impl Iterator<Item = &AmortizationSchedule> + '_ {
+        self.schedules.values()
+    }
+
+    /// Look up a schedule.
+    pub fn get_schedule(&self, id: ScheduleId) -> Option<&AmortizationSchedule> {
+        self.schedules.get(&id)
+    }
+
+    /// The entry [`Self::post_schedule_month`] would post: (date,
+    /// description, lines). Errors if the month isn't due and unposted.
+    pub fn preview_schedule_month(
+        &self,
+        id: ScheduleId,
+        month_end: NaiveDate,
+    ) -> Result<(NaiveDate, String, Vec<crate::schedules::TemplateLine>), LedgerError> {
+        let s = self
+            .schedules
+            .get(&id)
+            .ok_or_else(|| LedgerError::InvalidSchedule(format!("unknown schedule {id}")))?;
+        let (date, amount) = schedules::amortization_plan(s.total.amount, s.start, s.months)
+            .into_iter()
+            .find(|(d, _)| *d == month_end)
+            .ok_or_else(|| {
+                LedgerError::InvalidSchedule(format!("{month_end} is not a month of schedule {id}"))
+            })?;
+        if s.posted.contains(&date) {
+            return Err(LedgerError::InvalidSchedule(format!(
+                "schedule {id} already posted {date}"
+            )));
+        }
+        let money = Money::new(amount, s.total.currency);
+        let (debit, credit) = s.accounts();
+        let what = match s.kind {
+            schedules::ScheduleKind::PrepaidExpense => "Prepaid expense",
+            schedules::ScheduleKind::DeferredRevenue => "Deferred revenue",
+        };
+        Ok((
+            date,
+            format!("{what}: {} ({})", s.description, date.format("%Y-%m")),
+            vec![(debit, Side::Debit, money), (credit, Side::Credit, money)],
+        ))
+    }
+
+    /// Post one month of a schedule: the entry from
+    /// [`Self::preview_schedule_month`], posted and recorded so the month
+    /// never posts twice. Returns the entry id.
+    pub fn post_schedule_month(
+        &mut self,
+        id: ScheduleId,
+        month_end: NaiveDate,
+    ) -> Result<EntryId, LedgerError> {
+        let (date, description, lines) = self.preview_schedule_month(id, month_end)?;
+        if let Some(p) = self.closed_period_containing(date) {
+            return Err(LedgerError::ClosedPeriod(p, date.to_string()));
+        }
+        let entry = self.create_entry(date, &description);
+        for (account, side, money) in lines {
+            self.add_line(entry, account, side, money)?;
+        }
+        self.post_entry(entry)?;
+        self.schedules
+            .get_mut(&id)
+            .expect("previewed")
+            .posted
+            .insert(date);
+        Ok(entry)
+    }
+
+    /// Register a recurring entry. Returns its id.
+    pub fn register_recurring(&mut self, new: NewRecurring) -> Result<RecurringId, LedgerError> {
+        schedules::validate_recurring(&new, &self.chart)?;
+        let id = self.next_recurring_id;
+        self.next_recurring_id += 1;
+        self.recurring.insert(
+            id,
+            RecurringEntry {
+                id,
+                description: new.description,
+                lines: new.lines,
+                frequency: new.frequency,
+                start: new.start,
+                end: new.end,
+                generated: Default::default(),
+            },
+        );
+        Ok(id)
+    }
+
+    /// The id the next recurring entry will receive (for journaling stores).
+    pub fn next_recurring_id(&self) -> RecurringId {
+        self.next_recurring_id
+    }
+
+    /// All recurring entries, by id.
+    pub fn recurring_entries(&self) -> impl Iterator<Item = &RecurringEntry> + '_ {
+        self.recurring.values()
+    }
+
+    /// Generate one occurrence of a recurring entry as a *draft* (never
+    /// posted: the agent attaches the receipt and posts it). `date` must be
+    /// an occurrence not yet generated. Returns the draft's id.
+    pub fn generate_recurring(
+        &mut self,
+        id: RecurringId,
+        date: NaiveDate,
+    ) -> Result<EntryId, LedgerError> {
+        let r = self
+            .recurring
+            .get(&id)
+            .ok_or_else(|| LedgerError::InvalidSchedule(format!("unknown recurring entry {id}")))?;
+        if !r.due(date).contains(&date) {
+            return Err(LedgerError::InvalidSchedule(format!(
+                "{date} is not an ungenerated occurrence of recurring entry {id}"
+            )));
+        }
+        let (description, lines) = (r.description.clone(), r.lines.clone());
+        let entry = self.create_entry(date, &description);
+        for (account, side, money) in lines {
+            self.add_line(entry, account, side, money)?;
+        }
+        self.recurring
+            .get_mut(&id)
+            .expect("checked")
+            .generated
+            .insert(date);
+        Ok(entry)
     }
 
     /// The id the next account added will receive.

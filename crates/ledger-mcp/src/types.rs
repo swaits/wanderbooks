@@ -54,6 +54,31 @@ pub struct ChartAccount {
     pub deductible_percent: Option<String>,
 }
 
+/// Parameters for `books.chart_template`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ChartTemplateParams {
+    /// "sole_proprietorship" (incl. single-member LLC), "partnership"
+    /// (incl. multi-member LLC), "s_corporation", or "c_corporation".
+    pub entity_type: String,
+    /// Owners' names: one capital and distributions account each for a
+    /// partnership (at least two). Ignored otherwise.
+    #[serde(default)]
+    pub owners: Vec<String>,
+}
+
+/// Result of `books.chart_template`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ChartTemplateOut {
+    /// Chart CSV (code,name,type,parent_code,tax_category) for
+    /// `books.import_chart_csv`, after review.
+    pub csv: String,
+    /// The `wanderbooks.toml` settings that go with it: tax form, owners,
+    /// where period closes go.
+    pub settings_toml: String,
+    /// What to decide or know.
+    pub notes: Vec<String>,
+}
+
 /// Parameters for `books.set_tax_category`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SetTaxCategoryParams {

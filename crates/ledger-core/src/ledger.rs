@@ -634,108 +634,113 @@ impl Ledger {
 
     /// Close a period into Retained Earnings: see [`Self::close_period_to`].
     pub fn close_period(&mut self, id: PeriodId) -> Result<Option<EntryId>, LedgerError> {
-        self.close_period_to(id, &periods::CloseTo::RetainedEarnings)
+        self.close_period_to(id, &periods::CloseTo::RetainedEarnings { sweep: vec![] })
     }
 
     /// Close a period. This:
     /// 1. Rejects if the period is already closed, if any draft is dated
-    ///    inside it, or if a later period is already closed (closing out of
-    ///    order would sweep the same income twice).
+    ///    inside it, if a later period is already closed (closing out of
+    ///    order would sweep the same income twice), or if `to` is invalid.
     /// 2. Posts a closing entry dated at period end that zeroes every revenue
     ///    and expense account's balance *as of the period end* (entries
-    ///    dated after it stay open for their own period): revenue debited,
-    ///    expense credited, and the net to `to` — Retained Earnings (account
-    ///    `3999`, created if missing), or members' capital accounts by
-    ///    share for a partnership, to the cent with the last member
-    ///    absorbing rounding.
+    ///    dated after it stay open for their own period), puts the net in
+    ///    `to`'s target, and zeroes `to`'s sweep accounts (draws,
+    ///    distributions, dividends) into their target too:
+    ///    - `RetainedEarnings`: account `3999`, created if missing.
+    ///    - `Account`: one equity account (a sole proprietor's capital).
+    ///    - `Members`: each member's capital account gets their share of
+    ///      the net, to the cent (the last absorbs rounding), and their own
+    ///      distribution account.
     /// 3. Marks the period closed.
     ///
     /// Returns the closing entry's id, or `None` if there was nothing to
-    /// close (no revenue/expense balance at period end).
+    /// close.
     pub fn close_period_to(
         &mut self,
         id: PeriodId,
         to: &periods::CloseTo,
     ) -> Result<Option<EntryId>, LedgerError> {
-        self.preview_close_period(id)?;
-        if let periods::CloseTo::Members(members) = to {
-            self.validate_close_members(members)?;
-        }
+        self.preview_close_period_to(id, to)?;
         let period = self.periods.get(&id).expect("previewed").clone();
+        let (closings, net) = self.income_closings(period.end);
 
-        // Revenue and expense balances as of the period end.
-        let mut closings: Vec<(AccountId, Side, Decimal)> = Vec::new();
-        let mut accounts: Vec<_> = self.chart.all().collect();
-        accounts.sort_by(|a, b| a.code.cmp(&b.code));
-        for account in accounts {
-            if !matches!(
-                account.account_type,
-                AccountType::Revenue | AccountType::Expense
-            ) {
-                continue;
+        // (account, amount to credit; negative debits): the net to its
+        // targets, and each sweep account's balance into its target.
+        let mut equity: Vec<(AccountId, Decimal)> = Vec::new();
+        let mut sweep_lines: Vec<(AccountId, AccountId, Decimal)> = Vec::new();
+        let mut sweep = |from: AccountId, into: AccountId, this: &Self| {
+            // An equity balance (credit-normal) is −movement; zeroing it
+            // moves exactly that much into the target.
+            let balance = -this.movement_through(from, period.end);
+            if !balance.is_zero() {
+                sweep_lines.push((from, into, balance));
             }
-            let movement = self.movement_through(account.id, period.end);
-            if movement.is_zero() {
-                continue;
+        };
+        match to {
+            periods::CloseTo::RetainedEarnings { sweep: accounts } => {
+                let has_work = !closings.is_empty()
+                    || accounts
+                        .iter()
+                        .any(|a| !self.movement_through(*a, period.end).is_zero());
+                if has_work {
+                    let re = self.retained_earnings_account()?;
+                    equity.push((re, net));
+                    for a in accounts {
+                        sweep(*a, re, self);
+                    }
+                }
             }
-            // To zero the account: post the opposite of its net movement.
-            let (side, amount) = if movement > Decimal::ZERO {
-                (Side::Credit, movement)
-            } else {
-                (Side::Debit, -movement)
-            };
-            closings.push((account.id, side, amount));
+            periods::CloseTo::Account {
+                into,
+                sweep: accounts,
+            } => {
+                equity.push((*into, net));
+                for a in accounts {
+                    sweep(*a, *into, self);
+                }
+            }
+            periods::CloseTo::Members(members) => {
+                let shares: Vec<Decimal> = members.iter().map(|m| m.share).collect();
+                for (m, part) in members.iter().zip(periods::allocate(net, &shares)) {
+                    equity.push((m.capital, part));
+                    if let Some(d) = m.distributions {
+                        sweep(d, m.capital, self);
+                    }
+                }
+            }
         }
 
-        let closing_entry = if closings.is_empty() {
+        let closing_entry = if closings.is_empty() && sweep_lines.is_empty() {
             None
         } else {
-            // Net income: the closing debits (revenue) minus credits (expense).
-            let net: Decimal = closings
-                .iter()
-                .map(|(_, side, amount)| match side {
-                    Side::Debit => *amount,
-                    Side::Credit => -*amount,
-                })
-                .sum();
-            let targets: Vec<(AccountId, Decimal)> = match to {
-                periods::CloseTo::RetainedEarnings => {
-                    let re_id = match self.chart.find_by_code(periods::RETAINED_EARNINGS_CODE) {
-                        Some(a) => a.id,
-                        None => self.add_account(
-                            periods::RETAINED_EARNINGS_CODE,
-                            "Retained Earnings",
-                            AccountType::Equity,
-                            None,
-                            false,
-                        )?,
-                    };
-                    vec![(re_id, net)]
-                }
-                periods::CloseTo::Members(members) => {
-                    let shares: Vec<Decimal> = members.iter().map(|(_, s)| *s).collect();
-                    members
-                        .iter()
-                        .map(|(a, _)| *a)
-                        .zip(periods::allocate(net, &shares))
-                        .collect()
-                }
-            };
             let entry = self.create_entry(period.end, &format!("Close period {}", period.name));
-            for (account, side, amount) in closings {
-                self.add_line(entry, account, side, Money::new(amount, self.base_currency))?;
-            }
-            // Profit credits equity; a loss debits it.
-            for (account, share) in targets {
-                if share.is_zero() {
-                    continue;
+            let post = |this: &mut Self, account, credit: Decimal| -> Result<(), LedgerError> {
+                if credit.is_zero() {
+                    return Ok(());
                 }
-                let (side, amount) = if share > Decimal::ZERO {
-                    (Side::Credit, share)
+                let (side, amount) = if credit > Decimal::ZERO {
+                    (Side::Credit, credit)
                 } else {
-                    (Side::Debit, -share)
+                    (Side::Debit, -credit)
                 };
-                self.add_line(entry, account, side, Money::new(amount, self.base_currency))?;
+                this.add_line(entry, account, side, Money::new(amount, this.base_currency))
+            };
+            for (account, side, amount) in closings {
+                let credit = if side == Side::Credit {
+                    amount
+                } else {
+                    -amount
+                };
+                post(self, account, credit)?;
+            }
+            for (account, share) in equity {
+                post(self, account, share)?;
+            }
+            // A sweep zeroes the source (opposite its balance) and moves
+            // the balance into the target.
+            for (from, into, balance) in sweep_lines {
+                post(self, from, -balance)?;
+                post(self, into, balance)?;
             }
             self.post_entry(entry)?;
             Some(entry)
@@ -747,24 +752,88 @@ impl Ledger {
         Ok(closing_entry)
     }
 
-    /// Members for a close: shares positive and summing to 1, capital
-    /// accounts distinct equity accounts.
-    fn validate_close_members(&self, members: &[(AccountId, Decimal)]) -> Result<(), LedgerError> {
-        let total: Decimal = members.iter().map(|(_, s)| *s).sum();
-        if members.is_empty()
-            || total != Decimal::ONE
-            || members.iter().any(|(_, s)| *s <= Decimal::ZERO)
-        {
-            return Err(LedgerError::InvalidMembers(format!(
-                "member shares must be positive and sum to 1, got {total}"
-            )));
+    /// Revenue and expense balances as of `end` as closing lines (code
+    /// order), and the net income they carry (revenue debits minus expense
+    /// credits).
+    fn income_closings(&self, end: NaiveDate) -> (Vec<(AccountId, Side, Decimal)>, Decimal) {
+        let mut closings = Vec::new();
+        let mut accounts: Vec<_> = self.chart.all().collect();
+        accounts.sort_by(|a, b| a.code.cmp(&b.code));
+        for account in accounts {
+            if !matches!(
+                account.account_type,
+                AccountType::Revenue | AccountType::Expense
+            ) {
+                continue;
+            }
+            let movement = self.movement_through(account.id, end);
+            if movement.is_zero() {
+                continue;
+            }
+            // To zero the account: post the opposite of its net movement.
+            closings.push(if movement > Decimal::ZERO {
+                (account.id, Side::Credit, movement)
+            } else {
+                (account.id, Side::Debit, -movement)
+            });
+        }
+        let net = closings
+            .iter()
+            .map(|(_, side, amount)| match side {
+                Side::Debit => *amount,
+                Side::Credit => -*amount,
+            })
+            .sum();
+        (closings, net)
+    }
+
+    fn retained_earnings_account(&mut self) -> Result<AccountId, LedgerError> {
+        Ok(
+            match self.chart.find_by_code(periods::RETAINED_EARNINGS_CODE) {
+                Some(a) => a.id,
+                None => self.add_account(
+                    periods::RETAINED_EARNINGS_CODE,
+                    "Retained Earnings",
+                    AccountType::Equity,
+                    None,
+                    false,
+                )?,
+            },
+        )
+    }
+
+    /// Validate a close target: every account an equity account, targets
+    /// and sweeps distinct, members' shares positive and summing to 1.
+    fn validate_close_to(&self, to: &periods::CloseTo) -> Result<(), LedgerError> {
+        let mut accounts: Vec<AccountId> = Vec::new();
+        match to {
+            periods::CloseTo::RetainedEarnings { sweep } => accounts.extend(sweep),
+            periods::CloseTo::Account { into, sweep } => {
+                accounts.push(*into);
+                accounts.extend(sweep);
+            }
+            periods::CloseTo::Members(members) => {
+                let total: Decimal = members.iter().map(|m| m.share).sum();
+                if members.is_empty()
+                    || total != Decimal::ONE
+                    || members.iter().any(|m| m.share <= Decimal::ZERO)
+                {
+                    return Err(LedgerError::InvalidMembers(format!(
+                        "member shares must be positive and sum to 1, got {total}"
+                    )));
+                }
+                for m in members {
+                    accounts.push(m.capital);
+                    accounts.extend(m.distributions);
+                }
+            }
         }
         let mut seen = std::collections::BTreeSet::new();
-        for (a, _) in members {
-            let account = self.chart.get(*a).ok_or(LedgerError::UnknownAccount(*a))?;
-            if account.account_type != AccountType::Equity || !seen.insert(*a) {
+        for a in accounts {
+            let account = self.chart.get(a).ok_or(LedgerError::UnknownAccount(a))?;
+            if account.account_type != AccountType::Equity || !seen.insert(a) {
                 return Err(LedgerError::InvalidMembers(format!(
-                    "capital account {} must be a distinct equity account",
+                    "close account {} must be a distinct equity account",
                     account.code
                 )));
             }
@@ -787,16 +856,23 @@ impl Ledger {
         total
     }
 
-    /// Pure pre-close check for journaling stores: verifies that
-    /// [`Self::close_period`] would succeed — the period exists and is open,
-    /// no draft entries are dated inside it, and the closing entry's date
-    /// (period end) is not inside another closed period — and returns the id
-    /// the closing entry will receive, or `None` when the close posts no
-    /// entry (no revenue/expense movement). [`Self::close_period`] repeats
-    /// these checks before mutating; this exists so stores can journal the
-    /// outcome before mutating, keeping a failed write from leaving a
-    /// journal line behind.
+    /// [`Self::preview_close_period_to`] closing into Retained Earnings.
     pub fn preview_close_period(&self, id: PeriodId) -> Result<Option<EntryId>, LedgerError> {
+        self.preview_close_period_to(id, &periods::CloseTo::RetainedEarnings { sweep: vec![] })
+    }
+
+    /// Pure pre-close check for journaling stores: verifies that
+    /// [`Self::close_period_to`] would succeed — the period exists and is
+    /// open, no draft entries are dated inside it, no later period is
+    /// closed, the closing date isn't inside another closed period, and the
+    /// target is valid — and returns the id the closing entry will receive,
+    /// or `None` when the close posts no entry. Stores call this before
+    /// journaling so a failed close leaves no journal line behind.
+    pub fn preview_close_period_to(
+        &self,
+        id: PeriodId,
+        to: &periods::CloseTo,
+    ) -> Result<Option<EntryId>, LedgerError> {
         let period = self
             .periods
             .get(&id)
@@ -825,16 +901,23 @@ impl Ledger {
         {
             return Err(LedgerError::CloseOutOfOrder(id, later.id));
         }
-        // The close posts an entry exactly when some revenue or expense
-        // account has a balance at period end — the same predicate
-        // close_period_to uses to decide. The entry id is the next one the
-        // allocator hands out; account creation (e.g. Retained Earnings)
-        // does not consume entry ids.
-        let any_movement = self.chart.all().any(|a| {
-            matches!(a.account_type, AccountType::Revenue | AccountType::Expense)
-                && !self.movement_through(a.id, period.end).is_zero()
-        });
-        Ok(any_movement.then_some(self.next_entry_id))
+        self.validate_close_to(to)?;
+        // An entry posts exactly when there is income to close or a sweep
+        // account with a balance. Account creation (Retained Earnings) does
+        // not consume entry ids.
+        let (closings, _) = self.income_closings(period.end);
+        let sweeps: Vec<AccountId> = match to {
+            periods::CloseTo::RetainedEarnings { sweep }
+            | periods::CloseTo::Account { sweep, .. } => sweep.clone(),
+            periods::CloseTo::Members(members) => {
+                members.iter().filter_map(|m| m.distributions).collect()
+            }
+        };
+        let any = !closings.is_empty()
+            || sweeps
+                .iter()
+                .any(|a| !self.movement_through(*a, period.end).is_zero());
+        Ok(any.then_some(self.next_entry_id))
     }
 
     // ------------------------------------------------------------------

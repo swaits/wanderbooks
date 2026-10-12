@@ -28,6 +28,13 @@ pub struct Company {
     /// The income tax return the business files, if known: from
     /// `tax_form`, else from `tax_classification`.
     pub tax_form: Option<ledger_core::TaxForm>,
+    /// `[books] close_into`: the equity account a period close puts net
+    /// income in (a sole proprietor's capital, say). Unset: Retained
+    /// Earnings, or members' capital accounts when there are members.
+    pub close_into: Option<String>,
+    /// `[books] close_sweep`: equity accounts (draws, dividends,
+    /// distributions) a close zeroes into `close_into`.
+    pub close_sweep: Vec<String>,
 }
 
 /// One member of a multi-member LLC.
@@ -39,6 +46,9 @@ pub struct Member {
     pub share: Decimal,
     /// Code of their capital account in the chart.
     pub capital_account: String,
+    /// Code of their distributions account, if distributions are recorded
+    /// separately from capital (zeroed into capital at close).
+    pub distribution_account: Option<String>,
 }
 
 impl Default for Company {
@@ -49,6 +59,8 @@ impl Default for Company {
             members: Vec::new(),
             basis: "Accrual".to_string(),
             tax_form: None,
+            close_into: None,
+            close_sweep: Vec::new(),
         }
     }
 }
@@ -102,12 +114,16 @@ struct MemberToml {
     name: String,
     share: String,
     capital_account: Option<String>,
+    distribution_account: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
 struct BooksSection {
     receipt_threshold: Option<String>,
     accounting_basis: Option<String>,
+    close_into: Option<String>,
+    #[serde(default)]
+    close_sweep: Vec<String>,
 }
 
 /// The return a federal tax classification files: "partnership" → 1065,
@@ -174,6 +190,10 @@ pub fn parse(text: &str) -> Result<BooksSettings, String> {
             name: m.name.trim().to_string(),
             share,
             capital_account: capital_account.trim().to_string(),
+            distribution_account: m
+                .distribution_account
+                .map(|d| d.trim().to_string())
+                .filter(|d| !d.is_empty()),
         });
     }
     if !company.members.is_empty() {
@@ -190,6 +210,14 @@ pub fn parse(text: &str) -> Result<BooksSettings, String> {
             (None, Some(c)) => form_for_classification(c),
             (None, None) => None,
         };
+    if !company.members.is_empty() && raw.books.close_into.is_some() {
+        return Err(
+            "close_into is for single-owner businesses; with [[company.members]] a close goes to each member's capital account"
+                .to_string(),
+        );
+    }
+    company.close_into = raw.books.close_into.map(|c| c.trim().to_string());
+    company.close_sweep = raw.books.close_sweep;
     if let Some(basis) = raw.books.accounting_basis {
         company.basis = match basis.trim().to_lowercase().as_str() {
             "accrual" => "Accrual".to_string(),
@@ -291,12 +319,14 @@ mod tests {
                 Member {
                     name: "Tobin Harlow".into(),
                     share: half,
-                    capital_account: "3000".into()
+                    capital_account: "3000".into(),
+                    distribution_account: None,
                 },
                 Member {
                     name: "Morgan Ellis".into(),
                     share: half,
-                    capital_account: "3001".into()
+                    capital_account: "3001".into(),
+                    distribution_account: None,
                 },
             ]
         );

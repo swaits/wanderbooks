@@ -53,6 +53,8 @@ pub struct Member {
     pub name: String,
     /// Code of their capital account.
     pub capital_code: String,
+    /// Code of their distributions account, if they have one.
+    pub distribution_code: Option<String>,
 }
 
 /// What a row is, which decides how renderers style it.
@@ -276,9 +278,10 @@ fn flow_lines<'a>(
     members: &'a [Member],
 ) -> impl Iterator<Item = Row> + 'a {
     lines.iter().map(move |l| {
-        let member = members
-            .iter()
-            .find(|m| l.account.as_deref() == Some(m.capital_code.as_str()));
+        let member = members.iter().find(|m| {
+            let code = l.account.as_deref();
+            code == Some(m.capital_code.as_str()) || code == m.distribution_code.as_deref()
+        });
         let label = match member {
             Some(m) if l.amount >= Decimal::ZERO => format!("Member contributions — {}", m.name),
             Some(m) => format!("Member distributions — {}", m.name),
@@ -666,10 +669,12 @@ mod tests {
             Member {
                 name: "Alice".into(),
                 capital_code: "3000".into(),
+                distribution_code: None,
             },
             Member {
                 name: "Bob".into(),
                 capital_code: "3001".into(),
+                distribution_code: None,
             },
         ];
         let st = balance_sheet(&bs, e, &members);

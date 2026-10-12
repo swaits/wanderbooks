@@ -671,6 +671,10 @@ pub struct MemberCapital {
     /// Their capital account (equity): contributions credit it,
     /// distributions debit it.
     pub capital_account: crate::AccountId,
+    /// Their distributions account (contra-equity), if distributions are
+    /// recorded there rather than directly against capital. Part of their
+    /// capital on every statement; zeroed into capital at close.
+    pub distribution_account: Option<crate::AccountId>,
     /// Share of income, e.g. 0.5. The shares must sum to exactly 1.
     pub share: Decimal,
 }
@@ -738,15 +742,17 @@ pub fn members_equity(
     }
     let mut seen = BTreeSet::new();
     for m in members {
-        let account = ledger
-            .chart()
-            .get(m.capital_account)
-            .ok_or(LedgerError::UnknownAccount(m.capital_account))?;
-        if account.account_type != AccountType::Equity || !seen.insert(m.capital_account) {
-            return Err(LedgerError::InvalidMembers(format!(
-                "{}: capital account {} must be a distinct equity account",
-                m.name, account.code
-            )));
+        for id in std::iter::once(m.capital_account).chain(m.distribution_account) {
+            let account = ledger
+                .chart()
+                .get(id)
+                .ok_or(LedgerError::UnknownAccount(id))?;
+            if account.account_type != AccountType::Equity || !seen.insert(id) {
+                return Err(LedgerError::InvalidMembers(format!(
+                    "{}: account {} must be a distinct equity account",
+                    m.name, account.code
+                )));
+            }
         }
     }
     let day_before = start.pred_opt().ok_or(LedgerError::InvalidDateRange {
@@ -788,11 +794,28 @@ pub fn members_equity(
         }
         (credits, debits)
     };
+    // A member's capital is their capital account plus their distributions
+    // account (a debit balance, so it reduces capital).
     let capital: Vec<Decimal> = members
         .iter()
-        .map(|m| capital_before(m.capital_account))
+        .map(|m| {
+            capital_before(m.capital_account)
+                + m.distribution_account.map_or(Decimal::ZERO, capital_before)
+        })
         .collect();
-    let flow: Vec<(Decimal, Decimal)> = members.iter().map(|m| flows(m.capital_account)).collect();
+    // (contributions, distributions): credits to capital are
+    // contributions; debits to capital and net debits to the distributions
+    // account are distributions.
+    let flow: Vec<(Decimal, Decimal)> = members
+        .iter()
+        .map(|m| {
+            let (credits, debits) = flows(m.capital_account);
+            let (dc, dd) = m
+                .distribution_account
+                .map_or((Decimal::ZERO, Decimal::ZERO), flows);
+            (credits, debits + dd - dc)
+        })
+        .collect();
 
     // Everything in equity that isn't a capital account is partnership
     // earnings not yet distributed: allocate it by share.

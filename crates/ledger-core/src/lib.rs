@@ -44,7 +44,7 @@ pub use journal::{EntryId, EntryStatus, JournalEntry, JournalLine};
 pub use ledger::{Ledger, ReconciliationReport, UnclearedLine};
 pub use money::{Currency, Money};
 pub use payroll::{PayrollLine, PayrollRun, PayrollRunId};
-pub use periods::{CloseTo, Period, PeriodId, PeriodStatus, RETAINED_EARNINGS_CODE};
+pub use periods::{CloseTo, MemberClose, Period, PeriodId, PeriodStatus, RETAINED_EARNINGS_CODE};
 pub use reports::{
     BalanceSheet, BalanceSheetStatement, CashFlowLine, CashFlowParams, CashFlowStatement,
     ClassProfitAndLoss, GeneralLedger, LedgerAccount, LedgerPosting, MemberCapital,

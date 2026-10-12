@@ -82,6 +82,7 @@ impl BooksServer {
             .map(|m| ledger_import::Member {
                 name: m.name.clone(),
                 capital_code: m.capital_account.clone(),
+                distribution_code: m.distribution_account.clone(),
             })
             .collect()
     }
@@ -108,13 +109,67 @@ impl BooksServer {
                             m.name, m.capital_account
                         )
                     })?;
+                let distribution_account = match &m.distribution_account {
+                    Some(code) => Some(
+                        ledger
+                            .chart()
+                            .find_by_code(code)
+                            .ok_or_else(|| {
+                                format!("member {}: unknown distribution account {code}", m.name)
+                            })?
+                            .id,
+                    ),
+                    None => None,
+                };
                 Ok(ledger_core::MemberCapital {
                     name: m.name.clone(),
                     capital_account: account.id,
+                    distribution_account,
                     share: m.share,
                 })
             })
             .collect()
+    }
+
+    /// Where a period close goes, from wanderbooks.toml: members' capital
+    /// accounts by share (with their distribution accounts swept in) for a
+    /// partnership; else `close_into` (Retained Earnings when unset or
+    /// `3999`) with `close_sweep` zeroed into it.
+    fn close_target(&self, ledger: &Ledger) -> Result<ledger_core::CloseTo, String> {
+        let code = |c: &str| -> Result<AccountId, String> {
+            ledger
+                .chart()
+                .find_by_code(c)
+                .map(|a| a.id)
+                .ok_or_else(|| format!("wanderbooks.toml names unknown account {c}"))
+        };
+        if !self.company.members.is_empty() {
+            return Ok(ledger_core::CloseTo::Members(
+                self.member_capitals(ledger)?
+                    .into_iter()
+                    .map(|m| ledger_core::MemberClose {
+                        capital: m.capital_account,
+                        share: m.share,
+                        distributions: m.distribution_account,
+                    })
+                    .collect(),
+            ));
+        }
+        let sweep = self
+            .company
+            .close_sweep
+            .iter()
+            .map(|c| code(c))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(match self.company.close_into.as_deref() {
+            None | Some(ledger_core::RETAINED_EARNINGS_CODE) => {
+                ledger_core::CloseTo::RetainedEarnings { sweep }
+            }
+            Some(c) => ledger_core::CloseTo::Account {
+                into: code(c)?,
+                sweep,
+            },
+        })
     }
 
     /// The fiscal year's earnings through `as_of`, for the balance sheet:
@@ -1362,6 +1417,30 @@ impl BooksServer {
     }
 
     #[tool(
+        name = "books.chart_template",
+        description = "A starter chart of accounts for a kind of business (sole proprietorship, partnership or multi-member LLC, S corporation, C corporation): the right equity and owner-pay accounts (draws; per-partner capital and distributions plus guaranteed payments; officer compensation and distributions; dividends and income tax), common income and expense accounts with tax categories assigned, and the wanderbooks.toml settings that go with it. A proposal: review it with the human, adjust, then books.import_chart_csv.",
+        annotations(read_only_hint = true)
+    )]
+    async fn chart_template(
+        &self,
+        params: Parameters<ChartTemplateParams>,
+    ) -> Result<Json<ChartTemplateOut>, String> {
+        let p = params.0;
+        let entity = ledger_import::EntityType::parse(&p.entity_type).ok_or_else(|| {
+            format!(
+                "entity_type {:?}: expected sole_proprietorship, partnership, s_corporation, or c_corporation (an LLC is one of these for tax purposes)",
+                p.entity_type
+            )
+        })?;
+        let t = ledger_import::chart_template(entity, &p.owners)?;
+        Ok(Json(ChartTemplateOut {
+            csv: t.csv(),
+            settings_toml: t.settings_toml,
+            notes: t.notes,
+        }))
+    }
+
+    #[tool(
         name = "books.tax_categories",
         description = "The tax categories an account can map to (where it lands on the income tax return), filtered to the business's return when wanderbooks.toml says which (tax_form or tax_classification). Each has a default deductible percent (meals 50, nondeductible 0) and guidance. Categories are stable keys, not form line numbers.",
         annotations(read_only_hint = true)
@@ -2072,18 +2151,7 @@ impl BooksServer {
         if store.ledger().get_period(p.period_id).is_none() {
             return Err(format!("unknown period {}", p.period_id));
         }
-        // A partnership closes into its members' capital accounts by share;
-        // everyone else into Retained Earnings.
-        let to = if self.company.members.is_empty() {
-            ledger_core::CloseTo::RetainedEarnings
-        } else {
-            ledger_core::CloseTo::Members(
-                self.member_capitals(store.ledger())?
-                    .into_iter()
-                    .map(|m| (m.capital_account, m.share))
-                    .collect(),
-            )
-        };
+        let to = self.close_target(store.ledger())?;
         let describe = |ledger: &Ledger, eid: Option<ledger_core::EntryId>| -> Vec<String> {
             let Some(entry) = eid.and_then(|e| ledger.get_entry(e)) else {
                 return Vec::new();

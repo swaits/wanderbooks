@@ -29,16 +29,41 @@ pub enum PeriodStatus {
     Closed,
 }
 
-/// Where a period close puts the period's net income.
+/// Where a period close puts the period's net income, and which owner
+/// accounts (draws, distributions, dividends) it zeroes into equity too.
 #[derive(Clone, Debug, PartialEq)]
 pub enum CloseTo {
-    /// One Retained Earnings account ([`RETAINED_EARNINGS_CODE`]): the
-    /// corporate convention.
-    RetainedEarnings,
-    /// Members' capital accounts, by share (shares sum to 1): the
+    /// The Retained Earnings account ([`RETAINED_EARNINGS_CODE`], created if
+    /// missing): the corporate convention. `sweep` lists dividend or
+    /// distribution accounts to close into it.
+    RetainedEarnings {
+        /// Equity accounts zeroed into Retained Earnings.
+        sweep: Vec<crate::AccountId>,
+    },
+    /// One equity account, e.g. a sole proprietor's capital, with `sweep`
+    /// (e.g. the owner's draws) zeroed into it.
+    Account {
+        /// The equity account receiving the net.
+        into: crate::AccountId,
+        /// Equity accounts zeroed into it.
+        sweep: Vec<crate::AccountId>,
+    },
+    /// Members' capital accounts by share (shares sum to 1): the
     /// partnership convention, where each member's capital account carries
-    /// their allocated earnings.
-    Members(Vec<(crate::AccountId, rust_decimal::Decimal)>),
+    /// their allocated earnings and absorbs their distributions.
+    Members(Vec<MemberClose>),
+}
+
+/// One member in a partnership close.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MemberClose {
+    /// The member's capital account.
+    pub capital: crate::AccountId,
+    /// Their share of net income.
+    pub share: rust_decimal::Decimal,
+    /// Their distributions account, zeroed into their capital, if they
+    /// have one.
+    pub distributions: Option<crate::AccountId>,
 }
 
 /// Split `amount` by `shares` to the cent; the last share absorbs rounding,

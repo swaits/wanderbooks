@@ -32,7 +32,10 @@ CPA package and the balance sheet's net income line, `[[company.members]]`
 to 100%) drives the statement of members' equity, `[books]
 accounting_basis` ("accrual" or "cash", default accrual) labels report
 footers, and `[books] receipt_threshold` sets the receipt policy unless
-`config.json` sets `receipt_policy`.
+`config.json` sets `receipt_policy`. Members may name a
+`distribution_account`; single-owner businesses may set `[books] close_into`
+(the equity account a close puts net income in; default Retained Earnings)
+and `close_sweep` (draw, distribution, or dividend accounts closed into it).
 
 ## Transports
 
@@ -217,6 +220,18 @@ posting.
     accounting basis, preparation date, and journal seq. Multi-member LLCs
     get "Members' equity" with members named; the balance sheet separates
     retained earnings from the fiscal year's net income (loss).
+
+## Tools — chart templates
+
+- `books.chart_template { entity_type, owners? }` → `{ csv, settings_toml,
+  notes }`: a starter chart for a sole proprietorship (incl. single-member
+  LLC), partnership (incl. multi-member LLC), S corporation, or C
+  corporation — the equity and owner-pay accounts that entity needs (owner's
+  capital and draws; per-partner capital and distributions plus guaranteed
+  payments; officer compensation and shareholder distributions; dividends
+  and income tax expense), common income and expense accounts with tax
+  categories, and the `wanderbooks.toml` settings (tax form, members, close
+  target). A proposal: review with the human, then `books.import_chart_csv`.
 
 ## Tools — tax categories
 

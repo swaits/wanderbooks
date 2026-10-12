@@ -1,82 +1,123 @@
-//! Integration tests for `wanderbooks init`: the scaffold lands complete,
-//! the TOML parses, re-init is refused without `--force`.
+//! Integration tests for `wanderbooks new`: one command lands a complete
+//! books dir with the MCP server registered for it, the TOML and JSON
+//! parse, and re-running is refused without `--force` (which never
+//! touches the company profile).
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_wanderbooks"))
 }
 
-fn run_init(dir: &std::path::Path, extra: &[&str]) -> (bool, String) {
-    let mut cmd = Command::new(bin());
-    cmd.arg("init").arg(dir);
-    for e in extra {
-        cmd.arg(e);
+/// Stand-ins for the installed binaries, so tests never run cargo install.
+fn fake_bins(tmp: &Path) -> PathBuf {
+    let dir = tmp.join("bin");
+    fs::create_dir_all(&dir).unwrap();
+    for b in ["ledger-mcp", "ledger-gui"] {
+        fs::write(dir.join(b), "#!/bin/sh\n").unwrap();
     }
-    let out = cmd.output().expect("run wanderbooks");
+    dir
+}
+
+fn run(tmp: &Path, args: &[&str]) -> (bool, String) {
+    let path = format!(
+        "{}:{}",
+        fake_bins(tmp).display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let out = Command::new(bin())
+        .args(args)
+        .arg("--no-start")
+        .env("PATH", path)
+        .output()
+        .expect("run wanderbooks");
     let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
     s.push_str(&String::from_utf8_lossy(&out.stderr));
     (out.status.success(), s)
+}
+
+fn new(tmp: &Path, books: &Path, extra: &[&str]) -> (bool, String) {
+    let mut args = vec!["new", books.to_str().unwrap()];
+    args.extend(extra);
+    run(tmp, &args)
 }
 
 #[test]
 fn scaffold_lands_complete() {
     let tmp = tempfile::tempdir().unwrap();
     let books = tmp.path().join("acme-books");
-    let (ok, _) = run_init(&books, &[]);
-    assert!(ok, "init should succeed");
-    for f in ["mise.toml", "AGENT.md", "wanderbooks.toml", ".gitignore"] {
+    let (ok, out) = new(tmp.path(), &books, &[]);
+    assert!(ok, "new should succeed: {out}");
+    for f in [
+        "justfile",
+        "AGENTS.md",
+        "CLAUDE.md",
+        "wanderbooks.toml",
+        ".gitignore",
+        ".mcp.json",
+        ".claude/settings.json",
+    ] {
         let p = books.join(f);
         assert!(p.exists(), "{f} exists");
         assert!(!fs::read_to_string(&p).unwrap().is_empty(), "{f} non-empty");
     }
     assert!(books.join("books-data").is_dir(), "books-data dir exists");
+    assert!(books.join(".git").is_dir(), "fresh dir gets git init");
+    let log = Command::new("git")
+        .args(["log", "--oneline"])
+        .current_dir(&books)
+        .output()
+        .unwrap();
     assert!(
-        books.join(".git").is_dir(),
-        "fresh dir gets git init for the journal archive"
+        String::from_utf8_lossy(&log.stdout).contains("init"),
+        "scaffold committed"
     );
 }
 
 #[test]
-fn mise_toml_parses_and_names_repo_and_books() {
+fn the_server_is_registered_for_this_dir() {
     let tmp = tempfile::tempdir().unwrap();
     let books = tmp.path().join("b");
-    let (ok, _) = run_init(&books, &[]);
-    assert!(ok);
-    let raw = fs::read_to_string(books.join("mise.toml")).unwrap();
-    let doc: toml::Value = toml::from_str(&raw).expect("mise.toml parses");
-    assert!(doc.get("tools").is_some(), "[tools] present");
-    let tasks = doc.get("tasks").expect("[tasks] present");
-    for t in ["build", "mcp-add", "backup"] {
-        assert!(tasks.get(t).is_some(), "task {t} present");
+    assert!(new(tmp.path(), &books, &[]).0);
+    let books = books.canonicalize().unwrap();
+    let mcp: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(books.join(".mcp.json")).unwrap()).unwrap();
+    let server = &mcp["mcpServers"]["wanderbooks"];
+    assert!(server["command"].as_str().unwrap().ends_with("ledger-mcp"));
+    assert_eq!(
+        server["args"],
+        serde_json::json!(["--data-dir", books.join("books-data").to_string_lossy()])
+    );
+    let settings: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(books.join(".claude/settings.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        settings["enabledMcpjsonServers"],
+        serde_json::json!(["wanderbooks"])
+    );
+    // The justfile opens this dir's books in the GUI.
+    let just = fs::read_to_string(books.join("justfile")).unwrap();
+    assert!(just.contains("ledger-gui\" --data-dir books-data"));
+    for recipe in ["agent:", "gui:", "backup:", "update:"] {
+        assert!(just.contains(recipe), "justfile has {recipe}");
     }
-    // The build task must point at the repo checkout; mcp-add at the books dir.
-    let build_run = tasks["build"]["run"].as_str().unwrap();
-    assert!(
-        build_run.contains("cargo build"),
-        "build runs cargo: {build_run}"
+    assert_eq!(
+        fs::read_to_string(books.join("CLAUDE.md")).unwrap().trim(),
+        "@AGENTS.md"
     );
-    let mcp_run = tasks["mcp-add"]["run"].as_str().unwrap();
-    assert!(
-        mcp_run.contains("ledger-mcp") && mcp_run.contains("books-data"),
-        "mcp-add wires the server to this books dir: {mcp_run}"
-    );
-    let books_s = books.to_string_lossy();
-    assert!(
-        mcp_run.contains(books_s.as_ref()),
-        "mcp-add references the books dir path"
-    );
+    let toml: toml::Value =
+        toml::from_str(&fs::read_to_string(books.join("wanderbooks.toml")).unwrap()).unwrap();
+    assert_eq!(toml["books"]["data_dir"].as_str(), Some("books-data"));
 }
 
 #[test]
-fn agent_md_carries_the_contract() {
+fn agents_md_carries_the_contract() {
     let tmp = tempfile::tempdir().unwrap();
     let books = tmp.path().join("b");
-    let (ok, _) = run_init(&books, &[]);
-    assert!(ok);
-    let md = fs::read_to_string(books.join("AGENT.md")).unwrap();
+    assert!(new(tmp.path(), &books, &[]).0);
+    let md = fs::read_to_string(books.join("AGENTS.md")).unwrap();
     for phrase in [
         "preview",
         "Posted is forever",
@@ -84,26 +125,39 @@ fn agent_md_carries_the_contract() {
         "receipt",
         "journal.jsonl",
         "onboard",
+        "chart_template",
         "to the cent",
+        "just gui",
     ] {
-        assert!(md.contains(phrase), "AGENT.md mentions {phrase:?}");
+        assert!(md.contains(phrase), "AGENTS.md mentions {phrase:?}");
     }
 }
 
 #[test]
-fn reinit_refused_without_force() {
+fn rerun_refused_without_force_and_never_clobbers_the_profile() {
     let tmp = tempfile::tempdir().unwrap();
     let books = tmp.path().join("b");
-    assert!(run_init(&books, &[]).0);
-    let (ok, out) = run_init(&books, &[]);
-    assert!(!ok, "second init without --force fails");
+    assert!(new(tmp.path(), &books, &[]).0);
+    let (ok, out) = new(tmp.path(), &books, &[]);
+    assert!(!ok, "second new without --force fails");
     assert!(out.contains("--force"), "error points at --force: {out}");
-    let (ok, _) = run_init(&books, &["--force"]);
-    assert!(ok, "second init with --force succeeds");
+    fs::write(
+        books.join("wanderbooks.toml"),
+        "[company]\nname = \"Acme LLC\"\n",
+    )
+    .unwrap();
+    let (ok, _) = new(tmp.path(), &books, &["--force"]);
+    assert!(ok, "second new with --force succeeds");
+    assert!(
+        fs::read_to_string(books.join("wanderbooks.toml"))
+            .unwrap()
+            .contains("Acme LLC"),
+        "--force rewrites the scaffold, never the company profile"
+    );
 }
 
 #[test]
-fn init_inside_existing_repo_skips_git_init() {
+fn init_is_an_alias_and_respects_an_existing_repo() {
     let tmp = tempfile::tempdir().unwrap();
     let books = tmp.path().join("b");
     fs::create_dir_all(&books).unwrap();
@@ -115,8 +169,7 @@ fn init_inside_existing_repo_skips_git_init() {
             .unwrap()
             .success()
     );
-    let (ok, _) = run_init(&books, &[]);
-    assert!(ok);
-    // Still a valid repo (we didn't nest another one) and scaffold landed.
+    let (ok, out) = run(tmp.path(), &["init", books.to_str().unwrap()]);
+    assert!(ok, "{out}");
     assert!(books.join("wanderbooks.toml").exists());
 }

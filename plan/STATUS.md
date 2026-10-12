@@ -267,3 +267,10 @@ interface is MCP, not a cloned GUI. The first storage + MCP slice is done
   balance series and history, P&L by interval, flows), ledger-config
   (extracted from ledger-mcp; full profile, cash_accounts). Fonts: Inter
   with tnum frozen in and private-use glyphs removed (Phosphor icons).
+- 2026-10-12: One-command onboarding. `wanderbooks new DIR` installs the
+  server and GUI if missing, writes AGENTS.md (+ CLAUDE.md importing it),
+  wanderbooks.toml, a justfile (agent, gui, backup, update), .gitignore,
+  .mcp.json (the server registered for that dir only) and
+  .claude/settings.json (approved, no prompt), commits, and starts claude
+  with the onboarding prompt. `install.sh` does Rust + cargo install +
+  `wanderbooks new` in one line. mise is no longer part of the scaffold.

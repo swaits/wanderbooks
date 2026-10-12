@@ -773,9 +773,14 @@ fn tax(b: &Books, s: NaiveDate, e: NaiveDate) -> Table {
     sec(&mut t, "Income", &ts.income);
     sec(&mut t, "Cost of goods sold", &ts.cost_of_goods);
     sec(&mut t, "Deductions", &ts.deductions);
+    let net = if ts.uncategorized.is_empty() {
+        "Net"
+    } else {
+        "Net of categorized accounts"
+    };
     t.row(
         Kind::Grand,
-        "Net",
+        net,
         vec![Cell::of(ts.book_net()), Cell::of(ts.tax_net())],
     );
     if !ts.uncategorized.is_empty() {

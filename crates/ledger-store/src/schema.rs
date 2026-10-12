@@ -5,7 +5,7 @@
 //! is the current version.
 
 /// Current schema version.
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;
 
 /// Migrations, in order. `MIGRATIONS[i]` migrates from version `i` to `i+1`.
 pub const MIGRATIONS: &[&str] = &[
@@ -172,5 +172,12 @@ CREATE TABLE IF NOT EXISTS payroll_lines(
 );
 CREATE INDEX IF NOT EXISTS idx_payroll_lines_run ON payroll_lines(run_id);
 ALTER TABLE lines ADD COLUMN class_id INTEGER;
+"#,
+    r#"
+-- v5: withdrawn attachments. Withdrawal retires a receipt or document from
+-- listings and linking; the bytes stay in the blob store and the journal
+-- keeps the filing and the withdrawal.
+ALTER TABLE attachments ADD COLUMN withdrawn_at TEXT;
+ALTER TABLE attachments ADD COLUMN withdrawn_reason TEXT;
 "#,
 ];

@@ -41,6 +41,22 @@ pub enum StoreError {
     #[error("unknown attachment {0}")]
     UnknownAttachment(u64),
 
+    /// The attachment is not linked to any entry.
+    #[error("attachment {0} is not linked to an entry")]
+    AttachmentNotLinked(u64),
+
+    /// The attachment is linked to an entry; unlink it first.
+    #[error("attachment {0} is linked to entry {1}; unlink it first with books.unlink_receipt")]
+    AttachmentLinked(u64, u64),
+
+    /// The attachment was withdrawn and can no longer be linked or changed.
+    #[error("attachment {0} is withdrawn")]
+    AttachmentWithdrawn(u64),
+
+    /// A correction to the evidence trail needs a reason.
+    #[error("a non-empty reason is required")]
+    ReasonRequired,
+
     /// The store's schema is newer than this binary understands.
     #[error("schema version {0} newer than supported {1}")]
     SchemaTooNew(u32, u32),

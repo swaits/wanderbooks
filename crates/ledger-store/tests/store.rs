@@ -5,7 +5,7 @@
 
 use chrono::NaiveDate;
 use ledger_core::{AccountType, Currency, Money, Side};
-use ledger_store::{JournalWriter, Store};
+use ledger_store::{JournalWriter, Store, StoreError};
 use rust_decimal::Decimal;
 use std::path::PathBuf;
 
@@ -345,5 +345,115 @@ fn corrupt_projection_is_quarantined_and_rebuilt() {
     // The books are intact and verify clean.
     let tb = ledger_core::reports::trial_balance(store.ledger());
     assert_eq!(tb.total_debits, Decimal::from(14000));
+    store.verify().unwrap();
+}
+
+#[test]
+fn receipt_corrections_are_journaled_and_survive_rebuild() {
+    let dir = test_dir("receipt-corrections");
+    let mut store = Store::create(&dir, Currency::USD).unwrap();
+    let cash = store
+        .add_account("1000", "Cash", AccountType::Asset, None, false)
+        .unwrap();
+    let rent = store
+        .add_account("6000", "Rent Expense", AccountType::Expense, None, false)
+        .unwrap();
+    let e = store
+        .create_entry(
+            NaiveDate::from_ymd_opt(2026, 2, 1).unwrap(),
+            "February rent",
+        )
+        .unwrap();
+    store.add_line(e, rent, Side::Debit, usd(800)).unwrap();
+    store.add_line(e, cash, Side::Credit, usd(800)).unwrap();
+    store.post_entry(e).unwrap();
+    let (eml, _, _) = store
+        .attach_receipt(Some(e), "rent.eml", "message/rfc822", b"eml-bytes", None)
+        .unwrap();
+    let (pdf, _, _) = store
+        .attach_receipt(Some(e), "rent.pdf", "application/pdf", b"pdf-bytes", None)
+        .unwrap();
+
+    // Every correction needs a reason.
+    assert!(matches!(
+        store.unlink_receipt(eml, "  "),
+        Err(StoreError::ReasonRequired)
+    ));
+    // A linked receipt can't be withdrawn or moved: unlink it first.
+    assert!(matches!(
+        store.withdraw_attachment(eml, "dup"),
+        Err(StoreError::AttachmentLinked(a, b)) if a == eml && b == e
+    ));
+    assert!(matches!(
+        store.link_receipt(pdf, e),
+        Err(StoreError::AttachmentLinked(_, _))
+    ));
+
+    // Swap the .eml for the PDF: unlink, then withdraw.
+    assert_eq!(
+        store
+            .unlink_receipt(eml, "replaced by the PDF render")
+            .unwrap(),
+        e
+    );
+    assert!(matches!(
+        store.unlink_receipt(eml, "again"),
+        Err(StoreError::AttachmentNotLinked(_))
+    ));
+    store
+        .withdraw_attachment(eml, "file PDFs, not .eml")
+        .unwrap();
+    assert!(matches!(
+        store.link_receipt(eml, e),
+        Err(StoreError::AttachmentWithdrawn(_))
+    ));
+    assert!(matches!(
+        store.withdraw_attachment(eml, "again"),
+        Err(StoreError::AttachmentWithdrawn(_))
+    ));
+    assert!(matches!(
+        store.unlink_receipt(999, "x"),
+        Err(StoreError::UnknownAttachment(999))
+    ));
+
+    let check = |store: &Store| {
+        let linked: Vec<u64> = store
+            .list_attachments(Some(e))
+            .unwrap()
+            .iter()
+            .map(|a| a.id)
+            .collect();
+        assert_eq!(linked, vec![pdf]);
+        let all = store.list_attachments(None).unwrap();
+        let gone = all.iter().find(|a| a.id == eml).unwrap();
+        assert_eq!(gone.entry_id, None);
+        assert!(gone.withdrawn_at.is_some());
+        assert_eq!(
+            gone.withdrawn_reason.as_deref(),
+            Some("file PDFs, not .eml")
+        );
+        // Withdrawn is not deleted: the bytes are still there, hash-verified.
+        assert_eq!(store.attachment_bytes(eml).unwrap(), b"eml-bytes");
+    };
+    check(&store);
+
+    // The journal is the history: the attach, the unlink, and the withdrawal.
+    let journal = std::fs::read_to_string(dir.join("journal.jsonl")).unwrap();
+    for t in [
+        "receipt.attached",
+        "receipt.unlinked",
+        "attachment.withdrawn",
+    ] {
+        assert!(
+            journal.contains(&format!("\"type\":\"{t}\"")),
+            "missing {t}"
+        );
+    }
+
+    drop(store);
+    let mut store = Store::open(&dir).unwrap();
+    check(&store);
+    store.rebuild().unwrap();
+    check(&store);
     store.verify().unwrap();
 }

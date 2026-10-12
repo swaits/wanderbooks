@@ -18,7 +18,7 @@ Statuses: `covered` (built and tested), `partial` (built, known gaps listed),
 | 4 | Live Balance Sheet tab | engine + `books.balance_sheet` | covered |
 | 5 | Live Cash Flow tab | engine `cash_flow` (indirect) + `books.cash_flow` | covered |
 | 6 | Transaction Journal as append-only log | engine posting log + `books.search_entries` | covered |
-| 7 | Receipt storage in Drive | blob store + `books.attach_receipt` / `link_receipt` | covered |
+| 7 | Receipt storage in Drive | blob store + `books.attach_receipt` / `link_receipt` / `unlink_receipt` / `withdraw_attachment` | covered |
 | 8 | Document filing by category (01 Formation / 02 Legal / 03 Tax / 04 Accounting) | `books.file_document` | covered |
 | 9 | Ad-hoc questions ("what did we spend on X?") | `search_entries` + reports; the AI itself is the query layer | covered |
 | 10 | Human review of what the assistant recorded | `books.digest` | covered |

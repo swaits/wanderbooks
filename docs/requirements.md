@@ -52,6 +52,12 @@ requirement conflict, the requirement wins.
 
 ## Receipt policy (MCP phase)
 
+- **R-13a — Receipt corrections.** Posted entries are immutable (R-3); their
+  evidence is not frozen but is append-only. A receipt is replaced by
+  attaching the new one and unlinking the old with a reason; unwanted
+  receipts and documents are withdrawn with a reason. Unlinking may never
+  leave an entry the policy (R-13) requires a receipt for with none. Every
+  step is a journal event; no blob is deleted.
 - **R-13 — Receipt enforcement.** The MCP layer (not the engine — the engine
   stays policy-free) enforces a configurable receipt policy: postings at or
   above a threshold (`require_receipts_above`, default `"25.00"` in base

@@ -21,7 +21,7 @@ use rust_decimal::Decimal;
 use std::sync::{Arc, Mutex};
 
 /// The agent operating contract, delivered via initialize.
-const INSTRUCTIONS: &str = "You are the bookkeeping agent for these books. The engine enforces the accounting; you enforce the workflow.\n\nRULES\n- Money is exact decimal. Always pass amounts as decimal strings (\"123.45\"), never floats.\n- Never post directly. The flow is draft (books.draft_entry) -> add lines (books.add_line) -> preview (books.post_entry without confirmed) -> review the preview -> post (books.post_entry with confirmed=true).\n- Every entry must balance: debits equal credits, exactly. Every line needs a real account from books.chart. The engine rejects anything else.\n- Receipts: any entry moving more than $25.00 in debits needs at least one receipt attached (books.attach_receipt) before posting. The server rejects the post otherwise. This is enforced, not a suggestion.\n- Never invent accounts. If the account you need does not exist, add it with books.add_account first.\n- Corrections go through books.reverse_entry. Posted entries are immutable; there is no edit.\n- After posting, check books.digest to review what changed, so a human can review too.\n- Amounts in every response are decimal strings. Treat them as exact.\n- Fixed assets: register with books.register_asset, inspect with books.asset_schedule and books.list_assets, post monthly depreciation with books.run_depreciation (exempt from the receipt policy; the schedule is the evidence), and dispose with books.dispose_asset (preview first; the bill of sale is the receipt). Depreciation is straight-line, book basis only - tax depreciation stays with the CPA.";
+const INSTRUCTIONS: &str = "You are the bookkeeping agent for these books. The engine enforces the accounting; you enforce the workflow.\n\nRULES\n- Money is exact decimal. Always pass amounts as decimal strings (\"123.45\"), never floats.\n- Never post directly. The flow is draft (books.draft_entry) -> add lines (books.add_line) -> preview (books.post_entry without confirmed) -> review the preview -> post (books.post_entry with confirmed=true).\n- Every entry must balance: debits equal credits, exactly. Every line needs a real account from books.chart. The engine rejects anything else.\n- Receipts: any entry moving more than $25.00 in debits needs at least one receipt attached (books.attach_receipt) before posting. The server rejects the post otherwise. This is enforced, not a suggestion.\n- Never invent accounts. If the account you need does not exist, add it with books.add_account first.\n- Corrections go through books.reverse_entry. Posted entries are immutable; there is no edit.\n- Receipt corrections: receipts can change, but nothing is erased. To replace one, attach the new receipt, then books.unlink_receipt the old (with a reason); retire unwanted receipts or documents with books.withdraw_attachment (with a reason). The journal keeps every step.\n- After posting, check books.digest to review what changed, so a human can review too.\n- Amounts in every response are decimal strings. Treat them as exact.\n- Fixed assets: register with books.register_asset, inspect with books.asset_schedule and books.list_assets, post monthly depreciation with books.run_depreciation (exempt from the receipt policy; the schedule is the evidence), and dispose with books.dispose_asset (preview first; the bill of sale is the receipt). Depreciation is straight-line, book basis only - tax depreciation stays with the CPA.";
 
 /// Max receipt/document upload: 25 MB.
 const MAX_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
@@ -54,6 +54,43 @@ impl BooksServer {
         self.store
             .lock()
             .map_err(|_| "store lock poisoned".to_string())
+    }
+
+    /// Fail with the structured `receipt_required` error when the receipt
+    /// policy requires this posted entry to keep at least one receipt.
+    /// Drafts pass (posting enforces the policy later); reversals pass (they
+    /// are exempt: the original carries the evidence).
+    fn ensure_receipt_not_required(&self, store: &Store, entry_id: u64) -> Result<(), String> {
+        let entry = store
+            .ledger()
+            .get_entry(entry_id)
+            .ok_or_else(|| format!("unknown entry {entry_id}"))?;
+        if entry.status() != ledger_core::EntryStatus::Posted || entry.reversal_of().is_some() {
+            return Ok(());
+        }
+        let split_group = self.policy.split_group(store.ledger(), entry_id, entry);
+        if !self.policy.receipt_required(store.ledger(), entry) && split_group.is_empty() {
+            return Ok(());
+        }
+        let total = ReceiptPolicy::entry_debits(entry);
+        Err(ReceiptRequiredError {
+            code: "receipt_required".to_string(),
+            message: format!(
+                "entry {entry_id} moves {} in debits ({}); unlinking its last receipt would leave it without one.",
+                money(total),
+                self.policy.describe()
+            ),
+            entry_id: Some(entry_id),
+            asset_id: None,
+            debits: total.to_string(),
+            policy: self.policy.describe(),
+            remedy_tool: "books.attach_receipt".to_string(),
+            remedy_hint: format!(
+                "attach the replacement receipt to entry {entry_id} with books.attach_receipt first, then retry books.unlink_receipt"
+            ),
+            split_group,
+        }
+        .to_tool_error())
     }
 }
 
@@ -847,8 +884,64 @@ impl BooksServer {
     }
 
     #[tool(
+        name = "books.unlink_receipt",
+        description = "Detach a receipt from its entry, with a reason recorded in the journal. The receipt stays filed (unlinked); link it elsewhere or withdraw it with books.withdraw_attachment. The receipt policy still holds: an entry that requires a receipt cannot be left with none, so to replace a receipt attach the new one first, then unlink the old."
+    )]
+    async fn unlink_receipt(
+        &self,
+        params: Parameters<UnlinkReceiptParams>,
+    ) -> Result<Json<UnlinkReceiptOut>, String> {
+        let p = params.0;
+        let mut store = self.lock()?;
+        let attachment = store
+            .list_attachments(None)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|a| a.id == p.attachment_id)
+            .ok_or_else(|| format!("unknown attachment {}", p.attachment_id))?;
+        if let Some(entry_id) = attachment.entry_id {
+            let remaining = store
+                .list_attachments(Some(entry_id))
+                .map_err(|e| e.to_string())?
+                .len()
+                - 1;
+            if remaining == 0 {
+                self.ensure_receipt_not_required(&store, entry_id)?;
+            }
+        }
+        let entry_id = store
+            .unlink_receipt(p.attachment_id, &p.reason)
+            .map_err(|e| e.to_string())?;
+        let remaining_receipts = store
+            .list_attachments(Some(entry_id))
+            .map_err(|e| e.to_string())?
+            .len() as u64;
+        Ok(Json(UnlinkReceiptOut {
+            ok: true,
+            entry_id,
+            remaining_receipts,
+        }))
+    }
+
+    #[tool(
+        name = "books.withdraw_attachment",
+        description = "Withdraw an unlinked receipt or a filed document, with a reason recorded in the journal. It drops out of books.list_receipts and can never be linked again. Nothing is deleted: the bytes stay in the blob store and the journal keeps the filing and the withdrawal. Unlink a linked receipt first."
+    )]
+    async fn withdraw_attachment(
+        &self,
+        params: Parameters<WithdrawAttachmentParams>,
+    ) -> Result<Json<WithdrawAttachmentOut>, String> {
+        let p = params.0;
+        let mut store = self.lock()?;
+        store
+            .withdraw_attachment(p.attachment_id, &p.reason)
+            .map_err(|e| e.to_string())?;
+        Ok(Json(WithdrawAttachmentOut { ok: true }))
+    }
+
+    #[tool(
         name = "books.list_receipts",
-        description = "List receipts and filed documents, optionally filtered to one entry.",
+        description = "List receipts and filed documents, optionally filtered to one entry. Withdrawn attachments are hidden unless include_withdrawn=true.",
         annotations(read_only_hint = true)
     )]
     async fn list_receipts(
@@ -857,10 +950,12 @@ impl BooksServer {
     ) -> Result<Json<ListReceiptsOut>, String> {
         let p = params.0;
         let store = self.lock()?;
+        let include_withdrawn = p.include_withdrawn.unwrap_or(false);
         let receipts = store
             .list_attachments(p.entry_id)
             .map_err(|e| e.to_string())?
             .into_iter()
+            .filter(|a| include_withdrawn || a.withdrawn_at.is_none())
             .map(|a| ReceiptOut {
                 attachment_id: a.id,
                 sha256: a.blob_sha,
@@ -870,6 +965,8 @@ impl BooksServer {
                 mime_type: a.mime_type,
                 size_bytes: a.size_bytes,
                 description: a.description,
+                withdrawn: a.withdrawn_at.is_some(),
+                withdrawn_reason: a.withdrawn_reason,
             })
             .collect();
         Ok(Json(ListReceiptsOut { receipts }))
@@ -1686,6 +1783,9 @@ impl BooksServer {
                 split_group: Vec::new(),
             }
             .to_tool_error());
+        }
+        for aid in &attachment_ids {
+            store.check_linkable(*aid).map_err(|e| e.to_string())?;
         }
         let entry_id = store
             .dispose_asset(

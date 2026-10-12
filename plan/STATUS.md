@@ -151,3 +151,13 @@ interface is MCP, not a cloned GUI. The first storage + MCP slice is done
   (QBO/CSV/email/sheets, conversational). 5 integration tests green; clippy
   clean. Bootstrap: `mise trust && mise install`, `mise run build`,
   `mise run mcp-add`, then `claude` in the dir.
+- 2026-10-11: Receipts are mutable through events, never edits (Stephen:
+  "the journal is just a history of every single thing that happens").
+  `books.unlink_receipt` and `books.withdraw_attachment` (both require a
+  reason) journal `receipt.unlinked` / `attachment.withdrawn`; nothing is
+  erased from the journal or blob store. Unlinking can't strand an entry the
+  receipt policy requires evidence for (attach the replacement first).
+  `link_receipt` now refuses an already-linked or withdrawn attachment, which
+  closes a silent path for moving a receipt off a posted entry; disposals
+  check their receipt ids before posting. Schema v5. First real use: swapping
+  the migrated Wanderland Labs `.eml` receipts for their PDF renders.

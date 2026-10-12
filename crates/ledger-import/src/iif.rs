@@ -1,14 +1,14 @@
 //! Generate Intuit Interchange Format (IIF) journal entries for QuickBooks
 //! Desktop, which many CPAs still run.
 //!
-//! Layout per entry:
+//! Layout per entry (fields are tab-separated; `\t` marks each tab):
 //!
 //! ```text
-//! !TRNS	TRNSTYPE	DATE	ACCNT	NAME	AMOUNT	DOCNUM	MEMO
-//! !SPL	TRNSTYPE	DATE	ACCNT	AMOUNT	DOCNUM	MEMO
+//! !TRNS\tTRNSTYPE\tDATE\tACCNT\tNAME\tAMOUNT\tDOCNUM\tMEMO
+//! !SPL\tTRNSTYPE\tDATE\tACCNT\tAMOUNT\tDOCNUM\tMEMO
 //! !ENDTRNS
-//! TRNS	GENERAL JOURNAL	01/15/2026	Cash		1000.00	1	Memo
-//! SPL	GENERAL JOURNAL	01/15/2026	Revenue	-1000.00	1	Memo
+//! TRNS\tGENERAL JOURNAL\t01/15/2026\tCash\t\t1000.00\t1\tMemo
+//! SPL\tGENERAL JOURNAL\t01/15/2026\tRevenue\t-1000.00\t1\tMemo
 //! ENDTRNS
 //! ```
 //!

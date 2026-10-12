@@ -1893,17 +1893,17 @@ impl BooksServer {
         let closing = store.close_period(p.period_id).map_err(|e| e.to_string())?;
         // Build line descriptions from the posted closing entry.
         let mut lines = Vec::new();
-        if let Some(eid) = closing {
-            if let Some(entry) = store.ledger().get_entry(eid) {
-                for line in entry.lines() {
-                    let code = store
-                        .ledger()
-                        .chart()
-                        .get(line.account)
-                        .map(|a| a.code.clone())
-                        .unwrap_or_default();
-                    lines.push(format!("{:?} {} {}", line.side, code, line.amount.amount));
-                }
+        if let Some(eid) = closing
+            && let Some(entry) = store.ledger().get_entry(eid)
+        {
+            for line in entry.lines() {
+                let code = store
+                    .ledger()
+                    .chart()
+                    .get(line.account)
+                    .map(|a| a.code.clone())
+                    .unwrap_or_default();
+                lines.push(format!("{:?} {} {}", line.side, code, line.amount.amount));
             }
         }
         Ok(Json(ClosePeriodOut {

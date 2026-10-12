@@ -201,7 +201,7 @@ fn mcp_end_to_end_over_stdio() {
         .iter()
         .find(|l| l["code"] == "6000")
         .unwrap();
-    assert_eq!(rent_line["balance_before"], "0");
+    assert_eq!(rent_line["balance_before"], "0.00");
     assert_eq!(rent_line["balance_after"], "100.00");
 
     // Confirmed post without a receipt is rejected: >$25, no receipt.
@@ -275,7 +275,7 @@ fn mcp_end_to_end_over_stdio() {
     assert_eq!(rev["status"], "posted");
     let tb2 = mcp.call("books.trial_balance", json!({}));
     assert_eq!(tb2["balanced"], true);
-    assert_eq!(tb2["total_debits"], "0");
+    assert_eq!(tb2["total_debits"], "0.00");
 }
 
 #[test]
@@ -381,7 +381,7 @@ fn mcp_assets_end_to_end_over_stdio() {
     assert_eq!(preview["status"], "preview");
     assert_eq!(preview["book_value"], "58451.61");
     assert_eq!(preview["gain_loss"], "1548.39");
-    assert_eq!(preview["final_depreciation"], "0");
+    assert_eq!(preview["final_depreciation"], "0.00");
     assert_eq!(preview["receipt_required"], true);
 
     // Confirmed without the bill of sale: rejected.

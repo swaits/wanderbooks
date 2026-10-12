@@ -204,8 +204,14 @@ fn resolve_class(store: &Store, class: &str) -> Result<u32, String> {
         })
 }
 
+/// A money amount as a decimal string with at least two places: "0.00",
+/// "207.68", "1000.00". Padding only, never rounding: an exact amount with
+/// more places (an FX-converted line) keeps them. Never "-0".
 fn money(n: Decimal) -> String {
-    // Decimal's Display never emits floats or "-0" for exact values.
+    let mut n = if n.is_zero() { Decimal::ZERO } else { n };
+    if n.scale() < 2 {
+        n.rescale(2);
+    }
     n.to_string()
 }
 
@@ -2997,5 +3003,23 @@ impl ServerHandler for BooksServer {
                 meta: None,
             }],
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::money;
+    use rust_decimal::Decimal;
+    use std::str::FromStr;
+
+    #[test]
+    fn money_always_has_cents_and_never_rounds() {
+        let m = |s: &str| money(Decimal::from_str(s).unwrap());
+        assert_eq!(money(Decimal::ZERO), "0.00");
+        assert_eq!(m("-0"), "0.00");
+        assert_eq!(m("1000"), "1000.00");
+        assert_eq!(m("5.8"), "5.80");
+        assert_eq!(m("-207.68"), "-207.68");
+        assert_eq!(m("12.3456"), "12.3456");
     }
 }

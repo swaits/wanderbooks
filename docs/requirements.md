@@ -140,6 +140,9 @@ requirement conflict, the requirement wins.
   the journal records each posting with its full entry and replay checks
   it. Recurring entries generate drafts only, never posts, so the receipt
   policy always applies.
+- **R-? — Payout gross-up.** Platform deposits are recorded gross:
+  revenue, fees, and adjustments, reconciled to the deposit to the cent,
+  as a draft that carries the payout statement as its receipt.
 - **R-? — A/R and A/P workflows.** Was R-FUTURE-5.
   `ledger-core::arap`: customers, vendors, invoices, bills, payments,
   AR/AP aging. MCP tools for the full workflow.

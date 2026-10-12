@@ -223,6 +223,74 @@ pub struct RunRecurringOut {
     pub drafts: Vec<RecurringDraftOut>,
 }
 
+/// A revenue or fee line of a payout.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PayoutLineParam {
+    /// Account code or id.
+    pub account: String,
+    /// Positive decimal string.
+    pub amount: String,
+    /// Optional class (name or id), e.g. the app or product line.
+    pub class: Option<String>,
+}
+
+/// An adjustment on a payout statement.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PayoutAdjustmentParam {
+    /// Account code or id.
+    pub account: String,
+    /// "debit" reduces the deposit (refund, chargeback, reserve held, tax
+    /// withheld); "credit" increases it (reserve released, adjustment in
+    /// your favor).
+    pub side: String,
+    /// Positive decimal string.
+    pub amount: String,
+    /// Optional class (name or id).
+    pub class: Option<String>,
+}
+
+/// Parameters for `books.record_payout`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RecordPayoutParams {
+    /// Deposit date, YYYY-MM-DD.
+    pub date: String,
+    /// E.g. "App Store payout, October 2026".
+    pub description: String,
+    /// Account the money landed in.
+    pub deposit_account: String,
+    /// Net deposit, decimal string; negative when the platform debited you.
+    pub deposit: String,
+    /// Gross revenue lines (credited).
+    pub revenue: Vec<PayoutLineParam>,
+    /// Fees withheld (debited).
+    #[serde(default)]
+    pub fees: Vec<PayoutLineParam>,
+    /// Everything else on the statement.
+    #[serde(default)]
+    pub adjustments: Vec<PayoutAdjustmentParam>,
+}
+
+/// Result of `books.record_payout`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct RecordPayoutOut {
+    /// The draft entry.
+    pub entry_id: u64,
+    /// "draft".
+    pub status: String,
+    /// Gross revenue.
+    pub gross: String,
+    /// Fees withheld.
+    pub fees: String,
+    /// Net effect of adjustments on the deposit.
+    pub adjustments: String,
+    /// The deposit.
+    pub deposit: String,
+    /// The entry's lines, e.g. "Debit 1000 1265.01".
+    pub lines: Vec<String>,
+    /// What to do next.
+    pub next: String,
+}
+
 /// Parameters for `books.chart_template`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ChartTemplateParams {

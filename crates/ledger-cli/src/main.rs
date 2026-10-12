@@ -1,59 +1,77 @@
-//! `wanderbooks` CLI — the bootstrap for AI-native bookkeeping.
+//! `wanderbooks` CLI: one command from nothing to talking with your
+//! bookkeeper.
 //!
-//! Usage: `wanderbooks init [DIR] [--force]`
+//! ```text
+//! wanderbooks new [DIR] [--force] [--no-start]   (alias: init)
+//! wanderbooks gui [DIR]
+//! ```
 //!
-//! Scaffolds a new books directory: `mise.toml` (pinned toolchain + tasks),
-//! `AGENT.md` (the agent operating contract), `wanderbooks.toml` (company
-//! profile, filled in during onboarding), and an empty `books-data/` dir.
-//! From there: `mise trust && mise install`, `mise run build`,
-//! `mise run mcp-add`, then start `claude`/`codex` in the dir and let the
-//! agent take the onboarding from AGENT.md.
+//! `new` makes a complete books directory and starts the agent in it:
+//!
+//! 1. Finds `ledger-mcp` and `ledger-gui` next to this binary or on the
+//!    PATH, and installs them with cargo if they're missing.
+//! 2. Writes `AGENTS.md` (the bookkeeper's operating contract, with a
+//!    `CLAUDE.md` that imports it), `wanderbooks.toml`, a `justfile`,
+//!    `.gitignore`, and `books-data/`.
+//! 3. Registers the MCP server for this directory only: `.mcp.json`, plus
+//!    `.claude/settings.json` approving it, so Claude Code loads the tools
+//!    without `claude mcp add` or a prompt.
+//! 4. `git init`s the directory (its history is the archive) and commits.
+//! 5. Starts `claude` in the directory with the onboarding prompt, unless
+//!    `--no-start` or there's no terminal.
 
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Absolute path of the wanderbooks repo checkout this binary was built from.
-fn repo_root() -> PathBuf {
+/// Where `wanderbooks update` installs from.
+const REPO_URL: &str = "https://git.swaits.com/swaits/wanderbooks";
+
+/// The checkout this binary was built from, if it still exists.
+fn repo_root() -> Option<PathBuf> {
     let raw = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    raw.canonicalize().unwrap_or(raw)
+    let root = raw.canonicalize().ok()?;
+    root.join("crates/ledger-mcp/Cargo.toml")
+        .exists()
+        .then_some(root)
 }
 
-const MISE_TOML: &str = r#"# wanderbooks books dir — provisioned by `mise`.
-# Bootstrap: `mise trust && mise install` then `mise run build && mise run mcp-add`.
+const JUSTFILE: &str = r#"# wanderbooks books dir. Run `just` to list recipes.
+# Day to day you talk to the agent (`just agent`); the recipes are the
+# handful of things you might do yourself.
 
-[tools]
-rust = "stable"
+set shell := ["bash", "-cu"]
 
-[tasks.build]
-description = "Build ledger-mcp from the wanderbooks repo checkout"
-dir = "{{REPO}}"
-run = "cargo build --release -p ledger-mcp"
+# List recipes
+default:
+    @just --list
 
-[tasks.mcp-add]
-description = "Register wanderbooks with Claude Code (stdio transport; OS user boundary is the auth)"
-run = 'claude mcp add wanderbooks -- "{{REPO}}/target/release/ledger-mcp" --data-dir "{{BOOKS}}/books-data"'
+# Start a bookkeeping session with the agent
+agent:
+    claude
 
-[tasks.backup]
-description = "Commit the journal — the git history of this dir is the archive"
-run = 'git add -A && (git commit -m "books backup $(date -u +%Y-%m-%dT%H:%M:%SZ)" || true)'
+# Open the live, read-only view of these books
+gui:
+    "@@LEDGER_GUI@@" --data-dir books-data --books-toml wanderbooks.toml
+
+# Commit the journal: the git history of this dir is the archive
+backup:
+    git add -A && (git commit -qm "books backup $(date -u +%Y-%m-%dT%H:%M:%SZ)" && echo committed || echo "nothing to commit")
+
+# Update wanderbooks (server, GUI, CLI) to the latest version
+update:
+    cargo install --locked --git @@REPO_URL@@ ledger-cli ledger-mcp ledger-gui
 "#;
 
-const AGENT_MD: &str = r#"# AGENT.md — wanderbooks books dir
+const AGENTS_MD: &str = r#"# AGENTS.md — wanderbooks books dir
 
 This directory is a **wanderbooks** books dir: AI-native double-entry
 bookkeeping. You (the AI agent) are the bookkeeper. The human talks to you;
-you drive the books through the `wanderbooks` MCP server. There is no
-bookkeeping UI; the numbers you show the human *are* the interface.
-
-## Bootstrap (once, in order)
-
-1. `mise trust && mise install` — installs the pinned Rust toolchain.
-2. `mise run build` — builds `ledger-mcp` from the wanderbooks repo.
-3. `mise run mcp-add` — registers the server with Claude Code over stdio.
-   (Codex: add the same command + `--data-dir` to your MCP config instead.)
-4. Restart the session so the MCP tools load, then continue below.
+you drive the books through the `wanderbooks` MCP server (registered for
+this directory in `.mcp.json`). The humans read the books in the GUI
+(`just gui`): read-only and live, so whatever you post appears there within
+a second. Everything else they see, you show them.
 
 ## The MCP contract
 
@@ -66,204 +84,381 @@ bookkeeping UI; the numbers you show the human *are* the interface.
 - **Posted is forever.** Corrections are reversing entries linked to the
   original, never edits, never deletes.
 - **Receipts:** attach with `attach_receipt` and link to the entry. Anything
-  over $25 requires a receipt — the server enforces this, don't argue with it.
+  over the receipt threshold ($25 unless `wanderbooks.toml` says otherwise)
+  requires a receipt — the server enforces this, don't argue with it. One
+  file per receipt: PDF preferred, an image is fine.
 - **Show the numbers.** After every mutation, show the affected balances.
   When the human questions a figure, trace it to journal entries.
 
 ## First run: onboarding
 
 If `books-data/journal.jsonl` is missing or empty, onboard before recording
-anything:
+anything. Keep it conversational; ask a few things at a time.
 
-1. Ask: company legal name, entity type, owners and equity split, base
-   currency, fiscal year start.
-2. Set up the chart of accounts: propose a sensible default for the entity
-   type and let the human adjust, or import one they hand you.
-3. Record opening balances as one balanced opening entry. Verify the trial
-   balance balances before moving on.
-4. Write the answers into `wanderbooks.toml` under `[company]`.
-5. If they're migrating from another system, import from wherever the books
-   live now — QBO/CSV via `ledger-import`, bank or card CSVs, email receipts,
-   a spreadsheet, whatever they point you at. Diff trial balance, P&L,
-   balance sheet, and cash flow against the old system **to the cent**
-   before calling the migration done.
+1. Ask: company legal name, entity type (sole proprietorship or
+   single-member LLC, partnership or multi-member LLC, S corp, C corp),
+   owners and their shares, fiscal year start, and whether they want
+   accrual or cash basis.
+2. Propose a chart of accounts with `books.chart_template` for that entity
+   type and those owners. Walk the human through it, adjust, then import it
+   with `books.import_chart_csv`. Put the template's settings (members,
+   tax form, close target) in `wanderbooks.toml`.
+3. Fill in `wanderbooks.toml` `[company]`: name, entity type, tax
+   classification, formation state and date, EIN, address. Don't store
+   SSNs or full account numbers anywhere in this directory.
+4. Record opening balances as one balanced opening entry (or the owners'
+   first contributions). Verify the trial balance before moving on.
+5. File the formation documents they have (articles, EIN letter,
+   operating agreement) with `books.file_document`.
+6. If they're migrating from another system, import from wherever the books
+   live now — QBO/CSV, bank or card CSVs, email receipts, a spreadsheet,
+   whatever they point you at. Diff trial balance, P&L, balance sheet, and
+   cash flow against the old system **to the cent** before calling the
+   migration done.
+7. Tell them about `just gui`, then commit with `just backup`.
 
 ## Ongoing
 
 - Every transaction: draft, preview, confirm with the human, post, attach
-  the receipt.
+  the receipt. Tag payments to contractors with their vendor (1099s).
 - `books.digest` is the review surface — "what did you do with my books
   lately." Offer it; don't make the human ask.
 - Reports are pure functions of the journal. If a number looks wrong, the
   journal is the evidence — read it, don't guess.
-- Back up: run `mise run backup` after every session that posted entries.
-  The git history of this directory is the archive; the journal file is the
-  system of record and the SQLite database is disposable.
+- Back up: `just backup` after every session that posted entries. The git
+  history of this directory is the archive; `books-data/journal.jsonl` is
+  the system of record and the SQLite database is disposable.
 "#;
+
+const CLAUDE_MD: &str = "@AGENTS.md\n";
 
 const WANDERBOOKS_TOML: &str = r#"# wanderbooks books dir config. [company] is filled in during onboarding —
 # the agent asks, the human answers, the agent writes it here.
 
 [company]
 name = ""
-entity_type = ""
-owners = ""
 base_currency = "USD"
 fiscal_year_start = "01-01"
 
 [books]
 data_dir = "books-data"
+accounting_basis = "accrual"
 receipt_threshold = "25.00"
 "#;
 
 const GITIGNORE: &str = r#"# The SQLite projection is disposable — it rebuilds from journal.jsonl.
 books-data/wanderbooks.db
 books-data/wanderbooks.db-*
+# Generated exports can always be regenerated from the journal.
+exports/
 "#;
 
+const START_PROMPT: &str = "Hi! These are brand-new books. Please set them up with me.";
+
 fn print_usage() {
-    eprintln!("usage: wanderbooks init [DIR] [--force]");
-    eprintln!("  DIR      books directory to create (default: current directory)");
-    eprintln!("  --force  overwrite an existing wanderbooks.toml");
+    eprintln!("usage: wanderbooks new [DIR] [--force] [--no-start]");
+    eprintln!("       wanderbooks gui [DIR]");
+    eprintln!();
+    eprintln!("  new        make a books directory and start the agent in it (alias: init)");
+    eprintln!("  gui        open the live, read-only view of a books directory");
+    eprintln!("  DIR        the books directory (default: current directory)");
+    eprintln!("  --force    rewrite the scaffold in an existing books directory");
+    eprintln!("  --no-start don't start the agent afterwards");
 }
 
-fn render(template: &str, repo: &str, books: &str) -> String {
-    template
-        .replace("{{REPO}}", repo)
-        .replace("{{BOOKS}}", books)
+/// A binary next to this one (cargo installs them side by side), else on
+/// the PATH.
+fn find_binary(name: &str) -> Option<PathBuf> {
+    if let Some(dir) = env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(Path::to_path_buf))
+    {
+        let p = dir.join(name);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    env::var_os("PATH").and_then(|paths| {
+        env::split_paths(&paths)
+            .map(|d| d.join(name))
+            .find(|p| p.is_file())
+    })
 }
+
+/// Install the server and GUI with cargo: from this checkout when there is
+/// one, else from the repo.
+fn install_binaries() -> Result<(), String> {
+    let mut cmd = Command::new("cargo");
+    cmd.args(["install", "--locked"]);
+    match repo_root() {
+        Some(root) => {
+            eprintln!(
+                "Installing ledger-mcp and ledger-gui from {} (a few minutes, once)…",
+                root.display()
+            );
+            // `--path` takes one crate at a time.
+            for c in ["ledger-mcp", "ledger-gui"] {
+                let ok = Command::new("cargo")
+                    .args(["install", "--locked", "--path"])
+                    .arg(root.join("crates").join(c))
+                    .status()
+                    .map_err(|e| {
+                        format!("can't run cargo: {e} (install Rust from https://rustup.rs)")
+                    })?
+                    .success();
+                if !ok {
+                    return Err(format!("cargo install of {c} failed"));
+                }
+            }
+            return Ok(());
+        }
+        None => {
+            eprintln!(
+                "Installing ledger-mcp and ledger-gui from {REPO_URL} (a few minutes, once)…"
+            );
+            cmd.args(["--git", REPO_URL, "ledger-mcp", "ledger-gui"]);
+        }
+    }
+    let ok = cmd
+        .status()
+        .map_err(|e| format!("can't run cargo: {e} (install Rust from https://rustup.rs)"))?
+        .success();
+    if ok {
+        Ok(())
+    } else {
+        Err("cargo install failed".into())
+    }
+}
+
+fn binaries() -> Result<(PathBuf, PathBuf), String> {
+    if let (Some(m), Some(g)) = (find_binary("ledger-mcp"), find_binary("ledger-gui")) {
+        return Ok((m, g));
+    }
+    install_binaries()?;
+    match (find_binary("ledger-mcp"), find_binary("ledger-gui")) {
+        (Some(m), Some(g)) => Ok((m, g)),
+        _ => Err(
+            "installed, but ledger-mcp/ledger-gui aren't on the PATH; add ~/.cargo/bin to it"
+                .into(),
+        ),
+    }
+}
+
+fn json_string(s: &str) -> String {
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// `.mcp.json`: the wanderbooks server for this directory only.
+fn mcp_json(ledger_mcp: &Path, books: &Path) -> String {
+    format!(
+        "{{\n  \"mcpServers\": {{\n    \"wanderbooks\": {{\n      \"command\": {},\n      \"args\": [\"--data-dir\", {}]\n    }}\n  }}\n}}\n",
+        json_string(&ledger_mcp.to_string_lossy()),
+        json_string(&books.join("books-data").to_string_lossy())
+    )
+}
+
+/// `.claude/settings.json`: approve this directory's server, and its tools,
+/// so the first session starts working instead of asking. The server still
+/// previews every posting for the human to confirm.
+const CLAUDE_SETTINGS: &str = r#"{
+  "enabledMcpjsonServers": ["wanderbooks"],
+  "permissions": {
+    "allow": ["mcp__wanderbooks"]
+  }
+}
+"#;
 
 /// `git init` the dir unless already inside a repo; commit the scaffold.
 /// Failures are warnings, not errors — the scaffold is what matters.
 fn git_bootstrap(dir: &Path) {
-    let inside = Command::new("git")
-        .args(["rev-parse", "--is-inside-work-tree"])
-        .current_dir(dir)
-        .output()
-        .is_ok_and(|o| o.status.success());
-    if !inside {
-        let init_ok = Command::new("git")
-            .arg("init")
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .args(args)
             .current_dir(dir)
             .output()
-            .is_ok_and(|o| o.status.success());
-        if !init_ok {
-            eprintln!("warning: git init failed; skipping scaffold commit");
-            return;
-        }
-    }
-    let add = Command::new("git")
-        .args(["add", "-A"])
-        .current_dir(dir)
-        .output();
-    if !add.is_ok_and(|o| o.status.success()) {
-        eprintln!("warning: git add failed; skipping scaffold commit");
+            .is_ok_and(|o| o.status.success())
+    };
+    if !git(&["rev-parse", "--is-inside-work-tree"]) && !git(&["init", "-q"]) {
+        eprintln!("warning: git init failed; skipping the first commit");
         return;
     }
-    let _ = Command::new("git")
-        .args([
+    if !git(&["add", "-A"]) {
+        eprintln!("warning: git add failed; skipping the first commit");
+        return;
+    }
+    // Use the person's identity when they have one; fall back so a fresh
+    // machine still gets a first commit.
+    let has_identity = git(&["config", "user.email"]);
+    let mut args = Vec::new();
+    if !has_identity {
+        args.extend([
             "-c",
             "user.name=wanderbooks",
             "-c",
             "user.email=wanderbooks@localhost",
-            "commit",
-            "-m",
-            "init: wanderbooks books dir scaffold",
-        ])
-        .current_dir(dir)
-        .output();
+        ]);
+    }
+    args.extend(["commit", "-qm", "init: wanderbooks books dir"]);
+    git(&args);
 }
 
-/// Scaffold a books directory. Returns the dir on success.
-fn init(dir: &Path, force: bool) -> Result<PathBuf, String> {
+/// Write the books directory. Returns it, canonical.
+fn scaffold(
+    dir: &Path,
+    force: bool,
+    ledger_mcp: &Path,
+    ledger_gui: &Path,
+) -> Result<PathBuf, String> {
     fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     let dir = dir
         .canonicalize()
         .map_err(|e| format!("cannot resolve {}: {e}", dir.display()))?;
-
-    let marker = dir.join("wanderbooks.toml");
-    if marker.exists() && !force {
+    if dir.join("wanderbooks.toml").exists() && !force {
         return Err(format!(
-            "{} is already a books dir (wanderbooks.toml exists); use --force to overwrite",
+            "{} is already a books dir (wanderbooks.toml exists); use --force to rewrite the scaffold",
             dir.display()
         ));
     }
-
-    let repo = repo_root();
-    let repo_s = repo.to_string_lossy();
-    let books_s = dir.to_string_lossy();
-
-    let files: &[(&str, String)] = &[
-        ("mise.toml", render(MISE_TOML, &repo_s, &books_s)),
-        ("AGENT.md", AGENT_MD.to_string()),
-        ("wanderbooks.toml", WANDERBOOKS_TOML.to_string()),
+    let justfile = JUSTFILE
+        .replace("@@LEDGER_GUI@@", &ledger_gui.to_string_lossy())
+        .replace("@@REPO_URL@@", REPO_URL);
+    let mut files: Vec<(&str, String)> = vec![
+        ("justfile", justfile),
+        ("AGENTS.md", AGENTS_MD.to_string()),
+        ("CLAUDE.md", CLAUDE_MD.to_string()),
         (".gitignore", GITIGNORE.to_string()),
+        (".mcp.json", mcp_json(ledger_mcp, &dir)),
     ];
+    // The company profile is the person's data: never overwrite it.
+    if !dir.join("wanderbooks.toml").exists() {
+        files.push(("wanderbooks.toml", WANDERBOOKS_TOML.to_string()));
+    }
     for (name, content) in files {
         fs::write(dir.join(name), content).map_err(|e| format!("cannot write {name}: {e}"))?;
     }
+    fs::create_dir_all(dir.join(".claude")).map_err(|e| format!("cannot create .claude: {e}"))?;
+    fs::write(dir.join(".claude/settings.json"), CLAUDE_SETTINGS)
+        .map_err(|e| format!("cannot write .claude/settings.json: {e}"))?;
     fs::create_dir_all(dir.join("books-data"))
         .map_err(|e| format!("cannot create books-data: {e}"))?;
-    fs::write(dir.join("books-data").join(".gitkeep"), "")
+    fs::write(dir.join("books-data/.gitkeep"), "")
         .map_err(|e| format!("cannot write .gitkeep: {e}"))?;
-
     git_bootstrap(&dir);
     Ok(dir)
 }
 
+fn is_terminal() -> bool {
+    use std::io::IsTerminal;
+    std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
+}
+
+/// Replace this process with `claude` in the books dir, onboarding.
+fn start_agent(dir: &Path) -> Result<(), String> {
+    let Some(claude) = find_binary("claude") else {
+        println!(
+            "Claude Code isn't installed. Install it, then run `claude` in {}.",
+            dir.display()
+        );
+        return Ok(());
+    };
+    println!("Starting your bookkeeper…");
+    let mut cmd = Command::new(claude);
+    cmd.arg(START_PROMPT).current_dir(dir);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let err = cmd.exec();
+        Err(format!("can't start claude: {err}"))
+    }
+    #[cfg(not(unix))]
+    {
+        cmd.status()
+            .map_err(|e| format!("can't start claude: {e}"))?;
+        Ok(())
+    }
+}
+
+fn new(dir: &Path, force: bool, start: bool) -> Result<(), String> {
+    let (ledger_mcp, ledger_gui) = binaries()?;
+    let dir = scaffold(dir, force, &ledger_mcp, &ledger_gui)?;
+    println!("Books ready in {}", dir.display());
+    println!("  just gui     the live, read-only view of the books");
+    println!("  just agent   a session with your bookkeeper");
+    println!("  just backup  commit the journal");
+    if start && is_terminal() {
+        start_agent(&dir)?;
+    } else {
+        println!("Next: cd {} && claude", dir.display());
+    }
+    Ok(())
+}
+
+fn gui(dir: &Path) -> Result<(), String> {
+    let gui = find_binary("ledger-gui")
+        .ok_or("ledger-gui isn't installed; run `wanderbooks new` or `just update`")?;
+    let status = Command::new(gui)
+        .arg("--data-dir")
+        .arg(dir.join("books-data"))
+        .arg("--books-toml")
+        .arg(dir.join("wanderbooks.toml"))
+        .status()
+        .map_err(|e| e.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("ledger-gui exited with an error".into())
+    }
+}
+
 fn main() {
-    let args = env::args().skip(1);
     let mut dir: Option<PathBuf> = None;
     let mut force = false;
+    let mut start = true;
     let mut cmd: Option<String> = None;
-
-    for arg in args {
+    for arg in env::args().skip(1) {
         match arg.as_str() {
             "--help" | "-h" => {
                 print_usage();
                 return;
             }
             "--force" => force = true,
+            "--no-start" => start = false,
             s if s.starts_with('-') => {
                 eprintln!("unknown flag: {s}");
                 print_usage();
                 std::process::exit(2);
             }
+            s if cmd.is_none() => cmd = Some(s.to_string()),
+            s if dir.is_none() => dir = Some(PathBuf::from(s)),
             s => {
-                if cmd.is_none() {
-                    cmd = Some(s.to_string());
-                } else if dir.is_none() {
-                    dir = Some(PathBuf::from(s));
-                } else {
-                    eprintln!("unexpected argument: {s}");
-                    print_usage();
-                    std::process::exit(2);
-                }
+                eprintln!("unexpected argument: {s}");
+                print_usage();
+                std::process::exit(2);
             }
         }
     }
-
-    match cmd.as_deref() {
-        Some("init") => {
-            let dir = dir.unwrap_or_else(|| PathBuf::from("."));
-            match init(&dir, force) {
-                Ok(d) => {
-                    println!("initialized books dir: {}", d.display());
-                    println!("next:");
-                    println!("  cd {}", d.display());
-                    println!("  mise trust && mise install");
-                    println!("  mise run build && mise run mcp-add");
-                    println!("then start claude (or codex) here and follow AGENT.md");
-                }
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    std::process::exit(1);
-                }
-            }
-        }
+    let dir = dir.unwrap_or_else(|| PathBuf::from("."));
+    let result = match cmd.as_deref() {
+        Some("new") | Some("init") => new(&dir, force, start),
+        Some("gui") => gui(&dir),
         _ => {
             print_usage();
             std::process::exit(2);
         }
+    };
+    if let Err(e) = result {
+        eprintln!("error: {e}");
+        std::process::exit(1);
     }
 }

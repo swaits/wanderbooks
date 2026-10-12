@@ -57,12 +57,18 @@ See [`plan/STATUS.md`](plan/STATUS.md) for where things stand and
 
 ```bash
 cargo test          # whole suite
-cargo run -p ledger-cli -- init ~/books/acme   # scaffold a books dir: mise.toml + AGENT.md
 cargo run -p ledger-mcp -- --data-dir /tmp/books   # MCP server over stdio
 cargo run -p ledger-gui -- --demo                   # the desktop view, on a demo company
 ```
-Then `cd ~/books/acme`: `mise trust && mise install`, `mise run build`,
-`mise run mcp-add`, and start `claude` — the agent onboards from AGENT.md.
+New books, one command (installs Rust and wanderbooks if needed, makes the
+books dir with the MCP server registered for it, and starts the agent):
+
+```bash
+curl -fsSL https://git.swaits.com/swaits/wanderbooks/raw/branch/main/install.sh | sh -s -- ~/Books/Acme
+```
+
+Already installed: `wanderbooks new ~/Books/Acme`. In a books dir, `just`
+lists the shortcuts (`just gui`, `just agent`, `just backup`).
 
 ## Layout
 
@@ -72,6 +78,7 @@ crates/ledger-store/   # journal + SQLite projection + blob store
 crates/ledger-mcp/     # MCP server: 64 tools, resources, receipt policy
 crates/ledger-import/  # QBO CSV import, IIF/XLSX export
 crates/ledger-config/  # wanderbooks.toml company settings
+crates/ledger-cli/     # `wanderbooks new`: one-command books dir + agent
 crates/ledger-gui/     # read-only live desktop view (egui)
 docs/                  # requirements, architecture, oracle, parity, glossary
 plan/                  # STATUS.md, roadmap.md

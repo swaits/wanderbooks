@@ -4,13 +4,14 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "wanderbooks CLI: scaffold new books directories (mise.toml + AGENT.md)."
+description = "wanderbooks CLI: one command from nothing to a working books directory."
 
 [[bin]]
 name = "wanderbooks"
 path = "src/main.rs"
 
 [dev-dependencies]
+serde_json = "1"
 toml = "1"
 tempfile = "3"
 

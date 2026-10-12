@@ -139,7 +139,7 @@ fn mcp_end_to_end_over_stdio() {
     // Tool listing: 23 narrow tools, chart is read-only.
     let list = mcp.request("tools/list", json!({}));
     let tools = list["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 53, "expected 53 tools, got {}", tools.len());
+    assert_eq!(tools.len(), 59, "expected 59 tools, got {}", tools.len());
     let chart = tools.iter().find(|t| t["name"] == "books.chart").unwrap();
     assert_eq!(chart["annotations"]["readOnlyHint"], true);
     assert!(
@@ -1231,4 +1231,122 @@ fn mcp_partnership_from_template_over_stdio() {
             ("3001".into(), "1150.00".into())
         ]
     );
+}
+
+#[test]
+fn mcp_schedules_and_recurring_over_stdio() {
+    let dir = test_dir("schedules");
+    let init = |mcp: &mut Mcp| {
+        mcp.request(
+            "initialize",
+            json!({
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+            }),
+        );
+        mcp.notify("notifications/initialized");
+    };
+    let mut mcp = Mcp::spawn(&dir);
+    init(&mut mcp);
+    for (code, name, typ) in [
+        ("1000", "Bank", "asset"),
+        ("1300", "Prepaid Expenses", "asset"),
+        ("6300", "Insurance", "expense"),
+        ("6600", "Rent", "expense"),
+    ] {
+        mcp.call(
+            "books.add_account",
+            json!({"code": code, "name": name, "account_type": typ}),
+        );
+    }
+
+    // 1,000.00 of insurance over 3 months: 333.33, 333.33, 333.34.
+    let s = mcp.call(
+        "books.create_schedule",
+        json!({
+            "kind": "prepaid_expense",
+            "description": "Liability insurance",
+            "total": "1000.00",
+            "start": "2026-11-15",
+            "months": 3,
+            "balance_account": "1300",
+            "pl_account": "6300",
+        }),
+    );
+    let amounts: Vec<&str> = s["months"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["amount"].as_str().unwrap())
+        .collect();
+    assert_eq!(amounts, ["333.33", "333.33", "333.34"]);
+    let err = mcp.call_err(
+        "books.create_schedule",
+        json!({
+            "kind": "prepaid_expense", "description": "x", "total": "10",
+            "start": "2026-11-01", "months": 2,
+            "balance_account": "6300", "pl_account": "6300",
+        }),
+    );
+    assert!(err.contains("Asset"), "{err}");
+
+    // Preview posts nothing; confirmed posts November and December.
+    let preview = mcp.call("books.run_schedules", json!({"through": "2026-12-31"}));
+    assert_eq!(preview["status"], "preview");
+    assert_eq!(preview["postings"].as_array().unwrap().len(), 2);
+    let pl = mcp.call(
+        "books.profit_and_loss",
+        json!({"start": "2026-11-01", "end": "2026-12-31"}),
+    );
+    assert_eq!(pl["expenses"], "0.00");
+    let run = mcp.call(
+        "books.run_schedules",
+        json!({"through": "2026-12-31", "confirmed": true}),
+    );
+    assert_eq!(run["status"], "posted");
+    assert_eq!(run["postings"][1]["date"], "2026-12-31");
+    let again = mcp.call(
+        "books.run_schedules",
+        json!({"through": "2026-12-31", "confirmed": true}),
+    );
+    assert!(
+        again["postings"].as_array().unwrap().is_empty(),
+        "idempotent"
+    );
+
+    // Monthly rent: drafts only, never posted.
+    mcp.call(
+        "books.create_recurring",
+        json!({
+            "description": "Office rent",
+            "frequency": "monthly",
+            "start": "2026-11-01",
+            "lines": [
+                {"account": "6600", "side": "debit", "amount": "2000.00"},
+                {"account": "1000", "side": "credit", "amount": "2000.00"},
+            ],
+        }),
+    );
+    let drafts = mcp.call("books.run_recurring", json!({"through": "2026-12-15"}));
+    assert_eq!(drafts["drafts"].as_array().unwrap().len(), 2);
+    let pl = mcp.call(
+        "books.profit_and_loss",
+        json!({"start": "2026-11-01", "end": "2026-12-31"}),
+    );
+    assert_eq!(pl["expenses"], "666.66", "rent drafts don't post");
+    drop(mcp);
+
+    // Restart: everything replays from the journal.
+    let mut mcp = Mcp::spawn(&dir);
+    init(&mut mcp);
+    let list = mcp.call("books.list_schedules", json!({}));
+    assert_eq!(list["schedules"][0]["remaining"], "333.34");
+    let rec = mcp.call("books.list_recurring", json!({}));
+    assert_eq!(
+        rec["recurring"][0]["generated"],
+        json!(["2026-11-01", "2026-12-01"])
+    );
+    let more = mcp.call("books.run_recurring", json!({"through": "2026-12-31"}));
+    assert!(more["drafts"].as_array().unwrap().is_empty(), "idempotent");
 }

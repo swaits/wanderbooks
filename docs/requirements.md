@@ -134,6 +134,12 @@ requirement conflict, the requirement wins.
   capital. Periods close in order (`CloseOutOfOrder`). The
   journal records the target, and replay re-derives the closing entry and
   checks every line against the journal.
+- **R-? — Prepaid expenses, deferred revenue, and recurring entries.** Was
+  part of R-FUTURE-6 ("scheduled transactions"). Amortization schedules
+  post monthly, equal to the cent, idempotently, honoring closed periods;
+  the journal records each posting with its full entry and replay checks
+  it. Recurring entries generate drafts only, never posts, so the receipt
+  policy always applies.
 - **R-? — A/R and A/P workflows.** Was R-FUTURE-5.
   `ledger-core::arap`: customers, vendors, invoices, bills, payments,
   AR/AP aging. MCP tools for the full workflow.

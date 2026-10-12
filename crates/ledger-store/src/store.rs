@@ -1795,6 +1795,139 @@ impl Store {
         Ok((id, sha, dedup))
     }
 
+    /// Register an amortization schedule. Journaled as `schedule.registered`.
+    pub fn register_schedule(
+        &mut self,
+        new: ledger_core::NewSchedule,
+    ) -> Result<ledger_core::ScheduleId, StoreError> {
+        ledger_core::schedules::validate_schedule(&new, self.ledger.chart())?;
+        let id = self.ledger.next_schedule_id();
+        let line = self.append_journal(
+            "schedule.registered",
+            json!({
+                "id": id,
+                "description": new.description,
+                "kind": serde_json::to_value(new.kind)?,
+                "total": {"amount": new.total.amount.to_string(), "currency": new.total.currency.code()},
+                "start": new.start.to_string(),
+                "months": new.months,
+                "balance_account": new.balance_account,
+                "pl_account": new.pl_account,
+            }),
+        )?;
+        let got = self.ledger.register_schedule(new)?;
+        debug_assert_eq!(got, id);
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(id)
+    }
+
+    /// Post one month of a schedule. Journaled as `schedule.posted` with the
+    /// whole entry, so a month is never half-posted or posted twice; replay
+    /// re-derives the entry and checks it line by line.
+    pub fn post_schedule_month(
+        &mut self,
+        id: ledger_core::ScheduleId,
+        month_end: NaiveDate,
+    ) -> Result<EntryId, StoreError> {
+        // Pure pre-validation, so the mutation below cannot fail.
+        let (date, _, _) = self.ledger.preview_schedule_month(id, month_end)?;
+        if let Some(p) = self.ledger.closed_period_containing(date) {
+            return Err(LedgerError::ClosedPeriod(p, date.to_string()).into());
+        }
+        let entry = self.ledger.post_schedule_month(id, month_end)?;
+        let line = self.append_journal(
+            "schedule.posted",
+            json!({
+                "schedule_id": id,
+                "month": date.to_string(),
+                "entry": entry_detail_json(&self.ledger, entry),
+            }),
+        )?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(entry)
+    }
+
+    /// Post every schedule's due months through `through`, oldest first.
+    /// Returns (schedule, month, entry) for each.
+    pub fn run_schedules(
+        &mut self,
+        through: NaiveDate,
+    ) -> Result<Vec<(ledger_core::ScheduleId, NaiveDate, EntryId)>, StoreError> {
+        let mut due: Vec<(NaiveDate, ledger_core::ScheduleId)> = self
+            .ledger
+            .schedules()
+            .flat_map(|s| s.due(through).into_iter().map(move |(d, _)| (d, s.id)))
+            .collect();
+        due.sort();
+        let mut out = Vec::with_capacity(due.len());
+        for (month, id) in due {
+            out.push((id, month, self.post_schedule_month(id, month)?));
+        }
+        Ok(out)
+    }
+
+    /// Register a recurring entry. Journaled as `recurring.registered`.
+    pub fn register_recurring(
+        &mut self,
+        new: ledger_core::NewRecurring,
+    ) -> Result<ledger_core::RecurringId, StoreError> {
+        ledger_core::schedules::validate_recurring(&new, self.ledger.chart())?;
+        let id = self.ledger.next_recurring_id();
+        let lines: Vec<Value> = new
+            .lines
+            .iter()
+            .map(|(account, side, money)| {
+                json!({
+                    "account": account,
+                    "side": if *side == Side::Debit { "debit" } else { "credit" },
+                    "amount": money.amount.to_string(),
+                    "currency": money.currency.code(),
+                })
+            })
+            .collect();
+        let line = self.append_journal(
+            "recurring.registered",
+            json!({
+                "id": id,
+                "description": new.description,
+                "frequency": serde_json::to_value(new.frequency)?,
+                "start": new.start.to_string(),
+                "end": new.end.map(|e| e.to_string()),
+                "lines": lines,
+            }),
+        )?;
+        let got = self.ledger.register_recurring(new)?;
+        debug_assert_eq!(got, id);
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(id)
+    }
+
+    /// Generate every recurring entry's due occurrences through `through`
+    /// as drafts. Each journaled as `recurring.generated`. Returns
+    /// (recurring entry, date, draft) for each.
+    pub fn run_recurring(
+        &mut self,
+        through: NaiveDate,
+    ) -> Result<Vec<(ledger_core::RecurringId, NaiveDate, EntryId)>, StoreError> {
+        let mut due: Vec<(NaiveDate, ledger_core::RecurringId)> = self
+            .ledger
+            .recurring_entries()
+            .flat_map(|r| r.due(through).into_iter().map(move |d| (d, r.id)))
+            .collect();
+        due.sort();
+        let mut out = Vec::with_capacity(due.len());
+        for (date, id) in due {
+            let entry = self.ledger.generate_recurring(id, date)?;
+            let line = self.append_journal(
+                "recurring.generated",
+                json!({"recurring_id": id, "date": date.to_string(), "entry_id": entry}),
+            )?;
+            apply_line_to_sqlite(&self.conn, &line)?;
+            out.push((id, date, entry));
+        }
+        Ok(out)
+    }
+
     /// Set (or clear) an account's tax category and deductible percent.
     /// Journaled as `account.tax_set`.
     pub fn set_account_tax(
@@ -2742,6 +2875,79 @@ fn replay_line_into_ledger(
                 )));
             }
         }
+        "schedule.registered" => {
+            let want = get_u64(p, "id")?;
+            let got = ledger.register_schedule(ledger_core::NewSchedule {
+                description: get_str(p, "description")?.to_string(),
+                kind: serde_json::from_value(p["kind"].clone())?,
+                total: parse_money(p, "total")?,
+                start: parse_date(get_str(p, "start")?)?,
+                months: get_u64(p, "months")? as u32,
+                balance_account: get_u64(p, "balance_account")?,
+                pl_account: get_u64(p, "pl_account")?,
+            })?;
+            if got != want {
+                return Err(StoreError::ReplayMismatch(format!(
+                    "schedule id: journal says {want}, replay got {got}"
+                )));
+            }
+        }
+        "schedule.posted" => {
+            let got = ledger.post_schedule_month(
+                get_u64(p, "schedule_id")?,
+                parse_date(get_str(p, "month")?)?,
+            )?;
+            check_replayed_entry(ledger, got, &p["entry"])?;
+        }
+        "recurring.registered" => {
+            let want = get_u64(p, "id")?;
+            let lines = p["lines"]
+                .as_array()
+                .ok_or_else(|| StoreError::JournalCorrupt("recurring lines".into()))?
+                .iter()
+                .map(|l| {
+                    Ok((
+                        get_u64(l, "account")?,
+                        parse_side(get_str(l, "side")?)?,
+                        Money::new(
+                            get_str(l, "amount")?.parse().map_err(|_| {
+                                StoreError::JournalCorrupt("recurring amount".into())
+                            })?,
+                            Currency::new(get_str(l, "currency")?).map_err(|_| {
+                                StoreError::JournalCorrupt("recurring currency".into())
+                            })?,
+                        ),
+                    ))
+                })
+                .collect::<Result<Vec<_>, StoreError>>()?;
+            let got = ledger.register_recurring(ledger_core::NewRecurring {
+                description: get_str(p, "description")?.to_string(),
+                lines,
+                frequency: serde_json::from_value(p["frequency"].clone())?,
+                start: parse_date(get_str(p, "start")?)?,
+                end: match p.get("end").and_then(|v| v.as_str()) {
+                    Some(e) => Some(parse_date(e)?),
+                    None => None,
+                },
+            })?;
+            if got != want {
+                return Err(StoreError::ReplayMismatch(format!(
+                    "recurring id: journal says {want}, replay got {got}"
+                )));
+            }
+        }
+        "recurring.generated" => {
+            let want = get_u64(p, "entry_id")?;
+            let got = ledger.generate_recurring(
+                get_u64(p, "recurring_id")?,
+                parse_date(get_str(p, "date")?)?,
+            )?;
+            if got != want {
+                return Err(StoreError::ReplayMismatch(format!(
+                    "recurring draft: journal says {want}, replay got {got}"
+                )));
+            }
+        }
         "account.tax_set" => {
             let pct = match p.get("deductible_percent").and_then(|v| v.as_str()) {
                 Some(s) => Some(s.parse().map_err(|_| {
@@ -3034,6 +3240,76 @@ fn close_to_from_journal(v: Option<&Value>) -> Result<CloseTo, StoreError> {
     ))
 }
 
+/// Record a posted entry that rides inside another event's payload (a
+/// closing entry, a schedule posting) in the projection, like any posted
+/// entry.
+fn project_posted_entry(conn: &Connection, e: &Value) -> Result<(), StoreError> {
+    let eid = get_u64(e, "id")? as i64;
+    conn.execute(
+        "INSERT INTO entries(id, date, description, status, reversal_of) VALUES (?,?,?,'posted',NULL)",
+        params![eid, get_str(e, "date")?, get_str(e, "description")?],
+    )?;
+    for l in e
+        .get("lines")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| StoreError::JournalCorrupt("posted entry without lines".into()))?
+    {
+        conn.execute(
+            "INSERT INTO lines(entry_id, account_id, side, amount, currency, foreign_currency, foreign_amount, class_id) VALUES (?,?,?,?,?,?,?,?)",
+            params![
+                eid,
+                get_u64(l, "account")? as i64,
+                get_str(l, "side")?,
+                get_str(l, "amount")?,
+                get_str(l, "currency")?,
+                l.get("foreign_currency").and_then(|v| v.as_str()),
+                l.get("foreign_amount").and_then(|v| v.as_str()),
+                l.get("class_id").and_then(|v| v.as_u64()).map(|v| v as i64),
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+/// The full detail of a posted entry, for events that carry one.
+fn entry_detail_json(ledger: &Ledger, id: EntryId) -> Value {
+    let e = ledger.get_entry(id).expect("entry just posted");
+    json!({
+        "id": id,
+        "date": e.date().to_string(),
+        "description": e.description(),
+        "lines": e.lines().iter().map(journal_line_json).collect::<Vec<_>>(),
+    })
+}
+
+/// On replay, an entry re-derived from master data must match the journal
+/// line for line.
+fn check_replayed_entry(
+    ledger: &Ledger,
+    got: EntryId,
+    journaled: &Value,
+) -> Result<(), StoreError> {
+    let want = get_u64(journaled, "id")?;
+    if got != want {
+        return Err(StoreError::ReplayMismatch(format!(
+            "entry id: journal says {want}, replay got {got}"
+        )));
+    }
+    let lines: Vec<Value> = ledger
+        .get_entry(got)
+        .expect("replay posted it")
+        .lines()
+        .iter()
+        .map(journal_line_json)
+        .collect();
+    if journaled["lines"].as_array() != Some(&lines) {
+        return Err(StoreError::ReplayMismatch(format!(
+            "entry {got}: replayed lines differ from the journal"
+        )));
+    }
+    Ok(())
+}
+
 fn apply_line_to_sqlite(conn: &Connection, line: &JournalLine) -> Result<(), StoreError> {
     let p = &line.payload;
     match line.line_type.as_str() {
@@ -3158,6 +3434,10 @@ fn apply_line_to_sqlite(conn: &Connection, line: &JournalLine) -> Result<(), Sto
                 ],
             )?;
         }
+        "schedule.registered" | "recurring.registered" | "recurring.generated" => {
+            // Master data and drafts: the ledger holds them; no report rows.
+        }
+        "schedule.posted" => project_posted_entry(conn, &p["entry"])?,
         "receipt.unlinked" => {
             conn.execute(
                 "UPDATE attachments SET entry_id = NULL WHERE id = ?",
@@ -3237,29 +3517,7 @@ fn apply_line_to_sqlite(conn: &Connection, line: &JournalLine) -> Result<(), Sto
             // posted entry so the projection stays complete, then mark the
             // period row closed.
             if !p.get("entry").map(|v| v.is_null()).unwrap_or(true) {
-                let e = &p["entry"];
-                let eid = get_u64(e, "id")? as i64;
-                conn.execute(
-                    "INSERT INTO entries(id, date, description, status, reversal_of) VALUES (?,?,?,'posted',NULL)",
-                    params![eid, get_str(e, "date")?, get_str(e, "description")?],
-                )?;
-                for l in e.get("lines").and_then(|v| v.as_array()).ok_or_else(|| {
-                    StoreError::JournalCorrupt("period.closed entry without lines".into())
-                })? {
-                    conn.execute(
-                        "INSERT INTO lines(entry_id, account_id, side, amount, currency, foreign_currency, foreign_amount, class_id) VALUES (?,?,?,?,?,?,?,?)",
-                        params![
-                            eid,
-                            get_u64(l, "account")? as i64,
-                            get_str(l, "side")?,
-                            get_str(l, "amount")?,
-                            get_str(l, "currency")?,
-                            l.get("foreign_currency").and_then(|v| v.as_str()),
-                            l.get("foreign_amount").and_then(|v| v.as_str()),
-                            l.get("class_id").and_then(|v| v.as_u64()).map(|v| v as i64),
-                        ],
-                    )?;
-                }
+                project_posted_entry(conn, &p["entry"])?;
             }
             conn.execute(
                 "UPDATE periods SET status = 'closed', closing_entry = ? WHERE id = ?",

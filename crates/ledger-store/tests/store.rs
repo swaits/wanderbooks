@@ -537,3 +537,78 @@ fn a_close_into_members_capital_replays_exactly() {
     assert_eq!(balances(&store), want);
     store.verify().unwrap();
 }
+
+#[test]
+fn schedules_and_recurring_entries_replay_exactly() {
+    let dir = test_dir("schedules");
+    let mut store = Store::create(&dir, Currency::USD).unwrap();
+    let cash = store
+        .add_account("1000", "Cash", AccountType::Asset, None, false)
+        .unwrap();
+    let prepaid = store
+        .add_account("1300", "Prepaid", AccountType::Asset, None, false)
+        .unwrap();
+    let ins = store
+        .add_account("6300", "Insurance", AccountType::Expense, None, false)
+        .unwrap();
+    let rent = store
+        .add_account("6600", "Rent", AccountType::Expense, None, false)
+        .unwrap();
+    let date = |m, d| NaiveDate::from_ymd_opt(2026, m, d).unwrap();
+    let usd_s = |s: &str| Money::new(s.parse().unwrap(), Currency::USD);
+    store
+        .register_schedule(ledger_core::NewSchedule {
+            description: "Insurance".into(),
+            kind: ledger_core::ScheduleKind::PrepaidExpense,
+            total: usd_s("1000"),
+            start: date(1, 1),
+            months: 3,
+            balance_account: prepaid,
+            pl_account: ins,
+        })
+        .unwrap();
+    store
+        .register_recurring(ledger_core::NewRecurring {
+            description: "Rent".into(),
+            lines: vec![
+                (rent, Side::Debit, usd_s("500")),
+                (cash, Side::Credit, usd_s("500")),
+            ],
+            frequency: ledger_core::Frequency::Monthly,
+            start: date(1, 1),
+            end: None,
+        })
+        .unwrap();
+    // 333.33, 333.33 through February; rent drafts for Jan 1 and Feb 1.
+    let posted = store.run_schedules(date(2, 28)).unwrap();
+    assert_eq!(posted.len(), 2);
+    let drafts = store.run_recurring(date(2, 28)).unwrap();
+    assert_eq!(
+        drafts.iter().map(|d| d.1).collect::<Vec<_>>(),
+        [date(1, 1), date(2, 1)]
+    );
+    store.post_entry(drafts[0].2).unwrap();
+    let state = |s: &Store| {
+        (
+            s.ledger().account_balance(ins).unwrap(),
+            s.ledger().account_balance(rent).unwrap(),
+            s.ledger().get_entry(drafts[1].2).unwrap().status(),
+        )
+    };
+    let want = (
+        Decimal::new(66666, 2),
+        Decimal::new(500, 0),
+        ledger_core::EntryStatus::Draft,
+    );
+    assert_eq!(state(&store), want);
+
+    drop(store);
+    let mut store = Store::open(&dir).unwrap();
+    assert_eq!(state(&store), want);
+    store.rebuild().unwrap();
+    assert_eq!(state(&store), want);
+    store.verify().unwrap();
+    // Idempotent after replay: nothing new is due through February.
+    assert!(store.run_schedules(date(2, 28)).unwrap().is_empty());
+    assert!(store.run_recurring(date(2, 28)).unwrap().is_empty());
+}

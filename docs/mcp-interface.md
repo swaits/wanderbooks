@@ -279,10 +279,13 @@ R-FUTURE-3 and rides the engine roadmap, not the MCP layer.
 - `books.create_period { name, start, end }` → `{ period_id }`.
   Dates are YYYY-MM-DD, inclusive.
 - `books.close_period { period_id, confirmed? }` → without confirmation:
-  `{ status: "preview", lines: [...] }` showing the closing lines and posts
-  nothing; with `confirmed: true`: posts the closing entry (revenue debited
-  to zero, expenses credited to zero, net to `3999` Retained Earnings) and
-  marks the period closed. Closed periods reject new entries.
+  `{ status: "preview", lines: [...] }`: the exact closing entry (the close
+  run on a copy of the ledger), posting nothing; with `confirmed: true`:
+  posts it and marks the period closed. The entry zeroes revenue and
+  expense balances as of the period end; the net goes to `3999` Retained
+  Earnings, or, with `[[company.members]]` in `wanderbooks.toml`, to each
+  member's capital account by share. Periods close in order. Closed periods
+  reject new entries.
 - `books.list_periods {}` → `{ periods: [{ id, name, start, end, status,
   closing_entry }] }`.
 

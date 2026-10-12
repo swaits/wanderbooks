@@ -111,8 +111,16 @@ requirement conflict, the requirement wins.
   Reports work in base currency. (Full per-account currencies and translation
   remain future.)
 - **R-? — Periods and close.** Was R-FUTURE-2.
-  `ledger-core::periods`: `create_period`, `close_period` (posts closing
-  entry to `3999` Retained Earnings), closed periods reject new entries.
+  `ledger-core::periods`: `create_period`, `close_period_to(id, to)`; closed
+  periods reject new entries. The closing entry, dated at period end,
+  zeroes each revenue and expense account's balance **as of the period
+  end** (later-dated entries belong to later periods) and puts the net in
+  `to`: `CloseTo::RetainedEarnings` (`3999`, the corporate convention;
+  `close_period` is shorthand) or `CloseTo::Members` (each member's capital
+  account by share, to the cent, the last absorbing rounding: the
+  partnership convention). Periods close in order (`CloseOutOfOrder`). The
+  journal records the target, and replay re-derives the closing entry and
+  checks every line against the journal.
 - **R-? — A/R and A/P workflows.** Was R-FUTURE-5.
   `ledger-core::arap`: customers, vendors, invoices, bills, payments,
   AR/AP aging. MCP tools for the full workflow.

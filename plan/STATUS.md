@@ -204,4 +204,14 @@ interface is MCP, not a cloned GUI. The first storage + MCP slice is done
   (loss), standard cash-flow wording) and an "Accrual basis · Prepared …"
   footer. "Today" is local time, not UTC (evening exports were dated
   tomorrow).
+- 2026-10-11: Period close fixed and made partnership-aware. The close swept
+  every revenue/expense posting ever made, so a period closed after later
+  entries existed swallowed them (closing January in March closed February
+  and March too); it now zeroes balances as of the period end, refuses to
+  close out of order, and its preview is the real close run on a copy of
+  the ledger. A multi-member LLC closes into each member's capital account
+  by share (CloseTo::Members), the partnership convention, so capital
+  accounts carry allocated earnings; the members'-equity statement treats
+  those closes as income, not contributions, and the balance sheet shows
+  only unallocated earnings. Replay now checks closing lines, not just ids.
 

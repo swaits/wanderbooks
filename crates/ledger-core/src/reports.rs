@@ -4,6 +4,7 @@
 //! (`docs/oracle.md`) diffs: the same fixture books through two engines must
 //! produce byte-identical [`snapshot`] output.
 
+use crate::periods::allocate;
 use crate::{AccountType, Class, ClassId, JournalEntry, JournalLine, Ledger, LedgerError};
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
@@ -711,20 +712,6 @@ pub struct MembersEquityStatement {
     pub total: MemberEquityColumn,
 }
 
-/// Split `amount` by `shares` to the cent; the last share absorbs rounding,
-/// so the parts always sum to `amount` exactly.
-fn allocate(amount: Decimal, shares: &[Decimal]) -> Vec<Decimal> {
-    use rust_decimal::RoundingStrategy::MidpointAwayFromZero;
-    let mut parts: Vec<Decimal> = shares
-        .iter()
-        .map(|s| (amount * s).round_dp_with_strategy(2, MidpointAwayFromZero))
-        .collect();
-    if let Some((last, rest)) = parts.split_last_mut() {
-        *last = amount - rest.iter().sum::<Decimal>();
-    }
-    parts
-}
-
 /// Build the statement of changes in members' equity for `[start, end]`.
 ///
 /// Each member's capital account supplies contributions (credits) and
@@ -783,11 +770,14 @@ pub fn members_equity(
         }
         m
     };
+    // Contributions and distributions move a capital account; a closing
+    // entry allocating earnings into it is income, already counted below.
+    let closings = ledger.closing_entry_ids();
     let flows = |id: crate::AccountId| -> (Decimal, Decimal) {
         let (mut credits, mut debits) = (Decimal::ZERO, Decimal::ZERO);
         for e in ledger
             .posted_entries()
-            .filter(|e| e.date() >= start && e.date() <= end)
+            .filter(|e| e.date() >= start && e.date() <= end && !closings.contains(&e.id()))
         {
             for l in e.lines().iter().filter(|l| l.account == id) {
                 match l.side {

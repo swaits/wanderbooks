@@ -175,14 +175,29 @@ pub fn profit_and_loss(pl: &ProfitAndLossStatement) -> Statement {
     )
 }
 
-/// Lay out a balance sheet. `net_income_ytd` is the fiscal year to date's
-/// net income (loss): it shows as its own equity line, and earnings from
-/// before the fiscal year — the Retained Earnings account plus any not yet
-/// closed — show as "Retained earnings". With `members`, equity is
-/// "Members' equity".
+/// The fiscal year's earnings, as the balance sheet presents them.
+#[derive(Clone, Copy, Debug)]
+pub struct YearEarnings {
+    /// Net income (loss) for the fiscal year through the as-of date.
+    pub net_income_ytd: Decimal,
+    /// The part of it not yet closed into equity accounts.
+    pub unclosed: Decimal,
+}
+
+/// Lay out a balance sheet.
+///
+/// Without members (corporate convention), equity ends with "Retained
+/// earnings" — the Retained Earnings account plus earlier years' earnings
+/// not yet closed — and the fiscal year's "Net income (loss)".
+///
+/// With members (a partnership), each member's capital account already
+/// carries the earnings closed into it, so equity ends with only what
+/// hasn't been allocated: "Undistributed earnings, prior years" (if any)
+/// and this year's unclosed "Net income (loss)". Equity is "Members'
+/// equity".
 pub fn balance_sheet(
     bs: &BalanceSheetStatement,
-    net_income_ytd: Decimal,
+    earnings: YearEarnings,
     members: &[Member],
 ) -> Statement {
     let equity_name = if members.is_empty() {
@@ -203,21 +218,39 @@ pub fn balance_sheet(
     ));
     rows.push(spacer());
     rows.push(section(equity_name));
-    let (retained, other): (Vec<_>, Vec<_>) = bs
-        .equity
-        .iter()
-        .partition(|l| l.code == RETAINED_EARNINGS_CODE);
-    rows.extend(
-        other
+    if members.is_empty() {
+        let (retained, other): (Vec<_>, Vec<_>) = bs
+            .equity
             .iter()
-            .map(|l| one(RowKind::Line, format!("{} {}", l.code, l.name), l.amount)),
-    );
-    let retained: Decimal =
-        retained.iter().map(|l| l.amount).sum::<Decimal>() + bs.current_earnings - net_income_ytd;
-    if !retained.is_zero() {
-        rows.push(one(RowKind::Line, "Retained earnings", retained));
+            .partition(|l| l.code == RETAINED_EARNINGS_CODE);
+        rows.extend(
+            other
+                .iter()
+                .map(|l| one(RowKind::Line, format!("{} {}", l.code, l.name), l.amount)),
+        );
+        let retained: Decimal = retained.iter().map(|l| l.amount).sum::<Decimal>()
+            + bs.current_earnings
+            - earnings.net_income_ytd;
+        if !retained.is_zero() {
+            rows.push(one(RowKind::Line, "Retained earnings", retained));
+        }
+        rows.push(one(
+            RowKind::Line,
+            "Net income (loss)",
+            earnings.net_income_ytd,
+        ));
+    } else {
+        rows.extend(account_lines(&bs.equity));
+        let prior = bs.current_earnings - earnings.unclosed;
+        if !prior.is_zero() {
+            rows.push(one(
+                RowKind::Line,
+                "Undistributed earnings, prior years",
+                prior,
+            ));
+        }
+        rows.push(one(RowKind::Line, "Net income (loss)", earnings.unclosed));
     }
-    rows.push(one(RowKind::Line, "Net income (loss)", net_income_ytd));
     rows.push(one(
         RowKind::Subtotal,
         format!("Total {}", equity_name.to_lowercase()),
@@ -474,50 +507,105 @@ mod tests {
         );
     }
 
-    #[test]
-    fn balance_sheet_splits_retained_earnings_from_this_year() {
-        let line = |code: &str, name: &str, a: &str| StatementLine {
+    fn sl(code: &str, name: &str, a: &str) -> StatementLine {
+        StatementLine {
             code: code.into(),
             name: name.into(),
             amount: dec(a),
-        };
+        }
+    }
+
+    fn equity_rows(st: &Statement, from: &str) -> Vec<(String, Option<Decimal>)> {
+        st.rows
+            .iter()
+            .skip_while(|r| r.label != from)
+            .map(|r| (r.label.clone(), r.amounts.first().copied().flatten()))
+            .collect()
+    }
+
+    #[test]
+    fn corporate_balance_sheet_splits_retained_earnings_from_this_year() {
         // Prior years closed 1,000 to Retained Earnings; 200 more unclosed
         // from last year; this year's net income is 300 (current earnings
         // 500 = 200 + 300).
         let bs = BalanceSheetStatement {
             as_of: NaiveDate::from_ymd_opt(2027, 3, 31).unwrap(),
-            assets: vec![line("1000", "Cash", "2500")],
+            assets: vec![sl("1000", "Cash", "2500")],
             liabilities: vec![],
             equity: vec![
-                line("3000", "Capital — Alice", "1000"),
-                line("3999", "Retained Earnings", "1000"),
+                sl("3000", "Common Stock", "1000"),
+                sl("3999", "Retained Earnings", "1000"),
             ],
             current_earnings: dec("500"),
             total_assets: dec("2500"),
             total_liabilities: dec("0"),
             total_equity: dec("2500"),
         };
-        let members = [Member {
-            name: "Alice".into(),
-            capital_code: "3000".into(),
-        }];
-        let st = balance_sheet(&bs, dec("300"), &members);
-        let eq: Vec<(&str, Option<Decimal>)> = st
-            .rows
-            .iter()
-            .skip_while(|r| r.label != "Members' equity")
-            .map(|r| (r.label.as_str(), r.amounts.first().copied().flatten()))
-            .collect();
+        let e = YearEarnings {
+            net_income_ytd: dec("300"),
+            unclosed: dec("300"),
+        };
+        let st = balance_sheet(&bs, e, &[]);
+        let some = |s: &str| Some(dec(s));
         assert_eq!(
-            eq,
+            equity_rows(&st, "Equity"),
             [
-                ("Members' equity", None),
-                ("3000 Capital — Alice", Some(dec("1000"))),
-                ("Retained earnings", Some(dec("1200"))),
-                ("Net income (loss)", Some(dec("300"))),
-                ("Total members' equity", Some(dec("2500"))),
-                ("", None),
-                ("Total liabilities and members' equity", Some(dec("2500"))),
+                ("Equity".into(), None),
+                ("3000 Common Stock".into(), some("1000")),
+                ("Retained earnings".into(), some("1200")),
+                ("Net income (loss)".into(), some("300")),
+                ("Total equity".into(), some("2500")),
+                ("".into(), None),
+                ("Total liabilities and equity".into(), some("2500")),
+            ]
+        );
+    }
+
+    #[test]
+    fn partnership_balance_sheet_shows_only_unallocated_earnings() {
+        // January (100) was closed into the capital accounts; February and
+        // March (200) are this year's unclosed income; 50 from last year
+        // was never closed.
+        let bs = BalanceSheetStatement {
+            as_of: NaiveDate::from_ymd_opt(2027, 3, 31).unwrap(),
+            assets: vec![sl("1000", "Cash", "1350")],
+            liabilities: vec![],
+            equity: vec![
+                sl("3000", "Capital — Alice", "550"),
+                sl("3001", "Capital — Bob", "550"),
+            ],
+            current_earnings: dec("250"),
+            total_assets: dec("1350"),
+            total_liabilities: dec("0"),
+            total_equity: dec("1350"),
+        };
+        let e = YearEarnings {
+            net_income_ytd: dec("300"),
+            unclosed: dec("200"),
+        };
+        let members = [
+            Member {
+                name: "Alice".into(),
+                capital_code: "3000".into(),
+            },
+            Member {
+                name: "Bob".into(),
+                capital_code: "3001".into(),
+            },
+        ];
+        let st = balance_sheet(&bs, e, &members);
+        let some = |s: &str| Some(dec(s));
+        assert_eq!(
+            equity_rows(&st, "Members' equity"),
+            [
+                ("Members' equity".into(), None),
+                ("3000 Capital — Alice".into(), some("550")),
+                ("3001 Capital — Bob".into(), some("550")),
+                ("Undistributed earnings, prior years".into(), some("50")),
+                ("Net income (loss)".into(), some("200")),
+                ("Total members' equity".into(), some("1350")),
+                ("".into(), None),
+                ("Total liabilities and members' equity".into(), some("1350")),
             ]
         );
     }

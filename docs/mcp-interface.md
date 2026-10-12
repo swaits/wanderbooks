@@ -21,6 +21,15 @@ If a behavior can't be expressed through `ledger-core`'s public API, the
 core is missing something — fix the core, don't work around it in the MCP
 layer.
 
+## Company settings
+
+`ledger-mcp` reads the books dir's `wanderbooks.toml` (default: next to
+`--data-dir`; override with `--books-toml PATH`): `[company] name` heads
+every report, `[company] fiscal_year_start` ("MM-DD", default "01-01";
+the year's end is derived, never stored) defines fiscal-year-to-date for the
+CPA package, and `[books] receipt_threshold` sets the receipt policy unless
+`config.json` sets `receipt_policy`.
+
 ## Transports
 
 1. **stdio** (build first). For Claude Code, Claude Desktop, local agents.
@@ -78,8 +87,14 @@ below.
   → entries with lines, newest first. `limit` caps at 100.
 - `books.trial_balance {}` → canonical JSON (same shape as
   `reports::snapshot` trial-balance section).
-- `books.balance_sheet {}` → canonical JSON.
-- `books.profit_and_loss {}` → canonical JSON.
+- `books.balance_sheet { as_of? }` → totals (`assets`, `liabilities`,
+  `equity`, `current_earnings`, `balanced`) plus `asset_accounts`,
+  `liability_accounts`, `equity_accounts` (`{code, name, amount}`), as of
+  the date (default today).
+- `books.profit_and_loss { start?, end?, class? }` → totals plus
+  `revenue_accounts` and `expense_accounts` for the range. `end` defaults to
+  today, `start` to the first posted entry. Closing entries are excluded, so
+  a closed period still shows what it earned.
 - `books.cash_flow { start?, end?, cash_accounts: ["1000"], financing_accounts? }`
   → indirect-method cash flow statement. `cash_accounts` are the reconciling
   accounts (required); the three sections always sum to their net change.

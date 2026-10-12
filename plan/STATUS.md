@@ -170,3 +170,11 @@ interface is MCP, not a cloned GUI. The first storage + MCP slice is done
   requested label; core needs period-scoped statements); P&L and balance
   sheet XLSX are totals-only; PDF amounts don't align (padding in a
   proportional font), no company name, negatives as "-x".
+- 2026-10-11: Every statement export (csv, json, xlsx, pdf, CPA package)
+  now renders core's period statements: the date range and as-of date are
+  real, with a line per account. One layout (`ledger-import::report`:
+  sections, lines, subtotals, totals; exact "(1,234.56)" formatting) feeds
+  every renderer. The server reads `wanderbooks.toml`: company name for
+  report headers, `fiscal_year_start` for fiscal YTD (end derived), and
+  `receipt_threshold` (it was silently ignored before). Reports carry
+  "Prepared from journal through seq N".

@@ -1,12 +1,15 @@
 //! `ledger-mcp`: the AI-first bookkeeping interface, over stdio.
 //!
-//! Usage: `ledger-mcp [--data-dir PATH] [--config PATH]`
+//! Usage: `ledger-mcp [--data-dir PATH] [--config PATH] [--books-toml PATH]`
 //!
 //! The data dir holds `journal.jsonl` (the source of truth), `wanderbooks.db`
 //! (the disposable SQLite projection), `blobs/` (content-addressed receipts),
 //! and optionally `config.json`. If no store exists, one is created with the
-//! configured base currency.
+//! configured base currency. Company settings (name, fiscal year start,
+//! receipt threshold) come from the books dir's `wanderbooks.toml`, by
+//! default the one next to the data dir.
 
+mod company;
 mod policy;
 mod server;
 mod types;
@@ -25,9 +28,10 @@ struct Config {
     /// ISO 4217 base currency for a new store. Default "USD".
     #[serde(default)]
     base_currency: Option<String>,
-    /// Receipt policy. Defaults to require-receipts-above $25.00.
+    /// Receipt policy. Overrides `wanderbooks.toml`'s receipt_threshold;
+    /// with neither, receipts are required above $25.00.
     #[serde(default)]
-    receipt_policy: ReceiptPolicy,
+    receipt_policy: Option<ReceiptPolicy>,
 }
 
 fn default_data_dir() -> PathBuf {
@@ -36,15 +40,23 @@ fn default_data_dir() -> PathBuf {
 }
 
 fn print_usage() {
-    eprintln!("usage: ledger-mcp [--data-dir PATH] [--config PATH] [--http ADDR]");
+    eprintln!(
+        "usage: ledger-mcp [--data-dir PATH] [--config PATH] [--books-toml PATH] [--http ADDR]"
+    );
     eprintln!("  --data-dir  directory holding journal.jsonl (default ~/.local/share/wanderbooks)");
     eprintln!("  --config    JSON config file (default <data-dir>/config.json, optional)");
-    eprintln!("  --http      serve over Streamable HTTP at ADDR (e.g. 127.0.0.1:8080) instead of stdio");
+    eprintln!(
+        "  --books-toml  company settings (default <data-dir>/../wanderbooks.toml, optional)"
+    );
+    eprintln!(
+        "  --http      serve over Streamable HTTP at ADDR (e.g. 127.0.0.1:8080) instead of stdio"
+    );
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut data_dir = default_data_dir();
     let mut config_path: Option<PathBuf> = None;
+    let mut books_toml: Option<PathBuf> = None;
     let mut http_addr: Option<String> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -54,6 +66,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--config" => {
                 config_path = Some(PathBuf::from(args.next().ok_or("--config needs a path")?));
+            }
+            "--books-toml" => {
+                books_toml = Some(PathBuf::from(
+                    args.next().ok_or("--books-toml needs a path")?,
+                ));
             }
             "--http" => {
                 http_addr = Some(args.next().ok_or("--http needs an address")?);
@@ -79,6 +96,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     // Logs go to stderr: stdout is the MCP channel.
     eprintln!("ledger-mcp: data dir {}", data_dir.display());
+    // An explicit --books-toml must exist; the default is optional.
+    let settings = match books_toml {
+        Some(path) => company::load(&path)?,
+        None => match data_dir.parent().map(|p| p.join("wanderbooks.toml")) {
+            Some(path) if path.exists() => company::load(&path)?,
+            _ => company::BooksSettings::default(),
+        },
+    };
+    eprintln!("ledger-mcp: company {:?}", settings.company.name);
+    let policy = match (config.receipt_policy, settings.receipt_threshold) {
+        (Some(policy), _) => policy,
+        (None, Some(threshold)) => ReceiptPolicy {
+            require_receipts_above: threshold,
+            ..ReceiptPolicy::default()
+        },
+        (None, None) => ReceiptPolicy::default(),
+    };
+    let company = settings.company;
 
     let store = if data_dir.join(ledger_store::JOURNAL_FILE).exists() {
         Store::open(&data_dir)?
@@ -99,12 +134,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
     if let Some(addr) = http_addr {
         eprintln!("ledger-mcp: store verified, serving Streamable HTTP on {addr}");
-        rt.block_on(serve_http(addr, store, config.receipt_policy))?;
+        rt.block_on(serve_http(addr, store, policy, company))?;
         return Ok(());
     }
 
     eprintln!("ledger-mcp: store verified, serving over stdio");
-    let server = BooksServer::new(store, config.receipt_policy);
+    let server = BooksServer::new(store, policy).with_company(company);
     rt.block_on(async {
         let running = server.serve(stdio()).await?;
         let _ = running.waiting().await;
@@ -117,6 +152,7 @@ async fn serve_http(
     addr: String,
     store: Store,
     policy: ReceiptPolicy,
+    company: company::Company,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use rmcp::transport::streamable_http_server::{
         StreamableHttpService, session::local::LocalSessionManager,
@@ -126,7 +162,8 @@ async fn serve_http(
     let store = Arc::new(std::sync::Mutex::new(store));
     let service = StreamableHttpService::new(
         move || {
-            let server = server::BooksServer::new_shared(store.clone(), policy.clone());
+            let server = server::BooksServer::new_shared(store.clone(), policy.clone())
+                .with_company(company.clone());
             Ok(server)
         },
         Arc::new(LocalSessionManager::default()),

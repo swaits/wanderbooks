@@ -1981,6 +1981,12 @@ impl Store {
     // Maintenance: verify and rebuild
     // ------------------------------------------------------------------
 
+    /// Sequence number of the last journal line: the exact journal state a
+    /// report reflects. Zero for an empty journal.
+    pub fn journal_seq(&self) -> u64 {
+        self.journal.next_seq() - 1
+    }
+
     /// Verify everything: the journal hash chain, a fresh replay's reports
     /// against the live ledger, and the SQLite projection against the replay.
     /// Loud on any divergence.

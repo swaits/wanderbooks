@@ -114,6 +114,21 @@ pub struct ProfitAndLossOut {
     pub expenses: String,
     /// Revenue minus expenses, decimal string. Positive is profit.
     pub net_income: String,
+    /// Revenue accounts with movement in the period.
+    pub revenue_accounts: Vec<StatementLineOut>,
+    /// Expense accounts with movement in the period.
+    pub expense_accounts: Vec<StatementLineOut>,
+}
+
+/// One account's line on a statement.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct StatementLineOut {
+    /// Account code.
+    pub code: String,
+    /// Account name.
+    pub name: String,
+    /// Amount on the account's normal side, decimal string.
+    pub amount: String,
 }
 
 /// Parameters for `books.cash_flow`.
@@ -285,6 +300,12 @@ pub struct BalanceSheetOut {
     pub current_earnings: String,
     /// True when assets equal liabilities plus equity exactly.
     pub balanced: bool,
+    /// Asset accounts with a balance.
+    pub asset_accounts: Vec<StatementLineOut>,
+    /// Liability accounts with a balance.
+    pub liability_accounts: Vec<StatementLineOut>,
+    /// Equity accounts with a balance (current earnings is separate).
+    pub equity_accounts: Vec<StatementLineOut>,
 }
 
 // ---------------------------------------------------------------------------

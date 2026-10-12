@@ -49,8 +49,11 @@ See [`plan/STATUS.md`](plan/STATUS.md) for where things stand and
 
 ```bash
 cargo test          # whole suite
+cargo run -p ledger-cli -- init ~/books/acme   # scaffold a books dir: mise.toml + AGENT.md
 cargo run -p ledger-mcp -- --data-dir /tmp/books   # MCP server over stdio
 ```
+Then `cd ~/books/acme`: `mise trust && mise install`, `mise run build`,
+`mise run mcp-add`, and start `claude` — the agent onboards from AGENT.md.
 
 ## Layout
 

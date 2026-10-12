@@ -29,6 +29,35 @@ pub enum PeriodStatus {
     Closed,
 }
 
+/// Where a period close puts the period's net income.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CloseTo {
+    /// One Retained Earnings account ([`RETAINED_EARNINGS_CODE`]): the
+    /// corporate convention.
+    RetainedEarnings,
+    /// Members' capital accounts, by share (shares sum to 1): the
+    /// partnership convention, where each member's capital account carries
+    /// their allocated earnings.
+    Members(Vec<(crate::AccountId, rust_decimal::Decimal)>),
+}
+
+/// Split `amount` by `shares` to the cent; the last share absorbs rounding,
+/// so the parts always sum to `amount` exactly.
+pub fn allocate(
+    amount: rust_decimal::Decimal,
+    shares: &[rust_decimal::Decimal],
+) -> Vec<rust_decimal::Decimal> {
+    use rust_decimal::RoundingStrategy::MidpointAwayFromZero;
+    let mut parts: Vec<_> = shares
+        .iter()
+        .map(|s| (amount * s).round_dp_with_strategy(2, MidpointAwayFromZero))
+        .collect();
+    if let Some((last, rest)) = parts.split_last_mut() {
+        *last = amount - rest.iter().copied().sum::<rust_decimal::Decimal>();
+    }
+    parts
+}
+
 /// Code of the Retained Earnings account that closing entries credit (or
 /// debit), created on the first close if the chart lacks it.
 pub const RETAINED_EARNINGS_CODE: &str = "3999";

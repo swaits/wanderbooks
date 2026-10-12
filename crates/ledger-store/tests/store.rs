@@ -457,3 +457,72 @@ fn receipt_corrections_are_journaled_and_survive_rebuild() {
     check(&store);
     store.verify().unwrap();
 }
+
+#[test]
+fn a_close_into_members_capital_replays_exactly() {
+    let dir = test_dir("members-close");
+    let mut store = Store::create(&dir, Currency::USD).unwrap();
+    let cash = store
+        .add_account("1000", "Cash", AccountType::Asset, None, false)
+        .unwrap();
+    let alice = store
+        .add_account("3000", "Capital — Alice", AccountType::Equity, None, false)
+        .unwrap();
+    let bob = store
+        .add_account("3001", "Capital — Bob", AccountType::Equity, None, false)
+        .unwrap();
+    let revenue = store
+        .add_account("4000", "Revenue", AccountType::Revenue, None, false)
+        .unwrap();
+    let jan15 = NaiveDate::from_ymd_opt(2026, 1, 15).unwrap();
+    let e = store.create_entry(jan15, "Sale").unwrap();
+    store
+        .add_line(
+            e,
+            cash,
+            Side::Debit,
+            Money::new(Decimal::new(10001, 2), Currency::USD),
+        )
+        .unwrap();
+    store
+        .add_line(
+            e,
+            revenue,
+            Side::Credit,
+            Money::new(Decimal::new(10001, 2), Currency::USD),
+        )
+        .unwrap();
+    store.post_entry(e).unwrap();
+    let jan = store
+        .create_period(
+            "2026-01",
+            NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
+        )
+        .unwrap();
+    let half = Decimal::new(5, 1);
+    store
+        .close_period_to(
+            jan,
+            &ledger_core::CloseTo::Members(vec![(alice, half), (bob, half)]),
+        )
+        .unwrap();
+    // 100.01 splits 50.01 / 50.00 into the capital accounts.
+    let balances = |s: &Store| {
+        (
+            s.ledger().account_balance(alice).unwrap(),
+            s.ledger().account_balance(bob).unwrap(),
+        )
+    };
+    let want = (Decimal::new(5001, 2), Decimal::new(5000, 2));
+    assert_eq!(balances(&store), want);
+    let journal = std::fs::read_to_string(dir.join("journal.jsonl")).unwrap();
+    assert!(journal.contains("\"close_to\":{\"members\""));
+
+    drop(store);
+    let mut store = Store::open(&dir).unwrap();
+    assert_eq!(balances(&store), want);
+    store.rebuild().unwrap();
+    assert_eq!(balances(&store), want);
+    store.verify().unwrap();
+}

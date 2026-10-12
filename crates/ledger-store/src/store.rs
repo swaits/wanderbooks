@@ -12,9 +12,9 @@ use crate::journal::{JournalLine, JournalWriter, read_and_verify_journal};
 use crate::schema;
 use chrono::{Months, NaiveDate};
 use ledger_core::{
-    AccountId, AccountType, AssetId, AssetStatus, BillId, Class, ClassId, Currency, CustomerId,
-    DocumentLine, EntryId, EntryStatus, InvoiceId, Ledger, LedgerError, Money, NewAsset,
-    PayrollLine, PayrollRun, PayrollRunId, PeriodId, Side, VendorId, arap,
+    AccountId, AccountType, AssetId, AssetStatus, BillId, Class, ClassId, CloseTo, Currency,
+    CustomerId, DocumentLine, EntryId, EntryStatus, InvoiceId, Ledger, LedgerError, Money,
+    NewAsset, PayrollLine, PayrollRun, PayrollRunId, PeriodId, Side, VendorId, arap,
     payroll::{PayrollAccounts, payroll_entry_plan, payroll_remit_plan},
     reports,
 };
@@ -955,14 +955,32 @@ impl Store {
     /// re-runs the deterministic close logic and checks the closing entry
     /// id against the journal.
     pub fn close_period(&mut self, id: PeriodId) -> Result<Option<EntryId>, StoreError> {
+        self.close_period_to(id, &CloseTo::RetainedEarnings)
+    }
+
+    /// Close a period with its net income going to `to`: Retained Earnings,
+    /// or members' capital accounts by share (see
+    /// [`ledger_core::Ledger::close_period_to`]). The target rides in the
+    /// journal so replay re-derives the identical closing entry.
+    pub fn close_period_to(
+        &mut self,
+        id: PeriodId,
+        to: &CloseTo,
+    ) -> Result<Option<EntryId>, StoreError> {
         // Pure pre-validation: a doomed close journals nothing, not even
         // the Retained Earnings account creation below.
         self.ledger.preview_close_period(id)?;
-        // Retained Earnings must exist before the close so its creation (if
-        // needed) is journaled as account.added; the close's own ensure
-        // then no-ops and replay stays deterministic.
-        self.ensure_control_account("3999", "Retained Earnings", AccountType::Equity)?;
-        let closing_entry = self.ledger.close_period(id)?;
+        if *to == CloseTo::RetainedEarnings {
+            // Retained Earnings must exist before the close so its creation
+            // (if needed) is journaled as account.added; the close's own
+            // ensure then no-ops and replay stays deterministic.
+            self.ensure_control_account(
+                ledger_core::RETAINED_EARNINGS_CODE,
+                "Retained Earnings",
+                AccountType::Equity,
+            )?;
+        }
+        let closing_entry = self.ledger.close_period_to(id, to)?;
         let entry_detail = match closing_entry {
             Some(eid) => {
                 let e = self
@@ -978,11 +996,21 @@ impl Store {
             }
             None => None,
         };
+        let close_to = match to {
+            CloseTo::RetainedEarnings => json!("retained_earnings"),
+            CloseTo::Members(members) => json!({
+                "members": members
+                    .iter()
+                    .map(|(account, share)| json!({"account": account, "share": share.to_string()}))
+                    .collect::<Vec<_>>(),
+            }),
+        };
         let line = self.append_journal(
             "period.closed",
             json!({
                 "id": id,
                 "closing_entry": closing_entry,
+                "close_to": close_to,
                 "entry": entry_detail,
             }),
         )?;
@@ -2738,14 +2766,43 @@ fn replay_line_into_ledger(
             let id = get_u64(p, "id")?;
             let want = p.get("closing_entry").and_then(|v| v.as_u64());
             // Deterministic: the close re-derives the closing entry from
-            // the replayed state, so it must match the journaled id. The
-            // journaled entry detail is for the projection; the ledger
-            // re-derives the entry itself.
-            let got = ledger.close_period(id)?;
+            // the replayed state and the journaled target (absent: Retained
+            // Earnings), so it must match the journal's id and every line.
+            let to = match p.get("close_to").and_then(|v| v.get("members")) {
+                None => ledger_core::CloseTo::RetainedEarnings,
+                Some(members) => ledger_core::CloseTo::Members(
+                    members
+                        .as_array()
+                        .ok_or_else(|| StoreError::JournalCorrupt("close_to.members".into()))?
+                        .iter()
+                        .map(|m| {
+                            let share = get_str(m, "share")?.parse().map_err(|_| {
+                                StoreError::JournalCorrupt("close_to member share".into())
+                            })?;
+                            Ok((get_u64(m, "account")?, share))
+                        })
+                        .collect::<Result<_, StoreError>>()?,
+                ),
+            };
+            let got = ledger.close_period_to(id, &to)?;
             if got != want {
                 return Err(StoreError::ReplayMismatch(format!(
                     "closing entry: journal says {want:?}, replay got {got:?}"
                 )));
+            }
+            if let Some(eid) = got {
+                let replayed: Vec<Value> = ledger
+                    .get_entry(eid)
+                    .expect("close posted it")
+                    .lines()
+                    .iter()
+                    .map(journal_line_json)
+                    .collect();
+                if p["entry"]["lines"].as_array() != Some(&replayed) {
+                    return Err(StoreError::ReplayMismatch(format!(
+                        "closing entry {eid}: replayed lines differ from the journal"
+                    )));
+                }
             }
         }
         "line.cleared" => {

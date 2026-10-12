@@ -117,14 +117,31 @@ impl BooksServer {
             .collect()
     }
 
-    /// Net income (loss) for the fiscal year containing `as_of`, through it.
-    fn net_income_ytd(&self, ledger: &Ledger, as_of: NaiveDate) -> Result<Decimal, String> {
+    /// The fiscal year's earnings through `as_of`, for the balance sheet:
+    /// net income (loss) year to date (closing entries excluded), and the
+    /// part of it still unclosed (closing entries included, so months
+    /// already closed into equity drop out).
+    fn year_earnings(
+        &self,
+        ledger: &Ledger,
+        as_of: NaiveDate,
+    ) -> Result<ledger_import::YearEarnings, String> {
         let (fy_start, _) = self.company.fiscal_year_containing(as_of);
-        Ok(
-            ledger_core::profit_and_loss_for_period(ledger, fy_start, as_of, None)
-                .map_err(|e| e.to_string())?
-                .net_income(),
-        )
+        let net_income_ytd = ledger_core::profit_and_loss_for_period(ledger, fy_start, as_of, None)
+            .map_err(|e| e.to_string())?
+            .net_income();
+        let mut unclosed = Decimal::ZERO;
+        for a in ledger.chart().all().filter(|a| !a.placeholder) {
+            match a.account_type {
+                AccountType::Revenue => unclosed += movement_in(ledger, a.id, fy_start, as_of),
+                AccountType::Expense => unclosed -= movement_in(ledger, a.id, fy_start, as_of),
+                _ => {}
+            }
+        }
+        Ok(ledger_import::YearEarnings {
+            net_income_ytd,
+            unclosed,
+        })
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Store>, String> {
@@ -1529,8 +1546,8 @@ impl BooksServer {
             )?),
             "balance_sheet" => {
                 let bs = bs_statement(ledger, p.as_of.as_deref())?;
-                let ytd = self.net_income_ytd(ledger, bs.as_of)?;
-                report::balance_sheet(&bs, ytd, &members)
+                let earnings = self.year_earnings(ledger, bs.as_of)?;
+                report::balance_sheet(&bs, earnings, &members)
             }
             "cash_flow" => report::cash_flow(
                 &cash_flow_statement(
@@ -1952,7 +1969,7 @@ impl BooksServer {
 
     #[tool(
         name = "books.close_period",
-        description = "Close an accounting period. Without confirmed=true, returns a preview of the closing entry (revenue/expense zeroed to Retained Earnings) and closes nothing. With confirmed=true, posts the closing entry and marks the period closed. Closed periods reject new entries."
+        description = "Close an accounting period. The closing entry, dated at period end, zeroes revenue and expense balances as of that date into Retained Earnings, or, for a multi-member LLC (members in wanderbooks.toml), into each member's capital account by share. Periods close in order. Without confirmed=true, returns the exact closing entry it would post and closes nothing. With confirmed=true, posts it and marks the period closed. Closed periods reject new entries."
     )]
     async fn close_period(
         &self,
@@ -1964,53 +1981,53 @@ impl BooksServer {
         if store.ledger().get_period(p.period_id).is_none() {
             return Err(format!("unknown period {}", p.period_id));
         }
+        // A partnership closes into its members' capital accounts by share;
+        // everyone else into Retained Earnings.
+        let to = if self.company.members.is_empty() {
+            ledger_core::CloseTo::RetainedEarnings
+        } else {
+            ledger_core::CloseTo::Members(
+                self.member_capitals(store.ledger())?
+                    .into_iter()
+                    .map(|m| (m.capital_account, m.share))
+                    .collect(),
+            )
+        };
+        let describe = |ledger: &Ledger, eid: Option<ledger_core::EntryId>| -> Vec<String> {
+            let Some(entry) = eid.and_then(|e| ledger.get_entry(e)) else {
+                return Vec::new();
+            };
+            entry
+                .lines()
+                .iter()
+                .map(|line| {
+                    let code = ledger
+                        .chart()
+                        .get(line.account)
+                        .map(|a| a.code.clone())
+                        .unwrap_or_default();
+                    format!("{:?} {} {}", line.side, code, money(line.amount.amount))
+                })
+                .collect()
+        };
         if !p.confirmed {
-            // Preview: compute what the closing entry would look like
-            // without mutating. We do this by inspecting revenue/expense
-            // balances directly.
-            let mut lines = Vec::new();
-            let mut accounts: Vec<_> = store.ledger().chart().all().collect();
-            accounts.sort_by(|a, b| a.code.cmp(&b.code));
-            for account in accounts {
-                match account.account_type {
-                    AccountType::Revenue | AccountType::Expense => {
-                        let movement = store.ledger().account_movement(account.id);
-                        if movement.is_zero() {
-                            continue;
-                        }
-                        let (side, amount) = if movement > Decimal::ZERO {
-                            ("credit", movement)
-                        } else {
-                            ("debit", -movement)
-                        };
-                        lines.push(format!("{} {} {} to zero", side, account.code, amount));
-                    }
-                    _ => {}
-                }
-            }
+            // Preview: run the real close on a copy of the ledger, so the
+            // preview is exactly what confirming would post.
+            let mut scratch = store.ledger().clone();
+            let closing = scratch
+                .close_period_to(p.period_id, &to)
+                .map_err(|e| e.to_string())?;
             return Ok(Json(ClosePeriodOut {
                 status: "preview".to_string(),
                 period_id: p.period_id,
                 closing_entry: None,
-                lines,
+                lines: describe(&scratch, closing),
             }));
         }
-        let closing = store.close_period(p.period_id).map_err(|e| e.to_string())?;
-        // Build line descriptions from the posted closing entry.
-        let mut lines = Vec::new();
-        if let Some(eid) = closing
-            && let Some(entry) = store.ledger().get_entry(eid)
-        {
-            for line in entry.lines() {
-                let code = store
-                    .ledger()
-                    .chart()
-                    .get(line.account)
-                    .map(|a| a.code.clone())
-                    .unwrap_or_default();
-                lines.push(format!("{:?} {} {}", line.side, code, line.amount.amount));
-            }
-        }
+        let closing = store
+            .close_period_to(p.period_id, &to)
+            .map_err(|e| e.to_string())?;
+        let lines = describe(store.ledger(), closing);
         Ok(Json(ClosePeriodOut {
             status: "closed".to_string(),
             period_id: p.period_id,
@@ -2644,7 +2661,7 @@ impl BooksServer {
                 "balance-sheet",
                 report::balance_sheet(
                     &bs_statement(ledger, Some(&as_of_s))?,
-                    self.net_income_ytd(ledger, as_of)?,
+                    self.year_earnings(ledger, as_of)?,
                     &members,
                 ),
             ),

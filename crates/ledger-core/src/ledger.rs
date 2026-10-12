@@ -57,7 +57,7 @@ pub struct ReconciliationReport {
 }
 
 /// The books. Single-currency (see R-5); owns id allocation.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Ledger {
     base_currency: Currency,
     chart: ChartOfAccounts,
@@ -587,112 +587,159 @@ impl Ledger {
             .collect()
     }
 
+    /// Close a period into Retained Earnings: see [`Self::close_period_to`].
+    pub fn close_period(&mut self, id: PeriodId) -> Result<Option<EntryId>, LedgerError> {
+        self.close_period_to(id, &periods::CloseTo::RetainedEarnings)
+    }
+
     /// Close a period. This:
-    /// 1. Rejects if the period is already closed.
-    /// 2. Rejects if any draft entries have dates inside the period.
-    /// 3. Posts a closing entry dated at period end: revenue accounts are
-    ///    debited to zero, expense accounts are credited to zero, and the
-    ///    net goes to Retained Earnings (account `3999`, created if missing).
-    /// 4. Marks the period closed.
+    /// 1. Rejects if the period is already closed, if any draft is dated
+    ///    inside it, or if a later period is already closed (closing out of
+    ///    order would sweep the same income twice).
+    /// 2. Posts a closing entry dated at period end that zeroes every revenue
+    ///    and expense account's balance *as of the period end* (entries
+    ///    dated after it stay open for their own period): revenue debited,
+    ///    expense credited, and the net to `to` — Retained Earnings (account
+    ///    `3999`, created if missing), or members' capital accounts by
+    ///    share for a partnership, to the cent with the last member
+    ///    absorbing rounding.
+    /// 3. Marks the period closed.
     ///
     /// Returns the closing entry's id, or `None` if there was nothing to
-    /// close (no revenue/expense movement).
-    pub fn close_period(&mut self, id: PeriodId) -> Result<Option<EntryId>, LedgerError> {
-        let period = self
-            .periods
-            .get(&id)
-            .ok_or(LedgerError::UnknownPeriod(id))?
-            .clone();
-        if period.status == PeriodStatus::Closed {
-            return Err(LedgerError::PeriodAlreadyClosed(id));
+    /// close (no revenue/expense balance at period end).
+    pub fn close_period_to(
+        &mut self,
+        id: PeriodId,
+        to: &periods::CloseTo,
+    ) -> Result<Option<EntryId>, LedgerError> {
+        self.preview_close_period(id)?;
+        if let periods::CloseTo::Members(members) = to {
+            self.validate_close_members(members)?;
         }
-        // No drafts may have dates inside the period.
-        let has_drafts = self
-            .entries
-            .values()
-            .any(|e| e.status() == EntryStatus::Draft && period.contains(e.date()));
-        if has_drafts {
-            return Err(LedgerError::DraftsInPeriod(id));
-        }
+        let period = self.periods.get(&id).expect("previewed").clone();
 
-        // Collect revenue and expense accounts with non-zero movement.
+        // Revenue and expense balances as of the period end.
         let mut closings: Vec<(AccountId, Side, Decimal)> = Vec::new();
         let mut accounts: Vec<_> = self.chart.all().collect();
         accounts.sort_by(|a, b| a.code.cmp(&b.code));
         for account in accounts {
-            match account.account_type {
-                AccountType::Revenue | AccountType::Expense => {
-                    let movement = self.account_movement(account.id);
-                    if movement.is_zero() {
-                        continue;
-                    }
-                    // To zero the account: post the opposite of its net movement.
-                    let (side, amount) = if movement > Decimal::ZERO {
-                        (Side::Credit, movement)
-                    } else {
-                        (Side::Debit, -movement)
-                    };
-                    closings.push((account.id, side, amount));
-                }
-                _ => {}
+            if !matches!(
+                account.account_type,
+                AccountType::Revenue | AccountType::Expense
+            ) {
+                continue;
             }
+            let movement = self.movement_through(account.id, period.end);
+            if movement.is_zero() {
+                continue;
+            }
+            // To zero the account: post the opposite of its net movement.
+            let (side, amount) = if movement > Decimal::ZERO {
+                (Side::Credit, movement)
+            } else {
+                (Side::Debit, -movement)
+            };
+            closings.push((account.id, side, amount));
         }
 
         let closing_entry = if closings.is_empty() {
             None
         } else {
-            // Ensure Retained Earnings exists.
-            let re_id = match self.chart.find_by_code(periods::RETAINED_EARNINGS_CODE) {
-                Some(a) => a.id,
-                None => self.add_account(
-                    periods::RETAINED_EARNINGS_CODE,
-                    "Retained Earnings",
-                    AccountType::Equity,
-                    None,
-                    false,
-                )?,
-            };
-            // Sum the closing lines to find the net for RE.
-            let mut debits = Decimal::ZERO;
-            let mut credits = Decimal::ZERO;
-            for (_, side, amount) in &closings {
-                match side {
-                    Side::Debit => debits += *amount,
-                    Side::Credit => credits += *amount,
+            // Net income: the closing debits (revenue) minus credits (expense).
+            let net: Decimal = closings
+                .iter()
+                .map(|(_, side, amount)| match side {
+                    Side::Debit => *amount,
+                    Side::Credit => -*amount,
+                })
+                .sum();
+            let targets: Vec<(AccountId, Decimal)> = match to {
+                periods::CloseTo::RetainedEarnings => {
+                    let re_id = match self.chart.find_by_code(periods::RETAINED_EARNINGS_CODE) {
+                        Some(a) => a.id,
+                        None => self.add_account(
+                            periods::RETAINED_EARNINGS_CODE,
+                            "Retained Earnings",
+                            AccountType::Equity,
+                            None,
+                            false,
+                        )?,
+                    };
+                    vec![(re_id, net)]
                 }
-            }
+                periods::CloseTo::Members(members) => {
+                    let shares: Vec<Decimal> = members.iter().map(|(_, s)| *s).collect();
+                    members
+                        .iter()
+                        .map(|(a, _)| *a)
+                        .zip(periods::allocate(net, &shares))
+                        .collect()
+                }
+            };
             let entry = self.create_entry(period.end, &format!("Close period {}", period.name));
             for (account, side, amount) in closings {
                 self.add_line(entry, account, side, Money::new(amount, self.base_currency))?;
             }
-            // Balance with Retained Earnings.
-            if debits > credits {
-                // Profit: credit RE.
-                self.add_line(
-                    entry,
-                    re_id,
-                    Side::Credit,
-                    Money::new(debits - credits, self.base_currency),
-                )?;
-            } else if credits > debits {
-                // Loss: debit RE.
-                self.add_line(
-                    entry,
-                    re_id,
-                    Side::Debit,
-                    Money::new(credits - debits, self.base_currency),
-                )?;
+            // Profit credits equity; a loss debits it.
+            for (account, share) in targets {
+                if share.is_zero() {
+                    continue;
+                }
+                let (side, amount) = if share > Decimal::ZERO {
+                    (Side::Credit, share)
+                } else {
+                    (Side::Debit, -share)
+                };
+                self.add_line(entry, account, side, Money::new(amount, self.base_currency))?;
             }
             self.post_entry(entry)?;
             Some(entry)
         };
 
-        self.periods.get_mut(&id).expect("period exists").status = PeriodStatus::Closed;
-        self.periods
-            .get_mut(&id)
-            .expect("period exists")
-            .closing_entry = closing_entry;
+        let p = self.periods.get_mut(&id).expect("period exists");
+        p.status = PeriodStatus::Closed;
+        p.closing_entry = closing_entry;
         Ok(closing_entry)
+    }
+
+    /// Members for a close: shares positive and summing to 1, capital
+    /// accounts distinct equity accounts.
+    fn validate_close_members(&self, members: &[(AccountId, Decimal)]) -> Result<(), LedgerError> {
+        let total: Decimal = members.iter().map(|(_, s)| *s).sum();
+        if members.is_empty()
+            || total != Decimal::ONE
+            || members.iter().any(|(_, s)| *s <= Decimal::ZERO)
+        {
+            return Err(LedgerError::InvalidMembers(format!(
+                "member shares must be positive and sum to 1, got {total}"
+            )));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for (a, _) in members {
+            let account = self.chart.get(*a).ok_or(LedgerError::UnknownAccount(*a))?;
+            if account.account_type != AccountType::Equity || !seen.insert(*a) {
+                return Err(LedgerError::InvalidMembers(format!(
+                    "capital account {} must be a distinct equity account",
+                    account.code
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Debits minus credits on an account across posted entries dated on or
+    /// before `end`.
+    fn movement_through(&self, account: AccountId, end: NaiveDate) -> Decimal {
+        let mut total = Decimal::ZERO;
+        for entry in self.posted_entries().filter(|e| e.date() <= end) {
+            for line in entry.lines().iter().filter(|l| l.account == account) {
+                match line.side {
+                    Side::Debit => total += line.amount.amount,
+                    Side::Credit => total -= line.amount.amount,
+                }
+            }
+        }
+        total
     }
 
     /// Pure pre-close check for journaling stores: verifies that
@@ -724,14 +771,23 @@ impl Ledger {
         {
             return Err(LedgerError::ClosedPeriod(other, period.end.to_string()));
         }
+        // Periods close in order: a later closed period already swept this
+        // one's income, so closing it now would sweep it again.
+        if let Some(later) = self
+            .periods
+            .values()
+            .find(|p| p.status == PeriodStatus::Closed && p.end > period.end)
+        {
+            return Err(LedgerError::CloseOutOfOrder(id, later.id));
+        }
         // The close posts an entry exactly when some revenue or expense
-        // account has non-zero movement — the same predicate close_period
-        // uses to decide. The entry id is the next one the allocator hands
-        // out; account creation (e.g. Retained Earnings) does not consume
-        // entry ids.
+        // account has a balance at period end — the same predicate
+        // close_period_to uses to decide. The entry id is the next one the
+        // allocator hands out; account creation (e.g. Retained Earnings)
+        // does not consume entry ids.
         let any_movement = self.chart.all().any(|a| {
             matches!(a.account_type, AccountType::Revenue | AccountType::Expense)
-                && !self.account_movement(a.id).is_zero()
+                && !self.movement_through(a.id, period.end).is_zero()
         });
         Ok(any_movement.then_some(self.next_entry_id))
     }

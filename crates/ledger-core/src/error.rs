@@ -166,6 +166,10 @@ pub enum LedgerError {
     #[error("cannot close period {0}: draft entries exist with dates in the period")]
     DraftsInPeriod(u64),
 
+    /// A period can't close while a later period is already closed.
+    #[error("period {0} can't close: later period {1} is already closed (close in order)")]
+    CloseOutOfOrder(u64, u64),
+
     /// Entries cannot be created or posted in a closed period.
     #[error("period {0} is closed; entries dated {1} are rejected")]
     ClosedPeriod(u64, String),

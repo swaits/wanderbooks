@@ -533,3 +533,135 @@ fn cash_flow_lines_name_their_account() {
     let accounts: Vec<Option<&str>> = cf.financing.iter().map(|f| f.account.as_deref()).collect();
     assert_eq!(accounts, [Some("3000"), Some("3001")]);
 }
+
+#[test]
+fn a_close_sweeps_only_through_the_period_end() {
+    // February is already posted when January closes: the close must take
+    // January's 2,500 revenue and 800 rent (net 1,700) and leave
+    // February's 1,000 revenue and 120 software open.
+    let mut b = books(false);
+    let jan = b
+        .ledger
+        .create_period("2026-01", d(1, 1), d(1, 31))
+        .unwrap();
+    let closing = b.ledger.close_period(jan).unwrap().unwrap();
+    let lines: Vec<(String, Side, Decimal)> = b
+        .ledger
+        .get_entry(closing)
+        .unwrap()
+        .lines()
+        .iter()
+        .map(|l| {
+            (
+                b.ledger.chart().get(l.account).unwrap().code.clone(),
+                l.side,
+                l.amount.amount,
+            )
+        })
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            ("4000".to_string(), Side::Debit, dec(2_500)),
+            ("6100".to_string(), Side::Credit, dec(800)),
+            ("3999".to_string(), Side::Credit, dec(1_700)),
+        ]
+    );
+    let feb = profit_and_loss_for_period(&b.ledger, d(2, 1), d(2, 28), None).unwrap();
+    assert_eq!(feb.net_income(), dec(880));
+    let bs = balance_sheet_as_of(&b.ledger, d(2, 28)).unwrap();
+    assert_eq!(bs.current_earnings, dec(880));
+    assert_eq!(
+        bs.equity.last().unwrap(),
+        &line("3999", "Retained Earnings", 1_700)
+    );
+    assert!(bs.balanced());
+}
+
+#[test]
+fn periods_close_in_order() {
+    let mut b = books(false);
+    let jan = b
+        .ledger
+        .create_period("2026-01", d(1, 1), d(1, 31))
+        .unwrap();
+    let feb = b
+        .ledger
+        .create_period("2026-02", d(2, 1), d(2, 28))
+        .unwrap();
+    b.ledger.close_period(feb).unwrap();
+    // February swept everything through Feb 28, January included.
+    assert!(matches!(
+        b.ledger.close_period(jan),
+        Err(LedgerError::CloseOutOfOrder(j, f)) if j == jan && f == feb
+    ));
+}
+
+#[test]
+fn a_partnership_closes_into_members_capital() {
+    let (mut l, members) = partnership(false);
+    let to = ledger_core::CloseTo::Members(
+        members
+            .iter()
+            .map(|m| (m.capital_account, m.share))
+            .collect(),
+    );
+    let jan = l.create_period("2026-01", d(1, 1), d(1, 31)).unwrap();
+    l.close_period_to(jan, &to).unwrap();
+    // January earned 666.67: Alice's capital gets 333.34, Bob's 333.33,
+    // and there is no Retained Earnings account at all.
+    assert!(l.chart().find_by_code("3999").is_none());
+    let bs = balance_sheet_as_of(&l, d(1, 31)).unwrap();
+    let capital: Vec<Decimal> = bs.equity.iter().map(|e| e.amount).collect();
+    assert_eq!(capital, [cents("933.34"), cents("733.33")]);
+    assert_eq!(bs.current_earnings, Decimal::ZERO);
+
+    // The statement still reads: contributions are contributions (the
+    // close is income, not a contribution), and February starts where
+    // January ended.
+    let row = |c: &ledger_core::MemberEquityColumn| {
+        (
+            c.beginning,
+            c.contributions,
+            c.net_income,
+            c.distributions,
+            c.ending,
+        )
+    };
+    let jan_me = members_equity(&l, d(1, 1), d(1, 31), &members).unwrap();
+    assert_eq!(
+        row(&jan_me.members[0]),
+        (
+            cents("0"),
+            cents("600"),
+            cents("333.34"),
+            cents("0"),
+            cents("933.34")
+        )
+    );
+    assert_eq!(
+        row(&jan_me.members[1]),
+        (
+            cents("0"),
+            cents("400"),
+            cents("333.33"),
+            cents("0"),
+            cents("733.33")
+        )
+    );
+    let feb_me = members_equity(&l, d(2, 1), d(2, 28), &members).unwrap();
+    assert_eq!(feb_me.members[0].beginning, cents("933.34"));
+    assert_eq!(feb_me.members[1].ending, cents("683.33"));
+    assert_eq!(
+        feb_me.total.ending,
+        balance_sheet_as_of(&l, d(2, 28)).unwrap().total_equity
+    );
+
+    // Shares must still add up.
+    let feb = l.create_period("2026-02", d(2, 1), d(2, 28)).unwrap();
+    let bad = ledger_core::CloseTo::Members(vec![(members[0].capital_account, cents("0.5"))]);
+    assert!(matches!(
+        l.close_period_to(feb, &bad),
+        Err(LedgerError::InvalidMembers(_))
+    ));
+}

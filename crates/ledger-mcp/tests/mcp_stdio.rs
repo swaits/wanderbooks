@@ -1022,4 +1022,37 @@ fn mcp_period_statements_over_stdio() {
         json!({"format": "pdf", "report": "members_equity", "end": "2026-02-28"}),
     );
     assert_eq!(pdf["content_encoding"], "base64");
+
+    // Closing January: a one-member LLC closes into the member's capital
+    // account, not Retained Earnings. The preview is exactly what posts.
+    let jan = mcp.call(
+        "books.create_period",
+        json!({"name": "2026-01", "start": "2026-01-01", "end": "2026-01-31"}),
+    );
+    let jan_id = jan["period_id"].as_u64().unwrap();
+    let preview = mcp.call(
+        "books.close_period",
+        json!({"period_id": jan_id, "confirmed": false}),
+    );
+    assert_eq!(
+        preview["lines"],
+        json!(["Debit 4000 4.00", "Credit 3000 4.00"])
+    );
+    let closed = mcp.call(
+        "books.close_period",
+        json!({"period_id": jan_id, "confirmed": true}),
+    );
+    assert_eq!(closed["lines"], preview["lines"]);
+    let jan_bs = mcp.call("books.balance_sheet", json!({"as_of": "2026-01-31"}));
+    assert_eq!(jan_bs["equity_accounts"][0]["amount"], "1004.00");
+    assert_eq!(jan_bs["current_earnings"], "0.00");
+    // The close is income, not a contribution.
+    let me = mcp.call(
+        "books.export",
+        json!({"format": "json", "report": "members_equity", "start": "2026-01-01", "end": "2026-01-31"}),
+    );
+    let me: serde_json::Value = serde_json::from_str(me["content"].as_str().unwrap()).unwrap();
+    assert_eq!(me["total"]["contributions"], "1000.00");
+    assert_eq!(me["total"]["net_income"], "4.00");
+    assert_eq!(me["total"]["ending"], "1004.00");
 }

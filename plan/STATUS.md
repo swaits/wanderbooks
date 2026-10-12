@@ -221,4 +221,12 @@ interface is MCP, not a cloned GUI. The first storage + MCP slice is done
   deductible percent; the tax summary shows book vs. tax by category and
   every uncategorized account. tax_form comes from config or the tax
   classification. Schema v6.
+- 2026-10-11: Owner equity for every entity type. Chart templates for sole
+  proprietorships, partnerships/multi-member LLCs, S corps, and C corps
+  (equity and owner-pay accounts, tax categories, matching config). Closes
+  sweep draws, distributions, and dividends into their target; partners'
+  distribution accounts count as capital on the members' equity statement
+  and close into it. CloseTo became RetainedEarnings { sweep } / Account
+  { into, sweep } / Members([MemberClose]); journals without a target, or
+  with the old plain "retained_earnings", still replay.
 

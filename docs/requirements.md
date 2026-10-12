@@ -126,7 +126,12 @@ requirement conflict, the requirement wins.
   `to`: `CloseTo::RetainedEarnings` (`3999`, the corporate convention;
   `close_period` is shorthand) or `CloseTo::Members` (each member's capital
   account by share, to the cent, the last absorbing rounding: the
-  partnership convention). Periods close in order (`CloseOutOfOrder`). The
+  partnership convention), or `CloseTo::Account` (any equity account, e.g.
+  a sole proprietor's capital). Every target can sweep owner-pay equity
+  accounts — draws, distributions, dividends — into it: a member's
+  distributions account into their own capital. The members' equity
+  statement counts a member's distributions account as part of their
+  capital. Periods close in order (`CloseOutOfOrder`). The
   journal records the target, and replay re-derives the closing entry and
   checks every line against the journal.
 - **R-? — A/R and A/P workflows.** Was R-FUTURE-5.

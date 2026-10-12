@@ -413,11 +413,13 @@ fn partnership(close_january: bool) -> (Ledger, Vec<MemberCapital>) {
         MemberCapital {
             name: "Alice".into(),
             capital_account: alice,
+            distribution_account: None,
             share: half,
         },
         MemberCapital {
             name: "Bob".into(),
             capital_account: bob,
+            distribution_account: None,
             share: half,
         },
     ];
@@ -603,7 +605,11 @@ fn a_partnership_closes_into_members_capital() {
     let to = ledger_core::CloseTo::Members(
         members
             .iter()
-            .map(|m| (m.capital_account, m.share))
+            .map(|m| ledger_core::MemberClose {
+                capital: m.capital_account,
+                share: m.share,
+                distributions: None,
+            })
             .collect(),
     );
     let jan = l.create_period("2026-01", d(1, 1), d(1, 31)).unwrap();
@@ -659,9 +665,226 @@ fn a_partnership_closes_into_members_capital() {
 
     // Shares must still add up.
     let feb = l.create_period("2026-02", d(2, 1), d(2, 28)).unwrap();
-    let bad = ledger_core::CloseTo::Members(vec![(members[0].capital_account, cents("0.5"))]);
+    let bad = ledger_core::CloseTo::Members(vec![ledger_core::MemberClose {
+        capital: members[0].capital_account,
+        share: cents("0.5"),
+        distributions: None,
+    }]);
     assert!(matches!(
         l.close_period_to(feb, &bad),
+        Err(LedgerError::InvalidMembers(_))
+    ));
+}
+
+fn entry_lines(l: &Ledger, id: ledger_core::EntryId) -> Vec<(String, Side, Decimal)> {
+    l.get_entry(id)
+        .unwrap()
+        .lines()
+        .iter()
+        .map(|x| {
+            (
+                l.chart().get(x.account).unwrap().code.clone(),
+                x.side,
+                x.amount.amount,
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_sole_proprietor_closes_net_income_and_draws_into_capital() {
+    let mut l = Ledger::new(Currency::USD);
+    let cash = l
+        .add_account("1000", "Cash", AccountType::Asset, None, false)
+        .unwrap();
+    let capital = l
+        .add_account("3000", "Owner's Capital", AccountType::Equity, None, false)
+        .unwrap();
+    let draws = l
+        .add_account("3100", "Owner's Draws", AccountType::Equity, None, false)
+        .unwrap();
+    let sales = l
+        .add_account("4000", "Sales", AccountType::Revenue, None, false)
+        .unwrap();
+    let rent = l
+        .add_account("6000", "Rent", AccountType::Expense, None, false)
+        .unwrap();
+    post(&mut l, d(1, 2), "Owner invests", cash, capital, 5_000);
+    post(&mut l, d(1, 10), "Sales", cash, sales, 3_000);
+    post(&mut l, d(1, 15), "Rent", rent, cash, 1_000);
+    post(&mut l, d(1, 20), "Owner draw", draws, cash, 500);
+    let jan = l.create_period("2026-01", d(1, 1), d(1, 31)).unwrap();
+    let to = ledger_core::CloseTo::Account {
+        into: capital,
+        sweep: vec![draws],
+    };
+    let closing = l.close_period_to(jan, &to).unwrap().unwrap();
+    // Net 2,000 to capital; the 500 of draws zeroed into capital.
+    assert_eq!(
+        entry_lines(&l, closing),
+        [
+            ("4000".to_string(), Side::Debit, dec(3_000)),
+            ("6000".to_string(), Side::Credit, dec(1_000)),
+            ("3000".to_string(), Side::Credit, dec(2_000)),
+            ("3100".to_string(), Side::Credit, dec(500)),
+            ("3000".to_string(), Side::Debit, dec(500)),
+        ]
+    );
+    let bs = balance_sheet_as_of(&l, d(1, 31)).unwrap();
+    // 5,000 + 2,000 − 500 = 6,500, which is exactly the cash.
+    assert_eq!(bs.equity, vec![line("3000", "Owner's Capital", 6_500)]);
+    assert_eq!(bs.total_assets, dec(6_500));
+    assert_eq!(bs.current_earnings, Decimal::ZERO);
+}
+
+#[test]
+fn a_corporation_closes_dividends_into_retained_earnings() {
+    let mut l = Ledger::new(Currency::USD);
+    let cash = l
+        .add_account("1000", "Cash", AccountType::Asset, None, false)
+        .unwrap();
+    let stock = l
+        .add_account("3000", "Common Stock", AccountType::Equity, None, false)
+        .unwrap();
+    let dividends = l
+        .add_account("3200", "Dividends Paid", AccountType::Equity, None, false)
+        .unwrap();
+    let sales = l
+        .add_account("4000", "Sales", AccountType::Revenue, None, false)
+        .unwrap();
+    post(&mut l, d(1, 2), "Stock issued", cash, stock, 1_000);
+    post(&mut l, d(1, 10), "Sales", cash, sales, 900);
+    post(&mut l, d(1, 25), "Dividend", dividends, cash, 300);
+    let jan = l.create_period("2026-01", d(1, 1), d(1, 31)).unwrap();
+    let to = ledger_core::CloseTo::RetainedEarnings {
+        sweep: vec![dividends],
+    };
+    l.close_period_to(jan, &to).unwrap();
+    let bs = balance_sheet_as_of(&l, d(1, 31)).unwrap();
+    // Retained earnings: 900 earned − 300 paid out.
+    assert_eq!(
+        bs.equity,
+        vec![
+            line("3000", "Common Stock", 1_000),
+            line("3999", "Retained Earnings", 600)
+        ]
+    );
+    assert!(bs.balanced());
+}
+
+#[test]
+fn partner_distribution_accounts_roll_into_capital() {
+    let mut l = Ledger::new(Currency::USD);
+    let cash = l
+        .add_account("1000", "Cash", AccountType::Asset, None, false)
+        .unwrap();
+    let cap_a = l
+        .add_account("3000", "Capital — Alice", AccountType::Equity, None, false)
+        .unwrap();
+    let cap_b = l
+        .add_account("3001", "Capital — Bob", AccountType::Equity, None, false)
+        .unwrap();
+    let dist_a = l
+        .add_account(
+            "3100",
+            "Distributions — Alice",
+            AccountType::Equity,
+            None,
+            false,
+        )
+        .unwrap();
+    let dist_b = l
+        .add_account(
+            "3101",
+            "Distributions — Bob",
+            AccountType::Equity,
+            None,
+            false,
+        )
+        .unwrap();
+    let sales = l
+        .add_account("4000", "Sales", AccountType::Revenue, None, false)
+        .unwrap();
+    post(&mut l, d(1, 2), "Alice invests", cash, cap_a, 100);
+    post(&mut l, d(1, 2), "Bob invests", cash, cap_b, 100);
+    post(&mut l, d(1, 10), "Sales", cash, sales, 50);
+    post(&mut l, d(1, 20), "Bob's distribution", dist_b, cash, 20);
+    let half = cents("0.5");
+    let members = vec![
+        MemberCapital {
+            name: "Alice".into(),
+            capital_account: cap_a,
+            distribution_account: Some(dist_a),
+            share: half,
+        },
+        MemberCapital {
+            name: "Bob".into(),
+            capital_account: cap_b,
+            distribution_account: Some(dist_b),
+            share: half,
+        },
+    ];
+    // January: Bob's distribution comes from his distributions account.
+    let jan_me = members_equity(&l, d(1, 1), d(1, 31), &members).unwrap();
+    let row = |c: &ledger_core::MemberEquityColumn| {
+        (c.contributions, c.net_income, c.distributions, c.ending)
+    };
+    assert_eq!(
+        row(&jan_me.members[0]),
+        (dec(100), dec(25), dec(0), dec(125))
+    );
+    assert_eq!(
+        row(&jan_me.members[1]),
+        (dec(100), dec(25), dec(20), dec(105))
+    );
+    assert_eq!(
+        jan_me.total.ending,
+        balance_sheet_as_of(&l, d(1, 31)).unwrap().total_equity
+    );
+
+    // The close sweeps Bob's distributions into his capital.
+    let jan = l.create_period("2026-01", d(1, 1), d(1, 31)).unwrap();
+    let to = ledger_core::CloseTo::Members(
+        members
+            .iter()
+            .map(|m| ledger_core::MemberClose {
+                capital: m.capital_account,
+                share: m.share,
+                distributions: m.distribution_account,
+            })
+            .collect(),
+    );
+    l.close_period_to(jan, &to).unwrap();
+    let bs = balance_sheet_as_of(&l, d(1, 31)).unwrap();
+    assert_eq!(
+        bs.equity,
+        vec![
+            line("3000", "Capital — Alice", 125),
+            line("3001", "Capital — Bob", 105)
+        ]
+    );
+    // February starts there.
+    let feb_me = members_equity(&l, d(2, 1), d(2, 28), &members).unwrap();
+    assert_eq!(
+        (feb_me.members[0].beginning, feb_me.members[1].beginning),
+        (dec(125), dec(105))
+    );
+
+    // A sweep account must be equity.
+    let mut l2 = Ledger::new(Currency::USD);
+    let c = l2
+        .add_account("1000", "Cash", AccountType::Asset, None, false)
+        .unwrap();
+    let e = l2
+        .add_account("3000", "Capital", AccountType::Equity, None, false)
+        .unwrap();
+    let p = l2.create_period("2026-01", d(1, 1), d(1, 31)).unwrap();
+    let bad = ledger_core::CloseTo::Account {
+        into: e,
+        sweep: vec![c],
+    };
+    assert!(matches!(
+        l2.close_period_to(p, &bad),
         Err(LedgerError::InvalidMembers(_))
     ));
 }

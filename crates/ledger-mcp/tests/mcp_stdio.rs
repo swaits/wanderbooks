@@ -139,7 +139,7 @@ fn mcp_end_to_end_over_stdio() {
     // Tool listing: 23 narrow tools, chart is read-only.
     let list = mcp.request("tools/list", json!({}));
     let tools = list["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 52, "expected 52 tools, got {}", tools.len());
+    assert_eq!(tools.len(), 53, "expected 53 tools, got {}", tools.len());
     let chart = tools.iter().find(|t| t["name"] == "books.chart").unwrap();
     assert_eq!(chart["annotations"]["readOnlyHint"], true);
     assert!(
@@ -1118,5 +1118,117 @@ fn mcp_period_statements_over_stdio() {
             .unwrap()
             .iter()
             .all(|a| a["code"] != "6100")
+    );
+}
+
+#[test]
+fn mcp_partnership_from_template_over_stdio() {
+    let init = |mcp: &mut Mcp| {
+        mcp.request(
+            "initialize",
+            json!({
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+            }),
+        );
+        mcp.notify("notifications/initialized");
+    };
+    // 1. Ask for a template (any server will do).
+    let dir = test_dir("template");
+    let mut scratch = Mcp::spawn(&dir.join("scratch"));
+    init(&mut scratch);
+    let t = scratch.call(
+        "books.chart_template",
+        json!({"entity_type": "multi-member LLC", "owners": ["Ann", "Bo"]}),
+    );
+    let settings = t["settings_toml"].as_str().unwrap();
+    assert!(settings.contains("distribution_account = \"3101\""));
+    let err = scratch.call_err("books.chart_template", json!({"entity_type": "LLC"}));
+    assert!(err.contains("entity_type"), "{err}");
+
+    // 2. Its settings become the company config; its chart, the chart.
+    let toml = dir.join("wanderbooks.toml");
+    std::fs::write(
+        &toml,
+        format!("{settings}\n[books]\nreceipt_threshold = \"10000\"\n"),
+    )
+    .unwrap();
+    let mut mcp = Mcp::spawn_with(
+        &dir.join("books-data"),
+        &[std::ffi::OsStr::new("--books-toml"), toml.as_os_str()],
+    );
+    init(&mut mcp);
+    mcp.call("books.import_chart_csv", json!({"csv_text": t["csv"]}));
+    let post = |mcp: &mut Mcp, date: &str, dr: &str, cr: &str, amount: &str| {
+        let e = mcp.call(
+            "books.draft_entry",
+            json!({"date": date, "description": "x"}),
+        );
+        let id = e["entry_id"].as_u64().unwrap();
+        mcp.call(
+            "books.add_line",
+            json!({"entry_id": id, "account": dr, "side": "debit", "amount": amount}),
+        );
+        mcp.call(
+            "books.add_line",
+            json!({"entry_id": id, "account": cr, "side": "credit", "amount": amount}),
+        );
+        mcp.call(
+            "books.post_entry",
+            json!({"entry_id": id, "confirmed": true}),
+        );
+    };
+    post(&mut mcp, "2026-01-02", "1000", "3000", "1000.00");
+    post(&mut mcp, "2026-01-02", "1000", "3001", "1000.00");
+    post(&mut mcp, "2026-01-10", "1000", "4000", "400.00");
+    post(&mut mcp, "2026-01-20", "3101", "1000", "50.00");
+
+    // 3. Members' equity sees Bo's distribution in his distributions account.
+    let me = mcp.call(
+        "books.export",
+        json!({"format": "json", "report": "members_equity", "start": "2026-01-01", "end": "2026-01-31"}),
+    );
+    let me: serde_json::Value = serde_json::from_str(me["content"].as_str().unwrap()).unwrap();
+    assert_eq!(me["members"][1]["distributions"], "50.00");
+    assert_eq!(me["members"][1]["ending"], "1150.00");
+
+    // 4. Closing January: 200 each to capital, Bo's distributions swept in.
+    let jan = mcp.call(
+        "books.create_period",
+        json!({"name": "2026-01", "start": "2026-01-01", "end": "2026-01-31"}),
+    );
+    let closed = mcp.call(
+        "books.close_period",
+        json!({"period_id": jan["period_id"], "confirmed": true}),
+    );
+    assert_eq!(
+        closed["lines"],
+        json!([
+            "Debit 4000 400.00",
+            "Credit 3000 200.00",
+            "Credit 3001 200.00",
+            "Credit 3101 50.00",
+            "Debit 3001 50.00"
+        ])
+    );
+    let bs = mcp.call("books.balance_sheet", json!({"as_of": "2026-01-31"}));
+    let equity: Vec<(String, String)> = bs["equity_accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| {
+            (
+                a["code"].as_str().unwrap().to_string(),
+                a["amount"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        equity,
+        [
+            ("3000".into(), "1200.00".into()),
+            ("3001".into(), "1150.00".into())
+        ]
     );
 }

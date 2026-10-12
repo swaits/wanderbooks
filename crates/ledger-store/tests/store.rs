@@ -504,7 +504,18 @@ fn a_close_into_members_capital_replays_exactly() {
     store
         .close_period_to(
             jan,
-            &ledger_core::CloseTo::Members(vec![(alice, half), (bob, half)]),
+            &ledger_core::CloseTo::Members(vec![
+                ledger_core::MemberClose {
+                    capital: alice,
+                    share: half,
+                    distributions: None,
+                },
+                ledger_core::MemberClose {
+                    capital: bob,
+                    share: half,
+                    distributions: None,
+                },
+            ]),
         )
         .unwrap();
     // 100.01 splits 50.01 / 50.00 into the capital accounts.

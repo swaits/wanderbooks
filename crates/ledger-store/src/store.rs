@@ -955,7 +955,7 @@ impl Store {
     /// re-runs the deterministic close logic and checks the closing entry
     /// id against the journal.
     pub fn close_period(&mut self, id: PeriodId) -> Result<Option<EntryId>, StoreError> {
-        self.close_period_to(id, &CloseTo::RetainedEarnings)
+        self.close_period_to(id, &CloseTo::RetainedEarnings { sweep: vec![] })
     }
 
     /// Close a period with its net income going to `to`: Retained Earnings,
@@ -969,8 +969,8 @@ impl Store {
     ) -> Result<Option<EntryId>, StoreError> {
         // Pure pre-validation: a doomed close journals nothing, not even
         // the Retained Earnings account creation below.
-        self.ledger.preview_close_period(id)?;
-        if *to == CloseTo::RetainedEarnings {
+        self.ledger.preview_close_period_to(id, to)?;
+        if matches!(to, CloseTo::RetainedEarnings { .. }) {
             // Retained Earnings must exist before the close so its creation
             // (if needed) is journaled as account.added; the close's own
             // ensure then no-ops and replay stays deterministic.
@@ -997,11 +997,17 @@ impl Store {
             None => None,
         };
         let close_to = match to {
-            CloseTo::RetainedEarnings => json!("retained_earnings"),
+            CloseTo::RetainedEarnings { sweep } if sweep.is_empty() => json!("retained_earnings"),
+            CloseTo::RetainedEarnings { sweep } => json!({"retained_earnings": {"sweep": sweep}}),
+            CloseTo::Account { into, sweep } => json!({"account": {"into": into, "sweep": sweep}}),
             CloseTo::Members(members) => json!({
                 "members": members
                     .iter()
-                    .map(|(account, share)| json!({"account": account, "share": share.to_string()}))
+                    .map(|m| json!({
+                        "account": m.capital,
+                        "share": m.share.to_string(),
+                        "distributions": m.distributions,
+                    }))
                     .collect::<Vec<_>>(),
             }),
         };
@@ -2805,22 +2811,7 @@ fn replay_line_into_ledger(
             // Deterministic: the close re-derives the closing entry from
             // the replayed state and the journaled target (absent: Retained
             // Earnings), so it must match the journal's id and every line.
-            let to = match p.get("close_to").and_then(|v| v.get("members")) {
-                None => ledger_core::CloseTo::RetainedEarnings,
-                Some(members) => ledger_core::CloseTo::Members(
-                    members
-                        .as_array()
-                        .ok_or_else(|| StoreError::JournalCorrupt("close_to.members".into()))?
-                        .iter()
-                        .map(|m| {
-                            let share = get_str(m, "share")?.parse().map_err(|_| {
-                                StoreError::JournalCorrupt("close_to member share".into())
-                            })?;
-                            Ok((get_u64(m, "account")?, share))
-                        })
-                        .collect::<Result<_, StoreError>>()?,
-                ),
-            };
+            let to = close_to_from_journal(p.get("close_to"))?;
             let got = ledger.close_period_to(id, &to)?;
             if got != want {
                 return Err(StoreError::ReplayMismatch(format!(
@@ -2997,6 +2988,52 @@ fn apply_document_payment(
 /// of the journal line: INSERTs for new facts, targeted UPDATEs/DELETEs
 /// for lifecycle changes (receipt linking, disposal, period close,
 /// cleared flags, document payments, fx rate updates).
+/// The close target recorded in a `period.closed` line. Absent or
+/// `"retained_earnings"`: Retained Earnings with no sweeps (every journal
+/// written before targets existed).
+fn close_to_from_journal(v: Option<&Value>) -> Result<CloseTo, StoreError> {
+    let corrupt = |what: &str| StoreError::JournalCorrupt(format!("close_to: {what}"));
+    let ids = |v: &Value| -> Result<Vec<AccountId>, StoreError> {
+        v.as_array()
+            .ok_or_else(|| corrupt("sweep"))?
+            .iter()
+            .map(|x| x.as_u64().ok_or_else(|| corrupt("sweep id")))
+            .collect()
+    };
+    let Some(v) = v.filter(|v| !v.is_null() && v.as_str() != Some("retained_earnings")) else {
+        return Ok(CloseTo::RetainedEarnings { sweep: vec![] });
+    };
+    if let Some(re) = v.get("retained_earnings") {
+        return Ok(CloseTo::RetainedEarnings {
+            sweep: ids(&re["sweep"])?,
+        });
+    }
+    if let Some(a) = v.get("account") {
+        return Ok(CloseTo::Account {
+            into: get_u64(a, "into")?,
+            sweep: ids(&a["sweep"])?,
+        });
+    }
+    let members = v
+        .get("members")
+        .and_then(|m| m.as_array())
+        .ok_or_else(|| corrupt("unknown target"))?;
+    Ok(CloseTo::Members(
+        members
+            .iter()
+            .map(|m| {
+                Ok(ledger_core::MemberClose {
+                    capital: get_u64(m, "account")?,
+                    share: get_str(m, "share")?
+                        .parse()
+                        .map_err(|_| corrupt("member share"))?,
+                    distributions: m.get("distributions").and_then(|d| d.as_u64()),
+                })
+            })
+            .collect::<Result<_, StoreError>>()?,
+    ))
+}
+
 fn apply_line_to_sqlite(conn: &Connection, line: &JournalLine) -> Result<(), StoreError> {
     let p = &line.payload;
     match line.line_type.as_str() {

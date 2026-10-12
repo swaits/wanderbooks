@@ -44,6 +44,27 @@ impl TrialBalance {
 
 /// Build the trial balance from all posted entries.
 pub fn trial_balance(ledger: &Ledger) -> TrialBalance {
+    trial_balance_where(ledger, &|_| true)
+}
+
+/// The trial balance as of a date: every posted entry dated on or before
+/// it (closing entries included, so after a close it is the post-closing
+/// trial balance).
+pub fn trial_balance_as_of(ledger: &Ledger, as_of: NaiveDate) -> TrialBalance {
+    trial_balance_where(ledger, &|e| e.date() <= as_of)
+}
+
+fn trial_balance_where(ledger: &Ledger, include: &dyn Fn(&JournalEntry) -> bool) -> TrialBalance {
+    let mut movements: BTreeMap<crate::AccountId, Decimal> = BTreeMap::new();
+    for entry in ledger.posted_entries().filter(|e| include(e)) {
+        for line in entry.lines() {
+            let signed = match line.side {
+                crate::Side::Debit => line.amount.amount,
+                crate::Side::Credit => -line.amount.amount,
+            };
+            *movements.entry(line.account).or_default() += signed;
+        }
+    }
     let mut accounts: Vec<_> = ledger.chart().all().collect();
     accounts.sort_by(|a, b| a.code.cmp(&b.code));
 
@@ -54,7 +75,7 @@ pub fn trial_balance(ledger: &Ledger) -> TrialBalance {
         if account.placeholder {
             continue;
         }
-        let movement = ledger.account_movement(account.id);
+        let movement = movements.get(&account.id).copied().unwrap_or_default();
         if movement.is_zero() {
             continue;
         }
@@ -460,6 +481,374 @@ pub fn balance_sheet_as_of(
     })
 }
 
+// ---------------------------------------------------------------------------
+// General ledger (by account)
+// ---------------------------------------------------------------------------
+
+/// One posting in the general ledger: a journal line, seen from its account.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct LedgerPosting {
+    /// Entry date.
+    pub date: NaiveDate,
+    /// The journal entry: its other lines are the other side.
+    pub entry_id: crate::EntryId,
+    /// Entry description.
+    pub description: String,
+    /// The other side: `"CODE Name"` of the one account on the entry's
+    /// opposite side, or `"-Split-"` when that side is several accounts
+    /// (the QuickBooks convention).
+    pub split: String,
+    /// Debit amount, or zero.
+    pub debit: Decimal,
+    /// Credit amount, or zero.
+    pub credit: Decimal,
+    /// Running balance after this posting, on the account's normal side.
+    pub balance: Decimal,
+}
+
+/// One account's section of the general ledger.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LedgerAccount {
+    /// Account code.
+    pub code: String,
+    /// Account name.
+    pub name: String,
+    /// Account type.
+    pub account_type: AccountType,
+    /// Balance before the period, normal side.
+    pub beginning_balance: Decimal,
+    /// Postings in the period, by date then entry.
+    pub postings: Vec<LedgerPosting>,
+    /// Sum of the period's debits.
+    pub total_debits: Decimal,
+    /// Sum of the period's credits.
+    pub total_credits: Decimal,
+    /// Balance at period end, normal side. Ties to the trial balance.
+    pub ending_balance: Decimal,
+}
+
+/// The general ledger for a period: every account with a beginning balance
+/// or activity, in chart (code) order.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GeneralLedger {
+    /// First date, inclusive.
+    pub start: NaiveDate,
+    /// Last date, inclusive.
+    pub end: NaiveDate,
+    /// Accounts by code.
+    pub accounts: Vec<LedgerAccount>,
+}
+
+/// Build the general ledger for `[start, end]`. Every journal line is a
+/// posting to its account, with the entry's other side as the split, and a
+/// running balance from the account's balance before `start`. Closing
+/// entries are postings like any other.
+pub fn general_ledger(
+    ledger: &Ledger,
+    start: NaiveDate,
+    end: NaiveDate,
+) -> Result<GeneralLedger, LedgerError> {
+    if end < start {
+        return Err(LedgerError::InvalidDateRange {
+            start: start.to_string(),
+            end: end.to_string(),
+        });
+    }
+    let display = |id: crate::AccountId| -> Result<String, LedgerError> {
+        let a = ledger
+            .chart()
+            .get(id)
+            .ok_or(LedgerError::UnknownAccount(id))?;
+        Ok(format!("{} {}", a.code, a.name))
+    };
+    let mut entries: Vec<&JournalEntry> = ledger.posted_entries().collect();
+    entries.sort_by_key(|e| (e.date(), e.id()));
+
+    let mut begin: BTreeMap<crate::AccountId, Decimal> = BTreeMap::new();
+    let mut postings: BTreeMap<crate::AccountId, Vec<(crate::Side, Decimal, LedgerPosting)>> =
+        BTreeMap::new();
+    for entry in &entries {
+        let lines = entry.lines();
+        for (i, line) in lines.iter().enumerate() {
+            let signed = match line.side {
+                crate::Side::Debit => line.amount.amount,
+                crate::Side::Credit => -line.amount.amount,
+            };
+            if entry.date() < start {
+                *begin.entry(line.account).or_default() += signed;
+                continue;
+            }
+            if entry.date() > end {
+                continue;
+            }
+            // The other side is the accounts on the opposite side of the
+            // entry: a credit's split is what was debited, and vice versa.
+            let others: BTreeSet<crate::AccountId> = lines
+                .iter()
+                .enumerate()
+                .filter(|(j, l)| *j != i && l.side != line.side)
+                .map(|(_, l)| l.account)
+                .collect();
+            let split = match others.len() {
+                1 => display(*others.iter().next().expect("one"))?,
+                _ => "-Split-".to_string(),
+            };
+            let (debit, credit) = match line.side {
+                crate::Side::Debit => (line.amount.amount, Decimal::ZERO),
+                crate::Side::Credit => (Decimal::ZERO, line.amount.amount),
+            };
+            postings.entry(line.account).or_default().push((
+                line.side,
+                line.amount.amount,
+                LedgerPosting {
+                    date: entry.date(),
+                    entry_id: entry.id(),
+                    description: entry.description().to_string(),
+                    split,
+                    debit,
+                    credit,
+                    balance: Decimal::ZERO,
+                },
+            ));
+        }
+    }
+    let mut accounts: Vec<_> = ledger.chart().all().collect();
+    accounts.sort_by(|a, b| a.code.cmp(&b.code));
+    let mut out = Vec::new();
+    for account in accounts {
+        let begin_movement = begin.get(&account.id).copied().unwrap_or_default();
+        let lines = postings.remove(&account.id).unwrap_or_default();
+        if begin_movement.is_zero() && lines.is_empty() {
+            continue;
+        }
+        let normal = account.account_type.normal_side();
+        let to_normal = |m: Decimal| if normal == crate::Side::Debit { m } else { -m };
+        let beginning_balance = to_normal(begin_movement) + Decimal::ZERO;
+        let mut balance = beginning_balance;
+        let (mut total_debits, mut total_credits) = (Decimal::ZERO, Decimal::ZERO);
+        let mut posted = Vec::with_capacity(lines.len());
+        for (side, amount, mut p) in lines {
+            balance += if side == normal { amount } else { -amount };
+            total_debits += p.debit;
+            total_credits += p.credit;
+            p.balance = balance;
+            posted.push(p);
+        }
+        out.push(LedgerAccount {
+            code: account.code.clone(),
+            name: account.name.clone(),
+            account_type: account.account_type,
+            beginning_balance: zero_clean(beginning_balance),
+            postings: posted,
+            total_debits,
+            total_credits,
+            ending_balance: zero_clean(balance),
+        });
+    }
+    Ok(GeneralLedger {
+        start,
+        end,
+        accounts: out,
+    })
+}
+
+/// Never let a negative zero reach a report.
+fn zero_clean(d: Decimal) -> Decimal {
+    if d.is_zero() { Decimal::ZERO } else { d }
+}
+
+// ---------------------------------------------------------------------------
+// Statement of changes in members' equity (partnership capital accounts)
+// ---------------------------------------------------------------------------
+
+/// A member of a partnership (multi-member LLC): their capital account and
+/// their share of income.
+#[derive(Clone, Debug)]
+pub struct MemberCapital {
+    /// Member's name.
+    pub name: String,
+    /// Their capital account (equity): contributions credit it,
+    /// distributions debit it.
+    pub capital_account: crate::AccountId,
+    /// Share of income, e.g. 0.5. The shares must sum to exactly 1.
+    pub share: Decimal,
+}
+
+/// One member's (or the total) capital roll-forward for a period.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct MemberEquityColumn {
+    /// Member's name, or "Total".
+    pub name: String,
+    /// Capital at the start of the period, including their share of
+    /// earnings not yet distributed.
+    pub beginning: Decimal,
+    /// Contributions during the period.
+    pub contributions: Decimal,
+    /// Their share of the period's net income (loss).
+    pub net_income: Decimal,
+    /// Distributions during the period (a positive number, subtracted).
+    pub distributions: Decimal,
+    /// Any other change in equity, allocated by share. Zero unless equity
+    /// moved through an account that isn't a member's capital account, retained
+    /// earnings, or the period's income.
+    pub other: Decimal,
+    /// Capital at the end of the period.
+    pub ending: Decimal,
+}
+
+/// The statement of changes in members' equity: each member's capital
+/// account roll-forward, plus a total that ties to the balance sheet.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MembersEquityStatement {
+    /// First date, inclusive.
+    pub start: NaiveDate,
+    /// Last date, inclusive.
+    pub end: NaiveDate,
+    /// One column per member, in the order given.
+    pub members: Vec<MemberEquityColumn>,
+    /// Sum of the members. `ending` equals total equity on the balance
+    /// sheet as of `end`.
+    pub total: MemberEquityColumn,
+}
+
+/// Split `amount` by `shares` to the cent; the last share absorbs rounding,
+/// so the parts always sum to `amount` exactly.
+fn allocate(amount: Decimal, shares: &[Decimal]) -> Vec<Decimal> {
+    use rust_decimal::RoundingStrategy::MidpointAwayFromZero;
+    let mut parts: Vec<Decimal> = shares
+        .iter()
+        .map(|s| (amount * s).round_dp_with_strategy(2, MidpointAwayFromZero))
+        .collect();
+    if let Some((last, rest)) = parts.split_last_mut() {
+        *last = amount - rest.iter().sum::<Decimal>();
+    }
+    parts
+}
+
+/// Build the statement of changes in members' equity for `[start, end]`.
+///
+/// Each member's capital account supplies contributions (credits) and
+/// distributions (debits). Earnings are partnership earnings: net income
+/// for the period, and earnings from before it not yet distributed (retained
+/// earnings plus unclosed income), are allocated by share. Allocation is to
+/// the cent with the last member absorbing rounding, so every row's total
+/// is exact and the ending total equals balance-sheet equity.
+pub fn members_equity(
+    ledger: &Ledger,
+    start: NaiveDate,
+    end: NaiveDate,
+    members: &[MemberCapital],
+) -> Result<MembersEquityStatement, LedgerError> {
+    if members.is_empty() {
+        return Err(LedgerError::InvalidMembers("no members given".to_string()));
+    }
+    let shares: Vec<Decimal> = members.iter().map(|m| m.share).collect();
+    let total_share: Decimal = shares.iter().sum();
+    if total_share != Decimal::ONE || shares.iter().any(|s| *s <= Decimal::ZERO) {
+        return Err(LedgerError::InvalidMembers(format!(
+            "member shares must be positive and sum to 1, got {total_share}"
+        )));
+    }
+    let mut seen = BTreeSet::new();
+    for m in members {
+        let account = ledger
+            .chart()
+            .get(m.capital_account)
+            .ok_or(LedgerError::UnknownAccount(m.capital_account))?;
+        if account.account_type != AccountType::Equity || !seen.insert(m.capital_account) {
+            return Err(LedgerError::InvalidMembers(format!(
+                "{}: capital account {} must be a distinct equity account",
+                m.name, account.code
+            )));
+        }
+    }
+    let day_before = start.pred_opt().ok_or(LedgerError::InvalidDateRange {
+        start: start.to_string(),
+        end: end.to_string(),
+    })?;
+    let pnl = profit_and_loss_for_period(ledger, start, end, None)?;
+    let begin_bs = balance_sheet_as_of(ledger, day_before)?;
+    let end_bs = balance_sheet_as_of(ledger, end)?;
+
+    // Capital account balances before the period, and their movement in it.
+    let capital_before = |id: crate::AccountId| -> Decimal {
+        let mut m = Decimal::ZERO;
+        for e in ledger.posted_entries().filter(|e| e.date() < start) {
+            for l in e.lines().iter().filter(|l| l.account == id) {
+                match l.side {
+                    crate::Side::Credit => m += l.amount.amount,
+                    crate::Side::Debit => m -= l.amount.amount,
+                }
+            }
+        }
+        m
+    };
+    let flows = |id: crate::AccountId| -> (Decimal, Decimal) {
+        let (mut credits, mut debits) = (Decimal::ZERO, Decimal::ZERO);
+        for e in ledger
+            .posted_entries()
+            .filter(|e| e.date() >= start && e.date() <= end)
+        {
+            for l in e.lines().iter().filter(|l| l.account == id) {
+                match l.side {
+                    crate::Side::Credit => credits += l.amount.amount,
+                    crate::Side::Debit => debits += l.amount.amount,
+                }
+            }
+        }
+        (credits, debits)
+    };
+    let capital: Vec<Decimal> = members
+        .iter()
+        .map(|m| capital_before(m.capital_account))
+        .collect();
+    let flow: Vec<(Decimal, Decimal)> = members.iter().map(|m| flows(m.capital_account)).collect();
+
+    // Everything in equity that isn't a capital account is partnership
+    // earnings not yet distributed: allocate it by share.
+    let undistributed = begin_bs.total_equity - capital.iter().sum::<Decimal>();
+    let begin_alloc = allocate(undistributed, &shares);
+    let income_alloc = allocate(pnl.net_income(), &shares);
+    let explained = flow.iter().map(|(c, d)| c - d).sum::<Decimal>() + pnl.net_income();
+    let other_alloc = allocate(
+        end_bs.total_equity - begin_bs.total_equity - explained,
+        &shares,
+    );
+
+    let mut cols = Vec::with_capacity(members.len());
+    for (i, m) in members.iter().enumerate() {
+        let beginning = capital[i] + begin_alloc[i];
+        let (contributions, distributions) = flow[i];
+        let ending = beginning + contributions - distributions + income_alloc[i] + other_alloc[i];
+        cols.push(MemberEquityColumn {
+            name: m.name.clone(),
+            beginning: zero_clean(beginning),
+            contributions,
+            net_income: zero_clean(income_alloc[i]),
+            distributions,
+            other: zero_clean(other_alloc[i]),
+            ending: zero_clean(ending),
+        });
+    }
+    let sum = |f: fn(&MemberEquityColumn) -> Decimal| cols.iter().map(f).sum::<Decimal>();
+    let total = MemberEquityColumn {
+        name: "Total".to_string(),
+        beginning: sum(|c| c.beginning),
+        contributions: sum(|c| c.contributions),
+        net_income: sum(|c| c.net_income),
+        distributions: sum(|c| c.distributions),
+        other: sum(|c| c.other),
+        ending: sum(|c| c.ending),
+    };
+    debug_assert_eq!(total.ending, end_bs.total_equity);
+    Ok(MembersEquityStatement {
+        start,
+        end,
+        members: cols,
+        total,
+    })
+}
+
 /// Render the three core reports as canonical JSON for oracle diffing.
 ///
 /// Amounts are decimal strings (never floats, never locale-formatted), lines
@@ -507,6 +896,10 @@ pub struct CashFlowLine {
     pub label: String,
     /// Signed amount: positive = cash in, negative = cash out.
     pub amount: Decimal,
+    /// Code of the account the line is about, when it is about one (so a
+    /// renderer can relabel, e.g. a member's capital account by name).
+    #[serde(default)]
+    pub account: Option<String>,
 }
 
 /// Parameters for [`cash_flow`].
@@ -734,6 +1127,7 @@ pub fn cash_flow(
         target.push(CashFlowLine {
             label,
             amount: line,
+            account: Some(account.code.clone()),
         });
     }
 
@@ -796,6 +1190,7 @@ pub fn cash_flow(
             investing.push(CashFlowLine {
                 label: format!("Sale of fixed assets — {proceeds_label}"),
                 amount: proceeds,
+                account: ledger.chart().get(cost_acct).map(|a| a.code.clone()),
             });
             continue;
         }
@@ -805,6 +1200,7 @@ pub fn cash_flow(
                 investing.push(CashFlowLine {
                     label: format!("Purchase of fixed assets — {}", display(line.account)),
                     amount: -line.amount.amount,
+                    account: ledger.chart().get(line.account).map(|a| a.code.clone()),
                 });
             }
         }
@@ -815,6 +1211,7 @@ pub fn cash_flow(
         working_capital.push(CashFlowLine {
             label: "Less: gain on sale of fixed assets (in investing)".to_string(),
             amount: -disposal_gain_loss,
+            account: None,
         });
     }
 

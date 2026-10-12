@@ -47,6 +47,24 @@ requirement conflict, the requirement wins.
   reason. Period P&Ls partition: split a range anywhere and the halves sum
   to the whole, and a range's net income equals the change in current
   earnings across it (property-tested).
+- **R-9a — General ledger.** `general_ledger(start, end)`: by account in
+  code order, each with its beginning balance, every posting in the period
+  (date, entry, description, debit, credit, running balance on the account's
+  normal side), and its ending balance, which ties to the trial balance as
+  of `end`. Each posting names its *split*: the one account on the entry's
+  opposite side, or "-Split-" when that side has several (the QuickBooks
+  convention). The entry-ordered listing is the *general journal*, a
+  different report.
+- **R-9b — Trial balance as of a date.** `trial_balance_as_of(as_of)`.
+- **R-9c — Statement of changes in members' equity.** For a multi-member LLC
+  (partnership): each member's capital roll-forward — beginning,
+  contributions (credits to their capital account), allocated net income
+  (loss), distributions (debits), ending — plus a total that equals
+  balance-sheet equity. Earnings not yet distributed (retained earnings and
+  unclosed income) and the period's income are allocated by ownership share
+  to the cent, the last member absorbing rounding, so every row's total is
+  exact. Any equity change the roll-forward doesn't explain is shown as
+  "other", never hidden.
 - **R-10 — Canonical snapshots.** `reports::snapshot()` renders the three
   core reports as deterministic JSON (decimal strings, sorted lines, fixed
   keys). Two engines fed the same books must produce identical output. This

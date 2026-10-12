@@ -1,13 +1,21 @@
 //! The presentation model every statement renderer (XLSX, PDF) draws from.
 //!
-//! Core computes the statements; this module lays them out as rows —
-//! sections, account lines, subtotals, totals — once, so the formats can't
-//! drift apart. Amounts stay exact `Decimal`s here; [`format_amount`] is the
-//! one place they become text ("1,234.56", "(207.68)").
+//! Core computes the statements; this module lays them out once — title,
+//! period, column headers, and rows (sections, account lines, subtotals,
+//! totals) — so the formats can't drift apart. Amounts stay exact
+//! `Decimal`s here; [`format_amount`] and [`amount_parts`] are the only
+//! places they become text.
+//!
+//! Presentation follows US small-business convention (QuickBooks-style):
+//! a currency sign on subtotals and totals, a rule above every sum, a
+//! double rule under statement totals, "Net income (loss)", and — for a
+//! multi-member LLC — "Members' equity" with each member named.
 
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
+use ledger_core::RETAINED_EARNINGS_CODE;
 use ledger_core::reports::{
-    BalanceSheetStatement, CashFlowLine, CashFlowStatement, ProfitAndLossStatement, StatementLine,
+    BalanceSheetStatement, CashFlowLine, CashFlowStatement, MembersEquityStatement,
+    ProfitAndLossStatement, StatementLine, TrialBalance,
 };
 use rust_decimal::Decimal;
 use serde::Serialize;
@@ -17,21 +25,49 @@ use serde::Serialize;
 pub struct ReportMeta {
     /// Company name for the header, e.g. "Fernhill Labs LLC".
     pub company: String,
+    /// Accounting basis for the footer: "Accrual" or "Cash".
+    pub basis: String,
+    /// The day the report was prepared.
+    pub prepared_on: NaiveDate,
     /// Sequence number of the last journal line the report reflects.
     pub journal_seq: u64,
+}
+
+impl ReportMeta {
+    /// "Accrual basis · Prepared Sunday, October 11, 2026 · Journal seq 114".
+    pub fn footer(&self) -> String {
+        format!(
+            "{} basis · Prepared {}, {} · Journal seq {}",
+            self.basis,
+            self.prepared_on.format("%A"),
+            long_date(self.prepared_on),
+            self.journal_seq
+        )
+    }
+}
+
+/// A member of a multi-member LLC, for naming capital accounts on reports.
+#[derive(Clone, Debug)]
+pub struct Member {
+    /// The member's name.
+    pub name: String,
+    /// Code of their capital account.
+    pub capital_code: String,
 }
 
 /// What a row is, which decides how renderers style it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RowKind {
-    /// A section heading ("Revenue"); no amount.
+    /// A section heading ("Revenue"); no amounts.
     Section,
-    /// One account or one cash-flow line, indented under its section.
+    /// An explanatory heading inside a section; no amounts.
+    Subheading,
+    /// One account or one flow, indented under its section.
     Line,
     /// A section total ("Total revenue").
     Subtotal,
-    /// A statement total ("Net income").
+    /// A statement total ("Net income (loss)"); double rule beneath.
     Total,
     /// Vertical space between sections.
     Spacer,
@@ -44,243 +80,289 @@ pub struct Row {
     pub kind: RowKind,
     /// Label text.
     pub label: String,
-    /// Amount, when the row has one.
-    pub amount: Option<Decimal>,
-    /// Print a currency sign with the amount: US accounting style puts "$"
-    /// on the first amount under each section heading and on every
-    /// subtotal and total.
+    /// One amount per column; `None` leaves the cell blank.
+    pub amounts: Vec<Option<Decimal>>,
+    /// Print the currency sign with the amounts: subtotals and totals.
     pub currency: bool,
-    /// Draw a single rule above the amount: the "sum of the above" line.
-    /// Totals always have one; a subtotal only when amounts sit above it
-    /// (an empty section gets no rule over nothing).
+    /// Draw a rule above the row: the "sum of the above" line. Totals
+    /// always have one; a subtotal only when amounts sit above it.
     pub rule_above: bool,
 }
 
 /// A laid-out financial statement.
 #[derive(Clone, Debug, Serialize)]
 pub struct Statement {
-    /// "Profit and Loss", "Balance Sheet", "Statement of Cash Flows".
+    /// "Profit and Loss", "Balance Sheet", ...
     pub title: String,
     /// "October 4 – October 11, 2026" or "As of October 11, 2026".
     pub period: String,
+    /// Amount column headings ("Total"; "Debit", "Credit"; member names).
+    pub columns: Vec<String>,
     /// The rows, top to bottom.
     pub rows: Vec<Row>,
 }
 
-fn row(kind: RowKind, label: impl Into<String>, amount: Option<Decimal>) -> Row {
+fn row(kind: RowKind, label: impl Into<String>, amounts: Vec<Option<Decimal>>) -> Row {
     Row {
         kind,
         label: label.into(),
-        amount,
+        amounts,
         currency: false,
         rule_above: false,
     }
 }
 
-/// Finish a statement: mark which amounts carry the currency sign and which
-/// get a rule above.
-fn statement(title: &str, period: String, mut rows: Vec<Row>) -> Statement {
-    let mut first_in_section = true;
+fn one(kind: RowKind, label: impl Into<String>, amount: Decimal) -> Row {
+    row(kind, label, vec![Some(amount)])
+}
+
+fn section(label: &str) -> Row {
+    row(RowKind::Section, label, vec![])
+}
+
+fn subheading(label: &str) -> Row {
+    row(RowKind::Subheading, label, vec![])
+}
+
+fn spacer() -> Row {
+    row(RowKind::Spacer, "", vec![])
+}
+
+/// Finish a statement: currency signs on sums, rules above them.
+fn statement(title: &str, period: String, columns: &[&str], mut rows: Vec<Row>) -> Statement {
     let mut above: Option<RowKind> = None;
     for r in &mut rows {
+        r.currency = matches!(r.kind, RowKind::Subtotal | RowKind::Total);
         r.rule_above = match r.kind {
             RowKind::Total => true,
             RowKind::Subtotal => matches!(above, Some(RowKind::Line | RowKind::Subtotal)),
             _ => false,
         };
-        if r.kind != RowKind::Spacer {
+        if !matches!(r.kind, RowKind::Spacer | RowKind::Subheading) {
             above = Some(r.kind);
-        }
-        match r.kind {
-            RowKind::Section => first_in_section = true,
-            RowKind::Subtotal | RowKind::Total => r.currency = true,
-            RowKind::Line if r.amount.is_some() && first_in_section => {
-                r.currency = true;
-                first_in_section = false;
-            }
-            RowKind::Line | RowKind::Spacer => {}
         }
     }
     Statement {
         title: title.to_string(),
         period,
+        columns: columns.iter().map(|c| c.to_string()).collect(),
         rows,
     }
 }
 
-/// An amount split for column alignment: the digits, and whether it is a
-/// negative (printed in parentheses) or zero (printed as a dash). Renderers
-/// right-align `digits` and reserve the closing parenthesis's width on every
-/// row, so decimal points line up whether or not a value is negative.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct AmountParts {
-    /// "1,234.56" — absolute value, grouped, two decimals. Empty for zero.
-    pub digits: String,
-    /// Below zero.
-    pub negative: bool,
-    /// Exactly zero (after rounding to cents).
-    pub zero: bool,
-}
-
-/// Split an amount for aligned accounting display. Exact: no floats.
-pub fn amount_parts(d: Decimal) -> AmountParts {
-    let rounded = d.round_dp(2);
-    if rounded.is_zero() {
-        return AmountParts {
-            digits: String::new(),
-            negative: false,
-            zero: true,
-        };
-    }
-    let text = format_amount(rounded.abs());
-    AmountParts {
-        digits: text,
-        negative: rounded.is_sign_negative(),
-        zero: false,
-    }
-}
-
-fn section(label: &str) -> Row {
-    row(RowKind::Section, label, None)
-}
-
-fn spacer() -> Row {
-    row(RowKind::Spacer, "", None)
-}
-
 fn account_lines(lines: &[StatementLine]) -> impl Iterator<Item = Row> + '_ {
-    lines.iter().map(|l| {
-        row(
-            RowKind::Line,
-            format!("{} {}", l.code, l.name),
-            Some(l.amount),
-        )
-    })
-}
-
-fn flow_lines(lines: &[CashFlowLine]) -> impl Iterator<Item = Row> + '_ {
     lines
         .iter()
-        .map(|l| row(RowKind::Line, l.label.clone(), Some(l.amount)))
+        .map(|l| one(RowKind::Line, format!("{} {}", l.code, l.name), l.amount))
 }
 
 /// Lay out a profit and loss statement.
 pub fn profit_and_loss(pl: &ProfitAndLossStatement) -> Statement {
     let mut rows = vec![section("Revenue")];
     rows.extend(account_lines(&pl.revenue));
-    rows.push(row(
-        RowKind::Subtotal,
-        "Total revenue",
-        Some(pl.total_revenue),
-    ));
+    rows.push(one(RowKind::Subtotal, "Total revenue", pl.total_revenue));
     rows.push(spacer());
     rows.push(section("Expenses"));
     rows.extend(account_lines(&pl.expenses));
-    rows.push(row(
-        RowKind::Subtotal,
-        "Total expenses",
-        Some(pl.total_expenses),
-    ));
+    rows.push(one(RowKind::Subtotal, "Total expenses", pl.total_expenses));
     rows.push(spacer());
-    rows.push(row(RowKind::Total, "Net income", Some(pl.net_income())));
-    statement("Profit and Loss", period_label(pl.start, pl.end), rows)
-}
-
-/// Lay out a balance sheet.
-pub fn balance_sheet(bs: &BalanceSheetStatement) -> Statement {
-    let mut rows = vec![section("Assets")];
-    rows.extend(account_lines(&bs.assets));
-    rows.push(row(
-        RowKind::Subtotal,
-        "Total assets",
-        Some(bs.total_assets),
-    ));
-    rows.push(spacer());
-    rows.push(section("Liabilities"));
-    rows.extend(account_lines(&bs.liabilities));
-    rows.push(row(
-        RowKind::Subtotal,
-        "Total liabilities",
-        Some(bs.total_liabilities),
-    ));
-    rows.push(spacer());
-    rows.push(section("Equity"));
-    rows.extend(account_lines(&bs.equity));
-    rows.push(row(
-        RowKind::Line,
-        "Current earnings",
-        Some(bs.current_earnings),
-    ));
-    rows.push(row(
-        RowKind::Subtotal,
-        "Total equity",
-        Some(bs.total_equity),
-    ));
-    rows.push(spacer());
-    rows.push(row(
-        RowKind::Total,
-        "Total liabilities and equity",
-        Some(bs.total_liabilities + bs.total_equity),
-    ));
+    rows.push(one(RowKind::Total, "Net income (loss)", pl.net_income()));
     statement(
-        "Balance Sheet",
-        format!("As of {}", long_date(bs.as_of)),
+        "Profit and Loss",
+        period_label(pl.start, pl.end),
+        &["Total"],
         rows,
     )
 }
 
+/// Lay out a balance sheet. `net_income_ytd` is the fiscal year to date's
+/// net income (loss): it shows as its own equity line, and earnings from
+/// before the fiscal year — the Retained Earnings account plus any not yet
+/// closed — show as "Retained earnings". With `members`, equity is
+/// "Members' equity".
+pub fn balance_sheet(
+    bs: &BalanceSheetStatement,
+    net_income_ytd: Decimal,
+    members: &[Member],
+) -> Statement {
+    let equity_name = if members.is_empty() {
+        "Equity"
+    } else {
+        "Members' equity"
+    };
+    let mut rows = vec![section("Assets")];
+    rows.extend(account_lines(&bs.assets));
+    rows.push(one(RowKind::Subtotal, "Total assets", bs.total_assets));
+    rows.push(spacer());
+    rows.push(section("Liabilities"));
+    rows.extend(account_lines(&bs.liabilities));
+    rows.push(one(
+        RowKind::Subtotal,
+        "Total liabilities",
+        bs.total_liabilities,
+    ));
+    rows.push(spacer());
+    rows.push(section(equity_name));
+    let (retained, other): (Vec<_>, Vec<_>) = bs
+        .equity
+        .iter()
+        .partition(|l| l.code == RETAINED_EARNINGS_CODE);
+    rows.extend(
+        other
+            .iter()
+            .map(|l| one(RowKind::Line, format!("{} {}", l.code, l.name), l.amount)),
+    );
+    let retained: Decimal =
+        retained.iter().map(|l| l.amount).sum::<Decimal>() + bs.current_earnings - net_income_ytd;
+    if !retained.is_zero() {
+        rows.push(one(RowKind::Line, "Retained earnings", retained));
+    }
+    rows.push(one(RowKind::Line, "Net income (loss)", net_income_ytd));
+    rows.push(one(
+        RowKind::Subtotal,
+        format!("Total {}", equity_name.to_lowercase()),
+        bs.total_equity,
+    ));
+    rows.push(spacer());
+    rows.push(one(
+        RowKind::Total,
+        format!("Total liabilities and {}", equity_name.to_lowercase()),
+        bs.total_liabilities + bs.total_equity,
+    ));
+    statement(
+        "Balance Sheet",
+        format!("As of {}", long_date(bs.as_of)),
+        &["Total"],
+        rows,
+    )
+}
+
+/// Cash flow lines, naming members on their capital accounts.
+fn flow_lines<'a>(
+    lines: &'a [CashFlowLine],
+    members: &'a [Member],
+) -> impl Iterator<Item = Row> + 'a {
+    lines.iter().map(move |l| {
+        let member = members
+            .iter()
+            .find(|m| l.account.as_deref() == Some(m.capital_code.as_str()));
+        let label = match member {
+            Some(m) if l.amount >= Decimal::ZERO => format!("Member contributions — {}", m.name),
+            Some(m) => format!("Member distributions — {}", m.name),
+            None => l.label.clone(),
+        };
+        one(RowKind::Line, label, l.amount)
+    })
+}
+
 /// Lay out a cash flow statement (indirect method).
-pub fn cash_flow(cf: &CashFlowStatement) -> Statement {
+pub fn cash_flow(cf: &CashFlowStatement, members: &[Member]) -> Statement {
     let mut rows = vec![section("Operating activities")];
-    rows.push(row(RowKind::Line, "Net income", Some(cf.net_income)));
-    if !cf.depreciation.is_zero() {
-        rows.push(row(
-            RowKind::Line,
-            "Depreciation (non-cash)",
-            Some(cf.depreciation),
+    rows.push(one(RowKind::Line, "Net income (loss)", cf.net_income));
+    if !cf.depreciation.is_zero() || !cf.working_capital.is_empty() {
+        rows.push(subheading(
+            "Adjustments to reconcile net income (loss) to net cash from operating activities:",
         ));
     }
-    rows.extend(flow_lines(&cf.working_capital));
-    rows.push(row(
+    if !cf.depreciation.is_zero() {
+        rows.push(one(RowKind::Line, "Depreciation", cf.depreciation));
+    }
+    rows.extend(flow_lines(&cf.working_capital, members));
+    rows.push(one(
         RowKind::Subtotal,
         "Net cash from operating activities",
-        Some(cf.cash_from_operations),
+        cf.cash_from_operations,
     ));
     rows.push(spacer());
     rows.push(section("Investing activities"));
-    rows.extend(flow_lines(&cf.investing));
-    rows.push(row(
+    rows.extend(flow_lines(&cf.investing, members));
+    rows.push(one(
         RowKind::Subtotal,
         "Net cash from investing activities",
-        Some(cf.cash_from_investing),
+        cf.cash_from_investing,
     ));
     rows.push(spacer());
     rows.push(section("Financing activities"));
-    rows.extend(flow_lines(&cf.financing));
-    rows.push(row(
+    rows.extend(flow_lines(&cf.financing, members));
+    rows.push(one(
         RowKind::Subtotal,
         "Net cash from financing activities",
-        Some(cf.cash_from_financing),
+        cf.cash_from_financing,
     ));
     rows.push(spacer());
-    rows.push(row(
+    rows.push(one(
         RowKind::Subtotal,
-        "Net change in cash",
-        Some(cf.net_change_in_cash),
+        "Net increase (decrease) in cash",
+        cf.net_change_in_cash,
     ));
-    rows.push(row(
+    rows.push(one(
         RowKind::Line,
         "Cash at beginning of period",
-        Some(cf.cash_beginning),
+        cf.cash_beginning,
     ));
-    rows.push(row(
-        RowKind::Total,
-        "Cash at end of period",
-        Some(cf.cash_ending),
-    ));
+    rows.push(one(RowKind::Total, "Cash at end of period", cf.cash_ending));
     statement(
         "Statement of Cash Flows",
         period_label(cf.start, cf.end),
+        &["Total"],
+        rows,
+    )
+}
+
+/// Lay out a trial balance as of a date: Debit and Credit columns, a zero
+/// side left blank.
+pub fn trial_balance(tb: &TrialBalance, as_of: NaiveDate) -> Statement {
+    let nz = |d: Decimal| if d.is_zero() { None } else { Some(d) };
+    let mut rows: Vec<Row> = tb
+        .lines
+        .iter()
+        .map(|l| {
+            row(
+                RowKind::Line,
+                format!("{} {}", l.code, l.name),
+                vec![nz(l.debit), nz(l.credit)],
+            )
+        })
+        .collect();
+    rows.push(row(
+        RowKind::Total,
+        "Total",
+        vec![Some(tb.total_debits), Some(tb.total_credits)],
+    ));
+    statement(
+        "Trial Balance",
+        format!("As of {}", long_date(as_of)),
+        &["Debit", "Credit"],
+        rows,
+    )
+}
+
+/// Lay out the statement of changes in members' equity: one column per
+/// member and a total. Distributions print as reductions.
+pub fn members_equity(me: &MembersEquityStatement) -> Statement {
+    let cols: Vec<_> = me
+        .members
+        .iter()
+        .chain(std::iter::once(&me.total))
+        .collect();
+    let pick = |f: &dyn Fn(&ledger_core::MemberEquityColumn) -> Decimal| {
+        cols.iter().map(|c| Some(f(c))).collect::<Vec<_>>()
+    };
+    let mut rows = vec![
+        row(RowKind::Line, "Beginning balance", pick(&|c| c.beginning)),
+        row(RowKind::Line, "Contributions", pick(&|c| c.contributions)),
+        row(RowKind::Line, "Net income (loss)", pick(&|c| c.net_income)),
+        row(RowKind::Line, "Distributions", pick(&|c| -c.distributions)),
+    ];
+    if !me.total.other.is_zero() {
+        rows.push(row(RowKind::Line, "Other changes", pick(&|c| c.other)));
+    }
+    rows.push(row(RowKind::Total, "Ending balance", pick(&|c| c.ending)));
+    let names: Vec<&str> = cols.iter().map(|c| c.name.as_str()).collect();
+    statement(
+        "Statement of Changes in Members' Equity",
+        period_label(me.start, me.end),
+        &names,
         rows,
     )
 }
@@ -292,7 +374,6 @@ pub fn long_date(d: NaiveDate) -> String {
 
 /// "October 4 – October 11, 2026", or with both years when they differ.
 pub fn period_label(start: NaiveDate, end: NaiveDate) -> String {
-    use chrono::Datelike;
     if start.year() == end.year() {
         format!("{} – {}", start.format("%B %-d"), long_date(end))
     } else {
@@ -320,6 +401,27 @@ pub fn format_amount(d: Decimal) -> String {
     }
 }
 
+/// An amount split for column alignment: the digits, and whether it is a
+/// negative (printed in parentheses) or zero (printed as 0.00). Renderers
+/// right-align `digits` and reserve the closing parenthesis's width on every
+/// row, so decimal points line up whether or not a value is negative.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct AmountParts {
+    /// "1,234.56" — absolute value, grouped, two decimals.
+    pub digits: String,
+    /// Below zero.
+    pub negative: bool,
+}
+
+/// Split an amount for aligned accounting display. Exact: no floats.
+pub fn amount_parts(d: Decimal) -> AmountParts {
+    let rounded = d.round_dp(2);
+    AmountParts {
+        digits: format_amount(rounded.abs()),
+        negative: rounded.is_sign_negative() && !rounded.is_zero(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,44 +446,80 @@ mod tests {
     #[test]
     fn amounts_split_for_alignment() {
         let p = amount_parts(dec("-1234.5"));
-        assert_eq!(
-            (p.digits.as_str(), p.negative, p.zero),
-            ("1,234.50", true, false)
-        );
-        assert!(amount_parts(dec("0.004")).zero);
-        assert_eq!(amount_parts(dec("207.68")).digits, "207.68");
+        assert_eq!((p.digits.as_str(), p.negative), ("1,234.50", true));
+        let z = amount_parts(dec("-0.004"));
+        assert_eq!((z.digits.as_str(), z.negative), ("0.00", false));
     }
 
     #[test]
-    fn currency_signs_go_on_first_lines_and_totals() {
+    fn currency_signs_and_rules_go_on_sums() {
         let rows = vec![
             section("Assets"),
-            row(RowKind::Line, "a", Some(dec("1"))),
-            row(RowKind::Line, "b", Some(dec("2"))),
-            row(RowKind::Subtotal, "t", Some(dec("3"))),
+            one(RowKind::Line, "a", dec("1")),
+            one(RowKind::Line, "b", dec("2")),
+            one(RowKind::Subtotal, "t", dec("3")),
             spacer(),
-            section("Equity"),
-            row(RowKind::Line, "c", Some(dec("3"))),
-            row(RowKind::Total, "T", Some(dec("3"))),
+            section("Investing"),
+            one(RowKind::Subtotal, "empty", dec("0")),
+            one(RowKind::Total, "T", dec("3")),
         ];
-        let st = statement("X", String::new(), rows);
+        let st = statement("X", String::new(), &["Total"], rows);
         let signs: Vec<bool> = st.rows.iter().map(|r| r.currency).collect();
-        assert_eq!(signs, [false, true, false, true, false, false, true, true]);
+        assert_eq!(signs, [false, false, false, true, false, false, true, true]);
         let rules: Vec<bool> = st.rows.iter().map(|r| r.rule_above).collect();
+        // No rule over an empty section's subtotal; always one over a total.
         assert_eq!(
             rules,
             [false, false, false, true, false, false, false, true]
         );
-        // A subtotal straight under its heading (empty section): no rule.
-        let empty = statement(
-            "Y",
-            String::new(),
-            vec![
-                section("Investing"),
-                row(RowKind::Subtotal, "t", Some(dec("0"))),
+    }
+
+    #[test]
+    fn balance_sheet_splits_retained_earnings_from_this_year() {
+        let line = |code: &str, name: &str, a: &str| StatementLine {
+            code: code.into(),
+            name: name.into(),
+            amount: dec(a),
+        };
+        // Prior years closed 1,000 to Retained Earnings; 200 more unclosed
+        // from last year; this year's net income is 300 (current earnings
+        // 500 = 200 + 300).
+        let bs = BalanceSheetStatement {
+            as_of: NaiveDate::from_ymd_opt(2027, 3, 31).unwrap(),
+            assets: vec![line("1000", "Cash", "2500")],
+            liabilities: vec![],
+            equity: vec![
+                line("3000", "Capital — Alice", "1000"),
+                line("3999", "Retained Earnings", "1000"),
             ],
+            current_earnings: dec("500"),
+            total_assets: dec("2500"),
+            total_liabilities: dec("0"),
+            total_equity: dec("2500"),
+        };
+        let members = [Member {
+            name: "Alice".into(),
+            capital_code: "3000".into(),
+        }];
+        let st = balance_sheet(&bs, dec("300"), &members);
+        let eq: Vec<(&str, Option<Decimal>)> = st
+            .rows
+            .iter()
+            .skip_while(|r| r.label != "Members' equity")
+            .map(|r| (r.label.as_str(), r.amounts.first().copied().flatten()))
+            .collect();
+        assert_eq!(
+            eq,
+            [
+                ("Members' equity", None),
+                ("3000 Capital — Alice", Some(dec("1000"))),
+                ("Retained earnings", Some(dec("1200"))),
+                ("Net income (loss)", Some(dec("300"))),
+                ("Total members' equity", Some(dec("2500"))),
+                ("", None),
+                ("Total liabilities and members' equity", Some(dec("2500"))),
+            ]
         );
-        assert!(!empty.rows[1].rule_above);
     }
 
     #[test]
@@ -394,6 +532,16 @@ mod tests {
         assert_eq!(
             period_label(d(2026, 12, 1), d(2027, 1, 31)),
             "December 1, 2026 – January 31, 2027"
+        );
+        let meta = ReportMeta {
+            company: "X".into(),
+            basis: "Accrual".into(),
+            prepared_on: d(2026, 10, 11),
+            journal_seq: 114,
+        };
+        assert_eq!(
+            meta.footer(),
+            "Accrual basis · Prepared Sunday, October 11, 2026 · Journal seq 114"
         );
     }
 }

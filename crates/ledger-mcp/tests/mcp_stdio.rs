@@ -834,6 +834,7 @@ fn mcp_statement_pdfs_and_cpa_package_over_stdio() {
         ("profit_and_loss", json!({})),
         ("balance_sheet", json!({})),
         ("cash_flow", json!({"cash_accounts": ["1000"]})),
+        ("trial_balance", json!({"as_of": "2026-10-31"})),
     ] {
         let mut args = json!({"format": "pdf", "report": report});
         args.as_object_mut()
@@ -850,11 +851,12 @@ fn mcp_statement_pdfs_and_cpa_package_over_stdio() {
         json!({"format": "pdf", "report": "cash_flow"}),
     );
     assert!(err.contains("cash_accounts"), "{err}");
+    // The ledger and journal are workbooks, not printable statements.
     let err = mcp.call_err(
         "books.export",
-        json!({"format": "pdf", "report": "trial_balance"}),
+        json!({"format": "pdf", "report": "general_ledger"}),
     );
-    assert!(err.contains("for pdf"), "{err}");
+    assert!(err.contains("not pdf"), "{err}");
 
     // The CPA package carries all three statements.
     let err = mcp.call_err("books.export_cpa_package", json!({"as_of": "2026-10-31"}));
@@ -873,9 +875,14 @@ fn mcp_statement_pdfs_and_cpa_package_over_stdio() {
         names,
         [
             "balance-sheet.pdf",
+            "balance-sheet.xlsx",
             "cash-flow.pdf",
+            "cash-flow.xlsx",
+            "general-journal.xlsx",
             "general-ledger.xlsx",
             "profit-and-loss.pdf",
+            "profit-and-loss.xlsx",
+            "trial-balance.pdf",
             "trial-balance.xlsx"
         ]
     );
@@ -892,7 +899,7 @@ fn mcp_period_statements_over_stdio() {
     let toml = dir.join("wanderbooks.toml");
     std::fs::write(
         &toml,
-        "[company]\nname = \"Test Co\"\nfiscal_year_start = \"02-01\"\n[books]\nreceipt_threshold = \"5.00\"\n",
+        "[company]\nname = \"Test Co\"\nfiscal_year_start = \"02-01\"\n[[company.members]]\nname = \"Owner\"\nshare = \"100%\"\ncapital_account = \"3000\"\n[books]\nreceipt_threshold = \"5.00\"\n",
     )
     .unwrap();
     let data = dir.join("books-data");
@@ -978,4 +985,41 @@ fn mcp_period_statements_over_stdio() {
     assert_eq!(jan["current_earnings"], "4.00");
     assert_eq!(jan["equity_accounts"][0]["amount"], "1000.00");
     assert_eq!(jan["balanced"], true);
+
+    // Trial balance as of Jan 31: Dr cash 1,004.00 = Cr capital + sales.
+    let tb = mcp.call("books.trial_balance", json!({"as_of": "2026-01-31"}));
+    assert_eq!(tb["as_of"], "2026-01-31");
+    assert_eq!(tb["total_debits"], "1004.00");
+
+    // General ledger for February: cash starts at 1,004.00, pays 3.00 for
+    // software, takes in 2.50 of sales, ends at 1,003.50.
+    let gl = mcp.call(
+        "books.export",
+        json!({"format": "json", "report": "general_ledger", "start": "2026-02-01", "end": "2026-02-28"}),
+    );
+    let gl: serde_json::Value = serde_json::from_str(gl["content"].as_str().unwrap()).unwrap();
+    let cash = &gl["accounts"][0];
+    assert_eq!(cash["beginning_balance"], "1004.00");
+    assert_eq!(cash["postings"][0]["split"], "6000 Software");
+    assert_eq!(cash["postings"][0]["balance"], "1001.00");
+    assert_eq!(cash["postings"][1]["split"], "4000 Sales");
+    assert_eq!(cash["ending_balance"], "1003.50");
+
+    // Members' equity, Jan-Feb: the one member contributed 1,000.00 and
+    // earned 3.50 (6.50 sales - 3.00 software), ending at balance-sheet
+    // equity, 1,003.50.
+    let me = mcp.call(
+        "books.export",
+        json!({"format": "json", "report": "members_equity", "start": "2026-01-01", "end": "2026-02-28"}),
+    );
+    let me: serde_json::Value = serde_json::from_str(me["content"].as_str().unwrap()).unwrap();
+    assert_eq!(me["members"][0]["name"], "Owner");
+    assert_eq!(me["total"]["contributions"], "1000.00");
+    assert_eq!(me["total"]["net_income"], "3.50");
+    assert_eq!(me["total"]["ending"], "1003.50");
+    let pdf = mcp.call(
+        "books.export",
+        json!({"format": "pdf", "report": "members_equity", "end": "2026-02-28"}),
+    );
+    assert_eq!(pdf["content_encoding"], "base64");
 }

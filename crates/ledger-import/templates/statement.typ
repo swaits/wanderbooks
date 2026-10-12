@@ -1,111 +1,114 @@
-// A financial statement: P&L, balance sheet, or cash flow.
+// A financial statement: P&L, balance sheet, cash flow, trial balance, or
+// members' equity, in US small-business (QuickBooks-style) presentation.
 //
 // Everything arrives as data in sys.inputs.data (JSON), already laid out by
 // ledger-import::report, with amounts already split into exact parts. The
 // template only typesets: no arithmetic happens here, and no label is ever
 // parsed as markup.
 //
-// Shape: { company, title, period, footer,
-//          rows: [{ kind: "section" | "line" | "subtotal" | "total"
-//                       | "spacer", label, rule (single rule above),
-//                   amount: null | { digits: "1,234.56", negative, zero,
-//                                    currency } }] }
+// Shape: { company, title, period, footer, columns: ["Total"] | [...],
+//          rows: [{ kind: "section" | "subheading" | "line" | "subtotal"
+//                       | "total" | "spacer",
+//                   label, rule (rule above), currency ("$" on amounts),
+//                   amounts: [null | { digits: "1,234.56", negative }] }] }
 //
-// Amounts follow US accounting presentation: tabular figures, "$" pinned
-// to the left of the amount column on the first line of each section and on
-// totals, negatives in parentheses with the closing parenthesis hanging
-// (its width is reserved on every row, so decimal points always line up),
-// and zero as a dash in the ones position. Amounts are never bold: bold
-// figures are wider, which would knock totals out of the decimal column —
-// the rules mark subtotals and totals instead.
+// Amounts: Inter's tabular figures; negatives in parentheses with the
+// closing parenthesis hanging (its width is reserved on every row, so
+// decimal points always line up); "$" attached on subtotals and totals.
 
 #let d = json(bytes(sys.inputs.data))
+#let ncols = d.columns.len()
+#let ink = luma(25)
+#let quiet = luma(110)
+#let hair = 0.5pt + luma(160)
+#let firm = 0.6pt + ink
 
 #set document(title: d.company + " — " + d.title, author: d.company)
-#set text(
-  font: "Libertinus Serif",
-  size: 10.5pt,
-  number-type: "lining",
-  number-width: "tabular",
-)
+#set text(font: "Inter", size: 9pt, fill: ink, number-width: "tabular")
 #set page(
   paper: "us-letter",
-  margin: (x: 1in, top: 0.9in, bottom: 0.8in),
+  margin: (x: 0.75in, top: 0.75in, bottom: 0.75in),
   header: context {
     if counter(page).get().first() > 1 {
-      set text(8.5pt, fill: luma(110))
-      [#d.company — #d.title #h(1fr) #d.period]
+      set text(7.5pt, fill: quiet)
+      [#d.company · #d.title #h(1fr) #d.period]
     }
   },
   footer: context {
-    set text(8pt, fill: luma(110))
-    [#d.footer #h(1fr) Page #counter(page).display() of #counter(page).final().first()]
+    set text(7.5pt, fill: quiet)
+    grid(
+      columns: (1fr, auto, 1fr),
+      [],
+      d.footer,
+      align(right)[Page #counter(page).display() of #counter(page).final().first()],
+    )
   },
 )
 
 #align(center)[
-  #text(15pt, weight: "bold", d.company) \
+  #text(15pt, fill: luma(45), d.company) \
+  #v(4pt)
+  #text(10.5pt, weight: "bold", d.title) \
   #v(2pt)
-  #text(12.5pt, d.title) \
-  #v(1pt)
-  #text(10pt, style: "italic", d.period)
+  #d.period
 ]
-#v(16pt)
+#v(12pt)
 
-// Two lines under a statement total, the accounting double rule, set
-// clear of the descenders.
-#let double-rule(body) = stack(
-  body,
-  v(2.4pt),
-  line(length: 100%, stroke: 0.5pt),
-  v(1.4pt),
-  line(length: 100%, stroke: 0.5pt),
-)
-
-#let amount(r) = {
-  let a = r.amount
+#let amount(a, currency) = {
   if a == none { return [] }
   let open = if a.negative { [(] } else { [] }
   let close = if a.negative { [)] } else { hide[)] }
-  let body = if a.zero { [–#hide[.00]] } else { [#open#a.digits] }
-  grid(
-    columns: (auto, 1fr),
-    align: (left, right),
-    if a.currency [\$] else [],
-    [#body#close],
+  let sign = if currency [\$] else []
+  [#open#sign#a.digits#close]
+}
+
+#let full(body, ..args) = table.cell(colspan: ncols + 1, ..args, body)
+
+#let row-cells(r) = {
+  let bold = r.kind == "subtotal" or r.kind == "total"
+  let stroke = if r.rule { (top: if r.kind == "total" { firm } else { hair }) } else { none }
+  let label = if r.kind == "line" { pad(left: 1.4em, r.label) } else { r.label }
+  let label = if bold { text(weight: "bold", label) } else { label }
+  (
+    table.cell(stroke: stroke, label),
+    ..r.amounts.map(a => table.cell(stroke: stroke, amount(a, r.currency))),
   )
 }
 
 #table(
-  columns: (1fr, 9em),
+  columns: (1fr,) + (8em,) * ncols,
   stroke: none,
-  inset: (x: 0pt, y: 3.2pt),
-  align: (left + horizon, right + horizon),
+  inset: (x: 4pt, y: 3.6pt),
+  align: (left + horizon,) + (right + horizon,) * ncols,
+  table.header(
+    table.cell(stroke: (top: firm, bottom: hair), []),
+    ..d.columns.map(c => table.cell(
+      stroke: (top: firm, bottom: hair),
+      text(7.5pt, weight: "bold", tracking: 0.04em, upper(c)),
+    )),
+  ),
   ..d
     .rows
     .map(r => {
       if r.kind == "spacer" {
-        (table.cell(colspan: 2, v(3pt)),)
+        (full(v(2pt), inset: 2pt),)
       } else if r.kind == "section" {
-        (table.cell(colspan: 2, text(weight: "bold", r.label)),)
-      } else if r.kind == "line" {
-        (pad(left: 1.4em, r.label), amount(r))
-      } else if r.kind == "subtotal" {
-        (
-          text(weight: "bold", r.label),
-          table.cell(
-            stroke: if r.rule { (top: 0.5pt) } else { none },
-            amount(r),
+        (full(text(weight: "semibold", r.label)),)
+      } else if r.kind == "subheading" {
+        (full(pad(left: 1.4em, emph(r.label))),)
+      } else if r.kind == "total" {
+        // The double rule under a statement total, full width.
+        let double = full(
+          inset: (x: 0pt, y: 0pt),
+          stack(
+            spacing: 1.6pt,
+            line(length: 100%, stroke: firm),
+            line(length: 100%, stroke: firm),
           ),
         )
+        row-cells(r) + (double,)
       } else {
-        (
-          align(top, text(weight: "bold", r.label)),
-          table.cell(
-            stroke: (top: 0.5pt),
-            double-rule(amount(r)),
-          ),
-        )
+        row-cells(r)
       }
     })
     .flatten(),

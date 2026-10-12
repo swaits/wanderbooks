@@ -3,27 +3,29 @@
 //! Money is converted to f64 ONLY at this presentation boundary — never in
 //! a money path. All accounting math stays `Decimal`; the conversion happens
 //! when writing a cell, rounded to cents. Cells stay numeric (so a CPA can
-//! sum them) with an accounting number format: thousands separators,
-//! negatives in parentheses.
+//! sum them) with accounting number formats: thousands separators,
+//! negatives in parentheses with the closing parenthesis hanging (so
+//! decimal points align), "$" on subtotals and totals.
 
 use crate::report::{ReportMeta, RowKind, Statement};
+use chrono::NaiveDate;
 use ledger_core::Ledger;
-use ledger_core::reports::TrialBalance;
+use ledger_core::reports::GeneralLedger;
 use rust_decimal::Decimal;
-use rust_xlsxwriter::{Format, FormatBorder, Workbook, Worksheet};
+use rust_xlsxwriter::{Format, FormatAlign, FormatBorder, Workbook, Worksheet};
 use thiserror::Error;
 
 /// Which report to render.
 #[derive(Clone, Debug)]
 pub enum XlsxReport<'a> {
-    /// Trial balance lines.
-    TrialBalance(&'a TrialBalance),
-    /// A laid-out financial statement (P&L, balance sheet, cash flow); see
-    /// [`crate::report`].
+    /// A laid-out statement (P&L, balance sheet, cash flow, trial balance,
+    /// members' equity); see [`crate::report`].
     Statement(&'a Statement),
-    /// General ledger: every posted journal line. Needs the ledger for
-    /// account names and class names.
-    GeneralLedger(&'a Ledger),
+    /// The general ledger: by account, with running balances and splits.
+    GeneralLedger(&'a GeneralLedger),
+    /// The general journal: every posted entry in `[start, end]`, line by
+    /// line, in date order.
+    GeneralJournal(&'a Ledger, NaiveDate, NaiveDate),
 }
 
 /// XLSX errors.
@@ -40,40 +42,110 @@ impl From<rust_xlsxwriter::XlsxError> for XlsxError {
     }
 }
 
-/// Excel's Accounting format, with and without the currency symbol: "$"
-/// pinned left, digits right, negatives in parentheses with the closing
-/// parenthesis hanging (`_)` reserves its width on positives, so decimal
-/// points line up), zero as a dash.
-const ACCOUNTING: &str = r#"_(* #,##0.00_);_(* (#,##0.00);_(* "-"??_);_(@_)"#;
-const ACCOUNTING_USD: &str = r#"_($* #,##0.00_);_($* (#,##0.00);_($* "-"??_);_(@_)"#;
+/// Accounting number formats: the `_)` reserves a closing parenthesis's
+/// width on positives so decimal points line up with negatives.
+const PLAIN: &str = "#,##0.00_);(#,##0.00)";
+const DOLLARS: &str = "$#,##0.00_);($#,##0.00)";
 
-/// Company name, title, and period across the top; returns the next row.
-fn header(
-    sheet: &mut Worksheet,
-    meta: &ReportMeta,
-    title: &str,
-    period: Option<&str>,
-) -> Result<u32, XlsxError> {
-    let bold = Format::new().set_bold();
-    sheet.write_string_with_format(0, 0, &meta.company, &bold.clone().set_font_size(14))?;
-    sheet.write_string_with_format(1, 0, title, &bold)?;
-    let mut row = 2;
-    if let Some(period) = period {
-        sheet.write_string(row, 0, period)?;
-        row += 1;
-    }
-    Ok(row + 1)
+struct Formats {
+    bold: Format,
+    company: Format,
+    centered: Format,
+    header: Format,
+    header_right: Format,
+    plain: Format,
+    dollars_sum: Format,
+    dollars_total: Format,
+    line_label: Format,
+    sub_label: Format,
+    note: Format,
 }
 
-/// "Prepared from journal through seq N" under the last row.
-fn footer(sheet: &mut Worksheet, meta: &ReportMeta, row: u32) -> Result<(), XlsxError> {
-    let note = Format::new().set_italic().set_font_color("#666666");
-    sheet.write_string_with_format(
+impl Formats {
+    fn new() -> Self {
+        let bold = Format::new().set_bold();
+        let ruled = |f: Format| f.set_border_top(FormatBorder::Thin);
+        Self {
+            company: Format::new()
+                .set_font_size(14)
+                .set_align(FormatAlign::Center),
+            centered: Format::new().set_align(FormatAlign::Center),
+            header: bold
+                .clone()
+                .set_font_size(9)
+                .set_border_bottom(FormatBorder::Thin),
+            header_right: bold
+                .clone()
+                .set_font_size(9)
+                .set_border_bottom(FormatBorder::Thin)
+                .set_align(FormatAlign::Right),
+            plain: Format::new().set_num_format(PLAIN),
+            dollars_sum: ruled(bold.clone().set_num_format(DOLLARS)),
+            dollars_total: ruled(bold.clone().set_num_format(DOLLARS))
+                .set_border_bottom(FormatBorder::Double),
+            line_label: Format::new().set_indent(1),
+            sub_label: Format::new().set_italic().set_indent(1),
+            note: Format::new()
+                .set_italic()
+                .set_font_size(9)
+                .set_font_color("#666666")
+                .set_align(FormatAlign::Center),
+            bold,
+        }
+    }
+}
+
+/// Company, title, and period centered over `width` columns; returns the
+/// next free row.
+fn header(
+    sheet: &mut Worksheet,
+    f: &Formats,
+    meta: &ReportMeta,
+    title: &str,
+    period: &str,
+    width: u16,
+) -> Result<u32, XlsxError> {
+    let last = width.saturating_sub(1);
+    sheet.merge_range(0, 0, 0, last, &meta.company, &f.company)?;
+    sheet.merge_range(
+        1,
+        0,
+        1,
+        last,
+        title,
+        &f.bold.clone().set_align(FormatAlign::Center),
+    )?;
+    sheet.merge_range(2, 0, 2, last, period, &f.centered)?;
+    Ok(4)
+}
+
+/// Basis, preparation date, and journal seq under the last row.
+fn footer(
+    sheet: &mut Worksheet,
+    f: &Formats,
+    meta: &ReportMeta,
+    row: u32,
+    width: u16,
+) -> Result<(), XlsxError> {
+    sheet.merge_range(
         row + 1,
         0,
-        format!("Prepared from journal through seq {}", meta.journal_seq),
-        &note,
+        row + 1,
+        width.saturating_sub(1),
+        &meta.footer(),
+        &f.note,
     )?;
+    Ok(())
+}
+
+fn number(
+    sheet: &mut Worksheet,
+    row: u32,
+    col: u16,
+    d: Decimal,
+    fmt: &Format,
+) -> Result<(), XlsxError> {
+    sheet.write_number_with_format(row, col, dec_to_f64(d), fmt)?;
     Ok(())
 }
 
@@ -81,136 +153,219 @@ fn footer(sheet: &mut Worksheet, meta: &ReportMeta, row: u32) -> Result<(), Xlsx
 pub fn report_to_xlsx(report: &XlsxReport<'_>, meta: &ReportMeta) -> Result<Vec<u8>, XlsxError> {
     let mut workbook = Workbook::new();
     let sheet = workbook.add_worksheet();
-    let bold = Format::new().set_bold();
-    let money = Format::new().set_num_format(ACCOUNTING);
-    let usd = Format::new().set_num_format(ACCOUNTING_USD);
-    // Totals are marked by rules, not bold: bold figures are wider and would
-    // break the decimal column.
-    let usd_bold = usd.clone();
-
+    let f = Formats::new();
     match report {
-        XlsxReport::TrialBalance(tb) => {
-            sheet.set_name("Trial Balance")?;
-            let mut row = header(sheet, meta, "Trial Balance", None)?;
-            for (i, h) in ["Code", "Account", "Debit", "Credit"].iter().enumerate() {
-                sheet.write_string_with_format(row, i as u16, *h, &bold)?;
-            }
-            row += 1;
-            for line in &tb.lines {
-                sheet.write_string(row, 0, &line.code)?;
-                sheet.write_string(row, 1, &line.name)?;
-                sheet.write_number_with_format(row, 2, dec_to_f64(line.debit), &money)?;
-                sheet.write_number_with_format(row, 3, dec_to_f64(line.credit), &money)?;
-                row += 1;
-            }
-            let total = usd_bold
-                .clone()
-                .set_border_top(FormatBorder::Thin)
-                .set_border_bottom(FormatBorder::Double);
-            sheet.write_string_with_format(row, 1, "Total", &bold)?;
-            sheet.write_number_with_format(row, 2, dec_to_f64(tb.total_debits), &total)?;
-            sheet.write_number_with_format(row, 3, dec_to_f64(tb.total_credits), &total)?;
-            sheet.set_column_width(1, 40)?;
-            sheet.set_column_width(2, 14)?;
-            sheet.set_column_width(3, 14)?;
-            footer(sheet, meta, row + 1)?;
-        }
-        XlsxReport::Statement(st) => {
-            sheet.set_name(&st.title)?;
-            let mut row = header(sheet, meta, &st.title, Some(&st.period))?;
-            let line_label = Format::new().set_indent(1);
-            let subtotal = usd_bold.clone().set_border_top(FormatBorder::Thin);
-            let total = usd_bold
-                .clone()
-                .set_border_top(FormatBorder::Thin)
-                .set_border_bottom(FormatBorder::Double);
-            for r in &st.rows {
-                let amount = r.amount.map(dec_to_f64);
-                match r.kind {
-                    RowKind::Spacer => {}
-                    RowKind::Section => {
-                        sheet.write_string_with_format(row, 0, &r.label, &bold)?;
-                    }
-                    RowKind::Line => {
-                        sheet.write_string_with_format(row, 0, &r.label, &line_label)?;
-                        if let Some(a) = amount {
-                            let fmt = if r.currency { &usd } else { &money };
-                            sheet.write_number_with_format(row, 1, a, fmt)?;
-                        }
-                    }
-                    RowKind::Subtotal => {
-                        sheet.write_string_with_format(row, 0, &r.label, &bold)?;
-                        if let Some(a) = amount {
-                            let fmt = if r.rule_above { &subtotal } else { &usd_bold };
-                            sheet.write_number_with_format(row, 1, a, fmt)?;
-                        }
-                    }
-                    RowKind::Total => {
-                        sheet.write_string_with_format(row, 0, &r.label, &bold)?;
-                        if let Some(a) = amount {
-                            sheet.write_number_with_format(row, 1, a, &total)?;
-                        }
-                    }
-                }
-                row += 1;
-            }
-            sheet.set_column_width(0, 60)?;
-            sheet.set_column_width(1, 16)?;
-            footer(sheet, meta, row)?;
-        }
-        XlsxReport::GeneralLedger(ledger) => {
-            sheet.set_name("General Ledger")?;
-            let mut row = header(sheet, meta, "General Ledger", None)?;
-            for (i, h) in [
-                "Date",
-                "Entry",
-                "Description",
-                "Account Code",
-                "Account Name",
-                "Class",
-                "Debit",
-                "Credit",
-            ]
-            .iter()
-            .enumerate()
-            {
-                sheet.write_string_with_format(row, i as u16, *h, &bold)?;
-            }
-            row += 1;
-            for entry in ledger.posted_entries() {
-                for line in entry.lines() {
-                    let account = ledger.chart().get(line.account);
-                    let (code, name) = match account {
-                        Some(a) => (a.code.as_str(), a.name.as_str()),
-                        None => ("?", "?"),
-                    };
-                    let class_name = line
-                        .class_id
-                        .and_then(|cid| ledger.get_class(cid))
-                        .map(|c| c.name.as_str())
-                        .unwrap_or("");
-                    let (debit, credit) = match line.side {
-                        ledger_core::Side::Debit => (line.amount.amount, Decimal::ZERO),
-                        ledger_core::Side::Credit => (Decimal::ZERO, line.amount.amount),
-                    };
-                    sheet.write_string(row, 0, entry.date().to_string())?;
-                    sheet.write_number(row, 1, entry.id() as f64)?;
-                    sheet.write_string(row, 2, entry.description())?;
-                    sheet.write_string(row, 3, code)?;
-                    sheet.write_string(row, 4, name)?;
-                    sheet.write_string(row, 5, class_name)?;
-                    sheet.write_number_with_format(row, 6, dec_to_f64(debit), &money)?;
-                    sheet.write_number_with_format(row, 7, dec_to_f64(credit), &money)?;
-                    row += 1;
-                }
-            }
-            sheet.set_column_width(2, 50)?;
-            sheet.set_column_width(4, 32)?;
-            footer(sheet, meta, row)?;
+        XlsxReport::Statement(st) => statement(sheet, &f, meta, st)?,
+        XlsxReport::GeneralLedger(gl) => general_ledger(sheet, &f, meta, gl)?,
+        XlsxReport::GeneralJournal(ledger, start, end) => {
+            general_journal(sheet, &f, meta, ledger, *start, *end)?
         }
     }
-
     Ok(workbook.save_to_buffer()?)
+}
+
+fn statement(
+    sheet: &mut Worksheet,
+    f: &Formats,
+    meta: &ReportMeta,
+    st: &Statement,
+) -> Result<(), XlsxError> {
+    // Excel sheet names: at most 31 characters, no apostrophes at the ends.
+    let name: String = st.title.replace('\'', "").chars().take(31).collect();
+    sheet.set_name(name.trim())?;
+    let width = 1 + st.columns.len() as u16;
+    let mut row = header(sheet, f, meta, &st.title, &st.period, width)?;
+    sheet.write_string_with_format(row, 0, "", &f.header)?;
+    for (i, c) in st.columns.iter().enumerate() {
+        sheet.write_string_with_format(row, 1 + i as u16, c.to_uppercase(), &f.header_right)?;
+    }
+    row += 1;
+    let dollars_unruled = f.bold.clone().set_num_format(DOLLARS);
+    for r in &st.rows {
+        let (label_fmt, amount_fmt) = match r.kind {
+            RowKind::Spacer => {
+                row += 1;
+                continue;
+            }
+            RowKind::Section => (&f.bold, &f.plain),
+            RowKind::Subheading => (&f.sub_label, &f.plain),
+            RowKind::Line => (&f.line_label, &f.plain),
+            RowKind::Subtotal if r.rule_above => (&f.bold, &f.dollars_sum),
+            RowKind::Subtotal => (&f.bold, &dollars_unruled),
+            RowKind::Total => (&f.bold, &f.dollars_total),
+        };
+        sheet.write_string_with_format(row, 0, &r.label, label_fmt)?;
+        for (i, a) in r.amounts.iter().enumerate() {
+            match a {
+                Some(d) => number(sheet, row, 1 + i as u16, *d, amount_fmt)?,
+                None if r.rule_above => {
+                    sheet.write_blank(row, 1 + i as u16, amount_fmt)?;
+                }
+                None => {}
+            }
+        }
+        row += 1;
+    }
+    sheet.set_column_width(0, 58)?;
+    for i in 0..st.columns.len() as u16 {
+        sheet.set_column_width(1 + i, 16)?;
+    }
+    footer(sheet, f, meta, row, width)
+}
+
+fn general_ledger(
+    sheet: &mut Worksheet,
+    f: &Formats,
+    meta: &ReportMeta,
+    gl: &GeneralLedger,
+) -> Result<(), XlsxError> {
+    sheet.set_name("General Ledger")?;
+    let period = crate::report::period_label(gl.start, gl.end);
+    let cols = [
+        "Date",
+        "Entry",
+        "Description",
+        "Split",
+        "Debit",
+        "Credit",
+        "Balance",
+    ];
+    let mut row = header(sheet, f, meta, "General Ledger", &period, cols.len() as u16)?;
+    for (i, h) in cols.iter().enumerate() {
+        let fmt = if i >= 4 { &f.header_right } else { &f.header };
+        sheet.write_string_with_format(row, i as u16, h.to_uppercase(), fmt)?;
+    }
+    row += 1;
+    for a in &gl.accounts {
+        let name = format!("{} {}", a.code, a.name);
+        sheet.write_string_with_format(row, 0, &name, &f.bold)?;
+        row += 1;
+        sheet.write_string_with_format(row, 2, "Beginning balance", &f.line_label)?;
+        number(sheet, row, 6, a.beginning_balance, &f.plain)?;
+        row += 1;
+        for p in &a.postings {
+            sheet.write_string(row, 0, p.date.to_string())?;
+            sheet.write_number(row, 1, p.entry_id as f64)?;
+            sheet.write_string(row, 2, &p.description)?;
+            sheet.write_string(row, 3, &p.split)?;
+            if !p.debit.is_zero() {
+                number(sheet, row, 4, p.debit, &f.plain)?;
+            }
+            if !p.credit.is_zero() {
+                number(sheet, row, 5, p.credit, &f.plain)?;
+            }
+            number(sheet, row, 6, p.balance, &f.plain)?;
+            row += 1;
+        }
+        sheet.write_string_with_format(row, 0, format!("Total for {name}"), &f.bold)?;
+        for c in 1..4 {
+            sheet.write_blank(row, c, &f.dollars_sum)?;
+        }
+        number(sheet, row, 4, a.total_debits, &f.dollars_sum)?;
+        number(sheet, row, 5, a.total_credits, &f.dollars_sum)?;
+        number(sheet, row, 6, a.ending_balance, &f.dollars_sum)?;
+        row += 2;
+    }
+    for (c, w) in [
+        (0, 12.0),
+        (1, 7.0),
+        (2, 46.0),
+        (3, 34.0),
+        (4, 13.0),
+        (5, 13.0),
+        (6, 13.0),
+    ] {
+        sheet.set_column_width(c, w)?;
+    }
+    footer(sheet, f, meta, row, cols.len() as u16)
+}
+
+fn general_journal(
+    sheet: &mut Worksheet,
+    f: &Formats,
+    meta: &ReportMeta,
+    ledger: &Ledger,
+    start: NaiveDate,
+    end: NaiveDate,
+) -> Result<(), XlsxError> {
+    sheet.set_name("General Journal")?;
+    let period = crate::report::period_label(start, end);
+    let cols = [
+        "Date",
+        "Entry",
+        "Description",
+        "Account",
+        "Class",
+        "Debit",
+        "Credit",
+    ];
+    let mut row = header(
+        sheet,
+        f,
+        meta,
+        "General Journal",
+        &period,
+        cols.len() as u16,
+    )?;
+    for (i, h) in cols.iter().enumerate() {
+        let fmt = if i >= 5 { &f.header_right } else { &f.header };
+        sheet.write_string_with_format(row, i as u16, h.to_uppercase(), fmt)?;
+    }
+    row += 1;
+    let mut entries: Vec<_> = ledger
+        .posted_entries()
+        .filter(|e| e.date() >= start && e.date() <= end)
+        .collect();
+    entries.sort_by_key(|e| (e.date(), e.id()));
+    let (mut debits, mut credits) = (Decimal::ZERO, Decimal::ZERO);
+    for entry in entries {
+        for line in entry.lines() {
+            let account = ledger
+                .chart()
+                .get(line.account)
+                .map(|a| format!("{} {}", a.code, a.name))
+                .unwrap_or_else(|| "?".to_string());
+            let class = line
+                .class_id
+                .and_then(|cid| ledger.get_class(cid))
+                .map(|c| c.name.as_str())
+                .unwrap_or("");
+            sheet.write_string(row, 0, entry.date().to_string())?;
+            sheet.write_number(row, 1, entry.id() as f64)?;
+            sheet.write_string(row, 2, entry.description())?;
+            sheet.write_string(row, 3, &account)?;
+            sheet.write_string(row, 4, class)?;
+            match line.side {
+                ledger_core::Side::Debit => {
+                    number(sheet, row, 5, line.amount.amount, &f.plain)?;
+                    debits += line.amount.amount;
+                }
+                ledger_core::Side::Credit => {
+                    number(sheet, row, 6, line.amount.amount, &f.plain)?;
+                    credits += line.amount.amount;
+                }
+            }
+            row += 1;
+        }
+    }
+    sheet.write_string_with_format(row, 0, "Total", &f.bold)?;
+    for c in 1..5 {
+        sheet.write_blank(row, c, &f.dollars_total)?;
+    }
+    number(sheet, row, 5, debits, &f.dollars_total)?;
+    number(sheet, row, 6, credits, &f.dollars_total)?;
+    for (c, w) in [
+        (0, 12.0),
+        (1, 7.0),
+        (2, 50.0),
+        (3, 38.0),
+        (4, 12.0),
+        (5, 13.0),
+        (6, 13.0),
+    ] {
+        sheet.set_column_width(c, w)?;
+    }
+    footer(sheet, f, meta, row + 1, cols.len() as u16)
 }
 
 /// Decimal to f64 at the presentation boundary. Rounded to cents first.
@@ -222,7 +377,8 @@ fn dec_to_f64(d: Decimal) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ledger_core::reports::TrialBalanceLine;
+    use crate::report;
+    use ledger_core::reports::{TrialBalance, TrialBalanceLine};
 
     #[test]
     fn xlsx_is_a_zip() {
@@ -238,9 +394,12 @@ mod tests {
         };
         let meta = ReportMeta {
             company: "Test Co".to_string(),
+            basis: "Accrual".to_string(),
+            prepared_on: NaiveDate::from_ymd_opt(2026, 10, 11).unwrap(),
             journal_seq: 7,
         };
-        let bytes = report_to_xlsx(&XlsxReport::TrialBalance(&tb), &meta).unwrap();
+        let st = report::trial_balance(&tb, NaiveDate::from_ymd_opt(2026, 10, 11).unwrap());
+        let bytes = report_to_xlsx(&XlsxReport::Statement(&st), &meta).unwrap();
         // XLSX is a ZIP: starts with PK.
         assert_eq!(&bytes[0..2], b"PK");
         assert!(bytes.len() > 1000);

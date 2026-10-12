@@ -29,6 +29,10 @@ pub enum PeriodStatus {
     Closed,
 }
 
+/// Code of the Retained Earnings account that closing entries credit (or
+/// debit), created on the first close if the chart lacks it.
+pub const RETAINED_EARNINGS_CODE: &str = "3999";
+
 /// A named accounting period: a month, quarter, or year.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Period {
@@ -130,7 +134,7 @@ mod tests {
         assert_eq!(l.account_balance(rev).unwrap(), rust_decimal::Decimal::ZERO);
         assert_eq!(l.account_balance(exp).unwrap(), rust_decimal::Decimal::ZERO);
         // Retained earnings holds the net: 1000 - 400 = 600 (credit-normal).
-        let re = l.chart().find_by_code("3999").unwrap().id;
+        let re = l.chart().find_by_code(RETAINED_EARNINGS_CODE).unwrap().id;
         assert_eq!(
             l.account_balance(re).unwrap(),
             "600".parse::<rust_decimal::Decimal>().unwrap()

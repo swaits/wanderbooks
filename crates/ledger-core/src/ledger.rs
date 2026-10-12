@@ -642,10 +642,10 @@ impl Ledger {
             None
         } else {
             // Ensure Retained Earnings exists.
-            let re_id = match self.chart.find_by_code("3999") {
+            let re_id = match self.chart.find_by_code(periods::RETAINED_EARNINGS_CODE) {
                 Some(a) => a.id,
                 None => self.add_account(
-                    "3999",
+                    periods::RETAINED_EARNINGS_CODE,
                     "Retained Earnings",
                     AccountType::Equity,
                     None,

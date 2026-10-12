@@ -139,3 +139,15 @@ interface is MCP, not a cloned GUI. The first storage + MCP slice is done
   file from the server's filesystem into the blob store (receipt/document).
   The agent downloads from Drive via the CLI, then calls this — Drive
   credentials never enter the server.
+- 2026-10-11: `wanderbooks init` done. New `ledger-cli` crate (binary
+  `wanderbooks`, std-only): `init [DIR]` scaffolds a books dir — `mise.toml`
+  (pinned Rust toolchain; tasks: build, mcp-add, backup), `AGENT.md` (agent
+  operating contract: bootstrap, MCP contract, first-run onboarding incl.
+  migration via conversation, ongoing rules), `wanderbooks.toml` (company
+  profile, filled during onboarding), `books-data/` + `.gitignore` (SQLite
+  projection ignored; journal is the record). Fresh dirs get `git init` and
+  a scaffold commit so the journal archive starts on day one. One generic
+  init by design — no per-situation flags; the agent is the import layer
+  (QBO/CSV/email/sheets, conversational). 5 integration tests green; clippy
+  clean. Bootstrap: `mise trust && mise install`, `mise run build`,
+  `mise run mcp-add`, then `claude` in the dir.

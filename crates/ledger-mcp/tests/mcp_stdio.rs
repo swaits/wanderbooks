@@ -139,7 +139,7 @@ fn mcp_end_to_end_over_stdio() {
     // Tool listing: 23 narrow tools, chart is read-only.
     let list = mcp.request("tools/list", json!({}));
     let tools = list["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 59, "expected 59 tools, got {}", tools.len());
+    assert_eq!(tools.len(), 60, "expected 60 tools, got {}", tools.len());
     let chart = tools.iter().find(|t| t["name"] == "books.chart").unwrap();
     assert_eq!(chart["annotations"]["readOnlyHint"], true);
     assert!(
@@ -1349,4 +1349,107 @@ fn mcp_schedules_and_recurring_over_stdio() {
     );
     let more = mcp.call("books.run_recurring", json!({"through": "2026-12-31"}));
     assert!(more["drafts"].as_array().unwrap().is_empty(), "idempotent");
+}
+
+#[test]
+fn mcp_payout_gross_up_over_stdio() {
+    let dir = test_dir("payout");
+    let mut mcp = Mcp::spawn(&dir);
+    mcp.request(
+        "initialize",
+        json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+        }),
+    );
+    mcp.notify("notifications/initialized");
+    for (code, name, typ) in [
+        ("1000", "Bank", "asset"),
+        ("4000", "App Sales", "revenue"),
+        ("4100", "Refunds", "expense"),
+        ("6000", "Platform Fees", "expense"),
+    ] {
+        mcp.call(
+            "books.add_account",
+            json!({"code": code, "name": name, "account_type": typ}),
+        );
+    }
+    mcp.call("books.add_class", json!({"name": "App A"}));
+    mcp.call("books.add_class", json!({"name": "App B"}));
+
+    // 1,000.00 + 500.00 gross, 225.00 commission, a 9.99 refund: 1,265.01.
+    let mut payout = json!({
+        "date": "2026-11-30",
+        "description": "App Store payout, November 2026",
+        "deposit_account": "1000",
+        "deposit": "1265.00",
+        "revenue": [
+            {"account": "4000", "amount": "1000.00", "class": "App A"},
+            {"account": "4000", "amount": "500.00", "class": "App B"},
+        ],
+        "fees": [
+            {"account": "6000", "amount": "150.00", "class": "App A"},
+            {"account": "6000", "amount": "75.00", "class": "App B"},
+        ],
+        "adjustments": [
+            {"account": "4100", "side": "debit", "amount": "9.99", "class": "App A"},
+        ],
+    });
+    let err = mcp.call_err("books.record_payout", payout.clone());
+    assert!(err.contains("off by -0.01"), "{err}");
+    payout["deposit"] = json!("1265.01");
+    let out = mcp.call("books.record_payout", payout);
+    assert_eq!(out["status"], "draft");
+    assert_eq!(out["gross"], "1500.00");
+    assert_eq!(out["adjustments"], "-9.99");
+    assert_eq!(
+        out["lines"],
+        json!([
+            "Debit 1000 1265.01",
+            "Debit 6000 150.00",
+            "Debit 6000 75.00",
+            "Debit 4100 9.99",
+            "Credit 4000 1000.00",
+            "Credit 4000 500.00"
+        ])
+    );
+
+    // The statement is the receipt; then it posts like any entry.
+    let entry_id = out["entry_id"].as_u64().unwrap();
+    mcp.call(
+        "books.attach_receipt",
+        json!({
+            "entry_id": entry_id,
+            "file_name": "payout.pdf",
+            "mime_type": "application/pdf",
+            "content_base64": base64_like(b"%PDF-1.4 statement"),
+        }),
+    );
+    mcp.call(
+        "books.post_entry",
+        json!({"entry_id": entry_id, "confirmed": true}),
+    );
+    let by_class = mcp.call(
+        "books.profit_and_loss_by_class",
+        json!({"start": "2026-11-01", "end": "2026-11-30"}),
+    );
+    let net: Vec<(String, String)> = by_class["classes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            (
+                c["class"].as_str().unwrap_or("").to_string(),
+                c["net_income"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        net,
+        [
+            ("App A".into(), "840.01".into()),
+            ("App B".into(), "425.00".into())
+        ]
+    );
 }

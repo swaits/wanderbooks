@@ -162,6 +162,20 @@ through the policy.
 - `books.run_recurring { through? }` → `{ drafts: [{ recurring_id, date,
   entry_id }] }`: one draft per occurrence on or before `through`, once.
 
+## Tools — payouts
+
+- `books.record_payout { date, description, deposit_account, deposit,
+  revenue: [{ account, amount, class? }], fees?: [{ account, amount,
+  class? }], adjustments?: [{ account, side, amount, class? }] }` →
+  `{ entry_id, status: "draft", gross, fees, adjustments, deposit, lines,
+  next }`. Builds the grossed-up entry — Dr deposit (net; Cr when negative),
+  Dr fees, Dr/Cr adjustments (a debit reduces the deposit: refunds,
+  chargebacks, reserves held, tax withheld), Cr revenue (gross; revenue or
+  liability accounts, e.g. deferred revenue or sales tax collected) — and
+  refuses unless gross − fees ± adjustments equals the deposit to the cent,
+  naming the difference. A draft: attach the payout statement, preview,
+  post. Platform-agnostic; format-specific statement parsers can feed it.
+
 ## Tools — receipts & documents
 
 - `books.attach_receipt { entry_id?, file_name, mime_type, content_base64 }`

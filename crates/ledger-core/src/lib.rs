@@ -24,6 +24,7 @@ pub mod error;
 pub mod journal;
 pub mod ledger;
 pub mod money;
+pub mod payouts;
 pub mod payroll;
 pub mod periods;
 pub mod reports;
@@ -44,6 +45,7 @@ pub use error::LedgerError;
 pub use journal::{EntryId, EntryStatus, JournalEntry, JournalLine};
 pub use ledger::{Ledger, ReconciliationReport, UnclearedLine};
 pub use money::{Currency, Money};
+pub use payouts::{Payout, PayoutAdjustment, PayoutLine, PayoutTotals, payout_plan};
 pub use payroll::{PayrollLine, PayrollRun, PayrollRunId};
 pub use periods::{CloseTo, MemberClose, Period, PeriodId, PeriodStatus, RETAINED_EARNINGS_CODE};
 pub use reports::{

@@ -235,3 +235,9 @@ interface is MCP, not a cloned GUI. The first storage + MCP slice is done
   entries generate drafts, never posts. Journal events schedule.registered,
   schedule.posted (with the full entry, checked on replay),
   recurring.registered, recurring.generated. No schema change. 59 tools.
+- 2026-10-11: Payouts. books.record_payout grosses a platform deposit up
+  into revenue (by class), fees, and adjustments, refusing unless it
+  reconciles to the cent; it creates a draft so the payout statement is
+  attached as the receipt. Pure core logic (payouts.rs), no new journal
+  events (it journals as a draft and lines). 60 tools. Statement parsers
+  (Apple, Google, Stripe) wait for sample files.

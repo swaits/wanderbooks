@@ -137,6 +137,10 @@ pub enum LedgerError {
     #[error("invalid schedule: {0}")]
     InvalidSchedule(String),
 
+    /// A payout doesn't reconcile or uses the wrong accounts.
+    #[error("invalid payout: {0}")]
+    InvalidPayout(String),
+
     /// A tax category doesn't exist, doesn't fit the account, or has a bad
     /// deductible percent.
     #[error("invalid tax category: {0}")]

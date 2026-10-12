@@ -42,6 +42,7 @@ No other statuses.
 | CPA handoff package (TB + GL xlsx, P&L + BS pdf, zip) | Reports → export | done | — |
 | Budgets | Budgets | todo | R-FUTURE-6 (declined as bloat) |
 | Scheduled transactions (recurring entries → drafts) | Scheduled txns / Recurring transactions | partial | hand-verified fixture incl. month-end dates; drafts only, by design |
+| Payout gross-up (deposit → revenue, fees, adjustments) | Bank deposit with fee lines; Xero/QBO Stripe & Shopify integrations | partial | hand-verified fixture incl. classes and a negative payout; no statement parsers yet |
 | Prepaid expense + deferred revenue amortization | Amortization schedules (Xero/QBO add-ons) | partial | hand-verified fixture, to the cent; no golden file yet |
 | Automated GnuCash diff harness | — (our `xtask oracle`) | todo | roadmap phase 3 |
 

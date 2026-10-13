@@ -285,3 +285,14 @@ interface is MCP, not a cloned GUI. The first storage + MCP slice is done
   directory fsync off Unix), .exe-aware binary lookup, installer OS and
   C-compiler checks with WANDERBOOKS_REPO, the website (site/, `just
   site`, `just publish`), and a repo justfile (check, build, install, demo).
+- 2026-10-12: The CPA story. The CPA package now also carries every
+  receipt behind the period's entries (receipts/, with index.csv tying each
+  to its entry, date, amount, and SHA-256), the company's documents, the
+  journal as IIF (QuickBooks Desktop), the 1099 worksheet, and a README
+  with the verified journal size; include_receipts=false for a light one.
+  The scaffolded AGENTS.md teaches the bookkeeper to find receipts in
+  email, migrate from QuickBooks/Xero/spreadsheets (match every statement
+  to the cent; keep the old system read-only for a month), and work with
+  the CPA (package, read-only clone + GUI). The site leads with owning
+  your books and an AI bookkeeper: example prompts, a QuickBooks
+  comparison, an honest "what it doesn't do yet", the CPA section, FAQ.

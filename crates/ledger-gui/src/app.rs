@@ -376,7 +376,7 @@ fn live_status(ui: &mut Ui, b: &Books, since_update: f64, live: bool) {
             let (ok, text, tip) = match &b.integrity.disk {
                 DiskCheck::Matches => (true, "Database matches journal".to_string(), "The server's SQLite database matches a fresh projection of the journal, every table, row for row.".to_string()),
                 DiskCheck::Behind { applied, journal } => (true, "Database catching up".to_string(), format!("The database has applied {applied} of {journal} journal events; the server applies the rest right after writing them.")),
-                DiskCheck::Missing => (true, "Database will rebuild".to_string(), "No database file yet; the server builds it from the journal when it starts.".to_string()),
+                DiskCheck::Missing => (true, "Read-only copy".to_string(), "No server database here: a copy of the books (a CPA's, say), or the server hasn't run yet. The journal and every file are verified either way.".to_string()),
                 DiskCheck::Differs(why) => (false, "Database differs".to_string(), format!("{why}. The server rebuilds it from the journal (books.verify, or on its next start).")),
                 DiskCheck::Unreadable(why) => (false, "Database unreadable".to_string(), why.clone()),
             };

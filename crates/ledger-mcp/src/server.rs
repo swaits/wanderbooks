@@ -3328,7 +3328,7 @@ impl BooksServer {
 
     #[tool(
         name = "books.export_cpa_package",
-        description = "Build the CPA handoff package as a zip (base64): the profit and loss, balance sheet, cash flow, statement of changes in members' equity (multi-member LLCs), and trial balance, each as PDF and XLSX; plus the general ledger (by account) and general journal (entry by entry) as XLSX. cash_accounts (e.g. [\"1000\"]) is required: the cash flow statement reconciles to them. as_of defaults to today; period reports cover the fiscal year to date.",
+        description = "Build the CPA handoff package as a zip (base64): the profit and loss, balance sheet, cash flow, statement of changes in members' equity (multi-member LLCs), tax summary, and trial balance, each as PDF and XLSX; the general ledger (by account) and general journal (entry by entry) as XLSX; the journal as IIF (imports into QuickBooks Desktop); the 1099 worksheet as CSV; every receipt behind the year's entries (receipts/, with an index.csv tying each file to its entry) and the company's documents (documents/), unless include_receipts is false; and a README with the journal's verified hash. cash_accounts (e.g. [\"1000\"]) is required: the cash flow statement reconciles to them. as_of defaults to today; period reports cover the fiscal year to date.",
         annotations(read_only_hint = true)
     )]
     async fn export_cpa_package(
@@ -3418,7 +3418,107 @@ impl BooksServer {
             "general-journal.xlsx".into(),
             xlsx(XlsxReport::GeneralJournal(ledger, fy, as_of))?,
         ));
+        // 1099 worksheet for the calendar year of as_of.
+        let year = chrono::Datelike::year(&as_of);
+        let r1099 = ledger_core::vendor_1099_report(ledger, year, None);
+        let mut w = String::from("vendor,form,w9_on_file,paid,reportable\n");
+        for v in &r1099.vendors {
+            w.push_str(&format!(
+                "\"{}\",{},{},{},{}\n",
+                v.name.replace('"', "\"\""),
+                v.form.map(|f| f.label()).unwrap_or(""),
+                v.tin_on_file,
+                money(v.paid),
+                v.reportable
+            ));
+        }
+        files.push((format!("1099-worksheet-{year}.csv"), w.into_bytes()));
+        // The evidence: every current receipt on the year's posted entries,
+        // and the company's documents, with an index tying them together.
+        let mut receipt_count = 0;
+        if p.include_receipts {
+            let clean = |s: &str| -> String {
+                s.chars()
+                    .map(|c| {
+                        if c.is_alphanumeric() || ".-_ ".contains(c) {
+                            c
+                        } else {
+                            '_'
+                        }
+                    })
+                    .collect()
+            };
+            let mut index = String::from("entry_id,date,description,amount,file,sha256\n");
+            for a in store.list_attachments(None).map_err(|e| e.to_string())? {
+                if a.withdrawn_at.is_some() {
+                    continue;
+                }
+                let bytes = store.attachment_bytes(a.id).map_err(|e| e.to_string())?;
+                match a.entry_id.and_then(|e| ledger.get_entry(e)) {
+                    Some(e)
+                        if e.status() == ledger_core::EntryStatus::Posted
+                            && e.date() >= fy
+                            && e.date() <= as_of =>
+                    {
+                        let name = format!(
+                            "receipts/{}-entry-{}-{}",
+                            e.date(),
+                            e.id(),
+                            clean(&a.file_name)
+                        );
+                        let amount: Decimal = e
+                            .lines()
+                            .iter()
+                            .filter(|l| l.side == Side::Debit)
+                            .map(|l| l.amount.amount)
+                            .sum();
+                        index.push_str(&format!(
+                            "{},{},\"{}\",{},{},{}\n",
+                            e.id(),
+                            e.date(),
+                            e.description().replace('"', "\"\""),
+                            money(amount),
+                            name,
+                            a.blob_sha
+                        ));
+                        files.push((name, bytes));
+                        receipt_count += 1;
+                    }
+                    None if a.entry_id.is_none() && a.category != "receipts" => {
+                        files.push((
+                            format!("documents/{}/{}", clean(&a.category), clean(&a.file_name)),
+                            bytes,
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+            files.push(("receipts/index.csv".into(), index.into_bytes()));
+        }
+        let seq = store.journal_seq();
         drop(store);
+        files.push((
+            "general-journal.iif".into(),
+            self.export_iif()?.into_bytes(),
+        ));
+        let readme = format!(
+            "{name} — books package for the CPA\n\nFiscal year to date: {fy_start} through {as_of_s}. {basis} basis.\nKept in wanderbooks: double-entry books from an append-only, hash-chained journal ({seq} events, verified).\n\nStatements (PDF and XLSX): profit and loss, balance sheet, cash flow, {members}tax summary, trial balance.\nLedgers (XLSX): general ledger by account; general journal entry by entry.\ngeneral-journal.iif: every posted entry, for import into QuickBooks Desktop.\n1099-worksheet-{year}.csv: cash paid per vendor marked for a 1099, against the year's threshold.\n{receipts}\nThe tax summary maps accounts to return categories; it's a worksheet, not a filing. Questions go to the owners, who can ask their bookkeeping agent to trace any number to its entries and receipts.\n",
+            name = self.company.name,
+            basis = self.company.basis,
+            members = if self.company.members.is_empty() {
+                ""
+            } else {
+                "members' equity, "
+            },
+            receipts = if p.include_receipts {
+                format!(
+                    "receipts/: the {receipt_count} receipts behind the period's entries; index.csv ties each to its entry, date, amount, and SHA-256.\ndocuments/: the company's formation, legal, and tax documents.\n"
+                )
+            } else {
+                String::new()
+            },
+        );
+        files.insert(0, ("README.txt".into(), readme.into_bytes()));
 
         // Zip it.
         let mut zip_buf = Vec::new();

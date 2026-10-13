@@ -871,13 +871,18 @@ fn mcp_statement_pdfs_and_cpa_package_over_stdio() {
         .map(|i| zip.by_index(i).unwrap().name().unwrap().to_string())
         .collect();
     names.sort();
+    let (receipts, rest): (Vec<&String>, Vec<&String>) =
+        names.iter().partition(|n| n.starts_with("receipts/"));
     assert_eq!(
-        names,
+        rest,
         [
+            "1099-worksheet-2026.csv",
+            "README.txt",
             "balance-sheet.pdf",
             "balance-sheet.xlsx",
             "cash-flow.pdf",
             "cash-flow.xlsx",
+            "general-journal.iif",
             "general-journal.xlsx",
             "general-ledger.xlsx",
             "profit-and-loss.pdf",
@@ -888,9 +893,36 @@ fn mcp_statement_pdfs_and_cpa_package_over_stdio() {
             "trial-balance.xlsx"
         ]
     );
+    // Every receipt behind the period's entries, plus an index tying them
+    // to their entries.
+    assert!(receipts.iter().any(|n| *n == "receipts/index.csv"));
+    let files = receipts.len() - 1;
+    assert!(files > 0, "receipts included");
+    let mut index = String::new();
+    std::io::Read::read_to_string(&mut zip.by_name("receipts/index.csv").unwrap(), &mut index)
+        .unwrap();
+    assert_eq!(
+        index.lines().count(),
+        files + 1,
+        "one index row per receipt"
+    );
+    let mut readme = String::new();
+    std::io::Read::read_to_string(&mut zip.by_name("README.txt").unwrap(), &mut readme).unwrap();
+    assert!(readme.contains("hash-chained journal"), "{readme}");
     let mut cf = Vec::new();
     std::io::Read::read_to_end(&mut zip.by_name("cash-flow.pdf").unwrap(), &mut cf).unwrap();
     assert!(cf.starts_with(b"%PDF"));
+    // Without receipts, a lighter package.
+    let light = mcp.call(
+        "books.export_cpa_package",
+        json!({"as_of": "2026-10-31", "cash_accounts": ["1000"], "include_receipts": false}),
+    );
+    let light = zip::ZipArchive::new(std::io::Cursor::new(
+        b64.decode(light["content_base64"].as_str().unwrap())
+            .unwrap(),
+    ))
+    .unwrap();
+    assert_eq!(light.len(), rest.len());
 }
 
 #[test]

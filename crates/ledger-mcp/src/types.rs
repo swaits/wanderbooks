@@ -1917,6 +1917,10 @@ pub struct ExportCpaPackageParams {
     /// empty: liabilities are operating working capital.
     #[serde(default)]
     pub financing_accounts: Vec<String>,
+    /// Include every receipt for the year's entries and the company's
+    /// documents (default true).
+    #[serde(default = "default_true")]
+    pub include_receipts: bool,
 }
 
 /// Output of `books.export_cpa_package`.

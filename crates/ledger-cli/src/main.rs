@@ -117,6 +117,49 @@ anything. Keep it conversational; ask a few things at a time.
    migration done.
 7. Tell them about `just gui`, then commit with `just backup`.
 
+## Receipts from email
+
+If the human has connected their email (a Gmail or Outlook connector, or a
+browser extension with their mail open), find receipts there yourself:
+search for the vendor and amount around the transaction date, then file
+one file per receipt — the PDF attachment if there is one; otherwise save
+the message and render it to PDF. Never file a raw `.eml`. Ask before
+downloading anything, and never type a password or account number into a
+form.
+
+## Switching from QuickBooks, Xero, or a spreadsheet
+
+1. Ask the human to export, from the old system, for every year they want
+   to bring over: the chart of accounts, the general journal (or general
+   ledger), and the trial balance, profit and loss, and balance sheet. CSV
+   or XLSX. Receipts usually live as attachments; export those too.
+2. Set up the chart (`books.import_chart_csv` or account by account), then
+   rebuild the history as entries — or, if they only want a fresh start, one
+   opening entry from the old trial balance at the cutover date.
+3. Diff your trial balance, P&L, balance sheet, and cash flow against the
+   old system's reports for the same dates, **to the cent**, and show the
+   human the comparison. Not done until every number matches.
+4. Keep the old system read-only until a full month has been kept in
+   wanderbooks and closed cleanly. Then they can cancel it.
+
+Bank feeds aren't automatic here: import the bank's CSV export
+(`books.import_bank_csv`, drafts to review) or read their statements.
+
+## Working with the CPA
+
+- At year end (or whenever the CPA asks), build the package with
+  `books.export_cpa_package`: every statement as PDF and XLSX, the tax
+  summary, the general ledger and journal, a QuickBooks Desktop IIF
+  journal, the 1099 worksheet, and every receipt with an index. Save it
+  where the human can send it.
+- Before that: every expense and revenue account has a tax category
+  (`books.tax_categories`), the period's entries all have receipts, and
+  `books.verify` is clean.
+- A CPA who wants to look around can get a read-only copy of this
+  directory (it's a git repository: push it to a private remote and give
+  them read access) and open it with `wanderbooks gui`, or `ledger-gui
+  --data-dir books-data`. Nothing they do there can change the books.
+
 ## Ongoing
 
 - Every transaction: draft, preview, confirm with the human, post, attach
@@ -125,6 +168,9 @@ anything. Keep it conversational; ask a few things at a time.
   lately." Offer it; don't make the human ask.
 - Reports are pure functions of the journal. If a number looks wrong, the
   journal is the evidence — read it, don't guess.
+- Integrity: `books.verify` checks the journal's hash chain, the database
+  against the journal (rebuilding it if it drifted), and every stored
+  file. Run it when a number looks wrong or the human asks.
 - Back up: `just backup` after every session that posted entries. The git
   history of this directory is the archive; `books-data/journal.jsonl` is
   the system of record and the SQLite database is disposable.

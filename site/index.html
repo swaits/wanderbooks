@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>wanderbooks — bookkeeping you talk to</title>
-<meta name="description" content="Double-entry bookkeeping run by an AI bookkeeper. You talk; it keeps the books. You watch every number, live. Open source, your files, on your machine.">
+<title>wanderbooks — own your books, hire an AI bookkeeper</title>
+<meta name="description" content="Real double-entry bookkeeping in a folder you own, kept by an AI bookkeeper you talk to. No subscription, no lock-in, every number traceable to its receipt. An open-source alternative to QuickBooks Online.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -12,17 +12,17 @@
 :root {
   --bg: #f6f6f4; --surface: #fff; --border: #e4e4e0; --text: #1b1b1f;
   --muted: #67676f; --faint: #9c9ca4; --accent: #4f46e5; --accent-soft: #eeeefd;
-  --code-bg: #1b1b1f; --code-text: #ececee; --positive: #15803d;
+  --code-bg: #1b1b1f; --code-text: #ececee; --positive: #15803d; --negative: #b91c1c;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #111214; --surface: #191a1d; --border: #2a2b30; --text: #ececee;
     --muted: #a3a3ac; --faint: #6e6e78; --accent: #8b93fa; --accent-soft: #242545;
-    --code-bg: #0b0b0d; --code-text: #ececee; --positive: #4ade80;
+    --code-bg: #0b0b0d; --code-text: #ececee; --positive: #4ade80; --negative: #f87171;
   }
 }
 * { box-sizing: border-box; }
-html { -webkit-text-size-adjust: 100%; }
+html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
 body {
   margin: 0; background: var(--bg); color: var(--text);
   font: 400 17px/1.6 Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -33,11 +33,14 @@ a:hover { text-decoration: underline; }
 .wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
 header { display: flex; align-items: center; justify-content: space-between; padding: 22px 0; }
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 17px; color: var(--text); }
+.brand:hover { text-decoration: none; }
 .brand .mark { width: 28px; height: 28px; border-radius: 8px; background: var(--accent); color: #fff; display: grid; place-items: center; font-weight: 700; }
 nav a { color: var(--muted); margin-left: 22px; font-size: 15px; }
-.hero { padding: 56px 0 36px; max-width: 820px; }
-h1 { font-size: clamp(38px, 6vw, 60px); line-height: 1.05; letter-spacing: -0.03em; margin: 0 0 20px; font-weight: 700; }
-.lede { font-size: clamp(18px, 2.2vw, 21px); color: var(--muted); margin: 0 0 30px; max-width: 700px; }
+.hero { padding: 48px 0 32px; max-width: 840px; }
+.eyebrow { color: var(--accent); font-weight: 600; font-size: 14px; letter-spacing: .05em; text-transform: uppercase; margin-bottom: 14px; }
+h1 { font-size: clamp(38px, 6vw, 62px); line-height: 1.04; letter-spacing: -0.03em; margin: 0 0 20px; font-weight: 700; }
+.lede { font-size: clamp(18px, 2.2vw, 21px); color: var(--muted); margin: 0 0 30px; max-width: 720px; }
+.lede b { color: var(--text); font-weight: 600; }
 .install { background: var(--code-bg); color: var(--code-text); border-radius: 12px; padding: 16px 18px; display: flex; gap: 14px; align-items: flex-start; font: 500 14.5px/1.55 ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
 .install code { flex: 1; min-width: 0; white-space: normal; overflow-wrap: anywhere; }
 .install .prompt { color: #8b93fa; user-select: none; }
@@ -49,27 +52,49 @@ h1 { font-size: clamp(38px, 6vw, 60px); line-height: 1.05; letter-spacing: -0.03
 .shot.dark { display: none; }
 @media (prefers-color-scheme: dark) { .shot.light { display: none; } .shot.dark { display: block; } }
 .caption { color: var(--faint); font-size: 14px; text-align: center; margin: 10px 0 0; }
-section { padding: 64px 0 8px; }
-h2 { font-size: clamp(26px, 3.4vw, 34px); letter-spacing: -0.02em; line-height: 1.15; margin: 0 0 14px; }
-.sub { color: var(--muted); max-width: 720px; margin: 0 0 32px; }
+section { padding: 72px 0 8px; }
+h2 { font-size: clamp(27px, 3.6vw, 38px); letter-spacing: -0.02em; line-height: 1.12; margin: 0 0 14px; }
+.sub { color: var(--muted); max-width: 740px; margin: 0 0 32px; font-size: 18px; }
 .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+.grid.two-col { grid-template-columns: repeat(2, 1fr); }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 22px; }
 .card h3 { margin: 0 0 8px; font-size: 18px; }
 .card p { margin: 0; color: var(--muted); font-size: 15.5px; }
 .card .k { color: var(--accent); font-weight: 600; font-size: 13px; letter-spacing: .04em; text-transform: uppercase; margin-bottom: 8px; }
-.two { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; align-items: center; }
+.ask { display: flex; flex-direction: column; gap: 10px; }
+.ask .say { font-size: 16.5px; font-weight: 500; color: var(--text); line-height: 1.45; }
+.ask .say::before { content: "“"; color: var(--accent); font-weight: 700; margin-right: 1px; }
+.ask .say::after { content: "”"; color: var(--accent); font-weight: 700; }
+.ask p { font-size: 14.5px; }
+.two { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; align-items: center; }
 .two .shot { margin: 0; }
-ul.ticks { list-style: none; padding: 0; margin: 0; }
-ul.ticks li { padding: 7px 0 7px 28px; position: relative; color: var(--muted); }
-ul.ticks li b { color: var(--text); font-weight: 600; }
+ul.ticks, ul.crosses { list-style: none; padding: 0; margin: 0; }
+ul.ticks li, ul.crosses li { padding: 7px 0 7px 28px; position: relative; color: var(--muted); }
+ul.ticks li b, ul.crosses li b { color: var(--text); font-weight: 600; }
 ul.ticks li::before { content: "✓"; position: absolute; left: 0; color: var(--positive); font-weight: 700; }
-.platforms { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
-.platforms .card p code { font-size: 13.5px; }
+ul.crosses li::before { content: "–"; position: absolute; left: 4px; color: var(--faint); font-weight: 700; }
+table.vs { width: 100%; border-collapse: separate; border-spacing: 0; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; font-size: 15.5px; }
+table.vs th, table.vs td { text-align: left; padding: 14px 18px; vertical-align: top; border-bottom: 1px solid var(--border); }
+table.vs tr:last-child td { border-bottom: 0; }
+table.vs th { font-size: 13px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); font-weight: 600; background: var(--bg); }
+table.vs td:first-child { color: var(--muted); width: 22%; font-weight: 500; }
+table.vs td:nth-child(2) { color: var(--text); width: 42%; }
+table.vs td:nth-child(3) { color: var(--muted); }
+.callout { border-left: 3px solid var(--accent); padding: 4px 0 4px 18px; margin: 28px 0 0; color: var(--muted); font-size: 17px; max-width: 760px; }
+.callout b { color: var(--text); }
+details { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 20px; margin-bottom: 12px; }
+details summary { cursor: pointer; font-weight: 600; font-size: 16.5px; list-style: none; }
+details summary::-webkit-details-marker { display: none; }
+details summary::after { content: "+"; float: right; color: var(--faint); font-weight: 400; }
+details[open] summary::after { content: "–"; }
+details p { color: var(--muted); margin: 12px 0 0; font-size: 15.5px; }
 code.inline { font: 500 14px ui-monospace, Menlo, Consolas, monospace; background: var(--accent-soft); padding: 2px 6px; border-radius: 6px; color: var(--text); }
-footer { padding: 64px 0 48px; color: var(--faint); font-size: 14px; display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+footer { padding: 72px 0 48px; color: var(--faint); font-size: 14px; display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
 @media (max-width: 860px) {
-  .grid, .platforms, .two { grid-template-columns: 1fr; }
+  .grid, .grid.two-col, .two { grid-template-columns: 1fr; }
   nav { display: none; }
+  table.vs td:first-child { width: auto; }
+  table.vs th, table.vs td { padding: 12px; }
 }
 </style>
 </head>
@@ -78,73 +103,145 @@ footer { padding: 64px 0 48px; color: var(--faint); font-size: 14px; display: fl
   <header>
     <a class="brand" href="#"><span class="mark">w</span>wanderbooks</a>
     <nav>
-      <a href="#how">How it works</a>
-      <a href="#trust">Trust</a>
+      <a href="#ask">What you can ask</a>
+      <a href="#quickbooks">vs. QuickBooks</a>
+      <a href="#cpa">Your CPA</a>
       <a href="#install">Install</a>
       <a href="https://git.swaits.com/swaits/wanderbooks">Source</a>
     </nav>
   </header>
 
   <div class="hero">
-    <h1>Bookkeeping you talk to.</h1>
-    <p class="lede">wanderbooks is real double-entry accounting run by an AI bookkeeper. You tell it what happened and hand it receipts; it keeps the books, balanced to the cent. You watch every number, live, and click through any of them to the receipt behind it.</p>
-    <div class="install" id="install-box">
+    <div class="eyebrow">Stop renting your books</div>
+    <h1>Own your books. Hire an AI bookkeeper.</h1>
+    <p class="lede">wanderbooks is real double-entry accounting that lives in <b>a folder you own</b>, kept by <b>an AI bookkeeper you talk to</b>. It finds your receipts, records and categorizes everything, fixes its mistakes the way an accountant would, and hands your CPA a clean package. No subscription. No lock-in. Every number traceable to its receipt.</p>
+    <div class="install">
       <span class="prompt">$</span>
       <code id="cmd">curl -fsSL https://git.swaits.com/swaits/wanderbooks/raw/branch/main/install.sh | sh -s -- ~/Books/YourCompany</code>
       <button class="copy" id="copy">Copy</button>
     </div>
-    <p class="note">One line: installs everything, makes your books, and starts your bookkeeper. Linux and macOS; Windows via WSL2.</p>
+    <p class="note">One line installs everything, makes your books, and starts your bookkeeper. Linux and macOS; Windows via WSL2. Free and open source; you bring <a href="https://claude.com/claude-code">Claude</a>.</p>
   </div>
 
   <div class="shot light"><img src="assets/overview.png" alt="The wanderbooks overview: cash, what you owe, spending, revenue, runway, a cash chart, and what needs attention" width="1440" height="920"></div>
   <div class="shot dark"><img src="assets/overview-dark.png" alt="The wanderbooks overview in dark mode" width="1440" height="920"></div>
-  <p class="caption">The overview of a demo company. It leads with the answer, then the evidence.</p>
+  <p class="caption">The desktop view of a demo company. It leads with the answer, then the evidence.</p>
 
-  <section id="how">
-    <h2>You talk. It keeps the books. You see everything.</h2>
-    <p class="sub">No forms, no categories to hunt for, no month-end scramble. The bookkeeper works through an accounting engine that refuses to be wrong, and the books are always open in front of you.</p>
+  <section id="ask">
+    <h2>Just ask.</h2>
+    <p class="sub">Your bookkeeper is Claude, working through an accounting engine that won't let it be wrong. Talk to it the way you'd talk to a good bookkeeper. It does the work, shows you the result, and waits for your OK before anything is posted.</p>
     <div class="grid">
-      <div class="card"><div class="k">Talk</div><h3>Your bookkeeper is an AI agent</h3><p>“Record the Apple developer fee, the receipt's in my email.” It drafts the entry, shows you the preview, attaches the receipt, and posts when you say so. Claude Code, via MCP.</p></div>
-      <div class="card"><div class="k">See</div><h3>A desktop view of everything</h3><p>Cash and runway, profit by month, every transaction with its rendered receipt, statements an accountant would sign off on. Changes the agent makes appear in milliseconds.</p></div>
-      <div class="card"><div class="k">Own</div><h3>Your books are files you keep</h3><p>An append-only journal, your receipts, and a config file, in a folder under git. No subscription, no lock-in, no cloud you don't control.</p></div>
+      <div class="card ask"><div class="say">Find the receipt for the $106.38 Apple charge in my email and record it.</div><p>Searches your inbox, files the receipt as a PDF, drafts the entry with the right accounts, and shows you the preview.</p></div>
+      <div class="card ask"><div class="say">Here's last month's bank export. Categorize everything.</div><p>Imports the transactions as drafts, proposes an account for each from how you've booked them before, and asks about the ones it isn't sure of.</p></div>
+      <div class="card ask"><div class="say">The domain renewal went to the wrong account. Fix it.</div><p>Reverses the entry and records it correctly. Nothing is ever erased; the history shows exactly what changed and why.</p></div>
+      <div class="card ask"><div class="say">Why did software spending jump in March?</div><p>Traces the number to the entries and receipts behind it, and tells you what's new.</p></div>
+      <div class="card ask"><div class="say">Can we afford to hire someone at $6,000 a month?</div><p>Works it out from your actual cash, burn, and what's coming in, and shows its math.</p></div>
+      <div class="card ask"><div class="say">We paid the designer $2,400 this year. Does she need a 1099?</div><p>Checks the threshold for the year, whether payments were by card, and whether her W-9 is on file.</p></div>
+      <div class="card ask"><div class="say">Close September.</div><p>Checks for missing receipts and unposted drafts, reconciles to your bank statement, posts depreciation and amortization, and closes the period.</p></div>
+      <div class="card ask"><div class="say">Get Krista everything she needs for our tax return.</div><p>Builds the CPA package: every statement, the ledgers, the tax summary, the 1099 worksheet, and every receipt, indexed.</p></div>
+      <div class="card ask"><div class="say">Move us off QuickBooks.</div><p>Rebuilds your history from QuickBooks' exports and checks every statement against QuickBooks, to the cent, before you cancel.</p></div>
+    </div>
+  </section>
+
+  <section id="quickbooks">
+    <h2>Why not QuickBooks Online?</h2>
+    <p class="sub">QuickBooks rents you access to your own financial history, raises the rent every year, and makes leaving painful. You still do the bookkeeping yourself, in forms. wanderbooks turns that around.</p>
+    <table class="vs">
+      <tr><th></th><th>wanderbooks</th><th>QuickBooks Online</th></tr>
+      <tr><td>Where your books live</td><td>A folder on your computer, under git. Plain, documented files.</td><td>Intuit's servers. You get access while you pay.</td></tr>
+      <tr><td>What it costs</td><td>Nothing. Open source, forever. You bring your Claude plan.</td><td>A monthly subscription per company, and the price keeps rising.</td></tr>
+      <tr><td>Who does the bookkeeping</td><td>An AI bookkeeper: receipts, entries, categories, fixes, closes.</td><td>You do, in screens and forms. Or you pay someone.</td></tr>
+      <tr><td>Receipts</td><td>Required over a threshold you set, enforced on every entry, shown right beside it.</td><td>Optional attachments.</td></tr>
+      <tr><td>Audit trail</td><td>Every change is a hash-chained event; nothing is ever edited or erased.</td><td>An audit log inside their app.</td></tr>
+      <tr><td>Leaving</td><td>Your files are the books. Standard exports any time, including QuickBooks formats.</td><td>Export what you can, and hope.</td></tr>
+    </table>
+    <p class="callout"><b>Can it really replace QuickBooks?</b> For most small businesses, yes. Here's exactly what you get, and what you don't (yet).</p>
+    <div class="grid two-col" style="margin-top:22px">
+      <div class="card">
+        <h3>What it does</h3>
+        <ul class="ticks">
+          <li><b>Real double-entry books</b>: chart of accounts, journal, general ledger, trial balance.</li>
+          <li><b>Statements</b>: P&amp;L, balance sheet, cash flow, owners' equity; by month, quarter, or year; with comparisons.</li>
+          <li><b>Invoices and bills</b>, with receivables and payables aging.</li>
+          <li><b>Tax-ready</b>: tax categories for Schedule C, 1065, 1120-S, and 1120; a 1099 worksheet.</li>
+          <li><b>The rest of a real business</b>: fixed assets and depreciation, prepaid expenses and deferred revenue, recurring entries, platform payouts, classes, foreign-currency lines, period close, bank reconciliation.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>What it doesn't (yet)</h3>
+        <ul class="crosses">
+          <li><b>Automatic bank feeds.</b> Hand it your bank's CSV export or statements; it does the rest.</li>
+          <li><b>Payroll processing.</b> It records payroll you run elsewhere (Gusto, ADP), taxes and all.</li>
+          <li><b>Sending invoices and taking payments.</b> It tracks them; your payment processor collects.</li>
+          <li><b>Logins for your team.</b> Others get a read-only copy (below) or their own session with the bookkeeper.</li>
+          <li><b>Point-and-click setup.</b> Today you run one command in a terminal. After that it's plain English.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="cpa">
+    <div class="two">
+      <div>
+        <h2>“But my CPA works in QuickBooks.”</h2>
+        <p class="sub">Your CPA doesn't need QuickBooks. They need your numbers, the evidence behind them, and files their software can read. wanderbooks gives them more than a QuickBooks login ever did.</p>
+        <ul class="ticks">
+          <li><b>One package, ready to send</b>: P&amp;L, balance sheet, cash flow, equity, and trial balance as PDF and Excel; the general ledger and journal; the tax summary.</li>
+          <li><b>Every receipt</b> behind the year's entries, indexed by entry, date, and amount.</li>
+          <li><b>QuickBooks-compatible</b>: the journal as an IIF file that imports into QuickBooks Desktop, if that's where their workflow lives.</li>
+          <li><b>The 1099 worksheet</b>, with W-9 status.</li>
+          <li><b>A live, read-only view</b> if they want to look around: share the books folder privately and they open it in the desktop view. Nothing they do can change your books.</li>
+        </ul>
+      </div>
+      <div class="shot"><img src="assets/pnl.png" alt="A profit and loss statement in wanderbooks with interval columns and drill-down" width="1440" height="920"></div>
     </div>
   </section>
 
   <section>
     <div class="two">
+      <div class="shot"><img src="assets/entry.png" alt="A transaction with its lines, its rendered receipt, and its history" width="1440" height="920"></div>
       <div>
         <h2>Every number goes all the way down.</h2>
-        <p class="sub">Click an amount on a statement and you get the transactions behind it, for exactly those dates. Click a transaction and you get its lines, the receipt itself, and every event in its history.</p>
+        <p class="sub">The desktop view is read-only and live: whatever your bookkeeper posts appears in a fraction of a second. Click any amount on a statement for the transactions behind it. Click a transaction for its lines, the receipt itself, and every event in its history.</p>
         <ul class="ticks">
-          <li><b>Statements an accountant expects:</b> profit and loss, balance sheet, cash flow, owners' equity, trial balance, general ledger.</li>
-          <li><b>By month, quarter, or year</b>, compared with the prior period, each line as a share of income.</li>
-          <li><b>Tax-ready:</b> tax categories by return (Schedule C, 1065, 1120-S, 1120), a 1099 worksheet, receivables and payables aging.</li>
-          <li><b>Real-business features:</b> invoices and bills, fixed assets and depreciation, prepaid expenses, recurring entries, platform payouts grossed up, classes, multi-currency lines.</li>
+          <li><b>Answers first</b>: cash, runway, profit, and what needs attention, in a sentence.</li>
+          <li><b>Needs attention</b> finds missing receipts, unposted drafts, overdue invoices, 1099 vendors without a W-9, and hands you the prompt to fix each.</li>
+          <li><b>All the data</b>: the full journal, every receipt and document, light and dark.</li>
         </ul>
       </div>
-      <div class="shot"><img src="assets/entry.png" alt="A transaction with its lines, its rendered receipt, and its history" width="1440" height="920"></div>
     </div>
   </section>
 
   <section id="trust">
     <h2>Built so you can trust it.</h2>
-    <p class="sub">An AI is doing your books, so the books have to be impossible to quietly get wrong.</p>
+    <p class="sub">An AI is keeping your books, so the books have to be impossible to quietly get wrong.</p>
     <div class="grid">
-      <div class="card"><h3>The engine enforces accounting</h3><p>Every entry balances exactly; money is exact decimal, never floating point. Posted entries are permanent; corrections are reversing entries. Receipts are required over your threshold, enforced by the server.</p></div>
-      <div class="card"><h3>A tamper-evident journal</h3><p>Every change is an event, hash-chained to the one before it. The database is rebuilt from the journal and checked against it, table by table; every receipt is checked against its hash. The app shows you the result.</p></div>
-      <div class="card"><h3>You approve what matters</h3><p>The agent previews every posting before it happens. The desktop view can't change anything; when it spots a problem it hands you a prompt for the agent.</p></div>
+      <div class="card"><h3>The engine enforces accounting</h3><p>Every entry balances exactly; money is exact decimal, never floating point. Posted entries are permanent; corrections are reversing entries. The receipt rule is enforced by the server, not left to the AI's judgment.</p></div>
+      <div class="card"><h3>A tamper-evident journal</h3><p>Every change is an event hash-chained to the one before. The database is checked against the journal table by table, and rebuilt if it ever drifts; every receipt is checked against its hash. The desktop view shows you the result.</p></div>
+      <div class="card"><h3>You approve what matters</h3><p>The bookkeeper previews every posting before it happens and waits for you. The desktop view can't change anything at all.</p></div>
     </div>
   </section>
 
   <section id="install">
     <h2>Install</h2>
-    <p class="sub">The one line above does everything. It installs Rust if you don't have it, builds wanderbooks, makes your books folder with the bookkeeper wired in, and starts a session to set up your company.</p>
-    <div class="platforms">
+    <p class="sub">The one line at the top does everything: installs Rust if you don't have it, builds wanderbooks, makes your books folder with the bookkeeper wired in, and starts a session to set up your company.</p>
+    <div class="grid">
       <div class="card"><h3>Linux</h3><p>Needs a C compiler and git (<code class="inline">build-essential</code> on Debian and Ubuntu). The installer tells you if anything's missing.</p></div>
       <div class="card"><h3>macOS</h3><p>Needs Apple's command line tools: <code class="inline">xcode-select --install</code>.</p></div>
       <div class="card"><h3>Windows</h3><p>Run it inside WSL2 (<code class="inline">wsl --install</code>, then Ubuntu). On Windows 11 the desktop view opens as a normal window. Native Windows is on the way.</p></div>
     </div>
-    <p class="note" style="margin-top:24px">Already installed? <code class="inline">wanderbooks new ~/Books/AnotherCompany</code>. Inside a books folder, <code class="inline">just gui</code> opens the desktop view and <code class="inline">just agent</code> starts your bookkeeper. You'll need <a href="https://claude.com/claude-code">Claude Code</a>.</p>
+    <p class="note" style="margin-top:24px">Already installed? <code class="inline">wanderbooks new ~/Books/AnotherCompany</code>. In a books folder, <code class="inline">just agent</code> starts your bookkeeper and <code class="inline">just gui</code> opens the desktop view.</p>
+  </section>
+
+  <section id="faq">
+    <h2>Questions</h2>
+    <details><summary>What does it cost?</summary><p>wanderbooks is free and open source (MIT or Apache-2.0). Your bookkeeper is Claude, through Claude Code, which comes with a Claude Pro or Max plan or runs on API credits.</p></details>
+    <details><summary>Do I need to be technical?</summary><p>You need to paste one command into a terminal, once. After that you talk to your bookkeeper in plain English and read your books in the desktop app.</p></details>
+    <details><summary>How does it find my receipts?</summary><p>Connect your email to Claude (an email connector like Gmail's, or the Claude browser extension with your mail open) and ask. It searches for the vendor and amount, files one clean PDF per receipt, and attaches it to the entry. It asks before downloading anything, and it never types passwords or account numbers.</p></details>
+    <details><summary>Where's my data, and what does the AI see?</summary><p>Your books are files on your computer: a journal, your receipts, and a settings file, in a git repository you control. Nothing is uploaded to wanderbooks; there is no wanderbooks server. What your bookkeeper reads to help you goes to Anthropic like any Claude conversation.</p></details>
+    <details><summary>What if the AI gets something wrong?</summary><p>Every posting is previewed before it happens. If something slips through, it's corrected the way accountants do it, with a reversing entry, so the mistake and the fix are both on the record. The engine itself refuses anything that doesn't balance, anything without a required receipt, and anything in a closed period.</p></details>
+    <details><summary>Is this real accounting, or a spreadsheet with an AI on top?</summary><p>Real double-entry accounting, with the rules enforced in code: exact decimal money, balanced entries, immutable posting, closes, depreciation, accrual or cash basis. Its statements are tested against hand-computed numbers, golden files, and property tests.</p></details>
+    <details><summary>Can I bring my history from QuickBooks or a spreadsheet?</summary><p>Yes. Export your chart of accounts, journal, and reports, and ask your bookkeeper to move you over. It rebuilds the history and compares every statement against the old system, to the cent, before calling it done. Keep the old system read-only until you've closed a month in wanderbooks.</p></details>
   </section>
 
   <footer>

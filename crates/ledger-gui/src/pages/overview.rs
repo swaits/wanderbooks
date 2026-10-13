@@ -283,41 +283,69 @@ fn attention(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                 );
                 return;
             }
-            egui::ScrollArea::vertical()
-                .id_salt("attention")
-                .max_height(260.0)
-                .show(ui, |ui| {
-                    for (i, a) in b.attention.iter().enumerate() {
-                        if i > 0 {
-                            ui.add_space(4.0);
-                            widgets::rule(ui);
-                            ui.add_space(4.0);
+            // No inner scrolling: the card grows to fit. Past a handful of
+            // items, the rest sit behind a button that says how many.
+            const FIRST: usize = 6;
+            let id = ui.id().with("attention-expanded");
+            let mut expanded: bool = ui.ctx().data(|d| d.get_temp(id)).unwrap_or(false);
+            let shown = if expanded {
+                b.attention.len()
+            } else {
+                b.attention.len().min(FIRST)
+            };
+            for (i, a) in b.attention.iter().take(shown).enumerate() {
+                if i > 0 {
+                    ui.add_space(4.0);
+                    widgets::rule(ui);
+                    ui.add_space(4.0);
+                }
+                let (glyph, color) = match a.severity {
+                    Severity::Problem => (icon::WARNING_CIRCLE, p.negative),
+                    Severity::Todo => (icon::CIRCLE_DASHED, p.warning),
+                    Severity::Info => (icon::INFO, p.muted),
+                };
+                ui.horizontal_top(|ui| {
+                    ui.label(RichText::new(glyph).size(16.0).color(color));
+                    ui.vertical(|ui| {
+                        let t = RichText::new(&a.title).font(theme::semibold(13.0));
+                        let r = widgets::link(ui, t);
+                        if r.clicked()
+                            && let Some(to) = &a.target
+                        {
+                            shell.go(to.clone());
                         }
-                        let (glyph, color) = match a.severity {
-                            Severity::Problem => (icon::WARNING_CIRCLE, p.negative),
-                            Severity::Todo => (icon::CIRCLE_DASHED, p.warning),
-                            Severity::Info => (icon::INFO, p.muted),
-                        };
-                        ui.horizontal_top(|ui| {
-                            ui.label(RichText::new(glyph).size(16.0).color(color));
-                            ui.vertical(|ui| {
-                                let t = RichText::new(&a.title).font(theme::semibold(13.0));
-                                let r = widgets::link(ui, t);
-                                if r.clicked()
-                                    && let Some(to) = &a.target
-                                {
-                                    shell.go(to.clone());
-                                }
-                                ui.label(
-                                    RichText::new(&a.detail)
-                                        .font(theme::regular(12.0))
-                                        .color(p.muted),
-                                );
-                                widgets::copy_prompt(ui, &a.prompt);
-                            });
-                        });
-                    }
+                        ui.label(
+                            RichText::new(&a.detail)
+                                .font(theme::regular(12.0))
+                                .color(p.muted),
+                        );
+                        widgets::copy_prompt(ui, &a.prompt);
+                    });
                 });
+            }
+            let hidden = b.attention.len() - shown;
+            if hidden > 0 || expanded && b.attention.len() > FIRST {
+                ui.add_space(8.0);
+                let label = if hidden > 0 {
+                    format!("{} Show {} more", icon::CARET_DOWN, hidden)
+                } else {
+                    format!("{} Show fewer", icon::CARET_UP)
+                };
+                if ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new(label)
+                                .font(theme::semibold(12.5))
+                                .color(p.accent),
+                        )
+                        .frame(false),
+                    )
+                    .clicked()
+                {
+                    expanded = !expanded;
+                    ui.ctx().data_mut(|d| d.insert_temp(id, expanded));
+                }
+            }
         },
     );
 }

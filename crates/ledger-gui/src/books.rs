@@ -316,6 +316,19 @@ impl Books {
         Ok(books)
     }
 
+    /// Why an entry needs a receipt, in words: "every entry needs a
+    /// receipt" or "over the $25.00 receipt threshold".
+    pub fn receipt_rule(&self) -> String {
+        if self.receipt_threshold.is_zero() {
+            "every entry needs a receipt".to_string()
+        } else {
+            format!(
+                "over the {} receipt threshold",
+                crate::fmt::dollars(self.receipt_threshold)
+            )
+        }
+    }
+
     pub fn seq(&self) -> u64 {
         self.journal.len() as u64
     }

@@ -12,7 +12,8 @@
 use chrono::NaiveDate;
 use ledger_core::reports::{balance_sheet, profit_and_loss, snapshot, trial_balance};
 use ledger_core::{
-    AccountId, AccountType, Currency, EntryStatus, Ledger, LedgerError, Money, Side,
+    AccountId, AccountType, ChartOfAccounts, Currency, EntryStatus, JournalEntry, Ledger,
+    LedgerError, Money, Side,
 };
 use rust_decimal::Decimal;
 
@@ -299,6 +300,39 @@ fn foreign_currency_line_is_rejected() {
             expected: "USD".to_string(),
             found: "EUR".to_string(),
         }
+    );
+}
+
+/// R-1 / B-3: one currency throughout an entry. Even when every line
+/// matches its own account's currency (a chart the ledger never builds
+/// today, R-5), an entry mixing currencies is refused.
+#[test]
+fn an_entry_mixing_currencies_is_refused_even_on_matching_accounts() {
+    let c = fixture_company();
+    let mut ledger = c.ledger;
+    let id = ledger.create_entry(date(21), "two moneys");
+    ledger.add_line(id, c.cash, Side::Debit, usd(100)).unwrap();
+    ledger
+        .add_line(id, c.revenue, Side::Credit, usd(100))
+        .unwrap();
+    let mut json = serde_json::to_value(ledger.get_entry(id).unwrap()).unwrap();
+    json["lines"][1]["amount"]["currency"] = serde_json::to_value(Currency::EUR).unwrap();
+    let mixed: JournalEntry = serde_json::from_value(json).unwrap();
+
+    let mut chart = ChartOfAccounts::default();
+    chart
+        .add(ledger.chart().get(c.cash).unwrap().clone())
+        .unwrap();
+    let mut revenue = ledger.chart().get(c.revenue).unwrap().clone();
+    revenue.currency = Currency::EUR;
+    chart.add(revenue).unwrap();
+
+    assert_eq!(
+        mixed.validate(&chart),
+        Err(LedgerError::CurrencyMismatch {
+            expected: "USD".to_string(),
+            found: "EUR".to_string(),
+        })
     );
 }
 
@@ -1061,4 +1095,311 @@ fn a_foreign_line_is_booked_in_whole_base_units() {
     );
     // Rounds to nothing: refused.
     assert!(book(Currency::USD, Currency::EUR, "0.001", "1").is_err());
+}
+
+// ---------------------------------------------------------------------------
+// Ledger bookkeeping surfaces: id allocators, FX table, tax percent,
+// reconciliation, and closing variants (mutation-testing gaps, 2026-10-13).
+// ---------------------------------------------------------------------------
+
+fn cents(c: i64) -> Decimal {
+    Decimal::new(c, 2)
+}
+
+/// `next_*_id` predicts the id the next record receives, and each record
+/// gets its own.
+#[test]
+fn id_allocators_predict_the_next_id_and_never_repeat() {
+    use ledger_core::{Frequency, NewRecurring, NewSchedule, ScheduleKind};
+    let c = fixture_company();
+    let mut l = c.ledger;
+    let schedule = |n: &str| NewSchedule {
+        description: n.into(),
+        kind: ScheduleKind::PrepaidExpense,
+        total: usd(1_200),
+        start: date(1),
+        months: 12,
+        balance_account: c.equipment,
+        pl_account: c.rent,
+    };
+    let mut seen = Vec::new();
+    for n in ["a", "b"] {
+        let predicted = l.next_schedule_id();
+        let id = l.register_schedule(schedule(n)).unwrap();
+        assert_eq!(id, predicted);
+        assert!(!seen.contains(&id));
+        seen.push(id);
+    }
+    let mut listed: Vec<_> = l.schedules().map(|s| s.id).collect();
+    listed.sort();
+    assert_eq!(listed, seen);
+
+    let recurring = || NewRecurring {
+        description: "rent".into(),
+        lines: vec![
+            (c.rent, Side::Debit, usd(800)),
+            (c.cash, Side::Credit, usd(800)),
+        ],
+        frequency: Frequency::Monthly,
+        start: date(1),
+        end: None,
+    };
+    let mut seen = Vec::new();
+    for _ in 0..2 {
+        let predicted = l.next_recurring_id();
+        let id = l.register_recurring(recurring()).unwrap();
+        assert_eq!(id, predicted);
+        assert!(!seen.contains(&id));
+        seen.push(id);
+    }
+
+    let v = l.add_vendor("Vend").unwrap();
+    for _ in 0..2 {
+        let predicted = l.next_bill_id();
+        let id = l.create_bill(v, date(5), date(30), doc(100)).unwrap();
+        assert_eq!(id, predicted);
+        assert_ne!(l.next_bill_id(), id);
+    }
+}
+
+/// The FX table records positive rates for foreign currencies only, and
+/// gives back exactly what was recorded.
+#[test]
+fn fx_rates_are_positive_foreign_and_read_back_exactly() {
+    let mut l = Ledger::new(Currency::USD);
+    let rate: Decimal = "1.0834".parse().unwrap();
+    assert_eq!(l.get_fx_rate(Currency::EUR, date(5)), None);
+    assert_eq!(
+        l.set_fx_rate(Currency::EUR, date(5), Decimal::ZERO),
+        Err(LedgerError::InvalidFxRate(Decimal::ZERO))
+    );
+    assert!(l.set_fx_rate(Currency::EUR, date(5), -rate).is_err());
+    assert!(l.set_fx_rate(Currency::USD, date(5), rate).is_err());
+    assert_eq!(l.get_fx_rate(Currency::USD, date(5)), None);
+    l.set_fx_rate(Currency::EUR, date(5), rate).unwrap();
+    assert_eq!(l.get_fx_rate(Currency::EUR, date(5)), Some(rate));
+    assert_eq!(l.get_fx_rate(Currency::EUR, date(6)), None);
+}
+
+/// A deductible percent is 0 to 100 inclusive (set_account_tax's spec);
+/// 0 is real (penalties).
+#[test]
+fn deductible_percent_bounds_are_inclusive() {
+    let c = fixture_company();
+    let mut l = c.ledger;
+    let rent = c.rent;
+    l.set_account_tax(rent, Some("meals"), Some(Decimal::ZERO))
+        .unwrap();
+    l.set_account_tax(rent, Some("meals"), Some(Decimal::from(100)))
+        .unwrap();
+    assert!(matches!(
+        l.set_account_tax(rent, Some("meals"), Some(cents(-1))),
+        Err(LedgerError::InvalidTaxCategory(_))
+    ));
+}
+
+/// Spec (pay_bill scenario 2): a payment may not predate its bill; the
+/// bill's own date is fine.
+#[test]
+fn a_bill_can_be_paid_on_its_own_date() {
+    let c = fixture_company();
+    let mut l = c.ledger;
+    let v = l.add_vendor("Vend").unwrap();
+    let bill = l.create_bill(v, date(21), date(31), doc(100)).unwrap();
+    l.pay_bill(bill, date(21), cents(1_000), c.cash).unwrap();
+}
+
+/// Reconciliation invariants 1 and 4: on a credit-normal account the book
+/// balance is the account's balance, and a line dated on the statement
+/// date is outstanding until cleared.
+#[test]
+fn reconciling_a_card_reads_its_normal_side_and_includes_the_statement_date() {
+    let c = fixture_company();
+    let mut l = c.ledger;
+    let card = l
+        .add_account("2100", "Card", AccountType::Liability, None, false)
+        .unwrap();
+    post(
+        &mut l,
+        date(21),
+        "charge",
+        &[(c.rent, Side::Debit, 500), (card, Side::Credit, 500)],
+    );
+    post(
+        &mut l,
+        date(25),
+        "pay card",
+        &[(card, Side::Debit, 200), (c.cash, Side::Credit, 200)],
+    );
+    let r = l
+        .reconciliation_report(card, date(25), Decimal::from(300))
+        .unwrap();
+    assert_eq!(r.book_balance, Decimal::from(300));
+    assert_eq!(r.book_balance, l.account_balance(card).unwrap());
+    let outstanding: Vec<_> = r.uncleared_lines.iter().map(|u| u.date).collect();
+    assert_eq!(outstanding, vec![date(21), date(25)]);
+}
+
+/// B-11: closing to retained earnings with nothing to close but a swept
+/// account's balance still sweeps it.
+#[test]
+fn a_close_sweeps_dividends_even_without_income() {
+    let mut l = books_with("3100", "Dividends", AccountType::Equity, false);
+    let dividends = 2;
+    post(
+        &mut l,
+        date(10),
+        "dividend",
+        &[(dividends, Side::Debit, 100), (1, Side::Credit, 100)],
+    );
+    let jan = l.create_period("2026-01", date(1), date(31)).unwrap();
+    let to = ledger_core::CloseTo::RetainedEarnings {
+        sweep: vec![dividends],
+    };
+    let predicted = l.preview_close_period_to(jan, &to).unwrap();
+    assert_eq!(predicted, Some(l.next_entry_id()));
+    assert_eq!(l.close_period_to(jan, &to).unwrap(), predicted);
+    assert_eq!(l.account_balance(dividends).unwrap(), Decimal::ZERO);
+    let re = l.chart().find_by_code("3999").unwrap().id;
+    assert_eq!(l.account_balance(re).unwrap(), Decimal::from(-100));
+}
+
+/// `preview_close_period` names the entry a close with income will post.
+#[test]
+fn preview_close_names_the_closing_entry() {
+    let mut c = fixture_company();
+    let jan = c
+        .ledger
+        .create_period("2026-01", date(1), date(31))
+        .unwrap();
+    let next = c.ledger.next_entry_id();
+    assert_eq!(c.ledger.preview_close_period(jan).unwrap(), Some(next));
+    assert_eq!(c.ledger.close_period(jan).unwrap(), Some(next));
+}
+
+/// Closes journaled under the pre-2026-10-13 rule replay under it: each
+/// share rounded half away from zero, the last member absorbing the rest.
+/// Net 1.05 at 30/30/40 is 0.32, 0.32, 0.41 (largest remainder would give
+/// 0.32, 0.31, 0.42).
+#[test]
+fn a_last_absorbs_close_gives_the_rounding_to_the_last_member() {
+    let mut l = books_with("4000", "Sales", AccountType::Revenue, false);
+    let capital: Vec<AccountId> = ["3001", "3002", "3003"]
+        .iter()
+        .map(|code| {
+            l.add_account(code, "Capital", AccountType::Equity, None, false)
+                .unwrap()
+        })
+        .collect();
+    let e = l.create_entry(date(5), "sale");
+    let m = Money::new(cents(105), Currency::USD);
+    l.add_line(e, 1, Side::Debit, m).unwrap();
+    l.add_line(e, 2, Side::Credit, m).unwrap();
+    l.post_entry(e).unwrap();
+    let jan = l.create_period("2026-01", date(1), date(31)).unwrap();
+    let members = capital
+        .iter()
+        .zip(["0.3", "0.3", "0.4"])
+        .map(|(&capital, share)| ledger_core::MemberClose {
+            capital,
+            share: share.parse().unwrap(),
+            distributions: None,
+        })
+        .collect();
+    l.close_period_to(jan, &ledger_core::CloseTo::MembersLastAbsorbs(members))
+        .unwrap();
+    let got: Vec<Decimal> = capital
+        .iter()
+        .map(|&a| l.account_balance(a).unwrap())
+        .collect();
+    assert_eq!(got, vec![cents(32), cents(32), cents(41)]);
+}
+
+/// B-12: a period whose closing date already lies in a closed period
+/// can't close; the refusal names that period.
+#[test]
+fn a_period_ending_inside_a_closed_period_cannot_close() {
+    let mut c = fixture_company();
+    let q1 = c
+        .ledger
+        .create_period(
+            "2026-Q1",
+            date(1),
+            NaiveDate::from_ymd_opt(2026, 3, 31).unwrap(),
+        )
+        .unwrap();
+    let jan = c
+        .ledger
+        .create_period("2026-01", date(1), date(31))
+        .unwrap();
+    c.ledger.close_period(q1).unwrap();
+    assert_eq!(
+        c.ledger.close_period(jan),
+        Err(LedgerError::ClosedPeriod(q1, date(31).to_string()))
+    );
+}
+
+/// Replay (for journaling stores) rebuilds invoice and bill records
+/// exactly: ids follow the allocator, payments accumulate, vendors tag
+/// the entries. A record replayed out of order is refused.
+#[test]
+fn replayed_documents_and_payments_rebuild_the_records() {
+    use ledger_core::DocumentStatus;
+    let mut l = books_with("2000", "Accounts Payable", AccountType::Liability, false);
+    let c = l.add_customer("Acme").unwrap();
+    let v = l.add_vendor("Vend").unwrap();
+
+    let inv = l.next_invoice_id();
+    assert_eq!(
+        l.replay_invoice(inv + 1, c, date(5), date(30), doc(100), 10),
+        Err(LedgerError::ReplayIdMismatch(inv + 1, inv))
+    );
+    l.replay_invoice(inv, c, date(5), date(30), doc(100), 10)
+        .unwrap();
+    // Each later record replays at the id the allocator now predicts.
+    let mut ids = vec![inv];
+    for entry in [13, 14] {
+        let next = l.next_invoice_id();
+        l.replay_invoice(next, c, date(5), date(30), doc(1), entry)
+            .unwrap();
+        ids.push(next);
+    }
+    ids.sort();
+    ids.dedup();
+    assert_eq!(ids.len(), 3);
+    assert!(ids.iter().all(|&i| l.get_invoice(i).is_some()));
+    l.replay_invoice_payment(inv, Decimal::from(30), 11)
+        .unwrap();
+    l.replay_invoice_payment(inv, Decimal::from(20), 12)
+        .unwrap();
+    let i = l.get_invoice(inv).unwrap();
+    assert_eq!(i.amount_paid, Decimal::from(50));
+    assert_eq!(i.balance(), Decimal::from(50));
+    assert_eq!(i.status, DocumentStatus::Partial);
+
+    let bill = l.next_bill_id();
+    assert_eq!(
+        l.replay_bill(bill + 1, v, date(5), date(30), doc(100), 20),
+        Err(LedgerError::ReplayIdMismatch(bill + 1, bill))
+    );
+    assert_eq!(l.entry_vendor(20), None);
+    l.replay_bill(bill, v, date(5), date(30), doc(100), 20)
+        .unwrap();
+    assert_eq!(l.entry_vendor(20), Some(v));
+    let mut ids = vec![bill];
+    for entry in [23, 24] {
+        let next = l.next_bill_id();
+        l.replay_bill(next, v, date(5), date(30), doc(1), entry)
+            .unwrap();
+        ids.push(next);
+    }
+    ids.sort();
+    ids.dedup();
+    assert_eq!(ids.len(), 3);
+    l.replay_bill_payment(bill, Decimal::from(30), 21).unwrap();
+    l.replay_bill_payment(bill, Decimal::from(70), 22).unwrap();
+    let b = l.get_bill(bill).unwrap();
+    assert_eq!(b.amount_paid, Decimal::from(100));
+    assert_eq!(b.status, DocumentStatus::Paid);
+    assert_eq!(l.entry_vendor(22), Some(v));
 }

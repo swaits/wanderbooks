@@ -224,3 +224,100 @@ fn recurring_entries_generate_drafts_never_posts() {
     assert!(matches!(bad, Err(LedgerError::InvalidSchedule(_))));
     let _ = b.revenue;
 }
+
+#[test]
+fn schedule_length_is_one_to_six_hundred_months() {
+    let b = books();
+    let sched = |months| NewSchedule {
+        description: "Insurance".into(),
+        kind: ScheduleKind::PrepaidExpense,
+        total: usd("600"),
+        start: d(1, 1),
+        months,
+        balance_account: b.prepaid,
+        pl_account: b.insurance,
+    };
+    let chart = b.l.chart();
+    for ok in [1, 600] {
+        assert!(
+            ledger_core::schedules::validate_schedule(&sched(ok), chart).is_ok(),
+            "{ok} months"
+        );
+    }
+    for bad in [0, 601] {
+        assert!(
+            matches!(
+                ledger_core::schedules::validate_schedule(&sched(bad), chart),
+                Err(LedgerError::InvalidSchedule(_))
+            ),
+            "{bad} months"
+        );
+    }
+}
+
+#[test]
+fn recurring_templates_take_any_number_of_lines_and_may_end_on_their_start() {
+    let mut b = books();
+    // Three balanced lines are a valid template.
+    b.l.register_recurring(NewRecurring {
+        description: "Rent and insurance".into(),
+        lines: vec![
+            (b.rent, Side::Debit, usd("2000")),
+            (b.insurance, Side::Debit, usd("100")),
+            (b.cash, Side::Credit, usd("2100")),
+        ],
+        frequency: Frequency::Monthly,
+        start: d(1, 1),
+        end: None,
+    })
+    .unwrap();
+    // An end on the start date is one occurrence, not an error.
+    let once =
+        b.l.register_recurring(NewRecurring {
+            description: "One-off".into(),
+            lines: vec![
+                (b.rent, Side::Debit, usd("2000")),
+                (b.cash, Side::Credit, usd("2000")),
+            ],
+            frequency: Frequency::Monthly,
+            start: d(5, 1),
+            end: Some(d(5, 1)),
+        })
+        .unwrap();
+    let r = b.l.recurring_entries().find(|r| r.id == once).unwrap();
+    assert_eq!(r.due(d(12, 31)), [d(5, 1)]);
+    // An end before the start is.
+    let bad = b.l.register_recurring(NewRecurring {
+        description: "Backwards".into(),
+        lines: vec![
+            (b.rent, Side::Debit, usd("2000")),
+            (b.cash, Side::Credit, usd("2000")),
+        ],
+        frequency: Frequency::Monthly,
+        start: d(5, 2),
+        end: Some(d(5, 1)),
+    });
+    assert!(matches!(bad, Err(LedgerError::InvalidSchedule(_))));
+}
+
+#[test]
+fn frequencies_parse_and_step_from_the_start() {
+    assert_eq!(Frequency::parse("weekly"), Some(Frequency::Weekly));
+    assert_eq!(Frequency::parse(" Monthly "), Some(Frequency::Monthly));
+    assert_eq!(Frequency::parse("QUARTERLY"), Some(Frequency::Quarterly));
+    assert_eq!(Frequency::parse("annually"), Some(Frequency::Yearly));
+    assert_eq!(Frequency::parse("fortnightly"), None);
+    // Weekly: the kth occurrence is 7k days on.
+    let start = d(1, 1);
+    for (k, want) in [(0, d(1, 1)), (1, d(1, 8)), (2, d(1, 15)), (3, d(1, 22))] {
+        assert_eq!(Frequency::Weekly.nth(start, k), Some(want), "week {k}");
+    }
+    assert_eq!(Frequency::Quarterly.nth(start, 2), Some(d(7, 1)));
+    for (k, year) in [(1, 2027), (2, 2028), (3, 2029)] {
+        assert_eq!(
+            Frequency::Yearly.nth(start, k),
+            NaiveDate::from_ymd_opt(year, 1, 1),
+            "year {k}"
+        );
+    }
+}

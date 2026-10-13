@@ -6,7 +6,8 @@
 
 use chrono::NaiveDate;
 use ledger_core::analysis::{
-    Interval, balance_history, balance_series, flows_by_interval, pnl_by_interval,
+    Interval, accounts_of_type, balance_history, balance_series, flows_by_interval, interval_start,
+    pnl_by_interval,
 };
 use ledger_core::{AccountType, Currency, Ledger, Money, Side};
 use rust_decimal::Decimal;
@@ -78,4 +79,37 @@ fn balances_pnl_and_flows_over_time() {
     let both = flows_by_interval(&l, &[cash, card], d(1, 1), d(2, 28), Interval::Month);
     let io: Vec<(Decimal, Decimal)> = both.iter().map(|f| (f.2, f.3)).collect();
     assert_eq!(io, [(dec(5000), dec(300)), (dec(1200), dec(0))]);
+}
+
+#[test]
+fn intervals_start_on_calendar_boundaries() {
+    for (day, want) in [
+        (d(2, 14), d(1, 1)),
+        (d(5, 31), d(4, 1)),
+        (d(11, 30), d(10, 1)),
+    ] {
+        assert_eq!(interval_start(day, Interval::Quarter), want, "{day}");
+        assert_eq!(interval_start(day, Interval::Year), d(1, 1), "{day}");
+    }
+    assert_eq!(interval_start(d(11, 30), Interval::Month), d(11, 1));
+}
+
+#[test]
+fn accounts_of_type_picks_from_the_chart_in_order() {
+    let mut l = Ledger::new(Currency::USD);
+    let mut a = |c: &str, t| l.add_account(c, c, t, None, false).unwrap();
+    let cash = a("1000", AccountType::Asset);
+    let card = a("2100", AccountType::Liability);
+    let rent = a("6600", AccountType::Expense);
+    let bank = a("1010", AccountType::Asset);
+    let assets = accounts_of_type(&l, &[AccountType::Asset]);
+    assert_eq!(assets.len(), 2);
+    assert!(assets.contains(&cash) && assets.contains(&bank));
+    let mut cash_like = accounts_of_type(&l, &[AccountType::Asset, AccountType::Liability]);
+    cash_like.sort();
+    let mut want = vec![cash, card, bank];
+    want.sort();
+    assert_eq!(cash_like, want);
+    assert!(!cash_like.contains(&rent));
+    assert!(accounts_of_type(&l, &[AccountType::Revenue]).is_empty());
 }

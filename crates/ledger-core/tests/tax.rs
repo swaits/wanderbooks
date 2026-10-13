@@ -228,3 +228,39 @@ fn forms_parse_from_common_spellings() {
     }
     assert_eq!(TaxForm::parse("990"), None);
 }
+
+#[test]
+fn cost_of_goods_reduces_net_like_a_deduction() {
+    let mut l = books();
+    let cash = l.chart().find_by_code("1000").unwrap().id;
+    let cogs = l
+        .add_account("5000", "Cost of sales", AccountType::Expense, None, false)
+        .unwrap();
+    l.set_account_tax(cogs, Some("cost_of_goods_sold"), None)
+        .unwrap();
+    let e = l.create_entry(d(2, 1), "x");
+    let m = Money::new(dec("1000"), Currency::USD);
+    l.add_line(e, cogs, Side::Debit, m).unwrap();
+    l.add_line(e, cash, Side::Credit, m).unwrap();
+    l.post_entry(e).unwrap();
+    let ts = tax_summary(&l, d(1, 1), d(3, 31), Some(TaxForm::Form1065)).unwrap();
+    assert_eq!(ts.cost_of_goods.len(), 1);
+    assert_eq!(ts.cost_of_goods[0].book, dec("1000"));
+    assert_eq!(ts.cost_of_goods[0].tax, dec("1000"));
+    // The fixture's nets, less 1,000 of cost of goods sold.
+    assert_eq!(ts.book_net(), dec("4276.67"));
+    assert_eq!(ts.tax_net(), dec("4483.33"));
+}
+
+#[test]
+fn forms_have_their_irs_names() {
+    let labels: Vec<&str> = TaxForm::ALL.iter().map(|f| f.label()).collect();
+    assert_eq!(
+        labels,
+        ["Schedule C", "Form 1065", "Form 1120-S", "Form 1120"]
+    );
+    // A label parses back to its form.
+    for f in TaxForm::ALL {
+        assert_eq!(TaxForm::parse(f.label()), Some(f));
+    }
+}

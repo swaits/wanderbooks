@@ -959,3 +959,317 @@ fn closes_journaled_under_the_old_rule_replay_with_it() {
         [cents("33.33"), cents("33.33"), cents("33.34")]
     );
 }
+
+// ---------------------------------------------------------------------------
+// Boundaries, signs, and labels found untested by mutation testing
+// (cargo-mutants on src/reports.rs). Expected values are hand-computed.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_balance_checks_catch_an_imbalance() {
+    let b = books(false);
+    let mut tb = trial_balance_as_of(&b.ledger, d(2, 28));
+    assert!(tb.balanced());
+    tb.total_credits += cents("0.01");
+    assert!(!tb.balanced(), "a one-cent difference is out of balance");
+
+    let mut bs = balance_sheet(&b.ledger).unwrap();
+    assert!(bs.balanced());
+    bs.liabilities += cents("0.01");
+    assert!(!bs.balanced());
+
+    let mut bss = balance_sheet_as_of(&b.ledger, d(2, 28)).unwrap();
+    assert!(bss.balanced());
+    bss.total_assets -= cents("0.01");
+    assert!(!bss.balanced());
+}
+
+#[test]
+fn a_one_day_general_ledger_is_valid_and_a_backwards_one_is_not() {
+    let b = books(false);
+    // Jan 15 only: cash begins at the Jan 2 contribution, then the 2,500
+    // client payment lands.
+    let gl = general_ledger(&b.ledger, d(1, 15), d(1, 15)).unwrap();
+    let cash = gl.accounts.iter().find(|a| a.code == "1000").unwrap();
+    assert_eq!(cash.beginning_balance, dec(10_000));
+    assert_eq!(cash.postings.len(), 1);
+    assert_eq!(cash.ending_balance, dec(12_500));
+    assert!(matches!(
+        general_ledger(&b.ledger, d(1, 16), d(1, 15)),
+        Err(LedgerError::InvalidDateRange { .. })
+    ));
+}
+
+fn cf_params(start: NaiveDate, end: NaiveDate, cash: AccountId) -> CashFlowParams {
+    CashFlowParams {
+        start,
+        end,
+        cash_accounts: vec![cash],
+        financing_accounts: vec![],
+    }
+}
+
+fn reconciles(cf: &ledger_core::CashFlowStatement) {
+    // B-14 / cash_flow INVARIANT 1: the three sections sum to the change in
+    // cash, exactly.
+    assert_eq!(
+        cf.cash_from_operations + cf.cash_from_investing + cf.cash_from_financing,
+        cf.net_change_in_cash
+    );
+    assert_eq!(cf.cash_ending - cf.cash_beginning, cf.net_change_in_cash);
+}
+
+#[test]
+fn cash_flow_starts_counting_on_the_start_date() {
+    let b = books(false);
+    // A one-day period is a valid range. The Jan 15 payment is in it, not
+    // in the beginning balance.
+    let cf = cash_flow(&b.ledger, &cf_params(d(1, 15), d(1, 15), b.cash)).unwrap();
+    assert_eq!(cf.cash_beginning, dec(10_000));
+    assert_eq!(cf.cash_ending, dec(12_500));
+    assert_eq!(cf.net_income, dec(2_500));
+    reconciles(&cf);
+    // Backwards is refused.
+    assert!(matches!(
+        cash_flow(&b.ledger, &cf_params(d(1, 16), d(1, 15), b.cash)),
+        Err(LedgerError::InvalidDateRange { .. })
+    ));
+}
+
+#[test]
+fn cash_flow_labels_say_which_way_each_balance_moved() {
+    let mut l = Ledger::new(Currency::USD);
+    let cash = l
+        .add_account("1000", "Cash", AccountType::Asset, None, false)
+        .unwrap();
+    let ar = l
+        .add_account("1100", "Receivable", AccountType::Asset, None, false)
+        .unwrap();
+    let ap = l
+        .add_account("2000", "Payable", AccountType::Liability, None, false)
+        .unwrap();
+    let loan = l
+        .add_account("2500", "Loan", AccountType::Liability, None, false)
+        .unwrap();
+    let capital = l
+        .add_account("3000", "Capital", AccountType::Equity, None, false)
+        .unwrap();
+    let rev = l
+        .add_account("4000", "Revenue", AccountType::Revenue, None, false)
+        .unwrap();
+    let exp = l
+        .add_account("6000", "Expense", AccountType::Expense, None, false)
+        .unwrap();
+    // January: every account starts February with a balance.
+    post(&mut l, d(1, 2), "Contribution", cash, capital, 10_000);
+    post(&mut l, d(1, 3), "Invoice", ar, rev, 1_000);
+    post(&mut l, d(1, 4), "Bill", exp, ap, 500);
+    post(&mut l, d(1, 5), "Borrow", cash, loan, 2_000);
+    // February: every balance goes up.
+    post(&mut l, d(2, 3), "Invoice", ar, rev, 100);
+    post(&mut l, d(2, 4), "Bill", exp, ap, 50);
+    post(&mut l, d(2, 5), "Borrow", cash, loan, 300);
+    post(&mut l, d(2, 6), "Contribution", cash, capital, 400);
+    // March: every balance comes back down.
+    post(&mut l, d(3, 3), "Collect", cash, ar, 100);
+    post(&mut l, d(3, 4), "Pay bill", ap, cash, 50);
+    post(&mut l, d(3, 5), "Repay", loan, cash, 300);
+    post(&mut l, d(3, 6), "Distribution", capital, cash, 400);
+
+    let lines = |v: &[ledger_core::CashFlowLine]| -> Vec<(String, Decimal)> {
+        v.iter().map(|l| (l.label.clone(), l.amount)).collect()
+    };
+    let s = |x: &str| x.to_string();
+    let params = |start, end| CashFlowParams {
+        start,
+        end,
+        cash_accounts: vec![cash],
+        financing_accounts: vec![loan],
+    };
+
+    // February: net income 100 - 50 = 50; receivable up 100 (cash out),
+    // payable up 50 (cash in): operations 0. Borrowed 300, contributed 400.
+    let feb = cash_flow(&l, &params(d(2, 1), d(2, 28))).unwrap();
+    assert_eq!(feb.net_income, dec(50));
+    assert_eq!(
+        lines(&feb.working_capital),
+        [
+            (s("Increase in 1100 Receivable"), dec(-100)),
+            (s("Increase in 2000 Payable"), dec(50)),
+        ]
+    );
+    assert_eq!(
+        lines(&feb.financing),
+        [
+            (s("Proceeds from 2500 Loan"), dec(300)),
+            (s("Owner contributions — 3000 Capital"), dec(400)),
+        ]
+    );
+    assert_eq!(feb.cash_from_operations, dec(0));
+    assert_eq!(feb.net_change_in_cash, dec(700));
+    reconciles(&feb);
+
+    // March: the mirror image. Collected 100, paid 50, repaid 300,
+    // distributed 400.
+    let mar = cash_flow(&l, &params(d(3, 1), d(3, 31))).unwrap();
+    assert_eq!(mar.net_income, dec(0));
+    assert_eq!(
+        lines(&mar.working_capital),
+        [
+            (s("Decrease in 1100 Receivable"), dec(100)),
+            (s("Decrease in 2000 Payable"), dec(-50)),
+        ]
+    );
+    assert_eq!(
+        lines(&mar.financing),
+        [
+            (s("Repayment of 2500 Loan"), dec(-300)),
+            (s("Owner distributions — 3000 Capital"), dec(-400)),
+        ]
+    );
+    assert_eq!(mar.net_change_in_cash, dec(-650));
+    reconciles(&mar);
+}
+
+#[test]
+fn a_loss_on_disposal_moves_out_of_operating_into_investing() {
+    let mut l = Ledger::new(Currency::USD);
+    let cash = l
+        .add_account("1000", "Cash", AccountType::Asset, None, false)
+        .unwrap();
+    let equipment = l
+        .add_account("1500", "Equipment", AccountType::Asset, None, false)
+        .unwrap();
+    let accum = l
+        .add_account("1501", "Accum Depr", AccountType::Asset, None, false)
+        .unwrap();
+    let capital = l
+        .add_account("3000", "Capital", AccountType::Equity, None, false)
+        .unwrap();
+    let depr = l
+        .add_account("6500", "Depreciation", AccountType::Expense, None, false)
+        .unwrap();
+    let loss = l
+        .add_account(
+            "6900",
+            "Loss on Disposal",
+            AccountType::Expense,
+            None,
+            false,
+        )
+        .unwrap();
+    l.register_asset(ledger_core::NewAsset {
+        description: "Laptop".to_string(),
+        purchase_date: d(1, 10),
+        cost: usd(1_000),
+        salvage_value: usd(0),
+        useful_life_months: 10,
+        cost_account: equipment,
+        accum_depr_account: accum,
+        expense_account: depr,
+    })
+    .unwrap();
+    post(&mut l, d(1, 5), "Contribution", cash, capital, 5_000);
+    post(&mut l, d(1, 10), "Buy laptop", equipment, cash, 1_000);
+    post(&mut l, d(1, 31), "Depreciation", depr, accum, 100);
+    // Sold for 600 at a book value of 900: a 300 loss.
+    let e = l.create_entry(d(2, 15), "Sell laptop");
+    l.add_line(e, cash, Side::Debit, usd(600)).unwrap();
+    l.add_line(e, accum, Side::Debit, usd(100)).unwrap();
+    l.add_line(e, loss, Side::Debit, usd(300)).unwrap();
+    l.add_line(e, equipment, Side::Credit, usd(1_000)).unwrap();
+    l.post_entry(e).unwrap();
+
+    let lines = |v: &[ledger_core::CashFlowLine]| -> Vec<(String, Decimal)> {
+        v.iter().map(|l| (l.label.clone(), l.amount)).collect()
+    };
+    // February: net income -300; the loss is added back (positive, it used
+    // no cash), so operations is 0; the 600 proceeds are investing.
+    let feb = cash_flow(&l, &cf_params(d(2, 1), d(2, 28), cash)).unwrap();
+    assert_eq!(feb.net_income, dec(-300));
+    assert_eq!(
+        lines(&feb.working_capital),
+        [(
+            "Less: gain on sale of fixed assets (in investing)".to_string(),
+            dec(300)
+        )]
+    );
+    assert_eq!(feb.cash_from_operations, dec(0));
+    assert_eq!(
+        lines(&feb.investing),
+        [("Sale of fixed assets — 1000 Cash".to_string(), dec(600))]
+    );
+    assert_eq!(feb.net_change_in_cash, dec(600));
+    reconciles(&feb);
+}
+
+#[test]
+fn a_contribution_on_the_start_date_is_a_contribution_not_beginning_capital() {
+    let (l, members) = partnership(false);
+    // The partnership fixture's contributions are dated Jan 2. Starting the
+    // statement that day must give the same rows as all of January.
+    let me = members_equity(&l, d(1, 2), d(1, 31), &members).unwrap();
+    let row = |c: &ledger_core::MemberEquityColumn| (c.beginning, c.contributions, c.ending);
+    assert_eq!(
+        row(&me.members[0]),
+        (cents("0"), cents("600"), cents("933.34"))
+    );
+    assert_eq!(
+        row(&me.members[1]),
+        (cents("0"), cents("400"), cents("733.33"))
+    );
+}
+
+#[test]
+fn distribution_accounts_reduce_capital_and_returns_reduce_distributions() {
+    let mut l = Ledger::new(Currency::USD);
+    let cash = l
+        .add_account("1000", "Cash", AccountType::Asset, None, false)
+        .unwrap();
+    let cap_a = l
+        .add_account("3000", "Capital — Alice", AccountType::Equity, None, false)
+        .unwrap();
+    let cap_b = l
+        .add_account("3001", "Capital — Bob", AccountType::Equity, None, false)
+        .unwrap();
+    let dist_a = l
+        .add_account("3100", "Dist — Alice", AccountType::Equity, None, false)
+        .unwrap();
+    let dist_b = l
+        .add_account("3101", "Dist — Bob", AccountType::Equity, None, false)
+        .unwrap();
+    post(&mut l, d(1, 2), "Alice invests", cash, cap_a, 100);
+    post(&mut l, d(1, 2), "Bob invests", cash, cap_b, 100);
+    post(&mut l, d(1, 20), "Bob's distribution", dist_b, cash, 20);
+    // February: Bob takes 30 and hands 10 back: 20 distributed, net.
+    post(&mut l, d(2, 5), "Bob's distribution", dist_b, cash, 30);
+    post(&mut l, d(2, 6), "Bob returns some", cash, dist_b, 10);
+    let half = cents("0.5");
+    let members = vec![
+        MemberCapital {
+            name: "Alice".into(),
+            capital_account: cap_a,
+            distribution_account: Some(dist_a),
+            share: half,
+        },
+        MemberCapital {
+            name: "Bob".into(),
+            capital_account: cap_b,
+            distribution_account: Some(dist_b),
+            share: half,
+        },
+    ];
+    // No close: Bob's January distribution is still in his distributions
+    // account, and it comes off his capital, not the partnership's.
+    let feb = members_equity(&l, d(2, 1), d(2, 28), &members).unwrap();
+    let row = |c: &ledger_core::MemberEquityColumn| {
+        (c.beginning, c.contributions, c.distributions, c.ending)
+    };
+    assert_eq!(row(&feb.members[0]), (dec(100), dec(0), dec(0), dec(100)));
+    assert_eq!(row(&feb.members[1]), (dec(80), dec(0), dec(20), dec(60)));
+    assert_eq!(
+        feb.total.ending,
+        balance_sheet_as_of(&l, d(2, 28)).unwrap().total_equity
+    );
+    assert!(feb.members.iter().all(|m| m.other.is_zero()));
+}

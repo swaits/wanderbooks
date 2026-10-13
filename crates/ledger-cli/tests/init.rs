@@ -99,8 +99,8 @@ fn the_server_is_registered_for_this_dir() {
     );
     // The justfile opens this dir's books in the GUI.
     let just = fs::read_to_string(books.join("justfile")).unwrap();
-    assert!(just.contains("ledger-gui\" --data-dir books-data"));
-    for recipe in ["agent:", "gui:", "backup:", "update:"] {
+    assert!(just.contains("ledger-gui\" --data-dir \"{{justfile_directory()}}/books-data\""));
+    for recipe in ["agent:", "gui:", "gui-fg:", "gui-status:", "backup:", "update:"] {
         assert!(just.contains(recipe), "justfile has {recipe}");
     }
     assert_eq!(
@@ -128,6 +128,8 @@ fn agents_md_carries_the_contract() {
         "chart_template",
         "to the cent",
         "just gui",
+        "just gui-status",
+        "open_at_start",
     ] {
         assert!(md.contains(phrase), "AGENTS.md mentions {phrase:?}");
     }

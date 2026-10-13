@@ -1088,3 +1088,29 @@ fn a_journal_line_with_a_float_is_refused() {
         canon
     );
 }
+
+/// Regression (max-testing pass on the store, 2026-10-13): nothing stopped
+/// two processes (say, two agent sessions, each with its own MCP server)
+/// from writing the same books. One write from each broke the hash chain
+/// ("seq gap") and the books would not open. Oracle (rank 1, R-11: one
+/// append-only log, one writer): a second writer is refused while the
+/// first is open, and allowed once it closes; the books always reopen.
+#[test]
+fn a_second_writer_is_refused_while_the_first_has_the_books() {
+    let dir = test_dir("two-writers");
+    drop(Store::create(&dir, Currency::USD).unwrap());
+    let mut first = Store::open(&dir).unwrap();
+    match Store::open(&dir) {
+        Err(StoreError::Locked(why)) => assert!(why.contains("another"), "{why}"),
+        Err(e) => panic!("expected Locked, got {e}"),
+        Ok(_) => panic!("a second writer was allowed"),
+    }
+    first
+        .add_account("1000", "Cash", AccountType::Asset, None, false)
+        .unwrap();
+    drop(first);
+    // Released on close: the next writer gets in, and the books are whole.
+    let reopened = Store::open(&dir).unwrap();
+    reopened.verify().unwrap();
+    assert_eq!(reopened.ledger().chart().len(), 1);
+}

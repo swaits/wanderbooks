@@ -101,10 +101,26 @@ impl ReceiptPolicy {
 
     /// Human-readable policy summary for previews and errors.
     pub fn describe(&self) -> String {
-        format!(
-            "receipts required when entry debits are strictly greater than {}",
-            self.threshold()
-        )
+        if self.threshold().is_zero() {
+            "receipts required on every entry".to_string()
+        } else {
+            format!(
+                "receipts required when entry debits are strictly greater than {}",
+                self.threshold()
+            )
+        }
+    }
+
+    /// The receipt rule, phrased for the agent's operating instructions.
+    pub fn rule(&self) -> String {
+        if self.threshold().is_zero() {
+            "every entry needs at least one receipt".to_string()
+        } else {
+            format!(
+                "any entry moving more than ${} in debits needs at least one receipt",
+                self.threshold().round_dp(2)
+            )
+        }
     }
 
     /// Normalize a description for split detection.

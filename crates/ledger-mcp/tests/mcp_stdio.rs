@@ -1586,3 +1586,51 @@ fn mcp_vendor_1099_over_stdio() {
     assert_eq!(v["blobs_verified"], 1);
     assert!(v["events"].as_u64().unwrap() > 10);
 }
+
+#[test]
+fn mcp_receipts_always_required_when_threshold_is_zero() {
+    let dir = test_dir("always-receipts");
+    let toml = dir.join("wanderbooks.toml");
+    std::fs::write(&toml, "[books]\nreceipt_threshold = \"0.00\"\n").unwrap();
+    let mut mcp = Mcp::spawn_with(
+        &dir.join("books-data"),
+        &[std::ffi::OsStr::new("--books-toml"), toml.as_os_str()],
+    );
+    let init = mcp.request(
+        "initialize",
+        json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+        }),
+    );
+    let instructions = init["result"]["instructions"].as_str().unwrap();
+    assert!(
+        instructions.contains("every entry needs at least one receipt"),
+        "the agent is told the real policy: {instructions}"
+    );
+    assert!(!instructions.contains("$25.00"));
+    mcp.notify("notifications/initialized");
+    for (code, name, typ) in [("1000", "Bank", "asset"), ("6000", "Fees", "expense")] {
+        mcp.call(
+            "books.add_account",
+            json!({"code": code, "name": name, "account_type": typ}),
+        );
+    }
+    let e = mcp.call(
+        "books.draft_entry",
+        json!({"date": "2026-10-01", "description": "Bank fee"}),
+    );
+    let id = e["entry_id"].as_u64().unwrap();
+    for (account, side) in [("6000", "debit"), ("1000", "credit")] {
+        mcp.call(
+            "books.add_line",
+            json!({"entry_id": id, "account": account, "side": side, "amount": "5.00"}),
+        );
+    }
+    let err = mcp.call_err(
+        "books.post_entry",
+        json!({"entry_id": id, "confirmed": true}),
+    );
+    assert!(err.contains("receipt"), "a $5 entry needs a receipt too: {err}");
+}

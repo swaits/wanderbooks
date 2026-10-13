@@ -4051,7 +4051,11 @@ impl ServerHandler for BooksServer {
                 .enable_resources()
                 .build(),
         )
-        .with_instructions(INSTRUCTIONS)
+        // Tell the agent the policy these books actually use.
+        .with_instructions(INSTRUCTIONS.replace(
+            "any entry moving more than $25.00 in debits needs at least one receipt",
+            &self.policy.rule(),
+        ))
         .with_server_info(Implementation::new(
             "wanderbooks",
             env!("CARGO_PKG_VERSION"),

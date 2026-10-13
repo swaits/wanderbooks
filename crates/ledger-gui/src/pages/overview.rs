@@ -433,39 +433,51 @@ fn recent(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                 }
                 shown += 1;
                 let fresh = line.seq > b.fresh_from_seq && since_update < 8.0;
-                let row = egui::Frame::new()
-                    .fill(if fresh {
-                        p.new_highlight
-                    } else {
-                        egui::Color32::TRANSPARENT
-                    })
-                    .corner_radius(egui::CornerRadius::same(6))
-                    .inner_margin(egui::Margin::symmetric(6, 3))
-                    .show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(ev.icon).size(15.0).color(p.muted));
-                            let r = widgets::link(
-                                ui,
-                                RichText::new(&ev.text).font(theme::regular(13.0)),
-                            );
-                            if r.clicked() {
-                                go =
-                                    Some(ev.route.clone().unwrap_or(Route::JournalEvent(line.seq)));
-                            }
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    ui.label(
-                                        RichText::new(fmt::timestamp(&line.ts))
-                                            .font(theme::regular(11.5))
-                                            .color(p.faint),
-                                    );
-                                },
-                            );
-                        });
-                    });
-                let _ = (row, i);
+                // One painted row: icon, the event (cut with an ellipsis
+                // before the timestamp column), the timestamp.
+                let (r, resp) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), 30.0),
+                    egui::Sense::click(),
+                );
+                if fresh {
+                    ui.painter()
+                        .rect_filled(r, egui::CornerRadius::same(6), p.new_highlight);
+                } else if resp.hovered() {
+                    ui.painter()
+                        .rect_filled(r, egui::CornerRadius::same(6), p.hover);
+                }
+                if resp.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                let painter = ui.painter_at(r);
+                let y = r.center().y;
+                painter.text(
+                    egui::pos2(r.left() + 8.0, y),
+                    egui::Align2::LEFT_CENTER,
+                    ev.icon,
+                    egui::FontId::proportional(15.0),
+                    p.muted,
+                );
+                let ts =
+                    painter.layout_no_wrap(fmt::timestamp(&line.ts), theme::regular(11.5), p.faint);
+                let ts_w = ts.size().x;
+                painter.galley(
+                    egui::pos2(r.right() - 8.0 - ts_w, y - ts.size().y / 2.0),
+                    ts,
+                    p.faint,
+                );
+                widgets::clipped_text(
+                    &painter,
+                    egui::pos2(r.left() + 32.0, y),
+                    &ev.text,
+                    theme::regular(13.0),
+                    p.text,
+                    r.width() - 32.0 - ts_w - 28.0,
+                );
+                if resp.clicked() {
+                    go = Some(ev.route.clone().unwrap_or(Route::JournalEvent(line.seq)));
+                }
+                let _ = i;
             }
             if shown == 0 {
                 widgets::empty(ui, icon::CLOCK, "Nothing yet", "");

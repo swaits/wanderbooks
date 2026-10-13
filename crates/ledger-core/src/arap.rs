@@ -194,7 +194,26 @@ impl AgingRow {
     }
 }
 
-/// Bucket a past-due balance by days overdue.
+/// Put an open balance in its aging bucket.
+///
+/// ```text
+/// GOAL: say how overdue a balance is, as of a date.
+/// INVARIANTS:
+///   1. MUST put the whole balance in exactly one bucket; the others are
+///      zero.
+///   2. NEVER moves a balance to a younger bucket as `as_of` advances.
+/// SCENARIOS:
+///   1. IF `as_of` is on or before the due date:
+///      - SHOULD be Current
+///      - NEVER past due
+///      BECAUSE a document due today is not yet overdue (QuickBooks'
+///      convention; Stephen, 2026-10-13).
+///   2. IF it is 1 to 30 days past due: SHOULD be 1-30.
+///   3. IF 31 to 60: SHOULD be 31-60.
+///   4. IF 61 to 90: SHOULD be 61-90.
+///   5. IF more than 90: SHOULD be 90+.
+///      BECAUSE these are the standard 30-day aging buckets.
+/// ```
 pub fn aging_bucket(due_date: NaiveDate, as_of: NaiveDate, balance: Decimal) -> AgingRow {
     let mut row = AgingRow {
         name: String::new(),
@@ -204,7 +223,7 @@ pub fn aging_bucket(due_date: NaiveDate, as_of: NaiveDate, balance: Decimal) -> 
         days_90: Decimal::ZERO,
         days_90_plus: Decimal::ZERO,
     };
-    if due_date > as_of {
+    if due_date >= as_of {
         row.current = balance;
     } else {
         let days = (as_of - due_date).num_days();
@@ -346,6 +365,58 @@ mod tests {
             cash,
         );
         assert!(matches!(err, Err(LedgerError::Overpayment(_, _))));
+    }
+
+    #[test]
+    fn aging_boundaries() {
+        // Spec scenarios 1-5, at every edge.
+        let due = NaiveDate::from_ymd_opt(2026, 3, 31).unwrap();
+        let b = Decimal::from(7);
+        let bucket = |days: i64| {
+            let r = aging_bucket(due, due + chrono::Duration::days(days), b);
+            [r.current, r.days_30, r.days_60, r.days_90, r.days_90_plus]
+                .iter()
+                .position(|x| !x.is_zero())
+                .unwrap()
+        };
+        for (days, want) in [
+            (-10, 0),
+            (0, 0),
+            (1, 1),
+            (30, 1),
+            (31, 2),
+            (60, 2),
+            (61, 3),
+            (90, 3),
+            (91, 4),
+            (4000, 4),
+        ] {
+            assert_eq!(bucket(days), want, "{days} days past due");
+        }
+    }
+
+    proptest::proptest! {
+        /// Invariants 1 and 2: one bucket holds the whole balance, and
+        /// time only ever ages it.
+        #[test]
+        fn aging_is_exclusive_and_only_ages(
+            due_off in 0i64..2000, a in 0i64..2000, step in 0i64..400, cents in 1i64..10_000_000,
+        ) {
+            let base = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+            let due = base + chrono::Duration::days(due_off);
+            let b = Decimal::new(cents, 2);
+            let idx = |as_of: NaiveDate| {
+                let r = aging_bucket(due, as_of, b);
+                let cells = [r.current, r.days_30, r.days_60, r.days_90, r.days_90_plus];
+                let held: Vec<usize> = (0..5).filter(|&i| !cells[i].is_zero()).collect();
+                proptest::prop_assert_eq!(held.len(), 1);
+                proptest::prop_assert_eq!(cells[held[0]], b);
+                Ok(held[0])
+            };
+            let early = base + chrono::Duration::days(a);
+            let later = early + chrono::Duration::days(step);
+            proptest::prop_assert!(idx(early)? <= idx(later)?);
+        }
     }
 
     #[test]

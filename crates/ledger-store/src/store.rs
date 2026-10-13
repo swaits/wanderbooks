@@ -1010,16 +1010,24 @@ impl Store {
             CloseTo::RetainedEarnings { sweep } if sweep.is_empty() => json!("retained_earnings"),
             CloseTo::RetainedEarnings { sweep } => json!({"retained_earnings": {"sweep": sweep}}),
             CloseTo::Account { into, sweep } => json!({"account": {"into": into, "sweep": sweep}}),
-            CloseTo::Members(members) => json!({
-                "members": members
-                    .iter()
-                    .map(|m| json!({
-                        "account": m.capital,
-                        "share": m.share.to_string(),
-                        "distributions": m.distributions,
-                    }))
-                    .collect::<Vec<_>>(),
-            }),
+            CloseTo::Members(members) | CloseTo::MembersLastAbsorbs(members) => {
+                let mut v = json!({
+                    "members": members
+                        .iter()
+                        .map(|m| json!({
+                            "account": m.capital,
+                            "share": m.share.to_string(),
+                            "distributions": m.distributions,
+                        }))
+                        .collect::<Vec<_>>(),
+                });
+                // Closes journaled before 2026-10-13 carry no rounding and
+                // replay with the last member absorbing it.
+                if matches!(to, CloseTo::Members(_)) {
+                    v["rounding"] = json!("largest_remainder");
+                }
+                v
+            }
         };
         let line = self.append_journal(
             "period.closed",
@@ -3403,20 +3411,25 @@ fn close_to_from_journal(v: Option<&Value>) -> Result<CloseTo, StoreError> {
         .get("members")
         .and_then(|m| m.as_array())
         .ok_or_else(|| corrupt("unknown target"))?;
-    Ok(CloseTo::Members(
-        members
-            .iter()
-            .map(|m| {
-                Ok(ledger_core::MemberClose {
-                    capital: get_u64(m, "account")?,
-                    share: get_str(m, "share")?
-                        .parse()
-                        .map_err(|_| corrupt("member share"))?,
-                    distributions: m.get("distributions").and_then(|d| d.as_u64()),
-                })
+    let members = members
+        .iter()
+        .map(|m| {
+            Ok(ledger_core::MemberClose {
+                capital: get_u64(m, "account")?,
+                share: get_str(m, "share")?
+                    .parse()
+                    .map_err(|_| corrupt("member share"))?,
+                distributions: m.get("distributions").and_then(|d| d.as_u64()),
             })
-            .collect::<Result<_, StoreError>>()?,
-    ))
+        })
+        .collect::<Result<_, StoreError>>()?;
+    // The rounding rule the close was made under: absent before
+    // 2026-10-13, when the last member absorbed it.
+    match v.get("rounding").and_then(|r| r.as_str()) {
+        None => Ok(CloseTo::MembersLastAbsorbs(members)),
+        Some("largest_remainder") => Ok(CloseTo::Members(members)),
+        Some(_) => Err(corrupt("unknown rounding")),
+    }
 }
 
 /// Record a posted entry that rides inside another event's payload (a

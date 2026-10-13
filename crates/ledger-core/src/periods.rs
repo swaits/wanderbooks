@@ -50,8 +50,13 @@ pub enum CloseTo {
     },
     /// Members' capital accounts by share (shares sum to 1): the
     /// partnership convention, where each member's capital account carries
-    /// their allocated earnings and absorbs their distributions.
+    /// their allocated earnings and absorbs their distributions. Odd cents
+    /// go by largest remainder ([`allocate`]).
     Members(Vec<MemberClose>),
+    /// [`CloseTo::Members`] under the rounding closes used before
+    /// 2026-10-13 ([`allocate_last_absorbs`]). Only replay of those journals
+    /// produces it; new closes use `Members`.
+    MembersLastAbsorbs(Vec<MemberClose>),
 }
 
 /// One member in a partnership close.
@@ -66,9 +71,38 @@ pub struct MemberClose {
     pub distributions: Option<crate::AccountId>,
 }
 
-/// Split `amount` by `shares` to the cent; the last share absorbs rounding,
-/// so the parts always sum to `amount` exactly.
+/// Split `amount` by `shares` (which sum to 1) to the cent, by largest
+/// remainder: every part is its exact share rounded toward zero to the
+/// cent, and the leftover cents go one each to the largest remainders,
+/// ties to the earlier member ([`crate::kernel::apportion`]). The parts
+/// always sum to `amount` exactly, and no member is favored by position
+/// (Stephen, 2026-10-13). A loss splits as the negation of the same gain.
 pub fn allocate(
+    amount: rust_decimal::Decimal,
+    shares: &[rust_decimal::Decimal],
+) -> Vec<rust_decimal::Decimal> {
+    use rust_decimal::{Decimal, RoundingStrategy::ToZero};
+    let magnitude = amount.abs();
+    let exact: Vec<Decimal> = shares.iter().map(|s| magnitude * s).collect();
+    let mut parts: Vec<Decimal> = exact
+        .iter()
+        .map(|e| e.round_dp_with_strategy(2, ToZero))
+        .collect();
+    let remainders: Vec<Decimal> = exact.iter().zip(&parts).map(|(e, p)| e - p).collect();
+    crate::kernel::apportion(magnitude, &mut parts, &remainders, Decimal::new(1, 2))
+        .expect("shares sum to 1, so the shortfall is under one cent per member");
+    if amount.is_sign_negative() {
+        for p in &mut parts {
+            *p = -*p;
+        }
+    }
+    parts
+}
+
+/// The rule closes used before 2026-10-13: each share rounded half away
+/// from zero to the cent, the last absorbing the rounding. Kept only so
+/// closes journaled under it replay exactly ([`CloseTo::MembersLastAbsorbs`]).
+pub fn allocate_last_absorbs(
     amount: rust_decimal::Decimal,
     shares: &[rust_decimal::Decimal],
 ) -> Vec<rust_decimal::Decimal> {

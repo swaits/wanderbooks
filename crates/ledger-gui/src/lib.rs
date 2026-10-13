@@ -9,6 +9,7 @@ pub mod books;
 mod charts;
 pub mod data;
 pub mod demo;
+mod export;
 mod fmt;
 pub mod nav;
 pub mod pages;

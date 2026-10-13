@@ -281,61 +281,74 @@ impl App {
                 ui.add_space(18.0);
                 let current = self.nav.current.section();
                 let attention = books.as_ref().map(|b| b.attention.len()).unwrap_or(0);
-                for s in Section::ALL {
-                    let on = s == current;
-                    let (rect, resp) =
-                        ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::click());
-                    if on {
-                        ui.painter()
-                            .rect_filled(rect, CornerRadius::same(8), p.surface);
-                        ui.painter().rect_stroke(
-                            rect,
-                            CornerRadius::same(8),
-                            Stroke::new(1.0, p.border),
-                            egui::StrokeKind::Inside,
-                        );
-                    } else if resp.hovered() {
-                        ui.painter()
-                            .rect_filled(rect, CornerRadius::same(8), p.hover);
-                    }
-                    let color = if on { p.text } else { p.muted };
-                    ui.painter().text(
-                        rect.left_center() + vec2(10.0, 0.0),
-                        egui::Align2::LEFT_CENTER,
-                        s.icon(),
-                        egui::FontId::proportional(16.0),
-                        if on { p.accent } else { p.muted },
-                    );
-                    ui.painter().text(
-                        rect.left_center() + vec2(36.0, 0.0),
-                        egui::Align2::LEFT_CENTER,
-                        s.title(),
-                        if on {
-                            theme::semibold(13.5)
-                        } else {
-                            theme::regular(13.5)
-                        },
-                        color,
-                    );
-                    if s == Section::Overview && attention > 0 {
-                        let badge = egui::Rect::from_center_size(
-                            rect.right_center() - vec2(18.0, 0.0),
-                            vec2(22.0, 18.0),
-                        );
-                        ui.painter()
-                            .rect_filled(badge, CornerRadius::same(9), p.warning_soft);
-                        ui.painter().text(
-                            badge.center(),
-                            egui::Align2::CENTER_CENTER,
-                            attention.to_string(),
-                            theme::semibold(11.0),
-                            p.warning,
-                        );
-                    }
-                    if resp.clicked() {
-                        self.nav.go(s.home());
-                    }
-                }
+                // Short windows: the links scroll above the status box
+                // instead of the box drawing over them.
+                let links_h = (ui.available_height() - SIDEBAR_FOOTER).max(64.0);
+                egui::ScrollArea::vertical()
+                    .id_salt("sidebar_links")
+                    .max_height(links_h)
+                    .show(ui, |ui| {
+                        for s in Section::ALL {
+                            let on = s == current;
+                            let (rect, resp) = ui.allocate_exact_size(
+                                vec2(ui.available_width(), 32.0),
+                                Sense::click(),
+                            );
+                            if on {
+                                ui.painter()
+                                    .rect_filled(rect, CornerRadius::same(8), p.surface);
+                                ui.painter().rect_stroke(
+                                    rect,
+                                    CornerRadius::same(8),
+                                    Stroke::new(1.0, p.border),
+                                    egui::StrokeKind::Inside,
+                                );
+                            } else if resp.hovered() {
+                                ui.painter()
+                                    .rect_filled(rect, CornerRadius::same(8), p.hover);
+                            }
+                            let color = if on { p.text } else { p.muted };
+                            ui.painter().text(
+                                rect.left_center() + vec2(10.0, 0.0),
+                                egui::Align2::LEFT_CENTER,
+                                s.icon(),
+                                egui::FontId::proportional(16.0),
+                                if on { p.accent } else { p.muted },
+                            );
+                            ui.painter().text(
+                                rect.left_center() + vec2(36.0, 0.0),
+                                egui::Align2::LEFT_CENTER,
+                                s.title(),
+                                if on {
+                                    theme::semibold(13.5)
+                                } else {
+                                    theme::regular(13.5)
+                                },
+                                color,
+                            );
+                            if s == Section::Overview && attention > 0 {
+                                let badge = egui::Rect::from_center_size(
+                                    rect.right_center() - vec2(18.0, 0.0),
+                                    vec2(22.0, 18.0),
+                                );
+                                ui.painter().rect_filled(
+                                    badge,
+                                    CornerRadius::same(9),
+                                    p.warning_soft,
+                                );
+                                ui.painter().text(
+                                    badge.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    attention.to_string(),
+                                    theme::semibold(11.0),
+                                    p.warning,
+                                );
+                            }
+                            if resp.clicked() {
+                                self.nav.go(s.home());
+                            }
+                        }
+                    });
                 ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
                     let label = if self.dark {
                         format!("{} Light mode", icon::SUN)
@@ -403,41 +416,52 @@ impl App {
                 ui.add_space(18.0);
                 let current = self.nav.current.section();
                 let attention = books.as_ref().map(|b| b.attention.len()).unwrap_or(0);
-                for s in Section::ALL {
-                    let on = s == current;
-                    let (rect, resp) =
-                        ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
-                    if on {
-                        ui.painter()
-                            .rect_filled(rect, CornerRadius::same(8), p.surface);
-                        ui.painter().rect_stroke(
-                            rect,
-                            CornerRadius::same(8),
-                            Stroke::new(1.0, p.border),
-                            egui::StrokeKind::Inside,
-                        );
-                    } else if resp.hovered() {
-                        ui.painter()
-                            .rect_filled(rect, CornerRadius::same(8), p.hover);
-                    }
-                    ui.painter().text(
-                        rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        s.icon(),
-                        egui::FontId::proportional(18.0),
-                        if on { p.accent } else { p.muted },
-                    );
-                    let tip = if s == Section::Overview && attention > 0 {
-                        ui.painter()
-                            .circle_filled(rect.center() + vec2(9.0, -8.0), 4.0, p.warning);
-                        format!("{} · {attention} need attention", s.title())
-                    } else {
-                        s.title().to_string()
-                    };
-                    if resp.on_hover_text(tip).clicked() {
-                        self.nav.go(s.home());
-                    }
-                }
+                let links_h = (ui.available_height() - RAIL_FOOTER).max(72.0);
+                egui::ScrollArea::vertical()
+                    .id_salt("rail_links")
+                    .max_height(links_h)
+                    .show(ui, |ui| {
+                        for s in Section::ALL {
+                            let on = s == current;
+                            let (rect, resp) = ui.allocate_exact_size(
+                                vec2(ui.available_width(), 36.0),
+                                Sense::click(),
+                            );
+                            if on {
+                                ui.painter()
+                                    .rect_filled(rect, CornerRadius::same(8), p.surface);
+                                ui.painter().rect_stroke(
+                                    rect,
+                                    CornerRadius::same(8),
+                                    Stroke::new(1.0, p.border),
+                                    egui::StrokeKind::Inside,
+                                );
+                            } else if resp.hovered() {
+                                ui.painter()
+                                    .rect_filled(rect, CornerRadius::same(8), p.hover);
+                            }
+                            ui.painter().text(
+                                rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                s.icon(),
+                                egui::FontId::proportional(18.0),
+                                if on { p.accent } else { p.muted },
+                            );
+                            let tip = if s == Section::Overview && attention > 0 {
+                                ui.painter().circle_filled(
+                                    rect.center() + vec2(9.0, -8.0),
+                                    4.0,
+                                    p.warning,
+                                );
+                                format!("{} · {attention} need attention", s.title())
+                            } else {
+                                s.title().to_string()
+                            };
+                            if resp.on_hover_text(tip).clicked() {
+                                self.nav.go(s.home());
+                            }
+                        }
+                    });
                 ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
                     let (glyph, tip) = if self.dark {
                         (icon::SUN, "Light mode")
@@ -616,6 +640,10 @@ impl App {
 
 /// Width of the icon rail.
 const RAIL_W: f32 = 60.0;
+/// Height kept clear under the sidebar's links for the status box and the
+/// theme toggle; the rail's equivalent.
+const SIDEBAR_FOOTER: f32 = 172.0;
+const RAIL_FOOTER: f32 = 84.0;
 
 fn live_status(ui: &mut Ui, b: &Books, since_update: f64, live: bool) {
     let p = pal(ui.ctx());

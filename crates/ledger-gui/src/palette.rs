@@ -71,7 +71,9 @@ impl Palette {
                     .inner_margin(Margin::same(10)),
             )
             .show(ctx, |ui| {
-                ui.set_width(620.0);
+                // Never wider or taller than the window allows.
+                let screen = ctx.content_rect().size();
+                ui.set_width(620.0_f32.min(screen.x - 48.0).max(200.0));
                 let edit = egui::TextEdit::singleline(&mut self.query)
                     .hint_text("Search entries, accounts, vendors, documents, reports…")
                     .font(theme::regular(16.0))
@@ -89,7 +91,7 @@ impl Palette {
                 crate::widgets::rule(ui);
                 ui.add_space(4.0);
                 egui::ScrollArea::vertical()
-                    .max_height(420.0)
+                    .max_height(420.0_f32.min(screen.y - 160.0).max(120.0))
                     .show(ui, |ui| {
                         if items.is_empty() {
                             ui.label(RichText::new("Nothing matches.").color(p.muted));

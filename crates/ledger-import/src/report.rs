@@ -102,6 +102,9 @@ pub struct Statement {
     pub columns: Vec<String>,
     /// The rows, top to bottom.
     pub rows: Vec<Row>,
+    /// Columns from this index on hold percentages ("12.5%"), not money:
+    /// a comparison's "%" column, a P&L's "% of income".
+    pub percent_from: Option<usize>,
 }
 
 fn row(kind: RowKind, label: impl Into<String>, amounts: Vec<Option<Decimal>>) -> Row {
@@ -131,7 +134,7 @@ fn spacer() -> Row {
 }
 
 /// Finish a statement: currency signs on sums, rules above them.
-fn statement(title: &str, period: String, columns: &[&str], mut rows: Vec<Row>) -> Statement {
+pub fn statement(title: &str, period: String, columns: &[&str], mut rows: Vec<Row>) -> Statement {
     let mut above: Option<RowKind> = None;
     for r in &mut rows {
         r.currency = matches!(r.kind, RowKind::Subtotal | RowKind::Total);
@@ -149,6 +152,7 @@ fn statement(title: &str, period: String, columns: &[&str], mut rows: Vec<Row>) 
         period,
         columns: columns.iter().map(|c| c.to_string()).collect(),
         rows,
+        percent_from: None,
     }
 }
 

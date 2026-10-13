@@ -90,68 +90,70 @@ pub fn show(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                 }
                 ui.add_space(10.0);
                 // The same numbers as a table, with the margin.
-                let w = ui.available_width();
-                let cw = 130.0;
-                let header = |ui: &mut Ui, cells: [&str; 5]| {
-                    let (r, _) = ui.allocate_exact_size(vec2(w, 24.0), Sense::hover());
-                    ui.painter().text(
-                        r.left_center() + vec2(4.0, 0.0),
-                        egui::Align2::LEFT_CENTER,
-                        cells[0],
-                        theme::semibold(12.0),
-                        p.muted,
-                    );
-                    for (i, c) in cells[1..].iter().enumerate() {
+                let cw = widgets::amount_col_w(ui.available_width(), 4, 100.0, 130.0);
+                let w = ui.available_width().max(100.0 + cw * 4.0);
+                widgets::min_width(ui, "by_month_table", w, |ui| {
+                    let header = |ui: &mut Ui, cells: [&str; 5]| {
+                        let (r, _) = ui.allocate_exact_size(vec2(w, 24.0), Sense::hover());
                         ui.painter().text(
-                            egui::pos2(r.right() - cw * (3 - i) as f32 - 4.0, r.center().y),
-                            egui::Align2::RIGHT_CENTER,
-                            *c,
+                            r.left_center() + vec2(4.0, 0.0),
+                            egui::Align2::LEFT_CENTER,
+                            cells[0],
                             theme::semibold(12.0),
                             p.muted,
                         );
-                    }
-                };
-                header(ui, ["Month", "Income", "Spending", "Net", "Margin"]);
-                for m in months.iter().rev() {
-                    let (r, resp) = ui.allocate_exact_size(vec2(w, 26.0), Sense::click());
-                    if resp.hovered() {
-                        ui.painter().rect_filled(r, CornerRadius::same(4), p.hover);
-                    }
-                    ui.painter().text(
-                        r.left_center() + vec2(4.0, 0.0),
-                        egui::Align2::LEFT_CENTER,
-                        fmt::month(m.start),
-                        theme::regular(13.0),
-                        p.text,
-                    );
-                    let vals = [
-                        fmt::money(m.revenue),
-                        fmt::money(m.expenses),
-                        fmt::accounting(m.net()),
-                        pct(m.net(), m.revenue)
-                            .map(|x| format!("{x}%"))
-                            .unwrap_or_else(|| "—".into()),
-                    ];
-                    for (i, v) in vals.iter().enumerate() {
-                        let color = if i == 2 && m.net() < Decimal::ZERO {
-                            p.negative
-                        } else {
-                            p.text
-                        };
+                        for (i, c) in cells[1..].iter().enumerate() {
+                            ui.painter().text(
+                                egui::pos2(r.right() - cw * (3 - i) as f32 - 4.0, r.center().y),
+                                egui::Align2::RIGHT_CENTER,
+                                *c,
+                                theme::semibold(12.0),
+                                p.muted,
+                            );
+                        }
+                    };
+                    header(ui, ["Month", "Income", "Spending", "Net", "Margin"]);
+                    for m in months.iter().rev() {
+                        let (r, resp) = ui.allocate_exact_size(vec2(w, 26.0), Sense::click());
+                        if resp.hovered() {
+                            ui.painter().rect_filled(r, CornerRadius::same(4), p.hover);
+                        }
                         ui.painter().text(
-                            egui::pos2(r.right() - cw * (3 - i) as f32 - 4.0, r.center().y),
-                            egui::Align2::RIGHT_CENTER,
-                            v,
+                            r.left_center() + vec2(4.0, 0.0),
+                            egui::Align2::LEFT_CENTER,
+                            fmt::month(m.start),
                             theme::regular(13.0),
-                            color,
+                            p.text,
                         );
+                        let vals = [
+                            fmt::money(m.revenue),
+                            fmt::money(m.expenses),
+                            fmt::accounting(m.net()),
+                            pct(m.net(), m.revenue)
+                                .map(|x| format!("{x}%"))
+                                .unwrap_or_else(|| "—".into()),
+                        ];
+                        for (i, v) in vals.iter().enumerate() {
+                            let color = if i == 2 && m.net() < Decimal::ZERO {
+                                p.negative
+                            } else {
+                                p.text
+                            };
+                            ui.painter().text(
+                                egui::pos2(r.right() - cw * (3 - i) as f32 - 4.0, r.center().y),
+                                egui::Align2::RIGHT_CENTER,
+                                v,
+                                theme::regular(13.0),
+                                color,
+                            );
+                        }
+                        if resp.clicked() {
+                            shell.state.reports.range =
+                                crate::pages::reports::Range::Custom(m.start, m.end);
+                            shell.go(Route::Reports(ReportKind::ProfitAndLoss));
+                        }
                     }
-                    if resp.clicked() {
-                        shell.state.reports.range =
-                            crate::pages::reports::Range::Custom(m.start, m.end);
-                        shell.go(Route::Reports(ReportKind::ProfitAndLoss));
-                    }
-                }
+                });
             },
         );
         ui.add_space(16.0);
@@ -210,66 +212,70 @@ fn spending_changes(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                 widgets::empty(ui, icon::RECEIPT, "No spending yet", "");
                 return;
             }
-            let w = ui.available_width();
-            let cw = 130.0;
-            let (r, _) = ui.allocate_exact_size(vec2(w, 24.0), Sense::hover());
-            for (i, c) in ["This month", "Last month", "3-month avg"]
-                .iter()
-                .enumerate()
-            {
-                ui.painter().text(
-                    egui::pos2(r.right() - cw * (2 - i) as f32 - 4.0, r.center().y),
-                    egui::Align2::RIGHT_CENTER,
-                    *c,
-                    theme::semibold(12.0),
-                    p.muted,
-                );
-            }
-            ui.painter().text(
-                r.left_center() + vec2(4.0, 0.0),
-                egui::Align2::LEFT_CENTER,
-                "Account",
-                theme::semibold(12.0),
-                p.muted,
-            );
-            for (code, (name, now, last, avg)) in &rows {
-                let (r, resp) = ui.allocate_exact_size(vec2(w, 28.0), Sense::click());
-                if resp.hovered() {
-                    ui.painter().rect_filled(r, CornerRadius::same(4), p.hover);
+            let label_min = 180.0;
+            let cw = widgets::amount_col_w(ui.available_width(), 3, label_min, 130.0);
+            let w = ui.available_width().max(label_min + cw * 3.0);
+            widgets::min_width(ui, "spending_table", w, |ui| {
+                let (r, _) = ui.allocate_exact_size(vec2(w, 24.0), Sense::hover());
+                for (i, c) in ["This month", "Last month", "3-month avg"]
+                    .iter()
+                    .enumerate()
+                {
+                    ui.painter().text(
+                        egui::pos2(r.right() - cw * (2 - i) as f32 - 4.0, r.center().y),
+                        egui::Align2::RIGHT_CENTER,
+                        *c,
+                        theme::semibold(12.0),
+                        p.muted,
+                    );
                 }
                 ui.painter().text(
                     r.left_center() + vec2(4.0, 0.0),
                     egui::Align2::LEFT_CENTER,
-                    format!("{code} {name}"),
-                    theme::regular(13.0),
-                    p.text,
+                    "Account",
+                    theme::semibold(12.0),
+                    p.muted,
                 );
-                // Flag a category already running well above its average.
-                let hot = *avg > Decimal::ZERO && *now > *avg * Decimal::new(125, 2);
-                let vals = [(*now, hot), (*last, false), (*avg, false)];
-                for (i, (v, flag)) in vals.iter().enumerate() {
-                    let x = r.right() - cw * (2 - i) as f32 - 4.0;
-                    ui.painter().text(
-                        egui::pos2(x, r.center().y),
-                        egui::Align2::RIGHT_CENTER,
-                        fmt::money(v.round_dp(2)),
+                for (code, (name, now, last, avg)) in &rows {
+                    let (r, resp) = ui.allocate_exact_size(vec2(w, 28.0), Sense::click());
+                    if resp.hovered() {
+                        ui.painter().rect_filled(r, CornerRadius::same(4), p.hover);
+                    }
+                    widgets::clipped_text(
+                        ui.painter(),
+                        r.left_center() + vec2(4.0, 0.0),
+                        &format!("{code} {name}"),
                         theme::regular(13.0),
-                        if *flag { p.warning } else { p.text },
+                        p.text,
+                        w - cw * 3.0 - 8.0,
                     );
-                    if *flag {
+                    // Flag a category already running well above its average.
+                    let hot = *avg > Decimal::ZERO && *now > *avg * Decimal::new(125, 2);
+                    let vals = [(*now, hot), (*last, false), (*avg, false)];
+                    for (i, (v, flag)) in vals.iter().enumerate() {
+                        let x = r.right() - cw * (2 - i) as f32 - 4.0;
                         ui.painter().text(
-                            egui::pos2(x - 86.0, r.center().y),
+                            egui::pos2(x, r.center().y),
                             egui::Align2::RIGHT_CENTER,
-                            icon::ARROW_UP_RIGHT,
-                            egui::FontId::proportional(13.0),
-                            p.warning,
+                            fmt::money(v.round_dp(2)),
+                            theme::regular(13.0),
+                            if *flag { p.warning } else { p.text },
                         );
+                        if *flag {
+                            ui.painter().text(
+                                egui::pos2(x - 86.0, r.center().y),
+                                egui::Align2::RIGHT_CENTER,
+                                icon::ARROW_UP_RIGHT,
+                                egui::FontId::proportional(13.0),
+                                p.warning,
+                            );
+                        }
+                    }
+                    if resp.clicked() {
+                        go = b.ledger.chart().find_by_code(code).map(|a| a.id);
                     }
                 }
-                if resp.clicked() {
-                    go = b.ledger.chart().find_by_code(code).map(|a| a.id);
-                }
-            }
+            });
         },
     );
     if let Some(id) = go {

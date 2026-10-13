@@ -83,7 +83,7 @@ pub fn balance_line(ui: &mut Ui, points: &[(NaiveDate, Decimal)], until: NaiveDa
         );
     }
     // X labels: first, last, and a few between.
-    let n_labels = 4;
+    let n_labels = ((plot.width() / 90.0) as usize).clamp(1, 4);
     for i in 0..=n_labels {
         let d = first + chrono::Days::new(((days * i as f64) / n_labels as f64).round() as u64);
         let align = match i {
@@ -285,13 +285,18 @@ pub fn bar_chart(
                 color,
             );
         }
-        painter.text(
-            pos2(gx + gw / 2.0, plot.bottom() + 6.0),
-            Align2::CENTER_TOP,
-            &g.label,
-            theme::regular(11.0),
-            p.faint,
-        );
+        // Crowded, label every other group (or fewer), counting back from
+        // the latest so it's always labeled.
+        let every = (34.0 / gw).ceil().max(1.0) as usize;
+        if (groups.len() - 1 - gi).is_multiple_of(every) {
+            painter.text(
+                pos2(gx + gw / 2.0, plot.bottom() + 6.0),
+                Align2::CENTER_TOP,
+                &g.label,
+                theme::regular(11.0),
+                p.faint,
+            );
+        }
         if hovered {
             let lines: Vec<String> = series
                 .iter()

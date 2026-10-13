@@ -17,8 +17,16 @@ use rust_decimal::Decimal;
 
 fn kv(ui: &mut Ui, k: &str, v: &str) {
     let p = pal(ui.ctx());
+    // Narrow, the label goes above its value.
+    if ui.available_width() < 360.0 {
+        ui.label(RichText::new(k).font(theme::regular(12.0)).color(p.muted));
+        ui.add(egui::Label::new(RichText::new(v).font(theme::regular(13.0))).wrap());
+        ui.add_space(4.0);
+        return;
+    }
     ui.horizontal(|ui| {
-        let (r, _) = ui.allocate_exact_size(vec2(180.0, 20.0), Sense::hover());
+        let kw = (ui.available_width() * 0.4).min(180.0);
+        let (r, _) = ui.allocate_exact_size(vec2(kw, 20.0), Sense::hover());
         ui.painter().text(
             r.left_center(),
             egui::Align2::LEFT_CENTER,
@@ -79,7 +87,7 @@ pub fn show(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                                 .all()
                                 .filter(|a| a.account_type == ledger_core::AccountType::Equity)
                             {
-                                ui.horizontal(|ui| {
+                                ui.horizontal_wrapped(|ui| {
                                     ui.label(
                                         RichText::new(format!("{} {}", a.code, a.name))
                                             .font(theme::regular(13.0)),
@@ -101,7 +109,7 @@ pub fn show(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                         for m in &c.members {
                             let cap = b.ledger.chart().find_by_code(&m.capital_account);
                             let bal = cap.map(|a| b.balance_on(a.id, b.today)).unwrap_or_default();
-                            ui.horizontal(|ui| {
+                            ui.horizontal_wrapped(|ui| {
                                 ui.label(RichText::new(&m.name).font(theme::semibold(13.5)));
                                 widgets::pill(
                                     ui,
@@ -141,7 +149,7 @@ pub fn show(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                             ui.label(RichText::new("No periods yet. Closing a period locks it and moves its earnings into equity.").color(p.muted));
                         }
                         for per in periods {
-                            ui.horizontal(|ui| {
+                            ui.horizontal_wrapped(|ui| {
                                 let (g, color) = match per.status {
                                     PeriodStatus::Closed => (icon::LOCK, p.muted),
                                     PeriodStatus::Open => (icon::LOCK_OPEN, p.warning),
@@ -217,7 +225,7 @@ fn assets(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                 } else {
                     (acc / dep).try_into().unwrap_or(0.0)
                 };
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     if widgets::link(
                         ui,
                         RichText::new(&a.description).font(theme::semibold(13.5)),
@@ -303,7 +311,7 @@ fn schedules(ui: &mut Ui, b: &Books) {
                     ((total - remaining) / total).try_into().unwrap_or(0.0)
                 };
                 let due = s.due(b.today);
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new(&s.description).font(theme::semibold(13.5)));
                     ui.label(
                         RichText::new(format!(
@@ -361,7 +369,7 @@ fn recurring(ui: &mut Ui, b: &Books) {
                             .filter(|d| r.end.is_none_or(|e| *d <= e))
                     })
                     .find(|d| !r.generated.contains(d));
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new(&r.description).font(theme::semibold(13.5)));
                     ui.label(
                         RichText::new(format!(
@@ -424,7 +432,7 @@ fn parties(ui: &mut Ui, b: &Books) {
                             .find(|x| x.vendor_id == v.id)
                             .map(|x| x.paid)
                             .unwrap_or_default();
-                        ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
                             ui.label(RichText::new(&v.name).font(theme::semibold(13.0)));
                             if let Some(f) = v.form_1099 {
                                 widgets::pill(ui, f.label(), p.accent, p.accent_soft);
@@ -470,7 +478,7 @@ fn parties(ui: &mut Ui, b: &Books) {
                             .filter(|i| i.customer_id == c.id)
                             .map(|i| i.balance())
                             .sum();
-                        ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
                             ui.label(RichText::new(&c.name).font(theme::semibold(13.0)));
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),

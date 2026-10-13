@@ -343,11 +343,11 @@ fn list(ui: &mut Ui, b: &Books, selected: Option<u64>, shell: &mut Shell<'_>) {
             ),
         );
         let st = &mut shell.state.journal;
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut st.query)
                     .hint_text(format!("{} Filter events", icon::MAGNIFYING_GLASS))
-                    .desired_width(320.0),
+                    .desired_width(ui.available_width().min(320.0)),
             );
             ui.checkbox(&mut st.hide_steps, "Hide entry-building steps");
         });
@@ -401,20 +401,30 @@ fn list(ui: &mut Ui, b: &Books, selected: Option<u64>, shell: &mut Shell<'_>) {
                             egui::FontId::proportional(15.0),
                             p.muted,
                         );
+                        // The timestamp yields to the event when it's tight.
+                        let ts = painter.layout_no_wrap(
+                            fmt::timestamp(&line.ts),
+                            theme::regular(12.0),
+                            p.faint,
+                        );
+                        let ts_w = if rect.width() - 80.0 - ts.size().x - 24.0 >= 200.0 {
+                            let w = ts.size().x;
+                            painter.galley(
+                                egui::pos2(rect.right() - 8.0 - w, y - ts.size().y / 2.0),
+                                ts,
+                                p.faint,
+                            );
+                            w + 24.0
+                        } else {
+                            8.0
+                        };
                         widgets::clipped_text(
                             &painter,
                             egui::pos2(rect.left() + 80.0, y),
                             &ev.text,
                             theme::regular(13.0),
                             p.text,
-                            rect.width() - 80.0 - 200.0,
-                        );
-                        painter.text(
-                            egui::pos2(rect.right() - 8.0, y),
-                            egui::Align2::RIGHT_CENTER,
-                            fmt::timestamp(&line.ts),
-                            theme::regular(12.0),
-                            p.faint,
+                            rect.width() - 80.0 - ts_w,
                         );
                         if resp.clicked() {
                             shell.go(Route::JournalEvent(line.seq));

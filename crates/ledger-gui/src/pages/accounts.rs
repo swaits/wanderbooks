@@ -80,12 +80,27 @@ pub fn show_chart(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                             theme::regular(13.0),
                             p.muted,
                         );
-                        painter.text(
+                        let bal_text = fmt::accounting(bal);
+                        let bal_w = painter
+                            .layout_no_wrap(bal_text.clone(), theme::semibold(13.5), p.text)
+                            .size()
+                            .x;
+                        // Tags sit in their own column when there's room for
+                        // it; narrower, they move to the row's tooltip.
+                        let tags_x = 340.0;
+                        let tags_room = r.width() - tags_x - bal_w - 24.0;
+                        let name_room = if tags_room >= 120.0 {
+                            tags_x - 64.0 - 12.0
+                        } else {
+                            r.width() - 64.0 - bal_w - 24.0
+                        };
+                        widgets::clipped_text(
+                            &painter,
                             r.left_center() + vec2(64.0, 0.0),
-                            egui::Align2::LEFT_CENTER,
                             &a.name,
                             theme::regular(13.5),
                             p.text,
+                            name_room,
                         );
                         let mut tags = Vec::new();
                         if b.cash_accounts.contains(&a.id) {
@@ -103,20 +118,29 @@ pub fn show_chart(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                         if a.placeholder {
                             tags.push("header".into());
                         }
-                        painter.text(
-                            r.left_center() + vec2(340.0, 0.0),
-                            egui::Align2::LEFT_CENTER,
-                            tags.join(" · "),
-                            theme::regular(12.0),
-                            p.faint,
-                        );
+                        let tags = tags.join(" · ");
+                        if tags_room >= 120.0 {
+                            widgets::clipped_text(
+                                &painter,
+                                r.left_center() + vec2(tags_x, 0.0),
+                                &tags,
+                                theme::regular(12.0),
+                                p.faint,
+                                tags_room,
+                            );
+                        }
                         painter.text(
                             r.right_center() - vec2(8.0, 0.0),
                             egui::Align2::RIGHT_CENTER,
-                            fmt::accounting(bal),
+                            bal_text,
                             theme::semibold(13.5),
                             p.text,
                         );
+                        let resp = if tags_room < 120.0 && !tags.is_empty() {
+                            resp.on_hover_text(format!("{} {} · {tags}", a.code, a.name))
+                        } else {
+                            resp
+                        };
                         if resp.clicked() {
                             go = Some(a.id);
                         }
@@ -168,7 +192,7 @@ pub fn show_account(ui: &mut Ui, b: &Books, id: u64, shell: &mut Shell<'_>) {
             );
             ui.add_space(12.0);
         }
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(
                 RichText::new(format!(
                     "{} {} – {}",
@@ -206,146 +230,148 @@ pub fn show_account(ui: &mut Ui, b: &Books, id: u64, shell: &mut Shell<'_>) {
         };
         let mut go = None;
         widgets::card(ui, |ui| {
-            let w = ui.available_width();
-            let amt = 120.0;
-            let header = |ui: &mut Ui, vals: [&str; 5]| {
-                let (r, _) = ui.allocate_exact_size(vec2(w, 26.0), Sense::hover());
-                ui.painter().text(
-                    r.left_center() + vec2(4.0, 0.0),
-                    egui::Align2::LEFT_CENTER,
-                    vals[0],
-                    theme::semibold(12.0),
-                    p.muted,
-                );
-                ui.painter().text(
-                    r.left_center() + vec2(90.0, 0.0),
-                    egui::Align2::LEFT_CENTER,
-                    vals[1],
-                    theme::semibold(12.0),
-                    p.muted,
-                );
-                for (i, v) in vals[2..].iter().enumerate() {
+            let amt = widgets::amount_col_w(ui.available_width(), 3, 90.0 + 120.0, 120.0);
+            let w = ui.available_width().max(90.0 + 120.0 + amt * 3.0);
+            widgets::min_width(ui, "register", w, |ui| {
+                let header = |ui: &mut Ui, vals: [&str; 5]| {
+                    let (r, _) = ui.allocate_exact_size(vec2(w, 26.0), Sense::hover());
                     ui.painter().text(
-                        egui::pos2(r.right() - amt * (2 - i) as f32 - 4.0, r.center().y),
-                        egui::Align2::RIGHT_CENTER,
-                        *v,
+                        r.left_center() + vec2(4.0, 0.0),
+                        egui::Align2::LEFT_CENTER,
+                        vals[0],
                         theme::semibold(12.0),
                         p.muted,
                     );
-                }
-            };
-            header(ui, ["Date", "Description", "Debit", "Credit", "Balance"]);
-            widgets::rule(ui);
-            let line = |ui: &mut Ui,
-                        date: String,
-                        desc: String,
-                        sub: String,
-                        d: Decimal,
-                        c: Decimal,
-                        bal: Decimal,
-                        strong: bool|
-             -> egui::Response {
-                let (r, resp) = ui.allocate_exact_size(
-                    vec2(w, if sub.is_empty() { 30.0 } else { 42.0 }),
-                    Sense::click(),
-                );
-                if resp.hovered() && !strong {
-                    ui.painter().rect_filled(r, CornerRadius::same(6), p.hover);
-                }
-                let painter = ui.painter_at(r);
-                let font = if strong {
-                    theme::semibold(13.0)
-                } else {
-                    theme::regular(13.0)
-                };
-                let y = if sub.is_empty() {
-                    r.center().y
-                } else {
-                    r.center().y - 7.0
-                };
-                painter.text(
-                    egui::pos2(r.left() + 4.0, y),
-                    egui::Align2::LEFT_CENTER,
-                    date,
-                    theme::regular(12.5),
-                    p.muted,
-                );
-                // Leave room for the debit, credit, and balance columns.
-                let text_w = r.width() - 90.0 - amt * 3.0 - 12.0;
-                widgets::clipped_text(
-                    &painter,
-                    egui::pos2(r.left() + 90.0, y),
-                    &desc,
-                    font.clone(),
-                    p.text,
-                    text_w,
-                );
-                if !sub.is_empty() {
-                    widgets::clipped_text(
-                        &painter,
-                        egui::pos2(r.left() + 90.0, r.center().y + 9.0),
-                        &sub,
-                        theme::regular(11.5),
-                        p.faint,
-                        text_w,
+                    ui.painter().text(
+                        r.left_center() + vec2(90.0, 0.0),
+                        egui::Align2::LEFT_CENTER,
+                        vals[1],
+                        theme::semibold(12.0),
+                        p.muted,
                     );
-                }
-                for (i, v) in [d, c].iter().enumerate() {
-                    if !v.is_zero() {
-                        painter.text(
-                            egui::pos2(r.right() - amt * (2 - i) as f32 - 4.0, y),
+                    for (i, v) in vals[2..].iter().enumerate() {
+                        ui.painter().text(
+                            egui::pos2(r.right() - amt * (2 - i) as f32 - 4.0, r.center().y),
                             egui::Align2::RIGHT_CENTER,
-                            fmt::money(*v),
-                            font.clone(),
-                            p.text,
+                            *v,
+                            theme::semibold(12.0),
+                            p.muted,
                         );
                     }
-                }
-                painter.text(
-                    egui::pos2(r.right() - 4.0, y),
-                    egui::Align2::RIGHT_CENTER,
-                    fmt::accounting(bal),
-                    font,
-                    p.text,
-                );
-                resp
-            };
-            line(
-                ui,
-                fmt::date_short(s),
-                "Beginning balance".into(),
-                String::new(),
-                Decimal::ZERO,
-                Decimal::ZERO,
-                acct.beginning_balance,
-                true,
-            );
-            for post in acct.postings.iter().rev() {
-                let r = line(
+                };
+                header(ui, ["Date", "Description", "Debit", "Credit", "Balance"]);
+                widgets::rule(ui);
+                let line = |ui: &mut Ui,
+                            date: String,
+                            desc: String,
+                            sub: String,
+                            d: Decimal,
+                            c: Decimal,
+                            bal: Decimal,
+                            strong: bool|
+                 -> egui::Response {
+                    let (r, resp) = ui.allocate_exact_size(
+                        vec2(w, if sub.is_empty() { 30.0 } else { 42.0 }),
+                        Sense::click(),
+                    );
+                    if resp.hovered() && !strong {
+                        ui.painter().rect_filled(r, CornerRadius::same(6), p.hover);
+                    }
+                    let painter = ui.painter_at(r);
+                    let font = if strong {
+                        theme::semibold(13.0)
+                    } else {
+                        theme::regular(13.0)
+                    };
+                    let y = if sub.is_empty() {
+                        r.center().y
+                    } else {
+                        r.center().y - 7.0
+                    };
+                    painter.text(
+                        egui::pos2(r.left() + 4.0, y),
+                        egui::Align2::LEFT_CENTER,
+                        date,
+                        theme::regular(12.5),
+                        p.muted,
+                    );
+                    // Leave room for the debit, credit, and balance columns.
+                    let text_w = r.width() - 90.0 - amt * 3.0 - 12.0;
+                    widgets::clipped_text(
+                        &painter,
+                        egui::pos2(r.left() + 90.0, y),
+                        &desc,
+                        font.clone(),
+                        p.text,
+                        text_w,
+                    );
+                    if !sub.is_empty() {
+                        widgets::clipped_text(
+                            &painter,
+                            egui::pos2(r.left() + 90.0, r.center().y + 9.0),
+                            &sub,
+                            theme::regular(11.5),
+                            p.faint,
+                            text_w,
+                        );
+                    }
+                    for (i, v) in [d, c].iter().enumerate() {
+                        if !v.is_zero() {
+                            painter.text(
+                                egui::pos2(r.right() - amt * (2 - i) as f32 - 4.0, y),
+                                egui::Align2::RIGHT_CENTER,
+                                fmt::money(*v),
+                                font.clone(),
+                                p.text,
+                            );
+                        }
+                    }
+                    painter.text(
+                        egui::pos2(r.right() - 4.0, y),
+                        egui::Align2::RIGHT_CENTER,
+                        fmt::accounting(bal),
+                        font,
+                        p.text,
+                    );
+                    resp
+                };
+                line(
                     ui,
-                    fmt::date_short(post.date),
-                    post.description.clone(),
-                    format!("#{} · {}", post.entry_id, post.split),
-                    post.debit,
-                    post.credit,
-                    post.balance,
-                    false,
+                    fmt::date_short(s),
+                    "Beginning balance".into(),
+                    String::new(),
+                    Decimal::ZERO,
+                    Decimal::ZERO,
+                    acct.beginning_balance,
+                    true,
                 );
-                if r.clicked() {
-                    go = Some(post.entry_id);
+                for post in acct.postings.iter().rev() {
+                    let r = line(
+                        ui,
+                        fmt::date_short(post.date),
+                        post.description.clone(),
+                        format!("#{} · {}", post.entry_id, post.split),
+                        post.debit,
+                        post.credit,
+                        post.balance,
+                        false,
+                    );
+                    if r.clicked() {
+                        go = Some(post.entry_id);
+                    }
                 }
-            }
-            widgets::rule(ui);
-            line(
-                ui,
-                fmt::date_short(e),
-                "Ending balance".into(),
-                String::new(),
-                acct.total_debits,
-                acct.total_credits,
-                acct.ending_balance,
-                true,
-            );
+                widgets::rule(ui);
+                line(
+                    ui,
+                    fmt::date_short(e),
+                    "Ending balance".into(),
+                    String::new(),
+                    acct.total_debits,
+                    acct.total_credits,
+                    acct.ending_balance,
+                    true,
+                );
+            });
         });
         if let Some(entry) = go {
             shell.go(Route::Entry(entry));

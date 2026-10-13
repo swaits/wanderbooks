@@ -18,19 +18,25 @@ use egui::{Margin, Ui};
 
 /// Standard page body: scrollable, padded.
 pub fn page(ui: &mut Ui, id: &str, add: impl FnOnce(&mut Ui)) {
+    // Pinned to the window: something too wide is clipped (and found in
+    // review) rather than widening the page past its edge, which would
+    // carry over to the next frame and push everything else off screen.
+    let width = ui.available_width();
+    let side: i8 = if width < 560.0 { 16 } else { 32 };
     egui::ScrollArea::vertical()
         .id_salt(id)
+        .max_width(width)
         .auto_shrink(false)
         .show(ui, |ui| {
             egui::Frame::new()
                 .inner_margin(Margin {
-                    left: 32,
-                    right: 32,
+                    left: side,
+                    right: side,
                     top: 24,
                     bottom: 40,
                 })
                 .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
+                    ui.set_width((width - 2.0 * side as f32).max(0.0));
                     add(ui)
                 });
         });
@@ -89,8 +95,37 @@ pub fn columns(ui: &mut Ui, min_width: f32, weights: &[f32], mut add: impl FnMut
     ui.add_space(gap);
 }
 
+const SPLIT_MIN_LIST: f32 = 380.0;
+const SPLIT_MIN_DETAIL: f32 = 360.0;
+
+/// Tiles in rows: as many columns as fit at `min_width` each (up to
+/// `max`), evened out across the rows, the tiles stretched to fill. `add(i, ui)` fills tile `i`.
+pub fn grid(
+    ui: &mut Ui,
+    n: usize,
+    min_width: f32,
+    max: usize,
+    mut add: impl FnMut(usize, &mut Ui),
+) {
+    let fit = crate::widgets::fit_columns(ui.available_width(), min_width, 16.0, max);
+    // Balanced rows: six tiles that fit five across go three and three,
+    // not five and one.
+    let rows = n.max(1).div_ceil(fit);
+    let per_row = n.max(1).div_ceil(rows);
+    let idx: Vec<usize> = (0..n).collect();
+    for row in idx.chunks(per_row) {
+        columns(ui, 0.0, &vec![1.0; per_row], |i, ui| {
+            if let Some(&t) = row.get(i) {
+                add(t, ui);
+            }
+        });
+    }
+}
+
 /// A list on the left and a detail pane on the right, split by a
-/// draggable divider. The split is remembered per `id`.
+/// draggable divider. The split is remembered per `id`. Too narrow for
+/// both, the detail takes the whole width (its close button goes back to
+/// the list).
 pub fn split<T: ?Sized>(
     ui: &mut Ui,
     id: &str,
@@ -101,12 +136,25 @@ pub fn split<T: ?Sized>(
 ) {
     let p = crate::theme::pal(ui.ctx());
     let rect = ui.available_rect_before_wrap();
+    if rect.width() < SPLIT_MIN_LIST + SPLIT_MIN_DETAIL {
+        let inner = rect.shrink2(egui::vec2(16.0, 16.0));
+        ui.painter().rect_filled(rect, 0.0, p.surface);
+        let mut r = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(inner)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        r.set_clip_rect(rect);
+        right(&mut r, state);
+        ui.allocate_rect(rect, egui::Sense::hover());
+        return;
+    }
     let key = egui::Id::new(("split", id));
     let mut detail_w: f32 = ui
         .ctx()
         .data_mut(|d| d.get_persisted(key))
         .unwrap_or(default_detail);
-    detail_w = detail_w.clamp(360.0, (rect.width() - 380.0).max(360.0));
+    detail_w = detail_w.clamp(SPLIT_MIN_DETAIL, rect.width() - SPLIT_MIN_LIST);
     let divider_x = rect.right() - detail_w;
     let left_rect = egui::Rect::from_min_max(rect.min, egui::pos2(divider_x, rect.bottom()));
     let right_rect = egui::Rect::from_min_max(egui::pos2(divider_x + 1.0, rect.top()), rect.max);

@@ -57,7 +57,7 @@ fn grid(ui: &mut Ui, b: &Books, selected: Option<u64>, shell: &mut Shell<'_>) {
             ui.add(
                 egui::TextEdit::singleline(&mut st.query)
                     .hint_text(format!("{} Search file names", icon::MAGNIFYING_GLASS))
-                    .desired_width(260.0),
+                    .desired_width(ui.available_width().min(260.0)),
             );
             if ui.selectable_label(st.category.is_none(), "All").clicked() {
                 st.category = None;
@@ -94,10 +94,10 @@ fn grid(ui: &mut Ui, b: &Books, selected: Option<u64>, shell: &mut Shell<'_>) {
             widgets::card(ui, |ui| widgets::empty(ui, icon::FILES, "No documents", ""));
             return;
         }
-        let tile_w = 200.0;
-        let per_row = ((ui.available_width() + 16.0) / (tile_w + 16.0))
-            .floor()
-            .max(1.0) as usize;
+        // As many 200-point tiles as fit, stretched to fill the row.
+        let per_row = widgets::fit_columns(ui.available_width(), 200.0, 16.0, usize::MAX);
+        let tile_w =
+            ((ui.available_width() - 16.0 * (per_row as f32 - 1.0)) / per_row as f32).min(280.0);
         let mut go = None;
         for row in docs.chunks(per_row) {
             ui.horizontal_top(|ui| {
@@ -277,7 +277,9 @@ fn detail(ui: &mut Ui, b: &Books, a: &Attachment, shell: &mut Shell<'_>) {
                                 format!("#{} {} ({})", x.id, x.description, fmt::dollars(x.amount))
                             })
                             .unwrap_or_else(|| format!("#{e}"));
-                        if widgets::link(ui, RichText::new(label).color(p.accent)).clicked() {
+                        if widgets::link_truncated(ui, RichText::new(label).color(p.accent))
+                            .clicked()
+                        {
                             shell.go(Route::Entry(e));
                         }
                         ui.end_row();

@@ -61,7 +61,9 @@ fn main() -> eframe::Result<()> {
             .with_title("wanderbooks")
             .with_app_id("wanderbooks")
             .with_inner_size([1440.0, 920.0])
-            .with_min_inner_size([900.0, 600.0]),
+            // Small on purpose: tiling window managers hand out small slots
+            // regardless, and every screen lays itself out to fit.
+            .with_min_inner_size([360.0, 400.0]),
         ..Default::default()
     };
     eframe::run_native(

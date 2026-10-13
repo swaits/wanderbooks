@@ -40,12 +40,12 @@ fn screenshots() {
     };
     let only = std::env::var("SHOT_ONLY").ok();
     let dark = std::env::var("SHOT_DARK").is_ok();
-    let first_entry = data::load_once(&source)
-        .unwrap()
-        .entries
-        .last()
-        .map(|e| e.id)
-        .unwrap_or(1);
+    let loaded = data::load_once(&source).unwrap();
+    let first_entry = loaded.entries.last().map(|e| e.id).unwrap_or(1);
+    let first_cash = loaded.cash_accounts.first().copied().unwrap_or(1);
+    let last_doc = loaded.attachments.last().map(|a| a.id).unwrap_or(1);
+    let last_event = loaded.seq();
+    drop(loaded);
     let routes: Vec<(&str, Route)> = vec![
         ("overview", Route::Overview),
         ("transactions", Route::Transactions),
@@ -62,7 +62,16 @@ fn screenshots() {
         ("profit", Route::Profit),
         ("pnl", Route::Reports(ReportKind::ProfitAndLoss)),
         ("balance", Route::Reports(ReportKind::BalanceSheet)),
+        ("cashflow", Route::Reports(ReportKind::CashFlow)),
+        ("trial", Route::Reports(ReportKind::TrialBalance)),
+        ("gl", Route::Reports(ReportKind::GeneralLedger)),
+        ("tax", Route::Reports(ReportKind::TaxSummary)),
+        ("v1099", Route::Reports(ReportKind::Vendor1099)),
+        ("ar", Route::Reports(ReportKind::ArAging)),
         ("accounts", Route::Accounts),
+        ("account", Route::Account(first_cash)),
+        ("document", Route::Document(last_doc)),
+        ("event", Route::JournalEvent(last_event)),
         ("documents", Route::Documents),
         ("company", Route::Company),
         ("journal", Route::Journal),

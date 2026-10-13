@@ -56,7 +56,9 @@ pub fn show(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
         // One tile per cash and card account.
         let mut tiles: Vec<(u64, bool)> = b.cash_accounts.iter().map(|a| (*a, false)).collect();
         tiles.extend(b.card_accounts.iter().map(|a| (*a, true)));
+        // Up to four across, fewer when the window is narrow.
         let n = tiles.len().clamp(1, 4);
+        let n = widgets::fit_columns(ui.available_width(), 200.0, 16.0, n);
         for row in tiles.chunks(n) {
             columns(ui, 0.0, &vec![1.0; n], |i, ui| {
                 let Some((id, is_card)) = row.get(i) else {

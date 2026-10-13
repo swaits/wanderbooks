@@ -110,14 +110,14 @@ pub fn detail(ui: &mut Ui, b: &Books, e: &EntryInfo, shell: &mut Shell<'_>) {
                     ui.end_row();
                     if let Some(c) = &created {
                         k(ui, "Recorded");
-                        ui.label(c);
+                        ui.add(egui::Label::new(c).wrap());
                         ui.end_row();
                     }
                     if e.status == EntryStatus::Posted
                         && let Some(t) = &posted
                     {
                         k(ui, "Posted");
-                        ui.label(t);
+                        ui.add(egui::Label::new(t).wrap());
                         ui.end_row();
                     }
                 });
@@ -126,7 +126,7 @@ pub fn detail(ui: &mut Ui, b: &Books, e: &EntryInfo, shell: &mut Shell<'_>) {
             // Lines.
             section(ui, "Lines");
             let total_w = ui.available_width();
-            let amt_w = 104.0;
+            let amt_w = ((total_w - 26.0) * 0.25).clamp(64.0, 104.0);
             let class_names: std::collections::HashMap<u32, String> = b
                 .ledger
                 .list_classes()
@@ -159,7 +159,7 @@ pub fn detail(ui: &mut Ui, b: &Books, e: &EntryInfo, shell: &mut Shell<'_>) {
                             ui.allocate_ui(vec2(w, 22.0), |ui| {
                                 ui.set_width(w);
                                 ui.horizontal(|ui| {
-                                    let r = widgets::link(
+                                    let r = widgets::link_truncated(
                                         ui,
                                         RichText::new(b.account_label(line.account))
                                             .font(theme::regular(13.5)),

@@ -118,7 +118,7 @@ impl Snapshot {
         let complete = &buf[..=last_newline];
         let mut added = 0;
         for raw in complete.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
-            let line: JournalLine = serde_json::from_slice(raw).map_err(|e| {
+            let line: JournalLine = JournalLine::parse(raw).map_err(|e| {
                 StoreError::JournalCorrupt(format!(
                     "seq {}: unparseable line: {e}",
                     self.lines.len() + 1

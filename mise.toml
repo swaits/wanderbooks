@@ -3,7 +3,11 @@
 
 [tools]
 # Workspace toolchain (clippy and rustfmt for `just check`).
-rust = { version = "1.99", components = "clippy,rustfmt" }
+rust = [
+  { version = "1.99", components = "clippy,rustfmt" },
+  # Fuzzing (cargo-fuzz) and Miri need nightly; pinned so runs repeat.
+  { version = "nightly-2026-10-01", components = "miri,rust-src" },
+]
 just = "1"
 # `just deploy` runs the Netlify CLI through npx.
 node = "26"

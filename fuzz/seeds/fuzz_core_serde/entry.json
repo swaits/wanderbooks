@@ -1,0 +1,1 @@
+{"id":1,"date":"2026-01-15","description":"seed","lines":[{"account":1,"side":"Debit","amount":{"amount":"12.34","currency":"USD"}},{"account":2,"side":"Credit","amount":{"amount":"12.34","currency":"USD"}}],"status":"Posted","reversal_of":null}

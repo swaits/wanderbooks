@@ -216,11 +216,24 @@ pub struct RecurringDraftOut {
     pub entry_id: u64,
 }
 
+/// A recurring occurrence left ungenerated (its date is in a closed period).
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct RecurringSkippedOut {
+    /// Recurring entry id.
+    pub recurring_id: u64,
+    /// Occurrence date.
+    pub date: String,
+}
+
 /// Result of `books.run_recurring`.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct RunRecurringOut {
     /// Drafts created.
     pub drafts: Vec<RecurringDraftOut>,
+    /// Occurrences not generated because their date falls in a closed
+    /// period. Ask the human: book them by hand in an open period, or
+    /// leave them out.
+    pub skipped_closed_period: Vec<RecurringSkippedOut>,
 }
 
 /// A revenue or fee line of a payout.

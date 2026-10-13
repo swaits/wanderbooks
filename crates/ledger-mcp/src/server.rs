@@ -1887,7 +1887,7 @@ impl BooksServer {
 
     #[tool(
         name = "books.run_recurring",
-        description = "Turn every recurring entry's occurrences on or before `through` (default today) into drafts. Idempotent: an occurrence generates once. Each draft then goes through the normal flow: attach the receipt, preview, post."
+        description = "Turn every recurring entry's occurrences on or before `through` (default today) into drafts. Idempotent: an occurrence generates once. Occurrences dated in a closed period are not generated; they come back in `skipped_closed_period` for the human to decide. Each draft then goes through the normal flow: attach the receipt, preview, post."
     )]
     async fn run_recurring(
         &self,
@@ -1908,7 +1908,19 @@ impl BooksServer {
                 entry_id: entry,
             })
             .collect();
-        Ok(Json(RunRecurringOut { drafts }))
+        let skipped_closed_period = store
+            .ledger()
+            .recurring_in_closed_periods(through)
+            .into_iter()
+            .map(|(id, date)| RecurringSkippedOut {
+                recurring_id: id,
+                date: date.to_string(),
+            })
+            .collect();
+        Ok(Json(RunRecurringOut {
+            drafts,
+            skipped_closed_period,
+        }))
     }
 
     #[tool(
@@ -2725,28 +2737,16 @@ impl BooksServer {
 
         // The would-be disposal entry's lines, for the preview and the
         // receipt-policy check.
-        let mut raw: Vec<(AccountId, Side, Money)> = vec![
-            (
-                asset.accum_depr_account,
-                Side::Debit,
-                Money::new(preview.accumulated, base),
-            ),
-            (proceeds_account, Side::Debit, proceeds),
-            (asset.cost_account, Side::Credit, asset.cost),
-        ];
-        if preview.gain_loss > Decimal::ZERO {
-            raw.push((
-                gain_loss_account,
-                Side::Credit,
-                Money::new(preview.gain_loss, base),
-            ));
-        } else if preview.gain_loss < Decimal::ZERO {
-            raw.push((
-                gain_loss_account,
-                Side::Debit,
-                Money::new(-preview.gain_loss, base),
-            ));
-        }
+        let raw: Vec<(AccountId, Side, Money)> = Store::disposal_lines(
+            &asset,
+            &preview,
+            proceeds.amount,
+            proceeds_account,
+            gain_loss_account,
+        )
+        .into_iter()
+        .map(|(a, side, amount)| (a, side, Money::new(amount, base)))
+        .collect();
         // Disposals are money movement: the bill of sale is the receipt.
         let chart = store.ledger().chart();
         let code_of = |id: AccountId| {

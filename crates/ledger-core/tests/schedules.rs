@@ -225,6 +225,38 @@ fn recurring_entries_generate_drafts_never_posts() {
     let _ = b.revenue;
 }
 
+/// Regression (B-12, found by the store's refusal property on
+/// 2026-10-13): a recurring occurrence dated in a closed period is
+/// refused, leaves nothing behind, and is reported as needing a human.
+#[test]
+fn a_recurring_occurrence_in_a_closed_period_is_refused() {
+    let mut b = books();
+    let id =
+        b.l.register_recurring(NewRecurring {
+            description: "Office rent".into(),
+            lines: vec![
+                (b.rent, Side::Debit, usd("2000")),
+                (b.cash, Side::Credit, usd("2000")),
+            ],
+            frequency: Frequency::Monthly,
+            start: d(1, 31),
+            end: None,
+        })
+        .unwrap();
+    let jan = b.l.create_period("2026-01", d(1, 1), d(1, 31)).unwrap();
+    b.l.close_period(jan).unwrap();
+    let next = b.l.next_entry_id();
+    assert!(matches!(
+        b.l.generate_recurring(id, d(1, 31)),
+        Err(LedgerError::ClosedPeriod(p, _)) if p == jan
+    ));
+    assert_eq!(b.l.next_entry_id(), next, "no id spent");
+    assert!(b.l.get_entry(next).is_none(), "no draft left behind");
+    assert_eq!(b.l.recurring_in_closed_periods(d(2, 28)), [(id, d(1, 31))]);
+    // Later occurrences still generate.
+    assert_eq!(b.l.generate_recurring(id, d(2, 28)).unwrap(), next);
+}
+
 #[test]
 fn schedule_length_is_one_to_six_hundred_months() {
     let b = books();

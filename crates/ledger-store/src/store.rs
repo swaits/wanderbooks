@@ -738,6 +738,30 @@ impl Store {
         })
     }
 
+    /// The disposal entry's lines for an asset, its preview, and the
+    /// accounts chosen: the one place the shape of a disposal is decided,
+    /// for both the preview and the post. Zero lines are left out (an
+    /// engine entry has none): scrapping brings no proceeds, and an asset
+    /// disposed before its first depreciation has none accumulated.
+    pub fn disposal_lines(
+        asset: &ledger_core::Asset,
+        preview: &DisposalPreview,
+        proceeds: Decimal,
+        proceeds_account: AccountId,
+        gain_loss_account: AccountId,
+    ) -> Vec<(AccountId, Side, Decimal)> {
+        [
+            (asset.accum_depr_account, Side::Debit, preview.accumulated),
+            (proceeds_account, Side::Debit, proceeds),
+            (asset.cost_account, Side::Credit, asset.cost.amount),
+            (gain_loss_account, Side::Credit, preview.gain_loss),
+            (gain_loss_account, Side::Debit, -preview.gain_loss),
+        ]
+        .into_iter()
+        .filter(|(_, _, a)| *a > Decimal::ZERO)
+        .collect()
+    }
+
     /// Compute a disposal without posting. Pure reads plus the posted-vs-
     /// scheduled reconciliation that [`Store::dispose_asset`] performs.
     pub fn dispose_preview(
@@ -873,29 +897,53 @@ impl Store {
         // One source of truth for the math: the preview computes the
         // posted-vs-scheduled reconciliation; posting follows it.
         let preview = self.dispose_preview(asset_id, date, proceeds)?;
-        let accumulated = preview.accumulated;
-        let gain_loss = preview.gain_loss;
-        if preview.final_depreciation > Decimal::ZERO {
-            let diff = preview.final_depreciation;
-            let eid = self.create_entry(
-                date,
-                &format!(
+        let depreciation = (preview.final_depreciation > Decimal::ZERO).then(|| {
+            (
+                format!(
                     "Depreciation — {} — {} (final)",
                     asset.description, preview.period
                 ),
-            )?;
-            self.add_line(
-                eid,
-                asset.expense_account,
-                Side::Debit,
-                Money::new(diff, base),
-            )?;
-            self.add_line(
-                eid,
-                asset.accum_depr_account,
-                Side::Credit,
-                Money::new(diff, base),
-            )?;
+                vec![
+                    (
+                        asset.expense_account,
+                        Side::Debit,
+                        preview.final_depreciation,
+                    ),
+                    (
+                        asset.accum_depr_account,
+                        Side::Credit,
+                        preview.final_depreciation,
+                    ),
+                ],
+            )
+        });
+        let disposal = (
+            format!("Disposal — {} — {}", asset.description, date),
+            Self::disposal_lines(
+                &asset,
+                &preview,
+                proceeds.amount,
+                proceeds_account,
+                gain_loss_account,
+            ),
+        );
+        // Several commands make one disposal: rehearse them all together,
+        // so a refusal anywhere leaves nothing journaled.
+        self.rehearse(|l| {
+            for (description, lines) in depreciation.iter().chain([&disposal]) {
+                let e = l.try_create_entry(date, description)?;
+                for (account, side, amount) in lines {
+                    l.add_line(e, *account, *side, Money::new(*amount, base))?;
+                }
+                l.post_entry(e)?;
+            }
+            l.dispose_asset(asset_id, date, proceeds)
+        })?;
+        if let Some((description, lines)) = &depreciation {
+            let eid = self.create_entry(date, description)?;
+            for (account, side, amount) in lines {
+                self.add_line(eid, *account, *side, Money::new(*amount, base))?;
+            }
             self.post_entry(eid)?;
             let dline = self.append_journal(
                 "asset.depreciation_posted",
@@ -903,48 +951,14 @@ impl Store {
                     "asset_id": asset_id,
                     "period": preview.period,
                     "entry_id": eid,
-                    "amount": diff.to_string(),
+                    "amount": preview.final_depreciation.to_string(),
                 }),
             )?;
             apply_line_to_sqlite(&self.conn, &dline)?;
         }
-
-        let entry_id = self.create_entry(
-            date,
-            &format!("Disposal — {} — {}", asset.description, date),
-        )?;
-        self.add_line(
-            entry_id,
-            asset.accum_depr_account,
-            Side::Debit,
-            Money::new(accumulated, base),
-        )?;
-        self.add_line(
-            entry_id,
-            proceeds_account,
-            Side::Debit,
-            Money::new(proceeds.amount, base),
-        )?;
-        self.add_line(
-            entry_id,
-            asset.cost_account,
-            Side::Credit,
-            Money::new(asset.cost.amount, base),
-        )?;
-        if gain_loss > Decimal::ZERO {
-            self.add_line(
-                entry_id,
-                gain_loss_account,
-                Side::Credit,
-                Money::new(gain_loss, base),
-            )?;
-        } else if gain_loss < Decimal::ZERO {
-            self.add_line(
-                entry_id,
-                gain_loss_account,
-                Side::Debit,
-                Money::new(-gain_loss, base),
-            )?;
+        let entry_id = self.create_entry(date, &disposal.0)?;
+        for (account, side, amount) in &disposal.1 {
+            self.add_line(entry_id, *account, *side, Money::new(*amount, base))?;
         }
         self.post_entry(entry_id)?;
         let line = self.append_journal(
@@ -1976,7 +1990,9 @@ impl Store {
 
     /// Generate every recurring entry's due occurrences through `through`
     /// as drafts. Each journaled as `recurring.generated`. Returns
-    /// (recurring entry, date, draft) for each.
+    /// (recurring entry, date, draft) for each. Occurrences dated in a
+    /// closed period are left ungenerated (a closed period takes no new
+    /// entries); [`Ledger::recurring_in_closed_periods`] lists them.
     pub fn run_recurring(
         &mut self,
         through: NaiveDate,
@@ -1989,11 +2005,17 @@ impl Store {
         due.sort();
         let mut out = Vec::with_capacity(due.len());
         for (date, id) in due {
-            let entry = self.ledger.generate_recurring(id, date)?;
+            if self.ledger.closed_period_containing(date).is_some() {
+                continue;
+            }
+            self.rehearse(|l| l.generate_recurring(id, date))?;
+            let entry = self.ledger.next_entry_id();
             let line = self.append_journal(
                 "recurring.generated",
                 json!({"recurring_id": id, "date": date.to_string(), "entry_id": entry}),
             )?;
+            let got = self.ledger.generate_recurring(id, date)?;
+            debug_assert_eq!(got, entry);
             apply_line_to_sqlite(&self.conn, &line)?;
             out.push((id, date, entry));
         }
@@ -3096,7 +3118,7 @@ pub(crate) fn replay_line_into_ledger(
         }
         "recurring.generated" => {
             let want = get_u64(p, "entry_id")?;
-            let got = ledger.generate_recurring(
+            let got = ledger.replay_generate_recurring(
                 get_u64(p, "recurring_id")?,
                 parse_date(get_str(p, "date")?)?,
             )?;

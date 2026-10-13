@@ -613,6 +613,55 @@ fn schedules_and_recurring_entries_replay_exactly() {
     assert!(store.run_recurring(date(2, 28)).unwrap().is_empty());
 }
 
+/// Regression (B-12, found by the refusal property on 2026-10-13):
+/// `run_recurring` leaves occurrences in a closed period ungenerated
+/// instead of creating drafts there, and still generates the rest.
+#[test]
+fn run_recurring_skips_occurrences_in_a_closed_period() {
+    let dir = test_dir("recurring-closed");
+    let date = |m, d| NaiveDate::from_ymd_opt(2026, m, d).unwrap();
+    let usd_s = |s: &str| Money::new(s.parse().unwrap(), Currency::USD);
+    let mut store = Store::create(&dir, Currency::USD).unwrap();
+    let cash = store
+        .add_account("1000", "Cash", AccountType::Asset, None, false)
+        .unwrap();
+    let rent = store
+        .add_account("6000", "Rent", AccountType::Expense, None, false)
+        .unwrap();
+    store
+        .register_recurring(ledger_core::NewRecurring {
+            description: "Rent".into(),
+            lines: vec![
+                (rent, Side::Debit, usd_s("500")),
+                (cash, Side::Credit, usd_s("500")),
+            ],
+            frequency: ledger_core::Frequency::Monthly,
+            start: date(1, 1),
+            end: None,
+        })
+        .unwrap();
+    let jan = store
+        .create_period("2026-01", date(1, 1), date(1, 31))
+        .unwrap();
+    store.close_period(jan).unwrap();
+    let drafts = store.run_recurring(date(2, 28)).unwrap();
+    assert_eq!(drafts.iter().map(|d| d.1).collect::<Vec<_>>(), [date(2, 1)]);
+    assert_eq!(
+        store.ledger().recurring_in_closed_periods(date(2, 28)),
+        [(1, date(1, 1))]
+    );
+    drop(store);
+    let store = Store::open(&dir).unwrap();
+    store.verify().unwrap();
+    assert_eq!(
+        store
+            .ledger()
+            .recurring_in_closed_periods(date(2, 28))
+            .len(),
+        1
+    );
+}
+
 #[test]
 fn vendor_1099_tags_replay_and_project() {
     use ledger_core::arap::DocumentLine;
@@ -826,6 +875,35 @@ mod refusals {
         SetEntryVendor(u64, Option<u64>),
         SetVendor1099(u64, bool),
         SetAccountTax(u64, u8),
+        // The rest of the command surface (2026-10-13).
+        AttachReceipt(Option<u64>, u8),
+        FileDocument(u8),
+        LinkReceipt(u64, u64),
+        UnlinkReceipt(u64),
+        Withdraw(u64),
+        SetFxRate(u32, i64),
+        AddLineFx(u64, u64, bool, i64, i64),
+        RegisterAsset(u64, u64, u64, i64, u32),
+        RunDepreciation(u64, u32),
+        DisposeAsset(u64, u32, i64, u64, u64),
+        RunPayroll(u32, i64, i64, u64),
+        Remit(u32, u64),
+        RegisterSchedule(bool, i64, u32, u32, u64, u64),
+        PostScheduleMonth(u64, u32),
+        RegisterRecurring(u64, u64, i64, u32),
+        RunRecurring(u32),
+        MarkCleared(u64, usize, bool),
+        CloseMembers(u64, u64, u64),
+        /// A balanced pair of lines on a draft, so entries post.
+        Pair(u64, u64, u64, i64),
+        // Compound commands with valid arguments, so the success paths
+        // that need a chain of earlier steps get exercised too.
+        Book(u32, u64, u64, i64),
+        GoodAsset(i64, u32),
+        GoodSchedule(bool, i64, u32),
+        GoodInvoice(u32, i64),
+        GoodBill(u32, i64),
+        GoodClose(u32),
     }
 
     fn day(n: u32) -> NaiveDate {
@@ -870,6 +948,63 @@ mod refusals {
             (id.clone(), prop::option::of(0u64..4)).prop_map(|(e, v)| Op::SetEntryVendor(e, v)),
             (0u64..4, any::<bool>()).prop_map(|(v, t)| Op::SetVendor1099(v, t)),
             (0u64..10, 0u8..4).prop_map(|(a, k)| Op::SetAccountTax(a, k)),
+            (prop::option::of(id.clone()), 0u8..4).prop_map(|(e, b)| Op::AttachReceipt(e, b)),
+            (0u8..4).prop_map(Op::FileDocument),
+            (0u64..6, id.clone()).prop_map(|(a, e)| Op::LinkReceipt(a, e)),
+            (0u64..6).prop_map(Op::UnlinkReceipt),
+            (0u64..6).prop_map(Op::Withdraw),
+            (0u32..120, -2i64..30_000).prop_map(|(d, r)| Op::SetFxRate(d, r)),
+            (
+                id.clone(),
+                0u64..10,
+                any::<bool>(),
+                arb_cents(),
+                1i64..30_000
+            )
+                .prop_map(|(e, a, s, f, r)| Op::AddLineFx(e, a, s, f, r)),
+            (0u64..10, 0u64..10, 0u64..10, arb_cents(), 0u32..40)
+                .prop_map(|(c, d, x, cost, m)| Op::RegisterAsset(c, d, x, cost, m)),
+            (0u64..4, 0u32..12).prop_map(|(a, m)| Op::RunDepreciation(a, m)),
+            (0u64..4, 0u32..120, arb_cents(), 0u64..10, 0u64..10)
+                .prop_map(|(a, d, p, c, g)| Op::DisposeAsset(a, d, p, c, g)),
+            (0u32..120, arb_cents(), arb_cents(), 0u64..10)
+                .prop_map(|(d, g, w, c)| Op::RunPayroll(d, g, w, c)),
+            (0u32..120, 0u64..10).prop_map(|(d, c)| Op::Remit(d, c)),
+            (
+                any::<bool>(),
+                arb_cents(),
+                0u32..120,
+                0u32..30,
+                0u64..10,
+                0u64..10
+            )
+                .prop_map(|(k, t, st, m, b, p)| Op::RegisterSchedule(k, t, st, m, b, p)),
+            (0u64..4, 0u32..12).prop_map(|(s, m)| Op::PostScheduleMonth(s, m)),
+            (0u64..10, 0u64..10, arb_cents(), 0u32..120)
+                .prop_map(|(a, b, c, d)| Op::RegisterRecurring(a, b, c, d)),
+            (0u32..180).prop_map(Op::RunRecurring),
+            (id.clone(), 0usize..4, any::<bool>()).prop_map(|(e, i, c)| Op::MarkCleared(e, i, c)),
+            (0u64..5, 0u64..10, 0u64..10).prop_map(|(p, a, b)| Op::CloseMembers(p, a, b)),
+            (id.clone(), 1u64..10, 1u64..10, 1i64..500_000)
+                .prop_map(|(e, a, b, c)| Op::Pair(e, a, b, c)),
+            (id.clone(), 1u64..10, 1u64..10, 1i64..500_000)
+                .prop_map(|(e, a, b, c)| Op::Pair(e, a, b, c)),
+            (id.clone(), 1u64..10, 1u64..10, 1i64..500_000)
+                .prop_map(|(e, a, b, c)| Op::Pair(e, a, b, c)),
+            id.clone().prop_map(Op::Post),
+            id.clone().prop_map(Op::Post),
+            (0u32..120, 1u64..10, 1u64..10, 1i64..500_000)
+                .prop_map(|(d, a, b, c)| Op::Book(d, a, b, c)),
+            (0u32..120, 1u64..10, 1u64..10, 1i64..500_000)
+                .prop_map(|(d, a, b, c)| Op::Book(d, a, b, c)),
+            (0u32..120, 1u64..10, 1u64..10, 1i64..500_000)
+                .prop_map(|(d, a, b, c)| Op::Book(d, a, b, c)),
+            (1i64..5_000_000, 1u32..60).prop_map(|(c, m)| Op::GoodAsset(c, m)),
+            (any::<bool>(), 1i64..1_000_000, 1u32..24)
+                .prop_map(|(k, t, m)| Op::GoodSchedule(k, t, m)),
+            (0u32..120, 1i64..1_000_000).prop_map(|(d, c)| Op::GoodInvoice(d, c)),
+            (0u32..120, 1i64..1_000_000).prop_map(|(d, c)| Op::GoodBill(d, c)),
+            (1u32..5).prop_map(Op::GoodClose),
         ]
     }
 
@@ -890,7 +1025,10 @@ mod refusals {
         Some(""),
     ];
 
-    fn apply(store: &mut Store, op: &Op) -> Result<(), StoreError> {
+    /// Runs one op. A compound op is several commands; `mark` is called
+    /// after each step that succeeded, so the refusal law is checked
+    /// against the one command that was refused.
+    fn apply(store: &mut Store, op: &Op, mark: &mut dyn FnMut()) -> Result<(), StoreError> {
         let usd = |c: i64| Money::new(Decimal::new(c, 2), Currency::USD);
         let line = |c: i64| {
             vec![DocumentLine {
@@ -928,6 +1066,196 @@ mod refusals {
             Op::SetEntryVendor(e, v) => store.set_entry_vendor(e, v),
             Op::SetVendor1099(v, t) => store.set_vendor_1099(v, Some(Form1099::Nec), t),
             Op::SetAccountTax(a, k) => store.set_account_tax(a, TAX[k as usize], None),
+            Op::AttachReceipt(e, b) => store
+                .attach_receipt(e, "r.pdf", "application/pdf", &[b; 3], Some("receipt"))
+                .map(drop),
+            Op::FileDocument(b) => store
+                .file_document("legal", "d.pdf", "application/pdf", &[b, 9], None)
+                .map(drop),
+            Op::LinkReceipt(a, e) => store.link_receipt(a, e),
+            Op::UnlinkReceipt(a) => store.unlink_receipt(a, "wrong receipt").map(drop),
+            Op::Withdraw(a) => store.withdraw_attachment(a, "duplicate"),
+            Op::SetFxRate(d, r) => store.set_fx_rate(Currency::EUR, day(d), Decimal::new(r, 4)),
+            Op::AddLineFx(e, a, d, f, r) => {
+                let side = if d { Side::Debit } else { Side::Credit };
+                store.add_line_fx(
+                    e,
+                    a,
+                    side,
+                    Currency::EUR,
+                    Decimal::new(f, 2),
+                    Decimal::new(r, 4),
+                )
+            }
+            Op::RegisterAsset(c, d, x, cost, m) => store
+                .register_asset(ledger_core::NewAsset {
+                    description: "van".into(),
+                    purchase_date: day(0),
+                    cost: usd(cost),
+                    salvage_value: usd(0),
+                    useful_life_months: m,
+                    cost_account: c,
+                    accum_depr_account: d,
+                    expense_account: x,
+                })
+                .map(drop),
+            Op::RunDepreciation(a, m) => store
+                .run_depreciation(a, &format!("2026-{:02}", m + 1))
+                .map(drop),
+            Op::DisposeAsset(a, d, p, c, g) => {
+                store.dispose_asset(a, day(d), usd(p), c, g).map(drop)
+            }
+            Op::RunPayroll(d, g, w, c) => store
+                .run_payroll(
+                    day(d),
+                    vec![ledger_core::PayrollLine {
+                        employee_name: "Pat".into(),
+                        gross_pay: Decimal::new(g, 2),
+                        federal_withholding: Decimal::new(w, 2),
+                        state_withholding: Decimal::ZERO,
+                        ss_employee: Decimal::ZERO,
+                        medicare_employee: Decimal::ZERO,
+                        ss_employer: Decimal::new(g, 2) * Decimal::new(62, 3),
+                        medicare_employer: Decimal::ZERO,
+                        other_deductions: Decimal::ZERO,
+                    }],
+                    c,
+                )
+                .map(drop),
+            Op::Remit(d, c) => store.remit_payroll_taxes(day(d), c).map(drop),
+            Op::RegisterSchedule(k, t, st, m, b, pl) => store
+                .register_schedule(ledger_core::NewSchedule {
+                    description: "sched".into(),
+                    kind: if k {
+                        ledger_core::ScheduleKind::PrepaidExpense
+                    } else {
+                        ledger_core::ScheduleKind::DeferredRevenue
+                    },
+                    total: usd(t),
+                    start: day(st),
+                    months: m,
+                    balance_account: b,
+                    pl_account: pl,
+                })
+                .map(drop),
+            Op::PostScheduleMonth(id, m) => {
+                let first = NaiveDate::from_ymd_opt(2026, m + 1, 1).unwrap();
+                let end = first + chrono::Months::new(1) - chrono::Days::new(1);
+                store.post_schedule_month(id, end).map(drop)
+            }
+            Op::RegisterRecurring(a, b, c, d) => store
+                .register_recurring(ledger_core::NewRecurring {
+                    description: "rent".into(),
+                    lines: vec![(a, Side::Debit, usd(c)), (b, Side::Credit, usd(c))],
+                    frequency: ledger_core::Frequency::Monthly,
+                    start: day(d),
+                    end: None,
+                })
+                .map(drop),
+            Op::RunRecurring(d) => store
+                .run_recurring(
+                    NaiveDate::from_ymd_opt(2026, 1, 1).unwrap() + chrono::Days::new(u64::from(d)),
+                )
+                .map(drop),
+            Op::MarkCleared(e, i, c) => store.mark_cleared(e, i, c),
+            Op::Book(d, a, b, c) => {
+                let e = store.create_entry(day(d), "book")?;
+                mark();
+                store.add_line(e, a, Side::Debit, usd(c))?;
+                mark();
+                store.add_line(e, b, Side::Credit, usd(c))?;
+                mark();
+                store.post_entry(e)
+            }
+            Op::GoodAsset(c, m) => store
+                .register_asset(ledger_core::NewAsset {
+                    description: "machine".into(),
+                    purchase_date: day(0),
+                    cost: usd(c),
+                    salvage_value: usd(0),
+                    useful_life_months: m,
+                    cost_account: 2,
+                    accum_depr_account: 3,
+                    expense_account: 9,
+                })
+                .map(drop),
+            Op::GoodSchedule(k, t, m) => store
+                .register_schedule(ledger_core::NewSchedule {
+                    description: "insurance".into(),
+                    kind: if k {
+                        ledger_core::ScheduleKind::PrepaidExpense
+                    } else {
+                        ledger_core::ScheduleKind::DeferredRevenue
+                    },
+                    total: usd(t),
+                    start: day(0),
+                    months: m,
+                    balance_account: if k { 1 } else { 6 },
+                    pl_account: if k { 8 } else { 7 },
+                })
+                .map(drop),
+            Op::GoodInvoice(d, c) => {
+                let who = store.add_customer("Client")?;
+                mark();
+                store
+                    .create_invoice(who, day(d), day(d) + chrono::Days::new(30), line(c))
+                    .map(drop)
+            }
+            Op::GoodBill(d, c) => {
+                let who = store.add_vendor("Supplier")?;
+                mark();
+                store
+                    .create_bill(who, day(d), day(d) + chrono::Days::new(30), line(c))
+                    .map(drop)
+            }
+            Op::GoodClose(m) => {
+                let start = NaiveDate::from_ymd_opt(2026, m, 1).unwrap();
+                let end = NaiveDate::from_ymd_opt(2026, m + 1, 1)
+                    .unwrap()
+                    .pred_opt()
+                    .unwrap();
+                let p = store.create_period(&format!("2026-{m:02}"), start, end)?;
+                mark();
+                store
+                    .close_period_to(
+                        p,
+                        &ledger_core::CloseTo::Members(vec![
+                            ledger_core::MemberClose {
+                                capital: 4,
+                                share: Decimal::new(5, 1),
+                                distributions: None,
+                            },
+                            ledger_core::MemberClose {
+                                capital: 5,
+                                share: Decimal::new(5, 1),
+                                distributions: None,
+                            },
+                        ]),
+                    )
+                    .map(drop)
+            }
+            Op::Pair(e, a, b, c) => {
+                store.add_line(e, a, Side::Debit, usd(c))?;
+                mark();
+                store.add_line(e, b, Side::Credit, usd(c))
+            }
+            Op::CloseMembers(p, a, b) => store
+                .close_period_to(
+                    p,
+                    &ledger_core::CloseTo::Members(vec![
+                        ledger_core::MemberClose {
+                            capital: a,
+                            share: Decimal::new(5, 1),
+                            distributions: None,
+                        },
+                        ledger_core::MemberClose {
+                            capital: b,
+                            share: Decimal::new(5, 1),
+                            distributions: None,
+                        },
+                    ]),
+                )
+                .map(drop),
         }
     }
 
@@ -961,8 +1289,9 @@ mod refusals {
     }
 
     proptest! {
+        // 256 cases on every check; `STORE_CASES=5000` for a deeper run.
         #![proptest_config(ProptestConfig {
-            cases: 1000,
+            cases: std::env::var("STORE_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(256),
             failure_persistence: None,
             ..ProptestConfig::default()
         })]
@@ -976,11 +1305,50 @@ mod refusals {
         ) {
             let dir = test_dir(&format!("refusals-{seed}"));
             let mut store = Store::create(&dir, Currency::USD).unwrap();
+            // Start from realistic books, so most commands act on real
+            // things and refusals come from bad arguments (the first
+            // version started empty and almost nothing ever posted).
+            // Ids 1..=9: cash, equipment, accumulated depreciation, two
+            // members' capital, a liability, sales, rent, depreciation.
+            for (code, name, t) in [
+                ("1000", "Cash", AccountType::Asset),
+                ("1500", "Equipment", AccountType::Asset),
+                ("1510", "Accumulated depreciation", AccountType::Asset),
+                ("3000", "Capital A", AccountType::Equity),
+                ("3001", "Capital B", AccountType::Equity),
+                ("2500", "Loan", AccountType::Liability),
+                ("4100", "Sales", AccountType::Revenue),
+                ("6000", "Rent", AccountType::Expense),
+                ("6200", "Depreciation", AccountType::Expense),
+            ] {
+                store.add_account(code, name, t, None, false).unwrap();
+            }
+            for (n, (dr, cr, cents)) in [(1u64, 4u64, 1_000_000i64), (8, 1, 120_000), (1, 7, 250_000)]
+                .into_iter()
+                .enumerate()
+            {
+                let e = store.create_entry(day(n as u32 * 10), "setup").unwrap();
+                let m = Money::new(Decimal::new(cents, 2), Currency::USD);
+                store.add_line(e, dr, Side::Debit, m).unwrap();
+                store.add_line(e, cr, Side::Credit, m).unwrap();
+                store.post_entry(e).unwrap();
+            }
             let journal = dir.join(ledger_store::JOURNAL_FILE);
             for op in &ops {
                 check_invariants(&store)?;
-                let before = std::fs::read_to_string(&journal).unwrap();
-                if let Err(e) = apply(&mut store, op) {
+                let mut before = std::fs::read_to_string(&journal).unwrap();
+                let result = apply(&mut store, op, &mut || {
+                    before = std::fs::read_to_string(&journal).unwrap();
+                });
+                if std::env::var("STORE_STATS").is_ok() {
+                    let kind = format!("{op:?}");
+                    let kind = kind.split('(').next().unwrap_or("");
+                    match &result {
+                        Ok(()) => eprintln!("OK {kind}"),
+                        Err(e) => eprintln!("REFUSED {kind} {e}"),
+                    }
+                }
+                if let Err(e) = result {
                     let after = std::fs::read_to_string(&journal).unwrap();
                     prop_assert!(
                         after == before,
@@ -992,10 +1360,17 @@ mod refusals {
                 }
             }
             check_invariants(&store)?;
+            // Reopening gives back exactly these books (rank 3: the live
+            // ledger against journal replay).
+            let before = ledger_core::reports::snapshot(store.ledger()).unwrap();
+            let attachments = store.list_attachments(None).unwrap().len();
             drop(store);
             let reopened = Store::open(&dir);
             prop_assert!(reopened.is_ok(), "books failed to reopen: {:?}", reopened.err());
-            reopened.unwrap().verify().unwrap();
+            let reopened = reopened.unwrap();
+            reopened.verify().unwrap();
+            prop_assert_eq!(ledger_core::reports::snapshot(reopened.ledger()).unwrap(), before);
+            prop_assert_eq!(reopened.list_attachments(None).unwrap().len(), attachments);
             let _ = std::fs::remove_dir_all(&dir);
         }
     }
@@ -1147,4 +1522,59 @@ fn a_blob_id_never_reaches_outside_the_blob_store() {
     let (sha, _) = blobs.put(b"receipt").unwrap();
     assert_eq!(blobs.get(&sha).unwrap(), b"receipt");
     assert_eq!(blobs.get(&sha.to_uppercase()).unwrap(), b"receipt");
+}
+
+/// Regression (found by the refusal property on 2026-10-13): scrapping an
+/// asset (no proceeds) is a valid disposal. It posts without a zero
+/// proceeds line, books the whole book value as a loss, and survives
+/// reopen. Before the fix it journaled a catch-up depreciation entry and a
+/// half-built disposal draft, then refused.
+#[test]
+fn scrapping_an_asset_for_nothing_disposes_it() {
+    let dir = test_dir("scrap");
+    let mut store = Store::create(&dir, Currency::USD).unwrap();
+    let mut add = |code: &str, t| store_add(&mut store, code, t);
+    let cash = add("1000", AccountType::Asset);
+    let equipment = add("1500", AccountType::Asset);
+    let accum = add("1510", AccountType::Asset);
+    let loss = add("6900", AccountType::Expense);
+    let depr = add("6200", AccountType::Expense);
+    let day = |m, d| NaiveDate::from_ymd_opt(2026, m, d).unwrap();
+    let buy = store.create_entry(day(1, 1), "laptop").unwrap();
+    store
+        .add_line(buy, equipment, Side::Debit, usd(1200))
+        .unwrap();
+    store.add_line(buy, cash, Side::Credit, usd(1200)).unwrap();
+    store.post_entry(buy).unwrap();
+    let asset = store
+        .register_asset(ledger_core::NewAsset {
+            description: "laptop".into(),
+            purchase_date: day(1, 1),
+            cost: usd(1200),
+            salvage_value: usd(0),
+            useful_life_months: 12,
+            cost_account: equipment,
+            accum_depr_account: accum,
+            expense_account: depr,
+        })
+        .unwrap();
+    let entry = store
+        .dispose_asset(asset, day(3, 31), usd(0), cash, loss)
+        .unwrap();
+    let lines = store.ledger().get_entry(entry).unwrap().lines().to_vec();
+    assert!(lines.iter().all(|l| !l.amount.amount.is_zero()));
+    assert!(lines.iter().all(|l| l.account != cash), "no proceeds line");
+    // January through March depreciated (300), so a 900 loss on 1,200.
+    let balance = |s: &Store, a| s.ledger().account_balance(a).unwrap();
+    assert_eq!(balance(&store, loss), Decimal::from(900));
+    assert_eq!(balance(&store, equipment), Decimal::ZERO);
+    assert_eq!(balance(&store, accum), Decimal::ZERO);
+    drop(store);
+    let store = Store::open(&dir).unwrap();
+    store.verify().unwrap();
+    assert_eq!(balance(&store, loss), Decimal::from(900));
+}
+
+fn store_add(store: &mut Store, code: &str, t: AccountType) -> ledger_core::AccountId {
+    store.add_account(code, code, t, None, false).unwrap()
 }

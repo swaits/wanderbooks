@@ -62,8 +62,24 @@ h1 { font-size: clamp(38px, 6vw, 62px); line-height: 1.04; letter-spacing: -0.03
 @media (max-width: 760px) { .equation { grid-template-columns: 1fr; } .equation .op { justify-self: center; line-height: 1; } }
 .shot { margin: 40px 0 8px; border-radius: 14px; border: 1px solid var(--border); overflow: hidden; box-shadow: 0 24px 60px -24px rgba(0,0,0,.25); background: var(--surface); }
 .shot img { display: block; width: 100%; height: auto; }
-.shot.dark { display: none; }
-@media (prefers-color-scheme: dark) { .shot.light { display: none; } .shot.dark { display: block; } }
+.duo { margin: 44px 0 8px; display: grid; grid-template-columns: 5fr 8fr; gap: 16px; align-items: stretch; }
+.duo figcaption { grid-column: 1 / -1; color: var(--faint); font-size: 14px; text-align: center; margin-top: 2px; }
+.duo .shot { margin: 0; align-self: start; }
+.term-pane { background: #0b0b0d; border: 1px solid #2a2b30; border-radius: 14px; overflow: hidden; box-shadow: 0 24px 60px -24px rgba(0,0,0,.35); display: flex; flex-direction: column; color: #d6d6dc; }
+.term-bar { display: flex; align-items: center; gap: 7px; padding: 11px 14px; border-bottom: 1px solid #222328; font: 500 12px Inter, sans-serif; color: #8a8a94; }
+.term-bar span { width: 10px; height: 10px; border-radius: 50%; background: #34353b; }
+.term-bar b { font-weight: 500; margin-left: 8px; }
+.term-body { padding: 14px 16px 16px; font: 400 12px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace; display: flex; flex-direction: column; gap: 8px; }
+.term-body .you { color: #ececee; background: #17181c; border: 1px solid #2a2b30; border-radius: 8px; padding: 7px 10px; }
+.term-body .ai, .term-body .tool { padding-left: 18px; position: relative; }
+.term-body i { position: absolute; left: 0; font-style: normal; color: #ececee; font-size: 10px; line-height: 18px; }
+.term-body .tool i { color: #4ade80; }
+.term-body .tool { color: #a3a3ac; }
+.term-body .tool b { color: #ececee; font-weight: 600; }
+.term-body .tool span { color: #6e6e78; }
+.term-body .ai b { color: #fff; }
+.term-body pre { margin: 6px 0; font: inherit; color: #ececee; white-space: pre; overflow-x: auto; }
+@media (max-width: 860px) { .duo { grid-template-columns: 1fr; } }
 .caption { color: var(--faint); font-size: 14px; text-align: center; margin: 10px 0 0; }
 section { padding: 72px 0 8px; }
 h2 { font-size: clamp(27px, 3.6vw, 38px); letter-spacing: -0.02em; line-height: 1.12; margin: 0 0 14px; }
@@ -143,9 +159,27 @@ footer { padding: 72px 0 48px; color: var(--faint); font-size: 14px; display: fl
     <p class="note">One line installs everything, makes your books, and starts your bookkeeper in Claude Code. Using Codex? Add <code class="inline">--codex</code> to the end. Linux and macOS; Windows via WSL2.</p>
   </div>
 
-  <div class="shot light"><img src="assets/overview.png" alt="The wanderbooks overview: cash, what you owe, spending, revenue, runway, a cash chart, and what needs attention" width="1440" height="920"></div>
-  <div class="shot dark"><img src="assets/overview-dark.png" alt="The wanderbooks overview in dark mode" width="1440" height="920"></div>
-  <p class="caption">The viewer, on a demo company. You work by talking to Claude or Codex; the viewer is for looking.</p>
+  <figure class="duo">
+    <div class="term-pane" role="img" aria-label="An example Claude Code session recording a receipt in wanderbooks">
+      <div class="term-bar"><span></span><span></span><span></span><b>claude — ~/Books/Juniper</b></div>
+      <div class="term-body">
+<div class="you">&gt; Find the receipt for the Adobe charge on Oct 7 in my email and record it.</div>
+<div class="ai"><i>●</i>Found it: “Your Adobe receipt”, Creative Cloud All Apps, <b>$59.38</b> on the Visa ending 4242. Saved it as a PDF.</div>
+<div class="tool"><i>●</i><b>wanderbooks</b> · books.draft_entry <span>(2026-10-07, “Adobe — Creative Cloud All Apps”)</span></div>
+<div class="tool"><i>●</i><b>wanderbooks</b> · books.add_line <span>×2</span></div>
+<div class="tool"><i>●</i><b>wanderbooks</b> · books.attach_receipt <span>(adobe-2026-10-07.pdf)</span></div>
+<div class="tool"><i>●</i><b>wanderbooks</b> · books.post_entry <span>(preview)</span></div>
+<div class="ai"><i>●</i>Here's the entry:
+<pre>  6100 Software &amp; Subscriptions   Dr  59.38
+  2100 Business Credit Card        Cr  59.38</pre>Balanced, receipt attached. Software is now $1,324.69 for the year. Post it?</div>
+<div class="you">&gt; yes</div>
+<div class="tool"><i>●</i><b>wanderbooks</b> · books.post_entry <span>(confirmed)</span></div>
+<div class="ai"><i>●</i>Posted as <b>#245</b>. It's in the viewer now.</div>
+      </div>
+    </div>
+    <div class="shot viewer"><img src="assets/entry.png" alt="The wanderbooks viewer showing entry #245, Adobe Creative Cloud, with its lines and the rendered receipt" width="1440" height="1150"></div>
+    <figcaption>An example session: you talk to Claude Code (or Codex) on the left; the viewer on the right follows along live, receipt and all. Demo company.</figcaption>
+  </figure>
 
   <section id="ask">
     <h2>Just ask.</h2>
@@ -219,7 +253,7 @@ footer { padding: 72px 0 48px; color: var(--faint); font-size: 14px; display: fl
 
   <section>
     <div class="two">
-      <div class="shot"><img src="assets/entry.png" alt="A transaction with its lines, its rendered receipt, and its history" width="1440" height="920"></div>
+      <div class="shot"><img src="assets/overview.png" alt="The viewer's overview: cash, what you owe, spending, revenue, runway, a cash chart, and what needs attention" width="1440" height="920"></div>
       <div>
         <h2>Talk to change. Look in the viewer.</h2>
         <p class="sub">Everything that changes your books happens in conversation with Claude or Codex. The viewer is the other half: a live, read-only window on the books for browsing, searching, and reports. Whatever your bookkeeper posts shows up there in a fraction of a second, and every number goes all the way down: click an amount on a statement for the transactions behind it, then a transaction for its lines, the receipt itself, and its history.</p>

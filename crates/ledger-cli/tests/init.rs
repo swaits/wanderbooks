@@ -173,3 +173,37 @@ fn init_is_an_alias_and_respects_an_existing_repo() {
     assert!(ok, "{out}");
     assert!(books.join("wanderbooks.toml").exists());
 }
+
+#[test]
+fn codex_gets_its_own_named_server() {
+    let tmp = tempfile::tempdir().unwrap();
+    let bin = fake_bins(tmp.path());
+    let log = tmp.path().join("codex-args");
+    // A stand-in codex that records how it was called.
+    fs::write(
+        bin.join("codex"),
+        format!("#!/bin/sh\necho \"$@\" > {}\n", log.display()),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(bin.join("codex"), fs::Permissions::from_mode(0o755)).unwrap();
+    let books = tmp.path().join("Acme Books");
+    let (ok, out) = new(tmp.path(), &books, &["--codex"]);
+    assert!(ok, "{out}");
+    let args = fs::read_to_string(&log).unwrap();
+    let books = books.canonicalize().unwrap();
+    assert!(
+        args.starts_with("mcp add wanderbooks-acme-books -- "),
+        "{args}"
+    );
+    assert!(
+        args.trim_end().ends_with(&format!(
+            "--data-dir {}",
+            books.join("books-data").display()
+        )),
+        "{args}"
+    );
+    let just = fs::read_to_string(books.join("justfile")).unwrap();
+    assert!(just.contains("codex mcp add \"wanderbooks-acme-books\""));
+    assert!(out.contains("just codex"), "{out}");
+}

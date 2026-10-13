@@ -2,7 +2,7 @@
 //! bookkeeper.
 //!
 //! ```text
-//! wanderbooks new [DIR] [--force] [--no-start]   (alias: init)
+//! wanderbooks new [DIR] [--codex] [--force] [--no-start]   (alias: init)
 //! wanderbooks gui [DIR]
 //! ```
 //!
@@ -18,7 +18,8 @@
 //!    without `claude mcp add` or a prompt.
 //! 4. `git init`s the directory (its history is the archive) and commits.
 //! 5. Starts `claude` in the directory with the onboarding prompt, unless
-//!    `--no-start` or there's no terminal.
+//!    `--no-start` or there's no terminal. With `--codex`, registers the
+//!    server with Codex (as `wanderbooks-<dir name>`) and starts Codex.
 
 use std::env;
 use std::fs;
@@ -47,9 +48,17 @@ set shell := ["bash", "-cu"]
 default:
     @just --list
 
-# Start a bookkeeping session with the agent
+# Start a bookkeeping session with the agent (Claude Code)
 agent:
     claude
+
+# Start a bookkeeping session in Codex (run `just codex-setup` once first)
+codex:
+    codex
+
+# Register these books' MCP server with Codex (once per machine)
+codex-setup:
+    codex mcp add "@@CODEX_NAME@@" -- "@@LEDGER_MCP@@" --data-dir "{{justfile_directory()}}/books-data"
 
 # Open the live, read-only view of these books
 gui:
@@ -202,7 +211,7 @@ exports/
 const START_PROMPT: &str = "Hi! These are brand-new books. Please set them up with me.";
 
 fn print_usage() {
-    eprintln!("usage: wanderbooks new [DIR] [--force] [--no-start]");
+    eprintln!("usage: wanderbooks new [DIR] [--codex] [--force] [--no-start]");
     eprintln!("       wanderbooks gui [DIR]");
     eprintln!();
     eprintln!("  new        make a books directory and start the agent in it (alias: init)");
@@ -210,6 +219,7 @@ fn print_usage() {
     eprintln!("  DIR        the books directory (default: current directory)");
     eprintln!("  --force    rewrite the scaffold in an existing books directory");
     eprintln!("  --no-start don't start the agent afterwards");
+    eprintln!("  --codex    keep the books with Codex instead of Claude Code");
 }
 
 /// A binary next to this one (cargo installs them side by side), else on
@@ -380,6 +390,8 @@ fn scaffold(
     }
     let justfile = JUSTFILE
         .replace("@@LEDGER_GUI@@", &ledger_gui.to_string_lossy())
+        .replace("@@LEDGER_MCP@@", &ledger_mcp.to_string_lossy())
+        .replace("@@CODEX_NAME@@", &codex_name(&dir))
         .replace("@@REPO_URL@@", REPO_URL);
     let mut files: Vec<(&str, String)> = vec![
         ("justfile", justfile),
@@ -411,43 +423,115 @@ fn is_terminal() -> bool {
     std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
 }
 
-/// Replace this process with `claude` in the books dir, onboarding.
-fn start_agent(dir: &Path) -> Result<(), String> {
-    let Some(claude) = find_binary("claude") else {
+/// Which agent keeps the books.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Agent {
+    Claude,
+    Codex,
+}
+
+impl Agent {
+    fn binary(self) -> &'static str {
+        match self {
+            Agent::Claude => "claude",
+            Agent::Codex => "codex",
+        }
+    }
+}
+
+/// Codex keeps MCP servers in one global config, so each books dir gets
+/// its own server name: `wanderbooks-<dir name>`.
+fn codex_name(dir: &Path) -> String {
+    let base: String = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let base = base.trim_matches('-');
+    if base.is_empty() {
+        "wanderbooks".to_string()
+    } else {
+        format!("wanderbooks-{base}")
+    }
+}
+
+/// Register this books dir's MCP server with Codex.
+fn codex_register(dir: &Path, ledger_mcp: &Path) -> Result<(), String> {
+    let Some(codex) = find_binary("codex") else {
+        return Err("Codex isn't installed: https://developers.openai.com/codex".into());
+    };
+    let name = codex_name(dir);
+    let ok = Command::new(codex)
+        .args(["mcp", "add", &name, "--"])
+        .arg(ledger_mcp)
+        .arg("--data-dir")
+        .arg(dir.join("books-data"))
+        .status()
+        .map_err(|e| format!("can't run codex: {e}"))?
+        .success();
+    if ok {
+        println!("Registered the books with Codex as MCP server {name:?}.");
+        Ok(())
+    } else {
+        Err(format!("codex mcp add {name} failed"))
+    }
+}
+
+/// Replace this process with the agent in the books dir, onboarding.
+fn start_agent(dir: &Path, agent: Agent) -> Result<(), String> {
+    let Some(bin) = find_binary(agent.binary()) else {
         println!(
-            "Claude Code isn't installed. Install it, then run `claude` in {}.",
+            "{} isn't installed. Install it, then run `{}` in {}.",
+            if agent == Agent::Claude {
+                "Claude Code"
+            } else {
+                "Codex"
+            },
+            agent.binary(),
             dir.display()
         );
         return Ok(());
     };
     println!("Starting your bookkeeper…");
-    let mut cmd = Command::new(claude);
+    let mut cmd = Command::new(bin);
     cmd.arg(START_PROMPT).current_dir(dir);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
         let err = cmd.exec();
-        Err(format!("can't start claude: {err}"))
+        Err(format!("can't start {}: {err}", agent.binary()))
     }
     #[cfg(not(unix))]
     {
         cmd.status()
-            .map_err(|e| format!("can't start claude: {e}"))?;
+            .map_err(|e| format!("can't start {}: {e}", agent.binary()))?;
         Ok(())
     }
 }
 
-fn new(dir: &Path, force: bool, start: bool) -> Result<(), String> {
+fn new(dir: &Path, force: bool, start: bool, agent: Agent) -> Result<(), String> {
     let (ledger_mcp, ledger_gui) = binaries()?;
     let dir = scaffold(dir, force, &ledger_mcp, &ledger_gui)?;
+    if agent == Agent::Codex {
+        codex_register(&dir, &ledger_mcp)?;
+    }
     println!("Books ready in {}", dir.display());
     println!("  just gui     the live, read-only view of the books");
-    println!("  just agent   a session with your bookkeeper");
+    println!(
+        "  just {}  a session with your bookkeeper",
+        if agent == Agent::Codex {
+            "codex"
+        } else {
+            "agent"
+        }
+    );
     println!("  just backup  commit the journal");
     if start && is_terminal() {
-        start_agent(&dir)?;
+        start_agent(&dir, agent)?;
     } else {
-        println!("Next: cd {} && claude", dir.display());
+        println!("Next: cd {} && {}", dir.display(), agent.binary());
     }
     Ok(())
 }
@@ -473,6 +557,7 @@ fn main() {
     let mut dir: Option<PathBuf> = None;
     let mut force = false;
     let mut start = true;
+    let mut agent = Agent::Claude;
     let mut cmd: Option<String> = None;
     for arg in env::args().skip(1) {
         match arg.as_str() {
@@ -482,6 +567,7 @@ fn main() {
             }
             "--force" => force = true,
             "--no-start" => start = false,
+            "--codex" => agent = Agent::Codex,
             s if s.starts_with('-') => {
                 eprintln!("unknown flag: {s}");
                 print_usage();
@@ -498,7 +584,7 @@ fn main() {
     }
     let dir = dir.unwrap_or_else(|| PathBuf::from("."));
     let result = match cmd.as_deref() {
-        Some("new") | Some("init") => new(&dir, force, start),
+        Some("new") | Some("init") => new(&dir, force, start, agent),
         Some("gui") => gui(&dir),
         _ => {
             print_usage();

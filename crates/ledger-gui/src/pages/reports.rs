@@ -1272,11 +1272,10 @@ fn report(ui: &mut Ui, b: &Books, kind: ReportKind, shell: &mut Shell<'_>, picke
     }
 }
 
-fn render(ui: &mut Ui, t: &Table, pdf: &PdfInfo, shell: &mut Shell<'_>) {
+/// The "Save PDF" button (busy while one is being made). Also collects a
+/// finished job. True when clicked.
+fn pdf_button(ui: &mut Ui, st: &mut State) -> bool {
     let p = pal(ui.ctx());
-    let tsv = t.tsv();
-    let mut go: Option<Drill> = None;
-    let st = &mut shell.state.reports;
     if let Some(rx) = &st.pdf_job {
         if let Ok(done) = rx.try_recv() {
             st.pdf_job = None;
@@ -1286,33 +1285,133 @@ fn render(ui: &mut Ui, t: &Table, pdf: &PdfInfo, shell: &mut Shell<'_>) {
                 .request_repaint_after(std::time::Duration::from_millis(100));
         }
     }
+    let busy = st.pdf_job.is_some();
+    let label = if busy {
+        format!("{} Making PDF…", icon::HOURGLASS)
+    } else {
+        format!("{} Save PDF", icon::FILE_PDF)
+    };
+    ui.add_enabled(
+        !busy,
+        egui::Button::new(
+            RichText::new(label)
+                .font(theme::regular(12.0))
+                .color(p.muted),
+        )
+        .frame(false),
+    )
+    .on_hover_text(format!(
+        "Typesets this report as it's set up here and saves it to {}, then opens it",
+        crate::export::downloads_dir().display()
+    ))
+    .clicked()
+}
+
+/// Where the last PDF went (or why it didn't), for a few seconds.
+fn pdf_status(ui: &mut Ui, st: &State) {
+    let p = pal(ui.ctx());
+    let Some((done, at)) = &st.pdf_done else {
+        return;
+    };
+    if ui.input(|i| i.time) - at >= 8.0 {
+        return;
+    }
+    let (text, color) = match done {
+        Ok(path) => (
+            format!("{} Saved {}", icon::CHECK, path.display()),
+            p.positive,
+        ),
+        Err(e) => (
+            format!("{} PDF failed: {e}", icon::WARNING_CIRCLE),
+            p.negative,
+        ),
+    };
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+        ui.add(
+            egui::Label::new(RichText::new(text).font(theme::regular(11.5)).color(color))
+                .truncate(),
+        );
+    });
+    ui.ctx()
+        .request_repaint_after(std::time::Duration::from_millis(500));
+}
+
+/// Typeset `t` in the background, save it to Downloads, and open it.
+fn start_pdf(ctx: &egui::Context, st: &mut State, t: &Table, pdf: &PdfInfo) {
+    let statement = t.statement(&pdf.title, &pdf.period);
+    let meta = pdf.meta.clone();
+    let name = format!("{} — {} — {}", meta.company, pdf.title, pdf.period);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let ctx = ctx.clone();
+    std::thread::spawn(move || {
+        let done = ledger_import::statement_pdf(&statement, &meta)
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| crate::export::save_and_open(&name, "pdf", &bytes));
+        let _ = tx.send(done);
+        ctx.request_repaint();
+    });
+    st.pdf_job = Some(rx);
+    st.pdf_done = None;
+}
+
+/// The general ledger as a table for the PDF: each account a section, a
+/// line per posting (date, entry, description, the other side), its
+/// beginning balance, and totals with the ending balance.
+fn gl_table(g: &ledger_core::reports::GeneralLedger) -> Table {
+    let mut t = Table::new(vec!["Debit".into(), "Credit".into(), "Balance".into()]);
+    let amt = |v: Decimal| {
+        if v.is_zero() {
+            Cell::none()
+        } else {
+            Cell::of(v)
+        }
+    };
+    for a in g
+        .accounts
+        .iter()
+        .filter(|a| !a.postings.is_empty() || !a.beginning_balance.is_zero())
+    {
+        t.section(&format!("{} {}", a.code, a.name));
+        t.row(
+            Kind::Line,
+            "Beginning balance",
+            vec![Cell::none(), Cell::none(), Cell::of(a.beginning_balance)],
+        );
+        for post in &a.postings {
+            t.row(
+                Kind::Line,
+                format!(
+                    "{} · #{} · {} · {}",
+                    fmt::date_short(post.date),
+                    post.entry_id,
+                    post.description,
+                    post.split
+                ),
+                vec![amt(post.debit), amt(post.credit), Cell::of(post.balance)],
+            );
+        }
+        t.row(
+            Kind::Subtotal,
+            "Totals and ending balance",
+            vec![
+                Cell::of(a.total_debits),
+                Cell::of(a.total_credits),
+                Cell::of(a.ending_balance),
+            ],
+        );
+    }
+    t
+}
+
+fn render(ui: &mut Ui, t: &Table, pdf: &PdfInfo, shell: &mut Shell<'_>) {
+    let p = pal(ui.ctx());
+    let tsv = t.tsv();
+    let mut go: Option<Drill> = None;
+    let st = &mut shell.state.reports;
     let mut save_pdf = false;
     widgets::card(ui, |ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-            let busy = st.pdf_job.is_some();
-            let label = if busy {
-                format!("{} Making PDF…", icon::HOURGLASS)
-            } else {
-                format!("{} Save PDF", icon::FILE_PDF)
-            };
-            if ui
-                .add_enabled(
-                    !busy,
-                    egui::Button::new(
-                        RichText::new(label)
-                            .font(theme::regular(12.0))
-                            .color(p.muted),
-                    )
-                    .frame(false),
-                )
-                .on_hover_text(format!(
-                    "Typesets this report as it's set up here and saves it to {}, then opens it",
-                    crate::export::downloads_dir().display()
-                ))
-                .clicked()
-            {
-                save_pdf = true;
-            }
+            save_pdf = pdf_button(ui, st);
             ui.add_space(8.0);
             if ui
                 .add(
@@ -1329,31 +1428,7 @@ fn render(ui: &mut Ui, t: &Table, pdf: &PdfInfo, shell: &mut Shell<'_>) {
                 ui.ctx().copy_text(tsv.clone());
             }
         });
-        if let Some((done, at)) = &st.pdf_done {
-            let now = ui.input(|i| i.time);
-            if now - at < 8.0 {
-                let (text, color) = match done {
-                    Ok(path) => (
-                        format!("{} Saved {}", icon::CHECK, path.display()),
-                        p.positive,
-                    ),
-                    Err(e) => (
-                        format!("{} PDF failed: {e}", icon::WARNING_CIRCLE),
-                        p.negative,
-                    ),
-                };
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(text).font(theme::regular(11.5)).color(color),
-                        )
-                        .truncate(),
-                    );
-                });
-                ui.ctx()
-                    .request_repaint_after(std::time::Duration::from_millis(500));
-            }
-        }
+        pdf_status(ui, st);
         let n = t.columns.len().max(1) as f32;
         let base: f32 = if t.columns.len() > 6 { 112.0 } else { 136.0 };
         // Narrow, the amount columns give up their slack before the table
@@ -1525,20 +1600,7 @@ fn render(ui: &mut Ui, t: &Table, pdf: &PdfInfo, shell: &mut Shell<'_>) {
             });
     });
     if save_pdf {
-        let statement = t.statement(&pdf.title, &pdf.period);
-        let meta = pdf.meta.clone();
-        let name = format!("{} — {} — {}", meta.company, pdf.title, pdf.period);
-        let (tx, rx) = std::sync::mpsc::channel();
-        let ctx = ui.ctx().clone();
-        std::thread::spawn(move || {
-            let done = ledger_import::statement_pdf(&statement, &meta)
-                .map_err(|e| e.to_string())
-                .and_then(|bytes| crate::export::save_and_open(&name, "pdf", &bytes));
-            let _ = tx.send(done);
-            ctx.request_repaint();
-        });
-        st.pdf_job = Some(rx);
-        st.pdf_done = None;
+        start_pdf(ui.ctx(), st, t, pdf);
     }
     if let Some(d) = go {
         shell.state.accounts.range = Some((d.start, d.end));
@@ -1551,6 +1613,21 @@ fn gl(ui: &mut Ui, b: &Books, s: NaiveDate, e: NaiveDate, shell: &mut Shell<'_>)
     let Ok(g) = general_ledger(&b.ledger, s, e) else {
         return;
     };
+    let st = &mut shell.state.reports;
+    let mut save_pdf = false;
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+        save_pdf = pdf_button(ui, st);
+    });
+    pdf_status(ui, st);
+    if save_pdf {
+        let pdf = PdfInfo::new(
+            b,
+            ReportKind::GeneralLedger.title(),
+            &format!("{} – {}", fmt::date(s), fmt::date(e)),
+        );
+        start_pdf(ui.ctx(), st, &gl_table(&g), &pdf);
+    }
+    ui.add_space(6.0);
     let mut go: Option<Route> = None;
     for a in g
         .accounts
@@ -1575,122 +1652,118 @@ fn gl(ui: &mut Ui, b: &Books, s: NaiveDate, e: NaiveDate, shell: &mut Shell<'_>)
                 );
             });
             ui.add_space(6.0);
-            let w = ui.available_width();
+            // Narrow, the description gives way down to 120 points, then
+            // the table scrolls sideways.
             let fixed = [86.0, 52.0, 0.0, 110.0, 110.0, 120.0];
-            let flex = (w - fixed.iter().sum::<f32>()).max(120.0);
-            let row = |ui: &mut Ui,
-                       vals: [String; 6],
-                       strong: bool,
-                       color: egui::Color32|
-             -> egui::Response {
-                let (r, resp) = ui.allocate_exact_size(vec2(w, 24.0), Sense::click());
-                if resp.hovered() && !strong {
-                    ui.painter().rect_filled(r, CornerRadius::same(4), p.hover);
-                }
-                let painter = ui.painter_at(r);
-                let mut x = r.left();
-                for (i, v) in vals.iter().enumerate() {
-                    let cw = if i == 2 { flex } else { fixed[i] };
-                    let font = if strong {
-                        theme::semibold(12.5)
-                    } else {
-                        theme::regular(12.5)
-                    };
-                    if i >= 3 {
-                        painter.text(
-                            egui::pos2(x + cw - 4.0, r.center().y),
-                            egui::Align2::RIGHT_CENTER,
-                            v,
-                            font,
-                            color,
-                        );
-                    } else {
-                        let max_chars = ((cw - 8.0) / 6.8) as usize;
-                        let shown: String = if v.chars().count() > max_chars {
-                            v.chars()
-                                .take(max_chars.saturating_sub(1))
-                                .collect::<String>()
-                                + "…"
-                        } else {
-                            v.clone()
-                        };
-                        painter.text(
-                            egui::pos2(x + 4.0, r.center().y),
-                            egui::Align2::LEFT_CENTER,
-                            shown,
-                            font,
-                            color,
-                        );
+            let w = ui.available_width().max(fixed.iter().sum::<f32>() + 120.0);
+            let flex = w - fixed.iter().sum::<f32>();
+            widgets::min_width(ui, &format!("gl_{}", a.code), w, |ui| {
+                let row = |ui: &mut Ui,
+                           vals: [String; 6],
+                           strong: bool,
+                           color: egui::Color32|
+                 -> egui::Response {
+                    let (r, resp) = ui.allocate_exact_size(vec2(w, 24.0), Sense::click());
+                    if resp.hovered() && !strong {
+                        ui.painter().rect_filled(r, CornerRadius::same(4), p.hover);
                     }
-                    x += cw;
-                }
-                resp
-            };
-            row(
-                ui,
-                [
-                    "Date".into(),
-                    "#".into(),
-                    "Description".into(),
-                    "Debit".into(),
-                    "Credit".into(),
-                    "Balance".into(),
-                ],
-                true,
-                p.muted,
-            );
-            row(
-                ui,
-                [
-                    String::new(),
-                    String::new(),
-                    "Beginning balance".into(),
-                    String::new(),
-                    String::new(),
-                    fmt::accounting(a.beginning_balance),
-                ],
-                false,
-                p.muted,
-            );
-            for post in &a.postings {
-                let r = row(
+                    let painter = ui.painter_at(r);
+                    let mut x = r.left();
+                    for (i, v) in vals.iter().enumerate() {
+                        let cw = if i == 2 { flex } else { fixed[i] };
+                        let font = if strong {
+                            theme::semibold(12.5)
+                        } else {
+                            theme::regular(12.5)
+                        };
+                        if i >= 3 {
+                            painter.text(
+                                egui::pos2(x + cw - 4.0, r.center().y),
+                                egui::Align2::RIGHT_CENTER,
+                                v,
+                                font,
+                                color,
+                            );
+                        } else {
+                            widgets::clipped_text(
+                                &painter,
+                                egui::pos2(x + 4.0, r.center().y),
+                                v,
+                                font,
+                                color,
+                                cw - 8.0,
+                            );
+                        }
+                        x += cw;
+                    }
+                    resp
+                };
+                row(
                     ui,
                     [
-                        fmt::date_short(post.date),
-                        post.entry_id.to_string(),
-                        format!("{} · {}", post.description, post.split),
-                        if post.debit.is_zero() {
-                            String::new()
-                        } else {
-                            fmt::money(post.debit)
-                        },
-                        if post.credit.is_zero() {
-                            String::new()
-                        } else {
-                            fmt::money(post.credit)
-                        },
-                        fmt::accounting(post.balance),
+                        "Date".into(),
+                        "#".into(),
+                        "Description".into(),
+                        "Debit".into(),
+                        "Credit".into(),
+                        "Balance".into(),
+                    ],
+                    true,
+                    p.muted,
+                );
+                row(
+                    ui,
+                    [
+                        String::new(),
+                        String::new(),
+                        "Beginning balance".into(),
+                        String::new(),
+                        String::new(),
+                        fmt::accounting(a.beginning_balance),
                     ],
                     false,
+                    p.muted,
+                );
+                for post in &a.postings {
+                    let r = row(
+                        ui,
+                        [
+                            fmt::date_short(post.date),
+                            post.entry_id.to_string(),
+                            format!("{} · {}", post.description, post.split),
+                            if post.debit.is_zero() {
+                                String::new()
+                            } else {
+                                fmt::money(post.debit)
+                            },
+                            if post.credit.is_zero() {
+                                String::new()
+                            } else {
+                                fmt::money(post.credit)
+                            },
+                            fmt::accounting(post.balance),
+                        ],
+                        false,
+                        p.text,
+                    );
+                    if r.clicked() {
+                        go = Some(Route::Entry(post.entry_id));
+                    }
+                }
+                row(
+                    ui,
+                    [
+                        String::new(),
+                        String::new(),
+                        "Totals and ending balance".into(),
+                        fmt::money(a.total_debits),
+                        fmt::money(a.total_credits),
+                        fmt::accounting(a.ending_balance),
+                    ],
+                    true,
                     p.text,
                 );
-                if r.clicked() {
-                    go = Some(Route::Entry(post.entry_id));
-                }
-            }
-            row(
-                ui,
-                [
-                    String::new(),
-                    String::new(),
-                    "Totals and ending balance".into(),
-                    fmt::money(a.total_debits),
-                    fmt::money(a.total_credits),
-                    fmt::accounting(a.ending_balance),
-                ],
-                true,
-                p.text,
-            );
+            });
         });
         ui.add_space(12.0);
     }
@@ -1797,6 +1870,7 @@ mod tests {
         tables.push(("equity", owners_equity(&b, s, e)));
         tables.push(("tax", tax(&b, s, e)));
         tables.push(("ar", aging(b.ledger.ar_aging(e), e)));
+        tables.push(("gl", gl_table(&general_ledger(&b.ledger, s, e).unwrap())));
         let keep = std::env::var_os("PDF_DIR").map(std::path::PathBuf::from);
         for (name, t) in tables {
             let info = PdfInfo::new(&b, name, "Jan 1 – Oct 12, 2026");

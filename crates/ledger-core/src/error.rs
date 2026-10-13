@@ -159,6 +159,16 @@ pub enum LedgerError {
         other_end: chrono::NaiveDate,
     },
 
+    /// A payment can't apply to an invoice or bill dated after it (owner,
+    /// 2026-10-13); a real prepayment is a deposit, recorded differently.
+    #[error("a payment dated {date} can't apply to a document dated {document_date}")]
+    PaymentBeforeDocument {
+        /// The payment's date.
+        date: chrono::NaiveDate,
+        /// The invoice's or bill's date.
+        document_date: chrono::NaiveDate,
+    },
+
     /// The referenced journal entry does not exist.
     #[error("entry {0} does not exist")]
     UnknownEntry(u64),

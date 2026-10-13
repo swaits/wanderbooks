@@ -1162,7 +1162,10 @@ proptest! {
             let rows = l.ar_aging(as_of);
             let mut want: std::collections::BTreeMap<String, [Decimal; 5]> = Default::default();
             for (i, doc) in docs.iter().enumerate() {
-                let open = totals[i] - expect_paid[i];
+                // Payments (dated base + 5) count only once made: aging
+                // as of a date sees what existed then (owner, 2026-10-13).
+                let paid = if as_of >= base + Duration::days(5) { expect_paid[i] } else { Decimal::ZERO };
+                let open = totals[i] - paid;
                 if open.is_zero() {
                     continue;
                 }
@@ -1175,7 +1178,8 @@ proptest! {
             prop_assert_eq!(rows.len(), got.len(), "one row per customer");
             prop_assert_eq!(&got, &want);
             let row_sum: Decimal = rows.iter().map(|r| r.total()).sum();
-            prop_assert_eq!(row_sum, open_sum);
+            let want_sum: Decimal = want.values().flatten().copied().sum();
+            prop_assert_eq!(row_sum, want_sum);
         }
     }
 
@@ -1247,7 +1251,9 @@ proptest! {
             let rows = l.ap_aging(as_of);
             let mut want: std::collections::BTreeMap<String, [Decimal; 5]> = Default::default();
             for (i, doc) in docs.iter().enumerate() {
-                let open = totals[i] - expect_paid[i];
+                // Payments (dated base + 3) count only once made.
+                let paid = if as_of >= base + Duration::days(3) { expect_paid[i] } else { Decimal::ZERO };
+                let open = totals[i] - paid;
                 if open.is_zero() {
                     continue;
                 }
@@ -1261,4 +1267,70 @@ proptest! {
             prop_assert_eq!(&got, &want);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Decisions (owner, 2026-10-13): no payment before its document; aging
+// as of a date sees only what existed by then.
+// ---------------------------------------------------------------------------
+
+/// A payment can't apply to an invoice or bill that didn't exist yet (a
+/// real prepayment is a deposit, recorded differently). Refused, books
+/// unchanged.
+#[test]
+fn a_payment_never_predates_its_document() {
+    let (mut l, cash) = books();
+    let c = l.add_customer("Acme").unwrap();
+    let v = l.add_vendor("Vend").unwrap();
+    let inv = l
+        .create_invoice(c, d(2026, 3, 10), d(2026, 4, 10), vec![line("w", "100.00")])
+        .unwrap();
+    let bill = l
+        .create_bill(v, d(2026, 3, 10), d(2026, 4, 10), vec![line("w", "100.00")])
+        .unwrap();
+    let before = fingerprint(&l);
+    assert_eq!(
+        l.receive_payment(inv, d(2026, 3, 9), dec("10.00"), cash),
+        Err(LedgerError::PaymentBeforeDocument {
+            date: d(2026, 3, 9),
+            document_date: d(2026, 3, 10),
+        })
+    );
+    assert!(matches!(
+        l.pay_bill(bill, d(2026, 3, 1), dec("10.00"), cash),
+        Err(LedgerError::PaymentBeforeDocument { .. })
+    ));
+    assert_eq!(fingerprint(&l), before);
+    // The same day is fine.
+    l.receive_payment(inv, d(2026, 3, 10), dec("10.00"), cash)
+        .unwrap();
+}
+
+/// Aging as of a date shows only documents issued by then, less only the
+/// payments made by then.
+#[test]
+fn aging_as_of_a_date_sees_only_what_existed_then() {
+    let (mut l, cash) = books();
+    let c = l.add_customer("Acme").unwrap();
+    let early = l
+        .create_invoice(c, d(2026, 1, 5), d(2026, 2, 4), vec![line("a", "300.00")])
+        .unwrap();
+    l.create_invoice(c, d(2026, 3, 1), d(2026, 3, 31), vec![line("b", "500.00")])
+        .unwrap();
+    l.receive_payment(early, d(2026, 2, 20), dec("100.00"), cash)
+        .unwrap();
+    let total = |as_of| -> Decimal {
+        l.ar_aging(as_of)
+            .iter()
+            .map(|r| buckets(r).iter().copied().sum::<Decimal>())
+            .sum()
+    };
+    // Jan 31: only the first invoice exists, nothing paid yet.
+    assert_eq!(total(d(2026, 1, 31)), dec("300.00"));
+    // Feb 28: paid 100 of it; the March invoice doesn't exist yet.
+    assert_eq!(total(d(2026, 2, 28)), dec("200.00"));
+    // Mar 15: both.
+    assert_eq!(total(d(2026, 3, 15)), dec("700.00"));
+    // Before anything was issued: nothing.
+    assert!(l.ar_aging(d(2025, 12, 31)).is_empty());
 }

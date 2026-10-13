@@ -9,7 +9,7 @@
 //!    difference lands in Retained Earnings (created as `3999` if missing).
 //! 3. Marks the period closed.
 //!
-//! Once closed, [`Ledger::create_entry`] and [`Ledger::post_entry`] reject
+//! Once closed, [`Ledger::try_create_entry`](crate::Ledger::try_create_entry) and [`Ledger::post_entry`](crate::Ledger::post_entry) reject
 //! any entry dated inside the period. Corrections to closed periods go
 //! through the *next* open period (or a reversal dated in an open period).
 

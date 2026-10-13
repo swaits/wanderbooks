@@ -91,7 +91,10 @@ pub struct PayrollAccounts {
 /// amounts, no negative net pay. Journaling stores run this before writing
 /// anything, so a doomed run never leaves journal lines behind.
 pub fn validate_payroll_lines(lines: &[PayrollLine]) -> Result<(), LedgerError> {
-    if lines.is_empty() {
+    // No wages at all is no payroll: refused before anything changes
+    // (found by the spec-blind tests, 2026-10-13: an all-zero run passed
+    // validation, then failed at post after creating accounts).
+    if lines.is_empty() || lines.iter().all(|l| l.gross_pay.is_zero()) {
         return Err(LedgerError::EmptyPayroll);
     }
     for line in lines {

@@ -1043,6 +1043,13 @@ fn books_written_under_older_rules_still_open() {
         json!({"id": 1, "account": 999, "side": "debit", "amount": "10.00", "currency": "USD"}),
     )
     .unwrap();
+    // A foreign line booked before rounding to the cent (2026-10-13).
+    w.append(
+        "entry.line_added",
+        json!({"id": 1, "account": cash, "side": "credit", "amount": "108.34567", "currency": "USD",
+               "foreign_currency": "EUR", "foreign_amount": "100.00", "fx_rate": "1.0834567"}),
+    )
+    .unwrap();
     drop(w);
     // Opening rebuilds from the journal; it must accept all of it.
     let _ = std::fs::remove_file(dir.join(ledger_store::DB_FILE));
@@ -1050,5 +1057,11 @@ fn books_written_under_older_rules_still_open() {
     store.verify().unwrap();
     assert_eq!(store.ledger().chart().len(), 2);
     assert_eq!(store.ledger().list_periods().len(), 2);
-    assert_eq!(store.ledger().get_entry(1).unwrap().lines().len(), 1);
+    let lines = store.ledger().get_entry(1).unwrap().lines();
+    assert_eq!(lines.len(), 2);
+    // Replayed exactly as booked, not re-rounded.
+    assert_eq!(
+        lines[1].amount.amount,
+        "108.34567".parse::<Decimal>().unwrap()
+    );
 }

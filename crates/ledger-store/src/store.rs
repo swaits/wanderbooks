@@ -2929,18 +2929,18 @@ pub(crate) fn replay_line_into_ledger(
                     let foreign_amount: Decimal = get_str(p, "foreign_amount")?
                         .parse()
                         .map_err(|_| StoreError::JournalCorrupt("bad foreign amount".into()))?;
-                    let fx_rate: Decimal = get_str(p, "fx_rate")?
-                        .parse()
-                        .map_err(|_| StoreError::JournalCorrupt("bad fx rate".into()))?;
+                    // The journaled base amount is the record: lines booked
+                    // before 2026-10-13 were not rounded to the cent, and
+                    // replay keeps them exactly as booked.
                     ledger.replay_add_line_fx(
                         id,
                         account,
                         side,
+                        Money::new(amount, currency),
                         Currency::new(fc).map_err(|_| {
                             StoreError::JournalCorrupt("bad foreign currency".into())
                         })?,
                         foreign_amount,
-                        fx_rate,
                     )?;
                 }
                 None => {

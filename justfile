@@ -40,6 +40,12 @@ prove:
     fi
     echo "Lean: $(wc -l <<<"$audit") headline theorems, standard axioms only"
 
+# Cross-check against GnuCash (an oracle, never the spec): random books through
+# wanderbooks and through GnuCash 5.10 in a pinned container. Needs Docker.
+oracle:
+    docker build -q -t wanderbooks-gnucash-oracle oracle/gnucash
+    cargo test -p ledger-core --test oracle_gnucash -- --ignored --nocapture
+
 # Build the release binaries (CLI, MCP server, GUI)
 build:
     cargo build --release -p ledger-cli -p ledger-mcp -p ledger-gui

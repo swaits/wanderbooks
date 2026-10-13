@@ -1016,3 +1016,49 @@ fn a_line_on_an_unknown_or_placeholder_account_is_refused_when_added() {
         "refused lines aren't added"
     );
 }
+
+/// Spec (rules.md B-3; DECISION, owner 2026-10-13, after the GnuCash
+/// cross-check): a foreign line is booked in the base currency's smallest
+/// unit, half away from zero; the foreign original is kept.
+#[test]
+fn a_foreign_line_is_booked_in_whole_base_units() {
+    let book = |base: Currency, foreign: Currency, amount: &str, rate: &str| {
+        let mut l = Ledger::new(base);
+        let a = l
+            .add_account("1000", "Cash", AccountType::Asset, None, false)
+            .unwrap();
+        let e = l.create_entry(date(5), "fx");
+        let r = l.add_line_fx(
+            e,
+            a,
+            Side::Debit,
+            foreign,
+            amount.parse().unwrap(),
+            rate.parse().unwrap(),
+        );
+        r.map(|()| {
+            let line = l.get_entry(e).unwrap().lines()[0].clone();
+            (line.amount.amount, line.foreign_amount)
+        })
+    };
+    let dec = |s: &str| s.parse::<Decimal>().unwrap();
+    // 100.00 EUR x 1.0834567 = 108.34567 USD -> 108.35.
+    assert_eq!(
+        book(Currency::USD, Currency::EUR, "100.00", "1.0834567").unwrap(),
+        (dec("108.35"), Some(dec("100.00")))
+    );
+    // 10.00 USD x 151.237 = 1512.37 JPY -> 1512 (yen have no minor unit).
+    assert_eq!(
+        book(Currency::JPY, Currency::USD, "10.00", "151.237")
+            .unwrap()
+            .0,
+        dec("1512")
+    );
+    // Exactly half a cent rounds away from zero.
+    assert_eq!(
+        book(Currency::USD, Currency::EUR, "1", "0.125").unwrap().0,
+        dec("0.13")
+    );
+    // Rounds to nothing: refused.
+    assert!(book(Currency::USD, Currency::EUR, "0.001", "1").is_err());
+}

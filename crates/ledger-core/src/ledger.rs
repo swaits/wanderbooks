@@ -541,8 +541,8 @@ impl Ledger {
         parent: Option<AccountId>,
         placeholder: bool,
     ) -> Result<AccountId, LedgerError> {
+        // The id is used only if the account is: a refusal uses up nothing.
         let id = self.next_account_id;
-        self.next_account_id += 1;
         self.chart.add(Account {
             id,
             code: code.to_string(),
@@ -554,6 +554,7 @@ impl Ledger {
             tax_category: None,
             deductible_percent: None,
         })?;
+        self.next_account_id += 1;
         Ok(id)
     }
 
@@ -714,10 +715,26 @@ impl Ledger {
     }
 
     /// Add a foreign-currency line to a draft entry. `foreign_amount` is the
-    /// amount in `foreign_currency`; `fx_rate` converts foreign -> base
-    /// (base = foreign * rate). The stored `amount` is the base-currency
-    /// equivalent; the foreign original is kept for reference. Rates are
-    /// exact Decimals, never floats.
+    /// amount in `foreign_currency`; `fx_rate` converts foreign -> base.
+    /// The stored `amount` is foreign * rate rounded to the base currency's
+    /// minor unit (cents for USD), half away from zero; the foreign
+    /// original is kept for reference. Rates are exact Decimals, never
+    /// floats.
+    ///
+    /// ```text
+    /// GOAL: book a foreign-currency amount in the ledger's one money.
+    /// SOURCE: docs/spec/rules.md B-3 (Pacioli ch. 36: one money; ASC
+    ///         830-20-30-1: at the transaction-date rate); minor units: ISO
+    ///         4217; rounding: DECISION (owner, 2026-10-13).
+    /// INVARIANTS:
+    ///   1. The base amount MUST be a whole number of the base currency's
+    ///      smallest unit, within half a unit of foreign * rate.
+    ///   2. NEVER convert into the base currency itself.
+    /// SCENARIOS:
+    ///   1. IF 100.00 EUR at 1.0834567 into USD: SHOULD book 108.35.
+    ///   2. IF 10.00 USD at 151.237 into JPY: SHOULD book 1512.
+    ///   3. IF the rounded amount is zero: SHOULD refuse.
+    /// ```
     pub fn add_line_fx(
         &mut self,
         entry: EntryId,
@@ -728,27 +745,6 @@ impl Ledger {
         fx_rate: Decimal,
     ) -> Result<(), LedgerError> {
         self.check_line_account(account)?;
-        self.replay_add_line_fx(
-            entry,
-            account,
-            side,
-            foreign_currency,
-            foreign_amount,
-            fx_rate,
-        )
-    }
-
-    /// [`Self::add_line_fx`] without the account check added on
-    /// 2026-10-13, for replaying journals written before it.
-    pub fn replay_add_line_fx(
-        &mut self,
-        entry: EntryId,
-        account: AccountId,
-        side: Side,
-        foreign_currency: Currency,
-        foreign_amount: Decimal,
-        fx_rate: Decimal,
-    ) -> Result<(), LedgerError> {
         if foreign_amount <= Decimal::ZERO {
             return Err(LedgerError::InvalidDocumentLineAmount(foreign_amount));
         }
@@ -761,18 +757,55 @@ impl Ledger {
                 found: foreign_currency.code().to_string(),
             });
         }
-        let base_amount = foreign_amount
+        let exact = foreign_amount
             .checked_mul(fx_rate)
             .ok_or(LedgerError::AmountOutOfRange)?;
+        // Booked in the base currency's smallest unit (cents for USD), half
+        // away from zero: a ledger in one money holds no fractions of its
+        // smallest unit (rules.md B-3; DECISION, owner 2026-10-13, after
+        // the GnuCash cross-check found the difference).
+        let base_amount = match self.base_currency.minor_units() {
+            Some(dp) => exact
+                .round_dp_with_strategy(dp, rust_decimal::RoundingStrategy::MidpointAwayFromZero),
+            None => exact,
+        };
         if base_amount <= Decimal::ZERO {
             return Err(LedgerError::InvalidFxRate(fx_rate));
         }
-        let base = self.base_currency;
+        self.replay_add_line_fx(
+            entry,
+            account,
+            side,
+            Money::new(base_amount, self.base_currency),
+            foreign_currency,
+            foreign_amount,
+        )
+    }
+
+    /// A foreign-currency line exactly as a journal recorded it: the base
+    /// amount as booked (rounded or not, by the rule of its day) and the
+    /// foreign original. For replay only; new work uses
+    /// [`Self::add_line_fx`].
+    pub fn replay_add_line_fx(
+        &mut self,
+        entry: EntryId,
+        account: AccountId,
+        side: Side,
+        amount: Money,
+        foreign_currency: Currency,
+        foreign_amount: Decimal,
+    ) -> Result<(), LedgerError> {
+        if amount.currency != self.base_currency {
+            return Err(LedgerError::CurrencyMismatch {
+                expected: self.base_currency.code().to_string(),
+                found: amount.currency.code().to_string(),
+            });
+        }
         let e = self.draft_mut(entry)?;
         e.push_line(JournalLine {
             account,
             side,
-            amount: Money::new(base_amount, base),
+            amount,
             foreign_currency: Some(foreign_currency),
             foreign_amount: Some(foreign_amount),
             class_id: None,
@@ -1168,8 +1201,9 @@ impl Ledger {
     ///    - `RetainedEarnings`: account `3999`, created if missing.
     ///    - `Account`: one equity account (a sole proprietor's capital).
     ///    - `Members`: each member's capital account gets their share of
-    ///      the net, to the cent (the last absorbs rounding), and their own
-    ///      distribution account.
+    ///      the net, to the cent (odd cents by largest remainder; closes
+    ///      journaled before 2026-10-13 replay with the last member
+    ///      absorbing them), and their own distribution account.
     /// 3. Marks the period closed.
     ///
     /// Returns the closing entry's id, or `None` if there was nothing to

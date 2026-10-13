@@ -348,8 +348,9 @@ pub enum LedgerError {
     #[error("replay id mismatch: journal says {0}, allocator expects {1}")]
     ReplayIdMismatch(u64, u64),
 
-    /// A payroll run must have at least one employee line.
-    #[error("payroll run must have at least one line")]
+    /// A payroll run must pay some wages: at least one employee line with
+    /// gross pay.
+    #[error("payroll run must have at least one employee with gross pay")]
     EmptyPayroll,
 
     /// Payroll amounts must not be negative.

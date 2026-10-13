@@ -810,8 +810,8 @@ pub struct MembersEquityStatement {
 /// distributions (debits). Earnings are partnership earnings: net income
 /// for the period, and earnings from before it not yet distributed (retained
 /// earnings plus unclosed income), are allocated by share. Allocation is to
-/// the cent with the last member absorbing rounding, so every row's total
-/// is exact and the ending total equals balance-sheet equity.
+/// the cent, odd cents by largest remainder, so every row's total is exact
+/// and the ending total equals balance-sheet equity.
 ///
 /// ```text
 /// GOAL: each member's capital roll-forward for a partnership over a

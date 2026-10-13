@@ -368,12 +368,13 @@ fn coming_up(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                             theme::regular(12.5),
                             if late { p.negative } else { p.muted },
                         );
-                        ui.painter().text(
+                        widgets::clipped_text(
+                            ui.painter(),
                             r.left_center() + vec2(70.0, 0.0),
-                            egui::Align2::LEFT_CENTER,
                             &it.label,
                             theme::regular(13.0),
                             p.text,
+                            r.width() - 70.0 - 130.0,
                         );
                         let (txt, c) = if it.amount > Decimal::ZERO {
                             (format!("+{}", fmt::money(it.amount)), p.positive)
@@ -405,7 +406,11 @@ fn biggest_outflows(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
     let mut out: Vec<&crate::books::EntryInfo> = b
         .entries
         .iter()
-        .filter(|e| e.date > since && e.cash_effect < Decimal::ZERO)
+        .filter(|e| {
+            e.status == ledger_core::EntryStatus::Posted
+                && e.date > since
+                && e.cash_effect < Decimal::ZERO
+        })
         .collect();
     out.sort_by_key(|e| e.cash_effect);
     out.truncate(8);
@@ -431,12 +436,13 @@ fn biggest_outflows(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                     theme::regular(12.5),
                     p.muted,
                 );
-                ui.painter().text(
+                widgets::clipped_text(
+                    ui.painter(),
                     r.left_center() + vec2(70.0, 0.0),
-                    egui::Align2::LEFT_CENTER,
                     &e.description,
                     theme::regular(13.0),
                     p.text,
+                    r.width() - 70.0 - 130.0,
                 );
                 ui.painter().text(
                     r.right_center() - vec2(6.0, 0.0),

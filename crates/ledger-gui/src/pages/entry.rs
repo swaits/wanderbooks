@@ -267,20 +267,33 @@ pub fn detail(ui: &mut Ui, b: &Books, e: &EntryInfo, shell: &mut Shell<'_>) {
             for &i in &e.events {
                 let line = &b.journal[i];
                 let ev = super::journal::describe_any(b, line);
-                ui.horizontal(|ui| {
+                ui.horizontal_top(|ui| {
                     ui.label(RichText::new(ev.icon).color(p.muted));
-                    let r = widgets::link(ui, RichText::new(&ev.text).font(theme::regular(12.5)));
-                    if r.clicked() {
-                        shell.go(Route::JournalEvent(line.seq));
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        let r = ui.add(
+                            egui::Label::new(RichText::new(&ev.text).font(theme::regular(12.5)))
+                                .wrap()
+                                .sense(egui::Sense::click()),
+                        );
+                        if r.hovered() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+                        if r.clicked() {
+                            shell.go(Route::JournalEvent(line.seq));
+                        }
                         ui.label(
-                            RichText::new(format!("#{} · {}", line.seq, fmt::timestamp(&line.ts)))
-                                .font(theme::regular(11.5))
-                                .color(p.faint),
+                            RichText::new(format!(
+                                "event {} · {}",
+                                line.seq,
+                                fmt::timestamp(&line.ts)
+                            ))
+                            .font(theme::regular(11.0))
+                            .color(p.faint),
                         );
                     });
                 });
+                ui.add_space(4.0);
             }
         });
 }

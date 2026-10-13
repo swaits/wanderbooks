@@ -1632,5 +1632,8 @@ fn mcp_receipts_always_required_when_threshold_is_zero() {
         "books.post_entry",
         json!({"entry_id": id, "confirmed": true}),
     );
-    assert!(err.contains("receipt"), "a $5 entry needs a receipt too: {err}");
+    assert!(
+        err.contains("receipt"),
+        "a $5 entry needs a receipt too: {err}"
+    );
 }

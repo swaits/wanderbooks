@@ -270,20 +270,24 @@ pub fn show_account(ui: &mut Ui, b: &Books, id: u64, shell: &mut Shell<'_>) {
                     theme::regular(12.5),
                     p.muted,
                 );
-                painter.text(
+                // Leave room for the debit, credit, and balance columns.
+                let text_w = r.width() - 90.0 - amt * 3.0 - 12.0;
+                widgets::clipped_text(
+                    &painter,
                     egui::pos2(r.left() + 90.0, y),
-                    egui::Align2::LEFT_CENTER,
-                    desc,
+                    &desc,
                     font.clone(),
                     p.text,
+                    text_w,
                 );
                 if !sub.is_empty() {
-                    painter.text(
+                    widgets::clipped_text(
+                        &painter,
                         egui::pos2(r.left() + 90.0, r.center().y + 9.0),
-                        egui::Align2::LEFT_CENTER,
-                        sub,
+                        &sub,
                         theme::regular(11.5),
                         p.faint,
+                        text_w,
                     );
                 }
                 for (i, v) in [d, c].iter().enumerate() {

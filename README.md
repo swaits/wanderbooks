@@ -64,7 +64,7 @@ New books, one command (installs Rust and wanderbooks if needed, makes the
 books dir with the MCP server registered for it, and starts the agent):
 
 ```bash
-curl -fsSL https://git.swaits.com/swaits/wanderbooks/raw/branch/main/install.sh | sh -s -- ~/Books/Acme
+curl -fsSL https://wanderbooks.ai/install.sh | sh -s -- ~/Books/Acme
 ```
 
 Already installed: `wanderbooks new ~/Books/Acme`. In a books dir, `just`

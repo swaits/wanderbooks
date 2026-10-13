@@ -212,6 +212,10 @@ pub struct Ledger {
     next_recurring_id: RecurringId,
     /// Who each entry paid or was billed by, for 1099 reporting.
     entry_vendors: HashMap<EntryId, VendorId>,
+    /// Each invoice's payments (entry, amount), for aging as of a date.
+    invoice_payments: HashMap<InvoiceId, Vec<(EntryId, Decimal)>>,
+    /// Each bill's payments (entry, amount), for aging as of a date.
+    bill_payments: HashMap<BillId, Vec<(EntryId, Decimal)>>,
 }
 
 impl Ledger {
@@ -247,6 +251,8 @@ impl Ledger {
             recurring: std::collections::BTreeMap::new(),
             next_recurring_id: 1,
             entry_vendors: HashMap::new(),
+            invoice_payments: HashMap::new(),
+            bill_payments: HashMap::new(),
         }
     }
 
@@ -1848,7 +1854,15 @@ impl Ledger {
         if let Some(pid) = self.closed_period_containing(date) {
             return Err(LedgerError::ClosedPeriod(pid, date.to_string()));
         }
+        if date < invoice.date {
+            return Err(LedgerError::PaymentBeforeDocument {
+                date,
+                document_date: invoice.date,
+            });
+        }
         self.check_controls(&[RECEIVABLES])?;
+        // Every check before the entry exists: a refusal leaves no draft.
+        self.check_line_account(cash_account)?;
         let ar = self.ensure_control(&RECEIVABLES);
         let entry = self.create_entry(date, &format!("Payment on invoice {}", invoice_id));
         let money = Money::new(amount, self.base_currency);
@@ -1858,6 +1872,10 @@ impl Ledger {
         let inv = self.invoices.get_mut(&invoice_id).expect("invoice exists");
         inv.amount_paid += amount;
         inv.status = arap::derive_status(inv.amount_paid, inv.total());
+        self.invoice_payments
+            .entry(invoice_id)
+            .or_default()
+            .push((entry, amount));
         Ok(entry)
     }
 
@@ -1897,7 +1915,15 @@ impl Ledger {
         if let Some(pid) = self.closed_period_containing(date) {
             return Err(LedgerError::ClosedPeriod(pid, date.to_string()));
         }
+        if date < bill.date {
+            return Err(LedgerError::PaymentBeforeDocument {
+                date,
+                document_date: bill.date,
+            });
+        }
         self.check_controls(&[PAYABLES])?;
+        // Every check before the entry exists: a refusal leaves no draft.
+        self.check_line_account(cash_account)?;
         let ap = self.ensure_control(&PAYABLES);
         let entry = self.create_entry(date, &format!("Payment on bill {}", bill_id));
         let money = Money::new(amount, self.base_currency);
@@ -1907,6 +1933,10 @@ impl Ledger {
         let b = self.bills.get_mut(&bill_id).expect("bill exists");
         b.amount_paid += amount;
         b.status = arap::derive_status(b.amount_paid, b.total());
+        self.bill_payments
+            .entry(bill_id)
+            .or_default()
+            .push((entry, amount));
         self.entry_vendors.insert(entry, bill.vendor_id);
         Ok(entry)
     }
@@ -1991,12 +2021,15 @@ impl Ledger {
         amount: Decimal,
         entry_id: EntryId,
     ) -> Result<(), LedgerError> {
-        let _ = entry_id;
         let inv = self
             .invoices
             .get_mut(&invoice_id)
             .ok_or(LedgerError::UnknownInvoice(invoice_id))?;
         inv.amount_paid += amount;
+        self.invoice_payments
+            .entry(invoice_id)
+            .or_default()
+            .push((entry_id, amount));
         inv.status = arap::derive_status(inv.amount_paid, inv.total());
         Ok(())
     }
@@ -2016,6 +2049,10 @@ impl Ledger {
             .ok_or(LedgerError::UnknownBill(bill_id))?;
         bill.amount_paid += amount;
         bill.status = arap::derive_status(bill.amount_paid, bill.total());
+        self.bill_payments
+            .entry(bill_id)
+            .or_default()
+            .push((entry_id, amount));
         let vendor = bill.vendor_id;
         self.entry_vendors.insert(entry_id, vendor);
         Ok(())
@@ -2026,7 +2063,12 @@ impl Ledger {
     pub fn ar_aging(&self, as_of: NaiveDate) -> Vec<AgingRow> {
         let mut by_customer: HashMap<CustomerId, AgingRow> = HashMap::new();
         for inv in self.invoices.values() {
-            let balance = inv.balance();
+            // Only what existed by `as_of`: issued by then, less payments
+            // made by then (Stephen, 2026-10-13).
+            if inv.date > as_of {
+                continue;
+            }
+            let balance = inv.total() - self.paid_by(self.invoice_payments.get(&inv.id), as_of);
             if balance.is_zero() {
                 continue;
             }
@@ -2056,12 +2098,27 @@ impl Ledger {
         rows
     }
 
+    /// What a document's payments add up to through `as_of`: payments are
+    /// posted entries, dated.
+    fn paid_by(&self, payments: Option<&Vec<(EntryId, Decimal)>>, as_of: NaiveDate) -> Decimal {
+        payments
+            .into_iter()
+            .flatten()
+            .filter(|(e, _)| self.get_entry(*e).is_some_and(|e| e.date() <= as_of))
+            .map(|(_, amount)| *amount)
+            .sum()
+    }
+
     /// A/P aging as of a date: one row per vendor with an outstanding
     /// balance, bucketed by days past due.
     pub fn ap_aging(&self, as_of: NaiveDate) -> Vec<AgingRow> {
         let mut by_vendor: HashMap<VendorId, AgingRow> = HashMap::new();
         for bill in self.bills.values() {
-            let balance = bill.balance();
+            // Only what existed by `as_of` (see `ar_aging`).
+            if bill.date > as_of {
+                continue;
+            }
+            let balance = bill.total() - self.paid_by(self.bill_payments.get(&bill.id), as_of);
             if balance.is_zero() {
                 continue;
             }

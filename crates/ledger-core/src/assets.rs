@@ -128,8 +128,26 @@ fn depreciation_end(asset: &Asset) -> NaiveDate {
     }
 }
 
-/// Straight-line depreciation schedule from the purchase month through the
-/// month containing `through` (clamped to the depreciation end).
+/// Straight-line depreciation schedule from the purchase month through
+/// `through` (clamped to the depreciation end): one line per month, the
+/// last prorated by days when `through` falls mid-month.
+///
+/// ```text
+/// GOAL: how much of an asset's cost has been used up, month by month.
+/// SOURCE: docs/spec/rules.md B-15 (straight line; salvage never
+///         depreciated; partial months by days); DECISION (Stephen,
+///         2026-10-13): a schedule through a mid-month date prorates that
+///         month by days, as partial first and last months do.
+/// INVARIANTS:
+///   1. A full schedule MUST sum to exactly cost - salvage, to the cent.
+///   2. Accumulated depreciation NEVER falls; book value NEVER rises and
+///      NEVER drops below salvage.
+/// SCENARIOS:
+///   1. IF $12,000 over 12 months from Jan 1, through Jun 15:
+///      - SHOULD end with June at 500.00 (15 of 30 days), accumulated
+///        5,500.00
+///      BECAUSE depreciation accrues by the day within a month.
+/// ```
 ///
 /// Partial first and last months are prorated by days held. Each month is
 /// rounded to cents via the running-total method, and the final month

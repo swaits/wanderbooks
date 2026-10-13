@@ -261,18 +261,39 @@ fn schedule_through_purchase_date_covers_one_day() {
 }
 
 #[test]
-fn golden_van_depreciation_schedule() {
-    // The canonical van's month-by-month schedule, pinned byte-for-value.
-    // Hand-verified: 61 months, first 548.39 = 1000 x 17/31, last 451.61 =
-    // 1000 x 14/31, lifetime total exactly 60000.00.
+fn van_schedule_is_the_hand_computed_one() {
+    // Rank 1, computed by hand (rules.md B-15), replacing an unreviewed
+    // golden file (2026-10-13; every row of the old file was checked
+    // against this computation first, and matched).
+    // $60,000 over 60 months is $1,000 a month. Bought 2026-01-15: January
+    // holds 17 of 31 days = 548.39; February 2026 through December 2030 are
+    // 59 full months; life ends 2031-01-15, so January 2031 holds 14 of 31
+    // days = 451.61. 548.39 + 59,000 + 451.61 = 60,000.00 exactly.
     let (mut ledger, cost, accum, expense) = test_ledger();
     let id = van_asset(&mut ledger, 60_000, cost, accum, expense);
     let asset = ledger.get_asset(id).unwrap();
     let sched = depreciation_schedule(asset, date(2032, 1, 1));
-    let got = serde_json::to_value(&sched).unwrap();
-    let golden: serde_json::Value =
-        serde_json::from_str(include_str!("golden/van_schedule.json")).unwrap();
-    assert_eq!(got, golden);
+    assert_eq!(sched.len(), 61);
+    let mut accumulated = Decimal::ZERO;
+    for (k, line) in sched.iter().enumerate() {
+        let (year, month) = (2026 + (k as i32) / 12, (k as u32) % 12 + 1);
+        let amount = match k {
+            0 => Decimal::new(54839, 2),
+            60 => Decimal::new(45161, 2),
+            _ => Decimal::new(100000, 2),
+        };
+        accumulated += amount;
+        assert_eq!(line.period, format!("{year}-{month:02}"));
+        assert_eq!(line.amount, amount, "{}", line.period);
+        assert_eq!(line.accumulated, accumulated, "{}", line.period);
+        assert_eq!(
+            line.book_value,
+            Decimal::from(60_000) - accumulated,
+            "{}",
+            line.period
+        );
+    }
+    assert_eq!(accumulated, Decimal::from(60_000));
 }
 
 #[test]

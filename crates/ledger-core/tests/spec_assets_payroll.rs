@@ -285,16 +285,17 @@ fn full_months_each_take_one_twelfth_b15() {
     }
 }
 
-/// Oracle: interface doc "through the month containing `through`": through
-/// 2026-06-15 covers Jan..Jun.
+/// Oracle: depreciation_schedule SCENARIO 1 (DECISION, Stephen 2026-10-13,
+/// resolving this test's original disagreement in favor of the code): a
+/// schedule through 2026-06-15 prorates June by days: 15/30 of 1,000.
 #[test]
-#[ignore = "SPEC-DISAGREEMENT: schedule through 2026-06-15 prorates June to 500.00 (acc 5500.00), doc says through the month containing it (acc 6000.00)"]
-fn schedule_runs_through_month_containing_through_date() {
+fn schedule_through_a_mid_month_date_prorates_that_month_by_days() {
     let a = asset("12000.00", "0.00", 12, date(2026, 1, 1));
     let s = depreciation_schedule(&a, date(2026, 6, 15));
     assert_eq!(s.len(), 6);
     assert_eq!(s.last().unwrap().period, "2026-06");
-    assert_eq!(s.last().unwrap().accumulated, d("6000.00"));
+    assert_eq!(s.last().unwrap().amount, d("500.00"));
+    assert_eq!(s.last().unwrap().accumulated, d("5500.00"));
 }
 
 /// Oracle: interface doc "clamped to the depreciation end": a schedule asked

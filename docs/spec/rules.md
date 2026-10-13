@@ -245,7 +245,8 @@ depreciation that evenly splits the depreciable amount across the useful
 life of the asset," with "(Cost – salvage value)/Useful life"; partial
 periods: "A common method is to allocate depreciation expense based on the
 number of months the asset is owned in a year." wanderbooks prorates
-partial months by days. ASC 360-10-35-4 not yet verified (see README).
+partial months by days, including a schedule through a mid-month date
+(DECISION, Stephen 2026-10-13). ASC 360-10-35-4 not yet verified (see README).
 Tax conventions (half-year, mid-month, mid-quarter): IRS Pub. 946
 (`sources/irs-depreciation.md`), for the CPA.
 
@@ -291,10 +292,16 @@ more than 90 days past due"; it is illustrative, not a rule. The FFIEC
 Call Report instructions (bank regulators, not binding here): "The past
 due status … should be determined in accordance with its contractual
 repayment terms." A document due today is not yet past due: DECISION
-(Stephen, 2026-10-13).
+(Stephen, 2026-10-13). Aging as of a date shows only documents issued by
+then, less only payments made by then; and a payment never predates its
+invoice or bill (a real prepayment is a deposit): DECISIONS (Stephen,
+2026-10-13).
 
-**Enforced:** `arap::aging_bucket`. **Checked:** `aging_boundaries`,
-`aging_is_exclusive_and_only_ages`.
+**Enforced:** `arap::aging_bucket`, `Ledger::ar_aging`/`ap_aging`,
+`receive_payment`/`pay_bill` (`PaymentBeforeDocument`). **Checked:**
+`aging_boundaries`, `aging_is_exclusive_and_only_ages`,
+`aging_as_of_a_date_sees_only_what_existed_then`,
+`a_payment_never_predates_its_document`.
 
 ## B-19 1099 reporting thresholds
 

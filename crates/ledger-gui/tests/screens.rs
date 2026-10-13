@@ -76,7 +76,13 @@ fn screenshots() {
         }
         let books = data::load_once(&source).unwrap();
         let mut harness = Harness::builder()
-            .with_size(egui::vec2(1440.0, 920.0))
+            .with_size(egui::vec2(
+                1440.0,
+                std::env::var("SHOT_HEIGHT")
+                    .ok()
+                    .and_then(|h| h.parse().ok())
+                    .unwrap_or(920.0),
+            ))
             .build_eframe(|cc| App::with_books(&cc.egui_ctx, books, dark, route.clone()));
         harness.run_steps(4);
         let ctx = harness.ctx.clone();

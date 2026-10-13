@@ -93,6 +93,16 @@ property tests, mutation testing, and 11.5M fuzz executions:
 
 So the bar, for every agent, every change:
 
+0. **Specs come from authorities, not memory.** Every rule the engine
+   enforces is in `docs/spec/rules.md` with its source: Pacioli for the
+   mechanics of double entry, the IRS (vendored verbatim, public domain)
+   for records, periods, 1099s, capitalization, partnerships, and payroll,
+   FASB's Codification (cited, never copied) for GAAP. A rule no authority
+   states is marked CONVENTION or DECISION, with who decided and when.
+   Spec blocks in the code (```text GOAL/SOURCE/INVARIANTS/SCENARIOS)
+   carry a `SOURCE:` line. Never write a spec from what the code happens
+   to do, or from what you remember; find the document, or ask.
+
 1. **Money arithmetic goes in `kernel.rs`, generic over `Amount`.** If
    you write a sum, a sign flip, a split, or a rounding plug anywhere
    else, move it into the kernel. The engine calls the kernel. It never
@@ -166,6 +176,7 @@ clone, with status. Rules:
 | `docs/requirements.md` | What the engine must do (R-1…), what is future work |
 | `docs/architecture.md` | Crate layout, command pattern, dependency rules |
 | `docs/oracle.md` | How we check correctness: golden files, property tests, fuzzing, cross-checks against other implementations (and who is right) |
+| `docs/spec/` | The authorities every rule comes from (`rules.md`), with public-domain sources vendored verbatim |
 | `docs/verification.md` | The formal proofs: every accounting law, its Kani harness and Lean theorem, what they found |
 | `docs/parity.md` | Feature catalog and the non-regression floor |
 | `docs/capability-parity.md` | Parity vs the GSheet+GDrive system + the cutover rule |

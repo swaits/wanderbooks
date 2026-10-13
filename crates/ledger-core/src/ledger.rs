@@ -612,6 +612,8 @@ impl Ledger {
     ///
     /// ```text
     /// GOAL: decide whether `entry` may be reversed on `date`.
+    /// SOURCE: docs/spec/rules.md B-9 (Pacioli ch. 31, 36), B-10 (DECISION,
+    ///         Stephen 2026-10-13), B-12 (closed periods).
     /// INVARIANTS:
     ///   1. MUST NOT mutate anything.
     ///   2. NEVER accepts a reversal that `reverse_entry` would then refuse.

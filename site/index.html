@@ -145,7 +145,7 @@ footer { padding: 72px 0 48px; color: var(--faint); font-size: 14px; display: fl
 
   <div class="shot light"><img src="assets/overview.png" alt="The wanderbooks overview: cash, what you owe, spending, revenue, runway, a cash chart, and what needs attention" width="1440" height="920"></div>
   <div class="shot dark"><img src="assets/overview-dark.png" alt="The wanderbooks overview in dark mode" width="1440" height="920"></div>
-  <p class="caption">The desktop view of a demo company. It leads with the answer, then the evidence.</p>
+  <p class="caption">The viewer, on a demo company. You work by talking to Claude or Codex; the viewer is for looking.</p>
 
   <section id="ask">
     <h2>Just ask.</h2>
@@ -210,7 +210,7 @@ footer { padding: 72px 0 48px; color: var(--faint); font-size: 14px; display: fl
           <li><b>Every receipt</b> behind the year's entries, indexed by entry, date, and amount.</li>
           <li><b>QuickBooks-compatible</b>: the journal as an IIF file that imports into QuickBooks Desktop, if that's where their workflow lives.</li>
           <li><b>The 1099 worksheet</b>, with W-9 status.</li>
-          <li><b>A live, read-only view</b> if they want to look around: share the books folder privately and they open it in the desktop view. Nothing they do can change your books.</li>
+          <li><b>A live, read-only view</b> if they want to look around: share the books folder privately and they open it in the viewer. Nothing they do can change your books.</li>
         </ul>
       </div>
       <div class="shot"><img src="assets/pnl.png" alt="A profit and loss statement in wanderbooks with interval columns and drill-down" width="1440" height="920"></div>
@@ -221,9 +221,11 @@ footer { padding: 72px 0 48px; color: var(--faint); font-size: 14px; display: fl
     <div class="two">
       <div class="shot"><img src="assets/entry.png" alt="A transaction with its lines, its rendered receipt, and its history" width="1440" height="920"></div>
       <div>
-        <h2>Every number goes all the way down.</h2>
-        <p class="sub">The desktop view is read-only and live: whatever your bookkeeper posts appears in a fraction of a second. Click any amount on a statement for the transactions behind it. Click a transaction for its lines, the receipt itself, and every event in its history.</p>
+        <h2>Talk to change. Look in the viewer.</h2>
+        <p class="sub">Everything that changes your books happens in conversation with Claude or Codex. The viewer is the other half: a live, read-only window on the books for browsing, searching, and reports. Whatever your bookkeeper posts shows up there in a fraction of a second, and every number goes all the way down: click an amount on a statement for the transactions behind it, then a transaction for its lines, the receipt itself, and its history.</p>
         <ul class="ticks">
+          <li><b>Browse and search</b> every transaction, account, receipt, and document.</li>
+          <li><b>Reports</b> over any dates, by month, quarter, or year, with comparisons; copy any of them into a spreadsheet.</li>
           <li><b>Answers first</b>: cash, runway, profit, and what needs attention, in a sentence.</li>
           <li><b>Needs attention</b> finds missing receipts, unposted drafts, overdue invoices, 1099 vendors without a W-9, and hands you the prompt to fix each.</li>
           <li><b>All the data</b>: the full journal, every receipt and document, light and dark.</li>
@@ -237,8 +239,8 @@ footer { padding: 72px 0 48px; color: var(--faint); font-size: 14px; display: fl
     <p class="sub">An AI is keeping your books, so the books have to be impossible to quietly get wrong.</p>
     <div class="grid">
       <div class="card"><h3>The engine enforces accounting</h3><p>Every entry balances exactly; money is exact decimal, never floating point. Posted entries are permanent; corrections are reversing entries. The receipt rule is enforced by the server, not left to the AI's judgment.</p></div>
-      <div class="card"><h3>A tamper-evident journal</h3><p>Every change is an event hash-chained to the one before. The database is checked against the journal table by table, and rebuilt if it ever drifts; every receipt is checked against its hash. The desktop view shows you the result.</p></div>
-      <div class="card"><h3>You approve what matters</h3><p>The bookkeeper previews every posting before it happens and waits for you. The desktop view can't change anything at all.</p></div>
+      <div class="card"><h3>A tamper-evident journal</h3><p>Every change is an event hash-chained to the one before. The database is checked against the journal table by table, and rebuilt if it ever drifts; every receipt is checked against its hash. The viewer shows you the result.</p></div>
+      <div class="card"><h3>You approve what matters</h3><p>The bookkeeper previews every posting before it happens and waits for you. The viewer can't change anything at all.</p></div>
     </div>
   </section>
 
@@ -248,16 +250,16 @@ footer { padding: 72px 0 48px; color: var(--faint); font-size: 14px; display: fl
     <div class="grid">
       <div class="card"><h3>Linux</h3><p>Needs a C compiler and git (<code class="inline">build-essential</code> on Debian and Ubuntu). The installer tells you if anything's missing.</p></div>
       <div class="card"><h3>macOS</h3><p>Needs Apple's command line tools: <code class="inline">xcode-select --install</code>.</p></div>
-      <div class="card"><h3>Windows</h3><p>Run it inside WSL2 (<code class="inline">wsl --install</code>, then Ubuntu). On Windows 11 the desktop view opens as a normal window. Native Windows is on the way.</p></div>
+      <div class="card"><h3>Windows</h3><p>Run it inside WSL2 (<code class="inline">wsl --install</code>, then Ubuntu). On Windows 11 the viewer opens as a normal window. Native Windows is on the way.</p></div>
     </div>
-    <p class="note" style="margin-top:24px">Already installed? <code class="inline">wanderbooks new ~/Books/AnotherCompany</code>. In a books folder, <code class="inline">just agent</code> starts your bookkeeper and <code class="inline">just gui</code> opens the desktop view.</p>
+    <p class="note" style="margin-top:24px">Already installed? <code class="inline">wanderbooks new ~/Books/AnotherCompany</code>. In a books folder, <code class="inline">just agent</code> (or <code class="inline">just codex</code>) starts your bookkeeper and <code class="inline">just gui</code> opens the viewer.</p>
   </section>
 
   <section id="faq">
     <h2>Questions</h2>
     <details><summary>What does it cost?</summary><p>Nothing. wanderbooks is free and open source (MIT or Apache-2.0), with no account and no subscription. The bookkeeper is the AI you already use: Claude Code (included with Claude Pro and Max, or on API credits) or Codex (included with ChatGPT plans, or on API credits). There's nothing else to buy.</p></details>
     <details><summary>Wait, what's an MCP server?</summary><p>MCP is the standard way AI tools like Claude Code and Codex plug into other software. wanderbooks is an accounting engine that speaks it: your AI calls its tools to draft entries, attach receipts, and run reports, and the engine enforces the accounting rules. The one-line installer sets it up; you never have to touch it.</p></details>
-    <details><summary>Do I need to be technical?</summary><p>You need to paste one command into a terminal, once. After that you talk to your bookkeeper in plain English and read your books in the desktop app.</p></details>
+    <details><summary>Do I need to be technical?</summary><p>You need to paste one command into a terminal, once. After that you talk to your bookkeeper in plain English, in Claude Code or Codex, and look at your books in the viewer whenever you like.</p></details>
     <details><summary>How does it find my receipts?</summary><p>Give your AI access to your email (in Claude, an email connector like Gmail's or the Claude browser extension with your mail open) and ask. It searches for the vendor and amount, files one clean PDF per receipt, and attaches it to the entry. It asks before downloading anything, and it never types passwords or account numbers.</p></details>
     <details><summary>Where's my data, and what does the AI see?</summary><p>Your books are files on your computer: a journal, your receipts, and a settings file, in a git repository you control. Nothing is uploaded to wanderbooks; there is no wanderbooks server. What your bookkeeper reads to help you goes to your AI provider (Anthropic or OpenAI), like any other conversation with it.</p></details>
     <details><summary>What if the AI gets something wrong?</summary><p>Every posting is previewed before it happens. If something slips through, it's corrected the way accountants do it, with a reversing entry, so the mistake and the fix are both on the record. The engine itself refuses anything that doesn't balance, anything without a required receipt, and anything in a closed period.</p></details>

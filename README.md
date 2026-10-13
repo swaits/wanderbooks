@@ -24,7 +24,7 @@ through MCP. Self-hosted, no rent.
   Desktop) and XLSX reports.
 - **`ledger-config`** — the company settings in a books dir's
   `wanderbooks.toml`.
-- **`ledger-gui`** — the read-only desktop view for owners and their
+- **`ledger-gui`** — the viewer: a read-only, live window on the books for owners and their
   accountant (egui). Answers first (cash, runway, profit, what needs
   attention), then every number drills down to its lines, its entry, the
   rendered receipt, and the journal history. Follows the journal live:
@@ -58,7 +58,7 @@ See [`plan/STATUS.md`](plan/STATUS.md) for where things stand and
 ```bash
 cargo test          # whole suite
 cargo run -p ledger-mcp -- --data-dir /tmp/books   # MCP server over stdio
-cargo run -p ledger-gui -- --demo                   # the desktop view, on a demo company
+cargo run -p ledger-gui -- --demo                   # the viewer, on a demo company
 ```
 New books, one command (installs Rust and wanderbooks if needed, makes the
 books dir with the MCP server registered for it, and starts the agent):
@@ -80,7 +80,7 @@ crates/ledger-mcp/     # MCP server: 64 tools, resources, receipt policy
 crates/ledger-import/  # QBO CSV import, IIF/XLSX export
 crates/ledger-config/  # wanderbooks.toml company settings
 crates/ledger-cli/     # `wanderbooks new`: one-command books dir + agent
-crates/ledger-gui/     # read-only live desktop view (egui)
+crates/ledger-gui/     # the viewer: read-only, live (egui)
 docs/                  # requirements, architecture, oracle, parity, glossary
 plan/                  # STATUS.md, roadmap.md
 AGENTS.md              # operating manual for agents working here

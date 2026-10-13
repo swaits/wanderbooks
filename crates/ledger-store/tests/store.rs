@@ -752,3 +752,248 @@ fn a_draft_before_a_posted_entry_verifies_and_reopens() {
     let mut store = Store::open(&dir).unwrap();
     assert_eq!(store.verify_and_heal().unwrap().healed, None);
 }
+
+/// Regression (found by the max-testing pass, 2026-10-13): reversing into a
+/// closed period journaled the reversal *before* the engine refused it, so
+/// the journal held an event replay could never apply and the books would
+/// not reopen. Oracle (rank 1, spec R-3 + closed periods): a refused
+/// command leaves no journal line, and the books always reopen.
+#[test]
+fn reversal_into_a_closed_period_is_refused_before_journaling() {
+    let dir = test_dir("reverse-closed");
+    let mut store = build_books(&dir);
+    let jan = store
+        .create_period(
+            "2026-01",
+            NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
+        )
+        .unwrap();
+    store.close_period(jan).unwrap();
+    let posted = store.ledger().posted_entries().next().unwrap().id();
+    let journal = std::fs::read_to_string(dir.join("journal.jsonl")).unwrap();
+    let err = store.reverse_entry(
+        posted,
+        NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+        "into a closed month",
+    );
+    assert!(err.is_err());
+    assert_eq!(
+        std::fs::read_to_string(dir.join("journal.jsonl")).unwrap(),
+        journal,
+        "a refused reversal must not reach the journal"
+    );
+    drop(store);
+    let reopened = Store::open(&dir).expect("the books still open");
+    reopened.verify().unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// Refusals never reach the journal (rank 2: a law over every command
+// sequence). Found by the max-testing pass, 2026-10-13: a reversal into a
+// closed period was journaled before the engine refused it, and the books
+// would not reopen.
+// ---------------------------------------------------------------------------
+
+mod refusals {
+    use super::*;
+    use ledger_core::{DocumentLine, Form1099};
+    use proptest::prelude::*;
+
+    /// One store command, with arguments drawn to hit both the happy path
+    /// and every refusal: small id spaces so unknown, duplicate, posted,
+    /// closed, and already-reversed cases come up constantly.
+    #[derive(Clone, Debug)]
+    enum Op {
+        AddAccount(u8, u8, Option<u64>, bool),
+        CreateEntry(u32),
+        AddLine(u64, u64, bool, i64),
+        Post(u64),
+        Reverse(u64, u32),
+        CreatePeriod(u32, u32),
+        Close(u64),
+        AddCustomer(bool),
+        AddVendor(bool),
+        Invoice(u64, u32, u32, i64),
+        Bill(u64, u32, u32, i64),
+        ReceivePayment(u64, u32, i64, u64),
+        PayBill(u64, u32, i64, u64),
+        AddClass(u8),
+        SetLineClass(u64, usize, Option<u32>),
+        SetEntryVendor(u64, Option<u64>),
+        SetVendor1099(u64, bool),
+        SetAccountTax(u64, u8),
+    }
+
+    fn day(n: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 1, 1).unwrap() + chrono::Days::new(u64::from(n % 120))
+    }
+
+    /// Cents, biased toward the edges: zero, negative, tiny, huge.
+    fn arb_cents() -> impl Strategy<Value = i64> {
+        prop_oneof![
+            4 => 1i64..200_000,
+            1 => Just(0i64),
+            1 => -50_000i64..0,
+            1 => Just(i64::MAX / 2),
+        ]
+    }
+
+    fn arb_op() -> impl Strategy<Value = Op> {
+        let id = 0u64..12;
+        prop_oneof![
+            (0u8..8, 0u8..5, prop::option::of(0u64..10), any::<bool>())
+                .prop_map(|(c, t, p, h)| Op::AddAccount(c, t, p, h)),
+            (0u32..120).prop_map(Op::CreateEntry),
+            (id.clone(), 0u64..10, any::<bool>(), arb_cents())
+                .prop_map(|(e, a, d, c)| Op::AddLine(e, a, d, c)),
+            id.clone().prop_map(Op::Post),
+            (id.clone(), 0u32..120).prop_map(|(e, d)| Op::Reverse(e, d)),
+            (0u32..120, 0u32..120).prop_map(|(a, b)| Op::CreatePeriod(a, b)),
+            (0u64..5).prop_map(Op::Close),
+            any::<bool>().prop_map(Op::AddCustomer),
+            any::<bool>().prop_map(Op::AddVendor),
+            (0u64..4, 0u32..120, 0u32..120, arb_cents())
+                .prop_map(|(c, d, due, a)| Op::Invoice(c, d, due, a)),
+            (0u64..4, 0u32..120, 0u32..120, arb_cents())
+                .prop_map(|(v, d, due, a)| Op::Bill(v, d, due, a)),
+            (0u64..4, 0u32..120, arb_cents(), 0u64..10)
+                .prop_map(|(i, d, a, c)| Op::ReceivePayment(i, d, a, c)),
+            (0u64..4, 0u32..120, arb_cents(), 0u64..10)
+                .prop_map(|(b, d, a, c)| Op::PayBill(b, d, a, c)),
+            (0u8..3).prop_map(Op::AddClass),
+            (id.clone(), 0usize..4, prop::option::of(0u32..4))
+                .prop_map(|(e, i, c)| Op::SetLineClass(e, i, c)),
+            (id.clone(), prop::option::of(0u64..4)).prop_map(|(e, v)| Op::SetEntryVendor(e, v)),
+            (0u64..4, any::<bool>()).prop_map(|(v, t)| Op::SetVendor1099(v, t)),
+            (0u64..10, 0u8..4).prop_map(|(a, k)| Op::SetAccountTax(a, k)),
+        ]
+    }
+
+    const CODES: [&str; 8] = [
+        "1000", "1200", "2000", "3000", "3999", "4000", "6000", "6100",
+    ];
+    const TYPES: [AccountType; 5] = [
+        AccountType::Asset,
+        AccountType::Liability,
+        AccountType::Equity,
+        AccountType::Revenue,
+        AccountType::Expense,
+    ];
+    const TAX: [Option<&str>; 4] = [
+        None,
+        Some("advertising"),
+        Some("no-such-category"),
+        Some(""),
+    ];
+
+    fn apply(store: &mut Store, op: &Op) -> Result<(), StoreError> {
+        let usd = |c: i64| Money::new(Decimal::new(c, 2), Currency::USD);
+        let line = |c: i64| {
+            vec![DocumentLine {
+                description: "work".into(),
+                amount: Decimal::new(c, 2),
+            }]
+        };
+        match *op {
+            Op::AddAccount(c, t, p, h) => store
+                .add_account(CODES[c as usize], "acct", TYPES[t as usize], p, h)
+                .map(drop),
+            Op::CreateEntry(d) => store.create_entry(day(d), "e").map(drop),
+            Op::AddLine(e, a, d, c) => {
+                let side = if d { Side::Debit } else { Side::Credit };
+                store.add_line(e, a, side, usd(c))
+            }
+            Op::Post(e) => store.post_entry(e),
+            Op::Reverse(e, d) => store.reverse_entry(e, day(d), "undo").map(drop),
+            Op::CreatePeriod(a, b) => store.create_period("p", day(a), day(b)).map(drop),
+            Op::Close(p) => store.close_period(p).map(drop),
+            Op::AddCustomer(blank) => store
+                .add_customer(if blank { " " } else { "Acme" })
+                .map(drop),
+            Op::AddVendor(blank) => store.add_vendor(if blank { "" } else { "Vend" }).map(drop),
+            Op::Invoice(c, d, due, a) => {
+                store.create_invoice(c, day(d), day(due), line(a)).map(drop)
+            }
+            Op::Bill(v, d, due, a) => store.create_bill(v, day(d), day(due), line(a)).map(drop),
+            Op::ReceivePayment(i, d, a, c) => store
+                .receive_payment(i, day(d), Decimal::new(a, 2), c)
+                .map(drop),
+            Op::PayBill(b, d, a, c) => store.pay_bill(b, day(d), Decimal::new(a, 2), c).map(drop),
+            Op::AddClass(n) => store.add_class(["A", "B", ""][n as usize]).map(drop),
+            Op::SetLineClass(e, i, c) => store.set_line_class(e, i, c),
+            Op::SetEntryVendor(e, v) => store.set_entry_vendor(e, v),
+            Op::SetVendor1099(v, t) => store.set_vendor_1099(v, Some(Form1099::Nec), t),
+            Op::SetAccountTax(a, k) => store.set_account_tax(a, TAX[k as usize], None),
+        }
+    }
+
+    /// The Lean model's `Inv` (verify/lean/Wanderbooks/Ledger.lean), checked
+    /// on the real store: every posted entry is acceptable, the books net
+    /// to zero, and no draft is dated in a closed period.
+    fn check_invariants(store: &Store) -> Result<(), TestCaseError> {
+        let l = store.ledger();
+        for e in l.posted_entries() {
+            prop_assert!(
+                e.validate(l.chart()).is_ok(),
+                "posted entry {} invalid",
+                e.id()
+            );
+        }
+        let tb = ledger_core::reports::trial_balance(l);
+        prop_assert_eq!(tb.total_debits, tb.total_credits);
+        for id in 1..l.next_entry_id() {
+            if let Some(e) = l.get_entry(id)
+                && e.status() == ledger_core::EntryStatus::Draft
+            {
+                prop_assert!(
+                    l.closed_period_containing(e.date()).is_none(),
+                    "draft {} is dated {} inside a closed period",
+                    id,
+                    e.date()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 1000,
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        /// A refused command leaves the journal byte-identical, and after
+        /// any sequence the books reopen and verify.
+        #[test]
+        fn refused_commands_never_reach_the_journal(
+            ops in prop::collection::vec(arb_op(), 1..40),
+            seed in any::<u64>(),
+        ) {
+            let dir = test_dir(&format!("refusals-{seed}"));
+            let mut store = Store::create(&dir, Currency::USD).unwrap();
+            let journal = dir.join(ledger_store::JOURNAL_FILE);
+            for op in &ops {
+                check_invariants(&store)?;
+                let before = std::fs::read_to_string(&journal).unwrap();
+                if let Err(e) = apply(&mut store, op) {
+                    let after = std::fs::read_to_string(&journal).unwrap();
+                    prop_assert!(
+                        after == before,
+                        "refused {:?} ({}) but the journal grew by:\n{}",
+                        op,
+                        e,
+                        after.strip_prefix(&before).unwrap_or(&after)
+                    );
+                }
+            }
+            check_invariants(&store)?;
+            drop(store);
+            let reopened = Store::open(&dir);
+            prop_assert!(reopened.is_ok(), "books failed to reopen: {:?}", reopened.err());
+            reopened.unwrap().verify().unwrap();
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+}

@@ -3469,6 +3469,7 @@ dependencies = [
  "chrono",
  "hex",
  "ledger-core",
+ "proptest",
  "rusqlite",
  "rust_decimal",
  "serde",

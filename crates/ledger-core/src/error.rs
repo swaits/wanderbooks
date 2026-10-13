@@ -65,6 +65,16 @@ pub enum LedgerError {
     #[error("entry {0} is not posted yet")]
     EntryNotPosted(u64),
 
+    /// An entry is reversed at most once: a second reversal would undo it
+    /// twice. (Reversing the reversal re-instates it.)
+    #[error("entry {0} is already reversed by entry {1}")]
+    EntryAlreadyReversed(u64, u64),
+
+    /// A period's closing entry is never reversed: that would leave the
+    /// period closed with its earnings unswept.
+    #[error("entry {0} closes a period and cannot be reversed")]
+    ClosingEntryIrreversible(u64),
+
     /// The referenced journal entry does not exist.
     #[error("entry {0} does not exist")]
     UnknownEntry(u64),

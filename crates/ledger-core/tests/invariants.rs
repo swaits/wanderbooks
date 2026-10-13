@@ -354,6 +354,88 @@ fn reversal_nets_to_zero_and_links_back() {
     assert!(balance_sheet(&ledger).unwrap().balanced());
 }
 
+/// A posted mistake, for the reversal rules below.
+fn posted_mistake(ledger: &mut Ledger, c: &Company) -> ledger_core::EntryId {
+    let id = ledger.create_entry(date(21), "Mistake");
+    ledger.add_line(id, c.rent, Side::Debit, usd(500)).unwrap();
+    ledger.add_line(id, c.cash, Side::Credit, usd(500)).unwrap();
+    ledger.post_entry(id).unwrap();
+    id
+}
+
+/// Spec (Stephen, 2026-10-13): an entry is reversed at most once. A second
+/// reversal would undo the original twice.
+#[test]
+fn an_entry_is_reversed_at_most_once() {
+    let c = fixture_company();
+    let mut ledger = c.ledger.clone();
+    let id = posted_mistake(&mut ledger, &c);
+    let rev = ledger.reverse_entry(id, date(22), "Reverse").unwrap();
+    let before = ledger.next_entry_id();
+    assert_eq!(
+        ledger.reverse_entry(id, date(23), "Again").unwrap_err(),
+        LedgerError::EntryAlreadyReversed(id, rev)
+    );
+    // Refused means untouched: no entry allocated, no draft left behind.
+    assert_eq!(ledger.next_entry_id(), before);
+    assert_eq!(ledger.account_movement(c.rent), Decimal::from(800));
+}
+
+/// Spec: reversing the reversal re-instates the original, and is allowed
+/// (once, like any other entry).
+#[test]
+fn a_reversal_can_itself_be_reversed_once() {
+    let c = fixture_company();
+    let mut ledger = c.ledger.clone();
+    let id = posted_mistake(&mut ledger, &c);
+    let rev = ledger.reverse_entry(id, date(22), "Reverse").unwrap();
+    let back = ledger.reverse_entry(rev, date(23), "Re-instate").unwrap();
+    assert_eq!(ledger.account_movement(c.rent), Decimal::from(1300));
+    assert_eq!(
+        ledger.reverse_entry(rev, date(24), "Again").unwrap_err(),
+        LedgerError::EntryAlreadyReversed(rev, back)
+    );
+}
+
+/// Spec (Stephen, 2026-10-13): a closing entry is never reversed. Undoing
+/// it would leave the period marked closed with its earnings unswept.
+#[test]
+fn a_closing_entry_is_never_reversed() {
+    let c = fixture_company();
+    let mut ledger = c.ledger.clone();
+    let jan = ledger.create_period("2026-01", date(1), date(31)).unwrap();
+    let closing = ledger.close_period(jan).unwrap().unwrap();
+    let feb = NaiveDate::from_ymd_opt(2026, 2, 1).unwrap();
+    let before = ledger.next_entry_id();
+    assert_eq!(
+        ledger
+            .reverse_entry(closing, feb, "Undo close")
+            .unwrap_err(),
+        LedgerError::ClosingEntryIrreversible(closing)
+    );
+    assert_eq!(ledger.next_entry_id(), before);
+}
+
+/// Regression (max-testing pass, 2026-10-13): a reversal dated in a closed
+/// period was refused only at post time, after allocating an id and
+/// leaving a draft behind. Refused means untouched.
+#[test]
+fn a_reversal_into_a_closed_period_leaves_no_trace() {
+    let c = fixture_company();
+    let mut ledger = c.ledger.clone();
+    let id = posted_mistake(&mut ledger, &c);
+    let jan = ledger.create_period("2026-01", date(1), date(31)).unwrap();
+    // Nothing is open in January now except our posted mistake; close it.
+    ledger.close_period(jan).unwrap();
+    let before = ledger.next_entry_id();
+    assert!(matches!(
+        ledger.reverse_entry(id, date(25), "Into the closed month"),
+        Err(LedgerError::ClosedPeriod(..))
+    ));
+    assert_eq!(ledger.next_entry_id(), before);
+    assert!(ledger.check_reversal(id, date(25)).is_err());
+}
+
 // ---------------------------------------------------------------------------
 // Reports: the accounting laws hold.
 // ---------------------------------------------------------------------------

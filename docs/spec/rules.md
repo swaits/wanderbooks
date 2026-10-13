@@ -59,8 +59,17 @@ that every line reads one way (2026-10-13, found by the formal pass).
   functional currency of the recording entity by use of the exchange rate
   in effect at that date."
 
+A foreign line is booked in the base currency's smallest unit (ISO 4217
+minor units, `sources/iso-4217.md`), half away from zero; a ledger in one
+money holds no fractions of its smallest unit, and its cash can then
+match a bank statement: DECISION (Stephen, 2026-10-13), after the GnuCash
+cross-check found wanderbooks kept $108.34567 where GnuCash booked
+$108.35. Lines booked before then replay as booked.
+
 **Enforced:** `Ledger::add_line` (base currency only),
-`Ledger::add_line_fx` (base amount = foreign amount × rate, original kept).
+`Ledger::add_line_fx` (base amount = foreign amount × rate, rounded to
+the minor unit; original kept). **Checked:**
+`a_foreign_line_is_booked_in_whole_base_units`; the GnuCash oracle.
 **Checked:** `foreign_currency_line_is_rejected`, `fx_overflow_is_an_error`.
 
 ## B-4 Five elements, closed list

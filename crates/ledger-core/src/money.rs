@@ -39,6 +39,24 @@ impl Currency {
         Ok(Currency(upper))
     }
 
+    /// The currency's minor units: how many decimal places its smallest
+    /// unit has (2 for USD's cents, 0 for JPY, 3 for KWD), or `None` for
+    /// codes ISO 4217 gives none (gold, SDRs). Unlisted codes are 2.
+    ///
+    /// SOURCE: ISO 4217 list one, published 2026-09-17
+    /// (docs/spec/sources/iso-4217.md); generated from it, not typed in.
+    pub fn minor_units(&self) -> Option<u32> {
+        match self.code() {
+            "BIF" | "CLP" | "DJF" | "GNF" | "ISK" | "JPY" | "KMF" | "KRW" | "PYG" | "RWF"
+            | "UGX" | "UYI" | "VND" | "VUV" | "XAF" | "XOF" | "XPF" => Some(0),
+            "BHD" | "IQD" | "JOD" | "KWD" | "LYD" | "OMR" | "TND" => Some(3),
+            "CLF" | "UYW" => Some(4),
+            "XAG" | "XAU" | "XBA" | "XBB" | "XBC" | "XBD" | "XDR" | "XPD" | "XPT" | "XSU"
+            | "XTS" | "XUA" | "XXX" => None,
+            _ => Some(2),
+        }
+    }
+
     /// The three-letter code, e.g. `"USD"`.
     pub fn code(&self) -> &str {
         std::str::from_utf8(&self.0).expect("currency codes are ASCII by construction")

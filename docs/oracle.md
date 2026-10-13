@@ -79,7 +79,15 @@ periods, closing to net income), and a property test bridges the two.
 `just prove`; see `docs/verification.md`. Its first pass found three
 engine bugs that Layers 1–4 had all missed.
 
-**Layer 5 — Cross-implementation diff harness (roadmap phase 3).** A
+**Layer 5 — Cross-implementation diff harness (live: GnuCash).**
+`just oracle` builds GnuCash 5.10 in a pinned container
+(`oracle/gnucash/`) and runs `tests/oracle_gnucash.rs`: 200 random books
+built through wanderbooks (entries, foreign lines, reversals, closes),
+every account's balance at month ends and random dates, and each month's
+P&L, compared exactly (15,800 comparisons). Its first run found one real
+difference, adjudicated from principles: wanderbooks kept sub-cent
+amounts on foreign lines; it now books in cents (rules.md B-3). The
+original plan follows. A
 `ledger-oracle` crate will run fixture books through our engine and through
 other implementations (GnuCash headless first), then diff `snapshot()`
 output automatically: `cargo xtask oracle`. This is the direct analog of

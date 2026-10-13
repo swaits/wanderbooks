@@ -18,15 +18,20 @@
 
 #let d = json(bytes(sys.inputs.data))
 #let ncols = d.columns.len()
+// Wide statements (by month, with comparisons) turn the page and, past
+// seven columns, set smaller and tighter so a year of months fits.
+#let wide = ncols > 4
+#let dense = ncols > 7
 #let ink = luma(25)
 #let quiet = luma(110)
 #let hair = 0.5pt + luma(160)
 #let firm = 0.6pt + ink
 
 #set document(title: d.company + " — " + d.title, author: d.company)
-#set text(font: "Inter", size: 9pt, fill: ink, number-width: "tabular")
+#set text(font: "Inter", size: if dense { 7pt } else { 9pt }, fill: ink, number-width: "tabular")
 #set page(
   paper: "us-letter",
+  flipped: wide,
   margin: (x: 0.75in, top: 0.75in, bottom: 0.75in),
   header: context {
     if counter(page).get().first() > 1 {
@@ -58,7 +63,7 @@
   if a == none { return [] }
   let open = if a.negative { [(] } else { [] }
   let close = if a.negative { [)] } else { hide[)] }
-  let sign = if currency [\$] else []
+  let sign = if currency and a.at("percent", default: false) == false [\$] else []
   [#open#sign#a.digits#close]
 }
 
@@ -76,7 +81,7 @@
 }
 
 #table(
-  columns: (1fr,) + (8em,) * ncols,
+  columns: (1fr,) + (if dense { 6.6em } else { 8em },) * ncols,
   stroke: none,
   inset: (x: 4pt, y: 3.6pt),
   align: (left + horizon,) + (right + horizon,) * ncols,
@@ -84,7 +89,7 @@
     table.cell(stroke: (top: firm, bottom: hair), []),
     ..d.columns.map(c => table.cell(
       stroke: (top: firm, bottom: hair),
-      text(7.5pt, weight: "bold", tracking: 0.04em, upper(c)),
+      text(if dense { 6pt } else { 7.5pt }, weight: "bold", tracking: 0.04em, upper(c)),
     )),
   ),
   ..d

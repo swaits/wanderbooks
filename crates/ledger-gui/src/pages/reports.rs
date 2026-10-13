@@ -103,6 +103,32 @@ pub struct State {
     pub range: Range,
     pub columns: Columns,
     pub compare: Compare,
+    /// A PDF being typeset in the background.
+    pdf_job: Option<std::sync::mpsc::Receiver<Result<std::path::PathBuf, String>>>,
+    /// How the last PDF went, and when (to fade the message).
+    pdf_done: Option<(Result<std::path::PathBuf, String>, f64)>,
+}
+
+/// What a PDF of the report on screen needs besides the table.
+struct PdfInfo {
+    title: String,
+    period: String,
+    meta: ledger_import::ReportMeta,
+}
+
+impl PdfInfo {
+    fn new(b: &Books, title: &str, period: &str) -> Self {
+        PdfInfo {
+            title: title.to_string(),
+            period: period.to_string(),
+            meta: ledger_import::ReportMeta {
+                company: b.company_name().to_string(),
+                basis: b.settings.company.basis.clone(),
+                prepared_on: b.today,
+                journal_seq: b.seq(),
+            },
+        }
+    }
 }
 
 // ----------------------------------------------------------------------
@@ -247,6 +273,49 @@ impl Table {
         }
     }
 
+    /// The table as a statement for the PDF typesetter: sections spaced
+    /// apart, sums ruled and signed, notes as italic subheadings. Detail
+    /// lines (the accounts under a tax line) don't carry over.
+    fn statement(&self, title: &str, period: &str) -> ledger_import::Statement {
+        use ledger_import::{Row as PdfRow, RowKind};
+        let mut rows = Vec::new();
+        for r in &self.rows {
+            let kind = match r.kind {
+                Kind::Section => RowKind::Section,
+                Kind::Line => RowKind::Line,
+                Kind::Subtotal => RowKind::Subtotal,
+                Kind::Grand => RowKind::Total,
+                Kind::Note => RowKind::Subheading,
+            };
+            if matches!(kind, RowKind::Section | RowKind::Subheading) && !rows.is_empty() {
+                rows.push(PdfRow {
+                    kind: RowKind::Spacer,
+                    label: String::new(),
+                    amounts: Vec::new(),
+                    currency: false,
+                    rule_above: false,
+                });
+            }
+            // Icon glyphs (private use) aren't in the PDF's font.
+            let label: String = r
+                .label
+                .chars()
+                .filter(|c| !('\u{E000}'..='\u{F8FF}').contains(c))
+                .collect();
+            rows.push(PdfRow {
+                kind,
+                label: label.trim().to_string(),
+                amounts: r.cells.iter().map(|c| c.value).collect(),
+                currency: false,
+                rule_above: false,
+            });
+        }
+        let columns: Vec<&str> = self.columns.iter().map(String::as_str).collect();
+        let mut st = ledger_import::report::statement(title, period.to_string(), &columns, rows);
+        st.percent_from = self.pct_from;
+        st
+    }
+
     fn tsv(&self) -> String {
         let mut out = String::from("\t");
         out.push_str(&self.columns.join("\t"));
@@ -295,6 +364,11 @@ fn column_ranges(st: &State, b: &Books) -> Vec<(NaiveDate, NaiveDate, String)> {
             let mut v = vec![(s, e, col_title(s, e, Columns::Total))];
             if let Some((ps, pe)) = prior(st, s, e) {
                 v.push((ps, pe, col_title(ps, pe, Columns::Total)));
+                // Same days a year apart read the same: say which year.
+                if v[0].2 == v[1].2 {
+                    v[0].2 = format!("{}, {}", v[0].2, e.year());
+                    v[1].2 = format!("{}, {}", v[1].2, pe.year());
+                }
             }
             v
         }
@@ -1087,6 +1161,7 @@ fn report(ui: &mut Ui, b: &Books, kind: ReportKind, shell: &mut Shell<'_>, picke
         } else {
             Compare::None
         },
+        ..Default::default()
     };
     let cols = column_ranges(&state, b);
     let compare = state.compare != Compare::None;
@@ -1190,19 +1265,55 @@ fn report(ui: &mut Ui, b: &Books, kind: ReportKind, shell: &mut Shell<'_>, picke
         }
     };
     if let Some(t) = table {
-        render(ui, &t, shell);
+        render(ui, &t, &PdfInfo::new(b, kind.title(), &subtitle), shell);
     }
     if let Some(k) = pick {
         shell.go(Route::Reports(k));
     }
 }
 
-fn render(ui: &mut Ui, t: &Table, shell: &mut Shell<'_>) {
+fn render(ui: &mut Ui, t: &Table, pdf: &PdfInfo, shell: &mut Shell<'_>) {
     let p = pal(ui.ctx());
     let tsv = t.tsv();
     let mut go: Option<Drill> = None;
+    let st = &mut shell.state.reports;
+    if let Some(rx) = &st.pdf_job {
+        if let Ok(done) = rx.try_recv() {
+            st.pdf_job = None;
+            st.pdf_done = Some((done, ui.input(|i| i.time)));
+        } else {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(100));
+        }
+    }
+    let mut save_pdf = false;
     widgets::card(ui, |ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+            let busy = st.pdf_job.is_some();
+            let label = if busy {
+                format!("{} Making PDF…", icon::HOURGLASS)
+            } else {
+                format!("{} Save PDF", icon::FILE_PDF)
+            };
+            if ui
+                .add_enabled(
+                    !busy,
+                    egui::Button::new(
+                        RichText::new(label)
+                            .font(theme::regular(12.0))
+                            .color(p.muted),
+                    )
+                    .frame(false),
+                )
+                .on_hover_text(format!(
+                    "Typesets this report as it's set up here and saves it to {}, then opens it",
+                    crate::export::downloads_dir().display()
+                ))
+                .clicked()
+            {
+                save_pdf = true;
+            }
+            ui.add_space(8.0);
             if ui
                 .add(
                     egui::Button::new(
@@ -1218,6 +1329,31 @@ fn render(ui: &mut Ui, t: &Table, shell: &mut Shell<'_>) {
                 ui.ctx().copy_text(tsv.clone());
             }
         });
+        if let Some((done, at)) = &st.pdf_done {
+            let now = ui.input(|i| i.time);
+            if now - at < 8.0 {
+                let (text, color) = match done {
+                    Ok(path) => (
+                        format!("{} Saved {}", icon::CHECK, path.display()),
+                        p.positive,
+                    ),
+                    Err(e) => (
+                        format!("{} PDF failed: {e}", icon::WARNING_CIRCLE),
+                        p.negative,
+                    ),
+                };
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(text).font(theme::regular(11.5)).color(color),
+                        )
+                        .truncate(),
+                    );
+                });
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(500));
+            }
+        }
         let n = t.columns.len().max(1) as f32;
         let base: f32 = if t.columns.len() > 6 { 112.0 } else { 136.0 };
         // Narrow, the amount columns give up their slack before the table
@@ -1388,6 +1524,22 @@ fn render(ui: &mut Ui, t: &Table, shell: &mut Shell<'_>) {
                 }
             });
     });
+    if save_pdf {
+        let statement = t.statement(&pdf.title, &pdf.period);
+        let meta = pdf.meta.clone();
+        let name = format!("{} — {} — {}", meta.company, pdf.title, pdf.period);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = ui.ctx().clone();
+        std::thread::spawn(move || {
+            let done = ledger_import::statement_pdf(&statement, &meta)
+                .map_err(|e| e.to_string())
+                .and_then(|bytes| crate::export::save_and_open(&name, "pdf", &bytes));
+            let _ = tx.send(done);
+            ctx.request_repaint();
+        });
+        st.pdf_job = Some(rx);
+        st.pdf_done = None;
+    }
     if let Some(d) = go {
         shell.state.accounts.range = Some((d.start, d.end));
         shell.go(Route::Account(d.account));
@@ -1588,5 +1740,75 @@ fn vendor_1099(ui: &mut Ui, b: &Books, year: i32, shell: &mut Shell<'_>) {
     if r.vendors.is_empty() {
         t.note("No vendors marked for a 1099 and none paid this year.");
     }
-    render(ui, &t, shell);
+    let pdf = PdfInfo::new(
+        b,
+        ReportKind::Vendor1099.title(),
+        &format!("Calendar year {year}"),
+    );
+    render(ui, &t, &pdf, shell);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every table-backed report typesets as a PDF, in its plain, by-month,
+    /// and compared layouts. Set `PDF_DIR` to keep the files for eyes.
+    #[test]
+    fn reports_typeset_as_pdf() {
+        let today = NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
+        let dir = std::env::temp_dir().join(format!("ledger-gui-pdf-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        crate::demo::build(&dir, today).unwrap();
+        let b = crate::data::load_once(&crate::data::Source {
+            data_dir: dir.join("books-data"),
+            books_toml: Some(dir.join("wanderbooks.toml")),
+            today: Some(today),
+        })
+        .unwrap();
+        let ytd = |columns, compare| State {
+            range: Range::YearToDate,
+            columns,
+            compare,
+            ..Default::default()
+        };
+        let (s, e) = Range::YearToDate.dates(&b);
+        let mut tables: Vec<(&str, Table)> = Vec::new();
+        let mut t = pnl(
+            &b,
+            &column_ranges(&ytd(Columns::Total, Compare::None), &b),
+            false,
+        );
+        t.add_share_of_income();
+        tables.push(("pnl", t));
+        let cols = column_ranges(&ytd(Columns::Month, Compare::None), &b);
+        tables.push(("pnl-months", pnl(&b, &cols, true)));
+        let mut t = pnl(
+            &b,
+            &column_ranges(&ytd(Columns::Total, Compare::PriorYear), &b),
+            false,
+        );
+        t.add_change();
+        tables.push(("pnl-vs-prior-year", t));
+        tables.push(("balance", balance_sheet(&b, &[(e, "Total".into())])));
+        let cols = column_ranges(&ytd(Columns::Total, Compare::None), &b);
+        tables.push(("cashflow", cash_flow_table(&b, &cols, false)));
+        tables.push(("trial", trial_balance(&b, e)));
+        tables.push(("equity", owners_equity(&b, s, e)));
+        tables.push(("tax", tax(&b, s, e)));
+        tables.push(("ar", aging(b.ledger.ar_aging(e), e)));
+        let keep = std::env::var_os("PDF_DIR").map(std::path::PathBuf::from);
+        for (name, t) in tables {
+            let info = PdfInfo::new(&b, name, "Jan 1 – Oct 12, 2026");
+            let bytes =
+                ledger_import::statement_pdf(&t.statement(&info.title, &info.period), &info.meta)
+                    .unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(bytes.starts_with(b"%PDF"), "{name}");
+            if let Some(d) = &keep {
+                std::fs::create_dir_all(d).unwrap();
+                std::fs::write(d.join(format!("{name}.pdf")), bytes).unwrap();
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

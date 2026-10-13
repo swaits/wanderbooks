@@ -67,7 +67,16 @@ pub fn template_data(st: &Statement, meta: &ReportMeta) -> serde_json::Value {
             "label": r.label,
             "rule": r.rule_above,
             "currency": r.currency,
-            "amounts": r.amounts.iter().map(|a| a.map(|a| {
+            "amounts": r.amounts.iter().enumerate().map(|(i, a)| a.map(|a| {
+                if st.percent_from.is_some_and(|f| i >= f) {
+                    let a = a.round_dp(1);
+                    let negative = a.is_sign_negative() && !a.is_zero();
+                    return serde_json::json!({
+                        "digits": format!("{}%", a.abs().normalize()),
+                        "negative": negative,
+                        "percent": true,
+                    });
+                }
                 let p = amount_parts(a);
                 serde_json::json!({ "digits": p.digits, "negative": p.negative })
             })).collect::<Vec<_>>(),

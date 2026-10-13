@@ -64,5 +64,27 @@ fn a_change_in_another_process_shows_up_live() {
     assert!(b.fresh.contains(&e), "the new entry is highlighted as new");
     assert!(b.seq() > first.seq());
     eprintln!("live update arrived in {:?}", started.elapsed());
+
+    // The agent asks the viewer to show the entry (books.show).
+    let asked = Instant::now();
+    ledger_store::viewer::request(
+        &data,
+        ledger_store::viewer::ViewerTarget::Entry { entry_id: e },
+    )
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut shown = false;
+    while Instant::now() < deadline {
+        if let Some(Update::Show(ledger_store::viewer::ViewerTarget::Entry { entry_id })) =
+            loader.wait(Duration::from_millis(200))
+        {
+            assert_eq!(entry_id, e);
+            shown = true;
+            break;
+        }
+    }
+    assert!(shown, "the show request never reached the viewer");
+    eprintln!("show request arrived in {:?}", asked.elapsed());
+    let _ = std::fs::remove_file(ledger_store::viewer::command_path(&data));
     let _ = std::fs::remove_dir_all(&dir);
 }

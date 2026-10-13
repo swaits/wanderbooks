@@ -159,7 +159,13 @@ footer { padding: 72px 0 48px; color: var(--faint); font-size: 14px; display: fl
     <p class="note">One line installs everything, makes your books, and starts your bookkeeper in Claude Code. Using Codex? Add <code class="inline">--codex</code> to the end. Linux and macOS; Windows via WSL2.</p>
   </div>
 
-  <figure class="duo">
+  <div class="shot hero-shot"><img src="assets/overview.png" alt="The wanderbooks viewer's overview: cash, what you owe, spending, revenue, runway, a cash chart, and what needs attention" width="1440" height="920"></div>
+  <p class="caption">The viewer: a live, read-only window on your books. Demo company.</p>
+
+  <section id="session">
+    <h2>Here's what using it looks like.</h2>
+    <p class="sub">Your AI in one window, the viewer in the other. You ask; it does the bookkeeping, checks with you, and puts the result on your screen. Ask for “the balance sheet as of last quarter” or “this year's P&amp;L by month against last year” and the viewer jumps right there.</p>
+  <figure class="duo" style="margin-top:8px">
     <div class="term-pane" role="img" aria-label="An example Claude Code session recording a receipt in wanderbooks">
       <div class="term-bar"><span></span><span></span><span></span><b>claude — ~/Books/Juniper</b></div>
       <div class="term-body">
@@ -174,12 +180,14 @@ footer { padding: 72px 0 48px; color: var(--faint); font-size: 14px; display: fl
   2100 Business Credit Card        Cr  59.38</pre>Balanced, receipt attached. Software is now $1,324.69 for the year. Post it?</div>
 <div class="you">&gt; yes</div>
 <div class="tool"><i>●</i><b>wanderbooks</b> · books.post_entry <span>(confirmed)</span></div>
-<div class="ai"><i>●</i>Posted as <b>#245</b>. It's in the viewer now.</div>
+<div class="tool"><i>●</i><b>wanderbooks</b> · books.show <span>(entry #245)</span></div>
+<div class="ai"><i>●</i>Posted as <b>#245</b>. It's on your screen in the viewer.</div>
       </div>
     </div>
     <div class="shot viewer"><img src="assets/entry.png" alt="The wanderbooks viewer showing entry #245, Adobe Creative Cloud, with its lines and the rendered receipt" width="1440" height="1150"></div>
-    <figcaption>An example session: you talk to Claude Code (or Codex) on the left; the viewer on the right follows along live, receipt and all. Demo company.</figcaption>
+    <figcaption>An example session: you talk to Claude Code (or Codex) on the left; the viewer on the right updates live, and the AI opens whatever it's talking about. Demo company.</figcaption>
   </figure>
+  </section>
 
   <section id="ask">
     <h2>Just ask.</h2>
@@ -188,7 +196,8 @@ footer { padding: 72px 0 48px; color: var(--faint); font-size: 14px; display: fl
       <div class="card ask"><div class="say">Find the receipt for the $106.38 Apple charge in my email and record it.</div><p>Searches your inbox, files the receipt as a PDF, drafts the entry with the right accounts, and shows you the preview.</p></div>
       <div class="card ask"><div class="say">Here's last month's bank export. Categorize everything.</div><p>Imports the transactions as drafts, proposes an account for each from how you've booked them before, and asks about the ones it isn't sure of.</p></div>
       <div class="card ask"><div class="say">The domain renewal went to the wrong account. Fix it.</div><p>Reverses the entry and records it correctly. Nothing is ever erased; the history shows exactly what changed and why.</p></div>
-      <div class="card ask"><div class="say">Why did software spending jump in March?</div><p>Traces the number to the entries and receipts behind it, and tells you what's new.</p></div>
+      <div class="card ask"><div class="say">Show me every Adobe charge this year.</div><p>Opens the search in the viewer beside you, every charge listed, each one a click from its receipt.</p></div>
+      <div class="card ask"><div class="say">Why did software spending jump in March?</div><p>Traces the number to the entries and receipts behind it, puts the account's March register up in the viewer, and tells you what's new.</p></div>
       <div class="card ask"><div class="say">Can we afford to hire someone at $6,000 a month?</div><p>Works it out from your actual cash, burn, and what's coming in, and shows its math.</p></div>
       <div class="card ask"><div class="say">We paid the designer $2,400 this year. Does she need a 1099?</div><p>Checks the threshold for the year, whether payments were by card, and whether her W-9 is on file.</p></div>
       <div class="card ask"><div class="say">Close September.</div><p>Checks for missing receipts and unposted drafts, reconciles to your bank statement, posts depreciation and amortization, and closes the period.</p></div>
@@ -253,7 +262,7 @@ footer { padding: 72px 0 48px; color: var(--faint); font-size: 14px; display: fl
 
   <section>
     <div class="two">
-      <div class="shot"><img src="assets/overview.png" alt="The viewer's overview: cash, what you owe, spending, revenue, runway, a cash chart, and what needs attention" width="1440" height="920"></div>
+      <div class="shot"><img src="assets/cash.png" alt="The viewer's cash page: account balances, cash over time, money in and out by month, runway, and what's coming up" width="1440" height="920"></div>
       <div>
         <h2>Talk to change. Look in the viewer.</h2>
         <p class="sub">Everything that changes your books happens in conversation with Claude or Codex. The viewer is the other half: a live, read-only window on the books for browsing, searching, and reports. Whatever your bookkeeper posts shows up there in a fraction of a second, and every number goes all the way down: click an amount on a statement for the transactions behind it, then a transaction for its lines, the receipt itself, and its history.</p>

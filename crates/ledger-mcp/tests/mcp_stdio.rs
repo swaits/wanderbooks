@@ -139,7 +139,7 @@ fn mcp_end_to_end_over_stdio() {
     // Tool listing: 23 narrow tools, chart is read-only.
     let list = mcp.request("tools/list", json!({}));
     let tools = list["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 65, "expected 65 tools, got {}", tools.len());
+    assert_eq!(tools.len(), 66, "expected 66 tools, got {}", tools.len());
     let chart = tools.iter().find(|t| t["name"] == "books.chart").unwrap();
     assert_eq!(chart["annotations"]["readOnlyHint"], true);
     assert!(
@@ -1580,6 +1580,19 @@ fn mcp_vendor_1099_over_stdio() {
     assert_eq!(r["vendors"][0]["paid"], "0.00");
     let vendors = mcp.call("books.list_vendors", json!({}));
     assert_eq!(vendors["vendors"][0]["tin_on_file"], true);
+    // Show the entry in the viewer: a request outside the books.
+    let shown = mcp.call("books.show", json!({"entry_id": id}));
+    assert!(shown["shown"].as_str().unwrap().contains(&format!("#{id}")));
+    let cmd = ledger_store::viewer::read(&dir).expect("request written");
+    assert_eq!(
+        cmd.target,
+        ledger_store::viewer::ViewerTarget::Entry { entry_id: id }
+    );
+    let err = mcp.call_err("books.show", json!({"entry_id": 9999}));
+    assert!(err.contains("unknown entry"), "{err}");
+    let err = mcp.call_err("books.show", json!({"page": "cash", "search": "x"}));
+    assert!(err.contains("exactly one"), "{err}");
+    let _ = std::fs::remove_file(ledger_store::viewer::command_path(&dir));
     // The books check out end to end, receipt included.
     let v = mcp.call("books.verify", json!({}));
     assert_eq!(v["status"], "ok");

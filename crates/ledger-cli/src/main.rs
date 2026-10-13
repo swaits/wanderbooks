@@ -173,6 +173,10 @@ Bank feeds aren't automatic here: import the bank's CSV export
 
 - Every transaction: draft, preview, confirm with the human, post, attach
   the receipt. Tag payments to contractors with their vendor (1099s).
+- The human usually has the viewer open beside you (`just gui`). When they
+  ask to see something, and after you post, put it on their screen with
+  `books.show` (an entry, an account register, a report, a document, or a
+  search).
 - `books.digest` is the review surface — "what did you do with my books
   lately." Offer it; don't make the human ask.
 - Reports are pure functions of the journal. If a number looks wrong, the

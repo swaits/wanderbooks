@@ -404,6 +404,44 @@ pub struct VerifyOut {
     pub checked: Vec<String>,
 }
 
+/// Parameters for `books.show`. Give exactly one target.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ShowParams {
+    /// An entry to open (lines, receipt, history).
+    pub entry_id: Option<u64>,
+    /// An account code to open its register.
+    pub account: Option<String>,
+    /// A report: profit_and_loss, balance_sheet, cash_flow,
+    /// members_equity, trial_balance, general_ledger, tax_summary,
+    /// vendor_1099, ar_aging, ap_aging.
+    pub report: Option<String>,
+    /// A stored receipt or document (attachment id).
+    pub attachment_id: Option<u64>,
+    /// Search the transactions list (description, account, vendor, amount).
+    pub search: Option<String>,
+    /// A page: overview, cash, profit, transactions, reports, accounts,
+    /// documents, company, journal.
+    pub page: Option<String>,
+    /// For account and report: first date, YYYY-MM-DD.
+    pub start: Option<String>,
+    /// For account and report: last date, YYYY-MM-DD.
+    pub end: Option<String>,
+    /// For a report: split into columns, "total" (default), "month",
+    /// "quarter", or "year" (P&L, balance sheet, cash flow).
+    pub columns: Option<String>,
+    /// For a report: compare with "prior_period" or "prior_year".
+    pub compare: Option<String>,
+}
+
+/// Result of `books.show`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ShowOut {
+    /// What the viewer was asked to show.
+    pub shown: String,
+    /// Where this goes and what to tell the human.
+    pub note: String,
+}
+
 /// Parameters for `books.chart_template`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ChartTemplateParams {

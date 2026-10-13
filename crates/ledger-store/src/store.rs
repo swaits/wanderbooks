@@ -2217,7 +2217,10 @@ impl Store {
                 "live ledger diverged from journal replay".into(),
             ));
         }
-        let c = self.load_ledger_from_sqlite()?;
+        // A projection that can't even be read back has drifted too.
+        let c = self.load_ledger_from_sqlite().map_err(|e| {
+            StoreError::VerifyMismatch(format!("sqlite projection can't be read back: {e}"))
+        })?;
         let c_snap = reports::snapshot(&c).map_err(StoreError::Ledger)?;
         if a != c_snap {
             return Err(StoreError::VerifyMismatch(
@@ -2406,6 +2409,12 @@ impl Store {
             let (id, date, description, reversal_of) = e?;
             let date = chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d")
                 .map_err(|_| StoreError::JournalCorrupt(format!("bad date {date}")))?;
+            // Drafts aren't projected until posted, so ids can skip: a draft
+            // #8 before a posted #9. Hold their ids with empty drafts, which
+            // no report counts.
+            while ledger.next_entry_id() < id as u64 {
+                ledger.create_entry(date, "(draft, not projected)");
+            }
             match reversal_of {
                 Some(orig) => {
                     // Reversals allocate the next id; replayed in id order the

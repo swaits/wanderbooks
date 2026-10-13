@@ -727,3 +727,28 @@ fn the_whole_projection_is_checked_and_healed() {
     // A healthy store reports nothing to heal.
     assert_eq!(store.verify_and_heal().unwrap().healed, None);
 }
+
+#[test]
+fn a_draft_before_a_posted_entry_verifies_and_reopens() {
+    // The real case: a reimbursement drafted (#8, waiting on the bank),
+    // then a domain posted (#9). Drafts aren't in the projection, so its
+    // entry ids skip.
+    let dir = test_dir("draft-gap");
+    let mut store = build_books(&dir);
+    let cash = store.ledger().chart().find_by_code("1000").unwrap().id;
+    let equity = store.ledger().chart().find_by_code("3000").unwrap().id;
+    let d = NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
+    let draft = store.create_entry(d, "waiting on the bank").unwrap();
+    store.add_line(draft, cash, Side::Debit, usd(5)).unwrap();
+    store.add_line(draft, equity, Side::Credit, usd(5)).unwrap();
+    let posted = store.create_entry(d, "posted after the draft").unwrap();
+    store.add_line(posted, cash, Side::Debit, usd(7)).unwrap();
+    store
+        .add_line(posted, equity, Side::Credit, usd(7))
+        .unwrap();
+    store.post_entry(posted).unwrap();
+    store.verify().unwrap();
+    drop(store);
+    let mut store = Store::open(&dir).unwrap();
+    assert_eq!(store.verify_and_heal().unwrap().healed, None);
+}

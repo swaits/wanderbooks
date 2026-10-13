@@ -401,12 +401,13 @@ fn list(ui: &mut Ui, b: &Books, selected: Option<u64>, shell: &mut Shell<'_>) {
                             egui::FontId::proportional(15.0),
                             p.muted,
                         );
-                        painter.text(
+                        widgets::clipped_text(
+                            &painter,
                             egui::pos2(rect.left() + 80.0, y),
-                            egui::Align2::LEFT_CENTER,
                             &ev.text,
                             theme::regular(13.0),
                             p.text,
+                            rect.width() - 80.0 - 200.0,
                         );
                         painter.text(
                             egui::pos2(rect.right() - 8.0, y),

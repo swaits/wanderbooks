@@ -289,3 +289,27 @@ pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T,
         });
     changed
 }
+
+/// Left-aligned single-line text, vertically centered at `pos`, cut with
+/// an ellipsis at `max_width` so it never runs into whatever is to its
+/// right (an amount, a date).
+pub fn clipped_text(
+    painter: &egui::Painter,
+    pos: egui::Pos2,
+    text: &str,
+    font: egui::FontId,
+    color: Color32,
+    max_width: f32,
+) {
+    use egui::text::{LayoutJob, TextFormat, TextWrapping};
+    let mut job = LayoutJob::single_section(text.to_string(), TextFormat::simple(font, color));
+    job.wrap = TextWrapping {
+        max_width: max_width.max(10.0),
+        max_rows: 1,
+        break_anywhere: true,
+        overflow_character: Some('…'),
+    };
+    let galley = painter.layout_job(job);
+    let y = pos.y - galley.size().y / 2.0;
+    painter.galley(egui::pos2(pos.x, y), galley, color);
+}

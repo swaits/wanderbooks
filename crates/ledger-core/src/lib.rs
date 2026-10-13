@@ -33,6 +33,7 @@ pub mod periods;
 #[cfg(kani)]
 mod proofs;
 pub mod reports;
+pub mod rules;
 pub mod schedules;
 pub mod tax;
 

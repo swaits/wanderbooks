@@ -1777,7 +1777,15 @@ fn gl(ui: &mut Ui, b: &Books, s: NaiveDate, e: NaiveDate, shell: &mut Shell<'_>)
 
 fn vendor_1099(ui: &mut Ui, b: &Books, year: i32, shell: &mut Shell<'_>) {
     let p = pal(ui.ctx());
-    let r = vendor_1099_report(&b.ledger, year, None);
+    let r = match vendor_1099_report(&b.ledger, year, None) {
+        Ok(r) => r,
+        Err(e) => {
+            // Never guess a threshold (rules.md B-19): say why there's no
+            // worksheet, in the engine's words.
+            ui.label(RichText::new(e.to_string()).color(p.muted));
+            return;
+        }
+    };
     ui.label(
         RichText::new(format!(
             "Calendar {year}. Threshold {} ($600 through 2025; $2,000 from 2026, indexed after). Counts cash paid on entries tagged with the vendor; card payments are reported by the card processor (1099-K) and drop out.",

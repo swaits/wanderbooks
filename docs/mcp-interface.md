@@ -107,9 +107,13 @@ below.
   accounts (required); the three sections always sum to their net change.
   Disposal gains/losses move from operating to investing automatically.
 - `books.digest { since: "2026-10-01" }`
-  → `{ entries_posted: [...], totals_by_account: [...] }`. The human review
-  surface: "what did the AI do with my books lately." The digest is the
-  answer to "trust, but verify."
+  → `{ entries_posted: [...], totals_by_account: [...], stale_rules: [...] }`.
+  The human review surface: "what did the AI do with my books lately." The
+  digest is the answer to "trust, but verify." `stale_rules` lists legal
+  amounts wanderbooks may no longer know as of today (`{ name,
+  known_through, catalog, source, why }`): research the current value or
+  ask the human, then update it upstream (pull request or issue at
+  github.com/swaits/wanderbooks).
 
 ## Tools — fixed assets
 
@@ -220,7 +224,9 @@ whether a W-9 is on file.
   takes `vendor` too; bills and their payments are tagged automatically.
 - `books.vendor_1099 { year, threshold? }` → `{ year, threshold, vendors:
   [{ vendor_id, name, form_1099?, tin_on_file, paid, reportable }],
-  missing_w9, notes }`.
+  missing_w9, notes }`. For a year whose threshold wanderbooks doesn't know
+  (after 2026 until the indexed amount is added) it refuses with what to
+  do; pass `threshold` explicitly once the figure is confirmed.
 
 ## Tools — receipts & documents
 

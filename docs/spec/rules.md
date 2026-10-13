@@ -289,9 +289,13 @@ years after 2026, indexed to inflation and rounded to the nearest $100
 (§6041(h)). Card payments are reported on Form 1099-K, not 1099-NEC/MISC.
 Attorneys' gross proceeds stay at $600 (not modeled).
 
-**Enforced:** `form1099::default_threshold`. **Open:** for 2027 and later
-the indexed amount is not yet published; the engine must not silently
-assume $2,000 (see the open-questions list in the strategy note).
+**Enforced:** `form1099::default_threshold`, a dated rule
+(`ledger_core::rules::THRESHOLD_1099`, known through 2026, review from
+2026-11-01). For a later year the engine refuses with `RuleNotKnown`
+rather than guess; the MCP digest and the viewer's "Needs attention" list
+flag the rule once it is due (DECISION, the owner, 2026-10-13). **Checked:**
+`an_unknown_year_threshold_is_never_guessed`,
+`dated_rules_go_stale_on_their_review_date`, MCP stdio test.
 
 ## B-20 Every transaction has supporting documents; records are kept
 

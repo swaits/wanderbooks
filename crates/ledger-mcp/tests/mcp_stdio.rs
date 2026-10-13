@@ -251,6 +251,14 @@ fn mcp_end_to_end_over_stdio() {
     let digest = mcp.call("books.digest", json!({"since": "2026-01-01"}));
     assert_eq!(digest["entries"].as_array().unwrap().len(), 1);
     assert_eq!(digest["entries"][0]["receipt_missing"], false);
+    // Stale legal rules ride along with the digest. Which ones depends on
+    // the server's clock, so assert only what holds on any date.
+    for rule in digest["stale_rules"]
+        .as_array()
+        .expect("stale_rules is a list")
+    {
+        assert!(rule["name"].is_string() && rule["source"].is_string());
+    }
     let search = mcp.call("books.search_entries", json!({"text": "rent"}));
     assert_eq!(search["entries"].as_array().unwrap().len(), 1);
     assert_eq!(search["entries"][0]["receipt_count"], 1);
@@ -1578,6 +1586,21 @@ fn mcp_vendor_1099_over_stdio() {
     mcp.call("books.set_entry_vendor", json!({"entry_id": id}));
     let r = mcp.call("books.vendor_1099", json!({"year": 2026}));
     assert_eq!(r["vendors"][0]["paid"], "0.00");
+    // A year whose threshold isn't known yet: refused, with what to do
+    // (rules.md B-19). An explicit threshold works.
+    let why = mcp.call_err("books.vendor_1099", json!({"year": 2027}));
+    for needle in [
+        "only through 2026",
+        "official source",
+        "github.com/swaits/wanderbooks",
+    ] {
+        assert!(why.contains(needle), "missing {needle:?} in: {why}");
+    }
+    let r = mcp.call(
+        "books.vendor_1099",
+        json!({"year": 2027, "threshold": "2100"}),
+    );
+    assert_eq!(r["threshold"], "2100.00");
     let vendors = mcp.call("books.list_vendors", json!({}));
     assert_eq!(vendors["vendors"][0]["tin_on_file"], true);
     // Show the entry in the viewer: a request outside the books.

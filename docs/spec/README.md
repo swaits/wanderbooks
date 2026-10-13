@@ -40,6 +40,13 @@ human to confirm or overturn; nothing else is.
 - When an authority changes (the IRS revises a publication; a statute is
   amended), add the new text beside the old with its effective date. Rules
   that depend on dates (1099 thresholds) must say which text applies when.
+- Rules that change with the law are registered in
+  `crates/ledger-core/src/rules.rs` with the years they are known for and
+  a review date. Past what it knows, the engine refuses rather than
+  guesses; from the review date, the MCP digest and the viewer flag the
+  rule. Whoever updates one (human or agent) vendors the new official
+  text here, extends the rule, and sends the change upstream: a pull
+  request at https://github.com/swaits/wanderbooks (best), or an issue.
 
 ## Open: sources we could not verify
 

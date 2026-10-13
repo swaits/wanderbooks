@@ -413,7 +413,7 @@ fn recurring(ui: &mut Ui, b: &Books) {
 fn parties(ui: &mut Ui, b: &Books) {
     let p = pal(ui.ctx());
     let year = chrono::Datelike::year(&b.today);
-    let r1099 = vendor_1099_report(&b.ledger, year, None);
+    let r1099 = vendor_1099_report(&b.ledger, year, None).ok();
     columns(ui, 980.0, &[1.0, 1.0], |i, ui| match i {
         0 => {
             widgets::titled_card(
@@ -427,8 +427,8 @@ fn parties(ui: &mut Ui, b: &Books) {
                     }
                     for v in vendors {
                         let paid = r1099
-                            .vendors
                             .iter()
+                            .flat_map(|r| &r.vendors)
                             .find(|x| x.vendor_id == v.id)
                             .map(|x| x.paid)
                             .unwrap_or_default();

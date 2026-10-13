@@ -162,6 +162,17 @@ through the policy.
 - `books.run_recurring { through? }` → `{ drafts: [{ recurring_id, date,
   entry_id }] }`: one draft per occurrence on or before `through`, once.
 
+## Tools — integrity
+
+- `books.verify { blobs? }` → `{ status: "ok" | "healed", events, head,
+  healed?, blobs_verified?, checked }`. Verifies the journal's hash chain,
+  replays it against the live ledger, and compares every table of the
+  SQLite database row for row against a fresh projection of the journal.
+  A drifted database is rebuilt from the journal (the old file kept as
+  `wanderbooks.mismatch.<time>`). With `blobs` (default true), re-hashes
+  every stored file. The server runs the same check, and heals the same
+  way, every time it starts.
+
 ## Tools — payouts
 
 - `books.record_payout { date, description, deposit_account, deposit,

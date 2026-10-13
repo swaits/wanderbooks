@@ -143,3 +143,45 @@ fn walk(dir: &std::path::Path) -> Vec<(String, u64)> {
     }
     out
 }
+
+#[test]
+fn a_snapshot_checks_the_writers_database_and_files() {
+    use ledger_store::DiskCheck;
+    let dir = test_dir("disk");
+    let mut store = Store::create(&dir, Currency::USD).unwrap();
+    let cash = store
+        .add_account("1000", "Cash", AccountType::Asset, None, false)
+        .unwrap();
+    let equity = store
+        .add_account("3000", "Equity", AccountType::Equity, None, false)
+        .unwrap();
+    let e = post(&mut store, 1, cash, equity, 100);
+    store
+        .attach_receipt(Some(e), "r.png", "image/png", b"receipt-bytes", None)
+        .unwrap();
+    drop(store);
+    let snap = Snapshot::load(&dir).unwrap();
+    assert_eq!(snap.check_disk(), DiskCheck::Matches);
+    assert_eq!(snap.verify_blobs(), (1, vec![]));
+    // Someone edits the database behind the journal's back.
+    let conn = rusqlite::Connection::open(dir.join(ledger_store::DB_FILE)).unwrap();
+    conn.execute(
+        "UPDATE accounts SET name = 'Petty cash' WHERE code = '1000'",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    match snap.check_disk() {
+        DiskCheck::Differs(why) => assert!(why.contains("accounts"), "{why}"),
+        other => panic!("drift not seen: {other:?}"),
+    }
+    // A damaged file is caught too.
+    let blob = walk(&dir.join("blobs"))
+        .into_iter()
+        .map(|(p, _)| p)
+        .find(|p| !p.ends_with(".tmp"))
+        .unwrap();
+    std::fs::write(&blob, b"tampered").unwrap();
+    let (ok, bad) = snap.verify_blobs();
+    assert_eq!((ok, bad.len()), (0, 1));
+}

@@ -115,7 +115,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let company = settings.company;
 
-    let store = if data_dir.join(ledger_store::JOURNAL_FILE).exists() {
+    let mut store = if data_dir.join(ledger_store::JOURNAL_FILE).exists() {
         Store::open(&data_dir)?
     } else {
         let code = config.base_currency.as_deref().unwrap_or("USD");
@@ -123,11 +123,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("ledger-mcp: creating new store (base currency {code})");
         Store::create(&data_dir, currency)?
     };
-    // The journal is the source of truth: verify the chain and the
-    // projection before serving a single tool call.
-    store
-        .verify()
+    // The journal is the source of truth: verify the chain, the replay, and
+    // the whole projection before serving a single tool call, rebuilding
+    // the projection if it drifted.
+    let report = store
+        .verify_and_heal()
         .map_err(|e| format!("store verify failed: {e}"))?;
+    if let Some(why) = &report.healed {
+        eprintln!("ledger-mcp: rebuilt the database from the journal ({why})");
+    }
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

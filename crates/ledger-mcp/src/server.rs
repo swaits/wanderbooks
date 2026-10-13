@@ -1376,6 +1376,43 @@ impl BooksServer {
     }
 
     #[tool(
+        name = "books.verify",
+        description = "Check the books end to end: the journal's hash chain; a fresh replay against the live ledger; every table of the SQLite database, row for row, against a fresh projection of the journal (rebuilding the database from the journal if it drifted, keeping the old file); and, by default, every stored receipt and document against its SHA-256. Run it whenever a number looks wrong or a human asks whether the books are intact."
+    )]
+    async fn verify(&self, params: Parameters<VerifyParams>) -> Result<Json<VerifyOut>, String> {
+        let mut store = self.lock()?;
+        let report = store.verify_and_heal().map_err(|e| e.to_string())?;
+        let blobs = if params.0.blobs {
+            Some(store.verify_blobs().map_err(|e| e.to_string())?)
+        } else {
+            None
+        };
+        let mut checked = vec![
+            format!("journal hash chain ({} events)", report.events),
+            "fresh replay matches the live ledger (every statement, assets, classes, payroll)"
+                .to_string(),
+            "SQLite database matches a fresh projection of the journal, every table, row for row"
+                .to_string(),
+        ];
+        if let Some(n) = blobs {
+            checked.push(format!("{n} stored files match their SHA-256"));
+        }
+        Ok(Json(VerifyOut {
+            status: if report.healed.is_some() {
+                "healed"
+            } else {
+                "ok"
+            }
+            .to_string(),
+            events: report.events,
+            head: report.head,
+            healed: report.healed,
+            blobs_verified: blobs,
+            checked,
+        }))
+    }
+
+    #[tool(
         name = "books.digest",
         description = "What changed since a date: entries posted, per-account movement, and receipt coverage. Built for human review.",
         annotations(read_only_hint = true)

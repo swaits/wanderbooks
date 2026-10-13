@@ -139,7 +139,7 @@ fn mcp_end_to_end_over_stdio() {
     // Tool listing: 23 narrow tools, chart is read-only.
     let list = mcp.request("tools/list", json!({}));
     let tools = list["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 64, "expected 64 tools, got {}", tools.len());
+    assert_eq!(tools.len(), 65, "expected 65 tools, got {}", tools.len());
     let chart = tools.iter().find(|t| t["name"] == "books.chart").unwrap();
     assert_eq!(chart["annotations"]["readOnlyHint"], true);
     assert!(
@@ -1548,4 +1548,9 @@ fn mcp_vendor_1099_over_stdio() {
     assert_eq!(r["vendors"][0]["paid"], "0.00");
     let vendors = mcp.call("books.list_vendors", json!({}));
     assert_eq!(vendors["vendors"][0]["tin_on_file"], true);
+    // The books check out end to end, receipt included.
+    let v = mcp.call("books.verify", json!({}));
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["blobs_verified"], 1);
+    assert!(v["events"].as_u64().unwrap() > 10);
 }

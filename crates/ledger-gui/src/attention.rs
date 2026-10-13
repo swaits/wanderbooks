@@ -260,6 +260,43 @@ pub fn find(b: &Books) -> Vec<Attention> {
         }
     }
 
+    use ledger_store::DiskCheck;
+    let verify_prompt = "In wanderbooks, run books.verify and tell me what it found.".to_string();
+    match &b.integrity.disk {
+        DiskCheck::Differs(why) => out.push(Attention {
+            severity: Severity::Problem,
+            title: "The database doesn't match the journal".into(),
+            detail: format!("{why}. The journal is the record; the server rebuilds the database from it (books.verify, or on its next start)."),
+            target: Some(Route::Journal),
+            prompt: verify_prompt.clone(),
+        }),
+        DiskCheck::Unreadable(why) => out.push(Attention {
+            severity: Severity::Problem,
+            title: "Couldn't check the database".into(),
+            detail: format!("{why}."),
+            target: Some(Route::Journal),
+            prompt: verify_prompt.clone(),
+        }),
+        _ => {}
+    }
+    if !b.integrity.file_failures.is_empty() {
+        let ids: Vec<String> = b
+            .integrity
+            .file_failures
+            .iter()
+            .map(|(id, _)| id.to_string())
+            .collect();
+        out.push(Attention {
+            severity: Severity::Problem,
+            title: format!("{} damaged or missing", fmt::count(ids.len(), "stored file is", "stored files are")),
+            detail: format!(
+                "Attachment {}: the bytes on disk don't match their recorded hash. Restore them from a backup (the books dir's git history).",
+                ids.join(", ")
+            ),
+            target: Some(Route::Documents),
+            prompt: verify_prompt,
+        });
+    }
     out.sort_by_key(|a| a.severity);
     out
 }

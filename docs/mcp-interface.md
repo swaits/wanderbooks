@@ -162,6 +162,19 @@ through the policy.
 - `books.run_recurring { through? }` → `{ drafts: [{ recurring_id, date,
   entry_id }] }`: one draft per occurrence on or before `through`, once.
 
+## Tools — the viewer
+
+- `books.show { entry_id | account | report | attachment_id | search |
+  page, start?, end? }` → `{ shown, note }`. Asks the human's viewer
+  (`ledger-gui`) to open an entry, an account register or a report (for
+  start/end dates if given), a stored file, a transactions search, or a
+  page. Exactly one target; entries, accounts, and attachments are checked
+  to exist. Never touches the books: the request is a small JSON file in
+  the user's runtime directory (`$XDG_RUNTIME_DIR/wanderbooks/viewer-<hash
+  of the data dir>.json`), written atomically, watched by the viewer. A
+  viewer started within two minutes of a request opens it; older requests
+  are ignored.
+
 ## Tools — integrity
 
 - `books.verify { blobs? }` → `{ status: "ok" | "healed", events, head,

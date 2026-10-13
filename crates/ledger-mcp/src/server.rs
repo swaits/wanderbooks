@@ -23,7 +23,7 @@ use rust_decimal::Decimal;
 use std::sync::{Arc, Mutex};
 
 /// The agent operating contract, delivered via initialize.
-const INSTRUCTIONS: &str = "You are the bookkeeping agent for these books. The engine enforces the accounting; you enforce the workflow.\n\nRULES\n- Money is exact decimal. Always pass amounts as decimal strings (\"123.45\"), never floats.\n- Never post directly. The flow is draft (books.draft_entry) -> add lines (books.add_line) -> preview (books.post_entry without confirmed) -> review the preview -> post (books.post_entry with confirmed=true).\n- Every entry must balance: debits equal credits, exactly. Every line needs a real account from books.chart. The engine rejects anything else.\n- Receipts: any entry moving more than $25.00 in debits needs at least one receipt attached (books.attach_receipt) before posting. The server rejects the post otherwise. This is enforced, not a suggestion.\n- Never invent accounts. If the account you need does not exist, add it with books.add_account first.\n- Corrections go through books.reverse_entry. Posted entries are immutable; there is no edit.\n- Receipt corrections: receipts can change, but nothing is erased. To replace one, attach the new receipt, then books.unlink_receipt the old (with a reason); retire unwanted receipts or documents with books.withdraw_attachment (with a reason). The journal keeps every step.\n- After posting, check books.digest to review what changed, so a human can review too.\n- Amounts in every response are decimal strings. Treat them as exact.\n- Fixed assets: register with books.register_asset, inspect with books.asset_schedule and books.list_assets, post monthly depreciation with books.run_depreciation (exempt from the receipt policy; the schedule is the evidence), and dispose with books.dispose_asset (preview first; the bill of sale is the receipt). Depreciation is straight-line, book basis only - tax depreciation stays with the CPA.\n- Prepaid expenses and deferred revenue: record the original payment (with its receipt), then books.create_schedule; books.run_schedules posts the monthly amortization (preview first; exempt from the receipt policy like depreciation). Recurring entries (books.create_recurring, books.run_recurring) only ever create drafts: attach each actual receipt and post through the normal preview.\n- Platform payouts (app stores, payment processors, marketplaces): never book the net deposit as revenue. books.record_payout grosses it up (gross revenue, fees, adjustments) into a draft and refuses unless it reconciles to the cent; attach the payout statement, then preview and post.\n- 1099s: mark contractors and landlords with books.set_vendor_1099 (and whether their W-9 is on file; never store a TIN), and tag every payment to them with its vendor (books.draft_entry vendor, or books.set_entry_vendor; books.pay_bill tags automatically). books.vendor_1099 is the year-end worksheet for the CPA.";
+const INSTRUCTIONS: &str = "You are the bookkeeping agent for these books. The engine enforces the accounting; you enforce the workflow.\n\nRULES\n- Money is exact decimal. Always pass amounts as decimal strings (\"123.45\"), never floats.\n- Never post directly. The flow is draft (books.draft_entry) -> add lines (books.add_line) -> preview (books.post_entry without confirmed) -> review the preview -> post (books.post_entry with confirmed=true).\n- Every entry must balance: debits equal credits, exactly. Every line needs a real account from books.chart. The engine rejects anything else.\n- Receipts: any entry moving more than $25.00 in debits needs at least one receipt attached (books.attach_receipt) before posting. The server rejects the post otherwise. This is enforced, not a suggestion.\n- Never invent accounts. If the account you need does not exist, add it with books.add_account first.\n- Corrections go through books.reverse_entry. Posted entries are immutable; there is no edit.\n- Receipt corrections: receipts can change, but nothing is erased. To replace one, attach the new receipt, then books.unlink_receipt the old (with a reason); retire unwanted receipts or documents with books.withdraw_attachment (with a reason). The journal keeps every step.\n- After posting, check books.digest to review what changed, so a human can review too.\n- Amounts in every response are decimal strings. Treat them as exact.\n- Fixed assets: register with books.register_asset, inspect with books.asset_schedule and books.list_assets, post monthly depreciation with books.run_depreciation (exempt from the receipt policy; the schedule is the evidence), and dispose with books.dispose_asset (preview first; the bill of sale is the receipt). Depreciation is straight-line, book basis only - tax depreciation stays with the CPA.\n- Prepaid expenses and deferred revenue: record the original payment (with its receipt), then books.create_schedule; books.run_schedules posts the monthly amortization (preview first; exempt from the receipt policy like depreciation). Recurring entries (books.create_recurring, books.run_recurring) only ever create drafts: attach each actual receipt and post through the normal preview.\n- Platform payouts (app stores, payment processors, marketplaces): never book the net deposit as revenue. books.record_payout grosses it up (gross revenue, fees, adjustments) into a draft and refuses unless it reconciles to the cent; attach the payout statement, then preview and post.\n- The viewer: the human usually has the read-only viewer open beside you (`just gui`). When they ask to see something, and after you post, call books.show so it's on their screen.\n- 1099s: mark contractors and landlords with books.set_vendor_1099 (and whether their W-9 is on file; never store a TIN), and tag every payment to them with its vendor (books.draft_entry vendor, or books.set_entry_vendor; books.pay_bill tags automatically). books.vendor_1099 is the year-end worksheet for the CPA.";
 
 /// Max receipt/document upload: 25 MB.
 const MAX_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
@@ -1373,6 +1373,160 @@ impl BooksServer {
             });
         }
         Ok(Json(SearchEntriesOut { entries }))
+    }
+
+    #[tool(
+        name = "books.show",
+        description = "Show something in the human's viewer (the read-only desktop app, `just gui`): an entry (with its lines, receipt, and history), an account's register (optionally for start/end dates), a report (optionally for start/end dates, split into month/quarter/year columns, compared with the prior period or prior year), a stored receipt or document, a search of the transactions, or a page. Give exactly one target; work out dates yourself (\"last quarter\" means its first and last day). Use it whenever the human asks to see something, and after posting so they can look at what you did. Changes nothing in the books.",
+        annotations(read_only_hint = true)
+    )]
+    async fn show(&self, params: Parameters<ShowParams>) -> Result<Json<ShowOut>, String> {
+        use ledger_store::viewer::{ViewerTarget, request};
+        let p = params.0;
+        let store = self.lock()?;
+        let ledger = store.ledger();
+        let given = [
+            p.entry_id.is_some(),
+            p.account.is_some(),
+            p.report.is_some(),
+            p.attachment_id.is_some(),
+            p.search.is_some(),
+            p.page.is_some(),
+        ]
+        .iter()
+        .filter(|x| **x)
+        .count();
+        if given != 1 {
+            return Err(
+                "give exactly one of entry_id, account, report, attachment_id, search, page".into(),
+            );
+        }
+        for d in [&p.start, &p.end].into_iter().flatten() {
+            parse_date(d)?;
+        }
+        const REPORTS: [&str; 10] = [
+            "profit_and_loss",
+            "balance_sheet",
+            "cash_flow",
+            "members_equity",
+            "trial_balance",
+            "general_ledger",
+            "tax_summary",
+            "vendor_1099",
+            "ar_aging",
+            "ap_aging",
+        ];
+        const PAGES: [&str; 9] = [
+            "overview",
+            "cash",
+            "profit",
+            "transactions",
+            "reports",
+            "accounts",
+            "documents",
+            "company",
+            "journal",
+        ];
+        let (target, shown) = if let Some(id) = p.entry_id {
+            let e = ledger
+                .get_entry(id)
+                .ok_or_else(|| format!("unknown entry {id}"))?;
+            (
+                ViewerTarget::Entry { entry_id: id },
+                format!("entry #{id}, {}", e.description()),
+            )
+        } else if let Some(code) = p.account {
+            let a = ledger
+                .chart()
+                .find_by_code(&code)
+                .ok_or_else(|| format!("unknown account {code}"))?;
+            (
+                ViewerTarget::Account {
+                    code: code.clone(),
+                    start: p.start.clone(),
+                    end: p.end.clone(),
+                },
+                format!("the register of {} {}", a.code, a.name),
+            )
+        } else if let Some(report) = p.report {
+            if !REPORTS.contains(&report.as_str()) {
+                return Err(format!(
+                    "report {report:?}: expected one of {}",
+                    REPORTS.join(", ")
+                ));
+            }
+            if let Some(c) = &p.columns
+                && !["total", "month", "quarter", "year"].contains(&c.as_str())
+            {
+                return Err(format!(
+                    "columns {c:?}: expected total, month, quarter, or year"
+                ));
+            }
+            if let Some(c) = &p.compare
+                && !["prior_period", "prior_year"].contains(&c.as_str())
+            {
+                return Err(format!(
+                    "compare {c:?}: expected prior_period or prior_year"
+                ));
+            }
+            let mut what = format!("the {} report", report.replace('_', " "));
+            if let (Some(s), Some(e)) = (&p.start, &p.end) {
+                what.push_str(&format!(", {s} to {e}"));
+            }
+            if let Some(c) = p.columns.as_deref().filter(|c| *c != "total") {
+                what.push_str(&format!(", by {c}"));
+            }
+            if let Some(c) = &p.compare {
+                what.push_str(&format!(", compared with the {}", c.replace('_', " ")));
+            }
+            (
+                ViewerTarget::Report {
+                    report: report.clone(),
+                    start: p.start.clone(),
+                    end: p.end.clone(),
+                    columns: p.columns.clone(),
+                    compare: p.compare.clone(),
+                },
+                what,
+            )
+        } else if let Some(id) = p.attachment_id {
+            let a = store
+                .list_attachments(None)
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .find(|a| a.id == id)
+                .ok_or_else(|| format!("unknown attachment {id}"))?;
+            (
+                ViewerTarget::Document { attachment_id: id },
+                format!("document {id}, {}", a.file_name),
+            )
+        } else if let Some(query) = p.search {
+            (
+                ViewerTarget::Search {
+                    query: query.clone(),
+                },
+                format!("transactions matching {query:?}"),
+            )
+        } else {
+            let page = p.page.unwrap_or_default();
+            if !PAGES.contains(&page.as_str()) {
+                return Err(format!(
+                    "page {page:?}: expected one of {}",
+                    PAGES.join(", ")
+                ));
+            }
+            (
+                ViewerTarget::Page { page: page.clone() },
+                format!("the {page} page"),
+            )
+        };
+        request(store.data_dir(), target).map_err(|e| format!("couldn't reach the viewer: {e}"))?;
+        Ok(Json(ShowOut {
+            shown: shown.clone(),
+            note: format!(
+                "Sent to the viewer: {shown}. If it isn't open, the human can open it with `just gui` (within a couple of minutes, it opens right there)."
+            ),
+        }))
     }
 
     #[tool(

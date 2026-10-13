@@ -296,3 +296,9 @@ interface is MCP, not a cloned GUI. The first storage + MCP slice is done
   the CPA (package, read-only clone + GUI). The site leads with owning
   your books and an AI bookkeeper: example prompts, a QuickBooks
   comparison, an honest "what it doesn't do yet", the CPA section, FAQ.
+- 2026-10-12: The agent can drive the viewer. books.show (66 tools) asks
+  the viewer to open an entry, account register, report (with dates),
+  document, search, or page. The request lives outside the books (a JSON
+  file in the runtime dir keyed by the data dir, written atomically); the
+  viewer watches it beside the journal and applies books before
+  navigation. ~30 ms end to end.

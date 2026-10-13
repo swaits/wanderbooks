@@ -11,7 +11,7 @@ pub mod data;
 pub mod demo;
 mod fmt;
 pub mod nav;
-mod pages;
+pub mod pages;
 mod palette;
 mod receipts;
 mod theme;

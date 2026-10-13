@@ -32,10 +32,10 @@ site-shots:
     #!/usr/bin/env bash
     set -euo pipefail
     tmp=$(mktemp -d)
-    SHOT_DIR="$tmp" SHOT_DARK=1 SHOT_LIVE=1 SHOT_ONLY=overview,pnl cargo test -p ledger-gui --test screens
+    SHOT_DIR="$tmp" SHOT_DARK=1 SHOT_LIVE=1 SHOT_ONLY=overview,pnl,cash cargo test -p ledger-gui --test screens
     # The hero's viewer pane: taller, to sit beside the session.
     SHOT_DIR="$tmp" SHOT_DARK=1 SHOT_LIVE=1 SHOT_ONLY=entry SHOT_ENTRY=245 SHOT_HEIGHT=1150 cargo test -p ledger-gui --test screens
-    for f in overview entry pnl; do cp "$tmp/$f.png" site/assets/; done
+    for f in overview entry pnl cash; do cp "$tmp/$f.png" site/assets/; done
     rm -f site/assets/overview-dark.png
     rm -rf "$tmp"
 

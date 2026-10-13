@@ -99,6 +99,102 @@ impl App {
         self.receipts.settle(ctx);
     }
 
+    /// Go where the agent asked (`books.show`).
+    pub fn show(&mut self, target: ledger_store::viewer::ViewerTarget) {
+        use crate::nav::ReportKind;
+        use ledger_store::viewer::ViewerTarget as T;
+        let Some(b) = self.books.clone() else {
+            return;
+        };
+        let date = |s: &Option<String>| {
+            s.as_deref()
+                .and_then(|d| d.parse::<chrono::NaiveDate>().ok())
+        };
+        let route = match target {
+            T::Page { page } => match page.as_str() {
+                "overview" => Route::Overview,
+                "cash" => Route::Cash,
+                "profit" => Route::Profit,
+                "transactions" => Route::Transactions,
+                "reports" => Route::Reports(ReportKind::ProfitAndLoss),
+                "accounts" => Route::Accounts,
+                "documents" => Route::Documents,
+                "company" => Route::Company,
+                "journal" => Route::Journal,
+                _ => return,
+            },
+            T::Entry { entry_id } => Route::Entry(entry_id),
+            T::Account { code, start, end } => {
+                let Some(a) = b.ledger.chart().find_by_code(&code) else {
+                    return;
+                };
+                self.state.accounts.range = match (date(&start), date(&end)) {
+                    (None, None) => None,
+                    (s, e) => Some((
+                        s.unwrap_or_else(|| b.kpis.first_entry.unwrap_or(b.today)),
+                        e.unwrap_or(b.today),
+                    )),
+                };
+                Route::Account(a.id)
+            }
+            T::Report {
+                report,
+                start,
+                end,
+                columns,
+                compare,
+            } => {
+                use crate::pages::reports::{Columns, Compare};
+                self.state.reports.columns = match columns.as_deref() {
+                    Some("month") => Columns::Month,
+                    Some("quarter") => Columns::Quarter,
+                    Some("year") => Columns::Year,
+                    _ => Columns::Total,
+                };
+                self.state.reports.compare = match compare.as_deref() {
+                    Some("prior_period") => Compare::PriorPeriod,
+                    Some("prior_year") => Compare::PriorYear,
+                    _ => Compare::None,
+                };
+                let kind = match report.as_str() {
+                    "profit_and_loss" => ReportKind::ProfitAndLoss,
+                    "balance_sheet" => ReportKind::BalanceSheet,
+                    "cash_flow" => ReportKind::CashFlow,
+                    "members_equity" => ReportKind::MembersEquity,
+                    "trial_balance" => ReportKind::TrialBalance,
+                    "general_ledger" => ReportKind::GeneralLedger,
+                    "tax_summary" => ReportKind::TaxSummary,
+                    "vendor_1099" => ReportKind::Vendor1099,
+                    "ar_aging" => ReportKind::ArAging,
+                    "ap_aging" => ReportKind::ApAging,
+                    _ => return,
+                };
+                if let (s, e) = (date(&start), date(&end))
+                    && (s.is_some() || e.is_some())
+                {
+                    let (ds, de) = crate::pages::reports::Range::YearToDate.dates(&b);
+                    self.state.reports.range =
+                        crate::pages::reports::Range::Custom(s.unwrap_or(ds), e.unwrap_or(de));
+                }
+                Route::Reports(kind)
+            }
+            T::Document { attachment_id } => Route::Document(attachment_id),
+            T::Search { query } => {
+                let st = &mut self.state.transactions;
+                st.query = query;
+                st.filter = Default::default();
+                st.account = None;
+                Route::Transactions
+            }
+        };
+        self.nav.go(route);
+    }
+
+    /// Where the app is (tests).
+    pub fn route(&self) -> &Route {
+        &self.nav.current
+    }
+
     /// Page state (tests).
     /// Label a fixed-books app "Live", as it reads when following a
     /// journal (screenshots of what a running app looks like).
@@ -401,17 +497,18 @@ fn live_status(ui: &mut Ui, b: &Books, since_update: f64, live: bool) {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
-        if let Some(loader) = &self.loader {
-            match loader.poll() {
-                Some(Update::Books(b)) => {
+        let updates = self.loader.as_ref().map(|l| l.poll()).unwrap_or_default();
+        for u in updates {
+            match u {
+                Update::Books(b) => {
                     if self.books.is_some() {
                         self.updated_at = ui.input(|i| i.time);
                     }
                     self.books = Some(b);
                     self.error = None;
                 }
-                Some(Update::Error(e)) => self.error = Some(e),
-                None => {}
+                Update::Error(e) => self.error = Some(e),
+                Update::Show(target) => self.show(target),
             }
         }
         self.receipts.pump(ui.ctx());

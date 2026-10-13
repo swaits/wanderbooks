@@ -30,6 +30,8 @@ pub struct Source {
 pub enum Update {
     Books(Arc<Books>),
     Error(String),
+    /// The agent asked the viewer to show something (`books.show`).
+    Show(ledger_store::viewer::ViewerTarget),
 }
 
 pub struct Loader {
@@ -46,13 +48,10 @@ impl Loader {
         Loader { rx }
     }
 
-    /// The newest update, if any arrived since the last call.
-    pub fn poll(&self) -> Option<Update> {
-        let mut last = None;
-        while let Ok(u) = self.rx.try_recv() {
-            last = Some(u);
-        }
-        last
+    /// Every update since the last call, in order (books before the
+    /// navigation that refers to them).
+    pub fn poll(&self) -> Vec<Update> {
+        self.rx.try_iter().collect()
     }
 
     /// Block until the first update (tests, headless).
@@ -121,6 +120,26 @@ fn run(source: Source, ctx: egui::Context, tx: Sender<Update>) {
     let mut last_disk = Some(disk);
     send(first);
 
+    // Requests to show something: apply new ones, and on start one made in
+    // the last two minutes (the agent said "open the viewer"); never an
+    // old one.
+    let started = chrono::Utc::now();
+    let mut last_show = 0u64;
+    let mut check_show = |send: &dyn Fn(Update)| {
+        if let Some(cmd) = ledger_store::viewer::read(&source.data_dir)
+            && cmd.seq != last_show
+        {
+            let first_look = last_show == 0;
+            last_show = cmd.seq;
+            let recent = chrono::DateTime::parse_from_rfc3339(&cmd.at)
+                .is_ok_and(|t| started.signed_duration_since(t) < chrono::Duration::minutes(2));
+            if !first_look || recent {
+                send(Update::Show(cmd.target));
+            }
+        }
+    };
+    check_show(&send);
+
     let (ev_tx, ev_rx) = channel();
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         if res.is_ok() {
@@ -130,6 +149,11 @@ fn run(source: Source, ctx: egui::Context, tx: Sender<Update>) {
     .ok();
     if let Some(w) = watcher.as_mut() {
         let _ = w.watch(&source.data_dir, RecursiveMode::NonRecursive);
+        let cmd = ledger_store::viewer::command_path(&source.data_dir);
+        if let Some(dir) = cmd.parent() {
+            let _ = std::fs::create_dir_all(dir);
+            let _ = w.watch(dir, RecursiveMode::NonRecursive);
+        }
         if let Some(t) = &source.books_toml
             && let Some(dir) = t.parent()
         {
@@ -174,5 +198,6 @@ fn run(source: Source, ctx: egui::Context, tx: Sender<Update>) {
             last_disk = Some(disk);
             send(update);
         }
+        check_show(&send);
     }
 }

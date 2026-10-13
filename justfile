@@ -2,6 +2,9 @@
 
 set shell := ["bash", "-cu"]
 
+# The Netlify CLI, fetched on demand.
+netlify := "npx --yes netlify-cli@27"
+
 # List recipes
 default:
     @just --list
@@ -41,6 +44,10 @@ site:
     cp site/index.html install.sh site/dist/
     cp -r site/assets site/dist/
 
-# Publish the website: just publish user@host:/var/www/wanderbooks
-publish dest: site
-    rsync -av --delete site/dist/ "{{dest}}"
+# Deploy the website to wanderbooks.ai (Netlify; `netlify login` once first)
+deploy: site
+    {{netlify}} deploy --prod --dir site/dist --no-build
+
+# Deploy a preview of the website and print its URL
+deploy-preview: site
+    {{netlify}} deploy --dir site/dist --no-build

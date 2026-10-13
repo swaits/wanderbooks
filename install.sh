@@ -1,7 +1,7 @@
 #!/bin/sh
 # wanderbooks installer. One line on a new machine:
 #
-#   curl -fsSL https://git.swaits.com/swaits/wanderbooks/raw/branch/main/install.sh | sh -s -- ~/Books/Acme
+#   curl -fsSL https://wanderbooks.ai/install.sh | sh -s -- ~/Books/Acme
 #
 # Linux and macOS. On Windows, run it inside WSL2 (Ubuntu): the GUI opens as
 # a normal window on Windows 11.

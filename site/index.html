@@ -5,6 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>wanderbooks — own your books, hire an AI bookkeeper</title>
 <meta name="description" content="Real double-entry bookkeeping in a folder you own, kept by an AI bookkeeper you talk to. No subscription, no lock-in, every number traceable to its receipt. An open-source alternative to QuickBooks Online.">
+<link rel="canonical" href="https://wanderbooks.ai/">
+<meta property="og:title" content="wanderbooks — own your books, hire an AI bookkeeper">
+<meta property="og:description" content="Real double-entry bookkeeping in a folder you own, kept by an AI bookkeeper you talk to. No subscription, no lock-in.">
+<meta property="og:url" content="https://wanderbooks.ai/">
+<meta property="og:image" content="https://wanderbooks.ai/assets/overview.png">
+<meta name="twitter:card" content="summary_large_image">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -117,7 +123,7 @@ footer { padding: 72px 0 48px; color: var(--faint); font-size: 14px; display: fl
     <p class="lede">wanderbooks is real double-entry accounting that lives in <b>a folder you own</b>, kept by <b>an AI bookkeeper you talk to</b>. It finds your receipts, records and categorizes everything, fixes its mistakes the way an accountant would, and hands your CPA a clean package. No subscription. No lock-in. Every number traceable to its receipt.</p>
     <div class="install">
       <span class="prompt">$</span>
-      <code id="cmd">curl -fsSL https://git.swaits.com/swaits/wanderbooks/raw/branch/main/install.sh | sh -s -- ~/Books/YourCompany</code>
+      <code id="cmd">curl -fsSL https://wanderbooks.ai/install.sh | sh -s -- ~/Books/YourCompany</code>
       <button class="copy" id="copy">Copy</button>
     </div>
     <p class="note">One line installs everything, makes your books, and starts your bookkeeper. Linux and macOS; Windows via WSL2. Free and open source; you bring <a href="https://claude.com/claude-code">Claude</a>.</p>
@@ -250,10 +256,10 @@ footer { padding: 72px 0 48px; color: var(--faint); font-size: 14px; display: fl
   </footer>
 </div>
 <script>
-// When served next to install.sh, point the one-liner at this site.
+// On a preview deploy, point the one-liner at the preview's own install.sh.
 (function () {
   var cmd = document.getElementById("cmd");
-  if (location.protocol === "https:") {
+  if (location.protocol === "https:" && location.hostname !== "wanderbooks.ai") {
     cmd.textContent = "curl -fsSL " + location.origin + "/install.sh | sh -s -- ~/Books/YourCompany";
   }
   document.getElementById("copy").addEventListener("click", function () {

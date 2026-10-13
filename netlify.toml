@@ -1,0 +1,17 @@
+# wanderbooks.ai: the static site in site/, plus install.sh at the root.
+# `just site` builds the same thing locally; `just deploy` publishes it.
+[build]
+  command = "rm -rf site/dist && mkdir -p site/dist && cp site/index.html install.sh site/dist/ && cp -r site/assets site/dist/"
+  publish = "site/dist"
+
+# curl | sh reads plain text; never let a CDN cache an old installer for long.
+[[headers]]
+  for = "/install.sh"
+  [headers.values]
+    Content-Type = "text/plain; charset=utf-8"
+    Cache-Control = "public, max-age=300"
+
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=86400"

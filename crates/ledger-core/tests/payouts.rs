@@ -153,3 +153,33 @@ fn accounts_must_fit_their_roles() {
     p.revenue.clear();
     assert!(invalid(p), "needs revenue");
 }
+
+#[test]
+fn a_zero_payout_has_no_bank_line() {
+    let b = books();
+    // 10.00 of sales, 3.00 of fees, a 7.00 refund: nothing deposited.
+    let p = Payout {
+        deposit_account: b.bank,
+        deposit: dec("0.00"),
+        revenue: vec![line(b.sales, "10.00")],
+        fees: vec![line(b.fees, "3.00")],
+        adjustments: vec![PayoutAdjustment {
+            account: b.refunds,
+            side: Side::Debit,
+            amount: dec("7.00"),
+            class: None,
+        }],
+    };
+    let (plan, totals) = payout_plan(&p, b.l.chart()).unwrap();
+    assert_eq!(totals.deposit, Decimal::ZERO);
+    assert_eq!(
+        plan.iter()
+            .map(|(a, s, m, _)| (*a, *s, *m))
+            .collect::<Vec<_>>(),
+        [
+            (b.fees, Side::Debit, dec("3.00")),
+            (b.refunds, Side::Debit, dec("7.00")),
+            (b.sales, Side::Credit, dec("10.00")),
+        ]
+    );
+}

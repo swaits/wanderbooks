@@ -171,6 +171,37 @@ mod tests {
         );
     }
 
+    /// ISO 4217 list one (docs/spec/sources/iso-4217.md): one code from
+    /// each exponent class, and the codes with no minor unit.
+    #[test]
+    fn minor_units_follow_iso_4217() {
+        let units = |c: &str| Currency::new(c).unwrap().minor_units();
+        assert_eq!(units("USD"), Some(2));
+        assert_eq!(units("JPY"), Some(0));
+        assert_eq!(units("BHD"), Some(3));
+        assert_eq!(units("KWD"), Some(3));
+        assert_eq!(units("CLF"), Some(4));
+        assert_eq!(units("UYW"), Some(4));
+        assert_eq!(units("XAU"), None);
+        assert_eq!(units("XDR"), None);
+    }
+
+    #[test]
+    fn currency_and_money_print_their_code_and_amount() {
+        assert_eq!(Currency::new("usd").unwrap().to_string(), "USD");
+        assert_eq!(format!("{:?}", Currency::EUR), "Currency(EUR)");
+        assert_eq!(usd(d(1250)).to_string(), "12.50 USD");
+        assert_eq!(format!("{:?}", usd(d(-5))), "-0.05 USD");
+    }
+
+    #[test]
+    fn is_zero_means_exactly_zero() {
+        assert!(Money::zero(Currency::USD).is_zero());
+        assert!(usd(d(0)).is_zero());
+        assert!(!usd(d(1)).is_zero());
+        assert!(!usd(d(-1)).is_zero());
+    }
+
     #[test]
     fn checked_arithmetic_rejects_currency_mismatch() {
         let eur = Money::new(d(100), Currency::EUR);

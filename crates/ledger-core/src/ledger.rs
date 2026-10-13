@@ -1892,6 +1892,8 @@ impl Ledger {
     /// SCENARIOS:
     ///   1. IF the amount isn't positive, or exceeds what's still owed: SHOULD
     ///      refuse.
+    ///   2. IF dated before the bill: SHOULD refuse (PaymentBeforeDocument);
+    ///      the bill's own date is fine (DECISION, Stephen 2026-10-13).
     /// ```
     pub fn pay_bill(
         &mut self,

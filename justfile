@@ -62,7 +62,9 @@ miri:
 
 # Mutation testing of the core: do the tests catch planted bugs?
 mutants:
-    cargo mutants -p ledger-core --exclude crates/ledger-core/src/proofs.rs -j 4 --timeout 120
+    # Core and store tests (the store's replay tests reach Ledger::replay_*);
+    # the whole workspace would rebuild the viewer for every mutant.
+    cargo mutants -p ledger-core --exclude crates/ledger-core/src/proofs.rs --test-package ledger-core --test-package ledger-store -j 4 --timeout 120
 
 # Benchmarks of the core's hot paths (no budget gates them yet)
 bench:

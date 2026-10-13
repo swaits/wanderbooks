@@ -233,6 +233,9 @@ pub fn normal_balance<T: Amount>(account_type: AccountType, movement: T) -> Opti
 pub fn columns<T: Amount>(movement: T) -> Option<(T, T)> {
     if movement > T::ZERO {
         Some((movement, T::ZERO))
+    } else if movement == T::ZERO {
+        // Never a negative zero: money never prints "-0".
+        Some((T::ZERO, T::ZERO))
     } else {
         Some((T::ZERO, movement.checked_neg()?))
     }
@@ -379,6 +382,64 @@ mod tests {
         let mut parts = [0i64, 0];
         assert_eq!(apportion(1805, &mut parts, &[1, 0], 903), Some(()));
         assert_eq!(parts, [1805, 0]);
+    }
+
+    /// The i64 model's line range: up to 2^40 either way, inclusive.
+    #[test]
+    fn i64_line_range_is_two_to_the_fortieth() {
+        assert!((1i64 << 40).in_line_range());
+        assert!((-(1i64 << 40)).in_line_range());
+        assert!(!((1i64 << 40) + 1).in_line_range());
+        assert!(!i64::MIN.in_line_range());
+    }
+
+    /// B-9: a reversal flips every side and keeps accounts and amounts, so
+    /// with the original it nets every account to zero.
+    #[test]
+    fn a_reversal_flips_every_line_and_nets_to_zero() {
+        let lines = [
+            (1u8, Side::Debit, 70i64),
+            (2, Side::Credit, 50),
+            (3, Side::Credit, 20),
+        ];
+        let rev = reversal(&lines);
+        assert_eq!(rev.len(), lines.len());
+        for (o, r) in lines.iter().zip(&rev) {
+            assert_eq!((r.0, r.1, r.2), (o.0, flip(o.1), o.2));
+        }
+        let both = movements(lines.iter().chain(&rev).copied()).unwrap();
+        assert_eq!(both, vec![(1, 0), (2, 0), (3, 0)]);
+    }
+
+    /// Spec scenario 1's preconditions: parts and remainders pair up, and
+    /// the unit is positive; otherwise nothing is apportioned.
+    #[test]
+    fn apportion_refuses_mismatched_inputs_or_a_nonpositive_unit() {
+        let mut parts = [0i64, 0];
+        assert_eq!(apportion(0, &mut parts, &[0], 1), None);
+        assert_eq!(parts, [0, 0]);
+        let mut none: [i64; 0] = [];
+        assert_eq!(apportion(0, &mut none, &[], 0), None);
+        assert_eq!(apportion(0, &mut none, &[], -1), None);
+    }
+
+    /// With no parts, only a zero whole is fully apportioned.
+    #[test]
+    fn apportion_to_no_parts_accepts_only_zero() {
+        let mut none: [i64; 0] = [];
+        assert_eq!(apportion(0, &mut none, &[], 1), Some(()));
+        assert_eq!(apportion(5, &mut none, &[], 1), None);
+    }
+
+    /// A zero movement's columns are both a plain zero, never "-0" (found
+    /// by mutation triage, 2026-10-13: it returned a negative-zero credit).
+    #[test]
+    fn a_zero_movement_has_no_negative_zero_column() {
+        let (d, c) = columns(Decimal::ZERO).unwrap();
+        assert_eq!(
+            (d.to_string(), c.to_string()),
+            ("0".to_string(), "0".to_string())
+        );
     }
 
     #[test]

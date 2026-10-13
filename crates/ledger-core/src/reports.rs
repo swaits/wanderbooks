@@ -826,6 +826,7 @@ pub struct MembersEquityStatement {
 ///   3. Unclosed earnings and the period's income MUST be split by share,
 ///      to the cent, by largest remainder (DECISION, Stephen 2026-10-13).
 ///   4. NEVER hide an unexplained change: it goes in "other".
+///   5. An entry dated `start` is period activity, not beginning capital.
 /// SCENARIOS:
 ///   1. IF shares don't sum to 1, or are not positive: SHOULD refuse.
 /// ```
@@ -1111,6 +1112,12 @@ pub struct CashFlowStatement {
 ///   4. Financing MUST hold changes in equity (other than earnings) and in
 ///      the liabilities named as financing.
 ///   5. NEVER count closing entries.
+///   6. The period is `[start, end]`, inclusive: an entry dated `start` is
+///      period activity, not part of the beginning cash balance.
+///   7. Every line's amount is its cash effect: positive is cash in. Its
+///      label names the direction the balance moved ("Increase in" /
+///      "Decrease in"; "Proceeds from" / "Repayment of" for financing
+///      debt; "Owner contributions" / "Owner distributions" for equity).
 /// ```
 pub fn cash_flow(
     ledger: &Ledger,
@@ -1330,10 +1337,8 @@ pub fn cash_flow(
                     _ => {}
                 }
             }
-            let book_value = cost_amount - accum_debit;
             // Sanity: the entry balances, so proceeds + accum debit = cost + gain - loss.
             debug_assert!((proceeds + accum_debit - cost_amount - gain + loss).is_zero());
-            let _ = book_value;
             disposal_gain_loss += gain - loss;
             investing.push(CashFlowLine {
                 label: format!("Sale of fixed assets — {proceeds_label}"),

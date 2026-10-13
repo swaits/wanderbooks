@@ -252,6 +252,8 @@ pub struct DisposalAmounts {
 }
 
 /// Compute disposal amounts. Pure math; posting is the caller's job.
+/// A disposal may fall on the purchase date (one day held, accrual being
+/// inclusive, B-15 in docs/spec/rules.md); one before it is an error.
 pub fn disposal_amounts(
     asset: &Asset,
     date: NaiveDate,

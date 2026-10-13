@@ -203,3 +203,13 @@ fn dated_rules_go_stale_on_their_review_date() {
     );
     assert_eq!(stale_rules(d(2030, 6, 1)).len(), 1);
 }
+
+#[test]
+fn forms_have_their_irs_names() {
+    assert_eq!(Form1099::Nec.label(), "1099-NEC");
+    assert_eq!(Form1099::Misc.label(), "1099-MISC");
+    // A label parses back to its form.
+    for f in [Form1099::Nec, Form1099::Misc] {
+        assert_eq!(Form1099::parse(f.label()), Some(f));
+    }
+}

@@ -400,3 +400,20 @@ fn one_month_useful_life_is_valid() {
     let total: Decimal = sched.iter().map(|l| l.amount).sum();
     assert_eq!(total, Decimal::new(30000, 2));
 }
+
+#[test]
+fn disposal_on_the_purchase_date_is_allowed() {
+    let (mut ledger, cost, accum, expense) = test_ledger();
+    let id = van_asset(&mut ledger, 60_000, cost, accum, expense);
+    let asset = ledger.get_asset(id).unwrap().clone();
+    // Held one day: 1,000/month × 1/31 = 32.26 of depreciation.
+    let d = disposal_amounts(&asset, date(2026, 1, 15), usd("60000")).unwrap();
+    assert_eq!(d.accumulated, Decimal::new(3226, 2));
+    assert_eq!(d.book_value, Decimal::new(5_996_774, 2));
+    assert_eq!(d.gain_loss, Decimal::new(3226, 2));
+    // The day before purchase is not a disposal.
+    assert!(matches!(
+        disposal_amounts(&asset, date(2026, 1, 14), usd("60000")),
+        Err(ledger_core::LedgerError::DisposalBeforePurchase(_))
+    ));
+}

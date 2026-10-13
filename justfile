@@ -27,15 +27,16 @@ install:
 demo:
     cargo run --release -p ledger-gui -- --demo
 
-# Regenerate the website's screenshots from the demo company
+# Regenerate the website's screenshots (dark) from the demo company
 site-shots:
     #!/usr/bin/env bash
     set -euo pipefail
     tmp=$(mktemp -d)
-    SHOT_DIR="$tmp/light" SHOT_ONLY=overview,entry,pnl SHOT_ENTRY=249 cargo test -p ledger-gui --test screens
-    SHOT_DIR="$tmp/dark" SHOT_DARK=1 SHOT_ONLY=overview cargo test -p ledger-gui --test screens
-    for f in overview entry pnl; do cp "$tmp/light/$f.png" site/assets/; done
-    cp "$tmp/dark/overview.png" site/assets/overview-dark.png
+    SHOT_DIR="$tmp" SHOT_DARK=1 SHOT_LIVE=1 SHOT_ONLY=overview,pnl cargo test -p ledger-gui --test screens
+    # The hero's viewer pane: taller, to sit beside the session.
+    SHOT_DIR="$tmp" SHOT_DARK=1 SHOT_LIVE=1 SHOT_ONLY=entry SHOT_ENTRY=245 SHOT_HEIGHT=1150 cargo test -p ledger-gui --test screens
+    for f in overview entry pnl; do cp "$tmp/$f.png" site/assets/; done
+    rm -f site/assets/overview-dark.png
     rm -rf "$tmp"
 
 # Assemble the website in site/dist (index.html, install.sh, assets)

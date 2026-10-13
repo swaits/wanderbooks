@@ -47,6 +47,7 @@ pub struct App {
     state: PageState,
     palette: crate::palette::Palette,
     updated_at: f64,
+    live_label: bool,
 }
 
 impl App {
@@ -84,6 +85,7 @@ impl App {
             state: PageState::default(),
             palette: Default::default(),
             updated_at: -1e9,
+            live_label: false,
         }
     }
 
@@ -98,6 +100,12 @@ impl App {
     }
 
     /// Page state (tests).
+    /// Label a fixed-books app "Live", as it reads when following a
+    /// journal (screenshots of what a running app looks like).
+    pub fn show_live_label(&mut self) {
+        self.live_label = true;
+    }
+
     pub fn state_mut(&mut self) -> &mut PageState {
         &mut self.state
     }
@@ -250,7 +258,7 @@ impl App {
                             ui,
                             b,
                             ui.input(|i| i.time) - self.updated_at,
-                            self.loader.is_some(),
+                            self.loader.is_some() || self.live_label,
                         );
                     }
                 });

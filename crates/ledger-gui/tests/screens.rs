@@ -87,6 +87,9 @@ fn screenshots() {
                     .unwrap_or(920.0),
             ))
             .build_eframe(|cc| App::with_books(&cc.egui_ctx, books, dark, route.clone()));
+        if std::env::var("SHOT_LIVE").is_ok() {
+            harness.state_mut().show_live_label();
+        }
         harness.run_steps(4);
         let ctx = harness.ctx.clone();
         harness.state_mut().settle(&ctx);

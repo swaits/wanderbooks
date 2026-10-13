@@ -220,6 +220,11 @@ pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
             format!("Recurring: {}", s(p, "description")),
             Some(Route::Company),
         ),
+        "journal.tail_repaired" => ev(
+            icon::WARNING,
+            format!("Cut-off journal line set aside ({} bytes)", p["bytes"]),
+            None,
+        ),
         "recurring.generated" => ev(
             icon::REPEAT,
             "Recurring draft created".into(),

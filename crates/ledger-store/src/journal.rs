@@ -112,8 +112,11 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 /// Append-only writer. Assigns `seq`, stamps `ts`, chains `prev`, fsyncs
-/// every append. The sequence only advances after a successful fsync, so a
-/// torn tail can never exist in a file written by this writer.
+/// every append. The sequence only advances after a successful fsync, and a
+/// failed write is truncated away, so an append is acknowledged only once
+/// its whole line is on disk. A crash or power loss mid-append can still
+/// leave a partial last line; it was never acknowledged, and
+/// [`repair_torn_tail`] sets it aside when the books are next opened.
 pub struct JournalWriter {
     path: PathBuf,
     file: File,
@@ -224,10 +227,74 @@ pub fn read_and_verify_journal(path: &Path) -> Result<Vec<JournalLine>, StoreErr
     Ok(lines)
 }
 
+/// A torn final journal line, set aside when the books were opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TornTail {
+    /// How many bytes followed the last complete line.
+    pub bytes: u64,
+    /// SHA-256 of those bytes.
+    pub sha256: String,
+    /// Where they were saved, beside the journal.
+    pub saved_as: PathBuf,
+}
+
+/// Set aside a torn final line: bytes after the journal's last newline.
+///
+/// ```text
+/// GOAL: open books whose last append was cut off (power loss, crash).
+/// SOURCE: docs/receipt-store.md (a command is acknowledged only after its
+///   whole line, newline included, is synced); the same rule write-ahead
+///   logs use for a torn tail record (SQLite, PostgreSQL: recovery stops
+///   at the first incomplete record).
+/// SCENARIOS:
+///   1. IF the journal ends with a newline: SHOULD change nothing.
+///   2. IF bytes follow the last newline: SHOULD save them to a file
+///      beside the journal, truncate the journal to the last newline, and
+///      report them
+///      BECAUSE [`JournalWriter::append`] syncs the newline before it
+///      returns, so a line without one was never acknowledged: no one was
+///      told it happened, and dropping it loses nothing.
+///   3. NEVER touch a complete line: damage before the last newline is
+///      corruption, and opening refuses it.
+/// ```
+pub fn repair_torn_tail(path: &Path) -> Result<Option<TornTail>, StoreError> {
+    let raw = std::fs::read(path)?;
+    let keep = raw.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
+    if keep == raw.len() {
+        return Ok(None);
+    }
+    let tail = &raw[keep..];
+    let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S%.fZ").to_string();
+    let mut saved_as = path.as_os_str().to_owned();
+    saved_as.push(format!(".torn.{stamp}"));
+    let saved_as = PathBuf::from(saved_as);
+    {
+        let mut f = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&saved_as)?;
+        f.write_all(tail)?;
+        f.sync_all()?;
+    }
+    if let Some(dir) = path.parent()
+        && let Ok(d) = File::open(dir)
+    {
+        let _ = d.sync_all();
+    }
+    let file = OpenOptions::new().write(true).open(path)?;
+    file.set_len(keep as u64)?;
+    file.sync_all()?;
+    Ok(Some(TornTail {
+        bytes: tail.len() as u64,
+        sha256: sha256_hex(tail),
+        saved_as,
+    }))
+}
+
 /// Truncate a journal file to its last good line. For recovering *copies*
 /// with a torn tail (e.g. a backup taken mid-write): the projection never
 /// saw the torn line, so dropping it is safe. Returns the last good seq.
-/// The live journal written by [`JournalWriter`] cannot have a torn tail.
+/// The live journal's torn tail is handled on open by [`repair_torn_tail`].
 pub fn truncate_to_last_good_seq(path: &Path) -> Result<u64, StoreError> {
     let raw = std::fs::read(path)?;
     let mut good_len = 0usize;

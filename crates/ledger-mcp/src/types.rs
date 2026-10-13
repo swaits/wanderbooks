@@ -1266,6 +1266,22 @@ pub struct DigestOut {
     /// for everyone with a pull request (or at least an issue) at
     /// <https://github.com/swaits/wanderbooks>.
     pub stale_rules: Vec<StaleRule>,
+    /// Appends cut off mid-line (a crash or power loss) that were set aside
+    /// when the books were opened, since `since`. Nothing acknowledged was
+    /// lost; tell the human, and if they had just asked for a change,
+    /// check it is there and redo it if not.
+    pub journal_repairs: Vec<JournalRepair>,
+}
+
+/// A torn journal tail set aside on open.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct JournalRepair {
+    /// When it was set aside (UTC timestamp).
+    pub at: String,
+    /// How many bytes were cut off.
+    pub bytes: u64,
+    /// The file beside the journal they were saved to.
+    pub saved_as: String,
 }
 
 /// A dated rule due for review (see `ledger_core::rules`).

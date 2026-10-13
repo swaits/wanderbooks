@@ -237,6 +237,8 @@ impl Store {
         }
         // The writer lock first: nothing is read until no one else writes.
         let lock = lock_books(data_dir)?;
+        // An append cut off mid-line was never acknowledged: set it aside.
+        let torn = crate::journal::repair_torn_tail(&journal_path)?;
         // Single verified scan; the writer reuses it.
         let lines = read_and_verify_journal(&journal_path)?;
         let journal = JournalWriter::from_lines(&journal_path, &lines)?;
@@ -305,6 +307,23 @@ impl Store {
             base_currency,
         };
         store.catch_up(&lines)?;
+        if let Some(t) = torn {
+            // On the record, so the repair is part of the audit trail.
+            let line = store.append_journal(
+                "journal.tail_repaired",
+                json!({
+                    "bytes": t.bytes,
+                    "sha256": t.sha256,
+                    "saved_as": t.saved_as.file_name().map(|n| n.to_string_lossy().into_owned()),
+                }),
+            )?;
+            apply_line_to_sqlite(&store.conn, &line)?;
+            eprintln!(
+                "wanderbooks: the journal's last line was cut off (an append that never finished); set aside {} bytes in {}",
+                t.bytes,
+                t.saved_as.display()
+            );
+        }
         Ok(store)
     }
 
@@ -412,6 +431,23 @@ impl Store {
     /// Base currency of this store.
     pub fn base_currency(&self) -> Currency {
         self.base_currency
+    }
+
+    /// Every torn journal tail set aside on open, oldest first, as
+    /// (when, bytes, file it was saved to).
+    pub fn tail_repairs(&self) -> Result<Vec<(String, u64, String)>, StoreError> {
+        let lines = crate::journal::read_and_verify_journal(&self.data_dir.join(JOURNAL_FILE))?;
+        Ok(lines
+            .iter()
+            .filter(|l| l.line_type == "journal.tail_repaired")
+            .map(|l| {
+                (
+                    l.ts.clone(),
+                    l.payload["bytes"].as_u64().unwrap_or(0),
+                    l.payload["saved_as"].as_str().unwrap_or("").to_string(),
+                )
+            })
+            .collect())
     }
 
     /// Data directory.
@@ -3340,6 +3376,7 @@ pub(crate) fn replay_line_into_ledger(
                 p.get("class_id").and_then(|v| v.as_u64()).map(|v| v as u32),
             )?;
         }
+        "journal.tail_repaired" => {}
         other => {
             return Err(StoreError::JournalCorrupt(format!(
                 "unknown line type: {other}"
@@ -3545,7 +3582,7 @@ pub(crate) fn apply_line_to_sqlite(
 fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreError> {
     let p = &line.payload;
     match line.line_type.as_str() {
-        "store.created" => {}
+        "store.created" | "journal.tail_repaired" => {}
         "account.added" => {
             conn.execute(
                 "INSERT INTO accounts(id, code, name, type, parent, placeholder, currency) VALUES (?,?,?,?,?,?,?)",

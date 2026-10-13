@@ -102,6 +102,27 @@ pub enum LedgerError {
         placeholder: bool,
     },
 
+    /// A rule set by law (a dollar threshold, a rate) isn't known to
+    /// wanderbooks for the year asked; the engine never guesses (see
+    /// [`crate::rules`]).
+    #[error(
+        "wanderbooks knows the {rule} only through {known_through}, not for {year}. \
+         Find the {year} figure from the official source (see {spec}) or ask the books' \
+         owner or CPA, and pass it explicitly. Then update the rule for everyone: open a \
+         pull request (or at least an issue) at https://github.com/swaits/wanderbooks with \
+         the new value and its official source."
+    )]
+    RuleNotKnown {
+        /// The rule's plain name.
+        rule: String,
+        /// The year asked for.
+        year: i32,
+        /// The last year the rule is known for.
+        known_through: i32,
+        /// The vendored official source of the rule.
+        spec: String,
+    },
+
     /// The referenced journal entry does not exist.
     #[error("entry {0} does not exist")]
     UnknownEntry(u64),

@@ -12,7 +12,7 @@
 //! Thresholds are set by law and change; [`default_threshold`] encodes
 //! them and the report takes an override. Confirm with the CPA.
 
-use crate::{AccountType, Ledger, VendorId};
+use crate::{AccountType, Ledger, LedgerError, VendorId};
 use chrono::Datelike;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -47,17 +47,40 @@ impl Form1099 {
     }
 }
 
-/// The reporting threshold for payments made in `year`: $600 through 2025;
-/// $2,000 from 2026 (One Big Beautiful Bill Act), indexed for inflation
-/// after 2026, so later years return $2,000 until updated. Royalties
-/// (1099-MISC) have a $10 threshold this doesn't model. Pass an explicit
-/// threshold to override.
-pub fn default_threshold(year: i32) -> Decimal {
-    if year <= 2025 {
+/// The reporting threshold for payments made in `year`.
+///
+/// ```text
+/// GOAL: the dollar amount at which a vendor's payments become reportable.
+/// SOURCE: docs/spec/rules.md B-19 (26 U.S.C. §6041(a), (h), §6041A(a)(2),
+///         Pub. L. 119-21 §70433; sources/irs-1099-thresholds.md).
+/// SCENARIOS:
+///   1. IF `year` <= 2025: SHOULD be $600.
+///   2. IF `year` == 2026: SHOULD be $2,000.
+///   3. IF `year` > rules::THRESHOLD_1099.known_through:
+///      - SHOULD refuse with RuleNotKnown
+///      - NEVER guess $2,000
+///      BECAUSE the amount is indexed for inflation after 2026 and not
+///      yet known (Stephen, 2026-10-13: never apply stale rules).
+/// ```
+///
+/// Royalties (1099-MISC, $10) and attorneys' gross proceeds ($600) are not
+/// modeled. Pass an explicit threshold to [`vendor_1099_report`] to
+/// override.
+pub fn default_threshold(year: i32) -> Result<Decimal, LedgerError> {
+    let rule = crate::rules::THRESHOLD_1099;
+    if year > rule.known_through {
+        return Err(LedgerError::RuleNotKnown {
+            rule: rule.name.to_string(),
+            year,
+            known_through: rule.known_through,
+            spec: rule.source.to_string(),
+        });
+    }
+    Ok(if year <= 2025 {
         Decimal::new(600, 0)
     } else {
         Decimal::new(2000, 0)
-    }
+    })
 }
 
 /// One vendor's year.
@@ -94,8 +117,11 @@ pub fn vendor_1099_report(
     ledger: &Ledger,
     year: i32,
     threshold: Option<Decimal>,
-) -> Vendor1099Report {
-    let threshold = threshold.unwrap_or_else(|| default_threshold(year));
+) -> Result<Vendor1099Report, LedgerError> {
+    let threshold = match threshold {
+        Some(t) => t,
+        None => default_threshold(year)?,
+    };
     let mut paid: std::collections::HashMap<VendorId, Decimal> = Default::default();
     for entry in ledger.posted_entries() {
         if entry.date().year() != year {
@@ -137,9 +163,9 @@ pub fn vendor_1099_report(
         })
         .collect();
     vendors.sort_by(|a, b| a.name.cmp(&b.name).then(a.vendor_id.cmp(&b.vendor_id)));
-    Vendor1099Report {
+    Ok(Vendor1099Report {
         year,
         threshold,
         vendors,
-    }
+    })
 }

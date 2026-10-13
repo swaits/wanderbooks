@@ -23,7 +23,7 @@ use rust_decimal::Decimal;
 use std::sync::{Arc, Mutex};
 
 /// The agent operating contract, delivered via initialize.
-const INSTRUCTIONS: &str = "You are the bookkeeping agent for these books. The engine enforces the accounting; you enforce the workflow.\n\nRULES\n- Money is exact decimal. Always pass amounts as decimal strings (\"123.45\"), never floats.\n- Never post directly. The flow is draft (books.draft_entry) -> add lines (books.add_line) -> preview (books.post_entry without confirmed) -> review the preview -> post (books.post_entry with confirmed=true).\n- Every entry must balance: debits equal credits, exactly. Every line needs a real account from books.chart. The engine rejects anything else.\n- Receipts: any entry moving more than $25.00 in debits needs at least one receipt attached (books.attach_receipt) before posting. The server rejects the post otherwise. This is enforced, not a suggestion.\n- Never invent accounts. If the account you need does not exist, add it with books.add_account first.\n- Corrections go through books.reverse_entry. Posted entries are immutable; there is no edit.\n- Receipt corrections: receipts can change, but nothing is erased. To replace one, attach the new receipt, then books.unlink_receipt the old (with a reason); retire unwanted receipts or documents with books.withdraw_attachment (with a reason). The journal keeps every step.\n- After posting, check books.digest to review what changed, so a human can review too.\n- Amounts in every response are decimal strings. Treat them as exact.\n- Fixed assets: register with books.register_asset, inspect with books.asset_schedule and books.list_assets, post monthly depreciation with books.run_depreciation (exempt from the receipt policy; the schedule is the evidence), and dispose with books.dispose_asset (preview first; the bill of sale is the receipt). Depreciation is straight-line, book basis only - tax depreciation stays with the CPA.\n- Prepaid expenses and deferred revenue: record the original payment (with its receipt), then books.create_schedule; books.run_schedules posts the monthly amortization (preview first; exempt from the receipt policy like depreciation). Recurring entries (books.create_recurring, books.run_recurring) only ever create drafts: attach each actual receipt and post through the normal preview.\n- Platform payouts (app stores, payment processors, marketplaces): never book the net deposit as revenue. books.record_payout grosses it up (gross revenue, fees, adjustments) into a draft and refuses unless it reconciles to the cent; attach the payout statement, then preview and post.\n- The viewer: the human usually has the read-only viewer open beside you (`just gui`). When they ask to see something, and after you post, call books.show so it's on their screen.\n- 1099s: mark contractors and landlords with books.set_vendor_1099 (and whether their W-9 is on file; never store a TIN), and tag every payment to them with its vendor (books.draft_entry vendor, or books.set_entry_vendor; books.pay_bill tags automatically). books.vendor_1099 is the year-end worksheet for the CPA.";
+const INSTRUCTIONS: &str = "You are the bookkeeping agent for these books. The engine enforces the accounting; you enforce the workflow.\n\nRULES\n- Money is exact decimal. Always pass amounts as decimal strings (\"123.45\"), never floats.\n- Never post directly. The flow is draft (books.draft_entry) -> add lines (books.add_line) -> preview (books.post_entry without confirmed) -> review the preview -> post (books.post_entry with confirmed=true).\n- Every entry must balance: debits equal credits, exactly. Every line needs a real account from books.chart. The engine rejects anything else.\n- Receipts: any entry moving more than $25.00 in debits needs at least one receipt attached (books.attach_receipt) before posting. The server rejects the post otherwise. This is enforced, not a suggestion.\n- Never invent accounts. If the account you need does not exist, add it with books.add_account first.\n- Corrections go through books.reverse_entry. Posted entries are immutable; there is no edit.\n- Receipt corrections: receipts can change, but nothing is erased. To replace one, attach the new receipt, then books.unlink_receipt the old (with a reason); retire unwanted receipts or documents with books.withdraw_attachment (with a reason). The journal keeps every step.\n- After posting, check books.digest to review what changed, so a human can review too.\n- Amounts in every response are decimal strings. Treat them as exact.\n- Fixed assets: register with books.register_asset, inspect with books.asset_schedule and books.list_assets, post monthly depreciation with books.run_depreciation (exempt from the receipt policy; the schedule is the evidence), and dispose with books.dispose_asset (preview first; the bill of sale is the receipt). Depreciation is straight-line, book basis only - tax depreciation stays with the CPA.\n- Prepaid expenses and deferred revenue: record the original payment (with its receipt), then books.create_schedule; books.run_schedules posts the monthly amortization (preview first; exempt from the receipt policy like depreciation). Recurring entries (books.create_recurring, books.run_recurring) only ever create drafts: attach each actual receipt and post through the normal preview.\n- Platform payouts (app stores, payment processors, marketplaces): never book the net deposit as revenue. books.record_payout grosses it up (gross revenue, fees, adjustments) into a draft and refuses unless it reconciles to the cent; attach the payout statement, then preview and post.\n- The viewer: the human usually has the read-only viewer open beside you (`just gui`). When they ask to see something, and after you post, call books.show so it's on their screen.\n- 1099s: mark contractors and landlords with books.set_vendor_1099 (and whether their W-9 is on file; never store a TIN), and tag every payment to them with its vendor (books.draft_entry vendor, or books.set_entry_vendor; books.pay_bill tags automatically). books.vendor_1099 is the year-end worksheet for the CPA.\n- Rules that change with the law: wanderbooks knows some legal amounts (like the 1099 threshold) only through a given year and never guesses past it. When a tool refuses with \"wanderbooks knows the ... only through\", or books.digest lists stale_rules: check today's date, find the current figure from the official source (the refusal names the vendored source file) or ask the human (owner, CPA), confirm it with them, and pass it explicitly. Then update the rule for everyone: open a pull request at https://github.com/swaits/wanderbooks with the new value and its official text (best), or at least an issue; if you can't reach GitHub, give the human the issue text to file.\n- Control accounts: invoices, bills, payroll, and closes post to accounts found by code (1200, 2000, 4000, 6999, 3999, 6100-2150). If the chart already uses one of those codes for a different kind of account, the engine refuses and says which. Never rename or renumber the human's accounts on your own: explain the conflict and let them decide.";
 
 /// Max receipt/document upload: 25 MB.
 const MAX_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
@@ -1613,10 +1613,21 @@ impl BooksServer {
             }
         }
         totals.sort_by(|a, b| a.code.cmp(&b.code));
+        let stale_rules = ledger_core::rules::stale_rules(today)
+            .into_iter()
+            .map(|r| StaleRule {
+                name: r.name.to_string(),
+                known_through: r.known_through,
+                catalog: r.catalog.to_string(),
+                source: r.source.to_string(),
+                why: r.review_why.to_string(),
+            })
+            .collect();
         Ok(Json(DigestOut {
             since: since.to_string(),
             entries,
             totals_by_account: totals,
+            stale_rules,
         }))
     }
 
@@ -2058,7 +2069,7 @@ impl BooksServer {
 
     #[tool(
         name = "books.vendor_1099",
-        description = "1099 worksheet for a calendar year: cash paid to each vendor (credits minus debits to asset accounts on entries tagged with the vendor, so card payments, which the card processor reports on 1099-K, are excluded), which vendors are reportable (marked NEC/MISC and paid at least the threshold: $600 through 2025, $2,000 from 2026), and which are missing a W-9. For the CPA to confirm.",
+        description = "1099 worksheet for a calendar year: cash paid to each vendor (credits minus debits to asset accounts on entries tagged with the vendor, so card payments, which the card processor reports on 1099-K, are excluded), which vendors are reportable (marked NEC/MISC and paid at least the threshold: $600 through 2025, $2,000 in 2026, indexed for inflation after that), and which are missing a W-9. For a year whose threshold wanderbooks doesn't know yet it refuses rather than guess: get the figure from the IRS or the human, pass it as `threshold`, and update the rule for everyone (pull request or issue at github.com/swaits/wanderbooks). For the CPA to confirm.",
         annotations(read_only_hint = true)
     )]
     async fn vendor_1099(
@@ -2068,7 +2079,10 @@ impl BooksServer {
         let p = params.0;
         let threshold = p.threshold.as_deref().map(parse_amount).transpose()?;
         let store = self.lock()?;
-        let r = ledger_core::vendor_1099_report(store.ledger(), p.year, threshold);
+        // A year past what wanderbooks knows is refused with guidance
+        // (research or ask, pass `threshold`, then update the rule).
+        let r = ledger_core::vendor_1099_report(store.ledger(), p.year, threshold)
+            .map_err(|e| e.to_string())?;
         let missing_w9 = r
             .vendors
             .iter()
@@ -3574,19 +3588,28 @@ impl BooksServer {
         ));
         // 1099 worksheet for the calendar year of as_of.
         let year = chrono::Datelike::year(&as_of);
-        let r1099 = ledger_core::vendor_1099_report(ledger, year, None);
-        let mut w = String::from("vendor,form,w9_on_file,paid,reportable\n");
-        for v in &r1099.vendors {
-            w.push_str(&format!(
-                "\"{}\",{},{},{},{}\n",
-                v.name.replace('"', "\"\""),
-                v.form.map(|f| f.label()).unwrap_or(""),
-                v.tin_on_file,
-                money(v.paid),
-                v.reportable
-            ));
+        match ledger_core::vendor_1099_report(ledger, year, None) {
+            Ok(r1099) => {
+                let mut w = String::from("vendor,form,w9_on_file,paid,reportable\n");
+                for v in &r1099.vendors {
+                    w.push_str(&format!(
+                        "\"{}\",{},{},{},{}\n",
+                        v.name.replace('"', "\"\""),
+                        v.form.map(|f| f.label()).unwrap_or(""),
+                        v.tin_on_file,
+                        money(v.paid),
+                        v.reportable
+                    ));
+                }
+                files.push((format!("1099-worksheet-{year}.csv"), w.into_bytes()));
+            }
+            // The threshold isn't known for this year: never guess it
+            // (rules.md B-19); say so in the package instead.
+            Err(e) => files.push((
+                format!("1099-worksheet-{year}-NOT-INCLUDED.txt"),
+                format!("{e}\n").into_bytes(),
+            )),
         }
-        files.push((format!("1099-worksheet-{year}.csv"), w.into_bytes()));
         // The evidence: every current receipt on the year's posted entries,
         // and the company's documents, with an index tying them together.
         let mut receipt_count = 0;

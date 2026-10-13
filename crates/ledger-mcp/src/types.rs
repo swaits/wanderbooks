@@ -1247,6 +1247,27 @@ pub struct DigestOut {
     pub entries: Vec<DigestEntry>,
     /// Net movement per account over the period.
     pub totals_by_account: Vec<DigestTotal>,
+    /// Rules set by law (like the 1099 threshold) that wanderbooks may no
+    /// longer know as of today. For each: research the current value from
+    /// the official source or ask the human (owner, CPA), then update it
+    /// for everyone with a pull request (or at least an issue) at
+    /// https://github.com/swaits/wanderbooks.
+    pub stale_rules: Vec<StaleRule>,
+}
+
+/// A dated rule due for review (see `ledger_core::rules`).
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct StaleRule {
+    /// Plain name, e.g. "1099 reporting threshold".
+    pub name: String,
+    /// The last year wanderbooks knows it for.
+    pub known_through: i32,
+    /// Its entry in docs/spec/rules.md.
+    pub catalog: String,
+    /// The vendored official text in the wanderbooks repo.
+    pub source: String,
+    /// Why it's due, and where the next value comes from.
+    pub why: String,
 }
 
 /// Parameters for `books.export`.

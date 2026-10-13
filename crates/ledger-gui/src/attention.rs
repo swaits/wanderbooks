@@ -1,7 +1,7 @@
 //! What the books need: drafts left unposted, missing receipts, schedules
 //! and recurring entries due, open past periods, uncategorized tax lines,
 //! 1099 vendors without a W-9, overdue bills and invoices, money owed to
-//! owners. Each item says what's wrong, where to look, and the prompt that
+//! owners, and legal rules (like the 1099 threshold) due for an update. Each item says what's wrong, where to look, and the prompt that
 //! asks the agent to fix it (the GUI never changes the books itself).
 
 use crate::books::{Attention, Books, Severity};
@@ -176,12 +176,34 @@ pub fn find(b: &Books) -> Vec<Attention> {
         }
     }
 
+    // Rules set by law that wanderbooks may no longer know (rules.md;
+    // Stephen, 2026-10-13): research or ask, then update them for everyone.
+    for rule in ledger_core::rules::stale_rules(today) {
+        out.push(Attention {
+            severity: Severity::Todo,
+            title: format!("Check the {}", rule.name),
+            detail: format!(
+                "wanderbooks knows it through {}. {}",
+                rule.known_through, rule.review_why
+            ),
+            target: None,
+            prompt: format!(
+                "wanderbooks' {} is known only through {}. Find the current figure from the official source (see {} in the wanderbooks repo), or ask me or our CPA, and tell me what you found. Then update the rule for everyone: open a pull request at https://github.com/swaits/wanderbooks with the new value and its official source (or at least an issue).",
+                rule.name, rule.known_through, rule.source
+            ),
+        });
+    }
+
     let mut years = vec![today.year()];
     if today.month() == 1 {
         years.insert(0, today.year() - 1);
     }
     for year in years {
-        let r = vendor_1099_report(&b.ledger, year, None);
+        // A year whose threshold isn't known is flagged by the stale-rule
+        // item above; never guess it here.
+        let Ok(r) = vendor_1099_report(&b.ledger, year, None) else {
+            continue;
+        };
         for v in r.vendors.iter().filter(|v| v.reportable && !v.tin_on_file) {
             out.push(Attention {
                 severity: Severity::Problem,

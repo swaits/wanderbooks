@@ -655,7 +655,7 @@ fn vendor_1099_tags_replay_and_project() {
     store.post_entry(dup).unwrap();
     store.set_entry_vendor(dup, Some(dana)).unwrap();
     store.reverse_entry(dup, d(6, 3), "duplicate").unwrap();
-    let before = vendor_1099_report(store.ledger(), 2026, None);
+    let before = vendor_1099_report(store.ledger(), 2026, None).unwrap();
     assert_eq!(before.vendors[0].paid, Decimal::from(2200));
     assert!(before.vendors[0].reportable);
     drop(store);
@@ -666,7 +666,10 @@ fn vendor_1099_tags_replay_and_project() {
             std::fs::remove_file(dir.join(ledger_store::DB_FILE)).unwrap();
         }
         let store = Store::open(&dir).unwrap();
-        assert_eq!(vendor_1099_report(store.ledger(), 2026, None), before);
+        assert_eq!(
+            vendor_1099_report(store.ledger(), 2026, None).unwrap(),
+            before
+        );
         let conn = rusqlite::Connection::open(dir.join(ledger_store::DB_FILE)).unwrap();
         let tagged: i64 = conn
             .query_row(

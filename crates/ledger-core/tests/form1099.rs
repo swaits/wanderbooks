@@ -86,7 +86,7 @@ fn books() -> Ledger {
 #[test]
 fn cash_paid_per_vendor_and_who_is_reportable() {
     let l = books();
-    let r = vendor_1099_report(&l, 2026, None);
+    let r = vendor_1099_report(&l, 2026, None).unwrap();
     assert_eq!(r.threshold, dec("2000"));
     let rows: Vec<(&str, Decimal, bool)> = r
         .vendors
@@ -110,14 +110,15 @@ fn cash_paid_per_vendor_and_who_is_reportable() {
 #[test]
 fn years_and_thresholds() {
     let l = books();
-    assert_eq!(default_threshold(2025), dec("600"));
-    assert_eq!(default_threshold(2026), dec("2000"));
-    let y2025 = vendor_1099_report(&l, 2025, None);
+    // SOURCE: rules.md B-19 (sources/irs-1099-thresholds.md).
+    assert_eq!(default_threshold(2025), Ok(dec("600")));
+    assert_eq!(default_threshold(2026), Ok(dec("2000")));
+    let y2025 = vendor_1099_report(&l, 2025, None).unwrap();
     let dana = y2025.vendors.iter().find(|v| v.name == "Dana").unwrap();
     assert_eq!(dana.paid, dec("300"));
     assert!(!dana.reportable, "300 < 600");
     // An override: at 1,000, Ace's 1,200 is reportable.
-    let r = vendor_1099_report(&l, 2026, Some(dec("1000")));
+    let r = vendor_1099_report(&l, 2026, Some(dec("1000"))).unwrap();
     assert!(
         r.vendors
             .iter()
@@ -144,4 +145,61 @@ fn tags_need_real_entries_and_vendors() {
     assert_eq!(Form1099::parse("1099-NEC"), Some(Form1099::Nec));
     assert_eq!(Form1099::parse("misc"), Some(Form1099::Misc));
     assert_eq!(Form1099::parse("K"), None);
+}
+
+/// Spec (Stephen, 2026-10-13): a rule set by law that wanderbooks doesn't
+/// know for a year is never guessed. 26 U.S.C. §6041(h) indexes the $2,000
+/// threshold for calendar years after 2026; until the indexed amount is in
+/// the rule table, asking for it is an error that says what to do.
+#[test]
+fn an_unknown_year_threshold_is_never_guessed() {
+    let err = default_threshold(2027).unwrap_err();
+    let LedgerError::RuleNotKnown {
+        rule,
+        year,
+        known_through,
+        spec,
+    } = &err
+    else {
+        panic!("expected RuleNotKnown, got {err:?}");
+    };
+    assert_eq!(
+        (rule.as_str(), *year, *known_through),
+        ("1099 reporting threshold", 2027, 2026)
+    );
+    assert!(spec.ends_with("irs-1099-thresholds.md"), "{spec}");
+    let why = err.to_string();
+    for needle in [
+        "2027",
+        "official source",
+        "CPA",
+        "github.com/swaits/wanderbooks",
+    ] {
+        assert!(why.contains(needle), "missing {needle:?} in: {why}");
+    }
+    let l = books();
+    assert!(matches!(
+        vendor_1099_report(&l, 2027, None),
+        Err(LedgerError::RuleNotKnown { .. })
+    ));
+    // An explicit threshold (from the IRS, or the owner or CPA) works.
+    let r = vendor_1099_report(&l, 2027, Some(dec("2100"))).unwrap();
+    assert_eq!(r.threshold, dec("2100"));
+}
+
+/// Spec: a dated rule is due for review from its review date, and stays
+/// due; before it, nothing is stale. The engine has no clock: callers pass
+/// today.
+#[test]
+fn dated_rules_go_stale_on_their_review_date() {
+    use ledger_core::rules::{THRESHOLD_1099, stale_rules};
+    assert!(stale_rules(d(2026, 10, 13)).is_empty());
+    let due = THRESHOLD_1099.review_after();
+    assert!(stale_rules(due.pred_opt().unwrap()).is_empty());
+    assert_eq!(stale_rules(due).len(), 1);
+    assert_eq!(
+        stale_rules(d(2027, 1, 1))[0].name,
+        "1099 reporting threshold"
+    );
+    assert_eq!(stale_rules(d(2030, 6, 1)).len(), 1);
 }

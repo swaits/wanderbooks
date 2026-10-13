@@ -60,9 +60,24 @@ codex:
 codex-setup:
     codex mcp add "@@CODEX_NAME@@" -- "@@LEDGER_MCP@@" --data-dir "{{justfile_directory()}}/books-data"
 
-# Open the live, read-only view of these books
+# Open the live, read-only view of these books (in the background; once per books dir)
 gui:
-    "@@LEDGER_GUI@@" --data-dir books-data --books-toml wanderbooks.toml
+    #!/usr/bin/env bash
+    set -u
+    if just gui-status &>/dev/null; then echo "The viewer is already open."; exit 0; fi
+    log="{{justfile_directory()}}/books-data/gui.log"
+    nohup "@@LEDGER_GUI@@" --data-dir "{{justfile_directory()}}/books-data" \
+        --books-toml "{{justfile_directory()}}/wanderbooks.toml" >"$log" 2>&1 </dev/null &
+    sleep 1
+    if kill -0 $! 2>/dev/null; then echo "Viewer open (pid $!)."; else echo "The viewer didn't start:"; cat "$log"; exit 1; fi
+
+# Open the viewer in the foreground (logs in the terminal; Ctrl-C closes it)
+gui-fg:
+    "@@LEDGER_GUI@@" --data-dir "{{justfile_directory()}}/books-data" --books-toml "{{justfile_directory()}}/wanderbooks.toml"
+
+# Is the viewer open for these books? Prints open/closed; exits 0 only if open
+gui-status:
+    @pgrep -f -- "ledger-gui --data-dir {{justfile_directory()}}/books-data( |$)" >/dev/null && echo open || { echo closed; exit 1; }
 
 # Commit the journal: the git history of this dir is the archive
 backup:
@@ -169,6 +184,14 @@ Bank feeds aren't automatic here: import the bank's CSV export
   them read access) and open it with `wanderbooks gui`, or `ledger-gui
   --data-dir books-data`. Nothing they do there can change the books.
 
+## Session start
+
+Run `just gui-status`. If the viewer isn't open, follow `[viewer]
+open_at_start` in `wanderbooks.toml`: `"ask"` (the default) offers to open
+it, `"always"` opens it with `just gui`, `"never"` leaves it. `just gui`
+starts it in the background and does nothing if it's already open. If the
+human tells you their preference, write it there.
+
 ## Ongoing
 
 - Every transaction: draft, preview, confirm with the human, post, attach
@@ -203,6 +226,12 @@ fiscal_year_start = "01-01"
 data_dir = "books-data"
 accounting_basis = "accrual"
 receipt_threshold = "25.00"
+
+[viewer]
+# When a session starts and the viewer isn't open (`just gui-status`), the
+# agent: "ask" offers to open it, "always" opens it (`just gui`), "never"
+# leaves it closed.
+open_at_start = "ask"
 "#;
 
 const GITIGNORE: &str = r#"# The SQLite projection is disposable — it rebuilds from journal.jsonl.
@@ -210,6 +239,8 @@ books-data/wanderbooks.db
 books-data/wanderbooks.db-*
 # Generated exports can always be regenerated from the journal.
 exports/
+# The background viewer's log (`just gui`).
+books-data/gui.log
 "#;
 
 const START_PROMPT: &str = "Hi! These are brand-new books. Please set them up with me.";

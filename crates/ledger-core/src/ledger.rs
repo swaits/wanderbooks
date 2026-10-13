@@ -390,7 +390,36 @@ impl Ledger {
     /// Generate one occurrence of a recurring entry as a *draft* (never
     /// posted: the agent attaches the receipt and posts it). `date` must be
     /// an occurrence not yet generated. Returns the draft's id.
+    ///
+    /// ```text
+    /// GOAL: turn one due occurrence of a recurring entry into a draft.
+    /// SOURCE: docs/spec/rules.md B-12; Lean invariant Inv.draftsOpen.
+    /// SCENARIOS:
+    ///   1. IF the date falls in a closed period:
+    ///      - SHOULD refuse (ClosedPeriod)
+    ///      - NEVER create a draft there
+    ///      BECAUSE a closed period takes no new entries, however they
+    ///      are made (found by the store's refusal property, 2026-10-13).
+    ///   2. IF the date is not an ungenerated occurrence: SHOULD refuse.
+    ///   3. IF a line is refused: SHOULD leave the ledger as it was (no
+    ///      half-built draft, no id spent).
+    ///   4. Otherwise: SHOULD create a draft with the template's lines and
+    ///      mark the occurrence generated.
+    /// ```
     pub fn generate_recurring(
+        &mut self,
+        id: RecurringId,
+        date: NaiveDate,
+    ) -> Result<EntryId, LedgerError> {
+        if let Some(pid) = self.closed_period_containing(date) {
+            return Err(LedgerError::ClosedPeriod(pid, date.to_string()));
+        }
+        self.replay_generate_recurring(id, date)
+    }
+
+    /// [`Self::generate_recurring`] without the closed-period check, for
+    /// replaying journals written before that check existed.
+    pub fn replay_generate_recurring(
         &mut self,
         id: RecurringId,
         date: NaiveDate,
@@ -407,7 +436,11 @@ impl Ledger {
         let (description, lines) = (r.description.clone(), r.lines.clone());
         let entry = self.create_entry(date, &description);
         for (account, side, money) in lines {
-            self.add_line(entry, account, side, money)?;
+            if let Err(e) = self.add_line(entry, account, side, money) {
+                self.entries.remove(&entry);
+                self.next_entry_id = entry;
+                return Err(e);
+            }
         }
         self.recurring
             .get_mut(&id)
@@ -415,6 +448,18 @@ impl Ledger {
             .generated
             .insert(date);
         Ok(entry)
+    }
+
+    /// Occurrences due through `through` that can't be generated because
+    /// their date falls in a closed period, as (recurring entry, date).
+    /// They need a human decision (book them in an open period by hand,
+    /// or not at all).
+    pub fn recurring_in_closed_periods(&self, through: NaiveDate) -> Vec<(RecurringId, NaiveDate)> {
+        self.recurring
+            .values()
+            .flat_map(|r| r.due(through).into_iter().map(move |d| (r.id, d)))
+            .filter(|(_, d)| self.closed_period_containing(*d).is_some())
+            .collect()
     }
 
     /// The id the next account added will receive.

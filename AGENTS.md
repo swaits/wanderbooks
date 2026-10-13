@@ -12,9 +12,13 @@ what they haven't demonstrated.
 semantics, built to become a full bookkeeping application (engine now, UI
 later). The reference points:
 
-- **Semantic oracle:** GnuCash. It is open source with open file formats
-  (XML/SQLite), which makes it both the spec and the reference implementation
-  we diff against. See `docs/oracle.md`.
+- **Spec:** accounting principles, written down as proofs
+  (`docs/verification.md`). That is the only authority.
+- **Cross-check oracles:** GnuCash (open source, open file formats), the
+  old Google Sheet, QBO/Xero exports. Useful to diff against, *never*
+  trusted to be right: a disagreement is adjudicated from principles, and
+  nothing may rest on another program's behavior alone. See
+  `docs/oracle.md`, "Who is right".
 - **Workflow reference:** QuickBooks Online and Xero — for *what the UI must
   do*, never for code. We observe behavior; we write our own implementation.
 - **Method reference:** storytold/ArtCraft's app-cloning pipeline
@@ -37,6 +41,10 @@ later). The reference points:
    IRS publications for tax-adjacent logic later. GnuCash itself is GPL —
    read its docs, never copy its code. This repo is MIT OR Apache-2.0.
    Never disassemble or copy from proprietary software.
+6. **Accounting laws are proved, not just tested.** Arithmetic that money
+   flows through lives in `kernel.rs` and carries Kani proofs; the laws
+   it serves carry Lean proofs. `just prove` stays green. See
+   "Formal methods" below.
 
 ## Verification protocol (read this twice)
 
@@ -59,6 +67,58 @@ numbers**. The analog of storytold's screenshot-in-the-loop:
   oracles die.
 - The randomized invariant test (`random_balanced_journals_preserve_invariants`)
   is the always-on property oracle. Extend it when you add invariants.
+
+## Formal methods: the bar (read this three times)
+
+Tests check the cases someone thought of; proofs check all of them. The
+first formal pass on this engine (2026-10, `docs/verification.md`) paid
+for itself several times over, on code that already had 190+ tests,
+property tests, mutation testing, and 11.5M fuzz executions:
+
+- **Negative line amounts were accepted by the engine.** Only the MCP
+  layer refused them. Any other caller could post them.
+- **A large enough amount crashed the engine** (a `Decimal` overflow
+  panic while summing lines) instead of returning an error.
+- **Currency conversion could crash** the same way.
+- **The verifier itself had a soundness bug.** Kani 0.68 mis-models
+  `copy_from_slice` of symbolic length (model-checking/kani#4904): it
+  reported a reversal that doesn't net to zero. We didn't wave it away.
+  Replaying the counterexample natively, then shrinking it to a 15-line
+  crate, proved it was the tool, not the books. Now a canary harness
+  watches for the fix, and covers prove no proof is vacuous.
+- **Writing the spec simplified the code.** `credit_line` and
+  `closing_line` turned out to be the same function. Lean also proved
+  that no draft can exist in a closed period, the invariant that lets
+  the store journal a post before applying it.
+
+So the bar, for every agent, every change:
+
+1. **Money arithmetic goes in `kernel.rs`, generic over `Amount`.** If
+   you write a sum, a sign flip, a split, or a rounding plug anywhere
+   else, move it into the kernel. The engine calls the kernel. It never
+   gets a second copy.
+2. **Every kernel function gets a Kani harness** in `src/proofs.rs`, on
+   fixed arrays (no symbolic-length `Vec` growth, no `copy_from_slice`),
+   with a `kani::cover!` showing the interesting case is reached.
+3. **Every new law gets a Lean theorem** in `verify/lean`. Laws about
+   the books over time are theorems about `Reachable` states. A new
+   `Ledger` command is a new `Step` constructor, with its preservation
+   proof. No `sorry`, ever; `Audit.lean` lists every headline theorem.
+4. **Every kernel instantiation gets a bridge property** in
+   `tests/kernel_bridge.rs`, so what Kani proved on `i64` holds on
+   `Decimal`.
+5. **A failing proof is a finding, not an obstacle.** Get the
+   counterexample, replay it natively, and decide on evidence: bug in
+   our code, bug in the spec, or bug in the tool. Never weaken an
+   assertion, raise a bound, or delete a harness to make red go green
+   without writing down why in `docs/verification.md`.
+6. **More, not less.** When you touch an area the proofs don't cover
+   yet (A/R and A/P documents, payroll, depreciation, FX, persistence),
+   leave it with more formal coverage than you found it. Proptest,
+   mutation testing, fuzzing, Kani, and Lean all stack. Use all of them.
+
+`just check` and `just prove` both pass before every commit that touches
+`ledger-core`.
 
 ## Parity tracking
 
@@ -85,8 +145,11 @@ clone, with status. Rules:
 
 ## Working here
 
-- Rust stable, edition 2024. `cargo test` must pass; `cargo clippy` should be
-  clean; `cargo fmt` before committing.
+- `mise install` sets up every tool (pinned in `mise.toml`): Rust,
+  just, Kani, Lean, cargo-mutants, cargo-fuzz. If a recipe needs a tool,
+  it goes in `mise.toml`; nothing gets installed by hand.
+- Rust stable, edition 2024. `just check` must pass: fmt, clippy with zero
+  warnings, every test. `just prove` must pass for core changes.
 - Conventional commits: `feat:`, `fix:`, `docs:`, `test:`, `refactor:`.
   One logical change per commit. The commit message explains the *accounting*
   reasoning, not just the code.
@@ -102,7 +165,8 @@ clone, with status. Rules:
 |---|---|
 | `docs/requirements.md` | What the engine must do (R-1…), what is future work |
 | `docs/architecture.md` | Crate layout, command pattern, dependency rules |
-| `docs/oracle.md` | How we prove correctness: golden files, property tests, GnuCash diffing |
+| `docs/oracle.md` | How we check correctness: golden files, property tests, fuzzing, cross-checks against other implementations (and who is right) |
+| `docs/verification.md` | The formal proofs: every accounting law, its Kani harness and Lean theorem, what they found |
 | `docs/parity.md` | Feature catalog and the non-regression floor |
 | `docs/capability-parity.md` | Parity vs the GSheet+GDrive system + the cutover rule |
 | `docs/mcp-interface.md` | The MCP tool surface: the primary interface spec |

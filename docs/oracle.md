@@ -9,15 +9,33 @@ our oracle is *semantic*, not visual.
 
 1. **Fixture books.** A canonical set of journal entries exercising a feature
    (the January 2026 fixture company in `tests/invariants.rs` is the first).
-2. **Two engines.** The same fixtures go through our engine and through
-   **GnuCash** — the open-source, double-entry reference implementation with
-   open file formats. GnuCash is both the spec and the oracle.
+2. **More than one engine.** The same fixtures go through our engine and
+   through independent implementations: **GnuCash** (open source, open file
+   formats), the old Google Sheet, and later QBO/Xero exports. These are
+   *cross-checks*, not authorities (see "Who is right" below).
 3. **Exact diff.** `reports::snapshot()` renders trial balance, P&L, and
    balance sheet as canonical JSON. The outputs must be **identical** —
    decimal strings, no floats, no locale, no epsilon. Where storytold allows
    2/255 of perceptual slop, we allow zero: accounting has no "close enough".
 
-## The three oracle layers (today → future)
+## Who is right
+
+No other program is the spec. GnuCash, the Sheet, QuickBooks: each is
+*an* oracle, and each can be wrong. The order of authority:
+
+1. **Accounting principles, stated as proofs.** The laws in
+   `docs/verification.md`, proved in Lean and model-checked by Kani. They
+   do not depend on any other implementation's behavior.
+2. **Golden files recomputed by hand** from those principles (Layer 1).
+3. **External oracles** (GnuCash, the Sheet, QBO/Xero exports). A
+   disagreement with one is a *finding*: work out from principles which
+   side is wrong and write the reasoning down. Never change our output just
+   to match theirs. If theirs is wrong, add a test that pins our correct
+   behavior, and note their bug in `docs/parity.md`.
+
+Nothing in this repo may rest on an external oracle's behavior alone.
+
+## The oracle layers (today → future)
 
 **Layer 1 — Golden files (live now).** `tests/golden/*.json` hold
 hand-verified expected reports for canonical fixtures. The golden test fails
@@ -53,16 +71,28 @@ always balances exactly), `fuzz_op_sequence` (arbitrary op sequences via
 `arbitrary`; the trial balance always balances). 11.5M execs, zero crashes
 as of 2026-10-10. Corpora persist in `fuzz/corpus/` for regression.
 
-**Layer 5 — GnuCash diff harness (roadmap phase 3).** A `ledger-oracle` crate
-will run fixture books through our engine and through GnuCash headless, then
-diff `snapshot()` output automatically — `cargo xtask oracle`. This is the
-direct analog of storytold's `cargo xtask corpus` / `oracle_diff`. Note the
-distinction: GnuCash is the *behavioral* oracle, not a file-format target
+**Layer 4½ — Formal proofs (live now).** The accounting arithmetic lives
+in one generic kernel (`kernel.rs`). Kani model-checks it exhaustively
+within bounds, Lean 4 proves the laws for books of any size (trial
+balance, accounting equation, reversals, posted-is-forever, frozen closed
+periods, closing to net income), and a property test bridges the two.
+`just prove`; see `docs/verification.md`. Its first pass found three
+engine bugs that Layers 1–4 had all missed.
+
+**Layer 5 — Cross-implementation diff harness (roadmap phase 3).** A
+`ledger-oracle` crate will run fixture books through our engine and through
+other implementations (GnuCash headless first), then diff `snapshot()`
+output automatically: `cargo xtask oracle`. This is the direct analog of
+storytold's `cargo xtask corpus` / `oracle_diff`, with one difference: a
+diff does not mean we are wrong. Each one is adjudicated from principles
+(see "Who is right"). Note also: GnuCash is *a* behavioral cross-check, not
+a file-format target
 (the owner: "for file format import/export I could not give a single shit
 about GnuCash XML — QBO is all that matters"). The harness feeds fixtures to
 GnuCash via whatever it imports reliably (QIF/OFX) or its Python bindings;
-the exact mechanism is decided at implementation time. Until the harness
-exists, Layers 1 and 2 are the oracle, and they are not optional.
+the exact mechanism is decided at implementation time. The proofs and
+Layers 1–4 are the foundation and are not optional. The harness adds
+evidence. It never overrides them.
 
 ## What the oracle does NOT cover (yet)
 

@@ -24,11 +24,14 @@ pub mod classes;
 pub mod error;
 pub mod form1099;
 pub mod journal;
+pub mod kernel;
 pub mod ledger;
 pub mod money;
 pub mod payouts;
 pub mod payroll;
 pub mod periods;
+#[cfg(kani)]
+mod proofs;
 pub mod reports;
 pub mod schedules;
 pub mod tax;

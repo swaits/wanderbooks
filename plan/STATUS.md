@@ -58,6 +58,15 @@ public. Parity is 12 of 12 against the spreadsheet workflow.
   design, parity catalog (floor: 10 done), glossary, mcp-interface (incl. the
   5 asset tools), receipt-store (journal design), capability-parity
   (10 of 12 rows covered). Plan: this file + roadmap.
+- **Formal verification** (2026-10-13, `docs/verification.md`): the
+  money arithmetic moved into one generic kernel (`kernel.rs`) that the
+  engine calls. 18 Kani harnesses prove it exhaustively within bounds,
+  with covers against vacuity and a canary for a Kani soundness bug. 24
+  Lean 4 theorems prove the accounting laws for books of any size, after
+  any sequence of commands. A property test bridges `i64` and `Decimal`.
+  `just prove`. Found and fixed: negative line amounts accepted by the
+  engine, an overflow crash on huge amounts, and an overflow crash in FX
+  conversion.
 
 **In progress:** nothing — the next arcs are queued below, unstarted.
 
@@ -76,10 +85,17 @@ interface is MCP, not a cloned GUI. The first storage + MCP slice is done
 4. **Capability parity** (`docs/capability-parity.md`): 11 of 12 rows
    covered; full CPA export (xlsx/iif) remains. Then the month-long parallel
    run against the GSheet; cutover per the cutover rule.
-5. Then: oracle harness (GnuCash diff), read-only GUI on the event log,
+5. Then: oracle harness (cross-check diffs, GnuCash first), read-only GUI on the event log,
    workflow parity.
 
 ## Decisions log
+
+- 2026-10-13: Formal methods are part of the bar (the owner: "This shit is
+  fucking GOLD"). Money arithmetic lives in `kernel.rs` with Kani
+  harnesses; accounting laws get Lean theorems; `just prove` stays green.
+  The engine now rejects negative and out-of-range line amounts (max one
+  quadrillion, ten decimal places). Every dev tool is pinned in
+  `mise.toml`. See AGENTS.md "Formal methods".
 
 - 2026-10-10: Single currency per ledger for day one (R-5). Multi-currency
   is designed-for, not built.
@@ -96,8 +112,9 @@ interface is MCP, not a cloned GUI. The first storage + MCP slice is done
   a parallel-run cutover rule. GUI drops to read-only, event-log-driven,
   phase 4.
 - 2026-10-10: Import/export targets QuickBooks formats (CSV, IIF, XLSX) —
-  "could not give a single shit about GnuCash XML." GnuCash stays the
-  *behavioral* oracle only. Receipt enforcement is server-side policy in the
+  "could not give a single shit about GnuCash XML." GnuCash stays a
+  *behavioral* cross-check only. (2026-10-13, the owner: it is "an" oracle,
+  not "the" oracle; never trust it to be correct.) Receipt enforcement is server-side policy in the
   MCP layer (threshold + per-account overrides, typed `receipt_required`
   error, checklist in every preview); the engine stays policy-free.
 - 2026-10-10: Storage durability (the owner). SQLite is the query engine, not

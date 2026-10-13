@@ -1,0 +1,5 @@
+name = "wanderbooks"
+defaultTargets = ["Wanderbooks"]
+
+[[lean_lib]]
+name = "Wanderbooks"

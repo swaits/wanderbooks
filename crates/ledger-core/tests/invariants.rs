@@ -182,6 +182,65 @@ fn zero_amount_line_is_rejected() {
 }
 
 #[test]
+fn negative_amount_line_is_rejected() {
+    let c = fixture_company();
+    let mut ledger = c.ledger;
+    let id = ledger.create_entry(date(21), "Negative line");
+    let minus = Money::new(Decimal::from(-100), Currency::USD);
+    ledger.add_line(id, c.cash, Side::Debit, minus).unwrap();
+    ledger.add_line(id, c.equity, Side::Credit, minus).unwrap();
+    assert_eq!(
+        ledger.post_entry(id).unwrap_err(),
+        LedgerError::NegativeAmountLine
+    );
+}
+
+#[test]
+fn out_of_range_amount_is_rejected() {
+    let c = fixture_company();
+    let mut ledger = c.ledger;
+    // Big enough to overflow a sum: an error, never a panic.
+    let id = ledger.create_entry(date(21), "Too big");
+    let big = Money::new(Decimal::MAX, Currency::USD);
+    ledger.add_line(id, c.cash, Side::Debit, big).unwrap();
+    ledger.add_line(id, c.cash, Side::Debit, big).unwrap();
+    ledger.add_line(id, c.equity, Side::Credit, big).unwrap();
+    assert_eq!(
+        ledger.post_entry(id).unwrap_err(),
+        LedgerError::AmountOutOfRange
+    );
+    // Too precise.
+    let id = ledger.create_entry(date(21), "Too precise");
+    let tiny = Money::new("0.00000000001".parse().unwrap(), Currency::USD);
+    ledger.add_line(id, c.cash, Side::Debit, tiny).unwrap();
+    ledger.add_line(id, c.equity, Side::Credit, tiny).unwrap();
+    assert_eq!(
+        ledger.post_entry(id).unwrap_err(),
+        LedgerError::AmountOutOfRange
+    );
+}
+
+#[test]
+fn fx_overflow_is_an_error() {
+    let c = fixture_company();
+    let mut ledger = c.ledger;
+    let id = ledger.create_entry(date(21), "Huge FX");
+    assert_eq!(
+        ledger
+            .add_line_fx(
+                id,
+                c.cash,
+                Side::Debit,
+                Currency::EUR,
+                Decimal::MAX,
+                Decimal::from(2)
+            )
+            .unwrap_err(),
+        LedgerError::AmountOutOfRange
+    );
+}
+
+#[test]
 fn unknown_account_is_rejected() {
     let c = fixture_company();
     let mut ledger = c.ledger;

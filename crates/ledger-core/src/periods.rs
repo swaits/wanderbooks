@@ -77,9 +77,7 @@ pub fn allocate(
         .iter()
         .map(|s| (amount * s).round_dp_with_strategy(2, MidpointAwayFromZero))
         .collect();
-    if let Some((last, rest)) = parts.split_last_mut() {
-        *last = amount - rest.iter().copied().sum::<rust_decimal::Decimal>();
-    }
+    crate::kernel::plug_last(amount, &mut parts).expect("allocated amounts are in range");
     parts
 }
 

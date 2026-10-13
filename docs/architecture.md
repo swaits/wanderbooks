@@ -57,7 +57,7 @@ The core is a pure domain library and stays that way.
 | `ledger-store` | Journal (hash-chained JSONL) + SQLite projection, blob store | `ledger-core` |
 | `ledger-import` | QuickBooks CSV read-only import (bank transactions, chart of accounts) | `ledger-core` |
 | `ledger-export` | Format renderers: CSV, XLSX, IIF journal entries (QuickBooks Desktop) | `ledger-core` |
-| `ledger-oracle` | Diff harness: our engine vs GnuCash on fixture books | `ledger-core`, `ledger-import` |
+| `ledger-oracle` | Cross-check harness: our engine vs other implementations (GnuCash first) on fixture books; diffs are adjudicated, not obeyed | `ledger-core`, `ledger-import` |
 
 Dependency direction is always inward toward `ledger-core`. Nothing in the
 core may depend on a future crate. UI concerns (formatting, locale, widgets)

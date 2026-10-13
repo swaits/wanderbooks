@@ -72,6 +72,38 @@ fn sort_value(v: &Value) -> Value {
     }
 }
 
+impl JournalLine {
+    /// Parse one journal line, refusing what the journal never holds.
+    ///
+    /// ```text
+    /// GOAL: read a journal line so that its canonical form (which the
+    ///       hash chain covers) is a fixed point.
+    /// SOURCE: R-2 (no floats in money paths); found by fuzz_journal_line
+    ///         (2026-10-13): a float payload re-canonicalized differently.
+    /// INVARIANTS:
+    ///   1. NEVER accepts a floating-point number anywhere in the line:
+    ///      amounts are decimal strings and ids are integers.
+    ///   2. For an accepted line, parse(canonical) re-canonicalizes to the
+    ///      same bytes.
+    /// ```
+    pub fn parse(raw: &[u8]) -> Result<JournalLine, String> {
+        let value: Value = serde_json::from_slice(raw).map_err(|e| e.to_string())?;
+        if has_float(&value) {
+            return Err("a number with a fraction or exponent; the journal holds none".into());
+        }
+        serde_json::from_value(value).map_err(|e| e.to_string())
+    }
+}
+
+fn has_float(v: &Value) -> bool {
+    match v {
+        Value::Number(n) => n.is_f64(),
+        Value::Array(a) => a.iter().any(has_float),
+        Value::Object(m) => m.values().any(has_float),
+        _ => false,
+    }
+}
+
 /// Hex SHA-256 of bytes.
 pub fn sha256_hex(bytes: &[u8]) -> String {
     let mut h = Sha256::new();
@@ -158,7 +190,7 @@ pub fn read_and_verify_journal(path: &Path) -> Result<Vec<JournalLine>, StoreErr
     let mut expected_prev = GENESIS_PREV.to_string();
     for (i, raw) in reader.lines().enumerate() {
         let raw = raw?;
-        let line: JournalLine = serde_json::from_str(&raw).map_err(|e| {
+        let line: JournalLine = JournalLine::parse(raw.as_bytes()).map_err(|e| {
             StoreError::JournalCorrupt(format!("seq {}: unparseable line: {e}", i + 1))
         })?;
         let want_seq = i as u64 + 1;
@@ -204,7 +236,7 @@ pub fn truncate_to_last_good_seq(path: &Path) -> Result<u64, StoreError> {
         if line_str.trim().is_empty() {
             break; // blank line: our writer never emits these
         }
-        match serde_json::from_str::<JournalLine>(line_str) {
+        match JournalLine::parse(line_str.as_bytes()) {
             Ok(line) if line.seq == last_good_seq + 1 && line.prev == expected_prev => {
                 expected_prev = sha256_hex(line.to_canonical().as_bytes());
                 last_good_seq = line.seq;

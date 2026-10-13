@@ -40,11 +40,33 @@ prove:
     fi
     echo "Lean: $(wc -l <<<"$audit") headline theorems, standard axioms only"
 
-# Cross-check against GnuCash (an oracle, never the spec): random books through
-# wanderbooks and through GnuCash 5.10 in a pinned container. Needs Docker.
+# Random books through wanderbooks and GnuCash 5.10, compared exactly (Docker)
 oracle:
     docker build -q -t wanderbooks-gnucash-oracle oracle/gnucash
     cargo test -p ledger-core --test oracle_gnucash -- --ignored --nocapture
+
+# Fuzz one target for some seconds (nightly; corpus in fuzz/corpus/<target>)
+fuzz target="fuzz_op_sequence" seconds="300":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Call the binary directly: mise's shim would pin stable rustc.
+    fuzz=$(mise which cargo-fuzz)
+    cd fuzz && mkdir -p corpus/{{target}} seeds/{{target}}
+    # corpus/ grows (git-ignored); seeds/ holds the checked-in minimal inputs.
+    RUSTUP_TOOLCHAIN=nightly-2026-10-01 "$fuzz" fuzz run {{target}} corpus/{{target}} seeds/{{target}} -- \
+        -max_total_time={{seconds}} -timeout=10 -rss_limit_mb=2048
+
+# Undefined-behavior check of the core's tests under Miri (nightly)
+miri:
+    PROPTEST_CASES=4 MIRIFLAGS="-Zmiri-disable-isolation" cargo +nightly-2026-10-01 miri test -p ledger-core --lib --test kernel_bridge --test invariants
+
+# Mutation testing of the core: do the tests catch planted bugs?
+mutants:
+    cargo mutants -p ledger-core --exclude crates/ledger-core/src/proofs.rs -j 4 --timeout 120
+
+# Benchmarks of the core's hot paths (no budget gates them yet)
+bench:
+    cargo bench -p ledger-core --bench books
 
 # Build the release binaries (CLI, MCP server, GUI)
 build:

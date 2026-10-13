@@ -65,11 +65,19 @@ case is unreachable), and untestable-by-construction mutants are noted
 unbalanced ledger to falsify it).
 
 **Layer 4 — Fuzzing (live now).** `cargo fuzz` targets in `fuzz/`
-(nightly, libfuzzer): `fuzz_journal_line` (journal parsing never panics;
-canonical form is a fixed point), `fuzz_entry_validate` (a validated entry
-always balances exactly), `fuzz_op_sequence` (arbitrary op sequences via
-`arbitrary`; the trial balance always balances). 11.5M execs, zero crashes
-as of 2026-10-10. Corpora persist in `fuzz/corpus/` for regression.
+(nightly, pinned in `mise.toml`; `just fuzz <target> <seconds>`):
+`fuzz_journal_line` (journal parsing never panics; the canonical form is
+a fixed point), `fuzz_entry_validate` (a validated entry always balances
+exactly), `fuzz_op_sequence` (arbitrary command sequences with periods,
+closes, foreign lines, and raw-bit amounts; the books stay valid),
+`fuzz_core_serde` (every persisted core type round-trips), and
+`fuzz_store_open` (a corrupt journal is an error, never a panic). Hangs
+count (`-timeout=10`). Minimal seeds are checked in under `fuzz/seeds/`;
+the grown corpora in `fuzz/corpus/` are not (tens of MB). On 2026-10-13,
+54M executions found one crash: a float in a journal line broke the
+canonical form's fixed point, and the reader now refuses floats
+(`a_journal_line_with_a_float_is_refused`). Every crash is minimized and
+promoted to a named regression test.
 
 **Layer 4½ — Formal proofs (live now).** The accounting arithmetic lives
 in one generic kernel (`kernel.rs`). Kani model-checks it exhaustively

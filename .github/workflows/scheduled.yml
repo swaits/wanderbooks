@@ -1,0 +1,40 @@
+# Weekly, and on demand: the slow layers (docs/testing.md).
+name: scheduled
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+jobs:
+  prove:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - run: just prove
+  oracle:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - run: just oracle
+  fuzz:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [fuzz_journal_line, fuzz_entry_validate, fuzz_op_sequence, fuzz_core_serde, fuzz_store_open]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - run: just fuzz ${{ matrix.target }} 600
+  mutants:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - run: just mutants
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants
+          path: mutants.out

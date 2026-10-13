@@ -1065,3 +1065,26 @@ fn books_written_under_older_rules_still_open() {
         "108.34567".parse::<Decimal>().unwrap()
     );
 }
+
+/// Regression (fuzz_journal_line, 2026-10-13, crash-c9fa20f3): a journal
+/// line holding a number too large for an integer parsed as a float, and
+/// its canonical form (which the hash chain covers) re-canonicalized
+/// differently. The journal never holds floats (R-2), so the reader now
+/// refuses them; float-free lines are a fixed point.
+#[test]
+fn a_journal_line_with_a_float_is_refused() {
+    use ledger_store::JournalLine;
+    let crash = br#"{"payload":4444454444444444404444,"prev":"x","seq":8,"ts":";u","type":""}"#;
+    assert!(JournalLine::parse(crash).is_err());
+    assert!(
+        JournalLine::parse(br#"{"payload":{"amount":1.5},"prev":"x","seq":1,"ts":"t","type":"a"}"#)
+            .is_err()
+    );
+    let ok = br#"{"payload":{"amount":"1.50","id":7},"prev":"x","seq":1,"ts":"t","type":"a"}"#;
+    let line = JournalLine::parse(ok).unwrap();
+    let canon = line.to_canonical();
+    assert_eq!(
+        JournalLine::parse(canon.as_bytes()).unwrap().to_canonical(),
+        canon
+    );
+}

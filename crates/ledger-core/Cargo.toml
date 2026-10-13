@@ -17,4 +17,9 @@ serde_json = "1"
 workspace = true
 
 [dev-dependencies]
+criterion = "0.8.2"
 proptest = "1"
+
+[[bench]]
+name = "books"
+harness = false

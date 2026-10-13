@@ -12,6 +12,9 @@ use egui::{
 use egui_phosphor::regular as icon;
 use std::sync::Arc;
 
+/// Window widths below this get the icon rail instead of the sidebar.
+pub const COMPACT_BELOW: f32 = 1000.0;
+
 /// Per-page state that survives navigation.
 #[derive(Default)]
 pub struct PageState {
@@ -227,7 +230,12 @@ impl App {
         }
     }
 
-    fn sidebar(&mut self, ui: &mut Ui) {
+    /// The sidebar: full below [`COMPACT_BELOW`] window widths, an icon
+    /// rail (names in tooltips) when the window is narrower.
+    fn sidebar(&mut self, ui: &mut Ui, compact: bool) {
+        if compact {
+            return self.rail(ui);
+        }
         let p = pal(ui.ctx());
         let books = self.books.clone();
         egui::Panel::left("sidebar")
@@ -361,6 +369,139 @@ impl App {
             });
     }
 
+    /// The sidebar as a narrow rail of icons, for narrow windows.
+    fn rail(&mut self, ui: &mut Ui) {
+        let p = pal(ui.ctx());
+        let books = self.books.clone();
+        egui::Panel::left("rail")
+            .exact_size(RAIL_W)
+            .resizable(false)
+            .frame(
+                Frame::new()
+                    .fill(p.sidebar)
+                    .inner_margin(Margin::symmetric(10, 16)),
+            )
+            .show(ui, |ui| {
+                let name = books
+                    .as_ref()
+                    .map(|b| b.company_name().to_string())
+                    .unwrap_or_else(|| "wanderbooks".into());
+                let (r, _) =
+                    ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::hover());
+                let logo = egui::Rect::from_center_size(r.center(), vec2(28.0, 28.0));
+                ui.painter()
+                    .rect_filled(logo, CornerRadius::same(8), p.accent);
+                ui.painter().text(
+                    logo.center(),
+                    egui::Align2::CENTER_CENTER,
+                    name.chars().next().unwrap_or('W'),
+                    theme::bold(15.0),
+                    Color32::WHITE,
+                );
+                ui.interact(r, ui.id().with("logo"), Sense::hover())
+                    .on_hover_text(format!("{name} · Books"));
+                ui.add_space(18.0);
+                let current = self.nav.current.section();
+                let attention = books.as_ref().map(|b| b.attention.len()).unwrap_or(0);
+                for s in Section::ALL {
+                    let on = s == current;
+                    let (rect, resp) =
+                        ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
+                    if on {
+                        ui.painter()
+                            .rect_filled(rect, CornerRadius::same(8), p.surface);
+                        ui.painter().rect_stroke(
+                            rect,
+                            CornerRadius::same(8),
+                            Stroke::new(1.0, p.border),
+                            egui::StrokeKind::Inside,
+                        );
+                    } else if resp.hovered() {
+                        ui.painter()
+                            .rect_filled(rect, CornerRadius::same(8), p.hover);
+                    }
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        s.icon(),
+                        egui::FontId::proportional(18.0),
+                        if on { p.accent } else { p.muted },
+                    );
+                    let tip = if s == Section::Overview && attention > 0 {
+                        ui.painter()
+                            .circle_filled(rect.center() + vec2(9.0, -8.0), 4.0, p.warning);
+                        format!("{} · {attention} need attention", s.title())
+                    } else {
+                        s.title().to_string()
+                    };
+                    if resp.on_hover_text(tip).clicked() {
+                        self.nav.go(s.home());
+                    }
+                }
+                ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
+                    let (glyph, tip) = if self.dark {
+                        (icon::SUN, "Light mode")
+                    } else {
+                        (icon::MOON, "Dark mode")
+                    };
+                    if ui
+                        .add(
+                            egui::Button::new(RichText::new(glyph).size(16.0).color(p.muted))
+                                .frame(false)
+                                .min_size(vec2(32.0, 32.0)),
+                        )
+                        .on_hover_text(tip)
+                        .clicked()
+                    {
+                        self.dark = !self.dark;
+                        theme::apply(ui.ctx(), self.dark);
+                    }
+                    ui.add_space(6.0);
+                    if let Some(b) = &books {
+                        let live = self.loader.is_some() || self.live_label;
+                        let checks = checks(b);
+                        let ok = checks.iter().all(|c| c.0);
+                        let (r, resp) = ui.allocate_exact_size(vec2(32.0, 32.0), Sense::hover());
+                        if ok {
+                            let pulse = (ui.input(|i| i.time) - self.updated_at < 2.0) as u8 as f32;
+                            ui.painter().circle_filled(
+                                r.center(),
+                                4.0 + pulse,
+                                if live { p.positive } else { p.faint },
+                            );
+                        } else {
+                            ui.painter().text(
+                                r.center(),
+                                egui::Align2::CENTER_CENTER,
+                                icon::WARNING_CIRCLE,
+                                egui::FontId::proportional(18.0),
+                                p.negative,
+                            );
+                        }
+                        let mut tip = format!(
+                            "{} · event {}",
+                            if live { "Live" } else { "Snapshot" },
+                            b.seq()
+                        );
+                        for (ok, text, _) in &checks {
+                            tip.push_str(&format!(
+                                "\n{} {text}",
+                                if *ok {
+                                    icon::SEAL_CHECK
+                                } else {
+                                    icon::WARNING_CIRCLE
+                                }
+                            ));
+                        }
+                        resp.on_hover_text(tip);
+                    }
+                });
+            });
+    }
+
+    /// Back, forward, where you are, today, and search. Squeezed, the
+    /// search shrinks to its icon, the date goes, and the crumb truncates:
+    /// nothing ever overlaps.
     fn topbar(&mut self, ui: &mut Ui) {
         let p = pal(ui.ctx());
         egui::Panel::top("topbar")
@@ -368,10 +509,11 @@ impl App {
             .frame(
                 Frame::new()
                     .fill(p.bg)
-                    .inner_margin(Margin::symmetric(20, 10))
+                    .inner_margin(Margin::symmetric(16, 10))
                     .stroke(Stroke::new(1.0, p.border)),
             )
             .show(ui, |ui| {
+                let width = ui.available_width();
                 ui.horizontal_centered(|ui| {
                     let nav_btn = |ui: &mut Ui, glyph: &str, enabled: bool, tip: &str| {
                         ui.add_enabled(
@@ -395,51 +537,85 @@ impl App {
                         self.nav.forward();
                     }
                     ui.add_space(6.0);
-                    let crumb = self
-                        .books
-                        .as_ref()
-                        .map(|b| crate::palette::describe(b, &self.nav.current))
-                        .unwrap_or_default();
-                    ui.label(
-                        RichText::new(self.nav.current.section().title())
-                            .font(theme::regular(13.5))
-                            .color(p.muted),
-                    );
-                    if !crumb.is_empty() {
-                        ui.label(RichText::new(icon::CARET_RIGHT).color(p.faint));
-                        ui.add(
-                            egui::Label::new(RichText::new(crumb).font(theme::semibold(13.5)))
-                                .truncate(),
-                        );
-                    }
+                    // Right side first, so the crumb gets only what's left.
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let (text, min_w) = if width >= 640.0 {
+                            (
+                                format!(
+                                    "{}  Search everything…      Ctrl K",
+                                    icon::MAGNIFYING_GLASS
+                                ),
+                                260.0,
+                            )
+                        } else if width >= 420.0 {
+                            (format!("{}  Search", icon::MAGNIFYING_GLASS), 0.0)
+                        } else {
+                            (icon::MAGNIFYING_GLASS.to_string(), 30.0)
+                        };
                         let search = egui::Button::new(
-                            RichText::new(format!(
-                                "{}  Search everything…      Ctrl K",
-                                icon::MAGNIFYING_GLASS
-                            ))
-                            .font(theme::regular(13.0))
-                            .color(p.faint),
+                            RichText::new(text)
+                                .font(theme::regular(13.0))
+                                .color(p.faint),
                         )
                         .fill(p.surface)
                         .stroke(Stroke::new(1.0, p.border))
                         .corner_radius(CornerRadius::same(8))
-                        .min_size(vec2(260.0, 30.0));
-                        if ui.add(search).clicked() {
+                        .min_size(vec2(min_w, 30.0));
+                        if ui
+                            .add(search)
+                            .on_hover_text("Search everything (Ctrl K)")
+                            .clicked()
+                        {
                             self.palette.open();
                         }
-                        if let Some(b) = &self.books {
+                        if let Some(b) = &self.books
+                            && width >= 860.0
+                        {
                             ui.label(
                                 RichText::new(format!("Today {}", crate::fmt::date(b.today)))
                                     .font(theme::regular(12.5))
                                     .color(p.muted),
                             );
                         }
+                        ui.add_space(8.0);
+                        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                            let crumb = self
+                                .books
+                                .as_ref()
+                                .map(|b| crate::palette::describe(b, &self.nav.current))
+                                .unwrap_or_default();
+                            let section = self.nav.current.section().title();
+                            // Narrow, the crumb alone says where you are.
+                            if crumb.is_empty() || ui.available_width() >= 260.0 {
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(section)
+                                            .font(theme::regular(13.5))
+                                            .color(p.muted),
+                                    )
+                                    .truncate(),
+                                );
+                            }
+                            if !crumb.is_empty() {
+                                if ui.available_width() >= 260.0 - 80.0 {
+                                    ui.label(RichText::new(icon::CARET_RIGHT).color(p.faint));
+                                }
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(crumb).font(theme::semibold(13.5)),
+                                    )
+                                    .truncate(),
+                                );
+                            }
+                        });
                     });
                 });
             });
     }
 }
+
+/// Width of the icon rail.
+const RAIL_W: f32 = 60.0;
 
 fn live_status(ui: &mut Ui, b: &Books, since_update: f64, live: bool) {
     let p = pal(ui.ctx());
@@ -465,34 +641,52 @@ fn live_status(ui: &mut Ui, b: &Books, since_update: f64, live: bool) {
                         .color(p.muted),
                 );
             });
-            let check = |ui: &mut Ui, ok: bool, text: String, tip: String| {
-                let (glyph, color) = if ok { (icon::SEAL_CHECK, p.muted) } else { (icon::WARNING_CIRCLE, p.negative) };
-                ui.label(RichText::new(format!("{glyph} {text}")).font(theme::regular(11.5)).color(color))
-                    .on_hover_text(tip);
-            };
-            check(
-                ui,
-                true,
-                "Journal chain verified".into(),
-                format!("Every journal event's hash chains to the one before it.\nHead: {}\nData: {}", b.head, b.data_dir.display()),
-            );
-            use ledger_store::DiskCheck;
-            let (ok, text, tip) = match &b.integrity.disk {
-                DiskCheck::Matches => (true, "Database matches journal".to_string(), "The server's SQLite database matches a fresh projection of the journal, every table, row for row.".to_string()),
-                DiskCheck::Behind { applied, journal } => (true, "Database catching up".to_string(), format!("The database has applied {applied} of {journal} journal events; the server applies the rest right after writing them.")),
-                DiskCheck::Missing => (true, "Read-only copy".to_string(), "No server database here: a copy of the books (a CPA's, say), or the server hasn't run yet. The journal and every file are verified either way.".to_string()),
-                DiskCheck::Differs(why) => (false, "Database differs".to_string(), format!("{why}. The server rebuilds it from the journal (books.verify, or on its next start).")),
-                DiskCheck::Unreadable(why) => (false, "Database unreadable".to_string(), why.clone()),
-            };
-            check(ui, ok, text, tip);
-            let bad = b.integrity.file_failures.len();
-            check(
-                ui,
-                bad == 0,
-                if bad == 0 { format!("{} files verified", b.integrity.files_ok) } else { format!("{bad} files damaged") },
-                "Every stored receipt and document re-hashed against its recorded SHA-256.".into(),
-            );
+            for (ok, text, tip) in checks(b) {
+                let (glyph, color) = if ok {
+                    (icon::SEAL_CHECK, p.muted)
+                } else {
+                    (icon::WARNING_CIRCLE, p.negative)
+                };
+                ui.label(
+                    RichText::new(format!("{glyph} {text}"))
+                        .font(theme::regular(11.5))
+                        .color(color),
+                )
+                .on_hover_text(tip);
+            }
         });
+}
+
+/// The integrity checks the sidebar shows: (ok, label, explanation).
+fn checks(b: &Books) -> Vec<(bool, String, String)> {
+    use ledger_store::DiskCheck;
+    let mut out = vec![(
+        true,
+        "Journal chain verified".to_string(),
+        format!(
+            "Every journal event's hash chains to the one before it.\nHead: {}\nData: {}",
+            b.head,
+            b.data_dir.display()
+        ),
+    )];
+    out.push(match &b.integrity.disk {
+        DiskCheck::Matches => (true, "Database matches journal".to_string(), "The server's SQLite database matches a fresh projection of the journal, every table, row for row.".to_string()),
+        DiskCheck::Behind { applied, journal } => (true, "Database catching up".to_string(), format!("The database has applied {applied} of {journal} journal events; the server applies the rest right after writing them.")),
+        DiskCheck::Missing => (true, "Read-only copy".to_string(), "No server database here: a copy of the books (a CPA's, say), or the server hasn't run yet. The journal and every file are verified either way.".to_string()),
+        DiskCheck::Differs(why) => (false, "Database differs".to_string(), format!("{why}. The server rebuilds it from the journal (books.verify, or on its next start).")),
+        DiskCheck::Unreadable(why) => (false, "Database unreadable".to_string(), why.clone()),
+    });
+    let bad = b.integrity.file_failures.len();
+    out.push((
+        bad == 0,
+        if bad == 0 {
+            format!("{} files verified", b.integrity.files_ok)
+        } else {
+            format!("{bad} files damaged")
+        },
+        "Every stored receipt and document re-hashed against its recorded SHA-256.".into(),
+    ));
+    out
 }
 
 impl eframe::App for App {
@@ -513,7 +707,8 @@ impl eframe::App for App {
         }
         self.receipts.pump(ui.ctx());
         self.handle_keys(ui);
-        self.sidebar(ui);
+        let compact = ui.available_width() < COMPACT_BELOW;
+        self.sidebar(ui, compact);
         self.topbar(ui);
         let p = pal(ui.ctx());
         let since_update = ui.input(|i| i.time) - self.updated_at;

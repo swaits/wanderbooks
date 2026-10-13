@@ -223,27 +223,22 @@ fn kpis(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
             Route::Cash,
         ),
     ];
-    let n = if ui.available_width() > 1180.0 { 6 } else { 3 };
-    for row in tiles.chunks(n) {
-        let weights = vec![1.0; n];
-        columns(ui, 0.0, &weights, |i, ui| {
-            if let Some((tile, route)) = row.get(i) {
-                let r = widgets::kpi(
-                    ui,
-                    Kpi {
-                        label: tile.label,
-                        value: tile.value.clone(),
-                        sub: tile.sub.clone(),
-                        spark: tile.spark,
-                        how: tile.how,
-                    },
-                );
-                if r.interact(egui::Sense::click()).clicked() {
-                    shell.go(route.clone());
-                }
-            }
-        });
-    }
+    super::grid(ui, tiles.len(), 150.0, 6, |i, ui| {
+        let (tile, route) = &tiles[i];
+        let r = widgets::kpi(
+            ui,
+            Kpi {
+                label: tile.label,
+                value: tile.value.clone(),
+                sub: tile.sub.clone(),
+                spark: tile.spark,
+                how: tile.how,
+            },
+        );
+        if r.interact(egui::Sense::click()).clicked() {
+            shell.go(route.clone());
+        }
+    });
 }
 
 /// `change` picks from the light palette; map to the current one.

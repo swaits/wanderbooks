@@ -859,9 +859,43 @@ fn aging(rows: Vec<ledger_core::AgingRow>, as_of: NaiveDate) -> Table {
 // ----------------------------------------------------------------------
 // The page.
 
+/// The reports, grouped as the side list shows them.
+const GROUPS: [(&str, &[ReportKind]); 3] = [
+    (
+        "Statements",
+        &[
+            ReportKind::ProfitAndLoss,
+            ReportKind::BalanceSheet,
+            ReportKind::CashFlow,
+            ReportKind::MembersEquity,
+        ],
+    ),
+    (
+        "Ledgers",
+        &[ReportKind::TrialBalance, ReportKind::GeneralLedger],
+    ),
+    (
+        "Tax and aging",
+        &[
+            ReportKind::TaxSummary,
+            ReportKind::Vendor1099,
+            ReportKind::ArAging,
+            ReportKind::ApAging,
+        ],
+    ),
+];
+
+/// Narrower than this, the side list of reports becomes a picker above
+/// the report.
+const SIDE_LIST_MIN: f32 = 760.0;
+
 pub fn show(ui: &mut Ui, b: &Books, kind: ReportKind, shell: &mut Shell<'_>) {
     let p = pal(ui.ctx());
     let rect = ui.available_rect_before_wrap();
+    if rect.width() < SIDE_LIST_MIN {
+        super::page(ui, "report", |ui| report(ui, b, kind, shell, true));
+        return;
+    }
     let nav_w = 210.0;
     let nav_rect = egui::Rect::from_min_size(rect.min, vec2(nav_w, rect.height()));
     ui.painter().line_segment(
@@ -875,31 +909,7 @@ pub fn show(ui: &mut Ui, b: &Books, kind: ReportKind, shell: &mut Shell<'_>) {
             .color(p.faint),
     );
     nav.add_space(4.0);
-    let groups: [(&str, &[ReportKind]); 3] = [
-        (
-            "Statements",
-            &[
-                ReportKind::ProfitAndLoss,
-                ReportKind::BalanceSheet,
-                ReportKind::CashFlow,
-                ReportKind::MembersEquity,
-            ],
-        ),
-        (
-            "Ledgers",
-            &[ReportKind::TrialBalance, ReportKind::GeneralLedger],
-        ),
-        (
-            "Tax and aging",
-            &[
-                ReportKind::TaxSummary,
-                ReportKind::Vendor1099,
-                ReportKind::ArAging,
-                ReportKind::ApAging,
-            ],
-        ),
-    ];
-    for (g, kinds) in groups {
+    for (g, kinds) in GROUPS {
         nav.add_space(10.0);
         nav.label(RichText::new(g).font(theme::regular(12.0)).color(p.muted));
         nav.add_space(2.0);
@@ -937,11 +947,11 @@ pub fn show(ui: &mut Ui, b: &Books, kind: ReportKind, shell: &mut Shell<'_>) {
     let body = egui::Rect::from_min_max(egui::pos2(nav_rect.right() + 1.0, rect.top()), rect.max);
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(body));
     child.set_clip_rect(body);
-    super::page(&mut child, "report", |ui| report(ui, b, kind, shell));
+    super::page(&mut child, "report", |ui| report(ui, b, kind, shell, false));
     ui.allocate_rect(rect, Sense::hover());
 }
 
-fn report(ui: &mut Ui, b: &Books, kind: ReportKind, shell: &mut Shell<'_>) {
+fn report(ui: &mut Ui, b: &Books, kind: ReportKind, shell: &mut Shell<'_>, picker: bool) {
     let p = pal(ui.ctx());
     let point_in_time = matches!(
         kind,
@@ -961,8 +971,43 @@ fn report(ui: &mut Ui, b: &Books, kind: ReportKind, shell: &mut Shell<'_>) {
     );
     let st = &mut shell.state.reports;
 
-    // Controls.
+    // Controls. Each starts a new row when it won't fit on this one, by
+    // its known width: a control that overflows would widen the page.
+    let mut pick = None;
+    let row_w = ui.available_width();
+    let mut used = 0.0;
+    let mut room = |ui: &mut Ui, w: f32| {
+        if used > 0.0 && used + 8.0 + w > row_w {
+            ui.end_row();
+            used = 0.0;
+        } else if used > 0.0 {
+            ui.add_space(8.0);
+            used += 8.0;
+        }
+        used += w;
+    };
     ui.horizontal_wrapped(|ui| {
+        if picker {
+            room(ui, 214.0);
+            egui::ComboBox::from_id_salt("report_kind")
+                .selected_text(RichText::new(format!(
+                    "{}  {}",
+                    icon::FILE_TEXT,
+                    kind.title()
+                )))
+                .width(190.0)
+                .show_ui(ui, |ui| {
+                    for (g, kinds) in GROUPS {
+                        ui.label(RichText::new(g).font(theme::regular(12.0)).color(p.muted));
+                        for k in kinds {
+                            if ui.selectable_label(*k == kind, k.title()).clicked() {
+                                pick = Some(*k);
+                            }
+                        }
+                    }
+                });
+        }
+        room(ui, 194.0);
         egui::ComboBox::from_id_salt("range")
             .selected_text(RichText::new(format!(
                 "{}  {}",
@@ -983,6 +1028,7 @@ fn report(ui: &mut Ui, b: &Books, kind: ReportKind, shell: &mut Shell<'_>) {
                 }
             });
         if let Range::Custom(s, e) = st.range {
+            room(ui, 250.0);
             let (mut js, mut je) = (to_jiff(s), to_jiff(e));
             ui.add(
                 egui_extras::DatePickerButton::new(&mut js)
@@ -999,7 +1045,7 @@ fn report(ui: &mut Ui, b: &Books, kind: ReportKind, shell: &mut Shell<'_>) {
             st.range = Range::Custom(s.min(e), e.max(s));
         }
         if splittable {
-            ui.add_space(8.0);
+            room(ui, 270.0);
             widgets::segmented(
                 ui,
                 &mut st.columns,
@@ -1012,7 +1058,7 @@ fn report(ui: &mut Ui, b: &Books, kind: ReportKind, shell: &mut Shell<'_>) {
             );
         }
         if comparable && (st.columns == Columns::Total || !splittable) {
-            ui.add_space(8.0);
+            room(ui, 160.0);
             egui::ComboBox::from_id_salt("compare")
                 .selected_text(match st.compare {
                     Compare::None => "No comparison",
@@ -1146,6 +1192,9 @@ fn report(ui: &mut Ui, b: &Books, kind: ReportKind, shell: &mut Shell<'_>) {
     if let Some(t) = table {
         render(ui, &t, shell);
     }
+    if let Some(k) = pick {
+        shell.go(Route::Reports(k));
+    }
 }
 
 fn render(ui: &mut Ui, t: &Table, shell: &mut Shell<'_>) {
@@ -1169,14 +1218,18 @@ fn render(ui: &mut Ui, t: &Table, shell: &mut Shell<'_>) {
                 ui.ctx().copy_text(tsv.clone());
             }
         });
-        let col_w: f32 = if t.columns.len() > 6 { 112.0 } else { 136.0 };
-        let cols_w = col_w * t.columns.len() as f32;
+        let n = t.columns.len().max(1) as f32;
+        let base: f32 = if t.columns.len() > 6 { 112.0 } else { 136.0 };
+        // Narrow, the amount columns give up their slack before the table
+        // scrolls sideways.
+        let col_w = ((ui.available_width() - 180.0) / n).clamp(100.0, base);
+        let cols_w = col_w * n;
         egui::ScrollArea::horizontal()
             .id_salt("report_table")
             .show(ui, |ui| {
                 // Labels get what's left, but never so much that the eye loses
                 // the line between a label and its amount.
-                let label_w = (ui.available_width() - cols_w).clamp(300.0, 480.0);
+                let label_w = (ui.available_width() - cols_w).clamp(180.0, 480.0);
                 let width = label_w + cols_w;
                 ui.set_min_width(width);
                 let (hr, _) = ui.allocate_exact_size(vec2(width, 30.0), Sense::hover());
@@ -1223,21 +1276,29 @@ fn render(ui: &mut Ui, t: &Table, shell: &mut Shell<'_>) {
                         _ if !r.detail.is_empty() => rr.center().y - 7.0,
                         _ => rr.center().y,
                     };
-                    let label_g = ui
-                        .painter()
-                        .layout_no_wrap(r.label.clone(), font.clone(), color);
-                    ui.painter().galley(
-                        egui::pos2(rr.left() + indent + 4.0, y - label_g.size().y / 2.0),
-                        label_g,
+                    // Labels stop short of the first amount column (notes,
+                    // which have none, run the full width).
+                    let label_room = if r.cells.is_empty() {
+                        width - indent - 8.0
+                    } else {
+                        label_w - indent - 12.0
+                    };
+                    widgets::clipped_text(
+                        ui.painter(),
+                        egui::pos2(rr.left() + indent + 4.0, y),
+                        &r.label,
+                        font.clone(),
                         color,
+                        label_room,
                     );
                     if !r.detail.is_empty() {
-                        ui.painter().text(
+                        widgets::clipped_text(
+                            ui.painter(),
                             egui::pos2(rr.left() + indent + 4.0, rr.center().y + 9.0),
-                            egui::Align2::LEFT_CENTER,
                             &r.detail,
                             theme::regular(11.5),
                             p.faint,
+                            label_room,
                         );
                     }
                     for (i, c) in r.cells.iter().enumerate() {

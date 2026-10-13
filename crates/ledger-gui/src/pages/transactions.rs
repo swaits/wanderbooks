@@ -162,38 +162,10 @@ fn row(ui: &mut Ui, b: &Books, e: &EntryInfo, on: bool, since_update: f64) -> eg
         theme::semibold(16.0),
         p.text,
     );
-    // Description and accounts.
+    // Description and accounts, cut with an ellipsis before the receipt
+    // icon and the amount. Cash in reads green with a plus, cash out with
+    // a minus; entries that don't move cash show their size, muted.
     let text_left = left + 44.0;
-    let amount_w = 120.0;
-    let max_w = (rect.right() - amount_w - 70.0 - text_left).max(60.0);
-    let desc = painter.layout(e.description.clone(), theme::semibold(13.5), p.text, max_w);
-    let desc = if desc.rows.len() > 1 {
-        painter.layout_no_wrap(
-            truncate(&e.description, (max_w / 7.5) as usize),
-            theme::semibold(13.5),
-            p.text,
-        )
-    } else {
-        desc
-    };
-    painter.galley(egui::pos2(text_left, rect.center().y - 17.0), desc, p.text);
-    let accounts: Vec<String> = e.accounts.iter().map(|a| b.account_name(*a)).collect();
-    let mut sub = format!("#{} · {} · {}", e.id, e.origin, accounts.join(" → "));
-    if let Some(v) = &e.party {
-        sub.push_str(&format!(" · {v}"));
-    }
-    let sub = truncate(&sub, (max_w / 6.3) as usize);
-    painter.text(
-        egui::pos2(text_left, rect.center().y + 10.0),
-        egui::Align2::LEFT_CENTER,
-        sub,
-        theme::regular(12.0),
-        p.muted,
-    );
-    // Amount and badges.
-    let right = rect.right() - 10.0;
-    // Cash in reads green with a plus, cash out with a minus; entries that
-    // don't move cash show their size, muted.
     let (amount, color) = if e.cash_effect > rust_decimal::Decimal::ZERO {
         (format!("+{}", fmt::money(e.cash_effect)), p.positive)
     } else if e.cash_effect < rust_decimal::Decimal::ZERO {
@@ -201,6 +173,35 @@ fn row(ui: &mut Ui, b: &Books, e: &EntryInfo, on: bool, since_update: f64) -> eg
     } else {
         (fmt::money(e.amount), p.muted)
     };
+    let amount_w = painter
+        .layout_no_wrap(amount.clone(), theme::semibold(14.0), color)
+        .size()
+        .x
+        .max(64.0);
+    let max_w = (rect.right() - 10.0 - amount_w - 44.0 - text_left).max(40.0);
+    widgets::clipped_text(
+        &painter,
+        egui::pos2(text_left, rect.center().y - 8.0),
+        &e.description,
+        theme::semibold(13.5),
+        p.text,
+        max_w,
+    );
+    let accounts: Vec<String> = e.accounts.iter().map(|a| b.account_name(*a)).collect();
+    let mut sub = format!("#{} · {} · {}", e.id, e.origin, accounts.join(" → "));
+    if let Some(v) = &e.party {
+        sub.push_str(&format!(" · {v}"));
+    }
+    widgets::clipped_text(
+        &painter,
+        egui::pos2(text_left, rect.center().y + 10.0),
+        &sub,
+        theme::regular(12.0),
+        p.muted,
+        max_w,
+    );
+    // Amount and badges.
+    let right = rect.right() - 10.0;
     painter.text(
         egui::pos2(right, rect.center().y - 6.0),
         egui::Align2::RIGHT_CENTER,
@@ -234,7 +235,7 @@ fn row(ui: &mut Ui, b: &Books, e: &EntryInfo, on: bool, since_update: f64) -> eg
     };
     if let Some((g, c)) = clip {
         painter.text(
-            egui::pos2(rect.right() - amount_w - 24.0, rect.center().y),
+            egui::pos2(rect.right() - 10.0 - amount_w - 20.0, rect.center().y),
             egui::Align2::CENTER_CENTER,
             g,
             egui::FontId::proportional(16.0),
@@ -244,27 +245,27 @@ fn row(ui: &mut Ui, b: &Books, e: &EntryInfo, on: bool, since_update: f64) -> eg
     resp
 }
 
-fn truncate(s: &str, n: usize) -> String {
-    if s.chars().count() <= n {
-        s.to_string()
-    } else {
-        let t: String = s.chars().take(n.saturating_sub(1)).collect();
-        format!("{t}…")
-    }
-}
-
 fn filters(ui: &mut Ui, b: &Books, st: &mut State) {
-    widgets::segmented(
-        ui,
-        &mut st.filter,
-        &[
-            (Filter::All, "All"),
-            (Filter::Posted, "Posted"),
-            (Filter::Drafts, "Drafts"),
-            (Filter::WithReceipt, "With receipt"),
-            (Filter::NoReceipt, "No receipt"),
-        ],
-    );
+    let options = [
+        (Filter::All, "All"),
+        (Filter::Posted, "Posted"),
+        (Filter::Drafts, "Drafts"),
+        (Filter::WithReceipt, "With receipt"),
+        (Filter::NoReceipt, "No receipt"),
+    ];
+    // The segmented control needs about 330 points; narrower, a dropdown.
+    if ui.available_width() >= 340.0 {
+        widgets::segmented(ui, &mut st.filter, &options);
+    } else {
+        let current = options.iter().find(|o| o.0 == st.filter).map(|o| o.1);
+        egui::ComboBox::from_id_salt("txn_filter")
+            .selected_text(format!("{} {}", icon::FUNNEL, current.unwrap_or("All")))
+            .show_ui(ui, |ui| {
+                for (f, label) in options {
+                    ui.selectable_value(&mut st.filter, f, label);
+                }
+            });
+    }
     if let Some(a) = st.account {
         ui.add_space(6.0);
         let label = format!("{} {}  {}", icon::FUNNEL, b.account_label(a), icon::X);

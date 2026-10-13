@@ -75,8 +75,17 @@ pub fn pill(ui: &mut Ui, text: &str, fg: Color32, bg: Color32) -> Response {
 
 /// Text that looks like plain text until you hover it, then like a link.
 pub fn link(ui: &mut Ui, text: RichText) -> Response {
+    link_label(ui, egui::Label::new(text))
+}
+
+/// [`link`] on one line, cut with an ellipsis where the space ends.
+pub fn link_truncated(ui: &mut Ui, text: RichText) -> Response {
+    link_label(ui, egui::Label::new(text).truncate())
+}
+
+fn link_label(ui: &mut Ui, label: egui::Label) -> Response {
     let p = pal(ui.ctx());
-    let r = ui.add(egui::Label::new(text.clone()).sense(Sense::click()));
+    let r = ui.add(label.sense(Sense::click()));
     if r.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         let rect = r.rect;
@@ -163,7 +172,15 @@ pub fn kpi(ui: &mut Ui, k: Kpi<'_>) -> Response {
                     .color(p.muted),
             );
             ui.add_space(4.0);
-            ui.label(RichText::new(&k.value).font(theme::semibold(24.0)));
+            let font = fit_font(
+                ui,
+                &k.value,
+                theme::semibold,
+                24.0,
+                15.0,
+                ui.available_width(),
+            );
+            ui.add(egui::Label::new(RichText::new(&k.value).font(font)).truncate());
             if let Some((text, color)) = &k.sub {
                 ui.add_space(2.0);
                 ui.label(RichText::new(text).font(theme::regular(12.0)).color(*color));
@@ -312,4 +329,58 @@ pub fn clipped_text(
     let galley = painter.layout_job(job);
     let y = pos.y - galley.size().y / 2.0;
     painter.galley(egui::pos2(pos.x, y), galley, color);
+}
+
+/// How many columns at least `min_width` wide (with `gap` between) fit
+/// in `avail`, never fewer than one nor more than `max`.
+pub fn fit_columns(avail: f32, min_width: f32, gap: f32, max: usize) -> usize {
+    (((avail + gap) / (min_width + gap)).floor() as usize).clamp(1, max.max(1))
+}
+
+/// The width of each of `n` right-aligned amount columns in a painted
+/// table `width` wide, leaving at least `label_min` for the label on the
+/// left: `max` when there's room, shrinking to a floor that still fits an
+/// amount. Pair with [`min_width`] so a table that can't fit scrolls.
+pub fn amount_col_w(width: f32, n: usize, label_min: f32, max: f32) -> f32 {
+    ((width - label_min) / n.max(1) as f32).clamp(AMOUNT_MIN, max)
+}
+
+/// The narrowest an amount column gets ("(1,234,567.89)" at 13.5px).
+pub const AMOUNT_MIN: f32 = 92.0;
+
+/// Lay out `add` at least `width` wide: as is when there's room, in a
+/// sideways scroll when the window is narrower, so a table never paints
+/// over itself or past the edge.
+pub fn min_width<R>(ui: &mut Ui, id: &str, width: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
+    if ui.available_width() >= width {
+        return add(ui);
+    }
+    egui::ScrollArea::horizontal()
+        .id_salt(id)
+        .show(ui, |ui| {
+            ui.set_width(width);
+            add(ui)
+        })
+        .inner
+}
+
+/// The largest size up to `size` at which `text` fits on one line in
+/// `width` (down to `floor`): big numbers shrink rather than wrap.
+pub fn fit_font(
+    ui: &Ui,
+    text: &str,
+    font: impl Fn(f32) -> egui::FontId,
+    size: f32,
+    floor: f32,
+    width: f32,
+) -> egui::FontId {
+    let measured = ui
+        .painter()
+        .layout_no_wrap(text.to_string(), font(size), Color32::WHITE)
+        .size()
+        .x;
+    if measured <= width {
+        return font(size);
+    }
+    font((size * width / measured).floor().max(floor))
 }

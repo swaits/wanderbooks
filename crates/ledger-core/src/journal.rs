@@ -4,6 +4,7 @@
 //! total credits. Entries are born as drafts, validated, then posted. Posting
 //! is one-way; a posted entry can only be corrected by a reversing entry.
 
+use crate::kernel::{self, LineError};
 use crate::{AccountId, ChartOfAccounts, ClassId, Currency, LedgerError, Money, Side};
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
@@ -126,14 +127,11 @@ impl JournalEntry {
     }
 
     /// Validate the entry against the chart of accounts. This is the heart of
-    /// R-1: at least two lines, no zero amounts, no placeholder or unknown
-    /// accounts, one currency throughout, and debits exactly equal to credits.
+    /// R-1: at least two lines, every amount positive and within line range,
+    /// no placeholder or unknown accounts, one currency throughout, and
+    /// debits exactly equal to credits. The arithmetic is
+    /// [`kernel::check_lines`].
     pub fn validate(&self, chart: &ChartOfAccounts) -> Result<(), LedgerError> {
-        if self.lines.len() < 2 {
-            return Err(LedgerError::TooFewLines);
-        }
-        let mut debits = Decimal::ZERO;
-        let mut credits = Decimal::ZERO;
         let mut currency: Option<Currency> = None;
         for line in &self.lines {
             let account = chart
@@ -141,9 +139,6 @@ impl JournalEntry {
                 .ok_or(LedgerError::UnknownAccount(line.account))?;
             if account.placeholder {
                 return Err(LedgerError::PlaceholderAccount(account.code.clone()));
-            }
-            if line.amount.is_zero() {
-                return Err(LedgerError::ZeroAmountLine);
             }
             match currency {
                 None => currency = Some(line.amount.currency),
@@ -161,28 +156,33 @@ impl JournalEntry {
                     found: line.amount.currency.code().to_string(),
                 });
             }
-            match line.side {
-                Side::Debit => debits += line.amount.amount,
-                Side::Credit => credits += line.amount.amount,
+        }
+        let sides: Vec<(Side, Decimal)> = self
+            .lines
+            .iter()
+            .map(|l| (l.side, l.amount.amount))
+            .collect();
+        kernel::check_lines(&sides).map_err(|e| match e {
+            LineError::TooFewLines => LedgerError::TooFewLines,
+            LineError::ZeroAmount => LedgerError::ZeroAmountLine,
+            LineError::NegativeAmount => LedgerError::NegativeAmountLine,
+            LineError::OutOfRange => LedgerError::AmountOutOfRange,
+            LineError::Unbalanced { debits, credits } => {
+                LedgerError::UnbalancedEntry { debits, credits }
             }
-        }
-        if debits != credits {
-            return Err(LedgerError::UnbalancedEntry { debits, credits });
-        }
-        Ok(())
+        })
     }
 
     /// Net movement per account within this entry: debits minus credits.
     /// Sums to zero across accounts for any valid entry.
     pub fn movements(&self) -> HashMap<AccountId, Decimal> {
-        let mut out = HashMap::new();
-        for line in &self.lines {
-            let delta = match line.side {
-                Side::Debit => line.amount.amount,
-                Side::Credit => -line.amount.amount,
-            };
-            *out.entry(line.account).or_insert(Decimal::ZERO) += delta;
-        }
-        out
+        kernel::movements(
+            self.lines
+                .iter()
+                .map(|l| (l.account, l.side, l.amount.amount)),
+        )
+        .expect("posted lines are in range, so their sums are")
+        .into_iter()
+        .collect()
     }
 }

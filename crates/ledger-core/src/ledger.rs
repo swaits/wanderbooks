@@ -13,7 +13,7 @@ use crate::{
     Account, AccountId, AccountType, AgingRow, Asset, AssetId, AssetStatus, Bill, BillId,
     ChartOfAccounts, Class, ClassId, Currency, Customer, CustomerId, DocumentLine, DocumentStatus,
     EntryId, EntryStatus, Invoice, InvoiceId, JournalEntry, JournalLine, LedgerError, Money,
-    NewAsset, Period, PeriodId, PeriodStatus, Side, Vendor, VendorId, arap, assets,
+    NewAsset, Period, PeriodId, PeriodStatus, Side, Vendor, VendorId, arap, assets, kernel,
     payroll::{
         PayrollAccounts, PayrollLine, PayrollRun, PayrollRunId, payroll_entry_plan,
         payroll_remit_plan, validate_payroll_lines,
@@ -556,7 +556,9 @@ impl Ledger {
                 found: foreign_currency.code().to_string(),
             });
         }
-        let base_amount = foreign_amount * fx_rate;
+        let base_amount = foreign_amount
+            .checked_mul(fx_rate)
+            .ok_or(LedgerError::AmountOutOfRange)?;
         if base_amount <= Decimal::ZERO {
             return Err(LedgerError::InvalidFxRate(fx_rate));
         }
@@ -622,11 +624,7 @@ impl Ledger {
         }
         let id = self.create_entry(date, description);
         for (idx, line) in original.lines().iter().enumerate() {
-            let flipped = match line.side {
-                Side::Debit => Side::Credit,
-                Side::Credit => Side::Debit,
-            };
-            self.add_line(id, line.account, flipped, line.amount)?;
+            self.add_line(id, line.account, kernel::flip(line.side), line.amount)?;
             // The reversal offsets the original line for line: carry the
             // class so divisional P&L nets correctly.
             if line.class_id.is_some() {
@@ -896,23 +894,15 @@ impl Ledger {
         } else {
             let entry = self.create_entry(period.end, &format!("Close period {}", period.name));
             let post = |this: &mut Self, account, credit: Decimal| -> Result<(), LedgerError> {
-                if credit.is_zero() {
-                    return Ok(());
+                match kernel::credit_line(credit) {
+                    Some((side, amount)) => {
+                        this.add_line(entry, account, side, Money::new(amount, this.base_currency))
+                    }
+                    None => Ok(()),
                 }
-                let (side, amount) = if credit > Decimal::ZERO {
-                    (Side::Credit, credit)
-                } else {
-                    (Side::Debit, -credit)
-                };
-                this.add_line(entry, account, side, Money::new(amount, this.base_currency))
             };
             for (account, side, amount) in closings {
-                let credit = if side == Side::Credit {
-                    amount
-                } else {
-                    -amount
-                };
-                post(self, account, credit)?;
+                self.add_line(entry, account, side, Money::new(amount, self.base_currency))?;
             }
             for (account, share) in equity {
                 post(self, account, share)?;
@@ -947,24 +937,15 @@ impl Ledger {
             ) {
                 continue;
             }
-            let movement = self.movement_through(account.id, end);
-            if movement.is_zero() {
-                continue;
-            }
             // To zero the account: post the opposite of its net movement.
-            closings.push(if movement > Decimal::ZERO {
-                (account.id, Side::Credit, movement)
-            } else {
-                (account.id, Side::Debit, -movement)
-            });
+            if let Some((side, amount)) =
+                kernel::closing_line(self.movement_through(account.id, end))
+            {
+                closings.push((account.id, side, amount));
+            }
         }
-        let net = closings
-            .iter()
-            .map(|(_, side, amount)| match side {
-                Side::Debit => *amount,
-                Side::Credit => -*amount,
-            })
-            .sum();
+        let net = kernel::net(closings.iter().map(|&(_, side, amount)| (side, amount)))
+            .expect("posted lines are in range, so their sums are");
         (closings, net)
     }
 
@@ -1025,16 +1006,20 @@ impl Ledger {
     /// Debits minus credits on an account across posted entries dated on or
     /// before `end`.
     fn movement_through(&self, account: AccountId, end: NaiveDate) -> Decimal {
-        let mut total = Decimal::ZERO;
-        for entry in self.posted_entries().filter(|e| e.date() <= end) {
-            for line in entry.lines().iter().filter(|l| l.account == account) {
-                match line.side {
-                    Side::Debit => total += line.amount.amount,
-                    Side::Credit => total -= line.amount.amount,
-                }
-            }
-        }
-        total
+        self.net_of(account, |e| e.date() <= end)
+    }
+
+    /// Debits minus credits on an account across the posted entries
+    /// `include` accepts.
+    fn net_of(&self, account: AccountId, include: impl Fn(&JournalEntry) -> bool) -> Decimal {
+        kernel::net(
+            self.posted_entries()
+                .filter(|e| include(e))
+                .flat_map(|e| e.lines())
+                .filter(|l| l.account == account)
+                .map(|l| (l.side, l.amount.amount)),
+        )
+        .expect("posted lines are in range, so their sums are")
     }
 
     /// [`Self::preview_close_period_to`] closing into Retained Earnings.
@@ -1712,18 +1697,7 @@ impl Ledger {
     /// Signed net movement of an account across all posted entries:
     /// debits minus credits. Positive means net debit movement.
     pub fn account_movement(&self, account: AccountId) -> Decimal {
-        let mut total = Decimal::ZERO;
-        for entry in self.posted_entries() {
-            for line in entry.lines() {
-                if line.account == account {
-                    match line.side {
-                        Side::Debit => total += line.amount.amount,
-                        Side::Credit => total -= line.amount.amount,
-                    }
-                }
-            }
-        }
-        total
+        self.net_of(account, |_| true)
     }
 
     /// Balance expressed in the account's normal side: positive means a
@@ -1734,10 +1708,8 @@ impl Ledger {
             .get(account)
             .ok_or(LedgerError::UnknownAccount(account))?;
         let movement = self.account_movement(account.id);
-        let balance = match account.account_type.normal_side() {
-            Side::Debit => movement,
-            Side::Credit => -movement,
-        };
+        let balance = kernel::normal_balance(account.account_type, movement)
+            .expect("Decimal negation is exact");
         // Never leak negative zero into reports: it is a representation
         // artifact of negating an exact zero, and money must never print "-0".
         Ok(if balance.is_zero() {

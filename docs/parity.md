@@ -10,7 +10,7 @@ No other statuses.
 
 **Floor: 10 done** (2026-10-10; fixed-asset register added).
 
-| Area | GnuCash reference | Status | Notes |
+| Area | GnuCash counterpart (a cross-check, not the spec) | Status | Notes |
 |---|---|---|---|
 | Chart of accounts (5 types, codes, hierarchy) | Accounts tab | done | `account.rs`; placeholder support in |
 | Double-entry validation (balanced, ≥2 lines) | Journal validation | done | `journal.rs::validate` |
@@ -44,7 +44,7 @@ No other statuses.
 | Payout gross-up (deposit → revenue, fees, adjustments) | Bank deposit with fee lines; Xero/QBO Stripe & Shopify integrations | partial | hand-verified fixture incl. classes and a negative payout; no statement parsers yet |
 | 1099 vendor tracking + year-end worksheet | Vendors → Track payments for 1099; 1099 report | partial | hand-verified fixture (bill payments, card exclusion, reversal, year boundary); no golden file yet |
 | Prepaid expense + deferred revenue amortization | Amortization schedules (Xero/QBO add-ons) | partial | hand-verified fixture, to the cent; no golden file yet |
-| Automated GnuCash diff harness | — (our `xtask oracle`) | todo | roadmap phase 3 |
+| Automated cross-implementation diff harness (GnuCash first) | — (our `xtask oracle`) | todo | roadmap phase 3 |
 
 Workflow/UI parity (QuickBooks/Xero reference) gets its own catalog when the
 egui phase starts; semantics come first.

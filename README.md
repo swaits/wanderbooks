@@ -36,12 +36,23 @@ through MCP. Self-hosted, no rent.
 This is the storytold way applied to accounting: agents verify against
 oracles, never ship what they haven't demonstrated.
 
-- 70 workspace tests: invariant tests encoding accounting law, golden-file
+- 190+ workspace tests: invariant tests encoding accounting law, golden-file
   report snapshots, property tests (proptest), end-to-end MCP stdio tests.
+- **Formal proofs of the accounting laws** (`just prove`,
+  `docs/verification.md`). Kani model-checks the engine's arithmetic
+  kernel exhaustively within bounds. Lean 4 proves that, after any
+  sequence of commands, the trial balance balances, the accounting
+  equation holds, posted entries are forever, closed periods stay
+  frozen, and a close moves exactly the net income to equity. The first
+  pass found three engine bugs that every test, fuzzer, and mutant had
+  missed: negative amounts accepted, and two crashes on oversized
+  amounts. It also caught a soundness bug in the model checker itself.
 - Mutation testing via cargo-mutants; fuzzing via cargo-fuzz (11.5M+
   executions, zero crashes).
-- GnuCash is the behavioral oracle (never a code source — clean room,
-  MIT OR Apache-2.0).
+- GnuCash is *a* behavioral cross-check, never the authority and never
+  a code source (clean room, MIT OR Apache-2.0). Accounting principles,
+  proved, are the spec. Where any other program disagrees, we work out
+  from principles who is right.
 
 ## Status
 
@@ -70,6 +81,16 @@ curl -fsSL https://wanderbooks.ai/install.sh | sh -s -- ~/Books/Acme
 Already installed: `wanderbooks new ~/Books/Acme` (add `--codex` to keep the
 books with Codex instead of Claude Code). In a books dir, `just`
 lists the shortcuts (`just gui`, `just agent`, `just backup`).
+
+## Developing
+
+Every tool the recipes use (Rust, just, Kani, Lean, cargo-mutants,
+cargo-fuzz, Node for deploys) is pinned in `mise.toml`:
+
+```sh
+mise install
+just          # lists the recipes: check, build, prove, demo, ...
+```
 
 ## Layout
 

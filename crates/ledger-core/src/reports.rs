@@ -59,10 +59,8 @@ fn trial_balance_where(ledger: &Ledger, include: &dyn Fn(&JournalEntry) -> bool)
     let mut movements: BTreeMap<crate::AccountId, Decimal> = BTreeMap::new();
     for entry in ledger.posted_entries().filter(|e| include(e)) {
         for line in entry.lines() {
-            let signed = match line.side {
-                crate::Side::Debit => line.amount.amount,
-                crate::Side::Credit => -line.amount.amount,
-            };
+            let signed = crate::kernel::signed(line.side, line.amount.amount)
+                .expect("Decimal negation is exact");
             *movements.entry(line.account).or_default() += signed;
         }
     }
@@ -80,11 +78,7 @@ fn trial_balance_where(ledger: &Ledger, include: &dyn Fn(&JournalEntry) -> bool)
         if movement.is_zero() {
             continue;
         }
-        let (debit, credit) = if movement > Decimal::ZERO {
-            (movement, Decimal::ZERO)
-        } else {
-            (Decimal::ZERO, -movement)
-        };
+        let (debit, credit) = crate::kernel::columns(movement).expect("Decimal negation is exact");
         total_debits += debit;
         total_credits += credit;
         lines.push(TrialBalanceLine {

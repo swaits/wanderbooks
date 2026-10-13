@@ -26,6 +26,15 @@ pub enum LedgerError {
     #[error("journal line has a zero amount")]
     ZeroAmountLine,
 
+    /// Line amounts are positive; the side says which way the money moves.
+    #[error("journal line has a negative amount; use the other side instead")]
+    NegativeAmountLine,
+
+    /// A line larger than one quadrillion, or with more than ten decimal
+    /// places, is a mistake, and one that could overflow exact arithmetic.
+    #[error("journal line amount is out of range (at most 1000000000000000, ten decimal places)")]
+    AmountOutOfRange,
+
     /// The referenced account does not exist in the chart of accounts.
     #[error("unknown account id {0}")]
     UnknownAccount(u64),

@@ -24,8 +24,10 @@ The primary interface is MCP, not a cloned GUI (Stephen's call, 2026-10-10).
 
 ## Phase 3 — Oracle harness (next)
 
-- `ledger-oracle`: fixture books through our engine and GnuCash headless,
-  automatic `snapshot()` diffing.
+- `ledger-oracle`: fixture books through our engine and other
+  implementations (GnuCash headless first), automatic `snapshot()`
+  diffing. Each diff is adjudicated from principles; no other program is
+  the authority.
 - Parity catalog becomes machine-readable; CI enforces the non-regression
   floor.
 - Done when: a fixture book produces byte-identical snapshots from both
@@ -82,7 +84,8 @@ The primary interface is MCP, not a cloned GUI (Stephen's call, 2026-10-10).
 - Multi-currency with FX translation.
 - Period close.
 - The goal: a self-hosted bookkeeping system with a tested claim to
-  semantic parity with GnuCash and capability parity with the old
+  proved accounting semantics (cross-checked against GnuCash and others)
+  and capability parity with the old
   GSheet+GDrive workflow — no SaaS subscription required.
 
 ## Explicitly not on the roadmap

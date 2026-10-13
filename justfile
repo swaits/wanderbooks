@@ -15,6 +15,30 @@ check:
     cargo clippy --workspace --all-targets -- -D warnings
     cargo test --workspace
 
+# Formal proofs: Kani on the accounting kernel, Lean for books of any size (docs/verification.md)
+prove:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Capped: a harness that blows up should fail, not eat the machine.
+    log=$(mktemp)
+    (ulimit -v 12000000; cd crates/ledger-core &&
+        timeout 1800 cargo kani -j "$(nproc)" --output-format terse | tee "$log")
+    # A cover that can't be satisfied means a proof is vacuous.
+    if grep -E "\*\* [0-9]+ of [0-9]+ cover properties satisfied" "$log" |
+        awk '{ if ($2 != $4) bad = 1 } END { exit !bad }'; then
+        echo "Kani: an unsatisfiable cover; some proof is vacuous" >&2
+        exit 1
+    fi
+    rm -f "$log"
+    cd verify/lean
+    lake build
+    audit=$(lake env lean Audit.lean)
+    if grep -v -E "depends on axioms: \[(propext|Quot.sound|Classical.choice)(, (propext|Quot.sound|Classical.choice))*\]$|does not depend on any axioms" <<<"$audit"; then
+        echo "Lean audit: a theorem rests on something beyond the standard axioms" >&2
+        exit 1
+    fi
+    echo "Lean: $(wc -l <<<"$audit") headline theorems, standard axioms only"
+
 # Build the release binaries (CLI, MCP server, GUI)
 build:
     cargo build --release -p ledger-cli -p ledger-mcp -p ledger-gui

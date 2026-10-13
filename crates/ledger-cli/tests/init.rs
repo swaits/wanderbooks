@@ -97,6 +97,11 @@ fn the_server_is_registered_for_this_dir() {
         settings["enabledMcpjsonServers"],
         serde_json::json!(["wanderbooks"])
     );
+    // Every session starts by checking the viewer against open_at_start.
+    let hook = settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        .as_str()
+        .expect("SessionStart hook command");
+    assert!(hook.contains("just gui-status") && hook.contains("open_at_start"));
     // The justfile opens this dir's books in the GUI.
     let just = fs::read_to_string(books.join("justfile")).unwrap();
     assert!(just.contains("ledger-gui\" --data-dir \"{{justfile_directory()}}/books-data\""));

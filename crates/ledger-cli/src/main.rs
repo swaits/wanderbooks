@@ -15,7 +15,8 @@
 //!    `.gitignore`, and `books-data/`.
 //! 3. Registers the MCP server for this directory only: `.mcp.json`, plus
 //!    `.claude/settings.json` approving it, so Claude Code loads the tools
-//!    without `claude mcp add` or a prompt.
+//!    without `claude mcp add` or a prompt. The same settings carry a
+//!    SessionStart hook that checks whether the viewer is open.
 //! 4. `git init`s the directory (its history is the archive) and commits.
 //! 5. Starts `claude` in the directory with the onboarding prompt, unless
 //!    `--no-start` or there's no terminal. With `--codex`, registers the
@@ -363,11 +364,25 @@ fn mcp_json(ledger_mcp: &Path, books: &Path) -> String {
 
 /// `.claude/settings.json`: approve this directory's server, and its tools,
 /// so the first session starts working instead of asking. The server still
-/// previews every posting for the human to confirm.
+/// previews every posting for the human to confirm. A SessionStart hook
+/// checks the viewer and hands the agent `[viewer] open_at_start`, so the
+/// offer to open it doesn't hang on the agent remembering AGENTS.md.
 const CLAUDE_SETTINGS: &str = r#"{
   "enabledMcpjsonServers": ["wanderbooks"],
   "permissions": {
     "allow": ["mcp__wanderbooks"]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" && if just gui-status >/dev/null 2>&1; then echo 'wanderbooks viewer: open.'; else echo \"wanderbooks viewer: CLOSED. [viewer] open_at_start = $(sed -n 's/^open_at_start *= *//p' wanderbooks.toml). Act on this at the top of your first reply, before anything else: \\\"ask\\\" -> offer to open it (just gui); \\\"always\\\" -> run just gui; \\\"never\\\" -> say nothing.\"; fi"
+          }
+        ]
+      }
+    ]
   }
 }
 "#;

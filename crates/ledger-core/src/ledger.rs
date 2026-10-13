@@ -606,22 +606,70 @@ impl Ledger {
         self.entries.get(&entry)
     }
 
+    /// Pure pre-check for [`Self::reverse_entry`]: every way a reversal can
+    /// be refused, checked without touching the books, so journaling stores
+    /// can validate before they journal.
+    ///
+    /// ```text
+    /// GOAL: decide whether `entry` may be reversed on `date`.
+    /// INVARIANTS:
+    ///   1. MUST NOT mutate anything.
+    ///   2. NEVER accepts a reversal that `reverse_entry` would then refuse.
+    /// SCENARIOS:
+    ///   1. IF the entry is unknown or still a draft:
+    ///      - SHOULD refuse (`UnknownEntry`, `EntryNotPosted`)
+    ///      BECAUSE only posted entries are in the books to correct.
+    ///   2. IF the entry was already reversed:
+    ///      - SHOULD refuse with `EntryAlreadyReversed(entry, by)`
+    ///      - NEVER undo it a second time
+    ///      BECAUSE a second reversal would undo the original twice
+    ///      (owner, 2026-10-13). Reversing the reversal re-instates it.
+    ///   3. IF the entry closes a period:
+    ///      - SHOULD refuse with `ClosingEntryIrreversible`
+    ///      BECAUSE the period would stay closed with its earnings
+    ///      unswept (owner, 2026-10-13).
+    ///   4. IF `date` falls in a closed period:
+    ///      - SHOULD refuse with `ClosedPeriod`
+    ///      BECAUSE closed periods take no new postings.
+    /// ```
+    pub fn check_reversal(&self, entry: EntryId, date: NaiveDate) -> Result<(), LedgerError> {
+        let original = self
+            .entries
+            .get(&entry)
+            .ok_or(LedgerError::UnknownEntry(entry))?;
+        if original.status() != EntryStatus::Posted {
+            return Err(LedgerError::EntryNotPosted(entry));
+        }
+        if let Some(by) = self
+            .posted_entries()
+            .find(|e| e.reversal_of() == Some(entry))
+        {
+            return Err(LedgerError::EntryAlreadyReversed(entry, by.id()));
+        }
+        if self.closing_entry_ids().contains(&entry) {
+            return Err(LedgerError::ClosingEntryIrreversible(entry));
+        }
+        if let Some(pid) = self.closed_period_containing(date) {
+            return Err(LedgerError::ClosedPeriod(pid, date.to_string()));
+        }
+        Ok(())
+    }
+
     /// Post a reversing entry: same lines with sides flipped, linked back to
     /// the original via `reversal_of`. The books never forget; they correct.
+    /// Refused (see [`Self::check_reversal`]) before anything changes.
     pub fn reverse_entry(
         &mut self,
         entry: EntryId,
         date: NaiveDate,
         description: &str,
     ) -> Result<EntryId, LedgerError> {
+        self.check_reversal(entry, date)?;
         let original = self
             .entries
             .get(&entry)
             .ok_or(LedgerError::UnknownEntry(entry))?
             .clone();
-        if original.status() != EntryStatus::Posted {
-            return Err(LedgerError::EntryNotPosted(entry));
-        }
         let id = self.create_entry(date, description);
         for (idx, line) in original.lines().iter().enumerate() {
             self.add_line(id, line.account, kernel::flip(line.side), line.amount)?;

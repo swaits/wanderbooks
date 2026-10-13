@@ -67,7 +67,8 @@ books dir with the MCP server registered for it, and starts the agent):
 curl -fsSL https://wanderbooks.ai/install.sh | sh -s -- ~/Books/Acme
 ```
 
-Already installed: `wanderbooks new ~/Books/Acme`. In a books dir, `just`
+Already installed: `wanderbooks new ~/Books/Acme` (add `--codex` to keep the
+books with Codex instead of Claude Code). In a books dir, `just`
 lists the shortcuts (`just gui`, `just agent`, `just backup`).
 
 ## Layout

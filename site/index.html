@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>wanderbooks — own your books, hire an AI bookkeeper</title>
-<meta name="description" content="Real double-entry bookkeeping in a folder you own, kept by an AI bookkeeper you talk to. No subscription, no lock-in, every number traceable to its receipt. An open-source alternative to QuickBooks Online.">
+<title>wanderbooks — turn Claude or Codex into a full bookkeeping system, free</title>
+<meta name="description" content="wanderbooks is a free, open-source accounting engine for Claude Code and Codex. Connect it and the AI you already use becomes a complete bookkeeping system: receipts, statements, taxes, your CPA's package, in a folder you own. A free alternative to QuickBooks Online.">
 <link rel="canonical" href="https://wanderbooks.ai/">
-<meta property="og:title" content="wanderbooks — own your books, hire an AI bookkeeper">
-<meta property="og:description" content="Real double-entry bookkeeping in a folder you own, kept by an AI bookkeeper you talk to. No subscription, no lock-in.">
+<meta property="og:title" content="wanderbooks — turn Claude or Codex into a full bookkeeping system, free">
+<meta property="og:description" content="Free and open source. Connect it to Claude Code or Codex and get a complete bookkeeping system in a folder you own. No subscription, no account.">
 <meta property="og:url" content="https://wanderbooks.ai/">
 <meta property="og:image" content="https://wanderbooks.ai/assets/overview.png">
 <meta name="twitter:card" content="summary_large_image">
@@ -53,6 +53,13 @@ h1 { font-size: clamp(38px, 6vw, 62px); line-height: 1.04; letter-spacing: -0.03
 .copy { flex: none; background: #2a2b30; color: #ececee; border: 0; border-radius: 8px; padding: 7px 12px; font: 500 13px Inter, sans-serif; cursor: pointer; }
 .copy:hover { background: #3a3b42; }
 .note { color: var(--faint); font-size: 14px; margin-top: 12px; }
+.equation { display: grid; grid-template-columns: 1fr auto 1fr auto 1.3fr; gap: 12px; align-items: stretch; margin: 0 0 26px; }
+.equation .term { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+.equation .term.result { border-color: var(--accent); background: var(--accent-soft); }
+.equation .t { font-weight: 600; font-size: 16px; line-height: 1.3; }
+.equation .d { color: var(--muted); font-size: 13.5px; margin-top: 4px; line-height: 1.4; }
+.equation .op { align-self: center; color: var(--faint); font-size: 26px; font-weight: 300; }
+@media (max-width: 760px) { .equation { grid-template-columns: 1fr; } .equation .op { justify-self: center; line-height: 1; } }
 .shot { margin: 40px 0 8px; border-radius: 14px; border: 1px solid var(--border); overflow: hidden; box-shadow: 0 24px 60px -24px rgba(0,0,0,.25); background: var(--surface); }
 .shot img { display: block; width: 100%; height: auto; }
 .shot.dark { display: none; }
@@ -118,15 +125,22 @@ footer { padding: 72px 0 48px; color: var(--faint); font-size: 14px; display: fl
   </header>
 
   <div class="hero">
-    <div class="eyebrow">Stop renting your books</div>
-    <h1>Own your books. Hire an AI bookkeeper.</h1>
-    <p class="lede">wanderbooks is real double-entry accounting that lives in <b>a folder you own</b>, kept by <b>an AI bookkeeper you talk to</b>. It finds your receipts, records and categorizes everything, fixes its mistakes the way an accountant would, and hands your CPA a clean package. No subscription. No lock-in. Every number traceable to its receipt.</p>
+    <div class="eyebrow">Free and open source</div>
+    <h1>Turn Claude or Codex into a full bookkeeping system.</h1>
+    <p class="lede">wanderbooks is a <b>free</b> accounting engine your AI connects to. Plug it into <b>Claude Code or Codex</b>, the AI you already use, and you have complete double-entry books: it finds your receipts, records and categorizes everything, fixes mistakes the way an accountant would, and hands your CPA a clean package. <b>No subscription. No account. Nothing to buy.</b> Your books live in a folder you own.</p>
+    <div class="equation">
+      <div class="term"><div class="t">Claude Code or Codex</div><div class="d">the AI you already use</div></div>
+      <div class="op">+</div>
+      <div class="term"><div class="t">wanderbooks</div><div class="d">free, open source, an MCP server</div></div>
+      <div class="op">=</div>
+      <div class="term result"><div class="t">A complete bookkeeping system</div><div class="d">books, receipts, statements, taxes, your CPA's package</div></div>
+    </div>
     <div class="install">
       <span class="prompt">$</span>
       <code id="cmd">curl -fsSL https://wanderbooks.ai/install.sh | sh -s -- ~/Books/YourCompany</code>
       <button class="copy" id="copy">Copy</button>
     </div>
-    <p class="note">One line installs everything, makes your books, and starts your bookkeeper. Linux and macOS; Windows via WSL2. Free and open source; you bring <a href="https://claude.com/claude-code">Claude</a>.</p>
+    <p class="note">One line installs everything, makes your books, and starts your bookkeeper in Claude Code. Using Codex? Add <code class="inline">--codex</code> to the end. Linux and macOS; Windows via WSL2.</p>
   </div>
 
   <div class="shot light"><img src="assets/overview.png" alt="The wanderbooks overview: cash, what you owe, spending, revenue, runway, a cash chart, and what needs attention" width="1440" height="920"></div>
@@ -135,7 +149,7 @@ footer { padding: 72px 0 48px; color: var(--faint); font-size: 14px; display: fl
 
   <section id="ask">
     <h2>Just ask.</h2>
-    <p class="sub">Your bookkeeper is Claude, working through an accounting engine that won't let it be wrong. Talk to it the way you'd talk to a good bookkeeper. It does the work, shows you the result, and waits for your OK before anything is posted.</p>
+    <p class="sub">Your bookkeeper is the AI you already use, working through an accounting engine that won't let it be wrong. Talk to it the way you'd talk to a good bookkeeper. It does the work, shows you the result, and waits for your OK before anything is posted.</p>
     <div class="grid">
       <div class="card ask"><div class="say">Find the receipt for the $106.38 Apple charge in my email and record it.</div><p>Searches your inbox, files the receipt as a PDF, drafts the entry with the right accounts, and shows you the preview.</p></div>
       <div class="card ask"><div class="say">Here's last month's bank export. Categorize everything.</div><p>Imports the transactions as drafts, proposes an account for each from how you've booked them before, and asks about the ones it isn't sure of.</p></div>
@@ -155,7 +169,7 @@ footer { padding: 72px 0 48px; color: var(--faint); font-size: 14px; display: fl
     <table class="vs">
       <tr><th></th><th>wanderbooks</th><th>QuickBooks Online</th></tr>
       <tr><td>Where your books live</td><td>A folder on your computer, under git. Plain, documented files.</td><td>Intuit's servers. You get access while you pay.</td></tr>
-      <tr><td>What it costs</td><td>Nothing. Open source, forever. You bring your Claude plan.</td><td>A monthly subscription per company, and the price keeps rising.</td></tr>
+      <tr><td>What it costs</td><td>Nothing. Free and open source, forever. It runs on the Claude or ChatGPT plan you already have.</td><td>A monthly subscription per company, and the price keeps rising.</td></tr>
       <tr><td>Who does the bookkeeping</td><td>An AI bookkeeper: receipts, entries, categories, fixes, closes.</td><td>You do, in screens and forms. Or you pay someone.</td></tr>
       <tr><td>Receipts</td><td>Required over a threshold you set, enforced on every entry, shown right beside it.</td><td>Optional attachments.</td></tr>
       <tr><td>Audit trail</td><td>Every change is a hash-chained event; nothing is ever edited or erased.</td><td>An audit log inside their app.</td></tr>
@@ -241,10 +255,11 @@ footer { padding: 72px 0 48px; color: var(--faint); font-size: 14px; display: fl
 
   <section id="faq">
     <h2>Questions</h2>
-    <details><summary>What does it cost?</summary><p>wanderbooks is free and open source (MIT or Apache-2.0). Your bookkeeper is Claude, through Claude Code, which comes with a Claude Pro or Max plan or runs on API credits.</p></details>
+    <details><summary>What does it cost?</summary><p>Nothing. wanderbooks is free and open source (MIT or Apache-2.0), with no account and no subscription. The bookkeeper is the AI you already use: Claude Code (included with Claude Pro and Max, or on API credits) or Codex (included with ChatGPT plans, or on API credits). There's nothing else to buy.</p></details>
+    <details><summary>Wait, what's an MCP server?</summary><p>MCP is the standard way AI tools like Claude Code and Codex plug into other software. wanderbooks is an accounting engine that speaks it: your AI calls its tools to draft entries, attach receipts, and run reports, and the engine enforces the accounting rules. The one-line installer sets it up; you never have to touch it.</p></details>
     <details><summary>Do I need to be technical?</summary><p>You need to paste one command into a terminal, once. After that you talk to your bookkeeper in plain English and read your books in the desktop app.</p></details>
-    <details><summary>How does it find my receipts?</summary><p>Connect your email to Claude (an email connector like Gmail's, or the Claude browser extension with your mail open) and ask. It searches for the vendor and amount, files one clean PDF per receipt, and attaches it to the entry. It asks before downloading anything, and it never types passwords or account numbers.</p></details>
-    <details><summary>Where's my data, and what does the AI see?</summary><p>Your books are files on your computer: a journal, your receipts, and a settings file, in a git repository you control. Nothing is uploaded to wanderbooks; there is no wanderbooks server. What your bookkeeper reads to help you goes to Anthropic like any Claude conversation.</p></details>
+    <details><summary>How does it find my receipts?</summary><p>Give your AI access to your email (in Claude, an email connector like Gmail's or the Claude browser extension with your mail open) and ask. It searches for the vendor and amount, files one clean PDF per receipt, and attaches it to the entry. It asks before downloading anything, and it never types passwords or account numbers.</p></details>
+    <details><summary>Where's my data, and what does the AI see?</summary><p>Your books are files on your computer: a journal, your receipts, and a settings file, in a git repository you control. Nothing is uploaded to wanderbooks; there is no wanderbooks server. What your bookkeeper reads to help you goes to your AI provider (Anthropic or OpenAI), like any other conversation with it.</p></details>
     <details><summary>What if the AI gets something wrong?</summary><p>Every posting is previewed before it happens. If something slips through, it's corrected the way accountants do it, with a reversing entry, so the mistake and the fix are both on the record. The engine itself refuses anything that doesn't balance, anything without a required receipt, and anything in a closed period.</p></details>
     <details><summary>Is this real accounting, or a spreadsheet with an AI on top?</summary><p>Real double-entry accounting, with the rules enforced in code: exact decimal money, balanced entries, immutable posting, closes, depreciation, accrual or cash basis. Its statements are tested against hand-computed numbers, golden files, and property tests.</p></details>
     <details><summary>Can I bring my history from QuickBooks or a spreadsheet?</summary><p>Yes. Export your chart of accounts, journal, and reports, and ask your bookkeeper to move you over. It rebuilds the history and compares every statement against the old system, to the cent, before calling it done. Keep the old system read-only until you've closed a month in wanderbooks.</p></details>

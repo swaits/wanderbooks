@@ -274,3 +274,14 @@ interface is MCP, not a cloned GUI. The first storage + MCP slice is done
   .claude/settings.json (approved, no prompt), commits, and starts claude
   with the onboarding prompt. `install.sh` does Rust + cargo install +
   `wanderbooks new` in one line. mise is no longer part of the scaffold.
+- 2026-10-12: Integrity, end to end. Store::verify now also compares the
+  whole SQLite projection (every table, row for row) with a fresh
+  projection of the journal; verify_and_heal rebuilds a drifted database
+  (keeping the old file) and runs at every server start; books.verify
+  (65 tools) adds a re-hash of every blob. The GUI compares the server's
+  database (read-only) with its own projection and re-hashes each file
+  once, showing "Database matches journal · N files verified" and raising
+  problems in Needs attention. Also: Windows-safe blob writes (no
+  directory fsync off Unix), .exe-aware binary lookup, installer OS and
+  C-compiler checks with WANDERBOOKS_REPO, the website (site/, `just
+  site`, `just publish`), and a repo justfile (check, build, install, demo).

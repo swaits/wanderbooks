@@ -60,9 +60,14 @@ impl BlobStore {
             f.sync_all()?;
         }
         fs::rename(&tmp, &path)?;
-        // Fsync the directory so the rename itself is durable.
-        let dir = fs::File::open(path.parent().unwrap())?;
-        dir.sync_all()?;
+        // Fsync the directory so the rename itself is durable. Unix only:
+        // Windows can't open a directory as a file, and NTFS journals the
+        // rename's metadata itself.
+        #[cfg(unix)]
+        {
+            let dir = fs::File::open(path.parent().unwrap())?;
+            dir.sync_all()?;
+        }
         Ok((sha, false))
     }
 

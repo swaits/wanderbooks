@@ -8,7 +8,9 @@
 
 use crate::blob::BlobStore;
 use crate::error::StoreError;
-use crate::journal::{JournalLine, JournalWriter, read_and_verify_journal};
+use crate::journal::{
+    GENESIS_PREV, JournalLine, JournalWriter, read_and_verify_journal, sha256_hex,
+};
 use crate::schema;
 use chrono::{Months, NaiveDate};
 use ledger_core::{
@@ -2257,7 +2259,44 @@ impl Store {
                 "payroll runs diverged between journal, live ledger, and sqlite projection".into(),
             ));
         }
-        Ok(())
+        // Finally, the whole projection, not just what reports read: every
+        // table, row for row, against a fresh projection of the journal.
+        compare_projections(
+            &projection_rows(&self.conn)?,
+            &projection_rows(&fresh_projection(&lines)?)?,
+        )
+    }
+
+    /// [`Self::verify`], and if the SQLite projection is what diverged,
+    /// heal it: keep the divergent file for forensics, rebuild from the
+    /// journal, and verify again. A journal that fails its own chain is
+    /// never "healed": that's an error for a human.
+    pub fn verify_and_heal(&mut self) -> Result<VerifyReport, StoreError> {
+        let healed = match self.verify() {
+            Ok(()) => None,
+            Err(StoreError::VerifyMismatch(why)) => {
+                let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+                let keep = self.db_path.with_extension(format!("mismatch.{stamp}"));
+                std::fs::copy(&self.db_path, &keep)?;
+                eprintln!(
+                    "wanderbooks: {why}; kept the old database as {} and rebuilt from the journal",
+                    keep.display()
+                );
+                self.rebuild()?;
+                self.verify()?;
+                Some(why)
+            }
+            Err(e) => return Err(e),
+        };
+        let lines = read_and_verify_journal(self.journal.path())?;
+        Ok(VerifyReport {
+            events: lines.len() as u64,
+            head: lines
+                .last()
+                .map(|l| sha256_hex(l.to_canonical().as_bytes()))
+                .unwrap_or_else(|| GENESIS_PREV.to_string()),
+            healed,
+        })
     }
 
     /// Verify every blob's bytes against its SHA-256. Returns the count
@@ -2282,6 +2321,10 @@ impl Store {
         let old = std::mem::replace(&mut self.conn, Connection::open_in_memory()?);
         old.close().map_err(|(_, e)| StoreError::Rusqlite(e))?;
         std::fs::remove_file(&self.db_path)?;
+        // WAL and SHM are derived state too; a stale WAL must not leak into
+        // the rebuilt database.
+        let _ = std::fs::remove_file(self.db_path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(self.db_path.with_extension("db-shm"));
         self.conn = Self::open_conn(&self.db_path)?;
         Self::migrate(&self.conn)?;
         Self::write_meta(&self.conn, "base_currency", self.base_currency.code())?;
@@ -3771,6 +3814,93 @@ pub(crate) fn apply_line_to_sqlite(
         "INSERT INTO meta(key, value) VALUES ('last_applied_seq', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         params![line.seq.to_string()],
     )?;
+    Ok(())
+}
+
+/// What [`Store::verify_and_heal`] found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerifyReport {
+    /// Journal events verified.
+    pub events: u64,
+    /// Hash of the last journal line: the verified head of the chain.
+    pub head: String,
+    /// Why the projection was rebuilt, if it was.
+    pub healed: Option<String>,
+}
+
+/// A projection of `lines` into a private in-memory database, built with
+/// exactly the code the writer uses.
+pub(crate) fn fresh_projection(lines: &[JournalLine]) -> Result<Connection, StoreError> {
+    let conn = Connection::open_in_memory()?;
+    Store::migrate(&conn)?;
+    for line in lines {
+        apply_line_to_sqlite(&conn, line)?;
+    }
+    Ok(conn)
+}
+
+/// Every row of every projected table, as canonical strings, sorted: two
+/// projections hold the same data exactly when these are equal. The `meta`
+/// table (bookkeeping about the projection itself) is left out.
+pub(crate) fn projection_rows(
+    conn: &Connection,
+) -> Result<std::collections::BTreeMap<String, Vec<String>>, StoreError> {
+    use rusqlite::types::ValueRef;
+    let tables: Vec<String> = conn
+        .prepare(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name <> 'meta' ORDER BY name",
+        )?
+        .query_map([], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    let mut out = std::collections::BTreeMap::new();
+    for t in tables {
+        let mut stmt = conn.prepare(&format!("SELECT * FROM \"{t}\""))?;
+        let n = stmt.column_count();
+        let mut rows: Vec<String> = stmt
+            .query_map([], |r| {
+                let mut s = String::new();
+                for i in 0..n {
+                    let v = match r.get_ref(i)? {
+                        ValueRef::Null => "∅".to_string(),
+                        ValueRef::Integer(x) => format!("i{x}"),
+                        ValueRef::Real(x) => format!("r{x}"),
+                        ValueRef::Text(b) => format!("t{}", String::from_utf8_lossy(b)),
+                        ValueRef::Blob(b) => format!("b{}", sha256_hex(b)),
+                    };
+                    s.push_str(&v);
+                    s.push('\u{1f}');
+                }
+                Ok(s)
+            })?
+            .collect::<Result<_, _>>()?;
+        rows.sort();
+        out.insert(t, rows);
+    }
+    Ok(out)
+}
+
+/// Compare two projections; name the first table that differs.
+pub(crate) fn compare_projections(
+    have: &std::collections::BTreeMap<String, Vec<String>>,
+    want: &std::collections::BTreeMap<String, Vec<String>>,
+) -> Result<(), StoreError> {
+    for (table, rows) in want {
+        match have.get(table) {
+            None => {
+                return Err(StoreError::VerifyMismatch(format!(
+                    "sqlite projection is missing table {table}"
+                )));
+            }
+            Some(h) if h != rows => {
+                let missing = rows.iter().filter(|r| !h.contains(r)).count();
+                let extra = h.iter().filter(|r| !rows.contains(r)).count();
+                return Err(StoreError::VerifyMismatch(format!(
+                    "sqlite projection differs from the journal in table {table}: {missing} rows missing, {extra} unexpected"
+                )));
+            }
+            _ => {}
+        }
+    }
     Ok(())
 }
 

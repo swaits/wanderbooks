@@ -683,3 +683,47 @@ fn vendor_1099_tags_replay_and_project() {
         assert_eq!(form, "nec");
     }
 }
+
+#[test]
+fn the_whole_projection_is_checked_and_healed() {
+    let dir = test_dir("heal");
+    let mut store = build_books(&dir);
+    let e = store
+        .ledger()
+        .posted_entries()
+        .next()
+        .map(|e| e.id())
+        .unwrap();
+    store
+        .attach_receipt(Some(e), "r.png", "image/png", b"receipt", None)
+        .unwrap();
+    store.verify().unwrap();
+    drop(store);
+    // Drift no accounting report would notice: a receipt quietly unlinked.
+    let db = dir.join(ledger_store::DB_FILE);
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute("UPDATE attachments SET entry_id = NULL", [])
+        .unwrap();
+    drop(conn);
+    let mut store = Store::open(&dir).unwrap();
+    match store.verify() {
+        Err(StoreError::VerifyMismatch(why)) => assert!(why.contains("attachments"), "{why}"),
+        other => panic!("drift not caught: {other:?}"),
+    }
+    let report = store.verify_and_heal().unwrap();
+    assert!(report.healed.is_some(), "healed");
+    assert!(report.events > 0);
+    store.verify().unwrap();
+    assert_eq!(
+        store.list_attachments(Some(e)).unwrap().len(),
+        1,
+        "link restored"
+    );
+    let kept = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|d| d.ok())
+        .any(|d| d.file_name().to_string_lossy().contains(".mismatch."));
+    assert!(kept, "the divergent database is kept for forensics");
+    // A healthy store reports nothing to heal.
+    assert_eq!(store.verify_and_heal().unwrap().healed, None);
+}

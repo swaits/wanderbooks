@@ -18,13 +18,35 @@ use crate::blob::BlobStore;
 use crate::error::StoreError;
 use crate::journal::{GENESIS_PREV, JournalLine, sha256_hex};
 use crate::store::{
-    Attachment, BLOBS_DIR, JOURNAL_FILE, Store, apply_line_to_sqlite, query_attachments,
-    read_attachment_bytes, replay_line_into_ledger,
+    Attachment, BLOBS_DIR, DB_FILE, JOURNAL_FILE, Store, apply_line_to_sqlite, compare_projections,
+    projection_rows, query_attachments, read_attachment_bytes, replay_line_into_ledger,
 };
 use ledger_core::{Currency, EntryId, Ledger};
 use rusqlite::Connection;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+
+/// How the writer's on-disk SQLite database compares with the journal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DiskCheck {
+    /// Every table matches a fresh projection of the journal.
+    Matches,
+    /// The database hasn't applied the newest journal lines yet (normal
+    /// for a moment after a write; the writer applies right after
+    /// journaling, and heals on its next start).
+    Behind {
+        /// Journal lines the database has applied.
+        applied: u64,
+        /// Journal lines there are.
+        journal: u64,
+    },
+    /// No database file (the writer rebuilds it on start).
+    Missing,
+    /// The database differs from the journal: what differs.
+    Differs(String),
+    /// The database couldn't be read.
+    Unreadable(String),
+}
 
 /// A read-only, live-refreshable view of a data directory.
 pub struct Snapshot {
@@ -166,6 +188,58 @@ impl Snapshot {
     /// optionally only one entry's.
     pub fn attachments(&self, entry_id: Option<EntryId>) -> Result<Vec<Attachment>, StoreError> {
         query_attachments(&self.conn, entry_id)
+    }
+
+    /// Compare the writer's SQLite database (opened read-only) with this
+    /// snapshot's own projection of the journal, every table, row for row.
+    pub fn check_disk(&self) -> DiskCheck {
+        use rusqlite::OpenFlags;
+        let path = self.data_dir.join(DB_FILE);
+        if !path.exists() {
+            return DiskCheck::Missing;
+        }
+        let conn = match Connection::open_with_flags(
+            &path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        ) {
+            Ok(c) => c,
+            Err(e) => return DiskCheck::Unreadable(e.to_string()),
+        };
+        let applied: u64 = match conn.query_row(
+            "SELECT value FROM meta WHERE key='last_applied_seq'",
+            [],
+            |r| r.get::<_, String>(0),
+        ) {
+            Ok(v) => v.parse().unwrap_or(0),
+            Err(e) => return DiskCheck::Unreadable(e.to_string()),
+        };
+        let journal = self.journal_seq();
+        if applied != journal {
+            return DiskCheck::Behind { applied, journal };
+        }
+        let (disk, ours) = match (projection_rows(&conn), projection_rows(&self.conn)) {
+            (Ok(d), Ok(o)) => (d, o),
+            (Err(e), _) | (_, Err(e)) => return DiskCheck::Unreadable(e.to_string()),
+        };
+        match compare_projections(&disk, &ours) {
+            Ok(()) => DiskCheck::Matches,
+            Err(StoreError::VerifyMismatch(why)) => DiskCheck::Differs(why),
+            Err(e) => DiskCheck::Unreadable(e.to_string()),
+        }
+    }
+
+    /// Re-hash every stored file. Returns how many verified, and each
+    /// failure as (attachment id, why).
+    pub fn verify_blobs(&self) -> (u64, Vec<(u64, String)>) {
+        let mut ok = 0;
+        let mut bad = Vec::new();
+        for a in self.attachments(None).unwrap_or_default() {
+            match self.blobs.get(&a.blob_sha) {
+                Ok(_) => ok += 1,
+                Err(e) => bad.push((a.id, e.to_string())),
+            }
+        }
+        (ok, bad)
     }
 
     /// An attachment's bytes, verified against its hash.

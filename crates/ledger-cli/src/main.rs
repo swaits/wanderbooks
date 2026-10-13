@@ -169,6 +169,8 @@ fn print_usage() {
 /// A binary next to this one (cargo installs them side by side), else on
 /// the PATH.
 fn find_binary(name: &str) -> Option<PathBuf> {
+    let name = format!("{name}{}", env::consts::EXE_SUFFIX);
+    let name = name.as_str();
     if let Some(dir) = env::current_exe()
         .ok()
         .and_then(|e| e.parent().map(Path::to_path_buf))

@@ -5,11 +5,12 @@
 //! two. Filesystem events are the trigger; a slow poll backs them up in case
 //! an event is missed (network drives, odd editors).
 
-use crate::books::Books;
+use crate::books::{Books, Integrity};
 use chrono::NaiveDate;
 use ledger_config::BooksSettings;
 use ledger_store::Snapshot;
 use notify::{RecursiveMode, Watcher};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
@@ -63,7 +64,8 @@ impl Loader {
 /// Load once, synchronously (tests and one-shot tools).
 pub fn load_once(source: &Source) -> Result<Books, String> {
     let snap = Snapshot::load(&source.data_dir).map_err(|e| e.to_string())?;
-    Books::build(&snap, settings(source)?, today(source), None)
+    let integrity = Integrity::check(&snap, &mut HashSet::new());
+    Books::build(&snap, settings(source)?, today(source), None, integrity)
 }
 
 fn today(source: &Source) -> NaiveDate {
@@ -102,13 +104,22 @@ fn run(source: Source, ctx: egui::Context, tx: Sender<Update>) {
             }
         }
     };
-    let build = |snap: &Snapshot, prev: Option<u64>| -> Update {
-        match settings(&source).and_then(|s| Books::build(snap, s, today(&source), prev)) {
+    let mut verified: HashSet<String> = HashSet::new();
+    // Build the picture; also return the database check it was built with.
+    let mut build = |snap: &Snapshot, prev: Option<u64>| -> (Update, ledger_store::DiskCheck) {
+        let integrity = Integrity::check(snap, &mut verified);
+        let disk = integrity.disk.clone();
+        let update = match settings(&source)
+            .and_then(|s| Books::build(snap, s, today(&source), prev, integrity))
+        {
             Ok(b) => Update::Books(Arc::new(b)),
             Err(e) => Update::Error(e),
-        }
+        };
+        (update, disk)
     };
-    send(build(&snap, None));
+    let (first, disk) = build(&snap, None);
+    let mut last_disk = Some(disk);
+    send(first);
 
     let (ev_tx, ev_rx) = channel();
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
@@ -149,10 +160,19 @@ fn run(source: Source, ctx: egui::Context, tx: Sender<Update>) {
         };
         let toml_now = mtime(&source.books_toml);
         let new_day = today(&source);
-        if grew || toml_now != toml_mtime || new_day != day {
+        // The writer journals first and updates its database right after:
+        // a "behind" database usually catches up a moment later, so look
+        // again rather than leave a stale warning up.
+        let disk_changed = !grew
+            && last_disk
+                .as_ref()
+                .is_some_and(|d| *d != ledger_store::DiskCheck::Matches && snap.check_disk() != *d);
+        if grew || disk_changed || toml_now != toml_mtime || new_day != day {
             toml_mtime = toml_now;
             day = new_day;
-            send(build(&snap, grew.then_some(before)));
+            let (update, disk) = build(&snap, grew.then_some(before));
+            last_disk = Some(disk);
+            send(update);
         }
     }
 }

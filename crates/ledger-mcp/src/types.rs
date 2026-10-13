@@ -375,6 +375,35 @@ pub struct Vendor1099Out {
     pub notes: Vec<String>,
 }
 
+/// Parameters for `books.verify`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct VerifyParams {
+    /// Also re-hash every stored receipt and document (default true).
+    #[serde(default = "default_true")]
+    pub blobs: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Result of `books.verify`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct VerifyOut {
+    /// "ok", or "healed" when the database was rebuilt from the journal.
+    pub status: String,
+    /// Journal events whose hash chain verified.
+    pub events: u64,
+    /// SHA-256 of the last journal line: the verified head.
+    pub head: String,
+    /// Why the database was rebuilt, if it was.
+    pub healed: Option<String>,
+    /// Stored files re-hashed, when checked.
+    pub blobs_verified: Option<u64>,
+    /// What was checked, in words.
+    pub checked: Vec<String>,
+}
+
 /// Parameters for `books.chart_template`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ChartTemplateParams {

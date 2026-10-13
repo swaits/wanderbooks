@@ -85,6 +85,46 @@ pub struct Books {
     pub receipt_threshold: Decimal,
     pub attention: Vec<Attention>,
     pub kpis: Kpis,
+    pub integrity: Integrity,
+}
+
+/// Whether what's on disk is what the journal says.
+#[derive(Clone, Debug)]
+pub struct Integrity {
+    /// The writer's SQLite database against the journal.
+    pub disk: ledger_store::DiskCheck,
+    /// Stored files whose bytes match their hash.
+    pub files_ok: u64,
+    /// Files that are missing or damaged: (attachment id, why).
+    pub file_failures: Vec<(u64, String)>,
+}
+
+impl Integrity {
+    /// Check the database and every file not already verified (by hash, so
+    /// a file is read once however often the books change).
+    pub fn check(snap: &Snapshot, verified: &mut HashSet<String>) -> Integrity {
+        let store = ledger_store::BlobStore::open_read_only(&snap.data_dir().join("blobs"));
+        let mut ok = 0;
+        let mut failures = Vec::new();
+        for a in snap.attachments(None).unwrap_or_default() {
+            if verified.contains(&a.blob_sha) {
+                ok += 1;
+                continue;
+            }
+            match store.get(&a.blob_sha) {
+                Ok(_) => {
+                    verified.insert(a.blob_sha.clone());
+                    ok += 1;
+                }
+                Err(e) => failures.push((a.id, e.to_string())),
+            }
+        }
+        Integrity {
+            disk: snap.check_disk(),
+            files_ok: ok,
+            file_failures: failures,
+        }
+    }
 }
 
 /// The headline numbers.
@@ -113,6 +153,7 @@ impl Books {
         settings: BooksSettings,
         today: NaiveDate,
         prev_seq: Option<u64>,
+        integrity: Integrity,
     ) -> Result<Books, String> {
         let ledger = snap.ledger().clone();
         let attachments = snap.attachments(None).map_err(|e| e.to_string())?;
@@ -268,6 +309,7 @@ impl Books {
             receipt_threshold,
             attention: Vec::new(),
             kpis: Kpis::default(),
+            integrity,
         };
         books.kpis = books.compute_kpis();
         books.attention = crate::attention::find(&books);

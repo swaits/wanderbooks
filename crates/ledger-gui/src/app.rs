@@ -361,16 +361,33 @@ fn live_status(ui: &mut Ui, b: &Books, since_update: f64, live: bool) {
                         .color(p.muted),
                 );
             });
-            ui.label(
-                RichText::new(format!("{} Journal chain verified", icon::SEAL_CHECK))
-                    .font(theme::regular(11.5))
-                    .color(p.muted),
-            )
-            .on_hover_text(format!(
-                "Every journal event's hash chains to the one before it.\nHead: {}\nData: {}",
-                b.head,
-                b.data_dir.display()
-            ));
+            let check = |ui: &mut Ui, ok: bool, text: String, tip: String| {
+                let (glyph, color) = if ok { (icon::SEAL_CHECK, p.muted) } else { (icon::WARNING_CIRCLE, p.negative) };
+                ui.label(RichText::new(format!("{glyph} {text}")).font(theme::regular(11.5)).color(color))
+                    .on_hover_text(tip);
+            };
+            check(
+                ui,
+                true,
+                "Journal chain verified".into(),
+                format!("Every journal event's hash chains to the one before it.\nHead: {}\nData: {}", b.head, b.data_dir.display()),
+            );
+            use ledger_store::DiskCheck;
+            let (ok, text, tip) = match &b.integrity.disk {
+                DiskCheck::Matches => (true, "Database matches journal".to_string(), "The server's SQLite database matches a fresh projection of the journal, every table, row for row.".to_string()),
+                DiskCheck::Behind { applied, journal } => (true, "Database catching up".to_string(), format!("The database has applied {applied} of {journal} journal events; the server applies the rest right after writing them.")),
+                DiskCheck::Missing => (true, "Database will rebuild".to_string(), "No database file yet; the server builds it from the journal when it starts.".to_string()),
+                DiskCheck::Differs(why) => (false, "Database differs".to_string(), format!("{why}. The server rebuilds it from the journal (books.verify, or on its next start).")),
+                DiskCheck::Unreadable(why) => (false, "Database unreadable".to_string(), why.clone()),
+            };
+            check(ui, ok, text, tip);
+            let bad = b.integrity.file_failures.len();
+            check(
+                ui,
+                bad == 0,
+                if bad == 0 { format!("{} files verified", b.integrity.files_ok) } else { format!("{bad} files damaged") },
+                "Every stored receipt and document re-hashed against its recorded SHA-256.".into(),
+            );
         });
 }
 

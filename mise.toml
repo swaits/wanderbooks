@@ -1,0 +1,18 @@
+# Everything needed to build, test, prove, and ship wanderbooks.
+# `mise install` in this directory, then `just` lists the recipes.
+
+[tools]
+# Workspace toolchain (clippy and rustfmt for `just check`).
+rust = { version = "1.99", components = "clippy,rustfmt" }
+just = "1"
+# `just deploy` runs the Netlify CLI through npx.
+node = "26"
+# `just prove`: Kani model-checks the accounting kernel. Kani fetches its
+# own pinned nightly and CBMC under ~/.kani on first run.
+"cargo:kani-verifier" = "0.68.0"
+# `just prove`: Lean proves the accounting laws (verify/lean). Matches
+# verify/lean/lean-toolchain.
+"github:leanprover/lean4" = "4.34.1"
+# Mutation testing and fuzzing (docs/oracle.md).
+"cargo:cargo-mutants" = "latest"
+"cargo:cargo-fuzz" = "latest"

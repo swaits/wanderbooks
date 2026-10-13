@@ -15,8 +15,9 @@
 //!    `.gitignore`, and `books-data/`.
 //! 3. Registers the MCP server for this directory only: `.mcp.json`, plus
 //!    `.claude/settings.json` approving it, so Claude Code loads the tools
-//!    without `claude mcp add` or a prompt. The same settings carry a
-//!    SessionStart hook that checks whether the viewer is open.
+//!    without `claude mcp add` or a prompt. Claude Code
+//!    (`.claude/settings.json`) and Codex (`.codex/hooks.json`) both get a
+//!    SessionStart hook that runs `just session-start`: the viewer check.
 //! 4. `git init`s the directory (its history is the archive) and commits.
 //! 5. Starts `claude` in the directory with the onboarding prompt, unless
 //!    `--no-start` or there's no terminal. With `--codex`, registers the
@@ -79,6 +80,18 @@ gui-fg:
 # Is the viewer open for these books? Prints open/closed; exits 0 only if open
 gui-status:
     @pgrep -f -- "ledger-gui --data-dir {{justfile_directory()}}/books-data( |$)" >/dev/null && echo open || { echo closed; exit 1; }
+
+# The agents' session-start hook: the viewer's state, handled per [viewer] open_at_start
+session-start:
+    #!/usr/bin/env bash
+    set -u
+    just gui-status &>/dev/null && { echo "wanderbooks viewer: open."; exit 0; }
+    pref=$(sed -n 's/^open_at_start *= *"\([a-z]*\)".*/\1/p' "{{justfile_directory()}}/wanderbooks.toml")
+    case "${pref:-ask}" in
+        never) ;;
+        always) echo "wanderbooks viewer: closed; open_at_start = \"always\", so it was opened: $(just gui 2>&1 | tail -1)" ;;
+        *) echo "wanderbooks viewer: CLOSED. [viewer] open_at_start = \"ask\": at the top of your first reply, before anything else, offer to open it (\`just gui\`)." ;;
+    esac
 
 # Commit the journal: the git history of this dir is the archive
 backup:
@@ -187,7 +200,8 @@ Bank feeds aren't automatic here: import the bank's CSV export
 
 ## Session start
 
-Run `just gui-status`. If the viewer isn't open, follow `[viewer]
+A SessionStart hook runs `just session-start` and hands you the result;
+if it didn't, run `just gui-status` yourself. If the viewer isn't open, follow `[viewer]
 open_at_start` in `wanderbooks.toml`: `"ask"` (the default) offers to open
 it, `"always"` opens it with `just gui`, `"never"` leaves it. `just gui`
 starts it in the background and does nothing if it's already open. If the
@@ -365,8 +379,8 @@ fn mcp_json(ledger_mcp: &Path, books: &Path) -> String {
 /// `.claude/settings.json`: approve this directory's server, and its tools,
 /// so the first session starts working instead of asking. The server still
 /// previews every posting for the human to confirm. A SessionStart hook
-/// checks the viewer and hands the agent `[viewer] open_at_start`, so the
-/// offer to open it doesn't hang on the agent remembering AGENTS.md.
+/// runs `just session-start`, so the viewer check doesn't hang on the agent
+/// remembering AGENTS.md.
 const CLAUDE_SETTINGS: &str = r#"{
   "enabledMcpjsonServers": ["wanderbooks"],
   "permissions": {
@@ -375,11 +389,26 @@ const CLAUDE_SETTINGS: &str = r#"{
   "hooks": {
     "SessionStart": [
       {
+        "matcher": "startup|resume|clear",
         "hooks": [
-          {
-            "type": "command",
-            "command": "cd \"$CLAUDE_PROJECT_DIR\" && if just gui-status >/dev/null 2>&1; then echo 'wanderbooks viewer: open.'; else echo \"wanderbooks viewer: CLOSED. [viewer] open_at_start = $(sed -n 's/^open_at_start *= *//p' wanderbooks.toml). Act on this at the top of your first reply, before anything else: \\\"ask\\\" -> offer to open it (just gui); \\\"always\\\" -> run just gui; \\\"never\\\" -> say nothing.\"; fi"
-          }
+          { "type": "command", "command": "cd \"$CLAUDE_PROJECT_DIR\" && just session-start" }
+        ]
+      }
+    ]
+  }
+}
+"#;
+
+/// `.codex/hooks.json`: the same session-start check for Codex. Codex runs a
+/// project hook only once the project is trusted and the hook approved
+/// (`/hooks`); until then AGENTS.md's "Session start" is the fallback.
+const CODEX_HOOKS: &str = r#"{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear",
+        "hooks": [
+          { "type": "command", "command": "cd \"$(git rev-parse --show-toplevel)\" && just session-start", "timeout": 10 }
         ]
       }
     ]
@@ -460,6 +489,9 @@ fn scaffold(
     fs::create_dir_all(dir.join(".claude")).map_err(|e| format!("cannot create .claude: {e}"))?;
     fs::write(dir.join(".claude/settings.json"), CLAUDE_SETTINGS)
         .map_err(|e| format!("cannot write .claude/settings.json: {e}"))?;
+    fs::create_dir_all(dir.join(".codex")).map_err(|e| format!("cannot create .codex: {e}"))?;
+    fs::write(dir.join(".codex/hooks.json"), CODEX_HOOKS)
+        .map_err(|e| format!("cannot write .codex/hooks.json: {e}"))?;
     fs::create_dir_all(dir.join("books-data"))
         .map_err(|e| format!("cannot create books-data: {e}"))?;
     fs::write(dir.join("books-data/.gitkeep"), "")
@@ -578,6 +610,9 @@ fn new(dir: &Path, force: bool, start: bool, agent: Agent) -> Result<(), String>
         }
     );
     println!("  just backup  commit the journal");
+    if agent == Agent::Codex {
+        println!("In Codex, trust this directory and approve its session-start hook (/hooks).");
+    }
     if start && is_terminal() {
         start_agent(&dir, agent)?;
     } else {

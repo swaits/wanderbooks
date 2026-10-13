@@ -58,6 +58,7 @@ fn scaffold_lands_complete() {
         ".gitignore",
         ".mcp.json",
         ".claude/settings.json",
+        ".codex/hooks.json",
     ] {
         let p = books.join(f);
         assert!(p.exists(), "{f} exists");
@@ -101,11 +102,26 @@ fn the_server_is_registered_for_this_dir() {
     let hook = settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
         .as_str()
         .expect("SessionStart hook command");
-    assert!(hook.contains("just gui-status") && hook.contains("open_at_start"));
+    assert!(hook.ends_with("just session-start"), "{hook}");
+    let codex: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(books.join(".codex/hooks.json")).unwrap())
+            .unwrap();
+    let hook = codex["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        .as_str()
+        .expect("Codex SessionStart hook command");
+    assert!(hook.ends_with("just session-start"), "{hook}");
     // The justfile opens this dir's books in the GUI.
     let just = fs::read_to_string(books.join("justfile")).unwrap();
     assert!(just.contains("ledger-gui\" --data-dir \"{{justfile_directory()}}/books-data\""));
-    for recipe in ["agent:", "gui:", "gui-fg:", "gui-status:", "backup:", "update:"] {
+    for recipe in [
+        "agent:",
+        "gui:",
+        "gui-fg:",
+        "gui-status:",
+        "session-start:",
+        "backup:",
+        "update:",
+    ] {
         assert!(just.contains(recipe), "justfile has {recipe}");
     }
     assert_eq!(

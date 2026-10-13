@@ -116,7 +116,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let company = settings.company;
 
     let mut store = if data_dir.join(ledger_store::JOURNAL_FILE).exists() {
-        Store::open(&data_dir)?
+        open_waiting_for_lock(&data_dir)?
     } else {
         let code = config.base_currency.as_deref().unwrap_or("USD");
         let currency = Currency::new(code).map_err(|_| format!("bad base currency {code:?}"))?;
@@ -179,4 +179,21 @@ async fn serve_http(
     eprintln!("ledger-mcp: listening on http://{addr}/mcp");
     axum::serve(listener, router).await?;
     Ok(())
+}
+
+/// Open the books, waiting up to ten seconds for another writer to let go.
+/// A restarted server (a client reconnecting) often starts while the old
+/// process is still exiting with the lock; waiting turns that race into a
+/// short delay. A writer that keeps the books longer is a real conflict,
+/// and the refusal says so.
+fn open_waiting_for_lock(data_dir: &std::path::Path) -> Result<Store, ledger_store::StoreError> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match Store::open(data_dir) {
+            Err(ledger_store::StoreError::Locked(_)) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            other => return other,
+        }
+    }
 }

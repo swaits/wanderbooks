@@ -9,8 +9,16 @@ struct Mcp {
     stdin: ChildStdin,
     stdout: BufReader<std::process::ChildStdout>,
     next_id: u64,
-    #[allow(dead_code)]
     child: Child,
+}
+
+/// Closing stdin ends the server; wait for it to exit, so the next server
+/// on the same books never races it for the writer lock.
+impl Drop for Mcp {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
 impl Mcp {
@@ -1672,4 +1680,30 @@ fn mcp_receipts_always_required_when_threshold_is_zero() {
         err.contains("receipt"),
         "a $5 entry needs a receipt too: {err}"
     );
+}
+
+/// A client reconnecting starts a new server while the old one still has
+/// the books: the new one waits for the lock instead of dying.
+#[test]
+fn a_restarted_server_waits_for_the_old_one_to_let_go() {
+    let dir = test_dir("restart-race");
+    let init = |mcp: &mut Mcp| {
+        mcp.request(
+            "initialize",
+            json!({
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+            }),
+        );
+        mcp.notify("notifications/initialized");
+    };
+    let mut old = Mcp::spawn(&dir);
+    init(&mut old);
+    let mut new = Mcp::spawn(&dir);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    drop(old);
+    init(&mut new);
+    let chart = new.call("books.chart", json!({}));
+    assert!(chart.is_object());
 }

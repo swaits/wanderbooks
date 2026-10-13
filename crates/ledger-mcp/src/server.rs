@@ -1623,11 +1623,23 @@ impl BooksServer {
                 why: r.review_why.to_string(),
             })
             .collect();
+        let journal_repairs = store
+            .tail_repairs()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .filter(|(at, _, _)| at.get(..10).is_some_and(|d| d >= p.since.as_str()))
+            .map(|(at, bytes, saved_as)| JournalRepair {
+                at,
+                bytes,
+                saved_as,
+            })
+            .collect();
         Ok(Json(DigestOut {
             since: since.to_string(),
             entries,
             totals_by_account: totals,
             stale_rules,
+            journal_repairs,
         }))
     }
 

@@ -23,7 +23,13 @@ easily backupable, journable":
   journal file plus the blob directory. Plain files, no WAL-file timing
   windows, no special backup API. A torn tail from a mid-copy is detectable
   (the last line fails hash/parse) and recoverable (truncate to the last
-  good seq — the projection never saw it). Better: the journal is
+  good seq — the projection never saw it). The live journal recovers the
+  same way on its own: an append cut off by a crash or power loss (bytes
+  after the last newline) was never acknowledged, so opening the books
+  saves those bytes to `journal.jsonl.torn.<time>`, truncates to the last
+  newline, and journals a `journal.tail_repaired` line; `books.digest`
+  reports it. Damage before the last newline is corruption and still
+  refuses to open. Better: the journal is
   git-friendly, so an optional `wanderbooks backup` that commits it to a
   private git repo gives versioned, distributed, deduplicated backup with
   full history.

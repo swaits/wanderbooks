@@ -154,35 +154,112 @@ fn journal_tamper_is_detected() {
     );
 }
 
+/// Oracle (rank 1, journal::repair_torn_tail's spec): an append cut off
+/// mid-line was never acknowledged, so opening sets it aside, keeps every
+/// acknowledged line, puts the repair on the record, and reports it.
 #[test]
-fn torn_tail_is_truncatable() {
+fn a_torn_tail_is_set_aside_on_open() {
     let dir = test_dir("torntail");
     let store = build_books(&dir);
-    let seq_before = {
-        let w = JournalWriter::open(&dir.join(ledger_store::JOURNAL_FILE)).unwrap();
-        w.next_seq() - 1
-    };
+    let journal = dir.join(ledger_store::JOURNAL_FILE);
+    let before = ledger_core::reports::snapshot(store.ledger()).unwrap();
+    let seq_before = JournalWriter::open(&journal).unwrap().next_seq() - 1;
     drop(store);
 
-    // Simulate a torn backup: append half a line.
     use std::io::Write;
+    let torn = b"{\"seq\": 999, \"trunca";
     let mut f = std::fs::OpenOptions::new()
         .append(true)
-        .open(dir.join(ledger_store::JOURNAL_FILE))
+        .open(&journal)
         .unwrap();
-    f.write_all(b"{\"seq\": 999, \"trunca").unwrap();
+    f.write_all(torn).unwrap();
     f.sync_all().unwrap();
     drop(f);
 
-    // Strict open now fails...
-    assert!(Store::open(&dir).is_err());
-    // ...but truncation recovers to the last good seq.
-    let last_good =
-        ledger_store::journal::truncate_to_last_good_seq(&dir.join(ledger_store::JOURNAL_FILE))
-            .unwrap();
-    assert_eq!(last_good, seq_before);
     let store = Store::open(&dir).unwrap();
     store.verify().unwrap();
+    assert_eq!(
+        ledger_core::reports::snapshot(store.ledger()).unwrap(),
+        before
+    );
+    let repairs = store.tail_repairs().unwrap();
+    assert_eq!(repairs.len(), 1);
+    assert_eq!(repairs[0].1, torn.len() as u64);
+    // The cut-off bytes are kept, exactly, beside the journal.
+    assert_eq!(std::fs::read(dir.join(&repairs[0].2)).unwrap(), torn);
+    // The repair is the one new line, right after the last good one.
+    let lines = ledger_store::journal::read_and_verify_journal(&journal).unwrap();
+    assert_eq!(lines.len() as u64, seq_before + 1);
+    assert_eq!(lines.last().unwrap().line_type, "journal.tail_repaired");
+    // Opening again repairs nothing more.
+    drop(store);
+    let store = Store::open(&dir).unwrap();
+    assert_eq!(store.tail_repairs().unwrap().len(), 1);
+    store.verify().unwrap();
+}
+
+/// A damaged *complete* line is corruption, not a torn tail: opening still
+/// refuses it, and the journal is left as it was.
+#[test]
+fn damage_before_the_last_newline_still_refuses_to_open() {
+    let dir = test_dir("tornmid");
+    drop(build_books(&dir));
+    let journal = dir.join(ledger_store::JOURNAL_FILE);
+    let mut raw = std::fs::read(&journal).unwrap();
+    let cut = raw.len() - 2; // inside the last complete line
+    raw.remove(cut - 5);
+    std::fs::write(&journal, &raw).unwrap();
+    assert!(Store::open(&dir).is_err());
+    assert_eq!(std::fs::read(&journal).unwrap(), raw);
+}
+
+/// Power loss at any byte of the last append: whatever prefix reached the
+/// disk, the books open with exactly what was acknowledged before it.
+#[test]
+fn power_loss_at_any_byte_of_the_last_append_is_recovered() {
+    let dir = test_dir("tornevery");
+    let store = build_books(&dir);
+    let journal = dir.join(ledger_store::JOURNAL_FILE);
+    let before_bytes = std::fs::read(&journal).unwrap();
+    let before = ledger_core::reports::snapshot(store.ledger()).unwrap();
+    drop(store);
+    // The books as they were on disk before the last append (the database
+    // is never ahead of the journal: the line is written first).
+    let pre = test_dir("tornevery-pre");
+    for e in std::fs::read_dir(&dir).unwrap() {
+        let e = e.unwrap();
+        if e.file_type().unwrap().is_file() {
+            std::fs::copy(e.path(), pre.join(e.file_name())).unwrap();
+        }
+    }
+    let mut store = Store::open(&dir).unwrap();
+    store.add_customer("Acme").unwrap();
+    drop(store);
+    let full = std::fs::read(&journal).unwrap();
+    let last = &full[before_bytes.len()..];
+    assert_eq!(last.last(), Some(&b'\n'));
+    for cut in 1..last.len() {
+        let case = test_dir(&format!("tornevery-{cut}"));
+        for e in std::fs::read_dir(&pre).unwrap() {
+            let e = e.unwrap();
+            if e.file_type().unwrap().is_file() {
+                std::fs::copy(e.path(), case.join(e.file_name())).unwrap();
+            }
+        }
+        let mut torn = before_bytes.clone();
+        torn.extend_from_slice(&last[..cut]);
+        std::fs::write(case.join(ledger_store::JOURNAL_FILE), &torn).unwrap();
+        let store = Store::open(&case).unwrap_or_else(|e| panic!("cut at {cut}: {e}"));
+        store.verify().unwrap();
+        assert_eq!(
+            ledger_core::reports::snapshot(store.ledger()).unwrap(),
+            before,
+            "cut at {cut}"
+        );
+        assert!(store.ledger().list_customers().is_empty(), "cut at {cut}");
+        drop(store);
+        let _ = std::fs::remove_dir_all(&case);
+    }
 }
 
 #[test]

@@ -162,9 +162,21 @@ impl JournalWriter {
             prev: self.prev_hash.clone(),
         };
         let bytes = line.to_canonical();
-        self.file.write_all(bytes.as_bytes())?;
-        self.file.write_all(b"\n")?;
-        self.file.sync_all()?;
+        // A write that fails partway (a full disk) must leave nothing
+        // behind: cut the file back to where it was. Otherwise a partial
+        // line stays, and every later line lands after it, mid-journal
+        // (found by the full-disk fault test, 2026-10-13).
+        let before = self.file.metadata()?.len();
+        let written = self
+            .file
+            .write_all(bytes.as_bytes())
+            .and_then(|()| self.file.write_all(b"\n"))
+            .and_then(|()| self.file.sync_all());
+        if let Err(e) = written {
+            let _ = self.file.set_len(before);
+            let _ = self.file.sync_all();
+            return Err(e.into());
+        }
         self.prev_hash = sha256_hex(bytes.as_bytes());
         self.next_seq += 1;
         Ok(line)

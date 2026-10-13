@@ -3498,6 +3498,29 @@ pub(crate) fn apply_line_to_sqlite(
     conn: &Connection,
     line: &JournalLine,
 ) -> Result<(), StoreError> {
+    // All or nothing, per line: the rows, the events mirror, and
+    // last_applied_seq commit together. Without this a write that failed
+    // partway (a full disk) committed the rows but not last_applied_seq,
+    // and the next open's catch-up re-applied the line into a UNIQUE
+    // violation: the books would not open (found by the full-disk fault
+    // test, 2026-10-13). A savepoint, so it nests inside a caller's
+    // transaction.
+    conn.execute_batch("SAVEPOINT apply_line")?;
+    match apply_line_rows(conn, line) {
+        Ok(()) => {
+            conn.execute_batch("RELEASE apply_line")?;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK TO apply_line; RELEASE apply_line");
+            Err(e)
+        }
+    }
+}
+
+/// The statements behind [`apply_line_to_sqlite`], run inside its
+/// savepoint.
+fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreError> {
     let p = &line.payload;
     match line.line_type.as_str() {
         "store.created" => {}

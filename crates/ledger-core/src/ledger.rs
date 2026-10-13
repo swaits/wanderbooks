@@ -492,7 +492,47 @@ impl Ledger {
     }
 
     /// Add an account to the chart. Returns its id.
+    ///
+    /// ```text
+    /// GOAL: register an account under a unique code.
+    /// SOURCE: rules.md B-4 (the five elements); R-4; DECISION (Stephen,
+    ///         2026-10-13): a child has its parent's type.
+    /// SCENARIOS:
+    ///   1. IF the code is empty or taken: SHOULD refuse.
+    ///   2. IF the parent doesn't exist: SHOULD refuse.
+    ///   3. IF the parent is another type:
+    ///      - SHOULD refuse with ParentTypeMismatch
+    ///      - NEVER add the account
+    ///      BECAUSE a child subdivides its parent.
+    /// ```
+    ///
+    /// Replay of journals written before the parent rule uses
+    /// [`Self::replay_add_account`].
     pub fn add_account(
+        &mut self,
+        code: &str,
+        name: &str,
+        account_type: AccountType,
+        parent: Option<AccountId>,
+        placeholder: bool,
+    ) -> Result<AccountId, LedgerError> {
+        if let Some(p) = parent.and_then(|p| self.chart.get(p))
+            && p.account_type != account_type
+        {
+            return Err(LedgerError::ParentTypeMismatch {
+                code: code.to_string(),
+                parent_code: p.code.clone(),
+                expected: p.account_type,
+                found: account_type,
+            });
+        }
+        self.replay_add_account(code, name, account_type, parent, placeholder)
+    }
+
+    /// [`Self::add_account`] without the rules added on 2026-10-13 (a
+    /// child's type), for replaying journals written before them. Never
+    /// for new work.
+    pub fn replay_add_account(
         &mut self,
         code: &str,
         name: &str,
@@ -617,6 +657,32 @@ impl Ledger {
         side: Side,
         amount: Money,
     ) -> Result<(), LedgerError> {
+        self.check_line_account(account)?;
+        self.replay_add_line(entry, account, side, amount)
+    }
+
+    /// A line's account must exist and take postings, checked when the
+    /// line is added (Stephen, 2026-10-13); posting checks again.
+    fn check_line_account(&self, account: AccountId) -> Result<(), LedgerError> {
+        let a = self
+            .chart
+            .get(account)
+            .ok_or(LedgerError::UnknownAccount(account))?;
+        if a.placeholder {
+            return Err(LedgerError::PlaceholderAccount(a.code.clone()));
+        }
+        Ok(())
+    }
+
+    /// [`Self::add_line`] without the account check added on 2026-10-13,
+    /// for replaying journals written before it. Never for new work.
+    pub fn replay_add_line(
+        &mut self,
+        entry: EntryId,
+        account: AccountId,
+        side: Side,
+        amount: Money,
+    ) -> Result<(), LedgerError> {
         if amount.currency != self.base_currency {
             return Err(LedgerError::CurrencyMismatch {
                 expected: self.base_currency.code().to_string(),
@@ -641,6 +707,28 @@ impl Ledger {
     /// equivalent; the foreign original is kept for reference. Rates are
     /// exact Decimals, never floats.
     pub fn add_line_fx(
+        &mut self,
+        entry: EntryId,
+        account: AccountId,
+        side: Side,
+        foreign_currency: Currency,
+        foreign_amount: Decimal,
+        fx_rate: Decimal,
+    ) -> Result<(), LedgerError> {
+        self.check_line_account(account)?;
+        self.replay_add_line_fx(
+            entry,
+            account,
+            side,
+            foreign_currency,
+            foreign_amount,
+            fx_rate,
+        )
+    }
+
+    /// [`Self::add_line_fx`] without the account check added on
+    /// 2026-10-13, for replaying journals written before it.
+    pub fn replay_add_line_fx(
         &mut self,
         entry: EntryId,
         account: AccountId,
@@ -919,7 +1007,51 @@ impl Ledger {
 
     /// Create an accounting period. The date range must be valid
     /// (end >= start). Returns the period id.
+    ///
+    /// ```text
+    /// GOAL: name a span of days that can later be closed.
+    /// SOURCE: rules.md B-12 (IRS Pub. 538: tax years, calendar or fiscal);
+    ///         DECISION (Stephen, 2026-10-13): periods nest, never
+    ///         partially overlap.
+    /// SCENARIOS:
+    ///   1. IF end is before start: SHOULD refuse.
+    ///   2. IF it lies inside, or around, every period it touches: SHOULD
+    ///      accept (a month in a quarter in a year).
+    ///   3. IF it partially overlaps a period:
+    ///      - SHOULD refuse with PeriodsOverlap
+    ///      - NEVER create it, or use up an id
+    ///      BECAUSE a span split across two periods could close twice or
+    ///      never.
+    /// ```
     pub fn create_period(
+        &mut self,
+        name: &str,
+        start: NaiveDate,
+        end: NaiveDate,
+    ) -> Result<PeriodId, LedgerError> {
+        periods::validate_period_range(start, end)?;
+        let nested = |a: (NaiveDate, NaiveDate), b: (NaiveDate, NaiveDate)| {
+            (a.0 >= b.0 && a.1 <= b.1) || (b.0 >= a.0 && b.1 <= a.1)
+        };
+        for q in self.list_periods() {
+            let touches = start <= q.end && q.start <= end;
+            if touches && !nested((start, end), (q.start, q.end)) {
+                return Err(LedgerError::PeriodsOverlap {
+                    name: name.to_string(),
+                    start,
+                    end,
+                    other: q.name.clone(),
+                    other_start: q.start,
+                    other_end: q.end,
+                });
+            }
+        }
+        self.replay_create_period(name, start, end)
+    }
+
+    /// [`Self::create_period`] without the nesting rule added on
+    /// 2026-10-13, for replaying journals written before it.
+    pub fn replay_create_period(
         &mut self,
         name: &str,
         start: NaiveDate,

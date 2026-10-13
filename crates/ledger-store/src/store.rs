@@ -2374,6 +2374,10 @@ impl Store {
     }
 
     /// Rebuild a ledger purely from the SQLite projection (used by verify).
+    /// Rebuild the ledger from the SQLite projection, for the cross-check.
+    /// Like journal replay, it reads history, so it uses the engine's
+    /// `replay_*` commands: rules added later never refuse books written
+    /// before them.
     fn load_ledger_from_sqlite(&self) -> Result<Ledger, StoreError> {
         let mut ledger = Ledger::new(self.base_currency);
         let mut stmt = self.conn.prepare(
@@ -2400,7 +2404,7 @@ impl Store {
                     "account {code} currency {currency} != base"
                 )));
             }
-            let got = ledger.add_account(
+            let got = ledger.replay_add_account(
                 &code,
                 &name,
                 account_type,
@@ -2477,7 +2481,7 @@ impl Store {
                     })?;
                     for (idx, lr) in lrows.enumerate() {
                         let (account, side, amount, currency, class_id) = lr?;
-                        ledger.add_line(
+                        ledger.replay_add_line(
                             got,
                             account as u64,
                             parse_side(&side)?,
@@ -2883,7 +2887,7 @@ pub(crate) fn replay_line_into_ledger(
             let want = get_u64(p, "id")?;
             let account_type: AccountType = serde_json::from_value(p["account_type"].clone())?;
             let parent = p.get("parent").and_then(|v| v.as_u64());
-            let got = ledger.add_account(
+            let got = ledger.replay_add_account(
                 get_str(p, "code")?,
                 get_str(p, "name")?,
                 account_type,
@@ -2928,7 +2932,7 @@ pub(crate) fn replay_line_into_ledger(
                     let fx_rate: Decimal = get_str(p, "fx_rate")?
                         .parse()
                         .map_err(|_| StoreError::JournalCorrupt("bad fx rate".into()))?;
-                    ledger.add_line_fx(
+                    ledger.replay_add_line_fx(
                         id,
                         account,
                         side,
@@ -2940,7 +2944,7 @@ pub(crate) fn replay_line_into_ledger(
                     )?;
                 }
                 None => {
-                    ledger.add_line(id, account, side, Money::new(amount, currency))?;
+                    ledger.replay_add_line(id, account, side, Money::new(amount, currency))?;
                 }
             }
         }
@@ -2957,7 +2961,7 @@ pub(crate) fn replay_line_into_ledger(
                 for l in p.get("lines").and_then(|v| v.as_array()).ok_or_else(|| {
                     StoreError::JournalCorrupt("entry.posted without lines".into())
                 })? {
-                    ledger.add_line(
+                    ledger.replay_add_line(
                         id,
                         get_u64(l, "account")?,
                         parse_side(get_str(l, "side")?)?,
@@ -3132,7 +3136,7 @@ pub(crate) fn replay_line_into_ledger(
         }
         "period.created" => {
             let want = get_u64(p, "id")?;
-            let got = ledger.create_period(
+            let got = ledger.replay_create_period(
                 get_str(p, "name")?,
                 parse_date(get_str(p, "start")?)?,
                 parse_date(get_str(p, "end")?)?,

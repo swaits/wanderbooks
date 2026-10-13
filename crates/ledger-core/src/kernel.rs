@@ -8,21 +8,25 @@
 //! laws it implements hold for books of any size. See
 //! `docs/verification.md` for which proof covers which law.
 //!
-//! The laws, in the order they appear:
+//! The laws, in the order they appear (each traced to its authority in
+//! `docs/spec/rules.md`):
 //!
-//! * a line's signed amount is `+amount` for a debit, `-amount` for a credit;
+//! * a line's signed amount is `+amount` for a debit, `-amount` for a credit
+//!   (B-2);
 //! * an entry is acceptable when it has two or more lines, every amount is
-//!   positive and in range, and its debits equal its credits exactly;
-//! * an acceptable entry nets to zero, account by account summed;
+//!   positive and in range, and its debits equal its credits exactly (B-1,
+//!   B-2, B-21);
+//! * an acceptable entry nets to zero, account by account summed (B-1);
 //! * a reversal flips every side, so it is acceptable exactly when the
-//!   original is, and the two together net every account to zero;
+//!   original is, and the two together net every account to zero (B-9);
 //! * an account's balance is its movement read on its normal side, so the
 //!   balances satisfy the accounting equation whenever movements net to
-//!   zero;
+//!   zero (B-5, B-7);
 //! * a trial balance puts each movement in exactly one column, so its
-//!   columns differ by the net of all movements;
-//! * a closing line zeroes the account it closes;
-//! * an allocation's parts sum to the whole, to the last unit.
+//!   columns differ by the net of all movements (B-6);
+//! * a closing line zeroes the account it closes (B-11);
+//! * an allocation's parts sum to the whole, to the last unit, by largest
+//!   remainder (B-13).
 
 use crate::{AccountType, Side};
 use rust_decimal::Decimal;
@@ -277,6 +281,8 @@ pub fn plug_last<T: Amount>(whole: T, parts: &mut [T]) -> Option<()> {
 /// ```text
 /// GOAL: split a whole into parts, each a whole number of units where
 ///       possible, summing to the whole exactly, without favoring anyone.
+/// SOURCE: docs/spec/rules.md B-13 (shares: 26 U.S.C. §704(a); cent
+///         rounding: DECISION, owner 2026-10-13), B-21 (exact totals).
 /// INVARIANTS:
 ///   1. MUST make the parts sum to `whole` exactly.
 ///   2. MUST change each part by zero or one unit (the first in order

@@ -198,6 +198,9 @@ impl AgingRow {
 ///
 /// ```text
 /// GOAL: say how overdue a balance is, as of a date.
+/// SOURCE: docs/spec/rules.md B-18 (bucket edges: CONVENTION, ASC
+///         326-20-55-38 illustrative; due today is Current: DECISION,
+///         owner 2026-10-13).
 /// INVARIANTS:
 ///   1. MUST put the whole balance in exactly one bucket; the others are
 ///      zero.

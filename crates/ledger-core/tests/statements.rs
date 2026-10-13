@@ -888,3 +888,74 @@ fn partner_distribution_accounts_roll_into_capital() {
         Err(LedgerError::InvalidMembers(_))
     ));
 }
+
+// ---------------------------------------------------------------------------
+// Splitting odd cents among members: largest remainder (owner,
+// 2026-10-13). Spec: periods::allocate.
+// ---------------------------------------------------------------------------
+
+fn split(amount: &str, shares: &[&str]) -> Vec<Decimal> {
+    let shares: Vec<Decimal> = shares.iter().map(|s| cents(s)).collect();
+    ledger_core::periods::allocate(cents(amount), &shares)
+}
+
+#[test]
+fn an_odd_cent_goes_to_the_largest_remainder_not_the_last_member() {
+    // Three equal partners: the cent goes to the first (ties to the
+    // earlier), where the old rule always handed it to the last.
+    assert_eq!(
+        split("100.00", &["0.3333333333333333333333333333"; 3]),
+        [cents("33.34"), cents("33.33"), cents("33.33")]
+    );
+    // Unequal shares: 6.666... has the larger remainder.
+    assert_eq!(
+        split(
+            "10.00",
+            &[
+                "0.6666666666666666666666666667",
+                "0.3333333333333333333333333333"
+            ]
+        ),
+        [cents("6.67"), cents("3.33")]
+    );
+    // Equal remainders (0.035 each): ties go to the earlier member.
+    assert_eq!(
+        split("0.07", &["0.5", "0.5"]),
+        [cents("0.04"), cents("0.03")]
+    );
+    // 0.015 and 0.035: half a cent each, a tie again.
+    assert_eq!(
+        split("0.05", &["0.3", "0.7"]),
+        [cents("0.02"), cents("0.03")]
+    );
+    // 0.003 and 0.007: the later member's remainder is larger, so the
+    // cent is theirs.
+    assert_eq!(
+        split("0.01", &["0.3", "0.7"]),
+        [cents("0.00"), cents("0.01")]
+    );
+    // One cent, two ways: someone gets it, nobody gets a fraction.
+    assert_eq!(
+        split("0.01", &["0.5", "0.5"]),
+        [cents("0.01"), cents("0.00")]
+    );
+}
+
+#[test]
+fn a_loss_splits_as_the_negation_of_the_same_gain() {
+    assert_eq!(
+        split("-100.00", &["0.3333333333333333333333333333"; 3]),
+        [cents("-33.34"), cents("-33.33"), cents("-33.33")]
+    );
+}
+
+#[test]
+fn closes_journaled_under_the_old_rule_replay_with_it() {
+    // Contract: a close made before 2026-10-13 (last member absorbs) must
+    // replay to the same lines forever.
+    let shares = [cents("0.3333333333333333333333333333"); 3];
+    assert_eq!(
+        ledger_core::periods::allocate_last_absorbs(cents("100.00"), &shares),
+        [cents("33.33"), cents("33.33"), cents("33.34")]
+    );
+}

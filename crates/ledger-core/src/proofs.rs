@@ -460,6 +460,89 @@ fn plug_last_sums_exactly() {
     }
 }
 
+/// Most parts the apportionment harnesses explore (its ranking is
+/// quadratic, so the bound is smaller than `N`).
+const AP: usize = 3;
+
+/// Inputs for `kernel::apportion`: rounded-down parts, remainders, a unit,
+/// and a whole some shortfall above the parts' sum.
+fn any_apportionment() -> (usize, [i64; AP], [i64; AP], i64, i64, i64) {
+    let n: usize = kani::any();
+    kani::assume(n <= AP);
+    let before: [i64; AP] = core::array::from_fn(|_| any_amount());
+    let rems: [i64; AP] = core::array::from_fn(|_| any_amount());
+    let unit: i64 = kani::any();
+    kani::assume(unit > 0 && unit <= 1000);
+    let shortfall: i64 = kani::any();
+    kani::assume(shortfall.unsigned_abs() <= 4000);
+    let mut whole = shortfall;
+    for &p in &before[..n] {
+        whole += p;
+    }
+    (n, before, rems, unit, shortfall, whole)
+}
+
+/// `kernel::apportion` succeeds exactly when the parts are short of the
+/// whole by less than one unit per part; then the parts sum to the whole,
+/// and each gains nothing or one unit, except that one part may also take
+/// the sub-unit fraction.
+#[kani::proof]
+#[kani::unwind(5)]
+fn apportion_is_exact() {
+    let (n, before, rems, unit, shortfall, whole) = any_apportionment();
+    let mut parts = before;
+    let ok = kernel::apportion(whole, &mut parts[..n], &rems[..n], unit);
+    let in_range = if n == 0 {
+        whole == 0
+    } else {
+        shortfall >= 0 && shortfall < n as i64 * unit
+    };
+    assert_eq!(ok.is_some(), in_range);
+    if ok.is_none() {
+        return;
+    }
+    let mut sum = 0i64;
+    let mut fraction_takers = 0;
+    for i in 0..n {
+        sum += parts[i];
+        let gain = parts[i] - before[i];
+        assert!(gain >= 0 && gain < 2 * unit);
+        if gain != 0 && gain != unit {
+            fraction_takers += 1;
+        }
+    }
+    assert_eq!(sum, whole);
+    assert!(fraction_takers <= 1);
+    kani::cover!(
+        n == AP && shortfall >= 2 * unit,
+        "three parts, two units short"
+    );
+}
+
+/// `kernel::apportion` never gives a unit to a part while a part with a
+/// strictly larger remainder goes without (owner, 2026-10-13: no member
+/// favored by position).
+#[kani::proof]
+#[kani::unwind(5)]
+fn apportion_is_fair() {
+    let (n, before, rems, unit, _, whole) = any_apportionment();
+    let mut parts = before;
+    if kernel::apportion(whole, &mut parts[..n], &rems[..n], unit).is_none() {
+        return;
+    }
+    for i in 0..n {
+        for j in 0..n {
+            if rems[i] > rems[j] {
+                assert!(parts[i] - before[i] >= unit || parts[j] - before[j] < unit);
+            }
+        }
+    }
+    kani::cover!(
+        n == AP && rems[0] < rems[2],
+        "a later part with a larger remainder"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The checker itself
 // ---------------------------------------------------------------------------

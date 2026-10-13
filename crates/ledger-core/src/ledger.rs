@@ -926,9 +926,15 @@ impl Ledger {
                     sweep(*a, *into, self);
                 }
             }
-            periods::CloseTo::Members(members) => {
+            periods::CloseTo::Members(members) | periods::CloseTo::MembersLastAbsorbs(members) => {
                 let shares: Vec<Decimal> = members.iter().map(|m| m.share).collect();
-                for (m, part) in members.iter().zip(periods::allocate(net, &shares)) {
+                let parts = match to {
+                    periods::CloseTo::MembersLastAbsorbs(_) => {
+                        periods::allocate_last_absorbs(net, &shares)
+                    }
+                    _ => periods::allocate(net, &shares),
+                };
+                for (m, part) in members.iter().zip(parts) {
                     equity.push((m.capital, part));
                     if let Some(d) = m.distributions {
                         sweep(d, m.capital, self);
@@ -1022,7 +1028,7 @@ impl Ledger {
                 accounts.push(*into);
                 accounts.extend(sweep);
             }
-            periods::CloseTo::Members(members) => {
+            periods::CloseTo::Members(members) | periods::CloseTo::MembersLastAbsorbs(members) => {
                 let total: Decimal = members.iter().map(|m| m.share).sum();
                 if members.is_empty()
                     || total != Decimal::ONE
@@ -1123,7 +1129,7 @@ impl Ledger {
         let sweeps: Vec<AccountId> = match to {
             periods::CloseTo::RetainedEarnings { sweep }
             | periods::CloseTo::Account { sweep, .. } => sweep.clone(),
-            periods::CloseTo::Members(members) => {
+            periods::CloseTo::Members(members) | periods::CloseTo::MembersLastAbsorbs(members) => {
                 members.iter().filter_map(|m| m.distributions).collect()
             }
         };

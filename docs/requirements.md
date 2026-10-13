@@ -63,8 +63,9 @@ requirement conflict, the requirement wins.
   (loss), distributions (debits), ending — plus a total that equals
   balance-sheet equity. Earnings not yet distributed (retained earnings and
   unclosed income) and the period's income are allocated by ownership share
-  to the cent, the last member absorbing rounding, so every row's total is
-  exact. Any equity change the roll-forward doesn't explain is shown as
+  to the cent by largest remainder (the odd cent goes to the largest
+  remainder, ties to the earlier member; the owner, 2026-10-13), so every
+  row's total is exact. Any equity change the roll-forward doesn't explain is shown as
   "other", never hidden.
 - **R-9d — Tax categories.** Revenue and expense accounts map to stable
   tax categories (`ledger_core::tax::CATEGORIES`: key, label, income /
@@ -126,8 +127,9 @@ requirement conflict, the requirement wins.
   end** (later-dated entries belong to later periods) and puts the net in
   `to`: `CloseTo::RetainedEarnings` (`3999`, the corporate convention;
   `close_period` is shorthand) or `CloseTo::Members` (each member's capital
-  account by share, to the cent, the last absorbing rounding: the
-  partnership convention), or `CloseTo::Account` (any equity account, e.g.
+  account by share, to the cent, odd cents by largest remainder: the
+  partnership convention; closes journaled before 2026-10-13 replay with
+  the rule they were made under, the last member absorbing rounding), or `CloseTo::Account` (any equity account, e.g.
   a sole proprietor's capital). Every target can sweep owner-pay equity
   accounts — draws, distributions, dividends — into it: a member's
   distributions account into their own capital. The members' equity

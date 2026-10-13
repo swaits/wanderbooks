@@ -268,6 +268,81 @@ pub fn plug_last<T: Amount>(whole: T, parts: &mut [T]) -> Option<()> {
     Some(())
 }
 
+/// Largest-remainder apportionment: make rounded-down `parts` sum to
+/// `whole`, handing out the shortfall one `unit` at a time, largest
+/// `remainders` first (ties to the earlier part). Any final fraction of a
+/// unit (when `whole` isn't a whole number of units) goes to the first
+/// part in that order.
+///
+/// ```text
+/// GOAL: split a whole into parts, each a whole number of units where
+///       possible, summing to the whole exactly, without favoring anyone.
+/// INVARIANTS:
+///   1. MUST make the parts sum to `whole` exactly.
+///   2. MUST change each part by zero or one unit (the first in order
+///      may also take the sub-unit fraction).
+///   3. NEVER gives a unit to a part while a part with a strictly larger
+///      remainder goes without.
+/// SCENARIOS:
+///   1. IF the shortfall is negative, or `n` units or more (the parts
+///      weren't rounded down from shares of `whole`):
+///      - SHOULD return None, leaving `parts` unchanged
+///      BECAUSE apportioning only corrects rounding.
+///   2. IF $100.00 splits three equal ways:
+///      - SHOULD be 33.34, 33.33, 33.33
+///      - NEVER the same partner absorbing every odd cent by position
+///      BECAUSE the cent goes to the largest remainder, ties to the first
+///      (owner, 2026-10-13).
+/// ```
+///
+/// Allocation-free and O(n^2): it ranks each part by counting the parts
+/// ahead of it, so the model checker can prove it outright.
+pub fn apportion<T: Amount>(whole: T, parts: &mut [T], remainders: &[T], unit: T) -> Option<()> {
+    if parts.len() != remainders.len() || unit <= T::ZERO {
+        return None;
+    }
+    if parts.is_empty() {
+        // Nothing to give the whole to.
+        return (whole == T::ZERO).then_some(());
+    }
+    let mut shortfall = whole;
+    for &p in parts.iter() {
+        shortfall = shortfall.checked_sub(p)?;
+    }
+    if shortfall < T::ZERO {
+        return None;
+    }
+    // Whole units short, by subtraction: no division in `Amount`. A
+    // shortfall of a unit per part or more isn't rounding; refuse it.
+    let mut units = 0;
+    while shortfall >= unit {
+        shortfall = shortfall.checked_sub(unit)?;
+        units += 1;
+        if units == parts.len() {
+            return None;
+        }
+    }
+    // A part's rank: the parts ahead of it (larger remainder, or equal and
+    // earlier).
+    let rank = |i: usize| {
+        (0..remainders.len())
+            .filter(|&j| remainders[j] > remainders[i] || (remainders[j] == remainders[i] && j < i))
+            .count()
+    };
+    for (i, part) in parts.iter_mut().enumerate() {
+        let r = rank(i);
+        let mut add = T::ZERO;
+        if r < units {
+            add = unit;
+        }
+        if r == 0 {
+            add = add.checked_add(shortfall)?;
+        }
+        *part = part.checked_add(add)?;
+    }
+    Some(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,6 +356,23 @@ mod tests {
         assert!(!"0.00000000001".parse::<Decimal>().unwrap().in_line_range());
         // Trailing zeros are not precision.
         assert!("1.000000000000".parse::<Decimal>().unwrap().in_line_range());
+    }
+
+    /// Regression (Kani `apportion_is_exact`, 2026-10-13): a shortfall of
+    /// two units and a bit, with one part, was accepted and handed almost
+    /// two units to that part. Spec scenario 1: more than one unit short
+    /// per part is refused.
+    #[test]
+    fn apportion_refuses_a_shortfall_of_a_unit_per_part_or_more() {
+        let mut parts = [0i64];
+        assert_eq!(apportion(1805, &mut parts, &[0], 903), None);
+        assert_eq!(parts, [0]);
+        let mut parts = [0i64, 0];
+        assert_eq!(apportion(1806, &mut parts, &[0, 0], 903), None);
+        // Just under: accepted.
+        let mut parts = [0i64, 0];
+        assert_eq!(apportion(1805, &mut parts, &[1, 0], 903), Some(()));
+        assert_eq!(parts, [1805, 0]);
     }
 
     #[test]

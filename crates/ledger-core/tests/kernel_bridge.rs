@@ -148,6 +148,26 @@ proptest! {
     }
 
     #[test]
+    fn apportion_agrees(
+        parts in prop::collection::vec(arb_cents(), 0..5),
+        rems in prop::collection::vec(0i64..100, 5),
+        short in 0i64..500,
+    ) {
+        let n = parts.len();
+        let whole: i64 = parts.iter().sum::<i64>() + short;
+        let mut pi = parts.clone();
+        let mut pd: Vec<Decimal> = parts.iter().copied().map(dec).collect();
+        let ri = &rems[..n];
+        let rd: Vec<Decimal> = ri.iter().copied().map(dec).collect();
+        let oi = kernel::apportion(whole, &mut pi, ri, 100);
+        let od = kernel::apportion(dec(whole), &mut pd, &rd, dec(100));
+        prop_assert_eq!(oi.is_some(), od.is_some());
+        if oi.is_some() {
+            prop_assert_eq!(pi.into_iter().map(dec).collect::<Vec<_>>(), pd);
+        }
+    }
+
+    #[test]
     fn line_range_agrees(cents in arb_cents()) {
         prop_assert_eq!(cents.in_line_range(), dec(cents).in_line_range());
     }

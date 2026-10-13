@@ -319,3 +319,69 @@ proptest! {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Member splits (periods::allocate): conservation, a cent of each exact
+// share, fairness, and sign symmetry. Rank 2: laws, not recomputation.
+// ---------------------------------------------------------------------------
+
+/// 1 to 5 positive shares summing to exactly 1 (the last takes the rest).
+fn arb_shares() -> impl Strategy<Value = Vec<Decimal>> {
+    prop::collection::vec(1u32..1000, 1..=5).prop_map(|weights| {
+        let total: u32 = weights.iter().sum();
+        let mut shares: Vec<Decimal> = weights
+            .iter()
+            .map(|w| Decimal::from(*w) / Decimal::from(total))
+            .collect();
+        let rest: Decimal = shares[..shares.len() - 1].iter().sum();
+        *shares.last_mut().unwrap() = Decimal::ONE - rest;
+        shares
+    })
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(2000))]
+
+    #[test]
+    fn prop_split_parts_sum_to_the_whole_within_a_cent_of_each_share(
+        cents in -10_000_000_000i64..10_000_000_000, shares in arb_shares(),
+    ) {
+        let amount = Decimal::new(cents, 2);
+        let parts = ledger_core::periods::allocate(amount, &shares);
+        prop_assert_eq!(parts.len(), shares.len());
+        prop_assert_eq!(parts.iter().copied().sum::<Decimal>(), amount);
+        for (p, s) in parts.iter().zip(&shares) {
+            prop_assert!((*p - amount * s).abs() < Decimal::new(1, 2), "{p} vs share {s}");
+            prop_assert!(p.scale() <= 2 || p.normalize().scale() <= 2, "{p} is not whole cents");
+        }
+    }
+
+    #[test]
+    fn prop_split_never_rounds_up_a_smaller_remainder_over_a_larger(
+        cents in 0i64..10_000_000_000, shares in arb_shares(),
+    ) {
+        let amount = Decimal::new(cents, 2);
+        let parts = ledger_core::periods::allocate(amount, &shares);
+        let exact: Vec<Decimal> = shares.iter().map(|s| amount * s).collect();
+        let floor = |e: &Decimal| e.round_dp_with_strategy(2, rust_decimal::RoundingStrategy::ToZero);
+        for i in 0..parts.len() {
+            for j in 0..parts.len() {
+                let (ri, rj) = (exact[i] - floor(&exact[i]), exact[j] - floor(&exact[j]));
+                let (up_i, up_j) = (parts[i] > floor(&exact[i]), parts[j] > floor(&exact[j]));
+                if ri > rj {
+                    prop_assert!(up_i || !up_j, "member {j} rounded up over member {i}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn prop_split_of_a_loss_is_the_negated_split_of_the_gain(
+        cents in 0i64..10_000_000_000, shares in arb_shares(),
+    ) {
+        let amount = Decimal::new(cents, 2);
+        let gain = ledger_core::periods::allocate(amount, &shares);
+        let loss = ledger_core::periods::allocate(-amount, &shares);
+        prop_assert_eq!(loss, gain.iter().map(|p| -*p).collect::<Vec<_>>());
+    }
+}

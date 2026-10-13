@@ -65,6 +65,12 @@ pub enum StoreError {
     #[error("store already exists at {0}")]
     AlreadyExists(String),
 
+    /// Another process has these books open for writing. One writer at a
+    /// time: two would each extend the hash chain from the same place and
+    /// break it (found by the max-testing pass, 2026-10-13).
+    #[error("{0}")]
+    Locked(String),
+
     /// `open` called where no store exists.
     #[error("store not found at {0}")]
     NotFound(String),

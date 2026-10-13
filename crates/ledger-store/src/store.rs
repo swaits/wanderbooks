@@ -29,6 +29,40 @@ use std::path::{Path, PathBuf};
 pub const JOURNAL_FILE: &str = "journal.jsonl";
 /// File names inside the data directory.
 pub const DB_FILE: &str = "wanderbooks.db";
+
+/// The lock file a writer holds while the books are open. Readers (the
+/// viewer's [`crate::Snapshot`]) never take it.
+pub const LOCK_FILE: &str = "wanderbooks.lock";
+
+/// Take the books' writer lock, or say who has it.
+///
+/// ```text
+/// GOAL: one writer at a time.
+/// SOURCE: R-11 (one append-only log); docs/receipt-store.md (single write
+///         path).
+/// SCENARIOS:
+///   1. IF another process (or another Store in this one) has the books
+///      open for writing:
+///      - SHOULD refuse with Locked, saying so
+///      - NEVER let two writers extend the journal
+///      BECAUSE each would chain from the same last line and break it.
+/// ```
+fn lock_books(data_dir: &Path) -> Result<std::fs::File, StoreError> {
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(data_dir.join(LOCK_FILE))?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => Err(StoreError::Locked(format!(
+            "another wanderbooks process has the books in {} open for writing (an agent session, \
+             or its MCP server); close it first. The viewer is fine: it only reads",
+            data_dir.display()
+        ))),
+        Err(std::fs::TryLockError::Error(e)) => Err(StoreError::Io(e)),
+    }
+}
 pub(crate) const BLOBS_DIR: &str = "blobs";
 
 /// One row of an entry listing.
@@ -133,6 +167,10 @@ pub type PayrollLineInput = PayrollLine;
 /// `Store` is `Send` but not `Sync` (it owns a `rusqlite::Connection`).
 /// There is exactly one writer per data directory.
 pub struct Store {
+    /// The exclusive lock on [`LOCK_FILE`], held while the store is open:
+    /// one writer at a time. Released when dropped, or when the process
+    /// exits, even after a crash.
+    _lock: std::fs::File,
     data_dir: PathBuf,
     db_path: PathBuf,
     journal: JournalWriter,
@@ -165,12 +203,14 @@ impl Store {
             return Err(StoreError::AlreadyExists(data_dir.display().to_string()));
         }
         std::fs::create_dir_all(data_dir)?;
+        let lock = lock_books(data_dir)?;
         let db_path = data_dir.join(DB_FILE);
         let conn = Self::open_conn(&db_path)?;
         Self::migrate(&conn)?;
         Self::write_meta(&conn, "base_currency", base_currency.code())?;
         Self::write_meta(&conn, "last_applied_seq", "0")?;
         let mut store = Self {
+            _lock: lock,
             data_dir: data_dir.to_path_buf(),
             db_path,
             journal: JournalWriter::open(&journal_path)?,
@@ -195,6 +235,8 @@ impl Store {
         if !journal_path.exists() {
             return Err(StoreError::NotFound(data_dir.display().to_string()));
         }
+        // The writer lock first: nothing is read until no one else writes.
+        let lock = lock_books(data_dir)?;
         // Single verified scan; the writer reuses it.
         let lines = read_and_verify_journal(&journal_path)?;
         let journal = JournalWriter::from_lines(&journal_path, &lines)?;
@@ -253,6 +295,7 @@ impl Store {
             cur
         };
         let mut store = Self {
+            _lock: lock,
             data_dir: data_dir.to_path_buf(),
             db_path,
             journal,

@@ -9,10 +9,11 @@ netlify := "npx --yes netlify-cli@27"
 default:
     @just --list
 
-# Everything CI should check: format, clippy (zero warnings), tests
+# Everything CI should check: format, clippy and rustdoc (zero warnings), tests
 check:
     cargo fmt --all --check
     cargo clippy --workspace --all-targets -- -D warnings
+    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --quiet
     cargo test --workspace
 
 # Formal proofs: Kani on the accounting kernel, Lean for books of any size (docs/verification.md)

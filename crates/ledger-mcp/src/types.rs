@@ -1251,7 +1251,7 @@ pub struct DigestOut {
     /// longer know as of today. For each: research the current value from
     /// the official source or ask the human (owner, CPA), then update it
     /// for everyone with a pull request (or at least an issue) at
-    /// https://github.com/swaits/wanderbooks.
+    /// <https://github.com/swaits/wanderbooks>.
     pub stale_rules: Vec<StaleRule>,
 }
 

@@ -5,7 +5,7 @@
 //! separate set of books with its own rules and stays with the CPA. This
 //! module never pretends to do tax.
 //!
-//! The register is master data owned by [`Ledger`]: assets are journaled
+//! The register is master data owned by [`Ledger`](crate::Ledger): assets are journaled
 //! like accounts (see `ledger-store`), and ids are allocator-deterministic
 //! for replay. Depreciation itself is pure math — [`depreciation_schedule`]
 //! — and postings go through the normal entry machinery, so every

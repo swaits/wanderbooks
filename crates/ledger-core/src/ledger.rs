@@ -26,7 +26,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// An account the engine posts to by code: invoices, bills, payroll, and
-/// closes find (or create) these. See [`Ledger::check_controls`].
+/// closes find (or create) these; a command refuses one of the wrong type
+/// (`LedgerError::ControlAccountMismatch`).
 #[derive(Clone, Copy, Debug)]
 pub struct ControlAccount {
     /// The code the engine looks for.
@@ -615,6 +616,17 @@ impl Ledger {
     /// Start a draft journal entry, rejecting dates that fall in a closed
     /// period. This is the entry point for new work; [`Self::create_entry`]
     /// is for replay and internal use.
+    ///
+    /// ```text
+    /// GOAL: start a draft entry for new work.
+    /// SOURCE: docs/spec/rules.md B-12; Lean invariant Inv.draftsOpen.
+    /// SCENARIOS:
+    ///   1. IF the date falls in a closed period:
+    ///      - SHOULD refuse (ClosedPeriod)
+    ///      - NEVER create a draft there
+    ///      BECAUSE a closed period takes no new entries.
+    ///   2. Otherwise: SHOULD return a fresh id, one past the last.
+    /// ```
     pub fn try_create_entry(
         &mut self,
         date: NaiveDate,
@@ -771,6 +783,26 @@ impl Ledger {
     /// Validate and post a draft entry. One-way: a posted entry is immutable.
     ///
     /// Rejects entries dated in a closed period.
+    ///
+    /// ```text
+    /// GOAL: make a draft part of the books, once and for good.
+    /// SOURCE: docs/spec/rules.md B-1, B-2, B-3, B-8 (Pacioli ch. 36: write
+    ///         only forward), B-12.
+    /// INVARIANTS:
+    ///   1. MUST post only an entry that passes JournalEntry::validate.
+    ///   2. MUST append it to the log; NEVER reorder, change, or remove an
+    ///      earlier posted entry.
+    ///   3. A refusal MUST leave the books unchanged.
+    /// SCENARIOS:
+    ///   1. IF the entry is unknown: SHOULD refuse (UnknownEntry).
+    ///   2. IF it is already posted:
+    ///      - SHOULD refuse (EntryAlreadyPosted)
+    ///      - NEVER post it twice
+    ///   3. IF it is dated in a closed period: SHOULD refuse (ClosedPeriod).
+    ///   4. IF it doesn't balance, has fewer than two lines, a zero, negative,
+    ///      or out-of-range amount, or an unknown or placeholder account:
+    ///      SHOULD refuse with that reason.
+    /// ```
     pub fn post_entry(&mut self, entry: EntryId) -> Result<(), LedgerError> {
         let snapshot = self
             .entries
@@ -944,6 +976,15 @@ impl Ledger {
     /// salvage below cost, at least one month of life, base currency) and
     /// the account links (asset/asset/expense types, three distinct
     /// accounts).
+    ///
+    /// ```text
+    /// GOAL: put a fixed asset on the register, to depreciate monthly.
+    /// SOURCE: docs/spec/rules.md B-15; B-22 (capitalize vs expense).
+    /// SCENARIOS:
+    ///   1. IF the description is blank, cost isn't positive, salvage is
+    ///      negative or not below cost, the useful life is zero months, or the
+    ///      accounts aren't the right types: SHOULD refuse.
+    /// ```
     pub fn register_asset(&mut self, new: NewAsset) -> Result<AssetId, LedgerError> {
         self.validate_new_asset(&new)?;
         let id = self.next_asset_id;
@@ -981,6 +1022,18 @@ impl Ledger {
 
     /// Mark an asset disposed. The disposal *entry* is posted through the
     /// normal machinery by the caller; this records the lifecycle change.
+    ///
+    /// ```text
+    /// GOAL: take an asset off the books when sold or scrapped.
+    /// SOURCE: docs/spec/rules.md B-15; CONVENTION (gain or loss on disposal).
+    /// INVARIANTS:
+    ///   1. The gain (or loss) MUST equal proceeds minus book value at the
+    ///      disposal date.
+    ///   2. The asset's cost and accumulated depreciation MUST both leave the
+    ///      books.
+    /// SCENARIOS:
+    ///   1. IF the asset is unknown or already disposed: SHOULD refuse.
+    /// ```
     pub fn dispose_asset(
         &mut self,
         id: AssetId,
@@ -1121,6 +1174,32 @@ impl Ledger {
     ///
     /// Returns the closing entry's id, or `None` if there was nothing to
     /// close.
+    ///
+    /// ```text
+    /// GOAL: close a period: zero every revenue and expense account's balance
+    ///       as of its last day into equity, and lock it.
+    /// SOURCE: docs/spec/rules.md B-11 (Pacioli ch. 27, 34), B-12, B-13 (26
+    ///         U.S.C. §704(a)); R-? Periods and close.
+    /// INVARIANTS:
+    ///   1. After a close, every revenue and expense account MUST have a zero
+    ///      balance as of the period's last day.
+    ///   2. The closing entry MUST balance, be dated the period's last day, and
+    ///      credit equity with exactly the net income through that day (split
+    ///      among members by share, to the cent, by largest remainder).
+    ///   3. Entries dated after the period MUST stay untouched (their income
+    ///      belongs to their own period).
+    ///   4. A sweep account (draws, distributions, dividends) MUST end at zero,
+    ///      its balance moved into its target.
+    ///   5. NEVER post a closing entry when there is nothing to close.
+    /// SCENARIOS:
+    ///   1. IF the period is unknown or already closed: SHOULD refuse.
+    ///   2. IF a draft is dated inside it: SHOULD refuse (DraftsInPeriod).
+    ///   3. IF a later period is already closed: SHOULD refuse (CloseOutOfOrder).
+    ///   4. IF a target or sweep account isn't a distinct equity account, or
+    ///      member shares aren't positive and summing to 1: SHOULD refuse.
+    ///   5. IF closing to retained earnings and 3999 exists but isn't a
+    ///      postable equity account: SHOULD refuse (ControlAccountMismatch).
+    /// ```
     pub fn close_period_to(
         &mut self,
         id: PeriodId,
@@ -1452,6 +1531,15 @@ impl Ledger {
     /// Tag an entry (draft or posted) with the vendor it paid or was billed
     /// by, or clear the tag. The tag is reporting metadata, like a receipt
     /// link: it changes no amounts, so posted entries may be tagged.
+    ///
+    /// ```text
+    /// GOAL: tag an entry with the vendor it paid, for 1099s.
+    /// SOURCE: docs/spec/rules.md B-19.
+    /// SCENARIOS:
+    ///   1. IF the entry or vendor is unknown: SHOULD refuse.
+    ///   2. Tagging MUST change no amount (it's metadata, allowed on posted
+    ///      entries).
+    /// ```
     pub fn set_entry_vendor(
         &mut self,
         entry: EntryId,
@@ -1559,6 +1647,22 @@ impl Ledger {
 
     /// Create a sales invoice. Auto-posts: Dr `1200` Accounts Receivable,
     /// Cr `4000` Revenue. The invoice date must not fall in a closed period.
+    ///
+    /// ```text
+    /// GOAL: bill a customer and recognize the revenue (accrual basis).
+    /// SOURCE: IRS Pub. 538, accrual method (docs/spec/sources/irs-periods-and-methods.md:
+    ///         "report income in the year it is earned"); ASC 606-10-25-23;
+    ///         control accounts: Ledger::check_controls.
+    /// INVARIANTS:
+    ///   1. MUST post one balanced entry: Dr 1200 receivables, Cr 4000 revenue,
+    ///      for the sum of the lines, dated the invoice date.
+    ///   2. The invoice MUST start open, with nothing paid.
+    ///   3. A refusal MUST leave the books unchanged.
+    /// SCENARIOS:
+    ///   1. IF the customer is unknown, a line amount isn't positive, the due
+    ///      date is before the invoice date, or the date is in a closed
+    ///      period: SHOULD refuse.
+    /// ```
     pub fn create_invoice(
         &mut self,
         customer_id: CustomerId,
@@ -1604,6 +1708,21 @@ impl Ledger {
     /// Create a vendor bill. Auto-posts: Dr `6999` General Expenses,
     /// Cr `2000` Accounts Payable. The bill date must not fall in a closed
     /// period.
+    ///
+    /// ```text
+    /// GOAL: record a vendor's bill as an expense owed (accrual basis).
+    /// SOURCE: IRS Pub. 538, accrual method ("deduct ... expenses in the year
+    ///         incurred"); control accounts: Ledger::check_controls.
+    /// INVARIANTS:
+    ///   1. MUST post one balanced entry: Dr 6999 general expenses, Cr 2000
+    ///      payables, for the sum of the lines, dated the bill date, tagged
+    ///      with the vendor (1099s).
+    ///   2. A refusal MUST leave the books unchanged.
+    /// SCENARIOS:
+    ///   1. IF the vendor is unknown, a line amount isn't positive, the due date
+    ///      is before the bill date, or the date is in a closed period: SHOULD
+    ///      refuse.
+    /// ```
     pub fn create_bill(
         &mut self,
         vendor_id: VendorId,
@@ -1659,6 +1778,20 @@ impl Ledger {
 
     /// Record a customer payment against an invoice. Posts: Dr Cash,
     /// Cr A/R. Updates the invoice's paid amount and status.
+    ///
+    /// ```text
+    /// GOAL: record a customer's payment against an invoice.
+    /// SOURCE: IRS Pub. 538 (accrual); CONVENTION (A/R workflow).
+    /// INVARIANTS:
+    ///   1. MUST post Dr cash, Cr 1200 receivables, for the amount.
+    ///   2. The invoice's paid amount MUST rise by the amount; it is Paid
+    ///      exactly when fully paid, Partial when partly.
+    /// SCENARIOS:
+    ///   1. IF the amount isn't positive: SHOULD refuse.
+    ///   2. IF it exceeds what's still owed:
+    ///      - SHOULD refuse (Overpayment)
+    ///      - NEVER let paid exceed the total
+    /// ```
     pub fn receive_payment(
         &mut self,
         invoice_id: InvoiceId,
@@ -1696,6 +1829,18 @@ impl Ledger {
 
     /// Pay a vendor bill. Posts: Dr A/P, Cr Cash. Updates the bill's paid
     /// amount and status.
+    ///
+    /// ```text
+    /// GOAL: record paying a vendor's bill.
+    /// SOURCE: IRS Pub. 538 (accrual); CONVENTION (A/P workflow).
+    /// INVARIANTS:
+    ///   1. MUST post Dr 2000 payables, Cr cash, for the amount, tagged with
+    ///      the vendor.
+    ///   2. The bill's paid amount MUST rise by the amount.
+    /// SCENARIOS:
+    ///   1. IF the amount isn't positive, or exceeds what's still owed: SHOULD
+    ///      refuse.
+    /// ```
     pub fn pay_bill(
         &mut self,
         bill_id: BillId,
@@ -1917,6 +2062,14 @@ impl Ledger {
     /// Mark a posted entry's line as cleared (or uncleared). The cleared
     /// flag is a workflow marker, not accounting data: posted entries stay
     /// immutable, and the flag lives in a side table.
+    ///
+    /// ```text
+    /// GOAL: mark a posted line as cleared (seen on the bank statement), or not.
+    /// SOURCE: CONVENTION (bank reconciliation); R-? Bank reconciliation.
+    /// SCENARIOS:
+    ///   1. IF the entry is unknown, a draft, or has no such line: SHOULD refuse.
+    ///   2. Marking MUST change no amount, no report but the reconciliation.
+    /// ```
     pub fn mark_cleared(
         &mut self,
         entry_id: EntryId,
@@ -1953,6 +2106,19 @@ impl Ledger {
     /// cleared balance (posted lines marked cleared, dated on or before
     /// the statement date) to the statement balance, and lists every
     /// uncleared line so the human can see what's outstanding.
+    ///
+    /// ```text
+    /// GOAL: compare the books with a bank statement.
+    /// SOURCE: CONVENTION (bank reconciliation); R-? Bank reconciliation.
+    /// INVARIANTS:
+    ///   1. book_balance MUST be the account's net of all posted lines.
+    ///   2. cleared_balance MUST be the net of cleared lines dated on or
+    ///      before the statement date.
+    ///   3. difference MUST equal cleared_balance - statement_balance; zero
+    ///      means reconciled.
+    ///   4. uncleared_lines MUST list exactly the posted, uncleared lines on
+    ///      the account dated on or before the statement date.
+    /// ```
     pub fn reconciliation_report(
         &self,
         account: AccountId,
@@ -2052,6 +2218,17 @@ impl Ledger {
 
     /// Balance expressed in the account's normal side: positive means a
     /// normal balance, negative means a contra balance.
+    ///
+    /// ```text
+    /// GOAL: an account's balance on its normal side.
+    /// SOURCE: docs/spec/rules.md B-5.
+    /// INVARIANTS:
+    ///   1. MUST equal the account's debits minus credits for debit-normal
+    ///      types (asset, expense), and credits minus debits otherwise.
+    ///   2. NEVER return negative zero.
+    /// SCENARIOS:
+    ///   1. IF the account is unknown: SHOULD refuse.
+    /// ```
     pub fn account_balance(&self, account: AccountId) -> Result<Decimal, LedgerError> {
         let account = self
             .chart
@@ -2116,6 +2293,21 @@ impl Ledger {
     ///
     /// Accounting only: there are no tax tables here. Every withholding
     /// number is supplied by the caller.
+    ///
+    /// ```text
+    /// GOAL: record a payroll: wages, the employer's FICA, what is withheld
+    ///       and owed, and net pay.
+    /// SOURCE: IRS Pub. 15 (docs/spec/sources/irs-payroll.md); R-? Payroll
+    ///         (accounting only: the caller supplies every number).
+    /// INVARIANTS:
+    ///   1. MUST post one balanced entry: Dr 6100 gross wages, Dr 6110 employer
+    ///      FICA, Cr 2110-2150 the withholdings and both shares of FICA, Cr cash
+    ///      net pay.
+    ///   2. Net pay MUST equal gross minus the employee's withholdings.
+    /// SCENARIOS:
+    ///   1. IF any amount is negative, gross is zero, or withholdings exceed
+    ///      gross: SHOULD refuse.
+    /// ```
     pub fn run_payroll(
         &mut self,
         date: NaiveDate,
@@ -2168,6 +2360,15 @@ impl Ledger {
     /// Posts one entry — Dr each payable for its balance, Cr cash for the
     /// total. Fails with [`LedgerError::NothingToRemit`] when nothing is
     /// owed, and rejects dates in closed periods.
+    ///
+    /// ```text
+    /// GOAL: pay the payroll taxes and withholdings owed.
+    /// SOURCE: IRS Pub. 15 (deposits).
+    /// INVARIANTS:
+    ///   1. MUST zero every payroll payable (2110-2150) against cash.
+    /// SCENARIOS:
+    ///   1. IF nothing is owed: SHOULD refuse (NothingToRemit).
+    /// ```
     pub fn remit_payroll_taxes(
         &mut self,
         date: NaiveDate,
@@ -2283,6 +2484,16 @@ impl Ledger {
     /// Tag a draft entry's line with a class, or clear it with `None`.
     /// Draft-only: posted entries are immutable, so their classes are
     /// frozen at posting time.
+    ///
+    /// ```text
+    /// GOAL: tag a draft line with a class (or clear it).
+    /// SOURCE: R-? Tracking classes.
+    /// SCENARIOS:
+    ///   1. IF the entry is posted:
+    ///      - SHOULD refuse
+    ///      - NEVER change a posted line (B-8)
+    ///   2. IF the line or class doesn't exist: SHOULD refuse.
+    /// ```
     pub fn set_line_class(
         &mut self,
         entry: EntryId,

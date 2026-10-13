@@ -1,4 +1,4 @@
-//! Reports: pure functions of a [`Ledger`](crate::Ledger).
+//! Reports: pure functions of a [`Ledger`].
 //!
 //! Reports never mutate and never guess. They are what the semantic oracle
 //! (`docs/oracle.md`) diffs: the same fixture books through two engines must
@@ -44,6 +44,14 @@ impl TrialBalance {
 }
 
 /// Build the trial balance from all posted entries.
+///
+/// ```text
+/// GOAL: the trial balance over every posted entry (see trial_balance_as_of).
+/// SOURCE: docs/spec/rules.md B-6; R-7.
+/// INVARIANTS:
+///   1. MUST equal trial_balance_as_of on or after the last entry's date.
+///   2. MUST balance (total debits == total credits).
+/// ```
 pub fn trial_balance(ledger: &Ledger) -> TrialBalance {
     trial_balance_where(ledger, &|_| true)
 }
@@ -51,6 +59,29 @@ pub fn trial_balance(ledger: &Ledger) -> TrialBalance {
 /// The trial balance as of a date: every posted entry dated on or before
 /// it (closing entries included, so after a close it is the post-closing
 /// trial balance).
+///
+/// ```text
+/// GOAL: every account's balance, in a debit or a credit column, from the
+///       posted entries dated on or before `as_of`.
+/// SOURCE: docs/spec/rules.md B-6 (Pacioli ch. 36; IRS Pub. 583); R-7, R-9b.
+/// INVARIANTS:
+///   1. MUST have total debits equal total credits, for any books built
+///      through the Ledger commands.
+///   2. MUST list each non-placeholder account with a nonzero balance
+///      exactly once, in code order; NEVER list a placeholder or a zero
+///      balance.
+///   3. MUST put each balance in exactly one column, never negative.
+///   4. NEVER count a draft, or an entry dated after `as_of`; closing
+///      entries dated on or before it count (after a close this is the
+///      post-closing trial balance).
+/// SCENARIOS:
+///   1. IF no entries are posted by `as_of`:
+///      - SHOULD be empty with zero totals.
+///   2. IF an asset was debited 100 and credited 30:
+///      - SHOULD show it with debit 70, credit 0.
+///      BECAUSE the trial balance shows each account's net balance on the
+///      side it falls.
+/// ```
 pub fn trial_balance_as_of(ledger: &Ledger, as_of: NaiveDate) -> TrialBalance {
     trial_balance_where(ledger, &|e| e.date() <= as_of)
 }
@@ -151,6 +182,16 @@ pub struct ClassProfitAndLoss {
 ///
 /// The rows partition the ledger: summing every row's revenue and expenses
 /// reproduces [`profit_and_loss`].
+///
+/// ```text
+/// GOAL: a profit and loss per class (department, location, job), plus the
+///       unclassified lines.
+/// SOURCE: docs/spec/rules.md B-14; R-? Tracking classes.
+/// INVARIANTS:
+///   1. The per-class P&Ls (with unclassified) MUST sum to the whole P&L,
+///      account by account (conservation).
+///   2. NEVER count a line in two classes.
+/// ```
 pub fn profit_and_loss_by_class(ledger: &Ledger) -> Result<Vec<ClassProfitAndLoss>, LedgerError> {
     // Which classes actually have P&L lines, and whether any P&L line is
     // unclassified. Balance-sheet-only classes get no row.
@@ -399,6 +440,26 @@ fn statement_lines(
 /// counts every line). Closing entries are excluded: they move a period's
 /// earnings into retained earnings, so counting them would report a closed
 /// period as breaking even.
+///
+/// ```text
+/// GOAL: revenue, expenses, and net income for the entries dated from
+///       `start` through `end` (both inclusive), optionally one class's lines.
+/// SOURCE: docs/spec/rules.md B-14, B-11; R-9.
+/// INVARIANTS:
+///   1. MUST count only revenue and expense accounts, a line per account
+///      with its normal-side amount, and net income = revenue - expenses.
+///   2. NEVER count a closing entry (a close moves earnings; it doesn't
+///      earn or spend), a draft, or an entry outside the range.
+///   3. MUST partition: for start <= m < end, the period's net income equals
+///      [start, m] plus [m+1, end].
+///   4. MUST equal the change in current earnings (balance sheet) across
+///      the range when no close falls inside it.
+///   5. With a class: MUST count only lines tagged with that class.
+/// SCENARIOS:
+///   1. IF a month was closed: SHOULD still report that month's earnings.
+///      BECAUSE closing doesn't make a period break even (R-9).
+///   2. IF `start` is after `end`: SHOULD refuse. (ASSUMED)
+/// ```
 pub fn profit_and_loss_for_period(
     ledger: &Ledger,
     start: NaiveDate,
@@ -443,6 +504,23 @@ pub fn profit_and_loss_for_period(
 /// Revenue and expense not yet closed to retained earnings appear as
 /// current earnings inside equity, so the accounting equation holds on
 /// every date, before and after closes.
+///
+/// ```text
+/// GOAL: assets, liabilities, and equity as of a date, a line per account.
+/// SOURCE: docs/spec/rules.md B-7 (CON 8 ¶E62), B-11; R-8.
+/// INVARIANTS:
+///   1. MUST balance: assets = liabilities + equity + current earnings,
+///      exactly.
+///   2. MUST count every posted entry dated on or before `as_of`, closing
+///      entries included (after a close, earnings sit in retained earnings
+///      or members' capital, and current earnings is zero for closed time).
+///   3. Current earnings MUST be revenue minus expenses not yet closed.
+///   4. NEVER list revenue or expense accounts as lines.
+///   5. Lines use each account's normal-side balance (a contra balance is
+///      negative).
+/// SCENARIOS:
+///   1. IF nothing is posted by `as_of`: SHOULD be empty and balanced.
+/// ```
 pub fn balance_sheet_as_of(
     ledger: &Ledger,
     as_of: NaiveDate,
@@ -538,6 +616,22 @@ pub struct GeneralLedger {
 /// posting to its account, with the entry's other side as the split, and a
 /// running balance from the account's balance before `start`. Closing
 /// entries are postings like any other.
+///
+/// ```text
+/// GOAL: every posting from `start` through `end`, by account in code
+///       order, with running balances.
+/// SOURCE: docs/spec/rules.md B-6; R-9a (the QuickBooks general ledger).
+/// INVARIANTS:
+///   1. Each account MUST show its beginning balance (entries before
+///      `start`), every posting in the range in date order, and an ending
+///      balance equal to beginning plus the postings, on the account's
+///      normal side.
+///   2. Each account's ending balance MUST equal its trial-balance balance
+///      as of `end` (normal side).
+///   3. Each posting MUST name its split: the one account on the entry's
+///      other side, or "-Split-" when the other side has several.
+///   4. NEVER include drafts.
+/// ```
 pub fn general_ledger(
     ledger: &Ledger,
     start: NaiveDate,
@@ -718,6 +812,23 @@ pub struct MembersEquityStatement {
 /// earnings plus unclosed income), are allocated by share. Allocation is to
 /// the cent with the last member absorbing rounding, so every row's total
 /// is exact and the ending total equals balance-sheet equity.
+///
+/// ```text
+/// GOAL: each member's capital roll-forward for a partnership over a
+///       period: beginning, contributions, allocated net income, distributions,
+///       ending; with a total.
+/// SOURCE: docs/spec/rules.md B-13 (26 U.S.C. §704(a); Form 1065 Schedule
+///         M-2), B-11; R-9c.
+/// INVARIANTS:
+///   1. Each row MUST roll forward exactly: beginning + contributions +
+///      income - distributions + other = ending.
+///   2. The total ending MUST equal balance-sheet equity at `end`.
+///   3. Unclosed earnings and the period's income MUST be split by share,
+///      to the cent, by largest remainder (DECISION, owner 2026-10-13).
+///   4. NEVER hide an unexplained change: it goes in "other".
+/// SCENARIOS:
+///   1. IF shares don't sum to 1, or are not positive: SHOULD refuse.
+/// ```
 pub fn members_equity(
     ledger: &Ledger,
     start: NaiveDate,
@@ -862,6 +973,17 @@ pub fn members_equity(
 /// are sorted by account code, and object keys are fixed. Two engines fed the
 /// same fixture books must produce byte-identical output — that is the whole
 /// point (see `docs/oracle.md`).
+///
+/// ```text
+/// GOAL: the trial balance, P&L, and balance sheet as deterministic JSON,
+///       the interchange format for cross-checking against other
+///       implementations.
+/// SOURCE: R-10; docs/oracle.md.
+/// INVARIANTS:
+///   1. MUST be identical for the same books, whatever order accounts were
+///      added in (decimal strings, sorted lines, fixed keys).
+///   2. NEVER contain floats.
+/// ```
 pub fn snapshot(ledger: &Ledger) -> Result<serde_json::Value, LedgerError> {
     let tb = trial_balance(ledger);
     let pl = profit_and_loss(ledger)?;
@@ -971,6 +1093,25 @@ pub struct CashFlowStatement {
 /// working-capital changes gives operating cash flow; fixed-asset purchases
 /// and disposal proceeds give investing; equity and designated debt give
 /// financing. The three sections sum to the net change in `cash_accounts`.
+///
+/// ```text
+/// GOAL: the statement of cash flows by the indirect method: net income
+///       adjusted to operating cash, plus investing and financing, for a
+///       period.
+/// SOURCE: docs/spec/rules.md B-14 (ASC 230-10-45-28 indirect method;
+///         230-10-45-16 operating inflows).
+/// INVARIANTS:
+///   1. Operating + investing + financing MUST equal the net change in the
+///      cash accounts over the period, exactly.
+///   2. Operating MUST start from the period's net income (closing entries
+///      excluded) and adjust for changes in non-cash working-capital
+///      accounts.
+///   3. Investing MUST hold changes in non-current assets (fixed assets);
+///      a disposal's gain or loss moves out of operating into investing.
+///   4. Financing MUST hold changes in equity (other than earnings) and in
+///      the liabilities named as financing.
+///   5. NEVER count closing entries.
+/// ```
 pub fn cash_flow(
     ledger: &Ledger,
     params: &CashFlowParams,

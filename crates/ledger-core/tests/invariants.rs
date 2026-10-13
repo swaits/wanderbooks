@@ -774,3 +774,135 @@ fn cash_flow_with_registered_asset_and_disposal() {
     assert_eq!(cf.cash_from_financing, Decimal::new(10000000, 2));
     // Sum: 0 - 400 + 100,000 = 99,600. Matches cash.
 }
+
+// ---------------------------------------------------------------------------
+// Control accounts (Stephen, 2026-10-13): the engine posts invoices, bills,
+// payroll, and closes to accounts it finds by code. When an account with
+// that code exists but is the wrong kind, it refuses, says why, and changes
+// nothing, rather than posting to it or forcing the chart into its
+// numbering. SOURCE: rules.md B-4 (the elements), DECISION.
+// ---------------------------------------------------------------------------
+
+fn books_with(code: &str, name: &str, t: AccountType, placeholder: bool) -> Ledger {
+    let mut l = Ledger::new(Currency::USD);
+    l.add_account("1000", "Cash", AccountType::Asset, None, false)
+        .unwrap();
+    l.add_account(code, name, t, None, placeholder).unwrap();
+    l
+}
+
+fn doc(amount: u64) -> Vec<ledger_core::DocumentLine> {
+    vec![ledger_core::DocumentLine {
+        description: "work".into(),
+        amount: Decimal::from(amount),
+    }]
+}
+
+/// Refused means untouched: same chart, same ids, nothing posted.
+fn assert_untouched(before: &Ledger, after: &Ledger) {
+    assert_eq!(after.chart().len(), before.chart().len());
+    assert_eq!(after.next_entry_id(), before.next_entry_id());
+    assert_eq!(after.next_invoice_id(), before.next_invoice_id());
+    assert_eq!(after.next_bill_id(), before.next_bill_id());
+    assert_eq!(
+        after.posted_entries().count(),
+        before.posted_entries().count()
+    );
+}
+
+#[test]
+fn an_invoice_refuses_a_1200_that_is_not_receivables() {
+    let mut l = books_with("1200", "Customer Deposits", AccountType::Liability, false);
+    let c = l.add_customer("Acme").unwrap();
+    let before = l.clone();
+    let err = l
+        .create_invoice(c, date(5), date(30), doc(100))
+        .unwrap_err();
+    assert_eq!(
+        err,
+        LedgerError::ControlAccountMismatch {
+            code: "1200".into(),
+            name: "Customer Deposits".into(),
+            role: "accounts receivable".into(),
+            expected: AccountType::Asset,
+            found: AccountType::Liability,
+            placeholder: false,
+        }
+    );
+    // The reason names the account, what it is, and what was needed.
+    let why = err.to_string();
+    assert!(
+        why.contains("1200") && why.contains("Customer Deposits"),
+        "{why}"
+    );
+    assert!(why.contains("Liability") && why.contains("Asset"), "{why}");
+    assert_untouched(&before, &l);
+}
+
+#[test]
+fn an_invoice_refuses_a_placeholder_1200() {
+    let mut l = books_with("1200", "Receivables", AccountType::Asset, true);
+    let c = l.add_customer("Acme").unwrap();
+    let before = l.clone();
+    assert!(matches!(
+        l.create_invoice(c, date(5), date(30), doc(100)),
+        Err(LedgerError::ControlAccountMismatch {
+            placeholder: true,
+            ..
+        })
+    ));
+    assert_untouched(&before, &l);
+}
+
+#[test]
+fn an_invoice_creates_nothing_when_its_second_account_is_wrong() {
+    // 1200 is missing (would be created) but 4000 is the wrong type: the
+    // refusal must come before 1200 is added.
+    let mut l = books_with("4000", "Owner Loans", AccountType::Liability, false);
+    let c = l.add_customer("Acme").unwrap();
+    let before = l.clone();
+    assert!(matches!(
+        l.create_invoice(c, date(5), date(30), doc(100)),
+        Err(LedgerError::ControlAccountMismatch { .. })
+    ));
+    assert!(l.chart().find_by_code("1200").is_none());
+    assert_untouched(&before, &l);
+}
+
+#[test]
+fn a_bill_refuses_a_2000_that_is_not_payables() {
+    let mut l = books_with("2000", "Savings", AccountType::Asset, false);
+    let v = l.add_vendor("Vend").unwrap();
+    let before = l.clone();
+    assert!(matches!(
+        l.create_bill(v, date(5), date(30), doc(100)),
+        Err(LedgerError::ControlAccountMismatch {
+            expected: AccountType::Liability,
+            ..
+        })
+    ));
+    assert_untouched(&before, &l);
+}
+
+#[test]
+fn a_close_refuses_a_3999_that_is_not_equity() {
+    let mut l = books_with("3999", "Suspense", AccountType::Asset, false);
+    let sales = l
+        .add_account("4000", "Sales", AccountType::Revenue, None, false)
+        .unwrap();
+    let e = l.create_entry(date(5), "sale");
+    l.add_line(e, 1, Side::Debit, usd(100)).unwrap();
+    l.add_line(e, sales, Side::Credit, usd(100)).unwrap();
+    l.post_entry(e).unwrap();
+    let jan = l.create_period("2026-01", date(1), date(31)).unwrap();
+    let before = l.clone();
+    assert!(matches!(
+        l.close_period(jan),
+        Err(LedgerError::ControlAccountMismatch {
+            expected: AccountType::Equity,
+            ..
+        })
+    ));
+    assert_untouched(&before, &l);
+    assert!(l.closed_period_containing(date(5)).is_none());
+}

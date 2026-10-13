@@ -984,11 +984,7 @@ impl Store {
             // Retained Earnings must exist before the close so its creation
             // (if needed) is journaled as account.added; the close's own
             // ensure then no-ops and replay stays deterministic.
-            self.ensure_control_account(
-                ledger_core::RETAINED_EARNINGS_CODE,
-                "Retained Earnings",
-                AccountType::Equity,
-            )?;
+            self.ensure_control_account(&ledger_core::RETAINED_EARNINGS)?;
         }
         let closing_entry = self.ledger.close_period_to(id, to)?;
         let entry_detail = match closing_entry {
@@ -1091,14 +1087,12 @@ impl Store {
 
     fn ensure_control_account(
         &mut self,
-        code: &str,
-        name: &str,
-        account_type: AccountType,
+        c: &ledger_core::ControlAccount,
     ) -> Result<AccountId, StoreError> {
-        if let Some(a) = self.ledger.chart().find_by_code(code) {
+        if let Some(a) = self.ledger.chart().find_by_code(c.code) {
             return Ok(a.id);
         }
-        self.add_account(code, name, account_type, None, false)
+        self.add_account(c.code, c.name, c.account_type, None, false)
     }
 
     /// Journal an auto-posted two-line entry (debit one account, credit
@@ -1197,8 +1191,8 @@ impl Store {
         lines: Vec<DocumentLine>,
     ) -> Result<InvoiceId, StoreError> {
         self.rehearse(|l| {
-            ensure_on(l, "1200", "Accounts Receivable", AccountType::Asset)?;
-            ensure_on(l, "4000", "Revenue", AccountType::Revenue)?;
+            ensure_on(l, &ledger_core::RECEIVABLES)?;
+            ensure_on(l, &ledger_core::REVENUE)?;
             l.create_invoice(customer_id, date, due_date, lines.clone())
         })?;
         // Pure pre-validation mirroring Ledger::create_invoice, so the
@@ -1213,8 +1207,8 @@ impl Store {
         if let Some(pid) = self.ledger.closed_period_containing(date) {
             return Err(LedgerError::ClosedPeriod(pid, date.to_string()).into());
         }
-        let ar = self.ensure_control_account("1200", "Accounts Receivable", AccountType::Asset)?;
-        let revenue = self.ensure_control_account("4000", "Revenue", AccountType::Revenue)?;
+        let ar = self.ensure_control_account(&ledger_core::RECEIVABLES)?;
+        let revenue = self.ensure_control_account(&ledger_core::REVENUE)?;
         let invoice_id = self.ledger.next_invoice_id();
         let total: Decimal = lines.iter().map(|l| l.amount).sum();
         let description = format!("Invoice {invoice_id}");
@@ -1261,8 +1255,8 @@ impl Store {
         lines: Vec<DocumentLine>,
     ) -> Result<BillId, StoreError> {
         self.rehearse(|l| {
-            ensure_on(l, "6999", "General Expenses", AccountType::Expense)?;
-            ensure_on(l, "2000", "Accounts Payable", AccountType::Liability)?;
+            ensure_on(l, &ledger_core::GENERAL_EXPENSES)?;
+            ensure_on(l, &ledger_core::PAYABLES)?;
             l.create_bill(vendor_id, date, due_date, lines.clone())
         })?;
         if self.ledger.get_vendor(vendor_id).is_none() {
@@ -1273,9 +1267,8 @@ impl Store {
         if let Some(pid) = self.ledger.closed_period_containing(date) {
             return Err(LedgerError::ClosedPeriod(pid, date.to_string()).into());
         }
-        let expense =
-            self.ensure_control_account("6999", "General Expenses", AccountType::Expense)?;
-        let ap = self.ensure_control_account("2000", "Accounts Payable", AccountType::Liability)?;
+        let expense = self.ensure_control_account(&ledger_core::GENERAL_EXPENSES)?;
+        let ap = self.ensure_control_account(&ledger_core::PAYABLES)?;
         let bill_id = self.ledger.next_bill_id();
         let total: Decimal = lines.iter().map(|l| l.amount).sum();
         let description = format!("Bill {bill_id}");
@@ -1317,7 +1310,7 @@ impl Store {
         cash_account: AccountId,
     ) -> Result<EntryId, StoreError> {
         self.rehearse(|l| {
-            ensure_on(l, "1200", "Accounts Receivable", AccountType::Asset)?;
+            ensure_on(l, &ledger_core::RECEIVABLES)?;
             l.receive_payment(invoice_id, date, amount, cash_account)
         })?;
         // Pure pre-validation mirroring Ledger::receive_payment, plus the
@@ -1345,7 +1338,7 @@ impl Store {
         if cash.placeholder {
             return Err(LedgerError::PlaceholderAccount(cash.code.clone()).into());
         }
-        let ar = self.ensure_control_account("1200", "Accounts Receivable", AccountType::Asset)?;
+        let ar = self.ensure_control_account(&ledger_core::RECEIVABLES)?;
         let description = format!("Payment on invoice {invoice_id}");
         let (entry_id, mut journaled) =
             self.journal_auto_entry(date, &description, cash_account, ar, amount)?;
@@ -1379,7 +1372,7 @@ impl Store {
         cash_account: AccountId,
     ) -> Result<EntryId, StoreError> {
         self.rehearse(|l| {
-            ensure_on(l, "2000", "Accounts Payable", AccountType::Liability)?;
+            ensure_on(l, &ledger_core::PAYABLES)?;
             l.pay_bill(bill_id, date, amount, cash_account)
         })?;
         if amount <= Decimal::ZERO {
@@ -1404,7 +1397,7 @@ impl Store {
         if cash.placeholder {
             return Err(LedgerError::PlaceholderAccount(cash.code.clone()).into());
         }
-        let ap = self.ensure_control_account("2000", "Accounts Payable", AccountType::Liability)?;
+        let ap = self.ensure_control_account(&ledger_core::PAYABLES)?;
         let description = format!("Payment on bill {bill_id}");
         let (entry_id, mut journaled) =
             self.journal_auto_entry(date, &description, ap, cash_account, amount)?;
@@ -1511,42 +1504,15 @@ impl Store {
     /// then no-ops, which keeps replay deterministic: every account
     /// creation is an `account.added` event.
     fn ensure_payroll_accounts(&mut self) -> Result<PayrollAccounts, StoreError> {
+        let [salary, tax, federal, state, ss, medicare, other] = ledger_core::PAYROLL;
         Ok(PayrollAccounts {
-            salary_expense: self.ensure_control_account(
-                "6100",
-                "Salary & Wage Expense",
-                AccountType::Expense,
-            )?,
-            payroll_tax_expense: self.ensure_control_account(
-                "6110",
-                "Payroll Tax Expense",
-                AccountType::Expense,
-            )?,
-            federal_payable: self.ensure_control_account(
-                "2110",
-                "Federal Withholding Payable",
-                AccountType::Liability,
-            )?,
-            state_payable: self.ensure_control_account(
-                "2120",
-                "State Withholding Payable",
-                AccountType::Liability,
-            )?,
-            ss_payable: self.ensure_control_account(
-                "2130",
-                "SS Tax Payable",
-                AccountType::Liability,
-            )?,
-            medicare_payable: self.ensure_control_account(
-                "2140",
-                "Medicare Tax Payable",
-                AccountType::Liability,
-            )?,
-            other_payable: self.ensure_control_account(
-                "2150",
-                "Other Deductions Payable",
-                AccountType::Liability,
-            )?,
+            salary_expense: self.ensure_control_account(&salary)?,
+            payroll_tax_expense: self.ensure_control_account(&tax)?,
+            federal_payable: self.ensure_control_account(&federal)?,
+            state_payable: self.ensure_control_account(&state)?,
+            ss_payable: self.ensure_control_account(&ss)?,
+            medicare_payable: self.ensure_control_account(&medicare)?,
+            other_payable: self.ensure_control_account(&other)?,
         })
     }
 
@@ -1563,8 +1529,8 @@ impl Store {
         cash_account: AccountId,
     ) -> Result<PayrollRunId, StoreError> {
         self.rehearse(|l| {
-            for (code, name, account_type) in PAYROLL_ACCOUNTS {
-                ensure_on(l, code, name, account_type)?;
+            for c in &ledger_core::PAYROLL {
+                ensure_on(l, c)?;
             }
             l.run_payroll(date, lines.clone(), cash_account)
         })?;
@@ -2888,33 +2854,12 @@ fn get_str<'a>(p: &'a Value, key: &str) -> Result<&'a str, StoreError> {
 /// hydration, `verify`, and `rebuild`: the journal is the script, the engine
 /// is the actor.
 /// [`Store::ensure_control_account`] on a bare ledger, for rehearsals.
-fn ensure_on(
-    l: &mut Ledger,
-    code: &str,
-    name: &str,
-    account_type: AccountType,
-) -> Result<AccountId, LedgerError> {
-    match l.chart().find_by_code(code) {
+fn ensure_on(l: &mut Ledger, c: &ledger_core::ControlAccount) -> Result<AccountId, LedgerError> {
+    match l.chart().find_by_code(c.code) {
         Some(a) => Ok(a.id),
-        None => l.add_account(code, name, account_type, None, false),
+        None => l.add_account(c.code, c.name, c.account_type, None, false),
     }
 }
-
-/// The payroll control accounts, in the order [`Store::run_payroll`]
-/// creates them.
-const PAYROLL_ACCOUNTS: [(&str, &str, AccountType); 7] = [
-    ("6100", "Salary & Wage Expense", AccountType::Expense),
-    ("6110", "Payroll Tax Expense", AccountType::Expense),
-    (
-        "2110",
-        "Federal Withholding Payable",
-        AccountType::Liability,
-    ),
-    ("2120", "State Withholding Payable", AccountType::Liability),
-    ("2130", "SS Tax Payable", AccountType::Liability),
-    ("2140", "Medicare Tax Payable", AccountType::Liability),
-    ("2150", "Other Deductions Payable", AccountType::Liability),
-];
 
 pub(crate) fn replay_line_into_ledger(
     ledger: &mut Ledger,

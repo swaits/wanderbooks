@@ -75,6 +75,33 @@ pub enum LedgerError {
     #[error("entry {0} closes a period and cannot be reversed")]
     ClosingEntryIrreversible(u64),
 
+    /// The engine posts invoices, bills, payroll, and closes to accounts it
+    /// finds by code (1200 receivables, 2000 payables, 4000 revenue, ...).
+    /// An account with that code exists but is the wrong type, or a
+    /// placeholder, so the engine refuses rather than post there or force
+    /// the chart into its numbering (Stephen, 2026-10-13). The bookkeeper
+    /// decides with the human how to handle it.
+    #[error(
+        "account {code} \"{name}\" is {}, but {role} needs account {code} to be a postable {expected:?} account; \
+         wanderbooks won't post {role} there. Decide with the books' owner how to handle it \
+         (for instance, renumber that account so {code} is free, if they agree)",
+        if *placeholder { format!("a placeholder {found:?} account") } else { format!("a {found:?} account") }
+    )]
+    ControlAccountMismatch {
+        /// The code the engine looks for.
+        code: String,
+        /// The existing account's name.
+        name: String,
+        /// What the engine wanted it for, e.g. "accounts receivable".
+        role: String,
+        /// The type that role needs.
+        expected: crate::AccountType,
+        /// The existing account's type.
+        found: crate::AccountType,
+        /// Whether the existing account is a placeholder.
+        placeholder: bool,
+    },
+
     /// The referenced journal entry does not exist.
     #[error("entry {0} does not exist")]
     UnknownEntry(u64),

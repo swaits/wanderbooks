@@ -25,6 +25,111 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// An account the engine posts to by code: invoices, bills, payroll, and
+/// closes find (or create) these. See [`Ledger::check_controls`].
+#[derive(Clone, Copy, Debug)]
+pub struct ControlAccount {
+    /// The code the engine looks for.
+    pub code: &'static str,
+    /// The name it gives the account when it creates it.
+    pub name: &'static str,
+    /// What the account is for, in a refusal message.
+    pub role: &'static str,
+    /// The type the role needs.
+    pub account_type: AccountType,
+}
+
+const fn control(
+    code: &'static str,
+    name: &'static str,
+    role: &'static str,
+    account_type: AccountType,
+) -> ControlAccount {
+    ControlAccount {
+        code,
+        name,
+        role,
+        account_type,
+    }
+}
+
+/// A control account; see [`ControlAccount`].
+pub const RECEIVABLES: ControlAccount = control(
+    "1200",
+    "Accounts Receivable",
+    "accounts receivable",
+    AccountType::Asset,
+);
+/// A control account; see [`ControlAccount`].
+pub const REVENUE: ControlAccount =
+    control("4000", "Revenue", "invoice revenue", AccountType::Revenue);
+/// A control account; see [`ControlAccount`].
+pub const PAYABLES: ControlAccount = control(
+    "2000",
+    "Accounts Payable",
+    "accounts payable",
+    AccountType::Liability,
+);
+/// A control account; see [`ControlAccount`].
+pub const GENERAL_EXPENSES: ControlAccount = control(
+    "6999",
+    "General Expenses",
+    "bill expense",
+    AccountType::Expense,
+);
+/// A control account; see [`ControlAccount`].
+pub const RETAINED_EARNINGS: ControlAccount = control(
+    periods::RETAINED_EARNINGS_CODE,
+    "Retained Earnings",
+    "retained earnings",
+    AccountType::Equity,
+);
+/// The payroll accounts, in [`PayrollAccounts`] order.
+pub const PAYROLL: [ControlAccount; 7] = [
+    control(
+        "6100",
+        "Salary & Wage Expense",
+        "salary expense",
+        AccountType::Expense,
+    ),
+    control(
+        "6110",
+        "Payroll Tax Expense",
+        "payroll tax expense",
+        AccountType::Expense,
+    ),
+    control(
+        "2110",
+        "Federal Withholding Payable",
+        "federal withholding payable",
+        AccountType::Liability,
+    ),
+    control(
+        "2120",
+        "State Withholding Payable",
+        "state withholding payable",
+        AccountType::Liability,
+    ),
+    control(
+        "2130",
+        "SS Tax Payable",
+        "social security tax payable",
+        AccountType::Liability,
+    ),
+    control(
+        "2140",
+        "Medicare Tax Payable",
+        "Medicare tax payable",
+        AccountType::Liability,
+    ),
+    control(
+        "2150",
+        "Other Deductions Payable",
+        "other deductions payable",
+        AccountType::Liability,
+    ),
+];
+
 /// A posted line that has not cleared, for the reconciliation report.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UnclearedLine {
@@ -1124,6 +1229,9 @@ impl Ledger {
             return Err(LedgerError::CloseOutOfOrder(id, later.id));
         }
         self.validate_close_to(to)?;
+        if matches!(to, periods::CloseTo::RetainedEarnings { .. }) {
+            self.check_controls(&[RETAINED_EARNINGS])?;
+        }
         // An entry posts exactly when there is income to close or a sweep
         // account with a balance. Account creation (Retained Earnings) does
         // not consume entry ids.
@@ -1257,6 +1365,56 @@ impl Ledger {
             .collect()
     }
 
+    /// Check the control accounts a command will post to by code, before
+    /// anything changes: each is either missing (it will be created) or a
+    /// postable account of the right type.
+    ///
+    /// ```text
+    /// GOAL: never post a control role (receivables, payables, revenue,
+    ///       payroll, retained earnings) to an account of the wrong kind.
+    /// SOURCE: docs/spec/rules.md B-4 (the elements); DECISION (Stephen,
+    ///         2026-10-13): refuse with a reason, never force the chart's
+    ///         numbering.
+    /// INVARIANTS:
+    ///   1. MUST NOT mutate anything.
+    ///   2. NEVER accepts an existing account of another type, or a
+    ///      placeholder, for a control role.
+    /// SCENARIOS:
+    ///   1. IF the code is free: SHOULD accept (the command creates it).
+    ///   2. IF the code holds a postable account of the right type: SHOULD
+    ///      accept.
+    ///   3. IF it holds another type or a placeholder:
+    ///      - SHOULD refuse with ControlAccountMismatch, naming the code,
+    ///        the account, its type, the role, and the type needed
+    ///      - NEVER post to it, and NEVER rename or renumber it
+    ///      BECAUSE imported charts use their own numbering; the human
+    ///      decides.
+    /// ```
+    fn check_controls(&self, controls: &[ControlAccount]) -> Result<(), LedgerError> {
+        for c in controls {
+            if let Some(a) = self.chart.find_by_code(c.code)
+                && (a.account_type != c.account_type || a.placeholder)
+            {
+                return Err(LedgerError::ControlAccountMismatch {
+                    code: c.code.to_string(),
+                    name: a.name.clone(),
+                    role: c.role.to_string(),
+                    expected: c.account_type,
+                    found: a.account_type,
+                    placeholder: a.placeholder,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Ensure a control account exists, creating it if missing. Callers
+    /// run [`Self::check_controls`] first, so an existing account here is
+    /// the right type.
+    fn ensure_control(&mut self, c: &ControlAccount) -> AccountId {
+        self.ensure_account(c.code, c.name, c.account_type)
+    }
+
     /// Ensure an account exists by code, creating it with the given type
     /// and name if missing. Returns the account id.
     fn ensure_account(&mut self, code: &str, name: &str, account_type: AccountType) -> AccountId {
@@ -1285,8 +1443,9 @@ impl Ledger {
             return Err(LedgerError::ClosedPeriod(pid, date.to_string()));
         }
         let total: Decimal = lines.iter().map(|l| l.amount).sum();
-        let ar = self.ensure_account("1200", "Accounts Receivable", AccountType::Asset);
-        let revenue = self.ensure_account("4000", "Revenue", AccountType::Revenue);
+        self.check_controls(&[RECEIVABLES, REVENUE])?;
+        let ar = self.ensure_control(&RECEIVABLES);
+        let revenue = self.ensure_control(&REVENUE);
         let entry = self.create_entry(date, &format!("Invoice {}", self.next_invoice_id));
         let money = Money::new(total, self.base_currency);
         self.add_line(entry, ar, Side::Debit, money)?;
@@ -1329,8 +1488,9 @@ impl Ledger {
             return Err(LedgerError::ClosedPeriod(pid, date.to_string()));
         }
         let total: Decimal = lines.iter().map(|l| l.amount).sum();
-        let expense = self.ensure_account("6999", "General Expenses", AccountType::Expense);
-        let ap = self.ensure_account("2000", "Accounts Payable", AccountType::Liability);
+        self.check_controls(&[GENERAL_EXPENSES, PAYABLES])?;
+        let expense = self.ensure_control(&GENERAL_EXPENSES);
+        let ap = self.ensure_control(&PAYABLES);
         let entry = self.create_entry(date, &format!("Bill {}", self.next_bill_id));
         let money = Money::new(total, self.base_currency);
         self.add_line(entry, expense, Side::Debit, money)?;
@@ -1389,7 +1549,8 @@ impl Ledger {
         if let Some(pid) = self.closed_period_containing(date) {
             return Err(LedgerError::ClosedPeriod(pid, date.to_string()));
         }
-        let ar = self.ensure_account("1200", "Accounts Receivable", AccountType::Asset);
+        self.check_controls(&[RECEIVABLES])?;
+        let ar = self.ensure_control(&RECEIVABLES);
         let entry = self.create_entry(date, &format!("Payment on invoice {}", invoice_id));
         let money = Money::new(amount, self.base_currency);
         self.add_line(entry, cash_account, Side::Debit, money)?;
@@ -1425,7 +1586,8 @@ impl Ledger {
         if let Some(pid) = self.closed_period_containing(date) {
             return Err(LedgerError::ClosedPeriod(pid, date.to_string()));
         }
-        let ap = self.ensure_account("2000", "Accounts Payable", AccountType::Liability);
+        self.check_controls(&[PAYABLES])?;
+        let ap = self.ensure_control(&PAYABLES);
         let entry = self.create_entry(date, &format!("Payment on bill {}", bill_id));
         let money = Money::new(amount, self.base_currency);
         self.add_line(entry, ap, Side::Debit, money)?;
@@ -1788,6 +1950,7 @@ impl Ledger {
         cash_account: AccountId,
     ) -> Result<(), LedgerError> {
         validate_payroll_lines(lines)?;
+        self.check_controls(&PAYROLL)?;
         self.chart
             .get(cash_account)
             .ok_or(LedgerError::UnknownAccount(cash_account))?;
@@ -1801,38 +1964,15 @@ impl Ledger {
     /// missing. Journaling stores ensure these through their own journaled
     /// path first; this then no-ops and replay stays deterministic.
     fn payroll_accounts(&mut self) -> PayrollAccounts {
+        let [salary, tax, federal, state, ss, medicare, other] = PAYROLL;
         PayrollAccounts {
-            salary_expense: self.ensure_account(
-                "6100",
-                "Salary & Wage Expense",
-                AccountType::Expense,
-            ),
-            payroll_tax_expense: self.ensure_account(
-                "6110",
-                "Payroll Tax Expense",
-                AccountType::Expense,
-            ),
-            federal_payable: self.ensure_account(
-                "2110",
-                "Federal Withholding Payable",
-                AccountType::Liability,
-            ),
-            state_payable: self.ensure_account(
-                "2120",
-                "State Withholding Payable",
-                AccountType::Liability,
-            ),
-            ss_payable: self.ensure_account("2130", "SS Tax Payable", AccountType::Liability),
-            medicare_payable: self.ensure_account(
-                "2140",
-                "Medicare Tax Payable",
-                AccountType::Liability,
-            ),
-            other_payable: self.ensure_account(
-                "2150",
-                "Other Deductions Payable",
-                AccountType::Liability,
-            ),
+            salary_expense: self.ensure_control(&salary),
+            payroll_tax_expense: self.ensure_control(&tax),
+            federal_payable: self.ensure_control(&federal),
+            state_payable: self.ensure_control(&state),
+            ss_payable: self.ensure_control(&ss),
+            medicare_payable: self.ensure_control(&medicare),
+            other_payable: self.ensure_control(&other),
         }
     }
 
@@ -1904,6 +2044,7 @@ impl Ledger {
         self.chart
             .get(cash_account)
             .ok_or(LedgerError::UnknownAccount(cash_account))?;
+        self.check_controls(&PAYROLL)?;
         let payables = self.payroll_tax_payables();
         let total: Decimal = payables.iter().map(|(_, b)| *b).sum();
         if total.is_zero() {

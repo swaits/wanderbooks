@@ -1000,3 +1000,55 @@ mod refusals {
         }
     }
 }
+
+/// Contract (2026-10-13): rules added to the engine never lock anyone out
+/// of books written before them. A journal holding what the new rules
+/// refuse (a child account of another type, partially overlapping periods,
+/// a draft line on a missing account) must still open and verify; replay
+/// goes through Ledger::replay_*.
+#[test]
+fn books_written_under_older_rules_still_open() {
+    use serde_json::json;
+    let dir = test_dir("older-rules");
+    let mut store = Store::create(&dir, Currency::USD).unwrap();
+    let cash = store
+        .add_account("1000", "Cash", AccountType::Asset, None, true)
+        .unwrap();
+    drop(store);
+    // What an older wanderbooks could have written.
+    let mut w = JournalWriter::open(&dir.join(ledger_store::JOURNAL_FILE)).unwrap();
+    w.append(
+        "account.added",
+        json!({"id": 2, "code": "1010", "name": "Rent", "account_type": "Expense",
+               "parent": cash, "placeholder": false, "currency": "USD"}),
+    )
+    .unwrap();
+    w.append(
+        "period.created",
+        json!({"id": 1, "name": "2026-01", "start": "2026-01-01", "end": "2026-01-31"}),
+    )
+    .unwrap();
+    w.append(
+        "period.created",
+        json!({"id": 2, "name": "straddle", "start": "2026-01-15", "end": "2026-02-15"}),
+    )
+    .unwrap();
+    w.append(
+        "entry.created",
+        json!({"id": 1, "date": "2026-03-01", "description": "draft"}),
+    )
+    .unwrap();
+    w.append(
+        "entry.line_added",
+        json!({"id": 1, "account": 999, "side": "debit", "amount": "10.00", "currency": "USD"}),
+    )
+    .unwrap();
+    drop(w);
+    // Opening rebuilds from the journal; it must accept all of it.
+    let _ = std::fs::remove_file(dir.join(ledger_store::DB_FILE));
+    let store = Store::open(&dir).expect("older books still open");
+    store.verify().unwrap();
+    assert_eq!(store.ledger().chart().len(), 2);
+    assert_eq!(store.ledger().list_periods().len(), 2);
+    assert_eq!(store.ledger().get_entry(1).unwrap().lines().len(), 1);
+}

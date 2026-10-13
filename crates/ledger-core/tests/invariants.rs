@@ -242,12 +242,18 @@ fn fx_overflow_is_an_error() {
 
 #[test]
 fn unknown_account_is_rejected() {
+    // Refused when the line is added (since 2026-10-13); a line that got
+    // in anyway (replayed from an older journal) is still refused at post.
     let c = fixture_company();
     let mut ledger = c.ledger;
     let id = ledger.create_entry(date(21), "Ghost account");
     ledger.add_line(id, c.cash, Side::Debit, usd(100)).unwrap();
+    assert_eq!(
+        ledger.add_line(id, 999_999, Side::Credit, usd(100)),
+        Err(LedgerError::UnknownAccount(999_999))
+    );
     ledger
-        .add_line(id, 999_999, Side::Credit, usd(100))
+        .replay_add_line(id, 999_999, Side::Credit, usd(100))
         .unwrap();
     assert_eq!(
         ledger.post_entry(id).unwrap_err(),
@@ -263,7 +269,14 @@ fn placeholder_account_is_rejected() {
         .add_account("100", "Assets header", AccountType::Asset, None, true)
         .unwrap();
     let id = ledger.create_entry(date(21), "Post to header");
-    ledger.add_line(id, header, Side::Debit, usd(100)).unwrap();
+    assert_eq!(
+        ledger.add_line(id, header, Side::Debit, usd(100)),
+        Err(LedgerError::PlaceholderAccount("100".to_string()))
+    );
+    // Got in anyway (an older journal): still refused at post.
+    ledger
+        .replay_add_line(id, header, Side::Debit, usd(100))
+        .unwrap();
     ledger
         .add_line(id, c.equity, Side::Credit, usd(100))
         .unwrap();
@@ -905,4 +918,101 @@ fn a_close_refuses_a_3999_that_is_not_equity() {
     ));
     assert_untouched(&before, &l);
     assert!(l.closed_period_containing(date(5)).is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Chart, periods, and lines: rules confirmed by owner, 2026-10-13.
+// ---------------------------------------------------------------------------
+
+/// A child account subdivides its parent, so it is the same kind of
+/// account. SOURCE: rules.md B-4; DECISION (owner, 2026-10-13).
+#[test]
+fn a_child_account_has_its_parents_type() {
+    let mut l = Ledger::new(Currency::USD);
+    let cash = l
+        .add_account("1000", "Cash", AccountType::Asset, None, true)
+        .unwrap();
+    l.add_account("1010", "Checking", AccountType::Asset, Some(cash), false)
+        .unwrap();
+    let before = l.chart().len();
+    assert_eq!(
+        l.add_account("1020", "Rent", AccountType::Expense, Some(cash), false),
+        Err(LedgerError::ParentTypeMismatch {
+            code: "1020".into(),
+            parent_code: "1000".into(),
+            expected: AccountType::Asset,
+            found: AccountType::Expense,
+        })
+    );
+    assert_eq!(l.chart().len(), before);
+    assert!(l.chart().find_by_code("1020").is_none());
+}
+
+/// Periods nest (a month in a quarter in a year) but never partially
+/// overlap. DECISION (owner, 2026-10-13).
+#[test]
+fn periods_nest_but_never_partially_overlap() {
+    let d = |m: u32, day: u32| NaiveDate::from_ymd_opt(2026, m, day).unwrap();
+    let mut l = Ledger::new(Currency::USD);
+    l.create_period("2026-01", d(1, 1), d(1, 31)).unwrap();
+    l.create_period("2026-02", d(2, 1), d(2, 28)).unwrap();
+    // A quarter around both months, and a year around everything.
+    l.create_period("Q1 2026", d(1, 1), d(3, 31)).unwrap();
+    l.create_period("2026", d(1, 1), d(12, 31)).unwrap();
+    // A week inside January nests too.
+    l.create_period("week", d(1, 5), d(1, 11)).unwrap();
+    let next = l.next_period_id();
+    // Mid-January to mid-February straddles two months: refused.
+    assert!(matches!(
+        l.create_period("straddle", d(1, 15), d(2, 15)),
+        Err(LedgerError::PeriodsOverlap { .. })
+    ));
+    // So is a quarter that starts inside Q1.
+    assert!(matches!(
+        l.create_period("odd quarter", d(2, 1), d(4, 30)),
+        Err(LedgerError::PeriodsOverlap { .. })
+    ));
+    assert_eq!(l.next_period_id(), next, "refused means no id burned");
+    // Disjoint is fine.
+    l.create_period(
+        "2027-01",
+        NaiveDate::from_ymd_opt(2027, 1, 1).unwrap(),
+        NaiveDate::from_ymd_opt(2027, 1, 31).unwrap(),
+    )
+    .unwrap();
+}
+
+/// A line names a real, postable account when it is added, not only when
+/// the entry posts. DECISION (owner, 2026-10-13); rules.md B-1.
+#[test]
+fn a_line_on_an_unknown_or_placeholder_account_is_refused_when_added() {
+    let c = fixture_company();
+    let mut l = c.ledger.clone();
+    let header = l
+        .add_account("1900", "Other assets", AccountType::Asset, None, true)
+        .unwrap();
+    let e = l.create_entry(date(21), "Lines");
+    assert_eq!(
+        l.add_line(e, 999_999, Side::Debit, usd(10)),
+        Err(LedgerError::UnknownAccount(999_999))
+    );
+    assert_eq!(
+        l.add_line(e, header, Side::Debit, usd(10)),
+        Err(LedgerError::PlaceholderAccount("1900".into()))
+    );
+    assert!(matches!(
+        l.add_line_fx(
+            e,
+            header,
+            Side::Debit,
+            Currency::EUR,
+            Decimal::from(10),
+            Decimal::from(2)
+        ),
+        Err(LedgerError::PlaceholderAccount(_))
+    ));
+    assert!(
+        l.get_entry(e).unwrap().lines().is_empty(),
+        "refused lines aren't added"
+    );
 }

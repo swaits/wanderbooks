@@ -123,6 +123,42 @@ pub enum LedgerError {
         spec: String,
     },
 
+    /// A child account subdivides its parent, so it must be the same type
+    /// (owner, 2026-10-13).
+    #[error(
+        "account {code} is {found:?}, but its parent {parent_code} is {expected:?}; a child account must be the same type as its parent"
+    )]
+    ParentTypeMismatch {
+        /// The new account's code.
+        code: String,
+        /// The parent's code.
+        parent_code: String,
+        /// The parent's type, which the child must share.
+        expected: crate::AccountType,
+        /// The type the child was given.
+        found: crate::AccountType,
+    },
+
+    /// Periods nest (a month in a quarter in a year) but never partially
+    /// overlap (owner, 2026-10-13).
+    #[error(
+        "period {name} ({start} to {end}) partially overlaps period {other} ({other_start} to {other_end}); periods may nest, but not overlap"
+    )]
+    PeriodsOverlap {
+        /// The new period's name.
+        name: String,
+        /// Its first day.
+        start: chrono::NaiveDate,
+        /// Its last day.
+        end: chrono::NaiveDate,
+        /// The existing period's name.
+        other: String,
+        /// The existing period's first day.
+        other_start: chrono::NaiveDate,
+        /// The existing period's last day.
+        other_end: chrono::NaiveDate,
+    },
+
     /// The referenced journal entry does not exist.
     #[error("entry {0} does not exist")]
     UnknownEntry(u64),

@@ -27,7 +27,10 @@ Spec blocks in the code cite these as `SOURCE: rules.md B-n`.
   total credits after you post the journal entries to the ledger accounts."
 
 **Enforced:** `kernel::check_lines` via `JournalEntry::validate` (two or
-more lines, debits = credits exactly). **Checked:** Kani
+more lines, debits = credits exactly). A line's account must exist and
+take postings when the line is added, not only at post: DECISION
+(the owner, 2026-10-13), `Ledger::add_line`
+(`a_line_on_an_unknown_or_placeholder_account_is_refused_when_added`). **Checked:** Kani
 `check_lines_is_exact`, `accepted_entry_nets_to_zero`; Lean
 `Accepted.net_zero`; property `prop_posted_entries_balance`.
 
@@ -74,7 +77,9 @@ its liabilities … from delivering or producing goods, rendering services,
 or carrying out other activities." E81 expenses "are outflows or other
 using up of assets … or incurrences of its liabilities …".
 
-**Enforced:** `AccountType` (five variants). **Checked:** by type.
+**Enforced:** `AccountType` (five variants). A child account has its
+parent's type: DECISION (the owner, 2026-10-13), `Ledger::add_account`
+(`ParentTypeMismatch`). **Checked:** `a_child_account_has_its_parents_type`.
 
 ## B-5 Normal balances
 
@@ -178,7 +183,10 @@ the entity
 Periods themselves: IRS Pub. 538 (`sources/irs-periods-and-methods.md`)
 defines the tax year, calendar and fiscal. Locking a closed period and
 closing in order are practice (and follow from B-8: a closed period's
-book is not rewritten). **Enforced:** `closed_period_containing`,
+book is not rewritten). Periods nest (a month in a quarter in a year)
+and never partially overlap: DECISION (the owner, 2026-10-13),
+`Ledger::create_period` (`PeriodsOverlap`;
+`periods_nest_but_never_partially_overlap`). **Enforced:** `closed_period_containing`,
 `CloseOutOfOrder`, `Store::rehearse`. **Checked:** Lean `Steps.frozen`;
 store property `refused_commands_never_reach_the_journal` (no draft in a
 closed period).

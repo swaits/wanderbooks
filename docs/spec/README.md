@@ -31,6 +31,14 @@ SOURCE: CONVENTION (QuickBooks aging); nearest authority ASC 326-20-55-38 (illus
 A rule whose only source is CONVENTION or DECISION is a candidate for a
 human to confirm or overturn; nothing else is.
 
+## Rules added later never lock out older books
+
+When a rule is tightened (a check added to a command), books written
+before it must still open. Journal replay and the SQLite cross-check read
+history through the engine's `replay_*` commands, which skip checks added
+later; new commands go through the checked ones. Pinned by
+`books_written_under_older_rules_still_open` (ledger-store).
+
 ## Vendoring rules
 
 - Public-domain texts are copied **verbatim** (whitespace normalized), each

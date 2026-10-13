@@ -33,18 +33,32 @@ impl BlobStore {
         }
     }
 
-    fn path_for(&self, sha_hex: &str) -> PathBuf {
-        self.root
-            .join(&sha_hex[0..2])
-            .join(&sha_hex[2..4])
-            .join(sha_hex)
+    /// Where a blob lives, or `None` for anything that isn't a blob id.
+    ///
+    /// ```text
+    /// GOAL: map a blob id to its file, and nothing else to anything.
+    /// SOURCE: docs/receipt-store.md (content-addressed by SHA-256); the
+    ///         max-testing pass (2026-10-13): ids come from the journal,
+    ///         untrusted on disk, and a short one panicked.
+    /// INVARIANTS:
+    ///   1. NEVER a path outside the blob directory, whatever the input.
+    ///   2. ONLY a 64-hex-digit id (a SHA-256) names a blob.
+    /// ```
+    fn path_for(&self, sha_hex: &str) -> Option<PathBuf> {
+        let valid = sha_hex.len() == 64 && sha_hex.bytes().all(|b| b.is_ascii_hexdigit());
+        valid.then(|| {
+            self.root
+                .join(&sha_hex[0..2])
+                .join(&sha_hex[2..4])
+                .join(sha_hex)
+        })
     }
 
     /// Store bytes. Returns `(sha256_hex, deduplicated)`. Identical bytes
     /// store once: the second put is a no-op that reports `deduplicated`.
     pub fn put(&self, bytes: &[u8]) -> Result<(String, bool), StoreError> {
         let sha = sha256_hex(bytes);
-        let path = self.path_for(&sha);
+        let path = self.path_for(&sha).expect("a SHA-256 is a blob id");
         if path.exists() {
             return Ok((sha, true));
         }
@@ -75,7 +89,10 @@ impl BlobStore {
     /// is reported — never served.
     pub fn get(&self, sha_hex: &str) -> Result<Vec<u8>, StoreError> {
         let sha_hex = sha_hex.to_lowercase();
-        let bytes = fs::read(self.path_for(&sha_hex))?;
+        let path = self
+            .path_for(&sha_hex)
+            .ok_or_else(|| StoreError::CorruptBlob(sha_hex.clone()))?;
+        let bytes = fs::read(path)?;
         let actual = sha256_hex(&bytes);
         if actual != sha_hex {
             return Err(StoreError::CorruptBlob(sha_hex));
@@ -86,6 +103,7 @@ impl BlobStore {
     /// True when the blob exists (content not verified; use [`Self::get`]
     /// for a verifying read).
     pub fn exists(&self, sha_hex: &str) -> bool {
-        self.path_for(&sha_hex.to_lowercase()).exists()
+        self.path_for(&sha_hex.to_lowercase())
+            .is_some_and(|p| p.exists())
     }
 }

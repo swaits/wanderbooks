@@ -1114,3 +1114,37 @@ fn a_second_writer_is_refused_while_the_first_has_the_books() {
     reopened.verify().unwrap();
     assert_eq!(reopened.ledger().chart().len(), 1);
 }
+
+/// Security (rank 2; max-testing pass on the store, 2026-10-13): a blob id
+/// comes from the journal, which is untrusted input on disk. Whatever the
+/// id, the blob store never panics and never touches a path outside its
+/// own directory: only a 64-hex-digit id names a blob.
+#[test]
+fn a_blob_id_never_reaches_outside_the_blob_store() {
+    let dir = test_dir("blob-ids");
+    let blobs = ledger_store::BlobStore::open(&dir.join("blobs")).unwrap();
+    let outside = dir.join("secret.txt");
+    std::fs::write(&outside, b"not a blob").unwrap();
+    for id in [
+        "",
+        "a",
+        "ab",
+        "abc",
+        "é",
+        "日本語",
+        "../secret.txt",
+        "../../secret.txt",
+        "ab/../../secret.txt",
+        "/etc/passwd",
+        "zz",
+        &"g".repeat(64),
+        &"a".repeat(63),
+        &"a".repeat(65),
+    ] {
+        assert!(blobs.get(id).is_err(), "{id:?} was served");
+        assert!(!blobs.exists(id), "{id:?} probed a path");
+    }
+    let (sha, _) = blobs.put(b"receipt").unwrap();
+    assert_eq!(blobs.get(&sha).unwrap(), b"receipt");
+    assert_eq!(blobs.get(&sha.to_uppercase()).unwrap(), b"receipt");
+}

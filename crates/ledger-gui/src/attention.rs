@@ -51,9 +51,9 @@ pub fn find(b: &Books) -> Vec<Attention> {
             severity: Severity::Problem,
             title: format!("{} without receipts", fmt::count(missing.len(), "expense", "expenses")),
             detail: format!(
-                "{} of spending over the {} threshold has no receipt attached.",
+                "{} of spending has no receipt attached ({}).",
                 fmt::dollars(total),
-                fmt::dollars(b.receipt_threshold)
+                b.receipt_rule()
             ),
             target: Some(Route::Transactions),
             prompt: format!(
@@ -67,11 +67,11 @@ pub fn find(b: &Books) -> Vec<Attention> {
             severity: Severity::Problem,
             title: format!("No receipt: {}", e.description),
             detail: format!(
-                "#{} · {} · {} is over the {} receipt threshold.",
+                "#{} · {} · {}: {}.",
                 e.id,
                 fmt::date(e.date),
                 fmt::dollars(e.amount),
-                fmt::dollars(b.receipt_threshold)
+                b.receipt_rule()
             ),
             target: Some(Route::Entry(e.id)),
             prompt: format!(

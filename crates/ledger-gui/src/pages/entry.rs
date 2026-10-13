@@ -243,10 +243,7 @@ pub fn detail(ui: &mut Ui, b: &Books, e: &EntryInfo, shell: &mut Shell<'_>) {
             );
             if all_for_entry.is_empty() {
                 let msg = if e.missing_receipt {
-                    format!(
-                        "None attached, and this entry is over the {} receipt threshold.",
-                        fmt::dollars(b.receipt_threshold)
-                    )
+                    format!("None attached, and {}.", b.receipt_rule())
                 } else {
                     "None attached.".to_string()
                 };

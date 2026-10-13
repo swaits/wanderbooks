@@ -77,7 +77,10 @@ fn screenshots() {
         let books = data::load_once(&source).unwrap();
         let mut harness = Harness::builder()
             .with_size(egui::vec2(
-                1440.0,
+                std::env::var("SHOT_WIDTH")
+                    .ok()
+                    .and_then(|w| w.parse().ok())
+                    .unwrap_or(1440.0),
                 std::env::var("SHOT_HEIGHT")
                     .ok()
                     .and_then(|h| h.parse().ok())

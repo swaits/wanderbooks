@@ -67,8 +67,39 @@ fn set_read_only(root: &Path, read_only: bool) {
     walk(root, read_only);
 }
 
+/// Makes the books writable again when dropped, so a failing or
+/// interrupted run never leaves a folder no one can delete.
+struct Writable(PathBuf);
+impl Drop for Writable {
+    fn drop(&mut self) {
+        if self.0.exists() {
+            set_read_only(&self.0, false);
+        }
+    }
+}
+
+/// Folders left read-only by a killed run (no destructor ran): made
+/// writable and removed once their process is gone.
+fn sweep_leftovers() {
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        let Some(pid) = name.strip_prefix("ledger-gui-ro-") else {
+            continue;
+        };
+        if Path::new("/proc").join(pid).exists() {
+            continue; // still running (or the pid was reused): leave it
+        }
+        set_read_only(&e.path(), false);
+        let _ = std::fs::remove_dir_all(e.path());
+    }
+}
+
 #[test]
 fn the_viewer_never_writes_into_the_books() {
+    sweep_leftovers();
     let dir = std::env::temp_dir().join(format!("ledger-gui-ro-{}", std::process::id()));
     if dir.exists() {
         set_read_only(&dir, false);
@@ -81,6 +112,7 @@ fn the_viewer_never_writes_into_the_books() {
         books_toml: Some(dir.join("wanderbooks.toml")),
         today: Some(today),
     };
+    let _restore = Writable(dir.clone());
     set_read_only(&dir, true);
     let before = tree(&dir);
 

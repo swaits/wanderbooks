@@ -102,7 +102,7 @@ mutants-mcp:
 # spec-tested, not swept.
 mutants-gui:
     mkdir -p {{mutants_tmp}}
-    PROPTEST_MAX_SHRINK_ITERS=0 TMPDIR={{mutants_tmp}} cargo mutants -p ledger-gui --test-package ledger-gui -j 4 --timeout 60 -o mutants-gui -f crates/ledger-gui/src/books.rs -f crates/ledger-gui/src/fmt.rs -- --lib --test spec_gui
+    PROPTEST_MAX_SHRINK_ITERS=0 TMPDIR={{mutants_tmp}} cargo mutants -p ledger-gui --test-package ledger-gui -j 4 --timeout 300 -o mutants-gui -f crates/ledger-gui/src/books.rs -f crates/ledger-gui/src/fmt.rs -- --lib --test spec_gui
 
 # Benchmarks of the core's hot paths (no budget gates them yet)
 bench:

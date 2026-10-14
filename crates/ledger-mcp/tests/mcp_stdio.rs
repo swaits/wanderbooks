@@ -147,7 +147,7 @@ fn mcp_end_to_end_over_stdio() {
     // Tool listing: 23 narrow tools, chart is read-only.
     let list = mcp.request("tools/list", json!({}));
     let tools = list["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 66, "expected 66 tools, got {}", tools.len());
+    assert_eq!(tools.len(), 67, "expected 67 tools, got {}", tools.len());
     let chart = tools.iter().find(|t| t["name"] == "books.chart").unwrap();
     assert_eq!(chart["annotations"]["readOnlyHint"], true);
     assert!(
@@ -1898,5 +1898,128 @@ fn bank_import_reads_dates_rules_and_files_whole() {
     assert!(
         !journal.contains("2026-06-01"),
         "the first row was journaled"
+    );
+}
+
+/// books.renumber_account moves an account off a control code: payroll then
+/// gets its own wages account, the renumbered account keeps its entries,
+/// and settings naming the old code are listed.
+#[test]
+fn renumbering_an_account_keeps_its_history() {
+    let dir = test_dir("renumber");
+    let toml = dir.join("wanderbooks.toml");
+    std::fs::write(
+        &toml,
+        "[books]\nreceipt_threshold = \"1000000.00\"\ncash_accounts = [\"1000\"]\n",
+    )
+    .unwrap();
+    let mut mcp = Mcp::spawn_with(
+        &dir.join("books-data"),
+        &[std::ffi::OsStr::new("--books-toml"), toml.as_os_str()],
+    );
+    mcp.request(
+        "initialize",
+        json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+        }),
+    );
+    mcp.notify("notifications/initialized");
+    for (code, name, typ) in [
+        ("1000", "Bank", "asset"),
+        ("2100", "Due to owners", "liability"),
+        ("6100", "Domain & Hosting", "expense"),
+    ] {
+        mcp.call(
+            "books.add_account",
+            json!({"code": code, "name": name, "account_type": typ}),
+        );
+    }
+    let e = mcp.call(
+        "books.draft_entry",
+        json!({"date": "2026-03-05", "description": "domain"}),
+    );
+    let id = e["entry_id"].as_u64().unwrap();
+    for (account, side) in [("6100", "debit"), ("2100", "credit")] {
+        mcp.call(
+            "books.add_line",
+            json!({"entry_id": id, "account": account, "side": side, "amount": "12.34"}),
+        );
+    }
+    mcp.call(
+        "books.post_entry",
+        json!({"entry_id": id, "confirmed": true}),
+    );
+
+    // Refusals: a code in use; a control code of another type (2110 is
+    // payroll's federal withholding, a liability).
+    let err = mcp.call_err(
+        "books.renumber_account",
+        json!({"account": "6100", "code": "1000"}),
+    );
+    assert!(err.contains("already in use"), "{err}");
+    let err = mcp.call_err(
+        "books.renumber_account",
+        json!({"account": "6100", "code": "2110"}),
+    );
+    assert!(err.contains("2110"), "{err}");
+
+    let out = mcp.call(
+        "books.renumber_account",
+        json!({"account": "6100", "code": "6050"}),
+    );
+    assert_eq!(out["previous_code"], "6100");
+    assert_eq!(out["code"], "6050");
+    assert_eq!(out["config_mentions"], json!([]));
+    let chart = mcp.call("books.chart", json!({}));
+    let acct = chart["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["code"] == "6050")
+        .expect("renumbered");
+    assert_eq!(acct["name"], "Domain & Hosting");
+    assert_eq!(acct["balance"], "12.34");
+    assert!(
+        !chart["accounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["code"] == "6100")
+    );
+    // The cash account is named in wanderbooks.toml: listed.
+    let out = mcp.call(
+        "books.renumber_account",
+        json!({"account": "1000", "code": "1010"}),
+    );
+    assert_eq!(out["config_mentions"], json!(["[books] cash_accounts"]));
+    drop(mcp);
+
+    // A restart replays the journal to the same chart.
+    let mut mcp = Mcp::spawn(&dir.join("books-data"));
+    mcp.request(
+        "initialize",
+        json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+        }),
+    );
+    mcp.notify("notifications/initialized");
+    let chart = mcp.call("books.chart", json!({}));
+    let codes: Vec<&str> = chart["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["code"].as_str().unwrap())
+        .collect();
+    assert!(
+        codes.contains(&"6050") && codes.contains(&"1010"),
+        "{codes:?}"
+    );
+    assert!(
+        !codes.contains(&"6100") && !codes.contains(&"1000"),
+        "{codes:?}"
     );
 }

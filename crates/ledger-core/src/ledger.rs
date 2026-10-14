@@ -85,6 +85,19 @@ pub const RETAINED_EARNINGS: ControlAccount = control(
     "retained earnings",
     AccountType::Equity,
 );
+/// Every control account the engine posts to by code.
+pub fn control_accounts() -> impl Iterator<Item = &'static ControlAccount> {
+    [
+        &RECEIVABLES,
+        &REVENUE,
+        &PAYABLES,
+        &GENERAL_EXPENSES,
+        &RETAINED_EARNINGS,
+    ]
+    .into_iter()
+    .chain(PAYROLL.iter())
+}
+
 /// The payroll accounts, in [`PayrollAccounts`] order.
 pub const PAYROLL: [ControlAccount; 7] = [
     control(
@@ -718,6 +731,63 @@ impl Ledger {
         })?;
         self.next_account_id += 1;
         Ok(id)
+    }
+
+    /// Give an account a new number (code).
+    ///
+    /// ```text
+    /// GOAL: let the human renumber an account (say, off a code the engine
+    ///       uses for a control role) without touching its history.
+    /// SOURCE: DECISION (owner, 2026-10-14: "fix the account number");
+    ///         control accounts: Ledger::check_controls.
+    /// INVARIANTS:
+    ///   1. Only the code changes: the account's id, name, type, parent,
+    ///      tax category, and every entry posted to it stay as they were
+    ///      (entries name accounts by id), so every balance and report
+    ///      total is unchanged.
+    ///   2. A refusal MUST leave the books unchanged.
+    /// SCENARIOS:
+    ///   1. IF the account is unknown, or the code is blank or already in
+    ///      use (its own included): SHOULD refuse.
+    ///   2. IF the code is a control account's and the account is of
+    ///      another type, or a placeholder: SHOULD refuse with
+    ///      ControlAccountMismatch, as a control command would.
+    /// ```
+    pub fn renumber_account(&mut self, account: AccountId, code: &str) -> Result<(), LedgerError> {
+        self.check_renumber_account(account, code)?;
+        self.chart.set_code(account, code)
+    }
+
+    /// The validation behind [`Self::renumber_account`], for stores that
+    /// journal before mutating.
+    pub fn check_renumber_account(
+        &self,
+        account: AccountId,
+        code: &str,
+    ) -> Result<(), LedgerError> {
+        let a = self
+            .chart
+            .get(account)
+            .ok_or(LedgerError::UnknownAccount(account))?;
+        if code.trim().is_empty() {
+            return Err(LedgerError::EmptyAccountCode);
+        }
+        if self.chart.find_by_code(code).is_some() {
+            return Err(LedgerError::DuplicateAccountCode(code.to_string()));
+        }
+        if let Some(c) = control_accounts().find(|c| c.code == code)
+            && (a.account_type != c.account_type || a.placeholder)
+        {
+            return Err(LedgerError::ControlAccountMismatch {
+                code: code.to_string(),
+                name: a.name.clone(),
+                role: c.role.to_string(),
+                expected: c.account_type,
+                found: a.account_type,
+                placeholder: a.placeholder,
+            });
+        }
+        Ok(())
     }
 
     /// Set (or clear, with `None`) an account's tax category, and optionally

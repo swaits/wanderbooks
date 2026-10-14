@@ -2443,3 +2443,99 @@ proptest! {
         prop_assert_eq!(b.l.post_entry(e), v);
     }
 }
+
+// ---------------------------------------------------------------------
+// Ledger::renumber_account (2026-10-14).
+// ---------------------------------------------------------------------
+
+proptest! {
+    /// renumber_account INVARIANT 1: only the code changes. Every other
+    /// part of the ledger is equal, every account keeps its other fields,
+    /// and the trial balance is the same line for line apart from that one
+    /// code.
+    #[test]
+    fn renumber_changes_only_the_code(
+        postings in proptest::collection::vec((0usize..4, 0usize..4, 1i64..1_000_000), 0..12),
+        which in 0usize..4,
+    ) {
+        let mut l = Ledger::new(Currency::USD);
+        let ids: Vec<_> = [
+            ("1000", AccountType::Asset),
+            ("2000", AccountType::Liability),
+            ("4000", AccountType::Revenue),
+            ("6100", AccountType::Expense),
+        ]
+        .iter()
+        .map(|(c, t)| l.add_account(c, c, *t, None, false).unwrap())
+        .collect();
+        for (dr, cr, c) in postings {
+            if dr == cr {
+                continue;
+            }
+            let e = l.create_entry(d(2026, 1, 5), "x");
+            let m = Money::new(Decimal::new(c, 2), Currency::USD);
+            l.add_line(e, ids[dr], Side::Debit, m).unwrap();
+            l.add_line(e, ids[cr], Side::Credit, m).unwrap();
+            l.post_entry(e).unwrap();
+        }
+        let before = l.clone();
+        let old = l.chart().get(ids[which]).unwrap().code.clone();
+        l.renumber_account(ids[which], "7777").unwrap();
+        prop_assert_eq!(l.differs_from(&before), vec!["chart"]);
+        for id in &ids {
+            let (a, b) = (l.chart().get(*id).unwrap(), before.chart().get(*id).unwrap());
+            let mut b = b.clone();
+            if *id == ids[which] {
+                b.code = "7777".to_string();
+            }
+            prop_assert_eq!(a, &b);
+        }
+        prop_assert_eq!(l.chart().find_by_code("7777").map(|a| a.id), Some(ids[which]));
+        prop_assert!(l.chart().find_by_code(&old).is_none());
+        let (t1, t0) = (trial_balance(&l), trial_balance(&before));
+        prop_assert_eq!(t1.total_debits, t0.total_debits);
+        let mut a: Vec<_> = t1.lines.iter().map(|x| (x.name.clone(), x.debit, x.credit)).collect();
+        let mut b: Vec<_> = t0.lines.iter().map(|x| (x.name.clone(), x.debit, x.credit)).collect();
+        a.sort();
+        b.sort();
+        prop_assert_eq!(a, b);
+    }
+}
+
+/// renumber_account SCENARIOS 1-2 and INVARIANT 2: an unknown account, a
+/// blank or used code (its own too), and a control code for an account of
+/// another type are refused, leaving the books as they were. A control
+/// code for an account of the right type is accepted.
+#[test]
+fn renumber_refusals_leave_the_books_unchanged() {
+    let mut l = Ledger::new(Currency::USD);
+    let cash = l
+        .add_account("1000", "Cash", AccountType::Asset, None, false)
+        .unwrap();
+    let hosting = l
+        .add_account("6100", "Hosting", AccountType::Expense, None, false)
+        .unwrap();
+    let group = l
+        .add_account("6000", "Expenses", AccountType::Expense, None, true)
+        .unwrap();
+    let before = l.clone();
+    for (id, code) in [
+        (999, "7000"),
+        (hosting, ""),
+        (hosting, "  "),
+        (hosting, "1000"),
+        (hosting, "6100"),
+        (hosting, "2110"), // payroll federal withholding: a liability
+        (hosting, "1200"), // receivables: an asset
+        (cash, "4000"),    // revenue
+        (group, "6999"),   // general expenses: a placeholder can't be one
+    ] {
+        assert!(
+            l.renumber_account(id, code).is_err(),
+            "{id} -> {code:?} accepted"
+        );
+        assert!(l.differs_from(&before).is_empty(), "{id} -> {code:?}");
+    }
+    l.renumber_account(hosting, "6999").unwrap();
+    l.renumber_account(cash, "1200").unwrap();
+}

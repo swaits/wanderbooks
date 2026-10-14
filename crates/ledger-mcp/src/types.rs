@@ -480,6 +480,29 @@ pub struct ChartTemplateOut {
     pub notes: Vec<String>,
 }
 
+/// Parameters for `books.renumber_account`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RenumberAccountParams {
+    /// The account's current code (or id).
+    pub account: String,
+    /// Its new code: non-empty and not in use.
+    pub code: String,
+}
+
+/// Result of `books.renumber_account`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct RenumberAccountOut {
+    /// The account's id (unchanged).
+    pub id: u64,
+    /// The code it had.
+    pub previous_code: String,
+    /// The code it has now.
+    pub code: String,
+    /// Settings in wanderbooks.toml that still name the old code: change
+    /// each to the new one, then restart the server.
+    pub config_mentions: Vec<String>,
+}
+
 /// Parameters for `books.set_tax_category`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SetTaxCategoryParams {

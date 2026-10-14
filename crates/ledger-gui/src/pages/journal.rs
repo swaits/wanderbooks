@@ -121,6 +121,17 @@ pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
             format!("Added account {} {}", s(p, "code"), s(p, "name")),
             Some(Route::Account(id)),
         ),
+        "account.renumbered" => ev(
+            icon::TAG,
+            format!(
+                "Renumbered {} from {}",
+                b.account_label(p.get("account_id").and_then(|v| v.as_u64()).unwrap_or(0)),
+                s(p, "previous_code")
+            ),
+            p.get("account_id")
+                .and_then(|v| v.as_u64())
+                .map(Route::Account),
+        ),
         "account.tax_set" => ev(
             icon::TAG,
             format!(

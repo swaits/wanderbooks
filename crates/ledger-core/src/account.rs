@@ -125,6 +125,24 @@ impl ChartOfAccounts {
         self.accounts.values()
     }
 
+    /// Give an account a new code. The code must be non-empty and free.
+    pub fn set_code(&mut self, id: AccountId, code: &str) -> Result<(), LedgerError> {
+        if code.trim().is_empty() {
+            return Err(LedgerError::EmptyAccountCode);
+        }
+        if self.by_code.contains_key(code) {
+            return Err(LedgerError::DuplicateAccountCode(code.to_string()));
+        }
+        let a = self
+            .accounts
+            .get_mut(&id)
+            .ok_or(LedgerError::UnknownAccount(id))?;
+        self.by_code.remove(&a.code);
+        a.code = code.to_string();
+        self.by_code.insert(a.code.clone(), id);
+        Ok(())
+    }
+
     /// Set (or clear) an account's tax category and deductible percent.
     pub fn set_tax(
         &mut self,

@@ -155,7 +155,7 @@ fn number(
         None => sheet.write_string_with_format(
             row,
             col,
-            crate::report::format_amount(d),
+            exact_text(d),
             &fmt.clone().set_align(rust_xlsxwriter::FormatAlign::Right),
         )?,
     };
@@ -395,6 +395,26 @@ fn general_journal(
 }
 
 /// Decimal to f64 at the presentation boundary. Rounded to cents first.
+/// An amount as exact text: thousands grouped, every decimal it has (at
+/// least two), a negative in parentheses. Never rounded.
+fn exact_text(d: Decimal) -> String {
+    let places = d.normalize().scale().max(2) as usize;
+    let fixed = format!("{:.*}", places, d.abs());
+    let (int, frac) = fixed.split_once('.').expect("decimals");
+    let mut grouped = String::new();
+    for (i, c) in int.chars().enumerate() {
+        if i > 0 && (int.len() - i) % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(c);
+    }
+    if d.is_sign_negative() && !d.is_zero() {
+        format!("({grouped}.{frac})")
+    } else {
+        format!("{grouped}.{frac}")
+    }
+}
+
 /// The double a cell holds for `d`, when Excel will show it exactly: whole
 /// cents, at most 15 significant digits. None otherwise.
 fn exact_f64(d: Decimal) -> Option<f64> {

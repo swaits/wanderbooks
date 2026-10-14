@@ -863,6 +863,13 @@ fn tax(b: &Books, s: NaiveDate, e: NaiveDate) -> Table {
         net,
         vec![Cell::of(ts.book_net()), Cell::of(ts.tax_net())],
     );
+    if !ts.separately_stated.is_empty() {
+        sec(
+            &mut t,
+            "Separately stated to owners (Schedule K)",
+            &ts.separately_stated,
+        );
+    }
     if !ts.uncategorized.is_empty() {
         t.section("Not categorized");
         for u in &ts.uncategorized {

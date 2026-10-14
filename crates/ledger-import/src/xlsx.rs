@@ -138,6 +138,11 @@ fn footer(
     Ok(())
 }
 
+/// Write an amount. A number cell is a binary double and Excel honors 15
+/// significant digits (docs/spec/sources/xlsx-numbers.md), so an amount
+/// with more than 13 digits before the cents can't show exactly: such an
+/// amount is written as its exact text instead, right-aligned, so the
+/// spreadsheet never shows a wrong number.
 fn number(
     sheet: &mut Worksheet,
     row: u32,
@@ -145,7 +150,15 @@ fn number(
     d: Decimal,
     fmt: &Format,
 ) -> Result<(), XlsxError> {
-    sheet.write_number_with_format(row, col, dec_to_f64(d), fmt)?;
+    match exact_f64(d) {
+        Some(x) => sheet.write_number_with_format(row, col, x, fmt)?,
+        None => sheet.write_string_with_format(
+            row,
+            col,
+            crate::report::format_amount(d),
+            &fmt.clone().set_align(rust_xlsxwriter::FormatAlign::Right),
+        )?,
+    };
     Ok(())
 }
 
@@ -369,9 +382,15 @@ fn general_journal(
 }
 
 /// Decimal to f64 at the presentation boundary. Rounded to cents first.
-fn dec_to_f64(d: Decimal) -> f64 {
+/// The double a cell holds for `d`, when Excel will show it exactly: whole
+/// cents, at most 15 significant digits. None otherwise.
+fn exact_f64(d: Decimal) -> Option<f64> {
     use rust_decimal::prelude::ToPrimitive;
-    d.round_dp(2).to_f64().unwrap_or(0.0)
+    let cents = d.round_dp(2);
+    if cents != d || cents.abs() > Decimal::new(999_999_999_999_999, 2) {
+        return None;
+    }
+    cents.to_f64()
 }
 
 #[cfg(test)]
@@ -379,6 +398,27 @@ mod tests {
     use super::*;
     use crate::report;
     use ledger_core::reports::{TrialBalance, TrialBalanceLine};
+
+    proptest::proptest! {
+        /// Oracle: docs/spec/sources/xlsx-numbers.md (a cell is a binary
+        /// double; Excel honors 15 significant digits). Every whole-cent
+        /// amount up to 15 digits comes back exactly when shown to the
+        /// cent; anything finer than a cent, or longer, is not written as a
+        /// number at all.
+        #[test]
+        fn a_cent_amount_shows_exactly_or_is_written_as_text(
+            cents in -999_999_999_999_999i64..=999_999_999_999_999,
+            extra in 1i64..10,
+        ) {
+            let d = Decimal::new(cents, 2);
+            let x = exact_f64(d).expect("15 digits fit");
+            proptest::prop_assert_eq!(format!("{x:.2}"), format!("{d:.2}"));
+            proptest::prop_assert!(exact_f64(Decimal::new(cents * 10 + extra, 3)).is_none());
+            let big = Decimal::new(999_999_999_999_999, 2) + Decimal::new(extra, 2);
+            proptest::prop_assert!(exact_f64(big).is_none());
+            proptest::prop_assert!(exact_f64(-big).is_none());
+        }
+    }
 
     #[test]
     fn xlsx_is_a_zip() {

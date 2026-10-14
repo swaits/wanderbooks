@@ -264,3 +264,81 @@ fn forms_have_their_irs_names() {
         assert_eq!(TaxForm::parse(f.label()), Some(f));
     }
 }
+
+/// A small book with portfolio interest (125) and a donation (300) besides
+/// sales (1,000), for where each lands by return.
+fn interest_and_gift() -> Ledger {
+    let mut l = Ledger::new(Currency::USD);
+    let cash = l
+        .add_account("1000", "Cash", AccountType::Asset, None, false)
+        .unwrap();
+    let mut acct = |code: &str, t, cat: &str| {
+        let id = l.add_account(code, code, t, None, false).unwrap();
+        l.set_account_tax(id, Some(cat), None).unwrap();
+        id
+    };
+    let sales = acct("4000", AccountType::Revenue, "gross_receipts");
+    let interest = acct("4200", AccountType::Revenue, "interest_income");
+    let gift = acct("6900", AccountType::Expense, "charitable_contributions");
+    let usd = |s: &str| Money::new(dec(s), Currency::USD);
+    for (dr, cr, amt) in [
+        (cash, sales, "1000"),
+        (cash, interest, "125"),
+        (gift, cash, "300"),
+    ] {
+        let e = l.create_entry(d(2, 1), "x");
+        l.add_line(e, dr, Side::Debit, usd(amt)).unwrap();
+        l.add_line(e, cr, Side::Credit, usd(amt)).unwrap();
+        l.post_entry(e).unwrap();
+    }
+    l
+}
+
+/// Oracle: docs/spec/sources/irs-tax-lines.md. On Forms 1065 and 1120-S,
+/// Schedule K takes "only taxable portfolio interest", and charitable
+/// contributions are among the "items ... must state separately": both
+/// leave the ordinary-income net (1,000 here, not 825) and are listed
+/// apart. On Form 1120 they stay in it (lines 5 and 19).
+#[test]
+fn pass_throughs_state_interest_and_gifts_separately() {
+    let l = interest_and_gift();
+    for form in [TaxForm::Form1065, TaxForm::Form1120S] {
+        let ts = tax_summary(&l, d(1, 1), d(12, 31), Some(form)).unwrap();
+        let keys: Vec<&str> = ts
+            .separately_stated
+            .iter()
+            .map(|x| x.category.as_str())
+            .collect();
+        assert_eq!(
+            keys,
+            ["interest_income", "charitable_contributions"],
+            "{form:?}"
+        );
+        assert_eq!(ts.book_net(), dec("1000"), "{form:?}");
+    }
+    let ts = tax_summary(&l, d(1, 1), d(12, 31), Some(TaxForm::Form1120)).unwrap();
+    assert!(ts.separately_stated.is_empty());
+    assert_eq!(ts.book_net(), dec("825"));
+}
+
+/// Oracle: Schedule C instructions, Part V ("Do not include charitable
+/// contributions"): the category is refused for a Schedule C business.
+#[test]
+fn a_sole_proprietor_cannot_deduct_a_gift_on_schedule_c() {
+    assert!(matches!(
+        check_category(
+            "charitable_contributions",
+            AccountType::Expense,
+            Some(TaxForm::ScheduleC)
+        ),
+        Err(LedgerError::InvalidTaxCategory(_))
+    ));
+    assert!(
+        check_category(
+            "charitable_contributions",
+            AccountType::Expense,
+            Some(TaxForm::Form1120)
+        )
+        .is_ok()
+    );
+}

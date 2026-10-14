@@ -20,3 +20,6 @@ typst-layout = "0.15.1"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+proptest = "1"

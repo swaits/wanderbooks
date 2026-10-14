@@ -99,6 +99,8 @@ pub struct TaxCategory {
 
 const ALL: &[TaxForm] = &TaxForm::ALL;
 const CORPS: &[TaxForm] = &[TaxForm::Form1120S, TaxForm::Form1120];
+/// Every return but Schedule C.
+const ENTITIES: &[TaxForm] = &[TaxForm::Form1065, TaxForm::Form1120S, TaxForm::Form1120];
 
 const fn cat(
     key: &'static str,
@@ -144,7 +146,7 @@ pub const CATEGORIES: &[TaxCategory] = &[
         Income,
         ALL,
         100,
-        "Pass-throughs report it separately to owners (portfolio income).",
+        "Portfolio interest: partnerships and S corps state it separately (Schedule K). Interest earned in the business itself (on customer accounts, say) is ordinary income: use other_income.",
     ),
     cat("other_income", "Other income", Income, ALL, 100, ""),
     cat(
@@ -176,9 +178,9 @@ pub const CATEGORIES: &[TaxCategory] = &[
         "charitable_contributions",
         "Charitable contributions",
         Deduction,
-        ALL,
+        ENTITIES,
         100,
-        "Separately stated to owners for partnerships and S corps; limited for C corps; not a Schedule C deduction.",
+        "Separately stated to owners for partnerships and S corps (Schedule K); limited for C corps. Not on Schedule C (\"Do not include charitable contributions\"): a sole proprietor's gift is personal, an owner draw.",
     ),
     cat(
         "commissions_fees",
@@ -419,6 +421,12 @@ pub struct TaxSummary {
     pub cost_of_goods: Vec<TaxSummaryLine>,
     /// Deductions.
     pub deductions: Vec<TaxSummaryLine>,
+    /// Items a partnership or S corporation states separately to its owners
+    /// (Schedule K) instead of netting them in ordinary income: portfolio
+    /// interest and charitable contributions (docs/spec/sources/
+    /// irs-tax-lines.md). Not in [`TaxSummary::book_net`] or `tax_net`.
+    #[serde(default)]
+    pub separately_stated: Vec<TaxSummaryLine>,
     /// P&L accounts with activity and no category.
     pub uncategorized: Vec<Uncategorized>,
 }
@@ -497,11 +505,16 @@ pub fn tax_summary(
         income: vec![],
         cost_of_goods: vec![],
         deductions: vec![],
+        separately_stated: vec![],
         uncategorized,
     };
     // Catalog order, so the summary reads like the return.
     for c in CATEGORIES {
         if let Some(line) = by_cat.remove(c.key) {
+            if separately_stated(c.key, form) {
+                out.separately_stated.push(line);
+                continue;
+            }
             match c.kind {
                 TaxKind::Income => out.income.push(line),
                 TaxKind::CostOfGoods => out.cost_of_goods.push(line),
@@ -510,4 +523,14 @@ pub fn tax_summary(
         }
     }
     Ok(out)
+}
+
+/// Whether a partnership or S corporation states this category separately
+/// to its owners (Schedule K) rather than in ordinary income. Form 1065
+/// and 1120-S instructions: Schedule K takes "only taxable portfolio
+/// interest", and "charitable contributions" are among the "items ... must
+/// state separately".
+pub fn separately_stated(key: &str, form: Option<TaxForm>) -> bool {
+    matches!(form, Some(TaxForm::Form1065 | TaxForm::Form1120S))
+        && matches!(key, "interest_income" | "charitable_contributions")
 }

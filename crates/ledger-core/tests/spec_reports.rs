@@ -2394,10 +2394,12 @@ proptest! {
         prop_assert_eq!(st.total.beginning, balance_sheet_as_of(&b.l, prev(day(a))).unwrap().total_equity);
     }
 
-    /// Oracle: ME INVARIANT 3 — the period's income (closing entries
-    /// excluded: the model) is split by share to the cent by largest
-    /// remainder: parts sum to it and each is within one cent of its exact
-    /// share, and the larger exact remainder never gets less rounding.
+    /// Oracle: ME INVARIANTS 3-3b — the members' incomes sum to the period's
+    /// income (closing entries excluded: the model), and each is within
+    /// less than two cents of its exact share: under one cent of rounding
+    /// at each end of the cumulative split (docs/testing.md #7: a member's
+    /// running balance, what Form 1065 K-1 Item L reports, chains exactly;
+    /// see `each_members_capital_chains_across_statements`).
     #[test]
     fn prop_me_period_income_split_by_share(gens in arb_books(), (a, _m, e) in three_days(), pct in 1i64..100, month in opt_month()) {
         let mut b = build(&gens);
@@ -2409,7 +2411,7 @@ proptest! {
         prop_assert_eq!(st.total.net_income, ni);
         let cent = c(1);
         for (col, share) in st.members.iter().zip([share_a, Decimal::ONE - share_a]) {
-            prop_assert!((col.net_income - ni * share).abs() < cent, "{:?} share {}", col, share);
+            prop_assert!((col.net_income - ni * share).abs() < cent + cent, "{:?} share {}", col, share);
         }
     }
 }

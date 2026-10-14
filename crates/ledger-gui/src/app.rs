@@ -700,6 +700,7 @@ fn checks(b: &Books) -> Vec<(bool, String, String)> {
     out.push(match &b.integrity.disk {
         DiskCheck::Matches => (true, "Database matches journal".to_string(), "The server's SQLite database matches a fresh projection of the journal, every table, row for row.".to_string()),
         DiskCheck::Behind { applied, journal } => (true, "Database catching up".to_string(), format!("The database has applied {applied} of {journal} journal events; the server applies the rest right after writing them.")),
+        DiskCheck::Ahead { .. } => (true, "Viewer catching up".to_string(), "The server has written journal events this view hasn't read yet; it reads them on its next refresh.".to_string()),
         DiskCheck::Missing => (true, "Read-only copy".to_string(), "No server database here: a copy of the books (a CPA's, say), or the server hasn't run yet. The journal and every file are verified either way.".to_string()),
         DiskCheck::Differs(why) => (false, "Database differs".to_string(), format!("{why}. The server rebuilds it from the journal (books.verify, or on its next start).")),
         DiskCheck::Unreadable(why) => (false, "Database unreadable".to_string(), why.clone()),

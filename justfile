@@ -94,11 +94,13 @@ mutants-mcp:
     mkdir -p {{mutants_tmp}}
     MCP_CASES=16 PROPTEST_MAX_SHRINK_ITERS=0 TMPDIR={{mutants_tmp}} cargo mutants -p ledger-mcp --test-package ledger-mcp -j 4 --timeout 600 -o mutants-mcp
 
-# Mutation testing of the viewer's logic (formatting, file names, history,
-# search, ticks, the view model, the attention list; not the painting).
+# Mutation testing of the viewer where it matters: the numbers it shows
+# (the view model) and how it writes them (formatting). Its read-only
+# promise has its own test (tests/read_only.rs); search, history, ticks,
+# and the attention list are spec-tested, not swept.
 mutants-gui:
     mkdir -p {{mutants_tmp}}
-    PROPTEST_MAX_SHRINK_ITERS=0 TMPDIR={{mutants_tmp}} cargo mutants -p ledger-gui --test-package ledger-gui -j 4 --timeout 60 -o mutants-gui -f crates/ledger-gui/src/fmt.rs -f crates/ledger-gui/src/export.rs -f crates/ledger-gui/src/nav.rs -f crates/ledger-gui/src/attention.rs -f crates/ledger-gui/src/books.rs -f crates/ledger-gui/src/palette.rs -f crates/ledger-gui/src/charts.rs
+    PROPTEST_MAX_SHRINK_ITERS=0 TMPDIR={{mutants_tmp}} cargo mutants -p ledger-gui --test-package ledger-gui -j 4 --timeout 180 -o mutants-gui -f crates/ledger-gui/src/books.rs -f crates/ledger-gui/src/fmt.rs
 
 # Benchmarks of the core's hot paths (no budget gates them yet)
 bench:

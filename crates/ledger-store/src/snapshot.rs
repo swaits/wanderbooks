@@ -229,10 +229,28 @@ impl Snapshot {
         if !path.exists() {
             return DiskCheck::Missing;
         }
-        let mut conn = match Connection::open_with_flags(
-            &path,
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        ) {
+        // A WAL reader needs the -wal and -shm files, and creates them if
+        // they're missing: a write into the books, and a failure when the
+        // books are read-only to this user. With no -wal file no writer
+        // has the database open (SQLite deletes it when the last one
+        // closes), so it can't change under us: read it as an immutable
+        // file, creating nothing (found by the viewer's read-only test,
+        // 2026-10-14).
+        let live = path.with_extension("db-wal").exists();
+        let opened = if live {
+            Connection::open_with_flags(
+                &path,
+                OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            )
+        } else {
+            Connection::open_with_flags(
+                immutable_uri(&path),
+                OpenFlags::SQLITE_OPEN_READ_ONLY
+                    | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                    | OpenFlags::SQLITE_OPEN_URI,
+            )
+        };
+        let mut conn = match opened {
             Ok(c) => c,
             Err(e) => return DiskCheck::Unreadable(e.to_string()),
         };
@@ -285,4 +303,19 @@ impl Snapshot {
     pub fn attachment_bytes(&self, attachment_id: u64) -> Result<Vec<u8>, StoreError> {
         read_attachment_bytes(&self.conn, &self.blobs, attachment_id)
     }
+}
+
+/// `file:` URI for `path`, read-only and immutable (sqlite.org/uri.html):
+/// every byte outside the unreserved set is percent-encoded.
+fn immutable_uri(path: &Path) -> String {
+    let mut out = String::from("file:");
+    for b in path.to_string_lossy().bytes() {
+        if b.is_ascii_alphanumeric() || b"/-_.~".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out.push_str("?mode=ro&immutable=1");
+    out
 }

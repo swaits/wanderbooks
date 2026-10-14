@@ -134,6 +134,16 @@ fn spacer() -> Row {
 }
 
 /// Finish a statement: currency signs on sums, rules above them.
+///
+/// ```text
+/// GOAL: the finishing marks an accountant puts on a statement.
+/// SOURCE: CONVENTION (US small-business presentation, QuickBooks-style).
+/// INVARIANTS:
+///   1. Subtotals and totals print the currency sign; nothing else does.
+///   2. A total always has a rule above it; a subtotal only when amounts
+///      (lines or subtotals) sit above it in its section.
+///   3. Rows, labels, and amounts are kept exactly as given.
+/// ```
 pub fn statement(title: &str, period: String, columns: &[&str], mut rows: Vec<Row>) -> Statement {
     let mut above: Option<RowKind> = None;
     for r in &mut rows {
@@ -163,6 +173,16 @@ fn account_lines(lines: &[StatementLine]) -> impl Iterator<Item = Row> + '_ {
 }
 
 /// Lay out a profit and loss statement.
+///
+/// ```text
+/// GOAL: the P&L as printed, footing.
+/// SOURCE: docs/spec/rules.md B-14; footing (each column adds to its
+///         printed totals) is the reader's check on any statement.
+/// INVARIANTS:
+///   1. Revenue lines sum to "Total revenue"; expense lines to "Total
+///      expenses"; "Net income (loss)" = total revenue - total expenses.
+///   2. One line per account, "CODE Name", in the statement's order.
+/// ```
 pub fn profit_and_loss(pl: &ProfitAndLossStatement) -> Statement {
     let mut rows = vec![section("Revenue")];
     rows.extend(account_lines(&pl.revenue));
@@ -191,6 +211,20 @@ pub struct YearEarnings {
 }
 
 /// Lay out a balance sheet.
+///
+/// ```text
+/// GOAL: the balance sheet as printed, footing and balancing.
+/// SOURCE: rules.md B-4/B-5 (assets = liabilities + equity); footing.
+/// INVARIANTS:
+///   1. Asset lines sum to "Total assets", liability lines to "Total
+///      liabilities", equity lines (accounts and the earnings lines) to the
+///      equity total.
+///   2. "Total liabilities and (members') equity" = total liabilities +
+///      total equity = total assets.
+///   3. With members: equity is "Members' equity", each capital account
+///      listed, then unallocated earnings; without, "Retained earnings"
+///      and the year's "Net income (loss)".
+/// ```
 ///
 /// Without members (corporate convention), equity ends with "Retained
 /// earnings" — the Retained Earnings account plus earlier years' earnings
@@ -296,6 +330,20 @@ fn flow_lines<'a>(
 }
 
 /// Lay out a cash flow statement (indirect method).
+///
+/// ```text
+/// GOAL: the cash flow statement as printed, footing and reconciling.
+/// SOURCE: rules.md B-14 (ASC 230); footing.
+/// INVARIANTS:
+///   1. Net income, depreciation, and the working-capital lines sum to
+///      "Net cash from operating activities"; investing and financing lines
+///      to theirs.
+///   2. The three section totals sum to "Net increase (decrease) in cash",
+///      and beginning cash plus it is "Cash at end of period".
+///   3. A member's capital or distributions line names the member:
+///      "Member contributions — Name" for cash in, "Member distributions
+///      — Name" for cash out.
+/// ```
 pub fn cash_flow(cf: &CashFlowStatement, members: &[Member]) -> Statement {
     let mut rows = vec![section("Operating activities")];
     rows.push(one(RowKind::Line, "Net income (loss)", cf.net_income));
@@ -351,6 +399,15 @@ pub fn cash_flow(cf: &CashFlowStatement, members: &[Member]) -> Statement {
 
 /// Lay out a trial balance as of a date: Debit and Credit columns, a zero
 /// side left blank.
+///
+/// ```text
+/// GOAL: the trial balance as printed, footing.
+/// SOURCE: rules.md B-2 (debits equal credits); footing.
+/// INVARIANTS:
+///   1. Each column's lines sum to its total; the totals are equal for
+///      balanced books.
+///   2. A line shows its balance on one side only, the other blank.
+/// ```
 pub fn trial_balance(tb: &TrialBalance, as_of: NaiveDate) -> Statement {
     let nz = |d: Decimal| if d.is_zero() { None } else { Some(d) };
     let mut rows: Vec<Row> = tb
@@ -379,6 +436,16 @@ pub fn trial_balance(tb: &TrialBalance, as_of: NaiveDate) -> Statement {
 
 /// Lay out the statement of changes in members' equity: one column per
 /// member and a total. Distributions print as reductions.
+///
+/// ```text
+/// GOAL: each member's capital roll-forward as printed.
+/// SOURCE: rules.md B-13 (Form 1065 Schedule K-1, Item L); footing.
+/// INVARIANTS:
+///   1. In every column, beginning + contributions + net income +
+///      distributions (printed negative) + other = ending.
+///   2. Across every row, the members' columns sum to the Total column.
+///   3. "Other changes" appears only when some column has any.
+/// ```
 pub fn members_equity(me: &MembersEquityStatement) -> Statement {
     let cols: Vec<_> = me
         .members
@@ -510,9 +577,22 @@ pub fn period_label(start: NaiveDate, end: NaiveDate) -> String {
 
 /// Exact accounting format: thousands separators, two decimals, negatives
 /// in parentheses. "1,234.56", "(207.68)", "0.00". Never a float.
+///
+/// ```text
+/// GOAL: an amount as an accountant writes it.
+/// SOURCE: CONVENTION (US accounting presentation; QuickBooks reports).
+/// INVARIANTS:
+///   1. Exactly two decimals, rounded half away from zero; thousands
+///      separated by commas; a negative in parentheses.
+///   2. NEVER a negative zero: an amount that rounds to 0.00 prints
+///      "0.00" (found 2026-10-13: -0.004 printed "(0.00)").
+///   3. Removing the commas and parentheses gives back the amount rounded
+///      to the cent.
+/// ```
 pub fn format_amount(d: Decimal) -> String {
-    let negative = d.is_sign_negative() && !d.is_zero();
-    let fixed = format!("{:.2}", d.abs());
+    let rounded = d.round_dp_with_strategy(2, rust_decimal::RoundingStrategy::MidpointAwayFromZero);
+    let negative = rounded.is_sign_negative() && !rounded.is_zero();
+    let fixed = format!("{:.2}", rounded.abs());
     let (int, frac) = fixed.split_once('.').expect("two decimals");
     let mut grouped = String::new();
     for (i, c) in int.chars().enumerate() {
@@ -542,7 +622,7 @@ pub struct AmountParts {
 
 /// Split an amount for aligned accounting display. Exact: no floats.
 pub fn amount_parts(d: Decimal) -> AmountParts {
-    let rounded = d.round_dp(2);
+    let rounded = d.round_dp_with_strategy(2, rust_decimal::RoundingStrategy::MidpointAwayFromZero);
     AmountParts {
         digits: format_amount(rounded.abs()),
         negative: rounded.is_sign_negative() && !rounded.is_zero(),

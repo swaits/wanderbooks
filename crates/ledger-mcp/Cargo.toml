@@ -34,5 +34,7 @@ toml = "1"
 workspace = true
 
 [dev-dependencies]
+tokio = { version = "1", features = ["time", "macros", "rt-multi-thread"] }
+rmcp = { version = "3", features = ["client", "transport-streamable-http-client-reqwest"] }
 jsonschema = { version = "0.58", default-features = false }
 proptest = "1"

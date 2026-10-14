@@ -80,9 +80,10 @@ mutants-import:
 mutants-config:
     cargo mutants -p ledger-config --test-package ledger-config -j 4 --timeout 120 -o mutants-config
 
-# Mutation testing of the MCP server (every mutant runs the stdio suites).
+# Mutation testing of the MCP server (every mutant runs the stdio suites;
+# fewer random cases each, as for the store).
 mutants-mcp:
-    cargo mutants -p ledger-mcp --test-package ledger-mcp -j 4 --timeout 600 -o mutants-mcp
+    MCP_CASES=16 cargo mutants -p ledger-mcp --test-package ledger-mcp -j 4 --timeout 600 -o mutants-mcp
 
 # Mutation testing of the viewer's logic (formatting, file names, history,
 # search, ticks, the view model, the attention list; not the painting).

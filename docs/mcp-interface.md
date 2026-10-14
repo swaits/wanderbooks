@@ -342,6 +342,12 @@ posting.
   (`[company] tax_form`, or derived from `tax_classification`). Stable
   semantic keys (`meals`, `guaranteed_payments`, `commissions_fees`, ...),
   never form line numbers, which change by year.
+- `books.renumber_account { account, code }` → `{ id, previous_code,
+  code, config_mentions }`: give an account a new code. Only the code
+  changes (entries name accounts by id), so balances and reports don't
+  move. Refuses a code in use, or a control account's code for an account
+  of the wrong type. `config_mentions` lists the wanderbooks.toml settings
+  still naming the old code. Journaled as `account.renumbered`.
 - `books.set_tax_category { account, category?, deductible_percent? }`:
   map a revenue or expense account to a category (null clears),
   optionally overriding its deductible percent. Journaled as

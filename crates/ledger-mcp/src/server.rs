@@ -23,7 +23,7 @@ use rust_decimal::Decimal;
 use std::sync::{Arc, Mutex};
 
 /// The agent operating contract, delivered via initialize.
-const INSTRUCTIONS: &str = "You are the bookkeeping agent for these books. The engine enforces the accounting; you enforce the workflow.\n\nRULES\n- Money is exact decimal. Always pass amounts as decimal strings (\"123.45\"), never floats.\n- Never post directly. The flow is draft (books.draft_entry) -> add lines (books.add_line) -> preview (books.post_entry without confirmed) -> review the preview -> post (books.post_entry with confirmed=true).\n- Every entry must balance: debits equal credits, exactly. Every line needs a real account from books.chart. The engine rejects anything else.\n- Receipts: any entry moving more than $25.00 in debits needs at least one receipt attached (books.attach_receipt) before posting. The server rejects the post otherwise. This is enforced, not a suggestion.\n- Never invent accounts. If the account you need does not exist, add it with books.add_account first.\n- Corrections go through books.reverse_entry. Posted entries are immutable; there is no edit.\n- Receipt corrections: receipts can change, but nothing is erased. To replace one, attach the new receipt, then books.unlink_receipt the old (with a reason); retire unwanted receipts or documents with books.withdraw_attachment (with a reason). The journal keeps every step.\n- After posting, check books.digest to review what changed, so a human can review too.\n- Amounts in every response are decimal strings. Treat them as exact.\n- Fixed assets: register with books.register_asset, inspect with books.asset_schedule and books.list_assets, post monthly depreciation with books.run_depreciation (exempt from the receipt policy; the schedule is the evidence), and dispose with books.dispose_asset (preview first; the bill of sale is the receipt). Depreciation is straight-line, book basis only - tax depreciation stays with the CPA.\n- Prepaid expenses and deferred revenue: record the original payment (with its receipt), then books.create_schedule; books.run_schedules posts the monthly amortization (preview first; exempt from the receipt policy like depreciation). Recurring entries (books.create_recurring, books.run_recurring) only ever create drafts: attach each actual receipt and post through the normal preview.\n- Platform payouts (app stores, payment processors, marketplaces): never book the net deposit as revenue. books.record_payout grosses it up (gross revenue, fees, adjustments) into a draft and refuses unless it reconciles to the cent; attach the payout statement, then preview and post.\n- The viewer: the human usually has the read-only viewer open beside you (`just gui`). When they ask to see something, and after you post, call books.show so it's on their screen.\n- 1099s: mark contractors and landlords with books.set_vendor_1099 (and whether their W-9 is on file; never store a TIN), and tag every payment to them with its vendor (books.draft_entry vendor, or books.set_entry_vendor; books.pay_bill tags automatically). books.vendor_1099 is the year-end worksheet for the CPA.\n- Rules that change with the law: wanderbooks knows some legal amounts (like the 1099 threshold) only through a given year and never guesses past it. When a tool refuses with \"wanderbooks knows the ... only through\", or books.digest lists stale_rules: check today's date, find the current figure from the official source (the refusal names the vendored source file) or ask the human (owner, CPA), confirm it with them, and pass it explicitly. Then update the rule for everyone: open a pull request at https://github.com/swaits/wanderbooks with the new value and its official text (best), or at least an issue; if you can't reach GitHub, give the human the issue text to file.\n- Control accounts: invoices, bills, payroll, and closes post to accounts found by code (1200, 2000, 4000, 6999, 3999, 6100-2150). If the chart already uses one of those codes for a different kind of account, the engine refuses and says which. Never rename or renumber the human's accounts on your own: explain the conflict and let them decide.";
+const INSTRUCTIONS: &str = "You are the bookkeeping agent for these books. The engine enforces the accounting; you enforce the workflow.\n\nRULES\n- Money is exact decimal. Always pass amounts as decimal strings (\"123.45\"), never floats.\n- Never post directly. The flow is draft (books.draft_entry) -> add lines (books.add_line) -> preview (books.post_entry without confirmed) -> review the preview -> post (books.post_entry with confirmed=true).\n- Every entry must balance: debits equal credits, exactly. Every line needs a real account from books.chart. The engine rejects anything else.\n- Receipts: any entry moving more than $25.00 in debits needs at least one receipt attached (books.attach_receipt) before posting. The server rejects the post otherwise. This is enforced, not a suggestion.\n- Never invent accounts. If the account you need does not exist, add it with books.add_account first.\n- Corrections go through books.reverse_entry. Posted entries are immutable; there is no edit.\n- Receipt corrections: receipts can change, but nothing is erased. To replace one, attach the new receipt, then books.unlink_receipt the old (with a reason); retire unwanted receipts or documents with books.withdraw_attachment (with a reason). The journal keeps every step.\n- After posting, check books.digest to review what changed, so a human can review too.\n- Amounts in every response are decimal strings. Treat them as exact.\n- Fixed assets: register with books.register_asset, inspect with books.asset_schedule and books.list_assets, post monthly depreciation with books.run_depreciation (exempt from the receipt policy; the schedule is the evidence), and dispose with books.dispose_asset (preview first; the bill of sale is the receipt). Depreciation is straight-line, book basis only - tax depreciation stays with the CPA.\n- Prepaid expenses and deferred revenue: record the original payment (with its receipt), then books.create_schedule; books.run_schedules posts the monthly amortization (preview first; exempt from the receipt policy like depreciation). Recurring entries (books.create_recurring, books.run_recurring) only ever create drafts: attach each actual receipt and post through the normal preview.\n- Platform payouts (app stores, payment processors, marketplaces): never book the net deposit as revenue. books.record_payout grosses it up (gross revenue, fees, adjustments) into a draft and refuses unless it reconciles to the cent; attach the payout statement, then preview and post.\n- The viewer: the human usually has the read-only viewer open beside you (`just gui`). When they ask to see something, and after you post, call books.show so it's on their screen.\n- 1099s: mark contractors and landlords with books.set_vendor_1099 (and whether their W-9 is on file; never store a TIN), and tag every payment to them with its vendor (books.draft_entry vendor, or books.set_entry_vendor; books.pay_bill tags automatically). books.vendor_1099 is the year-end worksheet for the CPA.\n- Rules that change with the law: wanderbooks knows some legal amounts (like the 1099 threshold) only through a given year and never guesses past it. When a tool refuses with \"wanderbooks knows the ... only through\", or books.digest lists stale_rules: check today's date, find the current figure from the official source (the refusal names the vendored source file) or ask the human (owner, CPA), confirm it with them, and pass it explicitly. Then update the rule for everyone: open a pull request at https://github.com/swaits/wanderbooks with the new value and its official text (best), or at least an issue; if you can't reach GitHub, give the human the issue text to file.\n- Control accounts: invoices, bills, payroll, and closes post to accounts found by code (1200, 2000, 4000, 6999, 3999, 6100-2150). If the chart already uses one of those codes for a different kind of account, the engine refuses and says which. It can't tell an account of the right type but another purpose (a hosting expense at payroll's 6100): check the names before running payroll, bills, or invoices. Never renumber the human's accounts on your own: explain the conflict, and when they decide, books.renumber_account moves the account (its history stays).";
 
 /// Max receipt/document upload: 25 MB.
 const MAX_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
@@ -52,6 +52,35 @@ pub struct CashRoles {
 }
 
 impl BooksServer {
+    /// The wanderbooks.toml settings that name account `code`.
+    fn config_mentions(&self, code: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for (key, codes) in [
+            ("[books] cash_accounts", &self.roles.cash),
+            ("[books] financing_accounts", &self.roles.financing),
+            ("[books] investing_accounts", &self.roles.investing),
+        ] {
+            if codes.iter().any(|c| c == code) {
+                out.push(key.to_string());
+            }
+        }
+        if self.company.close_into.as_deref() == Some(code) {
+            out.push("[company] close_into".to_string());
+        }
+        for m in &self.company.members {
+            if m.capital_account == code {
+                out.push(format!("[[company.members]] {} capital_account", m.name));
+            }
+            if m.distribution_account.as_deref() == Some(code) {
+                out.push(format!(
+                    "[[company.members]] {} distribution_account",
+                    m.name
+                ));
+            }
+        }
+        out
+    }
+
     /// Build the server around an open store.
     pub fn new(store: Store, policy: ReceiptPolicy) -> Self {
         Self {
@@ -2268,6 +2297,35 @@ impl BooksServer {
         Ok(Json(TaxCategoriesOut {
             form: form.map(|f| f.label().to_string()),
             categories,
+        }))
+    }
+
+    #[tool(
+        name = "books.renumber_account",
+        description = "Give an account a new code. Only the code changes: its id, name, and every entry posted to it stay, so balances and reports don't move. Refuses a code in use, or a control account's code (invoices, bills, payroll, closes) for an account of the wrong type. Lists any wanderbooks.toml settings that still name the old code. Never renumber the human's accounts on your own: only when they ask."
+    )]
+    async fn renumber_account(
+        &self,
+        params: Parameters<RenumberAccountParams>,
+    ) -> Result<Json<RenumberAccountOut>, String> {
+        let p = params.0;
+        let mut store = self.lock()?;
+        let id = resolve_account(&store, &p.account)?;
+        let previous_code = store
+            .ledger()
+            .chart()
+            .get(id)
+            .expect("resolved")
+            .code
+            .clone();
+        store
+            .renumber_account(id, &p.code)
+            .map_err(|e| e.to_string())?;
+        Ok(Json(RenumberAccountOut {
+            id,
+            config_mentions: self.config_mentions(&previous_code),
+            previous_code,
+            code: p.code,
         }))
     }
 

@@ -952,6 +952,7 @@ mod refusals {
         SetEntryVendor(u64, Option<u64>),
         SetVendor1099(u64, bool),
         SetAccountTax(u64, u8),
+        Renumber(u64, u8),
         // The rest of the command surface (2026-10-13).
         AttachReceipt(Option<u64>, u8),
         FileDocument(u8),
@@ -1025,6 +1026,7 @@ mod refusals {
             (id.clone(), prop::option::of(0u64..4)).prop_map(|(e, v)| Op::SetEntryVendor(e, v)),
             (0u64..4, any::<bool>()).prop_map(|(v, t)| Op::SetVendor1099(v, t)),
             (0u64..10, 0u8..4).prop_map(|(a, k)| Op::SetAccountTax(a, k)),
+            (0u64..10, 0u8..9).prop_map(|(a, c)| Op::Renumber(a, c)),
             (prop::option::of(id.clone()), 0u8..4).prop_map(|(e, b)| Op::AttachReceipt(e, b)),
             (0u8..4).prop_map(Op::FileDocument),
             (0u64..6, id.clone()).prop_map(|(a, e)| Op::LinkReceipt(a, e)),
@@ -1143,6 +1145,14 @@ mod refusals {
             Op::SetEntryVendor(e, v) => store.set_entry_vendor(e, v),
             Op::SetVendor1099(v, t) => store.set_vendor_1099(v, Some(Form1099::Nec), t),
             Op::SetAccountTax(a, k) => store.set_account_tax(a, TAX[k as usize], None),
+            // The chart's codes, control codes (payroll's 6100 and 2110,
+            // revenue, receivables), a blank, and fresh ones.
+            Op::Renumber(a, c) => store.renumber_account(
+                a,
+                [
+                    "1000", "6100", "2110", "4000", "1200", "", "7001", "7002", "3999",
+                ][c as usize],
+            ),
             Op::AttachReceipt(e, b) => store
                 .attach_receipt(e, "r.pdf", "application/pdf", &[b; 3], Some("receipt"))
                 .map(drop),

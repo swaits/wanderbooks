@@ -2062,6 +2062,26 @@ impl Store {
         Ok(out)
     }
 
+    /// Give an account a new code (see `Ledger::renumber_account`).
+    /// Journaled as `account.renumbered`, with the code it had.
+    pub fn renumber_account(&mut self, account: AccountId, code: &str) -> Result<(), StoreError> {
+        self.rehearse(|l| l.renumber_account(account, code))?;
+        self.ledger.check_renumber_account(account, code)?;
+        let previous = self
+            .ledger
+            .chart()
+            .get(account)
+            .map(|a| a.code.clone())
+            .unwrap_or_default();
+        let line = self.append_journal(
+            "account.renumbered",
+            json!({"account_id": account, "code": code, "previous_code": previous}),
+        )?;
+        self.ledger.renumber_account(account, code)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
     /// Set (or clear) an account's tax category and deductible percent.
     /// Journaled as `account.tax_set`.
     pub fn set_account_tax(
@@ -3251,6 +3271,9 @@ pub(crate) fn replay_line_into_ledger(
                 p.get("vendor_id").and_then(|v| v.as_u64()),
             )?;
         }
+        "account.renumbered" => {
+            ledger.renumber_account(get_u64(p, "account_id")?, get_str(p, "code")?)?;
+        }
         "account.tax_set" => {
             let pct = match p.get("deductible_percent").and_then(|v| v.as_str()) {
                 Some(s) => Some(s.parse().map_err(|_| {
@@ -3795,6 +3818,12 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
                 )?;
             }
         },
+        "account.renumbered" => {
+            conn.execute(
+                "UPDATE accounts SET code = ? WHERE id = ?",
+                params![get_str(p, "code")?, get_u64(p, "account_id")? as i64],
+            )?;
+        }
         "account.tax_set" => {
             conn.execute(
                 "UPDATE accounts SET tax_category = ?, deductible_percent = ? WHERE id = ?",

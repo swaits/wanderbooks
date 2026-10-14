@@ -27,7 +27,7 @@ pub type InvoiceId = u64;
 pub type BillId = u64;
 
 /// A customer: someone we invoice.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Customer {
     /// Opaque handle.
     pub id: CustomerId,
@@ -36,7 +36,7 @@ pub struct Customer {
 }
 
 /// A vendor: someone who bills us.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Vendor {
     /// Opaque handle.
     pub id: VendorId,
@@ -64,7 +64,7 @@ pub enum DocumentStatus {
 }
 
 /// One line on an invoice or bill.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct DocumentLine {
     /// Description of the goods/services.
     pub description: String,
@@ -73,7 +73,7 @@ pub struct DocumentLine {
 }
 
 /// A sales invoice: we billed a customer.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Invoice {
     /// Opaque handle.
     pub id: InvoiceId,
@@ -106,7 +106,7 @@ impl Invoice {
 }
 
 /// A vendor bill: we owe a vendor.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Bill {
     /// Opaque handle.
     pub id: BillId,

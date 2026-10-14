@@ -166,7 +166,7 @@ pub struct ReconciliationReport {
 }
 
 /// The books. Single-currency (see R-5); owns id allocation.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Ledger {
     base_currency: Currency,
     chart: ChartOfAccounts,
@@ -462,6 +462,76 @@ impl Ledger {
             .collect()
     }
 
+    /// The parts of the ledger that differ from `other`, by field name
+    /// (empty when equal). For diagnosing a store whose journal replay and
+    /// projection disagree.
+    pub fn differs_from(&self, other: &Ledger) -> Vec<&'static str> {
+        [
+            ("base_currency", self.base_currency == other.base_currency),
+            ("chart", self.chart == other.chart),
+            ("entries", self.entries == other.entries),
+            ("order", self.order == other.order),
+            ("assets", self.assets == other.assets),
+            ("periods", self.periods == other.periods),
+            ("customers", self.customers == other.customers),
+            ("vendors", self.vendors == other.vendors),
+            ("invoices", self.invoices == other.invoices),
+            ("bills", self.bills == other.bills),
+            ("cleared", self.cleared == other.cleared),
+            ("fx_rates", self.fx_rates == other.fx_rates),
+            ("payroll_runs", self.payroll_runs == other.payroll_runs),
+            ("classes", self.classes == other.classes),
+            (
+                "next_account_id",
+                self.next_account_id == other.next_account_id,
+            ),
+            ("next_entry_id", self.next_entry_id == other.next_entry_id),
+            ("next_asset_id", self.next_asset_id == other.next_asset_id),
+            (
+                "next_period_id",
+                self.next_period_id == other.next_period_id,
+            ),
+            (
+                "next_customer_id",
+                self.next_customer_id == other.next_customer_id,
+            ),
+            (
+                "next_vendor_id",
+                self.next_vendor_id == other.next_vendor_id,
+            ),
+            (
+                "next_invoice_id",
+                self.next_invoice_id == other.next_invoice_id,
+            ),
+            ("next_bill_id", self.next_bill_id == other.next_bill_id),
+            (
+                "next_payroll_run_id",
+                self.next_payroll_run_id == other.next_payroll_run_id,
+            ),
+            ("next_class_id", self.next_class_id == other.next_class_id),
+            ("schedules", self.schedules == other.schedules),
+            (
+                "next_schedule_id",
+                self.next_schedule_id == other.next_schedule_id,
+            ),
+            ("recurring", self.recurring == other.recurring),
+            (
+                "next_recurring_id",
+                self.next_recurring_id == other.next_recurring_id,
+            ),
+            ("entry_vendors", self.entry_vendors == other.entry_vendors),
+            (
+                "invoice_payments",
+                self.invoice_payments == other.invoice_payments,
+            ),
+            ("bill_payments", self.bill_payments == other.bill_payments),
+        ]
+        .into_iter()
+        .filter(|(_, same)| !same)
+        .map(|(name, _)| name)
+        .collect()
+    }
+
     /// The id the next account added will receive.
     ///
     /// Exposed for journaling stores that record the id before mutating.
@@ -722,6 +792,7 @@ impl Ledger {
         amount: Money,
     ) -> Result<(), LedgerError> {
         self.check_line_account(account)?;
+        check_minor_units(amount)?;
         self.replay_add_line(entry, account, side, amount)
     }
 
@@ -886,8 +957,25 @@ impl Ledger {
     ///   4. IF it doesn't balance, has fewer than two lines, a zero, negative,
     ///      or out-of-range amount, or an unknown or placeholder account:
     ///      SHOULD refuse with that reason.
+    ///   5. IF a line is finer than its currency's minor unit (a fraction
+    ///      of a cent): SHOULD refuse (FinerThanMinorUnit)
+    ///      BECAUSE a ledger in one money holds no fractions of its
+    ///      smallest unit (B-3); found when a payroll run posted $65.27794
+    ///      (the store's refusal property in CI, 2026-10-13).
     /// ```
     pub fn post_entry(&mut self, entry: EntryId) -> Result<(), LedgerError> {
+        if let Some(e) = self.entries.get(&entry) {
+            for line in e.lines() {
+                check_minor_units(line.amount)?;
+            }
+        }
+        self.replay_post_entry(entry)
+    }
+
+    /// [`Self::post_entry`] without the minor-unit check added on
+    /// 2026-10-13, for replaying journals written before it. Never for new
+    /// work.
+    pub fn replay_post_entry(&mut self, entry: EntryId) -> Result<(), LedgerError> {
         let snapshot = self
             .entries
             .get(&entry)
@@ -2665,5 +2753,20 @@ impl Ledger {
         self.next_class_id += 1;
         self.classes.insert(id, Class { id, name });
         Ok(())
+    }
+}
+
+/// Refuse an amount finer than its currency's minor unit (rules.md B-3).
+/// A currency with no defined minor unit (ISO 4217 "N.A.") is not checked.
+fn check_minor_units(amount: Money) -> Result<(), LedgerError> {
+    match amount.currency.minor_units() {
+        Some(places) if amount.amount.normalize().scale() > places => {
+            Err(LedgerError::FinerThanMinorUnit {
+                amount: amount.amount,
+                currency: amount.currency.code().to_string(),
+                places,
+            })
+        }
+        _ => Ok(()),
     }
 }

@@ -120,7 +120,7 @@ pub fn allocate_last_absorbs(
 pub const RETAINED_EARNINGS_CODE: &str = "3999";
 
 /// A named accounting period: a month, quarter, or year.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Period {
     /// Opaque handle.
     pub id: PeriodId,

@@ -1192,7 +1192,8 @@ mod refusals {
                         state_withholding: Decimal::ZERO,
                         ss_employee: Decimal::ZERO,
                         medicare_employee: Decimal::ZERO,
-                        ss_employer: Decimal::new(g, 2) * Decimal::new(62, 3),
+                        // 6.2%, rounded to the cent as a caller must.
+                        ss_employer: (Decimal::new(g, 2) * Decimal::new(62, 3)).round_dp(2),
                         medicare_employer: Decimal::ZERO,
                         other_deductions: Decimal::ZERO,
                     }],
@@ -1380,76 +1381,118 @@ mod refusals {
             ops in prop::collection::vec(arb_op(), 1..40),
             seed in any::<u64>(),
         ) {
-            let dir = test_dir(&format!("refusals-{seed}"));
-            let mut store = Store::create(&dir, Currency::USD).unwrap();
-            // Start from realistic books, so most commands act on real
-            // things and refusals come from bad arguments (the first
-            // version started empty and almost nothing ever posted).
-            // Ids 1..=9: cash, equipment, accumulated depreciation, two
-            // members' capital, a liability, sales, rent, depreciation.
-            for (code, name, t) in [
-                ("1000", "Cash", AccountType::Asset),
-                ("1500", "Equipment", AccountType::Asset),
-                ("1510", "Accumulated depreciation", AccountType::Asset),
-                ("3000", "Capital A", AccountType::Equity),
-                ("3001", "Capital B", AccountType::Equity),
-                ("2500", "Loan", AccountType::Liability),
-                ("4100", "Sales", AccountType::Revenue),
-                ("6000", "Rent", AccountType::Expense),
-                ("6200", "Depreciation", AccountType::Expense),
-            ] {
-                store.add_account(code, name, t, None, false).unwrap();
-            }
-            for (n, (dr, cr, cents)) in [(1u64, 4u64, 1_000_000i64), (8, 1, 120_000), (1, 7, 250_000)]
-                .into_iter()
-                .enumerate()
-            {
-                let e = store.create_entry(day(n as u32 * 10), "setup").unwrap();
-                let m = Money::new(Decimal::new(cents, 2), Currency::USD);
-                store.add_line(e, dr, Side::Debit, m).unwrap();
-                store.add_line(e, cr, Side::Credit, m).unwrap();
-                store.post_entry(e).unwrap();
-            }
-            let journal = dir.join(ledger_store::JOURNAL_FILE);
-            for op in &ops {
-                check_invariants(&store)?;
-                let mut before = std::fs::read_to_string(&journal).unwrap();
-                let result = apply(&mut store, op, &mut || {
-                    before = std::fs::read_to_string(&journal).unwrap();
-                });
-                if std::env::var("STORE_STATS").is_ok() {
-                    let kind = format!("{op:?}");
-                    let kind = kind.split('(').next().unwrap_or("");
-                    match &result {
-                        Ok(()) => eprintln!("OK {kind}"),
-                        Err(e) => eprintln!("REFUSED {kind} {e}"),
-                    }
-                }
-                if let Err(e) = result {
-                    let after = std::fs::read_to_string(&journal).unwrap();
-                    prop_assert!(
-                        after == before,
-                        "refused {:?} ({}) but the journal grew by:\n{}",
-                        op,
-                        e,
-                        after.strip_prefix(&before).unwrap_or(&after)
-                    );
-                }
-            }
-            check_invariants(&store)?;
-            // Reopening gives back exactly these books (rank 3: the live
-            // ledger against journal replay).
-            let before = ledger_core::reports::snapshot(store.ledger()).unwrap();
-            let attachments = store.list_attachments(None).unwrap().len();
-            drop(store);
-            let reopened = Store::open(&dir);
-            prop_assert!(reopened.is_ok(), "books failed to reopen: {:?}", reopened.err());
-            let reopened = reopened.unwrap();
-            reopened.verify().unwrap();
-            prop_assert_eq!(ledger_core::reports::snapshot(reopened.ledger()).unwrap(), before);
-            prop_assert_eq!(reopened.list_attachments(None).unwrap().len(), attachments);
-            let _ = std::fs::remove_dir_all(&dir);
+            run_ops(&ops, seed)?;
         }
+    }
+
+    /// Run one sequence of ops against fresh books and check every law.
+    fn run_ops(ops: &[Op], seed: u64) -> Result<(), TestCaseError> {
+        let dir = test_dir(&format!("refusals-{seed}"));
+        let mut store = Store::create(&dir, Currency::USD).unwrap();
+        // Start from realistic books, so most commands act on real
+        // things and refusals come from bad arguments (the first
+        // version started empty and almost nothing ever posted).
+        // Ids 1..=9: cash, equipment, accumulated depreciation, two
+        // members' capital, a liability, sales, rent, depreciation.
+        for (code, name, t) in [
+            ("1000", "Cash", AccountType::Asset),
+            ("1500", "Equipment", AccountType::Asset),
+            ("1510", "Accumulated depreciation", AccountType::Asset),
+            ("3000", "Capital A", AccountType::Equity),
+            ("3001", "Capital B", AccountType::Equity),
+            ("2500", "Loan", AccountType::Liability),
+            ("4100", "Sales", AccountType::Revenue),
+            ("6000", "Rent", AccountType::Expense),
+            ("6200", "Depreciation", AccountType::Expense),
+        ] {
+            store.add_account(code, name, t, None, false).unwrap();
+        }
+        for (n, (dr, cr, cents)) in [(1u64, 4u64, 1_000_000i64), (8, 1, 120_000), (1, 7, 250_000)]
+            .into_iter()
+            .enumerate()
+        {
+            let e = store.create_entry(day(n as u32 * 10), "setup").unwrap();
+            let m = Money::new(Decimal::new(cents, 2), Currency::USD);
+            store.add_line(e, dr, Side::Debit, m).unwrap();
+            store.add_line(e, cr, Side::Credit, m).unwrap();
+            store.post_entry(e).unwrap();
+        }
+        let journal = dir.join(ledger_store::JOURNAL_FILE);
+        for op in ops {
+            check_invariants(&store)?;
+            let mut before = std::fs::read_to_string(&journal).unwrap();
+            let result = apply(&mut store, op, &mut || {
+                before = std::fs::read_to_string(&journal).unwrap();
+            });
+            if std::env::var("STORE_STATS").is_ok() {
+                let kind = format!("{op:?}");
+                let kind = kind.split('(').next().unwrap_or("");
+                match &result {
+                    Ok(()) => eprintln!("OK {kind}"),
+                    Err(e) => eprintln!("REFUSED {kind} {e}"),
+                }
+            }
+            if let Err(e) = result {
+                let after = std::fs::read_to_string(&journal).unwrap();
+                prop_assert!(
+                    after == before,
+                    "refused {:?} ({}) but the journal grew by:\n{}",
+                    op,
+                    e,
+                    after.strip_prefix(&before).unwrap_or(&after)
+                );
+            }
+        }
+        check_invariants(&store)?;
+        // Reopening gives back exactly these books (rank 3: the live
+        // ledger against journal replay).
+        // The ledger the commands built against its own journal's
+        // replay, every part of it (rank 3).
+        let verified = store.verify();
+        prop_assert!(verified.is_ok(), "live vs. replay: {:?}", verified.err());
+        let before = ledger_core::reports::snapshot(store.ledger()).unwrap();
+        let live = store.ledger().clone();
+        let attachments = store.list_attachments(None).unwrap().len();
+        drop(store);
+        let reopened = Store::open(&dir);
+        prop_assert!(
+            reopened.is_ok(),
+            "books failed to reopen: {:?}",
+            reopened.err()
+        );
+        let reopened = reopened.unwrap();
+        reopened.verify().unwrap();
+        prop_assert_eq!(
+            ledger_core::reports::snapshot(reopened.ledger()).unwrap(),
+            before
+        );
+        let parts = live.differs_from(reopened.ledger());
+        prop_assert!(parts.is_empty(), "reopened books differ in: {:?}", parts);
+        prop_assert_eq!(reopened.list_attachments(None).unwrap().len(), attachments);
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    /// Regression (CI, 2026-10-13): a payroll run with unrounded employer
+    /// tax posted $65.27794, and sums of it differed in scale between the
+    /// journal replay and the SQLite read-back. Posting now refuses
+    /// fractions of a cent (B-3; `no_entry_posts_a_fraction_of_the_minor_unit`);
+    /// this replays the sequence with the tax rounded, as callers must.
+    #[test]
+    fn regression_payroll_with_a_fraction_of_a_cent() {
+        run_ops(
+            &[
+                Op::Book(0, 1, 1, 1),
+                Op::Book(0, 1, 1, 1),
+                Op::CreateEntry(0),
+                Op::RunPayroll(0, 105_287, 1, 1),
+                Op::GoodClose(2),
+                Op::Pair(6, 8, 1, 1),
+                Op::Post(6),
+            ],
+            0,
+        )
+        .unwrap();
     }
 }
 

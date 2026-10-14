@@ -2358,6 +2358,18 @@ impl Store {
                 "sqlite projection diverged from journal".into(),
             ));
         }
+        // The whole ledger, not only its balances: drafts, documents,
+        // schedules, periods, settings. A replay bug in any of them shows
+        // here even when every balance agrees. (The SQLite read-back below
+        // is partial by design; the projection is checked table by table
+        // at the end.)
+        let parts = replayed.differs_from(&self.ledger);
+        if !parts.is_empty() {
+            return Err(StoreError::VerifyMismatch(format!(
+                "live ledger diverged from journal replay in: {}",
+                parts.join(", ")
+            )));
+        }
         // The accounting snapshot ignores the asset register, so compare it
         // explicitly: journal replay, live ledger, and projection must agree.
         let assets_of = |l: &Ledger| l.registered_assets().cloned().collect::<Vec<_>>();
@@ -2600,7 +2612,7 @@ impl Store {
                             ledger.set_line_class(got, idx, Some(cid as u32))?;
                         }
                     }
-                    ledger.post_entry(got)?;
+                    ledger.replay_post_entry(got)?;
                 }
             }
         }
@@ -3075,7 +3087,7 @@ pub(crate) fn replay_line_into_ledger(
                     )?;
                 }
             }
-            ledger.post_entry(id)?;
+            ledger.replay_post_entry(id)?;
         }
         "entry.reversed" => {
             let want = get_u64(p, "id")?;

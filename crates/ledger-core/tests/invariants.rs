@@ -210,15 +210,66 @@ fn out_of_range_amount_is_rejected() {
         ledger.post_entry(id).unwrap_err(),
         LedgerError::AmountOutOfRange
     );
-    // Too precise.
+    // Too precise: refused as soon as it is added (finer than a cent)...
     let id = ledger.create_entry(date(21), "Too precise");
     let tiny = Money::new("0.00000000001".parse().unwrap(), Currency::USD);
-    ledger.add_line(id, c.cash, Side::Debit, tiny).unwrap();
-    ledger.add_line(id, c.equity, Side::Credit, tiny).unwrap();
+    assert!(matches!(
+        ledger.add_line(id, c.cash, Side::Debit, tiny),
+        Err(LedgerError::FinerThanMinorUnit { places: 2, .. })
+    ));
+    // ...and out of range even for books replayed from before that rule.
+    ledger
+        .replay_add_line(id, c.cash, Side::Debit, tiny)
+        .unwrap();
+    ledger
+        .replay_add_line(id, c.equity, Side::Credit, tiny)
+        .unwrap();
     assert_eq!(
-        ledger.post_entry(id).unwrap_err(),
+        ledger.replay_post_entry(id).unwrap_err(),
         LedgerError::AmountOutOfRange
     );
+}
+
+/// B-3 (DECISION, owner 2026-10-13: a ledger in one money holds no
+/// fractions of its smallest unit). Regression: a payroll run posted
+/// $65.27794 (found by the store's refusal property in CI, 2026-10-13).
+#[test]
+fn no_entry_posts_a_fraction_of_the_minor_unit() {
+    let c = fixture_company();
+    let mut ledger = c.ledger;
+    let usd = |s: &str| Money::new(s.parse().unwrap(), Currency::USD);
+    // Whole cents, with or without trailing zeros, are fine.
+    for ok in ["65.27", "65.270", "65"] {
+        let id = ledger.create_entry(date(21), "cents");
+        ledger.add_line(id, c.cash, Side::Debit, usd(ok)).unwrap();
+        ledger
+            .add_line(id, c.equity, Side::Credit, usd(ok))
+            .unwrap();
+        ledger.post_entry(id).unwrap();
+    }
+    // A fraction of a cent is refused when added...
+    let id = ledger.create_entry(date(21), "sub-cent");
+    assert!(matches!(
+        ledger.add_line(id, c.cash, Side::Debit, usd("65.27794")),
+        Err(LedgerError::FinerThanMinorUnit { places: 2, .. })
+    ));
+    // ...and when posted, whatever path put the line on the draft.
+    ledger
+        .replay_add_line(id, c.cash, Side::Debit, usd("65.275"))
+        .unwrap();
+    ledger
+        .replay_add_line(id, c.equity, Side::Credit, usd("65.275"))
+        .unwrap();
+    assert!(matches!(
+        ledger.post_entry(id),
+        Err(LedgerError::FinerThanMinorUnit { .. })
+    ));
+    assert_eq!(
+        ledger.get_entry(id).unwrap().status(),
+        ledger_core::EntryStatus::Draft
+    );
+    // Books from before the rule still replay as booked.
+    ledger.replay_post_entry(id).unwrap();
 }
 
 #[test]

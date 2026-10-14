@@ -57,7 +57,7 @@ impl AccountType {
 }
 
 /// A single account in the chart of accounts.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Account {
     /// Opaque handle.
     pub id: AccountId,
@@ -84,7 +84,7 @@ pub struct Account {
 }
 
 /// The registry of accounts. Owns id allocation for accounts it holds.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ChartOfAccounts {
     accounts: HashMap<AccountId, Account>,
     by_code: HashMap<String, AccountId>,

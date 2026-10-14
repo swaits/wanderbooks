@@ -4,16 +4,16 @@
 #![allow(missing_docs)]
 
 pub mod app;
-mod attention;
+pub mod attention;
 pub mod books;
-mod charts;
+pub mod charts;
 pub mod data;
 pub mod demo;
-mod export;
-mod fmt;
+pub mod export;
+pub mod fmt;
 pub mod nav;
 pub mod pages;
-mod palette;
+pub mod palette;
 mod receipts;
 mod theme;
 mod widgets;

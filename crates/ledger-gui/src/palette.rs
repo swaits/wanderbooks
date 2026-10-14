@@ -157,42 +157,58 @@ impl Palette {
 ///      query matches everything with score 0.
 ///   2. A match's score is at least the number of non-space query
 ///      characters; consecutive matches and matches at a word start score
-///      more, so a word-start prefix scores at least as high as any
-///      other match of the same query.
+///      more. The score is the best over every way to match (not the
+///      first match found), so a hay holding the query whole at a word
+///      start scores at least as high as any hay's match of it.
 /// ```
-fn fuzzy(hay: &str, query: &str) -> Option<i32> {
-    if query.is_empty() {
+pub fn fuzzy(hay: &str, query: &str) -> Option<i32> {
+    let hay: Vec<char> = hay.to_lowercase().chars().collect();
+    // Query characters, each marked whether a space came just before it
+    // (a space ends a run: the next match earns no run bonus).
+    let mut q: Vec<(char, bool)> = Vec::new();
+    let mut after_space = false;
+    for c in query.to_lowercase().chars() {
+        if c == ' ' {
+            after_space = true;
+        } else {
+            q.push((c, after_space));
+            after_space = false;
+        }
+    }
+    if q.is_empty() {
         return Some(0);
     }
-    let hay: Vec<char> = hay.to_lowercase().chars().collect();
-    let mut score = 0;
-    let mut hi = 0;
-    let mut prev_match = false;
-    for qc in query.to_lowercase().chars() {
-        if qc == ' ' {
-            prev_match = false;
-            continue;
-        }
-        let mut found = false;
-        while hi < hay.len() {
-            let c = hay[hi];
-            hi += 1;
-            if c == qc {
-                score += if prev_match { 6 } else { 1 };
-                if hi == 1 || !hay[hi - 2].is_alphanumeric() {
-                    score += 4;
-                }
-                prev_match = true;
-                found = true;
-                break;
+    // The best score over every way to match (a greedy left-most match
+    // can miss a word start further on): best[j] is the top score for the
+    // query so far with its last character at hay[j].
+    let word_start = |j: usize| j == 0 || !hay[j - 1].is_alphanumeric();
+    let mut best: Vec<Option<i32>> = hay
+        .iter()
+        .enumerate()
+        .map(|(j, &c)| (c == q[0].0).then(|| 1 + if word_start(j) { 4 } else { 0 }))
+        .collect();
+    for &(qc, gap) in &q[1..] {
+        let mut next = vec![None; hay.len()];
+        // The best score ending strictly before j.
+        let mut before: Option<i32> = None;
+        for j in 0..hay.len() {
+            if hay[j] == qc {
+                let bonus = if word_start(j) { 4 } else { 0 };
+                let run = if gap {
+                    None
+                } else {
+                    j.checked_sub(1)
+                        .and_then(|p| best[p])
+                        .map(|s| s + 6 + bonus)
+                };
+                let jump = before.map(|s| s + 1 + bonus);
+                next[j] = run.max(jump);
             }
-            prev_match = false;
+            before = before.max(best[j]);
         }
-        if !found {
-            return None;
-        }
+        best = next;
     }
-    Some(score)
+    best.into_iter().flatten().max()
 }
 
 fn search(b: &Books, query: &str) -> Vec<Item> {

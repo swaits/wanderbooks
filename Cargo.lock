@@ -3631,6 +3631,7 @@ dependencies = [
  "ledger-import",
  "ledger-store",
  "notify",
+ "proptest",
  "rust_decimal",
  "serde",
  "serde_json",

@@ -1,0 +1,12 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc e1abb99e086123434884a3986a83c6a04e095d9f4a0d6b0b8f9490c3ef7a3fb4 # shrinks to center = 721350534.2385265, span_exp = -2, n = 1
+cc 67ed971061efe8d67c42fac1e63e6d1943358315b8d447482fd8e723d2850577 # shrinks to query = "c", head = "ac", tail = "", other = "c"
+cc 2f8bab974c3fe9cadfdc5f457bec479125025199050e9ad7d2a868750951e1d8 # shrinks to a = 0.0, b = -0.4626437454001001, n = 3, same = false
+cc a358fb90f0d14b99605d509ebbe00e178285158223ab165a54676d70a1a01287 # shrinks to plan = BooksPlan { threshold: "0.00", entries: [EntryPlan { day: 0, debits: [(0, 1)], credit_accounts: [0], split_pct: 1, scale: 3, post: false, receipt: false }], reverse: None }
+cc 3b788cd1184019b4cf33c3150a5368e446d20bdc52afe98b6d3094516ac7e5ac # shrinks to a = 1.2726536570066655e-11, b = -0.44869856490793697, n = 1, same = false
+cc adafa1178ead699437f63287c9be531c043a0a9de3ee34f908e4ca3ef81bc6c3 # shrinks to center = 79655376.47358137, span_exp = -6, n = 5

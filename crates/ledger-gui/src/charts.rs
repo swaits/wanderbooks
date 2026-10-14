@@ -17,30 +17,51 @@ fn f(d: Decimal) -> f64 {
 
 /// ```text
 /// INVARIANTS (finite lo <= hi, n >= 1):
-///   1. Evenly spaced by a step of 1, 2, 2.5, or 5 times a power of ten.
+///   1. Evenly spaced by a step of 1, 2, 2.5, or 5 times a power of ten
+///      (each tick a whole multiple of the step), all finite.
 ///   2. The first tick is at or below lo and the last at or above hi, so
 ///      no data falls outside the gridlines.
 ///   3. At most n + 2 ticks.
+///   When no such step exists in f64 (nice ticks past f64's range, within
+///   a factor of ten of it, or a span too small for the magnitude), the
+///   ticks are just [lo, hi] (or [lo]).
 /// ```
 /// "Nice" axis ticks covering [lo, hi].
-fn ticks(lo: f64, hi: f64, n: usize) -> Vec<f64> {
-    let span = (hi - lo).max(1e-9);
-    let raw = span / n as f64;
-    let mag = 10f64.powf(raw.log10().floor());
-    let step = [1.0, 2.0, 2.5, 5.0, 10.0]
-        .iter()
-        .map(|m| m * mag)
-        .find(|s| span / s <= n as f64)
-        .unwrap_or(10.0 * mag);
-    let start = (lo / step).floor() * step;
-    let mut v = vec![start];
-    // Up to the first tick at or above the top, so the data never pokes
-    // past the last gridline.
-    while *v.last().expect("non-empty") < hi - step * 1e-9 {
-        let next = v.last().expect("non-empty") + step;
-        v.push(next);
+pub fn ticks(lo: f64, hi: f64, n: usize) -> Vec<f64> {
+    let n = n.max(1);
+    let fallback = || if lo == hi { vec![lo] } else { vec![lo, hi] };
+    let span = (hi - lo).max(f64::MIN_POSITIVE);
+    if !span.is_finite() {
+        return fallback();
     }
-    v
+    let raw = span / n as f64;
+    let mut mag = 10f64.powf(raw.log10().floor());
+    // Try the nice steps from the smallest that fits n, coarser as needed
+    // (rounding at large magnitudes can cost a tick).
+    for _ in 0..4 {
+        for m in [1.0, 2.0, 2.5, 5.0] {
+            let step = m * mag;
+            if !step.is_finite() || step <= 0.0 || span / step > n as f64 {
+                continue;
+            }
+            let (k0, k1) = ((lo / step).floor(), (hi / step).ceil());
+            if !(k0.is_finite() && k1.is_finite()) || k1 - k0 + 1.0 > (n + 2) as f64 {
+                continue;
+            }
+            let v: Vec<f64> = (0..=(k1 - k0) as i64)
+                .map(|k| (k0 + k as f64) * step)
+                .collect();
+            let ok = v.iter().all(|x| x.is_finite())
+                && v.windows(2).all(|w| w[1] > w[0])
+                && v.first().is_some_and(|f| *f <= lo)
+                && v.last().is_some_and(|l| *l >= hi);
+            if ok {
+                return v;
+            }
+        }
+        mag *= 10.0;
+    }
+    fallback()
 }
 
 fn money_label(v: f64) -> String {

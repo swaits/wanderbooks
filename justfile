@@ -76,6 +76,19 @@ mutants-store:
 mutants-import:
     cargo mutants -p ledger-import --test-package ledger-import -j 4 --timeout 300 -o mutants-import
 
+# Mutation testing of the settings parser and the receipt policy.
+mutants-config:
+    cargo mutants -p ledger-config --test-package ledger-config -j 4 --timeout 120 -o mutants-config
+
+# Mutation testing of the MCP server (every mutant runs the stdio suites).
+mutants-mcp:
+    cargo mutants -p ledger-mcp --test-package ledger-mcp -j 4 --timeout 600 -o mutants-mcp
+
+# Mutation testing of the viewer's logic (formatting, file names, history,
+# search, ticks, the view model, the attention list; not the painting).
+mutants-gui:
+    cargo mutants -p ledger-gui --test-package ledger-gui -j 4 --timeout 300 -o mutants-gui -f crates/ledger-gui/src/fmt.rs -f crates/ledger-gui/src/export.rs -f crates/ledger-gui/src/nav.rs -f crates/ledger-gui/src/attention.rs -f crates/ledger-gui/src/books.rs -f crates/ledger-gui/src/palette.rs -f crates/ledger-gui/src/charts.rs
+
 # Benchmarks of the core's hot paths (no budget gates them yet)
 bench:
     cargo bench -p ledger-core --bench books

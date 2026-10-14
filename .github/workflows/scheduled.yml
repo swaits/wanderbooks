@@ -47,8 +47,36 @@ jobs:
       - uses: actions/checkout@v4
       - uses: jdx/mise-action@v2
       - run: just mutants-import
+      - run: just mutants-config
       - if: always()
         uses: actions/upload-artifact@v4
         with:
           name: mutants-import
-          path: mutants-import/mutants.out
+          path: |
+            mutants-import/mutants.out
+            mutants-config/mutants.out
+  mutants-mcp:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - run: just mutants-mcp
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-mcp
+          path: mutants-mcp/mutants.out
+  mutants-gui:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libgtk-3-dev
+      - run: just mutants-gui
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-gui
+          path: mutants-gui/mutants.out

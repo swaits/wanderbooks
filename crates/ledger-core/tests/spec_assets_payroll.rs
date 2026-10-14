@@ -316,7 +316,7 @@ fn schedule_clamps_to_end_of_life() {
 /// life ends 2026-03-15 so Mar holds 1..14 = 14/31 → 140.00. 17/31 + 14/31
 /// = one full month, and the total is exactly 620.00.
 ///
-/// ASSUMED: life ends on purchase_date + useful_life_months and the end day
+/// CONVENTION (docs/testing.md #9): life ends on purchase_date + useful_life_months and the end day
 /// itself is not held (matches the doc's "17/31 + 14/30" pairing for a
 /// purchase on the 15th).
 #[test]
@@ -343,7 +343,7 @@ fn partial_first_and_last_months_make_one_full_month_b15() {
 /// Jan 17/31 → 170.00, Feb 310.00, Mar 310.00 (acc 790.00), Apr (30 days)
 /// trues up to 930 − 790 = 140.00, not 14/30 × 310 = 144.67.
 ///
-/// ASSUMED: same end-of-life convention as the test above.
+/// CONVENTION (#9): same end-of-life convention as the test above.
 #[test]
 fn last_month_trues_up_unequal_month_lengths_b15() {
     let a = asset("1030.00", "100.00", 3, date(2026, 1, 15));
@@ -867,7 +867,7 @@ fn run_payroll_posts_hand_worked_entry() {
 /// 750.00, state 250.00, SS 620 + 248 = 868.00, Medicare 145 + 58 = 203.00,
 /// other 200.00, net 3567.50 + 1697.00 = 5264.50.
 ///
-/// ASSUMED: lines are aggregated per account ("zero totals are skipped"
+/// CONFIRMED (docs/testing.md #10): lines are aggregated per account ("zero totals are skipped"
 /// implies totals), not one line per employee.
 #[test]
 fn run_payroll_aggregates_employees() {

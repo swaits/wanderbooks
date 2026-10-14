@@ -531,7 +531,7 @@ fn pnl_closed_month_still_reports_its_earnings() {
     assert_eq!(year.net_income(), c(7000));
 }
 
-/// Oracle: P&L SCENARIO 2 (ASSUMED in the spec itself) — start after end
+/// Oracle: P&L SCENARIO 2 (DESIGN, docs/testing.md #1) — start after end
 /// refuses.
 #[test]
 fn pnl_period_start_after_end_refuses() {
@@ -1009,7 +1009,7 @@ fn me_refuses_bad_shares() {
 /// earnings 100.01 -> A 50.01, B 50.00; period income 201.01 -> A 100.51,
 /// B 100.50. Total ending 2251.02 = BS equity.
 ///
-/// ASSUMED: the beginning (unclosed prior earnings) and the period's income
+/// CHANGE PENDING (docs/testing.md #7): the beginning (unclosed prior earnings) and the period's income
 /// are each split separately (INVARIANT 3 names them separately), not
 /// cumulative-then-differenced.
 #[test]
@@ -1407,7 +1407,7 @@ fn sorted_amounts(lines: &[ledger_core::CashFlowLine]) -> Vec<Decimal> {
 /// 400; AR up 300 (-300), AP up 80 (+80); CFO 180; financing loan 300 +
 /// contribution 100 = 400; net change 580 = cash 1000 -> 1580.
 ///
-/// ASSUMED: one working-capital / financing line per account that changed.
+/// CHANGE PENDING (docs/testing.md #8): one working-capital / financing line per account that changed.
 #[test]
 fn cf_hand_computed_with_designated_debt() {
     let co = cf_example_books();
@@ -2418,7 +2418,7 @@ proptest! {
     /// NI + depreciation + working capital; with or without a close and a
     /// designated loan.
     ///
-    /// ASSUMED: with no registered fixed assets, depreciation and investing
+    /// CHANGE PENDING (docs/testing.md #8): with no registered fixed assets, depreciation and investing
     /// are zero (receivables are current, so working capital).
     #[test]
     fn prop_cf_sections_sum_to_change_in_cash(gens in arb_books(), (a, _m, e) in three_days(), month in opt_month(), designate in any::<bool>()) {

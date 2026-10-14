@@ -1235,7 +1235,7 @@ fn a_loss_closes_as_a_debit_to_equity() {
 }
 
 /// Oracle: close INVARIANT 5: nothing to close posts nothing and returns
-/// None. ASSUMED: the period is still marked closed (step 3 of the doc).
+/// None. CONVENTION (docs/testing.md #4): the period is still marked closed (step 3 of the doc).
 #[test]
 fn a_close_with_nothing_to_close_posts_no_entry() {
     let mut b = books();

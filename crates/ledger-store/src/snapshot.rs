@@ -40,6 +40,14 @@ pub enum DiskCheck {
         /// Journal lines there are.
         journal: u64,
     },
+    /// The database has applied journal lines this snapshot hasn't read
+    /// yet (normal while the writer is busy; the next refresh catches up).
+    Ahead {
+        /// Journal lines the database has applied.
+        applied: u64,
+        /// Journal lines this snapshot has read.
+        journal: u64,
+    },
     /// No database file (the writer rebuilds it on start).
     Missing,
     /// The database differs from the journal: what differs.
@@ -192,17 +200,27 @@ impl Snapshot {
 
     /// Compare the writer's SQLite database (opened read-only) with this
     /// snapshot's own projection of the journal, every table, row for row.
+    ///
+    /// The applied position and the tables are read in one read
+    /// transaction, so a write landing between the two reads can't make
+    /// them disagree (the writer is often busy while a viewer checks: found
+    /// by the concurrency test, 2026-10-13, as a false "differs").
     pub fn check_disk(&self) -> DiskCheck {
         use rusqlite::OpenFlags;
         let path = self.data_dir.join(DB_FILE);
         if !path.exists() {
             return DiskCheck::Missing;
         }
-        let conn = match Connection::open_with_flags(
+        let mut conn = match Connection::open_with_flags(
             &path,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         ) {
             Ok(c) => c,
+            Err(e) => return DiskCheck::Unreadable(e.to_string()),
+        };
+        // One consistent view of the database for every read below.
+        let conn = match conn.transaction() {
+            Ok(t) => t,
             Err(e) => return DiskCheck::Unreadable(e.to_string()),
         };
         let applied: u64 = match conn.query_row(
@@ -214,8 +232,11 @@ impl Snapshot {
             Err(e) => return DiskCheck::Unreadable(e.to_string()),
         };
         let journal = self.journal_seq();
-        if applied != journal {
+        if applied < journal {
             return DiskCheck::Behind { applied, journal };
+        }
+        if applied > journal {
+            return DiskCheck::Ahead { applied, journal };
         }
         let (disk, ours) = match (projection_rows(&conn), projection_rows(&self.conn)) {
             (Ok(d), Ok(o)) => (d, o),

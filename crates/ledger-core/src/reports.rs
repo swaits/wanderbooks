@@ -832,8 +832,10 @@ pub struct MembersEquityStatement {
 ///      1065 Schedule K-1 instructions, Item L, "beginning capital account
 ///      and ending capital account ... based on the partnership's books").
 ///   3b. A member's income is the roll-forward's remainder: their share of
-///      the period's income within a rounding cent; the members' incomes
-///      MUST sum to the period's net income.
+///      the period's income, off by less than two cents (under one cent of
+///      rounding at each end of the cumulative split); the members'
+///      incomes MUST sum to the period's net income. (Earnings a close has
+///      already moved into capital were rounded by that close, B-13.)
 ///   4. NEVER hide an unexplained change: it goes in "other".
 ///   5. An entry dated `start` is period activity, not beginning capital.
 /// SCENARIOS:

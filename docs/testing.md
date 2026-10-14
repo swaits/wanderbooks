@@ -17,6 +17,7 @@ the store's journal safety; the other crates come next (gap list).
 | Metamorphic | scaling, reversal, ordering invariance (2) | `spec_reports.rs` | `just check` | seconds | every change |
 | Refusal law (store) | a refused command never reaches the journal; the books reopen to the same reports (2, 3) | `store.rs` `refused_commands_never_reach_the_journal` | `just check` (`STORE_CASES=5000` deeper) | ~20s | every change |
 | Fault injection (store) | a full disk or a cut-off append leaves whole, openable books (1) | `ledger-store/tests/faults.rs`, `store.rs` (`power_loss_at_any_byte_of_the_last_append_is_recovered`) | `just check` | ~5s | every change |
+| Concurrency (store) | a viewer reading while the books are written sees only whole books, never a false "differs" (2) | `ledger-store/tests/concurrency.rs` | `just check` | <1s | every change |
 | Model-based stateful | the Lean state machine, transcribed (3) | `tests/model.rs` | `just check` | ~3s | every change |
 | Differential: Decimal vs i64 | the kernel at two types (3) | `kernel_bridge.rs` | `just check` | <1s | every change |
 | Differential: GnuCash | another implementation, adjudicated (3) | `tests/oracle_gnucash.rs`, `oracle/gnucash/` | `just oracle` | ~2 min | weekly |
@@ -78,6 +79,7 @@ accounting question), CHANGE (a source says otherwise; work pending).
 | 9 | An asset's life ends at purchase + life months, that day not held; day-count proration | CONVENTION | Exactly N months of service; day proration and the mid-month convention are both accepted book policies (ASC 360-10-35-4 not read: login) |
 | 10 | A payroll entry has one line per account total | CONFIRMED | The per-employee detail the IRS requires ("Amounts and dates of all wage ... payments", Employment Tax Recordkeeping) is kept in the run; a summary entry is standard |
 | 11 | A period with exactly the dates of an existing one is allowed | DESIGN | Nothing governs duplicate periods; harmless (the second close locks only). Refusing exact duplicates is an option |
+| 12 | Each close into members' capital rounds on its own (ties to the earlier member) | CHANGE (pending) | Found 2026-10-13 with #7: twelve monthly 50/50 closes can leave one member several cents ahead of half the year's income. Closes should split cumulatively too (year-to-date allocation minus what earlier closes gave); a new journaled rounding rule, older closes replaying as booked |
 
 Questions are settled from the sources, not by any one company's CPA
 (wanderbooks is general software). Where the standards leave a real
@@ -93,7 +95,7 @@ B-14) are the first.
 | Integration | SKIP for the core (no collaborators) | the core gains one; covered at the store and MCP layers |
 | End-to-end | SKIP for the core (a library) | MCP stdio tests cover the journeys |
 | Security properties | SKIP for the core (no roles, no secrets) | the first permission concept, or a secret-bearing field |
-| Concurrency stress | SKIP for the core (no shared state) | the first `Arc`, atomic, or lock in the core; the GUI and MCP server have threads (next) |
+| Concurrency stress | SKIP for the core (no shared state); DONE for the store's writer + viewer (found the false "differs") | the first `Arc`, atomic, or lock in the core; the MCP server's HTTP transport shares one store across sessions (next) |
 | Lean: apportion's sum law for any n | OPEN | Kani covers n <= 3, properties n <= 5; needs a permutation lemma |
 | ASC paragraphs not yet read | OPEN | ASC 360-10-35-4, 340-10, 230-10-45-10, 606-10-55-37B, 210: needs a FASB basic-view login |
 | GnuCash's own close | OPEN | the oracle books closes as ordinary entries; comparing GnuCash's Close Book needs its Scheme API |

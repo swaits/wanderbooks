@@ -2244,3 +2244,99 @@ fn replay_refuses_a_journaled_entry_it_does_not_rederive() {
     };
     assert!(msg.contains("events"), "{msg}");
 }
+
+/// Replay re-derives a schedule's monthly posting and refuses a journal
+/// whose recorded entry differs from it.
+#[test]
+fn replay_refuses_a_schedule_posting_it_does_not_rederive() {
+    let dir = test_dir("rederive-schedule");
+    let mut store = Store::create(&dir, Currency::USD).unwrap();
+    let prepaid = store_add(&mut store, "1300", AccountType::Asset);
+    let insurance = store_add(&mut store, "6300", AccountType::Expense);
+    let day = |m, d| NaiveDate::from_ymd_opt(2026, m, d).unwrap();
+    let id = store
+        .register_schedule(ledger_core::NewSchedule {
+            description: "Insurance".into(),
+            kind: ledger_core::ScheduleKind::PrepaidExpense,
+            total: usd(1200),
+            start: day(1, 1),
+            months: 12,
+            balance_account: prepaid,
+            pl_account: insurance,
+        })
+        .unwrap();
+    store.post_schedule_month(id, day(1, 31)).unwrap();
+    drop(store);
+    rechain(&dir, |_| {});
+    drop(Store::open(&dir).unwrap());
+    rechain(&dir, |lines| {
+        let posted = lines
+            .iter_mut()
+            .find(|l| l.line_type == "schedule.posted")
+            .unwrap();
+        for l in posted.payload["entry"]["lines"].as_array_mut().unwrap() {
+            l["amount"] = serde_json::json!("99.00");
+        }
+    });
+    let err = Store::open(&dir).err().expect("refused").to_string();
+    assert!(err.contains("differ"), "{err}");
+}
+
+/// A disposal refused for an account's type says which type it needed.
+#[test]
+fn a_disposal_account_refusal_names_the_type_needed() {
+    let dir = test_dir("dispose-type-message");
+    let (mut store, asset, cash, gain) = laptop(&dir);
+    let jan31 = NaiveDate::from_ymd_opt(2026, 1, 31).unwrap();
+    let proceeds = store
+        .dispose_asset(asset, jan31, usd(900), gain, gain)
+        .unwrap_err()
+        .to_string();
+    let gain_loss = store
+        .dispose_asset(asset, jan31, usd(900), cash, cash)
+        .unwrap_err()
+        .to_string();
+    assert!(proceeds.contains("asset"), "{proceeds}");
+    assert!(gain_loss.contains("revenue or expense"), "{gain_loss}");
+}
+
+/// A database whose pages are damaged though its settings still read
+/// fails SQLite's integrity check, and is kept aside and rebuilt.
+#[test]
+fn a_database_with_damaged_pages_is_rebuilt() {
+    let dir = test_dir("damaged-pages");
+    let mut store = build_books(&dir);
+    for n in 0..200u64 {
+        store
+            .add_customer(&format!("customer {n} {}", "x".repeat(100)))
+            .unwrap();
+    }
+    let before = ledger_core::reports::snapshot(store.ledger()).unwrap();
+    drop(store);
+    let db = dir.join(ledger_store::DB_FILE);
+    let mut bytes = std::fs::read(&db).unwrap();
+    // Scramble only the last pages (the customers just added); the header,
+    // schema, and settings at the front still read.
+    let tail = bytes.len() - bytes.len() / 4;
+    for b in bytes.iter_mut().skip(tail).step_by(7) {
+        *b ^= 0x5a;
+    }
+    std::fs::write(&db, &bytes).unwrap();
+    let store = Store::open(&dir).unwrap();
+    store.verify().unwrap();
+    assert_eq!(
+        ledger_core::reports::snapshot(store.ledger()).unwrap(),
+        before
+    );
+    let kept = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter(|e| {
+            e.as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".corrupt.")
+        })
+        .count();
+    assert_eq!(kept, 1);
+}

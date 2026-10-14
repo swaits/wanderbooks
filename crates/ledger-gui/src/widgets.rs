@@ -114,15 +114,35 @@ pub fn amount_cell(
     } else {
         theme::regular(14.0)
     };
+    // An amount copies as its plain decimal: a click when the cell doesn't
+    // drill down, the right-click menu when it does.
+    let copy = crate::fmt::plain(text);
     let (rect, resp) = ui.allocate_exact_size(
         vec2(width, 22.0),
-        if drill {
+        if drill || copy.is_some() {
             Sense::click()
         } else {
             Sense::hover()
         },
     );
     let p = pal(ui.ctx());
+    let copy_id = resp.id.with("copy");
+    if let Some(v) = &copy {
+        if drill {
+            resp.context_menu(|ui| copy_item(ui, "Copy amount", v));
+        } else if resp.clicked() {
+            copy_now(ui, copy_id, v);
+        }
+    }
+    let copied = copy.is_some() && !drill && recently_copied(ui, copy_id);
+    if copy.is_some() && !drill && resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let resp = if copy.is_some() && !drill {
+        resp.on_hover_text(if copied { "Copied" } else { "Click to copy" })
+    } else {
+        resp
+    };
     let hovered = drill && resp.hovered();
     let galley = ui.painter().layout_no_wrap(
         text.to_string(),
@@ -141,6 +161,15 @@ pub fn amount_cell(
                 egui::pos2(rect.right(), rect.center().y + galley.size().y / 2.0),
             ],
             Stroke::new(1.0, p.accent),
+        );
+    }
+    if copied {
+        ui.painter().text(
+            egui::pos2(pos.x - 4.0, rect.center().y),
+            egui::Align2::RIGHT_CENTER,
+            egui_phosphor::regular::CHECK,
+            egui::FontId::proportional(12.0),
+            p.positive,
         );
     }
     ui.painter().galley(pos, galley, color);
@@ -221,6 +250,73 @@ pub fn empty(ui: &mut Ui, icon: &str, title: &str, text: &str) {
         );
         ui.add_space(18.0);
     });
+}
+
+/// Put `value` on the clipboard, remembering when under `id` (for the
+/// brief "Copied" check).
+pub fn copy_now(ui: &Ui, id: egui::Id, value: &str) {
+    ui.ctx().copy_text(value.to_string());
+    let now = ui.input(|i| i.time);
+    ui.ctx().data_mut(|d| d.insert_temp(id, now));
+}
+
+/// Whether `id` was copied in the last moment; keeps repainting until the
+/// check fades.
+pub fn recently_copied(ui: &Ui, id: egui::Id) -> bool {
+    let at: Option<f64> = ui.ctx().data(|d| d.get_temp(id));
+    let now = ui.input(|i| i.time);
+    let recent = at.is_some_and(|t| now - t < 1.2);
+    if recent {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(200));
+    }
+    recent
+}
+
+/// A value that copies itself when clicked: a pointer and a copy icon on
+/// hover, a check for a moment after.
+pub fn copyable(ui: &mut Ui, text: RichText, value: &str) -> Response {
+    let id = ui.id().with(("copy", value));
+    let p = pal(ui.ctx());
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        let r = ui.add(egui::Label::new(text).sense(Sense::click()));
+        let recent = recently_copied(ui, id);
+        let (slot, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
+        if r.hovered() || recent {
+            ui.painter().text(
+                slot.center(),
+                egui::Align2::CENTER_CENTER,
+                if recent {
+                    egui_phosphor::regular::CHECK
+                } else {
+                    egui_phosphor::regular::COPY
+                },
+                egui::FontId::proportional(12.0),
+                if recent { p.positive } else { p.muted },
+            );
+        }
+        if r.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        let r = r.on_hover_text(if recent { "Copied" } else { "Click to copy" });
+        if r.clicked() {
+            copy_now(ui, id, value);
+        }
+        r
+    })
+    .inner
+}
+
+/// A "Copy …" item for a right-click menu.
+pub fn copy_item(ui: &mut Ui, label: &str, value: &str) {
+    if ui
+        .button(format!("{} {label}", egui_phosphor::regular::COPY))
+        .clicked()
+    {
+        ui.ctx().copy_text(value.to_string());
+        ui.close();
+    }
 }
 
 /// "Copy prompt": puts an agent prompt on the clipboard.

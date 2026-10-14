@@ -24,10 +24,12 @@ pub fn detail(ui: &mut Ui, b: &Books, e: &EntryInfo, shell: &mut Shell<'_>) {
         .auto_shrink(false)
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(
+                widgets::copyable(
+                    ui,
                     RichText::new(format!("Entry #{}", e.id))
                         .font(theme::regular(12.5))
                         .color(p.muted),
+                    &format!("#{}", e.id),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
@@ -106,7 +108,11 @@ pub fn detail(ui: &mut Ui, b: &Books, e: &EntryInfo, shell: &mut Shell<'_>) {
                     ui.label(fmt::date(e.date));
                     ui.end_row();
                     k(ui, "Amount");
-                    ui.label(RichText::new(fmt::dollars(e.amount)).font(theme::semibold(14.0)));
+                    widgets::copyable(
+                        ui,
+                        RichText::new(fmt::dollars(e.amount)).font(theme::semibold(14.0)),
+                        &fmt::plain(&fmt::dollars(e.amount)).unwrap_or_default(),
+                    );
                     ui.end_row();
                     if let Some(c) = &created {
                         k(ui, "Recorded");

@@ -168,18 +168,22 @@ pub fn show_account(ui: &mut Ui, b: &Books, id: u64, shell: &mut Shell<'_>) {
         .range
         .unwrap_or((first.min(b.today), b.today));
     page(ui, "account", |ui| {
-        ui.label(
+        widgets::copyable(
+            ui,
             RichText::new(format!("{:?} account · {}", a.account_type, a.code))
                 .font(theme::regular(13.0))
                 .color(p.muted),
+            &a.code,
         );
         ui.label(RichText::new(&a.name).font(theme::bold(26.0)));
         ui.add_space(4.0);
         let bal = b.balance_on(id, b.today);
-        ui.label(
+        widgets::copyable(
+            ui,
             RichText::new(format!("Balance today {}", fmt::dollars(bal)))
                 .font(theme::regular(15.0))
                 .color(p.muted),
+            &fmt::plain(&fmt::dollars(bal)).unwrap_or_default(),
         );
         ui.add_space(14.0);
         let hist = balance_history(&b.ledger, &[id]);
@@ -274,6 +278,25 @@ pub fn show_account(ui: &mut Ui, b: &Books, id: u64, shell: &mut Shell<'_>) {
                         vec2(w, if sub.is_empty() { 30.0 } else { 42.0 }),
                         Sense::click(),
                     );
+                    resp.context_menu(|ui| {
+                        for (label, v) in [("Copy debit", d), ("Copy credit", c)] {
+                            if !v.is_zero() {
+                                widgets::copy_item(
+                                    ui,
+                                    label,
+                                    &fmt::plain(&fmt::money(v)).unwrap_or_default(),
+                                );
+                            }
+                        }
+                        widgets::copy_item(
+                            ui,
+                            "Copy balance",
+                            &fmt::plain(&fmt::money(bal)).unwrap_or_default(),
+                        );
+                        if let Some(id) = sub.strip_prefix('#').and_then(|t| t.split(' ').next()) {
+                            widgets::copy_item(ui, "Copy entry number", &format!("#{id}"));
+                        }
+                    });
                     if resp.hovered() && !strong {
                         ui.painter().rect_filled(r, CornerRadius::same(6), p.hover);
                     }

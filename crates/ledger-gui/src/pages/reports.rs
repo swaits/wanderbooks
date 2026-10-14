@@ -1540,15 +1540,37 @@ fn render(ui: &mut Ui, t: &Table, pdf: &PdfInfo, shell: &mut Shell<'_>) {
                             egui::pos2(x1 - col_w + 8.0, rr.top()),
                             egui::pos2(x1, rr.bottom()),
                         );
+                        let copy = fmt::plain(&text);
                         let cresp = ui.interact(
                             cell,
                             ui.id().with(("cell", ri, i)),
-                            if c.drill.is_some() {
+                            if c.drill.is_some() || copy.is_some() {
                                 Sense::click()
                             } else {
                                 Sense::hover()
                             },
                         );
+                        // An amount copies as its plain decimal: a click
+                        // where the cell doesn't drill down, the right-click
+                        // menu where it does.
+                        if let Some(v) = &copy {
+                            if c.drill.is_some() {
+                                cresp.context_menu(|ui| widgets::copy_item(ui, "Copy amount", v));
+                            } else {
+                                if cresp.hovered() {
+                                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                }
+                                if cresp.clicked() {
+                                    widgets::copy_now(ui, cresp.id, v);
+                                }
+                                let note = if widgets::recently_copied(ui, cresp.id) {
+                                    "Copied"
+                                } else {
+                                    "Click to copy"
+                                };
+                                cresp.clone().on_hover_text(note);
+                            }
+                        }
                         let hovered = c.drill.is_some() && cresp.hovered();
                         let vcolor = if hovered { p.accent } else { color };
                         let vfont = if matches!(r.kind, Kind::Line) {
@@ -1677,6 +1699,15 @@ fn gl(ui: &mut Ui, b: &Books, s: NaiveDate, e: NaiveDate, shell: &mut Shell<'_>)
                            color: egui::Color32|
                  -> egui::Response {
                     let (r, resp) = ui.allocate_exact_size(vec2(w, 24.0), Sense::click());
+                    resp.context_menu(|ui| {
+                        for v in &vals {
+                            if let Some(id) = v.strip_prefix('#') {
+                                widgets::copy_item(ui, "Copy entry number", &format!("#{id}"));
+                            } else if let Some(a) = fmt::plain(v) {
+                                widgets::copy_item(ui, &format!("Copy {v}"), &a);
+                            }
+                        }
+                    });
                     if resp.hovered() && !strong {
                         ui.painter().rect_filled(r, CornerRadius::same(4), p.hover);
                     }

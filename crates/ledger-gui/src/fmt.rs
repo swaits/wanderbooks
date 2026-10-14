@@ -87,6 +87,31 @@ fn group(d: Decimal) -> String {
     format!("{out}.{frac}")
 }
 
+/// The plain decimal behind a displayed amount, for the clipboard:
+/// `$1,234.56` → `1234.56`, `(207.68)` and `−12.00` → `-207.68`, `-12.00`.
+/// Exact (the display never rounds). None when the text isn't an amount.
+pub fn plain(display: &str) -> Option<String> {
+    let t = display.trim();
+    let (neg, t) = match t.strip_prefix('(').and_then(|x| x.strip_suffix(')')) {
+        Some(inner) => (true, inner),
+        None => (false, t),
+    };
+    let (neg, t) = match t.strip_prefix('\u{2212}').or_else(|| t.strip_prefix('-')) {
+        Some(rest) => (!neg, rest),
+        None => (neg, t.strip_prefix('+').unwrap_or(t)),
+    };
+    let digits: String = t.chars().filter(|c| !matches!(c, '$' | ',')).collect();
+    let d: Decimal = digits.parse().ok()?;
+    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        return None;
+    }
+    Some(if neg && !d.is_zero() {
+        format!("-{digits}")
+    } else {
+        digits
+    })
+}
+
 /// A percent change from `prev` to `now`, if `prev` isn't zero.
 pub fn pct_change(prev: Decimal, now: Decimal) -> Option<f64> {
     if prev.is_zero() {
@@ -213,5 +238,12 @@ mod tests {
         assert_eq!(label("ein"), "EIN");
         assert_eq!(label("irs_name_control"), "IRS name control");
         assert_eq!(words("PrepaidExpense"), "Prepaid expense");
+        assert_eq!(plain("$1,234.56").as_deref(), Some("1234.56"));
+        assert_eq!(plain("(207.68)").as_deref(), Some("-207.68"));
+        assert_eq!(plain("\u{2212}$12.00").as_deref(), Some("-12.00"));
+        assert_eq!(plain("+1,000.005").as_deref(), Some("1000.005"));
+        assert_eq!(plain("0.00").as_deref(), Some("0.00"));
+        assert_eq!(plain("Debit"), None);
+        assert_eq!(plain(""), None);
     }
 }

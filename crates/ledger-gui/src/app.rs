@@ -675,12 +675,23 @@ fn live_status(ui: &mut Ui, b: &Books, since_update: f64, live: bool) {
                 } else {
                     (icon::WARNING_CIRCLE, p.negative)
                 };
-                ui.label(
-                    RichText::new(format!("{glyph} {text}"))
-                        .font(theme::regular(11.5))
-                        .color(color),
-                )
-                .on_hover_text(tip);
+                let r = ui
+                    .label(
+                        RichText::new(format!("{glyph} {text}"))
+                            .font(theme::regular(11.5))
+                            .color(color),
+                    )
+                    .on_hover_text(tip);
+                if text == "Journal chain verified" {
+                    r.context_menu(|ui| {
+                        crate::widgets::copy_item(ui, "Copy journal head", &b.head);
+                        crate::widgets::copy_item(
+                            ui,
+                            "Copy data folder",
+                            &b.data_dir.display().to_string(),
+                        );
+                    });
+                }
             }
         });
 }

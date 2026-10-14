@@ -134,6 +134,22 @@ fn list(ui: &mut Ui, b: &Books, selected: Option<u64>, shell: &mut Shell<'_>) {
 fn row(ui: &mut Ui, b: &Books, e: &EntryInfo, on: bool, since_update: f64) -> egui::Response {
     let p = pal(ui.ctx());
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 50.0), Sense::click());
+    resp.context_menu(|ui| {
+        widgets::copy_item(
+            ui,
+            "Copy amount",
+            &fmt::plain(&fmt::money(e.amount)).unwrap_or_default(),
+        );
+        if !e.cash_effect.is_zero() {
+            widgets::copy_item(
+                ui,
+                "Copy cash effect",
+                &fmt::plain(&fmt::money(e.cash_effect)).unwrap_or_default(),
+            );
+        }
+        widgets::copy_item(ui, "Copy entry number", &format!("#{}", e.id));
+        widgets::copy_item(ui, "Copy description", &e.description);
+    });
     let fresh = b.fresh.contains(&e.id) && since_update < 8.0;
     if on {
         ui.painter()

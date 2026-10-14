@@ -246,7 +246,11 @@ fn detail(ui: &mut Ui, b: &Books, a: &Attachment, shell: &mut Shell<'_>) {
                     }
                 });
             });
-            ui.label(RichText::new(&a.file_name).font(theme::bold(20.0)));
+            widgets::copyable(
+                ui,
+                RichText::new(&a.file_name).font(theme::bold(20.0)),
+                &a.file_name,
+            );
             ui.add_space(8.0);
             egui::Grid::new(("docfacts", a.id))
                 .num_columns(2)
@@ -265,8 +269,10 @@ fn detail(ui: &mut Ui, b: &Books, a: &Attachment, shell: &mut Shell<'_>) {
                     ui.label(fmt::timestamp(&a.created_at));
                     ui.end_row();
                     k(ui, "SHA-256");
-                    ui.add(
-                        egui::Label::new(RichText::new(&a.blob_sha).monospace().size(11.5)).wrap(),
+                    widgets::copyable(
+                        ui,
+                        RichText::new(&a.blob_sha).monospace().size(11.5),
+                        &a.blob_sha,
                     );
                     ui.end_row();
                     if let Some(e) = a.entry_id {

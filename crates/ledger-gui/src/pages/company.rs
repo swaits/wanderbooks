@@ -20,7 +20,7 @@ fn kv(ui: &mut Ui, k: &str, v: &str) {
     // Narrow, the label goes above its value.
     if ui.available_width() < 360.0 {
         ui.label(RichText::new(k).font(theme::regular(12.0)).color(p.muted));
-        ui.add(egui::Label::new(RichText::new(v).font(theme::regular(13.0))).wrap());
+        widgets::copyable(ui, RichText::new(v).font(theme::regular(13.0)), v);
         ui.add_space(4.0);
         return;
     }
@@ -34,7 +34,7 @@ fn kv(ui: &mut Ui, k: &str, v: &str) {
             theme::regular(13.0),
             p.muted,
         );
-        ui.add(egui::Label::new(RichText::new(v).font(theme::regular(13.0))).wrap());
+        widgets::copyable(ui, RichText::new(v).font(theme::regular(13.0)), v);
     });
 }
 

@@ -72,6 +72,10 @@ mutants:
 mutants-store:
     STORE_CASES=64 cargo mutants -p ledger-store --test-package ledger-store -j 3 --timeout 300 -o mutants-store
 
+# Mutation testing of the importers and report renderers.
+mutants-import:
+    cargo mutants -p ledger-import --test-package ledger-import -j 4 --timeout 300 -o mutants-import
+
 # Benchmarks of the core's hot paths (no budget gates them yet)
 bench:
     cargo bench -p ledger-core --bench books

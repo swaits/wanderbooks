@@ -175,6 +175,15 @@ fn number(
 ///      text, right-aligned. NEVER a number Excel would show wrong.
 ///   2. Every statement row is a row, in order, with its label.
 ///   3. The output is a valid XLSX (a zip holding a workbook).
+///   4. Layout: the company, title, and period on rows 1-3, each merged
+///      across the sheet's columns and centered; column headings on row 5,
+///      those over amounts right-aligned; content from row 6. A spacer is
+///      an empty row, the general ledger's accounts are one empty row
+///      apart, and the footer is one empty row below the last content.
+///   5. A statement row with `rule_above` (crate::report) carries a thin
+///      top border across every amount column, blank ones included; no
+///      other row's amounts do.
+///   6. Exact text groups thousands in threes ("1,234,567.125").
 /// ```
 pub fn report_to_xlsx(report: &XlsxReport<'_>, meta: &ReportMeta) -> Result<Vec<u8>, XlsxError> {
     let mut workbook = Workbook::new();
@@ -262,7 +271,10 @@ fn general_ledger(
         sheet.write_string_with_format(row, i as u16, h.to_uppercase(), fmt)?;
     }
     row += 1;
-    for a in &gl.accounts {
+    for (n, a) in gl.accounts.iter().enumerate() {
+        if n > 0 {
+            row += 1; // an empty row between accounts
+        }
         let name = format!("{} {}", a.code, a.name);
         sheet.write_string_with_format(row, 0, &name, &f.bold)?;
         row += 1;
@@ -290,7 +302,7 @@ fn general_ledger(
         number(sheet, row, 4, a.total_debits, &f.dollars_sum)?;
         number(sheet, row, 5, a.total_credits, &f.dollars_sum)?;
         number(sheet, row, 6, a.ending_balance, &f.dollars_sum)?;
-        row += 2;
+        row += 1;
     }
     for (c, w) in [
         (0, 12.0),

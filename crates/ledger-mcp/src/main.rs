@@ -113,6 +113,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         (None, None) => ReceiptPolicy::default(),
     };
+    let roles = server::CashRoles {
+        cash: settings.cash_accounts,
+        financing: settings.financing_accounts,
+        investing: settings.investing_accounts,
+    };
     let company = settings.company;
 
     let mut store = if data_dir.join(ledger_store::JOURNAL_FILE).exists() {
@@ -138,12 +143,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
     if let Some(addr) = http_addr {
         eprintln!("ledger-mcp: store verified, serving Streamable HTTP on {addr}");
-        rt.block_on(serve_http(addr, store, policy, company))?;
+        rt.block_on(serve_http(addr, store, policy, company, roles))?;
         return Ok(());
     }
 
     eprintln!("ledger-mcp: store verified, serving over stdio");
-    let server = BooksServer::new(store, policy).with_company(company);
+    let server = BooksServer::new(store, policy)
+        .with_company(company)
+        .with_cash_roles(roles);
     rt.block_on(async {
         let running = server.serve(stdio()).await?;
         let _ = running.waiting().await;
@@ -157,6 +164,7 @@ async fn serve_http(
     store: Store,
     policy: ReceiptPolicy,
     company: company::Company,
+    roles: server::CashRoles,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use rmcp::transport::streamable_http_server::{
         StreamableHttpService, session::local::LocalSessionManager,
@@ -167,7 +175,8 @@ async fn serve_http(
     let service = StreamableHttpService::new(
         move || {
             let server = server::BooksServer::new_shared(store.clone(), policy.clone())
-                .with_company(company.clone());
+                .with_company(company.clone())
+                .with_cash_roles(roles.clone());
             Ok(server)
         },
         Arc::new(LocalSessionManager::default()),

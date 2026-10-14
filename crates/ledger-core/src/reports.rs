@@ -1041,9 +1041,16 @@ pub struct CashFlowParams {
     pub end: chrono::NaiveDate,
     /// Accounts treated as cash. Their net change is the reconciling total.
     pub cash_accounts: Vec<crate::AccountId>,
-    /// Liability accounts treated as financing (debt). Default empty: all
-    /// liabilities are operating working capital, all equity is financing.
+    /// Liability accounts treated as financing (debt, including what the
+    /// owners advanced: ASC 230-10-45-14(2) "other short- or long-term
+    /// borrowing"). Default empty: all liabilities are operating working
+    /// capital. All equity is financing.
     pub financing_accounts: Vec<crate::AccountId>,
+    /// Asset accounts treated as investing: loans the entity makes and
+    /// investments it buys (ASC 230-10-20; 230-10-45-13). Registered fixed
+    /// assets are investing without being listed. Default empty: other
+    /// assets are operating working capital.
+    pub investing_accounts: Vec<crate::AccountId>,
 }
 
 /// Cash flow statement, indirect method.
@@ -1092,32 +1099,42 @@ pub struct CashFlowStatement {
 ///
 /// Pure function of the ledger: net income plus non-cash depreciation plus
 /// working-capital changes gives operating cash flow; fixed-asset purchases
-/// and disposal proceeds give investing; equity and designated debt give
-/// financing. The three sections sum to the net change in `cash_accounts`.
+/// and disposal proceeds, and the accounts named as investing, give
+/// investing; equity and the debt named as financing give financing. The
+/// three sections sum to the net change in `cash_accounts`.
 ///
 /// ```text
 /// GOAL: the statement of cash flows by the indirect method: net income
 ///       adjusted to operating cash, plus investing and financing, for a
 ///       period.
 /// SOURCE: docs/spec/rules.md B-14 (ASC 230-10-45-28 indirect method;
-///         230-10-45-16 operating inflows).
+///         230-10-45-16 operating inflows; 230-10-45-7/8 gross over net;
+///         230-10-45-13/14/15 investing and financing flows; 230-10-20
+///         investing activities).
 /// INVARIANTS:
 ///   1. Operating + investing + financing MUST equal the net change in the
 ///      cash accounts over the period, exactly.
 ///   2. Operating MUST start from the period's net income (closing entries
 ///      excluded) and adjust for changes in non-cash working-capital
 ///      accounts.
-///   3. Investing MUST hold changes in non-current assets (fixed assets);
-///      a disposal's gain or loss moves out of operating into investing.
+///   3. Investing MUST hold fixed-asset purchases and disposal proceeds
+///      (a disposal's gain or loss moves out of operating into investing)
+///      and the changes in the accounts named as investing.
 ///   4. Financing MUST hold changes in equity (other than earnings) and in
 ///      the liabilities named as financing.
+///   4a. Investing and financing MUST be gross (ASC 230-10-45-7: gross
+///      receipts and payments are "more relevant" than net): per account,
+///      cash in and cash out are separate lines (contributions apart from
+///      distributions, borrowing apart from repayment), netted only within
+///      one entry.
 ///   5. NEVER count closing entries.
 ///   6. The period is `[start, end]`, inclusive: an entry dated `start` is
 ///      period activity, not part of the beginning cash balance.
 ///   7. Every line's amount is its cash effect: positive is cash in. Its
-///      label names the direction the balance moved ("Increase in" /
-///      "Decrease in"; "Proceeds from" / "Repayment of" for financing
-///      debt; "Owner contributions" / "Owner distributions" for equity).
+///      label names the direction ("Increase in" / "Decrease in" for
+///      working capital; "Proceeds from" / "Repayment of" for financing
+///      debt; "Owner contributions" / "Owner distributions" for equity;
+///      "Payments for" / "Collections on" for investing accounts).
 /// ```
 pub fn cash_flow(
     ledger: &Ledger,
@@ -1148,6 +1165,8 @@ pub fn cash_flow(
     let cash_set: HashSet<crate::AccountId> = params.cash_accounts.iter().copied().collect();
     let financing_set: HashSet<crate::AccountId> =
         params.financing_accounts.iter().copied().collect();
+    let investing_set: HashSet<crate::AccountId> =
+        params.investing_accounts.iter().copied().collect();
 
     // Movement helpers: debits minus credits over a date predicate. Closing
     // entries are skipped: a close moves earnings into retained earnings,
@@ -1229,6 +1248,12 @@ pub fn cash_flow(
         if cash_set.contains(&id) || cost_accounts.contains(&id) || accum_accounts.contains(&id) {
             continue; // cash reconciles; fixed assets are investing (gross, below)
         }
+        if account.account_type == AccountType::Equity
+            || financing_set.contains(&id)
+            || investing_set.contains(&id)
+        {
+            continue; // financing and investing roles are gross, below
+        }
         let begin = normal(id, begin_movement(id));
         let end = normal(id, period_movement(id) + begin_movement(id));
         let delta = end - begin;
@@ -1248,14 +1273,6 @@ pub fn cash_flow(
                 };
                 (format!("{dir} {}", display(id)), cash_effect)
             }
-            AccountType::Liability if financing_set.contains(&id) => {
-                let dir = if delta > Decimal::ZERO {
-                    "Proceeds from"
-                } else {
-                    "Repayment of"
-                };
-                (format!("{dir} {}", display(id)), cash_effect)
-            }
             AccountType::Liability => {
                 let dir = if delta > Decimal::ZERO {
                     "Increase in"
@@ -1264,26 +1281,86 @@ pub fn cash_flow(
                 };
                 (format!("{dir} {}", display(id)), cash_effect)
             }
-            AccountType::Equity => {
-                let dir = if delta > Decimal::ZERO {
-                    "Owner contributions"
-                } else {
-                    "Owner distributions"
-                };
-                (format!("{dir} — {}", display(id)), cash_effect)
-            }
             _ => continue, // revenue/expense handled via net income
         };
-        let target = match account.account_type {
-            AccountType::Equity => &mut financing,
-            AccountType::Liability if financing_set.contains(&id) => &mut financing,
-            _ => &mut working_capital,
-        };
-        target.push(CashFlowLine {
+        working_capital.push(CashFlowLine {
             label,
             amount: line,
             account: Some(account.code.clone()),
         });
+    }
+
+    // --- Financing and investing accounts, gross (ASC 230-10-45-7) ---
+    // Per account, cash in and cash out as separate lines; an entry's own
+    // debits and credits to the account net first (one transaction, one
+    // flow).
+    let mut roles: Vec<&crate::Account> = ledger
+        .chart()
+        .all()
+        .filter(|a| {
+            !a.placeholder
+                && !cash_set.contains(&a.id)
+                && !cost_accounts.contains(&a.id)
+                && !accum_accounts.contains(&a.id)
+                && (a.account_type == AccountType::Equity
+                    || financing_set.contains(&a.id)
+                    || investing_set.contains(&a.id))
+        })
+        .collect();
+    roles.sort_by(|a, b| a.code.cmp(&b.code));
+    for account in roles {
+        let (mut cash_in, mut cash_out) = (Decimal::ZERO, Decimal::ZERO);
+        for entry in ledger.posted_entries() {
+            let d = entry.date();
+            if d < params.start || d > params.end || closings.contains(&entry.id()) {
+                continue;
+            }
+            // Cash effect of this entry's change to the account: minus its
+            // movement (debits - credits), for assets and claims alike.
+            let effect: Decimal = entry
+                .lines()
+                .iter()
+                .filter(|l| l.account == account.id)
+                .map(|l| match l.side {
+                    crate::Side::Debit => -l.amount.amount,
+                    crate::Side::Credit => l.amount.amount,
+                })
+                .sum();
+            if effect > Decimal::ZERO {
+                cash_in += effect;
+            } else {
+                cash_out += effect;
+            }
+        }
+        let name = display(account.id);
+        let (in_label, out_label, target) = if investing_set.contains(&account.id) {
+            (
+                format!("Collections on {name}"),
+                format!("Payments for {name}"),
+                &mut investing,
+            )
+        } else if account.account_type == AccountType::Equity {
+            (
+                format!("Owner contributions — {name}"),
+                format!("Owner distributions — {name}"),
+                &mut financing,
+            )
+        } else {
+            (
+                format!("Proceeds from {name}"),
+                format!("Repayment of {name}"),
+                &mut financing,
+            )
+        };
+        for (label, amount) in [(in_label, cash_in), (out_label, cash_out)] {
+            if !amount.is_zero() {
+                target.push(CashFlowLine {
+                    label,
+                    amount,
+                    account: Some(account.code.clone()),
+                });
+            }
+        }
     }
 
     // --- Investing, gross: purchases and disposal proceeds ---

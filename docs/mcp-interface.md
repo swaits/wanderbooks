@@ -36,6 +36,12 @@ footers, and `[books] receipt_threshold` sets the receipt policy unless
 `distribution_account`; single-owner businesses may set `[books] close_into`
 (the equity account a close puts net income in; default Retained Earnings)
 and `close_sweep` (draw, distribution, or dividend accounts closed into it).
+The cash flow statement's account roles are `[books] cash_accounts` (what
+it reconciles to), `financing_accounts` (loans, and money the owners
+advanced, such as a "Due to owners" liability: ASC 230-10-45-14(2)), and
+`investing_accounts` (loans the company makes, investments it buys: ASC
+230-10-20); the tools and the viewer both read them, and a call may pass
+its own (docs/spec/rules.md B-14).
 
 ## Transports
 
@@ -102,7 +108,7 @@ below.
   `revenue_accounts` and `expense_accounts` for the range. `end` defaults to
   today, `start` to the first posted entry. Closing entries are excluded, so
   a closed period still shows what it earned.
-- `books.cash_flow { start?, end?, cash_accounts: ["1000"], financing_accounts? }`
+- `books.cash_flow { start?, end?, cash_accounts?, financing_accounts?, investing_accounts? }` (each defaults to `[books]` in wanderbooks.toml; cash is required one way or the other)
   → indirect-method cash flow statement. `cash_accounts` are the reconciling
   accounts (required); the three sections always sum to their net change.
   Disposal gains/losses move from operating to investing automatically.
@@ -295,7 +301,7 @@ posting.
 ## Tools — export
 
 - `books.export { format, report, start?, end?, as_of?, cash_accounts?,
-  financing_accounts? }` → `{ content, content_encoding? }`.
+  financing_accounts?, investing_accounts? }` → `{ content, content_encoding? }`.
   - Reports: `profit_and_loss`, `balance_sheet`, `cash_flow` (needs
     `cash_accounts`), `trial_balance`, `members_equity` (statement of
     changes in members' equity; members from `wanderbooks.toml`),
@@ -486,7 +492,7 @@ entries.
 
 ## Tools — CPA handoff
 
-- `books.export_cpa_package { as_of?, cash_accounts, financing_accounts? }`
+- `books.export_cpa_package { as_of?, cash_accounts?, financing_accounts?, investing_accounts? }`
   → `{ file_name, content_base64 }`. A zip with the full set, each
   statement as PDF and XLSX: `profit-and-loss`, `balance-sheet`,
   `cash-flow` (reconciled to `cash_accounts`), `members-equity`

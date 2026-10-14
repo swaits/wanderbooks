@@ -235,9 +235,37 @@ inflows from operating activities: Cash receipts from sales of goods or
 services…". A closing entry is not income or spending (B-11), so period
 statements exclude it.
 
+Investing and financing are gross (ASC 230-10-45-7, via Deloitte DART:
+"information about the gross amounts of cash receipts and cash payments
+during a period is more relevant than information about the net
+amounts"; 45-8 allows netting only where "the turnover is quick, the
+amounts are large, and the maturities are short"). Financing inflows
+include "Proceeds from issuing equity instruments" and "other short- or
+long-term borrowing" (45-14(1), (2)); outflows include "distributions to
+owners" and "Repayments of amounts borrowed" (45-15(1), (2)). Investing
+"include[s] making and collecting loans and acquiring and disposing of
+debt or equity instruments and property, plant, and equipment" (ASC
+230-10-20). Which accounts hold loans made, investments, and debt is a
+fact of each company's chart, so it is a setting: `[books]
+financing_accounts` and `investing_accounts` in wanderbooks.toml (with
+`cash_accounts`), read by the MCP tools and the viewer alike.
+
+Money an owner advances, by paying a company expense personally (a
+"Due to owners" liability), is borrowing: PwC Viewpoint, Financial
+statement presentation 6.9.3.1 (constructive receipts and
+disbursements) presents cash a third party pays on the entity's behalf
+"as though the transaction took place through the bank accounts of the
+reporting entity": a financing inflow and an operating outflow. Listing
+that liability in `financing_accounts` gives exactly that; repaying the
+owner is then a repayment of amounts borrowed. "Judgment is required"
+(PwC), so it is the company's setting, not a fixed rule.
+
 **Enforced:** `profit_and_loss_for_period`, `cash_flow`. **Checked:** Lean
 `statements_add_up`; `prop_period_pnl_partitions`;
-`cash_flow_reconciles_to_change_in_cash`.
+`cash_flow_reconciles_to_change_in_cash`;
+`financing_is_gross_borrowing_apart_from_repayment`,
+`a_loan_the_entity_makes_is_investing_gross`,
+`an_expense_the_owner_paid_is_borrowing_then_operating`.
 
 ## B-15 Depreciation: straight line, salvage never depreciated, partial months by days
 

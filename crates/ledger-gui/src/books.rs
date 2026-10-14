@@ -77,6 +77,10 @@ pub struct Books {
     pub entries: Vec<EntryInfo>,
     pub entry_index: HashMap<EntryId, usize>,
     pub cash_accounts: Vec<AccountId>,
+    /// `[books] financing_accounts`, resolved (empty when not set).
+    pub financing_accounts: Vec<AccountId>,
+    /// `[books] investing_accounts`, resolved (empty when not set).
+    pub investing_accounts: Vec<AccountId>,
     pub card_accounts: Vec<AccountId>,
     /// Entries created or changed by the most recent refresh.
     pub fresh: HashSet<EntryId>,
@@ -164,6 +168,13 @@ impl Books {
             .and_then(|t| t.parse().ok())
             .unwrap_or(Decimal::new(25, 0));
         let cash_accounts = cash_accounts(&ledger, &settings);
+        let codes = |cs: &[String]| -> Vec<AccountId> {
+            cs.iter()
+                .filter_map(|c| ledger.chart().find_by_code(c).map(|a| a.id))
+                .collect()
+        };
+        let financing_accounts = codes(&settings.financing_accounts);
+        let investing_accounts = codes(&settings.investing_accounts);
         let card_accounts: Vec<AccountId> = ledger
             .chart()
             .all()
@@ -303,6 +314,8 @@ impl Books {
             entries,
             entry_index,
             cash_accounts,
+            financing_accounts,
+            investing_accounts,
             card_accounts,
             fresh,
             fresh_from_seq,

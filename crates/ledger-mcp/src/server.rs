@@ -36,6 +36,19 @@ pub struct BooksServer {
     store: Arc<Mutex<Store>>,
     policy: ReceiptPolicy,
     company: Company,
+    roles: CashRoles,
+}
+
+/// `[books]` account roles for the cash flow statement, used when a call
+/// doesn't pass its own: cash, financing, and investing account codes.
+#[derive(Clone, Debug, Default)]
+pub struct CashRoles {
+    /// `[books] cash_accounts`.
+    pub cash: Vec<String>,
+    /// `[books] financing_accounts`.
+    pub financing: Vec<String>,
+    /// `[books] investing_accounts`.
+    pub investing: Vec<String>,
 }
 
 impl BooksServer {
@@ -45,6 +58,7 @@ impl BooksServer {
             store: Arc::new(Mutex::new(store)),
             policy,
             company: Company::default(),
+            roles: CashRoles::default(),
         }
     }
 
@@ -55,6 +69,7 @@ impl BooksServer {
             store,
             policy,
             company: Company::default(),
+            roles: CashRoles::default(),
         }
     }
 
@@ -62,6 +77,40 @@ impl BooksServer {
     pub fn with_company(mut self, company: Company) -> Self {
         self.company = company;
         self
+    }
+
+    /// Set the `[books]` cash flow account roles.
+    pub fn with_cash_roles(mut self, roles: CashRoles) -> Self {
+        self.roles = roles;
+        self
+    }
+
+    /// The cash flow statement from account codes, each list defaulting to
+    /// the `[books]` roles when the call passes none.
+    fn cash_flow_for(
+        &self,
+        ledger: &Ledger,
+        start: Option<&str>,
+        end: Option<&str>,
+        cash: &[String],
+        financing: &[String],
+        investing: &[String],
+    ) -> Result<ledger_core::reports::CashFlowStatement, String> {
+        let or = |given: &'_ [String], default: &'_ [String]| -> Vec<String> {
+            if given.is_empty() {
+                default.to_vec()
+            } else {
+                given.to_vec()
+            }
+        };
+        cash_flow_statement(
+            ledger,
+            start,
+            end,
+            &or(cash, &self.roles.cash),
+            &or(financing, &self.roles.financing),
+            &or(investing, &self.roles.investing),
+        )
     }
 
     /// Header and provenance for a rendered report.
@@ -446,6 +495,7 @@ fn cash_flow_statement(
     end: Option<&str>,
     cash_codes: &[String],
     financing_codes: &[String],
+    investing_codes: &[String],
 ) -> Result<ledger_core::reports::CashFlowStatement, String> {
     let resolve = |codes: &[String], what: &str| -> Result<Vec<AccountId>, String> {
         codes
@@ -461,9 +511,13 @@ fn cash_flow_statement(
     };
     let cash_accounts = resolve(cash_codes, "cash")?;
     if cash_accounts.is_empty() {
-        return Err("cash_accounts is required for the cash flow statement".to_string());
+        return Err(
+            "cash_accounts is required for the cash flow statement (pass it, or set [books] cash_accounts in wanderbooks.toml)"
+                .to_string(),
+        );
     }
     let financing_accounts = resolve(financing_codes, "financing")?;
+    let investing_accounts = resolve(investing_codes, "investing")?;
     let (start, end) = statement_range(ledger, start, end)?;
     ledger_core::cash_flow(
         ledger,
@@ -472,6 +526,7 @@ fn cash_flow_statement(
             end,
             cash_accounts,
             financing_accounts,
+            investing_accounts,
         },
     )
     .map_err(|e| e.to_string())
@@ -769,46 +824,14 @@ impl BooksServer {
         let p = params.0;
         let store = self.lock()?;
         let ledger = store.ledger();
-        let start = match p.start {
-            Some(s) => parse_date(&s)?,
-            None => NaiveDate::from_ymd_opt(1, 1, 1).unwrap(),
-        };
-        let end = match p.end {
-            Some(s) => parse_date(&s)?,
-            None => today(),
-        };
-        // Resolve cash and financing account codes to ids.
-        let mut cash_accounts = Vec::new();
-        for code in &p.cash_accounts {
-            let id = ledger
-                .chart()
-                .find_by_code(code)
-                .map(|a| a.id)
-                .ok_or_else(|| format!("unknown cash account code: {code}"))?;
-            cash_accounts.push(id);
-        }
-        if cash_accounts.is_empty() {
-            return Err("at least one cash account code is required".to_string());
-        }
-        let mut financing_accounts = Vec::new();
-        for code in &p.financing_accounts {
-            let id = ledger
-                .chart()
-                .find_by_code(code)
-                .map(|a| a.id)
-                .ok_or_else(|| format!("unknown financing account code: {code}"))?;
-            financing_accounts.push(id);
-        }
-        let stmt = ledger_core::cash_flow(
+        let stmt = self.cash_flow_for(
             ledger,
-            &ledger_core::CashFlowParams {
-                start,
-                end,
-                cash_accounts,
-                financing_accounts,
-            },
-        )
-        .map_err(|e| e.to_string())?;
+            p.start.as_deref(),
+            p.end.as_deref(),
+            &p.cash_accounts,
+            &p.financing_accounts,
+            &p.investing_accounts,
+        )?;
         let line = |l: &ledger_core::CashFlowLine| CashFlowLineOut {
             label: l.label.clone(),
             amount: money(l.amount),
@@ -2454,12 +2477,13 @@ impl BooksServer {
                 report::balance_sheet(&bs, earnings, &members)
             }
             "cash_flow" => report::cash_flow(
-                &cash_flow_statement(
+                &self.cash_flow_for(
                     ledger,
                     p.start.as_deref(),
                     p.end.as_deref(),
                     &p.cash_accounts,
                     &p.financing_accounts,
+                    &p.investing_accounts,
                 )?,
                 &members,
             ),
@@ -3556,12 +3580,13 @@ impl BooksServer {
             (
                 "cash-flow",
                 report::cash_flow(
-                    &cash_flow_statement(
+                    &self.cash_flow_for(
                         ledger,
                         Some(&fy_start),
                         Some(&as_of_s),
                         &p.cash_accounts,
                         &p.financing_accounts,
+                        &p.investing_accounts,
                     )?,
                     &members,
                 ),
@@ -4056,36 +4081,14 @@ impl BooksServer {
     fn export_cash_flow(&self, format: &str, p: &ExportParams) -> Result<String, String> {
         let store = self.lock()?;
         let ledger = store.ledger();
-        let mut cash_accounts = Vec::new();
-        for code in &p.cash_accounts {
-            let id = ledger
-                .chart()
-                .find_by_code(code)
-                .map(|a| a.id)
-                .ok_or_else(|| format!("unknown cash account code: {code}"))?;
-            cash_accounts.push(id);
-        }
-        if cash_accounts.is_empty() {
-            return Err("cash_accounts is required for cash_flow".to_string());
-        }
-        let start = match &p.start {
-            Some(s) => parse_date(s)?,
-            None => NaiveDate::from_ymd_opt(1, 1, 1).unwrap(),
-        };
-        let end = match &p.end {
-            Some(s) => parse_date(s)?,
-            None => today(),
-        };
-        let stmt = ledger_core::cash_flow(
+        let stmt = self.cash_flow_for(
             ledger,
-            &ledger_core::CashFlowParams {
-                start,
-                end,
-                cash_accounts,
-                financing_accounts: vec![],
-            },
-        )
-        .map_err(|e| e.to_string())?;
+            p.start.as_deref(),
+            p.end.as_deref(),
+            &p.cash_accounts,
+            &p.financing_accounts,
+            &p.investing_accounts,
+        )?;
         if format == "json" {
             return serde_json::to_string_pretty(&serde_json::json!({
                 "start": stmt.start.to_string(), "end": stmt.end.to_string(),

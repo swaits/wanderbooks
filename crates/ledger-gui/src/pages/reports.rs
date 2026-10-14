@@ -554,7 +554,12 @@ fn balance_sheet(b: &Books, dates: &[(NaiveDate, String)]) -> Table {
     t
 }
 
+/// Financing accounts: from `[books] financing_accounts`, else liabilities
+/// whose names say they are debt.
 fn financing_accounts(b: &Books) -> Vec<AccountId> {
+    if !b.financing_accounts.is_empty() {
+        return b.financing_accounts.clone();
+    }
     b.ledger
         .chart()
         .all()
@@ -585,6 +590,7 @@ fn cash_flow_table(b: &Books, cols: &Cols, total: bool) -> Table {
                     end: *e,
                     cash_accounts: b.cash_accounts.clone(),
                     financing_accounts: fin.clone(),
+                    investing_accounts: b.investing_accounts.clone(),
                 },
             )
             .ok()

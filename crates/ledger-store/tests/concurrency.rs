@@ -79,7 +79,8 @@ fn a_viewer_reading_while_the_books_are_written_sees_only_whole_books() {
     start.wait();
     let (mut last_seq, mut last_posted, mut refreshes) = (0u64, 0usize, 0u64);
     loop {
-        let finished = done.load(Ordering::SeqCst);
+        // Done, or the writer died (its panic surfaces at the join below).
+        let finished = done.load(Ordering::SeqCst) || writer.is_finished();
         snapshot.refresh().unwrap();
         refreshes += 1;
         let l = snapshot.ledger();

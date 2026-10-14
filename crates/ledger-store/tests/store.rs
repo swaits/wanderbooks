@@ -1587,6 +1587,13 @@ fn a_journal_line_with_a_float_is_refused() {
         JournalLine::parse(br#"{"payload":{"amount":1.5},"prev":"x","seq":1,"ts":"t","type":"a"}"#)
             .is_err()
     );
+    // Anywhere in the line: inside an array too (an entry's lines).
+    assert!(
+        JournalLine::parse(
+            br#"{"payload":{"lines":[{"amount":"1.00"},{"amount":2.5}]},"prev":"x","seq":1,"ts":"t","type":"a"}"#
+        )
+        .is_err()
+    );
     let ok = br#"{"payload":{"amount":"1.50","id":7},"prev":"x","seq":1,"ts":"t","type":"a"}"#;
     let line = JournalLine::parse(ok).unwrap();
     let canon = line.to_canonical();
@@ -1775,4 +1782,153 @@ fn members_closes_replay_under_the_rule_they_were_journaled_with() {
         assert_eq!(bal(caps[0]), a.parse::<Decimal>().unwrap(), "{rule}");
         assert_eq!(bal(caps[1]), b.parse::<Decimal>().unwrap(), "{rule}");
     }
+}
+
+/// The viewer's journal accessors: the lines it has read, in order, and
+/// the hash the next line must chain onto (the SHA-256 of the last line's
+/// canonical form; docs/receipt-store.md "Line format").
+#[test]
+fn the_viewer_exposes_the_lines_it_read_and_their_head() {
+    let dir = test_dir("viewer-head");
+    let store = build_books(&dir);
+    drop(store);
+    let snap = ledger_store::Snapshot::load(&dir).unwrap();
+    let lines =
+        ledger_store::journal::read_and_verify_journal(&dir.join(ledger_store::JOURNAL_FILE))
+            .unwrap();
+    assert_eq!(snap.journal().len(), lines.len());
+    assert_eq!(snap.journal_seq(), lines.last().unwrap().seq);
+    assert_eq!(
+        snap.head_hash(),
+        ledger_store::journal::sha256_hex(lines.last().unwrap().to_canonical().as_bytes())
+    );
+}
+
+/// The scrap test's books: a 1,200 laptop, 12-month life, bought Jan 1,
+/// paid in cash. Returns (store, asset, cash, gain/loss account).
+fn laptop(dir: &std::path::Path) -> (Store, u64, u64, u64) {
+    let mut store = Store::create(dir, Currency::USD).unwrap();
+    let mut add = |code: &str, t| store_add(&mut store, code, t);
+    let cash = add("1000", AccountType::Asset);
+    let equipment = add("1500", AccountType::Asset);
+    let accum = add("1510", AccountType::Asset);
+    let gain = add("4900", AccountType::Revenue);
+    let depr = add("6200", AccountType::Expense);
+    let day = |m, d| NaiveDate::from_ymd_opt(2026, m, d).unwrap();
+    let buy = store.create_entry(day(1, 1), "laptop").unwrap();
+    store
+        .add_line(buy, equipment, Side::Debit, usd(1200))
+        .unwrap();
+    store.add_line(buy, cash, Side::Credit, usd(1200)).unwrap();
+    store.post_entry(buy).unwrap();
+    let asset = store
+        .register_asset(ledger_core::NewAsset {
+            description: "laptop".into(),
+            purchase_date: day(1, 1),
+            cost: usd(1200),
+            salvage_value: usd(0),
+            useful_life_months: 12,
+            cost_account: equipment,
+            accum_depr_account: accum,
+            expense_account: depr,
+        })
+        .unwrap();
+    (store, asset, cash, gain)
+}
+
+/// Hand-computed: January's 100 posted, sold Mar 31 for 1,000. Through
+/// Mar 31 the schedule says 300, so the final catch-up is 300 - 100 = 200,
+/// accumulated 300, book value 900, a gain of 100.
+#[test]
+fn a_disposal_catches_up_exactly_what_was_not_yet_posted() {
+    let dir = test_dir("dispose-catch-up");
+    let (mut store, asset, cash, gain) = laptop(&dir);
+    store.run_depreciation(asset, "2026-01").unwrap();
+    let day = NaiveDate::from_ymd_opt(2026, 3, 31).unwrap();
+    let p = store.dispose_preview(asset, day, usd(1000)).unwrap();
+    assert_eq!(
+        (
+            p.final_depreciation,
+            p.accumulated,
+            p.book_value,
+            p.gain_loss
+        ),
+        (
+            Decimal::from(200),
+            Decimal::from(300),
+            Decimal::from(900),
+            Decimal::from(100)
+        )
+    );
+    store
+        .dispose_asset(asset, day, usd(1000), cash, gain)
+        .unwrap();
+    assert_eq!(
+        store.ledger().account_balance(gain).unwrap(),
+        Decimal::from(100)
+    );
+    store.verify().unwrap();
+}
+
+/// A disposal may be dated the day the asset was bought, never before it.
+#[test]
+fn a_disposal_may_fall_on_the_purchase_date_but_not_before() {
+    let dir = test_dir("dispose-dates");
+    let (mut store, asset, cash, gain) = laptop(&dir);
+    let jan1 = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let before = jan1.pred_opt().unwrap();
+    assert!(store.dispose_preview(asset, before, usd(1200)).is_err());
+    assert!(
+        store
+            .dispose_asset(asset, before, usd(1200), cash, gain)
+            .is_err()
+    );
+    let p = store.dispose_preview(asset, jan1, usd(1200)).unwrap();
+    assert_eq!(p.book_value, Decimal::from(1200) - p.accumulated);
+    store
+        .dispose_asset(asset, jan1, usd(1200), cash, gain)
+        .unwrap();
+    // Disposed: a second disposal is refused.
+    assert!(store.dispose_preview(asset, jan1, usd(1)).is_err());
+    store.verify().unwrap();
+}
+
+/// A close to retained earnings that sweeps a draws account journals the
+/// sweep, so replay zeroes the draws again (the bare "retained_earnings"
+/// form is only for a close with nothing to sweep).
+#[test]
+fn a_retained_earnings_close_with_a_sweep_replays_it() {
+    let dir = test_dir("re-sweep");
+    let mut store = Store::create(&dir, Currency::USD).unwrap();
+    let mut add = |code: &str, t| store_add(&mut store, code, t);
+    let cash = add("1000", AccountType::Asset);
+    let draws = add("3100", AccountType::Equity);
+    let sales = add("4000", AccountType::Revenue);
+    let day = |d| NaiveDate::from_ymd_opt(2026, 1, d).unwrap();
+    for (dr, cr, n) in [(cash, sales, 500u64), (draws, cash, 200)] {
+        let e = store.create_entry(day(10), "x").unwrap();
+        store.add_line(e, dr, Side::Debit, usd(n)).unwrap();
+        store.add_line(e, cr, Side::Credit, usd(n)).unwrap();
+        store.post_entry(e).unwrap();
+    }
+    let p = store.create_period("2026-01", day(1), day(31)).unwrap();
+    store
+        .close_period_to(
+            p,
+            &ledger_core::CloseTo::RetainedEarnings { sweep: vec![draws] },
+        )
+        .unwrap();
+    let re = store.ledger().chart().find_by_code("3999").unwrap().id;
+    let state = |s: &Store| {
+        (
+            s.ledger().account_balance(draws).unwrap(),
+            s.ledger().account_balance(re).unwrap(),
+        )
+    };
+    // Net income 500 in, draws 200 swept out: retained earnings 300.
+    assert_eq!(state(&store), (Decimal::ZERO, Decimal::from(300)));
+    drop(store);
+    let store = Store::open(&dir).unwrap();
+    store.verify().unwrap();
+    assert_eq!(state(&store), (Decimal::ZERO, Decimal::from(300)));
 }

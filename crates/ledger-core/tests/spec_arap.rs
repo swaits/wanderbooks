@@ -538,7 +538,7 @@ fn create_invoice_refuses_due_before_date_books_unchanged() {
 
 /// Closes January 2026 on `l`.
 ///
-/// ASSUMED: closing a period with nothing in it still marks it closed
+/// CONVENTION (docs/testing.md #4): closing a period with nothing in it still marks it closed
 /// (close_period returns Ok(None)); the precondition is asserted.
 fn close_january(l: &mut Ledger) {
     let p = l

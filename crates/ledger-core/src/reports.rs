@@ -458,7 +458,7 @@ fn statement_lines(
 /// SCENARIOS:
 ///   1. IF a month was closed: SHOULD still report that month's earnings.
 ///      BECAUSE closing doesn't make a period break even (R-9).
-///   2. IF `start` is after `end`: SHOULD refuse. (ASSUMED)
+///   2. IF `start` is after `end`: SHOULD refuse. (DESIGN: no standard governs a reversed range; docs/testing.md #1)
 /// ```
 pub fn profit_and_loss_for_period(
     ledger: &Ledger,

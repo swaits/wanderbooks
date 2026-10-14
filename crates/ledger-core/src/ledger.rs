@@ -670,6 +670,15 @@ impl Ledger {
         parent: Option<AccountId>,
         placeholder: bool,
     ) -> Result<AccountId, LedgerError> {
+        // A chart lists each account by number and title; neither may be
+        // blank (2026-10-13; the core refused only an empty code, so a code
+        // of spaces or an unnamed account got in).
+        if code.trim().is_empty() {
+            return Err(LedgerError::EmptyAccountCode);
+        }
+        if name.trim().is_empty() {
+            return Err(LedgerError::EmptyAccountName);
+        }
         if let Some(p) = parent.and_then(|p| self.chart.get(p))
             && p.account_type != account_type
         {
@@ -684,7 +693,7 @@ impl Ledger {
     }
 
     /// [`Self::add_account`] without the rules added on 2026-10-13 (a
-    /// child's type), for replaying journals written before them. Never
+    /// child's type; a blank code or name), for replaying journals written before them. Never
     /// for new work.
     pub fn replay_add_account(
         &mut self,

@@ -41,6 +41,14 @@ pub enum ChartCsvError {
     /// Unknown account type.
     #[error("bad account type {0:?}: expected asset, liability, equity, revenue, or expense")]
     BadType(String),
+    /// A row's code or name is blank (row numbers count the header as 1).
+    #[error("row {row}: the {field} is blank")]
+    Blank {
+        /// The row, counting the header as row 1.
+        row: usize,
+        /// "code" or "name".
+        field: &'static str,
+    },
     /// Malformed CSV.
     #[error("csv error: {0}")]
     Csv(String),
@@ -75,6 +83,14 @@ pub fn parse_chart_csv(text: &str) -> Result<Vec<ChartRow>, ChartCsvError> {
         }
         if fields.len() != width {
             return Err(ChartCsvError::BadColumnCount(fields.len(), width));
+        }
+        for (field, value) in [("code", fields[0]), ("name", fields[1])] {
+            if value.trim().is_empty() {
+                return Err(ChartCsvError::Blank {
+                    row: idx + 1,
+                    field,
+                });
+            }
         }
         let account_type = fields[2].to_lowercase();
         match account_type.as_str() {
@@ -136,5 +152,26 @@ mod tests {
             parse_chart_csv(csv),
             Err(ChartCsvError::BadType(_))
         ));
+    }
+
+    /// Found by fuzz_import_csv (2026-10-13): a row with a blank code or
+    /// name was accepted.
+    #[test]
+    fn a_blank_code_or_name_is_refused_with_its_row() {
+        let header = "code,name,type,parent_code\n";
+        assert_eq!(
+            parse_chart_csv(&format!("{header}1000,Cash,asset,\n,Rent,expense,\n")),
+            Err(ChartCsvError::Blank {
+                row: 3,
+                field: "code"
+            })
+        );
+        assert_eq!(
+            parse_chart_csv(&format!("{header}1000,  ,asset,\n")),
+            Err(ChartCsvError::Blank {
+                row: 2,
+                field: "name"
+            })
+        );
     }
 }

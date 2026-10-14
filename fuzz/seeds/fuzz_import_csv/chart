@@ -1,0 +1,3 @@
+code,name,type,parent,tax
+1000,Cash,asset,,
+6000,Rent,expense,,rent_or_lease

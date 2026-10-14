@@ -17,9 +17,9 @@ pub mod report;
 pub mod templates;
 pub mod xlsx;
 
-pub use bank_csv::{BankTransaction, parse_bank_csv};
+pub use bank_csv::{BankCsvError, BankTransaction, DateOrder, parse_bank_csv, parse_bank_csv_with};
 pub use chart_csv::{ChartRow, parse_chart_csv};
-pub use iif::{IifEntry, journal_to_iif};
+pub use iif::{IifAccount, IifError, QbAccountType, iif_accounts, journal_to_iif};
 pub use pdf::{PdfError, statement_pdf};
 pub use report::{Member, ReportMeta, Row, RowKind, Statement, YearEarnings, format_amount};
 pub use templates::{ChartTemplate, EntityType, chart_template};

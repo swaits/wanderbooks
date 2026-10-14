@@ -2354,3 +2354,262 @@ fn entity_type_parse() {
     );
     assert_eq!(EntityType::parse("llc"), None);
 }
+
+// ---------------------------------------------------------------------
+// XLSX general ledger and general journal sheets, header and footer
+// (added after the store-style mutation run found them untested).
+// ---------------------------------------------------------------------
+
+fn num_at(cells: &BTreeMap<(u32, u32), Cell>, r: u32, c: u32) -> Option<Decimal> {
+    match cells.get(&(r, c)) {
+        Some(Cell::Num(v)) => Some(parse_num(v)),
+        Some(Cell::Text(t)) => parse_money_text(t),
+        None => None,
+    }
+}
+
+fn text_at(cells: &BTreeMap<(u32, u32), Cell>, r: u32, c: u32) -> Option<&str> {
+    match cells.get(&(r, c)) {
+        Some(Cell::Text(t)) => Some(t.as_str()),
+        _ => None,
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
+
+    /// The general ledger sheet: per account a beginning balance, each
+    /// posting with its running balance (each step moves it by the posting's
+    /// debit minus credit, the same sign throughout an account), and a total
+    /// row whose debits and credits foot and whose balance is the last one.
+    #[test]
+    fn xlsx_general_ledger_runs_and_foots((specs, oe, end_off) in books_strategy()) {
+        let b = build_books(&specs, oe);
+        let (s, e) = (d(2025, 7, 1), d(2025, 7, 1) + chrono::Duration::days(end_off));
+        let gl = general_ledger(&b.ledger, s, e).unwrap();
+        let bytes = report_to_xlsx(&XlsxReport::GeneralLedger(&gl), &meta()).unwrap();
+        let cells = sheet_cells(&bytes);
+        for a in &gl.accounts {
+            let name = format!("{} {}", a.code, a.name);
+            // The heading is the account's name alone in the first column
+            // (the Split column holds account names too).
+            let head = cells
+                .iter()
+                .find(|((_, c), v)| *c == 0 && **v == Cell::Text(name.clone()))
+                .map(|((r, _), _)| *r)
+                .expect("account heading");
+            prop_assert_eq!(text_at(&cells, head + 1, 2), Some("Beginning balance"));
+            let mut bal = num_at(&cells, head + 1, 6).unwrap();
+            prop_assert_eq!(bal, a.beginning_balance);
+            let (mut dr, mut cr) = (Decimal::ZERO, Decimal::ZERO);
+            let mut sign: Option<Decimal> = None;
+            let mut r = head + 2;
+            while text_at(&cells, r, 0) != Some(format!("Total for {name}").as_str()) {
+                let debit = num_at(&cells, r, 4).unwrap_or_default();
+                let credit = num_at(&cells, r, 5).unwrap_or_default();
+                let next = num_at(&cells, r, 6).unwrap();
+                let step = debit - credit;
+                if !step.is_zero() {
+                    let s = (next - bal) / step;
+                    prop_assert!(s == Decimal::ONE || s == -Decimal::ONE, "row {}", r);
+                    if let Some(prev) = sign { prop_assert_eq!(prev, s); }
+                    sign = Some(s);
+                }
+                dr += debit;
+                cr += credit;
+                bal = next;
+                r += 1;
+                prop_assert!(r < head + 10_000, "no total row for {}", name);
+            }
+            prop_assert_eq!(num_at(&cells, r, 4).unwrap(), dr);
+            prop_assert_eq!(num_at(&cells, r, 5).unwrap(), cr);
+            prop_assert_eq!(num_at(&cells, r, 6).unwrap(), bal);
+            prop_assert_eq!(bal, a.ending_balance);
+        }
+    }
+
+    /// The general journal sheet: exactly the posted lines dated in the
+    /// range (each with its date inside it), and a total row whose debits
+    /// and credits foot and are equal.
+    #[test]
+    fn xlsx_general_journal_holds_the_range_and_foots((specs, oe, end_off) in books_strategy()) {
+        let b = build_books(&specs, oe);
+        let (s, e) = (d(2025, 7, 10), d(2025, 7, 10) + chrono::Duration::days(end_off / 2));
+        let bytes = report_to_xlsx(&XlsxReport::GeneralJournal(&b.ledger, s, e), &meta()).unwrap();
+        let cells = sheet_cells(&bytes);
+        let want_lines: usize = b
+            .ledger
+            .posted_entries()
+            .filter(|x| x.date() >= s && x.date() <= e)
+            .map(|x| x.lines().len())
+            .sum();
+        let header = row_of(&cells, "DATE", 0).expect("column headings");
+        let (mut dr, mut cr, mut lines) = (Decimal::ZERO, Decimal::ZERO, 0usize);
+        let mut r = header + 1;
+        while text_at(&cells, r, 0) != Some("Total") {
+            let date: NaiveDate = text_at(&cells, r, 0).unwrap().parse().unwrap();
+            prop_assert!(date >= s && date <= e, "{} outside the range", date);
+            dr += num_at(&cells, r, 5).unwrap_or_default();
+            cr += num_at(&cells, r, 6).unwrap_or_default();
+            lines += 1;
+            r += 1;
+        }
+        prop_assert_eq!(lines, want_lines);
+        prop_assert_eq!(num_at(&cells, r, 5).unwrap(), dr);
+        prop_assert_eq!(num_at(&cells, r, 6).unwrap(), cr);
+        prop_assert_eq!(dr, cr);
+    }
+}
+
+/// Every sheet names the company, the report, and its period at the top,
+/// and ends with the footer (basis, preparation date, journal seq).
+#[test]
+fn xlsx_sheets_carry_header_and_footer() {
+    let b = build_books(&[], false);
+    let (s, e) = (d(2025, 7, 1), d(2025, 7, 31));
+    let pl = profit_and_loss_for_period(&b.ledger, s, e, None).unwrap();
+    let st = report::profit_and_loss(&pl);
+    let gl = general_ledger(&b.ledger, s, e).unwrap();
+    for (rep, title) in [
+        (XlsxReport::Statement(&st), "Profit and Loss"),
+        (XlsxReport::GeneralLedger(&gl), "General Ledger"),
+        (
+            XlsxReport::GeneralJournal(&b.ledger, s, e),
+            "General Journal",
+        ),
+    ] {
+        let cells = sheet_cells(&report_to_xlsx(&rep, &meta()).unwrap());
+        let texts: Vec<&str> = cells
+            .values()
+            .filter_map(|c| match c {
+                Cell::Text(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        let m = meta();
+        for want in [
+            m.company.as_str(),
+            title,
+            &report::period_label(s, e),
+            &m.footer(),
+        ] {
+            prop_assert_contains(&texts, want, title);
+        }
+    }
+}
+
+fn prop_assert_contains(texts: &[&str], want: &str, ctx: &str) {
+    assert!(
+        texts.iter().any(|t| t.contains(want)),
+        "{ctx}: no cell holds {want:?}"
+    );
+}
+
+/// The tax summary statement's Difference column is blank where book and
+/// tax agree and book - tax where they don't (meals at 50%); separately
+/// stated items sit in their own section, outside the net.
+#[test]
+fn tax_summary_difference_and_schedule_k() {
+    use ledger_core::tax::{TaxForm, tax_summary};
+    let mut l = Ledger::new(Currency::USD);
+    let cash = l
+        .add_account("1000", "Cash", AccountType::Asset, None, false)
+        .unwrap();
+    let mut acct = |code: &str, t, cat: &str| {
+        let id = l.add_account(code, code, t, None, false).unwrap();
+        l.set_account_tax(id, Some(cat), None).unwrap();
+        id
+    };
+    let sales = acct("4000", AccountType::Revenue, "gross_receipts");
+    let interest = acct("4200", AccountType::Revenue, "interest_income");
+    let meals = acct("6450", AccountType::Expense, "meals");
+    for (dr, cr, c) in [
+        (cash, sales, 100_000),
+        (cash, interest, 2_500),
+        (meals, cash, 10_000),
+    ] {
+        let e = l.create_entry(d(2026, 2, 1), "x");
+        l.add_line(e, dr, Side::Debit, usd(c)).unwrap();
+        l.add_line(e, cr, Side::Credit, usd(c)).unwrap();
+        l.post_entry(e).unwrap();
+    }
+    let ts = tax_summary(&l, d(2026, 1, 1), d(2026, 12, 31), Some(TaxForm::Form1065)).unwrap();
+    let st = report::tax_summary(&ts);
+    let row = |label: &str| {
+        st.rows
+            .iter()
+            .find(|r| r.label.starts_with(label))
+            .unwrap_or_else(|| panic!("no row {label}"))
+    };
+    let sales_row = row("Gross receipts");
+    assert_eq!(
+        sales_row.amounts,
+        vec![Some(cents(100_000)), Some(cents(100_000)), None]
+    );
+    let meals_row = row("Meals");
+    assert_eq!(
+        meals_row.amounts,
+        vec![Some(cents(10_000)), Some(cents(5_000)), Some(cents(5_000))]
+    );
+    assert!(
+        st.rows
+            .iter()
+            .any(|r| r.label.starts_with("Separately stated"))
+    );
+    let net = row("Income less deductions");
+    assert_eq!(
+        net.amounts[0],
+        Some(cents(90_000)),
+        "interest is outside the net"
+    );
+}
+
+/// The cash flow's "Adjustments" subheading and depreciation line appear
+/// only when there is something to adjust.
+#[test]
+fn cash_flow_adjustments_appear_only_when_there_are_some() {
+    let mk = |depreciation: Decimal, wc: Vec<ledger_core::CashFlowLine>| {
+        ledger_core::CashFlowStatement {
+            start: d(2026, 1, 1),
+            end: d(2026, 1, 31),
+            net_income: cents(1_000),
+            depreciation,
+            cash_from_operations: cents(1_000)
+                + depreciation
+                + wc.iter().map(|l| l.amount).sum::<Decimal>(),
+            working_capital: wc,
+            investing: vec![],
+            cash_from_investing: Decimal::ZERO,
+            financing: vec![],
+            cash_from_financing: Decimal::ZERO,
+            net_change_in_cash: Decimal::ZERO,
+            cash_beginning: Decimal::ZERO,
+            cash_ending: Decimal::ZERO,
+        }
+    };
+    let has = |st: &Statement, p: &str| st.rows.iter().any(|r| r.label.starts_with(p));
+    let plain = report::cash_flow(&mk(Decimal::ZERO, vec![]), &[]);
+    assert!(!has(&plain, "Adjustments") && !has(&plain, "Depreciation"));
+    let dep = report::cash_flow(&mk(cents(100), vec![]), &[]);
+    assert!(has(&dep, "Adjustments") && has(&dep, "Depreciation"));
+    let wc = report::cash_flow(
+        &mk(
+            Decimal::ZERO,
+            vec![ledger_core::CashFlowLine {
+                label: "Increase in AR".into(),
+                amount: cents(-50),
+                account: None,
+            }],
+        ),
+        &[],
+    );
+    assert!(has(&wc, "Adjustments") && !has(&wc, "Depreciation"));
+}
+
+/// A template takes at most 90 owners.
+#[test]
+fn templates_take_at_most_90_owners() {
+    let owners = |n: usize| (0..n).map(|i| format!("P{i}")).collect::<Vec<_>>();
+    assert!(chart_template(EntityType::Partnership, &owners(90)).is_ok());
+    assert!(chart_template(EntityType::Partnership, &owners(91)).is_err());
+}

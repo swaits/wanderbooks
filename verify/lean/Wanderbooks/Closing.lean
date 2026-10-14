@@ -317,4 +317,54 @@ theorem plugLast_keeps (whole : Int) (ps : List Int) :
       rw [show plugLast whole (p :: q :: rest) = p :: plugLast (whole - p) (q :: rest) from rfl,
         List.dropLast_cons_of_ne_nil hne, ih, List.dropLast_cons_cons]
 
+/-! ## Cumulative member closes
+
+A run of members closes (`CloseTo::Members`, rules.md B-13) gives each
+member, at each close, their allocation of the run's total so far minus
+their allocation of the total before it. `alloc` is any allocation of an
+amount to members (member `i` gets `alloc x i`), such as
+`periods::allocate`. -/
+
+/-- What one close gives member `i`: `before` is the run's total before
+it, `net` what it closes. -/
+def closePart (alloc : Int → Nat → Int) (before net : Int) (i : Nat) : Int :=
+  alloc (before + net) i - alloc before i
+
+/-- What a run of closes with these nets, starting after `before`, gives
+member `i` in all. -/
+def runPart (alloc : Int → Nat → Int) : Int → List Int → Nat → Int
+  | _, [], _ => 0
+  | before, net :: rest, i => closePart alloc before net i + runPart alloc (before + net) rest i
+
+/-- **A run telescopes**: member `i`'s total from a run is their allocation
+of everything the run closed, less their allocation of where it started.
+From an empty start (`alloc 0 = 0`), it is exactly their allocation of
+the run's total, so its rounding is one allocation's rounding, never a
+sum of them. -/
+theorem runPart_telescopes (alloc : Int → Nat → Int) (before : Int) (nets : List Int) (i : Nat) :
+    runPart alloc before nets i = alloc (before + nets.sum) i - alloc before i := by
+  induction nets generalizing before with
+  | nil => simp [runPart]
+  | cons n rest ih =>
+    simp only [runPart, closePart, ih, List.sum_cons]
+    rw [show before + n + rest.sum = before + (n + rest.sum) by omega]
+    omega
+
+/-- A sum of differences is the difference of the sums. -/
+theorem sum_map_sub (f g : Nat → Int) (ms : List Nat) :
+    (ms.map (fun i => f i - g i)).sum = (ms.map f).sum - (ms.map g).sum := by
+  induction ms with
+  | nil => simp
+  | cons m ms ih => simp only [List.map_cons, List.sum_cons, ih]; omega
+
+/-- **Each close hands out exactly its net** when every allocation sums
+to its amount (`periods::allocate` does: `kernel::apportion`). -/
+theorem closePart_total (alloc : Int → Nat → Int) (members : List Nat)
+    (sums : ∀ x, (members.map (alloc x)).sum = x) (before net : Int) :
+    (members.map (closePart alloc before net)).sum = net := by
+  have h := sum_map_sub (alloc (before + net)) (alloc before) members
+  unfold closePart
+  rw [h, sums, sums]
+  omega
+
 end Wanderbooks

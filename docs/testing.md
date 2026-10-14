@@ -79,7 +79,7 @@ accounting question), CHANGE (a source says otherwise; work pending).
 | 9 | An asset's life ends at purchase + life months, that day not held; day-count proration | CONVENTION | Exactly N months of service; day proration and the mid-month convention are both accepted book policies (ASC 360-10-35-4 not read: login) |
 | 10 | A payroll entry has one line per account total | CONFIRMED | The per-employee detail the IRS requires ("Amounts and dates of all wage ... payments", Employment Tax Recordkeeping) is kept in the run; a summary entry is standard |
 | 11 | A period with exactly the dates of an existing one is allowed | DESIGN | Nothing governs duplicate periods; harmless (the second close locks only). Refusing exact duplicates is an option |
-| 12 | Each close into members' capital rounds on its own (ties to the earlier member) | CHANGE (pending) | Found 2026-10-13 with #7: twelve monthly 50/50 closes can leave one member several cents ahead of half the year's income. Closes should split cumulatively too (year-to-date allocation minus what earlier closes gave); a new journaled rounding rule, older closes replaying as booked |
+| 12 | Each close into members' capital rounds on its own (ties to the earlier member) | CHANGED 2026-10-13 | Twelve monthly 50/50 closes could leave one member several cents ahead. A run of members closes now splits cumulatively (rules.md B-13; Lean `runPart_telescopes`; property `each_member_stays_within_a_cent_of_their_share` fails on the per-close rule); journaled `"cumulative"`, older closes replay as booked |
 
 Questions are settled from the sources, not by any one company's CPA
 (wanderbooks is general software). Where the standards leave a real

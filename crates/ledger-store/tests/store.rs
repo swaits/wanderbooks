@@ -1698,3 +1698,69 @@ fn scrapping_an_asset_for_nothing_disposes_it() {
 fn store_add(store: &mut Store, code: &str, t: AccountType) -> ledger_core::AccountId {
     store.add_account(code, code, t, None, false).unwrap()
 }
+
+/// Contract (rules.md B-13): each members close journals its rounding rule
+/// and replays under it: "cumulative" for new closes, "largest_remainder"
+/// for the per-close rule of earlier on 2026-10-13. Three one-cent months,
+/// 50/50: cumulative ends A 0.02 / B 0.01, per close A 0.03 / B 0.00.
+#[test]
+fn members_closes_replay_under_the_rule_they_were_journaled_with() {
+    for (cumulative, rule, a, b) in [
+        (true, "\"rounding\":\"cumulative\"", "0.02", "0.01"),
+        (false, "\"rounding\":\"largest_remainder\"", "0.03", "0.00"),
+    ] {
+        let dir = test_dir(&format!("close-rule-{cumulative}"));
+        let mut store = Store::create(&dir, Currency::USD).unwrap();
+        let cash = store
+            .add_account("1000", "Cash", AccountType::Asset, None, false)
+            .unwrap();
+        let caps = [
+            store
+                .add_account("3000", "A", AccountType::Equity, None, false)
+                .unwrap(),
+            store
+                .add_account("3001", "B", AccountType::Equity, None, false)
+                .unwrap(),
+        ];
+        let rev = store
+            .add_account("4000", "Sales", AccountType::Revenue, None, false)
+            .unwrap();
+        let members: Vec<ledger_core::MemberClose> = caps
+            .iter()
+            .map(|&capital| ledger_core::MemberClose {
+                capital,
+                share: Decimal::new(5, 1),
+                distributions: None,
+            })
+            .collect();
+        let to = if cumulative {
+            ledger_core::CloseTo::Members(members)
+        } else {
+            ledger_core::CloseTo::MembersPerClose(members)
+        };
+        let cent = Money::new(Decimal::new(1, 2), Currency::USD);
+        for m in 1..=3u32 {
+            let day = |d| NaiveDate::from_ymd_opt(2026, m, d).unwrap();
+            let e = store.create_entry(day(10), "a cent").unwrap();
+            store.add_line(e, cash, Side::Debit, cent).unwrap();
+            store.add_line(e, rev, Side::Credit, cent).unwrap();
+            store.post_entry(e).unwrap();
+            let end = NaiveDate::from_ymd_opt(2026, m + 1, 1)
+                .unwrap()
+                .pred_opt()
+                .unwrap();
+            let p = store
+                .create_period(&format!("2026-{m:02}"), day(1), end)
+                .unwrap();
+            store.close_period_to(p, &to).unwrap();
+        }
+        let journal = std::fs::read_to_string(dir.join(ledger_store::JOURNAL_FILE)).unwrap();
+        assert_eq!(journal.matches(rule).count(), 3, "{rule}");
+        drop(store);
+        let store = Store::open(&dir).unwrap();
+        store.verify().unwrap();
+        let bal = |id| store.ledger().account_balance(id).unwrap();
+        assert_eq!(bal(caps[0]), a.parse::<Decimal>().unwrap(), "{rule}");
+        assert_eq!(bal(caps[1]), b.parse::<Decimal>().unwrap(), "{rule}");
+    }
+}

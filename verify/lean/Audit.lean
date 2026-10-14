@@ -19,6 +19,8 @@ open Wanderbooks
 #print axioms net_closings_is_net_income
 #print axioms plugLast_total
 #print axioms plugLast_keeps
+#print axioms runPart_telescopes
+#print axioms closePart_total
 #print axioms Reachable.inv
 #print axioms Reachable.books_net_zero
 #print axioms Reachable.trial_balance

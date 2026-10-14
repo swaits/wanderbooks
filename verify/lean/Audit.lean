@@ -32,3 +32,6 @@ open Wanderbooks
 #print axioms close_zeroes
 #print axioms close_credits_net_income
 #print axioms statements_add_up
+#print axioms Apportion.ranks_perm
+#print axioms Apportion.apportion_sum
+#print axioms Apportion.apportion_sum_of_shortfall

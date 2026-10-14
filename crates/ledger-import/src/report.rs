@@ -460,6 +460,14 @@ pub fn tax_summary(ts: &ledger_core::TaxSummary) -> Statement {
             diff(ts.book_net(), ts.tax_net()),
         ],
     ));
+    if !ts.separately_stated.is_empty() {
+        rows.push(spacer());
+        rows.push(section("Separately stated to owners (Schedule K)"));
+        rows.push(subheading(
+            "Portfolio interest and charitable contributions; not included above:",
+        ));
+        rows.extend(lines(&ts.separately_stated));
+    }
     if !ts.uncategorized.is_empty() {
         rows.push(spacer());
         rows.push(section("Not yet categorized"));

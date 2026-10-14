@@ -325,6 +325,31 @@ SHA-256 of the retrieved file (`i1120.pdf`): `49476a6f69a38a0fdb96fea1d66ddc9364
 
 ---
 
+## Separately stated items on the pass-through returns (Schedule K)
+Source: <https://www.irs.gov/pub/irs-pdf/i1065.pdf>  
+Retrieved: 2026-10-13  
+SHA-256 of the retrieved file (`i1065.pdf`): `f4a35a24c7abac486908d3610754397a66b2130f0eb425dda897d78a9d91b786`
+
+**Portfolio income (Form 1065 instructions)**
+
+> Generally, portfolio income includes all gross income, other than income derived in the ordinary course of a trade or business, that is attributable to interest; dividends; royalties; income from a real estate investment trust (REIT), a regulated investment company (RIC), a REMIC, a common trust fund, a CFC, a QEF, or a cooperative; income from the disposition of property that produces income of a type defined as portfolio income; and income from the disposition of property held for investment.
+
+**Schedule K, line 5, Interest Income (Form 1065 instructions)**
+
+> Enter only taxable portfolio interest on this line.
+
+Source: <https://www.irs.gov/pub/irs-pdf/i1120s.pdf>  
+Retrieved: 2026-10-13  
+SHA-256 of the retrieved file (`i1120s.pdf`): `eab655cff9226dbc6d80213350bac050009ba90daf621c182d31c541bc62c3f2`
+
+**Separately stated items (Form 1120-S instructions)**
+
+> Items the corporation must state separately that require separate computations by the shareholders. Examples include expenses incurred for the production of income instead of in a trade or business, charitable contributions, foreign taxes paid or accrued, intangible drilling and development costs, soil and water conservation expenditures, amortizable basis of reforestation expenditures, and exploration expenditures.
+
+**Schedule K, line 4, Interest Income (Form 1120-S instructions)**
+
+> Enter only taxable portfolio interest on this line. Taxable interest is interest from all sources except interest exempt from tax and interest on tax-free covenant bonds.
+
 ## Mapping (wanderbooks, derived)
 
 **This section is derived, not quoted.** It is wanderbooks' reading of the 2025 forms and instructions above, written 2026-10-13, for the categories in `crates/ledger-core/src/tax.rs`. It is not tax advice; the CPA decides the return. "—" means the category does not apply to that form (per `TaxCategory::forms`). "Not page 1" means the quoted page-1 lines have no place for it; where it goes instead (for example Schedule K) is not quoted in this file and is left to the CPA.
@@ -333,13 +358,13 @@ SHA-256 of the retrieved file (`i1120.pdf`): `49476a6f69a38a0fdb96fea1d66ddc9364
 |---|---|---|---|---|
 | `gross_receipts` | 1 | 1a | 1a | 1a |
 | `returns_allowances` | 2 | 1b | 1b | 1b |
-| `interest_income` | 6 for interest on notes and accounts receivable (instructions, line 6); other interest not determined here | Not page 1 (separately stated; not quoted) | Not page 1 (not quoted) | 5 |
+| `interest_income` | 6 for interest on notes and accounts receivable (instructions, line 6); other interest not determined here | Not page 1: Schedule K line 5, portfolio interest (quoted above) | Not page 1: Schedule K line 4, portfolio interest (quoted above) | 5 |
 | `other_income` | 6 | 7 | 5 | 10 |
 | `cost_of_goods_sold` | 4 (from Part III, line 42) | 2 | 2 | 2 |
 | `advertising` | 8 | 21 (no advertising line) | 16 | 22 |
 | `bad_debts` | 27b via Part V (no line in Part II; instructions list bad debts under Part V) | 12 | 10 | 15 |
 | `car_truck` | 9 | 21 | 20 | 26 |
-| `charitable_contributions` | Not deductible on Schedule C (Part V: "Do not include charitable contributions") | Not page 1: separately stated (instructions) | Not page 1 (not quoted) | 19 |
+| `charitable_contributions` | Not deductible on Schedule C (Part V: "Do not include charitable contributions") | Not page 1: separately stated (instructions) | Not page 1: separately stated (quoted above) | 19 |
 | `commissions_fees` | 10 | 21 | 20 | 26 |
 | `contract_labor` | 11 | 21 | 20 | 26 |
 | `depreciation` | 13 (tax amount, not book; CPA) | 16a/16c (tax amount; CPA) | 14 (tax amount; CPA) | 20 (tax amount; CPA) |

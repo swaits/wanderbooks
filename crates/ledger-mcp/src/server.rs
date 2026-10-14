@@ -3994,6 +3994,7 @@ impl BooksServer {
                 "income": ts.income.iter().map(line).collect::<Vec<_>>(),
                 "cost_of_goods": ts.cost_of_goods.iter().map(line).collect::<Vec<_>>(),
                 "deductions": ts.deductions.iter().map(line).collect::<Vec<_>>(),
+                "separately_stated": ts.separately_stated.iter().map(line).collect::<Vec<_>>(),
                 "uncategorized": ts.uncategorized.iter().map(|u| serde_json::json!({
                     "account": u.account, "book": money(u.book),
                 })).collect::<Vec<_>>(),
@@ -4007,6 +4008,7 @@ impl BooksServer {
             ("income", &ts.income),
             ("cost_of_goods", &ts.cost_of_goods),
             ("deductions", &ts.deductions),
+            ("separately_stated", &ts.separately_stated),
         ] {
             for l in lines {
                 csv.push_str(&format!(

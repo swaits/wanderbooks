@@ -3524,6 +3524,7 @@ dependencies = [
  "chrono",
  "csv",
  "ledger-core",
+ "proptest",
  "rust_decimal",
  "rust_xlsxwriter",
  "serde",

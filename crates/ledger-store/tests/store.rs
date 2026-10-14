@@ -1932,3 +1932,117 @@ fn a_retained_earnings_close_with_a_sweep_replays_it() {
     store.verify().unwrap();
     assert_eq!(state(&store), (Decimal::ZERO, Decimal::from(300)));
 }
+
+/// The viewer tells a database that hasn't applied the newest lines
+/// (Behind) from one that has applied lines the viewer hasn't read yet
+/// (Ahead), and neither is a false "differs".
+#[test]
+fn the_viewer_tells_behind_from_ahead() {
+    use ledger_store::{DiskCheck, Snapshot};
+    let dir = test_dir("behind-ahead");
+    let store = build_books(&dir);
+    drop(store);
+    // Ahead: the viewer loads, then the writer appends and applies.
+    let snap = Snapshot::load(&dir).unwrap();
+    let mut store = Store::open(&dir).unwrap();
+    store.add_customer("Acme").unwrap();
+    assert!(
+        matches!(snap.check_disk(), DiskCheck::Ahead { .. }),
+        "{:?}",
+        snap.check_disk()
+    );
+    // Behind: a database restored from before that write.
+    drop(store);
+    let mut store = Store::open(&dir).unwrap();
+    let before_write = std::fs::read(dir.join(ledger_store::DB_FILE)).unwrap();
+    store.add_vendor("Supplier").unwrap();
+    drop(store);
+    std::fs::write(dir.join(ledger_store::DB_FILE), &before_write).unwrap();
+    let _ = std::fs::remove_file(dir.join("wanderbooks.db-wal"));
+    let _ = std::fs::remove_file(dir.join("wanderbooks.db-shm"));
+    let snap = Snapshot::load(&dir).unwrap();
+    match snap.check_disk() {
+        DiskCheck::Behind { applied, journal } => assert!(applied < journal),
+        other => panic!("expected Behind, got {other:?}"),
+    }
+}
+
+/// The table check says how many rows are missing and how many are
+/// unexpected, so a person can tell a lost row from a stray one.
+#[test]
+fn the_table_check_counts_missing_and_unexpected_rows() {
+    let dir = test_dir("table-counts");
+    let store = build_books(&dir);
+    drop(store);
+    let conn = rusqlite::Connection::open(dir.join(ledger_store::DB_FILE)).unwrap();
+    // The events table mirrors the journal and isn't read back into the
+    // ledger, so only the table check sees this.
+    conn.execute(
+        "DELETE FROM events WHERE seq = (SELECT MAX(seq) FROM events)",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    let store = Store::open(&dir).unwrap();
+    let err = store.verify().unwrap_err().to_string();
+    assert!(
+        err.contains("table events: 1 rows missing, 0 unexpected"),
+        "{err}"
+    );
+}
+
+/// A journal writer for a path whose directory doesn't exist yet creates
+/// it; the blob store reports a stored file as existing, and an unknown
+/// one as not.
+#[test]
+fn a_new_journal_makes_its_directory_and_blobs_exist_once_stored() {
+    let dir = test_dir("new-dirs");
+    let path = dir
+        .join("nested")
+        .join("deeper")
+        .join(ledger_store::JOURNAL_FILE);
+    let mut w = JournalWriter::open(&path).unwrap();
+    w.append("test.line", serde_json::json!({"n": 1})).unwrap();
+    assert!(path.exists());
+    let blobs = ledger_store::BlobStore::open(&dir.join("blobs")).unwrap();
+    let (sha, _) = blobs.put(b"receipt").unwrap();
+    assert!(blobs.exists(&sha));
+    assert!(!blobs.exists(&"0".repeat(64)));
+}
+
+/// Store::open SCENARIO 6: a database that records a base currency other
+/// than the journal's is the projection's fault, not the journal's: it is
+/// kept aside and rebuilt (before 2026-10-13 the books refused to open,
+/// blaming the journal).
+#[test]
+fn a_database_with_the_wrong_currency_is_rebuilt() {
+    let dir = test_dir("db-currency");
+    let store = build_books(&dir);
+    let before = ledger_core::reports::snapshot(store.ledger()).unwrap();
+    drop(store);
+    let conn = rusqlite::Connection::open(dir.join(ledger_store::DB_FILE)).unwrap();
+    conn.execute(
+        "UPDATE meta SET value = 'EUR' WHERE key = 'base_currency'",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    let store = Store::open(&dir).unwrap();
+    assert_eq!(store.base_currency(), Currency::USD);
+    assert_eq!(
+        ledger_core::reports::snapshot(store.ledger()).unwrap(),
+        before
+    );
+    store.verify().unwrap();
+    let kept = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter(|e| {
+            e.as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".corrupt.")
+        })
+        .count();
+    assert_eq!(kept, 1, "the wrong database is kept for forensics");
+}

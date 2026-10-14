@@ -281,8 +281,8 @@ impl BooksServer {
 
     /// The fiscal year's earnings through `as_of`, for the balance sheet:
     /// net income (loss) year to date (closing entries excluded), and the
-    /// part of it still unclosed (closing entries included, so months
-    /// already closed into equity drop out).
+    /// part of it not yet closed into equity: the income after the last
+    /// close (closes are cumulative), from no earlier than the year's start.
     fn year_earnings(
         &self,
         ledger: &Ledger,
@@ -292,14 +292,29 @@ impl BooksServer {
         let net_income_ytd = ledger_core::profit_and_loss_for_period(ledger, fy_start, as_of, None)
             .map_err(|e| e.to_string())?
             .net_income();
-        let mut unclosed = Decimal::ZERO;
-        for a in ledger.chart().all().filter(|a| !a.placeholder) {
-            match a.account_type {
-                AccountType::Revenue => unclosed += movement_in(ledger, a.id, fy_start, as_of),
-                AccountType::Expense => unclosed -= movement_in(ledger, a.id, fy_start, as_of),
-                _ => {}
-            }
-        }
+        // A close takes everything unclosed through its end, earlier years
+        // included, so this year's unclosed part is the income from the day
+        // after the last close (never before the year's start) through
+        // as_of. (Counting the closing entries dated this year instead
+        // charged this year with closing last year's income: found by
+        // year_earnings_split_closed_from_unclosed, 2026-10-14.)
+        let last_close = ledger
+            .list_periods()
+            .iter()
+            .filter(|p| p.status == PeriodStatus::Closed && p.end <= as_of)
+            .map(|p| p.end)
+            .max();
+        let from = match last_close.and_then(|e| e.succ_opt()) {
+            Some(after) if after > fy_start => after,
+            _ => fy_start,
+        };
+        let unclosed = if from <= as_of {
+            ledger_core::profit_and_loss_for_period(ledger, from, as_of, None)
+                .map_err(|e| e.to_string())?
+                .net_income()
+        } else {
+            Decimal::ZERO
+        };
         Ok(ledger_import::YearEarnings {
             net_income_ytd,
             unclosed,
@@ -4511,9 +4526,224 @@ impl ServerHandler for BooksServer {
 
 #[cfg(test)]
 mod tests {
-    use super::money;
-    use rust_decimal::Decimal;
+    use super::*;
+    use ledger_config::Member;
     use std::str::FromStr;
+
+    fn d(y: i32, m: u32, day: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, day).unwrap()
+    }
+
+    fn usd(s: &str) -> Money {
+        Money::new(Decimal::from_str(s).unwrap(), Currency::USD)
+    }
+
+    fn store(tag: &str) -> Store {
+        let dir =
+            std::env::temp_dir().join(format!("ledger-mcp-unit-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        Store::create(&dir, Currency::USD).unwrap()
+    }
+
+    fn post(s: &mut Store, date: NaiveDate, dr: AccountId, cr: AccountId, amount: &str) -> u64 {
+        let e = s.create_entry(date, "x").unwrap();
+        s.add_line(e, dr, Side::Debit, usd(amount)).unwrap();
+        s.add_line(e, cr, Side::Credit, usd(amount)).unwrap();
+        s.post_entry(e).unwrap();
+        e
+    }
+
+    fn members() -> Company {
+        Company {
+            members: vec![
+                Member {
+                    name: "Ada".into(),
+                    share: Decimal::new(5, 1),
+                    capital_account: "3000".into(),
+                    distribution_account: Some("3100".into()),
+                },
+                Member {
+                    name: "Bo".into(),
+                    share: Decimal::new(5, 1),
+                    capital_account: "3001".into(),
+                    distribution_account: None,
+                },
+            ],
+            ..Company::default()
+        }
+    }
+
+    /// "Max 25 MB" (books.attach_receipt): 25 MiB exactly.
+    #[test]
+    fn the_upload_limit_is_25_mib() {
+        assert_eq!(MAX_UPLOAD_BYTES, 25 * 1024 * 1024);
+        assert_eq!(MAX_UPLOAD_BYTES, 26_214_400);
+    }
+
+    /// A period is "YYYY-MM": year at least 1, month 1-12, nothing more.
+    #[test]
+    fn periods_are_a_year_and_a_month() {
+        assert_eq!(parse_period_mcp("2026-01"), Ok((2026, 1)));
+        assert_eq!(parse_period_mcp("2026-12"), Ok((2026, 12)));
+        for bad in [
+            "2026-13",
+            "2026-00",
+            "2026-01-05",
+            "0-05",
+            "2026",
+            "x-01",
+            "2026-",
+            "",
+        ] {
+            assert!(parse_period_mcp(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    /// Settings naming a code are found: cash/financing/investing roles,
+    /// close_into, and each member's capital and distributions accounts.
+    #[test]
+    fn config_mentions_finds_every_setting_naming_a_code() {
+        let server = BooksServer::new(store("mentions"), ReceiptPolicy::default())
+            .with_company(members())
+            .with_cash_roles(CashRoles {
+                cash: vec!["1000".into()],
+                financing: vec!["2100".into()],
+                investing: vec!["1400".into()],
+            });
+        assert_eq!(server.config_mentions("1000"), ["[books] cash_accounts"]);
+        assert_eq!(
+            server.config_mentions("2100"),
+            ["[books] financing_accounts"]
+        );
+        assert_eq!(
+            server.config_mentions("1400"),
+            ["[books] investing_accounts"]
+        );
+        assert_eq!(
+            server.config_mentions("3000"),
+            ["[[company.members]] Ada capital_account"]
+        );
+        assert_eq!(
+            server.config_mentions("3001"),
+            ["[[company.members]] Bo capital_account"]
+        );
+        assert_eq!(
+            server.config_mentions("3100"),
+            ["[[company.members]] Ada distribution_account"]
+        );
+        assert!(server.config_mentions("6000").is_empty());
+        let solo = BooksServer::new(store("mentions-solo"), ReceiptPolicy::default()).with_company(
+            Company {
+                close_into: Some("3000".into()),
+                ..Company::default()
+            },
+        );
+        assert_eq!(solo.config_mentions("3000"), ["[company] close_into"]);
+    }
+
+    /// Reports name each member with their accounts, in order.
+    #[test]
+    fn report_members_carry_names_and_accounts() {
+        let server =
+            BooksServer::new(store("members"), ReceiptPolicy::default()).with_company(members());
+        let m = server.report_members();
+        assert_eq!(m.len(), 2);
+        assert_eq!(
+            (m[0].name.as_str(), m[0].capital_code.as_str()),
+            ("Ada", "3000")
+        );
+        assert_eq!(m[0].distribution_code.as_deref(), Some("3100"));
+        assert_eq!(
+            (m[1].name.as_str(), m[1].capital_code.as_str()),
+            ("Bo", "3001")
+        );
+        assert_eq!(m[1].distribution_code, None);
+    }
+
+    /// The balance sheet's year earnings: net income for the fiscal year
+    /// to date, and the part not yet closed into equity (closing entries
+    /// included, so a closed month drops out).
+    #[test]
+    fn year_earnings_split_closed_from_unclosed() {
+        let mut s = store("earnings");
+        let cash = s
+            .add_account("1000", "Cash", AccountType::Asset, None, false)
+            .unwrap();
+        let sales = s
+            .add_account("4000", "Sales", AccountType::Revenue, None, false)
+            .unwrap();
+        let rent = s
+            .add_account("6000", "Rent", AccountType::Expense, None, false)
+            .unwrap();
+        post(&mut s, d(2025, 12, 15), cash, sales, "999.00"); // last fiscal year
+        post(&mut s, d(2026, 1, 10), cash, sales, "1000.00");
+        post(&mut s, d(2026, 1, 20), rent, cash, "300.00");
+        post(&mut s, d(2026, 2, 5), cash, sales, "50.00");
+        post(&mut s, d(2026, 2, 6), rent, cash, "20.00");
+        let server = BooksServer::new(s, ReceiptPolicy::default());
+        let as_of = d(2026, 2, 28);
+        {
+            let store = server.lock().unwrap();
+            let e = server.year_earnings(store.ledger(), as_of).unwrap();
+            assert_eq!(e.net_income_ytd, Decimal::from_str("730.00").unwrap());
+            assert_eq!(e.unclosed, Decimal::from_str("730.00").unwrap());
+        }
+        {
+            let mut store = server.lock().unwrap();
+            let jan = store
+                .create_period("2026-01", d(2026, 1, 1), d(2026, 1, 31))
+                .unwrap();
+            store.close_period(jan).unwrap();
+        }
+        let store = server.lock().unwrap();
+        let e = server.year_earnings(store.ledger(), as_of).unwrap();
+        assert_eq!(
+            e.net_income_ytd,
+            Decimal::from_str("730.00").unwrap(),
+            "still the year's income"
+        );
+        assert_eq!(
+            e.unclosed,
+            Decimal::from_str("30.00").unwrap(),
+            "January's 700 is closed"
+        );
+    }
+
+    /// Unlinking a receipt is refused only from a posted, non-reversal
+    /// entry the policy covers (crate::policy).
+    #[test]
+    fn receipts_are_kept_only_where_the_policy_needs_them() {
+        let mut s = store("unlink");
+        let cash = s
+            .add_account("1000", "Cash", AccountType::Asset, None, false)
+            .unwrap();
+        let rent = s
+            .add_account("6000", "Rent", AccountType::Expense, None, false)
+            .unwrap();
+        let draft = s.create_entry(d(2026, 3, 1), "draft").unwrap();
+        s.add_line(draft, rent, Side::Debit, usd("10.00")).unwrap();
+        s.add_line(draft, cash, Side::Credit, usd("10.00")).unwrap();
+        let posted = post(&mut s, d(2026, 3, 2), rent, cash, "10.00");
+        let reversal = s.reverse_entry(posted, d(2026, 3, 3), "undo").unwrap();
+        let every = ReceiptPolicy {
+            require_receipts_above: "0.00".into(),
+            ..ReceiptPolicy::default()
+        };
+        let server = BooksServer::new(s, every);
+        let store = server.lock().unwrap();
+        assert!(
+            server.ensure_receipt_not_required(&store, draft).is_ok(),
+            "a draft"
+        );
+        assert!(
+            server.ensure_receipt_not_required(&store, reversal).is_ok(),
+            "a reversal"
+        );
+        assert!(
+            server.ensure_receipt_not_required(&store, posted).is_err(),
+            "a posted entry"
+        );
+    }
 
     #[test]
     fn money_always_has_cents_and_never_rounds() {

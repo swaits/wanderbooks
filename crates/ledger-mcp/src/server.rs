@@ -3666,8 +3666,12 @@ impl BooksServer {
             expenses: Decimal,
         }
         let mut by_class: HashMap<Option<u32>, Acc> = HashMap::new();
+        // A closing entry isn't income or spending (rules.md B-11): left
+        // out, as profit_and_loss_for_period leaves it out (found by
+        // pnl_by_class_excludes_closing_entries, 2026-10-14).
+        let closings = ledger.closing_entry_ids();
         for entry in ledger.posted_entries() {
-            if entry.date() < start || entry.date() > end {
+            if entry.date() < start || entry.date() > end || closings.contains(&entry.id()) {
                 continue;
             }
             for line in entry.lines() {

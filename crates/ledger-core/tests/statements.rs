@@ -1522,3 +1522,177 @@ mod chaining {
         }
     }
 }
+
+mod cumulative_closes {
+    use super::*;
+    use ledger_core::{CloseTo, MemberClose};
+
+    /// Three months of one-cent income, 50/50, each month closed into the
+    /// members' capital.
+    fn three_cent_months(to: impl Fn(&[AccountId; 2]) -> CloseTo) -> (Ledger, [AccountId; 2]) {
+        let mut l = Ledger::new(Currency::USD);
+        let mut add = |code: &str, t| l.add_account(code, code, t, None, false).unwrap();
+        let cash = add("1000", AccountType::Asset);
+        let caps = [
+            add("3000", AccountType::Equity),
+            add("3001", AccountType::Equity),
+        ];
+        let rev = add("4000", AccountType::Revenue);
+        for m in 1..=3 {
+            let e = l.create_entry(d(m, 10), "a cent");
+            l.add_line(
+                e,
+                cash,
+                Side::Debit,
+                Money::new(cents("0.01"), Currency::USD),
+            )
+            .unwrap();
+            l.add_line(
+                e,
+                rev,
+                Side::Credit,
+                Money::new(cents("0.01"), Currency::USD),
+            )
+            .unwrap();
+            l.post_entry(e).unwrap();
+            let end = d(m + 1, 1).pred_opt().unwrap();
+            let p = l
+                .create_period(&format!("2026-{m:02}"), d(m, 1), end)
+                .unwrap();
+            l.close_period_to(p, &to(&caps)).unwrap();
+        }
+        (l, caps)
+    }
+
+    fn half(caps: &[AccountId; 2]) -> Vec<MemberClose> {
+        caps.iter()
+            .map(|&capital| MemberClose {
+                capital,
+                share: cents("0.5"),
+                distributions: None,
+            })
+            .collect()
+    }
+
+    /// Oracle: rules.md B-13 (cumulative closes; docs/testing.md #12),
+    /// hand-computed. Closing each cent on its own gives the earlier member
+    /// every tie: A 0.03, B 0.00 after three months. Cumulatively: after
+    /// month 1 the run's 0.01 splits A 0.01 / B 0; after month 2, 0.02
+    /// splits 0.01 / 0.01, so month 2 gives B the cent; after month 3, 0.03
+    /// splits 0.02 / 0.01, so month 3 gives A the cent. A 0.02, B 0.01.
+    #[test]
+    fn a_run_of_closes_never_piles_up_rounding() {
+        let (l, caps) = three_cent_months(|c| CloseTo::MembersPerClose(half(c)));
+        let bal = |l: &Ledger, a| l.account_balance(a).unwrap();
+        assert_eq!(
+            (bal(&l, caps[0]), bal(&l, caps[1])),
+            (cents("0.03"), cents("0.00")),
+            "per close: the earlier member takes every tie"
+        );
+        let (l, caps) = three_cent_months(|c| CloseTo::Members(half(c)));
+        assert_eq!(
+            (bal(&l, caps[0]), bal(&l, caps[1])),
+            (cents("0.02"), cents("0.01")),
+            "cumulative: within a cent of half of 0.03 each"
+        );
+    }
+
+    proptest::proptest! {
+        /// Oracle: rules.md B-13, cumulative closes. For any run of monthly
+        /// profits and losses closed into three members at 33.33% /
+        /// 33.33% / 33.34%, each member's total from the run is within one
+        /// cent of their exact share of everything closed.
+        #[test]
+        fn each_member_stays_within_a_cent_of_their_share(
+            nets in proptest::collection::vec(-500_000i64..500_000, 1..12),
+        ) {
+            let mut l = Ledger::new(Currency::USD);
+            let mut add = |code: &str, t| l.add_account(code, code, t, None, false).unwrap();
+            let cash = add("1000", AccountType::Asset);
+            let caps = [
+                add("3000", AccountType::Equity),
+                add("3001", AccountType::Equity),
+                add("3002", AccountType::Equity),
+            ];
+            let rev = add("4000", AccountType::Revenue);
+            let exp = add("6000", AccountType::Expense);
+            let shares = [cents("0.3333"), cents("0.3333"), cents("0.3334")];
+            let to = CloseTo::Members(
+                caps.iter()
+                    .zip(shares)
+                    .map(|(&capital, share)| MemberClose { capital, share, distributions: None })
+                    .collect(),
+            );
+            for (i, n) in nets.iter().enumerate() {
+                let m = i as u32 + 1;
+                if *n != 0 {
+                    let amount = Money::new(Decimal::new(n.abs(), 2), Currency::USD);
+                    let (dr, cr) = if *n > 0 { (cash, rev) } else { (exp, cash) };
+                    let e = l.create_entry(d(m, 10), "month");
+                    l.add_line(e, dr, Side::Debit, amount).unwrap();
+                    l.add_line(e, cr, Side::Credit, amount).unwrap();
+                    l.post_entry(e).unwrap();
+                }
+                let end = if m == 12 { d(12, 31) } else { d(m + 1, 1).pred_opt().unwrap() };
+                let p = l.create_period(&format!("2026-{m:02}"), d(m, 1), end).unwrap();
+                l.close_period_to(p, &to).unwrap();
+            }
+            let total = Decimal::new(nets.iter().sum::<i64>(), 2);
+            for (cap, share) in caps.iter().zip(shares) {
+                let got = l.account_balance(*cap).unwrap();
+                proptest::prop_assert!((got - total * share).abs() < cents("0.01"), "{got} vs {}", total * share);
+            }
+        }
+    }
+
+    /// A run is closes with the same members and shares, back to back: a
+    /// close to anything else (or with other shares) ends it, and the next
+    /// members close starts afresh.
+    #[test]
+    fn a_different_close_ends_the_run() {
+        let mut l = Ledger::new(Currency::USD);
+        let mut add = |code: &str, t| l.add_account(code, code, t, None, false).unwrap();
+        let cash = add("1000", AccountType::Asset);
+        let caps = [
+            add("3000", AccountType::Equity),
+            add("3001", AccountType::Equity),
+        ];
+        let rev = add("4000", AccountType::Revenue);
+        let cent = |l: &mut Ledger, m| {
+            let e = l.create_entry(d(m, 10), "a cent");
+            l.add_line(
+                e,
+                cash,
+                Side::Debit,
+                Money::new(cents("0.01"), Currency::USD),
+            )
+            .unwrap();
+            l.add_line(
+                e,
+                rev,
+                Side::Credit,
+                Money::new(cents("0.01"), Currency::USD),
+            )
+            .unwrap();
+            l.post_entry(e).unwrap();
+        };
+        let close = |l: &mut Ledger, m: u32, to: &CloseTo| {
+            let end = d(m + 1, 1).pred_opt().unwrap();
+            let p = l
+                .create_period(&format!("2026-{m:02}"), d(m, 1), end)
+                .unwrap();
+            l.close_period_to(p, to).unwrap();
+        };
+        // Month 1 to members (A gets the cent), month 2 to retained
+        // earnings (ends the run), month 3 to members again: a new run, so
+        // A gets that cent too.
+        cent(&mut l, 1);
+        close(&mut l, 1, &CloseTo::Members(half(&caps)));
+        cent(&mut l, 2);
+        close(&mut l, 2, &CloseTo::RetainedEarnings { sweep: vec![] });
+        cent(&mut l, 3);
+        close(&mut l, 3, &CloseTo::Members(half(&caps)));
+        assert_eq!(l.account_balance(caps[0]).unwrap(), cents("0.02"));
+        assert_eq!(l.account_balance(caps[1]).unwrap(), cents("0"));
+    }
+}

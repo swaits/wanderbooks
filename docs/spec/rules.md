@@ -217,6 +217,14 @@ closed period).
 - **No authority** says how to round a share to the cent. Largest
   remainder, ties to the earlier member: DECISION (the owner, 2026-10-13).
   Closes made before then replay with the last member absorbing it.
+- Rounding never piles up: a run of members closes (same members and
+  shares, back to back) splits cumulatively, each close giving a member
+  their allocation of the run's total so far less their allocation before
+  it, so each member's total from the run is within a cent of their exact
+  share (follows from the running capital account below; found
+  2026-10-13: closing each month on its own gave every tied cent to the
+  earlier member). Journaled as `"rounding": "cumulative"`; closes
+  journaled `"largest_remainder"` replay one at a time.
 - A capital account is one running balance: Form 1065 Schedule K-1
   instructions, Item L: "The partnership must report your beginning
   capital account and ending capital account for the year", "based on the
@@ -229,8 +237,12 @@ closed period).
 
 **Enforced:** `CloseTo::Members`, `periods::allocate`,
 `kernel::apportion`, `members_equity`. **Checked:** Kani
-`apportion_is_exact`, `apportion_is_fair`; properties `prop_split_*`,
-`each_members_capital_chains_across_statements`;
+`apportion_is_exact`, `apportion_is_fair`; Lean `runPart_telescopes`,
+`closePart_total`; properties `prop_split_*`,
+`each_members_capital_chains_across_statements`,
+`each_member_stays_within_a_cent_of_their_share`;
+`a_run_of_closes_never_piles_up_rounding`,
+`members_closes_replay_under_the_rule_they_were_journaled_with`;
 `closes_journaled_under_the_old_rule_replay_with_it`.
 
 ## B-14 Statements: P&L for a period; cash flow by the indirect method

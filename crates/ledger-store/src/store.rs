@@ -1099,7 +1099,9 @@ impl Store {
             CloseTo::RetainedEarnings { sweep } if sweep.is_empty() => json!("retained_earnings"),
             CloseTo::RetainedEarnings { sweep } => json!({"retained_earnings": {"sweep": sweep}}),
             CloseTo::Account { into, sweep } => json!({"account": {"into": into, "sweep": sweep}}),
-            CloseTo::Members(members) | CloseTo::MembersLastAbsorbs(members) => {
+            CloseTo::Members(members)
+            | CloseTo::MembersPerClose(members)
+            | CloseTo::MembersLastAbsorbs(members) => {
                 let mut v = json!({
                     "members": members
                         .iter()
@@ -1110,10 +1112,13 @@ impl Store {
                         }))
                         .collect::<Vec<_>>(),
                 });
-                // Closes journaled before 2026-10-13 carry no rounding and
-                // replay with the last member absorbing it.
-                if matches!(to, CloseTo::Members(_)) {
-                    v["rounding"] = json!("largest_remainder");
+                // The rounding rule, so replay closes the same way. Closes
+                // journaled before 2026-10-13 carry none (the last member
+                // absorbed it).
+                match to {
+                    CloseTo::Members(_) => v["rounding"] = json!("cumulative"),
+                    CloseTo::MembersPerClose(_) => v["rounding"] = json!("largest_remainder"),
+                    _ => {}
                 }
                 v
             }
@@ -3487,10 +3492,12 @@ fn close_to_from_journal(v: Option<&Value>) -> Result<CloseTo, StoreError> {
         })
         .collect::<Result<_, StoreError>>()?;
     // The rounding rule the close was made under: absent before
-    // 2026-10-13, when the last member absorbed it.
+    // 2026-10-13, when the last member absorbed it; "largest_remainder"
+    // per close, then "cumulative" over a run of closes.
     match v.get("rounding").and_then(|r| r.as_str()) {
         None => Ok(CloseTo::MembersLastAbsorbs(members)),
-        Some("largest_remainder") => Ok(CloseTo::Members(members)),
+        Some("largest_remainder") => Ok(CloseTo::MembersPerClose(members)),
+        Some("cumulative") => Ok(CloseTo::Members(members)),
         Some(_) => Err(corrupt("unknown rounding")),
     }
 }

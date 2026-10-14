@@ -124,6 +124,13 @@ sequence of commands, of any length**:
     other shares were rounded, and only the last share changes.
     - Kani `plug_last_sums_exactly` · Lean `plugLast_total`,
       `plugLast_keeps`
+17. **A run of member closes telescopes**: each member's total from a run
+    of cumulative closes is their allocation of everything the run closed
+    (so its rounding is one allocation's, never a sum of them), and each
+    close hands out exactly its net, for any allocation whose parts sum to
+    the whole (rules.md B-13).
+    - Lean `runPart_telescopes`, `closePart_total` · property
+      `each_member_stays_within_a_cent_of_their_share`
 
 ## What the proofs found
 

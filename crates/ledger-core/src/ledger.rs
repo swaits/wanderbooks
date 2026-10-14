@@ -1294,6 +1294,8 @@ impl Ledger {
                 end,
                 status: PeriodStatus::Open,
                 closing_entry: None,
+                close_seq: None,
+                member_close: None,
             },
         );
         Ok(id)
@@ -1417,13 +1419,23 @@ impl Ledger {
                     sweep(*a, *into, self);
                 }
             }
-            periods::CloseTo::Members(members) | periods::CloseTo::MembersLastAbsorbs(members) => {
+            periods::CloseTo::Members(members)
+            | periods::CloseTo::MembersPerClose(members)
+            | periods::CloseTo::MembersLastAbsorbs(members) => {
                 let shares: Vec<Decimal> = members.iter().map(|m| m.share).collect();
                 let parts = match to {
                     periods::CloseTo::MembersLastAbsorbs(_) => {
                         periods::allocate_last_absorbs(net, &shares)
                     }
-                    _ => periods::allocate(net, &shares),
+                    periods::CloseTo::MembersPerClose(_) => periods::allocate(net, &shares),
+                    _ => {
+                        // Cumulative: what the run gives each member with
+                        // this close, less what it gave them before.
+                        let before = self.member_close_run(&member_key(members));
+                        let after = periods::allocate(before + net, &shares);
+                        let prior = periods::allocate(before, &shares);
+                        after.iter().zip(&prior).map(|(a, p)| a - p).collect()
+                    }
                 };
                 for (m, part) in members.iter().zip(parts) {
                     equity.push((m.capital, part));
@@ -1462,10 +1474,44 @@ impl Ledger {
             Some(entry)
         };
 
+        let close_seq = self
+            .periods
+            .values()
+            .filter(|p| p.status == PeriodStatus::Closed)
+            .count() as u64
+            + 1;
         let p = self.periods.get_mut(&id).expect("period exists");
         p.status = PeriodStatus::Closed;
         p.closing_entry = closing_entry;
+        p.close_seq = Some(close_seq);
+        p.member_close = match to {
+            periods::CloseTo::Members(members) => Some(periods::MemberCloseRecord {
+                members: member_key(members),
+                net,
+            }),
+            _ => None,
+        };
         Ok(closing_entry)
+    }
+
+    /// The net closed by the run of cumulative members closes, with exactly
+    /// these members and shares, that ends with the latest close: zero if
+    /// the latest close was anything else (or there is none).
+    fn member_close_run(&self, members: &[(AccountId, Decimal)]) -> Decimal {
+        let mut closed: Vec<&periods::Period> = self
+            .periods
+            .values()
+            .filter(|p| p.status == PeriodStatus::Closed)
+            .collect();
+        closed.sort_by_key(|p| std::cmp::Reverse(p.close_seq));
+        let mut total = Decimal::ZERO;
+        for p in closed {
+            match &p.member_close {
+                Some(r) if r.members == members => total += r.net,
+                _ => break,
+            }
+        }
+        total
     }
 
     /// Revenue and expense balances as of `end` as closing lines (code
@@ -1519,7 +1565,9 @@ impl Ledger {
                 accounts.push(*into);
                 accounts.extend(sweep);
             }
-            periods::CloseTo::Members(members) | periods::CloseTo::MembersLastAbsorbs(members) => {
+            periods::CloseTo::Members(members)
+            | periods::CloseTo::MembersPerClose(members)
+            | periods::CloseTo::MembersLastAbsorbs(members) => {
                 let total: Decimal = members.iter().map(|m| m.share).sum();
                 if members.is_empty()
                     || total != Decimal::ONE
@@ -1623,7 +1671,9 @@ impl Ledger {
         let sweeps: Vec<AccountId> = match to {
             periods::CloseTo::RetainedEarnings { sweep }
             | periods::CloseTo::Account { sweep, .. } => sweep.clone(),
-            periods::CloseTo::Members(members) | periods::CloseTo::MembersLastAbsorbs(members) => {
+            periods::CloseTo::Members(members)
+            | periods::CloseTo::MembersPerClose(members)
+            | periods::CloseTo::MembersLastAbsorbs(members) => {
                 members.iter().filter_map(|m| m.distributions).collect()
             }
         };
@@ -2769,4 +2819,10 @@ fn check_minor_units(amount: Money) -> Result<(), LedgerError> {
         }
         _ => Ok(()),
     }
+}
+
+/// A members close's (capital account, share) list, in order: what a run
+/// of cumulative closes must share.
+fn member_key(members: &[periods::MemberClose]) -> Vec<(AccountId, Decimal)> {
+    members.iter().map(|m| (m.capital, m.share)).collect()
 }

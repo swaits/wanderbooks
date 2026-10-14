@@ -51,8 +51,15 @@ pub enum CloseTo {
     /// Members' capital accounts by share (shares sum to 1): the
     /// partnership convention, where each member's capital account carries
     /// their allocated earnings and absorbs their distributions. Odd cents
-    /// go by largest remainder ([`allocate`]).
+    /// go by largest remainder ([`allocate`]), cumulatively: a run of
+    /// member closes with the same members and shares gives each member,
+    /// in total, their share of the run's total to the cent, so rounding
+    /// never piles up close after close (rules.md B-13; since 2026-10-13).
     Members(Vec<MemberClose>),
+    /// [`CloseTo::Members`] rounding each close on its own (largest
+    /// remainder), the rule for closes journaled on 2026-10-13 before the
+    /// cumulative one. Only replay of those journals produces it.
+    MembersPerClose(Vec<MemberClose>),
     /// [`CloseTo::Members`] under the rounding closes used before
     /// 2026-10-13 ([`allocate_last_absorbs`]). Only replay of those journals
     /// produces it; new closes use `Members`.
@@ -134,6 +141,23 @@ pub struct Period {
     pub status: PeriodStatus,
     /// The closing entry's id, once closed.
     pub closing_entry: Option<u64>,
+    /// The order it closed in among all closes (1 for the first), once
+    /// closed.
+    #[serde(default)]
+    pub close_seq: Option<u64>,
+    /// What a cumulative members close allocated, once closed that way.
+    #[serde(default)]
+    pub member_close: Option<MemberCloseRecord>,
+}
+
+/// A cumulative members close ([`CloseTo::Members`]): who shared, and the
+/// net it closed. The next close with the same members continues the run.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct MemberCloseRecord {
+    /// (capital account, share), in the order given.
+    pub members: Vec<(crate::AccountId, rust_decimal::Decimal)>,
+    /// The net income this close allocated (negative for a loss).
+    pub net: rust_decimal::Decimal,
 }
 
 impl Period {

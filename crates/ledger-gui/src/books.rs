@@ -132,6 +132,30 @@ impl Integrity {
 }
 
 /// The headline numbers.
+///
+/// ```text
+/// GOAL: the overview's numbers are the books' numbers.
+/// SOURCE: the module's rule ("every number here comes from ledger-core;
+///         this module only indexes and arranges"); DECISION (the
+///         comparisons and the burn estimate, as defined here).
+/// INVARIANTS (all at `today`; m0 = the first of today's month):
+///   1. cash, cash_30d_ago: the cash accounts' balances (normal side) at
+///      the end of today and of today - 30 days.
+///   2. liabilities: the balance sheet's total liabilities at today.
+///   3. receivables: the balances of the asset accounts whose name says
+///      "receivable".
+///   4. revenue_mtd, expenses_mtd: the P&L from m0 through today.
+///      revenue_prev_month, expenses_prev_month: the P&L from the first
+///      of last month through the same day of it (its last day, if
+///      shorter).
+///   5. net_ytd: revenue minus expenses from the fiscal year's first day
+///      (ledger_config) through today.
+///   6. monthly_burn: over the three full months before m0, expenses
+///      minus revenue, divided by the months of those the books cover
+///      (from the first posted entry's month); Some only when positive,
+///      rounded to the cent half away from zero.
+///   7. first_entry: the earliest posted entry's date.
+/// ```
 #[derive(Clone, Debug, Default)]
 pub struct Kpis {
     pub cash: Decimal,
@@ -437,7 +461,10 @@ impl Books {
                 Some(_) => 3,
                 None => 0,
             };
-            (loss > Decimal::ZERO && months > 0).then(|| (loss / Decimal::from(months)).round_dp(2))
+            (loss > Decimal::ZERO && months > 0).then(|| {
+                (loss / Decimal::from(months))
+                    .round_dp_with_strategy(2, rust_decimal::RoundingStrategy::MidpointAwayFromZero)
+            })
         });
         Kpis {
             cash: cash[1],

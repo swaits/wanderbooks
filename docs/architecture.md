@@ -16,7 +16,7 @@ private, and constructors are `pub(crate)` where it matters. This is what
 makes the ledger auditable and what will make the future oracle harness
 trustworthy — the harness only needs to drive the command surface.
 
-Reports (`trial_balance`, `balance_sheet`, `profit_and_loss`, `snapshot`)
+Reports (`trial_balance`, `balance_sheet`, `unclosed_earnings`, `snapshot`)
 are free functions: pure, total, and deterministic. Same ledger in, same
 report out, every time, on every platform. That determinism is the entire
 basis of `docs/oracle.md`.
@@ -31,7 +31,7 @@ crates/ledger-core/
     account.rs    # AccountType, Side, Account, ChartOfAccounts
     journal.rs    # JournalLine, JournalEntry, validate()
     ledger.rs     # Ledger: the command surface, append-only log
-    reports.rs    # trial_balance, profit_and_loss, balance_sheet, snapshot
+    reports.rs    # trial_balance, unclosed_earnings, balance_sheet, snapshot
   tests/
     invariants.rs # accounting-law tests + randomized property test
     golden/       # hand-verified expected report snapshots

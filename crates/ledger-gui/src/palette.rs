@@ -148,6 +148,18 @@ impl Palette {
 
 /// Subsequence match: every query character in order, rewarding
 /// contiguous runs and word starts. None if no match.
+/// Fuzzy match score, higher is better.
+///
+/// ```text
+/// INVARIANTS:
+///   1. Matches (Some) exactly when the query's non-space characters,
+///      lower-cased, appear in order in the lower-cased hay; the empty
+///      query matches everything with score 0.
+///   2. A match's score is at least the number of non-space query
+///      characters; consecutive matches and matches at a word start score
+///      more, so a word-start prefix scores at least as high as any
+///      other match of the same query.
+/// ```
 fn fuzzy(hay: &str, query: &str) -> Option<i32> {
     if query.is_empty() {
         return Some(0);

@@ -126,8 +126,9 @@ fn trial_balance_where(ledger: &Ledger, include: &dyn Fn(&JournalEntry) -> bool)
     }
 }
 
-/// Profit and loss: revenue and expenses for the life of the ledger. For a
-/// date range, with a line per account, use [`profit_and_loss_for_period`].
+/// Revenue and expense totals: from [`unclosed_earnings`], what the books
+/// hold now (closed periods already moved to equity); for a date range,
+/// with a line per account, use [`profit_and_loss_for_period`].
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProfitAndLoss {
     /// Total revenue (credit-normal balances, reported positive).
@@ -143,15 +144,19 @@ impl ProfitAndLoss {
     }
 }
 
-/// Build the profit and loss statement from all posted entries.
-pub fn profit_and_loss(ledger: &Ledger) -> Result<ProfitAndLoss, LedgerError> {
+/// Earnings not yet closed: revenue and expenses over every posted entry,
+/// closing entries included, so a closed period's income (already moved
+/// to equity) nets out. This is the balance sheet's current-earnings line,
+/// not a profit and loss for any period (docs/testing.md #3; OpenStax,
+/// Principles of Financial Accounting 5.1).
+pub fn unclosed_earnings(ledger: &Ledger) -> Result<ProfitAndLoss, LedgerError> {
     profit_and_loss_filtered(ledger, None)
 }
 
 /// Build the profit and loss statement, optionally filtered to one class.
 ///
 /// With `None` every line counts and the result is identical to
-/// [`profit_and_loss`]. With `Some(class)` only lines tagged with that
+/// [`unclosed_earnings`]. With `Some(class)` only lines tagged with that
 /// class count. Unlike the account-at-a-time accumulation this works line
 /// by line, because classes live on lines: each line contributes its signed
 /// amount (positive on the account's normal side) to its account type's
@@ -181,7 +186,7 @@ pub struct ClassProfitAndLoss {
 /// sorted by class name; the unclassified row comes last.
 ///
 /// The rows partition the ledger: summing every row's revenue and expenses
-/// reproduces [`profit_and_loss`].
+/// reproduces [`unclosed_earnings`].
 ///
 /// ```text
 /// GOAL: a profit and loss per class (department, location, job), plus the
@@ -313,7 +318,7 @@ pub fn balance_sheet(ledger: &Ledger) -> Result<BalanceSheet, LedgerError> {
             AccountType::Revenue | AccountType::Expense => {}
         }
     }
-    let current_earnings = profit_and_loss(ledger)?.net_income();
+    let current_earnings = unclosed_earnings(ledger)?.net_income();
     equity += current_earnings;
     Ok(BalanceSheet {
         assets,
@@ -1031,7 +1036,7 @@ pub fn members_equity(
 /// ```
 pub fn snapshot(ledger: &Ledger) -> Result<serde_json::Value, LedgerError> {
     let tb = trial_balance(ledger);
-    let pl = profit_and_loss(ledger)?;
+    let pl = unclosed_earnings(ledger)?;
     let bs = balance_sheet(ledger)?;
     Ok(serde_json::json!({
         "trial_balance": {

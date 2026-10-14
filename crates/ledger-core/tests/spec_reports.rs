@@ -11,7 +11,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{Days, NaiveDate};
-use ledger_core::reports::{profit_and_loss, profit_and_loss_by_class, snapshot, trial_balance};
+use ledger_core::reports::{profit_and_loss_by_class, snapshot, trial_balance, unclosed_earnings};
 use ledger_core::{
     AccountId, AccountType, BalanceSheetStatement, CashFlowParams, CashFlowStatement, ClassId,
     CloseTo, Currency, EntryId, GeneralLedger, Ledger, MemberCapital, MemberClose,
@@ -651,7 +651,7 @@ fn pnl_by_class_rows_sorted_by_name_unclassified_last() {
             (None, c(0), c(3000)),
         ]
     );
-    let whole = profit_and_loss(&co.l).unwrap();
+    let whole = unclosed_earnings(&co.l).unwrap();
     assert_eq!(whole.revenue, c(15000));
     assert_eq!(whole.expenses, c(5000));
 }
@@ -2134,7 +2134,7 @@ proptest! {
     fn prop_pnl_by_class_rows_sum_to_whole(gens in arb_books()) {
         let b = build_ordered(&gens, 1, &(0..N).collect::<Vec<_>>(), true);
         let rows = profit_and_loss_by_class(&b.l).unwrap();
-        let whole = profit_and_loss(&b.l).unwrap();
+        let whole = unclosed_earnings(&b.l).unwrap();
         prop_assert_eq!(rows.iter().map(|r| r.profit_and_loss.revenue).sum::<Decimal>(), whole.revenue);
         prop_assert_eq!(rows.iter().map(|r| r.profit_and_loss.expenses).sum::<Decimal>(), whole.expenses);
         let (wr, we) = model_pnl(&model(&gens, early(), d(2030, 1, 1), None));
@@ -2171,7 +2171,7 @@ proptest! {
         let mut b = build_ordered(&gens, 1, &(0..N).collect::<Vec<_>>(), true);
         close_through(&mut b, Some(month), &re_close());
         let rows = profit_and_loss_by_class(&b.l).unwrap();
-        let whole = profit_and_loss(&b.l).unwrap();
+        let whole = unclosed_earnings(&b.l).unwrap();
         prop_assert_eq!(rows.iter().map(|r| r.profit_and_loss.revenue).sum::<Decimal>(), whole.revenue);
         prop_assert_eq!(rows.iter().map(|r| r.profit_and_loss.expenses).sum::<Decimal>(), whole.expenses);
     }

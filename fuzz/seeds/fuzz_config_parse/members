@@ -1,0 +1,25 @@
+[company]
+name = "Three Partners LLC"
+tax_form = "1065"
+fiscal_year_start = "07-01"
+
+[[company.members]]
+name = "A"
+share = "0.5"
+capital_account = "3000"
+distribution_account = "3100"
+
+[[company.members]]
+name = "B"
+share = "25%"
+capital_account = "3001"
+
+[[company.members]]
+name = "C"
+share = " 0.25"
+capital_account = " 3002 "
+
+[books]
+accounting_basis = "cash"
+receipt_threshold = "75"
+investing_accounts = ["1500"]

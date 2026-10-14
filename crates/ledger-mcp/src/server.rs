@@ -1,5 +1,34 @@
 //! The MCP server: narrow typed tools over the store, with the receipt
 //! policy enforced server-side.
+//!
+//! ```text
+//! GOAL: let an AI agent keep the books through tools that cannot leave
+//!       them wrong, and say exactly what happened.
+//! SOURCE: docs/spec/sources/mcp-tools.md (MCP 2025-06-18 tools: structured
+//!         results conform to the declared output schema; tool errors are
+//!         results with isError; "validate all tool inputs");
+//!         docs/spec/sources/jsonrpc-2.0.md (one response per request, id
+//!         echoed, result xor error); DECISION (owner, the operating
+//!         contract in INSTRUCTIONS and docs/mcp-interface.md).
+//! INVARIANTS:
+//!   1. Every tool's structured result MUST conform to its declared output
+//!      schema, and the same JSON MUST be in a text block.
+//!   2. A refused call (isError) MUST leave the books unchanged: the
+//!      journal byte for byte.
+//!   3. Amounts in MUST be decimal strings, exactly `-?digits[.digits]`
+//!      (no exponent, sign "+", separators, or spaces); amounts out are
+//!      decimal strings, never JSON numbers, with at least two places and
+//!      never rounded.
+//!   4. Posting and reversing MUST preview without `confirmed: true`, and a
+//!      preview MUST change nothing.
+//!   5. An entry the receipt policy covers MUST NOT post, or keep posted,
+//!      without a receipt (crate::policy).
+//!   6. A reference (account, vendor, class) given as a number that names
+//!      one thing by id and another by code or name is refused, never
+//!      guessed.
+//!   7. The server MUST answer every request with exactly one response
+//!      whose id is the request's, and keep serving after any tool error.
+//! ```
 
 use crate::policy::ReceiptPolicy;
 use crate::types::*;
@@ -330,9 +359,10 @@ fn parse_date(s: &str) -> Result<NaiveDate, String> {
         .map_err(|_| format!("bad date {s:?}: expected YYYY-MM-DD"))
 }
 
+/// A decimal string, exactly `-?digits[.digits]` (INVARIANT 3).
 fn parse_amount(s: &str) -> Result<Decimal, String> {
-    s.parse::<Decimal>()
-        .map_err(|_| format!("bad amount {s:?}: expected a decimal string like \"123.45\""))
+    ledger_config::decimal(s)
+        .ok_or_else(|| format!("bad amount {s:?}: expected a decimal string like \"123.45\""))
 }
 
 fn parse_side(s: &str) -> Result<Side, String> {
@@ -378,28 +408,35 @@ fn parse_account_type(s: &str) -> Result<AccountType, String> {
     }
 }
 
-/// Resolve an account reference: a numeric id, or an account code.
+/// Resolve an account reference: an account code, or a numeric id. A
+/// number that is one account's code and another's id is refused
+/// (INVARIANT 6).
 fn resolve_account(store: &Store, account: &str) -> Result<AccountId, String> {
-    if let Ok(id) = account.parse::<u64>()
-        && store.ledger().chart().get(id).is_some()
-    {
-        return Ok(id);
+    let chart = store.ledger().chart();
+    let by_code = chart.find_by_code(account).map(|a| a.id);
+    let by_id = account
+        .parse::<u64>()
+        .ok()
+        .filter(|id| chart.get(*id).is_some());
+    match (by_code, by_id) {
+        (Some(c), Some(i)) if c != i => Err(format!(
+            "account {account:?} is ambiguous: it is the code of account {c} and the id of account {i}; pass the code of the one you mean"
+        )),
+        (Some(c), _) => Ok(c),
+        (None, Some(i)) => Ok(i),
+        (None, None) => Err(format!(
+            "unknown account {account:?}: use an id or code from books.chart"
+        )),
     }
-    store
-        .ledger()
-        .chart()
-        .find_by_code(account)
-        .map(|a| a.id)
-        .ok_or_else(|| format!("unknown account {account:?}: use an id or code from books.chart"))
 }
 
-/// Resolve a class by id or name (case-insensitive).
+/// Resolve a vendor by id or name (case-insensitive); a number that is
+/// one vendor's id and another's name is refused (INVARIANT 6).
 fn resolve_vendor(store: &Store, vendor: &str) -> Result<u64, String> {
-    if let Ok(id) = vendor.parse::<u64>()
-        && store.ledger().get_vendor(id).is_some()
-    {
-        return Ok(id);
-    }
+    let by_id = vendor
+        .parse::<u64>()
+        .ok()
+        .filter(|id| store.ledger().get_vendor(*id).is_some());
     let matches: Vec<u64> = store
         .ledger()
         .list_vendors()
@@ -407,6 +444,15 @@ fn resolve_vendor(store: &Store, vendor: &str) -> Result<u64, String> {
         .filter(|v| v.name.eq_ignore_ascii_case(vendor.trim()))
         .map(|v| v.id)
         .collect();
+    if let Some(id) = by_id {
+        return match matches.as_slice() {
+            [] => Ok(id),
+            [m] if *m == id => Ok(id),
+            _ => Err(format!(
+                "vendor {vendor:?} is ambiguous: it is vendor {id}'s id and another vendor's name; pass the id"
+            )),
+        };
+    }
     match matches.as_slice() {
         [id] => Ok(*id),
         [] => Err(format!(
@@ -420,19 +466,23 @@ fn form_1099_label(form: Option<ledger_core::Form1099>) -> Option<String> {
     form.map(|f| f.label().to_string())
 }
 
+/// Resolve a class by id or name; a number that is one class's id and
+/// another's name is refused (INVARIANT 6).
 fn resolve_class(store: &Store, class: &str) -> Result<u32, String> {
-    if let Ok(id) = class.parse::<u32>()
-        && store.ledger().get_class(id).is_some()
-    {
-        return Ok(id);
+    let by_id = class
+        .parse::<u32>()
+        .ok()
+        .filter(|id| store.ledger().get_class(*id).is_some());
+    let by_name = store.ledger().find_class_by_name(class).map(|c| c.id);
+    match (by_id, by_name) {
+        (Some(i), Some(n)) if i != n => Err(format!(
+            "class {class:?} is ambiguous: it is class {i}'s id and class {n}'s name; pass the id"
+        )),
+        (Some(i), _) | (None, Some(i)) => Ok(i),
+        (None, None) => Err(format!(
+            "unknown class {class:?}: use an id or name from books.list_classes"
+        )),
     }
-    store
-        .ledger()
-        .find_class_by_name(class)
-        .map(|c| c.id)
-        .ok_or_else(|| {
-            format!("unknown class {class:?}: use an id or name from books.list_classes")
-        })
 }
 
 /// A money amount as a decimal string with at least two places: "0.00",
@@ -923,6 +973,11 @@ impl BooksServer {
         let mut store = self.lock()?;
         let account = resolve_account(&store, &p.account)?;
         let side = parse_side(&p.side)?;
+        // Resolve the class before writing anything (INVARIANT 2).
+        let class_id = match &p.class {
+            Some(c) => Some(resolve_class(&store, c)?),
+            None => None,
+        };
         // Foreign-currency line?
         if p.foreign_currency.is_some() || p.foreign_amount.is_some() || p.fx_rate.is_some() {
             let fc = p
@@ -949,8 +1004,7 @@ impl BooksServer {
                 .map_err(|e| e.to_string())?;
         }
         // Class tag, if requested. The line just added is the last one.
-        if let Some(class_ref) = p.class {
-            let class_id = resolve_class(&store, &class_ref)?;
+        if let Some(class_id) = class_id {
             let line_index = store
                 .ledger()
                 .get_entry(p.entry_id)
@@ -3362,11 +3416,11 @@ impl BooksServer {
                 let total = r.total().to_string();
                 AgingRowOut {
                     name: r.name,
-                    current: r.current.to_string(),
-                    days_30: r.days_30.to_string(),
-                    days_60: r.days_60.to_string(),
-                    days_90: r.days_90.to_string(),
-                    days_90_plus: r.days_90_plus.to_string(),
+                    current: money(r.current),
+                    days_30: money(r.days_30),
+                    days_60: money(r.days_60),
+                    days_90: money(r.days_90),
+                    days_90_plus: money(r.days_90_plus),
                     total,
                 }
             })
@@ -3389,11 +3443,11 @@ impl BooksServer {
                 let total = r.total().to_string();
                 AgingRowOut {
                     name: r.name,
-                    current: r.current.to_string(),
-                    days_30: r.days_30.to_string(),
-                    days_60: r.days_60.to_string(),
-                    days_90: r.days_90.to_string(),
-                    days_90_plus: r.days_90_plus.to_string(),
+                    current: money(r.current),
+                    days_30: money(r.days_30),
+                    days_60: money(r.days_60),
+                    days_90: money(r.days_90),
+                    days_90_plus: money(r.days_90_plus),
                     total,
                 }
             })
@@ -3584,6 +3638,11 @@ impl BooksServer {
         if end < start {
             return Err("end is before start".to_string());
         }
+        // One class, if asked (validated like every reference).
+        let only = match &p.class {
+            Some(c) => Some(resolve_class(&store, c)?),
+            None => None,
+        };
         // Per-class P&L over the date range: accumulate line by line.
         use std::collections::HashMap;
         #[derive(Default)]
@@ -3621,6 +3680,7 @@ impl BooksServer {
         // Sort: named classes by name, unclassified last.
         let mut rows: Vec<(Option<String>, Acc)> = by_class
             .into_iter()
+            .filter(|(cid, _)| only.is_none() || *cid == only)
             .map(|(cid, acc)| {
                 let name = cid
                     .and_then(|id| ledger.get_class(id))

@@ -150,6 +150,17 @@ impl Section {
     }
 }
 
+/// ```text
+/// GOAL: back and forward behave like a web browser's.
+/// SOURCE: CONVENTION (browser session history: going somewhere new
+///         drops the forward list).
+/// INVARIANTS:
+///   1. go(r) to a different route makes it current, pushes the old one
+///      on back, and clears forward; go to the current route does nothing.
+///   2. back() then forward() returns to the same route (and vice versa);
+///      either does nothing when its list is empty.
+///   3. can_back/can_forward say whether back/forward would move.
+/// ```
 /// Back/forward history.
 pub struct Nav {
     back: Vec<Route>,

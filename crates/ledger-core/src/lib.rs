@@ -12,7 +12,7 @@
 //! * All mutations go through [`Ledger`] commands (`create_entry`, `add_line`,
 //!   `post_entry`, `reverse_entry`). Posted entries are immutable; corrections
 //!   are reversing entries.
-//! * Reports ([`trial_balance`](reports::trial_balance), [`balance_sheet`](reports::balance_sheet), [`profit_and_loss`](reports::profit_and_loss)) are
+//! * Reports ([`trial_balance`](reports::trial_balance), [`balance_sheet`](reports::balance_sheet), [`unclosed_earnings`](reports::unclosed_earnings)) are
 //!   pure functions of a ledger, which is what makes the semantic oracle
 //!   (`docs/oracle.md`) possible.
 

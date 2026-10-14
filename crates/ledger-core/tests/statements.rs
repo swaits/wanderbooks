@@ -15,7 +15,7 @@
 
 use chrono::NaiveDate;
 use ledger_core::reports::{
-    balance_sheet, balance_sheet_as_of, profit_and_loss, profit_and_loss_for_period,
+    balance_sheet, balance_sheet_as_of, profit_and_loss_for_period, unclosed_earnings,
 };
 use ledger_core::{
     AccountId, AccountType, CashFlowParams, ClassId, Currency, Ledger, LedgerError, MemberCapital,
@@ -127,7 +127,7 @@ fn profit_and_loss_is_scoped_to_the_period() {
         (dec(3_500), dec(920))
     );
     // ... which is the life-of-ledger P&L, because nothing is outside it.
-    let all = profit_and_loss(&b.ledger).unwrap();
+    let all = unclosed_earnings(&b.ledger).unwrap();
     assert_eq!((all.revenue, all.expenses), (dec(3_500), dec(920)));
 
     // One class: only the tagged software line.

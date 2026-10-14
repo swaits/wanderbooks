@@ -1,0 +1,17 @@
+[company]
+name = "Juniper Studio LLC"
+entity_type = "LLC, single-member"
+tax_classification = "disregarded entity"  # Schedule C
+fiscal_year_start = "01-01"
+formation_state = "OR"
+formed = "2025-06-02"
+ein = "00-0000000"
+address = "1200 NW Everett St, Portland, OR 97209"
+owner = "Alex Rivera"
+
+[books]
+accounting_basis = "accrual"
+receipt_threshold = "25.00"
+close_into = "3000"
+close_sweep = ["3100"]
+cash_accounts = ["1000", "1010"]

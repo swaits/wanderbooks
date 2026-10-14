@@ -1,36 +1,56 @@
 //! Formatting money, dates, and counts. Amounts are exact decimals in and
 //! exact strings out: nothing here rounds except `compact`, which says so.
+//!
+//! ```text
+//! GOAL: show every amount exactly as the books hold it.
+//! SOURCE: DECISION (the MCP contract: "money is exact or it is wrong");
+//!         CONVENTION (US accounting display: thousands commas,
+//!         negatives in parentheses or with a minus sign).
+//! INVARIANTS:
+//!   1. money, accounting, and dollars NEVER round: every decimal place
+//!      the amount has (at least two) is shown, thousands grouped by
+//!      commas in threes, so the text reads back to the same value.
+//!   2. Zero (and negative zero) shows without a sign; a negative shows
+//!      U+2212 (money, dollars) or parentheses (accounting), never both
+//!      and never "-0".
+//!   3. compact rounds (chart axes, tight tiles): $950, $1.2k, $25k,
+//!      $3.4M; it never shows a sign on what rounds to zero.
+//! ```
 
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
 
-/// Thousands separators, two decimals, a true minus sign: `−1,234.56`.
+/// Thousands separators, every decimal (at least two), a true minus sign:
+/// `−1,234.56`.
 pub fn money(d: Decimal) -> String {
-    let neg = d.is_sign_negative() && !d.is_zero();
-    let s = group(d.abs().round_dp(2));
-    if neg { format!("\u{2212}{s}") } else { s }
+    let s = group(d.abs());
+    if is_negative(d) {
+        format!("\u{2212}{s}")
+    } else {
+        s
+    }
 }
 
 /// Accounting style: negatives in parentheses, `(1,234.56)`.
 pub fn accounting(d: Decimal) -> String {
-    if d.is_sign_negative() && !d.is_zero() {
-        format!("({})", group(d.abs().round_dp(2)))
-    } else {
-        group(d.round_dp(2))
-    }
+    let s = group(d.abs());
+    if is_negative(d) { format!("({s})") } else { s }
 }
 
 /// With the currency sign: `$1,234.56`, `−$12.00`.
 pub fn dollars(d: Decimal) -> String {
-    let neg = d.is_sign_negative() && !d.is_zero();
-    let s = format!("${}", group(d.abs().round_dp(2)));
-    if neg { format!("\u{2212}{s}") } else { s }
+    let s = format!("${}", group(d.abs()));
+    if is_negative(d) {
+        format!("\u{2212}{s}")
+    } else {
+        s
+    }
 }
 
 /// Rounded for chart axes and tight tiles: `$1.2k`, `$3.4M`, `$950`.
 pub fn compact(d: Decimal) -> String {
     let f: f64 = d.try_into().unwrap_or(0.0);
-    let (neg, a) = (f < 0.0, f.abs());
+    let a = f.abs();
     let s = if a >= 1_000_000.0 {
         format!("${:.1}M", a / 1_000_000.0)
     } else if a >= 10_000.0 {
@@ -40,11 +60,22 @@ pub fn compact(d: Decimal) -> String {
     } else {
         format!("${a:.0}")
     };
-    if neg { format!("\u{2212}{s}") } else { s }
+    // No sign on what rounds to zero ("$0", not "−$0").
+    if f < 0.0 && s != "$0" {
+        format!("\u{2212}{s}")
+    } else {
+        s
+    }
 }
 
+fn is_negative(d: Decimal) -> bool {
+    d.is_sign_negative() && !d.is_zero()
+}
+
+/// A non-negative amount, every decimal it has (at least two), grouped.
 fn group(d: Decimal) -> String {
-    let s = format!("{:.2}", d);
+    let places = d.normalize().scale().max(2) as usize;
+    let s = format!("{:.*}", places, d);
     let (int, frac) = s.split_once('.').unwrap_or((&s, "00"));
     let mut out = String::new();
     for (i, c) in int.chars().enumerate() {
@@ -172,7 +203,9 @@ mod tests {
         assert_eq!(money(dec("0")), "0.00");
         assert_eq!(money(dec("-0.00")), "0.00");
         assert_eq!(accounting(dec("-207.68")), "(207.68)");
-        assert_eq!(dollars(dec("999.999")), "$1,000.00");
+        assert_eq!(dollars(dec("999.999")), "$999.999");
+        assert_eq!(money(dec("0.125")), "0.125");
+        assert_eq!(compact(dec("-0.4")), "$0");
         assert_eq!(compact(dec("1234")), "$1.2k");
         assert_eq!(compact(dec("-25000")), "\u{2212}$25k");
         assert_eq!(compact(dec("950.4")), "$950");

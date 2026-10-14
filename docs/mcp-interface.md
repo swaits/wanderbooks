@@ -85,14 +85,13 @@ below.
 - `books.draft_entry { date: "2026-10-10", description: "..." }`
   → `{ entry_id, status: "draft" }`.
 - `books.add_line { entry_id, account: "1000" | <id>, side: "debit" | "credit",
-  amount: "123.45" }`
-  → `{ lines: [...], totals: { debits, credits, balanced } }`. Running totals
-  after every line: the agent watches the entry balance in real time.
-- `books.post_entry { entry_id, confirmed }` → without confirmation:
-  `{ preview: { lines, resulting_balances, receipts: { attached: [...],
-  required_but_missing: bool } } }`; with confirmation: validates (including
-  the receipt policy), posts, returns `{ entry, balances_changed: [{ code,
-  before, after }] }`.
+  amount: "123.45" }` → `{ ok: true }`. A refused line (unknown account or
+  class, bad amount) adds nothing.
+- `books.post_entry { entry_id, confirmed }` → `{ status, entry_id, date,
+  description, total, lines (with resulting balances), receipts,
+  receipt_required, receipt_missing, split_detected }`. Without
+  `confirmed: true`, `status` is `"preview"` and nothing changes; with it,
+  the receipt policy is enforced and `status` is `"posted"`.
 - `books.reverse_entry { entry_id, date, description, confirmed }` → same
   preview/confirm pattern as post.
 - `books.get_entry { entry_id }` → full entry with lines.
@@ -492,8 +491,9 @@ entries.
 - `books.add_line` gains optional `class` (name or id): tags the new line.
   Shared costs are split explicitly across lines at entry time.
 - `books.profit_and_loss` gains optional `class` filter.
-- `books.profit_and_loss_by_class { start, end }` → per-class revenue,
-  expenses, net income, plus an unclassified row. Reversals carry their
+- `books.profit_and_loss_by_class { start, end, class? }` → per-class revenue,
+  expenses, net income, plus an unclassified row (only that class's row
+  when `class` is given; an unknown or ambiguous class is refused). Reversals carry their
   class so divisional P&L nets correctly.
 
 ## Tools — CPA handoff

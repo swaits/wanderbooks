@@ -34,7 +34,7 @@ pub struct EntryInfo {
     pub vendor: Option<String>,
     pub reversal_of: Option<EntryId>,
     pub reversed_by: Option<EntryId>,
-    /// Spending over the receipt threshold with no receipt.
+    /// Covered by the receipt policy (the server's rule) and has no receipt.
     pub missing_receipt: bool,
     /// Net effect on cash accounts: positive in, negative out, zero if the
     /// entry doesn't touch cash.
@@ -162,11 +162,13 @@ impl Books {
         let ledger = snap.ledger().clone();
         let attachments = snap.attachments(None).map_err(|e| e.to_string())?;
         let journal = snap.journal().to_vec();
-        let receipt_threshold = settings
-            .receipt_threshold
-            .as_deref()
-            .and_then(|t| t.parse().ok())
-            .unwrap_or(Decimal::new(25, 0));
+        // The server's own rule (config.json, else wanderbooks.toml), so
+        // the viewer flags exactly what the server would refuse.
+        let policy = ledger_config::effective_receipt_policy(
+            &snap.data_dir().join("config.json"),
+            &settings,
+        )?;
+        let receipt_threshold = policy.threshold();
         let cash_accounts = cash_accounts(&ledger, &settings);
         let codes = |cs: &[String]| -> Vec<AccountId> {
             cs.iter()
@@ -238,23 +240,14 @@ impl Books {
                 .entry_vendor(id)
                 .and_then(|v| ledger.get_vendor(v))
                 .map(|v| v.name.clone());
-            // Receipts prove spending: hand-made entries (and recurring
-            // drafts) that debit an expense or buy an asset from outside.
-            // Invoices, payments, transfers, draws, closes, and schedules
-            // carry their own evidence.
-            let spends = e.lines().iter().any(|l| {
-                l.side == Side::Debit
-                    && ledger.chart().get(l.account).is_some_and(|a| {
-                        a.account_type == AccountType::Expense
-                            || (a.account_type == AccountType::Asset
-                                && !cash_accounts.contains(&a.id)
-                                && !a.name.to_lowercase().contains("receivable"))
-                    })
-            });
+            // The receipt policy covers what is posted by hand (journal
+            // entries and recurring drafts); invoices, payments, closes,
+            // depreciation, and schedules carry their own evidence, and a
+            // reversal leans on its original's.
             let missing_receipt = matches!(origin, "Journal entry" | "Recurring")
-                && spends
+                && e.reversal_of().is_none()
                 && rec.is_empty()
-                && amount > receipt_threshold;
+                && policy.receipt_required(&ledger, e);
             let cash_effect: Decimal = e
                 .lines()
                 .iter()

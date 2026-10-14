@@ -21,15 +21,13 @@ easily backupable, journable":
   from rewriting the chain — nothing local does.
 - **Backupable.** The backup is `cp -r $WANDERBOOKS_DATA /backup`: the
   journal file plus the blob directory. Plain files, no WAL-file timing
-  windows, no special backup API. A torn tail from a mid-copy is detectable
-  (the last line fails hash/parse) and recoverable (truncate to the last
-  good seq — the projection never saw it). The live journal recovers the
-  same way on its own: an append cut off by a crash or power loss (bytes
-  after the last newline) was never acknowledged, so opening the books
-  saves those bytes to `journal.jsonl.torn.<time>`, truncates to the last
-  newline, and journals a `journal.tail_repaired` line; `books.digest`
-  reports it. Damage before the last newline is corruption and still
-  refuses to open. Better: the journal is
+  windows, no special backup API. A copy taken mid-write, like a crash or
+  power loss mid-append, can end in a cut-off line (bytes after the last
+  newline). It was never acknowledged, so opening the books saves those
+  bytes to `journal.jsonl.torn.<time>`, truncates to the last newline, and
+  journals a `journal.tail_repaired` line; `books.digest` reports it.
+  Damage before the last newline is corruption and refuses to open: that
+  is for a human, never repaired automatically. Better: the journal is
   git-friendly, so an optional `wanderbooks backup` that commits it to a
   private git repo gives versioned, distributed, deduplicated backup with
   full history.

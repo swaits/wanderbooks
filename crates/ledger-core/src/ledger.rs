@@ -263,6 +263,17 @@ impl Ledger {
     /// Register an amortization schedule. Returns its id.
     pub fn register_schedule(&mut self, new: NewSchedule) -> Result<ScheduleId, LedgerError> {
         schedules::validate_schedule(&new, &self.chart)?;
+        self.replay_register_schedule(new)
+    }
+
+    /// [`Self::register_schedule`] without the total's range and minor-unit
+    /// checks added on 2026-10-13, for replaying journals written before
+    /// them. Never for new work.
+    pub fn replay_register_schedule(
+        &mut self,
+        new: NewSchedule,
+    ) -> Result<ScheduleId, LedgerError> {
+        schedules::validate_schedule_shape(&new, &self.chart)?;
         let id = self.next_schedule_id;
         self.next_schedule_id += 1;
         self.schedules.insert(
@@ -336,6 +347,15 @@ impl Ledger {
     /// [`Self::preview_schedule_month`], posted and recorded so the month
     /// never posts twice. Returns the entry id.
     pub fn post_schedule_month(
+        &mut self,
+        id: ScheduleId,
+        month_end: NaiveDate,
+    ) -> Result<EntryId, LedgerError> {
+        self.atomically(|l| l.post_schedule_month_steps(id, month_end))
+    }
+
+    /// The steps of [`Self::post_schedule_month`], run inside [`Self::atomically`].
+    fn post_schedule_month_steps(
         &mut self,
         id: ScheduleId,
         month_end: NaiveDate,
@@ -530,6 +550,18 @@ impl Ledger {
         .filter(|(_, same)| !same)
         .map(|(name, _)| name)
         .collect()
+    }
+
+    /// Run a command made of several steps as one: if any step is
+    /// refused, the ledger is exactly as it was (no half-built draft, no
+    /// id spent). Found 2026-10-13: a schedule month whose amount was out
+    /// of range left a draft behind.
+    fn atomically<T>(
+        &mut self,
+        steps: impl FnOnce(&mut Self) -> Result<T, LedgerError>,
+    ) -> Result<T, LedgerError> {
+        let before = self.clone();
+        steps(self).inspect_err(|_| *self = before)
     }
 
     /// The id the next account added will receive.
@@ -1063,6 +1095,16 @@ impl Ledger {
         date: NaiveDate,
         description: &str,
     ) -> Result<EntryId, LedgerError> {
+        self.atomically(|l| l.reverse_entry_steps(entry, date, description))
+    }
+
+    /// The steps of [`Self::reverse_entry`], run inside [`Self::atomically`].
+    fn reverse_entry_steps(
+        &mut self,
+        entry: EntryId,
+        date: NaiveDate,
+        description: &str,
+    ) -> Result<EntryId, LedgerError> {
         self.check_reversal(entry, date)?;
         let original = self
             .entries
@@ -1107,6 +1149,11 @@ impl Ledger {
         }
         if new.cost.amount <= Decimal::ZERO {
             return Err(LedgerError::InvalidAssetCost(new.cost.amount));
+        }
+        // Every depreciation and disposal line derives from the cost: one
+        // that no line could carry is refused here, not months later.
+        if new.cost.amount > kernel::MAX_LINE_AMOUNT {
+            return Err(LedgerError::AmountOutOfRange);
         }
         if new.cost.currency != self.base_currency {
             return Err(LedgerError::CurrencyMismatch {
@@ -1376,6 +1423,15 @@ impl Ledger {
     ///      postable equity account: SHOULD refuse (ControlAccountMismatch).
     /// ```
     pub fn close_period_to(
+        &mut self,
+        id: PeriodId,
+        to: &periods::CloseTo,
+    ) -> Result<Option<EntryId>, LedgerError> {
+        self.atomically(|l| l.close_period_to_steps(id, to))
+    }
+
+    /// The steps of [`Self::close_period_to`], run inside [`Self::atomically`].
+    fn close_period_to_steps(
         &mut self,
         id: PeriodId,
         to: &periods::CloseTo,
@@ -1893,6 +1949,17 @@ impl Ledger {
         due_date: NaiveDate,
         lines: Vec<DocumentLine>,
     ) -> Result<InvoiceId, LedgerError> {
+        self.atomically(|l| l.create_invoice_steps(customer_id, date, due_date, lines))
+    }
+
+    /// The steps of [`Self::create_invoice`], run inside [`Self::atomically`].
+    fn create_invoice_steps(
+        &mut self,
+        customer_id: CustomerId,
+        date: NaiveDate,
+        due_date: NaiveDate,
+        lines: Vec<DocumentLine>,
+    ) -> Result<InvoiceId, LedgerError> {
         if !self.customers.contains_key(&customer_id) {
             return Err(LedgerError::UnknownCustomer(customer_id));
         }
@@ -1947,6 +2014,17 @@ impl Ledger {
     ///      refuse.
     /// ```
     pub fn create_bill(
+        &mut self,
+        vendor_id: VendorId,
+        date: NaiveDate,
+        due_date: NaiveDate,
+        lines: Vec<DocumentLine>,
+    ) -> Result<BillId, LedgerError> {
+        self.atomically(|l| l.create_bill_steps(vendor_id, date, due_date, lines))
+    }
+
+    /// The steps of [`Self::create_bill`], run inside [`Self::atomically`].
+    fn create_bill_steps(
         &mut self,
         vendor_id: VendorId,
         date: NaiveDate,
@@ -2022,6 +2100,17 @@ impl Ledger {
         amount: Decimal,
         cash_account: AccountId,
     ) -> Result<EntryId, LedgerError> {
+        self.atomically(|l| l.receive_payment_steps(invoice_id, date, amount, cash_account))
+    }
+
+    /// The steps of [`Self::receive_payment`], run inside [`Self::atomically`].
+    fn receive_payment_steps(
+        &mut self,
+        invoice_id: InvoiceId,
+        date: NaiveDate,
+        amount: Decimal,
+        cash_account: AccountId,
+    ) -> Result<EntryId, LedgerError> {
         if amount <= Decimal::ZERO {
             return Err(LedgerError::InvalidPaymentAmount(amount));
         }
@@ -2079,6 +2168,17 @@ impl Ledger {
     ///      the bill's own date is fine (DECISION, owner 2026-10-13).
     /// ```
     pub fn pay_bill(
+        &mut self,
+        bill_id: BillId,
+        date: NaiveDate,
+        amount: Decimal,
+        cash_account: AccountId,
+    ) -> Result<EntryId, LedgerError> {
+        self.atomically(|l| l.pay_bill_steps(bill_id, date, amount, cash_account))
+    }
+
+    /// The steps of [`Self::pay_bill`], run inside [`Self::atomically`].
+    fn pay_bill_steps(
         &mut self,
         bill_id: BillId,
         date: NaiveDate,
@@ -2590,6 +2690,16 @@ impl Ledger {
         lines: Vec<PayrollLine>,
         cash_account: AccountId,
     ) -> Result<PayrollRunId, LedgerError> {
+        self.atomically(|l| l.run_payroll_steps(date, lines, cash_account))
+    }
+
+    /// The steps of [`Self::run_payroll`], run inside [`Self::atomically`].
+    fn run_payroll_steps(
+        &mut self,
+        date: NaiveDate,
+        lines: Vec<PayrollLine>,
+        cash_account: AccountId,
+    ) -> Result<PayrollRunId, LedgerError> {
         self.validate_payroll(date, &lines, cash_account)?;
         let accounts = self.payroll_accounts();
         let entry = self.try_create_entry(date, &format!("Payroll {date}"))?;
@@ -2646,6 +2756,15 @@ impl Ledger {
     ///   1. IF nothing is owed: SHOULD refuse (NothingToRemit).
     /// ```
     pub fn remit_payroll_taxes(
+        &mut self,
+        date: NaiveDate,
+        cash_account: AccountId,
+    ) -> Result<EntryId, LedgerError> {
+        self.atomically(|l| l.remit_payroll_taxes_steps(date, cash_account))
+    }
+
+    /// The steps of [`Self::remit_payroll_taxes`], run inside [`Self::atomically`].
+    fn remit_payroll_taxes_steps(
         &mut self,
         date: NaiveDate,
         cash_account: AccountId,
@@ -2808,7 +2927,7 @@ impl Ledger {
 
 /// Refuse an amount finer than its currency's minor unit (rules.md B-3).
 /// A currency with no defined minor unit (ISO 4217 "N.A.") is not checked.
-fn check_minor_units(amount: Money) -> Result<(), LedgerError> {
+pub(crate) fn check_minor_units(amount: Money) -> Result<(), LedgerError> {
     match amount.currency.minor_units() {
         Some(places) if amount.amount.normalize().scale() > places => {
             Err(LedgerError::FinerThanMinorUnit {

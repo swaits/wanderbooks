@@ -1351,6 +1351,8 @@ mod refusals {
         }
         let tb = ledger_core::reports::trial_balance(l);
         prop_assert_eq!(tb.total_debits, tb.total_credits);
+        prop_assert_eq!(store.list_classes().len(), l.list_classes().len());
+        prop_assert_eq!(store.list_payroll_runs().len(), l.list_payroll_runs().len());
         for id in 1..l.next_entry_id() {
             if let Some(e) = l.get_entry(id)
                 && e.status() == ledger_core::EntryStatus::Draft
@@ -1431,6 +1433,16 @@ mod refusals {
                     Ok(()) => eprintln!("OK {kind}"),
                     Err(e) => eprintln!("REFUSED {kind} {e}"),
                 }
+            }
+            // The converse law: an accepted command is on the record. Only
+            // a batch run may find nothing to do.
+            if result.is_ok() && !matches!(op, Op::RunDepreciation(..) | Op::RunRecurring(..)) {
+                let after = std::fs::read_to_string(&journal).unwrap();
+                prop_assert!(
+                    after.len() > before.len(),
+                    "accepted {:?} but journaled nothing",
+                    op
+                );
             }
             if let Err(e) = result {
                 let after = std::fs::read_to_string(&journal).unwrap();

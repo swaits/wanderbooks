@@ -353,3 +353,57 @@ fn frequencies_parse_and_step_from_the_start() {
         );
     }
 }
+
+/// Regression (found by the store's refusal property, 2026-10-13): a
+/// schedule whose total no line could carry, or finer than a cent, is
+/// refused when registered, not at a month end.
+#[test]
+fn a_schedule_total_no_month_could_post_is_refused() {
+    let mut b = books();
+    let new = |total: &str| NewSchedule {
+        description: "Insurance".into(),
+        kind: ScheduleKind::PrepaidExpense,
+        total: usd(total),
+        start: d(1, 1),
+        months: 6,
+        balance_account: b.prepaid,
+        pl_account: b.insurance,
+    };
+    let huge = new("46116860184273879.03");
+    let sub_cent = new("120.005");
+    assert!(matches!(
+        b.l.register_schedule(huge),
+        Err(LedgerError::AmountOutOfRange)
+    ));
+    assert!(matches!(
+        b.l.register_schedule(sub_cent),
+        Err(LedgerError::FinerThanMinorUnit { .. })
+    ));
+}
+
+/// Regression: a schedule month refused after its entry was begun leaves
+/// the ledger exactly as it was: no half-built draft, no id spent
+/// (Ledger::atomically). The doomed schedule can only come from an older
+/// journal now, so it is registered through the replay path.
+#[test]
+fn a_refused_schedule_month_leaves_nothing_behind() {
+    let mut b = books();
+    let id =
+        b.l.replay_register_schedule(NewSchedule {
+            description: "Insurance".into(),
+            kind: ScheduleKind::PrepaidExpense,
+            total: usd("46116860184273879.03"),
+            start: d(1, 1),
+            months: 6,
+            balance_account: b.prepaid,
+            pl_account: b.insurance,
+        })
+        .unwrap();
+    let before = b.l.clone();
+    assert!(b.l.post_schedule_month(id, d(1, 31)).is_err());
+    assert!(
+        b.l.differs_from(&before).is_empty(),
+        "{:?}",
+        b.l.differs_from(&before)
+    );
+}

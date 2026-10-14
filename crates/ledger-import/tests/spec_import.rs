@@ -10,7 +10,7 @@
 //! decoder written here (RFC 1951), so the cells themselves are the
 //! evidence, not the writer's word.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use chrono::{Datelike, NaiveDate};
 use ledger_core::reports::{balance_sheet_as_of, profit_and_loss_for_period};
@@ -2612,4 +2612,395 @@ fn templates_take_at_most_90_owners() {
     let owners = |n: usize| (0..n).map(|i| format!("P{i}")).collect::<Vec<_>>();
     assert!(chart_template(EntityType::Partnership, &owners(90)).is_ok());
     assert!(chart_template(EntityType::Partnership, &owners(91)).is_err());
+}
+
+// ---------------------------------------------------------------------
+// XLSX layout and styles (report_to_xlsx INVARIANTS 4-6), read from the
+// workbook's own XML: each cell's style index, the style table
+// (`cellXfs`: border and alignment), merged ranges, and column widths.
+// (Added after the import mutation run found layout untested.)
+// ---------------------------------------------------------------------
+
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Style {
+    top_border: bool,
+    halign: Option<String>,
+}
+
+fn xml_section<'a>(xml: &'a str, tag: &str) -> &'a str {
+    let open = format!("<{tag}");
+    let close = format!("</{tag}>");
+    let Some(i) = xml.find(&open) else { return "" };
+    let j = xml[i..].find(&close).map_or(xml.len(), |j| i + j);
+    &xml[i..j]
+}
+
+fn attr_of(tag: &str, name: &str) -> Option<String> {
+    let k = format!(" {name}=\"");
+    tag.find(&k)
+        .map(|p| tag[p + k.len()..].split('"').next().unwrap().to_string())
+}
+
+/// Excel's "B12" to 1-based (row, 0-based col).
+fn cell_ref(r: &str) -> (u32, u32) {
+    let letters: String = r.chars().take_while(|c| c.is_ascii_alphabetic()).collect();
+    let row: u32 = r[letters.len()..].parse().unwrap();
+    let col = letters
+        .chars()
+        .fold(0u32, |a, c| a * 26 + (c as u32 - 'A' as u32 + 1))
+        - 1;
+    (row, col)
+}
+
+/// Every written cell's style, blank cells included.
+fn cell_styles(xlsx: &[u8]) -> BTreeMap<(u32, u32), Style> {
+    let files = unzip(xlsx);
+    let styles = String::from_utf8(files["xl/styles.xml"].clone()).unwrap();
+    let borders: Vec<bool> = xml_section(&styles, "borders")
+        .split("<border")
+        .skip(1)
+        .filter(|b| b.starts_with('>') || b.starts_with(' '))
+        .map(|b| {
+            let end = b.find("</border>").unwrap_or(b.len());
+            b[..end].contains("<top style=")
+        })
+        .collect();
+    let xfs: Vec<Style> = xml_section(&styles, "cellXfs")
+        .split("<xf ")
+        .skip(1)
+        .map(|x| {
+            let tag = format!(" {}", &x[..x.find('>').unwrap()]);
+            let border = attr_of(&tag, "borderId").map_or(0, |b| b.parse().unwrap());
+            Style {
+                top_border: borders[border],
+                halign: x
+                    .find("<alignment")
+                    .and_then(|p| attr_of(&x[p..p + x[p..].find('>').unwrap()], "horizontal")),
+            }
+        })
+        .collect();
+    let sheet = String::from_utf8(files["xl/worksheets/sheet1.xml"].clone()).unwrap();
+    let mut out = BTreeMap::new();
+    for c in sheet.split("<c ").skip(1) {
+        let tag = format!(" {}", &c[..c.find('>').unwrap()]);
+        let s = attr_of(&tag, "s").map_or(0, |s| s.parse().unwrap());
+        out.insert(cell_ref(&attr_of(&tag, "r").unwrap()), xfs[s].clone());
+    }
+    out
+}
+
+/// Merged ranges as ((row, col), (row, col)), 1-based rows.
+fn merges(xlsx: &[u8]) -> Vec<((u32, u32), (u32, u32))> {
+    let files = unzip(xlsx);
+    let sheet = String::from_utf8(files["xl/worksheets/sheet1.xml"].clone()).unwrap();
+    sheet
+        .split("<mergeCell ")
+        .skip(1)
+        .map(|m| {
+            let r = attr_of(&format!(" {m}"), "ref").unwrap();
+            let (a, b) = r.split_once(':').unwrap();
+            (cell_ref(a), cell_ref(b))
+        })
+        .collect()
+}
+
+/// Column widths by 0-based column.
+fn col_widths(xlsx: &[u8]) -> BTreeMap<u32, f64> {
+    let files = unzip(xlsx);
+    let sheet = String::from_utf8(files["xl/worksheets/sheet1.xml"].clone()).unwrap();
+    let mut out = BTreeMap::new();
+    for c in sheet.split("<col ").skip(1) {
+        let tag = format!(" {}", &c[..c.find('>').unwrap()]);
+        let (lo, hi): (u32, u32) = (
+            attr_of(&tag, "min").unwrap().parse().unwrap(),
+            attr_of(&tag, "max").unwrap().parse().unwrap(),
+        );
+        let w: f64 = attr_of(&tag, "width").unwrap().parse().unwrap();
+        for col in lo..=hi {
+            out.insert(col - 1, w);
+        }
+    }
+    out
+}
+
+fn rows_used(cells: &BTreeMap<(u32, u32), Cell>) -> BTreeSet<u32> {
+    cells.keys().map(|(r, _)| *r).collect()
+}
+
+/// The footer is one empty row below the last other content (INVARIANT 4).
+fn assert_footer_one_row_below(cells: &BTreeMap<(u32, u32), Cell>, what: &str) {
+    let footer = meta().footer();
+    let at = row_of(cells, &footer, 0).unwrap_or_else(|| panic!("{what}: no footer"));
+    let last = cells
+        .iter()
+        .filter(|(_, c)| **c != Cell::Text(footer.clone()))
+        .map(|((r, _), _)| *r)
+        .max()
+        .unwrap();
+    assert_eq!(
+        at,
+        last + 2,
+        "{what}: footer at row {at}, content ends {last}"
+    );
+}
+
+/// INVARIANTS 4-5 on a statement with every kind of row: header block,
+/// right-aligned headings, content from row 6, a spacer as one empty row,
+/// rules exactly where rule_above says (blank amount cells too), the
+/// footer one row down, and the label and amount columns sized.
+#[test]
+fn xlsx_statement_layout_and_rules() {
+    let row = |kind, label: &str, amounts: Vec<Option<Decimal>>| Row {
+        kind,
+        label: label.into(),
+        amounts,
+        currency: false,
+        rule_above: false,
+    };
+    let st = report::statement(
+        "Layout",
+        "July 2025".into(),
+        &["Book", "Tax"],
+        vec![
+            row(RowKind::Section, "Income", vec![]),
+            row(
+                RowKind::Line,
+                "Sales",
+                vec![Some(cents(100)), Some(cents(100))],
+            ),
+            row(
+                RowKind::Subtotal,
+                "Total income",
+                vec![Some(cents(100)), None],
+            ),
+            row(RowKind::Spacer, "", vec![]),
+            row(RowKind::Section, "Empty", vec![]),
+            row(RowKind::Subtotal, "Total empty", vec![Some(cents(0)), None]),
+            row(RowKind::Spacer, "", vec![]),
+            row(RowKind::Total, "Net", vec![Some(cents(100)), None]),
+        ],
+    );
+    let rules: HashMap<&str, bool> = st
+        .rows
+        .iter()
+        .map(|r| (r.label.as_str(), r.rule_above))
+        .collect();
+    assert!(rules["Total income"] && !rules["Total empty"] && rules["Net"]);
+    let bytes = report_to_xlsx(&XlsxReport::Statement(&st), &meta()).unwrap();
+    let cells = sheet_cells(&bytes);
+    let styles = cell_styles(&bytes);
+    // Header block over all three columns (A..C), centered.
+    let m = meta();
+    for (r, want) in [(1, m.company.as_str()), (2, "Layout"), (3, "July 2025")] {
+        assert_eq!(text_at(&cells, r, 0), Some(want));
+        assert!(merges(&bytes).contains(&((r, 0), (r, 2))), "row {r} merge");
+        assert_eq!(styles[&(r, 0)].halign.as_deref(), Some("center"));
+    }
+    assert!(!rows_used(&cells).contains(&4));
+    assert_eq!(text_at(&cells, 5, 1), Some("BOOK"));
+    assert_eq!(text_at(&cells, 5, 2), Some("TAX"));
+    for c in [1, 2] {
+        assert_eq!(styles[&(5, c)].halign.as_deref(), Some("right"));
+    }
+    // Content from row 6, a spacer is one empty row.
+    let at = |label: &str| row_of(&cells, label, 0).unwrap();
+    assert_eq!(at("Income"), 6);
+    assert_eq!(at("Sales"), 7);
+    assert_eq!(at("Total income"), 8);
+    assert_eq!(at("Empty"), 10);
+    assert_eq!(at("Total empty"), 11);
+    assert_eq!(at("Net"), 13);
+    assert!(!rows_used(&cells).contains(&9) && !rows_used(&cells).contains(&12));
+    // Rules: exactly on rule_above rows, across every amount column.
+    for r in &st.rows {
+        if r.label.is_empty() {
+            continue;
+        }
+        let rr = at(&r.label);
+        for c in [1, 2] {
+            let ruled = styles.get(&(rr, c)).is_some_and(|s| s.top_border);
+            assert_eq!(ruled, r.rule_above, "{:?} column {c}", r.label);
+        }
+    }
+    assert_footer_one_row_below(&cells, "statement");
+    let w = col_widths(&bytes);
+    assert!(w[&0] > w[&1], "the label column is the wide one: {w:?}");
+    assert!(w.contains_key(&1) && w.contains_key(&2), "{w:?}");
+}
+
+/// INVARIANT 4 on the general ledger and journal: amount headings
+/// right-aligned and the others not, accounts one empty row apart, and the
+/// footer one row below (also with nothing to show).
+#[test]
+fn xlsx_ledger_layouts() {
+    let specs: Vec<EntrySpec> = (0..6)
+        .map(|i| EntrySpec {
+            day: 190 + i * 3,
+            accts: vec![(i as usize) % 3, 3],
+            k: 1,
+            debits: vec![1_000 + i, 0, 0],
+            seeds: vec![0; 3],
+            memo: format!("e{i}"),
+        })
+        .collect();
+    let b = build_books(&specs, false);
+    let (s, e) = (d(2026, 1, 1), d(2026, 12, 31));
+    let gl = general_ledger(&b.ledger, s, e).unwrap();
+    assert!(gl.accounts.len() >= 2);
+    let empty_gl = general_ledger(&b.ledger, d(2020, 1, 1), d(2020, 1, 31)).unwrap();
+    for (rep, right_from, what) in [
+        (XlsxReport::GeneralLedger(&gl), 4, "general ledger"),
+        (
+            XlsxReport::GeneralJournal(&b.ledger, s, e),
+            5,
+            "general journal",
+        ),
+        (
+            XlsxReport::GeneralLedger(&empty_gl),
+            4,
+            "empty general ledger",
+        ),
+    ] {
+        let bytes = report_to_xlsx(&rep, &meta()).unwrap();
+        let cells = sheet_cells(&bytes);
+        let styles = cell_styles(&bytes);
+        assert_eq!(text_at(&cells, 5, 0), Some("DATE"), "{what}");
+        for c in 0..7 {
+            let right = styles[&(5, c)].halign.as_deref() == Some("right");
+            assert_eq!(right, c >= right_from, "{what}: heading column {c}");
+        }
+        assert_footer_one_row_below(&cells, what);
+    }
+    let cells = sheet_cells(&report_to_xlsx(&XlsxReport::GeneralLedger(&gl), &meta()).unwrap());
+    let first = &gl.accounts[0];
+    assert_eq!(
+        text_at(&cells, 6, 0),
+        Some(format!("{} {}", first.code, first.name).as_str()),
+        "the first account right under the headings"
+    );
+    for pair in gl.accounts.windows(2) {
+        let name = |a: &ledger_core::reports::LedgerAccount| format!("{} {}", a.code, a.name);
+        let total = row_of(&cells, &format!("Total for {}", name(&pair[0])), 0).unwrap();
+        assert_eq!(
+            text_at(&cells, total + 2, 0),
+            Some(name(&pair[1]).as_str()),
+            "the next account one empty row down"
+        );
+        assert!(!rows_used(&cells).contains(&(total + 1)));
+    }
+}
+
+/// INVARIANT 6: exact text groups thousands in threes, keeps every
+/// decimal, and puts a negative in parentheses.
+#[test]
+fn xlsx_exact_text_groups_thousands() {
+    let cases = [
+        ("0.001", "0.001"),
+        ("999.999", "999.999"),
+        ("1000.001", "1,000.001"),
+        ("123456.001", "123,456.001"),
+        ("-1000.005", "(1,000.005)"),
+        ("1234567.125", "1,234,567.125"),
+        ("12345678901234.56", "12,345,678,901,234.56"),
+        ("-123456789012345.67", "(123,456,789,012,345.67)"),
+    ];
+    let st = report::statement(
+        "Text",
+        "x".into(),
+        &["Amount"],
+        cases
+            .iter()
+            .map(|(a, _)| Row {
+                kind: RowKind::Line,
+                label: format!("amount {a}"),
+                amounts: vec![Some(dec(a))],
+                currency: false,
+                rule_above: false,
+            })
+            .collect(),
+    );
+    let cells = render(&st);
+    for (a, want) in cases {
+        let r = row_of(&cells, &format!("amount {a}"), 0).unwrap();
+        assert_eq!(text_at(&cells, r, 1), Some(want), "{a}");
+    }
+}
+
+/// bank_csv INVARIANT 3: a date whose day equals its month reads the same
+/// either way, so a file of only those needs no order.
+#[test]
+fn bank_csv_day_equals_month_needs_no_order() {
+    let txns = parse_bank_csv("03/03/2026,A,1.00\n12/12/2026,B,-2.00\n").unwrap();
+    assert_eq!(txns[0].date, d(2026, 3, 3));
+    assert_eq!(txns[1].date, d(2026, 12, 12));
+}
+
+/// iif INVARIANT 4, exactly: a tab or line break becomes a space, dashes
+/// '-', curly quotes straight, a no-break space a space, anything else '?'.
+#[test]
+fn iif_field_transliteration_exact() {
+    let mut l = Ledger::new(Currency::USD);
+    let cash = l
+        .add_account("1000", "Cash", AccountType::Asset, None, false)
+        .unwrap();
+    let rev = l
+        .add_account("4000", "Revenue", AccountType::Revenue, None, false)
+        .unwrap();
+    let e = l.create_entry(
+        d(2026, 3, 9),
+        "a\tb\nc\r\nd \u{2013}\u{2014}\u{2212} \u{201C}\u{e9}\u{201D} \u{2018}\u{2019} x\u{a0}y",
+    );
+    l.add_line(e, cash, Side::Debit, usd(1)).unwrap();
+    l.add_line(e, rev, Side::Credit, usd(1)).unwrap();
+    l.post_entry(e).unwrap();
+    let accounts = iif_accounts(&l, |_| QbAccountType::Bank);
+    let entries: Vec<&JournalEntry> = l.posted_entries().collect();
+    let text = journal_to_iif(&accounts, &entries).unwrap();
+    let trns = text.lines().find(|l| l.starts_with("TRNS\t")).unwrap();
+    assert_eq!(trns.rsplit('\t').next(), Some("a b c  d --- \"?\" '' x y"));
+}
+
+/// The tax summary shows its cost-of-goods and not-yet-categorized
+/// sections when it has those, and omits them when it doesn't.
+#[test]
+fn tax_summary_optional_sections() {
+    use ledger_core::tax::{TaxForm, tax_summary};
+    let build = |with: bool| {
+        let mut l = Ledger::new(Currency::USD);
+        let cash = l
+            .add_account("1000", "Cash", AccountType::Asset, None, false)
+            .unwrap();
+        let sales = l
+            .add_account("4000", "Sales", AccountType::Revenue, None, false)
+            .unwrap();
+        l.set_account_tax(sales, Some("gross_receipts"), None)
+            .unwrap();
+        let mut pairs = vec![(cash, sales)];
+        if with {
+            let cogs = l
+                .add_account("5000", "Inventory sold", AccountType::Expense, None, false)
+                .unwrap();
+            l.set_account_tax(cogs, Some("cost_of_goods_sold"), None)
+                .unwrap();
+            let odd = l
+                .add_account("6900", "Unsorted", AccountType::Expense, None, false)
+                .unwrap();
+            pairs.extend([(cogs, cash), (odd, cash)]);
+        }
+        for (dr, cr) in pairs {
+            let e = l.create_entry(d(2026, 2, 1), "x");
+            l.add_line(e, dr, Side::Debit, usd(1_000)).unwrap();
+            l.add_line(e, cr, Side::Credit, usd(1_000)).unwrap();
+            l.post_entry(e).unwrap();
+        }
+        let ts = tax_summary(&l, d(2026, 1, 1), d(2026, 12, 31), Some(TaxForm::Form1065)).unwrap();
+        report::tax_summary(&ts)
+    };
+    let has = |st: &Statement, label: &str| st.rows.iter().any(|r| r.label == label);
+    let full = build(true);
+    assert!(has(&full, "Cost of goods sold"));
+    assert!(has(&full, "Not yet categorized"));
+    let bare = build(false);
+    assert!(!has(&bare, "Cost of goods sold"));
+    assert!(!has(&bare, "Not yet categorized"));
 }

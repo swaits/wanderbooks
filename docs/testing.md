@@ -29,6 +29,7 @@ next (gap list).
 | Benchmarks | a baseline (6) | `ledger-core/benches/books.rs`, `ledger-store/benches/store.rs` | `just bench` | ~2 min | none (no budget, by decision) |
 | Mutation | can the tests fail? | `ledger-core` (2026-10-13: 1,011 caught + 13 timeouts of 1,024 viable, 0 missed) | `just mutants` | ~3 h | weekly |
 | Mutation (store) | can the tests fail? | `ledger-store` (2026-10-13: 357 caught + 1 timeout of 365 viable, from 82%; three of its seven survivors then killed; four equivalent left: `sort_value`'s two arms, `OpenFlags` `|` vs `^`, the long form of a sweepless close) | `just mutants-store` | ~12 min | weekly |
+| Mutation (import) | can the tests fail? | `ledger-import` (2026-10-13: from 91 of 171 (53%) to 208 of 239 viable on the full run; the 31 survivors (XLSX layout, borders, alignment, exact-text grouping, IIF transliteration, tax-summary optional sections, day-equals-month dates) then killed by targeted tests, re-run clean but one: a blank amount cell written unbordered on an unruled row, invisible, so equivalent) | `just mutants-import` | ~1 h | weekly |
 
 CI: `.github/workflows/check.yml` runs `just check` on every push;
 `scheduled.yml` runs proofs, the oracle, fuzzing, and mutation weekly.
@@ -111,5 +112,5 @@ B-14) are the first.
 | Lean: apportion's sum law for any n | OPEN | Kani covers n <= 3, properties n <= 5; needs a permutation lemma |
 | ASC paragraphs not yet read | OPEN | ASC 360-10-35-4, 340-10, 230-10-45-10, 606-10-55-37B, 210: needs a FASB basic-view login |
 | GnuCash's own close | OPEN | the oracle books closes as ordinary entries; comparing GnuCash's Close Book needs its Scheme API |
-| Import: spec-blind suite, footing properties, mutation | IN PROGRESS | sources vendored (Intuit bank CSV and IIF, ECMA-376/Excel numbers, IRS form lines); fuzz_import_csv; templates checked against the engine's control accounts |
+| Import: spec-blind suite, footing properties, mutation | DONE | sources vendored (Intuit bank CSV and IIF, ECMA-376/Excel numbers, IRS form lines); specs on every module; tests/spec_import.rs (spec-blind, footing and round-trip properties, XLSX read back from its XML, layout and styles); fuzz_import_csv; templates checked against the engine's control accounts; mutation one equivalent left |
 | MCP, config, GUI crates | NEXT | the same playbook |

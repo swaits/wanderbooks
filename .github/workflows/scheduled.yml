@@ -41,3 +41,14 @@ jobs:
           path: |
             mutants.out
             mutants-store/mutants.out
+  mutants-import:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - run: just mutants-import
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-import
+          path: mutants-import/mutants.out

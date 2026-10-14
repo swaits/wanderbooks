@@ -5,3 +5,4 @@ site/dist/
 .netlify/
 /mutants.out*/
 /mutants-store/
+/mutants-import/

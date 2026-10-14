@@ -73,20 +73,17 @@ accounting question), CHANGE (a source says otherwise; work pending).
 | 4 | Closing a period with nothing to close still locks it | CONVENTION | A close is a lock (B-12); a dormant month must still lock and count for close-in-order |
 | 5 | Draws and distributions are closed into capital at period end | CONFIRMED | OpenStax 5.1: dividends "are closed to the permanent account"; drawing accounts close to owner's capital. Monthly closes mean the year's K-1 Item L withdrawals sum across months |
 | 6 | Reconciliation balances | CONFIRMED | Signed by the account's normal side (a card reads as owed), as statements show it; `reconciling_a_card_reads_its_normal_side_...` |
-| 7 | A member's ending on one equity statement may differ by a cent from the next statement's beginning | CHANGE (pending) | A capital account is one running balance (Form 1065 K-1 instructions, Item L: beginning and ending capital "based on the partnership's books and records"). Allocate cumulatively so beginning equals the prior ending per member. CPA question below |
-| 8 | Cash flow nets one line per account; investing comes only from registered assets | CHANGE (pending) | ASC 230-10-45-7: gross receipts and payments "more relevant" than net; 45-8 limits netting to quick-turnover items. Financing: contributions apart from distributions, borrowings apart from repayments. ASC 230-10-20/45-13: loans made and investments bought are investing, so classify by account role |
+| 7 | A member's ending on one equity statement may differ by a cent from the next statement's beginning | CHANGED 2026-10-13 | A capital account is one running balance (Form 1065 K-1 instructions, Item L). Undistributed earnings now split cumulatively as of each date, so each member's capital chains exactly (`each_members_capital_chains_across_statements`; it fails on the old code); rules.md B-13 |
+| 8 | Cash flow nets one line per account; investing comes only from registered assets | CHANGED 2026-10-13 | ASC 230-10-45-7: gross receipts and payments "more relevant" than net; 45-8 limits netting to quick-turnover items. Financing and investing are now gross; loans made and investments bought are investing (230-10-20, 45-13) via `[books] investing_accounts`. Owner-advanced expenses: PwC 6.9.3.1 constructive treatment via `[books] financing_accounts` (rules.md B-14) |
 | 9 | An asset's life ends at purchase + life months, that day not held; day-count proration | CONVENTION | Exactly N months of service; day proration and the mid-month convention are both accepted book policies (ASC 360-10-35-4 not read: login) |
 | 10 | A payroll entry has one line per account total | CONFIRMED | The per-employee detail the IRS requires ("Amounts and dates of all wage ... payments", Employment Tax Recordkeeping) is kept in the run; a summary entry is standard |
 | 11 | A period with exactly the dates of an existing one is allowed | DESIGN | Nothing governs duplicate periods; harmless (the second close locks only). Refusing exact duplicates is an option |
 
-Questions for Krista Baker (CPA):
-
-1. Interim members' equity: is a per-member allocation of unclosed
-   earnings acceptable on interim statements, or should the books close
-   monthly so the capital accounts carry it?
-2. How should 2100 Due to Shareholders, and expenses the owners paid
-   personally, appear on the cash flow statement: operating, financing,
-   or as a non-cash disclosure (ASC 230-10-50-3, not yet read)?
+Questions are settled from the sources, not by any one company's CPA
+(wanderbooks is general software). Where the standards leave a real
+choice, it is a per-company setting with a sourced default, for that
+company's accountant to review: the cash flow account roles (rules.md
+B-14) are the first.
 
 ## Gap list: what isn't covered, and what would bring it in
 

@@ -217,10 +217,20 @@ closed period).
 - **No authority** says how to round a share to the cent. Largest
   remainder, ties to the earlier member: DECISION (Stephen, 2026-10-13).
   Closes made before then replay with the last member absorbing it.
+- A capital account is one running balance: Form 1065 Schedule K-1
+  instructions, Item L: "The partnership must report your beginning
+  capital account and ending capital account for the year", "based on the
+  partnership's books and records." So a statement of members' equity
+  splits undistributed earnings cumulatively, as of each date (beginning
+  as of the day before the period, ending as of its last day), never one
+  period at a time: a member's ending on one statement is their beginning
+  on the next, to the cent, and a member's period income is the
+  roll-forward's remainder (their share within a rounding cent).
 
 **Enforced:** `CloseTo::Members`, `periods::allocate`,
 `kernel::apportion`, `members_equity`. **Checked:** Kani
-`apportion_is_exact`, `apportion_is_fair`; properties `prop_split_*`;
+`apportion_is_exact`, `apportion_is_fair`; properties `prop_split_*`,
+`each_members_capital_chains_across_statements`;
 `closes_journaled_under_the_old_rule_replay_with_it`.
 
 ## B-14 Statements: P&L for a period; cash flow by the indirect method

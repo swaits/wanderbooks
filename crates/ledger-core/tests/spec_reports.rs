@@ -1004,14 +1004,16 @@ fn me_refuses_bad_shares() {
     }
 }
 
-/// Oracle: ME INVARIANTS 1-3 — hand-computed roll-forward with odd cents
-/// split by largest remainder, ties to the earlier member: prior unclosed
-/// earnings 100.01 -> A 50.01, B 50.00; period income 201.01 -> A 100.51,
-/// B 100.50. Total ending 2251.02 = BS equity.
-///
-/// CHANGE PENDING (docs/testing.md #7): the beginning (unclosed prior earnings) and the period's income
-/// are each split separately (INVARIANT 3 names them separately), not
-/// cumulative-then-differenced.
+/// Oracle: ME INVARIANTS 1-3b — hand-computed roll-forward, cumulative
+/// allocation (docs/testing.md #7; K-1 Item L: one running capital
+/// balance), odd cents by largest remainder, ties to the earlier member.
+/// Undistributed before Feb 1: 100.01 -> A 50.01, B 50.00. Through Mar 31:
+/// 100.01 + 301.01 - 100.00 = 301.02 -> 150.51 each. Endings: A 950.00 +
+/// 150.51 = 1100.51, B 1000.00 + 150.51 = 1150.51. Incomes (the
+/// remainder): A 1100.51 - 1050.01 + 50.00 = 100.50, B 100.51; sum 201.01,
+/// the period's income. Total ending 2251.02 = BS equity. (Splitting the
+/// period's income on its own would give A 150.52 and B 150.50 to date:
+/// two cents off half each.)
 #[test]
 fn me_hand_computed_roll_forward_with_largest_remainder() {
     let mut co = company();
@@ -1059,8 +1061,8 @@ fn me_hand_computed_roll_forward_with_largest_remainder() {
     assert_eq!(
         st.members,
         vec![
-            col("A", 105001, 0, 10051, 5000, 0, 110052),
-            col("B", 5000, 100000, 10050, 0, 0, 115050),
+            col("A", 105001, 0, 10050, 5000, 0, 110051),
+            col("B", 5000, 100000, 10051, 0, 0, 115051),
         ]
     );
     assert_eq!(
@@ -1408,7 +1410,8 @@ fn sorted_amounts(lines: &[ledger_core::CashFlowLine]) -> Vec<Decimal> {
 /// 400; AR up 300 (-300), AP up 80 (+80); CFO 180; financing loan 300 +
 /// contribution 100 = 400; net change 580 = cash 1000 -> 1580.
 ///
-/// CHANGE PENDING (docs/testing.md #8): one working-capital / financing line per account that changed.
+/// Working capital is one line per account that changed; financing is gross per
+/// account (docs/testing.md #8): here each financing account moved one way only.
 #[test]
 fn cf_hand_computed_with_designated_debt() {
     let co = cf_example_books();
@@ -2424,7 +2427,8 @@ proptest! {
     /// NI + depreciation + working capital; with or without a close and a
     /// designated loan.
     ///
-    /// CHANGE PENDING (docs/testing.md #8): with no registered fixed assets, depreciation and investing
+    /// With no registered fixed assets and no investing accounts (docs/testing.md #8),
+    /// depreciation and investing
     /// are zero (receivables are current, so working capital).
     #[test]
     fn prop_cf_sections_sum_to_change_in_cash(gens in arb_books(), (a, _m, e) in three_days(), month in opt_month(), designate in any::<bool>()) {

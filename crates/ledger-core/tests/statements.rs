@@ -471,16 +471,20 @@ fn members_equity_rolls_capital_forward_and_ties_to_the_balance_sheet() {
         );
 
         // February begins where January ended, whether or not January was
-        // closed to retained earnings. 100.01 splits 50.01 / 50.00.
+        // closed to retained earnings (still undistributed either way).
+        // Cumulative split (docs/testing.md #7): everything to date, 666.67
+        // + 100.01 = 766.68, is 383.34 each, so Alice's February share is
+        // 383.34 - 333.34 = 50.00 and Bob's 383.34 - 333.33 = 50.01.
         let feb = members_equity(&l, d(2, 1), d(2, 28), &members).unwrap();
+        let (alice, bob) = (("50.00", "983.34"), ("50.01", "683.34"));
         assert_eq!(
             row(&feb.members[0]),
             (
                 cents("933.34"),
                 cents("0"),
-                cents("50.01"),
+                cents(alice.0),
                 cents("0"),
-                cents("983.35")
+                cents(alice.1)
             )
         );
         assert_eq!(
@@ -488,9 +492,9 @@ fn members_equity_rolls_capital_forward_and_ties_to_the_balance_sheet() {
             (
                 cents("733.33"),
                 cents("0"),
-                cents("50.00"),
+                cents(bob.0),
                 cents("100"),
-                cents("683.33")
+                cents(bob.1)
             )
         );
         assert_eq!(feb.total.ending, cents("1666.68"));
@@ -1404,4 +1408,117 @@ fn an_entry_that_nets_to_nothing_on_an_account_adds_no_line() {
     let cf = cash_flow(&l, &params).unwrap();
     assert_eq!(cf.cash_from_financing, dec(600));
     assert_eq!(cf.financing.len(), 4);
+}
+
+mod chaining {
+    use super::*;
+    use ledger_core::{CloseTo, MemberClose};
+    use proptest::prelude::*;
+
+    /// One month of activity: (member, contribution cents, distribution
+    /// cents, revenue cents, expense cents).
+    type Month = (usize, i64, i64, i64, i64);
+
+    fn month() -> impl Strategy<Value = Month> {
+        (
+            0usize..3,
+            0i64..50_000,
+            0i64..20_000,
+            0i64..100_000,
+            0i64..80_000,
+        )
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+
+        /// Oracle: members' equity INVARIANT 3a (docs/testing.md #7; Form
+        /// 1065 Schedule K-1 instructions, Item L: one running capital
+        /// balance per member). For random books, shares with odd cents,
+        /// months closed to the members or not, and any split date: each
+        /// member's ending on the first statement is their beginning on
+        /// the second, and the two statements together roll to the
+        /// one-statement figures; every member's incomes sum to net income.
+        #[test]
+        fn each_members_capital_chains_across_statements(
+            months in prop::collection::vec(month(), 1..12),
+            closes in prop::collection::vec(any::<bool>(), 12),
+            split in 1u32..330,
+        ) {
+            let mut l = Ledger::new(Currency::USD);
+            let mut add = |code: &str, t| l.add_account(code, code, t, None, false).unwrap();
+            let cash = add("1000", AccountType::Asset);
+            let caps = [
+                add("3000", AccountType::Equity),
+                add("3001", AccountType::Equity),
+                add("3002", AccountType::Equity),
+            ];
+            let rev = add("4000", AccountType::Revenue);
+            let exp = add("6000", AccountType::Expense);
+            let shares = [
+                Decimal::from_str("0.3333").unwrap(),
+                Decimal::from_str("0.3333").unwrap(),
+                Decimal::from_str("0.3334").unwrap(),
+            ];
+            let cents = |n: i64| Money::new(Decimal::new(n, 2), Currency::USD);
+            let post2 = |l: &mut Ledger, date, dr, cr, n: i64| {
+                if n > 0 {
+                    let e = l.create_entry(date, "x");
+                    l.add_line(e, dr, Side::Debit, cents(n)).unwrap();
+                    l.add_line(e, cr, Side::Credit, cents(n)).unwrap();
+                    l.post_entry(e).unwrap();
+                }
+            };
+            for (i, (who, contrib, dist, sales, costs)) in months.iter().enumerate() {
+                let m = i as u32 + 1;
+                post2(&mut l, d(m, 3), cash, caps[*who], *contrib);
+                post2(&mut l, d(m, 10), cash, rev, *sales);
+                post2(&mut l, d(m, 15), exp, cash, *costs);
+                post2(&mut l, d(m, 20), caps[*who], cash, *dist);
+                if closes[i] {
+                    let end = if m == 12 { d(12, 31) } else { d(m + 1, 1).pred_opt().unwrap() };
+                    let p = l.create_period(&format!("2026-{m:02}"), d(m, 1), end).unwrap();
+                    let to = CloseTo::Members(
+                        caps.iter()
+                            .zip(shares)
+                            .map(|(&capital, share)| MemberClose { capital, share, distributions: None })
+                            .collect(),
+                    );
+                    // Closes must go in order; a refused close just leaves
+                    // the month open.
+                    let _ = l.close_period_to(p, &to);
+                }
+            }
+            let members: Vec<MemberCapital> = caps
+                .iter()
+                .zip(shares)
+                .enumerate()
+                .map(|(i, (&capital_account, share))| MemberCapital {
+                    name: format!("M{i}"),
+                    capital_account,
+                    distribution_account: None,
+                    share,
+                })
+                .collect();
+            let mid = d(1, 1) + chrono::Days::new(u64::from(split));
+            let first = members_equity(&l, d(1, 1), mid, &members).unwrap();
+            let second = members_equity(&l, mid.succ_opt().unwrap(), d(12, 31), &members).unwrap();
+            let whole = members_equity(&l, d(1, 1), d(12, 31), &members).unwrap();
+            for i in 0..3 {
+                prop_assert_eq!(first.members[i].ending, second.members[i].beginning);
+                prop_assert_eq!(second.members[i].ending, whole.members[i].ending);
+                prop_assert_eq!(first.members[i].beginning, whole.members[i].beginning);
+            }
+            for st in [&first, &second, &whole] {
+                let incomes: Decimal = st.members.iter().map(|m| m.net_income).sum();
+                prop_assert_eq!(incomes, st.total.net_income);
+                for m in &st.members {
+                    prop_assert_eq!(
+                        m.beginning + m.contributions + m.net_income - m.distributions + m.other,
+                        m.ending
+                    );
+                }
+            }
+        }
+    }
 }

@@ -61,8 +61,6 @@ later; new commands go through the checked ones. Pinned by
 
 Read on 2026-10-13 through Deloitte's free DART roadmaps, which reproduce
 ASC text: ASC 230-10-45-16 and -28, 326-20-55-37/38, 606-10-25-23, 45-2,
-55-37/38, 830-20-30-1. Not yet verified (the ASC's free basic view needs a
-login): ASC 360-10-35-4 (depreciation), 340-10 (prepaids), 230-10-45-10,
-606-10-55-37B, 210 (balance sheet). Until someone with a FASB basic-view
-account reads them, the rules that would cite them cite the textbook and
-say so.
+55-37/38, 830-20-30-1. Read directly in the ASC basic view on 2026-10-14
+(`sources/fasb-asc.md`): 360-10-35-4, 340-10-05-2/4/5, 210-10-45-1/2/5,
+230-10-45-7/10/12/13/14/15, 606-10-55-36 through 55-38. None left open.

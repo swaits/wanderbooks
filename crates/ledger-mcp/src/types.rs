@@ -650,7 +650,7 @@ pub struct CashFlowParams {
     #[serde(default)]
     pub cash_accounts: Vec<String>,
     /// Account codes for liabilities treated as financing (loans, and what
-    /// owners advanced: ASC 230-10-45-14(2)). Defaults to `[books]
+    /// owners advanced: ASC 230-10-45-14(b)). Defaults to `[books]
     /// financing_accounts`, else empty (liabilities are working capital).
     #[serde(default)]
     pub financing_accounts: Vec<String>,

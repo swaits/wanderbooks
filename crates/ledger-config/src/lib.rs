@@ -102,7 +102,7 @@ pub struct BooksSettings {
     pub cash_accounts: Vec<String>,
     /// `[books] financing_accounts`: liability account codes the cash flow
     /// statement treats as financing (loans, and what owners advanced:
-    /// ASC 230-10-45-14(2)). Empty: callers decide.
+    /// ASC 230-10-45-14(b)). Empty: callers decide.
     pub financing_accounts: Vec<String>,
     /// `[books] investing_accounts`: asset account codes the cash flow
     /// statement treats as investing (loans the company makes, investments

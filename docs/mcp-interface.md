@@ -38,7 +38,7 @@ footers, and `[books] receipt_threshold` sets the receipt policy unless
 and `close_sweep` (draw, distribution, or dividend accounts closed into it).
 The cash flow statement's account roles are `[books] cash_accounts` (what
 it reconciles to), `financing_accounts` (loans, and money the owners
-advanced, such as a "Due to owners" liability: ASC 230-10-45-14(2)), and
+advanced, such as a "Due to owners" liability: ASC 230-10-45-14(b)), and
 `investing_accounts` (loans the company makes, investments it buys: ASC
 230-10-20); the tools and the viewer both read them, and a call may pass
 its own (docs/spec/rules.md B-14).

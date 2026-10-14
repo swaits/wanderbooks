@@ -27,7 +27,18 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::Duration;
 
 /// How long any single response may take before the server counts as hung.
-const TIMEOUT: Duration = Duration::from_secs(30);
+/// Long enough for a server's first answer while a mutation run's jobs
+/// contend for the disk (every journal append is synced).
+const TIMEOUT: Duration = Duration::from_secs(180);
+
+/// Random cases for the state machine: 64 on every check; `MCP_CASES`
+/// sets fewer for a mutation run, more for a deeper one.
+fn cases() -> u32 {
+    std::env::var("MCP_CASES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(64)
+}
 
 /// Keys whose values are money. Derived from the `outputSchema`s: every
 /// string property described as an amount or "decimal string", plus the
@@ -1279,7 +1290,7 @@ fn run_op(m: &mut Mcp, k: &mut Known, op: &Op) {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 64, failure_persistence: None, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: cases(), failure_persistence: None, ..ProptestConfig::default() })]
 
     /// Invariants 2 and 7 under random call sequences: every call gets
     /// exactly one response with its id, result xor error; any refusal

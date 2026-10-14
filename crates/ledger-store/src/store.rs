@@ -5,6 +5,30 @@
 //! behind: the journal is the source of truth, the in-memory [`Ledger`] is
 //! the validation authority, and SQLite is the queryable projection that
 //! the next open heals via `last_applied_seq`.
+//!
+//! ```text
+//! GOAL: every change to the books is one durable, ordered, verifiable fact,
+//!       or nothing at all.
+//! SOURCE: R-11 (append-only log: "The log plus the chart fully determine
+//!         every report"); R-12 (one command surface); docs/receipt-store.md
+//!         "Write path" ("append to the journal, fsync, then apply to
+//!         SQLite"); IRS Pub. 583 ("Your books must show your gross income,
+//!         as well as your deductions and credits"; keep "supporting
+//!         documents"); Rev. Proc. 98-25 §5.01 (machine-sensible records
+//!         with an audit trail, "capable of being processed").
+//! INVARIANTS (every command method of Store):
+//!   1. A refused command MUST leave the journal byte-identical, and the
+//!      ledger and projection unchanged (rehearsed on a clone first).
+//!   2. An accepted command MUST be journaled (appended and synced) before
+//!      the in-memory ledger changes, and applied to SQLite after.
+//!   3. The journal MUST hold only whole lines, gapless `seq`, each `prev`
+//!      the SHA-256 of the line before (genesis: 64 zeros).
+//!   4. Replaying the journal MUST rebuild exactly the live ledger, every
+//!      part of it, not only its balances (Store::verify).
+//!   5. A command made of several journaled steps (a disposal, a recurring
+//!      run) MUST be rehearsed whole, so a refusal anywhere writes nothing.
+//!   6. NEVER delete or rewrite a journal line or a stored file.
+//! ```
 
 use crate::blob::BlobStore;
 use crate::error::StoreError;
@@ -197,6 +221,18 @@ impl Store {
     // ------------------------------------------------------------------
 
     /// Create a new store. Fails if one already exists.
+    ///
+    /// ```text
+    /// GOAL: start empty books in a data directory.
+    /// SOURCE: docs/receipt-store.md "Line format" (genesis prev); R-11.
+    /// INVARIANTS:
+    ///   1. The journal's first line MUST be `store.created` with the base
+    ///      currency, chained from the genesis hash (64 zeros).
+    ///   2. The writer lock MUST be held from creation on.
+    /// SCENARIOS:
+    ///   1. IF a journal already exists there: SHOULD refuse
+    ///      - NEVER overwrite or append to existing books.
+    /// ```
     pub fn create(data_dir: &Path, base_currency: Currency) -> Result<Self, StoreError> {
         let journal_path = data_dir.join(JOURNAL_FILE);
         if journal_path.exists() {
@@ -230,6 +266,28 @@ impl Store {
     /// Open an existing store, verifying the journal chain and catching the
     /// SQLite projection up to the journal head. A missing database file is
     /// healed by full replay: the journal is the source of truth.
+    ///
+    /// ```text
+    /// GOAL: the books as journaled, with a projection that matches them.
+    /// SOURCE: docs/receipt-store.md "Write path" (a crash between append
+    ///         and apply is healed from `last_applied_seq`), "Verification";
+    ///         journal::repair_torn_tail (an unacknowledged cut-off line).
+    /// INVARIANTS:
+    ///   1. The writer lock MUST be taken before anything is read.
+    ///   2. The ledger MUST be the replay of every journal line, in order.
+    ///   3. The projection MUST end caught up to the journal head.
+    /// SCENARIOS:
+    ///   1. IF there is no journal: SHOULD refuse (NotFound).
+    ///   2. IF another writer has the books: SHOULD refuse (Locked).
+    ///   3. IF the last line is cut off (no newline): SHOULD set it aside,
+    ///      truncate, and journal `journal.tail_repaired`.
+    ///   4. IF a complete line fails its hash, parse, or `seq`: SHOULD refuse
+    ///      - NEVER repair or skip it (that is corruption, for a human).
+    ///   5. IF the database is missing: SHOULD rebuild it from the journal.
+    ///   6. IF the database fails SQLite's integrity check: SHOULD keep it
+    ///      aside for forensics and rebuild from the journal.
+    ///   7. IF the database is behind the journal: SHOULD apply the rest.
+    /// ```
     pub fn open(data_dir: &Path) -> Result<Self, StoreError> {
         let journal_path = data_dir.join(JOURNAL_FILE);
         if !journal_path.exists() {
@@ -1165,10 +1223,6 @@ impl Store {
     // Accounts receivable / payable
     // ------------------------------------------------------------------
 
-    /// Fetch a control account by code, creating it through the journaled
-    /// account path when missing. The ledger's internal ensure_account
-    /// then no-ops, which keeps replay deterministic: every account
-    /// creation is an `account.added` event.
     /// Rehearse a command on a scratch copy of the ledger before anything
     /// is journaled, so every refusal the engine would make surfaces first.
     /// A journaled command the engine then refused could never be replayed,
@@ -1183,6 +1237,10 @@ impl Store {
         Ok(())
     }
 
+    /// Fetch a control account by code, creating it through the journaled
+    /// account path when missing. The ledger's internal ensure_account
+    /// then no-ops, which keeps replay deterministic: every account
+    /// creation is an `account.added` event.
     fn ensure_control_account(
         &mut self,
         c: &ledger_core::ControlAccount,
@@ -1848,6 +1906,25 @@ impl Store {
 
     /// Attach a receipt to an entry (or file it unlinked with `entry_id=None`
     /// and link later). Returns `(attachment_id, sha256, deduplicated)`.
+    ///
+    /// ```text
+    /// GOAL: keep a supporting document, by its exact bytes, with the entry
+    ///       it supports.
+    /// SOURCE: IRS Pub. 583 ("you must keep supporting documents ... they
+    ///         support the entries in your books"); docs/receipt-store.md
+    ///         "Blob store" (content-addressed, immutable, deduplicated).
+    /// INVARIANTS:
+    ///   1. The bytes MUST be stored under their SHA-256 and read back
+    ///      identical, verified against it.
+    ///   2. The same bytes filed twice MUST share one stored file, and the
+    ///      second filing MUST say deduplicated.
+    ///   3. Each filing MUST be its own attachment, journaled
+    ///      (`receipt.attached`), with its name, type, and description.
+    /// SCENARIOS:
+    ///   1. IF `entry_id` names no entry: SHOULD refuse
+    ///      - NEVER store an attachment pointing at nothing.
+    ///   2. IF `entry_id` is None: SHOULD file it unlinked, to link later.
+    /// ```
     pub fn attach_receipt(
         &mut self,
         entry_id: Option<EntryId>,
@@ -2139,6 +2216,19 @@ impl Store {
     /// already linked elsewhere must be unlinked first, so moving evidence
     /// off an entry always goes through [`Store::unlink_receipt`] and its
     /// recorded reason.
+    ///
+    /// ```text
+    /// GOAL: attach filed evidence to the entry it supports.
+    /// SOURCE: R-13a (receipt corrections are append-only events); IRS Pub.
+    ///         583 (supporting documents "support the entries in your
+    ///         books").
+    /// SCENARIOS:
+    ///   1. IF the attachment is unknown: SHOULD refuse.
+    ///   2. IF it is withdrawn: SHOULD refuse (AttachmentWithdrawn).
+    ///   3. IF it is linked (to any entry): SHOULD refuse (AttachmentLinked).
+    ///   4. IF the entry is unknown: SHOULD refuse.
+    ///   5. Otherwise: SHOULD journal `receipt.linked`.
+    /// ```
     pub fn link_receipt(
         &mut self,
         attachment_id: u64,
@@ -2176,6 +2266,18 @@ impl Store {
     /// append-only even when the current evidence set changes. Returns the
     /// entry it was linked to.
     ///
+    /// ```text
+    /// GOAL: take evidence off an entry, on the record.
+    /// SOURCE: R-13a.
+    /// SCENARIOS:
+    ///   1. IF the attachment is unknown, withdrawn, or not linked: SHOULD
+    ///      refuse.
+    ///   2. IF the reason is blank: SHOULD refuse
+    ///      BECAUSE a correction without a why is not an audit trail.
+    ///   3. Otherwise: SHOULD journal `receipt.unlinked` with the entry and
+    ///      reason; the file stays stored and filed.
+    /// ```
+    ///
     /// Policy-free like the rest of the store: whether an entry may be left
     /// without a receipt is the MCP layer's call.
     pub fn unlink_receipt(
@@ -2204,6 +2306,18 @@ impl Store {
     /// listings and can never be linked again. Nothing is deleted: the bytes
     /// stay in the blob store and the journal keeps the filing and the
     /// withdrawal. A linked receipt must be unlinked first.
+    ///
+    /// ```text
+    /// GOAL: retire a filed file, keeping it and the record of why.
+    /// SOURCE: R-13a ("no blob is deleted"); IRS Pub. 583 (keep records
+    ///         while they may be needed).
+    /// SCENARIOS:
+    ///   1. IF the attachment is unknown or already withdrawn: SHOULD refuse.
+    ///   2. IF it is linked to an entry: SHOULD refuse (AttachmentLinked).
+    ///   3. IF the reason is blank: SHOULD refuse.
+    ///   4. Otherwise: SHOULD journal `attachment.withdrawn`; listings omit
+    ///      it; its bytes still verify and read.
+    /// ```
     pub fn withdraw_attachment(
         &mut self,
         attachment_id: u64,
@@ -2340,6 +2454,20 @@ impl Store {
     /// Verify everything: the journal hash chain, a fresh replay's reports
     /// against the live ledger, and the SQLite projection against the replay.
     /// Loud on any divergence.
+    ///
+    /// ```text
+    /// GOAL: prove the books are what the journal says.
+    /// SOURCE: docs/receipt-store.md "Verification"; Rev. Proc. 98-25 §5.01
+    ///         (the relationship between the records and the books must be
+    ///         demonstrable: an audit trail).
+    /// INVARIANTS:
+    ///   1. MUST change nothing.
+    ///   2. MUST fail (VerifyMismatch, naming what differs) unless: the
+    ///      chain verifies; a fresh replay equals the live ledger in every
+    ///      part; the SQLite read-back's reports, asset register, classes
+    ///      and payroll runs equal the replay's; and every projection table
+    ///      equals a fresh projection of the journal, row for row.
+    /// ```
     pub fn verify(&self) -> Result<(), StoreError> {
         let lines = read_and_verify_journal(self.journal.path())?;
         let mut replayed = Ledger::new(self.base_currency);
@@ -2422,6 +2550,20 @@ impl Store {
     /// heal it: keep the divergent file for forensics, rebuild from the
     /// journal, and verify again. A journal that fails its own chain is
     /// never "healed": that's an error for a human.
+    ///
+    /// ```text
+    /// GOAL: books that verify, healing only what is derived.
+    /// SOURCE: docs/receipt-store.md ("the SQLite database is disposable";
+    ///         "don't investigate — rebuild").
+    /// SCENARIOS:
+    ///   1. IF verify passes: SHOULD report the event count and head hash,
+    ///      healed: none.
+    ///   2. IF the projection or ledger diverged (VerifyMismatch): SHOULD copy
+    ///      the database aside, rebuild from the journal, verify again, and
+    ///      report why it healed.
+    ///   3. IF the journal itself fails: SHOULD refuse
+    ///      - NEVER touch the journal.
+    /// ```
     pub fn verify_and_heal(&mut self) -> Result<VerifyReport, StoreError> {
         let healed = match self.verify() {
             Ok(()) => None,

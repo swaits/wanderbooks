@@ -66,6 +66,12 @@ mutants:
     # the whole workspace would rebuild the viewer for every mutant.
     cargo mutants -p ledger-core --exclude crates/ledger-core/src/proofs.rs --test-package ledger-core --test-package ledger-store -j 4 --timeout 120
 
+# Mutation testing of the store. Fewer random cases per mutant (each needs
+# a run that catches it, not the deep sweep); temp books on a RAM disk if
+# TMPDIR is one, since every journal append is synced.
+mutants-store:
+    STORE_CASES=64 cargo mutants -p ledger-store --test-package ledger-store -j 3 --timeout 300 -o mutants-store
+
 # Benchmarks of the core's hot paths (no budget gates them yet)
 bench:
     cargo bench -p ledger-core --bench books

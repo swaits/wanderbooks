@@ -3,3 +3,5 @@
 .DS_Store
 site/dist/
 .netlify/
+/mutants.out*/
+/mutants-store/

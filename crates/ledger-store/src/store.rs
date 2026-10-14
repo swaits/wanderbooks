@@ -1474,31 +1474,8 @@ impl Store {
             ensure_on(l, &ledger_core::RECEIVABLES)?;
             l.receive_payment(invoice_id, date, amount, cash_account)
         })?;
-        // Pure pre-validation mirroring Ledger::receive_payment, plus the
-        // account checks post_entry would perform: a failed post after the
-        // journal writes would leave the journal ahead of the ledger.
-        if amount <= Decimal::ZERO {
-            return Err(LedgerError::InvalidPaymentAmount(amount).into());
-        }
-        let balance = self
-            .ledger
-            .get_invoice(invoice_id)
-            .ok_or(LedgerError::UnknownInvoice(invoice_id))?
-            .balance();
-        if amount > balance {
-            return Err(LedgerError::Overpayment(amount, balance).into());
-        }
-        if let Some(pid) = self.ledger.closed_period_containing(date) {
-            return Err(LedgerError::ClosedPeriod(pid, date.to_string()).into());
-        }
-        let cash = self
-            .ledger
-            .chart()
-            .get(cash_account)
-            .ok_or(LedgerError::UnknownAccount(cash_account))?;
-        if cash.placeholder {
-            return Err(LedgerError::PlaceholderAccount(cash.code.clone()).into());
-        }
+        // The rehearsal above is the whole check: hand-written mirrors of
+        // the engine's refusals drift from it (and were never reached).
         let ar = self.ensure_control_account(&ledger_core::RECEIVABLES)?;
         let description = format!("Payment on invoice {invoice_id}");
         let (entry_id, mut journaled) =
@@ -1536,28 +1513,6 @@ impl Store {
             ensure_on(l, &ledger_core::PAYABLES)?;
             l.pay_bill(bill_id, date, amount, cash_account)
         })?;
-        if amount <= Decimal::ZERO {
-            return Err(LedgerError::InvalidPaymentAmount(amount).into());
-        }
-        let balance = self
-            .ledger
-            .get_bill(bill_id)
-            .ok_or(LedgerError::UnknownBill(bill_id))?
-            .balance();
-        if amount > balance {
-            return Err(LedgerError::Overpayment(amount, balance).into());
-        }
-        if let Some(pid) = self.ledger.closed_period_containing(date) {
-            return Err(LedgerError::ClosedPeriod(pid, date.to_string()).into());
-        }
-        let cash = self
-            .ledger
-            .chart()
-            .get(cash_account)
-            .ok_or(LedgerError::UnknownAccount(cash_account))?;
-        if cash.placeholder {
-            return Err(LedgerError::PlaceholderAccount(cash.code.clone()).into());
-        }
         let ap = self.ensure_control_account(&ledger_core::PAYABLES)?;
         let description = format!("Payment on bill {bill_id}");
         let (entry_id, mut journaled) =

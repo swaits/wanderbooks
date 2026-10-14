@@ -69,6 +69,7 @@ mutants:
 # Benchmarks of the core's hot paths (no budget gates them yet)
 bench:
     cargo bench -p ledger-core --bench books
+    cargo bench -p ledger-store --bench store
 
 # Build the release binaries (CLI, MCP server, GUI)
 build:

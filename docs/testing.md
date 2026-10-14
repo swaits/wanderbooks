@@ -25,7 +25,7 @@ the store's journal safety; the other crates come next (gap list).
 | Fuzzing | crash, hang, broken books (4) | `fuzz/fuzz_targets/`, corpora in `fuzz/corpus/` | `just fuzz <target> <secs>` | 10 min each | weekly |
 | Miri | undefined behavior in our use of dependencies (4) | the core's unit, bridge, invariant tests | `just miri` | ~2 min | on demand |
 | Golden | `tests/golden/fixture_company.json` (5) | `invariants.rs` | `just check` | <1s | every change |
-| Benchmarks | a baseline (6) | `benches/books.rs` | `just bench` | ~1 min | none (no budget, by decision) |
+| Benchmarks | a baseline (6) | `ledger-core/benches/books.rs`, `ledger-store/benches/store.rs` | `just bench` | ~2 min | none (no budget, by decision) |
 | Mutation | can the tests fail? | `ledger-core` (2026-10-13: 1,011 caught + 13 timeouts of 1,024 viable, 0 missed) | `just mutants` | ~3 h | weekly |
 
 CI: `.github/workflows/check.yml` runs `just check` on every push;
@@ -56,6 +56,16 @@ laptop:
 | trial balance | 44 µs | 1.07 ms |
 | balance sheet | 47 µs | 1.04 ms |
 | one month's P&L | 25 µs | 248 µs |
+
+The store, 10k two-line entries on the laptop's disk (every journal
+append is synced; `benches/store.rs` in ledger-store):
+
+| | 10k entries |
+|---|---|
+| open the books (verify the chain, replay, catch the database up) | 249 ms |
+| the viewer loading them | 616 ms |
+| a full verify (replay, projection, every table) | 809 ms |
+| post one entry (create, two lines, post: four synced appends) | 62 ms |
 
 ## Formerly assumed: checked against the standards (2026-10-13)
 

@@ -21,6 +21,11 @@ hex = "0.4"
 tempfile = "3"
 proptest = "1"
 rust_decimal = "1"
+criterion = "0.8.2"
+
+[[bench]]
+name = "store"
+harness = false
 
 [lints]
 workspace = true

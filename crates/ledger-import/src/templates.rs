@@ -10,6 +10,24 @@
 //! `books.import_chart_csv`), with tax categories already assigned, plus
 //! the `wanderbooks.toml` settings that go with it (tax form, owners, and
 //! where period closes go).
+//!
+//! ```text
+//! GOAL: a chart a new business can import and run as is.
+//! SOURCE: docs/spec/sources/irs-tax-lines.md (each category belongs on
+//!         the business's return); the engine's control accounts
+//!         (ledger_core: receivables, payables, revenue, retained earnings,
+//!         payroll), which it finds by code.
+//! INVARIANTS:
+//!   1. Every row imports: codes unique, parents before children, types
+//!      valid, and each tax category valid for the entity's return.
+//!   2. An account at a control account's code MUST be that control
+//!      account (same type and name)
+//!      BECAUSE the engine posts by code: wages would land on whatever
+//!      sits at 6100 (found 2026-10-13: the templates put processing fees
+//!      there).
+//!   3. A partnership gets a capital and a distributions account per
+//!      partner and shares that sum to 100%.
+//! ```
 
 use crate::chart_csv::ChartRow;
 use rust_decimal::Decimal;
@@ -130,7 +148,6 @@ pub fn chart_template(entity: EntityType, owners: &[String]) -> Result<ChartTemp
         acct("2000", "Accounts Payable", "liability", None),
         acct("2100", "Credit Card", "liability", None),
         acct("2200", "Sales Tax Payable", "liability", None),
-        acct("2300", "Payroll Liabilities", "liability", None),
         acct("2400", "Deferred Revenue", "liability", None),
         acct("2500", owed_to, "liability", None),
         acct("2700", "Loans Payable", "liability", None),
@@ -213,10 +230,25 @@ pub fn chart_template(entity: EntityType, owners: &[String]) -> Result<ChartTemp
         acct("6000", "Advertising", "expense", Some("advertising")),
         acct("6050", "Bank Fees", "expense", Some("other_deductions")),
         acct(
-            "6100",
+            "6060",
             "Platform and Payment Processing Fees",
             "expense",
             Some("commissions_fees"),
+        ),
+        // Payroll posts to the engine's control accounts by code (6100,
+        // 6110; the withholding payables 2110-2150 are created when payroll
+        // first runs), so the template's payroll accounts are those.
+        acct(
+            "6100",
+            "Salary & Wage Expense",
+            "expense",
+            Some("salaries_wages"),
+        ),
+        acct(
+            "6110",
+            "Payroll Tax Expense",
+            "expense",
+            Some("taxes_licenses"),
         ),
         acct("6150", "Contract Labor", "expense", Some("contract_labor")),
         acct("6200", "Depreciation", "expense", Some("depreciation")),
@@ -275,13 +307,6 @@ pub fn chart_template(entity: EntityType, owners: &[String]) -> Result<ChartTemp
             "expense",
             Some("nondeductible"),
         ),
-        acct(
-            "7000",
-            "Salaries and Wages",
-            "expense",
-            Some("salaries_wages"),
-        ),
-        acct("7050", "Payroll Taxes", "expense", Some("taxes_licenses")),
         acct(
             "7100",
             "Employee Benefits",

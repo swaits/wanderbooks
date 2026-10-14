@@ -195,15 +195,21 @@ fn parse_date(s: &str, order: DateOrder) -> Result<NaiveDate, BankCsvError> {
     if let Ok(d) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
         return Ok(d);
     }
-    let (four, two) = match order {
-        DateOrder::MonthFirst => ("%m/%d/%Y", "%m/%d/%y"),
-        DateOrder::DayFirst => ("%d/%m/%Y", "%d/%m/%y"),
+    let four = match order {
+        DateOrder::MonthFirst => "%m/%d/%Y",
+        DateOrder::DayFirst => "%d/%m/%Y",
     };
-    // A four-digit year first; a two-digit year follows POSIX (69-99 are
-    // 1900s), as chrono's %y does.
-    let year_digits = s.rsplit('/').next().map_or(0, str::len);
-    let format = if year_digits == 2 { two } else { four };
-    NaiveDate::parse_from_str(s, format).map_err(|_| BankCsvError::BadDate(s.to_string()))
+    let bad = || BankCsvError::BadDate(s.to_string());
+    let (rest, year) = s.rsplit_once('/').ok_or_else(bad)?;
+    if year.len() != 2 {
+        return NaiveDate::parse_from_str(s, four).map_err(|_| bad());
+    }
+    // A two-digit year follows POSIX strptime %y: 69-99 are 1900s, 00-68
+    // 2000s. (chrono's %y puts the cutoff at 70; found by the spec-blind
+    // suite, 2026-10-13.)
+    let yy: i32 = year.parse().map_err(|_| bad())?;
+    let full = if yy >= 69 { 1900 + yy } else { 2000 + yy };
+    NaiveDate::parse_from_str(&format!("{rest}/{full}"), four).map_err(|_| bad())
 }
 
 fn parse_amount(s: &str) -> Result<Decimal, BankCsvError> {

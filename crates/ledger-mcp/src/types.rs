@@ -566,9 +566,9 @@ pub struct TrialBalanceLineOut {
     pub code: String,
     /// Account name.
     pub name: String,
-    /// Debit balance as a decimal string, or "0".
+    /// Debit balance, decimal string ("0.00" when none).
     pub debit: String,
-    /// Credit balance as a decimal string, or "0".
+    /// Credit balance, decimal string ("0.00" when none).
     pub credit: String,
 }
 
@@ -1570,7 +1570,7 @@ pub struct DisposeAssetOut {
     /// Gain (positive) or loss (negative), decimal string.
     pub gain_loss: String,
     /// Depreciation auto-posted for the final partial period, decimal string
-    /// ("0" when the period was already posted).
+    /// ("0.00" when the period was already posted).
     pub final_depreciation: String,
     /// The disposal entry's lines with resulting balances.
     pub lines: Vec<PreviewLine>,

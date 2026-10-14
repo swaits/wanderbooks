@@ -13,11 +13,12 @@ use ledger_config as company;
 mod policy;
 mod server;
 mod types;
+mod wire;
 
 use ledger_core::Currency;
 use ledger_store::Store;
 use policy::ReceiptPolicy;
-use rmcp::{ServiceExt, transport::stdio};
+use rmcp::ServiceExt;
 use serde::Deserialize;
 use server::BooksServer;
 use std::path::PathBuf;
@@ -28,10 +29,7 @@ struct Config {
     /// ISO 4217 base currency for a new store. Default "USD".
     #[serde(default)]
     base_currency: Option<String>,
-    /// Receipt policy. Overrides `wanderbooks.toml`'s receipt_threshold;
-    /// with neither, receipts are required above $25.00.
-    #[serde(default)]
-    receipt_policy: Option<ReceiptPolicy>,
+    // `receipt_policy` is read by ledger_config::effective_receipt_policy.
 }
 
 fn default_data_dir() -> PathBuf {
@@ -105,14 +103,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     };
     eprintln!("ledger-mcp: company {:?}", settings.company.name);
-    let policy = match (config.receipt_policy, settings.receipt_threshold) {
-        (Some(policy), _) => policy,
-        (None, Some(threshold)) => ReceiptPolicy {
-            require_receipts_above: threshold,
-            ..ReceiptPolicy::default()
-        },
-        (None, None) => ReceiptPolicy::default(),
-    };
+    let policy = company::effective_receipt_policy(&config_path, &settings)?;
     let roles = server::CashRoles {
         cash: settings.cash_accounts,
         financing: settings.financing_accounts,
@@ -152,8 +143,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_company(company)
         .with_cash_roles(roles);
     rt.block_on(async {
-        let running = server.serve(stdio()).await?;
+        // The wire answers what JSON-RPC requires that rmcp drops (wire.rs).
+        let (input, output, writer) = wire::spawn(tokio::io::stdin(), tokio::io::stdout());
+        let running = server.serve((input, output)).await?;
         let _ = running.waiting().await;
+        let _ = writer.await;
         Ok::<(), Box<dyn std::error::Error>>(())
     })
 }

@@ -12,6 +12,30 @@ use ledger_core::reports::profit_and_loss_for_period;
 use ledger_core::{AccountType, EntryStatus, PeriodStatus, vendor_1099_report};
 use rust_decimal::Decimal;
 
+/// Everything the books need, as items to show.
+///
+/// ```text
+/// GOAL: tell the humans what's unfinished or wrong, and hand them the
+///       prompt that gets the agent to fix it; never change the books.
+/// SOURCE: DECISION (Stephen: the viewer is read-only; its "Needs
+///         attention" list offers prompts, AGENTS.md); the conditions
+///         below; docs/spec/sources/irs-1099-thresholds.md (W-9s).
+/// INVARIANTS:
+///   1. Pure: reads `b`, writes nothing.
+///   2. One item per: draft entry (Todo); posted entry missing a receipt
+///      (Problem; four or more are one combined item); recurring entry or
+///      schedule due through today (Todo); period ended and still open
+///      (Todo); fiscal-year account with activity and no tax category
+///      (Info); legal rule known only through a past year (Todo); 1099
+///      vendor without a W-9 (Problem); overdue bills, and overdue
+///      invoices (Problem, one each, with the total); money owed to
+///      owners (Info, per account with a balance); the database differing
+///      from the journal or unreadable, and damaged or missing stored
+///      files (Problem).
+///   3. Nothing else: books with none of those yield no items.
+///   4. Every item's prompt starts "In wanderbooks," or names
+///      wanderbooks, and its amounts are the books' exact amounts.
+/// ```
 pub fn find(b: &Books) -> Vec<Attention> {
     let mut out = Vec::new();
     let today = b.today;
@@ -49,9 +73,9 @@ pub fn find(b: &Books) -> Vec<Attention> {
             .collect();
         out.push(Attention {
             severity: Severity::Problem,
-            title: format!("{} without receipts", fmt::count(missing.len(), "expense", "expenses")),
+            title: format!("{} without receipts", fmt::count(missing.len(), "entry", "entries")),
             detail: format!(
-                "{} of spending has no receipt attached ({}).",
+                "{} in entries with no receipt attached ({}).",
                 fmt::dollars(total),
                 b.receipt_rule()
             ),

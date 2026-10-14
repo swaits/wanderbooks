@@ -1,0 +1,28 @@
+[company]
+name = "Wanderland Labs LLC"
+entity_type = "LLC, multi-member, member-managed"
+tax_classification = "partnership"  # Form 1065; a Schedule K-1 per member
+base_currency = "USD"
+fiscal_year_start = "01-01"         # the year ends the day before: Dec 31
+formation_state = "UT"
+formed = "2026-10-04"
+
+[[company.members]]
+name = "Stephen Waits"
+share = "50%"
+capital_account = "3000"
+
+[[company.members]]
+name = "Katherine Pendergast"
+share = "50%"
+capital_account = "3001"
+
+[books]
+data_dir = "books-data"
+accounting_basis = "accrual"
+receipt_threshold = "0.00"
+cash_accounts = ["1000"]
+financing_accounts = ["2100"]
+
+[viewer]
+open_at_start = "ask"

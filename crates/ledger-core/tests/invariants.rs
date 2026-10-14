@@ -10,7 +10,7 @@
 //! semantic oracle (see `docs/oracle.md`).
 
 use chrono::NaiveDate;
-use ledger_core::reports::{balance_sheet, profit_and_loss, snapshot, trial_balance};
+use ledger_core::reports::{balance_sheet, snapshot, trial_balance, unclosed_earnings};
 use ledger_core::{
     AccountId, AccountType, ChartOfAccounts, Currency, EntryStatus, JournalEntry, Ledger,
     LedgerError, Money, Side,
@@ -565,7 +565,7 @@ fn accounting_equation_holds() {
 #[test]
 fn profit_and_loss_is_correct() {
     let c = fixture_company();
-    let pl = profit_and_loss(&c.ledger).unwrap();
+    let pl = unclosed_earnings(&c.ledger).unwrap();
     assert_eq!(pl.revenue, Decimal::from(4_000));
     assert_eq!(pl.expenses, Decimal::from(800));
     assert_eq!(pl.net_income(), Decimal::from(3_200));

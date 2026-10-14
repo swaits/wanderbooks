@@ -180,7 +180,7 @@ mod tests {
         assert_eq!((z.revenue, z.expenses), (Decimal::ZERO, Decimal::ZERO));
         // None counts every line: identical to the account-based P&L.
         let all = crate::reports::profit_and_loss_filtered(&ledger, None).unwrap();
-        let plain = crate::reports::profit_and_loss(&ledger).unwrap();
+        let plain = crate::reports::unclosed_earnings(&ledger).unwrap();
         assert_eq!((all.revenue, all.expenses), (plain.revenue, plain.expenses));
         assert_eq!((all.revenue, all.expenses), (d(170_000), d(55_000)));
     }
@@ -205,7 +205,7 @@ mod tests {
         assert_eq!(rows[1].profit_and_loss.net_income(), d(40_000));
         assert_eq!(rows[2].profit_and_loss.net_income(), d(15_000));
         // The rows partition the ledger: they sum to the total P&L.
-        let total = crate::reports::profit_and_loss(&ledger).unwrap();
+        let total = crate::reports::unclosed_earnings(&ledger).unwrap();
         let rev: Decimal = rows.iter().map(|r| r.profit_and_loss.revenue).sum();
         let exp: Decimal = rows.iter().map(|r| r.profit_and_loss.expenses).sum();
         assert_eq!((rev, exp), (total.revenue, total.expenses));

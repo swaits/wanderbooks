@@ -15,6 +15,13 @@ fn f(d: Decimal) -> f64 {
     d.try_into().unwrap_or(0.0)
 }
 
+/// ```text
+/// INVARIANTS (finite lo <= hi, n >= 1):
+///   1. Evenly spaced by a step of 1, 2, 2.5, or 5 times a power of ten.
+///   2. The first tick is at or below lo and the last at or above hi, so
+///      no data falls outside the gridlines.
+///   3. At most n + 2 ticks.
+/// ```
 /// "Nice" axis ticks covering [lo, hi].
 fn ticks(lo: f64, hi: f64, n: usize) -> Vec<f64> {
     let span = (hi - lo).max(1e-9);

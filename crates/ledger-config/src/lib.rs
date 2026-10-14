@@ -9,6 +9,9 @@
 //! unless `config.json` sets one). The fiscal year *end* is never stored: it is the day before
 //! the next start, so the two can't disagree.
 
+pub mod receipt_policy;
+pub use receipt_policy::ReceiptPolicy;
+
 use chrono::{Datelike, NaiveDate};
 use rust_decimal::Decimal;
 use serde::Deserialize;
@@ -148,21 +151,44 @@ struct BooksSection {
     investing_accounts: Vec<String>,
 }
 
-/// The return a federal tax classification files: "partnership" → 1065,
-/// "s corporation" → 1120-S, "c corporation" → 1120, "sole proprietorship"
-/// or "disregarded entity" → Schedule C. Unrecognized: unknown.
+/// The return a federal tax classification files (docs/spec/sources/
+/// irs-entity-classification.md), read by whole words, ignoring case:
+/// "partnership" → 1065; "S corporation" (S corp, S-corp, scorp) →
+/// 1120-S; "C corporation", or "corporation", "corp", or "association"
+/// alone → 1120; "disregarded", "sole proprietor(ship)", or
+/// "single-member" → Schedule C. Anything else, or words naming two
+/// returns ("corporation or S corporation"), names none.
 fn form_for_classification(c: &str) -> Option<ledger_core::TaxForm> {
-    let c = c.to_lowercase();
-    if c.contains("partnership") {
-        Some(ledger_core::TaxForm::Form1065)
-    } else if c.contains("s corp") || c.contains("s-corp") || c.contains("s_corp") {
-        Some(ledger_core::TaxForm::Form1120S)
-    } else if c.contains("c corp") || c.contains("c-corp") || c.contains("c_corp") {
-        Some(ledger_core::TaxForm::Form1120)
-    } else if c.contains("sole") || c.contains("disregarded") {
-        Some(ledger_core::TaxForm::ScheduleC)
-    } else {
-        None
+    use ledger_core::TaxForm;
+    let lower = c.to_lowercase();
+    let words: Vec<&str> = lower
+        .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let has = |w: &str| words.contains(&w);
+    let mut found = Vec::new();
+    if has("partnership") {
+        found.push(TaxForm::Form1065);
+    }
+    for (i, w) in words.iter().enumerate() {
+        let prev = i.checked_sub(1).map(|p| words[p]);
+        let form = match *w {
+            "scorp" => Some(TaxForm::Form1120S),
+            "ccorp" | "association" => Some(TaxForm::Form1120),
+            "corp" | "corporation" if prev == Some("s") => Some(TaxForm::Form1120S),
+            "corp" | "corporation" => Some(TaxForm::Form1120),
+            _ => None,
+        };
+        found.extend(form);
+    }
+    if has("disregarded") || has("sole") || words.windows(2).any(|p| p == ["single", "member"]) {
+        found.push(TaxForm::ScheduleC);
+    }
+    found.sort();
+    found.dedup();
+    match found.as_slice() {
+        [one] => Some(*one),
+        _ => None,
     }
 }
 
@@ -180,19 +206,121 @@ fn parse_share(name: &str, s: &str) -> Result<Decimal, String> {
     Ok(share)
 }
 
-/// Parse `"MM-DD"`. February 29 is rejected: a fiscal year must start on a
-/// day every year has.
+/// Parse `"MM-DD"`: the first day of a month (a fiscal year ends on the
+/// last day of a month: IRS Pub. 538, docs/spec/sources/
+/// irs-periods-and-methods.md).
 fn parse_month_day(s: &str) -> Result<(u32, u32), String> {
     let bad = || format!("fiscal_year_start {s:?}: expected \"MM-DD\", e.g. \"01-01\"");
     let (m, d) = s.split_once('-').ok_or_else(bad)?;
     let (m, d): (u32, u32) = (m.parse().map_err(|_| bad())?, d.parse().map_err(|_| bad())?);
-    // 2001 is not a leap year: a valid date there exists every year.
-    NaiveDate::from_ymd_opt(2001, m, d)
-        .ok_or_else(|| format!("fiscal_year_start {s:?} is not a day every year has"))?;
+    if !(1..=12).contains(&m) {
+        return Err(bad());
+    }
+    if d != 1 {
+        return Err(format!(
+            "fiscal_year_start {s:?}: a fiscal year starts on the first of a month (it ends on the last day of one: IRS Pub. 538)"
+        ));
+    }
     Ok((m, d))
 }
 
+/// Account codes as written, trimmed; a blank one is refused.
+fn codes(key: &str, list: Vec<String>) -> Result<Vec<String>, String> {
+    list.into_iter()
+        .map(|c| {
+            let c = c.trim().to_string();
+            if c.is_empty() {
+                Err(format!("{key}: an account code is blank"))
+            } else {
+                Ok(c)
+            }
+        })
+        .collect()
+}
+
+/// A decimal string as the books take one: exactly `-?digits[.digits]`.
+/// The decimal parser alone also takes "1_000", "+5", ".5", and
+/// exponents ("1e3"); a setting or tool argument never means those.
+pub fn decimal(s: &str) -> Option<Decimal> {
+    let digits = s.strip_prefix('-').unwrap_or(s);
+    let (whole, frac) = match digits.split_once('.') {
+        Some((w, f)) => (w, Some(f)),
+        None => (digits, None),
+    };
+    let all_digits = |t: &str| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit());
+    if !all_digits(whole) || frac.is_some_and(|f| !all_digits(f)) {
+        return None;
+    }
+    s.parse().ok()
+}
+
+/// The receipt policy in force: `config_json`'s `receipt_policy` when the
+/// file sets one, else `[books] receipt_threshold`, else the default
+/// ($25.00); validated (crate::receipt_policy INVARIANT 4). The server and
+/// the viewer both call this, so they enforce and show one rule.
+pub fn effective_receipt_policy(
+    config_json: &Path,
+    settings: &BooksSettings,
+) -> Result<ReceiptPolicy, String> {
+    #[derive(Deserialize)]
+    struct ConfigJson {
+        #[serde(default)]
+        receipt_policy: Option<ReceiptPolicy>,
+    }
+    let from_json = if config_json.exists() {
+        let raw = std::fs::read_to_string(config_json)
+            .map_err(|e| format!("{}: {e}", config_json.display()))?;
+        serde_json::from_str::<ConfigJson>(&raw)
+            .map_err(|e| format!("bad config {}: {e}", config_json.display()))?
+            .receipt_policy
+    } else {
+        None
+    };
+    let policy = match (from_json, &settings.receipt_threshold) {
+        (Some(p), _) => p,
+        (None, Some(t)) => ReceiptPolicy {
+            require_receipts_above: t.clone(),
+            ..ReceiptPolicy::default()
+        },
+        (None, None) => ReceiptPolicy::default(),
+    };
+    policy.validate()?;
+    Ok(policy)
+}
+
 /// Parse `wanderbooks.toml` text.
+///
+/// ```text
+/// GOAL: read the company's settings, refusing any the books can't honor
+///       rather than guessing.
+/// SOURCE: IRS Pub. 538 (docs/spec/sources/irs-periods-and-methods.md:
+///         a fiscal year ends on the last day of a month); Treas. Reg.
+///         §301.7701-3 and the Schedule C instructions
+///         (docs/spec/sources/irs-entity-classification.md); IRC §704(a)
+///         (shares from the agreement: docs/spec/sources/irs-partnerships.md).
+/// INVARIANTS:
+///   1. Every setting is optional; an empty file is a calendar-year,
+///      accrual-basis "Unnamed company" with no members.
+///   2. fiscal_year_start MUST be the first of a month ("MM-01").
+///   3. Members: each MUST have a name and a capital account, names and
+///      capital accounts MUST be distinct (and no member's distributions
+///      account another's capital), and shares (each in (0, 1], "50%" or
+///      "0.5") MUST sum to exactly 1.
+///   4. tax_form wins over tax_classification (which is then not read);
+///      a classification is read by whole words, ignoring case, and MUST
+///      name exactly one return (source table). tax_form, basis, and
+///      classification values ignore case.
+///   5. receipt_threshold MUST be a decimal at least zero.
+///   6. Account codes (cash, financing, investing, close_into,
+///      close_sweep, members' capital and distributions) are trimmed; a
+///      blank one is refused (a blank distributions account means none). close_into is
+///      refused with members (a close goes to their capital accounts).
+///   7. profile holds every simple [company] value in file order:
+///      strings as written, numbers, booleans, and dates in TOML's
+///      spelling; tables and arrays (members) are left out.
+///   8. NEVER accept a file that would be read differently than written:
+///      an unknown basis, tax form, or classification is refused.
+/// ```
 pub fn parse(text: &str) -> Result<BooksSettings, String> {
     let raw: BooksToml = toml::from_str(text).map_err(|e| e.to_string())?;
     let mut company = Company::default();
@@ -218,6 +346,30 @@ pub fn parse(text: &str) -> Result<BooksSettings, String> {
                 .filter(|d| !d.is_empty()),
         });
     }
+    for (i, m) in company.members.iter().enumerate() {
+        if m.name.is_empty() {
+            return Err(format!("member {}: name is blank", i + 1));
+        }
+        for other in &company.members[..i] {
+            if other.name == m.name {
+                return Err(format!("member {} is listed twice", m.name));
+            }
+            if other.capital_account == m.capital_account {
+                return Err(format!(
+                    "members {} and {} share capital account {}",
+                    other.name, m.name, m.capital_account
+                ));
+            }
+        }
+        for other in &company.members {
+            if other.distribution_account.as_deref() == Some(m.capital_account.as_str()) {
+                return Err(format!(
+                    "{}'s distributions account {} is {}'s capital account",
+                    other.name, m.capital_account, m.name
+                ));
+            }
+        }
+    }
     if !company.members.is_empty() {
         let total: Decimal = company.members.iter().map(|m| m.share).sum();
         if total != Decimal::ONE {
@@ -229,7 +381,11 @@ pub fn parse(text: &str) -> Result<BooksSettings, String> {
             (Some(f), _) => Some(ledger_core::TaxForm::parse(f).ok_or_else(|| {
                 format!("tax_form {f:?}: expected schedule_c, 1065, 1120s, or 1120")
             })?),
-            (None, Some(c)) => form_for_classification(c),
+            (None, Some(c)) => Some(form_for_classification(c).ok_or_else(|| {
+                format!(
+                    "tax_classification {c:?}: expected partnership, S corporation, C corporation, or disregarded entity (or set tax_form)"
+                )
+            })?),
             (None, None) => None,
         };
     if !company.members.is_empty() && raw.books.close_into.is_some() {
@@ -238,8 +394,11 @@ pub fn parse(text: &str) -> Result<BooksSettings, String> {
                 .to_string(),
         );
     }
-    company.close_into = raw.books.close_into.map(|c| c.trim().to_string());
-    company.close_sweep = raw.books.close_sweep;
+    company.close_into = match raw.books.close_into {
+        Some(c) => Some(codes("close_into", vec![c])?.remove(0)),
+        None => None,
+    };
+    company.close_sweep = codes("close_sweep", raw.books.close_sweep)?;
     if let Some(basis) = raw.books.accounting_basis {
         company.basis = match basis.trim().to_lowercase().as_str() {
             "accrual" => "Accrual".to_string(),
@@ -253,9 +412,11 @@ pub fn parse(text: &str) -> Result<BooksSettings, String> {
     }
     let receipt_threshold = match raw.books.receipt_threshold {
         Some(t) => {
-            t.trim()
-                .parse::<Decimal>()
-                .map_err(|_| format!("receipt_threshold {t:?} is not a decimal"))?;
+            let v = decimal(t.trim())
+                .ok_or_else(|| format!("receipt_threshold {t:?} is not a decimal"))?;
+            if v.is_sign_negative() && !v.is_zero() {
+                return Err(format!("receipt_threshold {t:?} is below zero"));
+            }
             Some(t.trim().to_string())
         }
         None => None,
@@ -280,9 +441,9 @@ pub fn parse(text: &str) -> Result<BooksSettings, String> {
     Ok(BooksSettings {
         company,
         receipt_threshold,
-        cash_accounts: raw.books.cash_accounts,
-        financing_accounts: raw.books.financing_accounts,
-        investing_accounts: raw.books.investing_accounts,
+        cash_accounts: codes("cash_accounts", raw.books.cash_accounts)?,
+        financing_accounts: codes("financing_accounts", raw.books.financing_accounts)?,
+        investing_accounts: codes("investing_accounts", raw.books.investing_accounts)?,
     })
 }
 

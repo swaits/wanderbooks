@@ -24,6 +24,9 @@ path = "../crates/ledger-store"
 [dependencies.ledger-import]
 path = "../crates/ledger-import"
 
+[dependencies.ledger-config]
+path = "../crates/ledger-config"
+
 [[bin]]
 name = "fuzz_journal_line"
 path = "fuzz_targets/fuzz_journal_line.rs"
@@ -71,6 +74,13 @@ bench = false
 [[bin]]
 name = "fuzz_import_csv"
 path = "fuzz_targets/fuzz_import_csv.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_config_parse"
+path = "fuzz_targets/fuzz_config_parse.rs"
 test = false
 doc = false
 bench = false

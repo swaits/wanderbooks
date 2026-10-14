@@ -1,0 +1,6 @@
+[company]
+tax_classification = "We are an S corp, formerly a sole proprietorship"
+fiscal_year_start = "02-29"
+[books]
+close_into = "  "
+close_sweep = ["3100", ""]

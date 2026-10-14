@@ -10,8 +10,8 @@ use ledger_core::{
     AccountType, Currency, Ledger, Money, NewAsset, Side, accumulated_depreciation, book_value,
     depreciation_schedule,
     reports::{
-        balance_sheet, balance_sheet_as_of, profit_and_loss, profit_and_loss_for_period,
-        trial_balance,
+        balance_sheet, balance_sheet_as_of, profit_and_loss_for_period, trial_balance,
+        unclosed_earnings,
     },
 };
 use proptest::prelude::*;
@@ -157,7 +157,7 @@ proptest! {
         let (r2, e2) = rest.map_or((Decimal::ZERO, Decimal::ZERO), |p| (p.total_revenue, p.total_expenses));
         prop_assert_eq!(first.total_revenue + r2, whole.total_revenue);
         prop_assert_eq!(first.total_expenses + e2, whole.total_expenses);
-        let all = profit_and_loss(&ledger).unwrap();
+        let all = unclosed_earnings(&ledger).unwrap();
         prop_assert_eq!((whole.total_revenue, whole.total_expenses), (all.revenue, all.expenses));
     }
 

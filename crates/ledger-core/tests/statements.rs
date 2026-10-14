@@ -214,6 +214,7 @@ fn a_closed_period_still_reports_its_earnings() {
             end: d(1, 31),
             cash_accounts: vec![b.cash],
             financing_accounts: vec![],
+            investing_accounts: vec![],
         },
     )
     .unwrap();
@@ -249,6 +250,7 @@ fn cash_flow_lines_are_in_code_order() {
                 end: d(12, 31),
                 cash_accounts: vec![cash],
                 financing_accounts: vec![],
+                investing_accounts: vec![],
             },
         )
         .unwrap();
@@ -529,11 +531,17 @@ fn cash_flow_lines_name_their_account() {
             end: d(12, 31),
             cash_accounts: vec![1],
             financing_accounts: vec![],
+            investing_accounts: vec![],
         },
     )
     .unwrap();
     let accounts: Vec<Option<&str>> = cf.financing.iter().map(|f| f.account.as_deref()).collect();
-    assert_eq!(accounts, [Some("3000"), Some("3001")]);
+    // Gross (ASC 230-10-45-7): 3001 contributed and took a distribution,
+    // so it has a line for each.
+    assert_eq!(accounts, [Some("3000"), Some("3001"), Some("3001")]);
+    assert!(cf.financing[1].label.starts_with("Owner contributions"));
+    assert!(cf.financing[2].label.starts_with("Owner distributions"));
+    assert!(cf.financing[1].amount > Decimal::ZERO && cf.financing[2].amount < Decimal::ZERO);
 }
 
 #[test]
@@ -1006,6 +1014,7 @@ fn cf_params(start: NaiveDate, end: NaiveDate, cash: AccountId) -> CashFlowParam
         end,
         cash_accounts: vec![cash],
         financing_accounts: vec![],
+        investing_accounts: vec![],
     }
 }
 
@@ -1085,6 +1094,7 @@ fn cash_flow_labels_say_which_way_each_balance_moved() {
         end,
         cash_accounts: vec![cash],
         financing_accounts: vec![loan],
+        investing_accounts: vec![],
     };
 
     // February: net income 100 - 50 = 50; receivable up 100 (cash out),
@@ -1272,4 +1282,126 @@ fn distribution_accounts_reduce_capital_and_returns_reduce_distributions() {
         balance_sheet_as_of(&l, d(2, 28)).unwrap().total_equity
     );
     assert!(feb.members.iter().all(|m| m.other.is_zero()));
+}
+
+/// The cash flow fixture for financing and investing roles. Hand-computed:
+///
+/// | date   | entry                                  | Dr             | Cr             |
+/// |--------|----------------------------------------|----------------|----------------|
+/// | Mar 1  | bank loan 1,000                        | 1000 Cash      | 2500 Loan      |
+/// | Mar 5  | owner pays software 100 personally     | 6000 Software  | 2100 Due to owners |
+/// | Mar 10 | lend a member 500                      | 1400 Member loan | 1000 Cash    |
+/// | Mar 20 | repay 400 of the bank loan             | 2500 Loan      | 1000 Cash      |
+/// | Mar 25 | the member repays 200                  | 1000 Cash      | 1400 Member loan |
+/// | Mar 28 | reimburse the owner 100                | 2100 Due to owners | 1000 Cash  |
+///
+/// Cash: +1,000 - 500 - 400 + 200 - 100 = +200.
+fn roles() -> (Ledger, CashFlowParams) {
+    let mut l = Ledger::new(Currency::USD);
+    let mut add = |code: &str, t| l.add_account(code, code, t, None, false).unwrap();
+    let cash = add("1000", AccountType::Asset);
+    let member_loan = add("1400", AccountType::Asset);
+    let due_owners = add("2100", AccountType::Liability);
+    let loan = add("2500", AccountType::Liability);
+    let software = add("6000", AccountType::Expense);
+    post(&mut l, d(3, 1), "loan", cash, loan, 1000);
+    post(&mut l, d(3, 5), "software", software, due_owners, 100);
+    post(&mut l, d(3, 10), "lend", member_loan, cash, 500);
+    post(&mut l, d(3, 20), "repay", loan, cash, 400);
+    post(&mut l, d(3, 25), "collect", cash, member_loan, 200);
+    post(&mut l, d(3, 28), "reimburse", due_owners, cash, 100);
+    let params = CashFlowParams {
+        start: d(3, 1),
+        end: d(3, 31),
+        cash_accounts: vec![cash],
+        financing_accounts: vec![loan, due_owners],
+        investing_accounts: vec![member_loan],
+    };
+    (l, params)
+}
+
+fn lines(ls: &[ledger_core::reports::CashFlowLine]) -> Vec<(String, Decimal)> {
+    ls.iter()
+        .map(|l| (l.account.clone().unwrap_or_default(), l.amount))
+        .collect()
+}
+
+/// Oracle: ASC 230-10-45-7 ("information about the gross amounts of cash
+/// receipts and cash payments during a period is more relevant than
+/// information about the net amounts"), 230-10-45-14(2) (proceeds from
+/// "other short- or long-term borrowing") and 45-15(2) ("Repayments of
+/// amounts borrowed"): borrowing and repayment are separate lines.
+#[test]
+fn financing_is_gross_borrowing_apart_from_repayment() {
+    let (l, params) = roles();
+    let cf = cash_flow(&l, &params).unwrap();
+    assert_eq!(
+        lines(&cf.financing),
+        [
+            ("2100".into(), dec(100)),
+            ("2100".into(), dec(-100)),
+            ("2500".into(), dec(1000)),
+            ("2500".into(), dec(-400)),
+        ]
+    );
+    assert_eq!(cf.cash_from_financing, dec(600));
+}
+
+/// Oracle: ASC 230-10-20 ("Investing activities include making and
+/// collecting loans") and 230-10-45-13 ("Disbursements for loans made by
+/// the entity"): a loan to a member is investing, gross, not working
+/// capital.
+#[test]
+fn a_loan_the_entity_makes_is_investing_gross() {
+    let (l, params) = roles();
+    let cf = cash_flow(&l, &params).unwrap();
+    assert_eq!(
+        lines(&cf.investing),
+        [("1400".into(), dec(200)), ("1400".into(), dec(-500))]
+    );
+    assert!(cf.investing[0].label.starts_with("Collections on"));
+    assert!(cf.investing[1].label.starts_with("Payments for"));
+    assert!(
+        cf.working_capital
+            .iter()
+            .all(|w| w.account.as_deref() != Some("1400"))
+    );
+    assert_eq!(cf.cash_from_investing, dec(-300));
+}
+
+/// Oracle: PwC Viewpoint, Financial statement presentation 6.9.3.1
+/// (constructive receipts and disbursements: cash a third party pays on
+/// the entity's behalf is presented "as though the transaction took place
+/// through the bank accounts of the reporting entity"). The owner paying
+/// software personally is a borrowing (financing in) and an operating
+/// payment (in net income); reimbursing the owner is a repayment.
+/// Hand-computed: operating -100, investing -300, financing +600 = +200,
+/// the change in cash.
+#[test]
+fn an_expense_the_owner_paid_is_borrowing_then_operating() {
+    let (l, params) = roles();
+    let cf = cash_flow(&l, &params).unwrap();
+    assert_eq!(cf.net_income, dec(-100));
+    assert_eq!(cf.cash_from_operations, dec(-100));
+    assert_eq!(cf.net_change_in_cash, dec(200));
+    assert_eq!(
+        cf.cash_from_operations + cf.cash_from_investing + cf.cash_from_financing,
+        cf.net_change_in_cash
+    );
+}
+
+/// Gross lines net only within one entry: an entry that both debits and
+/// credits a financing account by the same amount moves no cash and adds
+/// no line.
+#[test]
+fn an_entry_that_nets_to_nothing_on_an_account_adds_no_line() {
+    let (mut l, params) = roles();
+    let loan = l.chart().find_by_code("2500").unwrap().id;
+    let e = l.create_entry(d(3, 30), "reclass within the loan");
+    l.add_line(e, loan, Side::Debit, usd(50)).unwrap();
+    l.add_line(e, loan, Side::Credit, usd(50)).unwrap();
+    l.post_entry(e).unwrap();
+    let cf = cash_flow(&l, &params).unwrap();
+    assert_eq!(cf.cash_from_financing, dec(600));
+    assert_eq!(cf.financing.len(), 4);
 }

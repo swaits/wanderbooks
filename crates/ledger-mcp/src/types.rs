@@ -621,13 +621,21 @@ pub struct CashFlowParams {
     pub start: Option<String>,
     /// Period end, YYYY-MM-DD. Defaults to today.
     pub end: Option<String>,
-    /// Account codes treated as cash (e.g. `["1000", "1010"]`). Required:
-    /// the statement reconciles to the net change in these accounts.
+    /// Account codes treated as cash (e.g. `["1000", "1010"]`): the
+    /// statement reconciles to the net change in these accounts. Defaults
+    /// to `[books] cash_accounts`; one or the other is required.
+    #[serde(default)]
     pub cash_accounts: Vec<String>,
-    /// Account codes for liabilities treated as financing (debt).
-    /// Defaults to empty: liabilities are operating working capital.
+    /// Account codes for liabilities treated as financing (loans, and what
+    /// owners advanced: ASC 230-10-45-14(2)). Defaults to `[books]
+    /// financing_accounts`, else empty (liabilities are working capital).
     #[serde(default)]
     pub financing_accounts: Vec<String>,
+    /// Asset account codes treated as investing for cash_flow: loans the
+    /// company makes, investments it buys (ASC 230-10-20). Defaults to
+    /// `[books] investing_accounts`.
+    #[serde(default)]
+    pub investing_accounts: Vec<String>,
 }
 
 /// One cash flow line.
@@ -1315,13 +1323,19 @@ pub struct ExportParams {
     pub end: Option<String>,
     /// As-of date for balance_sheet, YYYY-MM-DD.
     pub as_of: Option<String>,
-    /// Cash account codes for cash_flow (required for that report).
+    /// Cash account codes for cash_flow. Defaults to `[books]
+    /// cash_accounts`; one or the other is required for that report.
     #[serde(default)]
     pub cash_accounts: Vec<String>,
-    /// Liability account codes treated as financing (debt) for cash_flow.
-    /// Defaults to empty: liabilities are operating working capital.
+    /// Liability account codes treated as financing for cash_flow.
+    /// Defaults to `[books] financing_accounts`, else empty.
     #[serde(default)]
     pub financing_accounts: Vec<String>,
+    /// Asset account codes treated as investing for cash_flow: loans the
+    /// company makes, investments it buys (ASC 230-10-20). Defaults to
+    /// `[books] investing_accounts`.
+    #[serde(default)]
+    pub investing_accounts: Vec<String>,
 }
 
 /// Result of `books.export`.
@@ -1997,14 +2011,20 @@ pub struct ProfitAndLossByClassOut {
 pub struct ExportCpaPackageParams {
     /// As-of date, YYYY-MM-DD. Defaults to today.
     pub as_of: Option<String>,
-    /// Cash account codes the cash flow statement reconciles to (required),
-    /// e.g. `["1000"]`.
+    /// Cash account codes the cash flow statement reconciles to, e.g.
+    /// `["1000"]`. Defaults to `[books] cash_accounts`; one or the other
+    /// is required.
     #[serde(default)]
     pub cash_accounts: Vec<String>,
-    /// Liability account codes treated as financing (debt). Defaults to
-    /// empty: liabilities are operating working capital.
+    /// Liability account codes treated as financing. Defaults to `[books]
+    /// financing_accounts`, else empty.
     #[serde(default)]
     pub financing_accounts: Vec<String>,
+    /// Asset account codes treated as investing for cash_flow: loans the
+    /// company makes, investments it buys (ASC 230-10-20). Defaults to
+    /// `[books] investing_accounts`.
+    #[serde(default)]
+    pub investing_accounts: Vec<String>,
     /// Include every receipt for the year's entries and the company's
     /// documents (default true).
     #[serde(default = "default_true")]

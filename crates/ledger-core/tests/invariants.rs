@@ -724,6 +724,7 @@ fn cash_flow_params(cash: AccountId) -> CashFlowParams {
         end: date(31),
         cash_accounts: vec![cash],
         financing_accounts: vec![],
+        investing_accounts: vec![],
     }
 }
 

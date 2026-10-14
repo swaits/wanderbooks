@@ -97,6 +97,14 @@ pub struct BooksSettings {
     /// savings, cash on hand), for cash reports and dashboards. Empty:
     /// callers decide (e.g. by account name).
     pub cash_accounts: Vec<String>,
+    /// `[books] financing_accounts`: liability account codes the cash flow
+    /// statement treats as financing (loans, and what owners advanced:
+    /// ASC 230-10-45-14(2)). Empty: callers decide.
+    pub financing_accounts: Vec<String>,
+    /// `[books] investing_accounts`: asset account codes the cash flow
+    /// statement treats as investing (loans the company makes, investments
+    /// it buys: ASC 230-10-20). Registered fixed assets need not be listed.
+    pub investing_accounts: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -134,6 +142,10 @@ struct BooksSection {
     close_sweep: Vec<String>,
     #[serde(default)]
     cash_accounts: Vec<String>,
+    #[serde(default)]
+    financing_accounts: Vec<String>,
+    #[serde(default)]
+    investing_accounts: Vec<String>,
 }
 
 /// The return a federal tax classification files: "partnership" → 1065,
@@ -269,6 +281,8 @@ pub fn parse(text: &str) -> Result<BooksSettings, String> {
         company,
         receipt_threshold,
         cash_accounts: raw.books.cash_accounts,
+        financing_accounts: raw.books.financing_accounts,
+        investing_accounts: raw.books.investing_accounts,
     })
 }
 
@@ -337,7 +351,7 @@ mod tests {
     #[test]
     fn keeps_the_whole_profile_in_order() {
         let s = parse(
-            "[company]\nname = \"Acme LLC\"\nein = \"12-3456789\"\nformed = \"2026-10-04\"\n[books]\ncash_accounts = [\"1000\", \"1010\"]\n",
+            "[company]\nname = \"Acme LLC\"\nein = \"12-3456789\"\nformed = \"2026-10-04\"\n[books]\ncash_accounts = [\"1000\", \"1010\"]\nfinancing_accounts = [\"2100\"]\ninvesting_accounts = [\"1400\"]\n",
         )
         .unwrap();
         assert_eq!(
@@ -349,6 +363,8 @@ mod tests {
             ]
         );
         assert_eq!(s.cash_accounts, ["1000", "1010"]);
+        assert_eq!(s.financing_accounts, ["2100"]);
+        assert_eq!(s.investing_accounts, ["1400"]);
     }
 
     #[test]

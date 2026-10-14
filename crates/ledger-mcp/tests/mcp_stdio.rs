@@ -1707,3 +1707,79 @@ fn a_restarted_server_waits_for_the_old_one_to_let_go() {
     let chart = new.call("books.chart", json!({}));
     assert!(chart.is_object());
 }
+
+/// `books.cash_flow` with no accounts passed reads the roles from
+/// `[books]` in wanderbooks.toml (rules.md B-14): the owners' advance is
+/// financing, gross; a loan to a member is investing.
+#[test]
+fn cash_flow_reads_its_account_roles_from_the_books_settings() {
+    let dir = test_dir("cash-roles");
+    let toml = dir.join("wanderbooks.toml");
+    std::fs::write(
+        &toml,
+        "[books]\nreceipt_threshold = \"1000000.00\"\ncash_accounts = [\"1000\"]\nfinancing_accounts = [\"2100\"]\ninvesting_accounts = [\"1400\"]\n",
+    )
+    .unwrap();
+    let mut mcp = Mcp::spawn_with(
+        &dir.join("books-data"),
+        &[std::ffi::OsStr::new("--books-toml"), toml.as_os_str()],
+    );
+    mcp.request(
+        "initialize",
+        json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+        }),
+    );
+    mcp.notify("notifications/initialized");
+    for (code, name, typ) in [
+        ("1000", "Bank", "asset"),
+        ("1400", "Loan to member", "asset"),
+        ("2100", "Due to owners", "liability"),
+        ("3000", "Capital", "equity"),
+        ("6000", "Software", "expense"),
+    ] {
+        mcp.call(
+            "books.add_account",
+            json!({"code": code, "name": name, "account_type": typ}),
+        );
+    }
+    let mut post = |date: &str, dr: &str, cr: &str, amount: &str| {
+        let e = mcp.call(
+            "books.draft_entry",
+            json!({"date": date, "description": "test"}),
+        );
+        let id = e["entry_id"].as_u64().unwrap();
+        for (account, side) in [(dr, "debit"), (cr, "credit")] {
+            mcp.call(
+                "books.add_line",
+                json!({"entry_id": id, "account": account, "side": side, "amount": amount}),
+            );
+        }
+        mcp.call(
+            "books.post_entry",
+            json!({"entry_id": id, "confirmed": true}),
+        );
+    };
+    post("2026-03-01", "1000", "3000", "1000.00");
+    post("2026-03-05", "6000", "2100", "100.00");
+    post("2026-03-10", "1400", "1000", "500.00");
+    post("2026-03-28", "2100", "1000", "100.00");
+    let cf = mcp.call(
+        "books.cash_flow",
+        json!({"start": "2026-03-01", "end": "2026-03-31"}),
+    );
+    let amounts = |section: &str| -> Vec<String> {
+        cf[section]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| l["amount"].as_str().unwrap().to_string())
+            .collect()
+    };
+    // Financing, gross and sorted by code: 2100 in and out, then capital.
+    assert_eq!(amounts("financing"), ["100.00", "-100.00", "1000.00"]);
+    assert_eq!(amounts("investing"), ["-500.00"]);
+    assert_eq!(cf["net_change_in_cash"], "400.00");
+}

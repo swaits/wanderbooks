@@ -1328,6 +1328,7 @@ fn cf_transfer_between_cash_accounts_is_not_a_flow() {
             end: d(2026, 2, 28),
             cash_accounts: vec![cash, ar],
             financing_accounts: vec![],
+            investing_accounts: vec![],
         },
     )
     .unwrap();
@@ -1416,6 +1417,7 @@ fn cf_hand_computed_with_designated_debt() {
         end: d(2026, 2, 28),
         cash_accounts: vec![co.cash],
         financing_accounts: vec![co.loan],
+        investing_accounts: vec![],
     };
     let cf = cash_flow(&co.l, &params).unwrap();
     assert_eq!(cf.start, d(2026, 2, 1));
@@ -1445,6 +1447,7 @@ fn cf_undesignated_liability_is_working_capital() {
         end: d(2026, 2, 28),
         cash_accounts: vec![co.cash],
         financing_accounts: vec![],
+        investing_accounts: vec![],
     };
     let cf = cash_flow(&co.l, &params).unwrap();
     assert_eq!(cf.cash_from_operations, c(48000));
@@ -1463,6 +1466,7 @@ fn cf_never_counts_closing_entries() {
         end: d(2026, 2, 28),
         cash_accounts: vec![co.cash],
         financing_accounts: vec![co.loan],
+        investing_accounts: vec![],
     };
     let before = cash_flow(&co.l, &params).unwrap();
     let p1 =
@@ -1544,6 +1548,7 @@ fn cf_fixed_asset_purchase_depreciation_and_disposal() {
             end: d(2026, 2, 28),
             cash_accounts: vec![cash],
             financing_accounts: vec![],
+            investing_accounts: vec![],
         },
     )
     .unwrap();
@@ -1561,6 +1566,7 @@ fn cf_fixed_asset_purchase_depreciation_and_disposal() {
             end: d(2026, 3, 31),
             cash_accounts: vec![cash],
             financing_accounts: vec![],
+            investing_accounts: vec![],
         },
     )
     .unwrap();
@@ -1991,7 +1997,7 @@ proptest! {
     fn prop_drafts_change_no_report(gens in arb_books(), drafts in prop::collection::vec(arb_gen(), 1..5), (a, _m, e) in three_days()) {
         let mut b = build(&gens);
         let (s0, e0) = (day(a), day(e));
-        let cfp = CashFlowParams { start: s0, end: e0, cash_accounts: vec![b.ids[CASH]], financing_accounts: vec![] };
+        let cfp = CashFlowParams { start: s0, end: e0, cash_accounts: vec![b.ids[CASH]], financing_accounts: vec![], investing_accounts: vec![] };
         let tb = tb_lines(&trial_balance_as_of(&b.l, e0));
         let pl = pnl_key(&profit_and_loss_for_period(&b.l, s0, e0, None).unwrap());
         let bs = bs_key(&balance_sheet_as_of(&b.l, e0).unwrap());
@@ -2429,6 +2435,7 @@ proptest! {
             end: day(e),
             cash_accounts: vec![b.ids[CASH]],
             financing_accounts: if designate { vec![b.ids[LOAN]] } else { vec![] },
+            investing_accounts: vec![],
         };
         let cf = cash_flow(&b.l, &params).unwrap();
         prop_assert_eq!(cf.cash_from_operations + cf.cash_from_investing + cf.cash_from_financing, cf.net_change_in_cash);
@@ -2457,6 +2464,7 @@ proptest! {
             end: day(e),
             cash_accounts: vec![b.ids[CASH]],
             financing_accounts: if designate { vec![b.ids[LOAN]] } else { vec![] },
+            investing_accounts: vec![],
         };
         let cf = cash_flow(&b.l, &params).unwrap();
         let m = model(&gens, day(a), day(e), None);
@@ -2473,7 +2481,7 @@ proptest! {
         let open = build(&gens);
         let mut closed = build(&gens);
         close_through(&mut closed, Some(month), &re_close());
-        let p = |b: &Books| CashFlowParams { start: day(a), end: day(e), cash_accounts: vec![b.ids[CASH]], financing_accounts: vec![b.ids[LOAN]] };
+        let p = |b: &Books| CashFlowParams { start: day(a), end: day(e), cash_accounts: vec![b.ids[CASH]], financing_accounts: vec![b.ids[LOAN]], investing_accounts: vec![] };
         let x = cash_flow(&open.l, &p(&open)).unwrap();
         let y = cash_flow(&closed.l, &p(&closed)).unwrap();
         prop_assert_eq!(x.net_income, y.net_income);
@@ -2490,7 +2498,7 @@ proptest! {
         let kk = Decimal::from(k);
         let one = build(&gens);
         let many = build_scaled(&gens, k);
-        let p = |b: &Books| CashFlowParams { start: day(a), end: day(e), cash_accounts: vec![b.ids[CASH]], financing_accounts: vec![] };
+        let p = |b: &Books| CashFlowParams { start: day(a), end: day(e), cash_accounts: vec![b.ids[CASH]], financing_accounts: vec![], investing_accounts: vec![] };
         let x = cash_flow(&one.l, &p(&one)).unwrap();
         let y = cash_flow(&many.l, &p(&many)).unwrap();
         prop_assert_eq!(y.net_income, x.net_income * kk);

@@ -602,7 +602,8 @@ impl Store {
         side: Side,
         amount: Money,
     ) -> Result<(), StoreError> {
-        self.ledger.add_line(entry, account, side, amount)?;
+        let mut next = self.ledger.clone();
+        next.add_line(entry, account, side, amount)?;
         let line = self.append_journal(
             "entry.line_added",
             json!({
@@ -616,6 +617,7 @@ impl Store {
                 "currency": amount.currency.code(),
             }),
         )?;
+        self.ledger = next;
         apply_line_to_sqlite(&self.conn, &line)?;
         Ok(())
     }
@@ -1128,20 +1130,20 @@ impl Store {
         id: PeriodId,
         to: &CloseTo,
     ) -> Result<Option<EntryId>, StoreError> {
-        // Pure pre-validation: a doomed close journals nothing, not even
-        // the Retained Earnings account creation below.
-        self.ledger.preview_close_period_to(id, to)?;
+        // Rehearsed whole: a doomed close journals nothing, not even the
+        // Retained Earnings account creation below.
+        self.rehearse(|l| l.close_period_to(id, to))?;
         if matches!(to, CloseTo::RetainedEarnings { .. }) {
             // Retained Earnings must exist before the close so its creation
             // (if needed) is journaled as account.added; the close's own
             // ensure then no-ops and replay stays deterministic.
             self.ensure_control_account(&ledger_core::RETAINED_EARNINGS)?;
         }
-        let closing_entry = self.ledger.close_period_to(id, to)?;
+        let mut next = self.ledger.clone();
+        let closing_entry = next.close_period_to(id, to)?;
         let entry_detail = match closing_entry {
             Some(eid) => {
-                let e = self
-                    .ledger
+                let e = next
                     .get_entry(eid)
                     .expect("close just posted the closing entry");
                 Some(json!({
@@ -1190,6 +1192,7 @@ impl Store {
                 "entry": entry_detail,
             }),
         )?;
+        self.ledger = next;
         apply_line_to_sqlite(&self.conn, &line)?;
         Ok(closing_entry)
     }
@@ -1206,7 +1209,8 @@ impl Store {
         line_index: usize,
         cleared: bool,
     ) -> Result<(), StoreError> {
-        self.ledger.mark_cleared(entry_id, line_index, cleared)?;
+        let mut next = self.ledger.clone();
+        next.mark_cleared(entry_id, line_index, cleared)?;
         let line = self.append_journal(
             "line.cleared",
             json!({
@@ -1215,6 +1219,7 @@ impl Store {
                 "cleared": cleared,
             }),
         )?;
+        self.ledger = next;
         apply_line_to_sqlite(&self.conn, &line)?;
         Ok(())
     }
@@ -1587,7 +1592,8 @@ impl Store {
         date: NaiveDate,
         rate: Decimal,
     ) -> Result<(), StoreError> {
-        self.ledger.set_fx_rate(currency, date, rate)?;
+        let mut next = self.ledger.clone();
+        next.set_fx_rate(currency, date, rate)?;
         let line = self.append_journal(
             "fx.rate_set",
             json!({
@@ -1596,6 +1602,7 @@ impl Store {
                 "rate": rate.to_string(),
             }),
         )?;
+        self.ledger = next;
         apply_line_to_sqlite(&self.conn, &line)?;
         Ok(())
     }
@@ -1613,7 +1620,8 @@ impl Store {
         foreign_amount: Decimal,
         fx_rate: Decimal,
     ) -> Result<(), StoreError> {
-        self.ledger.add_line_fx(
+        let mut next = self.ledger.clone();
+        next.add_line_fx(
             entry_id,
             account,
             side,
@@ -1623,8 +1631,7 @@ impl Store {
         )?;
         // Read back the stored base amount rather than recomputing it: the
         // journal must carry exactly what the ledger holds.
-        let stored = self
-            .ledger
+        let stored = next
             .get_entry(entry_id)
             .expect("entry exists after add_line_fx")
             .lines()
@@ -1647,6 +1654,7 @@ impl Store {
                 "fx_rate": fx_rate.to_string(),
             }),
         )?;
+        self.ledger = next;
         apply_line_to_sqlite(&self.conn, &line)?;
         Ok(())
     }
@@ -2032,20 +2040,21 @@ impl Store {
         id: ledger_core::ScheduleId,
         month_end: NaiveDate,
     ) -> Result<EntryId, StoreError> {
-        // Pure pre-validation, so the mutation below cannot fail.
+        // On a copy first: the posting can still be refused after the
+        // preview (an amount out of range, found by the refusal property,
+        // 2026-10-13), and a refusal must leave the live books untouched.
         let (date, _, _) = self.ledger.preview_schedule_month(id, month_end)?;
-        if let Some(p) = self.ledger.closed_period_containing(date) {
-            return Err(LedgerError::ClosedPeriod(p, date.to_string()).into());
-        }
-        let entry = self.ledger.post_schedule_month(id, month_end)?;
+        let mut next = self.ledger.clone();
+        let entry = next.post_schedule_month(id, month_end)?;
         let line = self.append_journal(
             "schedule.posted",
             json!({
                 "schedule_id": id,
                 "month": date.to_string(),
-                "entry": entry_detail_json(&self.ledger, entry),
+                "entry": entry_detail_json(&next, entry),
             }),
         )?;
+        self.ledger = next;
         apply_line_to_sqlite(&self.conn, &line)?;
         Ok(entry)
     }
@@ -2302,8 +2311,8 @@ impl Store {
         Ok(entry_id)
     }
 
-    /// Withdraw a receipt or document, recording why: it drops out of
-    /// listings and can never be linked again. Nothing is deleted: the bytes
+    /// Withdraw a receipt or document, recording why: it is marked withdrawn
+    /// (active listings omit it) and can never be linked again. Nothing is deleted: the bytes
     /// stay in the blob store and the journal keeps the filing and the
     /// withdrawal. A linked receipt must be unlinked first.
     ///
@@ -2315,8 +2324,9 @@ impl Store {
     ///   1. IF the attachment is unknown or already withdrawn: SHOULD refuse.
     ///   2. IF it is linked to an entry: SHOULD refuse (AttachmentLinked).
     ///   3. IF the reason is blank: SHOULD refuse.
-    ///   4. Otherwise: SHOULD journal `attachment.withdrawn`; listings omit
-    ///      it; its bytes still verify and read.
+    ///   4. Otherwise: SHOULD journal `attachment.withdrawn`; the store's
+    ///      listing marks it withdrawn with the reason (the MCP listing
+    ///      hides it unless asked); its bytes still verify and read.
     /// ```
     pub fn withdraw_attachment(
         &mut self,
@@ -3252,7 +3262,7 @@ pub(crate) fn replay_line_into_ledger(
         }
         "schedule.registered" => {
             let want = get_u64(p, "id")?;
-            let got = ledger.register_schedule(ledger_core::NewSchedule {
+            let got = ledger.replay_register_schedule(ledger_core::NewSchedule {
                 description: get_str(p, "description")?.to_string(),
                 kind: serde_json::from_value(p["kind"].clone())?,
                 total: parse_money(p, "total")?,
@@ -3840,7 +3850,7 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
                 ],
             )?;
             conn.execute(
-                "INSERT INTO attachments(id, blob_sha, entry_id, category, description, created_at) VALUES (?,?,?,?,?,?)",
+                "INSERT INTO attachments(id, blob_sha, entry_id, category, description, created_at, file_name, mime_type) VALUES (?,?,?,?,?,?,?,?)",
                 params![
                     get_u64(p, "attachment_id")? as i64,
                     get_str(p, "blob_sha")?,
@@ -3848,6 +3858,8 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
                     get_str(p, "category")?,
                     p.get("description").and_then(|v| v.as_str()),
                     line.ts,
+                    get_str(p, "file_name")?,
+                    get_str(p, "mime_type")?,
                 ],
             )?;
         }
@@ -4252,7 +4264,8 @@ pub(crate) fn query_attachments(
     entry_id: Option<EntryId>,
 ) -> Result<Vec<Attachment>, StoreError> {
     let mut sql = String::from(
-        "SELECT a.id, a.blob_sha, a.entry_id, a.category, b.original_name, b.mime_type, \
+        "SELECT a.id, a.blob_sha, a.entry_id, a.category, \
+         COALESCE(a.file_name, b.original_name), COALESCE(a.mime_type, b.mime_type), \
          b.size_bytes, a.description, a.created_at, a.withdrawn_at, a.withdrawn_reason \
          FROM attachments a \
          JOIN blobs b ON b.sha256 = a.blob_sha",

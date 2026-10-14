@@ -5,7 +5,7 @@
 //! is the current version.
 
 /// Current schema version.
-pub const SCHEMA_VERSION: u32 = 7;
+pub const SCHEMA_VERSION: u32 = 8;
 
 /// Migrations, in order. `MIGRATIONS[i]` migrates from version `i` to `i+1`.
 pub const MIGRATIONS: &[&str] = &[
@@ -195,5 +195,17 @@ CREATE TABLE IF NOT EXISTS entry_vendors(
   entry_id INTEGER PRIMARY KEY,
   vendor_id INTEGER NOT NULL
 );
+"#,
+    r#"
+-- v8: each filing keeps its own file name and type. Before, they came from
+-- the blob, so filing the same bytes again under another name listed the
+-- first name (found by the spec-blind store suite, 2026-10-13). Existing
+-- rows take the blob's; a database whose filings differed then fails
+-- verify's table check and is rebuilt from the journal.
+ALTER TABLE attachments ADD COLUMN file_name TEXT;
+ALTER TABLE attachments ADD COLUMN mime_type TEXT;
+UPDATE attachments SET
+  file_name = (SELECT original_name FROM blobs WHERE sha256 = attachments.blob_sha),
+  mime_type = (SELECT mime_type FROM blobs WHERE sha256 = attachments.blob_sha);
 "#,
 ];

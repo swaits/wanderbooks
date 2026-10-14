@@ -57,3 +57,10 @@ path = "fuzz_targets/fuzz_store_open.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_store_replay"
+path = "fuzz_targets/fuzz_store_replay.rs"
+test = false
+doc = false
+bench = false

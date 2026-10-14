@@ -112,6 +112,22 @@ pub fn amortization_plan(
 
 /// Validate a new schedule against the chart.
 pub fn validate_schedule(new: &NewSchedule, chart: &ChartOfAccounts) -> Result<(), LedgerError> {
+    validate_schedule_shape(new, chart)?;
+    // Every month's posting derives from the total: one no line could
+    // carry, or finer than a cent, is refused here, not at a month end
+    // (found by the store's refusal property, 2026-10-13).
+    if new.total.amount > crate::kernel::MAX_LINE_AMOUNT {
+        return Err(LedgerError::AmountOutOfRange);
+    }
+    crate::ledger::check_minor_units(new.total)
+}
+
+/// [`validate_schedule`] without the total's range and minor-unit checks
+/// added on 2026-10-13, for replaying journals written before them.
+pub fn validate_schedule_shape(
+    new: &NewSchedule,
+    chart: &ChartOfAccounts,
+) -> Result<(), LedgerError> {
     let bad = |m: String| Err(LedgerError::InvalidSchedule(m));
     if new.description.trim().is_empty() {
         return bad("description is required".into());

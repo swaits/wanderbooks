@@ -284,8 +284,10 @@ impl Store {
     ///   4. IF a complete line fails its hash, parse, or `seq`: SHOULD refuse
     ///      - NEVER repair or skip it (that is corruption, for a human).
     ///   5. IF the database is missing: SHOULD rebuild it from the journal.
-    ///   6. IF the database fails SQLite's integrity check: SHOULD keep it
-    ///      aside for forensics and rebuild from the journal.
+    ///   6. IF the database fails SQLite's integrity check, or records a
+    ///      base currency other than the journal's: SHOULD keep it aside
+    ///      for forensics and rebuild from the journal
+    ///      BECAUSE the database is derived; the journal is the record.
     ///   7. IF the database is behind the journal: SHOULD apply the rest.
     /// ```
     pub fn open(data_dir: &Path) -> Result<Self, StoreError> {
@@ -300,11 +302,28 @@ impl Store {
         // Single verified scan; the writer reuses it.
         let lines = read_and_verify_journal(&journal_path)?;
         let journal = JournalWriter::from_lines(&journal_path, &lines)?;
+        // The base currency comes from the journal, the source of truth; a
+        // journal without a sound store.created line is corrupt.
+        let base_currency = journal_currency(&lines)?;
         let db_path = data_dir.join(DB_FILE);
         let mut fresh_db = !db_path.exists();
-        if !fresh_db && !Self::db_file_healthy(&db_path) {
-            // The projection is corrupt. The journal is the source of truth,
-            // so quarantine the damaged file (for forensics) and rebuild.
+        let damage = if fresh_db {
+            None
+        } else if !Self::db_file_healthy(&db_path) {
+            Some("failed integrity_check".to_string())
+        } else {
+            match Self::db_currency(&db_path) {
+                Some(c) if c == base_currency => None,
+                other => Some(format!(
+                    "says base currency {}, the journal {}",
+                    other.map_or("(none)".to_string(), |c| c.code().to_string()),
+                    base_currency.code()
+                )),
+            }
+        };
+        if let Some(why) = damage {
+            // The projection is wrong. The journal is the source of truth,
+            // so quarantine the database (for forensics) and rebuild.
             let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
             let quarantine = db_path.with_extension(format!("corrupt.{stamp}"));
             std::fs::rename(&db_path, &quarantine).map_err(StoreError::Io)?;
@@ -313,47 +332,17 @@ impl Store {
             let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
             let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
             eprintln!(
-                "wanderbooks: sqlite projection failed integrity_check; quarantined to {} and rebuilding from journal",
+                "wanderbooks: sqlite projection {why}; quarantined to {} and rebuilding from journal",
                 quarantine.display()
             );
             fresh_db = true;
         }
         let conn = Self::open_conn(&db_path)?;
         Self::migrate(&conn)?;
-        let base_currency = if fresh_db {
-            // Heal from the journal: currency comes from store.created.
-            let first = lines.first().ok_or_else(|| {
-                StoreError::JournalCorrupt("journal has no store.created line".into())
-            })?;
-            if first.line_type != "store.created" {
-                return Err(StoreError::JournalCorrupt(
-                    "journal's first line is not store.created".into(),
-                ));
-            }
-            let code = first.payload["base_currency"].as_str().ok_or_else(|| {
-                StoreError::JournalCorrupt("store.created without base_currency".into())
-            })?;
-            let cur = Currency::new(code)
-                .map_err(|_| StoreError::JournalCorrupt(format!("bad currency {code}")))?;
-            Self::write_meta(&conn, "base_currency", cur.code())?;
+        if fresh_db {
+            Self::write_meta(&conn, "base_currency", base_currency.code())?;
             Self::write_meta(&conn, "last_applied_seq", "0")?;
-            cur
-        } else {
-            let cur = Self::read_currency(&conn)?;
-            // Cross-check the projection against the journal.
-            if let Some(first) = lines.first()
-                && first.line_type == "store.created"
-            {
-                let jc = first.payload["base_currency"].as_str().unwrap_or("");
-                if jc != cur.code() {
-                    return Err(StoreError::JournalCorrupt(format!(
-                        "base currency mismatch: journal says {jc}, sqlite says {}",
-                        cur.code()
-                    )));
-                }
-            }
-            cur
-        };
+        }
         let mut store = Self {
             _lock: lock,
             data_dir: data_dir.to_path_buf(),
@@ -383,6 +372,20 @@ impl Store {
             );
         }
         Ok(store)
+    }
+
+    /// The base currency an existing database records, if it can say.
+    fn db_currency(db_path: &Path) -> Option<Currency> {
+        let conn = Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .ok()?;
+        let code: String = conn
+            .query_row(
+                "SELECT value FROM meta WHERE key='base_currency'",
+                [],
+                |r| r.get(0),
+            )
+            .ok()?;
+        Currency::new(&code).ok()
     }
 
     fn open_conn(db_path: &Path) -> Result<Connection, StoreError> {
@@ -443,16 +446,6 @@ impl Store {
             params![key, value],
         )?;
         Ok(())
-    }
-
-    fn read_currency(conn: &Connection) -> Result<Currency, StoreError> {
-        let code: String = conn.query_row(
-            "SELECT value FROM meta WHERE key='base_currency'",
-            [],
-            |r| r.get(0),
-        )?;
-        Currency::new(&code)
-            .map_err(|_| StoreError::JournalCorrupt(format!("bad base_currency in meta: {code}")))
     }
 
     /// Replay the journal: hydrate the in-memory ledger fully, and apply to
@@ -4269,4 +4262,21 @@ fn row_to_attachment(r: &rusqlite::Row) -> rusqlite::Result<Attachment> {
         withdrawn_at: r.get(9)?,
         withdrawn_reason: r.get(10)?,
     })
+}
+
+/// The base currency of the books, from the journal's first line, which
+/// must be `store.created`.
+fn journal_currency(lines: &[JournalLine]) -> Result<Currency, StoreError> {
+    let first = lines
+        .first()
+        .ok_or_else(|| StoreError::JournalCorrupt("journal has no store.created line".into()))?;
+    if first.line_type != "store.created" {
+        return Err(StoreError::JournalCorrupt(
+            "journal's first line is not store.created".into(),
+        ));
+    }
+    let code = first.payload["base_currency"]
+        .as_str()
+        .ok_or_else(|| StoreError::JournalCorrupt("store.created without base_currency".into()))?;
+    Currency::new(code).map_err(|_| StoreError::JournalCorrupt(format!("bad currency {code}")))
 }

@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 32fa871fdd86d0ed0796633bcaab87af1143b4541818db7017872dd006fee657 # shrinks to (specs, oe, end_off) = ([EntrySpec { day: 0, accts: [7, 14], k: 1, debits: [100, 100, 100], seeds: [0, 6482613244230351999, 7089996084298427956], memo: "6—#" }], false, 156)

@@ -98,6 +98,19 @@ fn typeset(st: &Statement, meta: &ReportMeta) -> Result<PagedDocument, PdfError>
 }
 
 /// Render a laid-out statement (see [`crate::report`]) as a PDF.
+///
+/// ```text
+/// GOAL: a statement a CPA can print and file.
+/// SOURCE: CONVENTION (layout); docs/spec/sources/irs-records.md (records
+///         "capable of being processed", reproducible).
+/// INVARIANTS:
+///   1. Deterministic: the same statement and metadata render to the same
+///      bytes.
+///   2. Every label is data, never markup: a name holding Typst syntax
+///      ("#panic()", "*", "$", "[") prints as text and NEVER runs.
+///   3. Every row reaches the page: template_data carries each row's label,
+///      kind, and amounts split by amount_parts, in order.
+/// ```
 pub fn statement_pdf(st: &Statement, meta: &ReportMeta) -> Result<Vec<u8>, PdfError> {
     let doc = typeset(st, meta)?;
     typst_pdf::pdf(&doc, &typst_pdf::PdfOptions::default())

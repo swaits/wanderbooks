@@ -4,7 +4,8 @@ How wanderbooks knows its books are right. Strongest oracle first: a
 test's worth is where its idea of "correct" comes from, not what it runs.
 Formal proofs are in `docs/verification.md`; the authorities every rule
 comes from are in `docs/spec/`. Scope so far: `ledger-core` in full, and
-the store's journal safety; the other crates come next (gap list).
+the store in full; the import crate in progress; MCP, config, and GUI
+next (gap list).
 
 ## Layers
 
@@ -110,4 +111,5 @@ B-14) are the first.
 | Lean: apportion's sum law for any n | OPEN | Kani covers n <= 3, properties n <= 5; needs a permutation lemma |
 | ASC paragraphs not yet read | OPEN | ASC 360-10-35-4, 340-10, 230-10-45-10, 606-10-55-37B, 210: needs a FASB basic-view login |
 | GnuCash's own close | OPEN | the oracle books closes as ordinary entries; comparing GnuCash's Close Book needs its Scheme API |
-| Store: differential replay vs. projection, concurrency (writer + snapshot reader), benchmarks at 10k, mutation | NEXT | then import, MCP, config, GUI, the same playbook |
+| Import: spec-blind suite, footing properties, mutation | IN PROGRESS | sources vendored (Intuit bank CSV and IIF, ECMA-376/Excel numbers, IRS form lines); fuzz_import_csv; templates checked against the engine's control accounts |
+| MCP, config, GUI crates | NEXT | the same playbook |

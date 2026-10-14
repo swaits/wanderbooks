@@ -823,8 +823,17 @@ pub struct MembersEquityStatement {
 ///   1. Each row MUST roll forward exactly: beginning + contributions +
 ///      income - distributions + other = ending.
 ///   2. The total ending MUST equal balance-sheet equity at `end`.
-///   3. Unclosed earnings and the period's income MUST be split by share,
-///      to the cent, by largest remainder (DECISION, owner 2026-10-13).
+///   3. Undistributed earnings MUST be split by share, to the cent, by
+///      largest remainder (DECISION, owner 2026-10-13), cumulatively as
+///      of each date: a member's beginning is their capital and share as
+///      of the day before `start`, their ending as of `end`.
+///   3a. A member's ending on one statement MUST equal their beginning on
+///      the next, exactly (a capital account is one running balance: Form
+///      1065 Schedule K-1 instructions, Item L, "beginning capital account
+///      and ending capital account ... based on the partnership's books").
+///   3b. A member's income is the roll-forward's remainder: their share of
+///      the period's income within a rounding cent; the members' incomes
+///      MUST sum to the period's net income.
 ///   4. NEVER hide an unexplained change: it goes in "other".
 ///   5. An entry dated `start` is period activity, not beginning capital.
 /// SCENARIOS:
@@ -924,10 +933,39 @@ pub fn members_equity(
         .collect();
 
     // Everything in equity that isn't a capital account is partnership
-    // earnings not yet distributed: allocate it by share.
-    let undistributed = begin_bs.total_equity - capital.iter().sum::<Decimal>();
-    let begin_alloc = allocate(undistributed, &shares);
-    let income_alloc = allocate(pnl.net_income(), &shares);
+    // earnings not yet distributed. Each member's share of it is allocated
+    // cumulatively, as of a date, so a member's capital on a date never
+    // depends on which statement shows it: one statement's ending is the
+    // next one's beginning, to the cent (a capital account is one running
+    // balance: Form 1065 Schedule K-1 instructions, Item L).
+    let capital_through = |id: crate::AccountId, through: NaiveDate| -> Decimal {
+        let mut m = Decimal::ZERO;
+        for e in ledger.posted_entries().filter(|e| e.date() <= through) {
+            for l in e.lines().iter().filter(|l| l.account == id) {
+                match l.side {
+                    crate::Side::Credit => m += l.amount.amount,
+                    crate::Side::Debit => m -= l.amount.amount,
+                }
+            }
+        }
+        m
+    };
+    let capital_end: Vec<Decimal> = members
+        .iter()
+        .map(|m| {
+            capital_through(m.capital_account, end)
+                + m.distribution_account
+                    .map_or(Decimal::ZERO, |d| capital_through(d, end))
+        })
+        .collect();
+    let begin_alloc = allocate(
+        begin_bs.total_equity - capital.iter().sum::<Decimal>(),
+        &shares,
+    );
+    let end_alloc = allocate(
+        end_bs.total_equity - capital_end.iter().sum::<Decimal>(),
+        &shares,
+    );
     let explained = flow.iter().map(|(c, d)| c - d).sum::<Decimal>() + pnl.net_income();
     let other_alloc = allocate(
         end_bs.total_equity - begin_bs.total_equity - explained,
@@ -937,13 +975,17 @@ pub fn members_equity(
     let mut cols = Vec::with_capacity(members.len());
     for (i, m) in members.iter().enumerate() {
         let beginning = capital[i] + begin_alloc[i];
+        let ending = capital_end[i] + end_alloc[i];
         let (contributions, distributions) = flow[i];
-        let ending = beginning + contributions - distributions + income_alloc[i] + other_alloc[i];
+        // The member's income is what the roll-forward leaves: their share
+        // of the period's income, give or take the rounding cent that keeps
+        // the running balance exact. The members' incomes sum to net income.
+        let income = ending - beginning - contributions + distributions - other_alloc[i];
         cols.push(MemberEquityColumn {
             name: m.name.clone(),
             beginning: zero_clean(beginning),
             contributions,
-            net_income: zero_clean(income_alloc[i]),
+            net_income: zero_clean(income),
             distributions,
             other: zero_clean(other_alloc[i]),
             ending: zero_clean(ending),

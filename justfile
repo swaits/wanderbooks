@@ -60,35 +60,44 @@ fuzz target="fuzz_op_sequence" seconds="300":
 miri:
     PROPTEST_CASES=4 MIRIFLAGS="-Zmiri-disable-isolation" cargo +nightly-2026-10-01 miri test -p ledger-core --lib --test kernel_bridge --test invariants
 
+# Where cargo-mutants copies and builds the tree for each mutant (several
+# GB per job): the user's cache on disk, never /tmp, which is often RAM.
+mutants_tmp := env_var_or_default("XDG_CACHE_HOME", env_var("HOME") + "/.cache") + "/wanderbooks/mutants"
+
 # Mutation testing of the core: do the tests catch planted bugs?
 mutants:
     # Core and store tests (the store's replay tests reach Ledger::replay_*);
     # the whole workspace would rebuild the viewer for every mutant.
-    cargo mutants -p ledger-core --exclude crates/ledger-core/src/proofs.rs --test-package ledger-core --test-package ledger-store -j 4 --timeout 120
+    mkdir -p {{mutants_tmp}}
+    TMPDIR={{mutants_tmp}} cargo mutants -p ledger-core --exclude crates/ledger-core/src/proofs.rs --test-package ledger-core --test-package ledger-store -j 4 --timeout 120
 
 # Mutation testing of the store. Fewer random cases per mutant (each needs
-# a run that catches it, not the deep sweep); temp books on a RAM disk if
-# TMPDIR is one, since every journal append is synced.
+# a run that catches it, not the deep sweep).
 mutants-store:
-    STORE_CASES=64 cargo mutants -p ledger-store --test-package ledger-store -j 3 --timeout 300 -o mutants-store
+    mkdir -p {{mutants_tmp}}
+    STORE_CASES=64 TMPDIR={{mutants_tmp}} cargo mutants -p ledger-store --test-package ledger-store -j 3 --timeout 300 -o mutants-store
 
 # Mutation testing of the importers and report renderers.
 mutants-import:
-    cargo mutants -p ledger-import --test-package ledger-import -j 4 --timeout 300 -o mutants-import
+    mkdir -p {{mutants_tmp}}
+    TMPDIR={{mutants_tmp}} cargo mutants -p ledger-import --test-package ledger-import -j 4 --timeout 300 -o mutants-import
 
 # Mutation testing of the settings parser and the receipt policy.
 mutants-config:
-    cargo mutants -p ledger-config --test-package ledger-config -j 4 --timeout 120 -o mutants-config
+    mkdir -p {{mutants_tmp}}
+    TMPDIR={{mutants_tmp}} cargo mutants -p ledger-config --test-package ledger-config -j 4 --timeout 120 -o mutants-config
 
 # Mutation testing of the MCP server (every mutant runs the stdio suites;
 # fewer random cases each, as for the store).
 mutants-mcp:
-    MCP_CASES=16 cargo mutants -p ledger-mcp --test-package ledger-mcp -j 4 --timeout 600 -o mutants-mcp
+    mkdir -p {{mutants_tmp}}
+    MCP_CASES=16 TMPDIR={{mutants_tmp}} cargo mutants -p ledger-mcp --test-package ledger-mcp -j 4 --timeout 600 -o mutants-mcp
 
 # Mutation testing of the viewer's logic (formatting, file names, history,
 # search, ticks, the view model, the attention list; not the painting).
 mutants-gui:
-    cargo mutants -p ledger-gui --test-package ledger-gui -j 4 --timeout 300 -o mutants-gui -f crates/ledger-gui/src/fmt.rs -f crates/ledger-gui/src/export.rs -f crates/ledger-gui/src/nav.rs -f crates/ledger-gui/src/attention.rs -f crates/ledger-gui/src/books.rs -f crates/ledger-gui/src/palette.rs -f crates/ledger-gui/src/charts.rs
+    mkdir -p {{mutants_tmp}}
+    TMPDIR={{mutants_tmp}} cargo mutants -p ledger-gui --test-package ledger-gui -j 4 --timeout 300 -o mutants-gui -f crates/ledger-gui/src/fmt.rs -f crates/ledger-gui/src/export.rs -f crates/ledger-gui/src/nav.rs -f crates/ledger-gui/src/attention.rs -f crates/ledger-gui/src/books.rs -f crates/ledger-gui/src/palette.rs -f crates/ledger-gui/src/charts.rs
 
 # Benchmarks of the core's hot paths (no budget gates them yet)
 bench:

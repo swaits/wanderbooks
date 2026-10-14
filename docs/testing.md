@@ -109,7 +109,7 @@ B-14) are the first.
 | End-to-end | SKIP for the core (a library) | MCP stdio tests cover the journeys |
 | Security properties | SKIP for the core (no roles, no secrets) | the first permission concept, or a secret-bearing field |
 | Concurrency stress | SKIP for the core (no shared state); DONE for the store's writer + viewer (found the false "differs") | the first `Arc`, atomic, or lock in the core; the MCP server's HTTP transport shares one store across sessions (next) |
-| Lean: apportion's sum law for any n | OPEN | Kani covers n <= 3, properties n <= 5; needs a permutation lemma |
+| Lean: apportion's sum law for any n | DONE (2026-10-14) | verify/lean/Wanderbooks/Apportion.lean: ranks are a permutation of 0..n-1 (strict total order + pigeonhole, core Lean only), so exactly u parts get a unit and one the fraction; `apportion_sum` and `apportion_sum_of_shortfall`, standard axioms only |
 | ASC paragraphs not yet read | OPEN | ASC 360-10-35-4, 340-10, 230-10-45-10, 606-10-55-37B, 210: needs a FASB basic-view login |
 | GnuCash's own close | OPEN | the oracle books closes as ordinary entries; comparing GnuCash's Close Book needs its Scheme API |
 | Import: spec-blind suite, footing properties, mutation | DONE | sources vendored (Intuit bank CSV and IIF, ECMA-376/Excel numbers, IRS form lines); specs on every module; tests/spec_import.rs (spec-blind, footing and round-trip properties, XLSX read back from its XML, layout and styles); fuzz_import_csv; templates checked against the engine's control accounts; mutation one equivalent left |

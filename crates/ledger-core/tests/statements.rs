@@ -1332,7 +1332,7 @@ fn lines(ls: &[ledger_core::reports::CashFlowLine]) -> Vec<(String, Decimal)> {
 
 /// Oracle: ASC 230-10-45-7 ("information about the gross amounts of cash
 /// receipts and cash payments during a period is more relevant than
-/// information about the net amounts"), 230-10-45-14(2) (proceeds from
+/// information about the net amounts"), 230-10-45-14(b) (proceeds from
 /// "other short- or long-term borrowing") and 45-15(2) ("Repayments of
 /// amounts borrowed"): borrowing and repayment are separate lines.
 #[test]

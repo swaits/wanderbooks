@@ -1091,7 +1091,7 @@ pub struct CashFlowParams {
     /// Accounts treated as cash. Their net change is the reconciling total.
     pub cash_accounts: Vec<crate::AccountId>,
     /// Liability accounts treated as financing (debt, including what the
-    /// owners advanced: ASC 230-10-45-14(2) "other short- or long-term
+    /// owners advanced: ASC 230-10-45-14(b) "other short- or long-term
     /// borrowing"). Default empty: all liabilities are operating working
     /// capital. All equity is financing.
     pub financing_accounts: Vec<crate::AccountId>,

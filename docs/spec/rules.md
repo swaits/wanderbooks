@@ -257,14 +257,16 @@ inflows from operating activities: Cash receipts from sales of goods or
 services…". A closing entry is not income or spending (B-11), so period
 statements exclude it.
 
-Investing and financing are gross (ASC 230-10-45-7, via Deloitte DART:
+Investing and financing are gross (ASC 230-10-45-7, read directly
+2026-10-14, `sources/fasb-asc.md`:
 "information about the gross amounts of cash receipts and cash payments
 during a period is more relevant than information about the net
 amounts"; 45-8 allows netting only where "the turnover is quick, the
 amounts are large, and the maturities are short"). Financing inflows
 include "Proceeds from issuing equity instruments" and "other short- or
-long-term borrowing" (45-14(1), (2)); outflows include "distributions to
-owners" and "Repayments of amounts borrowed" (45-15(1), (2)). Investing
+long-term borrowing" (45-14(a), (b)); outflows include "distributions to
+owners" and "Repayments of amounts borrowed" (45-15(a), (b)). Every cash
+flow is investing, financing, or operating (45-10). Investing
 "include[s] making and collecting loans and acquiring and disposing of
 debt or equity instruments and property, plant, and equipment" (ASC
 230-10-20). Which accounts hold loans made, investments, and debt is a
@@ -300,7 +302,11 @@ life of the asset," with "(Cost – salvage value)/Useful life"; partial
 periods: "A common method is to allocate depreciation expense based on the
 number of months the asset is owned in a year." wanderbooks prorates
 partial months by days, including a schedule through a mid-month date
-(DECISION, the owner 2026-10-13). ASC 360-10-35-4 not yet verified (see README).
+(DECISION, the owner 2026-10-13). ASC 360-10-35-4 (read 2026-10-14,
+`sources/fasb-asc.md`) prescribes no method: cost less salvage is spread
+over the useful life "in a systematic and rational manner," as equitably
+as possible to the periods served; straight line by days is one such
+allocation.
 Tax conventions (half-year, mid-month, mid-quarter): IRS Pub. 946
 (`sources/irs-depreciation.md`), for the CPA.
 
@@ -316,7 +322,10 @@ ASC 606-10-45-2 (cited): payment before transfer → "the entity shall
 present the contract as a contract liability"; 606-10-25-23: "An entity
 shall recognize revenue when (or as) the entity satisfies a performance
 obligation by transferring a promised good or service." Prepaids: OpenStax
-§4.2 (cited). Tax: the 12-month rule, Treas. Reg. §1.263(a)-4(f)
+§4.2 (cited); ASC 340-10-05-4 and 210-10-45-1(g), -2 (read 2026-10-14,
+`sources/fasb-asc.md`): a prepaid is an asset paid in advance of its use,
+current within the operating cycle; the ASC prescribes no expensing
+method, so monthly expensing stays a convention. Tax: the 12-month rule, Treas. Reg. §1.263(a)-4(f)
 (`sources/irs-capitalization.md`).
 
 **Enforced:** `schedules`. **Checked:** `a_prepaid_expense_is_expensed_month_by_month`,
@@ -329,7 +338,9 @@ obligation by transferring a promised good or service." Prepaids: OpenStax
 ASC 606-10-55-37 (cited): "An entity is a principal if it controls the
 specified good or service before that good or service is transferred to a
 customer." 606-10-55-38: an agent "recognizes revenue in the amount of any
-fee or commission to which it expects to be entitled." Whether an app
+fee or commission to which it expects to be entitled." 606-10-55-37B
+(read 2026-10-14, `sources/fasb-asc.md`): a principal recognizes revenue
+"in the gross amount of consideration." Whether an app
 developer is principal for app-store sales is a judgment under 55-39; the
 CPA confirms.
 

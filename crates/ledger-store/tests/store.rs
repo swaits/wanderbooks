@@ -2046,3 +2046,201 @@ fn a_database_with_the_wrong_currency_is_rebuilt() {
         .count();
     assert_eq!(kept, 1, "the wrong database is kept for forensics");
 }
+
+/// A disposal's proceeds go to an asset account and its gain or loss to a
+/// revenue or expense account; anything else is refused before anything
+/// is journaled.
+#[test]
+fn a_disposal_refuses_accounts_of_the_wrong_type() {
+    let dir = test_dir("dispose-types");
+    let (mut store, asset, cash, gain) = laptop(&dir);
+    let jan31 = NaiveDate::from_ymd_opt(2026, 1, 31).unwrap();
+    let journal = dir.join(ledger_store::JOURNAL_FILE);
+    let before = std::fs::read(&journal).unwrap();
+    // Proceeds into a revenue account, gain/loss into an asset account.
+    assert!(
+        store
+            .dispose_asset(asset, jan31, usd(900), gain, gain)
+            .is_err()
+    );
+    assert!(
+        store
+            .dispose_asset(asset, jan31, usd(900), cash, cash)
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&journal).unwrap(), before);
+    store
+        .dispose_asset(asset, jan31, usd(900), cash, gain)
+        .unwrap();
+}
+
+/// A depreciation period is "YYYY-MM": month 1 to 12, year 1 or later.
+#[test]
+fn depreciation_periods_must_be_real_months() {
+    let dir = test_dir("periods");
+    let (mut store, asset, _, _) = laptop(&dir);
+    for bad in ["2026-13", "2026-00", "0-05", "2026-01-01", "2026", "x-05"] {
+        let err = store.run_depreciation(asset, bad).unwrap_err().to_string();
+        assert!(err.contains("bad period"), "{bad}: {err}");
+    }
+    // Year 1 is a real year (whatever else the asset makes of it).
+    if let Err(e) = store.run_depreciation(asset, "0001-01") {
+        assert!(!e.to_string().contains("bad period"), "{e}");
+    }
+    store.run_depreciation(asset, "2026-02").unwrap();
+}
+
+/// Searching posted entries: by account, date range, and text, newest
+/// first, with a limit and offset; drafts never show.
+#[test]
+fn searching_entries_filters_and_pages() {
+    let dir = test_dir("search");
+    let mut store = Store::create(&dir, Currency::USD).unwrap();
+    let mut add = |code: &str, t| store_add(&mut store, code, t);
+    let cash = add("1000", AccountType::Asset);
+    let sales = add("4000", AccountType::Revenue);
+    let rent = add("6000", AccountType::Expense);
+    let day = |m, d| NaiveDate::from_ymd_opt(2026, m, d).unwrap();
+    let mut post = |date, desc: &str, dr, cr| {
+        let e = store.create_entry(date, desc).unwrap();
+        store.add_line(e, dr, Side::Debit, usd(10)).unwrap();
+        store.add_line(e, cr, Side::Credit, usd(10)).unwrap();
+        store.post_entry(e).unwrap();
+        e
+    };
+    let a = post(day(1, 5), "Sale to Acme", cash, sales);
+    let b = post(day(2, 5), "Rent February", rent, cash);
+    let c = post(day(3, 5), "Sale to Beta", cash, sales);
+    store.create_entry(day(3, 6), "Sale draft").unwrap();
+    let ids =
+        |rows: Vec<ledger_store::store::EntryRow>| rows.iter().map(|r| r.id).collect::<Vec<_>>();
+    assert_eq!(
+        ids(store.search_entries(None, None, None, None, 10, 0).unwrap()),
+        [c, b, a]
+    );
+    assert_eq!(
+        ids(store
+            .search_entries(Some(rent), None, None, None, 10, 0)
+            .unwrap()),
+        [b]
+    );
+    assert_eq!(
+        ids(store
+            .search_entries(None, Some("2026-02-01"), Some("2026-03-01"), None, 10, 0)
+            .unwrap()),
+        [b]
+    );
+    assert_eq!(
+        ids(store
+            .search_entries(None, None, None, Some("Sale"), 10, 0)
+            .unwrap()),
+        [c, a]
+    );
+    assert_eq!(
+        ids(store.search_entries(None, None, None, None, 1, 1).unwrap()),
+        [b]
+    );
+}
+
+/// The database's invoice row follows its payments: amount paid and
+/// open / partial / paid, matching the ledger.
+#[test]
+fn the_database_tracks_what_an_invoice_has_been_paid() {
+    use ledger_core::arap::DocumentLine;
+    let dir = test_dir("invoice-paid");
+    let mut store = Store::create(&dir, Currency::USD).unwrap();
+    let cash = store_add(&mut store, "1000", AccountType::Asset);
+    let who = store.add_customer("Acme").unwrap();
+    let day = |d| NaiveDate::from_ymd_opt(2026, 1, d).unwrap();
+    let inv = store
+        .create_invoice(
+            who,
+            day(1),
+            day(31),
+            vec![DocumentLine {
+                description: "work".into(),
+                amount: Decimal::from(100),
+            }],
+        )
+        .unwrap();
+    let row = |dir: &std::path::Path| -> (String, String) {
+        let conn = rusqlite::Connection::open(dir.join(ledger_store::DB_FILE)).unwrap();
+        conn.query_row(
+            "SELECT amount_paid, status FROM invoices WHERE id = ?",
+            [inv as i64],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    };
+    assert_eq!(row(&dir).1, "open");
+    store
+        .receive_payment(inv, day(10), Decimal::from(40), cash)
+        .unwrap();
+    assert_eq!(row(&dir), ("40".into(), "partial".into()));
+    store
+        .receive_payment(inv, day(20), Decimal::from(60), cash)
+        .unwrap();
+    assert_eq!(row(&dir), ("100".into(), "paid".into()));
+    store.verify().unwrap();
+}
+
+/// Rewrite a journal through a change to its lines, re-chaining it, so
+/// the result passes the hash chain and reaches replay.
+fn rechain(dir: &std::path::Path, change: impl Fn(&mut Vec<ledger_store::JournalLine>)) {
+    let path = dir.join(ledger_store::JOURNAL_FILE);
+    let mut lines = ledger_store::journal::read_and_verify_journal(&path).unwrap();
+    change(&mut lines);
+    std::fs::remove_file(&path).unwrap();
+    let _ = std::fs::remove_file(dir.join(ledger_store::DB_FILE));
+    let mut w = JournalWriter::open(&path).unwrap();
+    for l in lines {
+        w.append(&l.line_type, l.payload).unwrap();
+    }
+}
+
+/// Replay re-derives a closing entry and refuses a journal whose recorded
+/// entry differs from it (a hand edit that re-chained the file), and a
+/// database missing a table fails the table check.
+#[test]
+fn replay_refuses_a_journaled_entry_it_does_not_rederive() {
+    let dir = test_dir("rederive");
+    let mut store = Store::create(&dir, Currency::USD).unwrap();
+    let cash = store_add(&mut store, "1000", AccountType::Asset);
+    let sales = store_add(&mut store, "4000", AccountType::Revenue);
+    let day = |d| NaiveDate::from_ymd_opt(2026, 1, d).unwrap();
+    let e = store.create_entry(day(10), "sale").unwrap();
+    store.add_line(e, cash, Side::Debit, usd(500)).unwrap();
+    store.add_line(e, sales, Side::Credit, usd(500)).unwrap();
+    store.post_entry(e).unwrap();
+    let p = store.create_period("2026-01", day(1), day(31)).unwrap();
+    store.close_period(p).unwrap();
+    drop(store);
+    // An untouched re-chain opens fine (the helper itself is sound).
+    rechain(&dir, |_| {});
+    drop(Store::open(&dir).unwrap());
+    // The recorded closing entry says 400 where replay computes 500.
+    rechain(&dir, |lines| {
+        let close = lines
+            .iter_mut()
+            .find(|l| l.line_type == "period.closed")
+            .unwrap();
+        for l in close.payload["entry"]["lines"].as_array_mut().unwrap() {
+            l["amount"] = serde_json::json!("400.00");
+        }
+    });
+    let err = Store::open(&dir).err().expect("refused").to_string();
+    assert!(err.contains("differ"), "{err}");
+
+    // A projection missing a table.
+    let dir = test_dir("missing-table");
+    drop(build_books(&dir));
+    let conn = rusqlite::Connection::open(dir.join(ledger_store::DB_FILE)).unwrap();
+    conn.execute("DROP TABLE events", []).unwrap();
+    drop(conn);
+    let store = Store::open(&dir);
+    let msg = match store {
+        Ok(s) => s.verify().unwrap_err().to_string(),
+        Err(e) => e.to_string(),
+    };
+    assert!(msg.contains("events"), "{msg}");
+}

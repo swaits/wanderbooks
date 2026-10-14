@@ -1344,11 +1344,7 @@ impl Store {
         due_date: NaiveDate,
         lines: Vec<DocumentLine>,
     ) -> Result<InvoiceId, StoreError> {
-        self.rehearse(|l| {
-            ensure_on(l, &ledger_core::RECEIVABLES)?;
-            ensure_on(l, &ledger_core::REVENUE)?;
-            l.create_invoice(customer_id, date, due_date, lines.clone())
-        })?;
+        self.rehearse(|l| l.create_invoice(customer_id, date, due_date, lines.clone()))?;
         // Pure pre-validation mirroring Ledger::create_invoice, so the
         // journal writes below cannot be followed by a failed mutation.
         // (The auto-posted entry balances by construction and its accounts
@@ -1408,11 +1404,7 @@ impl Store {
         due_date: NaiveDate,
         lines: Vec<DocumentLine>,
     ) -> Result<BillId, StoreError> {
-        self.rehearse(|l| {
-            ensure_on(l, &ledger_core::GENERAL_EXPENSES)?;
-            ensure_on(l, &ledger_core::PAYABLES)?;
-            l.create_bill(vendor_id, date, due_date, lines.clone())
-        })?;
+        self.rehearse(|l| l.create_bill(vendor_id, date, due_date, lines.clone()))?;
         if self.ledger.get_vendor(vendor_id).is_none() {
             return Err(LedgerError::UnknownVendor(vendor_id).into());
         }
@@ -1463,10 +1455,7 @@ impl Store {
         amount: Decimal,
         cash_account: AccountId,
     ) -> Result<EntryId, StoreError> {
-        self.rehearse(|l| {
-            ensure_on(l, &ledger_core::RECEIVABLES)?;
-            l.receive_payment(invoice_id, date, amount, cash_account)
-        })?;
+        self.rehearse(|l| l.receive_payment(invoice_id, date, amount, cash_account))?;
         // The rehearsal above is the whole check: hand-written mirrors of
         // the engine's refusals drift from it (and were never reached).
         let ar = self.ensure_control_account(&ledger_core::RECEIVABLES)?;
@@ -1502,10 +1491,7 @@ impl Store {
         amount: Decimal,
         cash_account: AccountId,
     ) -> Result<EntryId, StoreError> {
-        self.rehearse(|l| {
-            ensure_on(l, &ledger_core::PAYABLES)?;
-            l.pay_bill(bill_id, date, amount, cash_account)
-        })?;
+        self.rehearse(|l| l.pay_bill(bill_id, date, amount, cash_account))?;
         let ap = self.ensure_control_account(&ledger_core::PAYABLES)?;
         let description = format!("Payment on bill {bill_id}");
         let (entry_id, mut journaled) =
@@ -1640,12 +1626,7 @@ impl Store {
         lines: Vec<PayrollLineInput>,
         cash_account: AccountId,
     ) -> Result<PayrollRunId, StoreError> {
-        self.rehearse(|l| {
-            for c in &ledger_core::PAYROLL {
-                ensure_on(l, c)?;
-            }
-            l.run_payroll(date, lines.clone(), cash_account)
-        })?;
+        self.rehearse(|l| l.run_payroll(date, lines.clone(), cash_account))?;
         // Pure pre-validation mirroring Ledger::run_payroll, so the journal
         // writes below cannot be followed by a failed mutation.
         self.ledger.validate_payroll(date, &lines, cash_account)?;
@@ -1827,22 +1808,6 @@ impl Store {
         class_id: Option<ClassId>,
     ) -> Result<(), StoreError> {
         self.rehearse(|l| l.set_line_class(entry_id, line_index, class_id))?;
-        // Draft-only check via the ledger, before anything is journaled.
-        let entry = self
-            .ledger
-            .get_entry(entry_id)
-            .ok_or(LedgerError::UnknownEntry(entry_id))?;
-        if entry.status() != EntryStatus::Draft {
-            return Err(LedgerError::PostedEntryImmutable.into());
-        }
-        if let Some(cid) = class_id
-            && self.ledger.get_class(cid).is_none()
-        {
-            return Err(LedgerError::UnknownClass(cid).into());
-        }
-        if line_index >= entry.lines().len() {
-            return Err(LedgerError::LineIndexOutOfRange(line_index, entry_id).into());
-        }
         let line = self.append_journal(
             "entry.line_class_set",
             json!({
@@ -2461,25 +2426,18 @@ impl Store {
                 parts.join(", ")
             )));
         }
-        // The accounting snapshot ignores the asset register, so compare it
-        // explicitly: journal replay, live ledger, and projection must agree.
+        // The live ledger equals the replay (checked above, in full); the
+        // SQLite read-back's asset register, classes, and payroll runs
+        // must equal it too (the accounting snapshot ignores them).
         let assets_of = |l: &Ledger| l.registered_assets().cloned().collect::<Vec<_>>();
-        let (ra, rb, rc) = (assets_of(&replayed), assets_of(&self.ledger), assets_of(&c));
-        if ra != rb || ra != rc {
+        if assets_of(&replayed) != assets_of(&c) {
             return Err(StoreError::VerifyMismatch(
                 "asset register diverged between journal, live ledger, and sqlite projection"
                     .into(),
             ));
         }
-        // Classes and payroll runs are master data the snapshot also
-        // ignores; compare them explicitly the same way.
         let classes_of = |l: &Ledger| l.list_classes().into_iter().cloned().collect::<Vec<_>>();
-        let (ca, cb, cc) = (
-            classes_of(&replayed),
-            classes_of(&self.ledger),
-            classes_of(&c),
-        );
-        if ca != cb || ca != cc {
+        if classes_of(&replayed) != classes_of(&c) {
             return Err(StoreError::VerifyMismatch(
                 "class list diverged between journal, live ledger, and sqlite projection".into(),
             ));
@@ -2490,8 +2448,7 @@ impl Store {
                 .cloned()
                 .collect::<Vec<_>>()
         };
-        let (pa, pb, pc) = (runs_of(&replayed), runs_of(&self.ledger), runs_of(&c));
-        if pa != pb || pa != pc {
+        if runs_of(&replayed) != runs_of(&c) {
             return Err(StoreError::VerifyMismatch(
                 "payroll runs diverged between journal, live ledger, and sqlite projection".into(),
             ));
@@ -3075,14 +3032,6 @@ fn get_str<'a>(p: &'a Value, key: &str) -> Result<&'a str, StoreError> {
 /// Replay one journal line into a ledger, asserting recorded ids. Used by
 /// hydration, `verify`, and `rebuild`: the journal is the script, the engine
 /// is the actor.
-/// [`Store::ensure_control_account`] on a bare ledger, for rehearsals.
-fn ensure_on(l: &mut Ledger, c: &ledger_core::ControlAccount) -> Result<AccountId, LedgerError> {
-    match l.chart().find_by_code(c.code) {
-        Some(a) => Ok(a.id),
-        None => l.add_account(c.code, c.name, c.account_type, None, false),
-    }
-}
-
 pub(crate) fn replay_line_into_ledger(
     ledger: &mut Ledger,
     line: &JournalLine,

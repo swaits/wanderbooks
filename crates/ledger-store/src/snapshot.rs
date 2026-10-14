@@ -95,6 +95,24 @@ impl Snapshot {
 
     /// Apply whatever the writer appended since the last read. Returns the
     /// number of new journal lines (0 when nothing changed).
+    ///
+    /// ```text
+    /// GOAL: a viewer that follows the live books without ever writing.
+    /// SOURCE: docs/receipt-store.md (the journal is the source of truth;
+    ///         lines are appended whole and chained); R-11.
+    /// INVARIANTS:
+    ///   1. NEVER write to the data directory.
+    ///   2. MUST apply only complete lines (ending in a newline) that chain
+    ///      onto the last one read; a line still being appended waits for
+    ///      the next refresh.
+    ///   3. After a refresh, the ledger MUST equal a replay of the lines
+    ///      read so far.
+    /// SCENARIOS:
+    ///   1. IF nothing was appended: SHOULD return 0 and change nothing.
+    ///   2. IF the file shrank or no longer chains (a restore, a repaired
+    ///      tail): SHOULD reload from scratch.
+    ///   3. IF a complete new line fails its hash or parse: SHOULD refuse.
+    /// ```
     pub fn refresh(&mut self) -> Result<usize, StoreError> {
         let len = std::fs::metadata(self.data_dir.join(JOURNAL_FILE))?.len();
         if len < self.offset {

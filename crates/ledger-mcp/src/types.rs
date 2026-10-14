@@ -681,18 +681,23 @@ pub struct CashFlowOut {
 /// Parameters for `books.import_bank_csv`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ImportBankCsvParams {
-    /// The CSV text (QBO bank upload layout: Date,Description,Amount or
-    /// Date,Description,Expense,Income).
+    /// The CSV text (QBO bank upload layout: Date,Description,Amount, or
+    /// Date,Description, money out, money in).
     pub csv_text: String,
     /// Account code for the bank account (the offset side of each entry).
     pub bank_account_code: String,
     /// Account code for the default offset (e.g. an expense account).
     /// Used when no rule matches.
     pub default_offset_code: String,
-    /// Optional categorization rules: { "pattern": "account_code" }.
-    /// First case-insensitive substring match on the description wins.
+    /// Optional categorization rules: { "pattern": "account_code" }. A
+    /// pattern matches a description containing it (ignoring case); the
+    /// longest matching pattern wins.
     #[serde(default)]
     pub rules: std::collections::HashMap<String, String>,
+    /// How to read slash dates the file doesn't settle itself:
+    /// "month_first" (mm/dd/yyyy, US banks) or "day_first" (dd/mm/yyyy).
+    #[serde(default)]
+    pub date_order: Option<String>,
 }
 
 /// One imported bank transaction (as a draft entry).

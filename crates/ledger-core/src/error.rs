@@ -195,6 +195,11 @@ pub enum LedgerError {
     #[error("account code must not be empty")]
     EmptyAccountCode,
 
+    /// An account's name is empty or only spaces: a chart lists every
+    /// account by number and title.
+    #[error("account name must not be empty")]
+    EmptyAccountName,
+
     /// The referenced parent account does not exist.
     #[error("unknown parent account id {0}")]
     UnknownParentAccount(u64),

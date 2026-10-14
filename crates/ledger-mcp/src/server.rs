@@ -1668,14 +1668,25 @@ impl BooksServer {
 
     #[tool(
         name = "books.import_bank_csv",
-        description = "Import a QuickBooks-style bank/credit-card CSV (Date,Description,Amount or Date,Description,Expense,Income). Creates one DRAFT entry per transaction: bank account on one side, categorized offset on the other (via rules or default_offset_code). Review with books.digest, then post."
+        description = "Import a QuickBooks-style bank/credit-card CSV: 3 columns Date,Description,Amount (payments negative), or 4 columns Date,Description, money out, money in (Intuit heads them Credit,Debit). Slash dates must settle month-first or day-first from the file itself or from date_order (\"month_first\" for mm/dd, \"day_first\" for dd/mm); ask the human when the tool says the dates read either way. Creates one DRAFT entry per transaction, all or none: bank account on one side, categorized offset on the other (the longest matching rule pattern, else default_offset_code). Review with books.digest, then post."
     )]
     async fn import_bank_csv(
         &self,
         params: Parameters<ImportBankCsvParams>,
     ) -> Result<Json<ImportBankCsvOut>, String> {
         let p = params.0;
-        let txns = ledger_import::parse_bank_csv(&p.csv_text).map_err(|e| e.to_string())?;
+        let order = match p.date_order.as_deref() {
+            None => None,
+            Some("month_first") => Some(ledger_import::DateOrder::MonthFirst),
+            Some("day_first") => Some(ledger_import::DateOrder::DayFirst),
+            Some(other) => {
+                return Err(format!(
+                    "date_order must be \"month_first\" or \"day_first\", got {other:?}"
+                ));
+            }
+        };
+        let txns =
+            ledger_import::parse_bank_csv_with(&p.csv_text, order).map_err(|e| e.to_string())?;
         let mut store = self.lock()?;
         let bank = store
             .ledger()
@@ -1700,14 +1711,41 @@ impl BooksServer {
                 .ok_or_else(|| format!("unknown rule account code: {code}"))?;
             rules.push((pattern.to_lowercase(), (id, c)));
         }
+        // The most specific pattern wins (longest, then alphabetical): the
+        // rules arrive as a map with no order, so "first match" would pick
+        // a different account from run to run when two patterns match.
+        rules.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then_with(|| a.0.cmp(&b.0)));
+        let offset_for = |description: &str| {
+            let desc_lower = description.to_lowercase();
+            rules
+                .iter()
+                .find(|(pat, _)| desc_lower.contains(pat.as_str()))
+                .map(|(_, v)| v.clone())
+                .unwrap_or_else(|| default_offset.clone())
+        };
+        let base = store.ledger().base_currency();
+        // Rehearse the whole file on a copy first, so a transaction that
+        // can't become a draft (a date in a closed period, say) refuses the
+        // file instead of leaving the ones before it behind.
+        let mut scratch = store.ledger().clone();
+        for txn in &txns {
+            let (offset_id, _) = offset_for(&txn.description);
+            let amount = Money::new(txn.amount.abs(), base);
+            let (bank_side, offset_side) = if txn.amount > Decimal::ZERO {
+                (Side::Debit, Side::Credit)
+            } else {
+                (Side::Credit, Side::Debit)
+            };
+            let e = scratch
+                .try_create_entry(txn.date, &txn.description)
+                .and_then(|e| scratch.add_line(e, bank.0, bank_side, amount).map(|()| e))
+                .and_then(|e| scratch.add_line(e, offset_id, offset_side, amount))
+                .map_err(|e| format!("{} {}: {e}", txn.date, txn.description));
+            e?;
+        }
         let mut imported = Vec::new();
         for txn in txns {
-            let desc_lower = txn.description.to_lowercase();
-            let (offset_id, offset_code) = rules
-                .iter()
-                .find(|(pat, _)| desc_lower.contains(pat))
-                .map(|(_, v)| v.clone())
-                .unwrap_or_else(|| default_offset.clone());
+            let (offset_id, offset_code) = offset_for(&txn.description);
             let amount = Money::new(txn.amount.abs(), store.ledger().base_currency());
             let entry_id = store
                 .create_entry(txn.date, &format!("Bank import — {}", txn.description))
@@ -2275,7 +2313,6 @@ impl BooksServer {
         let p = params.0;
         let rows = ledger_import::parse_chart_csv(&p.csv_text).map_err(|e| e.to_string())?;
         let mut store = self.lock()?;
-        // Validate all rows first: nothing is half-imported.
         let parse_type = |t: &str| match t {
             "asset" => Ok(AccountType::Asset),
             "liability" => Ok(AccountType::Liability),
@@ -2284,17 +2321,33 @@ impl BooksServer {
             "expense" => Ok(AccountType::Expense),
             _ => Err(format!("bad account type: {t}")),
         };
+        // Rehearse the whole import on a copy of the ledger first, so a bad
+        // row anywhere (a duplicate within the file, a parent listed after
+        // its child or of another type, a blank code) refuses the file and
+        // nothing is half-imported. The old up-front checks covered only
+        // clashes with the existing chart and tax categories.
+        let mut scratch = store.ledger().clone();
         for row in &rows {
-            if store.ledger().chart().find_by_code(&row.code).is_some() {
-                return Err(format!("duplicate account code: {}", row.code));
-            }
-            if let Some(cat) = &row.tax_category {
-                ledger_core::tax::check_category(
-                    cat,
-                    parse_type(&row.account_type)?,
-                    self.company.tax_form,
-                )
+            let account_type = parse_type(&row.account_type)?;
+            let parent = match &row.parent_code {
+                Some(code) => Some(
+                    scratch
+                        .chart()
+                        .find_by_code(code)
+                        .map(|a| a.id)
+                        .ok_or_else(|| format!("{}: unknown parent code {code}", row.code))?,
+                ),
+                None => None,
+            };
+            let id = scratch
+                .add_account(&row.code, &row.name, account_type, parent, false)
                 .map_err(|e| format!("{}: {e}", row.code))?;
+            if let Some(cat) = &row.tax_category {
+                ledger_core::tax::check_category(cat, account_type, self.company.tax_form)
+                    .map_err(|e| format!("{}: {e}", row.code))?;
+                scratch
+                    .set_account_tax(id, Some(cat), None)
+                    .map_err(|e| format!("{}: {e}", row.code))?;
             }
         }
         let mut created = Vec::new();
@@ -2551,26 +2604,41 @@ impl BooksServer {
         ledger_import::statement_pdf(&st, &meta).map_err(|e| e.to_string())
     }
 
-    /// Render the journal as IIF text via ledger-import.
+    /// Render the journal as IIF text via ledger-import, declaring every
+    /// account with its QuickBooks type: the `[books] cash_accounts` are
+    /// BANK, the receivable and payable control accounts AR and AP, a
+    /// registered asset's cost and accumulated depreciation FIXASSET, and
+    /// the rest follow their wanderbooks type (other current asset, other
+    /// current liability, equity, income, expense).
     fn export_iif(&self) -> Result<String, String> {
-        use ledger_import::{IifEntry, journal_to_iif};
+        use ledger_import::{QbAccountType as Qb, iif_accounts, journal_to_iif};
         let store = self.lock()?;
         let ledger = store.ledger();
-        let account_names = |id: ledger_core::AccountId| {
-            ledger
-                .chart()
-                .get(id)
-                .map(|a| a.name.clone())
-                .unwrap_or_default()
-        };
-        let entries: Vec<IifEntry<'_>> = ledger
-            .posted_entries()
-            .map(|e| IifEntry {
-                entry: e,
-                account_names: &account_names,
-            })
+        let fixed: std::collections::HashSet<AccountId> = ledger
+            .registered_assets()
+            .flat_map(|a| [a.cost_account, a.accum_depr_account])
             .collect();
-        Ok(journal_to_iif(&entries))
+        let accounts = iif_accounts(ledger, |a| {
+            if self.roles.cash.contains(&a.code) {
+                Qb::Bank
+            } else if a.code == ledger_core::RECEIVABLES.code {
+                Qb::AccountsReceivable
+            } else if a.code == ledger_core::PAYABLES.code {
+                Qb::AccountsPayable
+            } else if fixed.contains(&a.id) {
+                Qb::FixedAsset
+            } else {
+                match a.account_type {
+                    AccountType::Asset => Qb::OtherCurrentAsset,
+                    AccountType::Liability => Qb::OtherCurrentLiability,
+                    AccountType::Equity => Qb::Equity,
+                    AccountType::Revenue => Qb::Income,
+                    AccountType::Expense => Qb::Expense,
+                }
+            }
+        });
+        let entries: Vec<_> = ledger.posted_entries().collect();
+        journal_to_iif(&accounts, &entries).map_err(|e| e.to_string())
     }
 
     // ------------------------------------------------------------------

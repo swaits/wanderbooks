@@ -1783,3 +1783,120 @@ fn cash_flow_reads_its_account_roles_from_the_books_settings() {
     assert_eq!(amounts("investing"), ["-500.00"]);
     assert_eq!(cf["net_change_in_cash"], "400.00");
 }
+
+/// A chart CSV with a bad row anywhere is refused whole: nothing is
+/// half-imported (the old checks missed duplicates within the file and a
+/// parent listed after its child).
+#[test]
+fn a_chart_file_with_a_bad_row_imports_nothing() {
+    let dir = test_dir("chart-atomic");
+    let mut mcp = Mcp::spawn(&dir);
+    mcp.request(
+        "initialize",
+        json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+        }),
+    );
+    mcp.notify("notifications/initialized");
+    let count = |mcp: &mut Mcp| {
+        mcp.call("books.chart", json!({}))["accounts"]
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    let before = count(&mut mcp);
+    for bad in [
+        // A duplicate code within the file.
+        "code,name,type,parent_code\n1000,Cash,asset,\n1010,Savings,asset,\n1000,Again,asset,\n",
+        // A parent listed after its child.
+        "code,name,type,parent_code\n1000,Cash,asset,\n1011,Sub,asset,1010\n1010,Bank,asset,\n",
+        // A child of another type than its parent.
+        "code,name,type,parent_code\n1000,Cash,asset,\n4000,Sales,revenue,1000\n",
+    ] {
+        let err = mcp.call_err("books.import_chart_csv", json!({"csv_text": bad}));
+        assert!(!err.is_empty());
+        assert_eq!(count(&mut mcp), before, "half-imported: {bad}");
+    }
+    let ok = mcp.call(
+        "books.import_chart_csv",
+        json!({"csv_text": "code,name,type,parent_code\n1000,Cash,asset,\n1010,Checking,asset,1000\n"}),
+    );
+    assert_eq!(ok["count"], 2);
+}
+
+/// Bank CSV import: slash dates that read either way need the caller's
+/// order; overlapping rules pick the longest pattern every time; and a
+/// transaction that can't become a draft refuses the whole file.
+#[test]
+fn bank_import_reads_dates_rules_and_files_whole() {
+    let dir = test_dir("bank-import");
+    let mut mcp = Mcp::spawn(&dir);
+    mcp.request(
+        "initialize",
+        json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+        }),
+    );
+    mcp.notify("notifications/initialized");
+    for (code, name, typ) in [
+        ("1000", "Bank", "asset"),
+        ("6000", "Other", "expense"),
+        ("6100", "Coffee", "expense"),
+        ("6200", "Coffee beans", "expense"),
+    ] {
+        mcp.call(
+            "books.add_account",
+            json!({"code": code, "name": name, "account_type": typ}),
+        );
+    }
+    let base = |csv: &str| {
+        json!({
+            "csv_text": csv,
+            "bank_account_code": "1000",
+            "default_offset_code": "6000",
+            "rules": {"coffee": "6100", "coffee beans": "6200"},
+        })
+    };
+    // 3/4/2026 reads both ways and nothing in the file settles it.
+    let ambiguous = "Date,Description,Amount\n3/4/2026,Coffee shop,-4.50\n";
+    let err = mcp.call_err("books.import_bank_csv", base(ambiguous));
+    assert!(err.contains("either way"), "{err}");
+    let mut args = base(ambiguous);
+    args["date_order"] = json!("day_first");
+    let out = mcp.call("books.import_bank_csv", args);
+    assert_eq!(out["imported"][0]["date"], "2026-04-03");
+    // Both patterns match "Coffee beans": the longer wins, every time.
+    for _ in 0..5 {
+        let out = mcp.call(
+            "books.import_bank_csv",
+            base("Date,Description,Amount\n2026-05-01,Coffee beans 2kg,-30.00\n"),
+        );
+        assert_eq!(out["imported"][0]["offset_account"], "6200");
+    }
+    // A transaction dated in a closed period refuses the file: nothing of
+    // it becomes a draft.
+    let p = mcp.call(
+        "books.create_period",
+        json!({"name": "2026-01", "start": "2026-01-01", "end": "2026-01-31"}),
+    );
+    mcp.call(
+        "books.close_period",
+        json!({"period_id": p["period_id"], "confirmed": true}),
+    );
+    let err = mcp.call_err(
+        "books.import_bank_csv",
+        base(
+            "Date,Description,Amount\n2026-06-01,Fine,-1.00\n2026-01-15,In a closed month,-2.00\n",
+        ),
+    );
+    assert!(err.contains("closed"), "{err}");
+    let journal = std::fs::read_to_string(dir.join(ledger_store::JOURNAL_FILE)).unwrap();
+    assert!(
+        !journal.contains("2026-06-01"),
+        "the first row was journaled"
+    );
+}

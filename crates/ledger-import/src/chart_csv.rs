@@ -56,6 +56,21 @@ pub enum ChartCsvError {
 
 /// Parse a chart CSV. Returns rows in file order (parents should come first,
 /// but order is not validated here).
+///
+/// ```text
+/// GOAL: read a chart of accounts a person hands the agent.
+/// SOURCE: docs/mcp-interface.md (books.import_chart_csv); CONVENTION for
+///         the layout.
+/// INVARIANTS:
+///   1. The first non-blank row is the header, exactly code,name,type,
+///      parent_code with an optional fifth tax_category (any case);
+///      anything else is BadHeader.
+///   2. Every later row has the header's width (BadColumnCount), a type
+///      among asset, liability, equity, revenue, expense, any case
+///      (BadType), and a non-blank code and name (Blank, with its row).
+///   3. A blank parent or tax category is None; blank lines are skipped;
+///      an empty file is no rows.
+/// ```
 pub fn parse_chart_csv(text: &str) -> Result<Vec<ChartRow>, ChartCsvError> {
     let mut reader = csv::ReaderBuilder::new()
         .has_headers(false)
@@ -64,13 +79,15 @@ pub fn parse_chart_csv(text: &str) -> Result<Vec<ChartRow>, ChartCsvError> {
         .from_reader(text.as_bytes());
     let mut out = Vec::new();
     let mut width = 4;
+    let mut header_seen = false;
     for (idx, record) in reader.records().enumerate() {
         let record = record.map_err(|e| ChartCsvError::Csv(e.to_string()))?;
         let fields: Vec<&str> = record.iter().collect();
         if fields.iter().all(|f| f.is_empty()) {
             continue;
         }
-        if idx == 0 {
+        if !header_seen {
+            header_seen = true;
             let lower: Vec<String> = fields.iter().map(|f| f.to_lowercase()).collect();
             width = if lower == ["code", "name", "type", "parent_code"] {
                 4

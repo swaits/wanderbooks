@@ -163,6 +163,19 @@ fn number(
 }
 
 /// Render a report to XLSX bytes.
+///
+/// ```text
+/// GOAL: a statement as a spreadsheet a CPA can sum and check.
+/// SOURCE: docs/spec/sources/xlsx-numbers.md (a cell number is a binary
+///         double; Excel honors 15 significant digits).
+/// INVARIANTS:
+///   1. An amount is a number cell, in an accounting format (thousands
+///      separators, negatives in parentheses), unless Excel couldn't show
+///      it exactly (finer than a cent, or past 15 digits): then its exact
+///      text, right-aligned. NEVER a number Excel would show wrong.
+///   2. Every statement row is a row, in order, with its label.
+///   3. The output is a valid XLSX (a zip holding a workbook).
+/// ```
 pub fn report_to_xlsx(report: &XlsxReport<'_>, meta: &ReportMeta) -> Result<Vec<u8>, XlsxError> {
     let mut workbook = Workbook::new();
     let sheet = workbook.add_worksheet();

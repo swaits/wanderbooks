@@ -6,3 +6,6 @@ site/dist/
 /mutants.out*/
 /mutants-store/
 /mutants-import/
+/mutants-config/
+/mutants-mcp/
+/mutants-gui/

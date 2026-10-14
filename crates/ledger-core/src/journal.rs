@@ -24,7 +24,7 @@ pub enum EntryStatus {
 }
 
 /// One debit or credit line of a journal entry.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct JournalLine {
     /// The account this line posts to.
     pub account: AccountId,
@@ -51,7 +51,7 @@ pub struct JournalLine {
 }
 
 /// A balanced set of journal lines with a date and a description.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct JournalEntry {
     id: EntryId,
     date: NaiveDate,

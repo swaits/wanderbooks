@@ -66,10 +66,14 @@ match a bank statement: DECISION (Stephen, 2026-10-13), after the GnuCash
 cross-check found wanderbooks kept $108.34567 where GnuCash booked
 $108.35. Lines booked before then replay as booked.
 
-**Enforced:** `Ledger::add_line` (base currency only),
-`Ledger::add_line_fx` (base amount = foreign amount × rate, rounded to
-the minor unit; original kept). **Checked:**
-`a_foreign_line_is_booked_in_whole_base_units`; the GnuCash oracle.
+**Enforced:** `Ledger::add_line` (base currency only, no fraction of the
+minor unit), `Ledger::add_line_fx` (base amount = foreign amount × rate,
+rounded to the minor unit; original kept), `Ledger::post_entry` (every
+line, whatever made it: payroll, closes, disposals; `FinerThanMinorUnit`,
+since 2026-10-13 after a payroll run posted $65.27794). Journals from
+before replay as booked (`replay_post_entry`). **Checked:**
+`a_foreign_line_is_booked_in_whole_base_units`,
+`no_entry_posts_a_fraction_of_the_minor_unit`; the GnuCash oracle.
 **Checked:** `foreign_currency_line_is_rejected`, `fx_overflow_is_an_error`.
 
 ## B-4 Five elements, closed list

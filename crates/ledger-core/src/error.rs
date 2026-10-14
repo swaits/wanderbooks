@@ -35,6 +35,20 @@ pub enum LedgerError {
     #[error("journal line amount is out of range (at most 1000000000000000, ten decimal places)")]
     AmountOutOfRange,
 
+    /// An amount finer than its currency's smallest unit (ISO 4217 minor
+    /// units): no one can pay a fraction of a cent (rules.md B-3).
+    #[error(
+        "amount {amount} {currency} has more than {places} decimal places; round it to the {currency} minor unit first"
+    )]
+    FinerThanMinorUnit {
+        /// The amount as given.
+        amount: rust_decimal::Decimal,
+        /// Its currency code.
+        currency: String,
+        /// The decimal places the currency allows.
+        places: u32,
+    },
+
     /// The referenced account does not exist in the chart of accounts.
     #[error("unknown account id {0}")]
     UnknownAccount(u64),

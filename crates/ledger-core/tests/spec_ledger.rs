@@ -123,6 +123,23 @@ fn try_post(
     l.post_entry(id).err()
 }
 
+/// [`try_post`] through the replay path, which books written before the
+/// minor-unit rule (B-3, 2026-10-13) still take: for the kernel's own
+/// limits below a cent.
+fn try_replay_post(
+    l: &mut Ledger,
+    date: NaiveDate,
+    lines: &[(AccountId, Side, Money)],
+) -> Option<LedgerError> {
+    let id = l.try_create_entry(date, "attempt").unwrap();
+    for (a, s, m) in lines {
+        if let Err(e) = l.replay_add_line(id, *a, *s, *m) {
+            return Some(e);
+        }
+    }
+    l.replay_post_entry(id).err()
+}
+
 /// Everything a refusal could disturb, as plain comparable data.
 #[derive(Clone, Debug, PartialEq)]
 struct Observed {
@@ -687,8 +704,9 @@ fn an_unbalanced_entry_is_refused_with_its_totals() {
             credits: dec("99.99"),
         })
     );
-    // One ten-billionth is still a difference.
-    let r = try_post(
+    // One ten-billionth is still a difference (on replayed books; new
+    // work refuses anything finer than a cent first).
+    let r = try_replay_post(
         &mut b.l,
         d(2026, 3, 1),
         &[
@@ -771,13 +789,29 @@ fn line_range_is_one_quadrillion_and_ten_places() {
         )
     };
     assert_eq!(ok(&mut b, "1000000000000000"), None);
-    assert_eq!(ok(&mut b, "0.0000000001"), None);
     assert_eq!(
         ok(&mut b, "1000000000000000.01"),
         Some(LedgerError::AmountOutOfRange)
     );
+    // Below a cent, new work is refused first (B-3); replayed books meet
+    // the kernel's ten-place limit.
+    assert!(matches!(
+        ok(&mut b, "0.0000000001"),
+        Some(LedgerError::FinerThanMinorUnit { .. })
+    ));
+    let replayed = |b: &mut Books, amt: &str| {
+        try_replay_post(
+            &mut b.l,
+            d(2026, 3, 1),
+            &[
+                (b.exp, Side::Debit, usd(amt)),
+                (b.cash, Side::Credit, usd(amt)),
+            ],
+        )
+    };
+    assert_eq!(replayed(&mut b, "0.0000000001"), None);
     assert_eq!(
-        ok(&mut b, "0.00000000001"),
+        replayed(&mut b, "0.00000000001"),
         Some(LedgerError::AmountOutOfRange)
     );
     assert_eq!(b.l.posted_entries().count(), 2);

@@ -182,6 +182,16 @@ proptest! {
         for (d, v) in &h {
             prop_assert_eq!(*v, cash(&l, *d), "cash on {}", d);
         }
+        // ... and it isn't empty when a cash account moved: its last point
+        // is the last day one did (a transfer between them included).
+        let cash_idx = [0usize, 1];
+        let last_move = p
+            .entries
+            .iter()
+            .filter(|e| cash_idx.contains(&e.1) || cash_idx.contains(&e.2))
+            .map(|e| t - Days::new(e.0))
+            .max();
+        prop_assert_eq!(h.last().map(|x| x.0), last_move);
         // Names and labels.
         for (code, name, _) in CHART {
             let id = l.chart().find_by_code(code).unwrap().id;
@@ -294,4 +304,301 @@ fn percent_change_and_tax_forms() {
         assert!(fmt::tax_form(f).contains(number), "{f:?}");
     }
     assert_eq!(fmt::compact(d("-1234")), "\u{2212}$1.2k");
+}
+
+fn store_at(tag: &str) -> (PathBuf, Store) {
+    let d = dir(tag);
+    let s = Store::create(&d.join("books-data"), Currency::USD).unwrap();
+    (d, s)
+}
+
+fn source(d: &std::path::Path, toml: &str, today: NaiveDate) -> Source {
+    std::fs::write(d.join("wanderbooks.toml"), toml).unwrap();
+    Source {
+        data_dir: d.join("books-data"),
+        books_toml: Some(d.join("wanderbooks.toml")),
+        today: Some(today),
+    }
+}
+
+fn post(s: &mut Store, date: NaiveDate, dr: u64, cr: u64, cents: i64) -> u64 {
+    let e = s.create_entry(date, "x").unwrap();
+    let m = Money::new(Decimal::new(cents, 2), Currency::USD);
+    s.add_line(e, dr, Side::Debit, m).unwrap();
+    s.add_line(e, cr, Side::Credit, m).unwrap();
+    s.post_entry(e).unwrap();
+    e
+}
+
+/// Kpis INVARIANTS 4 and 6 on fixed dates: the prior month runs to the
+/// same day; burn averages over only the months the books cover.
+#[test]
+fn comparisons_and_burn_on_fixed_dates() {
+    let (d, mut s) = store_at("burn");
+    let cash = s
+        .add_account("1000", "Checking", AccountType::Asset, None, false)
+        .unwrap();
+    let rev = s
+        .add_account("4000", "Sales", AccountType::Revenue, None, false)
+        .unwrap();
+    let exp = s
+        .add_account("6000", "Rent", AccountType::Expense, None, false)
+        .unwrap();
+    let today = NaiveDate::from_ymd_opt(2026, 5, 10).unwrap();
+    // The books start in March: burn covers March and April, not February.
+    post(
+        &mut s,
+        NaiveDate::from_ymd_opt(2026, 3, 3).unwrap(),
+        exp,
+        cash,
+        30_000,
+    );
+    post(
+        &mut s,
+        NaiveDate::from_ymd_opt(2026, 4, 10).unwrap(),
+        exp,
+        cash,
+        10_000,
+    );
+    post(
+        &mut s,
+        NaiveDate::from_ymd_opt(2026, 4, 11).unwrap(),
+        cash,
+        rev,
+        7_000,
+    ); // after the same day
+    post(
+        &mut s,
+        NaiveDate::from_ymd_opt(2026, 5, 2).unwrap(),
+        cash,
+        rev,
+        1_000,
+    );
+    drop(s);
+    let b = data::load_once(&source(&d, "[books]\ncash_accounts = [\"1000\"]\n", today)).unwrap();
+    let k = &b.kpis;
+    assert_eq!(k.revenue_mtd, Decimal::new(1_000, 2));
+    assert_eq!(k.expenses_prev_month, Decimal::new(10_000, 2), "April 1-10");
+    assert_eq!(
+        k.revenue_prev_month,
+        Decimal::ZERO,
+        "April 11 is after the same day"
+    );
+    // Feb-Apr loss: 300 + 100 - 70 = 330 over the 2 months covered.
+    assert_eq!(k.monthly_burn, Some(Decimal::new(16_500, 2)));
+    // A profitable stretch has no burn; books starting this month have none.
+    let (d2, mut s2) = store_at("burn-new");
+    let c2 = s2
+        .add_account("1000", "Checking", AccountType::Asset, None, false)
+        .unwrap();
+    let e2 = s2
+        .add_account("6000", "Rent", AccountType::Expense, None, false)
+        .unwrap();
+    post(
+        &mut s2,
+        NaiveDate::from_ymd_opt(2026, 5, 1).unwrap(),
+        e2,
+        c2,
+        5_000,
+    );
+    drop(s2);
+    let b2 = data::load_once(&source(&d2, "", today)).unwrap();
+    assert_eq!(b2.kpis.monthly_burn, None);
+    // Three full months of loss: divided by 3, half away from zero.
+    let (d3, mut s3) = store_at("burn-three");
+    let c3 = s3
+        .add_account("1000", "Checking", AccountType::Asset, None, false)
+        .unwrap();
+    let e3 = s3
+        .add_account("6000", "Rent", AccountType::Expense, None, false)
+        .unwrap();
+    post(
+        &mut s3,
+        NaiveDate::from_ymd_opt(2025, 12, 1).unwrap(),
+        e3,
+        c3,
+        1,
+    );
+    post(
+        &mut s3,
+        NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
+        e3,
+        c3,
+        1_000,
+    );
+    drop(s3);
+    let b3 = data::load_once(&source(&d3, "", today)).unwrap();
+    // 10.00 / 3 = 3.333... -> 3.33
+    assert_eq!(b3.kpis.monthly_burn, Some(Decimal::new(333, 2)));
+    for x in [d, d2, d3] {
+        let _ = std::fs::remove_dir_all(x);
+    }
+}
+
+/// The view model's indexes: cash accounts by name when the settings name
+/// none, card accounts, each entry's accounts (debits first, once each),
+/// and what's new since the last refresh.
+#[test]
+fn indexes_cash_cards_accounts_and_fresh() {
+    let (d, mut s) = store_at("index");
+    let checking = s
+        .add_account("1000", "Business Checking", AccountType::Asset, None, false)
+        .unwrap();
+    let savings = s
+        .add_account("1010", "Savings", AccountType::Asset, None, false)
+        .unwrap();
+    let group = s
+        .add_account("1090", "Cash accounts", AccountType::Asset, None, true)
+        .unwrap();
+    let equip = s
+        .add_account("1500", "Equipment", AccountType::Asset, None, false)
+        .unwrap();
+    let card = s
+        .add_account(
+            "2050",
+            "Chase Ink Card",
+            AccountType::Liability,
+            None,
+            false,
+        )
+        .unwrap();
+    let cardish = s
+        .add_account("1600", "Card reader", AccountType::Asset, None, false)
+        .unwrap();
+    let rent = s
+        .add_account("6000", "Rent", AccountType::Expense, None, false)
+        .unwrap();
+    let today = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
+    // Two debits to one account, then two credits.
+    let e = s.create_entry(today, "split").unwrap();
+    let m = |c| Money::new(Decimal::new(c, 2), Currency::USD);
+    s.add_line(e, rent, Side::Debit, m(100)).unwrap();
+    s.add_line(e, rent, Side::Debit, m(200)).unwrap();
+    s.add_line(e, card, Side::Credit, m(250)).unwrap();
+    s.add_line(e, checking, Side::Credit, m(50)).unwrap();
+    s.post_entry(e).unwrap();
+    drop(s);
+    let src = source(&d, "", today);
+    let b = data::load_once(&src).unwrap();
+    let mut cash = b.cash_accounts.clone();
+    cash.sort();
+    assert_eq!(
+        cash,
+        vec![checking, savings],
+        "by name, postable assets only"
+    );
+    let _ = (group, equip, cardish);
+    assert_eq!(b.card_accounts, vec![card], "liabilities named card");
+    assert_eq!(b.entry(e).unwrap().accounts, vec![rent, card, checking]);
+    assert!(b.fresh.is_empty(), "a first load marks nothing new");
+    // A new entry after a refresh is the only fresh one.
+    let seq = b.seq();
+    let mut s = Store::open(&d.join("books-data")).unwrap();
+    let e2 = post(&mut s, today, rent, checking, 999);
+    drop(s);
+    let snap = ledger_store::Snapshot::load(&src.data_dir).unwrap();
+    let settings = ledger_config::load(src.books_toml.as_ref().unwrap()).unwrap();
+    let mut verified = std::collections::HashSet::new();
+    let integrity = ledger_gui::books::Integrity::check(&snap, &mut verified);
+    let b2 = ledger_gui::books::Books::build(&snap, settings, today, Some(seq), integrity).unwrap();
+    assert_eq!(b2.fresh, [e2].into_iter().collect());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Integrity counts every stored file, read once: a second check with the
+/// same memory counts them again without rereading; a damaged one fails.
+#[test]
+fn integrity_counts_files_once_verified() {
+    let (d, mut s) = store_at("integrity");
+    let cash = s
+        .add_account("1000", "Checking", AccountType::Asset, None, false)
+        .unwrap();
+    let rent = s
+        .add_account("6000", "Rent", AccountType::Expense, None, false)
+        .unwrap();
+    let e = post(
+        &mut s,
+        NaiveDate::from_ymd_opt(2026, 1, 2).unwrap(),
+        rent,
+        cash,
+        100,
+    );
+    s.attach_receipt(Some(e), "a.pdf", "application/pdf", b"one", None)
+        .unwrap();
+    s.attach_receipt(Some(e), "b.pdf", "application/pdf", b"two", None)
+        .unwrap();
+    drop(s);
+    let snap = ledger_store::Snapshot::load(&d.join("books-data")).unwrap();
+    let mut verified = std::collections::HashSet::new();
+    let first = ledger_gui::books::Integrity::check(&snap, &mut verified);
+    assert_eq!((first.files_ok, first.file_failures.len()), (2, 0));
+    let again = ledger_gui::books::Integrity::check(&snap, &mut verified);
+    assert_eq!((again.files_ok, again.file_failures.len()), (2, 0));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Origins and parties for the rest of the journal's kinds: the invoice
+/// itself shows its customer, a bill payment its vendor, and a payroll
+/// tax remittance is labeled as one (so the receipt rule for hand-made
+/// entries doesn't flag it).
+#[test]
+fn more_origins_and_parties() {
+    let (d, mut s) = store_at("origin2");
+    let cash = s
+        .add_account("1000", "Checking", AccountType::Asset, None, false)
+        .unwrap();
+    let today = NaiveDate::from_ymd_opt(2026, 7, 15).unwrap();
+    let cust = s.add_customer("Acme Buyer").unwrap();
+    let vend = s.add_vendor("Paper Co").unwrap();
+    let line = |a: i64| {
+        vec![DocumentLine {
+            description: "x".into(),
+            amount: Decimal::new(a, 2),
+        }]
+    };
+    s.create_invoice(cust, today, today + Days::new(30), line(10_000))
+        .unwrap();
+    let bill = s
+        .create_bill(vend, today, today + Days::new(30), line(5_000))
+        .unwrap();
+    let paid = s
+        .pay_bill(bill, today, Decimal::new(5_000, 2), cash)
+        .unwrap();
+    s.run_payroll(
+        today,
+        vec![ledger_core::PayrollLine {
+            employee_name: "Pat".into(),
+            gross_pay: Decimal::new(100_000, 2),
+            federal_withholding: Decimal::new(10_000, 2),
+            state_withholding: Decimal::new(3_000, 2),
+            ss_employee: Decimal::new(6_200, 2),
+            medicare_employee: Decimal::new(1_450, 2),
+            ss_employer: Decimal::new(6_200, 2),
+            medicare_employer: Decimal::new(1_450, 2),
+            other_deductions: Decimal::ZERO,
+        }],
+        cash,
+    )
+    .unwrap();
+    let remit = s.remit_payroll_taxes(today, cash).unwrap();
+    drop(s);
+    let b = data::load_once(&source(
+        &d,
+        "[books]\nreceipt_threshold = \"0.00\"\n",
+        today,
+    ))
+    .unwrap();
+    let inv = b.entries.iter().find(|x| x.origin == "Invoice").unwrap();
+    assert_eq!(inv.party.as_deref(), Some("Acme Buyer"));
+    let pay = b.entry(paid).unwrap();
+    assert_eq!(pay.origin, "Bill payment");
+    assert_eq!(pay.party.as_deref(), Some("Paper Co"));
+    assert_eq!(
+        b.entries.iter().filter(|x| x.origin == "Payroll").count(),
+        1
+    );
+    let r = b.entry(remit).unwrap();
+    assert_eq!(r.origin, "Payroll taxes");
+    assert!(!r.missing_receipt, "a remittance isn't a hand-made entry");
+    let _ = std::fs::remove_dir_all(&d);
 }

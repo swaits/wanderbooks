@@ -2561,7 +2561,7 @@ impl BooksServer {
 
     #[tool(
         name = "books.label_asset",
-        description = "Link a fixed asset to the entry that acquired it (acquisition_entry), or set or change its tag (the label on the thing: letters, digits, - _ . /, at most 32; unique ignoring case and never reused by another asset, even after a retag or disposal) and its manufacturer serial number. The asset is its id or current tag. Journaled. Print labels with books.asset_labels."
+        description = "Change a fixed asset's description, link it to the entry that acquired it (acquisition_entry), or set or change its tag (the label on the thing: letters, digits, - _ . /, at most 32; unique ignoring case and never reused by another asset, even after a retag or disposal) and its manufacturer serial number. The asset is its id or current tag. Journaled. Print labels with books.asset_labels."
     )]
     async fn label_asset(
         &self,
@@ -2574,10 +2574,22 @@ impl BooksServer {
         if clear && p.serial.is_some() {
             return Err("pass serial or clear_serial, not both".into());
         }
-        if p.tag.is_none() && p.serial.is_none() && !clear && p.acquisition_entry.is_none() {
+        if p.tag.is_none()
+            && p.serial.is_none()
+            && !clear
+            && p.acquisition_entry.is_none()
+            && p.description.is_none()
+        {
             return Err(
-                "nothing to change: pass tag, serial, clear_serial, or acquisition_entry".into(),
+                "nothing to change: pass tag, serial, clear_serial, description, or acquisition_entry"
+                    .into(),
             );
+        }
+        if let Some(d) = &p.description {
+            store
+                .ledger()
+                .check_asset_description(id, d)
+                .map_err(|e| e.to_string())?;
         }
         if let Some(entry) = p.acquisition_entry {
             store
@@ -2612,12 +2624,18 @@ impl BooksServer {
                 .set_asset_acquisition(id, entry)
                 .map_err(|e| e.to_string())?;
         }
+        if let Some(d) = &p.description {
+            store
+                .set_asset_description(id, d)
+                .map_err(|e| e.to_string())?;
+        }
         let a = store.ledger().get_asset(id).expect("resolved");
         Ok(Json(LabelAssetOut {
             asset_id: id,
             tag: a.tag.clone(),
             serial: a.serial.clone(),
             acquisition_entry: a.acquired_by,
+            description: a.description.clone(),
         }))
     }
 

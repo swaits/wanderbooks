@@ -267,6 +267,15 @@ pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
             };
             ev(icon::BARCODE, text, asset_id.map(Route::Asset))
         }
+        "asset.described" => ev(
+            icon::PENCIL_SIMPLE,
+            format!(
+                "Renamed asset {} to {}",
+                s(p, "previous_description"),
+                s(p, "description")
+            ),
+            asset_id.map(Route::Asset),
+        ),
         "asset.acquisition_linked" => {
             let entry = p.get("entry_id").and_then(|v| v.as_u64()).unwrap_or(0);
             Some(Event {

@@ -499,3 +499,28 @@ fn verify_compares_amounts_by_value() {
         Store::open(&dir).unwrap().verify().unwrap();
     }
 }
+
+/// A description change is journaled with the old one, replays on reopen
+/// and from the journal alone, and verifies; a blank one is refused and
+/// journals nothing.
+#[test]
+fn a_description_change_replays_and_verifies() {
+    let (dir, mut s, _, x, _) = fixture("described");
+    let before = journal(&dir).len();
+    assert!(s.set_asset_description(x, "  ").is_err());
+    assert_eq!(journal(&dir).len(), before, "a refusal journals nothing");
+    s.set_asset_description(x, "Laptop, contributed jointly")
+        .unwrap();
+    let (kind, p) = journal(&dir).pop().unwrap();
+    assert_eq!(kind, "asset.described");
+    assert_eq!(p["description"], "Laptop, contributed jointly");
+    s.verify().unwrap();
+    drop(s);
+    std::fs::remove_file(dir.join(DB_FILE)).unwrap();
+    let s = Store::open(&dir).unwrap();
+    assert_eq!(
+        s.ledger().get_asset(x).unwrap().description,
+        "Laptop, contributed jointly"
+    );
+    s.verify().unwrap();
+}

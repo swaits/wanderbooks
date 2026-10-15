@@ -2853,17 +2853,17 @@ pub struct ListPartiesOut {
 /// the payments received on them, and reversals of any of these. Only
 /// posted entries dated in the calendar year count.
 ///
-/// Money lines are the lines on the money accounts: the `[books]
-/// cash_accounts` (every asset account but receivables when none are set)
-/// and every liability account except the payables and payroll
-/// withholding accounts (the control roles in `books.roles`: 2000 and
-/// 2110-2150 by default). A liability counts because it is how the
-/// company paid or was paid: a card, a member paying for it, a loan. Each
-/// entry's net is its money lines' credits minus their debits: a positive
-/// net was paid to the party, a negative one received from it; a reversal
-/// counts against its original's side. An entry that only moves money
-/// between money accounts (borrowing, a customer's deposit booked to a
-/// liability) nets to zero. A bill is not paid until its payment is.
+/// Each entry's money is `ledger_core::parties::entry_flow`: what left or
+/// reached the `[books] cash_accounts` (every asset account but
+/// receivables when none are set), plus what the company paid through a
+/// liability (a card, a member paying for it, a loan; not payables or
+/// payroll withholdings), with cash that pays a liability down counting
+/// once, as paid to that liability's creditor (a reimbursement to the
+/// members, a card payment to the issuer), and cash raised by a liability
+/// counting as received from the lender. Positive is paid to the party,
+/// negative received from it; a reversal counts against its original's
+/// side. A transfer between the company's own cash accounts nets to zero.
+/// A bill is not paid until its payment is.
 /// (`ledger_core::parties::activity` computes it; the viewer shows the
 /// same numbers.)
 #[derive(Debug, Clone, Serialize, JsonSchema)]

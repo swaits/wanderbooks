@@ -250,21 +250,21 @@ pub enum PartyPeriod {
 /// GOAL: answer "how much did we spend with them, and how much did we
 ///       get back?" (owner, 2026-10-15) with the books' own numbers.
 /// SOURCE: ledger_core::parties::activity (paid, received) and
-///         ledger_core::parties::money_accounts (the money set), with
+///         ledger_core::parties::entry_flow (what for), with
 ///         Books::cash_accounts, as PartyInfo uses them.
 /// INVARIANTS:
 ///   1. paid, received: activity(ledger, party, span, cash accounts)'s,
 ///      exactly.
 ///   2. net() = paid − received.
-///   3. what_for: over the party's posted entries dated in the span, each
-///      account not in money_accounts with its debits − credits, the
-///      accounts whose sum is zero left out, largest magnitude first
+///   3. what_for: over the party's posted entries dated in the span, the
+///      sum by account of each entry_flow's what_for (a liability paid
+///      down, like a reimbursement, appears as what the money paid for),
+///      the accounts whose sum is zero left out, largest magnitude first
 ///      (then by account id). Positive: what money paid for; negative:
 ///      where money received came from (or, on payables and
 ///      receivables, what is still owed).
-///   4. Σ what_for = net(), exactly: every entry balances, so its
-///      non-money lines net to what its money lines moved (a reversal
-///      reverses both).
+///   4. Σ what_for = net(), exactly: each entry_flow's what_for sums to
+///      its net (a reversal reverses both).
 ///   5. entries: how many of the party's entries are posted and dated
 ///      in the span.
 /// ```
@@ -1228,11 +1228,8 @@ impl Books {
             let money = ledger_core::parties::money_accounts(l, &self.cash_accounts);
             let mut by: BTreeMap<AccountId, Decimal> = BTreeMap::new();
             for e in &posted {
-                for line in e.lines().iter().filter(|x| !money.contains(&x.account)) {
-                    *by.entry(line.account).or_default() += match line.side {
-                        Side::Debit => line.amount.amount,
-                        Side::Credit => -line.amount.amount,
-                    };
+                for (account, amount) in ledger_core::parties::entry_flow(e, &money).what_for {
+                    *by.entry(account).or_default() += amount;
                 }
             }
             what_for = by.into_iter().filter(|(_, v)| !v.is_zero()).collect();

@@ -1135,3 +1135,78 @@ fn a_vault_record_hash_with_nine_digits_is_accepted() {
     };
     assert_eq!(facts.check(), Ok(()));
 }
+
+/// Oracle: parties::entry_flow SCENARIOS 1–6, worked by hand; what_for
+/// always sums to net.
+#[test]
+fn entry_flow_scenarios() {
+    use ledger_core::parties::{entry_flow, money_accounts};
+    use ledger_core::{AccountType, Currency, Ledger, Money, Side};
+    use rust_decimal::Decimal;
+    let mut l = Ledger::new(Currency::USD);
+    let mut acct = |code: &str, t| l.add_account(code, code, t, None, false).unwrap();
+    let bank = acct("1000", AccountType::Asset);
+    let savings = acct("1010", AccountType::Asset);
+    let equip = acct("1500", AccountType::Asset);
+    let card = acct("2050", AccountType::Liability);
+    let members = acct("2100", AccountType::Liability);
+    let loan = acct("2500", AccountType::Liability);
+    let capital = acct("3000", AccountType::Equity);
+    let exp = acct("6000", AccountType::Expense);
+    let money = money_accounts(&l, &[bank, savings]);
+    let d = chrono::NaiveDate::from_ymd_opt(2026, 5, 1).unwrap();
+    let mut case = |lines: &[(u64, Side, &str)]| {
+        let e = l.create_entry(d, "x");
+        for (a, side, amt) in lines {
+            l.add_line(
+                e,
+                *a,
+                *side,
+                Money::new(amt.parse().unwrap(), Currency::USD),
+            )
+            .unwrap();
+        }
+        let f = entry_flow(l.get_entry(e).unwrap(), &money);
+        let sum: Decimal = f.what_for.iter().map(|(_, v)| *v).sum();
+        assert_eq!(sum, f.net, "what_for sums to net: {f:?}");
+        f
+    };
+    use Side::{Credit as C, Debit as D};
+    let dec = |s: &str| s.parse::<Decimal>().unwrap();
+    // 1. Expense from the bank, a card, a member.
+    for src in [bank, card, members] {
+        let f = case(&[(exp, D, "10.00"), (src, C, "10.00")]);
+        assert_eq!(f.net, dec("10.00"));
+        assert_eq!(f.what_for, vec![(exp, dec("10.00"))]);
+    }
+    // 2. Reimbursing members; paying the card.
+    for liab in [members, card] {
+        let f = case(&[(liab, D, "387.64"), (bank, C, "387.64")]);
+        assert_eq!(f.net, dec("387.64"));
+        assert_eq!(f.what_for, vec![(liab, dec("387.64"))]);
+    }
+    // 3. A loan.
+    let f = case(&[(bank, D, "1000.00"), (loan, C, "1000.00")]);
+    assert_eq!(f.net, dec("-1000.00"));
+    // 4. Refunds to the bank and to the card.
+    assert_eq!(
+        case(&[(bank, D, "5.00"), (exp, C, "5.00")]).net,
+        dec("-5.00")
+    );
+    assert_eq!(
+        case(&[(card, D, "5.00"), (exp, C, "5.00")]).net,
+        dec("-5.00")
+    );
+    // 5. Own-account transfer.
+    let f = case(&[(savings, D, "50.00"), (bank, C, "50.00")]);
+    assert_eq!(f.net, Decimal::ZERO);
+    assert!(f.what_for.is_empty());
+    // 6. Property contributed.
+    assert_eq!(
+        case(&[(equip, D, "750.00"), (capital, C, "750.00")]).net,
+        Decimal::ZERO
+    );
+    // Split payment: part bank, part card.
+    let f = case(&[(exp, D, "100.00"), (bank, C, "60.00"), (card, C, "40.00")]);
+    assert_eq!(f.net, dec("100.00"));
+}

@@ -314,31 +314,146 @@ pub struct Activity {
     pub received: rust_decimal::Decimal,
 }
 
-/// The money accounts [`activity`] counts: the cash accounts (every asset
-/// account but receivables when `cash` is empty), and every liability
-/// account but payables and the payroll withholdings (cards, and what
-/// members paid for the company and are owed back).
-pub fn money_accounts(
-    ledger: &crate::Ledger,
-    cash: &[crate::AccountId],
-) -> std::collections::HashSet<crate::AccountId> {
+/// The accounts [`entry_flow`] reads money from: the cash accounts (every
+/// asset account but receivables when `cash` is empty), and the
+/// liabilities other than payables and the payroll withholdings (cards,
+/// what members paid for the company and are owed back, loans).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MoneyAccounts {
+    /// Cash: bank, savings, cash on hand.
+    pub cash: std::collections::HashSet<crate::AccountId>,
+    /// Liabilities that pay for the company or are paid down.
+    pub liabilities: std::collections::HashSet<crate::AccountId>,
+}
+
+/// The [`MoneyAccounts`] of `ledger`, with `cash` the books' cash accounts.
+pub fn money_accounts(ledger: &crate::Ledger, cash: &[crate::AccountId]) -> MoneyAccounts {
     use crate::AccountType;
     let not_money: std::collections::HashSet<crate::AccountId> = crate::PAYROLL[2..]
         .iter()
         .chain([&crate::PAYABLES, &crate::RECEIVABLES])
         .filter_map(|c| ledger.role_account(c))
         .collect();
-    ledger
-        .chart()
-        .all()
-        .filter(|a| !not_money.contains(&a.id))
-        .filter(|a| match a.account_type {
-            AccountType::Liability => true,
-            AccountType::Asset => cash.is_empty() || cash.contains(&a.id),
-            _ => false,
-        })
-        .map(|a| a.id)
-        .collect()
+    let mut out = MoneyAccounts::default();
+    for a in ledger.chart().all().filter(|a| !not_money.contains(&a.id)) {
+        match a.account_type {
+            AccountType::Asset if cash.is_empty() || cash.contains(&a.id) => {
+                out.cash.insert(a.id);
+            }
+            AccountType::Liability => {
+                out.liabilities.insert(a.id);
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// What one entry moved with its counterparty ([`entry_flow`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EntryFlow {
+    /// Paid to the counterparty (positive) or received from it (negative).
+    pub net: rust_decimal::Decimal,
+    /// What for, by account (debits − credits): positive is what the money
+    /// paid for, negative where money received came from. Sums to `net`.
+    pub what_for: Vec<(crate::AccountId, rust_decimal::Decimal)>,
+}
+
+/// The money one entry moved with its counterparty, and what for.
+///
+/// ```text
+/// GOAL: "how much did we pay them" right however it was paid: from the
+///       bank, on a card, by a member for the company, or by paying down
+///       what the company owes them (a reimbursement, a card payment).
+/// SOURCE: DECISION (owner, 2026-10-15), after a reimbursement to the
+///         members netted to zero under the earlier rule (cash and
+///         liabilities alike as money).
+/// DEFINITIONS (over the entry's lines, in `money`):
+///   cash_cr, cash_dr: credits and debits on cash accounts;
+///   liab_cr, liab_dr: credits and debits on money liabilities;
+///   down = min(liab_dr, cash_cr): cash paying down a liability (its
+///     creditor is paid; the liability is what for);
+///   up = min(liab_cr, cash_dr): a liability raising cash (borrowing: the
+///     lender pays the company).
+/// INVARIANTS:
+///   1. net = (cash_cr − cash_dr) + (liab_cr − liab_dr) + down − up.
+///   2. what_for: every line not on a money account (debits − credits),
+///      plus `down` on the debited liabilities and −`up` on the credited
+///      ones (in line order), zero sums left out, accounts merged; its sum
+///      is net exactly, because the entry balances.
+/// SCENARIOS:
+///   1. Expense from the bank, on a card, or paid by a member for the
+///      company (Dr expense / Cr 1000, 2050, or 2100): net is the amount.
+///   2. Reimbursing members (Dr 2100 / Cr 1000) or paying a card (Dr 2050 /
+///      Cr 1000): net is the amount, what for is the liability.
+///   3. A loan (Dr 1000 / Cr loan): net is minus the amount (received).
+///   4. A refund (Dr 1000 or Dr card / Cr expense): negative net.
+///   5. A transfer between the company's own cash accounts: zero.
+///   6. A member contributing property (Dr equipment / Cr capital): zero.
+/// ```
+pub fn entry_flow(entry: &crate::JournalEntry, money: &MoneyAccounts) -> EntryFlow {
+    use crate::Side;
+    use rust_decimal::Decimal;
+    let (mut cash_cr, mut cash_dr, mut liab_cr, mut liab_dr) =
+        (Decimal::ZERO, Decimal::ZERO, Decimal::ZERO, Decimal::ZERO);
+    for l in entry.lines() {
+        let a = l.amount.amount;
+        match (
+            money.cash.contains(&l.account),
+            money.liabilities.contains(&l.account),
+            l.side,
+        ) {
+            (true, _, Side::Credit) => cash_cr += a,
+            (true, _, Side::Debit) => cash_dr += a,
+            (false, true, Side::Credit) => liab_cr += a,
+            (false, true, Side::Debit) => liab_dr += a,
+            _ => {}
+        }
+    }
+    let down = liab_dr.min(cash_cr);
+    let up = liab_cr.min(cash_dr);
+    let net = (cash_cr - cash_dr) + (liab_cr - liab_dr) + down - up;
+    let mut by: std::collections::BTreeMap<crate::AccountId, Decimal> = Default::default();
+    let (mut down_left, mut up_left) = (down, up);
+    let mut order: Vec<crate::AccountId> = Vec::new();
+    for l in entry.lines() {
+        let a = l.amount.amount;
+        let part = if money.cash.contains(&l.account) {
+            Decimal::ZERO
+        } else if money.liabilities.contains(&l.account) {
+            match l.side {
+                Side::Debit => {
+                    let take = a.min(down_left);
+                    down_left -= take;
+                    take
+                }
+                Side::Credit => {
+                    let take = a.min(up_left);
+                    up_left -= take;
+                    -take
+                }
+            }
+        } else {
+            match l.side {
+                Side::Debit => a,
+                Side::Credit => -a,
+            }
+        };
+        if !part.is_zero() {
+            if !by.contains_key(&l.account) {
+                order.push(l.account);
+            }
+            *by.entry(l.account).or_default() += part;
+        }
+    }
+    EntryFlow {
+        net,
+        what_for: order
+            .into_iter()
+            .map(|a| (a, by[&a]))
+            .filter(|(_, v)| !v.is_zero())
+            .collect(),
+    }
 }
 
 /// One party's entries, and the money paid to and received from it in
@@ -353,9 +468,9 @@ pub fn money_accounts(
 ///   1. entries: every entry Ledger::entry_party names the party
 ///      (hand tags, vendor tags, bills and their payments, invoices and
 ///      their payments, and reversals of any of these carry it).
-///   2. Each posted entry dated in the span nets (credits − debits) on
-///      money_accounts: positive is a payment, negative a receipt. A
-///      reversal counts on its original's side, so it subtracts.
+///   2. Each posted entry dated in the span counts its entry_flow net:
+///      positive is a payment, negative a receipt. A reversal counts on
+///      its original's side, so it subtracts.
 ///   3. A card charge counts as paid (the company paid them, by card); a
 ///      bill doesn't until it is paid. Not the 1099 amount: that is
 ///      form1099::vendor_1099_report_with.
@@ -366,22 +481,12 @@ pub fn activity(
     (start, end): (NaiveDate, NaiveDate),
     cash: &[crate::AccountId],
 ) -> Activity {
-    use crate::Side;
     use rust_decimal::Decimal;
     let entries: BTreeSet<crate::EntryId> = (0..ledger.next_entry_id())
         .filter(|&id| ledger.entry_party(id) == Some(party))
         .collect();
     let money = money_accounts(ledger, cash);
-    let net_out = |e: &crate::JournalEntry| -> Decimal {
-        e.lines()
-            .iter()
-            .filter(|l| money.contains(&l.account))
-            .map(|l| match l.side {
-                Side::Credit => l.amount.amount,
-                Side::Debit => -l.amount.amount,
-            })
-            .sum()
-    };
+    let net_out = |e: &crate::JournalEntry| entry_flow(e, &money).net;
     let (mut paid, mut received) = (Decimal::ZERO, Decimal::ZERO);
     for &id in &entries {
         let Some(e) = ledger.get_entry(id) else {

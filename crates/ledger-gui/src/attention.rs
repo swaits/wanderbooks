@@ -1,8 +1,8 @@
 //! What the books need: drafts left unposted, missing receipts, schedules
 //! and recurring entries due, open past periods, uncategorized tax lines,
 //! 1099 vendors without a W-9, overdue bills and invoices, money owed to
-//! owners, fixed asset depreciation not posted and assets without a tag,
-//! and legal rules (like the 1099 threshold) due for an update. Each item says what's wrong, where to look, and the prompt that
+//! owners, fixed asset depreciation not posted, assets without a tag or a
+//! tax basis, and legal rules (like the 1099 threshold) due for an update. Each item says what's wrong, where to look, and the prompt that
 //! asks the agent to fix it (the GUI never changes the books itself).
 
 use crate::books::{Attention, Books, Severity};
@@ -36,7 +36,9 @@ use rust_decimal::Decimal;
 ///      and not posted (Books::depreciation_due amount > 0: Todo, one
 ///      item); the asset register and the books' asset cost accounts
 ///      disagreeing today (unregistered_cost != 0: Problem); an active
-///      asset in service with no tag (Todo, one per asset).
+///      asset in service with no tag (Todo, one per asset); an active
+///      asset in service with no tax basis (Asset::tax_basis is None:
+///      Todo, one per asset, its prompt naming books.set_asset_tax_basis).
 ///   3. Nothing else: books with none of those yield no items.
 ///   4. Every item's prompt starts "In wanderbooks," or names
 ///      wanderbooks, and its amounts are the books' exact amounts.
@@ -380,6 +382,29 @@ pub fn find(b: &Books) -> Vec<Attention> {
             prompt: format!(
                 "In wanderbooks, label asset {} (\"{}\") with books.label_asset: give it the next generated tag unless I have my own, and its serial number if I can find it. Then print its label with books.asset_labels.",
                 a.id, a.description
+            ),
+        });
+    }
+
+    for a in b.ledger.registered_assets().filter(|a| {
+        a.tax_basis().is_none()
+            && a.status == ledger_core::AssetStatus::Active
+            && a.purchase_date <= today
+    }) {
+        let name = a.tag.clone().unwrap_or_else(|| format!("asset {}", a.id));
+        out.push(Attention {
+            severity: Severity::Todo,
+            title: format!("No tax basis: {}", b.asset_label(a.id)),
+            detail: format!(
+                "Book cost {}, in service {}. The CPA needs its federal tax basis beside its book value.",
+                fmt::dollars(a.cost.amount),
+                fmt::date(a.purchase_date)
+            ),
+            target: Some(Route::Asset(a.id)),
+            prompt: format!(
+                "In wanderbooks, record the tax basis of {name} (\"{}\", book cost {}) with books.set_asset_tax_basis. Ask me how the company got it: bought (cost), contributed by a member from business use (carryover, IRC §723: the member's adjusted basis), or converted by a member from personal use (personal-use conversion, Treas. Reg. §1.168(i)-4(b): the member's adjusted basis; the tax basis is the lesser of that and its fair market value). Then show me the asset.",
+                a.description,
+                fmt::dollars(a.cost.amount)
             ),
         });
     }

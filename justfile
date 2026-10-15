@@ -10,11 +10,19 @@ default:
     @just --list
 
 # Everything CI should check: format, clippy and rustdoc (zero warnings), tests
-check:
+check: sweep-test-tmp
     cargo fmt --all --check
     cargo clippy --workspace --all-targets -- -D warnings
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --quiet
     cargo test --workspace
+    @just sweep-test-tmp
+
+# Test books go in the system temp dir (often RAM). A test cleans up after
+# itself, but one killed mid-run (a mutant's timeout, ^C) can't: tens of
+# thousands piled up to 23 GB of RAM (2026-10-15). Remove this user's test
+# book dirs older than an hour, so a run in progress elsewhere keeps its own.
+sweep-test-tmp:
+    @find "${TMPDIR:-/tmp}" /tmp -maxdepth 1 -user "$(id -u)" -type d -mmin +60 \( -name 'wb-*' -o -name 'wanderbooks-*' -o -name 'ledger-*' \) -exec rm -rf {} + 2>/dev/null || true
 
 # Formal proofs: Kani on the accounting kernel, Lean for books of any size (docs/verification.md)
 prove:
@@ -66,33 +74,38 @@ miri:
 mutants_tmp := env_var_or_default("XDG_CACHE_HOME", env_var("HOME") + "/.cache") + "/wanderbooks/mutants"
 
 # Mutation testing of the core: do the tests catch planted bugs?
-mutants:
+mutants: sweep-test-tmp
     # Core and store tests (the store's replay tests reach Ledger::replay_*);
     # the whole workspace would rebuild the viewer for every mutant.
     mkdir -p {{mutants_tmp}}
     PROPTEST_MAX_SHRINK_ITERS=0 TMPDIR={{mutants_tmp}} cargo mutants -p ledger-core --exclude crates/ledger-core/src/proofs.rs --test-package ledger-core --test-package ledger-store -j 4 --timeout 120
+    @just sweep-test-tmp
 
 # Mutation testing of the store. Fewer random cases per mutant (each needs
 # a run that catches it, not the deep sweep).
-mutants-store:
+mutants-store: sweep-test-tmp
     mkdir -p {{mutants_tmp}}
     STORE_CASES=64 PROPTEST_MAX_SHRINK_ITERS=0 TMPDIR={{mutants_tmp}} cargo mutants -p ledger-store --test-package ledger-store -j 3 --timeout 300 -o mutants-store
+    @just sweep-test-tmp
 
 # Mutation testing of the importers and report renderers.
-mutants-import:
+mutants-import: sweep-test-tmp
     mkdir -p {{mutants_tmp}}
     PROPTEST_MAX_SHRINK_ITERS=0 TMPDIR={{mutants_tmp}} cargo mutants -p ledger-import --test-package ledger-import -j 4 --timeout 300 -o mutants-import
+    @just sweep-test-tmp
 
 # Mutation testing of the settings parser and the receipt policy.
-mutants-config:
+mutants-config: sweep-test-tmp
     mkdir -p {{mutants_tmp}}
     PROPTEST_MAX_SHRINK_ITERS=0 TMPDIR={{mutants_tmp}} cargo mutants -p ledger-config --test-package ledger-config -j 4 --timeout 120 -o mutants-config
+    @just sweep-test-tmp
 
 # Mutation testing of the MCP server (every mutant runs the stdio suites;
 # fewer random cases each, as for the store).
-mutants-mcp:
+mutants-mcp: sweep-test-tmp
     mkdir -p {{mutants_tmp}}
     MCP_CASES=16 PROPTEST_MAX_SHRINK_ITERS=0 TMPDIR={{mutants_tmp}} cargo mutants -p ledger-mcp --test-package ledger-mcp -j 4 --timeout 600 -o mutants-mcp
+    @just sweep-test-tmp
 
 # Mutation testing of the viewer where it matters: the numbers it shows
 # (the view model) and how it writes them (formatting), against the tests
@@ -100,9 +113,10 @@ mutants-mcp:
 # its own test (tests/read_only.rs, which renders every page: too slow to
 # rerun per mutant); search, history, ticks, and the attention list are
 # spec-tested, not swept.
-mutants-gui:
+mutants-gui: sweep-test-tmp
     mkdir -p {{mutants_tmp}}
     PROPTEST_MAX_SHRINK_ITERS=0 TMPDIR={{mutants_tmp}} cargo mutants -p ledger-gui --test-package ledger-gui -j 4 --timeout 300 -o mutants-gui -f crates/ledger-gui/src/books.rs -f crates/ledger-gui/src/fmt.rs -- --lib --test spec_gui --test view_model --test copy
+    @just sweep-test-tmp
 
 # Benchmarks of the core's hot paths (no budget gates them yet)
 bench:

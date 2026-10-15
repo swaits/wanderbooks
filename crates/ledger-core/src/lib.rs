@@ -44,7 +44,8 @@ pub use arap::{
 };
 pub use assets::{
     Asset, AssetId, AssetStatus, DepreciationMethod, DisposalAmounts, NewAsset, ScheduleLine,
-    accumulated_depreciation, book_value, depreciation_schedule, disposal_amounts,
+    TaxBasis, TaxBasisRule, accumulated_depreciation, book_value, depreciation_schedule,
+    disposal_amounts,
 };
 pub use classes::{Class, ClassId};
 pub use error::LedgerError;

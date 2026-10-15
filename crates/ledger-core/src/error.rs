@@ -147,6 +147,11 @@ pub enum LedgerError {
         why: String,
     },
 
+    /// An asset's tax basis record doesn't fit its rule (see
+    /// `Ledger::set_asset_tax_basis`).
+    #[error("bad tax basis: {0}")]
+    InvalidTaxBasis(String),
+
     /// A serial number of the wrong form (see `assets::check_serial`).
     #[error("bad serial number: {0}")]
     InvalidSerial(String),

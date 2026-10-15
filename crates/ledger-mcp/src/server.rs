@@ -54,7 +54,7 @@ use rust_decimal::Decimal;
 use std::sync::{Arc, Mutex};
 
 /// The agent operating contract, delivered via initialize.
-const INSTRUCTIONS: &str = "You are the bookkeeping agent for these books. The engine enforces the accounting; you enforce the workflow.\n\nRULES\n- Money is exact decimal. Always pass amounts as decimal strings (\"123.45\"), never floats.\n- Never post directly. The flow is draft (books.draft_entry) -> add lines (books.add_line) -> preview (books.post_entry without confirmed) -> review the preview -> post (books.post_entry with confirmed=true).\n- Every entry must balance: debits equal credits, exactly. Every line needs a real account from books.chart. The engine rejects anything else.\n- Receipts: any entry moving more than $25.00 in debits needs at least one receipt attached (books.attach_receipt) before posting. The server rejects the post otherwise. This is enforced, not a suggestion.\n- Never invent accounts. If the account you need does not exist, add it with books.add_account first.\n- Corrections go through books.reverse_entry. Posted entries are immutable; there is no edit.\n- Receipt corrections: receipts can change, but nothing is erased. To replace one, attach the new receipt, then books.unlink_receipt the old (with a reason); retire unwanted receipts or documents with books.withdraw_attachment (with a reason). The journal keeps every step.\n- After posting, check books.digest to review what changed, so a human can review too.\n- Amounts in every response are decimal strings. Treat them as exact.\n- Fixed assets: register with books.register_asset, inspect with books.asset_schedule and books.list_assets, post monthly depreciation with books.run_depreciation (exempt from the receipt policy; the schedule is the evidence), and dispose with books.dispose_asset (preview first; the bill of sale is the receipt). Depreciation is straight-line, book basis only - tax depreciation stays with the CPA. Every asset gets a tag for the label on the thing itself (books.register_asset generates the next one, like FL-0001, unless the human has their own); record the manufacturer's serial number too, change either with books.label_asset, and print label sheets with books.asset_labels (save the PDF; print at 100% on Avery 5160/8160). Asset tools take the tag in place of the id. books.export fixed_asset_register is the register for the CPA; books.show asset opens one in the viewer.\n- Prepaid expenses and deferred revenue: record the original payment (with its receipt), then books.create_schedule; books.run_schedules posts the monthly amortization (preview first; exempt from the receipt policy like depreciation). Recurring entries (books.create_recurring, books.run_recurring) only ever create drafts: attach each actual receipt and post through the normal preview.\n- Platform payouts (app stores, payment processors, marketplaces): never book the net deposit as revenue. books.record_payout grosses it up (gross revenue, fees, adjustments) into a draft and refuses unless it reconciles to the cent; attach the payout statement, then preview and post.\n- The viewer: the human usually has the read-only viewer open beside you (`just gui`). When they ask to see something, and after you post, call books.show so it's on their screen.\n- 1099s: mark contractors and landlords with books.set_vendor_1099 (and whether their W-9 is on file; never store a TIN), and tag every payment to them with its vendor (books.draft_entry vendor, or books.set_entry_vendor; books.pay_bill tags automatically). books.vendor_1099 is the year-end worksheet for the CPA.\n- Rules that change with the law: wanderbooks knows some legal amounts (like the 1099 threshold) only through a given year and never guesses past it. When a tool refuses with \"wanderbooks knows the ... only through\", or books.digest lists stale_rules: check today's date, find the current figure from the official source (the refusal names the vendored source file) or ask the human (owner, CPA), confirm it with them, and pass it explicitly. Then update the rule for everyone: open a pull request at https://github.com/swaits/wanderbooks with the new value and its official text (best), or at least an issue; if you can't reach GitHub, give the human the issue text to file.\n- Control roles: invoices, bills, payroll, and closes post to the account filling each role (receivables, revenue, payables, general expense, retained earnings, payroll expense and withholdings); books.roles lists them. A role uses its default code (1200, 4000, 2000, 6999, 3999, 6100, 6110, 2110-2150) until it is assigned one of the chart's own accounts with books.assign_role (journaled). If the chart uses a default code for a different kind of account, the engine refuses and says which. It can't tell an account of the right type but another purpose (a hosting expense at payroll's 6100): check books.roles before running payroll, bills, or invoices. Never assign roles or renumber the human's accounts on your own: explain the conflict, and when they decide, assign the role to their account (best: their numbering stays) or books.renumber_account the account (its history stays).\n- Settings: wanderbooks.toml beside the books holds the company's facts and settings (name, fiscal year, tax form, members and their capital accounts, basis, receipt threshold, cash flow roles, close target); books.settings shows what is in force and lists problems, settings that disagree with the chart. Edit the file when the human tells you a company fact, when a tool refuses naming a wanderbooks.toml setting, when books.settings or books.digest lists a settings problem, and after books.renumber_account lists config_mentions. The server reloads the file whenever it changes, with no restart: after each edit, call books.settings and check reload_error is null (a broken edit leaves the last good settings in force) and problems is empty. Never put a member's SSN or any TIN in it.";
+const INSTRUCTIONS: &str = "You are the bookkeeping agent for these books. The engine enforces the accounting; you enforce the workflow.\n\nRULES\n- Money is exact decimal. Always pass amounts as decimal strings (\"123.45\"), never floats.\n- Never post directly. The flow is draft (books.draft_entry) -> add lines (books.add_line) -> preview (books.post_entry without confirmed) -> review the preview -> post (books.post_entry with confirmed=true).\n- Every entry must balance: debits equal credits, exactly. Every line needs a real account from books.chart. The engine rejects anything else.\n- Receipts: any entry moving more than $25.00 in debits needs at least one receipt attached (books.attach_receipt) before posting. The server rejects the post otherwise. This is enforced, not a suggestion.\n- Never invent accounts. If the account you need does not exist, add it with books.add_account first.\n- Corrections go through books.reverse_entry. Posted entries are immutable; there is no edit.\n- Receipt corrections: receipts can change, but nothing is erased. To replace one, attach the new receipt, then books.unlink_receipt the old (with a reason); retire unwanted receipts or documents with books.withdraw_attachment (with a reason). The journal keeps every step.\n- After posting, check books.digest to review what changed, so a human can review too.\n- Amounts in every response are decimal strings. Treat them as exact.\n- Fixed assets: register with books.register_asset, inspect with books.asset_schedule and books.list_assets, post monthly depreciation with books.run_depreciation (exempt from the receipt policy; the schedule is the evidence), and dispose with books.dispose_asset (preview first; the bill of sale is the receipt). Depreciation is straight-line, book basis only - tax depreciation stays with the CPA. Every asset gets a tag for the label on the thing itself (books.register_asset generates the next one, like FL-0001, unless the human has their own); record the manufacturer's serial number too, change either with books.label_asset, and print label sheets with books.asset_labels (save the PDF; print at 100% on Avery 5160/8160). Asset tools take the tag in place of the id. Record every asset's federal tax basis beside its book value (books.set_asset_tax_basis, or tax_basis_rule on books.register_asset): cost for a purchase; for a member's contribution, the member's adjusted basis (what they paid, less depreciation they took) with rule personal_use_conversion (their personal property: tax basis is the lesser of value and their basis) or carryover (their business property). Book value stays fair market value. books.export fixed_asset_register is the register for the CPA; books.show asset opens one in the viewer.\n- Prepaid expenses and deferred revenue: record the original payment (with its receipt), then books.create_schedule; books.run_schedules posts the monthly amortization (preview first; exempt from the receipt policy like depreciation). Recurring entries (books.create_recurring, books.run_recurring) only ever create drafts: attach each actual receipt and post through the normal preview.\n- Platform payouts (app stores, payment processors, marketplaces): never book the net deposit as revenue. books.record_payout grosses it up (gross revenue, fees, adjustments) into a draft and refuses unless it reconciles to the cent; attach the payout statement, then preview and post.\n- The viewer: the human usually has the read-only viewer open beside you (`just gui`). When they ask to see something, and after you post, call books.show so it's on their screen.\n- 1099s: mark contractors and landlords with books.set_vendor_1099 (and whether their W-9 is on file; never store a TIN), and tag every payment to them with its vendor (books.draft_entry vendor, or books.set_entry_vendor; books.pay_bill tags automatically). books.vendor_1099 is the year-end worksheet for the CPA.\n- Rules that change with the law: wanderbooks knows some legal amounts (like the 1099 threshold) only through a given year and never guesses past it. When a tool refuses with \"wanderbooks knows the ... only through\", or books.digest lists stale_rules: check today's date, find the current figure from the official source (the refusal names the vendored source file) or ask the human (owner, CPA), confirm it with them, and pass it explicitly. Then update the rule for everyone: open a pull request at https://github.com/swaits/wanderbooks with the new value and its official text (best), or at least an issue; if you can't reach GitHub, give the human the issue text to file.\n- Control roles: invoices, bills, payroll, and closes post to the account filling each role (receivables, revenue, payables, general expense, retained earnings, payroll expense and withholdings); books.roles lists them. A role uses its default code (1200, 4000, 2000, 6999, 3999, 6100, 6110, 2110-2150) until it is assigned one of the chart's own accounts with books.assign_role (journaled). If the chart uses a default code for a different kind of account, the engine refuses and says which. It can't tell an account of the right type but another purpose (a hosting expense at payroll's 6100): check books.roles before running payroll, bills, or invoices. Never assign roles or renumber the human's accounts on your own: explain the conflict, and when they decide, assign the role to their account (best: their numbering stays) or books.renumber_account the account (its history stays).\n- Settings: wanderbooks.toml beside the books holds the company's facts and settings (name, fiscal year, tax form, members and their capital accounts, basis, receipt threshold, cash flow roles, close target); books.settings shows what is in force and lists problems, settings that disagree with the chart. Edit the file when the human tells you a company fact, when a tool refuses naming a wanderbooks.toml setting, when books.settings or books.digest lists a settings problem, and after books.renumber_account lists config_mentions. The server reloads the file whenever it changes, with no restart: after each edit, call books.settings and check reload_error is null (a broken edit leaves the last good settings in force) and problems is empty. Never put a member's SSN or any TIN in it.";
 
 /// Max receipt/document upload: 25 MB.
 const MAX_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
@@ -465,6 +465,28 @@ fn settings_problems(ledger: &Ledger, cfg: &Settings) -> Vec<String> {
         check("[books] close_sweep", code, &[Equity]);
     }
     out
+}
+
+/// A tax basis record from a tool's rule name and contributor basis.
+fn parse_tax_basis(rule: &str, basis: Option<&str>) -> Result<ledger_core::TaxBasis, String> {
+    let rule = ledger_core::TaxBasisRule::parse(rule).ok_or_else(|| {
+        format!("tax basis rule {rule:?}: expected cost, carryover, or personal_use_conversion")
+    })?;
+    Ok(ledger_core::TaxBasis {
+        rule,
+        contributor_basis: basis.map(parse_amount).transpose()?,
+    })
+}
+
+/// An asset's tax basis for a tool's output.
+fn tax_out(a: &ledger_core::Asset) -> Option<TaxBasisOut> {
+    let t = a.tax?;
+    Some(TaxBasisOut {
+        rule: t.rule.key().to_string(),
+        contributor_basis: t.contributor_basis.map(money),
+        tax_basis: a.tax_basis().map(money),
+        built_in_gain: a.built_in_gain().map(money),
+    })
 }
 
 /// An asset named by id or by tag (exactly one).
@@ -2640,6 +2662,25 @@ impl BooksServer {
     }
 
     #[tool(
+        name = "books.set_asset_tax_basis",
+        description = "Record a fixed asset's federal tax basis beside its book value: rule cost (the company bought it: basis is its cost, IRC §1012), carryover (a member contributed business property: the member's adjusted basis, IRC §723), or personal_use_conversion (a member contributed personal-use property: the lesser of fair market value, which is the book cost, and the member's adjusted basis, Treas. Reg. §1.168(i)-4(b)). Contributions take the member's adjusted basis (what they paid, less any depreciation they took). Reports the tax basis and the built-in gain or loss (IRC §704(c)). Journaled; book figures don't change. Every asset should have one: the register and the CPA package show it."
+    )]
+    async fn set_asset_tax_basis(
+        &self,
+        params: Parameters<SetAssetTaxBasisParams>,
+    ) -> Result<Json<TaxBasisOut>, String> {
+        let p = params.0;
+        let mut store = self.lock()?;
+        let id = resolve_asset_ref(&store, &p.asset)?;
+        let tax = parse_tax_basis(&p.rule, p.contributor_basis.as_deref())?;
+        store
+            .set_asset_tax_basis(id, tax)
+            .map_err(|e| e.to_string())?;
+        let a = store.ledger().get_asset(id).expect("resolved");
+        Ok(Json(tax_out(a).expect("just set")))
+    }
+
+    #[tool(
         name = "books.asset_labels",
         description = "A printable sheet of asset labels (PDF, base64): each label shows the company, the tag, a QR code of the tag, the description, and the serial number. Avery 5160/8160 (US letter, 30 labels of 1\" x 2-5/8\"); skip reuses a partly used sheet. Omit assets for every active asset with a tag. Save the file and tell the human to print at 100% scale.",
         annotations(read_only_hint = true)
@@ -3211,6 +3252,19 @@ impl BooksServer {
                 ));
             }
         }
+        // Checked before registering, so a bad tax basis registers nothing
+        // (found by the spec-blind MCP suite, 2026-10-15).
+        let tax = match &p.tax_basis_rule {
+            Some(rule) => {
+                let tax = parse_tax_basis(rule, p.contributor_basis.as_deref())?;
+                tax.check().map_err(|why| format!("bad tax basis: {why}"))?;
+                Some(tax)
+            }
+            None if p.contributor_basis.is_some() => {
+                return Err("contributor_basis needs tax_basis_rule".into());
+            }
+            None => None,
+        };
         let asset_id = store
             .register_asset(NewAsset {
                 description: p.description,
@@ -3237,6 +3291,11 @@ impl BooksServer {
         if let Some(entry) = p.acquisition_entry {
             store
                 .set_asset_acquisition(asset_id, entry)
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(tax) = tax {
+            store
+                .set_asset_tax_basis(asset_id, tax)
                 .map_err(|e| e.to_string())?;
         }
         Ok(Json(RegisterAssetOut { asset_id, tag }))
@@ -3304,6 +3363,7 @@ impl BooksServer {
                 tag: a.tag.clone(),
                 serial: a.serial.clone(),
                 acquisition_entry: a.acquired_by,
+                tax: tax_out(a),
                 description: a.description.clone(),
                 purchase_date: a.purchase_date.to_string(),
                 cost: money(a.cost.amount),
@@ -4548,7 +4608,13 @@ impl BooksServer {
                     "book_value": money(a.book_value),
                     "status": status(a),
                     "proceeds": a.disposed.map(|(_, p)| money(p)),
+                    "tax_basis_rule": a.tax_rule.map(|r| r.key()),
+                    "contributor_basis": a.contributor_basis.map(money),
+                    "tax_basis": a.tax_basis.map(money),
+                    "built_in_gain": a.built_in_gain.map(money),
                 })).collect::<Vec<_>>(),
+                "total_tax_basis": money(r.total_tax_basis),
+                "missing_tax_basis": r.missing_tax_basis,
                 "total_cost": money(r.total_cost),
                 "total_accumulated": money(r.total_accumulated),
                 "total_book_value": money(r.total_book_value),
@@ -4560,11 +4626,11 @@ impl BooksServer {
             .map_err(|e| e.to_string());
         }
         let mut csv = String::from(
-            "tag,description,serial,in_service,cost,salvage,useful_life_months,accumulated,book_value,status,proceeds\n",
+            "tag,description,serial,in_service,cost,salvage,useful_life_months,accumulated,book_value,status,proceeds,tax_basis_rule,contributor_basis,tax_basis,built_in_gain\n",
         );
         for a in &r.rows {
             csv.push_str(&format!(
-                "{},{},{},{},{},{},{},{},{},{},{}\n",
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
                 csv_escape(a.tag.as_deref().unwrap_or("")),
                 csv_escape(&a.description),
                 csv_escape(a.serial.as_deref().unwrap_or("")),
@@ -4576,13 +4642,18 @@ impl BooksServer {
                 money(a.book_value),
                 status(a),
                 a.disposed.map(|(_, p)| money(p)).unwrap_or_default(),
+                a.tax_rule.map(|r| r.key()).unwrap_or_default(),
+                a.contributor_basis.map(money).unwrap_or_default(),
+                a.tax_basis.map(money).unwrap_or_default(),
+                a.built_in_gain.map(money).unwrap_or_default(),
             ));
         }
         csv.push_str(&format!(
-            "TOTAL,,,,{},,,{},{},,",
+            "TOTAL,,,,{},,,{},{},,,,,{},",
             money(r.total_cost),
             money(r.total_accumulated),
-            money(r.total_book_value)
+            money(r.total_book_value),
+            money(r.total_tax_basis)
         ));
         Ok(csv)
     }

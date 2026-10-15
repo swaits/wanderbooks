@@ -725,6 +725,27 @@ impl Store {
         Ok(())
     }
 
+    /// Record an asset's federal tax basis (see
+    /// `Ledger::set_asset_tax_basis`). Journaled as `asset.tax_basis_set`.
+    pub fn set_asset_tax_basis(
+        &mut self,
+        id: AssetId,
+        tax: ledger_core::TaxBasis,
+    ) -> Result<(), StoreError> {
+        self.ledger.check_asset_tax_basis(id, tax)?;
+        let line = self.append_journal(
+            "asset.tax_basis_set",
+            json!({
+                "asset_id": id,
+                "rule": tax.rule.key(),
+                "contributor_basis": tax.contributor_basis.map(|b| b.to_string()),
+            }),
+        )?;
+        self.ledger.set_asset_tax_basis(id, tax)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
     /// Change an asset's description (see `Ledger::set_asset_description`).
     /// Journaled as `asset.described`, with the description it had.
     pub fn set_asset_description(
@@ -2897,6 +2918,21 @@ impl Store {
             let (id, serial) = row?;
             ledger.set_asset_serial(id as u64, Some(&serial))?;
         }
+        let mut xstmt = self.conn.prepare(
+            "SELECT id, tax_rule, contributor_basis FROM assets WHERE tax_rule IS NOT NULL ORDER BY id",
+        )?;
+        let taxes = xstmt.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+            ))
+        })?;
+        for row in taxes {
+            let (id, rule, basis) = row?;
+            let tax = tax_basis_from_journal(&json!({"rule": rule, "contributor_basis": basis}))?;
+            ledger.set_asset_tax_basis(id as u64, tax)?;
+        }
         let mut qstmt = self.conn.prepare(
             "SELECT id, acquisition_entry FROM assets WHERE acquisition_entry IS NOT NULL ORDER BY id",
         )?;
@@ -3452,6 +3488,10 @@ pub(crate) fn replay_line_into_ledger(
         "asset.tagged" => {
             ledger.set_asset_tag(get_u64(p, "asset_id")?, get_str(p, "tag")?)?;
         }
+        "asset.tax_basis_set" => {
+            let tax = tax_basis_from_journal(p)?;
+            ledger.set_asset_tax_basis(get_u64(p, "asset_id")?, tax)?;
+        }
         "asset.described" => {
             ledger.set_asset_description(get_u64(p, "asset_id")?, get_str(p, "description")?)?;
         }
@@ -3680,6 +3720,26 @@ fn apply_document_payment(
 /// The close target recorded in a `period.closed` line. Absent or
 /// `"retained_earnings"`: Retained Earnings with no sweeps (every journal
 /// written before targets existed).
+/// An `asset.tax_basis_set` payload's rule and contributor basis, strictly:
+/// an unknown rule or a basis that isn't a decimal string is corrupt.
+fn tax_basis_from_journal(p: &Value) -> Result<ledger_core::TaxBasis, StoreError> {
+    let corrupt = |what: &str| StoreError::JournalCorrupt(format!("asset.tax_basis_set {what}"));
+    let rule =
+        ledger_core::TaxBasisRule::parse(get_str(p, "rule")?).ok_or_else(|| corrupt("rule"))?;
+    let contributor_basis = match p.get("contributor_basis") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(
+            v.as_str()
+                .and_then(|s| s.parse::<Decimal>().ok())
+                .ok_or_else(|| corrupt("contributor_basis"))?,
+        ),
+    };
+    Ok(ledger_core::TaxBasis {
+        rule,
+        contributor_basis,
+    })
+}
+
 fn close_to_from_journal(v: Option<&Value>) -> Result<CloseTo, StoreError> {
     let corrupt = |what: &str| StoreError::JournalCorrupt(format!("close_to: {what}"));
     let ids = |v: &Value| -> Result<Vec<AccountId>, StoreError> {
@@ -3927,6 +3987,16 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
             conn.execute(
                 "INSERT INTO asset_tags_log(asset_id, tag) VALUES (?, ?)",
                 params![id, tag],
+            )?;
+        }
+        "asset.tax_basis_set" => {
+            conn.execute(
+                "UPDATE assets SET tax_rule = ?, contributor_basis = ? WHERE id = ?",
+                params![
+                    get_str(p, "rule")?,
+                    p.get("contributor_basis").and_then(|v| v.as_str()),
+                    get_u64(p, "asset_id")? as i64
+                ],
             )?;
         }
         "asset.described" => {

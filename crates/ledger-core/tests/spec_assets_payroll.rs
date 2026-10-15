@@ -61,6 +61,7 @@ fn asset(cost: &str, salvage: &str, life: u32, purchase: NaiveDate) -> Asset {
         tag: None,
         serial: None,
         acquired_by: None,
+        tax: None,
     }
 }
 

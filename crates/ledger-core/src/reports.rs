@@ -1556,6 +1556,15 @@ pub struct AssetRegisterRow {
     pub book_value: Decimal,
     /// Disposal date and proceeds, if disposed by the date.
     pub disposed: Option<(NaiveDate, Decimal)>,
+    /// The federal tax basis rule, if recorded.
+    pub tax_rule: Option<crate::TaxBasisRule>,
+    /// The contributing member's adjusted basis (a contribution only).
+    pub contributor_basis: Option<Decimal>,
+    /// The depreciable federal tax basis (`Asset::tax_basis`), if recorded.
+    pub tax_basis: Option<Decimal>,
+    /// Built-in gain (+) or loss (−) at contribution, IRC §704(c)
+    /// (`Asset::built_in_gain`).
+    pub built_in_gain: Option<Decimal>,
 }
 
 /// The fixed asset register as of a date, reconciled to the general ledger.
@@ -1572,6 +1581,11 @@ pub struct AssetRegister {
     pub total_accumulated: Decimal,
     /// Their book value.
     pub total_book_value: Decimal,
+    /// The total depreciable tax basis of the assets still held that have
+    /// one recorded.
+    pub total_tax_basis: Decimal,
+    /// How many assets still held have no tax basis recorded.
+    pub missing_tax_basis: usize,
     /// The general ledger's balance (debit positive) of the assets' cost
     /// accounts on the date.
     pub ledger_cost: Decimal,
@@ -1611,7 +1625,11 @@ impl AssetRegister {
 ///   2. accumulated is the asset's schedule through as_of
 ///      (assets::accumulated_depreciation); book_value = cost −
 ///      accumulated.
-///   3. Totals are the sums over the held assets, exactly.
+///   3. Totals are the sums over the held assets, exactly; tax basis
+///      totals over those with one recorded, and missing_tax_basis counts
+///      the rest.
+///   5. Each row's tax fields are the asset's (Asset::tax_basis,
+///      Asset::built_in_gain), never re-derived here.
 ///   4. ledger_cost and ledger_accumulated are the general ledger's
 ///      balances on as_of of the distinct cost and accumulated
 ///      depreciation accounts of the registered assets, so
@@ -1622,6 +1640,7 @@ pub fn fixed_asset_register(ledger: &Ledger, as_of: NaiveDate) -> AssetRegister 
     use crate::AssetStatus;
     let mut rows = Vec::new();
     let (mut cost, mut accumulated) = (Decimal::ZERO, Decimal::ZERO);
+    let (mut tax_total, mut tax_missing) = (Decimal::ZERO, 0usize);
     let mut cost_accounts = std::collections::BTreeSet::new();
     let mut accum_accounts = std::collections::BTreeSet::new();
     for a in ledger
@@ -1644,6 +1663,10 @@ pub fn fixed_asset_register(ledger: &Ledger, as_of: NaiveDate) -> AssetRegister 
         if disposed.is_none() {
             cost += a.cost.amount;
             accumulated += acc;
+            match a.tax_basis() {
+                Some(t) => tax_total += t,
+                None => tax_missing += 1,
+            }
         }
         rows.push(AssetRegisterRow {
             asset_id: a.id,
@@ -1661,6 +1684,10 @@ pub fn fixed_asset_register(ledger: &Ledger, as_of: NaiveDate) -> AssetRegister 
                 a.cost.amount - acc
             },
             disposed,
+            tax_rule: a.tax.map(|t| t.rule),
+            contributor_basis: a.tax.and_then(|t| t.contributor_basis),
+            tax_basis: a.tax_basis(),
+            built_in_gain: a.built_in_gain(),
         });
     }
     let tb = trial_balance_as_of(ledger, as_of);
@@ -1681,6 +1708,8 @@ pub fn fixed_asset_register(ledger: &Ledger, as_of: NaiveDate) -> AssetRegister 
         total_cost: cost,
         total_accumulated: accumulated,
         total_book_value: cost - accumulated,
+        total_tax_basis: tax_total,
+        missing_tax_basis: tax_missing,
         ledger_cost: cost_accounts.iter().map(|&id| net(id)).sum(),
         ledger_accumulated: -accum_accounts.iter().map(|&id| net(id)).sum::<Decimal>(),
     }

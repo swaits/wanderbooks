@@ -5,7 +5,7 @@
 //! is the current version.
 
 /// Current schema version.
-pub const SCHEMA_VERSION: u32 = 9;
+pub const SCHEMA_VERSION: u32 = 10;
 
 /// Migrations, in order. `MIGRATIONS[i]` migrates from version `i` to `i+1`.
 pub const MIGRATIONS: &[&str] = &[
@@ -220,5 +220,12 @@ CREATE TABLE IF NOT EXISTS asset_tags_log(
   asset_id INTEGER NOT NULL,
   tag TEXT NOT NULL
 );
+"#,
+    r#"
+-- v10: each asset's federal tax basis: the rule (cost, carryover,
+-- personal_use_conversion) and the contributing member's adjusted basis
+-- (TEXT, exact decimal, never REAL).
+ALTER TABLE assets ADD COLUMN tax_rule TEXT;
+ALTER TABLE assets ADD COLUMN contributor_basis TEXT;
 "#,
 ];

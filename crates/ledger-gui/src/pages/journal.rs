@@ -53,6 +53,45 @@ fn attachment_name(b: &Books, id: u64) -> String {
         .unwrap_or_else(|| format!("attachment {id}"))
 }
 
+/// "Tax basis of FL-0001: personal-use conversion, contributor's basis
+/// $1,917.21 → tax basis $1,650.00". The tax basis is ledger-core's
+/// (`Asset::tax_basis`) for the event's rule and basis on the asset's
+/// book cost, which never changes once registered.
+fn tax_basis_text(b: &Books, asset_id: Option<u64>, p: &Value) -> String {
+    let asset = asset_id.and_then(|id| b.ledger.get_asset(id));
+    let name = match (asset, asset_id) {
+        (Some(a), _) => a.tag.clone().unwrap_or_else(|| a.description.clone()),
+        (None, Some(id)) => format!("asset {id}"),
+        (None, None) => "an asset".to_string(),
+    };
+    let rule = ledger_core::TaxBasisRule::parse(s(p, "rule"));
+    let contributor: Option<rust_decimal::Decimal> = p
+        .get("contributor_basis")
+        .and_then(|v| v.as_str())
+        .and_then(|v| v.parse().ok());
+    let Some(rule) = rule else {
+        return format!("Tax basis of {name} recorded");
+    };
+    let tax = asset.and_then(|a| {
+        let mut a = a.clone();
+        a.tax = Some(ledger_core::TaxBasis {
+            rule,
+            contributor_basis: contributor,
+        });
+        a.tax_basis()
+    });
+    let mut text = format!("Tax basis of {name}: {}", super::assets::rule_words(rule));
+    if let Some(c) = contributor {
+        text.push_str(&format!(", contributor's basis {}", fmt::dollars(c)));
+    }
+    match (tax, contributor.is_some()) {
+        (Some(t), true) => text.push_str(&format!(" → tax basis {}", fmt::dollars(t))),
+        (Some(t), false) => text.push_str(&format!(", tax basis {}", fmt::dollars(t))),
+        (None, _) => {}
+    }
+    text
+}
+
 /// A sentence for a meaningful event; `None` for the intermediate steps of
 /// building an entry (created, line added), which the posted event covers.
 pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
@@ -267,6 +306,11 @@ pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
             };
             ev(icon::BARCODE, text, asset_id.map(Route::Asset))
         }
+        "asset.tax_basis_set" => ev(
+            icon::SCALES,
+            tax_basis_text(b, asset_id, p),
+            asset_id.map(Route::Asset),
+        ),
         "asset.described" => ev(
             icon::PENCIL_SIMPLE,
             format!(

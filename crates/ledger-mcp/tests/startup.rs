@@ -116,6 +116,31 @@ fn the_settings_beside_the_books_are_read() {
     );
 }
 
+/// The cash flow roles in wanderbooks.toml beside the data folder are
+/// read without --books-toml: its cash account lets cash_flow run with no
+/// cash_accounts of its own.
+#[test]
+fn the_cash_roles_beside_the_books_are_read() {
+    let dir = temp("roles");
+    std::fs::write(
+        dir.join("wanderbooks.toml"),
+        "[books]\ncash_accounts = [\"1000\"]\n",
+    )
+    .unwrap();
+    let data = dir.join("books-data");
+    let mut store = ledger_store::Store::create(&data, ledger_core::Currency::USD).unwrap();
+    store
+        .add_account("1000", "Cash", ledger_core::AccountType::Asset, None, false)
+        .unwrap();
+    drop(store);
+    let reply = one_call(
+        Command::new(BIN).arg("--data-dir").arg(&data),
+        "books.cash_flow",
+        serde_json::json!({"start": "2026-01-01", "end": "2026-03-31"}),
+    );
+    assert!(reply.contains("\"isError\":false"), "{reply}");
+}
+
 /// A writer that keeps the books is a conflict: the server gives up with
 /// an error (after its ten-second wait), never hangs.
 #[test]

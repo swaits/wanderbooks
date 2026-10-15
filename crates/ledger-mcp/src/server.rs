@@ -3676,7 +3676,7 @@ impl BooksServer {
             }
             for line in entry.lines() {
                 let account = match ledger.chart().get(line.account) {
-                    Some(a) if !a.placeholder => a,
+                    Some(a) => a,
                     _ => continue,
                 };
                 let signed = match line.side {
@@ -4589,6 +4589,7 @@ mod tests {
     fn periods_are_a_year_and_a_month() {
         assert_eq!(parse_period_mcp("2026-01"), Ok((2026, 1)));
         assert_eq!(parse_period_mcp("2026-12"), Ok((2026, 12)));
+        assert_eq!(parse_period_mcp("0001-01"), Ok((1, 1)));
         for bad in [
             "2026-13",
             "2026-00",
@@ -4711,6 +4712,44 @@ mod tests {
             Decimal::from_str("30.00").unwrap(),
             "January's 700 is closed"
         );
+    }
+
+    /// Only a closed period moves where the unclosed part starts: an open
+    /// one dated before as_of doesn't, and a close that ended before the
+    /// fiscal year began leaves the year starting on its first day (last
+    /// December's income is never this year's).
+    #[test]
+    fn year_earnings_count_only_closes_and_never_before_the_year() {
+        let mut s = store("earnings-open");
+        let cash = s
+            .add_account("1000", "Cash", AccountType::Asset, None, false)
+            .unwrap();
+        let sales = s
+            .add_account("4000", "Sales", AccountType::Revenue, None, false)
+            .unwrap();
+        post(&mut s, d(2025, 12, 15), cash, sales, "999.00");
+        post(&mut s, d(2026, 1, 10), cash, sales, "1000.00");
+        s.create_period("2026-01", d(2026, 1, 1), d(2026, 1, 31))
+            .unwrap();
+        let server = BooksServer::new(s, ReceiptPolicy::default());
+        let as_of = d(2026, 2, 28);
+        let thousand = Decimal::from_str("1000.00").unwrap();
+        {
+            let store = server.lock().unwrap();
+            let e = server.year_earnings(store.ledger(), as_of).unwrap();
+            assert_eq!(e.unclosed, thousand, "an open January closes nothing");
+        }
+        {
+            let mut store = server.lock().unwrap();
+            let to_nov = store
+                .create_period("2025-01..11", d(2025, 1, 1), d(2025, 11, 30))
+                .unwrap();
+            store.close_period(to_nov).unwrap();
+        }
+        let store = server.lock().unwrap();
+        let e = server.year_earnings(store.ledger(), as_of).unwrap();
+        assert_eq!(e.net_income_ytd, thousand);
+        assert_eq!(e.unclosed, thousand, "December 2025 is not this year's");
     }
 
     /// Unlinking a receipt is refused only from a posted, non-reversal

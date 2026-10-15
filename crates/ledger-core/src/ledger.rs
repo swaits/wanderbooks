@@ -1698,6 +1698,58 @@ impl Ledger {
         tax.check().map_err(LedgerError::InvalidTaxBasis)
     }
 
+    /// Correct a registered asset's economics (cost, salvage, useful life,
+    /// in-service date) when it was registered wrong. Its accounts, tag,
+    /// serial, links, and tax basis record stay.
+    ///
+    /// ```text
+    /// GOAL: fix a registration mistake without re-registering (which would
+    ///       burn its tag, since tags are never reused).
+    /// SOURCE: DECISION (Stephen, 2026-10-15).
+    /// INVARIANTS:
+    ///   1. The corrected figures pass every check a new registration does
+    ///      (validate_new_asset).
+    ///   2. Only an active asset is corrected; a store also refuses once any
+    ///      depreciation for it is posted (the posted entries would disagree
+    ///      with the schedule; correct with entries instead).
+    ///   3. A refusal MUST leave the books unchanged.
+    /// ```
+    pub fn correct_asset(
+        &mut self,
+        id: AssetId,
+        fix: assets::AssetCorrection,
+    ) -> Result<(), LedgerError> {
+        self.check_correct_asset(id, &fix)?;
+        let a = self.assets.get_mut(&id).expect("checked");
+        a.cost = fix.cost;
+        a.salvage_value = fix.salvage_value;
+        a.useful_life_months = fix.useful_life_months;
+        a.purchase_date = fix.purchase_date;
+        Ok(())
+    }
+
+    /// The validation behind [`Self::correct_asset`].
+    pub fn check_correct_asset(
+        &self,
+        id: AssetId,
+        fix: &assets::AssetCorrection,
+    ) -> Result<(), LedgerError> {
+        let a = self.assets.get(&id).ok_or(LedgerError::UnknownAsset(id))?;
+        if a.status != AssetStatus::Active {
+            return Err(LedgerError::AssetAlreadyDisposed(id));
+        }
+        self.validate_new_asset(&NewAsset {
+            description: a.description.clone(),
+            purchase_date: fix.purchase_date,
+            cost: fix.cost,
+            salvage_value: fix.salvage_value,
+            useful_life_months: fix.useful_life_months,
+            cost_account: a.cost_account,
+            accum_depr_account: a.accum_depr_account,
+            expense_account: a.expense_account,
+        })
+    }
+
     /// The asset whose current tag is `tag`, ignoring case.
     pub fn asset_by_tag(&self, tag: &str) -> Option<&Asset> {
         let id = self.asset_tags.get(&assets::tag_key(tag))?;

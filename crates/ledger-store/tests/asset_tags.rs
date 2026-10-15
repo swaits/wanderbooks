@@ -757,3 +757,44 @@ fn an_asset_tax_basis_set_line_with_a_bad_payload_is_corrupt() {
         }
     }
 }
+
+/// A registration mistake is corrected (journaled with the old figures,
+/// replayed, verified); a correction needs a reason and valid figures, and
+/// is refused once depreciation for the asset is posted.
+#[test]
+fn an_asset_is_corrected_until_depreciation_is_posted() {
+    let (dir, mut s, _, x, _) = fixture("corrected");
+    let fix = |cost: &str| ledger_core::AssetCorrection {
+        cost: usd(cost),
+        salvage_value: usd("0.00"),
+        useful_life_months: 12,
+        purchase_date: date(2026, 1, 1),
+    };
+    let before = journal(&dir).len();
+    assert!(matches!(
+        s.correct_asset(x, fix("1000.00"), " "),
+        Err(StoreError::ReasonRequired)
+    ));
+    assert!(s.correct_asset(x, fix("0.00"), "zero cost").is_err());
+    assert_eq!(journal(&dir).len(), before, "refusals journal nothing");
+    s.correct_asset(x, fix("1000.00"), "AppleCare+ split out")
+        .unwrap();
+    let (kind, p) = journal(&dir).pop().unwrap();
+    assert_eq!(kind, "asset.corrected");
+    assert_eq!(p["cost"]["amount"], "1000.00");
+    assert_eq!(p["previous"]["cost"]["amount"], "1200.00");
+    s.verify().unwrap();
+    drop(s);
+    std::fs::remove_file(dir.join(DB_FILE)).unwrap();
+    let mut s = Store::open(&dir).unwrap();
+    assert_eq!(
+        s.ledger().get_asset(x).unwrap().cost.amount.to_string(),
+        "1000.00"
+    );
+    s.verify().unwrap();
+    s.run_depreciation(x, "2026-01").unwrap();
+    assert!(matches!(
+        s.correct_asset(x, fix("900.00"), "too late"),
+        Err(StoreError::AssetDepreciationPosted(_))
+    ));
+}

@@ -796,6 +796,10 @@ fn happy_path(name: &str) -> Mcp {
         "books.set_asset_tax_basis",
         json!({"asset": "LAPTOP-1", "rule": "personal_use_conversion", "contributor_basis": "3200.00"}),
     );
+    m.ok(
+        "books.correct_asset",
+        json!({"asset": "LAPTOP-1", "useful_life_months": 48, "reason": "registered with the wrong life"}),
+    );
     m.ok("books.asset_labels", json!({}));
     m.ok(
         "books.asset_labels",

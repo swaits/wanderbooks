@@ -311,6 +311,28 @@ pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
             tax_basis_text(b, asset_id, p),
             asset_id.map(Route::Asset),
         ),
+        "asset.corrected" => ev(
+            icon::PENCIL_SIMPLE,
+            format!(
+                "Corrected {}: cost {} (was {}), {} months from {}. {}",
+                asset(asset_id),
+                p.get("cost")
+                    .and_then(|c| c.get("amount"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?"),
+                p.get("previous")
+                    .and_then(|c| c.get("cost"))
+                    .and_then(|c| c.get("amount"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?"),
+                p.get("useful_life_months")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+                s(p, "purchase_date"),
+                s(p, "reason")
+            ),
+            asset_id.map(Route::Asset),
+        ),
         "asset.described" => ev(
             icon::PENCIL_SIMPLE,
             format!(

@@ -725,6 +725,48 @@ impl Store {
         Ok(())
     }
 
+    /// Correct a registered asset's cost, salvage, life, or in-service date
+    /// (see `Ledger::correct_asset`), with the reason. Refused once any
+    /// depreciation for it is posted. Journaled as `asset.corrected`, with
+    /// the figures it had.
+    pub fn correct_asset(
+        &mut self,
+        id: AssetId,
+        fix: ledger_core::AssetCorrection,
+        reason: &str,
+    ) -> Result<(), StoreError> {
+        if reason.trim().is_empty() {
+            return Err(StoreError::ReasonRequired);
+        }
+        self.ledger.check_correct_asset(id, &fix)?;
+        if !self.asset_depreciation_total(id)?.is_zero() {
+            return Err(StoreError::AssetDepreciationPosted(id));
+        }
+        let a = self.ledger.get_asset(id).expect("checked").clone();
+        let money =
+            |m: &Money| json!({"amount": m.amount.to_string(), "currency": m.currency.code()});
+        let line = self.append_journal(
+            "asset.corrected",
+            json!({
+                "asset_id": id,
+                "cost": money(&fix.cost),
+                "salvage_value": money(&fix.salvage_value),
+                "useful_life_months": fix.useful_life_months,
+                "purchase_date": fix.purchase_date.to_string(),
+                "reason": reason,
+                "previous": {
+                    "cost": money(&a.cost),
+                    "salvage_value": money(&a.salvage_value),
+                    "useful_life_months": a.useful_life_months,
+                    "purchase_date": a.purchase_date.to_string(),
+                },
+            }),
+        )?;
+        self.ledger.correct_asset(id, fix)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
     /// Record an asset's federal tax basis (see
     /// `Ledger::set_asset_tax_basis`). Journaled as `asset.tax_basis_set`.
     pub fn set_asset_tax_basis(
@@ -3488,6 +3530,17 @@ pub(crate) fn replay_line_into_ledger(
         "asset.tagged" => {
             ledger.set_asset_tag(get_u64(p, "asset_id")?, get_str(p, "tag")?)?;
         }
+        "asset.corrected" => {
+            ledger.correct_asset(
+                get_u64(p, "asset_id")?,
+                ledger_core::AssetCorrection {
+                    cost: parse_money(p, "cost")?,
+                    salvage_value: parse_money(p, "salvage_value")?,
+                    useful_life_months: get_u64(p, "useful_life_months")? as u32,
+                    purchase_date: parse_date(get_str(p, "purchase_date")?)?,
+                },
+            )?;
+        }
         "asset.tax_basis_set" => {
             let tax = tax_basis_from_journal(p)?;
             ledger.set_asset_tax_basis(get_u64(p, "asset_id")?, tax)?;
@@ -3987,6 +4040,21 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
             conn.execute(
                 "INSERT INTO asset_tags_log(asset_id, tag) VALUES (?, ?)",
                 params![id, tag],
+            )?;
+        }
+        "asset.corrected" => {
+            let amt = |k: &str| -> Result<String, StoreError> {
+                Ok(get_str(&p[k], "amount")?.to_string())
+            };
+            conn.execute(
+                "UPDATE assets SET cost_amount = ?, salvage_amount = ?, useful_life_months = ?, purchase_date = ? WHERE id = ?",
+                params![
+                    amt("cost")?,
+                    amt("salvage_value")?,
+                    get_u64(p, "useful_life_months")? as i64,
+                    get_str(p, "purchase_date")?,
+                    get_u64(p, "asset_id")? as i64
+                ],
             )?;
         }
         "asset.tax_basis_set" => {

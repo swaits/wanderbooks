@@ -5,6 +5,11 @@ use thiserror::Error;
 /// Every way a store operation can fail.
 #[derive(Debug, Error)]
 pub enum StoreError {
+    /// An asset can't be corrected once depreciation for it is posted: the
+    /// posted entries would disagree with the corrected schedule.
+    #[error("asset {0} already has depreciation posted; correct it with entries instead")]
+    AssetDepreciationPosted(u64),
+
     /// Filesystem error.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),

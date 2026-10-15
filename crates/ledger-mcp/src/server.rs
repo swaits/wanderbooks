@@ -2662,6 +2662,49 @@ impl BooksServer {
     }
 
     #[tool(
+        name = "books.correct_asset",
+        description = "Correct a registered fixed asset's cost, salvage value, useful life, or in-service date when it was registered wrong, with the reason; omitted fields keep their values. Refused once any depreciation for it is posted (correct with entries then). Its tag, serial, links, and tax basis record stay; correct the entry that put it on the books too, so the books and the register agree (books.export fixed_asset_register shows any difference). Journaled with the old figures."
+    )]
+    async fn correct_asset(
+        &self,
+        params: Parameters<CorrectAssetParams>,
+    ) -> Result<Json<AssetSummaryOne>, String> {
+        let p = params.0;
+        let mut store = self.lock()?;
+        let id = resolve_asset_ref(&store, &p.asset)?;
+        let a = store.ledger().get_asset(id).expect("resolved").clone();
+        let base = store.ledger().base_currency();
+        let fix = ledger_core::AssetCorrection {
+            cost: match &p.cost {
+                Some(c) => Money::new(parse_amount(c)?, base),
+                None => a.cost,
+            },
+            salvage_value: match &p.salvage_value {
+                Some(c) => Money::new(parse_amount(c)?, base),
+                None => a.salvage_value,
+            },
+            useful_life_months: p.useful_life_months.unwrap_or(a.useful_life_months),
+            purchase_date: match &p.in_service {
+                Some(d) => parse_date(d)?,
+                None => a.purchase_date,
+            },
+        };
+        store
+            .correct_asset(id, fix, &p.reason)
+            .map_err(|e| e.to_string())?;
+        let a = store.ledger().get_asset(id).expect("resolved");
+        Ok(Json(AssetSummaryOne {
+            asset_id: id,
+            tag: a.tag.clone(),
+            cost: money(a.cost.amount),
+            salvage_value: money(a.salvage_value.amount),
+            useful_life_months: a.useful_life_months,
+            in_service: a.purchase_date.to_string(),
+            tax: tax_out(a),
+        }))
+    }
+
+    #[tool(
         name = "books.set_asset_tax_basis",
         description = "Record a fixed asset's federal tax basis beside its book value: rule cost (the company bought it: basis is its cost, IRC §1012), carryover (a member contributed business property: the member's adjusted basis, IRC §723), or personal_use_conversion (a member contributed personal-use property: the lesser of fair market value, which is the book cost, and the member's adjusted basis, Treas. Reg. §1.168(i)-4(b)). Contributions take the member's adjusted basis (what they paid, less any depreciation they took). Reports the tax basis and the built-in gain or loss (IRC §704(c)). Journaled; book figures don't change. Every asset should have one: the register and the CPA package show it."
     )]

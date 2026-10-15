@@ -87,6 +87,19 @@ pub struct Asset {
     pub tax: Option<TaxBasis>,
 }
 
+/// Corrected economics for a registered asset ([`crate::Ledger::correct_asset`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AssetCorrection {
+    /// Capitalized cost.
+    pub cost: Money,
+    /// Residual value.
+    pub salvage_value: Money,
+    /// Useful life in months.
+    pub useful_life_months: u32,
+    /// In-service date (depreciation starts here).
+    pub purchase_date: NaiveDate,
+}
+
 /// Which rule sets an asset's federal tax basis.
 ///
 /// ```text

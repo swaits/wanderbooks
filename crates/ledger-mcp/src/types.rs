@@ -1523,6 +1523,43 @@ pub struct RegisterAssetParams {
     pub contributor_basis: Option<String>,
 }
 
+/// Parameters for `books.correct_asset`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CorrectAssetParams {
+    /// The asset: its id or tag.
+    pub asset: String,
+    /// Corrected cost, decimal string. Omit to keep it.
+    pub cost: Option<String>,
+    /// Corrected salvage value, decimal string. Omit to keep it.
+    pub salvage_value: Option<String>,
+    /// Corrected useful life in months. Omit to keep it.
+    pub useful_life_months: Option<u32>,
+    /// Corrected in-service date, YYYY-MM-DD. Omit to keep it.
+    pub in_service: Option<String>,
+    /// Why (required): what was wrong.
+    pub reason: String,
+}
+
+/// Result of `books.correct_asset`: the asset's figures now.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct AssetSummaryOne {
+    /// Asset id.
+    pub asset_id: u64,
+    /// Its tag.
+    pub tag: Option<String>,
+    /// Cost, decimal string.
+    pub cost: String,
+    /// Salvage value, decimal string.
+    pub salvage_value: String,
+    /// Useful life in months.
+    pub useful_life_months: u32,
+    /// In-service date, YYYY-MM-DD.
+    pub in_service: String,
+    /// Its federal tax basis (follows the corrected cost under
+    /// personal_use_conversion and cost).
+    pub tax: Option<TaxBasisOut>,
+}
+
 /// Parameters for `books.set_asset_tax_basis`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SetAssetTaxBasisParams {

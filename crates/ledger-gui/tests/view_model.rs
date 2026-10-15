@@ -430,7 +430,53 @@ fn comparisons_and_burn_on_fixed_dates() {
     let b3 = data::load_once(&source(&d3, "", today)).unwrap();
     // 10.00 / 3 = 3.333... -> 3.33
     assert_eq!(b3.kpis.monthly_burn, Some(Decimal::new(333, 2)));
-    for x in [d, d2, d3] {
+    // Books covering only last month: one month, not two.
+    let (d4, mut s4) = store_at("burn-one");
+    let c4 = s4
+        .add_account("1000", "Checking", AccountType::Asset, None, false)
+        .unwrap();
+    let e4 = s4
+        .add_account("6000", "Rent", AccountType::Expense, None, false)
+        .unwrap();
+    post(
+        &mut s4,
+        NaiveDate::from_ymd_opt(2026, 4, 20).unwrap(),
+        e4,
+        c4,
+        9_000,
+    );
+    drop(s4);
+    let b4 = data::load_once(&source(&d4, "", today)).unwrap();
+    assert_eq!(b4.kpis.monthly_burn, Some(Decimal::new(9_000, 2)));
+    // Breaking even burns nothing.
+    let (d5, mut s5) = store_at("burn-even");
+    let c5 = s5
+        .add_account("1000", "Checking", AccountType::Asset, None, false)
+        .unwrap();
+    let r5 = s5
+        .add_account("4000", "Sales", AccountType::Revenue, None, false)
+        .unwrap();
+    let e5 = s5
+        .add_account("6000", "Rent", AccountType::Expense, None, false)
+        .unwrap();
+    post(
+        &mut s5,
+        NaiveDate::from_ymd_opt(2026, 3, 5).unwrap(),
+        e5,
+        c5,
+        4_000,
+    );
+    post(
+        &mut s5,
+        NaiveDate::from_ymd_opt(2026, 3, 6).unwrap(),
+        c5,
+        r5,
+        4_000,
+    );
+    drop(s5);
+    let b5 = data::load_once(&source(&d5, "", today)).unwrap();
+    assert_eq!(b5.kpis.monthly_burn, None);
+    for x in [d, d2, d3, d4, d5] {
         let _ = std::fs::remove_dir_all(x);
     }
 }

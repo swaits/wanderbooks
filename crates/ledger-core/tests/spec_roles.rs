@@ -224,6 +224,7 @@ fn refuses(l: &mut Ledger, key: &str, account: Option<AccountId>) -> LedgerError
 fn alice() -> PayrollLine {
     PayrollLine {
         employee_name: "Alice".to_string(),
+        employee: None,
         gross_pay: dec("5000.00"),
         federal_withholding: dec("600.00"),
         state_withholding: dec("250.00"),

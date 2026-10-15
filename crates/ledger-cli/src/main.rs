@@ -322,6 +322,13 @@ receipt_threshold = "25.00"
 # by books.roles. Until assigned, each uses its default code (1200, 2000,
 # 4000, 6999, 3999, 6100, 6110, 2110-2150).
 
+[vault]
+# The TIN vault (full taxpayer identification numbers and W-9s, encrypted,
+# in vault/ beside the books, which git ignores) is opened with this key
+# file, kept OUTSIDE the books. Keep a copy in your password manager:
+# without it the vault can't be read. Unset: ~/.config/wanderbooks/vault.key
+# key_file = "~/.config/wanderbooks/vault.key"
+
 [viewer]
 # When a session starts and the viewer isn't open (`just gui-status`), the
 # agent: "ask" offers to open it, "always" opens it (`just gui`), "never"
@@ -332,6 +339,8 @@ open_at_start = "ask"
 const GITIGNORE: &str = r#"# The SQLite projection is disposable — it rebuilds from journal.jsonl.
 books-data/wanderbooks.db
 books-data/wanderbooks.db-*
+# The TIN vault: encrypted, but never in git (it must be purgeable).
+vault/
 # Copies of a database that disagreed with the journal, kept when it is
 # rebuilt; disposable like the database itself.
 books-data/wanderbooks.mismatch.*

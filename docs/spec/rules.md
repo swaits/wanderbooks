@@ -378,6 +378,15 @@ years after 2026, indexed to inflation and rounded to the nearest $100
 (§6041(h)). Card payments are reported on Form 1099-K, not 1099-NEC/MISC.
 Attorneys' gross proceeds stay at $600 (not modeled).
 
+What counts as paid: payments made in the calendar year (§6041(a)), so a
+prepayment counts when made. The engine counts credits minus debits to the
+payment sources on a vendor's tagged entries: `[books] cash_accounts` and
+`financing_accounts` (a member or lender paying on the company's behalf;
+the company is still the payer). A card charge leaves neither (1099-K); a
+bill is not paid until it is (`form1099::vendor_1099_report_with`,
+checked by `payments_come_from_cash_and_financing_only`). A W-9 is on
+file by the vendor's flag or its party's W-9 facts.
+
 **Enforced:** `form1099::default_threshold`, a dated rule
 (`ledger_core::rules::THRESHOLD_1099`, known through 2026, review from
 2026-11-01). For a later year the engine refuses with `RuleNotKnown`
@@ -494,3 +503,26 @@ non-negative, in cents), `Asset::tax_basis`, `Asset::built_in_gain`,
 `missing_tax_basis`). **Checked:** `ledger-core` `tests/spec_tax_basis.rs`;
 `ledger-store` `tests/asset_tags.rs` (`asset.tax_basis_set` journaling,
 replay, v9 migration, corrupt payloads); `ledger-mcp` `tests/spec_assets.rs`.
+
+## B-26 Parties: one directory, no full TIN in the books
+
+**Status:** AUTHORITY (truncated TINs: `sources/irs-truncated-tin.md`);
+DECISIONS (the owner, 2026-10-15)
+
+Everyone the company deals with is a party, with roles (vendor,
+contractor, customer, employee, member, payout platform, tax agency,
+financial institution, landlord). Vendor and customer records link to
+their party; entries are tagged with theirs. Names are unique among parties
+not archived, ignoring case and surrounding space. A W-9 is recorded as its
+facts and the TIN's last four digits (the part a truncated TIN shows,
+Treas. Reg. §301.6109-4(a)); no party field may hold a nine-digit number,
+and the full TIN lives only in the encrypted vault, outside the journal
+(DECISION). W-9 facts need a 1099 role (contractor, landlord); W-4 facts
+need the employee role; payroll lines that name their employee name a
+party with that role.
+
+**Enforced:** `crate::parties` (has_full_tin, check_text, W9Facts::check,
+W4Facts::check), `Ledger::add_party`, `update_party`, `set_party_role`,
+`set_party_w9`, `set_party_w4`, `set_entry_party`, `validate_payroll`.
+**Checked:** `ledger-core` `tests/spec_parties.rs`; `ledger-store`
+`tests/parties.rs`; `ledger-mcp` `tests/spec_parties.rs`.

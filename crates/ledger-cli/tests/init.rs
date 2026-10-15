@@ -368,11 +368,12 @@ fn the_toml_shows_every_setting_the_config_reads() {
     // Read from the config crate's serde structs, so a new setting there
     // fails here until the template shows it.
     let src = include_str!("../../ledger-config/src/lib.rs");
-    assert_eq!(fields(src, "BooksToml"), ["company", "books"]);
+    assert_eq!(fields(src, "BooksToml"), ["company", "books", "vault"]);
     for (strukt, sect) in [
         ("CompanyToml", "company"),
         ("MemberToml", "company.members"),
         ("BooksSection", "books"),
+        ("VaultSection", "vault"),
     ] {
         for key in fields(src, strukt) {
             if strukt == "CompanyToml" && key == "members" {

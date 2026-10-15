@@ -281,7 +281,7 @@ pub fn status_text(disposed: Option<(NaiveDate, Decimal)>) -> String {
     }
 }
 
-fn notice_box(ui: &mut Ui, n: &Notice) {
+pub(crate) fn notice_box(ui: &mut Ui, n: &Notice) {
     let p = pal(ui.ctx());
     let (fg, bg) = if n.problem {
         (p.warning, p.warning_soft)
@@ -310,7 +310,7 @@ fn notice_box(ui: &mut Ui, n: &Notice) {
 /// One painted table row: `cells` are (text, width, right-aligned,
 /// color); the cell whose width is 0 takes what's left. A second line
 /// (`sub`) goes under the flexible cell.
-fn row(
+pub(crate) fn row(
     ui: &mut Ui,
     w: f32,
     cells: &[(String, f32, bool, Color32)],
@@ -1345,7 +1345,7 @@ fn tax_card(ui: &mut Ui, a: &Asset) {
 }
 
 /// A two-column grid of facts; `add` gets the label painter.
-fn facts(ui: &mut Ui, add: impl FnOnce(&mut Ui, &dyn Fn(&mut Ui, &str))) {
+pub(crate) fn facts(ui: &mut Ui, add: impl FnOnce(&mut Ui, &dyn Fn(&mut Ui, &str))) {
     let p = pal(ui.ctx());
     egui::Grid::new(ui.next_auto_id())
         .num_columns(2)

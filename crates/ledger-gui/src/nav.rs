@@ -1,6 +1,6 @@
 //! Where you are and how you got there: a browser-style history.
 
-use ledger_core::{AccountId, AssetId, EntryId};
+use ledger_core::{AccountId, AssetId, EntryId, PartyId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ReportKind {
@@ -63,6 +63,10 @@ pub enum Route {
     Assets,
     /// One fixed asset.
     Asset(AssetId),
+    /// The party directory.
+    Parties,
+    /// One party.
+    Party(PartyId),
     Documents,
     Document(u64),
     Company,
@@ -81,6 +85,7 @@ impl Route {
             Route::Reports(_) => Section::Reports,
             Route::Accounts | Route::Account(_) => Section::Accounts,
             Route::Assets | Route::Asset(_) => Section::Assets,
+            Route::Parties | Route::Party(_) => Section::Parties,
             Route::Documents | Route::Document(_) => Section::Documents,
             Route::Company => Section::Company,
             Route::Journal | Route::JournalEvent(_) => Section::Journal,
@@ -97,13 +102,14 @@ pub enum Section {
     Reports,
     Accounts,
     Assets,
+    Parties,
     Documents,
     Company,
     Journal,
 }
 
 impl Section {
-    pub const ALL: [Section; 10] = [
+    pub const ALL: [Section; 11] = [
         Section::Overview,
         Section::Cash,
         Section::Profit,
@@ -111,6 +117,7 @@ impl Section {
         Section::Reports,
         Section::Accounts,
         Section::Assets,
+        Section::Parties,
         Section::Documents,
         Section::Company,
         Section::Journal,
@@ -125,6 +132,7 @@ impl Section {
             Section::Reports => "Reports",
             Section::Accounts => "Accounts",
             Section::Assets => "Assets",
+            Section::Parties => "Parties",
             Section::Documents => "Documents",
             Section::Company => "Company",
             Section::Journal => "Journal",
@@ -141,6 +149,7 @@ impl Section {
             Section::Reports => i::FILE_TEXT,
             Section::Accounts => i::TREE_STRUCTURE,
             Section::Assets => i::PACKAGE,
+            Section::Parties => i::ADDRESS_BOOK,
             Section::Documents => i::FILES,
             Section::Company => i::BUILDINGS,
             Section::Journal => i::SCROLL,
@@ -156,6 +165,7 @@ impl Section {
             Section::Reports => Route::Reports(ReportKind::ProfitAndLoss),
             Section::Accounts => Route::Accounts,
             Section::Assets => Route::Assets,
+            Section::Parties => Route::Parties,
             Section::Documents => Route::Documents,
             Section::Company => Route::Company,
             Section::Journal => Route::Journal,

@@ -21,24 +21,29 @@ descriptions get records.
 
 ```text
 Party {
-  id: PartyId,                 // vendors and customers keep their ids (see Migration)
+  id: PartyId,                 // its own id space (vendor and customer records keep theirs)
   name: String,                // legal or trade name, as on documents
   display_name: Option<String>,
-  roles: BTreeSet<Role>,       // vendor, contractor, customer, employee, member,
-                               // payout_platform, tax_agency, financial_institution, landlord
+  roles: BTreeSet<Role>,       // set by hand: contractor, employee, member, payout_platform,
+                               // tax_agency, financial_institution, landlord (vendor and
+                               // customer follow the records; see all_roles)
   website: Option<String>,
   address: Option<String>,     // business address; no personal PII beyond it
-  w9: Option<W9Facts>,         // contractor/landlord: the TIN itself is in the vault
-  w4: Option<W4Facts>,         // employee: never the SSN
-  form_1099: Option<Form1099>, // carried over from Vendor
-  member: Option<String>,      // a member's name in wanderbooks.toml, when role member
   notes: Option<String>,
   archived: bool,              // no longer dealt with; history stays
+  w9: Option<W9Facts>,         // contractor/landlord: the TIN itself is in the vault
+  w4: Option<W4Facts>,         // employee: never the SSN
+  vendor: Option<VendorId>,    // its vendor record (bills, payments, 1099 form)
+  customer: Option<CustomerId>,// its customer record (invoices)
 }
 W9Facts { received: NaiveDate, entity_type: String, exempt_payee_code: Option<String>,
-          fatca_code: Option<String>, tin_last4: String, kept_at: String }
+          fatca_code: Option<String>, tin_last4: String, kept_at: String,
+          vault_record: Option<String> /* SHA-256 of the vault record */ }
 W4Facts { received: NaiveDate, state: String, kept_at: String }
 ```
+
+The 1099 form stays on the vendor record (`vendor.1099_set`); a party
+reaches it through `vendor`.
 
 Rules (to vendor as B-26 with sources):
 
@@ -65,29 +70,32 @@ Rules (to vendor as B-26 with sources):
 
 ### Journal events
 
-`party.added {id, name, roles}`, `party.updated {id, field, value}` (one
-field per event: name, display_name, website, address, notes, archived),
-`party.role_added {id, role}`, `party.role_removed {id, role}`,
+`party.added {id, name, roles}`, `party.updated {id, change}` (one
+`PartyField` per event, `{field, value}`: name, display_name, website,
+address, notes, archived), `party.role_set {id, role, on}`,
 `party.w9_set {id, facts|null}`, `party.w4_set {id, facts|null}`,
-`entry.party_set`. Replayed and projected like the rest; every event gets
-viewer journal text (the GUI test enforces it).
+`entry.party_set {entry_id, party_id|null}`. Replayed and projected like
+the rest; every event gets viewer journal text (the GUI test enforces it).
 
 ### Migration
 
 Old journals replay unchanged. `vendor.added` and `customer.added` keep
-their meaning and create parties with the vendor or customer role; the
-party id space starts above the highest vendor and customer ids, and a
-vendor and a customer with the same name stay two parties until the
-human merges them (`books.merge_parties`, journaled, re-pointing links).
-`entry.vendor_set` replays as `entry.party_set`. `vendor.1099_set` sets
-the party's `form_1099` and the contractor role.
+their meaning and, on replay as live, link their record to a party: the
+live party of that name (ignoring case and surrounding space) without
+such a record yet, else a new party. So a vendor and a customer of the
+same name share one party; a second vendor of a taken name gets a new
+party named "Name (2)" (names stay unique). Vendor and customer names
+obey the party text rules (no full TIN). `entry.vendor_set` also sets the
+entry's party, and `entry.party_set` to a party with a vendor record sets
+the vendor tag: one counterparty.
 
 ### Tools
 
 `books.add_party`, `books.update_party`, `books.party_roles`,
 `books.set_w9`, `books.set_w4`, `books.parties` (list, filter by role),
 `books.party` (one: facts, roles, totals this year, documents, links),
-`books.merge_parties`, `books.set_entry_party`. `books.add_vendor` and
+`books.set_entry_party`. (Merging two parties, `books.merge_parties`, is
+not built yet: records of one name already share a party.) `books.add_vendor` and
 `books.add_customer` stay as shortcuts.
 
 ### Viewer
@@ -111,10 +119,13 @@ worksheet it hands the CPA is complete, but never in the journal.
   W-9 file itself, each encrypted at rest (XChaCha20-Poly1305, one random
   nonce per record; the file format carries a version and the party id as
   associated data, so a record can't be moved to another party).
-- **Key:** a random 256-bit key in the OS keyring (Secret Service on Linux,
-  Keychain on macOS), created on first use; never on disk in the books dir.
-  A recovery copy is the human's job: `just vault-export` writes the key
-  and records as one passphrase-encrypted file for a password manager.
+- **Key:** a random 256-bit key in a key file outside the books dir
+  (default `~/.config/wanderbooks/vault.key`, mode 0600; `[vault] key_file`
+  in wanderbooks.toml overrides it), created on first use. No OS keyring
+  or other system service (the owner, 2026-10-15: no external dependencies),
+  so the vault works anywhere wanderbooks runs. Recovery is a copy of that
+  file in the human's password manager; without it the vault can't be
+  read (the books still open and verify).
 - **Journal:** `party.w9_set` records that a W-9 was received, its date,
   entity type, codes, and last four, plus a hash of the vault record, so
   the books prove a W-9 existed without holding it.

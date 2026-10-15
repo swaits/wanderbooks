@@ -24,6 +24,10 @@ pub type PayrollRunId = u64;
 pub struct PayrollLine {
     /// Employee name, for the run record.
     pub employee_name: String,
+    /// The employee's party, if named (new runs should; runs from before
+    /// the party directory carry the name only).
+    #[serde(default)]
+    pub employee: Option<crate::PartyId>,
     /// Gross pay for the period.
     pub gross_pay: Decimal,
     /// Federal income tax withheld.
@@ -194,6 +198,7 @@ mod tests {
     fn line(name: &str) -> PayrollLine {
         PayrollLine {
             employee_name: name.to_string(),
+            employee: None,
             gross_pay: d(500_000),          // 5000.00
             federal_withholding: d(75_000), // 750.00
             state_withholding: d(25_000),   // 250.00

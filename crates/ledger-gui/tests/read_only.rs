@@ -134,6 +134,7 @@ fn the_viewer_never_writes_into_the_books() {
         .next()
         .map(|a| a.id)
         .unwrap();
+    let party = books.ledger.parties().next().map(|p| p.id).unwrap();
     drop(books);
 
     // Follow live for a moment.
@@ -174,6 +175,8 @@ fn the_viewer_never_writes_into_the_books() {
         Route::Account(cash),
         Route::Assets,
         Route::Asset(asset),
+        Route::Parties,
+        Route::Party(party),
         Route::Document(doc),
         Route::JournalEvent(event),
         Route::Documents,

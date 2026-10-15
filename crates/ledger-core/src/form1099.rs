@@ -3,11 +3,17 @@
 //! A vendor is marked with the information return it gets (1099-NEC for
 //! nonemployee compensation, 1099-MISC for rents and the like) and whether
 //! its W-9 is on file. Entries are tagged with the vendor they paid
-//! (`pay_bill` tags automatically). The amount paid is the cash that left
-//! asset accounts on the vendor's tagged entries: credits minus debits to
-//! asset accounts. A card payment (Dr expense, Cr credit card) moves no
-//! asset, so it is excluded, as it should be: card payments are reported by
-//! the card processor on 1099-K, not by the payer.
+//! (`pay_bill` tags automatically). The amount paid is what left the
+//! company's payment sources on the vendor's tagged entries: credits minus
+//! debits to them ([`PaymentAccounts`]). The sources are the cash accounts
+//! (bank, cash on hand) and the financing liabilities (what owners or
+//! lenders paid on the company's behalf, e.g. Due to Shareholders): the
+//! company is the payer either way. A card payment (Dr expense, Cr credit
+//! card) leaves neither, so it is excluded, as it should be: card payments
+//! are reported by the card processor on 1099-K, not by the payer. A bill
+//! (Cr payables) is not a payment until it is paid, and a prepayment
+//! (Dr prepaid, Cr cash) counts in full when made: §6041 reports payments
+//! made in the year.
 //!
 //! Thresholds are set by law and change; [`default_threshold`] encodes
 //! them and the report takes an override. Confirm with the CPA.
@@ -118,6 +124,57 @@ pub fn vendor_1099_report(
     year: i32,
     threshold: Option<Decimal>,
 ) -> Result<Vendor1099Report, LedgerError> {
+    vendor_1099_report_with(ledger, year, threshold, &PaymentAccounts::default())
+}
+
+/// The accounts payments to vendors come out of, for
+/// [`vendor_1099_report_with`]: the books' `[books] cash_accounts` and
+/// `[books] financing_accounts`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PaymentAccounts {
+    /// Cash accounts: bank, savings, cash on hand.
+    pub cash: Vec<crate::AccountId>,
+    /// Financing liabilities: owner advances, loans (paid on the company's
+    /// behalf). Never a payment card.
+    pub financing: Vec<crate::AccountId>,
+}
+
+impl PaymentAccounts {
+    /// Whether `account` is a payment source. With no cash accounts given,
+    /// every asset account is one (books that haven't named their cash).
+    fn includes(&self, ledger: &Ledger, account: crate::AccountId) -> bool {
+        if self.cash.is_empty() {
+            ledger
+                .chart()
+                .get(account)
+                .is_some_and(|a| a.account_type == AccountType::Asset)
+                || self.financing.contains(&account)
+        } else {
+            self.cash.contains(&account) || self.financing.contains(&account)
+        }
+    }
+}
+
+/// [`vendor_1099_report`], counting payments out of `sources`.
+///
+/// ```text
+/// SOURCE: docs/spec/rules.md B-19 (26 U.S.C. §6041(a): payments made in
+///         the year; card payments go on 1099-K).
+/// INVARIANTS:
+///   1. A vendor's amount is credits minus debits to `sources` on its
+///      tagged posted entries dated in `year`.
+/// SCENARIOS:
+///   1. Paid from cash, or by a member through a financing liability:
+///      counts. Charged to a card, or billed and unpaid: doesn't.
+///   2. A prepayment (Dr prepaid, Cr cash) counts in full; a refund to
+///      cash and a reversal subtract.
+/// ```
+pub fn vendor_1099_report_with(
+    ledger: &Ledger,
+    year: i32,
+    threshold: Option<Decimal>,
+    sources: &PaymentAccounts,
+) -> Result<Vendor1099Report, LedgerError> {
     let threshold = match threshold {
         Some(t) => t,
         None => default_threshold(year)?,
@@ -133,12 +190,7 @@ pub fn vendor_1099_report(
         let cash: Decimal = entry
             .lines()
             .iter()
-            .filter(|l| {
-                ledger
-                    .chart()
-                    .get(l.account)
-                    .is_some_and(|a| a.account_type == AccountType::Asset)
-            })
+            .filter(|l| sources.includes(ledger, l.account))
             .map(|l| match l.side {
                 crate::Side::Credit => l.amount.amount,
                 crate::Side::Debit => -l.amount.amount,
@@ -156,7 +208,12 @@ pub fn vendor_1099_report(
                 vendor_id: v.id,
                 name: v.name.clone(),
                 form: v.form_1099,
-                tin_on_file: v.tin_on_file,
+                // On file by the vendor's flag or its party's W-9 facts.
+                tin_on_file: v.tin_on_file
+                    || ledger
+                        .party_of_vendor(v.id)
+                        .and_then(|p| ledger.get_party(p))
+                        .is_some_and(|p| p.w9.is_some()),
                 paid: amount,
                 reportable: v.form_1099.is_some() && amount >= threshold,
             }

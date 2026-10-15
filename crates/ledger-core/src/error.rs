@@ -152,6 +152,15 @@ pub enum LedgerError {
     #[error("bad tax basis: {0}")]
     InvalidTaxBasis(String),
 
+    /// No party has this id.
+    #[error("unknown party {0}")]
+    UnknownParty(u64),
+
+    /// A party command that breaks a rule of the directory
+    /// (`crate::parties`).
+    #[error("{0}")]
+    InvalidParty(String),
+
     /// A serial number of the wrong form (see `assets::check_serial`).
     #[error("bad serial number: {0}")]
     InvalidSerial(String),

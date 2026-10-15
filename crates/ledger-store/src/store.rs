@@ -725,6 +725,102 @@ impl Store {
         Ok(())
     }
 
+    // ------------------------------------------------------------------
+    // Parties (ledger_core::parties)
+    // ------------------------------------------------------------------
+
+    /// Add a party. Journaled as `party.added`.
+    pub fn add_party(
+        &mut self,
+        name: &str,
+        roles: &[ledger_core::Role],
+    ) -> Result<ledger_core::PartyId, StoreError> {
+        self.ledger.check_add_party(name, roles)?;
+        let id = self.ledger.next_party_id();
+        let line = self.append_journal(
+            "party.added",
+            json!({"id": id, "name": name.trim(), "roles": roles.iter().map(|r| r.key()).collect::<Vec<_>>()}),
+        )?;
+        let got = self.ledger.add_party(name, roles)?;
+        debug_assert_eq!(got, id, "party id allocator diverged from journal");
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(got)
+    }
+
+    /// Change one of a party's facts. Journaled as `party.updated`.
+    pub fn update_party(
+        &mut self,
+        id: ledger_core::PartyId,
+        field: ledger_core::PartyField,
+    ) -> Result<(), StoreError> {
+        self.ledger.check_update_party(id, &field)?;
+        let line = self.append_journal("party.updated", json!({"id": id, "change": field}))?;
+        self.ledger.update_party(id, field)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
+    /// Give or take a party role. Journaled as `party.role_set`.
+    pub fn set_party_role(
+        &mut self,
+        id: ledger_core::PartyId,
+        role: ledger_core::Role,
+        on: bool,
+    ) -> Result<(), StoreError> {
+        self.ledger.check_set_party_role(id, role, on)?;
+        let line = self.append_journal(
+            "party.role_set",
+            json!({"id": id, "role": role.key(), "on": on}),
+        )?;
+        self.ledger.set_party_role(id, role, on)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
+    /// Record or clear a party's W-9 facts. Journaled as `party.w9_set`.
+    pub fn set_party_w9(
+        &mut self,
+        id: ledger_core::PartyId,
+        facts: Option<ledger_core::W9Facts>,
+    ) -> Result<(), StoreError> {
+        self.ledger.check_set_party_w9(id, facts.as_ref())?;
+        let line = self.append_journal("party.w9_set", json!({"id": id, "facts": facts}))?;
+        self.ledger.set_party_w9(id, facts)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
+    /// Record or clear a party's W-4 facts. Journaled as `party.w4_set`.
+    pub fn set_party_w4(
+        &mut self,
+        id: ledger_core::PartyId,
+        facts: Option<ledger_core::W4Facts>,
+    ) -> Result<(), StoreError> {
+        self.ledger.check_set_party_w4(id, facts.as_ref())?;
+        let line = self.append_journal("party.w4_set", json!({"id": id, "facts": facts}))?;
+        self.ledger.set_party_w4(id, facts)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
+    /// Tag an entry with its party, or clear the tag. Journaled as
+    /// `entry.party_set`.
+    pub fn set_entry_party(
+        &mut self,
+        entry: EntryId,
+        party: Option<ledger_core::PartyId>,
+    ) -> Result<(), StoreError> {
+        let mut rehearsal = self.ledger.clone();
+        rehearsal.set_entry_party(entry, party)?;
+        let line = self.append_journal(
+            "entry.party_set",
+            json!({"entry_id": entry, "party_id": party}),
+        )?;
+        self.ledger.set_entry_party(entry, party)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
     /// Correct a registered asset's cost, salvage, life, or in-service date
     /// (see `Ledger::correct_asset`), with the reason. Refused once any
     /// depreciation for it is posted. Journaled as `asset.corrected`, with
@@ -2416,7 +2512,10 @@ impl Store {
     ///         while they may be needed).
     /// SCENARIOS:
     ///   1. IF the attachment is unknown or already withdrawn: SHOULD refuse.
-    ///   2. IF it is linked to an entry: SHOULD refuse (AttachmentLinked).
+    ///   2. IF it is filed on an entry: SHOULD refuse (AttachmentLinked,
+    ///      undone with unlink_receipt). IF it is linked to any subject
+    ///      (link_attachment): SHOULD refuse (AlreadyLinked, naming the
+    ///      first subject; undone with unlink_attachment).
     ///   3. IF the reason is blank: SHOULD refuse.
     ///   4. Otherwise: SHOULD journal `attachment.withdrawn`; the store's
     ///      listing marks it withdrawn with the reason (the MCP listing
@@ -2432,12 +2531,452 @@ impl Store {
             return Err(StoreError::ReasonRequired);
         }
         self.check_linkable(attachment_id)?;
+        if let Some(sub) = self.attachment_links(attachment_id)?.first() {
+            return Err(StoreError::AlreadyLinked(attachment_id, sub.describe()));
+        }
         let line = self.append_journal(
             "attachment.withdrawn",
             json!({ "attachment_id": attachment_id, "reason": reason }),
         )?;
         apply_line_to_sqlite(&self.conn, &line)?;
         Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // Attachment links, statements, reconciliations
+    // ------------------------------------------------------------------
+
+    /// Whether `subject` exists in the books.
+    fn subject_exists(&self, subject: Subject) -> Result<bool, StoreError> {
+        let l = &self.ledger;
+        Ok(match subject {
+            Subject::Entry(i) => l.get_entry(i).is_some(),
+            Subject::Account(i) => l.chart().get(i).is_some(),
+            Subject::Asset(i) => l.get_asset(i).is_some(),
+            Subject::Party(i) => l.get_party(i).is_some(),
+            Subject::Invoice(i) => l.get_invoice(i).is_some(),
+            Subject::Bill(i) => l.get_bill(i).is_some(),
+            Subject::Period(i) => l.list_periods().iter().any(|p| p.id == i),
+            Subject::PayrollRun(i) => l.get_payroll_run(i).is_some(),
+            Subject::Schedule(i) => l.get_schedule(i).is_some(),
+            Subject::Reconciliation(i) => self
+                .conn
+                .query_row(
+                    "SELECT 1 FROM reconciliations WHERE id = ?",
+                    params![i as i64],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some(),
+            Subject::Company => true,
+        })
+    }
+
+    /// The subjects an attachment is linked to (its filing entry, if any,
+    /// first).
+    pub fn attachment_links(&self, attachment_id: u64) -> Result<Vec<Subject>, StoreError> {
+        let (entry, _) = self.attachment_state(attachment_id)?;
+        let mut out: Vec<Subject> = entry.map(Subject::Entry).into_iter().collect();
+        let mut stmt = self.conn.prepare(
+            "SELECT subject_kind, subject_id FROM attachment_links WHERE attachment_id = ? ORDER BY subject_kind, subject_id",
+        )?;
+        let rows = stmt.query_map(params![attachment_id as i64], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            let (kind, id) = row?;
+            if let Some(sub) = Subject::from_parts(&kind, id as u64) {
+                out.push(sub);
+            }
+        }
+        Ok(out)
+    }
+
+    /// The attachments linked to a subject (for an entry: filed on it or
+    /// linked to it), not withdrawn.
+    pub fn attachments_for(&self, subject: Subject) -> Result<Vec<Attachment>, StoreError> {
+        if let Subject::Entry(e) = subject {
+            return Ok(query_attachments(&self.conn, Some(e))?
+                .into_iter()
+                .filter(|a| a.withdrawn_at.is_none())
+                .collect());
+        }
+        let ids: Vec<i64> = self
+            .conn
+            .prepare(
+                "SELECT attachment_id FROM attachment_links WHERE subject_kind = ? AND subject_id = ? ORDER BY attachment_id",
+            )?
+            .query_map(params![subject.kind(), subject.id() as i64], |r| r.get(0))?
+            .collect::<Result<_, _>>()?;
+        Ok(query_attachments(&self.conn, None)?
+            .into_iter()
+            .filter(|a| ids.contains(&(a.id as i64)) && a.withdrawn_at.is_none())
+            .collect())
+    }
+
+    /// Link a stored attachment to a subject: another entry, an account, an
+    /// asset, a party, an invoice, a bill, a period, a payroll run, a
+    /// schedule, a reconciliation, or the company.
+    ///
+    /// ```text
+    /// GOAL: one file, linked wherever it's evidence, without refiling.
+    /// SOURCE: docs/parties-and-attachments.md "Attachments"; DECISION
+    ///         (owner, 2026-10-15).
+    /// INVARIANTS:
+    ///   1. Journaled as `attachment.linked {attachment_id, subject}`.
+    ///   2. An entry's receipts are the files filed on it and the files
+    ///      linked to it; the receipt policy counts both.
+    ///   3. A refusal journals nothing.
+    /// SCENARIOS:
+    ///   1. IF the attachment is unknown or withdrawn, or the subject
+    ///      doesn't exist: SHOULD refuse.
+    ///   2. IF it is already linked to that subject (or filed on that
+    ///      entry): SHOULD refuse.
+    /// ```
+    pub fn link_attachment(
+        &mut self,
+        attachment_id: u64,
+        subject: Subject,
+    ) -> Result<(), StoreError> {
+        let (entry, withdrawn) = self.attachment_state(attachment_id)?;
+        if withdrawn {
+            return Err(StoreError::AttachmentWithdrawn(attachment_id));
+        }
+        if !self.subject_exists(subject)? {
+            return Err(StoreError::UnknownSubject(subject.describe()));
+        }
+        if entry.map(Subject::Entry) == Some(subject)
+            || self.attachment_links(attachment_id)?.contains(&subject)
+        {
+            return Err(StoreError::AlreadyLinked(attachment_id, subject.describe()));
+        }
+        let line = self.append_journal(
+            "attachment.linked",
+            json!({"attachment_id": attachment_id, "subject": subject}),
+        )?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
+    /// Take a link off, with the reason. The file stays filed; a receipt
+    /// filed on an entry comes off with `unlink_receipt` instead.
+    ///
+    /// ```text
+    /// SCENARIOS:
+    ///   1. IF the reason is blank, or the attachment isn't linked to the
+    ///      subject (through this table): SHOULD refuse.
+    ///   2. Otherwise: journaled as `attachment.unlinked {attachment_id,
+    ///      subject, reason}`.
+    /// ```
+    pub fn unlink_attachment(
+        &mut self,
+        attachment_id: u64,
+        subject: Subject,
+        reason: &str,
+    ) -> Result<(), StoreError> {
+        let reason = reason.trim();
+        if reason.is_empty() {
+            return Err(StoreError::ReasonRequired);
+        }
+        self.attachment_state(attachment_id)?;
+        let linked = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM attachment_links WHERE attachment_id = ? AND subject_kind = ? AND subject_id = ?",
+                params![attachment_id as i64, subject.kind(), subject.id() as i64],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if !linked {
+            return Err(StoreError::NotLinkedTo(attachment_id, subject.describe()));
+        }
+        let line = self.append_journal(
+            "attachment.unlinked",
+            json!({"attachment_id": attachment_id, "subject": subject, "reason": reason}),
+        )?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
+    /// Record what a filed statement says: its account, period, and
+    /// balances. Links it to the account.
+    ///
+    /// ```text
+    /// GOAL: the bank and card statements are in the books, so a
+    ///       reconciliation names the one it agrees with.
+    /// INVARIANTS:
+    ///   1. Journaled as `statement.recorded {attachment_id, account_id,
+    ///      period_start, period_end, opening_balance, closing_balance}`,
+    ///      then `attachment.linked` to the account.
+    /// SCENARIOS:
+    ///   1. IF the attachment is unknown or withdrawn, already records a
+    ///      statement, the account is unknown or not an asset or liability
+    ///      (a bank, cash, or card account), the period runs backwards, or
+    ///      a balance has more than two decimal places: SHOULD refuse,
+    ///      journaling nothing.
+    /// ```
+    pub fn record_statement(&mut self, st: Statement) -> Result<(), StoreError> {
+        let (_, withdrawn) = self.attachment_state(st.attachment_id)?;
+        if withdrawn {
+            return Err(StoreError::AttachmentWithdrawn(st.attachment_id));
+        }
+        let bad = |why: &str| Err(StoreError::InvalidStatement(why.to_string()));
+        let acct = self
+            .ledger
+            .chart()
+            .get(st.account_id)
+            .ok_or(LedgerError::UnknownAccount(st.account_id))?;
+        if !matches!(
+            acct.account_type,
+            AccountType::Asset | AccountType::Liability
+        ) {
+            return bad("a statement is for a bank, cash, or card account (an asset or liability)");
+        }
+        if st.period_end < st.period_start {
+            return bad("the period ends before it starts");
+        }
+        if [st.opening_balance, st.closing_balance]
+            .iter()
+            .any(|b| b.normalize().scale() > 2)
+        {
+            return bad("balances are in cents at most");
+        }
+        if self.statement(st.attachment_id)?.is_some() {
+            return bad("that attachment already records a statement");
+        }
+        let line = self.append_journal(
+            "statement.recorded",
+            json!({
+                "attachment_id": st.attachment_id,
+                "account_id": st.account_id,
+                "period_start": st.period_start.to_string(),
+                "period_end": st.period_end.to_string(),
+                "opening_balance": st.opening_balance.to_string(),
+                "closing_balance": st.closing_balance.to_string(),
+            }),
+        )?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        if !self
+            .attachment_links(st.attachment_id)?
+            .contains(&Subject::Account(st.account_id))
+        {
+            self.link_attachment(st.attachment_id, Subject::Account(st.account_id))?;
+        }
+        Ok(())
+    }
+
+    /// The statement an attachment records, if any.
+    pub fn statement(&self, attachment_id: u64) -> Result<Option<Statement>, StoreError> {
+        Ok(self
+            .statements(None)?
+            .into_iter()
+            .find(|s| s.attachment_id == attachment_id))
+    }
+
+    /// Recorded statements, optionally one account's, by period end.
+    pub fn statements(&self, account: Option<AccountId>) -> Result<Vec<Statement>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT attachment_id, account_id, period_start, period_end, opening_balance, closing_balance FROM statements ORDER BY period_end, attachment_id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (att, acct, start, end, open, close) = row?;
+            if account.is_some_and(|a| a != acct as u64) {
+                continue;
+            }
+            let dec = |t: &str| {
+                t.parse::<Decimal>()
+                    .map_err(|_| StoreError::JournalCorrupt(format!("statement amount {t}")))
+            };
+            out.push(Statement {
+                attachment_id: att as u64,
+                account_id: acct as u64,
+                period_start: parse_date(&start)?,
+                period_end: parse_date(&end)?,
+                opening_balance: dec(&open)?,
+                closing_balance: dec(&close)?,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Reconcile an account to a recorded statement: the books' cleared
+    /// balance through the statement date must equal its closing balance.
+    ///
+    /// ```text
+    /// GOAL: a monthly close that leaves proof: which statement, which
+    ///       balance, which lines it cleared.
+    /// SOURCE: CONVENTION (bank reconciliation); docs/parties-and-
+    ///         attachments.md "Reconciliations"; DECISION (owner,
+    ///         2026-10-15).
+    /// INVARIANTS:
+    ///   1. Recorded only when the difference is exactly zero
+    ///      (Ledger::reconciliation_report against the statement's date and
+    ///      closing balance).
+    ///   2. It records the cleared lines on the account dated on or before
+    ///      the statement date, and links the statement to it.
+    ///   3. Reconciliations of an account go forward: a new one's date is
+    ///      after every one not voided.
+    ///   4. Journaled as `reconciliation.completed`; never edited (void and
+    ///      redo).
+    /// SCENARIOS:
+    ///   1. IF the attachment records no statement: SHOULD refuse.
+    ///   2. IF the books differ from the statement: SHOULD refuse with
+    ///      NotReconciled naming the difference.
+    ///   3. IF a reconciliation not voided is dated on or after it: SHOULD
+    ///      refuse.
+    /// ```
+    pub fn complete_reconciliation(
+        &mut self,
+        statement_attachment: u64,
+    ) -> Result<Reconciliation, StoreError> {
+        let st = self.statement(statement_attachment)?.ok_or_else(|| {
+            StoreError::InvalidStatement(format!(
+                "attachment {statement_attachment} records no statement (record_statement first)"
+            ))
+        })?;
+        if let Some(last) = self
+            .reconciliations(Some(st.account_id))?
+            .into_iter()
+            .filter(|r| r.voided.is_none())
+            .map(|r| r.statement_date)
+            .max()
+            && last >= st.period_end
+        {
+            return Err(StoreError::ReconciliationRefused(format!(
+                "account {} is already reconciled through {last}; void that reconciliation to redo it",
+                st.account_id
+            )));
+        }
+        let report =
+            self.ledger
+                .reconciliation_report(st.account_id, st.period_end, st.closing_balance)?;
+        if !report.difference.is_zero() {
+            return Err(StoreError::NotReconciled {
+                difference: report.difference,
+            });
+        }
+        let mut cleared = Vec::new();
+        for e in self.ledger.posted_entries() {
+            if e.date() > st.period_end {
+                continue;
+            }
+            for (i, l) in e.lines().iter().enumerate() {
+                if l.account == st.account_id && self.ledger.is_cleared(e.id(), i) {
+                    cleared.push((e.id(), i));
+                }
+            }
+        }
+        cleared.sort_unstable();
+        let id: u64 = self.conn.query_row(
+            "SELECT COALESCE(MAX(id), 0) + 1 FROM reconciliations",
+            [],
+            |r| r.get::<_, i64>(0),
+        )? as u64;
+        let line = self.append_journal(
+            "reconciliation.completed",
+            json!({
+                "id": id,
+                "account_id": st.account_id,
+                "statement_date": st.period_end.to_string(),
+                "statement_balance": st.closing_balance.to_string(),
+                "attachment_id": statement_attachment,
+                "cleared": cleared,
+            }),
+        )?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        self.link_attachment(statement_attachment, Subject::Reconciliation(id))?;
+        Ok(Reconciliation {
+            id,
+            account_id: st.account_id,
+            statement_date: st.period_end,
+            statement_balance: st.closing_balance,
+            attachment_id: statement_attachment,
+            cleared,
+            voided: None,
+        })
+    }
+
+    /// Void a reconciliation, with the reason (to redo it). Journaled as
+    /// `reconciliation.voided`.
+    pub fn void_reconciliation(&mut self, id: u64, reason: &str) -> Result<(), StoreError> {
+        let reason = reason.trim();
+        if reason.is_empty() {
+            return Err(StoreError::ReasonRequired);
+        }
+        let r = self
+            .reconciliations(None)?
+            .into_iter()
+            .find(|r| r.id == id)
+            .ok_or_else(|| StoreError::UnknownSubject(format!("reconciliation {id}")))?;
+        if r.voided.is_some() {
+            return Err(StoreError::ReconciliationRefused(format!(
+                "reconciliation {id} is already voided"
+            )));
+        }
+        let line =
+            self.append_journal("reconciliation.voided", json!({"id": id, "reason": reason}))?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
+    /// Reconciliations, optionally one account's, by date.
+    pub fn reconciliations(
+        &self,
+        account: Option<AccountId>,
+    ) -> Result<Vec<Reconciliation>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, account_id, statement_date, statement_balance, attachment_id, voided_reason FROM reconciliations ORDER BY statement_date, id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, Option<String>>(5)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, acct, date, bal, att, voided) = row?;
+            if account.is_some_and(|a| a != acct as u64) {
+                continue;
+            }
+            let cleared: Vec<(EntryId, usize)> = self
+                .conn
+                .prepare(
+                    "SELECT entry_id, line_index FROM reconciliation_lines WHERE reconciliation_id = ? ORDER BY entry_id, line_index",
+                )?
+                .query_map(params![id], |r| {
+                    Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)? as usize))
+                })?
+                .collect::<Result<_, _>>()?;
+            out.push(Reconciliation {
+                id: id as u64,
+                account_id: acct as u64,
+                statement_date: parse_date(&date)?,
+                statement_balance: bal.parse().map_err(|_| {
+                    StoreError::JournalCorrupt(format!("reconciliation balance {bal}"))
+                })?,
+                attachment_id: att as u64,
+                cleared,
+                voided,
+            });
+        }
+        Ok(out)
     }
 
     /// `(linked entry, withdrawn?)` for an attachment.
@@ -3002,7 +3541,7 @@ impl Store {
         for r in run_rows {
             let (id, date, entry_id) = r?;
             let mut pl_stmt = self.conn.prepare(
-                "SELECT employee_name, gross_pay, federal_withholding, state_withholding, ss_employee, medicare_employee, ss_employer, medicare_employer, other_deductions FROM payroll_lines WHERE run_id = ? ORDER BY id",
+                "SELECT employee_name, gross_pay, federal_withholding, state_withholding, ss_employee, medicare_employee, ss_employer, medicare_employer, other_deductions, employee_id FROM payroll_lines WHERE run_id = ? ORDER BY id",
             )?;
             let pl_rows = pl_stmt.query_map(params![id], |lr| {
                 Ok((
@@ -3015,13 +3554,15 @@ impl Store {
                     lr.get::<_, String>(6)?,
                     lr.get::<_, String>(7)?,
                     lr.get::<_, String>(8)?,
+                    lr.get::<_, Option<i64>>(9)?,
                 ))
             })?;
             let mut lines = Vec::new();
             for lr in pl_rows {
-                let (name, gross, fed, state, ss_e, med_e, ss_r, med_r, other) = lr?;
+                let (name, gross, fed, state, ss_e, med_e, ss_r, med_r, other, emp) = lr?;
                 lines.push(PayrollLine {
                     employee_name: name,
+                    employee: emp.map(|e| e as u64),
                     gross_pay: parse_payroll_amount(gross)?,
                     federal_withholding: parse_payroll_amount(fed)?,
                     state_withholding: parse_payroll_amount(state)?,
@@ -3150,6 +3691,7 @@ fn flip_line_json(l: &ledger_core::JournalLine) -> Value {
 fn payroll_line_json(l: &PayrollLine) -> Value {
     json!({
         "employee_name": l.employee_name,
+        "employee": l.employee,
         "gross_pay": l.gross_pay.to_string(),
         "federal_withholding": l.federal_withholding.to_string(),
         "state_withholding": l.state_withholding.to_string(),
@@ -3177,6 +3719,12 @@ fn parse_payroll_lines(p: &Value) -> Result<Vec<PayrollLine>, StoreError> {
             };
             Ok(PayrollLine {
                 employee_name: get_str(l, "employee_name")?.to_string(),
+                employee: match l.get("employee") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => Some(v.as_u64().ok_or_else(|| {
+                        StoreError::JournalCorrupt("payroll line employee".into())
+                    })?),
+                },
                 gross_pay: amount("gross_pay")?,
                 federal_withholding: amount("federal_withholding")?,
                 state_withholding: amount("state_withholding")?,
@@ -3498,6 +4046,13 @@ pub(crate) fn replay_line_into_ledger(
                 pct,
             )?;
         }
+        "attachment.linked"
+        | "attachment.unlinked"
+        | "statement.recorded"
+        | "reconciliation.completed"
+        | "reconciliation.voided" => {
+            // Evidence, not accounting state: the projection records them.
+        }
         "receipt.attached"
         | "receipt.linked"
         | "receipt.unlinked"
@@ -3529,6 +4084,59 @@ pub(crate) fn replay_line_into_ledger(
         }
         "asset.tagged" => {
             ledger.set_asset_tag(get_u64(p, "asset_id")?, get_str(p, "tag")?)?;
+        }
+        "party.added" => {
+            let want = get_u64(p, "id")?;
+            let roles = p
+                .get("roles")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| StoreError::JournalCorrupt("party.added roles".into()))?
+                .iter()
+                .map(|r| {
+                    r.as_str()
+                        .and_then(ledger_core::Role::parse)
+                        .ok_or_else(|| StoreError::JournalCorrupt("party.added role".into()))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let got = ledger.add_party(get_str(p, "name")?, &roles)?;
+            if got != want {
+                return Err(StoreError::ReplayMismatch(format!(
+                    "party id: journal says {want}, replay got {got}"
+                )));
+            }
+        }
+        "party.updated" => {
+            let field: ledger_core::PartyField = serde_json::from_value(p["change"].clone())
+                .map_err(|_| StoreError::JournalCorrupt("party.updated change".into()))?;
+            ledger.update_party(get_u64(p, "id")?, field)?;
+        }
+        "party.role_set" => {
+            let role = ledger_core::Role::parse(get_str(p, "role")?)
+                .ok_or_else(|| StoreError::JournalCorrupt("party.role_set role".into()))?;
+            let on = p
+                .get("on")
+                .and_then(|v| v.as_bool())
+                .ok_or_else(|| StoreError::JournalCorrupt("party.role_set on".into()))?;
+            ledger.set_party_role(get_u64(p, "id")?, role, on)?;
+        }
+        "party.w9_set" => {
+            let facts: Option<ledger_core::W9Facts> = serde_json::from_value(p["facts"].clone())
+                .map_err(|_| StoreError::JournalCorrupt("party.w9_set facts".into()))?;
+            ledger.set_party_w9(get_u64(p, "id")?, facts)?;
+        }
+        "party.w4_set" => {
+            let facts: Option<ledger_core::W4Facts> = serde_json::from_value(p["facts"].clone())
+                .map_err(|_| StoreError::JournalCorrupt("party.w4_set facts".into()))?;
+            ledger.set_party_w4(get_u64(p, "id")?, facts)?;
+        }
+        "entry.party_set" => {
+            let party = match p.get("party_id") {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(v.as_u64().ok_or_else(|| {
+                    StoreError::JournalCorrupt("entry.party_set party_id".into())
+                })?),
+            };
+            ledger.set_entry_party(get_u64(p, "entry_id")?, party)?;
         }
         "asset.corrected" => {
             ledger.correct_asset(
@@ -4030,9 +4638,82 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
         "payroll.taxes_remitted" => {
             // The entry was projected by its own events; this only names it.
         }
-        "role.assigned" => {
-            // Roles live in the ledger (rebuilt by replay); the events
-            // mirror below keeps the history.
+        "attachment.linked" | "attachment.unlinked" => {
+            let sub = &p["subject"];
+            let kind = get_str(sub, "kind")?;
+            let id = sub.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+            if Subject::from_parts(kind, id).is_none() {
+                return Err(StoreError::JournalCorrupt(format!(
+                    "attachment subject {kind}"
+                )));
+            }
+            let att = get_u64(p, "attachment_id")? as i64;
+            if line.line_type == "attachment.linked" {
+                conn.execute(
+                    "INSERT INTO attachment_links(attachment_id, subject_kind, subject_id) VALUES (?,?,?)",
+                    params![att, kind, id as i64],
+                )?;
+            } else {
+                conn.execute(
+                    "DELETE FROM attachment_links WHERE attachment_id = ? AND subject_kind = ? AND subject_id = ?",
+                    params![att, kind, id as i64],
+                )?;
+            }
+        }
+        "statement.recorded" => {
+            conn.execute(
+                "INSERT INTO statements(attachment_id, account_id, period_start, period_end, opening_balance, closing_balance) VALUES (?,?,?,?,?,?)",
+                params![
+                    get_u64(p, "attachment_id")? as i64,
+                    get_u64(p, "account_id")? as i64,
+                    get_str(p, "period_start")?,
+                    get_str(p, "period_end")?,
+                    get_str(p, "opening_balance")?,
+                    get_str(p, "closing_balance")?,
+                ],
+            )?;
+        }
+        "reconciliation.completed" => {
+            let id = get_u64(p, "id")? as i64;
+            conn.execute(
+                "INSERT INTO reconciliations(id, account_id, statement_date, statement_balance, attachment_id) VALUES (?,?,?,?,?)",
+                params![
+                    id,
+                    get_u64(p, "account_id")? as i64,
+                    get_str(p, "statement_date")?,
+                    get_str(p, "statement_balance")?,
+                    get_u64(p, "attachment_id")? as i64,
+                ],
+            )?;
+            let cleared = p
+                .get("cleared")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| StoreError::JournalCorrupt("reconciliation cleared".into()))?;
+            for pair in cleared {
+                let e = pair.get(0).and_then(|v| v.as_u64());
+                let l = pair.get(1).and_then(|v| v.as_u64());
+                let (Some(e), Some(l)) = (e, l) else {
+                    return Err(StoreError::JournalCorrupt(
+                        "reconciliation cleared line".into(),
+                    ));
+                };
+                conn.execute(
+                    "INSERT INTO reconciliation_lines(reconciliation_id, entry_id, line_index) VALUES (?,?,?)",
+                    params![id, e as i64, l as i64],
+                )?;
+            }
+        }
+        "reconciliation.voided" => {
+            conn.execute(
+                "UPDATE reconciliations SET voided_reason = ? WHERE id = ?",
+                params![get_str(p, "reason")?, get_u64(p, "id")? as i64],
+            )?;
+        }
+        "role.assigned" | "party.added" | "party.updated" | "party.role_set" | "party.w9_set"
+        | "party.w4_set" | "entry.party_set" => {
+            // Control roles and the party directory live in the ledger
+            // (rebuilt by replay); the events mirror below keeps the
+            // history.
         }
         "asset.tagged" => {
             let (id, tag) = (get_u64(p, "asset_id")? as i64, get_str(p, "tag")?);
@@ -4373,7 +5054,7 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
             )?;
             for l in parse_payroll_lines(p)? {
                 conn.execute(
-                    "INSERT INTO payroll_lines(run_id, employee_name, gross_pay, federal_withholding, state_withholding, ss_employee, medicare_employee, ss_employer, medicare_employer, other_deductions) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO payroll_lines(run_id, employee_name, gross_pay, federal_withholding, state_withholding, ss_employee, medicare_employee, ss_employer, medicare_employer, other_deductions, employee_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                     params![
                         run_id,
                         l.employee_name,
@@ -4385,6 +5066,7 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
                         l.ss_employer.to_string(),
                         l.medicare_employer.to_string(),
                         l.other_deductions.to_string(),
+                        l.employee.map(|e| e as i64),
                     ],
                 )?;
             }
@@ -4517,6 +5199,135 @@ pub(crate) fn compare_projections(
     Ok(())
 }
 
+/// What an attachment can be linked to (docs/parties-and-attachments.md).
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+#[serde(tag = "kind", content = "id", rename_all = "snake_case")]
+pub enum Subject {
+    /// An entry (beyond the one a receipt is filed on).
+    Entry(u64),
+    /// An account (e.g. its statements, the agreement that opened it).
+    Account(u64),
+    /// A fixed asset (photos, warranty, manuals).
+    Asset(u64),
+    /// A party (contracts, correspondence).
+    Party(u64),
+    /// An invoice.
+    Invoice(u64),
+    /// A bill.
+    Bill(u64),
+    /// An accounting period (its close package).
+    Period(u64),
+    /// A payroll run.
+    PayrollRun(u64),
+    /// An amortization schedule (the prepaid contract).
+    Schedule(u64),
+    /// A reconciliation (its statement).
+    Reconciliation(u64),
+    /// The company itself (formation documents).
+    Company,
+}
+
+impl Subject {
+    /// Its kind's wire name.
+    pub fn kind(self) -> &'static str {
+        match self {
+            Subject::Entry(_) => "entry",
+            Subject::Account(_) => "account",
+            Subject::Asset(_) => "asset",
+            Subject::Party(_) => "party",
+            Subject::Invoice(_) => "invoice",
+            Subject::Bill(_) => "bill",
+            Subject::Period(_) => "period",
+            Subject::PayrollRun(_) => "payroll_run",
+            Subject::Schedule(_) => "schedule",
+            Subject::Reconciliation(_) => "reconciliation",
+            Subject::Company => "company",
+        }
+    }
+
+    /// Its id (0 for the company).
+    pub fn id(self) -> u64 {
+        match self {
+            Subject::Entry(i)
+            | Subject::Account(i)
+            | Subject::Asset(i)
+            | Subject::Party(i)
+            | Subject::Invoice(i)
+            | Subject::Bill(i)
+            | Subject::Period(i)
+            | Subject::PayrollRun(i)
+            | Subject::Schedule(i)
+            | Subject::Reconciliation(i) => i,
+            Subject::Company => 0,
+        }
+    }
+
+    /// The subject of `kind` and `id`.
+    pub fn from_parts(kind: &str, id: u64) -> Option<Subject> {
+        Some(match kind {
+            "entry" => Subject::Entry(id),
+            "account" => Subject::Account(id),
+            "asset" => Subject::Asset(id),
+            "party" => Subject::Party(id),
+            "invoice" => Subject::Invoice(id),
+            "bill" => Subject::Bill(id),
+            "period" => Subject::Period(id),
+            "payroll_run" => Subject::PayrollRun(id),
+            "schedule" => Subject::Schedule(id),
+            "reconciliation" => Subject::Reconciliation(id),
+            "company" => Subject::Company,
+            _ => return None,
+        })
+    }
+
+    /// Human words, e.g. "account 1", for messages.
+    pub fn describe(self) -> String {
+        match self {
+            Subject::Company => "the company".into(),
+            s => format!("{} {}", s.kind().replace('_', " "), s.id()),
+        }
+    }
+}
+
+/// A bank or card statement: the attachment that holds it, and what it
+/// says.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Statement {
+    /// The attachment holding the statement.
+    pub attachment_id: u64,
+    /// The account it is for.
+    pub account_id: AccountId,
+    /// First day it covers.
+    pub period_start: NaiveDate,
+    /// Last day it covers (its statement date).
+    pub period_end: NaiveDate,
+    /// Its opening balance, in the account's normal direction.
+    pub opening_balance: Decimal,
+    /// Its closing balance, in the account's normal direction.
+    pub closing_balance: Decimal,
+}
+
+/// A completed reconciliation.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Reconciliation {
+    /// Its id.
+    pub id: u64,
+    /// The account reconciled.
+    pub account_id: AccountId,
+    /// The statement date it reconciles through.
+    pub statement_date: NaiveDate,
+    /// The statement's closing balance.
+    pub statement_balance: Decimal,
+    /// The statement's attachment.
+    pub attachment_id: u64,
+    /// The lines it found cleared, (entry, line index).
+    pub cleared: Vec<(EntryId, usize)>,
+    /// Why it was voided, if it was.
+    pub voided: Option<String>,
+}
+
 /// Attachments in the projection, optionally only one entry's, by id.
 pub(crate) fn query_attachments(
     conn: &Connection,
@@ -4530,7 +5341,11 @@ pub(crate) fn query_attachments(
          JOIN blobs b ON b.sha256 = a.blob_sha",
     );
     if entry_id.is_some() {
-        sql.push_str(" WHERE a.entry_id = ?");
+        // Filed on the entry, or linked to it.
+        sql.push_str(
+            " WHERE a.entry_id = ?1 OR a.id IN \
+             (SELECT attachment_id FROM attachment_links WHERE subject_kind = 'entry' AND subject_id = ?1)",
+        );
     }
     sql.push_str(" ORDER BY a.id");
     let mut stmt = conn.prepare(&sql)?;

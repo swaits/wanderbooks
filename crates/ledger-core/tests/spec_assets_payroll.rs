@@ -196,6 +196,7 @@ fn pline(
 ) -> PayrollLine {
     PayrollLine {
         employee_name: name.to_string(),
+        employee: None,
         gross_pay: d(gross),
         federal_withholding: d(fed),
         state_withholding: d(state),
@@ -1208,6 +1209,7 @@ fn arb_line() -> impl Strategy<Value = PayrollLine> {
             let z = |(v, keep): (i64, bool)| Decimal::new(if keep { v } else { 0 }, 2);
             PayrollLine {
                 employee_name: "E".to_string(),
+                employee: None,
                 gross_pay: Decimal::new(gross, 2),
                 federal_withholding: z(w[0]),
                 state_withholding: z(w[1]),

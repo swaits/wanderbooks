@@ -614,6 +614,7 @@ fn more_origins_and_parties() {
         today,
         vec![ledger_core::PayrollLine {
             employee_name: "Pat".into(),
+            employee: None,
             gross_pay: Decimal::new(100_000, 2),
             federal_withholding: Decimal::new(10_000, 2),
             state_withholding: Decimal::new(3_000, 2),

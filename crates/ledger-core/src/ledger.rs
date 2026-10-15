@@ -261,6 +261,11 @@ pub struct Ledger {
     /// Every asset tag ever held ([`assets::tag_key`] → the asset that
     /// held it): a tag never moves to another asset.
     asset_tags: std::collections::BTreeMap<String, AssetId>,
+    /// The party directory ([`crate::parties`]).
+    parties: std::collections::BTreeMap<crate::PartyId, crate::Party>,
+    next_party_id: crate::PartyId,
+    /// The party each entry is with (the counterparty).
+    entry_parties: HashMap<EntryId, crate::PartyId>,
 }
 
 impl Ledger {
@@ -300,6 +305,9 @@ impl Ledger {
             bill_payments: HashMap::new(),
             roles: std::collections::BTreeMap::new(),
             asset_tags: std::collections::BTreeMap::new(),
+            parties: std::collections::BTreeMap::new(),
+            next_party_id: 1,
+            entry_parties: HashMap::new(),
         }
     }
 
@@ -594,6 +602,9 @@ impl Ledger {
             ("bill_payments", self.bill_payments == other.bill_payments),
             ("roles", self.roles == other.roles),
             ("asset_tags", self.asset_tags == other.asset_tags),
+            ("parties", self.parties == other.parties),
+            ("next_party_id", self.next_party_id == other.next_party_id),
+            ("entry_parties", self.entry_parties == other.entry_parties),
         ]
         .into_iter()
         .filter(|(_, same)| !same)
@@ -1359,9 +1370,12 @@ impl Ledger {
             .ok_or(LedgerError::UnknownEntry(id))?
             .mark_reversal_of(entry);
         self.post_entry(id)?;
-        // A reversed payment un-pays the vendor: carry the tag.
+        // A reversed payment un-pays the vendor: carry the tags.
         if let Some(v) = self.entry_vendor(entry) {
             self.entry_vendors.insert(id, v);
+        }
+        if let Some(p) = self.entry_party(entry) {
+            self.entry_parties.insert(id, p);
         }
         Ok(id)
     }
@@ -2311,6 +2325,9 @@ impl Ledger {
         if name.trim().is_empty() {
             return Err(LedgerError::EmptyAssetDescription);
         }
+        // Its party takes this name, so the name obeys party rules (no
+        // full TIN; parties INVARIANT 1).
+        crate::parties::check_text("name", name).map_err(LedgerError::InvalidParty)?;
         let id = self.next_customer_id;
         self.next_customer_id += 1;
         self.customers.insert(
@@ -2320,6 +2337,7 @@ impl Ledger {
                 name: name.to_string(),
             },
         );
+        self.link_record_party(name, false, id);
         Ok(id)
     }
 
@@ -2328,6 +2346,9 @@ impl Ledger {
         if name.trim().is_empty() {
             return Err(LedgerError::EmptyAssetDescription);
         }
+        // Its party takes this name, so the name obeys party rules (no
+        // full TIN; parties INVARIANT 1).
+        crate::parties::check_text("name", name).map_err(LedgerError::InvalidParty)?;
         let id = self.next_vendor_id;
         self.next_vendor_id += 1;
         self.vendors.insert(
@@ -2339,6 +2360,7 @@ impl Ledger {
                 tin_on_file: false,
             },
         );
+        self.link_record_party(name, true, id);
         Ok(id)
     }
 
@@ -2395,8 +2417,444 @@ impl Ledger {
                     return Err(LedgerError::UnknownVendor(v));
                 }
                 self.entry_vendors.insert(entry, v);
+                if let Some(p) = self.party_of_vendor(v) {
+                    self.entry_parties.insert(entry, p);
+                }
             }
             None => {
+                // The party tag goes too only when it was the vendor's.
+                if let Some(v) = self.entry_vendors.remove(&entry)
+                    && self.entry_parties.get(&entry).copied() == self.party_of_vendor(v)
+                {
+                    self.entry_parties.remove(&entry);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Tag an entry with a vendor and that vendor's party (bills, bill
+    /// payments): one counterparty, both tags.
+    fn tag_vendor(&mut self, entry: EntryId, vendor: VendorId) {
+        self.entry_vendors.insert(entry, vendor);
+        if let Some(p) = self.party_of_vendor(vendor) {
+            self.entry_parties.insert(entry, p);
+        }
+    }
+
+    /// Tag an entry with a customer's party (invoices, invoice payments).
+    fn tag_customer(&mut self, entry: EntryId, customer: CustomerId) {
+        if let Some(p) = self.party_of_customer(customer) {
+            self.entry_parties.insert(entry, p);
+        }
+    }
+
+    /// Link a new vendor or customer record to its party: the party not
+    /// archived with that name (ignoring case and surrounding space) that
+    /// has no such record yet, else a new party (named "Name (2)", "(3)",
+    /// ... when a live party already has the name). Deterministic, so replay
+    /// rebuilds the same directory from the same records.
+    fn link_record_party(&mut self, name: &str, vendor: bool, record: u64) {
+        let key = crate::parties::name_key(name);
+        let slot = |p: &crate::Party| if vendor { p.vendor } else { p.customer };
+        let found = self
+            .parties
+            .values()
+            .find(|p| !p.archived && crate::parties::name_key(&p.name) == key && slot(p).is_none())
+            .map(|p| p.id);
+        let id = match found {
+            Some(id) => id,
+            None => {
+                let id = self.next_party_id;
+                self.next_party_id += 1;
+                // Names are unique among live parties (parties INVARIANT 3):
+                // a second record of the same name gets "Name (2)", and so on.
+                let base = name.trim();
+                let taken = |n: &str| {
+                    let k = crate::parties::name_key(n);
+                    self.parties
+                        .values()
+                        .any(|p| !p.archived && crate::parties::name_key(&p.name) == k)
+                };
+                let mut party_name = base.to_string();
+                let mut n = 2;
+                while taken(&party_name) {
+                    party_name = format!("{base} ({n})");
+                    n += 1;
+                }
+                self.parties.insert(
+                    id,
+                    crate::Party {
+                        id,
+                        name: party_name,
+                        display_name: None,
+                        roles: std::collections::BTreeSet::new(),
+                        website: None,
+                        address: None,
+                        notes: None,
+                        archived: false,
+                        w9: None,
+                        w4: None,
+                        vendor: None,
+                        customer: None,
+                    },
+                );
+                id
+            }
+        };
+        let p = self.parties.get_mut(&id).expect("just found or made");
+        if vendor {
+            p.vendor = Some(record);
+        } else {
+            p.customer = Some(record);
+        }
+    }
+
+    /// The party a vendor record belongs to.
+    pub fn party_of_vendor(&self, vendor: VendorId) -> Option<crate::PartyId> {
+        self.parties
+            .values()
+            .find(|p| p.vendor == Some(vendor))
+            .map(|p| p.id)
+    }
+
+    /// The party a customer record belongs to.
+    pub fn party_of_customer(&self, customer: CustomerId) -> Option<crate::PartyId> {
+        self.parties
+            .values()
+            .find(|p| p.customer == Some(customer))
+            .map(|p| p.id)
+    }
+
+    /// One party.
+    pub fn get_party(&self, id: crate::PartyId) -> Option<&crate::Party> {
+        self.parties.get(&id)
+    }
+
+    /// Every party, in id order.
+    pub fn parties(&self) -> impl Iterator<Item = &crate::Party> + '_ {
+        self.parties.values()
+    }
+
+    /// The party (not archived) named `name`, ignoring case and surrounding
+    /// space.
+    pub fn party_by_name(&self, name: &str) -> Option<&crate::Party> {
+        let key = crate::parties::name_key(name);
+        self.parties
+            .values()
+            .find(|p| !p.archived && crate::parties::name_key(&p.name) == key)
+    }
+
+    /// The party an entry is with, if tagged.
+    pub fn entry_party(&self, entry: EntryId) -> Option<crate::PartyId> {
+        self.entry_parties.get(&entry).copied()
+    }
+
+    /// The next party id the directory will assign.
+    pub fn next_party_id(&self) -> crate::PartyId {
+        self.next_party_id
+    }
+
+    /// Add a party.
+    ///
+    /// ```text
+    /// GOAL: a record for anyone the company deals with.
+    /// SOURCE: crate::parties (INVARIANTS 1, 3); DECISION (owner,
+    ///         2026-10-15).
+    /// SCENARIOS:
+    ///   1. IF the name is blank, holds a full TIN, or names a party not
+    ///      archived: SHOULD refuse, changing nothing.
+    ///   2. IF a role is vendor or customer: SHOULD refuse (those follow
+    ///      their records; add_vendor / add_customer make them).
+    /// ```
+    pub fn add_party(
+        &mut self,
+        name: &str,
+        roles: &[crate::Role],
+    ) -> Result<crate::PartyId, LedgerError> {
+        self.check_add_party(name, roles)?;
+        let id = self.next_party_id;
+        self.next_party_id += 1;
+        self.parties.insert(
+            id,
+            crate::Party {
+                id,
+                name: name.trim().to_string(),
+                display_name: None,
+                roles: roles.iter().copied().collect(),
+                website: None,
+                address: None,
+                notes: None,
+                archived: false,
+                w9: None,
+                w4: None,
+                vendor: None,
+                customer: None,
+            },
+        );
+        Ok(id)
+    }
+
+    /// The validation behind [`Self::add_party`].
+    pub fn check_add_party(&self, name: &str, roles: &[crate::Role]) -> Result<(), LedgerError> {
+        let bad = |why: String| Err(LedgerError::InvalidParty(why));
+        if name.trim().is_empty() {
+            return bad("a party needs a name".into());
+        }
+        crate::parties::check_text("name", name).map_err(LedgerError::InvalidParty)?;
+        if self.party_by_name(name).is_some() {
+            return bad(format!("a party named {:?} already exists", name.trim()));
+        }
+        if roles
+            .iter()
+            .any(|r| matches!(r, crate::Role::Vendor | crate::Role::Customer))
+        {
+            return bad(
+                "vendor and customer roles come with their records: add_vendor or add_customer"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
+    /// Change one of a party's facts.
+    ///
+    /// ```text
+    /// SOURCE: crate::parties (INVARIANTS 1, 3).
+    /// SCENARIOS:
+    ///   1. IF the party is unknown, a text holds a full TIN or is too long,
+    ///      or a new name is blank or taken: SHOULD refuse, changing
+    ///      nothing.
+    /// ```
+    pub fn update_party(
+        &mut self,
+        id: crate::PartyId,
+        field: crate::PartyField,
+    ) -> Result<(), LedgerError> {
+        self.check_update_party(id, &field)?;
+        let p = self.parties.get_mut(&id).expect("checked");
+        use crate::PartyField::*;
+        match field {
+            Name(n) => {
+                // Its records carry the same name: aging, bills, and the
+                // 1099 worksheet show what the party is called now.
+                p.name = n.trim().to_string();
+                let (name, vendor, customer) = (p.name.clone(), p.vendor, p.customer);
+                if let Some(v) = vendor.and_then(|v| self.vendors.get_mut(&v)) {
+                    v.name = name.clone();
+                }
+                if let Some(c) = customer.and_then(|c| self.customers.get_mut(&c)) {
+                    c.name = name;
+                }
+            }
+            DisplayName(v) => p.display_name = v,
+            Website(v) => p.website = v,
+            Address(v) => p.address = v,
+            Notes(v) => p.notes = v,
+            Archived(b) => p.archived = b,
+        }
+        Ok(())
+    }
+
+    /// The validation behind [`Self::update_party`].
+    pub fn check_update_party(
+        &self,
+        id: crate::PartyId,
+        field: &crate::PartyField,
+    ) -> Result<(), LedgerError> {
+        use crate::PartyField::*;
+        let p = self.parties.get(&id).ok_or(LedgerError::UnknownParty(id))?;
+        let text = |f: &str, v: &Option<String>| match v {
+            Some(t) => crate::parties::check_text(f, t).map_err(LedgerError::InvalidParty),
+            None => Ok(()),
+        };
+        match field {
+            Name(n) => {
+                if n.trim().is_empty() {
+                    return Err(LedgerError::InvalidParty("a party needs a name".into()));
+                }
+                crate::parties::check_text("name", n).map_err(LedgerError::InvalidParty)?;
+                if let Some(other) = self.party_by_name(n)
+                    && other.id != id
+                {
+                    return Err(LedgerError::InvalidParty(format!(
+                        "a party named {:?} already exists",
+                        n.trim()
+                    )));
+                }
+            }
+            DisplayName(v) => text("display_name", v)?,
+            Website(v) => text("website", v)?,
+            Address(v) => text("address", v)?,
+            Notes(v) => text("notes", v)?,
+            Archived(false) => {
+                if let Some(other) = self.party_by_name(&p.name)
+                    && other.id != id
+                {
+                    return Err(LedgerError::InvalidParty(format!(
+                        "another party is named {:?}; rename one first",
+                        p.name
+                    )));
+                }
+            }
+            Archived(true) => {}
+        }
+        Ok(())
+    }
+
+    /// Give a party a role, or take one away.
+    ///
+    /// ```text
+    /// SOURCE: crate::parties (INVARIANT 2).
+    /// SCENARIOS:
+    ///   1. IF the role is vendor or customer: SHOULD refuse (they follow
+    ///      the records).
+    ///   2. IF taking away a 1099 role leaves W-9 facts with no 1099 role,
+    ///      or taking away employee leaves W-4 facts: SHOULD refuse (clear
+    ///      the facts first).
+    /// ```
+    pub fn set_party_role(
+        &mut self,
+        id: crate::PartyId,
+        role: crate::Role,
+        on: bool,
+    ) -> Result<(), LedgerError> {
+        self.check_set_party_role(id, role, on)?;
+        let p = self.parties.get_mut(&id).expect("checked");
+        if on {
+            p.roles.insert(role);
+        } else {
+            p.roles.remove(&role);
+        }
+        Ok(())
+    }
+
+    /// The validation behind [`Self::set_party_role`].
+    pub fn check_set_party_role(
+        &self,
+        id: crate::PartyId,
+        role: crate::Role,
+        on: bool,
+    ) -> Result<(), LedgerError> {
+        let p = self.parties.get(&id).ok_or(LedgerError::UnknownParty(id))?;
+        if matches!(role, crate::Role::Vendor | crate::Role::Customer) {
+            return Err(LedgerError::InvalidParty(
+                "vendor and customer roles follow their records".into(),
+            ));
+        }
+        if !on {
+            let mut left = p.roles.clone();
+            left.remove(&role);
+            if p.w9.is_some() && !left.iter().any(|r| r.gets_1099()) {
+                return Err(LedgerError::InvalidParty(
+                    "clear the W-9 facts before removing the last 1099 role".into(),
+                ));
+            }
+            if p.w4.is_some() && role == crate::Role::Employee {
+                return Err(LedgerError::InvalidParty(
+                    "clear the W-4 facts before removing the employee role".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Record (or clear) a party's W-9 facts.
+    ///
+    /// ```text
+    /// SOURCE: crate::parties (INVARIANTS 1, 2).
+    /// SCENARIOS:
+    ///   1. IF the party has no 1099 role (contractor, landlord), or the
+    ///      facts' form is wrong (W9Facts::check): SHOULD refuse.
+    /// ```
+    pub fn set_party_w9(
+        &mut self,
+        id: crate::PartyId,
+        facts: Option<crate::W9Facts>,
+    ) -> Result<(), LedgerError> {
+        self.check_set_party_w9(id, facts.as_ref())?;
+        self.parties.get_mut(&id).expect("checked").w9 = facts;
+        Ok(())
+    }
+
+    /// The validation behind [`Self::set_party_w9`].
+    pub fn check_set_party_w9(
+        &self,
+        id: crate::PartyId,
+        facts: Option<&crate::W9Facts>,
+    ) -> Result<(), LedgerError> {
+        let p = self.parties.get(&id).ok_or(LedgerError::UnknownParty(id))?;
+        if let Some(f) = facts {
+            if !p.roles.iter().any(|r| r.gets_1099()) {
+                return Err(LedgerError::InvalidParty(
+                    "W-9 facts need a 1099 role (contractor or landlord)".into(),
+                ));
+            }
+            f.check().map_err(LedgerError::InvalidParty)?;
+        }
+        Ok(())
+    }
+
+    /// Record (or clear) a party's W-4 facts.
+    pub fn set_party_w4(
+        &mut self,
+        id: crate::PartyId,
+        facts: Option<crate::W4Facts>,
+    ) -> Result<(), LedgerError> {
+        self.check_set_party_w4(id, facts.as_ref())?;
+        self.parties.get_mut(&id).expect("checked").w4 = facts;
+        Ok(())
+    }
+
+    /// The validation behind [`Self::set_party_w4`].
+    pub fn check_set_party_w4(
+        &self,
+        id: crate::PartyId,
+        facts: Option<&crate::W4Facts>,
+    ) -> Result<(), LedgerError> {
+        let p = self.parties.get(&id).ok_or(LedgerError::UnknownParty(id))?;
+        if let Some(f) = facts {
+            if !p.roles.contains(&crate::Role::Employee) {
+                return Err(LedgerError::InvalidParty(
+                    "W-4 facts need the employee role".into(),
+                ));
+            }
+            f.check().map_err(LedgerError::InvalidParty)?;
+        }
+        Ok(())
+    }
+
+    /// Tag an entry with the party it was with, or clear the tag. A party
+    /// with a vendor record also tags the entry's vendor (for 1099s), as
+    /// [`Self::set_entry_vendor`] does the other way round. Metadata: no
+    /// amount changes, so posted entries may be tagged.
+    pub fn set_entry_party(
+        &mut self,
+        entry: EntryId,
+        party: Option<crate::PartyId>,
+    ) -> Result<(), LedgerError> {
+        if !self.entries.contains_key(&entry) {
+            return Err(LedgerError::UnknownEntry(entry));
+        }
+        match party {
+            Some(p) => {
+                let vendor = self
+                    .parties
+                    .get(&p)
+                    .ok_or(LedgerError::UnknownParty(p))?
+                    .vendor;
+                self.entry_parties.insert(entry, p);
+                match vendor {
+                    Some(v) => {
+                        self.entry_vendors.insert(entry, v);
+                    }
+                    None => {
+                        self.entry_vendors.remove(&entry);
+                    }
+                }
+            }
+            None => {
+                self.entry_parties.remove(&entry);
                 self.entry_vendors.remove(&entry);
             }
         }
@@ -2562,6 +3020,7 @@ impl Ledger {
                 entry_id: entry,
             },
         );
+        self.tag_customer(entry, customer_id);
         Ok(id)
     }
 
@@ -2633,7 +3092,7 @@ impl Ledger {
                 entry_id: entry,
             },
         );
-        self.entry_vendors.insert(entry, vendor_id);
+        self.tag_vendor(entry, vendor_id);
         Ok(id)
     }
 
@@ -2645,6 +3104,30 @@ impl Ledger {
     /// Look up a bill.
     pub fn get_bill(&self, id: BillId) -> Option<&Bill> {
         self.bills.get(&id)
+    }
+
+    /// Every invoice, by id.
+    pub fn invoices(&self) -> Vec<&Invoice> {
+        let mut v: Vec<&Invoice> = self.invoices.values().collect();
+        v.sort_by_key(|i| i.id);
+        v
+    }
+
+    /// Every bill, by id.
+    pub fn bills(&self) -> Vec<&Bill> {
+        let mut v: Vec<&Bill> = self.bills.values().collect();
+        v.sort_by_key(|b| b.id);
+        v
+    }
+
+    /// An invoice's payments: `(payment entry, amount)`, in order received.
+    pub fn invoice_payments(&self, id: InvoiceId) -> &[(EntryId, Decimal)] {
+        self.invoice_payments.get(&id).map_or(&[], Vec::as_slice)
+    }
+
+    /// A bill's payments: `(payment entry, amount)`, in order paid.
+    pub fn bill_payments(&self, id: BillId) -> &[(EntryId, Decimal)] {
+        self.bill_payments.get(&id).map_or(&[], Vec::as_slice)
     }
 
     /// Record a customer payment against an invoice. Posts: Dr Cash,
@@ -2714,10 +3197,12 @@ impl Ledger {
         let inv = self.invoices.get_mut(&invoice_id).expect("invoice exists");
         inv.amount_paid += amount;
         inv.status = arap::derive_status(inv.amount_paid, inv.total());
+        let customer = inv.customer_id;
         self.invoice_payments
             .entry(invoice_id)
             .or_default()
             .push((entry, amount));
+        self.tag_customer(entry, customer);
         Ok(entry)
     }
 
@@ -2792,7 +3277,7 @@ impl Ledger {
             .entry(bill_id)
             .or_default()
             .push((entry, amount));
-        self.entry_vendors.insert(entry, bill.vendor_id);
+        self.tag_vendor(entry, bill.vendor_id);
         Ok(entry)
     }
 
@@ -2828,6 +3313,7 @@ impl Ledger {
                 entry_id,
             },
         );
+        self.tag_customer(entry_id, customer_id);
         Ok(())
     }
 
@@ -2860,7 +3346,7 @@ impl Ledger {
                 entry_id,
             },
         );
-        self.entry_vendors.insert(entry_id, vendor_id);
+        self.tag_vendor(entry_id, vendor_id);
         Ok(())
     }
 
@@ -2886,6 +3372,8 @@ impl Ledger {
             .or_default()
             .push((entry_id, amount));
         inv.status = arap::derive_status(inv.amount_paid, inv.total());
+        let customer = inv.customer_id;
+        self.tag_customer(entry_id, customer);
         Ok(())
     }
 
@@ -2909,7 +3397,7 @@ impl Ledger {
             .or_default()
             .push((entry_id, amount));
         let vendor = bill.vendor_id;
-        self.entry_vendors.insert(entry_id, vendor);
+        self.tag_vendor(entry_id, vendor);
         Ok(())
     }
 
@@ -3205,6 +3693,18 @@ impl Ledger {
         cash_account: AccountId,
     ) -> Result<(), LedgerError> {
         validate_payroll_lines(lines)?;
+        // A line that names its employee names a party with that role.
+        for line in lines {
+            if let Some(id) = line.employee {
+                let p = self.parties.get(&id).ok_or(LedgerError::UnknownParty(id))?;
+                if !p.roles.contains(&crate::Role::Employee) {
+                    return Err(LedgerError::InvalidParty(format!(
+                        "{} isn't an employee (give the party the employee role first)",
+                        p.label()
+                    )));
+                }
+            }
+        }
         self.check_controls(&PAYROLL)?;
         self.chart
             .get(cash_account)

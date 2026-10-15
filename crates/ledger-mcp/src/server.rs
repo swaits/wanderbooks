@@ -23,9 +23,9 @@
 //!      preview MUST change nothing.
 //!   5. An entry the receipt policy covers MUST NOT post, or keep posted,
 //!      without a receipt (crate::policy).
-//!   6. A reference (account, vendor, class) given as a number that names
-//!      one thing by id and another by code or name is refused, never
-//!      guessed.
+//!   6. A reference (account, vendor, class, party) given as a number
+//!      that names one thing by id and another by code or name is
+//!      refused, never guessed.
 //!   7. The server MUST answer every request with exactly one response
 //!      whose id is the request's, and keep serving after any tool error.
 //! ```
@@ -54,7 +54,7 @@ use rust_decimal::Decimal;
 use std::sync::{Arc, Mutex};
 
 /// The agent operating contract, delivered via initialize.
-const INSTRUCTIONS: &str = "You are the bookkeeping agent for these books. The engine enforces the accounting; you enforce the workflow.\n\nRULES\n- Money is exact decimal. Always pass amounts as decimal strings (\"123.45\"), never floats.\n- Never post directly. The flow is draft (books.draft_entry) -> add lines (books.add_line) -> preview (books.post_entry without confirmed) -> review the preview -> post (books.post_entry with confirmed=true).\n- Every entry must balance: debits equal credits, exactly. Every line needs a real account from books.chart. The engine rejects anything else.\n- Receipts: any entry moving more than $25.00 in debits needs at least one receipt attached (books.attach_receipt) before posting. The server rejects the post otherwise. This is enforced, not a suggestion.\n- Never invent accounts. If the account you need does not exist, add it with books.add_account first.\n- Corrections go through books.reverse_entry. Posted entries are immutable; there is no edit.\n- Receipt corrections: receipts can change, but nothing is erased. To replace one, attach the new receipt, then books.unlink_receipt the old (with a reason); retire unwanted receipts or documents with books.withdraw_attachment (with a reason). The journal keeps every step.\n- After posting, check books.digest to review what changed, so a human can review too.\n- Amounts in every response are decimal strings. Treat them as exact.\n- Fixed assets: register with books.register_asset, inspect with books.asset_schedule and books.list_assets, post monthly depreciation with books.run_depreciation (exempt from the receipt policy; the schedule is the evidence), and dispose with books.dispose_asset (preview first; the bill of sale is the receipt). Depreciation is straight-line, book basis only - tax depreciation stays with the CPA. Every asset gets a tag for the label on the thing itself (books.register_asset generates the next one, like FL-0001, unless the human has their own); record the manufacturer's serial number too, change either with books.label_asset, and print label sheets with books.asset_labels (save the PDF; print at 100% on Avery 5160/8160). Asset tools take the tag in place of the id. Record every asset's federal tax basis beside its book value (books.set_asset_tax_basis, or tax_basis_rule on books.register_asset): cost for a purchase; for a member's contribution, the member's adjusted basis (what they paid, less depreciation they took) with rule personal_use_conversion (their personal property: tax basis is the lesser of value and their basis) or carryover (their business property). Book value stays fair market value. books.export fixed_asset_register is the register for the CPA; books.show asset opens one in the viewer.\n- Prepaid expenses and deferred revenue: record the original payment (with its receipt), then books.create_schedule; books.run_schedules posts the monthly amortization (preview first; exempt from the receipt policy like depreciation). Recurring entries (books.create_recurring, books.run_recurring) only ever create drafts: attach each actual receipt and post through the normal preview.\n- Platform payouts (app stores, payment processors, marketplaces): never book the net deposit as revenue. books.record_payout grosses it up (gross revenue, fees, adjustments) into a draft and refuses unless it reconciles to the cent; attach the payout statement, then preview and post.\n- The viewer: the human usually has the read-only viewer open beside you (`just gui`). When they ask to see something, and after you post, call books.show so it's on their screen.\n- 1099s: mark contractors and landlords with books.set_vendor_1099 (and whether their W-9 is on file; never store a TIN), and tag every payment to them with its vendor (books.draft_entry vendor, or books.set_entry_vendor; books.pay_bill tags automatically). books.vendor_1099 is the year-end worksheet for the CPA.\n- Rules that change with the law: wanderbooks knows some legal amounts (like the 1099 threshold) only through a given year and never guesses past it. When a tool refuses with \"wanderbooks knows the ... only through\", or books.digest lists stale_rules: check today's date, find the current figure from the official source (the refusal names the vendored source file) or ask the human (owner, CPA), confirm it with them, and pass it explicitly. Then update the rule for everyone: open a pull request at https://github.com/swaits/wanderbooks with the new value and its official text (best), or at least an issue; if you can't reach GitHub, give the human the issue text to file.\n- Control roles: invoices, bills, payroll, and closes post to the account filling each role (receivables, revenue, payables, general expense, retained earnings, payroll expense and withholdings); books.roles lists them. A role uses its default code (1200, 4000, 2000, 6999, 3999, 6100, 6110, 2110-2150) until it is assigned one of the chart's own accounts with books.assign_role (journaled). If the chart uses a default code for a different kind of account, the engine refuses and says which. It can't tell an account of the right type but another purpose (a hosting expense at payroll's 6100): check books.roles before running payroll, bills, or invoices. Never assign roles or renumber the human's accounts on your own: explain the conflict, and when they decide, assign the role to their account (best: their numbering stays) or books.renumber_account the account (its history stays).\n- Settings: wanderbooks.toml beside the books holds the company's facts and settings (name, fiscal year, tax form, members and their capital accounts, basis, receipt threshold, cash flow roles, close target); books.settings shows what is in force and lists problems, settings that disagree with the chart. Edit the file when the human tells you a company fact, when a tool refuses naming a wanderbooks.toml setting, when books.settings or books.digest lists a settings problem, and after books.renumber_account lists config_mentions. The server reloads the file whenever it changes, with no restart: after each edit, call books.settings and check reload_error is null (a broken edit leaves the last good settings in force) and problems is empty. Never put a member's SSN or any TIN in it.";
+const INSTRUCTIONS: &str = "You are the bookkeeping agent for these books. The engine enforces the accounting; you enforce the workflow.\n\nRULES\n- Money is exact decimal. Always pass amounts as decimal strings (\"123.45\"), never floats.\n- Never post directly. The flow is draft (books.draft_entry) -> add lines (books.add_line) -> preview (books.post_entry without confirmed) -> review the preview -> post (books.post_entry with confirmed=true).\n- Every entry must balance: debits equal credits, exactly. Every line needs a real account from books.chart. The engine rejects anything else.\n- Receipts: any entry moving more than $25.00 in debits needs at least one receipt attached (books.attach_receipt) before posting. The server rejects the post otherwise. This is enforced, not a suggestion.\n- Never invent accounts. If the account you need does not exist, add it with books.add_account first.\n- Corrections go through books.reverse_entry. Posted entries are immutable; there is no edit.\n- Receipt corrections: receipts can change, but nothing is erased. To replace one, attach the new receipt, then books.unlink_receipt the old (with a reason); retire unwanted receipts or documents with books.withdraw_attachment (with a reason). The journal keeps every step.\n- After posting, check books.digest to review what changed, so a human can review too.\n- Amounts in every response are decimal strings. Treat them as exact.\n- Fixed assets: register with books.register_asset, inspect with books.asset_schedule and books.list_assets, post monthly depreciation with books.run_depreciation (exempt from the receipt policy; the schedule is the evidence), and dispose with books.dispose_asset (preview first; the bill of sale is the receipt). Depreciation is straight-line, book basis only - tax depreciation stays with the CPA. Every asset gets a tag for the label on the thing itself (books.register_asset generates the next one, like FL-0001, unless the human has their own); record the manufacturer's serial number too, change either with books.label_asset, and print label sheets with books.asset_labels (save the PDF; print at 100% on Avery 5160/8160). Asset tools take the tag in place of the id. Record every asset's federal tax basis beside its book value (books.set_asset_tax_basis, or tax_basis_rule on books.register_asset): cost for a purchase; for a member's contribution, the member's adjusted basis (what they paid, less depreciation they took) with rule personal_use_conversion (their personal property: tax basis is the lesser of value and their basis) or carryover (their business property). Book value stays fair market value. books.export fixed_asset_register is the register for the CPA; books.show asset opens one in the viewer.\n- Prepaid expenses and deferred revenue: record the original payment (with its receipt), then books.create_schedule; books.run_schedules posts the monthly amortization (preview first; exempt from the receipt policy like depreciation). Recurring entries (books.create_recurring, books.run_recurring) only ever create drafts: attach each actual receipt and post through the normal preview.\n- Platform payouts (app stores, payment processors, marketplaces): never book the net deposit as revenue. books.record_payout grosses it up (gross revenue, fees, adjustments) into a draft and refuses unless it reconciles to the cent; attach the payout statement, then preview and post.\n- The viewer: the human usually has the read-only viewer open beside you (`just gui`). When they ask to see something, and after you post, call books.show so it's on their screen.\n- Parties: keep the directory current. Every counterparty (vendor, contractor, landlord, customer, payout platform, tax agency, bank or card issuer, member, employee) gets a party: books.add_party with its roles (books.add_vendor and books.add_customer link their record to the party of the same name, or make one). Tag every entry with its party (books.draft_entry party, or books.set_entry_party; a party with a vendor record tags the vendor for 1099s too). Record W-9 facts (books.set_w9) for contractors and landlords before paying them, and W-4 facts (books.set_w4) for employees before their first payroll; name the employee party on every books.run_payroll line. Never store a full TIN or SSN in the books, only the last four digits: the engine refuses any nine-digit number in a party field. books.parties lists the directory, books.party shows one party with the year's totals, and books.show party opens it in the viewer. Archive (books.update_party archived) parties no longer dealt with; never delete history.\n- 1099s: mark contractors and landlords with books.set_vendor_1099 (and whether their W-9 is on file; never store a TIN), and tag every payment to them with its vendor or party (books.draft_entry vendor or party, books.set_entry_vendor, or books.set_entry_party; books.pay_bill tags automatically). books.vendor_1099 is the year-end worksheet for the CPA.\n- Rules that change with the law: wanderbooks knows some legal amounts (like the 1099 threshold) only through a given year and never guesses past it. When a tool refuses with \"wanderbooks knows the ... only through\", or books.digest lists stale_rules: check today's date, find the current figure from the official source (the refusal names the vendored source file) or ask the human (owner, CPA), confirm it with them, and pass it explicitly. Then update the rule for everyone: open a pull request at https://github.com/swaits/wanderbooks with the new value and its official text (best), or at least an issue; if you can't reach GitHub, give the human the issue text to file.\n- Control roles: invoices, bills, payroll, and closes post to the account filling each role (receivables, revenue, payables, general expense, retained earnings, payroll expense and withholdings); books.roles lists them. A role uses its default code (1200, 4000, 2000, 6999, 3999, 6100, 6110, 2110-2150) until it is assigned one of the chart's own accounts with books.assign_role (journaled). If the chart uses a default code for a different kind of account, the engine refuses and says which. It can't tell an account of the right type but another purpose (a hosting expense at payroll's 6100): check books.roles before running payroll, bills, or invoices. Never assign roles or renumber the human's accounts on your own: explain the conflict, and when they decide, assign the role to their account (best: their numbering stays) or books.renumber_account the account (its history stays).\n- Settings: wanderbooks.toml beside the books holds the company's facts and settings (name, fiscal year, tax form, members and their capital accounts, basis, receipt threshold, cash flow roles, close target); books.settings shows what is in force and lists problems, settings that disagree with the chart. Edit the file when the human tells you a company fact, when a tool refuses naming a wanderbooks.toml setting, when books.settings or books.digest lists a settings problem, and after books.renumber_account lists config_mentions. The server reloads the file whenever it changes, with no restart: after each edit, call books.settings and check reload_error is null (a broken edit leaves the last good settings in force) and problems is empty. Never put a member's SSN or any TIN in it.";
 
 /// Max receipt/document upload: 25 MB.
 const MAX_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
@@ -70,6 +70,25 @@ pub struct BooksServer {
 
 #[cfg(test)]
 pub use crate::settings::CashRoles;
+
+/// Where payments to vendors come from, for the 1099 worksheet: the
+/// `[books] cash_accounts` and `financing_accounts` in the chart (codes the
+/// chart lacks are skipped; `books.settings` reports them).
+fn payment_accounts(
+    ledger: &ledger_core::Ledger,
+    roles: &crate::settings::CashRoles,
+) -> ledger_core::PaymentAccounts {
+    let ids = |codes: &[String]| {
+        codes
+            .iter()
+            .filter_map(|c| ledger.chart().find_by_code(c).map(|a| a.id))
+            .collect()
+    };
+    ledger_core::PaymentAccounts {
+        cash: ids(&roles.cash),
+        financing: ids(&roles.financing),
+    }
+}
 
 impl BooksServer {
     /// The wanderbooks.toml settings that name account `code`.
@@ -626,6 +645,189 @@ fn resolve_vendor(store: &Store, vendor: &str) -> Result<u64, String> {
     }
 }
 
+/// Resolve a party by id or by name: the name ignoring case and
+/// surrounding space, among parties not archived (an archived party goes
+/// by id). A number that is one party's id and another's name is refused
+/// (INVARIANT 6).
+fn resolve_party(store: &Store, party: &str) -> Result<ledger_core::PartyId, String> {
+    let ledger = store.ledger();
+    let by_id = party
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .filter(|id| ledger.get_party(*id).is_some());
+    let by_name = ledger.party_by_name(party).map(|p| p.id);
+    match (by_id, by_name) {
+        (Some(i), Some(n)) if i != n => Err(format!(
+            "party {party:?} is ambiguous: it is party {i}'s id and party {n}'s name; pass the id"
+        )),
+        (Some(i), _) | (None, Some(i)) => Ok(i),
+        (None, None) => Err(format!(
+            "unknown party {party:?}: use an id or name from books.parties (an archived party goes by id), or add it with books.add_party"
+        )),
+    }
+}
+
+/// Parse role names (`Role::key`), refusing any unknown one.
+fn parse_roles(roles: &[String]) -> Result<Vec<ledger_core::Role>, String> {
+    roles
+        .iter()
+        .map(|r| {
+            ledger_core::Role::parse(r.trim()).ok_or_else(|| {
+                format!(
+                    "unknown role {r:?}: expected one of {}",
+                    ledger_core::Role::ALL.map(|r| r.key()).join(", ")
+                )
+            })
+        })
+        .collect()
+}
+
+/// A party's roles (vendor and customer included), in display order.
+fn party_roles(p: &ledger_core::Party) -> Vec<String> {
+    let all = p.all_roles();
+    ledger_core::Role::ALL
+        .into_iter()
+        .filter(|r| all.contains(r))
+        .map(|r| r.key().to_string())
+        .collect()
+}
+
+/// A party's facts for a tool's output.
+fn party_out(p: &ledger_core::Party) -> PartyOut {
+    PartyOut {
+        party_id: p.id,
+        name: p.name.clone(),
+        label: p.label().to_string(),
+        display_name: p.display_name.clone(),
+        roles: party_roles(p),
+        website: p.website.clone(),
+        address: p.address.clone(),
+        notes: p.notes.clone(),
+        archived: p.archived,
+        vendor_id: p.vendor,
+        customer_id: p.customer,
+        w9: p.w9.as_ref().map(|w| W9Out {
+            received_on: w.received.to_string(),
+            entity_type: w.entity_type.clone(),
+            exempt_payee_code: w.exempt_payee_code.clone(),
+            fatca_code: w.fatca_code.clone(),
+            tin_last4: w.tin_last4.clone(),
+            kept_at: w.kept_at.clone(),
+        }),
+        w4: p.w4.as_ref().map(|w| W4Out {
+            received_on: w.received.to_string(),
+            state: w.state.clone(),
+            kept_at: w.kept_at.clone(),
+        }),
+    }
+}
+
+/// An optional party text from a tool: trimmed, and "" clears it.
+fn optional_text(s: &str) -> Option<String> {
+    let t = s.trim();
+    (!t.is_empty()).then(|| t.to_string())
+}
+
+/// A document's status for a tool's output.
+fn status_key(s: DocumentStatus) -> String {
+    match s {
+        DocumentStatus::Open => "open",
+        DocumentStatus::Partial => "partial",
+        DocumentStatus::Paid => "paid",
+    }
+    .to_string()
+}
+
+/// An invoice or bill for `books.party`: its (date, due date), (total,
+/// paid so far), status, and entry.
+fn party_document(
+    id: u64,
+    (date, due): (NaiveDate, NaiveDate),
+    (total, paid): (Decimal, Decimal),
+    status: DocumentStatus,
+    entry_id: u64,
+) -> PartyDocumentOut {
+    PartyDocumentOut {
+        id,
+        date: date.to_string(),
+        due_date: due.to_string(),
+        total: money(total),
+        paid: money(paid),
+        balance: money(total - paid),
+        status: status_key(status),
+        entry_id,
+    }
+}
+
+/// Everything the books did with one party (`PartyTotalsOut` defines it).
+struct PartyActivity {
+    /// The party's entries, drafts included.
+    entries: std::collections::BTreeSet<u64>,
+    /// Paid to it in the year.
+    paid: Decimal,
+    /// Received from it in the year.
+    received: Decimal,
+}
+
+/// The party's entries and the year's money paid and received
+/// (`PartyTotalsOut`): ledger_core::parties::activity over the calendar
+/// year, with the `[books] cash_accounts`.
+fn party_activity(
+    store: &Store,
+    party: &ledger_core::Party,
+    cash_codes: &[String],
+    year: i32,
+) -> Result<PartyActivity, String> {
+    let ledger = store.ledger();
+    let cash: Vec<AccountId> = cash_codes
+        .iter()
+        .filter_map(|c| ledger.chart().find_by_code(c).map(|a| a.id))
+        .collect();
+    let span = (
+        NaiveDate::from_ymd_opt(year, 1, 1).ok_or("year out of range")?,
+        NaiveDate::from_ymd_opt(year, 12, 31).ok_or("year out of range")?,
+    );
+    let a = ledger_core::parties::activity(ledger, party.id, span, &cash);
+    Ok(PartyActivity {
+        entries: a.entries,
+        paid: a.paid,
+        received: a.received,
+    })
+}
+
+/// The party's customer record's invoices, by id.
+fn party_invoices<'a>(
+    ledger: &'a Ledger,
+    party: &ledger_core::Party,
+) -> Vec<&'a ledger_core::Invoice> {
+    let Some(c) = party.customer else {
+        return Vec::new();
+    };
+    ledger
+        .invoices()
+        .into_iter()
+        .filter(|i| i.customer_id == c)
+        .collect()
+}
+
+/// The party's vendor record's bills, by id.
+fn party_bills<'a>(ledger: &'a Ledger, party: &ledger_core::Party) -> Vec<&'a ledger_core::Bill> {
+    let Some(v) = party.vendor else {
+        return Vec::new();
+    };
+    ledger
+        .bills()
+        .into_iter()
+        .filter(|b| b.vendor_id == v)
+        .collect()
+}
+
+/// This calendar year.
+fn this_year() -> i32 {
+    chrono::Datelike::year(&today())
+}
+
 fn form_1099_label(form: Option<ledger_core::Form1099>) -> Option<String> {
     form.map(|f| f.label().to_string())
 }
@@ -1098,7 +1300,7 @@ impl BooksServer {
 
     #[tool(
         name = "books.draft_entry",
-        description = "Start a draft journal entry. Drafts are journaled and survive restarts, but don't affect reports until posted; add lines with books.add_line."
+        description = "Start a draft journal entry. Drafts are journaled and survive restarts, but don't affect reports until posted; add lines with books.add_line. Pass party (id or name) for the counterparty: every entry with a vendor, platform, agency, bank, member, or contractor names its party (a party with a vendor record tags the vendor too, for 1099s)."
     )]
     async fn draft_entry(
         &self,
@@ -1106,15 +1308,34 @@ impl BooksServer {
     ) -> Result<Json<DraftEntryOut>, String> {
         let p = params.0;
         let mut store = self.lock()?;
+        // Resolve every reference before writing anything (INVARIANT 2).
+        let date = parse_date(&p.date)?;
         let vendor = p
             .vendor
             .as_deref()
             .map(|v| resolve_vendor(&store, v))
             .transpose()?;
+        let party = p
+            .party
+            .as_deref()
+            .map(|r| resolve_party(&store, r))
+            .transpose()?;
+        if let (Some(v), Some(pid)) = (vendor, party) {
+            let party_vendor = store.ledger().get_party(pid).and_then(|p| p.vendor);
+            if party_vendor != Some(v) {
+                return Err(format!(
+                    "vendor {v} isn't party {pid}'s vendor record: pass only the party (its vendor record is tagged with it), or the vendor alone"
+                ));
+            }
+        }
         let id = store
-            .create_entry(parse_date(&p.date)?, &p.description)
+            .create_entry(date, &p.description)
             .map_err(|e| e.to_string())?;
-        if vendor.is_some() {
+        if party.is_some() {
+            store
+                .set_entry_party(id, party)
+                .map_err(|e| e.to_string())?;
+        } else if vendor.is_some() {
             store
                 .set_entry_vendor(id, vendor)
                 .map_err(|e| e.to_string())?;
@@ -1604,6 +1825,12 @@ impl BooksServer {
                 .entry_vendor(p.entry_id)
                 .and_then(|v| store.ledger().get_vendor(v))
                 .map(|v| v.name.clone()),
+            party_id: store.ledger().entry_party(p.entry_id),
+            party: store
+                .ledger()
+                .entry_party(p.entry_id)
+                .and_then(|id| store.ledger().get_party(id))
+                .map(|p| p.label().to_string()),
         }))
     }
 
@@ -1653,7 +1880,7 @@ impl BooksServer {
 
     #[tool(
         name = "books.show",
-        description = "Show something in the human's viewer (the read-only desktop app, `just gui`): an entry (with its lines, receipt, and history), an account's register (optionally for start/end dates), a report (optionally for start/end dates, split into month/quarter/year columns, compared with the prior period or prior year), a stored receipt or document, a fixed asset (by tag or id), a search of the transactions, or a page. Give exactly one target; work out dates yourself (\"last quarter\" means its first and last day). Use it whenever the human asks to see something, and after posting so they can look at what you did. Changes nothing in the books.",
+        description = "Show something in the human's viewer (the read-only desktop app, `just gui`): an entry (with its lines, receipt, and history), an account's register (optionally for start/end dates), a report (optionally for start/end dates, split into month/quarter/year columns, compared with the prior period or prior year), a stored receipt or document, a fixed asset (by tag or id), a party (by id or name: who they are and everything the company did with them), a search of the transactions, or a page. Give exactly one target; work out dates yourself (\"last quarter\" means its first and last day). Use it whenever the human asks to see something, and after posting so they can look at what you did. Changes nothing in the books.",
         annotations(read_only_hint = true)
     )]
     async fn show(&self, params: Parameters<ShowParams>) -> Result<Json<ShowOut>, String> {
@@ -1667,6 +1894,7 @@ impl BooksServer {
             p.report.is_some(),
             p.attachment_id.is_some(),
             p.asset.is_some(),
+            p.party.is_some(),
             p.search.is_some(),
             p.page.is_some(),
         ]
@@ -1675,7 +1903,7 @@ impl BooksServer {
         .count();
         if given != 1 {
             return Err(
-                "give exactly one of entry_id, account, report, attachment_id, asset, search, page"
+                "give exactly one of entry_id, account, report, attachment_id, asset, party, search, page"
                     .into(),
             );
         }
@@ -1695,7 +1923,7 @@ impl BooksServer {
             "ap_aging",
             "fixed_asset_register",
         ];
-        const PAGES: [&str; 10] = [
+        const PAGES: [&str; 11] = [
             "overview",
             "cash",
             "profit",
@@ -1703,6 +1931,7 @@ impl BooksServer {
             "reports",
             "accounts",
             "assets",
+            "parties",
             "documents",
             "company",
             "journal",
@@ -1720,6 +1949,13 @@ impl BooksServer {
                         .unwrap_or_default(),
                     a.description
                 ),
+            )
+        } else if let Some(r) = &p.party {
+            let id = resolve_party(&store, r)?;
+            let party = ledger.get_party(id).expect("resolved");
+            (
+                ViewerTarget::Party { party_id: id },
+                format!("party {id}, {}", party.label()),
             )
         } else if let Some(id) = p.entry_id {
             let e = ledger
@@ -2357,7 +2593,7 @@ impl BooksServer {
 
     #[tool(
         name = "books.list_vendors",
-        description = "Vendors, with which 1099 each gets and whether its W-9 is on file.",
+        description = "Vendors, with which 1099 each gets, whether its W-9 is on file, and the party each belongs to (books.party).",
         annotations(read_only_hint = true)
     )]
     async fn list_vendors(&self) -> Result<Json<ListVendorsOut>, String> {
@@ -2372,6 +2608,7 @@ impl BooksServer {
                     name: v.name.clone(),
                     form_1099: form_1099_label(v.form_1099),
                     tin_on_file: v.tin_on_file,
+                    party_id: store.ledger().party_of_vendor(v.id),
                 })
                 .collect(),
         }))
@@ -2404,6 +2641,7 @@ impl BooksServer {
             name: v.name.clone(),
             form_1099: form_1099_label(v.form_1099),
             tin_on_file: v.tin_on_file,
+            party_id: store.ledger().party_of_vendor(id),
         }))
     }
 
@@ -2447,8 +2685,13 @@ impl BooksServer {
         let store = self.lock()?;
         // A year past what wanderbooks knows is refused with guidance
         // (research or ask, pass `threshold`, then update the rule).
-        let r = ledger_core::vendor_1099_report(store.ledger(), p.year, threshold)
-            .map_err(|e| e.to_string())?;
+        let r = ledger_core::vendor_1099_report_with(
+            store.ledger(),
+            p.year,
+            threshold,
+            &payment_accounts(store.ledger(), &self.settings().roles),
+        )
+        .map_err(|e| e.to_string())?;
         let missing_w9 = r
             .vendors
             .iter()
@@ -3793,30 +4036,460 @@ impl BooksServer {
 
     #[tool(
         name = "books.add_customer",
-        description = "Add a customer for accounts receivable."
+        description = "Add a customer record for accounts receivable (invoices). It links to the party of the same name that has no customer record yet (ignoring case), else to a new party; the output names both ids."
     )]
     async fn add_customer(
         &self,
-        params: Parameters<AddPartyParams>,
-    ) -> Result<Json<AddPartyOut>, String> {
+        params: Parameters<AddRecordParams>,
+    ) -> Result<Json<AddRecordOut>, String> {
         let p = params.0;
         let mut store = self.lock()?;
         let id = store.add_customer(&p.name).map_err(|e| e.to_string())?;
-        Ok(Json(AddPartyOut { id }))
+        let party_id = store
+            .ledger()
+            .party_of_customer(id)
+            .ok_or_else(|| format!("customer {id} has no party"))?;
+        Ok(Json(AddRecordOut { id, party_id }))
     }
 
     #[tool(
         name = "books.add_vendor",
-        description = "Add a vendor for accounts payable."
+        description = "Add a vendor record for accounts payable (bills) and 1099s. It links to the party of the same name that has no vendor record yet (ignoring case), else to a new party; the output names both ids."
     )]
     async fn add_vendor(
         &self,
-        params: Parameters<AddPartyParams>,
-    ) -> Result<Json<AddPartyOut>, String> {
+        params: Parameters<AddRecordParams>,
+    ) -> Result<Json<AddRecordOut>, String> {
         let p = params.0;
         let mut store = self.lock()?;
         let id = store.add_vendor(&p.name).map_err(|e| e.to_string())?;
-        Ok(Json(AddPartyOut { id }))
+        let party_id = store
+            .ledger()
+            .party_of_vendor(id)
+            .ok_or_else(|| format!("vendor {id} has no party"))?;
+        Ok(Json(AddRecordOut { id, party_id }))
+    }
+
+    // ------------------------------------------------------------------
+    // Parties (ledger_core::parties)
+    // ------------------------------------------------------------------
+
+    #[tool(
+        name = "books.add_party",
+        description = "Add a party to the directory: anyone the company deals with (a contractor, landlord, payout platform, tax agency, bank or card issuer, member, employee). Name it as on its documents (unique among parties not archived); give its roles: contractor, employee, member, payout_platform, tax_agency, financial_institution, landlord. Vendor and customer aren't given by hand: books.add_vendor and books.add_customer add those records and link them to the party of the same name. Never put a full TIN or SSN in any party field: the engine refuses nine-digit numbers. Journaled as party.added; returns the party."
+    )]
+    async fn add_party(
+        &self,
+        params: Parameters<AddPartyParams>,
+    ) -> Result<Json<PartyOut>, String> {
+        let p = params.0;
+        let mut roles = parse_roles(&p.roles)?;
+        roles.sort();
+        roles.dedup();
+        let mut store = self.lock()?;
+        let id = store
+            .add_party(&p.name, &roles)
+            .map_err(|e| e.to_string())?;
+        let party = store.ledger().get_party(id).expect("just added");
+        Ok(Json(party_out(party)))
+    }
+
+    #[tool(
+        name = "books.update_party",
+        description = "Change a party's facts: name, display_name, website, address, notes, archived. Give only the fields to change; an empty string clears display_name, website, address, or notes. Every field is checked before any is written, so a bad one (a blank or taken name, a full TIN, over 500 characters) changes nothing; each is journaled as its own party.updated. Archive a party you no longer deal with (its history stays; it then goes by id). Returns the party."
+    )]
+    async fn update_party(
+        &self,
+        params: Parameters<UpdatePartyParams>,
+    ) -> Result<Json<PartyOut>, String> {
+        use ledger_core::PartyField as F;
+        let p = params.0;
+        let mut store = self.lock()?;
+        let id = resolve_party(&store, &p.party)?;
+        let mut fields = Vec::new();
+        if let Some(n) = p.name {
+            fields.push(F::Name(n));
+        }
+        if let Some(v) = p.display_name {
+            fields.push(F::DisplayName(optional_text(&v)));
+        }
+        if let Some(v) = p.website {
+            fields.push(F::Website(optional_text(&v)));
+        }
+        if let Some(v) = p.address {
+            fields.push(F::Address(optional_text(&v)));
+        }
+        if let Some(v) = p.notes {
+            fields.push(F::Notes(optional_text(&v)));
+        }
+        if let Some(a) = p.archived {
+            fields.push(F::Archived(a));
+        }
+        if fields.is_empty() {
+            return Err(
+                "give at least one field to change: name, display_name, website, address, notes, archived"
+                    .into(),
+            );
+        }
+        // Every field, in order, before any is written (INVARIANT 2).
+        let mut rehearsal = store.ledger().clone();
+        for f in &fields {
+            rehearsal
+                .update_party(id, f.clone())
+                .map_err(|e| e.to_string())?;
+        }
+        for f in fields {
+            store.update_party(id, f).map_err(|e| e.to_string())?;
+        }
+        let party = store.ledger().get_party(id).expect("resolved");
+        Ok(Json(party_out(party)))
+    }
+
+    #[tool(
+        name = "books.set_party_roles",
+        description = "Give a party roles (add) or take them away (remove): contractor, employee, member, payout_platform, tax_agency, financial_institution, landlord. Vendor and customer follow their records and can't be set by hand. Adds apply before removes; a role it already has (or lacks) is left alone. Removing a party's last 1099 role (contractor, landlord) needs its W-9 facts cleared first (books.set_w9 clear), and removing employee its W-4 facts. All or nothing: a refusal changes nothing. Each change is journaled as party.role_set. Returns the party."
+    )]
+    async fn set_party_roles(
+        &self,
+        params: Parameters<SetPartyRolesParams>,
+    ) -> Result<Json<PartyOut>, String> {
+        let p = params.0;
+        let add = parse_roles(&p.add)?;
+        let remove = parse_roles(&p.remove)?;
+        if add.is_empty() && remove.is_empty() {
+            return Err("give at least one role to add or remove".into());
+        }
+        if let Some(r) = add.iter().find(|r| remove.contains(r)) {
+            return Err(format!("role {} is both added and removed", r.key()));
+        }
+        if add
+            .iter()
+            .chain(&remove)
+            .any(|r| matches!(r, ledger_core::Role::Vendor | ledger_core::Role::Customer))
+        {
+            return Err(
+                "vendor and customer roles follow their records: books.add_vendor or books.add_customer"
+                    .into(),
+            );
+        }
+        let mut store = self.lock()?;
+        let id = resolve_party(&store, &p.party)?;
+        let has = store
+            .ledger()
+            .get_party(id)
+            .expect("resolved")
+            .roles
+            .clone();
+        let mut changes: Vec<(ledger_core::Role, bool)> = Vec::new();
+        for r in add {
+            if !has.contains(&r) && !changes.contains(&(r, true)) {
+                changes.push((r, true));
+            }
+        }
+        for r in remove {
+            if has.contains(&r) && !changes.contains(&(r, false)) {
+                changes.push((r, false));
+            }
+        }
+        // The whole change, in order, before any is written (INVARIANT 2).
+        let mut rehearsal = store.ledger().clone();
+        for (r, on) in &changes {
+            rehearsal
+                .set_party_role(id, *r, *on)
+                .map_err(|e| e.to_string())?;
+        }
+        for (r, on) in changes {
+            store.set_party_role(id, r, on).map_err(|e| e.to_string())?;
+        }
+        let party = store.ledger().get_party(id).expect("resolved");
+        Ok(Json(party_out(party)))
+    }
+
+    #[tool(
+        name = "books.set_w9",
+        description = "Record what a contractor's or landlord's W-9 says, or clear it (clear: true alone): the date received (received_on), line 3 entity type, line 4 exempt payee and FATCA codes, the TIN's last four digits only, and where the form is kept. Never pass the full TIN anywhere: the engine refuses any nine-digit number. The party needs a 1099 role (contractor or landlord: books.set_party_roles). Record it before paying them. A party with a vendor record also gets its W-9 marked on file there (books.vendor_1099 missing_w9). Journaled as party.w9_set. Returns the party."
+    )]
+    async fn set_w9(&self, params: Parameters<SetW9Params>) -> Result<Json<PartyOut>, String> {
+        let p = params.0;
+        let facts = if p.clear {
+            if p.received_on.is_some()
+                || p.entity_type.is_some()
+                || p.exempt_payee_code.is_some()
+                || p.fatca_code.is_some()
+                || p.tin_last4.is_some()
+                || p.kept_at.is_some()
+            {
+                return Err("clear: true takes no other W-9 fact".into());
+            }
+            None
+        } else {
+            let need = |v: &Option<String>, name: &str| {
+                v.as_deref()
+                    .map(|s| s.trim().to_string())
+                    .ok_or_else(|| format!("{name} is required (or pass clear: true)"))
+            };
+            Some(ledger_core::W9Facts {
+                received: parse_date(&need(&p.received_on, "received_on")?)?,
+                entity_type: need(&p.entity_type, "entity_type")?,
+                exempt_payee_code: p.exempt_payee_code.as_deref().and_then(optional_text),
+                fatca_code: p.fatca_code.as_deref().and_then(optional_text),
+                tin_last4: need(&p.tin_last4, "tin_last4")?,
+                kept_at: need(&p.kept_at, "kept_at")?,
+                vault_record: None,
+            })
+        };
+        let mut store = self.lock()?;
+        let id = resolve_party(&store, &p.party)?;
+        let on_file = facts.is_some();
+        store.set_party_w9(id, facts).map_err(|e| e.to_string())?;
+        // Keep the vendor record's W-9 flag (the 1099 worksheet's) in step.
+        let vendor = store
+            .ledger()
+            .get_party(id)
+            .and_then(|p| p.vendor)
+            .and_then(|v| store.ledger().get_vendor(v))
+            .map(|v| (v.id, v.form_1099, v.tin_on_file));
+        if let Some((v, form, tin_on_file)) = vendor
+            && tin_on_file != on_file
+        {
+            store
+                .set_vendor_1099(v, form, on_file)
+                .map_err(|e| e.to_string())?;
+        }
+        let party = store.ledger().get_party(id).expect("resolved");
+        Ok(Json(party_out(party)))
+    }
+
+    #[tool(
+        name = "books.set_w4",
+        description = "Record what an employee's W-4 says, or clear it (clear: true alone): the date received (received_on), the work state (two letters), and where the form is kept. Never the SSN. The party needs the employee role. Record it before their first payroll. Journaled as party.w4_set. Returns the party."
+    )]
+    async fn set_w4(&self, params: Parameters<SetW4Params>) -> Result<Json<PartyOut>, String> {
+        let p = params.0;
+        let facts = if p.clear {
+            if p.received_on.is_some() || p.state.is_some() || p.kept_at.is_some() {
+                return Err("clear: true takes no other W-4 fact".into());
+            }
+            None
+        } else {
+            let need = |v: &Option<String>, name: &str| {
+                v.as_deref()
+                    .map(|s| s.trim().to_string())
+                    .ok_or_else(|| format!("{name} is required (or pass clear: true)"))
+            };
+            Some(ledger_core::W4Facts {
+                received: parse_date(&need(&p.received_on, "received_on")?)?,
+                state: need(&p.state, "state")?,
+                kept_at: need(&p.kept_at, "kept_at")?,
+            })
+        };
+        let mut store = self.lock()?;
+        let id = resolve_party(&store, &p.party)?;
+        store.set_party_w4(id, facts).map_err(|e| e.to_string())?;
+        let party = store.ledger().get_party(id).expect("resolved");
+        Ok(Json(party_out(party)))
+    }
+
+    #[tool(
+        name = "books.parties",
+        description = "The party directory, by id: each party's name, label, roles (vendor and customer included), vendor and customer record ids, whether W-9 facts (with the TIN's last four) and W-4 facts are on file, archived, and what was paid to and received from it in the year (default this year; defined as in books.party). Filter by role; archived parties only with include_archived.",
+        annotations(read_only_hint = true)
+    )]
+    async fn parties(
+        &self,
+        params: Parameters<ListPartiesParams>,
+    ) -> Result<Json<ListPartiesOut>, String> {
+        let p = params.0;
+        let role = p
+            .role
+            .as_deref()
+            .map(|r| parse_roles(&[r.to_string()]).map(|v| v[0]))
+            .transpose()?;
+        let year = p.year.unwrap_or_else(this_year);
+        let cash = self.settings().roles.cash.clone();
+        let store = self.lock()?;
+        let mut parties = Vec::new();
+        for party in store.ledger().parties() {
+            if party.archived && !p.include_archived {
+                continue;
+            }
+            if role.is_some_and(|r| !party.all_roles().contains(&r)) {
+                continue;
+            }
+            let act = party_activity(&store, party, &cash, year)?;
+            parties.push(PartySummaryOut {
+                party_id: party.id,
+                name: party.name.clone(),
+                label: party.label().to_string(),
+                roles: party_roles(party),
+                vendor_id: party.vendor,
+                customer_id: party.customer,
+                w9_on_file: party.w9.is_some(),
+                tin_last4: party.w9.as_ref().map(|w| w.tin_last4.clone()),
+                w4_on_file: party.w4.is_some(),
+                archived: party.archived,
+                paid: money(act.paid),
+                received: money(act.received),
+            });
+        }
+        Ok(Json(ListPartiesOut { year, parties }))
+    }
+
+    #[tool(
+        name = "books.party",
+        description = "One party, by id or name: its facts and roles, vendor and customer record ids, the year's totals (default this year: paid to it, received from it, invoiced, billed, the 1099 amount for a vendor, payroll gross and net), what it is owed and owes now (open bills and invoices), every entry it is on (tagged with it or its vendor record, its invoices and their payments, and their reversals), its invoices and bills, and the payroll lines naming it. Totals come from the journal: the output's schema says exactly how.",
+        annotations(read_only_hint = true)
+    )]
+    async fn party(&self, params: Parameters<PartyParams>) -> Result<Json<PartyDetailOut>, String> {
+        let p = params.0;
+        let year = p.year.unwrap_or_else(this_year);
+        let cash = self.settings().roles.cash.clone();
+        let store = self.lock()?;
+        let ledger = store.ledger();
+        let id = resolve_party(&store, &p.party)?;
+        let party = ledger.get_party(id).expect("resolved");
+        let act = party_activity(&store, party, &cash, year)?;
+        let in_year = |d: NaiveDate| chrono::Datelike::year(&d) == year;
+        let mut entries: Vec<PartyEntryOut> = act
+            .entries
+            .iter()
+            .filter_map(|&e| ledger.get_entry(e))
+            .map(|e| PartyEntryOut {
+                entry_id: e.id(),
+                date: e.date().to_string(),
+                description: e.description().to_string(),
+                status: match e.status() {
+                    ledger_core::EntryStatus::Draft => "draft",
+                    ledger_core::EntryStatus::Posted => "posted",
+                }
+                .to_string(),
+                total: money(ReceiptPolicy::entry_debits(e)),
+                reversal_of: e.reversal_of(),
+            })
+            .collect();
+        entries.sort_by(|a, b| b.date.cmp(&a.date).then(b.entry_id.cmp(&a.entry_id)));
+        let invoices = party_invoices(ledger, party);
+        let bills = party_bills(ledger, party);
+        let amount_1099 = match party.vendor {
+            Some(v) => {
+                let r = ledger_core::vendor_1099_report_with(
+                    ledger,
+                    year,
+                    Some(Decimal::ZERO),
+                    &payment_accounts(ledger, &self.settings().roles),
+                )
+                .map_err(|e| e.to_string())?;
+                Some(money(
+                    r.vendors
+                        .iter()
+                        .find(|l| l.vendor_id == v)
+                        .map(|l| l.paid)
+                        .unwrap_or_default(),
+                ))
+            }
+            None => None,
+        };
+        let mut payroll = Vec::new();
+        let (mut gross, mut net) = (Decimal::ZERO, Decimal::ZERO);
+        for run in ledger.list_payroll_runs() {
+            for line in run.lines.iter().filter(|l| l.employee == Some(id)) {
+                if in_year(run.date) {
+                    gross += line.gross_pay;
+                    net += line.net_pay();
+                }
+                payroll.push(PartyPayrollOut {
+                    run_id: run.id,
+                    date: run.date.to_string(),
+                    entry_id: run.entry_id,
+                    gross_pay: money(line.gross_pay),
+                    net_pay: money(line.net_pay()),
+                });
+            }
+        }
+        let totals = PartyTotalsOut {
+            paid: money(act.paid),
+            received: money(act.received),
+            invoiced: money(
+                invoices
+                    .iter()
+                    .filter(|i| in_year(i.date))
+                    .map(|i| i.total())
+                    .sum(),
+            ),
+            billed: money(
+                bills
+                    .iter()
+                    .filter(|b| in_year(b.date))
+                    .map(|b| b.total())
+                    .sum(),
+            ),
+            owed: money(bills.iter().map(|b| b.balance()).sum()),
+            receivable: money(invoices.iter().map(|i| i.balance()).sum()),
+            amount_1099,
+            form_1099: party
+                .vendor
+                .and_then(|v| ledger.get_vendor(v))
+                .and_then(|v| form_1099_label(v.form_1099)),
+            gross_pay: money(gross),
+            net_pay: money(net),
+        };
+        Ok(Json(PartyDetailOut {
+            party: party_out(party),
+            year,
+            totals,
+            entries,
+            invoices: invoices
+                .iter()
+                .map(|i| {
+                    party_document(
+                        i.id,
+                        (i.date, i.due_date),
+                        (i.total(), i.amount_paid),
+                        i.status,
+                        i.entry_id,
+                    )
+                })
+                .collect(),
+            bills: bills
+                .iter()
+                .map(|b| {
+                    party_document(
+                        b.id,
+                        (b.date, b.due_date),
+                        (b.total(), b.amount_paid),
+                        b.status,
+                        b.entry_id,
+                    )
+                })
+                .collect(),
+            payroll,
+        }))
+    }
+
+    #[tool(
+        name = "books.set_entry_party",
+        description = "Tag an entry (draft or posted) with the party it was with (id or name), or pass party null (or omit it) to clear the tag. A party with a vendor record also tags the entry's vendor, so a payment to a contractor or landlord counts in books.vendor_1099; a party without one, or clearing, clears the vendor tag. Metadata only: amounts never change. Journaled as entry.party_set. Returns the entry (as books.get_entry)."
+    )]
+    async fn set_entry_party(
+        &self,
+        params: Parameters<SetEntryPartyParams>,
+    ) -> Result<Json<GetEntryOut>, String> {
+        let p = params.0;
+        {
+            let mut store = self.lock()?;
+            let party = p
+                .party
+                .as_deref()
+                .map(|r| resolve_party(&store, r))
+                .transpose()?;
+            store
+                .set_entry_party(p.entry_id, party)
+                .map_err(|e| e.to_string())?;
+        }
+        self.get_entry(Parameters(GetEntryParams {
+            entry_id: p.entry_id,
+        }))
+        .await
     }
 
     #[tool(
@@ -4046,7 +4719,7 @@ impl BooksServer {
 
     #[tool(
         name = "books.run_payroll",
-        description = "Run payroll for a pay date. Each line carries one employee's gross pay and every withholding/deduction as decimal strings — the engine cuts one balanced entry (Dr Salary & Wage Expense, Dr Payroll Tax Expense for the employer share, Cr the withholding payables, Cr cash for net pay). Auto-creates the 61xx/21xx accounts. All amounts are decimal strings, never floats."
+        description = "Run payroll for a pay date. Each line carries one employee's gross pay and every withholding/deduction as decimal strings — the engine cuts one balanced entry (Dr Salary & Wage Expense, Dr Payroll Tax Expense for the employer share, Cr the withholding payables, Cr cash for net pay). Auto-creates the 61xx/21xx accounts. All amounts are decimal strings, never floats. Name each line's employee party (employee: id or name, a party with the employee role; add one with books.add_party and record its W-4 with books.set_w4 first): new runs should, so the run shows on the employee's books.party."
     )]
     async fn run_payroll(
         &self,
@@ -4059,8 +4732,28 @@ impl BooksServer {
             .lines
             .into_iter()
             .map(|l| {
+                let employee = l
+                    .employee
+                    .as_deref()
+                    .map(|r| resolve_party(&store, r))
+                    .transpose()?;
+                let employee_name = match (l.employee_name, employee) {
+                    (Some(n), _) => n,
+                    (None, Some(id)) => store
+                        .ledger()
+                        .get_party(id)
+                        .map(|p| p.name.clone())
+                        .unwrap_or_default(),
+                    (None, None) => {
+                        return Err(
+                            "each payroll line names its employee: employee (a party) or employee_name"
+                                .to_string(),
+                        );
+                    }
+                };
                 Ok(ledger_core::PayrollLine {
-                    employee_name: l.employee_name,
+                    employee_name,
+                    employee,
                     gross_pay: parse_amount(&l.gross_pay)?,
                     federal_withholding: parse_amount(&l.federal_withholding)?,
                     state_withholding: parse_amount(&l.state_withholding)?,
@@ -4388,7 +5081,12 @@ impl BooksServer {
         ));
         // 1099 worksheet for the calendar year of as_of.
         let year = chrono::Datelike::year(&as_of);
-        match ledger_core::vendor_1099_report(ledger, year, None) {
+        match ledger_core::vendor_1099_report_with(
+            ledger,
+            year,
+            None,
+            &payment_accounts(ledger, &self.settings().roles),
+        ) {
             Ok(r1099) => {
                 let mut w = String::from("vendor,form,w9_on_file,paid,reportable\n");
                 for v in &r1099.vendors {

@@ -92,6 +92,74 @@ fn tax_basis_text(b: &Books, asset_id: Option<u64>, p: &Value) -> String {
     text
 }
 
+/// What an attachment link's subject (`{"kind": .., "id": ..}`) is, in
+/// words, and where it opens.
+fn subject_text(b: &Books, subject: Option<&Value>) -> (String, Option<Route>) {
+    let kind = subject
+        .and_then(|s| s.get("kind"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let id = subject.and_then(|s| s.get("id")).and_then(|v| v.as_u64());
+    match (kind, id) {
+        ("entry", Some(e)) => (format!("#{e}"), Some(Route::Entry(e))),
+        ("account", Some(a)) => (b.account_label(a), Some(Route::Account(a))),
+        ("asset", Some(a)) => (b.asset_label(a), Some(Route::Asset(a))),
+        ("party", Some(p)) => (b.party_label(p), Some(Route::Party(p))),
+        ("company", _) => ("the company".into(), Some(Route::Company)),
+        ("payroll_run", Some(i)) => (format!("payroll run {i}"), None),
+        (k, Some(i)) if !k.is_empty() => (format!("{} {i}", k.replace('_', " ")), None),
+        _ => ("a subject".into(), None),
+    }
+}
+
+/// A party's label, or "a party" when the event names none.
+fn party_name(b: &Books, id: Option<u64>) -> String {
+    match id {
+        Some(id) => b.party_label(id),
+        None => "a party".to_string(),
+    }
+}
+
+/// "Display name of Gumroad, Inc. set to Gumroad", "Archived Etsy": one
+/// `party.updated` event in words. Names are today's (the display name's
+/// change names the legal name, so it reads the same afterwards).
+fn party_update_text(b: &Books, id: Option<u64>, change: Option<&Value>) -> String {
+    let name = party_name(b, id);
+    let legal = id
+        .and_then(|i| b.ledger.get_party(i))
+        .map_or_else(|| name.clone(), |p| p.name.clone());
+    let field = change
+        .and_then(|c| c.get("field"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let value = change.and_then(|c| c.get("value"));
+    let text = value.and_then(|v| v.as_str());
+    let words = match field {
+        "name" => "Name",
+        "display_name" => "Display name",
+        "website" => "Website",
+        "address" => "Address",
+        "notes" => "Notes",
+        _ => "",
+    };
+    match (field, text) {
+        ("archived", _) => {
+            if value.and_then(|v| v.as_bool()).unwrap_or(false) {
+                format!("Archived {name}")
+            } else {
+                format!("Unarchived {name}")
+            }
+        }
+        ("name", Some(t)) => format!("Renamed a party to {t}"),
+        ("display_name", Some(t)) => format!("Display name of {legal} set to {t}"),
+        ("display_name", None) => format!("Display name of {legal} cleared"),
+        ("notes", Some(_)) => format!("Notes of {name} updated"),
+        ("", _) => format!("Updated {name}"),
+        (_, Some(t)) => format!("{words} of {name} set to {t}"),
+        (_, None) => format!("{words} of {name} cleared"),
+    }
+}
+
 /// A sentence for a meaningful event; `None` for the intermediate steps of
 /// building an entry (created, line added), which the posted event covers.
 pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
@@ -177,6 +245,67 @@ pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
             ),
             entry_id.map(Route::Entry),
         ),
+        "attachment.linked" | "attachment.unlinked" => {
+            let (what, route) = subject_text(b, p.get("subject"));
+            let name = attachment_name(b, att);
+            Some(Event {
+                icon: if line.line_type == "attachment.linked" {
+                    icon::LINK
+                } else {
+                    icon::LINK_BREAK
+                },
+                text: if line.line_type == "attachment.linked" {
+                    format!("Linked {name} to {what}")
+                } else {
+                    format!("Unlinked {name} from {what}: {}", s(p, "reason"))
+                },
+                route: Some(Route::Document(att)),
+                also: route,
+            })
+        }
+        "statement.recorded" => {
+            let account = p.get("account_id").and_then(|v| v.as_u64());
+            let closing = s(p, "closing_balance")
+                .parse()
+                .map(fmt::dollars)
+                .unwrap_or_default();
+            Some(Event {
+                icon: icon::FILE_TEXT,
+                text: format!(
+                    "Statement for {}, {} to {}: closing balance {closing}",
+                    account.map_or("an account".into(), |a| b.account_label(a)),
+                    s(p, "period_start"),
+                    s(p, "period_end")
+                ),
+                route: Some(Route::Document(att)),
+                also: account.map(Route::Account),
+            })
+        }
+        "reconciliation.completed" => {
+            let account = p.get("account_id").and_then(|v| v.as_u64());
+            let balance = s(p, "statement_balance")
+                .parse()
+                .map(fmt::dollars)
+                .unwrap_or_default();
+            Some(Event {
+                icon: icon::CHECK_SQUARE,
+                text: format!(
+                    "Reconciled {} through {} at {balance}",
+                    account.map_or("an account".into(), |a| b.account_label(a)),
+                    s(p, "statement_date")
+                ),
+                route: account.map(Route::Account),
+                also: p
+                    .get("attachment_id")
+                    .and_then(|v| v.as_u64())
+                    .map(Route::Document),
+            })
+        }
+        "reconciliation.voided" => ev(
+            icon::PROHIBIT,
+            format!("Voided reconciliation {id}: {}", s(p, "reason")),
+            None,
+        ),
         "attachment.withdrawn" => ev(
             icon::ARCHIVE,
             format!("Withdrew {}: {}", attachment_name(b, att), s(p, "reason")),
@@ -236,24 +365,169 @@ pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
         "vendor.added" => ev(
             icon::STOREFRONT,
             format!("Added vendor {}", s(p, "name")),
-            Some(Route::Company),
+            Some(
+                p.get("id")
+                    .and_then(|v| v.as_u64())
+                    .and_then(|v| b.ledger.party_of_vendor(v))
+                    .map_or(Route::Company, Route::Party),
+            ),
         ),
         "customer.added" => ev(
             icon::USER_PLUS,
             format!("Added customer {}", s(p, "name")),
-            Some(Route::Company),
+            Some(
+                p.get("id")
+                    .and_then(|v| v.as_u64())
+                    .and_then(|c| b.ledger.party_of_customer(c))
+                    .map_or(Route::Company, Route::Party),
+            ),
         ),
         "class.added" => ev(icon::TAG, format!("Added class {}", s(p, "name")), None),
-        "vendor.1099_set" => ev(
-            icon::IDENTIFICATION_CARD,
-            "Updated a vendor's 1099 details".into(),
-            Some(Route::Company),
-        ),
-        "entry.vendor_set" => ev(
-            icon::STOREFRONT,
-            format!("Tagged #{} with a vendor", entry_id.unwrap_or(0)),
-            entry_id.map(Route::Entry),
-        ),
+        "party.added" => {
+            let roles: Vec<String> = p
+                .get("roles")
+                .and_then(|v| v.as_array())
+                .map(|rs| {
+                    rs.iter()
+                        .filter_map(|r| r.as_str().and_then(ledger_core::Role::parse))
+                        .map(|r| super::parties::role_label(r).to_lowercase())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let name = match s(p, "name") {
+                "" => party_name(b, p.get("id").and_then(|v| v.as_u64())),
+                n => n.to_string(),
+            };
+            ev(
+                icon::ADDRESS_BOOK,
+                if roles.is_empty() {
+                    format!("Added party {name}")
+                } else {
+                    format!("Added party {name} ({})", roles.join(", "))
+                },
+                p.get("id").and_then(|v| v.as_u64()).map(Route::Party),
+            )
+        }
+        "party.updated" => {
+            let pid = p.get("id").and_then(|v| v.as_u64());
+            ev(
+                icon::PENCIL_SIMPLE,
+                party_update_text(b, pid, p.get("change")),
+                pid.map(Route::Party),
+            )
+        }
+        "party.role_set" => {
+            let pid = p.get("id").and_then(|v| v.as_u64());
+            let name = party_name(b, pid);
+            let role = ledger_core::Role::parse(s(p, "role"));
+            let on = p.get("on").and_then(|v| v.as_bool()).unwrap_or(true);
+            let text = match (role, on) {
+                (Some(r), true) => format!("{name} is now {}", super::parties::role_noun(r)),
+                (Some(r), false) => format!("{name} is no longer {}", super::parties::role_noun(r)),
+                (None, _) => format!("Changed the roles of {name}"),
+            };
+            ev(icon::USER_GEAR, text, pid.map(Route::Party))
+        }
+        "party.w9_set" => {
+            let pid = p.get("id").and_then(|v| v.as_u64());
+            let name = party_name(b, pid);
+            let text = match p.get("facts").filter(|f| !f.is_null()) {
+                Some(f) => {
+                    let mut t = format!("W-9 for {name} recorded");
+                    if let Some(d) = f.get("received").and_then(|v| v.as_str()) {
+                        t.push_str(&format!(", received {d}"));
+                    }
+                    if let Some(e) = f.get("entity_type").and_then(|v| v.as_str()) {
+                        t.push_str(&format!(": {e}"));
+                    }
+                    if let Some(l4) = f.get("tin_last4").and_then(|v| v.as_str()) {
+                        t.push_str(&format!(", TIN ending {l4}"));
+                    }
+                    t
+                }
+                None => format!("W-9 facts for {name} cleared"),
+            };
+            ev(icon::IDENTIFICATION_CARD, text, pid.map(Route::Party))
+        }
+        "party.w4_set" => {
+            let pid = p.get("id").and_then(|v| v.as_u64());
+            let name = party_name(b, pid);
+            let text = match p.get("facts").filter(|f| !f.is_null()) {
+                Some(f) => {
+                    let mut t = format!("W-4 for {name} recorded");
+                    if let Some(d) = f.get("received").and_then(|v| v.as_str()) {
+                        t.push_str(&format!(", received {d}"));
+                    }
+                    if let Some(st) = f.get("state").and_then(|v| v.as_str()) {
+                        t.push_str(&format!(" (works in {st})"));
+                    }
+                    t
+                }
+                None => format!("W-4 facts for {name} cleared"),
+            };
+            ev(icon::IDENTIFICATION_BADGE, text, pid.map(Route::Party))
+        }
+        "entry.party_set" => {
+            let pid = p.get("party_id").and_then(|v| v.as_u64());
+            let e = entry_id.unwrap_or(0);
+            Some(Event {
+                icon: icon::ADDRESS_BOOK,
+                text: match pid {
+                    Some(_) => format!("Tagged #{e} with {}", party_name(b, pid)),
+                    None => format!("Cleared the party of #{e}"),
+                },
+                route: entry_id.map(Route::Entry),
+                also: pid.map(Route::Party),
+            })
+        }
+        "vendor.1099_set" => {
+            let vendor = p.get("vendor_id").and_then(|v| v.as_u64());
+            let name = vendor
+                .and_then(|v| b.ledger.get_vendor(v))
+                .map(|v| v.name.clone());
+            let form = p
+                .get("form_1099")
+                .and_then(|v| v.as_str())
+                .and_then(ledger_core::Form1099::parse)
+                .map(|f| f.label());
+            let w9 = p.get("tin_on_file").and_then(|v| v.as_bool());
+            let text = match (name, form, w9) {
+                (Some(n), Some(f), Some(w)) => format!(
+                    "1099 details of {n}: {f}, W-9 {}",
+                    if w { "on file" } else { "not on file" }
+                ),
+                (Some(n), None, Some(_)) => format!("{n} no longer gets a 1099"),
+                (Some(n), _, None) => format!("Updated the 1099 details of {n}"),
+                (None, ..) => "Updated a vendor's 1099 details".into(),
+            };
+            ev(
+                icon::IDENTIFICATION_CARD,
+                text,
+                Some(
+                    vendor
+                        .and_then(|v| b.ledger.party_of_vendor(v))
+                        .map_or(Route::Company, Route::Party),
+                ),
+            )
+        }
+        "entry.vendor_set" => {
+            let vendor = p.get("vendor_id").and_then(|v| v.as_u64());
+            let e = entry_id.unwrap_or(0);
+            Some(Event {
+                icon: icon::STOREFRONT,
+                text: match vendor.and_then(|v| b.ledger.get_vendor(v)) {
+                    Some(v) => format!("Tagged #{e} with vendor {}", v.name),
+                    None if vendor.is_none() && p.get("vendor_id").is_some() => {
+                        format!("Cleared the vendor of #{e}")
+                    }
+                    None => format!("Tagged #{e} with a vendor"),
+                },
+                route: entry_id.map(Route::Entry),
+                also: vendor
+                    .and_then(|v| b.ledger.party_of_vendor(v))
+                    .map(Route::Party),
+            })
+        }
         "invoice.created" => ev(
             icon::INVOICE,
             format!("Invoice {id} created"),

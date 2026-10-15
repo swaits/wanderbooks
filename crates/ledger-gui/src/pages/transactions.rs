@@ -78,7 +78,7 @@ fn list(ui: &mut Ui, b: &Books, selected: Option<u64>, shell: &mut Shell<'_>) {
             ui.add(
                 egui::TextEdit::singleline(&mut st.query)
                     .hint_text(format!(
-                        "{} Search description, account, vendor, amount",
+                        "{} Search description, account, party, amount",
                         icon::MAGNIFYING_GLASS
                     ))
                     .desired_width(if narrow { ui.available_width() } else { 340.0 }),
@@ -204,10 +204,11 @@ fn row(ui: &mut Ui, b: &Books, e: &EntryInfo, on: bool, since_update: f64) -> eg
         max_w,
     );
     let accounts: Vec<String> = e.accounts.iter().map(|a| b.account_name(*a)).collect();
-    let mut sub = format!("#{} · {} · {}", e.id, e.origin, accounts.join(" → "));
-    if let Some(v) = &e.party {
-        sub.push_str(&format!(" · {v}"));
-    }
+    // The party first: it's what's cut last when the row is narrow.
+    let sub = match &e.party {
+        Some(v) => format!("#{} · {} · {v} · {}", e.id, e.origin, accounts.join(" → ")),
+        None => format!("#{} · {} · {}", e.id, e.origin, accounts.join(" → ")),
+    };
     widgets::clipped_text(
         &painter,
         egui::pos2(text_left, rect.center().y + 10.0),

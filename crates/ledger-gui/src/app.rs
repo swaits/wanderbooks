@@ -22,6 +22,7 @@ pub struct PageState {
     pub reports: pages::reports::State,
     pub accounts: pages::accounts::State,
     pub assets: pages::assets::State,
+    pub parties: pages::parties::State,
     pub documents: pages::documents::State,
     pub journal: pages::journal::State,
 }
@@ -123,6 +124,7 @@ impl App {
                 "reports" => Route::Reports(ReportKind::ProfitAndLoss),
                 "accounts" => Route::Accounts,
                 "assets" => Route::Assets,
+                "parties" => Route::Parties,
                 "documents" => Route::Documents,
                 "company" => Route::Company,
                 "journal" => Route::Journal,
@@ -190,6 +192,12 @@ impl App {
                     return;
                 }
                 Route::Asset(asset_id)
+            }
+            T::Party { party_id } => {
+                if b.ledger.get_party(party_id).is_none() {
+                    return;
+                }
+                Route::Party(party_id)
             }
             T::Search { query } => {
                 let st = &mut self.state.transactions;

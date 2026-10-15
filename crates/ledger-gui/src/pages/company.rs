@@ -183,7 +183,7 @@ pub fn show(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
         assets(ui, b, shell);
         schedules(ui, b);
         recurring(ui, b);
-        parties(ui, b);
+        parties(ui, b, shell);
     });
 }
 
@@ -421,8 +421,18 @@ fn recurring(ui: &mut Ui, b: &Books) {
     ui.add_space(16.0);
 }
 
-fn parties(ui: &mut Ui, b: &Books) {
+fn parties(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
     let p = pal(ui.ctx());
+    let mut go: Option<crate::nav::Route> = None;
+    // A record's name opens its party.
+    let mut name = |ui: &mut Ui, text: &str, party: Option<u64>| {
+        let r = widgets::link(ui, RichText::new(text).font(theme::semibold(13.0)));
+        if let Some(id) = party
+            && r.on_hover_text("Open this party").clicked()
+        {
+            go = Some(crate::nav::Route::Party(id));
+        }
+    };
     let year = chrono::Datelike::year(&b.today);
     let r1099 = vendor_1099_report(&b.ledger, year, None).ok();
     columns(ui, 980.0, &[1.0, 1.0], |i, ui| match i {
@@ -444,7 +454,7 @@ fn parties(ui: &mut Ui, b: &Books) {
                             .map(|x| x.paid)
                             .unwrap_or_default();
                         ui.horizontal_wrapped(|ui| {
-                            ui.label(RichText::new(&v.name).font(theme::semibold(13.0)));
+                            name(ui, &v.name, b.ledger.party_of_vendor(v.id));
                             if let Some(f) = v.form_1099 {
                                 widgets::pill(ui, f.label(), p.accent, p.accent_soft);
                                 if v.tin_on_file {
@@ -490,7 +500,7 @@ fn parties(ui: &mut Ui, b: &Books) {
                             .map(|i| i.balance())
                             .sum();
                         ui.horizontal_wrapped(|ui| {
-                            ui.label(RichText::new(&c.name).font(theme::semibold(13.0)));
+                            name(ui, &c.name, b.ledger.party_of_customer(c.id));
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
@@ -509,4 +519,7 @@ fn parties(ui: &mut Ui, b: &Books) {
             );
         }
     });
+    if let Some(r) = go {
+        shell.go(r);
+    }
 }

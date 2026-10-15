@@ -2,7 +2,9 @@
 //! and recurring entries due, open past periods, uncategorized tax lines,
 //! 1099 vendors without a W-9, overdue bills and invoices, money owed to
 //! owners, fixed asset depreciation not posted, assets without a tag or a
-//! tax basis, and legal rules (like the 1099 threshold) due for an update. Each item says what's wrong, where to look, and the prompt that
+//! tax basis, contractors and landlords paid without W-9 facts, and legal
+//! rules (like the 1099 threshold) due for an update. Each item says
+//! what's wrong, where to look, and the prompt that
 //! asks the agent to fix it (the GUI never changes the books itself).
 
 use crate::books::{Attention, Books, Severity};
@@ -38,7 +40,14 @@ use rust_decimal::Decimal;
 ///      disagreeing today (unregistered_cost != 0: Problem); an active
 ///      asset in service with no tag (Todo, one per asset); an active
 ///      asset in service with no tax basis (Asset::tax_basis is None:
-///      Todo, one per asset, its prompt naming books.set_asset_tax_basis).
+///      Todo, one per asset, its prompt naming books.set_asset_tax_basis);
+///      a party not archived whose W-9 is Missing (pages::parties::
+///      w9_status: it files a 1099, has no W-9 facts, and its vendor
+///      record doesn't say one is on file) and that was paid this year
+///      (PartyInfo::paid_ytd > 0),
+///      unless its vendor is already a 1099 vendor without a W-9 above
+///      (Todo, one per party, its prompt from
+///      pages::parties::collect_w9_prompt, naming books.set_w9).
 ///   3. Nothing else: books with none of those yield no items.
 ///   4. Every item's prompt starts "In wanderbooks," or names
 ///      wanderbooks, and its amounts are the books' exact amounts.
@@ -229,6 +238,8 @@ pub fn find(b: &Books) -> Vec<Attention> {
     if today.month() == 1 {
         years.insert(0, today.year() - 1);
     }
+    // Vendors the "needs a W-9" item already names this year.
+    let mut asked_w9 = std::collections::HashSet::new();
     for year in years {
         // A year whose threshold isn't known is flagged by the stale-rule
         // item above; never guess it here.
@@ -236,6 +247,10 @@ pub fn find(b: &Books) -> Vec<Attention> {
             continue;
         };
         for v in r.vendors.iter().filter(|v| v.reportable && !v.tin_on_file) {
+            if year == today.year() {
+                asked_w9.insert(v.vendor_id);
+            }
+            let party = b.ledger.party_of_vendor(v.vendor_id);
             out.push(Attention {
                 severity: Severity::Problem,
                 title: format!("{} needs a W-9", v.name),
@@ -244,13 +259,41 @@ pub fn find(b: &Books) -> Vec<Attention> {
                     fmt::dollars(v.paid),
                     fmt::dollars(r.threshold)
                 ),
-                target: Some(Route::Company),
+                target: Some(party.map_or(Route::Company, Route::Party)),
                 prompt: format!(
                     "Remind me to request a W-9 from {}; once I have it, mark it on file in wanderbooks with books.set_vendor_1099.",
                     v.name
                 ),
             });
         }
+    }
+
+    for p in b.ledger.parties().filter(|p| {
+        !p.archived
+            && crate::pages::parties::w9_status(b, p) == crate::pages::parties::W9Status::Missing
+            && !p.vendor.is_some_and(|v| asked_w9.contains(&v))
+    }) {
+        let Some(info) = b.party(p.id).filter(|i| i.paid_ytd > Decimal::ZERO) else {
+            continue;
+        };
+        out.push(Attention {
+            severity: Severity::Todo,
+            title: format!("Collect a W-9 from {}", p.label()),
+            detail: format!(
+                "Paid {} in {} as {}, with no W-9 facts recorded: collect a W-9 before the next payment.",
+                fmt::dollars(info.paid_ytd),
+                today.year(),
+                if p.roles.contains(&ledger_core::Role::Landlord)
+                    && !p.roles.contains(&ledger_core::Role::Contractor)
+                {
+                    "a landlord"
+                } else {
+                    "a contractor"
+                }
+            ),
+            target: Some(Route::Party(p.id)),
+            prompt: crate::pages::parties::collect_w9_prompt(b, p),
+        });
     }
 
     let overdue = |rows: Vec<ledger_core::AgingRow>| -> (usize, Decimal) {

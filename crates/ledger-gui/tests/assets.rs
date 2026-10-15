@@ -612,3 +612,42 @@ proptest! {
         }
     }
 }
+
+/// Every event the store can journal reads as a sentence in the journal
+/// and recent activity, never as its raw type: the event types come from
+/// the store's own source (its replay arms), so a new event without
+/// journal text fails here. (asset.acquisition_linked showed raw,
+/// 2026-10-15.)
+#[test]
+fn every_journal_event_has_plain_language_text() {
+    let src = include_str!("../../ledger-store/src/store.rs");
+    let mut kinds: Vec<&str> = src
+        .lines()
+        .flat_map(|l| l.split('"').skip(1).step_by(2))
+        .filter(|t| {
+            let mut parts = t.split('.');
+            matches!(
+                (parts.next(), parts.next(), parts.next()),
+                (Some(a), Some(b), None)
+                    if !a.is_empty() && !b.is_empty()
+                        && a.chars().chain(b.chars()).all(|c| c.is_ascii_lowercase() || c == '_')
+            )
+        })
+        .filter(|t| src.contains(&format!("\"{t}\" =>")) || src.contains(&format!("\"{t}\" |")))
+        .collect();
+    kinds.sort_unstable();
+    kinds.dedup();
+    assert!(kinds.len() > 30, "found only {kinds:?}");
+    let f = fixture("every-event");
+    for kind in kinds {
+        let line = ledger_store::JournalLine {
+            seq: 1,
+            ts: "2026-10-15T00:00:00Z".into(),
+            line_type: kind.to_string(),
+            payload: serde_json::json!({}),
+            prev: String::new(),
+        };
+        let e = ledger_gui::pages::journal::describe_any(&f.books, &line);
+        assert_ne!(e.text, kind, "{kind} has no journal text");
+    }
+}

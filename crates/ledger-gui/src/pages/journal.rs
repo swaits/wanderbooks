@@ -267,6 +267,18 @@ pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
             };
             ev(icon::BARCODE, text, asset_id.map(Route::Asset))
         }
+        "asset.acquisition_linked" => {
+            let entry = p.get("entry_id").and_then(|v| v.as_u64()).unwrap_or(0);
+            Some(Event {
+                icon: icon::LINK,
+                text: format!(
+                    "Linked {} to the entry that acquired it, #{entry}",
+                    asset(asset_id)
+                ),
+                route: asset_id.map(Route::Asset),
+                also: Some(Route::Entry(entry)),
+            })
+        }
         "asset.depreciation_posted" => with_asset(
             icon::TREND_DOWN,
             format!(

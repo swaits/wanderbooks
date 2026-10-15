@@ -5,7 +5,7 @@
 //! is the current version.
 
 /// Current schema version.
-pub const SCHEMA_VERSION: u32 = 10;
+pub const SCHEMA_VERSION: u32 = 11;
 
 /// Migrations, in order. `MIGRATIONS[i]` migrates from version `i` to `i+1`.
 pub const MIGRATIONS: &[&str] = &[
@@ -227,5 +227,44 @@ CREATE TABLE IF NOT EXISTS asset_tags_log(
 -- (TEXT, exact decimal, never REAL).
 ALTER TABLE assets ADD COLUMN tax_rule TEXT;
 ALTER TABLE assets ADD COLUMN contributor_basis TEXT;
+"#,
+    r#"
+-- v11: attachments link to any subject (docs/parties-and-attachments.md):
+-- entries beyond the first, accounts, assets, parties, invoices, bills,
+-- periods, payroll runs, schedules, reconciliations, the company. Bank and
+-- card statements carry their account, period, and balances; a
+-- reconciliation records the statement, its balance, and the lines it
+-- cleared. Amounts are TEXT, exact decimal.
+CREATE TABLE IF NOT EXISTS attachment_links(
+  attachment_id INTEGER NOT NULL,
+  subject_kind TEXT NOT NULL,
+  subject_id INTEGER NOT NULL,
+  PRIMARY KEY(attachment_id, subject_kind, subject_id)
+);
+CREATE INDEX IF NOT EXISTS idx_attachment_links_subject ON attachment_links(subject_kind, subject_id);
+-- Payroll lines name their employee party (Ledger PayrollLine.employee).
+ALTER TABLE payroll_lines ADD COLUMN employee_id INTEGER;
+CREATE TABLE IF NOT EXISTS statements(
+  attachment_id INTEGER PRIMARY KEY,
+  account_id INTEGER NOT NULL,
+  period_start TEXT NOT NULL,
+  period_end TEXT NOT NULL,
+  opening_balance TEXT NOT NULL,
+  closing_balance TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS reconciliations(
+  id INTEGER PRIMARY KEY,
+  account_id INTEGER NOT NULL,
+  statement_date TEXT NOT NULL,
+  statement_balance TEXT NOT NULL,
+  attachment_id INTEGER NOT NULL,
+  voided_reason TEXT NULL
+);
+CREATE TABLE IF NOT EXISTS reconciliation_lines(
+  reconciliation_id INTEGER NOT NULL,
+  entry_id INTEGER NOT NULL,
+  line_index INTEGER NOT NULL,
+  PRIMARY KEY(reconciliation_id, entry_id, line_index)
+);
 "#,
 ];

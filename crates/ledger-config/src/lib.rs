@@ -112,6 +112,9 @@ pub struct BooksSettings {
     /// ("WL" for "WL-0001"). Unset: [`BooksSettings::asset_tag_prefix`]
     /// derives it from the company name.
     pub asset_tag_prefix: Option<String>,
+    /// `[vault] key_file`: the TIN vault's key file. Unset: the vault's
+    /// default (`~/.config/wanderbooks/vault.key`).
+    pub vault_key_file: Option<std::path::PathBuf>,
 }
 
 impl BooksSettings {
@@ -168,6 +171,13 @@ struct BooksToml {
     company: CompanyToml,
     #[serde(default)]
     books: BooksSection,
+    #[serde(default)]
+    vault: VaultSection,
+}
+
+#[derive(Default, Deserialize)]
+struct VaultSection {
+    key_file: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
@@ -497,6 +507,16 @@ pub fn parse(text: &str) -> Result<BooksSettings, String> {
         cash_accounts: codes("cash_accounts", raw.books.cash_accounts)?,
         financing_accounts: codes("financing_accounts", raw.books.financing_accounts)?,
         investing_accounts: codes("investing_accounts", raw.books.investing_accounts)?,
+        vault_key_file: match raw.vault.key_file {
+            Some(p) if p.trim().is_empty() => {
+                return Err("[vault] key_file is empty".into());
+            }
+            Some(p) => Some(std::path::PathBuf::from(match p.strip_prefix("~/") {
+                Some(rest) => format!("{}/{rest}", std::env::var("HOME").unwrap_or_default()),
+                None => p,
+            })),
+            None => None,
+        },
         asset_tag_prefix: match raw.books.asset_tag_prefix {
             Some(p)
                 if !p.is_empty()

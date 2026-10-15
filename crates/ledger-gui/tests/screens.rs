@@ -51,6 +51,19 @@ fn screenshots() {
         .next()
         .map(|a| a.id)
         .unwrap_or(1);
+    // A party with the most to show: W-9 facts first, else any.
+    let party = std::env::var("SHOT_PARTY")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .or_else(|| {
+            loaded
+                .ledger
+                .parties()
+                .find(|p| p.w9.is_some() && p.vendor.is_some())
+                .or_else(|| loaded.ledger.parties().next())
+                .map(|p| p.id)
+        })
+        .unwrap_or(1);
     drop(loaded);
     let routes: Vec<(&str, Route)> = vec![
         ("overview", Route::Overview),
@@ -82,6 +95,8 @@ fn screenshots() {
         ("account", Route::Account(first_cash)),
         ("assets", Route::Assets),
         ("asset", Route::Asset(first_asset)),
+        ("parties", Route::Parties),
+        ("party", Route::Party(party)),
         ("document", Route::Document(last_doc)),
         ("event", Route::JournalEvent(last_event)),
         ("documents", Route::Documents),

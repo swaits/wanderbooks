@@ -51,11 +51,13 @@ const MONEY_KEYS: &[&str] = &[
     "adjustments",
     "after",
     "amount",
+    "amount_1099",
     "assets",
     "balance",
     "balance_after",
     "balance_before",
     "before",
+    "billed",
     "book_balance",
     "book_value",
     "cash_beginning",
@@ -84,12 +86,18 @@ const MONEY_KEYS: &[&str] = &[
     "final_depreciation",
     "gain_loss",
     "gross",
+    "gross_pay",
+    "invoiced",
     "liabilities",
     "movement",
     "net_change_in_cash",
     "net_income",
+    "net_pay",
+    "owed",
     "paid",
     "proceeds",
+    "received",
+    "receivable",
     "remaining",
     "revenue",
     "salvage_value",
@@ -588,6 +596,7 @@ fn happy_path(name: &str) -> Mcp {
     m.ok("books.list_recurring", json!({}));
     m.ok("books.list_schedules", json!({}));
     m.ok("books.list_vendors", json!({}));
+    m.ok("books.parties", json!({}));
     m.ok("books.digest", json!({"since": "2026-01-01"}));
 
     // Chart.
@@ -645,6 +654,28 @@ fn happy_path(name: &str) -> Mcp {
         json!({"vendor": "Landlord", "form_1099": "misc", "tin_on_file": true}),
     );
     m.ok("books.list_vendors", json!({}));
+    m.ok(
+        "books.add_party",
+        json!({"name": "Pat", "roles": ["employee"]}),
+    );
+    m.ok(
+        "books.update_party",
+        json!({"party": "Pat", "display_name": "Pat D.", "notes": "first hire"}),
+    );
+    m.ok(
+        "books.set_w4",
+        json!({"party": "Pat", "received_on": "2026-01-02", "state": "UT", "kept_at": "binder"}),
+    );
+    m.ok(
+        "books.set_party_roles",
+        json!({"party": "Landlord", "add": ["landlord"]}),
+    );
+    m.ok(
+        "books.set_w9",
+        json!({"party": "Landlord", "received_on": "2026-01-03", "entity_type": "LLC (partnership)",
+               "tin_last4": "4321", "kept_at": "CPA portal"}),
+    );
+    m.ok("books.parties", json!({"role": "landlord", "year": 2026}));
 
     // Owner contribution: draft, lines, receipt, preview, post.
     let e1 = m.draft(
@@ -692,6 +723,10 @@ fn happy_path(name: &str) -> Mcp {
     m.ok(
         "books.set_entry_vendor",
         json!({"entry_id": e2, "vendor": vendor.to_string()}),
+    );
+    m.ok(
+        "books.set_entry_party",
+        json!({"entry_id": e2, "party": "Landlord"}),
     );
     // Replace the receipt: attach new, unlink old, retire it.
     m.attach(Some(e2), b"rent receipt v2");
@@ -853,7 +888,7 @@ fn happy_path(name: &str) -> Mcp {
     m.ok(
         "books.run_payroll",
         json!({"date": "2026-02-15", "cash_account": "1000", "lines": [{
-            "employee_name": "Pat", "gross_pay": "1000.00", "federal_withholding": "100.00",
+            "employee": "Pat", "gross_pay": "1000.00", "federal_withholding": "100.00",
             "state_withholding": "50.00", "ss_employee": "62.00", "medicare_employee": "14.50",
             "ss_employer": "62.00", "medicare_employer": "14.50", "other_deductions": "0.00"}]}),
     );
@@ -908,7 +943,11 @@ fn happy_path(name: &str) -> Mcp {
     m.ok("books.digest", json!({"since": "2026-01-01"}));
     m.ok("books.search_entries", json!({"text": "rent", "limit": 10}));
     m.ok("books.vendor_1099", json!({"year": 2026}));
+    m.ok("books.party", json!({"party": "Landlord", "year": 2026}));
+    m.ok("books.party", json!({"party": "Pat", "year": 2026}));
+    m.ok("books.party", json!({"party": "Client"}));
     m.ok("books.verify", json!({}));
+    m.ok("books.show", json!({"party": "Landlord"}));
     m.ok("books.show", json!({"entry_id": e1}));
     m.ok(
         "books.show",

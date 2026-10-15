@@ -27,6 +27,7 @@ pub mod journal;
 pub mod kernel;
 pub mod ledger;
 pub mod money;
+pub mod parties;
 pub mod payouts;
 pub mod payroll;
 pub mod periods;
@@ -49,13 +50,17 @@ pub use assets::{
 };
 pub use classes::{Class, ClassId};
 pub use error::LedgerError;
-pub use form1099::{Form1099, Vendor1099Line, Vendor1099Report, vendor_1099_report};
+pub use form1099::{
+    Form1099, PaymentAccounts, Vendor1099Line, Vendor1099Report, vendor_1099_report,
+    vendor_1099_report_with,
+};
 pub use journal::{EntryId, EntryStatus, JournalEntry, JournalLine};
 pub use ledger::{
     ControlAccount, GENERAL_EXPENSES, Ledger, PAYABLES, PAYROLL, RECEIVABLES, RETAINED_EARNINGS,
     REVENUE, ReconciliationReport, UnclearedLine, control_account, control_accounts,
 };
 pub use money::{Currency, Money};
+pub use parties::{Party, PartyField, PartyId, Role, W4Facts, W9Facts};
 pub use payouts::{Payout, PayoutAdjustment, PayoutLine, PayoutTotals, payout_plan};
 pub use payroll::{PayrollLine, PayrollRun, PayrollRunId};
 pub use periods::{

@@ -1197,6 +1197,7 @@ mod refusals {
                     day(d),
                     vec![ledger_core::PayrollLine {
                         employee_name: "Pat".into(),
+                        employee: None,
                         gross_pay: Decimal::new(g, 2),
                         federal_withholding: Decimal::new(w, 2),
                         state_withholding: Decimal::ZERO,

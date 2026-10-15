@@ -111,8 +111,10 @@ below.
 
 - `books.chart` → `{ accounts: [{ id, code, name, type, parent, placeholder,
   balance }] }`. Balances included: one call answers "what do we have."
-- `books.draft_entry { date: "2026-10-10", description: "..." }`
-  → `{ entry_id, status: "draft" }`.
+- `books.draft_entry { date: "2026-10-10", description: "...", vendor?,
+  party? }` → `{ entry_id, status: "draft" }`. `party` tags the
+  counterparty (see "Tools — parties"); given with `vendor`, both must name
+  the same vendor record, else nothing is drafted.
 - `books.add_line { entry_id, account: "1000" | <id>, side: "debit" | "credit",
   amount: "123.45" }` → `{ ok: true }`. A refused line (unknown account or
   class, bad amount) adds nothing.
@@ -123,7 +125,8 @@ below.
   the receipt policy is enforced and `status` is `"posted"`.
 - `books.reverse_entry { entry_id, date, description, confirmed }` → same
   preview/confirm pattern as post.
-- `books.get_entry { entry_id }` → full entry with lines.
+- `books.get_entry { entry_id }` → full entry with lines, receipts, and
+  its `vendor`, `party_id`, and `party` (the party's label) tags.
 - `books.search_entries { account?, date_from?, date_to?, text?, limit?, offset? }`
   → entries with lines, newest first. `limit` caps at 100.
 - `books.trial_balance { as_of? }` → `as_of`, lines, totals, `balanced`
@@ -222,12 +225,13 @@ through the policy.
 
 ## Tools — the viewer
 
-- `books.show { entry_id | account | report | attachment_id | search |
-  page, start?, end? }` → `{ shown, note }`. Asks the human's viewer
-  (`ledger-gui`) to open an entry, an account register or a report (for
-  start/end dates if given), a stored file, a transactions search, or a
-  page. Exactly one target; entries, accounts, and attachments are checked
-  to exist. Never touches the books: the request is a small JSON file in
+- `books.show { entry_id | account | report | attachment_id | asset |
+  party | search | page, start?, end? }` → `{ shown, note }`. Asks the
+  human's viewer (`ledger-gui`) to open an entry, an account register or a
+  report (for start/end dates if given), a stored file, an asset, a party
+  (by id or name, resolved as in "Tools — parties"), a transactions search,
+  or a page (`parties` among them). Exactly one target; entries, accounts,
+  attachments, assets, and parties are checked to exist. Never touches the books: the request is a small JSON file in
   the user's runtime directory (`$XDG_RUNTIME_DIR/wanderbooks/viewer-<hash
   of the data dir>.json`), written atomically, watched by the viewer. A
   viewer started within two minutes of a request opens it; older requests
@@ -269,18 +273,115 @@ overridable, always for the CPA to confirm. TINs are never stored, only
 whether a W-9 is on file.
 
 - `books.list_vendors {}` → `{ vendors: [{ id, name, form_1099?,
-  tin_on_file }] }`.
+  tin_on_file, party_id }] }`.
 - `books.set_vendor_1099 { vendor, form_1099: "nec" | "misc" | "none",
   tin_on_file? }` → the vendor. `vendor` is an id or a name.
 - `books.set_entry_vendor { entry_id, vendor? }` → the entry (as
   `books.get_entry`, which now shows `vendor`). Omitting `vendor` clears
   the tag. Metadata only: posted entries may be tagged. `books.draft_entry`
   takes `vendor` too; bills and their payments are tagged automatically.
+  `books.set_entry_party` tags the vendor too when the party has a vendor
+  record, so tagging by party counts for 1099s the same way.
 - `books.vendor_1099 { year, threshold? }` → `{ year, threshold, vendors:
   [{ vendor_id, name, form_1099?, tin_on_file, paid, reportable }],
   missing_w9, notes }`. For a year whose threshold wanderbooks doesn't know
   (after 2026 until the indexed amount is added) it refuses with what to
   do; pass `threshold` explicitly once the figure is confirmed.
+
+## Tools — parties
+
+The directory of everyone the company deals with (`ledger_core::parties`;
+design in `docs/parties-and-attachments.md`): vendors, contractors,
+landlords, customers, payout platforms, tax agencies, banks and card
+issuers, members, employees. Vendor and customer *records* (bills,
+invoices, aging, 1099 marks) stay where they are; each links to exactly one
+party. `books.add_vendor` and `books.add_customer` link their record to the
+party of the same name (ignoring case and surrounding space, not archived)
+that has no such record yet, or make a new party.
+
+**References.** A `party` argument is an id or a name: the name ignoring
+case and surrounding space, among parties not archived (an archived party
+goes by id). A number that is one party's id and another party's name is
+refused, never guessed.
+
+**Roles:** `vendor`, `contractor`, `customer`, `employee`, `member`,
+`payout_platform`, `tax_agency`, `financial_institution`, `landlord`.
+Vendor and customer follow the records and are never set by hand.
+
+**Rules the engine enforces** (each refusal changes nothing, the journal
+byte for byte): no party field holds a full TIN (a run of nine digits,
+single spaces or hyphens allowed between them); a W-9's TIN is its last
+four digits only; W-9 facts need a 1099 role (contractor or landlord), W-4
+facts the employee role; names are unique among parties not archived;
+texts are at most 500 characters, no control characters.
+
+- `books.add_party { name, roles? }` → the party (below). Journaled as
+  `party.added`.
+- `books.update_party { party, name?, display_name?, website?, address?,
+  notes?, archived? }` → the party. Give at least one field; `""` clears
+  `display_name`, `website`, `address`, or `notes`. Every field is checked
+  (in order, on a rehearsal) before any is written; each is journaled as
+  its own `party.updated`, in the order name, display_name, website,
+  address, notes, archived. Un-archiving is refused while another party
+  has the name.
+- `books.set_party_roles { party, add?, remove? }` → the party. Adds apply
+  before removes (so a contractor's W-9 survives a swap to landlord); roles
+  it already has, or lacks, are skipped; each change is journaled as
+  `party.role_set`. Removing the last 1099 role with W-9 facts on file, or
+  employee with W-4 facts, is refused: clear the facts first.
+- `books.set_w9 { party, received_on, entity_type, exempt_payee_code?,
+  fatca_code?, tin_last4, kept_at }` or `{ party, clear: true }` → the
+  party. Journaled as `party.w9_set`. A party with a vendor record also
+  gets the record's `tin_on_file` set to match (journaled as
+  `vendor.1099_set`), so `books.vendor_1099`'s `missing_w9` follows.
+- `books.set_w4 { party, received_on, state, kept_at }` or `{ party, clear:
+  true }` → the party. Journaled as `party.w4_set`.
+- `books.set_entry_party { entry_id, party? }` → the entry (as
+  `books.get_entry`). `party` null or omitted clears the tag. A party with
+  a vendor record also tags the entry's vendor; one without, or clearing,
+  clears the vendor tag. Metadata only; posted entries may be tagged.
+  Journaled as `entry.party_set`.
+- `books.parties { role?, include_archived?, year? }` → `{ year, parties:
+  [{ party_id, name, label, roles, vendor_id?, customer_id?, w9_on_file,
+  tin_last4?, w4_on_file, archived, paid, received }] }`, by id.
+- `books.party { party, year? }` → `{ party, year, totals, entries,
+  invoices, bills, payroll }`: the facts; the calendar year's totals
+  (default this year); every entry it is on (drafts included, newest
+  first); its invoices and bills (`{ id, date, due_date, total, paid,
+  balance, status, entry_id }`); and the payroll lines naming it
+  (`{ run_id, date, entry_id, gross_pay, net_pay }`).
+
+The party (every mutating party tool returns it): `{ party_id, name,
+label, display_name?, roles, website?, address?, notes?, archived,
+vendor_id?, customer_id?, w9?: { received_on, entity_type,
+exempt_payee_code?, fatca_code?, tin_last4, kept_at }, w4?: { received_on,
+state, kept_at } }`. `label` is the display name, else the name; `roles`
+include vendor and customer when it has those records.
+
+**Totals** (`books.party` `totals`; `paid` and `received` in
+`books.parties`), from the journal:
+
+- *The party's entries:* tagged with the party; tagged with its vendor
+  record (bills and their payments); its customer record's invoices and
+  the payments received on them; and reversals of any of these. Only
+  posted entries dated in the year count.
+- *Money accounts:* the `[books] cash_accounts` (every asset account but
+  receivables when none are set), and every liability account except the
+  payables and payroll withholding roles (`books.roles`). A liability
+  counts as how the company paid or was paid: a card, a member paying for
+  it, a loan.
+- `paid` / `received`: each entry's money lines, credits minus debits; a
+  positive net was paid to the party, a negative one received from it; a
+  reversal counts against its original's side. A bill isn't paid until its
+  payment is; an entry only moving money between money accounts nets to
+  zero.
+- `invoiced` / `billed`: its invoices' and bills' totals dated in the year.
+  `owed` / `receivable`: its open bills' and invoices' balances now (every
+  year).
+- `amount_1099` (vendor parties only): what `books.vendor_1099` counts as
+  paid to its vendor record in the year (asset accounts only, so card
+  payments drop out); `form_1099` is the record's mark.
+- `gross_pay` / `net_pay`: payroll lines naming it, in the year.
 
 ## Tools — receipts & documents
 
@@ -457,6 +558,11 @@ in the server's tool descriptions, so the model reads it at use time):
    wrong posting is a reversal. Never guess-post.
 5. **The digest is the receipt for your work.** After a batch of bookkeeping,
    offer the digest; the human reviews, you fix.
+6. **Keep the party directory current.** Every counterparty gets a party;
+   every entry is tagged with its party; contractors and landlords get W-9
+   facts before they are paid, employees W-4 facts before their first
+   payroll, and every payroll line names its employee party. Never a full
+   TIN or SSN: the engine refuses nine-digit numbers.
 
 ## Out of scope for this phase
 
@@ -492,8 +598,9 @@ R-FUTURE-3 and rides the engine roadmap, not the MCP layer.
 
 ## Tools — A/R and A/P
 
-- `books.add_customer { name }` → `{ id }`.
-- `books.add_vendor { name }` → `{ id }`.
+- `books.add_customer { name }` → `{ id, party_id }`.
+- `books.add_vendor { name }` → `{ id, party_id }`. Both link the record to
+  a party ("Tools — parties").
 - `books.create_invoice { party_id, date, due_date, lines: [{ description,
   amount }] }` → `{ id, total, entry_id }`. Auto-posts Dr `1200` Accounts
   Receivable / Cr `4000` Revenue.
@@ -522,13 +629,17 @@ R-FUTURE-3 and rides the engine roadmap, not the MCP layer.
 No tax tables: the caller supplies every number; the engine cuts correct
 entries.
 
-- `books.run_payroll { date, cash_account, lines: [{ employee_name,
-  gross_pay, federal_withholding, state_withholding, ss_employee,
+- `books.run_payroll { date, cash_account, lines: [{ employee?,
+  employee_name?, gross_pay, federal_withholding, state_withholding, ss_employee,
   medicare_employee, ss_employer, medicare_employer, other_deductions }] }`
   → `{ run_id, entry_id, total_gross, total_net }`. One balanced entry:
   Dr 6100 Salary & Wage Expense (gross), Dr 6110 Payroll Tax Expense
   (employer SS + Medicare), Cr 2110–2150 withholding payables, Cr cash
   (net). Auto-creates the 61xx/21xx accounts. Respects closed periods.
+  `employee` names the employee's party (id or name; it must have the
+  employee role, else nothing is written); new runs should name it, and
+  `employee_name` then defaults to the party's name. A line needs one or
+  the other.
 - `books.remit_payroll_taxes { date, cash_account }` → `{ entry_id, total }`.
   Clears every payroll payable to cash in one entry.
 - `books.list_payroll_runs` → `{ runs: [{ id, date, employee_count,

@@ -669,9 +669,37 @@ fn tax_basis_replays_on_reopen() {
     }
 }
 
+/// Downgrade the database to schema v10 (none of v11's attachment links,
+/// statements, reconciliations, or payroll_lines.employee_id).
+fn downgrade_db_to_v10(dir: &Path) {
+    let conn = rusqlite::Connection::open(dir.join(DB_FILE)).unwrap();
+    conn.execute_batch(
+        "DROP TABLE attachment_links;
+         DROP TABLE statements;
+         DROP TABLE reconciliations;
+         DROP TABLE reconciliation_lines;
+         ALTER TABLE payroll_lines DROP COLUMN employee_id;
+         UPDATE meta SET value = '10' WHERE key = 'schema_version';",
+    )
+    .unwrap();
+}
+
+/// An existing v10 database migrates on open and verifies.
+#[test]
+fn a_v10_database_migrates_and_verifies() {
+    let (dir, mut s, _, x, _) = fixture("v10");
+    s.set_asset_tag(x, "WL-0001").unwrap();
+    drop(s);
+    downgrade_db_to_v10(&dir);
+    let s = Store::open(&dir).expect("a v10 database opens");
+    s.verify().unwrap();
+    assert_eq!(tag_of(&s, x).as_deref(), Some("WL-0001"));
+}
+
 /// Downgrade the database to schema v9 (no assets.tax_rule /
 /// assets.contributor_basis), as an older wanderbooks left it.
 fn downgrade_db_to_v9(dir: &Path) {
+    downgrade_db_to_v10(dir);
     let conn = rusqlite::Connection::open(dir.join(DB_FILE)).unwrap();
     conn.execute_batch(
         "ALTER TABLE assets DROP COLUMN tax_rule;

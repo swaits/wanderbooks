@@ -51,7 +51,9 @@ pub fn detail(ui: &mut Ui, b: &Books, e: &EntryInfo, shell: &mut Shell<'_>) {
                     }
                 };
                 widgets::pill(ui, e.origin, p.muted, p.hover);
-                if let Some(v) = &e.vendor {
+                if let Some(v) = &e.vendor
+                    && e.party_id.is_none()
+                {
                     widgets::pill(ui, &format!("{} {v}", icon::STOREFRONT), p.muted, p.hover);
                 }
                 if e.missing_receipt {
@@ -83,6 +85,26 @@ pub fn detail(ui: &mut Ui, b: &Books, e: &EntryInfo, shell: &mut Shell<'_>) {
                 .clicked()
                 {
                     shell.go(Route::Entry(r));
+                }
+            }
+            if let Some(party) = e.party_id.and_then(|id| b.ledger.get_party(id)) {
+                ui.add_space(4.0);
+                if widgets::link(
+                    ui,
+                    RichText::new(format!(
+                        "{} {}",
+                        super::parties::party_icon(party),
+                        party.label()
+                    ))
+                    .color(p.accent),
+                )
+                .on_hover_text(format!(
+                    "The party this entry is with ({}): open them",
+                    super::parties::roles_text(party).to_lowercase()
+                ))
+                .clicked()
+                {
+                    shell.go(Route::Party(party.id));
                 }
             }
             if let Some(&asset) = b.entry_assets.get(&e.id) {

@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 #[serde(tag = "show", rename_all = "snake_case")]
 pub enum ViewerTarget {
     /// A top-level page: overview, cash, profit, transactions, reports,
-    /// accounts, assets, documents, company, journal.
+    /// accounts, assets, parties, documents, company, journal.
     Page {
         /// Page name.
         page: String,
@@ -61,6 +61,12 @@ pub enum ViewerTarget {
     Asset {
         /// Asset id.
         asset_id: u64,
+    },
+    /// One party: who they are, their roles, and everything the company
+    /// did with them.
+    Party {
+        /// Party id.
+        party_id: u64,
     },
     /// The transactions list, searched.
     Search {

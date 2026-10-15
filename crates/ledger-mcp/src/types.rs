@@ -315,6 +315,8 @@ pub struct VendorOut {
     pub form_1099: Option<String>,
     /// W-9 on file.
     pub tin_on_file: bool,
+    /// The party the vendor record belongs to.
+    pub party_id: Option<u64>,
 }
 
 /// Result of `books.list_vendors`.
@@ -432,10 +434,12 @@ pub struct ShowParams {
     pub attachment_id: Option<u64>,
     /// A fixed asset, by tag or id.
     pub asset: Option<String>,
+    /// A party, by id or name (as `books.party`).
+    pub party: Option<String>,
     /// Search the transactions list (description, account, vendor, amount).
     pub search: Option<String>,
     /// A page: overview, cash, profit, transactions, reports, accounts,
-    /// assets, documents, company, journal.
+    /// assets, parties, documents, company, journal.
     pub page: Option<String>,
     /// For account and report: first date, YYYY-MM-DD.
     pub start: Option<String>,
@@ -938,6 +942,10 @@ pub struct DraftEntryParams {
     pub description: String,
     /// The vendor this entry pays (id or name), for 1099 tracking.
     pub vendor: Option<String>,
+    /// The party this entry is with (id or name; see `books.parties`). A
+    /// party with a vendor record also tags the entry's vendor; given with
+    /// `vendor`, both must name the same vendor.
+    pub party: Option<String>,
 }
 
 /// Result of `books.draft_entry`.
@@ -1298,6 +1306,10 @@ pub struct GetEntryOut {
     pub receipts: Vec<PreviewReceipt>,
     /// The vendor the entry is tagged with, for 1099 tracking.
     pub vendor: Option<String>,
+    /// The id of the party the entry is tagged with (its counterparty).
+    pub party_id: Option<u64>,
+    /// That party's label (display name, else name).
+    pub party: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2015,16 +2027,21 @@ pub struct ReconcileOut {
 
 /// Parameters for `books.add_customer` / `books.add_vendor`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct AddPartyParams {
-    /// Customer or vendor name.
+pub struct AddRecordParams {
+    /// Customer or vendor name. The record links to the party of that name
+    /// (ignoring case and surrounding space, not archived) that has no such
+    /// record yet, else to a new party.
     pub name: String,
 }
 
 /// Output of `books.add_customer` / `books.add_vendor`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct AddPartyOut {
-    /// The new party's id.
+pub struct AddRecordOut {
+    /// The new customer's or vendor's id (for `books.create_invoice`,
+    /// `books.create_bill`, `books.set_vendor_1099`).
     pub id: u64,
+    /// The party the record belongs to (`books.party`).
+    pub party_id: u64,
 }
 
 /// One line on an invoice or bill.
@@ -2146,8 +2163,13 @@ pub struct SetFxRateOut {
 /// One employee's payroll numbers. All amounts are decimal strings.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PayrollLineIn {
-    /// Employee name.
-    pub employee_name: String,
+    /// The employee's party (id or name), which must have the employee
+    /// role. New runs should name it; without it the line carries only
+    /// `employee_name`.
+    pub employee: Option<String>,
+    /// Employee name for the run record. Defaults to the employee party's
+    /// name; required without `employee`.
+    pub employee_name: Option<String>,
     /// Gross pay, decimal string.
     pub gross_pay: String,
     /// Federal withholding, decimal string.
@@ -2324,4 +2346,370 @@ pub struct ExportCpaPackageOut {
     pub file_name: String,
     /// The zip, base64-encoded.
     pub content_base64: String,
+}
+
+// ---------------------------------------------------------------------------
+// Parties (the directory of everyone the company deals with)
+// ---------------------------------------------------------------------------
+//
+// A `party` reference is a party's id or its name: the name ignoring case
+// and surrounding space, among parties not archived (an archived party goes
+// by id). A number that is one party's id and another party's name is
+// refused, never guessed.
+
+/// Parameters for `books.add_party`.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct AddPartyParams {
+    /// Legal or trade name, as on its documents. Unique (ignoring case and
+    /// surrounding space) among parties not archived; never a full TIN.
+    pub name: String,
+    /// Roles: contractor, employee, member, payout_platform, tax_agency,
+    /// financial_institution, landlord. Not vendor or customer: those come
+    /// with their records (`books.add_vendor`, `books.add_customer`, which
+    /// link to the party of the same name). May be empty.
+    #[serde(default)]
+    pub roles: Vec<String>,
+}
+
+/// Parameters for `books.update_party`. Give at least one field to change.
+/// Every field given is checked before any is written: a bad one changes
+/// nothing. Each is journaled as its own `party.updated`, in this order:
+/// name, display_name, website, address, notes, archived.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct UpdatePartyParams {
+    /// The party: id or name.
+    pub party: String,
+    /// A new legal or trade name (not blank, not another party's).
+    pub name: Option<String>,
+    /// A shorter name to show; "" clears it.
+    pub display_name: Option<String>,
+    /// Website; "" clears it.
+    pub website: Option<String>,
+    /// Business address; "" clears it.
+    pub address: Option<String>,
+    /// Notes; "" clears them.
+    pub notes: Option<String>,
+    /// True: no longer dealt with (its history stays; it no longer
+    /// resolves by name, and its name is free for another party). False:
+    /// dealt with again (refused while another party has its name).
+    pub archived: Option<bool>,
+}
+
+/// Parameters for `books.set_party_roles`. Give at least one role to add
+/// or remove.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct SetPartyRolesParams {
+    /// The party: id or name.
+    pub party: String,
+    /// Roles to give it (see `books.add_party`; not vendor or customer).
+    #[serde(default)]
+    pub add: Vec<String>,
+    /// Roles to take away. Refused while facts need the role: clear the
+    /// W-9 (`books.set_w9` clear) before removing its last 1099 role
+    /// (contractor, landlord), and the W-4 before removing employee.
+    #[serde(default)]
+    pub remove: Vec<String>,
+}
+
+/// Parameters for `books.set_w9`: what a W-9 said, never the number
+/// itself. Either `clear: true` alone, or every required fact.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct SetW9Params {
+    /// The party: id or name. Needs a 1099 role (contractor or landlord).
+    pub party: String,
+    /// When the W-9 was received, YYYY-MM-DD. Required unless clearing.
+    pub received_on: Option<String>,
+    /// Line 3 federal tax classification, e.g. "individual/sole
+    /// proprietor", "C corporation", "LLC (partnership)". Required unless
+    /// clearing.
+    pub entity_type: Option<String>,
+    /// Line 4 exempt payee code, if any.
+    pub exempt_payee_code: Option<String>,
+    /// Line 4 FATCA exemption code, if any.
+    pub fatca_code: Option<String>,
+    /// The TIN's last four digits: exactly four digits. A full TIN (nine
+    /// digits, however written) is refused here and in every party field.
+    /// Required unless clearing.
+    pub tin_last4: Option<String>,
+    /// Where the form itself is kept, e.g. "CPA portal" or "filed in the
+    /// books, document 12". Required unless clearing.
+    pub kept_at: Option<String>,
+    /// True: clear the W-9 facts (give no other fact).
+    #[serde(default)]
+    pub clear: bool,
+}
+
+/// Parameters for `books.set_w4`: what a W-4 said, never the SSN. Either
+/// `clear: true` alone, or every fact.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct SetW4Params {
+    /// The party: id or name. Needs the employee role.
+    pub party: String,
+    /// When the W-4 was received, YYYY-MM-DD. Required unless clearing.
+    pub received_on: Option<String>,
+    /// The work state: two capital letters, e.g. "UT". Required unless
+    /// clearing.
+    pub state: Option<String>,
+    /// Where the form itself is kept. Required unless clearing.
+    pub kept_at: Option<String>,
+    /// True: clear the W-4 facts (give no other fact).
+    #[serde(default)]
+    pub clear: bool,
+}
+
+/// Parameters for `books.parties`.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct ListPartiesParams {
+    /// Only parties with this role (any role, vendor and customer
+    /// included).
+    pub role: Option<String>,
+    /// Include archived parties (default false).
+    #[serde(default)]
+    pub include_archived: bool,
+    /// Calendar year for `paid` and `received` (default: this year, so
+    /// year to date).
+    pub year: Option<i32>,
+}
+
+/// Parameters for `books.party`.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct PartyParams {
+    /// The party: id or name.
+    pub party: String,
+    /// Calendar year for the totals (default: this year, so year to date).
+    pub year: Option<i32>,
+}
+
+/// Parameters for `books.set_entry_party`.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct SetEntryPartyParams {
+    /// Entry id (draft or posted).
+    pub entry_id: u64,
+    /// The party (id or name); null or omitted clears the tag. A party with
+    /// a vendor record also tags the entry's vendor (so the payment counts
+    /// in `books.vendor_1099`); one without, or clearing, clears the vendor
+    /// tag too.
+    pub party: Option<String>,
+}
+
+/// A party's W-9 facts.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct W9Out {
+    /// When it was received, YYYY-MM-DD.
+    pub received_on: String,
+    /// Line 3 federal tax classification.
+    pub entity_type: String,
+    /// Line 4 exempt payee code, if any.
+    pub exempt_payee_code: Option<String>,
+    /// Line 4 FATCA exemption code, if any.
+    pub fatca_code: Option<String>,
+    /// The TIN's last four digits.
+    pub tin_last4: String,
+    /// Where the form is kept.
+    pub kept_at: String,
+}
+
+/// A party's W-4 facts.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct W4Out {
+    /// When it was received, YYYY-MM-DD.
+    pub received_on: String,
+    /// The work state.
+    pub state: String,
+    /// Where the form is kept.
+    pub kept_at: String,
+}
+
+/// One party: its facts, as every party tool that changes one returns it.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct PartyOut {
+    /// Party id.
+    pub party_id: u64,
+    /// Legal or trade name.
+    pub name: String,
+    /// The name to show: the display name, else the name.
+    pub label: String,
+    /// Display name, if set.
+    pub display_name: Option<String>,
+    /// Roles, in display order: the ones set by hand, plus vendor and
+    /// customer when it has those records.
+    pub roles: Vec<String>,
+    /// Website.
+    pub website: Option<String>,
+    /// Business address.
+    pub address: Option<String>,
+    /// Notes.
+    pub notes: Option<String>,
+    /// No longer dealt with.
+    pub archived: bool,
+    /// Its vendor record's id, if it bills the company.
+    pub vendor_id: Option<u64>,
+    /// Its customer record's id, if the company invoices it.
+    pub customer_id: Option<u64>,
+    /// W-9 facts, if on file.
+    pub w9: Option<W9Out>,
+    /// W-4 facts, if on file.
+    pub w4: Option<W4Out>,
+}
+
+/// One party in `books.parties`.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct PartySummaryOut {
+    /// Party id.
+    pub party_id: u64,
+    /// Legal or trade name.
+    pub name: String,
+    /// The name to show.
+    pub label: String,
+    /// Roles, vendor and customer included.
+    pub roles: Vec<String>,
+    /// Its vendor record's id, if any.
+    pub vendor_id: Option<u64>,
+    /// Its customer record's id, if any.
+    pub customer_id: Option<u64>,
+    /// W-9 facts are on file.
+    pub w9_on_file: bool,
+    /// The W-9's TIN last four digits, when on file.
+    pub tin_last4: Option<String>,
+    /// W-4 facts are on file.
+    pub w4_on_file: bool,
+    /// No longer dealt with.
+    pub archived: bool,
+    /// Paid to the party in the year, decimal string (as `books.party`
+    /// totals).
+    pub paid: String,
+    /// Received from the party in the year, decimal string (as
+    /// `books.party` totals).
+    pub received: String,
+}
+
+/// Result of `books.parties`.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ListPartiesOut {
+    /// The year `paid` and `received` cover.
+    pub year: i32,
+    /// Parties, by id.
+    pub parties: Vec<PartySummaryOut>,
+}
+
+/// A party's year, from the journal. "The party's entries" are the
+/// entries tagged with the party (`books.set_entry_party`, `books.draft_entry`
+/// party), the entries tagged with its vendor record (bills and their
+/// payments, `books.set_entry_vendor`), its customer record's invoices and
+/// the payments received on them, and reversals of any of these. Only
+/// posted entries dated in the calendar year count.
+///
+/// Money lines are the lines on the money accounts: the `[books]
+/// cash_accounts` (every asset account but receivables when none are set)
+/// and every liability account except the payables and payroll
+/// withholding accounts (the control roles in `books.roles`: 2000 and
+/// 2110-2150 by default). A liability counts because it is how the
+/// company paid or was paid: a card, a member paying for it, a loan. Each
+/// entry's net is its money lines' credits minus their debits: a positive
+/// net was paid to the party, a negative one received from it; a reversal
+/// counts against its original's side. An entry that only moves money
+/// between money accounts (borrowing, a customer's deposit booked to a
+/// liability) nets to zero. A bill is not paid until its payment is.
+/// (`ledger_core::parties::activity` computes it; the viewer shows the
+/// same numbers.)
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct PartyTotalsOut {
+    /// Paid to the party, decimal string.
+    pub paid: String,
+    /// Received from the party, decimal string.
+    pub received: String,
+    /// Its customer record's invoices dated in the year, total, decimal
+    /// string.
+    pub invoiced: String,
+    /// Its vendor record's bills dated in the year, total, decimal string.
+    pub billed: String,
+    /// Still owed to it now: its open bills' balances (every year),
+    /// decimal string.
+    pub owed: String,
+    /// Still owed by it now: its open invoices' balances (every year),
+    /// decimal string.
+    pub receivable: String,
+    /// For a party with a vendor record: the cash `books.vendor_1099`
+    /// counts as paid to that vendor in the year (asset accounts only, so
+    /// card payments drop out), decimal string. Absent otherwise.
+    pub amount_1099: Option<String>,
+    /// The information return its vendor record gets ("1099-NEC",
+    /// "1099-MISC"), if any.
+    pub form_1099: Option<String>,
+    /// Gross pay on payroll lines naming it, decimal string.
+    pub gross_pay: String,
+    /// Net pay on payroll lines naming it, decimal string.
+    pub net_pay: String,
+}
+
+/// One of a party's entries.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct PartyEntryOut {
+    /// Entry id.
+    pub entry_id: u64,
+    /// Entry date, YYYY-MM-DD.
+    pub date: String,
+    /// Description.
+    pub description: String,
+    /// "draft" or "posted".
+    pub status: String,
+    /// Total debits, decimal string.
+    pub total: String,
+    /// Id of the reversed entry, for reversals.
+    pub reversal_of: Option<u64>,
+}
+
+/// One of a party's invoices or bills.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct PartyDocumentOut {
+    /// Invoice or bill id.
+    pub id: u64,
+    /// Document date, YYYY-MM-DD.
+    pub date: String,
+    /// Due date, YYYY-MM-DD.
+    pub due_date: String,
+    /// Total, decimal string.
+    pub total: String,
+    /// Paid so far, decimal string.
+    pub paid: String,
+    /// Still owed, decimal string.
+    pub balance: String,
+    /// "open", "partial", or "paid".
+    pub status: String,
+    /// The posted entry that raised it.
+    pub entry_id: u64,
+}
+
+/// A payroll run line naming the party.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct PartyPayrollOut {
+    /// Payroll run id.
+    pub run_id: u64,
+    /// Pay date, YYYY-MM-DD.
+    pub date: String,
+    /// The run's posted entry.
+    pub entry_id: u64,
+    /// Gross pay, decimal string.
+    pub gross_pay: String,
+    /// Net pay, decimal string.
+    pub net_pay: String,
+}
+
+/// Result of `books.party`.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct PartyDetailOut {
+    /// Its facts and roles.
+    pub party: PartyOut,
+    /// The calendar year the totals cover.
+    pub year: i32,
+    /// The year's totals.
+    pub totals: PartyTotalsOut,
+    /// Its entries (every year, drafts included), newest first.
+    pub entries: Vec<PartyEntryOut>,
+    /// Its customer record's invoices, by id.
+    pub invoices: Vec<PartyDocumentOut>,
+    /// Its vendor record's bills, by id.
+    pub bills: Vec<PartyDocumentOut>,
+    /// Payroll lines naming it, by run.
+    pub payroll: Vec<PartyPayrollOut>,
 }

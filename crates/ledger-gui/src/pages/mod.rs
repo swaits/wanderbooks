@@ -8,6 +8,7 @@ pub mod documents;
 pub mod entry;
 pub mod journal;
 pub mod overview;
+pub mod parties;
 pub mod profit;
 pub mod reports;
 pub mod transactions;
@@ -55,6 +56,8 @@ pub fn show(ui: &mut Ui, b: &Books, route: &Route, shell: &mut Shell<'_>) {
         Route::Account(id) => accounts::show_account(ui, b, *id, shell),
         Route::Assets => assets::show_register(ui, b, shell),
         Route::Asset(id) => assets::show_asset(ui, b, *id, shell),
+        Route::Parties => parties::show_list(ui, b, shell),
+        Route::Party(id) => parties::show_party(ui, b, *id, shell),
         Route::Documents => documents::show(ui, b, None, shell),
         Route::Document(id) => documents::show(ui, b, Some(*id), shell),
         Route::Company => company::show(ui, b, shell),

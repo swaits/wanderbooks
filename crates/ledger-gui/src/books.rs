@@ -8,8 +8,8 @@ use ledger_config::BooksSettings;
 use ledger_core::analysis::{balance_history, balance_series};
 use ledger_core::reports::{balance_sheet_as_of, profit_and_loss_for_period};
 use ledger_core::{
-    AccountId, AccountType, AssetId, AssetRegister, AssetStatus, EntryId, EntryStatus, Ledger,
-    Side, fixed_asset_register,
+    AccountId, AccountType, AssetId, AssetRegister, AssetStatus, BillId, EntryId, EntryStatus,
+    InvoiceId, Ledger, Party, PartyId, PayrollRunId, Side, Vendor1099Line, fixed_asset_register,
 };
 use ledger_store::{Attachment, JournalLine, Snapshot};
 use rust_decimal::Decimal;
@@ -42,8 +42,12 @@ pub struct EntryInfo {
     /// Net effect on cash accounts: positive in, negative out, zero if the
     /// entry doesn't touch cash.
     pub cash_effect: Decimal,
-    /// The customer or vendor, from invoices, bills, and vendor tags.
+    /// The counterparty's name: its directory party's label (see
+    /// [`PartyInfo`] for which entries are a party's), else its vendor's
+    /// or invoice customer's name.
     pub party: Option<String>,
+    /// The directory party the entry is with (see [`PartyInfo`]).
+    pub party_id: Option<PartyId>,
     /// Lower-cased text for search: description, accounts, vendor, amount.
     pub haystack: String,
 }
@@ -79,6 +83,62 @@ impl AssetTrail {
     pub fn posted(&self) -> Decimal {
         self.depreciation.values().map(|(_, a)| *a).sum()
     }
+}
+
+/// One party's dealings with the company: its entries, documents, and
+/// this year's totals, computed once per refresh.
+///
+/// ```text
+/// GOAL: answer "who is this, and what has the company done with them?"
+///       with the books' own numbers.
+/// SOURCE: docs/parties-and-attachments.md (Parties → Viewer); the
+///         module's rule (every number from ledger-core; this indexes and
+///         sums); DECISION (the year and the payment accounts, below).
+/// DEFINITIONS:
+///   The party's entries: Ledger::entry_party names it (core tags hand
+///     tags, vendor tags, bills, invoices, their payments, reversals).
+///   The year: the calendar year of `today`, Jan 1 through today (the
+///     year 1099s are counted in).
+///   Money: ledger_core::parties::activity with Books::cash_accounts
+///     (the same numbers books.party reports).
+/// INVARIANTS:
+///   1. entries: every entry that is the party's, drafts included, in
+///      Books::entries order (newest first).
+///   2. paid_ytd = activity's paid − received over the year, exactly.
+///      Positive: paid to them, net; negative: received from them, net.
+///   3. invoiced_ytd = Σ Invoice::total() over its customer record's
+///      invoices dated in the year; billed_ytd the same for its vendor
+///      record's bills.
+///   4. open_invoices = Σ Invoice::balance() over its customer record's
+///      invoices; open_bills = Σ Bill::balance() over its vendor record's
+///      bills (any date: what is still owed today).
+///   5. form_1099: its vendor record's line in
+///      vendor_1099_report_with(ledger, year, None, cash and financing
+///      accounts), when it has a vendor
+///      record in that report and the report knows the year's threshold
+///      (threshold_1099 is then that threshold).
+///   6. payroll_runs: the runs with a line whose employee is the party,
+///      or (older runs, no party on the line) whose employee_name is the
+///      party's name ignoring case and surrounding space.
+///   7. events: indexes into Books::journal of party.* events with its
+///      id, entry.party_set naming it, and its records' vendor.added,
+///      customer.added, vendor.1099_set, and entry.vendor_set events.
+/// ```
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PartyInfo {
+    pub id: PartyId,
+    pub entries: Vec<EntryId>,
+    pub paid_ytd: Decimal,
+    pub invoiced_ytd: Decimal,
+    pub billed_ytd: Decimal,
+    pub open_invoices: Decimal,
+    pub open_bills: Decimal,
+    pub invoices: Vec<InvoiceId>,
+    pub bills: Vec<BillId>,
+    pub payroll_runs: Vec<PayrollRunId>,
+    pub form_1099: Option<Vendor1099Line>,
+    pub threshold_1099: Option<Decimal>,
+    pub events: Vec<usize>,
 }
 
 /// Depreciation due and not yet in the books.
@@ -154,6 +214,8 @@ pub struct Books {
     pub asset_trails: HashMap<AssetId, AssetTrail>,
     /// The asset each depreciation, disposal, or purchase entry is about.
     pub entry_assets: HashMap<EntryId, AssetId>,
+    /// Every party's dealings with the company, by party id.
+    pub parties: BTreeMap<PartyId, PartyInfo>,
 }
 
 /// Whether what's on disk is what the journal says.
@@ -288,7 +350,6 @@ impl Books {
             }
         }
         let fresh_from_seq = prev_seq.unwrap_or(journal.len() as u64);
-        let parties = parties(&ledger, &journal);
         let mut fresh = HashSet::new();
         let closings = ledger.closing_entry_ids();
         let mut entries = Vec::new();
@@ -345,7 +406,13 @@ impl Books {
                     Side::Credit => -l.amount.amount,
                 })
                 .sum();
-            let party = vendor.clone().or_else(|| parties.get(&id).cloned());
+            // Core tags every entry with its counterparty (hand tags,
+            // vendor tags, bills, invoices, their payments, reversals).
+            let party_id = ledger.entry_party(id);
+            let party = party_id
+                .and_then(|p| ledger.get_party(p))
+                .map(|p| p.label().to_string())
+                .or_else(|| vendor.clone());
             let mut haystack = format!(
                 "{} {} #{} {}",
                 e.description(),
@@ -361,6 +428,12 @@ impl Books {
             if let Some(v) = &party {
                 haystack.push(' ');
                 haystack.push_str(v);
+            }
+            if let Some(p) = party_id.and_then(|p| ledger.get_party(p))
+                && p.display_name.is_some()
+            {
+                haystack.push(' ');
+                haystack.push_str(&p.name);
             }
             entries.push(EntryInfo {
                 id,
@@ -378,6 +451,7 @@ impl Books {
                 missing_receipt,
                 cash_effect,
                 party,
+                party_id,
                 haystack: haystack.to_lowercase(),
             });
         }
@@ -413,7 +487,9 @@ impl Books {
             integrity,
             asset_trails,
             entry_assets,
+            parties: BTreeMap::new(),
         };
+        books.parties = books.party_infos();
         books.kpis = books.compute_kpis();
         books.attention = crate::attention::find(&books);
         Ok(books)
@@ -578,6 +654,140 @@ impl Books {
         }
     }
 
+    /// One party's dealings (None for an unknown party).
+    pub fn party(&self, id: PartyId) -> Option<&PartyInfo> {
+        self.parties.get(&id)
+    }
+
+    /// A party's label (its display name, else its name).
+    pub fn party_label(&self, id: PartyId) -> String {
+        self.ledger
+            .get_party(id)
+            .map(|p| p.label().to_string())
+            .unwrap_or_else(|| format!("party {id}"))
+    }
+
+    /// Whether a party files a 1099: it has a 1099 role (contractor,
+    /// landlord), or its vendor record is marked for a 1099.
+    pub fn files_1099(&self, p: &Party) -> bool {
+        p.roles.iter().any(|r| r.gets_1099())
+            || p.vendor
+                .and_then(|v| self.ledger.get_vendor(v))
+                .is_some_and(|v| v.form_1099.is_some())
+    }
+
+    /// Every party's [`PartyInfo`].
+    fn party_infos(&self) -> BTreeMap<PartyId, PartyInfo> {
+        let l = &self.ledger;
+        let year = self.today.year();
+        let year_start = NaiveDate::from_ymd_opt(year, 1, 1).expect("valid");
+        let in_year = |d: NaiveDate| d >= year_start && d <= self.today;
+        let mut out: BTreeMap<PartyId, PartyInfo> = l
+            .parties()
+            .map(|p| {
+                (
+                    p.id,
+                    PartyInfo {
+                        id: p.id,
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect();
+        for (id, info) in out.iter_mut() {
+            let a = ledger_core::parties::activity(
+                l,
+                *id,
+                (year_start, self.today),
+                &self.cash_accounts,
+            );
+            info.entries = self
+                .entries
+                .iter()
+                .filter(|e| a.entries.contains(&e.id))
+                .map(|e| e.id)
+                .collect();
+            info.paid_ytd = a.paid - a.received;
+        }
+        for inv in l.invoices() {
+            let id = inv.id;
+            if let Some(info) = l
+                .party_of_customer(inv.customer_id)
+                .and_then(|p| out.get_mut(&p))
+            {
+                info.invoices.push(id);
+                info.open_invoices += inv.balance();
+                if in_year(inv.date) {
+                    info.invoiced_ytd += inv.total();
+                }
+            }
+        }
+        for bill in l.bills() {
+            let id = bill.id;
+            if let Some(info) = l
+                .party_of_vendor(bill.vendor_id)
+                .and_then(|p| out.get_mut(&p))
+            {
+                info.bills.push(id);
+                info.open_bills += bill.balance();
+                if in_year(bill.date) {
+                    info.billed_ytd += bill.total();
+                }
+            }
+        }
+        let sources = ledger_core::PaymentAccounts {
+            cash: self.cash_accounts.clone(),
+            financing: self.financing_accounts.clone(),
+        };
+        if let Ok(r) = ledger_core::vendor_1099_report_with(l, year, None, &sources) {
+            for v in &r.vendors {
+                if let Some(info) = l.party_of_vendor(v.vendor_id).and_then(|p| out.get_mut(&p)) {
+                    info.form_1099 = Some(v.clone());
+                    info.threshold_1099 = Some(r.threshold);
+                }
+            }
+        }
+        for run in l.list_payroll_runs() {
+            for p in l.parties() {
+                let names = |x: &ledger_core::PayrollLine| match x.employee {
+                    Some(e) => e == p.id,
+                    None => {
+                        ledger_core::parties::name_key(&x.employee_name)
+                            == ledger_core::parties::name_key(&p.name)
+                    }
+                };
+                if run.lines.iter().any(names)
+                    && let Some(info) = out.get_mut(&p.id)
+                    && !info.payroll_runs.contains(&run.id)
+                {
+                    info.payroll_runs.push(run.id);
+                }
+            }
+        }
+        let u = |v: &Value, k: &str| v.get(k).and_then(|v| v.as_u64());
+        for (i, line) in self.journal.iter().enumerate() {
+            let p = &line.payload;
+            let t = line.line_type.as_str();
+            let party = if t.starts_with("party.") {
+                u(p, "id")
+            } else {
+                match t {
+                    "entry.party_set" => u(p, "party_id"),
+                    "vendor.added" => u(p, "id").and_then(|v| l.party_of_vendor(v)),
+                    "customer.added" => u(p, "id").and_then(|c| l.party_of_customer(c)),
+                    "vendor.1099_set" | "entry.vendor_set" => {
+                        u(p, "vendor_id").and_then(|v| l.party_of_vendor(v))
+                    }
+                    _ => None,
+                }
+            };
+            if let Some(info) = party.and_then(|p| out.get_mut(&p)) {
+                info.events.push(i);
+            }
+        }
+        out
+    }
+
     /// Depreciation due through the last finished month on or before
     /// `as_of` and not yet posted (see [`DepreciationDue`]).
     pub fn depreciation_due(&self, as_of: NaiveDate) -> DepreciationDue {
@@ -615,37 +825,6 @@ impl Books {
     pub fn blob_root(&self) -> PathBuf {
         self.data_dir.join("blobs")
     }
-}
-
-/// Customer names for entries created by invoices and their payments,
-/// from the journal. (Bills and bill payments need nothing here: the
-/// ledger tags their entries with the vendor, which takes precedence.)
-fn parties(ledger: &Ledger, journal: &[JournalLine]) -> HashMap<EntryId, String> {
-    let mut out = HashMap::new();
-    let customer = |id: Option<u64>| {
-        id.and_then(|c| ledger.get_customer(c))
-            .map(|c| c.name.clone())
-    };
-    let u = |p: &Value, k: &str| p.get(k).and_then(|v| v.as_u64());
-    for line in journal {
-        let p = &line.payload;
-        let Some(entry) = u(p, "entry_id") else {
-            continue;
-        };
-        let name = match line.line_type.as_str() {
-            "invoice.created" => customer(u(p, "customer_id")),
-            "invoice.payment_received" => customer(
-                u(p, "invoice_id")
-                    .and_then(|i| ledger.get_invoice(i))
-                    .map(|i| i.customer_id),
-            ),
-            _ => None,
-        };
-        if let Some(n) = name {
-            out.insert(entry, n);
-        }
-    }
-    out
 }
 
 /// Every registered asset's trail, from the journal (depreciation,

@@ -213,3 +213,52 @@ fn forms_have_their_irs_names() {
         assert_eq!(Form1099::parse(f.label()), Some(f));
     }
 }
+
+/// vendor_1099_report_with SCENARIOS 1–2, worked by hand. Payment sources:
+/// cash 1000 and the members' financing liability 2200. Kim (1099-MISC,
+/// landlord) in 2026:
+/// - 1,000 rent from the bank (Dr rent, Cr 1000): +1,000
+/// - 2,400 prepaid rent from the bank (Dr 1300, Cr 1000): +2,400 (paid
+///   when made; the prepaid asset is not a source, so it doesn't offset)
+/// - 800 rent paid by a member (Dr rent, Cr 2200): +800
+/// - 500 rent on the card (Dr rent, Cr 2100): 0 (1099-K)
+/// - 300 refunded to the bank (Dr 1000, Cr rent): −300
+///
+/// Total 3,900. The plain report (every asset a source, no financing)
+/// sees 1,000 + 0 + 0 + 0 − 300 = 700: the understatement this fixes.
+#[test]
+fn payments_come_from_cash_and_financing_only() {
+    use ledger_core::{PaymentAccounts, vendor_1099_report_with};
+    let mut l = Ledger::new(Currency::USD);
+    let acct = |l: &mut Ledger, code: &str, t| l.add_account(code, code, t, None, false).unwrap();
+    let bank = acct(&mut l, "1000", AccountType::Asset);
+    let prepaid = acct(&mut l, "1300", AccountType::Asset);
+    let card = acct(&mut l, "2100", AccountType::Liability);
+    let members = acct(&mut l, "2200", AccountType::Liability);
+    let rent = acct(&mut l, "6600", AccountType::Expense);
+    let kim = l.add_vendor("Kim").unwrap();
+    l.set_vendor_1099(kim, Some(Form1099::Misc), true).unwrap();
+    for (dr, cr, amt) in [
+        (rent, bank, "1000"),
+        (prepaid, bank, "2400"),
+        (rent, members, "800"),
+        (rent, card, "500"),
+        (bank, rent, "300"),
+    ] {
+        let e = l.create_entry(d(2026, 5, 1), "rent");
+        let m = Money::new(dec(amt), Currency::USD);
+        l.add_line(e, dr, Side::Debit, m).unwrap();
+        l.add_line(e, cr, Side::Credit, m).unwrap();
+        l.post_entry(e).unwrap();
+        l.set_entry_vendor(e, Some(kim)).unwrap();
+    }
+    let sources = PaymentAccounts {
+        cash: vec![bank],
+        financing: vec![members],
+    };
+    let r = vendor_1099_report_with(&l, 2026, None, &sources).unwrap();
+    assert_eq!(r.vendors[0].paid, dec("3900"));
+    assert!(r.vendors[0].reportable, "3,900 is over 2,000");
+    let plain = vendor_1099_report(&l, 2026, None).unwrap();
+    assert_eq!(plain.vendors[0].paid, dec("700"));
+}

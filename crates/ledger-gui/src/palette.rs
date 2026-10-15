@@ -1,6 +1,7 @@
 //! Ctrl+K: jump to anything. Pages, reports, accounts, entries (by text,
-//! amount, or #id), fixed assets (by tag, serial, or description), vendors,
-//! and documents, ranked by a simple fuzzy match.
+//! amount, or #id), fixed assets (by tag, serial, or description), parties
+//! (vendors and customers among them, by name or display name), and
+//! documents, ranked by a simple fuzzy match.
 
 use crate::books::Books;
 use crate::fmt;
@@ -224,6 +225,15 @@ pub fn fuzzy(hay: &str, query: &str) -> Option<i32> {
 ///      tag, serial, and description; a query found whole in its tag or
 ///      serial (ignoring case) adds 500, in its description 50.
 ///   3. Every asset result opens Route::Asset(its id).
+/// INVARIANTS (parties):
+///   4. A party whose name or display name equals the trimmed query,
+///      ignoring case, scores 1500: above an entry's exact #id, below an
+///      exact asset tag.
+///   5. Otherwise a party is listed when the query fuzzily matches its
+///      name and display name; a query found whole in either (ignoring
+///      case) adds 500.
+///   6. Every party result opens Route::Party(its id); archived parties
+///      are found too, and say so.
 /// ```
 pub fn search(b: &Books, query: &str) -> Vec<Item> {
     let q = query.trim();
@@ -329,13 +339,34 @@ pub fn search(b: &Books, query: &str) -> Vec<Item> {
                 });
             }
         }
-        for v in b.ledger.list_vendors() {
-            if let Some(score) = fuzzy(&v.name, q) {
+        for p in b.ledger.parties() {
+            let display = p.display_name.as_deref().unwrap_or("");
+            let exact = |t: &str| !t.is_empty() && t.trim().to_lowercase() == ql;
+            let whole = |t: &str| !t.is_empty() && t.to_lowercase().contains(&ql);
+            let score = if exact(&p.name) || exact(display) {
+                Some(1500)
+            } else {
+                fuzzy(&format!("{} {display}", p.name), q).map(|s| {
+                    s + if whole(&p.name) || whole(display) {
+                        500
+                    } else {
+                        0
+                    }
+                })
+            };
+            if let Some(score) = score {
+                let mut detail = vec![crate::pages::parties::roles_text(p)];
+                if p.display_name.is_some() {
+                    detail.push(p.name.clone());
+                }
+                if p.archived {
+                    detail.push("archived".into());
+                }
                 out.push(Item {
-                    icon: icon::STOREFRONT,
-                    title: v.name.clone(),
-                    detail: "Vendor".into(),
-                    route: Route::Company,
+                    icon: crate::pages::parties::party_icon(p),
+                    title: p.label().to_string(),
+                    detail: detail.join(" · "),
+                    route: Route::Party(p.id),
                     score,
                 });
             }
@@ -378,6 +409,7 @@ pub fn describe(b: &Books, r: &Route) -> String {
             .map(|a| a.file_name.clone())
             .unwrap_or_default(),
         Route::Asset(id) => b.asset_label(*id),
+        Route::Party(id) => b.party_label(*id),
         Route::JournalEvent(seq) => format!("Event {seq}"),
         _ => String::new(),
     }

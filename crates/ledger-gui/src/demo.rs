@@ -250,6 +250,94 @@ pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
     .map(|n| s.add_customer(n))
     .collect::<Result<_, _>>()?;
 
+    // The party directory: who they are, beyond the vendor and customer
+    // records (roles, W-9 facts with only the TIN's last four, sites).
+    {
+        use ledger_core::{PartyField, Role, W9Facts};
+        let party_of = |s: &Store, v: u64| s.ledger().party_of_vendor(v).expect("linked");
+        let sam_p = party_of(&s, sam);
+        s.set_party_role(sam_p, Role::Contractor, true)?;
+        s.set_party_w9(
+            sam_p,
+            Some(W9Facts {
+                received: start + Days::new(20),
+                entity_type: "Individual/sole proprietor".into(),
+                exempt_payee_code: None,
+                fatca_code: None,
+                tin_last4: "4821".into(),
+                kept_at: "wanderbooks vault".into(),
+                vault_record: None,
+            }),
+        )?;
+        s.update_party(
+            sam_p,
+            PartyField::Notes(Some(
+                "Illustrator for client projects; invoices after each delivery.".into(),
+            )),
+        )?;
+        let riley_p = party_of(&s, riley);
+        s.set_party_role(riley_p, Role::Contractor, true)?;
+        s.update_party(riley_p, PartyField::Website(Some("rileychen.dev".into())))?;
+        let lofts = party_of(&s, landlord);
+        s.set_party_role(lofts, Role::Landlord, true)?;
+        s.set_party_w9(
+            lofts,
+            Some(W9Facts {
+                received: start + Days::new(3),
+                entity_type: "LLC taxed as a partnership".into(),
+                exempt_payee_code: None,
+                fatca_code: None,
+                tin_last4: "3307".into(),
+                kept_at: "CPA portal".into(),
+                vault_record: None,
+            }),
+        )?;
+        s.update_party(
+            lofts,
+            PartyField::Address(Some("1200 NW Everett St, Portland, OR 97209".into())),
+        )?;
+        s.update_party(lofts, PartyField::DisplayName(Some("Everett Lofts".into())))?;
+        if let Some(fern) = s.ledger().party_of_customer(customers[0]) {
+            s.update_party(
+                fern,
+                PartyField::Website(Some("fernandfield.coffee".into())),
+            )?;
+            s.update_party(
+                fern,
+                PartyField::Address(Some("88 SE Division St, Portland, OR 97202".into())),
+            )?;
+        }
+        let irs = s.add_party("Internal Revenue Service", &[Role::TaxAgency])?;
+        s.update_party(irs, PartyField::DisplayName(Some("IRS".into())))?;
+        s.update_party(irs, PartyField::Website(Some("irs.gov".into())))?;
+        let odr = s.add_party("Oregon Department of Revenue", &[Role::TaxAgency])?;
+        s.update_party(odr, PartyField::Website(Some("oregon.gov/dor".into())))?;
+        let old = s.add_party("Etsy, Inc.", &[Role::PayoutPlatform])?;
+        s.update_party(
+            old,
+            PartyField::Notes(Some("Sold templates here before moving to Gumroad.".into())),
+        )?;
+        s.update_party(old, PartyField::Archived(true))?;
+    }
+    let gumroad = s.add_party("Gumroad, Inc.", &[ledger_core::Role::PayoutPlatform])?;
+    s.update_party(
+        gumroad,
+        ledger_core::PartyField::DisplayName(Some("Gumroad".into())),
+    )?;
+    s.update_party(
+        gumroad,
+        ledger_core::PartyField::Website(Some("gumroad.com".into())),
+    )?;
+    let chase = s.add_party(
+        "JPMorgan Chase Bank, N.A.",
+        &[ledger_core::Role::FinancialInstitution],
+    )?;
+    s.update_party(
+        chase,
+        ledger_core::PartyField::DisplayName(Some("Chase".into())),
+    )?;
+    let alex = s.add_party("Alex Rivera", &[ledger_core::Role::Member])?;
+
     // Formation documents.
     s.file_document(
         "formation",
@@ -562,7 +650,7 @@ pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
         // Pay the card in full on the 25th.
         let date = day(m, 25);
         if in_range(date) && card_balance > Decimal::ZERO {
-            post(
+            let paid = post(
                 &mut s,
                 date,
                 "Credit card payment",
@@ -582,6 +670,7 @@ pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
                 None,
                 None,
             )?;
+            s.set_entry_party(paid, Some(chase))?;
             card_balance = Decimal::ZERO;
         }
         // Client invoices: two or three a month, net 30.
@@ -657,6 +746,7 @@ pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
                     None,
                 )?;
                 s.post_entry(e)?;
+                s.set_entry_party(e, Some(gumroad))?;
             }
         }
         // Contractors.
@@ -715,7 +805,7 @@ pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
         if month_index >= 3 {
             let date = day(m, 28);
             if in_range(date) {
-                post(
+                let draw = post(
                     &mut s,
                     date,
                     "Owner draw",
@@ -726,6 +816,7 @@ pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
                     None,
                     None,
                 )?;
+                s.set_entry_party(draw, Some(alex))?;
             }
         }
         if month_index % 3 == 2 {

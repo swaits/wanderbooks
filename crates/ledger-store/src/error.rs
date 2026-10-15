@@ -5,6 +5,31 @@ use thiserror::Error;
 /// Every way a store operation can fail.
 #[derive(Debug, Error)]
 pub enum StoreError {
+    /// An attachment link names a subject that doesn't exist.
+    #[error("no {0} to link to")]
+    UnknownSubject(String),
+    /// The attachment is already linked to that subject.
+    #[error("attachment {0} is already linked to {1}")]
+    AlreadyLinked(u64, String),
+    /// The attachment isn't linked to that subject.
+    #[error("attachment {0} isn't linked to {1}")]
+    NotLinkedTo(u64, String),
+    /// A statement record that doesn't fit its account or itself.
+    #[error("bad statement: {0}")]
+    InvalidStatement(String),
+    /// The books don't agree with the statement yet.
+    #[error(
+        "not reconciled: the cleared balance differs from the statement by {difference}; \
+         clear the lines the statement shows (or find what's missing) first"
+    )]
+    NotReconciled {
+        /// Cleared balance less the statement balance.
+        difference: rust_decimal::Decimal,
+    },
+    /// A reconciliation command that breaks the sequence.
+    #[error("{0}")]
+    ReconciliationRefused(String),
+
     /// An asset can't be corrected once depreciation for it is posted: the
     /// posted entries would disagree with the corrected schedule.
     #[error("asset {0} already has depreciation posted; correct it with entries instead")]

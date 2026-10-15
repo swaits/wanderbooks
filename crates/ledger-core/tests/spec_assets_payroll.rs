@@ -58,6 +58,9 @@ fn asset(cost: &str, salvage: &str, life: u32, purchase: NaiveDate) -> Asset {
         accum_depr_account: 11,
         expense_account: 12,
         status: AssetStatus::Active,
+        tag: None,
+        serial: None,
+        acquired_by: None,
     }
 }
 

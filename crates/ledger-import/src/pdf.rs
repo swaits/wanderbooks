@@ -25,10 +25,24 @@ pub enum PdfError {
     /// The PDF writer failed.
     #[error("pdf save failed: {0}")]
     Save(String),
+    /// No labels to print.
+    #[error("no labels to print")]
+    NoLabels,
+    /// The skip would start past the first sheet.
+    #[error("skip {skip} is out of range: a sheet has {per_sheet} labels, so skip must be 0 to {}", per_sheet - 1)]
+    SkipOutOfRange {
+        /// The requested skip.
+        skip: usize,
+        /// Labels per sheet.
+        per_sheet: usize,
+    },
+    /// A tag could not be encoded as a QR code (too long).
+    #[error("qr code failed: {0}")]
+    Qr(String),
 }
 
 static TEMPLATE: &str = include_str!("../templates/statement.typ");
-static INTER: [&[u8]; 3] = [
+pub(crate) static INTER: [&[u8]; 3] = [
     include_bytes!("../fonts/Inter-Regular.ttf"),
     include_bytes!("../fonts/Inter-SemiBold.ttf"),
     include_bytes!("../fonts/Inter-Bold.ttf"),

@@ -376,6 +376,9 @@ pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
         accum_depr_account: accum,
         expense_account: depreciation,
     })?;
+    // The label on the laptop, and its serial number.
+    s.set_asset_tag(asset, "JS-0001")?;
+    s.set_asset_serial(asset, Some("C02FK3XJQ6L4"))?;
 
     // Prepaid insurance, spread over a year.
     let ins_date = day(start + Months::new(2), 15);

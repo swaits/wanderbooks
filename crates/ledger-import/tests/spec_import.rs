@@ -3004,3 +3004,165 @@ fn tax_summary_optional_sections() {
     assert!(!has(&bare, "Cost of goods sold"));
     assert!(!has(&bare, "Not yet categorized"));
 }
+
+// ---------------------------------------------------------------------------
+// Fixed asset register (ledger_import::asset_register)
+// ---------------------------------------------------------------------------
+
+/// A register as ledger_core::fixed_asset_register would return it: two
+/// assets held, one disposed (shown, in no total), and books that differ
+/// from the register on both counts.
+fn asset_register_fixture() -> ledger_core::AssetRegister {
+    use ledger_core::AssetRegisterRow;
+    let row = |id, tag: Option<&str>, desc: &str, serial: Option<&str>, cost, acc, disposed| {
+        AssetRegisterRow {
+            asset_id: id,
+            tag: tag.map(Into::into),
+            description: desc.into(),
+            serial: serial.map(Into::into),
+            in_service: d(2026, 1, 15),
+            cost: cents(cost),
+            salvage: cents(10000),
+            useful_life_months: 36,
+            accumulated: cents(acc),
+            book_value: cents(cost - acc),
+            disposed,
+        }
+    };
+    ledger_core::AssetRegister {
+        as_of: d(2026, 10, 15),
+        rows: vec![
+            row(
+                1,
+                Some("WL-0001"),
+                "Framework Laptop 13",
+                Some("FRAN123"),
+                250000,
+                52778,
+                None,
+            ),
+            row(2, None, "Desk", None, 120000, 25000, None),
+            {
+                let mut r = row(
+                    3,
+                    Some("WL-0003"),
+                    "Old monitor",
+                    None,
+                    40000,
+                    0,
+                    Some((d(2026, 9, 30), cents(4500))),
+                );
+                r.book_value = Decimal::ZERO;
+                r
+            },
+        ],
+        total_cost: cents(370000),
+        total_accumulated: cents(77778),
+        total_book_value: cents(292222),
+        ledger_cost: cents(400000),
+        ledger_accumulated: cents(70000),
+    }
+}
+
+fn number_cell(cells: &BTreeMap<(u32, u32), Cell>, at: (u32, u32)) -> Decimal {
+    match cells.get(&at) {
+        Some(Cell::Num(v)) => parse_num(v),
+        other => panic!("{at:?}: expected a number, got {other:?}"),
+    }
+}
+
+fn text_cell(cells: &BTreeMap<(u32, u32), Cell>, at: (u32, u32)) -> String {
+    match cells.get(&at) {
+        Some(Cell::Text(t)) => t.clone(),
+        other => panic!("{at:?}: expected text, got {other:?}"),
+    }
+}
+
+/// asset_register INVARIANTS 1-3 and 5, read back from the workbook's XML:
+/// header, headings, one row per asset in order (disposed marked), the
+/// register's own totals, and the reconciliation under Cost and
+/// Accumulated depreciation.
+#[test]
+fn asset_register_xlsx_cells() {
+    let r = asset_register_fixture();
+    let x = ledger_import::asset_register_xlsx(&r, &meta()).unwrap();
+    let c = sheet_cells(&x);
+    assert_eq!(text_cell(&c, (1, 0)), "Spec Test LLC");
+    assert_eq!(text_cell(&c, (2, 0)), "Fixed Asset Register");
+    assert_eq!(text_cell(&c, (3, 0)), "As of October 15, 2026");
+    let heads: Vec<String> = (0..10).map(|i| text_cell(&c, (5, i))).collect();
+    assert_eq!(
+        heads,
+        [
+            "TAG",
+            "DESCRIPTION",
+            "SERIAL",
+            "IN SERVICE",
+            "COST",
+            "SALVAGE",
+            "LIFE (MONTHS)",
+            "ACCUMULATED DEPRECIATION",
+            "BOOK VALUE",
+            "STATUS"
+        ]
+    );
+    assert_eq!(text_cell(&c, (6, 0)), "WL-0001");
+    assert_eq!(text_cell(&c, (6, 1)), "Framework Laptop 13");
+    assert_eq!(text_cell(&c, (6, 2)), "FRAN123");
+    assert_eq!(text_cell(&c, (6, 3)), "2026-01-15");
+    assert_eq!(number_cell(&c, (6, 4)), dec("2500.00"));
+    assert_eq!(number_cell(&c, (6, 5)), dec("100.00"));
+    assert_eq!(number_cell(&c, (6, 6)), dec("36"));
+    assert_eq!(number_cell(&c, (6, 7)), dec("527.78"));
+    assert_eq!(number_cell(&c, (6, 8)), dec("1972.22"));
+    assert_eq!(text_cell(&c, (6, 9)), "Active");
+    assert_eq!(text_cell(&c, (7, 1)), "Desk");
+    assert_eq!(text_cell(&c, (8, 0)), "WL-0003");
+    assert_eq!(text_cell(&c, (8, 9)), "Disposed 2026-09-30, proceeds 45.00");
+    assert_eq!(number_cell(&c, (8, 8)), Decimal::ZERO);
+    // Totals: the register's (held assets only), not a re-sum of the rows.
+    assert_eq!(text_cell(&c, (9, 0)), "Total, assets held");
+    assert_eq!(number_cell(&c, (9, 4)), dec("3700.00"));
+    assert_eq!(number_cell(&c, (9, 7)), dec("777.78"));
+    assert_eq!(number_cell(&c, (9, 8)), dec("2922.22"));
+    assert!(!c.contains_key(&(9, 5)), "no salvage total");
+    // Reconciliation.
+    assert_eq!(text_cell(&c, (11, 0)), "Reconciliation to the books");
+    let recon = [
+        (12, "Cost per register", 4, "3700.00"),
+        (13, "Cost per books", 4, "4000.00"),
+        (14, "Difference (unregistered cost)", 4, "300.00"),
+        (16, "Accumulated depreciation per schedule", 7, "777.78"),
+        (17, "Accumulated depreciation per books", 7, "700.00"),
+        (18, "Difference (not yet posted)", 7, "77.78"),
+    ];
+    for (row, label, col, amt) in recon {
+        assert_eq!(text_cell(&c, (row, 0)), label);
+        assert_eq!(number_cell(&c, (row, col)), dec(amt), "{label}");
+    }
+    let footer = c
+        .values()
+        .any(|v| matches!(v, Cell::Text(t) if t.contains("Journal seq 42")));
+    assert!(footer, "footer present");
+}
+
+/// asset_register INVARIANT 4: an empty register says so, still totals,
+/// and still reconciles (the books may carry unregistered cost).
+#[test]
+fn asset_register_xlsx_empty() {
+    let r = ledger_core::AssetRegister {
+        as_of: d(2026, 10, 15),
+        rows: vec![],
+        total_cost: Decimal::ZERO,
+        total_accumulated: Decimal::ZERO,
+        total_book_value: Decimal::ZERO,
+        ledger_cost: cents(99900),
+        ledger_accumulated: Decimal::ZERO,
+    };
+    let c = sheet_cells(&ledger_import::asset_register_xlsx(&r, &meta()).unwrap());
+    assert_eq!(text_cell(&c, (6, 0)), "No fixed assets");
+    assert_eq!(text_cell(&c, (7, 0)), "Total, assets held");
+    assert_eq!(number_cell(&c, (7, 4)), Decimal::ZERO);
+    assert_eq!(text_cell(&c, (12, 0)), "Difference (unregistered cost)");
+    assert_eq!(number_cell(&c, (12, 4)), dec("999.00"));
+}

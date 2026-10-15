@@ -7,11 +7,14 @@ use chrono::{Datelike, NaiveDate};
 use ledger_config::BooksSettings;
 use ledger_core::analysis::{balance_history, balance_series};
 use ledger_core::reports::{balance_sheet_as_of, profit_and_loss_for_period};
-use ledger_core::{AccountId, AccountType, EntryId, EntryStatus, Ledger, Side};
+use ledger_core::{
+    AccountId, AccountType, AssetId, AssetRegister, AssetStatus, EntryId, EntryStatus, Ledger,
+    Side, fixed_asset_register,
+};
 use ledger_store::{Attachment, JournalLine, Snapshot};
 use rust_decimal::Decimal;
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
 /// One entry, indexed for listing and detail.
@@ -43,6 +46,63 @@ pub struct EntryInfo {
     pub party: Option<String>,
     /// Lower-cased text for search: description, accounts, vendor, amount.
     pub haystack: String,
+}
+
+/// One fixed asset's trail through the journal and the entries.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AssetTrail {
+    /// Depreciation the books carry, by month ("YYYY-MM"): the entry and
+    /// its amount, from `asset.depreciation_posted`.
+    pub depreciation: BTreeMap<String, (EntryId, Decimal)>,
+    /// The disposal entry, from `asset.disposed`.
+    pub disposal_entry: Option<EntryId>,
+    /// The entry that put it on the books, when one can be told: posted,
+    /// debiting its cost account exactly its cost, dated its in-service
+    /// date (else the nearest such entry within 31 days), and not already
+    /// claimed by an earlier asset.
+    pub purchase_entry: Option<EntryId>,
+    /// Indexes into [`Books::journal`] of every `asset.*` event about it.
+    pub events: Vec<usize>,
+}
+
+impl AssetTrail {
+    /// Every entry that touches the asset: purchase, depreciation (by
+    /// month), disposal.
+    pub fn entries(&self) -> Vec<EntryId> {
+        let mut out: Vec<EntryId> = self.purchase_entry.into_iter().collect();
+        out.extend(self.depreciation.values().map(|(e, _)| *e));
+        out.extend(self.disposal_entry);
+        out
+    }
+
+    /// Depreciation the books carry for it, summed exactly.
+    pub fn posted(&self) -> Decimal {
+        self.depreciation.values().map(|(_, a)| *a).sum()
+    }
+}
+
+/// Depreciation due and not yet in the books.
+///
+/// ```text
+/// GOAL: say when monthly depreciation hasn't been run, without crying
+///       wolf over the month still under way.
+/// SOURCE: docs/spec/rules.md B-15 (monthly straight-line depreciation);
+///         CONVENTION (a month's depreciation is posted when the month
+///         ends: ledger-store dates it the month's last day).
+/// INVARIANTS:
+///   1. through is as_of when as_of is a month's last day, else the last
+///      day of the month before as_of's.
+///   2. amount is fixed_asset_register(ledger, through)
+///      .unposted_depreciation(), exactly.
+///   3. periods: the months ("YYYY-MM", ascending, distinct) that some
+///      asset held on `through` has in its schedule through `through`
+///      and no depreciation posted for.
+/// ```
+#[derive(Clone, Debug, PartialEq)]
+pub struct DepreciationDue {
+    pub through: NaiveDate,
+    pub amount: Decimal,
+    pub periods: Vec<String>,
 }
 
 /// Something the books need, with how to fix it.
@@ -90,6 +150,10 @@ pub struct Books {
     pub attention: Vec<Attention>,
     pub kpis: Kpis,
     pub integrity: Integrity,
+    /// Each registered asset's trail, by asset id.
+    pub asset_trails: HashMap<AssetId, AssetTrail>,
+    /// The asset each depreciation, disposal, or purchase entry is about.
+    pub entry_assets: HashMap<EntryId, AssetId>,
 }
 
 /// Whether what's on disk is what the journal says.
@@ -319,6 +383,13 @@ impl Books {
         }
         entries.sort_by(|a, b| b.date.cmp(&a.date).then(b.id.cmp(&a.id)));
         let entry_index = entries.iter().enumerate().map(|(i, e)| (e.id, i)).collect();
+        let asset_trails = asset_trails(&ledger, &journal);
+        let mut entry_assets = HashMap::new();
+        for (&a, t) in &asset_trails {
+            for e in t.entries() {
+                entry_assets.insert(e, a);
+            }
+        }
         let mut books = Books {
             ledger,
             settings,
@@ -340,6 +411,8 @@ impl Books {
             attention: Vec::new(),
             kpis: Kpis::default(),
             integrity,
+            asset_trails,
+            entry_assets,
         };
         books.kpis = books.compute_kpis();
         books.attention = crate::attention::find(&books);
@@ -483,6 +556,61 @@ impl Books {
         }
     }
 
+    /// The fixed asset register on `as_of`, exactly as ledger-core
+    /// computes it.
+    pub fn asset_register(&self, as_of: NaiveDate) -> AssetRegister {
+        fixed_asset_register(&self.ledger, as_of)
+    }
+
+    /// An asset's trail (empty for an unknown asset).
+    pub fn asset_trail(&self, id: AssetId) -> AssetTrail {
+        self.asset_trails.get(&id).cloned().unwrap_or_default()
+    }
+
+    /// "WL-0001 MacBook Pro" (or just the description, untagged).
+    pub fn asset_label(&self, id: AssetId) -> String {
+        match self.ledger.get_asset(id) {
+            Some(a) => match &a.tag {
+                Some(t) => format!("{t} {}", a.description),
+                None => a.description.clone(),
+            },
+            None => format!("asset {id}"),
+        }
+    }
+
+    /// Depreciation due through the last finished month on or before
+    /// `as_of` and not yet posted (see [`DepreciationDue`]).
+    pub fn depreciation_due(&self, as_of: NaiveDate) -> DepreciationDue {
+        let through = if as_of.succ_opt().is_some_and(|d| d.day() == 1) {
+            as_of
+        } else {
+            NaiveDate::from_ymd_opt(as_of.year(), as_of.month(), 1).expect("valid")
+                - chrono::Days::new(1)
+        };
+        let amount = self.asset_register(through).unposted_depreciation();
+        let mut periods = std::collections::BTreeSet::new();
+        for a in self
+            .ledger
+            .registered_assets()
+            .filter(|a| a.purchase_date <= through)
+        {
+            if matches!(a.status, AssetStatus::Disposed { date, .. } if date <= through) {
+                continue;
+            }
+            let posted = self.asset_trails.get(&a.id);
+            for l in ledger_core::depreciation_schedule(a, through) {
+                if !posted.is_some_and(|t| t.depreciation.contains_key(&l.period)) {
+                    periods.insert(l.period);
+                }
+            }
+        }
+        DepreciationDue {
+            through,
+            amount,
+            periods: periods.into_iter().collect(),
+        }
+    }
+
     /// Blob store path for an attachment.
     pub fn blob_root(&self) -> PathBuf {
         self.data_dir.join("blobs")
@@ -515,6 +643,92 @@ fn parties(ledger: &Ledger, journal: &[JournalLine]) -> HashMap<EntryId, String>
         };
         if let Some(n) = name {
             out.insert(entry, n);
+        }
+    }
+    out
+}
+
+/// Every registered asset's trail, from the journal (depreciation,
+/// disposal, its own events) and the entries (the purchase).
+fn asset_trails(ledger: &Ledger, journal: &[JournalLine]) -> HashMap<AssetId, AssetTrail> {
+    let mut out: HashMap<AssetId, AssetTrail> = ledger
+        .registered_assets()
+        .map(|a| (a.id, AssetTrail::default()))
+        .collect();
+    let u = |p: &Value, k: &str| p.get(k).and_then(|v| v.as_u64());
+    for (i, line) in journal.iter().enumerate() {
+        let p = &line.payload;
+        let asset = match line.line_type.as_str() {
+            "asset.registered" => u(p, "id"),
+            t if t.starts_with("asset.") => u(p, "asset_id"),
+            _ => None,
+        };
+        let Some(t) = asset.and_then(|a| out.get_mut(&a)) else {
+            continue;
+        };
+        t.events.push(i);
+        match line.line_type.as_str() {
+            "asset.depreciation_posted" => {
+                if let (Some(period), Some(entry), Some(amount)) = (
+                    p.get("period").and_then(|v| v.as_str()),
+                    u(p, "entry_id"),
+                    p.get("amount")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse::<Decimal>().ok()),
+                ) {
+                    t.depreciation.insert(period.to_string(), (entry, amount));
+                }
+            }
+            "asset.disposed" => t.disposal_entry = u(p, "entry_id"),
+            _ => {}
+        }
+    }
+    // The purchase: an entry that debits the cost account exactly the cost,
+    // on the in-service date or as near it as can be (within 31 days).
+    // A linked acquisition is the purchase; otherwise match it.
+    for a in ledger.registered_assets() {
+        if let (Some(id), Some(t)) = (a.acquired_by, out.get_mut(&a.id)) {
+            t.purchase_entry = Some(id);
+        }
+    }
+    let reversed: HashSet<EntryId> = (1..ledger.next_entry_id())
+        .filter_map(|id| ledger.get_entry(id).and_then(|e| e.reversal_of()))
+        .collect();
+    let mut claimed: HashSet<EntryId> = out.values().flat_map(|t| t.entries()).collect();
+    for a in ledger
+        .registered_assets()
+        .filter(|a| a.acquired_by.is_none())
+    {
+        let mut best: Option<(i64, EntryId)> = None;
+        for id in 1..ledger.next_entry_id() {
+            let Some(e) = ledger.get_entry(id) else {
+                continue;
+            };
+            if e.status() != EntryStatus::Posted
+                || e.reversal_of().is_some()
+                || reversed.contains(&id)
+                || claimed.contains(&id)
+            {
+                continue;
+            }
+            let days = (e.date() - a.purchase_date).num_days().abs();
+            if days > 31 {
+                continue;
+            }
+            let buys = e.lines().iter().any(|l| {
+                l.account == a.cost_account
+                    && l.side == Side::Debit
+                    && l.amount.amount == a.cost.amount
+            });
+            if buys && best.is_none_or(|(d, _)| days < d) {
+                best = Some((days, id));
+            }
+        }
+        if let Some((_, id)) = best {
+            claimed.insert(id);
+            if let Some(t) = out.get_mut(&a.id) {
+                t.purchase_entry = Some(id);
+            }
         }
     }
     out

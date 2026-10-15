@@ -417,3 +417,67 @@ fn disposal_on_the_purchase_date_is_allowed() {
         Err(ledger_core::LedgerError::DisposalBeforePurchase(_))
     ));
 }
+
+/// An asset links to the posted entry that acquired it, if that entry
+/// debits its cost account and isn't a reversal or reversed; a correction
+/// (reverse, repost) links the replacement. Refusals change nothing.
+#[test]
+fn acquisition_links_only_to_a_live_entry_debiting_the_cost_account() {
+    use ledger_core::{LedgerError, Side};
+    let (mut ledger, cost, accum, expense) = test_ledger();
+    let capital = ledger
+        .add_account("3000", "Capital", AccountType::Equity, None, false)
+        .unwrap();
+    let id = van_asset(&mut ledger, 1650, cost, accum, expense);
+    let post = |l: &mut Ledger, dr: u64, cr: u64| {
+        let e = l.create_entry(date(2026, 1, 15), "contribution");
+        l.add_line(e, dr, Side::Debit, usd("1650")).unwrap();
+        l.add_line(e, cr, Side::Credit, usd("1650")).unwrap();
+        l.post_entry(e).unwrap();
+        e
+    };
+    let original = post(&mut ledger, cost, capital);
+    let wrong = post(&mut ledger, expense, capital);
+    let draft = ledger.create_entry(date(2026, 1, 15), "draft");
+    let refused = |l: &mut Ledger, entry: u64| {
+        let before = l.clone();
+        let err = l.set_asset_acquisition(id, entry).unwrap_err();
+        assert_eq!(*l, before);
+        err
+    };
+    assert!(matches!(
+        refused(&mut ledger, wrong),
+        LedgerError::AcquisitionEntryMismatch { .. }
+    ));
+    assert!(matches!(
+        refused(&mut ledger, draft),
+        LedgerError::AcquisitionEntryMismatch { .. }
+    ));
+    assert!(matches!(
+        refused(&mut ledger, 999),
+        LedgerError::UnknownEntry(999)
+    ));
+    assert!(matches!(
+        ledger.set_asset_acquisition(99, original),
+        Err(LedgerError::UnknownAsset(99))
+    ));
+    ledger.set_asset_acquisition(id, original).unwrap();
+    assert_eq!(ledger.get_asset(id).unwrap().acquired_by, Some(original));
+
+    // Corrected: reversed, reposted. Neither the original nor its
+    // reversal can be the link; the replacement can.
+    let reversal = ledger
+        .reverse_entry(original, date(2026, 1, 16), "joint, not one member's")
+        .unwrap();
+    let replacement = post(&mut ledger, cost, capital);
+    assert!(matches!(
+        refused(&mut ledger, original),
+        LedgerError::AcquisitionEntryMismatch { .. }
+    ));
+    assert!(matches!(
+        refused(&mut ledger, reversal),
+        LedgerError::AcquisitionEntryMismatch { .. }
+    ));
+    ledger.set_asset_acquisition(id, replacement).unwrap();
+    assert_eq!(ledger.get_asset(id).unwrap().acquired_by, Some(replacement));
+}

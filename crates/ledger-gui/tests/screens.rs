@@ -45,6 +45,12 @@ fn screenshots() {
     let first_cash = loaded.cash_accounts.first().copied().unwrap_or(1);
     let last_doc = loaded.attachments.last().map(|a| a.id).unwrap_or(1);
     let last_event = loaded.seq();
+    let first_asset = loaded
+        .ledger
+        .registered_assets()
+        .next()
+        .map(|a| a.id)
+        .unwrap_or(1);
     drop(loaded);
     let routes: Vec<(&str, Route)> = vec![
         ("overview", Route::Overview),
@@ -68,8 +74,14 @@ fn screenshots() {
         ("tax", Route::Reports(ReportKind::TaxSummary)),
         ("v1099", Route::Reports(ReportKind::Vendor1099)),
         ("ar", Route::Reports(ReportKind::ArAging)),
+        (
+            "asset-register",
+            Route::Reports(ReportKind::FixedAssetRegister),
+        ),
         ("accounts", Route::Accounts),
         ("account", Route::Account(first_cash)),
+        ("assets", Route::Assets),
+        ("asset", Route::Asset(first_asset)),
         ("document", Route::Document(last_doc)),
         ("event", Route::JournalEvent(last_event)),
         ("documents", Route::Documents),

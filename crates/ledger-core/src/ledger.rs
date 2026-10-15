@@ -258,6 +258,9 @@ pub struct Ledger {
     /// Control roles assigned an account ([`Ledger::assign_role`]), by
     /// [`ControlAccount::key`]. A role not here uses its code.
     roles: std::collections::BTreeMap<&'static str, AccountId>,
+    /// Every asset tag ever held ([`assets::tag_key`] → the asset that
+    /// held it): a tag never moves to another asset.
+    asset_tags: std::collections::BTreeMap<String, AssetId>,
 }
 
 impl Ledger {
@@ -296,6 +299,7 @@ impl Ledger {
             invoice_payments: HashMap::new(),
             bill_payments: HashMap::new(),
             roles: std::collections::BTreeMap::new(),
+            asset_tags: std::collections::BTreeMap::new(),
         }
     }
 
@@ -588,6 +592,8 @@ impl Ledger {
                 self.invoice_payments == other.invoice_payments,
             ),
             ("bill_payments", self.bill_payments == other.bill_payments),
+            ("roles", self.roles == other.roles),
+            ("asset_tags", self.asset_tags == other.asset_tags),
         ]
         .into_iter()
         .filter(|(_, same)| !same)
@@ -1450,6 +1456,9 @@ impl Ledger {
                 accum_depr_account: new.accum_depr_account,
                 expense_account: new.expense_account,
                 status: AssetStatus::Active,
+                tag: None,
+                serial: None,
+                acquired_by: None,
             },
         );
         Ok(id)
@@ -1465,6 +1474,168 @@ impl Ledger {
         let mut ids: Vec<AssetId> = self.assets.keys().copied().collect();
         ids.sort_unstable();
         ids.into_iter().filter_map(|id| self.assets.get(&id))
+    }
+
+    /// Give an asset a tag (or a new one): the label on the thing itself.
+    ///
+    /// ```text
+    /// GOAL: find an asset in the books from the label on it, and the
+    ///       label from the books.
+    /// SOURCE: DECISION (Stephen, 2026-10-15).
+    /// INVARIANTS:
+    ///   1. Tags are unique among all assets, ignoring case.
+    ///   2. A tag is never reused by another asset, even after the asset
+    ///      that held it was retagged or disposed: an old label never
+    ///      points at the wrong thing. The same asset may take back a tag
+    ///      it held.
+    ///   3. A refusal MUST leave the books unchanged.
+    /// SCENARIOS:
+    ///   1. IF the asset is unknown: SHOULD refuse.
+    ///   2. IF the tag's form is wrong (assets::check_asset_tag): SHOULD
+    ///      refuse with InvalidAssetTag.
+    ///   3. IF another asset holds or held the tag: SHOULD refuse with
+    ///      AssetTagTaken.
+    ///   4. IF the asset already has that tag: SHOULD accept (no change).
+    /// ```
+    pub fn set_asset_tag(&mut self, id: AssetId, tag: &str) -> Result<(), LedgerError> {
+        self.check_asset_tag_for(Some(id), tag)?;
+        self.asset_tags.insert(assets::tag_key(tag), id);
+        self.assets.get_mut(&id).expect("checked").tag = Some(tag.to_string());
+        Ok(())
+    }
+
+    /// Whether `tag` can go on asset `id` (`None`: on an asset not yet
+    /// registered), for stores that journal before mutating.
+    pub fn check_asset_tag_for(&self, id: Option<AssetId>, tag: &str) -> Result<(), LedgerError> {
+        if let Some(id) = id
+            && !self.assets.contains_key(&id)
+        {
+            return Err(LedgerError::UnknownAsset(id));
+        }
+        assets::check_asset_tag(tag).map_err(|why| LedgerError::InvalidAssetTag {
+            tag: tag.to_string(),
+            why,
+        })?;
+        match self.asset_tags.get(&assets::tag_key(tag)) {
+            Some(&holder) if Some(holder) != id => Err(LedgerError::AssetTagTaken {
+                tag: tag.to_string(),
+                asset: holder,
+            }),
+            _ => Ok(()),
+        }
+    }
+
+    /// Record (or, with `None`, clear) an asset's serial number.
+    ///
+    /// ```text
+    /// GOAL: keep the manufacturer's serial with the asset, for warranty,
+    ///       insurance, and proving which thing the books mean.
+    /// SOURCE: DECISION (Stephen, 2026-10-15).
+    /// SCENARIOS:
+    ///   1. IF the asset is unknown, or the serial's form is wrong
+    ///      (assets::check_serial): SHOULD refuse, changing nothing.
+    /// ```
+    pub fn set_asset_serial(
+        &mut self,
+        id: AssetId,
+        serial: Option<&str>,
+    ) -> Result<(), LedgerError> {
+        self.check_asset_serial(id, serial)?;
+        self.assets.get_mut(&id).expect("checked").serial = serial.map(str::to_string);
+        Ok(())
+    }
+
+    /// The validation behind [`Self::set_asset_serial`].
+    pub fn check_asset_serial(&self, id: AssetId, serial: Option<&str>) -> Result<(), LedgerError> {
+        if !self.assets.contains_key(&id) {
+            return Err(LedgerError::UnknownAsset(id));
+        }
+        if let Some(s) = serial {
+            assets::check_serial(s).map_err(LedgerError::InvalidSerial)?;
+        }
+        Ok(())
+    }
+
+    /// Link an asset to the posted entry that put it on the books: its
+    /// purchase, or a member's contribution of it.
+    ///
+    /// ```text
+    /// GOAL: from an asset, its source document and capital entry; from
+    ///       the entry, the asset.
+    /// SOURCE: DECISION (Stephen, 2026-10-15).
+    /// INVARIANTS:
+    ///   1. The linked entry is posted, is not a reversal, has not been
+    ///      reversed, and debits the asset's cost account.
+    ///   2. A refusal MUST leave the books unchanged.
+    /// SCENARIOS:
+    ///   1. IF the asset or entry is unknown, or the entry fails 1: SHOULD
+    ///      refuse with AcquisitionEntryMismatch (or UnknownAsset /
+    ///      UnknownEntry).
+    ///   2. IF a later correction reverses the linked entry: link the
+    ///      replacement (a reversed link stays as history in the journal).
+    /// ```
+    pub fn set_asset_acquisition(
+        &mut self,
+        id: AssetId,
+        entry: EntryId,
+    ) -> Result<(), LedgerError> {
+        self.check_asset_acquisition(id, entry)?;
+        self.assets.get_mut(&id).expect("checked").acquired_by = Some(entry);
+        Ok(())
+    }
+
+    /// The validation behind [`Self::set_asset_acquisition`].
+    pub fn check_asset_acquisition(&self, id: AssetId, entry: EntryId) -> Result<(), LedgerError> {
+        let asset = self.assets.get(&id).ok_or(LedgerError::UnknownAsset(id))?;
+        let e = self
+            .entries
+            .get(&entry)
+            .ok_or(LedgerError::UnknownEntry(entry))?;
+        let why = if e.status() != crate::EntryStatus::Posted {
+            Some("it isn't posted")
+        } else if e.reversal_of().is_some() {
+            Some("it is a reversal")
+        } else if self
+            .entries
+            .values()
+            .any(|x| x.reversal_of() == Some(entry))
+        {
+            Some("it has been reversed")
+        } else if !e
+            .lines()
+            .iter()
+            .any(|l| l.account == asset.cost_account && l.side == Side::Debit)
+        {
+            Some("it doesn't debit the asset's cost account")
+        } else {
+            None
+        };
+        match why {
+            Some(why) => Err(LedgerError::AcquisitionEntryMismatch {
+                asset: id,
+                entry,
+                why: why.to_string(),
+            }),
+            None => Ok(()),
+        }
+    }
+
+    /// The asset whose current tag is `tag`, ignoring case.
+    pub fn asset_by_tag(&self, tag: &str) -> Option<&Asset> {
+        let id = self.asset_tags.get(&assets::tag_key(tag))?;
+        self.assets
+            .get(id)
+            .filter(|a| a.tag.as_deref().map(assets::tag_key) == Some(assets::tag_key(tag)))
+    }
+
+    /// The first free generated tag, `PREFIX-0001`, `PREFIX-0002`, ...:
+    /// the lowest number no asset holds or held under that prefix.
+    /// Numbers past 9999 widen.
+    pub fn next_asset_tag(&self, prefix: &str) -> String {
+        (1u64..)
+            .map(|n| format!("{prefix}-{n:04}"))
+            .find(|t| !self.asset_tags.contains_key(&assets::tag_key(t)))
+            .expect("some number is free")
     }
 
     /// Mark an asset disposed. The disposal *entry* is posted through the

@@ -128,6 +128,12 @@ fn the_viewer_never_writes_into_the_books() {
     let cash = books.cash_accounts[0];
     let doc = books.attachments.last().map(|a| a.id).unwrap();
     let event = books.seq();
+    let asset = books
+        .ledger
+        .registered_assets()
+        .next()
+        .map(|a| a.id)
+        .unwrap();
     drop(books);
 
     // Follow live for a moment.
@@ -161,8 +167,13 @@ fn the_viewer_never_writes_into_the_books() {
         Route::Reports(ReportKind::TaxSummary),
         Route::Reports(ReportKind::Vendor1099),
         Route::Reports(ReportKind::ArAging),
+        Route::Reports(ReportKind::ApAging),
+        Route::Reports(ReportKind::MembersEquity),
+        Route::Reports(ReportKind::FixedAssetRegister),
         Route::Accounts,
         Route::Account(cash),
+        Route::Assets,
+        Route::Asset(asset),
         Route::Document(doc),
         Route::JournalEvent(event),
         Route::Documents,

@@ -85,6 +85,19 @@ pub fn detail(ui: &mut Ui, b: &Books, e: &EntryInfo, shell: &mut Shell<'_>) {
                     shell.go(Route::Entry(r));
                 }
             }
+            if let Some(&asset) = b.entry_assets.get(&e.id) {
+                ui.add_space(4.0);
+                if widgets::link(
+                    ui,
+                    RichText::new(format!("{} {}", icon::PACKAGE, b.asset_label(asset)))
+                        .color(p.accent),
+                )
+                .on_hover_text("Open this fixed asset")
+                .clicked()
+                {
+                    shell.go(Route::Asset(asset));
+                }
+            }
             ui.add_space(16.0);
 
             // Facts.

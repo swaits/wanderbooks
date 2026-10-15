@@ -18,6 +18,7 @@ fn show_requests_navigate_the_viewer() {
     };
     let books = data::load_once(&source).unwrap();
     let rent = books.ledger.chart().find_by_code("6200").unwrap().id;
+    let laptop = books.ledger.asset_by_tag("js-0001").unwrap().id;
     let mut h = Harness::builder()
         .with_size(egui::vec2(1440.0, 920.0))
         .build_eframe(|cc| App::with_books(&cc.egui_ctx, books, true, Route::Overview));
@@ -61,6 +62,44 @@ fn show_requests_navigate_the_viewer() {
     h.run_steps(2);
     assert_eq!(h.state_mut().route(), &Route::Transactions);
     assert_eq!(h.state_mut().state_mut().transactions.query, "adobe");
+
+    // "Show me the asset register", "the laptop", "the register at June 30".
+    h.state_mut().show(ViewerTarget::Page {
+        page: "assets".into(),
+    });
+    h.run_steps(2);
+    assert_eq!(h.state_mut().route(), &Route::Assets);
+    h.state_mut().show(ViewerTarget::Asset { asset_id: laptop });
+    h.run_steps(2);
+    assert_eq!(h.state_mut().route(), &Route::Asset(laptop));
+    h.state_mut().show(ViewerTarget::Report {
+        report: "fixed_asset_register".into(),
+        start: None,
+        end: Some("2026-06-30".into()),
+        columns: None,
+        compare: None,
+    });
+    h.run_steps(2);
+    assert_eq!(
+        h.state_mut().route(),
+        &Route::Reports(ReportKind::FixedAssetRegister)
+    );
+    assert!(matches!(
+        h.state_mut().state_mut().reports.range,
+        ledger_gui::pages::reports::Range::Custom(_, e)
+            if e == chrono::NaiveDate::from_ymd_opt(2026, 6, 30).unwrap()
+    ));
+    // An unknown asset is ignored.
+    h.state_mut().show(ViewerTarget::Asset { asset_id: 999 });
+    h.run_steps(1);
+    assert_eq!(
+        h.state_mut().route(),
+        &Route::Reports(ReportKind::FixedAssetRegister)
+    );
+    h.state_mut().show(ViewerTarget::Search {
+        query: "adobe".into(),
+    });
+    h.run_steps(2);
 
     // Unknown accounts are ignored, not crashes.
     h.state_mut().show(ViewerTarget::Account {

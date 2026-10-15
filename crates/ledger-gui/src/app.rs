@@ -21,6 +21,7 @@ pub struct PageState {
     pub transactions: pages::transactions::State,
     pub reports: pages::reports::State,
     pub accounts: pages::accounts::State,
+    pub assets: pages::assets::State,
     pub documents: pages::documents::State,
     pub journal: pages::journal::State,
 }
@@ -121,6 +122,7 @@ impl App {
                 "transactions" => Route::Transactions,
                 "reports" => Route::Reports(ReportKind::ProfitAndLoss),
                 "accounts" => Route::Accounts,
+                "assets" => Route::Assets,
                 "documents" => Route::Documents,
                 "company" => Route::Company,
                 "journal" => Route::Journal,
@@ -170,6 +172,7 @@ impl App {
                     "vendor_1099" => ReportKind::Vendor1099,
                     "ar_aging" => ReportKind::ArAging,
                     "ap_aging" => ReportKind::ApAging,
+                    "fixed_asset_register" => ReportKind::FixedAssetRegister,
                     _ => return,
                 };
                 if let (s, e) = (date(&start), date(&end))
@@ -182,6 +185,12 @@ impl App {
                 Route::Reports(kind)
             }
             T::Document { attachment_id } => Route::Document(attachment_id),
+            T::Asset { asset_id } => {
+                if b.ledger.get_asset(asset_id).is_none() {
+                    return;
+                }
+                Route::Asset(asset_id)
+            }
             T::Search { query } => {
                 let st = &mut self.state.transactions;
                 st.query = query;

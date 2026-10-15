@@ -68,6 +68,83 @@ pub struct Asset {
     pub expense_account: AccountId,
     /// Lifecycle state.
     pub status: AssetStatus,
+    /// The label on the thing itself, e.g. "WL-0001" (see
+    /// [`check_asset_tag`]); `None` until one is set.
+    #[serde(default)]
+    pub tag: Option<String>,
+    /// The manufacturer's serial number, if recorded.
+    #[serde(default)]
+    pub serial: Option<String>,
+    /// The posted entry that put it on the books (its purchase, or a
+    /// member's contribution of it), if linked
+    /// ([`crate::Ledger::set_asset_acquisition`]).
+    #[serde(default)]
+    pub acquired_by: Option<crate::EntryId>,
+}
+
+/// The longest asset tag.
+pub const MAX_ASSET_TAG_LEN: usize = 32;
+/// The longest serial number.
+pub const MAX_SERIAL_LEN: usize = 64;
+
+/// Check an asset tag's form: 1 to [`MAX_ASSET_TAG_LEN`] characters, each
+/// an ASCII letter or digit or one of `-` `_` `.` `/`, at least one of
+/// them a letter or digit. Returns why not.
+///
+/// ```text
+/// GOAL: a tag prints on a small label, reads aloud, scans from a QR code,
+///       and types back in exactly.
+/// SOURCE: DECISION (Stephen, 2026-10-15): generated tags ("WL-0001") or
+///         the human's own.
+/// INVARIANTS:
+///   1. Accepted tags contain no spaces, no control or non-ASCII
+///      characters, and at least one letter or digit.
+/// ```
+pub fn check_asset_tag(tag: &str) -> Result<(), String> {
+    if tag.is_empty() {
+        return Err("a tag can't be empty".into());
+    }
+    if tag.len() > MAX_ASSET_TAG_LEN {
+        return Err(format!("a tag is at most {MAX_ASSET_TAG_LEN} characters"));
+    }
+    if let Some(c) = tag
+        .chars()
+        .find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/')))
+    {
+        return Err(format!(
+            "{c:?} can't be in a tag (letters, digits, - _ . / only)"
+        ));
+    }
+    if !tag.chars().any(|c| c.is_ascii_alphanumeric()) {
+        return Err("a tag needs a letter or digit".into());
+    }
+    Ok(())
+}
+
+/// Check a serial number's form: 1 to [`MAX_SERIAL_LEN`] characters, no
+/// control characters, no leading or trailing space. Returns why not.
+pub fn check_serial(serial: &str) -> Result<(), String> {
+    if serial.trim().is_empty() {
+        return Err("a serial number can't be empty".into());
+    }
+    if serial.chars().count() > MAX_SERIAL_LEN {
+        return Err(format!(
+            "a serial number is at most {MAX_SERIAL_LEN} characters"
+        ));
+    }
+    if serial.trim() != serial {
+        return Err("a serial number can't start or end with a space".into());
+    }
+    if serial.chars().any(char::is_control) {
+        return Err("a serial number can't contain control characters".into());
+    }
+    Ok(())
+}
+
+/// The key tags are compared by: tags are unique ignoring case
+/// ("wl-0001" is "WL-0001").
+pub fn tag_key(tag: &str) -> String {
+    tag.to_ascii_uppercase()
 }
 
 /// Parameters for registering an asset. A struct (not eight arguments)

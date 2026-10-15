@@ -156,20 +156,40 @@ CPA. Partial first/final months prorated by days; the final month trues up
 so the lifetime total is exactly (cost − salvage).
 
 - `books.register_asset { description, purchase_date, cost, salvage_value?,
-  useful_life_months, cost_account, accum_depr_account, expense_account }`
-  → `{ asset_id }`. Accounts resolved by id or code.
-- `books.asset_schedule { asset_id }`
+  useful_life_months, cost_account, accum_depr_account, expense_account,
+  tag?, serial? }` → `{ asset_id, tag }`. Accounts resolved by id or code.
+  Without `tag`, the next free `PREFIX-0001` (`[books] asset_tag_prefix`,
+  else the company name's initials without LLC/Inc; "FA" when none).
+- `books.label_asset { asset, tag?, serial?, clear_serial? }` → `{ asset_id,
+  tag, serial }`: set or change the tag (unique ignoring case, never reused
+  by another asset even after a retag or disposal) or the manufacturer's
+  serial. `asset` is the id or current tag. Journaled as `asset.tagged`,
+  `asset.serial_set`.
+- `books.asset_labels { assets?, skip? }` → `{ file_name, content_base64,
+  tags }`: an Avery 5160/8160 label sheet (PDF): company, tag, QR code of
+  the tag, description, serial. Default: every active tagged asset; `skip`
+  reuses a partly used sheet.
+- `books.asset_schedule { asset_id | tag }`
   → `{ status, schedule: [{ period, amount, accumulated, book_value }] }`.
 - `books.list_assets {}` → assets with status and current book values.
 - `books.run_depreciation { period: "YYYY-MM", asset_id? }`
   → per-asset `{ entry_id, amount, already_posted }`, plus `skipped` for
   assets outside their useful life. Idempotent per asset and period.
-- `books.dispose_asset { asset_id, date, proceeds, proceeds_account,
+- `books.dispose_asset { asset_id | tag, date, proceeds, proceeds_account,
   gain_loss_account, confirmed?, receipt_attachment_ids? }` → without
   confirmation: `{ status: "preview", ... }` and posts nothing; with
   `confirmed: true`: auto-posts missing final-period depreciation, then
   posts the balanced disposal entry. Subject to receipt policy (bill of
   sale); monthly depreciation is exempt as an allocation.
+- `books.export { report: "fixed_asset_register", format: json | csv,
+  as_of? }`: every asset registered by the date (tag, serial, cost,
+  depreciation by schedule, book value, disposal), totals, and the
+  general ledger's balances of the assets' cost and accumulated
+  depreciation accounts, with `unposted_depreciation` and
+  `unregistered_cost` (zero when register and books agree;
+  `ledger_core::fixed_asset_register`).
+- `books.show { asset }` opens an asset in the viewer; `page: "assets"`
+  and `report: "fixed_asset_register"` open the register.
 
 ## Tools — schedules and recurring entries
 

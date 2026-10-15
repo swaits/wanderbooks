@@ -194,10 +194,18 @@ fn assets(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
         return;
     }
     let mut go = None;
-    widgets::titled_card(
+    let (register, _) = widgets::titled_card(
         ui,
         "Fixed assets",
-        |_| {},
+        |ui| {
+            widgets::link(
+                ui,
+                RichText::new(format!("Asset register {}", icon::ARROW_RIGHT))
+                    .font(theme::regular(12.5))
+                    .color(p.accent),
+            )
+            .clicked()
+        },
         |ui| {
             for a in &assets {
                 // What has actually been posted, so this ties to the balance
@@ -228,11 +236,11 @@ fn assets(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                 ui.horizontal_wrapped(|ui| {
                     if widgets::link(
                         ui,
-                        RichText::new(&a.description).font(theme::semibold(13.5)),
+                        RichText::new(b.asset_label(a.id)).font(theme::semibold(13.5)),
                     )
                     .clicked()
                     {
-                        go = Some(a.cost_account);
+                        go = Some(a.id);
                     }
                     ui.label(
                         RichText::new(format!(
@@ -271,7 +279,10 @@ fn assets(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
         },
     );
     if let Some(id) = go {
-        shell.go(Route::Account(id));
+        shell.go(Route::Asset(id));
+    }
+    if register {
+        shell.go(Route::Assets);
     }
     ui.add_space(16.0);
 }

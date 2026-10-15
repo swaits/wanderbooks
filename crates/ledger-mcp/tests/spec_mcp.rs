@@ -778,15 +778,29 @@ fn happy_path(name: &str) -> Mcp {
     m.ok("books.ap_aging", json!({"as_of": "2026-06-30"}));
 
     // Fixed assets.
-    let asset = m.ok(
+    let registered = m.ok(
         "books.register_asset",
         json!({"description": "Laptop", "purchase_date": "2026-01-10", "cost": "3000.00",
                "salvage_value": "0.00", "useful_life_months": 36, "cost_account": "1500",
                "accum_depr_account": "1510", "expense_account": "6500"}),
-    )["asset_id"]
-        .as_u64()
-        .unwrap();
+    );
+    assert_eq!(registered["tag"], "S-0001", "\"Spec Co\" without \"Co\": S");
+    let asset = registered["asset_id"].as_u64().unwrap();
     m.ok("books.asset_schedule", json!({"asset_id": asset}));
+    m.ok("books.asset_schedule", json!({"tag": "s-0001"}));
+    m.ok(
+        "books.label_asset",
+        json!({"asset": "S-0001", "tag": "LAPTOP-1", "serial": "SN 123"}),
+    );
+    m.ok("books.asset_labels", json!({}));
+    m.ok(
+        "books.asset_labels",
+        json!({"assets": ["LAPTOP-1"], "skip": 3}),
+    );
+    m.ok(
+        "books.export",
+        json!({"report": "fixed_asset_register", "format": "json", "as_of": "2026-03-31"}),
+    );
     m.ok("books.list_assets", json!({}));
     m.ok("books.run_depreciation", json!({"period": "2026-01"}));
     let dispose = json!({"asset_id": asset, "date": "2026-06-15", "proceeds": "1000.00",

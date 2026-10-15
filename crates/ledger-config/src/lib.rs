@@ -108,6 +108,58 @@ pub struct BooksSettings {
     /// statement treats as investing (loans the company makes, investments
     /// it buys: ASC 230-10-20). Registered fixed assets need not be listed.
     pub investing_accounts: Vec<String>,
+    /// `[books] asset_tag_prefix`: the prefix of generated asset tags
+    /// ("WL" for "WL-0001"). Unset: [`BooksSettings::asset_tag_prefix`]
+    /// derives it from the company name.
+    pub asset_tag_prefix: Option<String>,
+}
+
+impl BooksSettings {
+    /// The prefix generated asset tags use: `[books] asset_tag_prefix`, or
+    /// else the initials of the company name's words, legal-form words
+    /// (LLC, Inc, Corp, ...) left out, at most 8 ("Wanderland Labs LLC" →
+    /// "WL"); "FA" (fixed asset) when the name gives none.
+    pub fn asset_tag_prefix(&self) -> String {
+        if let Some(p) = &self.asset_tag_prefix {
+            return p.clone();
+        }
+        const FORMS: &[&str] = &[
+            "llc",
+            "l",
+            "c",
+            "inc",
+            "incorporated",
+            "corp",
+            "corporation",
+            "co",
+            "company",
+            "ltd",
+            "limited",
+            "llp",
+            "lp",
+            "pllc",
+            "pc",
+            "pa",
+            "the",
+            "and",
+            "of",
+        ];
+        let initials: String = self
+            .company
+            .name
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|w| !w.is_empty() && !FORMS.contains(&w.to_ascii_lowercase().as_str()))
+            .filter_map(|w| w.chars().next())
+            .filter(char::is_ascii_alphabetic)
+            .map(|c| c.to_ascii_uppercase())
+            .take(8)
+            .collect();
+        if initials.is_empty() || self.company.name == Company::default().name {
+            "FA".to_string()
+        } else {
+            initials
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -149,6 +201,7 @@ struct BooksSection {
     financing_accounts: Vec<String>,
     #[serde(default)]
     investing_accounts: Vec<String>,
+    asset_tag_prefix: Option<String>,
 }
 
 /// The return a federal tax classification files (docs/spec/sources/
@@ -444,6 +497,21 @@ pub fn parse(text: &str) -> Result<BooksSettings, String> {
         cash_accounts: codes("cash_accounts", raw.books.cash_accounts)?,
         financing_accounts: codes("financing_accounts", raw.books.financing_accounts)?,
         investing_accounts: codes("investing_accounts", raw.books.investing_accounts)?,
+        asset_tag_prefix: match raw.books.asset_tag_prefix {
+            Some(p)
+                if !p.is_empty()
+                    && p.len() <= 8
+                    && p.chars().all(|c| c.is_ascii_alphanumeric()) =>
+            {
+                Some(p)
+            }
+            Some(p) => {
+                return Err(format!(
+                    "[books] asset_tag_prefix {p:?}: 1 to 8 letters or digits"
+                ));
+            }
+            None => None,
+        },
     })
 }
 

@@ -47,6 +47,20 @@ pub struct Settings {
     pub company: Company,
     /// `[books]` cash flow roles.
     pub roles: CashRoles,
+    /// The prefix of generated asset tags (`[books] asset_tag_prefix`, or
+    /// the company's initials).
+    pub asset_tag_prefix: String,
+}
+
+impl Settings {
+    /// The prefix for generated asset tags ("FA" when none is set).
+    pub fn tag_prefix(&self) -> &str {
+        if self.asset_tag_prefix.is_empty() {
+            "FA"
+        } else {
+            &self.asset_tag_prefix
+        }
+    }
 }
 
 /// Where the settings come from.
@@ -81,6 +95,7 @@ impl Source {
         };
         let policy = ledger_config::effective_receipt_policy(&self.config_json, &books)?;
         Ok(Settings {
+            asset_tag_prefix: books.asset_tag_prefix(),
             policy,
             roles: CashRoles {
                 cash: books.cash_accounts,

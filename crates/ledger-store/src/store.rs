@@ -711,6 +711,51 @@ impl Store {
         Ok(live)
     }
 
+    /// Give an asset a tag (see `Ledger::set_asset_tag`). Journaled as
+    /// `asset.tagged`, with the tag it had.
+    pub fn set_asset_tag(&mut self, id: AssetId, tag: &str) -> Result<(), StoreError> {
+        self.ledger.check_asset_tag_for(Some(id), tag)?;
+        let previous = self.ledger.get_asset(id).and_then(|a| a.tag.clone());
+        let line = self.append_journal(
+            "asset.tagged",
+            json!({"asset_id": id, "tag": tag, "previous_tag": previous}),
+        )?;
+        self.ledger.set_asset_tag(id, tag)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
+    /// Link an asset to the entry that put it on the books (see
+    /// `Ledger::set_asset_acquisition`). Journaled as
+    /// `asset.acquisition_linked`.
+    pub fn set_asset_acquisition(&mut self, id: AssetId, entry: EntryId) -> Result<(), StoreError> {
+        self.ledger.check_asset_acquisition(id, entry)?;
+        let line = self.append_journal(
+            "asset.acquisition_linked",
+            json!({"asset_id": id, "entry_id": entry}),
+        )?;
+        self.ledger.set_asset_acquisition(id, entry)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
+    /// Record or clear an asset's serial number (see
+    /// `Ledger::set_asset_serial`). Journaled as `asset.serial_set`.
+    pub fn set_asset_serial(
+        &mut self,
+        id: AssetId,
+        serial: Option<&str>,
+    ) -> Result<(), StoreError> {
+        self.ledger.check_asset_serial(id, serial)?;
+        let line = self.append_journal(
+            "asset.serial_set",
+            json!({"asset_id": id, "serial": serial}),
+        )?;
+        self.ledger.set_asset_serial(id, serial)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
     /// Was depreciation already posted for this asset and period?
     fn depreciation_posted_entry(
         &self,
@@ -2812,6 +2857,32 @@ impl Store {
                 )?;
             }
         }
+        // Tags in the order they were given (a retag keeps the old tag
+        // reserved), then serial numbers.
+        let mut tstmt = self
+            .conn
+            .prepare("SELECT asset_id, tag FROM asset_tags_log ORDER BY seq")?;
+        let tags = tstmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+        for t in tags {
+            let (id, tag) = t?;
+            ledger.set_asset_tag(id as u64, &tag)?;
+        }
+        let mut sstmt = self
+            .conn
+            .prepare("SELECT id, serial FROM assets WHERE serial IS NOT NULL ORDER BY id")?;
+        let serials = sstmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+        for row in serials {
+            let (id, serial) = row?;
+            ledger.set_asset_serial(id as u64, Some(&serial))?;
+        }
+        let mut qstmt = self.conn.prepare(
+            "SELECT id, acquisition_entry FROM assets WHERE acquisition_entry IS NOT NULL ORDER BY id",
+        )?;
+        let links = qstmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
+        for row in links {
+            let (id, entry) = row?;
+            ledger.set_asset_acquisition(id as u64, entry as u64)?;
+        }
         // Payroll runs: id order; lines in insertion order. Amounts are
         // TEXT in SQLite, so they parse here with exact Decimal math.
         let parse_payroll_amount = |s: String| {
@@ -3356,6 +3427,22 @@ pub(crate) fn replay_line_into_ledger(
                 )));
             }
         }
+        "asset.tagged" => {
+            ledger.set_asset_tag(get_u64(p, "asset_id")?, get_str(p, "tag")?)?;
+        }
+        "asset.acquisition_linked" => {
+            ledger.set_asset_acquisition(get_u64(p, "asset_id")?, get_u64(p, "entry_id")?)?;
+        }
+        "asset.serial_set" => {
+            let serial =
+                match p.get("serial") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => Some(v.as_str().ok_or_else(|| {
+                        StoreError::JournalCorrupt("asset.serial_set serial".into())
+                    })?),
+                };
+            ledger.set_asset_serial(get_u64(p, "asset_id")?, serial)?;
+        }
         "asset.depreciation_posted" => {
             // The entry itself was journaled as entry.created/entry.posted;
             // this line is idempotency bookkeeping for the projection.
@@ -3808,6 +3895,32 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
         "role.assigned" => {
             // Roles live in the ledger (rebuilt by replay); the events
             // mirror below keeps the history.
+        }
+        "asset.tagged" => {
+            let (id, tag) = (get_u64(p, "asset_id")? as i64, get_str(p, "tag")?);
+            conn.execute("UPDATE assets SET tag = ? WHERE id = ?", params![tag, id])?;
+            conn.execute(
+                "INSERT INTO asset_tags_log(asset_id, tag) VALUES (?, ?)",
+                params![id, tag],
+            )?;
+        }
+        "asset.acquisition_linked" => {
+            conn.execute(
+                "UPDATE assets SET acquisition_entry = ? WHERE id = ?",
+                params![
+                    get_u64(p, "entry_id")? as i64,
+                    get_u64(p, "asset_id")? as i64
+                ],
+            )?;
+        }
+        "asset.serial_set" => {
+            conn.execute(
+                "UPDATE assets SET serial = ? WHERE id = ?",
+                params![
+                    p.get("serial").and_then(|v| v.as_str()),
+                    get_u64(p, "asset_id")? as i64
+                ],
+            )?;
         }
         "receipt.attached" | "document.filed" => {
             conn.execute(

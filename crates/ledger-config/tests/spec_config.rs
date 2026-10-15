@@ -1125,3 +1125,104 @@ fn inv7_profile_keeps_simple_values_of_every_type() {
         ]
     );
 }
+
+// ------------------------------------------------- [books] asset_tag_prefix
+//
+// Spec: `BooksSettings::asset_tag_prefix` doc ("`[books] asset_tag_prefix`,
+// or else the initials of the company name's words, legal-form words (LLC,
+// Inc, Corp, ...) left out, at most 8 ("Wanderland Labs LLC" → "WL"); "FA"
+// (fixed asset) when the name gives none"), docs/mcp-interface.md
+// (books.register_asset), and the parse refusal "1 to 8 letters or digits".
+
+fn prefix_for_name(name: &str) -> String {
+    ok(&company_kv("name", name)).asset_tag_prefix()
+}
+
+#[test]
+fn asset_tag_prefix_explicit_setting_wins() {
+    let s = ok("[company]\nname = \"Wanderland Labs LLC\"\n[books]\nasset_tag_prefix = \"LAB\"\n");
+    assert_eq!(s.asset_tag_prefix.as_deref(), Some("LAB"));
+    assert_eq!(s.asset_tag_prefix(), "LAB");
+}
+
+#[test]
+fn asset_tag_prefix_accepts_one_to_eight_letters_or_digits() {
+    for p in ["A", "7", "WL", "WL2026", "ABCDEFGH", "12345678"] {
+        let s = ok(&books_kv("asset_tag_prefix", p));
+        assert_eq!(s.asset_tag_prefix(), p, "{p:?}");
+    }
+}
+
+#[test]
+fn asset_tag_prefix_refuses_other_forms() {
+    for p in [
+        "",
+        "ABCDEFGHI",
+        "WL-",
+        "W L",
+        "W_L",
+        "WL.",
+        "ÉL",
+        " WL",
+        "WL/1",
+    ] {
+        refused(&books_kv("asset_tag_prefix", p));
+    }
+    // Not a string.
+    refused("[books]\nasset_tag_prefix = 12\n");
+}
+
+#[test]
+fn asset_tag_prefix_unset_is_none() {
+    assert_eq!(ok("").asset_tag_prefix, None);
+    assert_eq!(ok("[books]\n").asset_tag_prefix, None);
+}
+
+/// The doc's example.
+#[test]
+fn asset_tag_prefix_default_is_company_initials_without_legal_form() {
+    assert_eq!(prefix_for_name("Wanderland Labs LLC"), "WL");
+    assert_eq!(prefix_for_name("Acme Inc"), "A");
+    assert_eq!(prefix_for_name("Acme Widgets Corp"), "AW");
+    assert_eq!(prefix_for_name("Blue Sky Ventures"), "BSV");
+}
+
+/// Initials are uppercase.
+#[test]
+fn asset_tag_prefix_default_is_uppercase() {
+    assert_eq!(prefix_for_name("wanderland labs LLC"), "WL");
+}
+
+/// At most 8 initials.
+#[test]
+fn asset_tag_prefix_default_takes_at_most_eight_initials() {
+    assert_eq!(
+        prefix_for_name("Alpha Bravo Charlie Delta Echo Foxtrot Golf Hotel India Juliet"),
+        "ABCDEFGH"
+    );
+}
+
+/// "FA" when the name gives none: only legal-form words, or the default
+/// (unnamed) company.
+#[test]
+fn asset_tag_prefix_default_falls_back_to_fa() {
+    assert_eq!(ok("").asset_tag_prefix(), "FA");
+    assert_eq!(prefix_for_name("Unnamed company"), "FA");
+    assert_eq!(prefix_for_name("LLC"), "FA");
+    assert_eq!(prefix_for_name("Inc"), "FA");
+}
+
+proptest! {
+    /// Whatever the name, the default is a prefix the setting itself would
+    /// accept: 1 to 8 ASCII letters or digits, uppercase.
+    #[test]
+    fn prop_default_asset_tag_prefix_is_a_valid_setting(name in "[ -~]{1,60}") {
+        let Ok(s) = parse(&company_kv("name", &name)) else { return Ok(()); };
+        let p = s.asset_tag_prefix();
+        prop_assert!((1..=8).contains(&p.len()), "{:?} -> {:?}", name, p);
+        prop_assert!(p.chars().all(|c| c.is_ascii_alphanumeric()), "{:?} -> {:?}", name, p);
+        prop_assert_eq!(p.to_ascii_uppercase(), p.clone());
+        let back = ok(&books_kv("asset_tag_prefix", &p));
+        prop_assert_eq!(back.asset_tag_prefix(), p);
+    }
+}

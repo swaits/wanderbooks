@@ -2981,7 +2981,7 @@ impl Store {
         let links = qstmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
         for row in links {
             let (id, entry) = row?;
-            ledger.set_asset_acquisition(id as u64, entry as u64)?;
+            ledger.restore_asset_acquisition(id as u64, entry as u64)?;
         }
         // Payroll runs: id order; lines in insertion order. Amounts are
         // TEXT in SQLite, so they parse here with exact Decimal math.

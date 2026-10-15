@@ -97,8 +97,8 @@ pub enum LedgerError {
     /// decides with the human how to handle it.
     #[error(
         "account {code} \"{name}\" is {}, but {role} needs account {code} to be a postable {expected:?} account; \
-         wanderbooks won't post {role} there. Decide with the books' owner how to handle it \
-         (for instance, renumber that account so {code} is free, if they agree)",
+         wanderbooks won't post {role} there. Decide with the books' owner how to handle it: \
+         assign {role} to an account of theirs, or renumber that account so {code} is free",
         if *placeholder { format!("a placeholder {found:?} account") } else { format!("a {found:?} account") }
     )]
     ControlAccountMismatch {
@@ -114,6 +114,44 @@ pub enum LedgerError {
         found: crate::AccountType,
         /// Whether the existing account is a placeholder.
         placeholder: bool,
+    },
+
+    /// No control role has that name (see `ledger_core::control_accounts`).
+    #[error(
+        "no role {0:?}; the roles are receivables, revenue, payables, general_expense, \
+         retained_earnings, salary_expense, payroll_tax_expense, federal_withholding, \
+         state_withholding, social_security_payable, medicare_payable, other_deductions_payable"
+    )]
+    UnknownRole(String),
+
+    /// One account per role: an account already filling a role can't take
+    /// a second (its balance would mix what the two control).
+    #[error("account {code} \"{name}\" already holds {role}; give each role its own account")]
+    RoleTaken {
+        /// The account's code.
+        code: String,
+        /// The account's name.
+        name: String,
+        /// The role it fills, e.g. "accounts receivable".
+        role: String,
+    },
+
+    /// A balance sheet role (receivables, payables, withholdings, retained
+    /// earnings) can't move while its account holds a balance: the control
+    /// account must keep agreeing with what it controls.
+    #[error(
+        "{role} is in account {code} \"{name}\", which holds {balance}; move that balance to the \
+         new account with a journal entry first, then assign the role"
+    )]
+    RoleHoldsBalance {
+        /// The role, e.g. "accounts receivable".
+        role: String,
+        /// The code of the account filling it now.
+        code: String,
+        /// That account's name.
+        name: String,
+        /// Its balance.
+        balance: rust_decimal::Decimal,
     },
 
     /// A rule set by law (a dollar threshold, a rate) isn't known to

@@ -132,6 +132,28 @@ pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
                 .and_then(|v| v.as_u64())
                 .map(Route::Account),
         ),
+        "role.assigned" => {
+            let role = s(p, "role");
+            let control = ledger_core::control_account(role);
+            let purpose = control.map_or(role, |c| c.role);
+            let mut chars = purpose.chars();
+            let purpose: String = chars
+                .next()
+                .map(|f| f.to_uppercase().chain(chars).collect())
+                .unwrap_or_default();
+            let account = p.get("account_id").and_then(|v| v.as_u64());
+            ev(
+                icon::TAG,
+                match account {
+                    Some(id) => format!("{purpose} now posts to {}", b.account_label(id)),
+                    None => format!(
+                        "{purpose} back to its default code {}",
+                        control.map_or("", |c| c.code)
+                    ),
+                },
+                account.map(Route::Account),
+            )
+        }
         "account.tax_set" => ev(
             icon::TAG,
             format!(

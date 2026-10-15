@@ -420,3 +420,29 @@ taxable years beginning on or after January 1, 2016. The 12-month rule:
 §1.263(a)-4(f)(1). The election is made yearly on the return.
 
 **Enforced:** bookkeeper policy (books' AGENTS.md), not the engine.
+
+## B-23 Control roles: one account each, of the right kind, moved only when empty
+
+**Status:** CONVENTION (a control account agrees with the records it
+controls); DECISIONS (Stephen, 2026-10-13 and 2026-10-15)
+
+Invoices, bills, payroll, and closes post to accounts the engine picks by
+role: receivables, revenue, payables, general expense, retained earnings,
+salary and payroll tax expense, and five payroll withholdings. A role uses
+its default code (1200, 4000, 2000, 6999, 3999, 6100, 6110, 2110–2150)
+until the human assigns it one of the chart's own accounts; the assignment
+is journaled, so replay never depends on a setting outside the journal
+(DECISION, 2026-10-15). A role's account is postable and of the role's
+type (B-4), and the engine refuses one that isn't rather than renumber
+the chart (DECISION, 2026-10-13). No account fills two roles. A
+receivables, payables, withholding, or retained earnings account must keep
+agreeing with what it controls (open invoices, open bills, taxes withheld,
+closed earnings): such a role moves only when its account holds no
+balance, so the bookkeeper first moves the balance with an entry, which
+the journal shows. Revenue and expense roles move at any time; earlier
+postings stay where they are.
+
+**Enforced:** `Ledger::check_controls`, `Ledger::assign_role` /
+`check_assign_role`, `Ledger::check_renumber_account` (an assigned role
+frees its code). **Checked:** `ledger-core` `tests/spec_roles.rs`;
+`ledger-store` replay of `role.assigned`.

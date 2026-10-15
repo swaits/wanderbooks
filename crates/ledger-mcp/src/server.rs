@@ -31,8 +31,10 @@
 //! ```
 
 use crate::policy::ReceiptPolicy;
+use crate::settings::{Live, Settings};
 use crate::types::*;
 use chrono::NaiveDate;
+#[cfg(test)]
 use ledger_config::Company;
 use ledger_core::{
     AccountId, AccountType, AssetStatus, Currency, DocumentLine, DocumentStatus, JournalEntry,
@@ -52,7 +54,7 @@ use rust_decimal::Decimal;
 use std::sync::{Arc, Mutex};
 
 /// The agent operating contract, delivered via initialize.
-const INSTRUCTIONS: &str = "You are the bookkeeping agent for these books. The engine enforces the accounting; you enforce the workflow.\n\nRULES\n- Money is exact decimal. Always pass amounts as decimal strings (\"123.45\"), never floats.\n- Never post directly. The flow is draft (books.draft_entry) -> add lines (books.add_line) -> preview (books.post_entry without confirmed) -> review the preview -> post (books.post_entry with confirmed=true).\n- Every entry must balance: debits equal credits, exactly. Every line needs a real account from books.chart. The engine rejects anything else.\n- Receipts: any entry moving more than $25.00 in debits needs at least one receipt attached (books.attach_receipt) before posting. The server rejects the post otherwise. This is enforced, not a suggestion.\n- Never invent accounts. If the account you need does not exist, add it with books.add_account first.\n- Corrections go through books.reverse_entry. Posted entries are immutable; there is no edit.\n- Receipt corrections: receipts can change, but nothing is erased. To replace one, attach the new receipt, then books.unlink_receipt the old (with a reason); retire unwanted receipts or documents with books.withdraw_attachment (with a reason). The journal keeps every step.\n- After posting, check books.digest to review what changed, so a human can review too.\n- Amounts in every response are decimal strings. Treat them as exact.\n- Fixed assets: register with books.register_asset, inspect with books.asset_schedule and books.list_assets, post monthly depreciation with books.run_depreciation (exempt from the receipt policy; the schedule is the evidence), and dispose with books.dispose_asset (preview first; the bill of sale is the receipt). Depreciation is straight-line, book basis only - tax depreciation stays with the CPA.\n- Prepaid expenses and deferred revenue: record the original payment (with its receipt), then books.create_schedule; books.run_schedules posts the monthly amortization (preview first; exempt from the receipt policy like depreciation). Recurring entries (books.create_recurring, books.run_recurring) only ever create drafts: attach each actual receipt and post through the normal preview.\n- Platform payouts (app stores, payment processors, marketplaces): never book the net deposit as revenue. books.record_payout grosses it up (gross revenue, fees, adjustments) into a draft and refuses unless it reconciles to the cent; attach the payout statement, then preview and post.\n- The viewer: the human usually has the read-only viewer open beside you (`just gui`). When they ask to see something, and after you post, call books.show so it's on their screen.\n- 1099s: mark contractors and landlords with books.set_vendor_1099 (and whether their W-9 is on file; never store a TIN), and tag every payment to them with its vendor (books.draft_entry vendor, or books.set_entry_vendor; books.pay_bill tags automatically). books.vendor_1099 is the year-end worksheet for the CPA.\n- Rules that change with the law: wanderbooks knows some legal amounts (like the 1099 threshold) only through a given year and never guesses past it. When a tool refuses with \"wanderbooks knows the ... only through\", or books.digest lists stale_rules: check today's date, find the current figure from the official source (the refusal names the vendored source file) or ask the human (owner, CPA), confirm it with them, and pass it explicitly. Then update the rule for everyone: open a pull request at https://github.com/swaits/wanderbooks with the new value and its official text (best), or at least an issue; if you can't reach GitHub, give the human the issue text to file.\n- Control accounts: invoices, bills, payroll, and closes post to accounts found by code (1200, 2000, 4000, 6999, 3999, 6100-2150). If the chart already uses one of those codes for a different kind of account, the engine refuses and says which. It can't tell an account of the right type but another purpose (a hosting expense at payroll's 6100): check the names before running payroll, bills, or invoices. Never renumber the human's accounts on your own: explain the conflict, and when they decide, books.renumber_account moves the account (its history stays).";
+const INSTRUCTIONS: &str = "You are the bookkeeping agent for these books. The engine enforces the accounting; you enforce the workflow.\n\nRULES\n- Money is exact decimal. Always pass amounts as decimal strings (\"123.45\"), never floats.\n- Never post directly. The flow is draft (books.draft_entry) -> add lines (books.add_line) -> preview (books.post_entry without confirmed) -> review the preview -> post (books.post_entry with confirmed=true).\n- Every entry must balance: debits equal credits, exactly. Every line needs a real account from books.chart. The engine rejects anything else.\n- Receipts: any entry moving more than $25.00 in debits needs at least one receipt attached (books.attach_receipt) before posting. The server rejects the post otherwise. This is enforced, not a suggestion.\n- Never invent accounts. If the account you need does not exist, add it with books.add_account first.\n- Corrections go through books.reverse_entry. Posted entries are immutable; there is no edit.\n- Receipt corrections: receipts can change, but nothing is erased. To replace one, attach the new receipt, then books.unlink_receipt the old (with a reason); retire unwanted receipts or documents with books.withdraw_attachment (with a reason). The journal keeps every step.\n- After posting, check books.digest to review what changed, so a human can review too.\n- Amounts in every response are decimal strings. Treat them as exact.\n- Fixed assets: register with books.register_asset, inspect with books.asset_schedule and books.list_assets, post monthly depreciation with books.run_depreciation (exempt from the receipt policy; the schedule is the evidence), and dispose with books.dispose_asset (preview first; the bill of sale is the receipt). Depreciation is straight-line, book basis only - tax depreciation stays with the CPA.\n- Prepaid expenses and deferred revenue: record the original payment (with its receipt), then books.create_schedule; books.run_schedules posts the monthly amortization (preview first; exempt from the receipt policy like depreciation). Recurring entries (books.create_recurring, books.run_recurring) only ever create drafts: attach each actual receipt and post through the normal preview.\n- Platform payouts (app stores, payment processors, marketplaces): never book the net deposit as revenue. books.record_payout grosses it up (gross revenue, fees, adjustments) into a draft and refuses unless it reconciles to the cent; attach the payout statement, then preview and post.\n- The viewer: the human usually has the read-only viewer open beside you (`just gui`). When they ask to see something, and after you post, call books.show so it's on their screen.\n- 1099s: mark contractors and landlords with books.set_vendor_1099 (and whether their W-9 is on file; never store a TIN), and tag every payment to them with its vendor (books.draft_entry vendor, or books.set_entry_vendor; books.pay_bill tags automatically). books.vendor_1099 is the year-end worksheet for the CPA.\n- Rules that change with the law: wanderbooks knows some legal amounts (like the 1099 threshold) only through a given year and never guesses past it. When a tool refuses with \"wanderbooks knows the ... only through\", or books.digest lists stale_rules: check today's date, find the current figure from the official source (the refusal names the vendored source file) or ask the human (owner, CPA), confirm it with them, and pass it explicitly. Then update the rule for everyone: open a pull request at https://github.com/swaits/wanderbooks with the new value and its official text (best), or at least an issue; if you can't reach GitHub, give the human the issue text to file.\n- Control roles: invoices, bills, payroll, and closes post to the account filling each role (receivables, revenue, payables, general expense, retained earnings, payroll expense and withholdings); books.roles lists them. A role uses its default code (1200, 4000, 2000, 6999, 3999, 6100, 6110, 2110-2150) until it is assigned one of the chart's own accounts with books.assign_role (journaled). If the chart uses a default code for a different kind of account, the engine refuses and says which. It can't tell an account of the right type but another purpose (a hosting expense at payroll's 6100): check books.roles before running payroll, bills, or invoices. Never assign roles or renumber the human's accounts on your own: explain the conflict, and when they decide, assign the role to their account (best: their numbering stays) or books.renumber_account the account (its history stays).\n- Settings: wanderbooks.toml beside the books holds the company's facts and settings (name, fiscal year, tax form, members and their capital accounts, basis, receipt threshold, cash flow roles, close target); books.settings shows what is in force and lists problems, settings that disagree with the chart. Edit the file when the human tells you a company fact, when a tool refuses naming a wanderbooks.toml setting, when books.settings or books.digest lists a settings problem, and after books.renumber_account lists config_mentions. The server reloads the file whenever it changes, with no restart: after each edit, call books.settings and check reload_error is null (a broken edit leaves the last good settings in force) and problems is empty. Never put a member's SSN or any TIN in it.";
 
 /// Max receipt/document upload: 25 MB.
 const MAX_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
@@ -63,40 +65,35 @@ const MAX_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
 #[derive(Clone)]
 pub struct BooksServer {
     store: Arc<Mutex<Store>>,
-    policy: ReceiptPolicy,
-    company: Company,
-    roles: CashRoles,
+    settings: Arc<Mutex<Live>>,
 }
 
-/// `[books]` account roles for the cash flow statement, used when a call
-/// doesn't pass its own: cash, financing, and investing account codes.
-#[derive(Clone, Debug, Default)]
-pub struct CashRoles {
-    /// `[books] cash_accounts`.
-    pub cash: Vec<String>,
-    /// `[books] financing_accounts`.
-    pub financing: Vec<String>,
-    /// `[books] investing_accounts`.
-    pub investing: Vec<String>,
-}
+#[cfg(test)]
+pub use crate::settings::CashRoles;
 
 impl BooksServer {
     /// The wanderbooks.toml settings that name account `code`.
     fn config_mentions(&self, code: &str) -> Vec<String> {
         let mut out = Vec::new();
         for (key, codes) in [
-            ("[books] cash_accounts", &self.roles.cash),
-            ("[books] financing_accounts", &self.roles.financing),
-            ("[books] investing_accounts", &self.roles.investing),
+            ("[books] cash_accounts", &self.settings().roles.cash),
+            (
+                "[books] financing_accounts",
+                &self.settings().roles.financing,
+            ),
+            (
+                "[books] investing_accounts",
+                &self.settings().roles.investing,
+            ),
         ] {
             if codes.iter().any(|c| c == code) {
                 out.push(key.to_string());
             }
         }
-        if self.company.close_into.as_deref() == Some(code) {
+        if self.settings().company.close_into.as_deref() == Some(code) {
             out.push("[company] close_into".to_string());
         }
-        for m in &self.company.members {
+        for m in &self.settings().company.members {
             if m.capital_account == code {
                 out.push(format!("[[company.members]] {} capital_account", m.name));
             }
@@ -112,12 +109,7 @@ impl BooksServer {
 
     /// Build the server around an open store.
     pub fn new(store: Store, policy: ReceiptPolicy) -> Self {
-        Self {
-            store: Arc::new(Mutex::new(store)),
-            policy,
-            company: Company::default(),
-            roles: CashRoles::default(),
-        }
+        Self::new_shared(Arc::new(Mutex::new(store)), policy)
     }
 
     /// Build the server around a shared store (for HTTP: each connection
@@ -125,22 +117,44 @@ impl BooksServer {
     pub fn new_shared(store: Arc<Mutex<Store>>, policy: ReceiptPolicy) -> Self {
         Self {
             store,
-            policy,
-            company: Company::default(),
-            roles: CashRoles::default(),
+            settings: Arc::new(Mutex::new(Live::fixed(Settings {
+                policy,
+                ..Settings::default()
+            }))),
         }
     }
 
+    /// Take the settings from files, reloading them whenever they change
+    /// (crate::settings), shared with the other sessions holding `live`.
+    pub fn with_live_settings(mut self, live: Arc<Mutex<Live>>) -> Self {
+        self.settings = live;
+        self
+    }
+
     /// Set the company (name for report headers, fiscal year).
-    pub fn with_company(mut self, company: Company) -> Self {
-        self.company = company;
+    #[cfg(test)]
+    pub fn with_company(self, company: Company) -> Self {
+        self.live().edit(|s| s.company = company);
         self
     }
 
     /// Set the `[books]` cash flow account roles.
-    pub fn with_cash_roles(mut self, roles: CashRoles) -> Self {
-        self.roles = roles;
+    #[cfg(test)]
+    pub fn with_cash_roles(self, roles: CashRoles) -> Self {
+        self.live().edit(|s| s.roles = roles);
         self
+    }
+
+    fn live(&self) -> std::sync::MutexGuard<'_, Live> {
+        // A panic while holding it can't leave the settings half-written
+        // (they're swapped whole), so a poisoned lock is still good.
+        self.settings.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The settings in force for this request (reloaded at its start, in
+    /// `call_tool` and `read_resource`, if their files changed).
+    fn settings(&self) -> Arc<Settings> {
+        self.live().current()
     }
 
     /// The cash flow statement from account codes, each list defaulting to
@@ -165,17 +179,17 @@ impl BooksServer {
             ledger,
             start,
             end,
-            &or(cash, &self.roles.cash),
-            &or(financing, &self.roles.financing),
-            &or(investing, &self.roles.investing),
+            &or(cash, &self.settings().roles.cash),
+            &or(financing, &self.settings().roles.financing),
+            &or(investing, &self.settings().roles.investing),
         )
     }
 
     /// Header and provenance for a rendered report.
     fn report_meta(&self, store: &Store) -> ReportMeta {
         ReportMeta {
-            company: self.company.name.clone(),
-            basis: self.company.basis.clone(),
+            company: self.settings().company.name.clone(),
+            basis: self.settings().company.basis.clone(),
             prepared_on: today(),
             journal_seq: store.journal_seq(),
         }
@@ -183,7 +197,8 @@ impl BooksServer {
 
     /// Members as reports name them (empty unless a multi-member LLC).
     fn report_members(&self) -> Vec<ledger_import::Member> {
-        self.company
+        self.settings()
+            .company
             .members
             .iter()
             .map(|m| ledger_import::Member {
@@ -197,13 +212,14 @@ impl BooksServer {
     /// Members with their capital accounts resolved in the chart, for the
     /// statement of members' equity.
     fn member_capitals(&self, ledger: &Ledger) -> Result<Vec<ledger_core::MemberCapital>, String> {
-        if self.company.members.is_empty() {
+        if self.settings().company.members.is_empty() {
             return Err(
                 "no members configured: add [[company.members]] (name, share, capital_account) to wanderbooks.toml"
                     .to_string(),
             );
         }
-        self.company
+        self.settings()
+            .company
             .members
             .iter()
             .map(|m| {
@@ -250,7 +266,7 @@ impl BooksServer {
                 .map(|a| a.id)
                 .ok_or_else(|| format!("wanderbooks.toml names unknown account {c}"))
         };
-        if !self.company.members.is_empty() {
+        if !self.settings().company.members.is_empty() {
             return Ok(ledger_core::CloseTo::Members(
                 self.member_capitals(ledger)?
                     .into_iter()
@@ -263,12 +279,13 @@ impl BooksServer {
             ));
         }
         let sweep = self
+            .settings()
             .company
             .close_sweep
             .iter()
             .map(|c| code(c))
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(match self.company.close_into.as_deref() {
+        Ok(match self.settings().company.close_into.as_deref() {
             None | Some(ledger_core::RETAINED_EARNINGS_CODE) => {
                 ledger_core::CloseTo::RetainedEarnings { sweep }
             }
@@ -288,7 +305,7 @@ impl BooksServer {
         ledger: &Ledger,
         as_of: NaiveDate,
     ) -> Result<ledger_import::YearEarnings, String> {
-        let (fy_start, _) = self.company.fiscal_year_containing(as_of);
+        let (fy_start, _) = self.settings().company.fiscal_year_containing(as_of);
         let net_income_ytd = ledger_core::profit_and_loss_for_period(ledger, fy_start, as_of, None)
             .map_err(|e| e.to_string())?
             .net_income();
@@ -339,8 +356,16 @@ impl BooksServer {
         if entry.status() != ledger_core::EntryStatus::Posted || entry.reversal_of().is_some() {
             return Ok(());
         }
-        let split_group = self.policy.split_group(store.ledger(), entry_id, entry);
-        if !self.policy.receipt_required(store.ledger(), entry) && split_group.is_empty() {
+        let split_group = self
+            .settings()
+            .policy
+            .split_group(store.ledger(), entry_id, entry);
+        if !self
+            .settings()
+            .policy
+            .receipt_required(store.ledger(), entry)
+            && split_group.is_empty()
+        {
             return Ok(());
         }
         let total = ReceiptPolicy::entry_debits(entry);
@@ -349,12 +374,12 @@ impl BooksServer {
             message: format!(
                 "entry {entry_id} moves {} in debits ({}); unlinking its last receipt would leave it without one.",
                 money(total),
-                self.policy.describe()
+                self.settings().policy.describe()
             ),
             entry_id: Some(entry_id),
             asset_id: None,
             debits: total.to_string(),
-            policy: self.policy.describe(),
+            policy: self.settings().policy.describe(),
             remedy_tool: "books.attach_receipt".to_string(),
             remedy_hint: format!(
                 "attach the replacement receipt to entry {entry_id} with books.attach_receipt first, then retry books.unlink_receipt"
@@ -386,6 +411,78 @@ fn parse_side(s: &str) -> Result<Side, String> {
         "credit" => Ok(Side::Credit),
         _ => Err(format!("bad side {s:?}: expected \"debit\" or \"credit\"")),
     }
+}
+
+/// The settings that disagree with the books: each names the setting and
+/// what to change. A code must name an account in the chart, of the kind
+/// the setting needs (cash and investing: assets; financing: liabilities;
+/// capital, distributions, close_into, close_sweep: equity).
+fn settings_problems(ledger: &Ledger, cfg: &Settings) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut check = |setting: &str, code: &str, want: &[AccountType]| {
+        match ledger.chart().find_by_code(code) {
+            None => out.push(format!(
+                "{setting} names {code}, which isn't in the chart: add that account, or change {setting} in wanderbooks.toml"
+            )),
+            Some(a) if !want.contains(&a.account_type) => out.push(format!(
+                "{setting} names {code} \"{}\", a {:?} account, but needs {}: change {setting} in wanderbooks.toml",
+                a.name,
+                a.account_type,
+                want.iter().map(|t| format!("{t:?}")).collect::<Vec<_>>().join(" or "),
+            )),
+            Some(_) => {}
+        }
+    };
+    use AccountType::*;
+    for code in &cfg.roles.cash {
+        check("[books] cash_accounts", code, &[Asset]);
+    }
+    for code in &cfg.roles.financing {
+        check("[books] financing_accounts", code, &[Liability, Equity]);
+    }
+    for code in &cfg.roles.investing {
+        check("[books] investing_accounts", code, &[Asset]);
+    }
+    let c = &cfg.company;
+    for m in &c.members {
+        check(
+            &format!("[[company.members]] {} capital_account", m.name),
+            &m.capital_account,
+            &[Equity],
+        );
+        if let Some(d) = &m.distribution_account {
+            check(
+                &format!("[[company.members]] {} distribution_account", m.name),
+                d,
+                &[Equity],
+            );
+        }
+    }
+    if let Some(code) = &c.close_into {
+        check("[books] close_into", code, &[Equity]);
+    }
+    for code in &c.close_sweep {
+        check("[books] close_sweep", code, &[Equity]);
+    }
+    out
+}
+
+/// Every control role and the account filling it, for books.roles.
+fn roles_out(ledger: &Ledger) -> Vec<RoleOut> {
+    ledger_core::control_accounts()
+        .map(|c| {
+            let account = ledger.role_account(c).and_then(|id| ledger.chart().get(id));
+            RoleOut {
+                role: c.key.to_string(),
+                purpose: c.role.to_string(),
+                account_type: format!("{:?}", c.account_type),
+                default_code: c.code.to_string(),
+                assigned: ledger.role_assignment(c).is_some(),
+                account_code: account.map(|a| a.code.clone()),
+                account_name: account.map(|a| a.name.clone()),
+            }
+        })
+        .collect()
 }
 
 /// Parse a calendar-month period "YYYY-MM".
@@ -1066,11 +1163,17 @@ impl BooksServer {
                 ));
             }
         }
-        let mut receipt_required = self.policy.receipt_required(store.ledger(), &entry);
+        let mut receipt_required = self
+            .settings()
+            .policy
+            .receipt_required(store.ledger(), &entry);
         let receipts = preview_receipts(&store, p.entry_id)?;
         // Anti-splitting: if this entry looks like part of a split group,
         // the receipt policy applies to the group total.
-        let split_group = self.policy.split_group(store.ledger(), p.entry_id, &entry);
+        let split_group = self
+            .settings()
+            .policy
+            .split_group(store.ledger(), p.entry_id, &entry);
         if !split_group.is_empty() {
             receipt_required = true;
         }
@@ -1105,13 +1208,13 @@ impl BooksServer {
                     "entry {} moves {} in debits ({}); attach a receipt with books.attach_receipt before posting.{}",
                     p.entry_id,
                     money(total),
-                    self.policy.describe(),
+                    self.settings().policy.describe(),
                     split_note
                 ),
                 entry_id: Some(p.entry_id),
                 asset_id: None,
                 debits: total.to_string(),
-                policy: self.policy.describe(),
+                policy: self.settings().policy.describe(),
                 remedy_tool: "books.attach_receipt".to_string(),
                 remedy_hint: format!(
                     "attach a receipt to entry {} with books.attach_receipt, then retry books.post_entry with confirmed=true",
@@ -1706,7 +1809,7 @@ impl BooksServer {
             let receipts = store
                 .list_attachments(Some(e.id()))
                 .map_err(|e| e.to_string())?;
-            let required = self.policy.receipt_required(ledger, e);
+            let required = self.settings().policy.receipt_required(ledger, e);
             entries.push(DigestEntry {
                 entry_id: e.id(),
                 date: e.date().to_string(),
@@ -1761,6 +1864,16 @@ impl BooksServer {
             totals_by_account: totals,
             stale_rules,
             journal_repairs,
+            settings_problems: {
+                let mut problems = settings_problems(store.ledger(), &self.settings());
+                if let Some(e) = self.live().status().error {
+                    problems.insert(
+                        0,
+                        format!("wanderbooks.toml didn't load (the last good settings are in force): {e}"),
+                    );
+                }
+                problems
+            },
         }))
     }
 
@@ -2346,7 +2459,7 @@ impl BooksServer {
         annotations(read_only_hint = true)
     )]
     async fn tax_categories(&self) -> Result<Json<TaxCategoriesOut>, String> {
-        let form = self.company.tax_form;
+        let form = self.settings().company.tax_form;
         let categories = ledger_core::tax::CATEGORIES
             .iter()
             .filter(|c| form.is_none_or(|f| c.forms.contains(&f)))
@@ -2399,6 +2512,80 @@ impl BooksServer {
     }
 
     #[tool(
+        name = "books.settings",
+        description = "The settings in force from wanderbooks.toml (company, fiscal year, tax form, members, basis, receipt rule, cash flow roles, close target), the file they come from, and problems: settings that disagree with the chart, each saying what to change. The server reloads the file whenever it changes, with no restart; after editing it, call this to confirm the edit loaded (reload_error says why one didn't, and the last good settings stay in force).",
+        annotations(read_only_hint = true)
+    )]
+    async fn settings_tool(&self) -> Result<Json<SettingsOut>, String> {
+        let status = self.live().status();
+        let cfg = self.settings();
+        let store = self.lock()?;
+        let c = &cfg.company;
+        Ok(Json(SettingsOut {
+            books_toml: status.books_toml.map(|p| p.display().to_string()),
+            books_toml_exists: status.books_toml_exists,
+            config_json: status.config_json.map(|p| p.display().to_string()),
+            reload_error: status.error,
+            loads: status.loads,
+            company: c.name.clone(),
+            fiscal_year_start: format!("{:02}-{:02}", c.fiscal_year_start.0, c.fiscal_year_start.1),
+            tax_form: c.tax_form.map(|f| f.label().to_string()),
+            basis: c.basis.clone(),
+            receipt_rule: cfg.policy.rule(),
+            members: c
+                .members
+                .iter()
+                .map(|m| MemberSettingOut {
+                    name: m.name.clone(),
+                    share: m.share.normalize().to_string(),
+                    capital_account: m.capital_account.clone(),
+                    distribution_account: m.distribution_account.clone(),
+                })
+                .collect(),
+            cash_accounts: cfg.roles.cash.clone(),
+            financing_accounts: cfg.roles.financing.clone(),
+            investing_accounts: cfg.roles.investing.clone(),
+            close_into: c.close_into.clone(),
+            close_sweep: c.close_sweep.clone(),
+            problems: settings_problems(store.ledger(), &cfg),
+        }))
+    }
+
+    #[tool(
+        name = "books.roles",
+        description = "The control roles invoices, bills, payroll, and closes post to (receivables, revenue, payables, general expense, retained earnings, payroll expense and withholdings), and the account filling each: the one assigned with books.assign_role, else the account at the role's default code.",
+        annotations(read_only_hint = true)
+    )]
+    async fn roles(&self) -> Result<Json<RolesOut>, String> {
+        let store = self.lock()?;
+        Ok(Json(RolesOut {
+            roles: roles_out(store.ledger()),
+        }))
+    }
+
+    #[tool(
+        name = "books.assign_role",
+        description = "Assign a control role (see books.roles) one of the chart's own accounts, so invoices, bills, payroll, or closes post there instead of the default code; account null returns the role to its default code. Journaled. Refuses an account of the wrong type, a placeholder, one already filling another role, and moving a receivables, payables, withholding, or retained earnings role while its account holds a balance (move the balance with an entry first). Posted entries never change. Only when the human agrees."
+    )]
+    async fn assign_role(
+        &self,
+        params: Parameters<AssignRoleParams>,
+    ) -> Result<Json<RolesOut>, String> {
+        let p = params.0;
+        let mut store = self.lock()?;
+        let account = match &p.account {
+            Some(a) => Some(resolve_account(&store, a)?),
+            None => None,
+        };
+        store
+            .assign_role(&p.role, account)
+            .map_err(|e| e.to_string())?;
+        Ok(Json(RolesOut {
+            roles: roles_out(store.ledger()),
+        }))
+    }
+
+    #[tool(
         name = "books.set_tax_category",
         description = "Map a revenue or expense account to a tax category (see books.tax_categories), optionally overriding its deductible percent; category null clears it. Drives the tax_summary report."
     )]
@@ -2420,7 +2607,7 @@ impl BooksServer {
                 .get(id)
                 .expect("resolved")
                 .account_type;
-            ledger_core::tax::check_category(cat, t, self.company.tax_form)
+            ledger_core::tax::check_category(cat, t, self.settings().company.tax_form)
                 .map_err(|e| e.to_string())?;
         }
         store
@@ -2470,8 +2657,12 @@ impl BooksServer {
                 .add_account(&row.code, &row.name, account_type, parent, false)
                 .map_err(|e| format!("{}: {e}", row.code))?;
             if let Some(cat) = &row.tax_category {
-                ledger_core::tax::check_category(cat, account_type, self.company.tax_form)
-                    .map_err(|e| format!("{}: {e}", row.code))?;
+                ledger_core::tax::check_category(
+                    cat,
+                    account_type,
+                    self.settings().company.tax_form,
+                )
+                .map_err(|e| format!("{}: {e}", row.code))?;
                 scratch
                     .set_account_tax(id, Some(cat), None)
                     .map_err(|e| format!("{}: {e}", row.code))?;
@@ -2677,7 +2868,7 @@ impl BooksServer {
             "tax_summary" => {
                 let (start, end) = statement_range(ledger, p.start.as_deref(), p.end.as_deref())?;
                 report::tax_summary(
-                    &ledger_core::tax_summary(ledger, start, end, self.company.tax_form)
+                    &ledger_core::tax_summary(ledger, start, end, self.settings().company.tax_form)
                         .map_err(|e| e.to_string())?,
                 )
             }
@@ -2745,12 +2936,14 @@ impl BooksServer {
             .registered_assets()
             .flat_map(|a| [a.cost_account, a.accum_depr_account])
             .collect();
+        let receivables = ledger.role_account(&ledger_core::RECEIVABLES);
+        let payables = ledger.role_account(&ledger_core::PAYABLES);
         let accounts = iif_accounts(ledger, |a| {
-            if self.roles.cash.contains(&a.code) {
+            if self.settings().roles.cash.contains(&a.code) {
                 Qb::Bank
-            } else if a.code == ledger_core::RECEIVABLES.code {
+            } else if Some(a.id) == receivables {
                 Qb::AccountsReceivable
-            } else if a.code == ledger_core::PAYABLES.code {
+            } else if Some(a.id) == payables {
                 Qb::AccountsPayable
             } else if fixed.contains(&a.id) {
                 Qb::FixedAsset
@@ -3003,7 +3196,10 @@ impl BooksServer {
             } else {
                 Decimal::ZERO
             };
-        let receipt_required = self.policy.receipt_required_for(&code_refs, debits);
+        let receipt_required = self
+            .settings()
+            .policy
+            .receipt_required_for(&code_refs, debits);
 
         let out = DisposeAssetOut {
             status: "preview".to_string(),
@@ -3028,12 +3224,12 @@ impl BooksServer {
                     "disposing {} moves {} in debits ({}); file the bill of sale with books.file_document, then retry with receipt_attachment_ids",
                     asset.description,
                     money(debits),
-                    self.policy.describe()
+                    self.settings().policy.describe()
                 ),
                 entry_id: None,
                 asset_id: Some(p.asset_id),
                 debits: debits.to_string(),
-                policy: self.policy.describe(),
+                policy: self.settings().policy.describe(),
                 remedy_tool: "books.file_document".to_string(),
                 remedy_hint:
                     "file the bill of sale with books.file_document, then retry books.dispose_asset with confirmed=true and receipt_attachment_ids=[<id>]"
@@ -3552,15 +3748,12 @@ impl BooksServer {
         let mut store = self.lock()?;
         let cash = resolve_account(&store, &p.cash_account)?;
         // Total before remitting, for the response.
-        let mut total = Decimal::ZERO;
-        for code in ["2110", "2120", "2130", "2140", "2150"] {
-            if let Some(a) = store.ledger().chart().find_by_code(code) {
-                total += store
-                    .ledger()
-                    .account_balance(a.id)
-                    .map_err(|e| e.to_string())?;
-            }
-        }
+        let total: Decimal = store
+            .ledger()
+            .payroll_tax_payables()
+            .iter()
+            .map(|(_, b)| *b)
+            .sum();
         let entry_id = store
             .remit_payroll_taxes(parse_date(&p.date)?, cash)
             .map_err(|e| e.to_string())?;
@@ -3755,7 +3948,7 @@ impl BooksServer {
         let ledger = store.ledger();
 
         // Fiscal year to date, per wanderbooks.toml's fiscal_year_start.
-        let (fy_start, _) = self.company.fiscal_year_containing(as_of);
+        let (fy_start, _) = self.settings().company.fiscal_year_containing(as_of);
         let (fy_start, as_of_s) = (fy_start.to_string(), as_of.to_string());
         let xlsx = |r: XlsxReport<'_>| report_to_xlsx(&r, &meta).map_err(|e| e.to_string());
         let pdf =
@@ -3797,7 +3990,7 @@ impl BooksServer {
                 ),
             ),
         ];
-        if !self.company.members.is_empty() {
+        if !self.settings().company.members.is_empty() {
             let me = ledger_core::members_equity(ledger, fy, as_of, &self.member_capitals(ledger)?)
                 .map_err(|e| e.to_string())?;
             statements.push(("members-equity", report::members_equity(&me)));
@@ -3805,7 +3998,7 @@ impl BooksServer {
         statements.push((
             "tax-summary",
             report::tax_summary(
-                &ledger_core::tax_summary(ledger, fy, as_of, self.company.tax_form)
+                &ledger_core::tax_summary(ledger, fy, as_of, self.settings().company.tax_form)
                     .map_err(|e| e.to_string())?,
             ),
         ));
@@ -3922,9 +4115,9 @@ impl BooksServer {
         ));
         let readme = format!(
             "{name} — books package for the CPA\n\nFiscal year to date: {fy_start} through {as_of_s}. {basis} basis.\nKept in wanderbooks: double-entry books from an append-only, hash-chained journal ({seq} events, verified).\n\nStatements (PDF and XLSX): profit and loss, balance sheet, cash flow, {members}tax summary, trial balance.\nLedgers (XLSX): general ledger by account; general journal entry by entry.\ngeneral-journal.iif: every posted entry, for import into QuickBooks Desktop.\n1099-worksheet-{year}.csv: cash paid per vendor marked for a 1099, against the year's threshold.\n{receipts}\nThe tax summary maps accounts to return categories; it's a worksheet, not a filing. Questions go to the owners, who can ask their bookkeeping agent to trace any number to its entries and receipts.\n",
-            name = self.company.name,
-            basis = self.company.basis,
-            members = if self.company.members.is_empty() {
+            name = self.settings().company.name,
+            basis = self.settings().company.basis,
+            members = if self.settings().company.members.is_empty() {
                 ""
             } else {
                 "members' equity, "
@@ -4116,7 +4309,7 @@ impl BooksServer {
         let store = self.lock()?;
         let ledger = store.ledger();
         let (start, end) = statement_range(ledger, p.start.as_deref(), p.end.as_deref())?;
-        let ts = ledger_core::tax_summary(ledger, start, end, self.company.tax_form)
+        let ts = ledger_core::tax_summary(ledger, start, end, self.settings().company.tax_form)
             .map_err(|e| e.to_string())?;
         let line = |l: &ledger_core::TaxSummaryLine| {
             serde_json::json!({
@@ -4443,6 +4636,17 @@ impl BooksServer {
 
 #[tool_handler]
 impl ServerHandler for BooksServer {
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
+        // Pick up an edited wanderbooks.toml before the tool runs.
+        self.live().refresh();
+        let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        Self::tool_router().call(tcc).await
+    }
+
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(
             ServerCapabilities::builder()
@@ -4453,7 +4657,7 @@ impl ServerHandler for BooksServer {
         // Tell the agent the policy these books actually use.
         .with_instructions(INSTRUCTIONS.replace(
             "any entry moving more than $25.00 in debits needs at least one receipt",
-            &self.policy.rule(),
+            &self.settings().policy.rule(),
         ))
         .with_server_info(Implementation::new(
             "wanderbooks",
@@ -4513,6 +4717,7 @@ impl ServerHandler for BooksServer {
         request: ReadResourceRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, rmcp::ErrorData> {
+        self.live().refresh();
         let uri = request.uri.clone();
         let text = self.resource_text(&uri).await.map_err(|e| {
             rmcp::ErrorData::resource_not_found(uri.clone(), Some(serde_json::json!({"reason": e})))

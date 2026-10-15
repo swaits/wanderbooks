@@ -43,6 +43,35 @@ advanced, such as a "Due to owners" liability: ASC 230-10-45-14(b)), and
 230-10-20); the tools and the viewer both read them, and a call may pass
 its own (docs/spec/rules.md B-14).
 
+The server reloads `wanderbooks.toml` (and `config.json`'s receipt policy)
+whenever either changes, compared by content at the start of each request,
+so an edit takes effect on the next call with no restart. A broken edit
+keeps the last good settings in force and is reported until fixed; the
+data dir and base currency are fixed at startup (`ledger-mcp/src/settings.rs`).
+
+- `books.settings {}` → `{ books_toml, books_toml_exists, config_json,
+  reload_error, loads, company, fiscal_year_start, tax_form, basis,
+  receipt_rule, members, cash_accounts, financing_accounts,
+  investing_accounts, close_into, close_sweep, problems }`: the settings in
+  force and where they come from. `problems` lists settings that disagree
+  with the chart (a code not in it, or of the wrong kind), each saying what
+  to change; `books.digest` repeats them, with a failed reload, as
+  `settings_problems`. The agent edits the file when the human gives a
+  company fact, a refusal names a setting, or a problem is listed, then
+  checks `books.settings`.
+
+The accounts invoices, bills, payroll, and closes post to are not settings:
+they are control roles in the journal (rules.md B-23).
+
+- `books.roles {}` → `{ roles: [{ role, purpose, account_type,
+  default_code, assigned, account_code?, account_name? }] }`: every control
+  role and the account filling it.
+- `books.assign_role { role, account? }` → `{ roles }`: assign a role one
+  of the chart's accounts (`account` null: back to the default code).
+  Refuses the wrong type, a placeholder, an account already filling
+  another role, and moving a balance sheet role while its account holds a
+  balance. Journaled as `role.assigned`.
+
 ## Transports
 
 1. **stdio** (build first). For Claude Code, Claude Desktop, local agents.
@@ -344,9 +373,10 @@ posting.
 - `books.renumber_account { account, code }` → `{ id, previous_code,
   code, config_mentions }`: give an account a new code. Only the code
   changes (entries name accounts by id), so balances and reports don't
-  move. Refuses a code in use, or a control account's code for an account
-  of the wrong type. `config_mentions` lists the wanderbooks.toml settings
-  still naming the old code. Journaled as `account.renumbered`.
+  move. Refuses a code in use, or an unassigned control role's default
+  code for an account of the wrong type. `config_mentions` lists the
+  wanderbooks.toml settings still naming the old code (edit them; the
+  server reloads the file). Journaled as `account.renumbered`.
 - `books.set_tax_category { account, category?, deductible_percent? }`:
   map a revenue or expense account to a category (null clears),
   optionally overriding its deductible percent. Journaled as

@@ -499,8 +499,104 @@ pub struct RenumberAccountOut {
     /// The code it has now.
     pub code: String,
     /// Settings in wanderbooks.toml that still name the old code: change
-    /// each to the new one, then restart the server.
+    /// each to the new one (the server reloads the file).
     pub config_mentions: Vec<String>,
+}
+
+/// One member, as `books.settings` reports it.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct MemberSettingOut {
+    /// Name.
+    pub name: String,
+    /// Share of income, as a decimal string ("0.5").
+    pub share: String,
+    /// Capital account code.
+    pub capital_account: String,
+    /// Distributions account code, if any.
+    pub distribution_account: Option<String>,
+}
+
+/// Result of `books.settings`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SettingsOut {
+    /// The wanderbooks.toml the server reads (null: settings built in, not
+    /// from a file).
+    pub books_toml: Option<String>,
+    /// Whether that file exists (absent: the defaults apply).
+    pub books_toml_exists: bool,
+    /// The config.json read for a receipt policy.
+    pub config_json: Option<String>,
+    /// Why the last edit failed to load, or null. While set, the settings
+    /// below are the last ones that loaded: fix the file.
+    pub reload_error: Option<String>,
+    /// How many times the settings have loaded (the first included); it
+    /// goes up each time an edit loads.
+    pub loads: u64,
+    /// `[company] name`.
+    pub company: String,
+    /// `[company] fiscal_year_start`, "MM-DD".
+    pub fiscal_year_start: String,
+    /// The return filed (`tax_form`, or from `tax_classification`), or null.
+    pub tax_form: Option<String>,
+    /// `[books] accounting_basis`.
+    pub basis: String,
+    /// The receipt rule in force.
+    pub receipt_rule: String,
+    /// `[[company.members]]`.
+    pub members: Vec<MemberSettingOut>,
+    /// `[books] cash_accounts`.
+    pub cash_accounts: Vec<String>,
+    /// `[books] financing_accounts`.
+    pub financing_accounts: Vec<String>,
+    /// `[books] investing_accounts`.
+    pub investing_accounts: Vec<String>,
+    /// `[books] close_into`.
+    pub close_into: Option<String>,
+    /// `[books] close_sweep`.
+    pub close_sweep: Vec<String>,
+    /// Settings that disagree with the books, each saying what to change in
+    /// wanderbooks.toml (or the chart). Empty: nothing to fix.
+    pub problems: Vec<String>,
+}
+
+/// Parameters for `books.assign_role`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AssignRoleParams {
+    /// The role, from books.roles: receivables, revenue, payables,
+    /// general_expense, retained_earnings, salary_expense,
+    /// payroll_tax_expense, federal_withholding, state_withholding,
+    /// social_security_payable, medicare_payable, other_deductions_payable.
+    pub role: String,
+    /// The account to fill it (code or id); null returns the role to its
+    /// default code.
+    pub account: Option<String>,
+}
+
+/// One control role and the account filling it.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct RoleOut {
+    /// The role's key, for books.assign_role.
+    pub role: String,
+    /// What it is for, e.g. "accounts receivable".
+    pub purpose: String,
+    /// The account type it needs.
+    pub account_type: String,
+    /// The code it uses when no account is assigned.
+    pub default_code: String,
+    /// Whether an account is assigned (false: the default code is used).
+    pub assigned: bool,
+    /// The account filling it now: its code, or null when none exists yet
+    /// (the first command that needs it creates it at the default code).
+    pub account_code: Option<String>,
+    /// That account's name.
+    pub account_name: Option<String>,
+}
+
+/// Result of `books.roles`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct RolesOut {
+    /// Every control role, in the engine's order.
+    pub roles: Vec<RoleOut>,
 }
 
 /// Parameters for `books.set_tax_category`.
@@ -1307,6 +1403,10 @@ pub struct DigestOut {
     /// lost; tell the human, and if they had just asked for a change,
     /// check it is there and redo it if not.
     pub journal_repairs: Vec<JournalRepair>,
+    /// Settings in wanderbooks.toml that need changing: an edit that
+    /// didn't load, or a setting that disagrees with the chart. Fix each
+    /// with the human, then check books.settings.
+    pub settings_problems: Vec<String>,
 }
 
 /// A torn journal tail set aside on open.

@@ -30,7 +30,10 @@ use std::collections::HashMap;
 /// (`LedgerError::ControlAccountMismatch`).
 #[derive(Clone, Copy, Debug)]
 pub struct ControlAccount {
-    /// The code the engine looks for.
+    /// The role's stable name, for assigning it an account
+    /// ([`Ledger::assign_role`]): `receivables`, `payables`, ...
+    pub key: &'static str,
+    /// The code the engine looks for when the role has no account assigned.
     pub code: &'static str,
     /// The name it gives the account when it creates it.
     pub name: &'static str,
@@ -41,12 +44,14 @@ pub struct ControlAccount {
 }
 
 const fn control(
+    key: &'static str,
     code: &'static str,
     name: &'static str,
     role: &'static str,
     account_type: AccountType,
 ) -> ControlAccount {
     ControlAccount {
+        key,
         code,
         name,
         role,
@@ -56,16 +61,23 @@ const fn control(
 
 /// A control account; see [`ControlAccount`].
 pub const RECEIVABLES: ControlAccount = control(
+    "receivables",
     "1200",
     "Accounts Receivable",
     "accounts receivable",
     AccountType::Asset,
 );
 /// A control account; see [`ControlAccount`].
-pub const REVENUE: ControlAccount =
-    control("4000", "Revenue", "invoice revenue", AccountType::Revenue);
+pub const REVENUE: ControlAccount = control(
+    "revenue",
+    "4000",
+    "Revenue",
+    "invoice revenue",
+    AccountType::Revenue,
+);
 /// A control account; see [`ControlAccount`].
 pub const PAYABLES: ControlAccount = control(
+    "payables",
     "2000",
     "Accounts Payable",
     "accounts payable",
@@ -73,6 +85,7 @@ pub const PAYABLES: ControlAccount = control(
 );
 /// A control account; see [`ControlAccount`].
 pub const GENERAL_EXPENSES: ControlAccount = control(
+    "general_expense",
     "6999",
     "General Expenses",
     "bill expense",
@@ -80,6 +93,7 @@ pub const GENERAL_EXPENSES: ControlAccount = control(
 );
 /// A control account; see [`ControlAccount`].
 pub const RETAINED_EARNINGS: ControlAccount = control(
+    "retained_earnings",
     periods::RETAINED_EARNINGS_CODE,
     "Retained Earnings",
     "retained earnings",
@@ -98,45 +112,57 @@ pub fn control_accounts() -> impl Iterator<Item = &'static ControlAccount> {
     .chain(PAYROLL.iter())
 }
 
+/// The control role named `key` (see [`ControlAccount::key`]).
+pub fn control_account(key: &str) -> Option<&'static ControlAccount> {
+    control_accounts().find(|c| c.key == key)
+}
+
 /// The payroll accounts, in [`PayrollAccounts`] order.
 pub const PAYROLL: [ControlAccount; 7] = [
     control(
+        "salary_expense",
         "6100",
         "Salary & Wage Expense",
         "salary expense",
         AccountType::Expense,
     ),
     control(
+        "payroll_tax_expense",
         "6110",
         "Payroll Tax Expense",
         "payroll tax expense",
         AccountType::Expense,
     ),
     control(
+        "federal_withholding",
         "2110",
         "Federal Withholding Payable",
         "federal withholding payable",
         AccountType::Liability,
     ),
     control(
+        "state_withholding",
         "2120",
         "State Withholding Payable",
         "state withholding payable",
         AccountType::Liability,
     ),
     control(
+        "social_security_payable",
         "2130",
         "SS Tax Payable",
         "social security tax payable",
         AccountType::Liability,
     ),
     control(
+        "medicare_payable",
         "2140",
         "Medicare Tax Payable",
         "Medicare tax payable",
         AccountType::Liability,
     ),
     control(
+        "other_deductions_payable",
         "2150",
         "Other Deductions Payable",
         "other deductions payable",
@@ -229,6 +255,9 @@ pub struct Ledger {
     invoice_payments: HashMap<InvoiceId, Vec<(EntryId, Decimal)>>,
     /// Each bill's payments (entry, amount), for aging as of a date.
     bill_payments: HashMap<BillId, Vec<(EntryId, Decimal)>>,
+    /// Control roles assigned an account ([`Ledger::assign_role`]), by
+    /// [`ControlAccount::key`]. A role not here uses its code.
+    roles: std::collections::BTreeMap<&'static str, AccountId>,
 }
 
 impl Ledger {
@@ -266,6 +295,7 @@ impl Ledger {
             entry_vendors: HashMap::new(),
             invoice_payments: HashMap::new(),
             bill_payments: HashMap::new(),
+            roles: std::collections::BTreeMap::new(),
         }
     }
 
@@ -775,7 +805,8 @@ impl Ledger {
         if self.chart.find_by_code(code).is_some() {
             return Err(LedgerError::DuplicateAccountCode(code.to_string()));
         }
-        if let Some(c) = control_accounts().find(|c| c.code == code)
+        if let Some(c) =
+            control_accounts().find(|c| c.code == code && !self.roles.contains_key(c.key))
             && (a.account_type != c.account_type || a.placeholder)
         {
             return Err(LedgerError::ControlAccountMismatch {
@@ -788,6 +819,124 @@ impl Ledger {
             });
         }
         Ok(())
+    }
+
+    /// The account that fills a control role now: the one assigned to it,
+    /// else the account at the role's code (`None` when there is none yet;
+    /// the first command that needs it creates it).
+    pub fn role_account(&self, c: &ControlAccount) -> Option<AccountId> {
+        match self.roles.get(c.key) {
+            Some(&id) => Some(id),
+            None => self.chart.find_by_code(c.code).map(|a| a.id),
+        }
+    }
+
+    /// The account assigned to a control role, if any (`None`: the role
+    /// uses its code).
+    pub fn role_assignment(&self, c: &ControlAccount) -> Option<AccountId> {
+        self.roles.get(c.key).copied()
+    }
+
+    /// Assign a control role an account of the books' own numbering, or
+    /// (`None`) return it to its code. Invoices, bills, payroll, and closes
+    /// then post the role there.
+    ///
+    /// ```text
+    /// GOAL: let a chart keep its own numbering: the engine's roles go to
+    ///       the accounts the human picks, not only to fixed codes.
+    /// SOURCE: docs/spec/rules.md B-4 (the elements), B-23 (control roles);
+    ///         DECISION (Stephen, 2026-10-15): roles are journaled, not
+    ///         configured, so replay never depends on a file.
+    /// INVARIANTS:
+    ///   1. After an assignment, every command that posts the role posts it
+    ///      to that account; after `None`, to the account at the role's
+    ///      code (created when first needed, as before).
+    ///   2. No account fills two roles.
+    ///   3. A role's account is always postable and of the role's type.
+    ///   4. Posted entries never change: an assignment only steers what
+    ///      later commands post.
+    ///   5. A refusal MUST leave the books unchanged.
+    /// SCENARIOS:
+    ///   1. IF the role is unknown, or the account is unknown: SHOULD refuse.
+    ///   2. IF the account (or, for `None`, the account at the role's
+    ///      code) is of another type or a placeholder: SHOULD refuse with
+    ///      ControlAccountMismatch.
+    ///   3. IF that account already fills another role: SHOULD refuse
+    ///      with RoleTaken.
+    ///   4. IF the role is a balance sheet one (an asset, liability, or
+    ///      equity role) and the account filling it now holds a balance,
+    ///      and the role would move: SHOULD refuse with RoleHoldsBalance
+    ///      BECAUSE the control account must keep agreeing with what it
+    ///      controls (open invoices, bills, taxes withheld); move the
+    ///      balance with an entry first. Revenue and expense roles move
+    ///      freely.
+    ///   5. IF the role already resolves to that account: SHOULD accept
+    ///      (the assignment is recorded).
+    /// ```
+    pub fn assign_role(
+        &mut self,
+        key: &str,
+        account: Option<AccountId>,
+    ) -> Result<(), LedgerError> {
+        let c = self.check_assign_role(key, account)?;
+        match account {
+            Some(id) => self.roles.insert(c.key, id),
+            None => self.roles.remove(c.key),
+        };
+        Ok(())
+    }
+
+    /// The validation behind [`Self::assign_role`], for stores that journal
+    /// before mutating. Returns the role.
+    pub fn check_assign_role(
+        &self,
+        key: &str,
+        account: Option<AccountId>,
+    ) -> Result<&'static ControlAccount, LedgerError> {
+        let c = control_account(key).ok_or_else(|| LedgerError::UnknownRole(key.to_string()))?;
+        let target = match account {
+            Some(id) => Some(self.chart.get(id).ok_or(LedgerError::UnknownAccount(id))?),
+            None => self.chart.find_by_code(c.code),
+        };
+        if let Some(a) = target {
+            if a.account_type != c.account_type || a.placeholder {
+                return Err(LedgerError::ControlAccountMismatch {
+                    code: a.code.clone(),
+                    name: a.name.clone(),
+                    role: c.role.to_string(),
+                    expected: c.account_type,
+                    found: a.account_type,
+                    placeholder: a.placeholder,
+                });
+            }
+            if let Some(other) =
+                control_accounts().find(|o| o.key != c.key && self.role_account(o) == Some(a.id))
+            {
+                return Err(LedgerError::RoleTaken {
+                    code: a.code.clone(),
+                    name: a.name.clone(),
+                    role: other.role.to_string(),
+                });
+            }
+        }
+        let now = self.role_account(c);
+        let balance_sheet = !matches!(c.account_type, AccountType::Revenue | AccountType::Expense);
+        if let Some(current) = now
+            && balance_sheet
+            && now != target.map(|a| a.id)
+        {
+            let balance = self.account_balance(current).unwrap_or(Decimal::ZERO);
+            if !balance.is_zero() {
+                let a = self.chart.get(current).expect("a role's account exists");
+                return Err(LedgerError::RoleHoldsBalance {
+                    role: c.role.to_string(),
+                    code: a.code.clone(),
+                    name: a.name.clone(),
+                    balance,
+                });
+            }
+        }
+        Ok(c)
     }
 
     /// Set (or clear, with `None`) an account's tax category, and optionally
@@ -1676,6 +1825,9 @@ impl Ledger {
     }
 
     fn retained_earnings_account(&mut self) -> Result<AccountId, LedgerError> {
+        if let Some(&id) = self.roles.get(RETAINED_EARNINGS.key) {
+            return Ok(id);
+        }
         Ok(
             match self.chart.find_by_code(periods::RETAINED_EARNINGS_CODE) {
                 Some(a) => a.id,
@@ -1970,6 +2122,11 @@ impl Ledger {
     /// ```
     fn check_controls(&self, controls: &[ControlAccount]) -> Result<(), LedgerError> {
         for c in controls {
+            // An assigned account was checked when it was assigned, and
+            // an account's type never changes.
+            if self.roles.contains_key(c.key) {
+                continue;
+            }
             if let Some(a) = self.chart.find_by_code(c.code)
                 && (a.account_type != c.account_type || a.placeholder)
             {
@@ -1990,7 +2147,10 @@ impl Ledger {
     /// run [`Self::check_controls`] first, so an existing account here is
     /// the right type.
     fn ensure_control(&mut self, c: &ControlAccount) -> AccountId {
-        self.ensure_account(c.code, c.name, c.account_type)
+        match self.roles.get(c.key) {
+            Some(&id) => id,
+            None => self.ensure_account(c.code, c.name, c.account_type),
+        }
     }
 
     /// Ensure an account exists by code, creating it with the given type
@@ -2808,14 +2968,15 @@ impl Ledger {
     /// means owed.
     pub fn payroll_tax_payables(&self) -> Vec<(AccountId, Decimal)> {
         let mut out = Vec::new();
-        for code in ["2110", "2120", "2130", "2140", "2150"] {
-            let Some(account) = self.chart.find_by_code(code) else {
+        for c in &PAYROLL[2..] {
+            let Some(account) = self.role_account(c) else {
                 continue;
             };
-            // The code resolved, so the balance lookup cannot fail.
-            let balance = self.account_balance(account.id).unwrap_or(Decimal::ZERO);
+            // The role resolved to an account, so the balance lookup
+            // cannot fail.
+            let balance = self.account_balance(account).unwrap_or(Decimal::ZERO);
             if !balance.is_zero() {
-                out.push((account.id, balance));
+                out.push((account, balance));
             }
         }
         out

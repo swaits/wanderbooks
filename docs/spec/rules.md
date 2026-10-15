@@ -464,3 +464,33 @@ accounts.
 `assets::check_asset_tag`, `assets::check_serial`. **Checked:**
 `ledger-core` `tests/spec_asset_tags.rs`; `ledger-store`
 `tests/asset_tags.rs`; `ledger-mcp` `tests/spec_assets.rs`.
+
+## B-25 Tax basis beside book value
+
+**Status:** AUTHORITY (`sources/irs-partnership-basis.md`); DECISION
+(Stephen, 2026-10-15: the register carries tax basis)
+
+Book value and tax basis are different numbers for the same asset. The
+book value of a member's contribution is its fair market value (Treas.
+Reg. §1.704-1(b)(2)(iv)(d)(1), cited). Its federal tax basis follows the
+rule that applies: property the company buys has a cost basis ("The basis
+of property shall be the cost of such property", IRC §1012(a)); property a
+member contributes keeps "the adjusted basis of such property to the
+contributing partner at the time of the contribution" (IRC §723,
+carryover); property a member converts from personal use depreciates from
+"the lesser of its fair market value or its adjusted depreciable basis"
+(Treas. Reg. §1.168(i)-4(b)(1)). The difference between fair market value
+and the contributor's adjusted basis is the built-in gain (positive) or
+loss (negative) that IRC §704(c) makes the partnership account for; a
+built-in loss counts only for the contributing member (§704(c)(1)(C)).
+wanderbooks records the rule, the contributor's adjusted basis, the
+resulting tax basis, and the built-in gain or loss; tax depreciation
+(MACRS, conventions, elections) stays with the CPA (`sources/irs-depreciation.md`).
+
+**Enforced:** `Ledger::set_asset_tax_basis` / `check_asset_tax_basis`
+(cost takes no contributor basis, a contribution requires one,
+non-negative, in cents), `Asset::tax_basis`, `Asset::built_in_gain`,
+`reports::fixed_asset_register` (per-row tax fields, `total_tax_basis`,
+`missing_tax_basis`). **Checked:** `ledger-core` `tests/spec_tax_basis.rs`;
+`ledger-store` `tests/asset_tags.rs` (`asset.tax_basis_set` journaling,
+replay, v9 migration, corrupt payloads); `ledger-mcp` `tests/spec_assets.rs`.

@@ -5,12 +5,12 @@
 use chrono::{Datelike, Days, Months, NaiveDate};
 use egui_kittest::Harness;
 use ledger_core::{
-    AccountType, AssetId, Currency, EntryId, Money, NewAsset, Side, depreciation_schedule,
-    fixed_asset_register,
+    AccountType, AssetId, Currency, EntryId, Money, NewAsset, Side, TaxBasis, TaxBasisRule,
+    depreciation_schedule, fixed_asset_register,
 };
 use ledger_gui::books::Books;
 use ledger_gui::nav::{ReportKind, Route};
-use ledger_gui::pages::assets::{MonthStatus, notices, schedule};
+use ledger_gui::pages::assets::{MonthStatus, TaxFacts, missing_tax_notice, notices, schedule};
 use ledger_gui::pages::journal::describe;
 use ledger_gui::{App, Source, attention, data, fmt, palette};
 use ledger_store::Store;
@@ -77,9 +77,11 @@ fn today() -> NaiveDate {
     d(TODAY.0, TODAY.1, TODAY.2)
 }
 
-/// A laptop (tagged, serial, depreciation through July), a monitor (no
-/// tag, through August), and an old laptop retagged, its serial cleared,
-/// and sold in June.
+/// A laptop (tagged, serial, depreciation through July; tax basis first
+/// recorded as a carryover, then corrected to cost), a monitor (no tag, no
+/// tax basis, through August), and an old laptop retagged, its serial
+/// cleared, converted from personal use worth less than its basis (a
+/// built-in loss), and sold in June.
 fn fixture(tag: &str) -> Fixture {
     let dir = TempDir::new(tag);
     let data = dir.0.join("books-data");
@@ -145,6 +147,16 @@ fn fixture(tag: &str) -> Fixture {
     s.set_asset_tag(old, "WL-0009").unwrap();
     s.set_asset_serial(old, Some("X1")).unwrap();
     s.set_asset_serial(old, None).unwrap();
+    let tax = |rule, basis: Option<i64>| TaxBasis {
+        rule,
+        contributor_basis: basis.map(|c| Decimal::new(c, 2)),
+    };
+    s.set_asset_tax_basis(laptop, tax(TaxBasisRule::Carryover, Some(200_000)))
+        .unwrap();
+    s.set_asset_tax_basis(laptop, tax(TaxBasisRule::Cost, None))
+        .unwrap();
+    s.set_asset_tax_basis(old, tax(TaxBasisRule::PersonalUseConversion, Some(70_000)))
+        .unwrap();
     for m in 1..=7 {
         s.run_depreciation(laptop, &format!("2026-{m:02}")).unwrap();
     }
@@ -437,6 +449,178 @@ fn attention_asks_for_depreciation_and_tags() {
         "{titles:?}"
     );
     assert_eq!(b.depreciation_due(today()).amount, Decimal::ZERO);
+}
+
+/// The viewer's tax figures are ledger-core's: each asset's
+/// (Asset::tax_basis, Asset::built_in_gain), each register row's, and the
+/// register's total and missing count, on every date.
+#[test]
+fn tax_basis_is_ledger_cores() {
+    let f = fixture("tax");
+    let b = &f.books;
+    for id in [f.laptop, f.monitor, f.old] {
+        let core = f.oracle.get_asset(id).unwrap();
+        let mine = TaxFacts::of(b.ledger.get_asset(id).unwrap());
+        assert_eq!(mine.rule, core.tax.map(|t| t.rule), "asset {id}");
+        assert_eq!(
+            mine.contributor_basis,
+            core.tax.and_then(|t| t.contributor_basis)
+        );
+        assert_eq!(mine.tax_basis, core.tax_basis(), "asset {id}");
+        assert_eq!(mine.built_in_gain, core.built_in_gain(), "asset {id}");
+    }
+    // Independently: the laptop's basis is its cost; the old laptop's is
+    // its value ($600.00, under the member's $700.00), a $100.00 loss.
+    let laptop = TaxFacts::of(b.ledger.get_asset(f.laptop).unwrap());
+    assert_eq!(laptop.rule, Some(TaxBasisRule::Cost));
+    assert_eq!(laptop.tax_basis, Some(Decimal::new(300_000, 2)));
+    assert_eq!(laptop.built_in_gain, None);
+    let old = TaxFacts::of(b.ledger.get_asset(f.old).unwrap());
+    assert_eq!(old.tax_basis, Some(Decimal::new(60_000, 2)));
+    assert_eq!(old.built_in_gain, Some(Decimal::new(-10_000, 2)));
+    assert_eq!(
+        old.summary(),
+        "Personal-use conversion · contributor's basis $700.00"
+    );
+    assert_eq!(
+        old.detail(),
+        "Tax basis $600.00: Personal-use conversion (Treas. Reg. §1.168(i)-4(b)); contributor's basis $700.00; built-in loss $100.00."
+    );
+    assert_eq!(
+        TaxFacts::of(b.ledger.get_asset(f.monitor).unwrap()).detail(),
+        "Tax basis not recorded."
+    );
+    assert_eq!(
+        TaxFacts::of(b.ledger.get_asset(f.monitor).unwrap()),
+        TaxFacts {
+            rule: None,
+            contributor_basis: None,
+            tax_basis: None,
+            built_in_gain: None
+        }
+    );
+    for as_of in [d(2026, 1, 31), d(2026, 6, 30), today()] {
+        let r = b.asset_register(as_of);
+        let oracle = fixed_asset_register(&f.oracle, as_of);
+        assert_eq!(r.total_tax_basis, oracle.total_tax_basis, "{as_of}");
+        assert_eq!(r.missing_tax_basis, oracle.missing_tax_basis, "{as_of}");
+        for x in &r.rows {
+            let a = f.oracle.get_asset(x.asset_id).unwrap();
+            let facts = TaxFacts::of_row(x);
+            assert_eq!(facts.tax_basis, a.tax_basis());
+            assert_eq!(facts.built_in_gain, a.built_in_gain());
+            assert_eq!(facts, TaxFacts::of(a));
+        }
+    }
+    // Today: the laptop's $3,000.00 (the monitor has none; the old laptop
+    // is gone), and one missing, said in the notices.
+    let r = b.asset_register(today());
+    assert_eq!(r.total_tax_basis, Decimal::new(300_000, 2));
+    assert_eq!(r.missing_tax_basis, 1);
+    let want = missing_tax_notice(1).unwrap();
+    assert!(want.starts_with("Tax basis not recorded for 1 asset"));
+    assert!(want.contains("books.set_asset_tax_basis"));
+    assert!(notices(b, &r).iter().any(|n| n.problem && n.text == want));
+    assert_eq!(missing_tax_notice(0), None);
+    assert!(
+        missing_tax_notice(2)
+            .unwrap()
+            .starts_with("Tax basis not recorded for 2 assets")
+    );
+}
+
+#[test]
+fn journal_text_for_tax_basis() {
+    let f = fixture("tax-journal");
+    let b = &f.books;
+    let texts: Vec<(String, Option<Route>)> = b
+        .journal
+        .iter()
+        .filter(|l| l.line_type == "asset.tax_basis_set")
+        .filter_map(|l| describe(b, l))
+        .map(|e| (e.text, e.route))
+        .collect();
+    assert_eq!(
+        texts,
+        vec![
+            (
+                "Tax basis of WL-0001: carryover, contributor's basis $2,000.00 → tax basis $2,000.00"
+                    .to_string(),
+                Some(Route::Asset(f.laptop))
+            ),
+            (
+                "Tax basis of WL-0001: cost, tax basis $3,000.00".to_string(),
+                Some(Route::Asset(f.laptop))
+            ),
+            (
+                "Tax basis of WL-0009: personal-use conversion, contributor's basis $700.00 → tax basis $600.00"
+                    .to_string(),
+                Some(Route::Asset(f.old))
+            ),
+        ]
+    );
+}
+
+/// An asset held with no tax basis asks for one, with a prompt naming
+/// the tool and the asset; recording it clears the item.
+#[test]
+fn attention_asks_for_tax_basis() {
+    let f = fixture("tax-attention");
+    let items = attention::find(&f.books);
+    let tax: Vec<_> = items
+        .iter()
+        .filter(|a| a.title.starts_with("No tax basis"))
+        .collect();
+    assert_eq!(tax.len(), 1, "only the monitor: {tax:#?}");
+    let item = tax[0];
+    assert_eq!(item.title, "No tax basis: Monitor");
+    assert_eq!(item.target, Some(Route::Asset(f.monitor)));
+    assert!(item.prompt.starts_with(&format!(
+        "In wanderbooks, record the tax basis of asset {} (\"Monitor\", book cost $1,200.00) with books.set_asset_tax_basis.",
+        f.monitor
+    )));
+    assert!(item.detail.contains("$1,200.00"));
+
+    let data = f._dir.0.join("books-data");
+    let mut s = Store::open(&data).unwrap();
+    s.set_asset_tag(f.monitor, "WL-0002").unwrap();
+    drop(s);
+    let b = load(&f._dir.0, today());
+    let item = attention::find(&b)
+        .into_iter()
+        .find(|a| a.title.starts_with("No tax basis"))
+        .expect("still missing");
+    assert_eq!(item.title, "No tax basis: WL-0002 Monitor");
+    assert!(
+        item.prompt
+            .starts_with("In wanderbooks, record the tax basis of WL-0002 (")
+    );
+
+    let mut s = Store::open(&data).unwrap();
+    s.set_asset_tax_basis(
+        f.monitor,
+        TaxBasis {
+            rule: TaxBasisRule::Carryover,
+            contributor_basis: Some(Decimal::new(90_000, 2)),
+        },
+    )
+    .unwrap();
+    drop(s);
+    let b = load(&f._dir.0, today());
+    assert!(
+        !attention::find(&b)
+            .iter()
+            .any(|a| a.title.starts_with("No tax basis"))
+    );
+    let r = b.asset_register(today());
+    assert_eq!(r.missing_tax_basis, 0);
+    assert!(
+        !notices(&b, &r)
+            .iter()
+            .any(|n| n.text.contains("Tax basis not recorded"))
+    );
+    // $3,000.00 laptop + the monitor's $900.00 carryover.
+    assert_eq!(r.total_tax_basis, Decimal::new(390_000, 2));
 }
 
 #[test]

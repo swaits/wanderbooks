@@ -379,6 +379,14 @@ pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
     // The label on the laptop, and its serial number.
     s.set_asset_tag(asset, "JS-0001")?;
     s.set_asset_serial(asset, Some("C02FK3XJQ6L4"))?;
+    // Bought by the company, so its federal tax basis is its cost.
+    s.set_asset_tax_basis(
+        asset,
+        ledger_core::TaxBasis {
+            rule: ledger_core::TaxBasisRule::Cost,
+            contributor_basis: None,
+        },
+    )?;
 
     // Prepaid insurance, spread over a year.
     let ins_date = day(start + Months::new(2), 15);

@@ -1,15 +1,21 @@
 // The fixed asset register: every asset, its cost, depreciation, and book
-// value, then the totals and the reconciliation to the general ledger.
+// value, then the totals and the reconciliation to the general ledger,
+// then each asset's federal tax basis beside its book cost, and the notes
+// that cite the tax basis rules.
 //
 // Everything arrives as data in sys.inputs.data (JSON), laid out by
 // ledger-import::asset_register, with amounts already split into exact
 // parts. The template only typesets: no arithmetic, and no text is ever
 // parsed as markup.
 //
-// Shape: { company, title, period, footer, columns: [10 headings], empty,
+// Shape: { company, title, period, footer, columns: [10 headings],
+//          tax_title, tax_columns: [7 headings], empty,
 //          lines: [{ tag, description, serial, in_service, cost, salvage,
-//                    life, accumulated, book_value, status, disposed }],
-//          totals: [cost, accumulated, book_value],
+//                    life, accumulated, book_value, status, disposed,
+//                    rule, rule_mark, recorded, contributor_basis|null,
+//                    tax_basis|null, built_in_gain|null }],
+//          totals: [cost, accumulated, book_value], tax_total,
+//          missing: text|null, notes: [{ mark, text }],
 //          reconciliation: [{ label, amount, difference }] }
 // where every amount is { digits: "1,234.56", negative }.
 
@@ -121,8 +127,8 @@
   ),
 )
 
-#v(14pt)
-#block(breakable: false, {
+// The reconciliation to the books, drawn beside the notes at the end.
+#let reconciliation = block(breakable: false, {
   text(weight: "semibold", "Reconciliation to the books")
   v(2pt)
   table(
@@ -147,3 +153,86 @@
       .flatten(),
   )
 })
+
+// Federal tax basis, asset by asset, beside the book cost it may differ
+// from; each rule marked with the number of the note that cites it.
+#let tax_numeric = (3, 4, 5, 6)
+#let tcols = d.tax_columns.len()
+#let maybe(x) = if x == none { [] } else { amount(x) }
+#v(12pt)
+#text(weight: "semibold", d.tax_title)
+#v(2pt)
+#table(
+  columns: (auto, 1fr, auto, 7.4em, 7.4em, 7.4em, 7.4em),
+  stroke: none,
+  inset: (x: 3.5pt, y: 3.4pt),
+  align: (col, row) => (if col in tax_numeric { right } else { left }) + (if row == 0 { bottom } else { horizon }),
+  table.header(
+    ..d.tax_columns.enumerate().map(((i, c)) => table.cell(
+      stroke: (top: firm, bottom: hair),
+      text(6.5pt, weight: "bold", tracking: 0.04em, {
+        upper(c)
+        if i == tcols - 1 { super("4") }
+      }),
+    )),
+  ),
+  ..if d.lines.len() == 0 {
+    (table.cell(colspan: tcols, emph(d.empty)),)
+  } else {
+    d
+      .lines
+      .map(l => {
+        let t(s) = if l.disposed { text(fill: quiet, s) } else { s }
+        let rule = if l.recorded {
+          [#l.rule#super(l.rule_mark)]
+        } else if l.disposed {
+          emph(l.rule)
+        } else {
+          text(fill: rgb("#9a5b00"), emph(l.rule))
+        }
+        (
+          t(l.tag),
+          t(l.description),
+          t(rule),
+          t(amount(l.cost)),
+          t(maybe(l.contributor_basis)),
+          t(maybe(l.tax_basis)),
+          t(maybe(l.built_in_gain)),
+        )
+      })
+      .flatten()
+  },
+  ..{
+    let s = (top: firm)
+    let blank = table.cell(stroke: s, [])
+    (
+      table.cell(stroke: s, colspan: 5, text(weight: "bold", "Total tax basis, assets held")),
+      table.cell(stroke: s, text(weight: "bold", amount(d.tax_total, currency: true))),
+      blank,
+    )
+  },
+  table.cell(
+    colspan: tcols,
+    inset: (x: 0pt, y: 0pt),
+    stack(spacing: 1.6pt, line(length: 100%, stroke: firm), line(length: 100%, stroke: firm)),
+  ),
+)
+#if d.missing != none {
+  v(4pt)
+  text(fill: rgb("#9a5b00"), emph(d.missing))
+}
+
+// Notes: book value against tax basis, and each rule's citation.
+#let notes = {
+  set text(7.5pt, fill: luma(70))
+  set par(leading: 0.5em)
+  text(weight: "semibold", fill: ink, "Notes")
+  block(above: 6pt, d.notes.at(0).text)
+  for n in d.notes.slice(1) {
+    block(above: 4pt, grid(columns: (1.2em, 1fr), super(n.mark), n.text))
+  }
+}
+
+// The reconciliation and the notes, side by side.
+#v(12pt)
+#grid(columns: (auto, 1fr), column-gutter: 32pt, reconciliation, pad(top: 1pt, notes))

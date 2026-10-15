@@ -945,14 +945,22 @@ fn aging(rows: Vec<ledger_core::AgingRow>, as_of: NaiveDate) -> Table {
 
 /// The fixed asset register on `as_of`: ledger-core's
 /// `fixed_asset_register`, laid out, with its reconciliation to the
-/// general ledger and what that says (the Assets page's notices).
+/// general ledger and what that says (the Assets page's notices). Each
+/// asset's federal tax basis sits beside its book figures: contributor's
+/// basis, tax basis, and built-in gain (loss), the register row's own,
+/// with its rule (and citation) in the detail; the tax basis total is the
+/// register's.
 fn asset_register(b: &Books, as_of: NaiveDate) -> Table {
     let r = b.asset_register(as_of);
     let mut t = Table::new(vec![
         "Cost".into(),
         "Accumulated".into(),
         "Book value".into(),
+        "Contributor's basis".into(),
+        "Tax basis".into(),
+        "Built-in gain (loss)".into(),
     ]);
+    let none3 = || vec![Cell::none(), Cell::none(), Cell::none()];
     if r.rows.is_empty() {
         t.note(format!(
             "No fixed asset was in service by {}.",
@@ -975,6 +983,18 @@ fn asset_register(b: &Books, as_of: NaiveDate) -> Table {
         if !x.salvage.is_zero() {
             detail.push(format!("salvage {}", fmt::dollars(x.salvage)));
         }
+        let tax = super::assets::TaxFacts::of_row(x);
+        detail.push(match tax.rule {
+            Some(rule) => format!(
+                "tax basis: {}",
+                ledger_import::asset_register::rule_cited(rule)
+            ),
+            None => "tax basis not recorded".into(),
+        });
+        let opt = |v: Option<Decimal>| Cell {
+            value: v,
+            drill: None,
+        };
         let cells = match x.disposed {
             Some(_) => {
                 detail.push(format!(
@@ -982,12 +1002,15 @@ fn asset_register(b: &Books, as_of: NaiveDate) -> Table {
                     super::assets::status_text(x.disposed),
                     fmt::dollars(x.cost)
                 ));
-                vec![Cell::none(), Cell::none(), Cell::none()]
+                [none3(), none3()].concat()
             }
             None => vec![
                 Cell::of(x.cost),
                 Cell::of(x.accumulated),
                 Cell::of(x.book_value),
+                opt(tax.contributor_basis),
+                opt(tax.tax_basis),
+                opt(tax.built_in_gain),
             ],
         };
         t.rows.push(Row {
@@ -1004,6 +1027,9 @@ fn asset_register(b: &Books, as_of: NaiveDate) -> Table {
             Cell::of(r.total_cost),
             Cell::of(r.total_accumulated),
             Cell::of(r.total_book_value),
+            Cell::none(),
+            Cell::of(r.total_tax_basis),
+            Cell::none(),
         ],
     );
     t.section("Reconciliation to the books");
@@ -1039,6 +1065,9 @@ fn asset_register(b: &Books, as_of: NaiveDate) -> Table {
                 drill: accum_drill,
             },
             Cell::of(r.ledger_cost - r.ledger_accumulated),
+            Cell::none(),
+            Cell::none(),
+            Cell::none(),
         ],
     );
     t.row(
@@ -1048,11 +1077,17 @@ fn asset_register(b: &Books, as_of: NaiveDate) -> Table {
             Cell::of(-r.unregistered_cost()),
             Cell::of(r.unposted_depreciation()),
             Cell::of(-r.unregistered_cost() - r.unposted_depreciation()),
+            Cell::none(),
+            Cell::none(),
+            Cell::none(),
         ],
     );
     for n in super::assets::notices(b, &r) {
         t.note(n.text);
     }
+    t.note(
+        "Cost is what the company paid or, for a member's contribution, its fair market value then; the tax basis follows its rule and can differ. Built-in gain (loss) is that value less the contributor's basis (IRC §704(c)). Tax depreciation starts from the tax basis — the CPA's.",
+    );
     t
 }
 
@@ -1997,6 +2032,74 @@ fn vendor_1099(ui: &mut Ui, b: &Books, year: i32, shell: &mut Shell<'_>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The fixed asset register report's tax columns are the register's:
+    /// each held asset's contributor's basis, tax basis, and built-in gain
+    /// (ledger-core's Asset::tax_basis and built_in_gain), the total its
+    /// total_tax_basis, and its rule (cited) in the detail.
+    #[test]
+    fn asset_register_report_carries_tax_basis() {
+        let today = NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
+        let dir = std::env::temp_dir().join(format!("ledger-gui-tax-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        crate::demo::build(&dir, today).unwrap();
+        let b = crate::data::load_once(&crate::data::Source {
+            data_dir: dir.join("books-data"),
+            books_toml: Some(dir.join("wanderbooks.toml")),
+            today: Some(today),
+        })
+        .unwrap();
+        let r = ledger_core::fixed_asset_register(&b.ledger, today);
+        assert!(!r.rows.is_empty(), "the demo has an asset");
+        assert_eq!(r.missing_tax_basis, 0, "the demo's asset has a tax basis");
+        let t = asset_register(&b, today);
+        assert_eq!(
+            t.columns,
+            [
+                "Cost",
+                "Accumulated",
+                "Book value",
+                "Contributor's basis",
+                "Tax basis",
+                "Built-in gain (loss)"
+            ]
+        );
+        for x in &r.rows {
+            let a = b.ledger.get_asset(x.asset_id).unwrap();
+            let row = t
+                .rows
+                .iter()
+                .find(|row| row.kind == Kind::Line && row.label.contains(&x.description))
+                .expect("a line per asset");
+            let v: Vec<Option<Decimal>> = row.cells.iter().map(|c| c.value).collect();
+            assert_eq!(
+                v,
+                [
+                    Some(x.cost),
+                    Some(x.accumulated),
+                    Some(x.book_value),
+                    a.tax.and_then(|t| t.contributor_basis),
+                    a.tax_basis(),
+                    a.built_in_gain(),
+                ]
+            );
+            assert!(row.detail.contains("tax basis: Cost"), "{}", row.detail);
+        }
+        let total = t.rows.iter().find(|row| row.label == "Total held").unwrap();
+        assert_eq!(total.cells[4].value, Some(r.total_tax_basis));
+        assert_eq!(total.cells[4].value, r.rows[0].tax_basis);
+        assert!(
+            t.rows
+                .iter()
+                .all(|row| row.cells.is_empty() || row.cells.len() == 6)
+        );
+        assert!(
+            t.rows
+                .iter()
+                .any(|row| row.kind == Kind::Note && row.label.contains("fair market value"))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// Every table-backed report typesets as a PDF, in its plain, by-month,
     /// and compared layouts. Set `PDF_DIR` to keep the files for eyes.

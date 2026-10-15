@@ -1459,6 +1459,7 @@ impl Ledger {
                 tag: None,
                 serial: None,
                 acquired_by: None,
+                tax: None,
             },
         );
         Ok(id)
@@ -1654,6 +1655,47 @@ impl Ledger {
             return Err(LedgerError::EmptyAssetDescription);
         }
         Ok(())
+    }
+
+    /// Record an asset's federal tax basis: the rule, and for a member's
+    /// contribution the member's adjusted basis. Book figures don't change.
+    ///
+    /// ```text
+    /// GOAL: the register carries tax basis beside book value, so book and
+    ///       tax never get confused and the CPA sees both.
+    /// SOURCE: docs/spec/rules.md B-25; docs/spec/sources/
+    ///         irs-partnership-basis.md.
+    /// INVARIANTS:
+    ///   1. Cost takes no contributor basis; Carryover and
+    ///      PersonalUseConversion require one.
+    ///   2. A contributor basis is non-negative, in cents at most.
+    ///   3. A refusal MUST leave the books unchanged.
+    /// SCENARIOS:
+    ///   1. IF the asset is unknown, or 1 or 2 fails: SHOULD refuse with
+    ///      UnknownAsset or InvalidTaxBasis.
+    ///   2. IF set again: the new record replaces the old (the journal
+    ///      keeps both).
+    /// ```
+    pub fn set_asset_tax_basis(
+        &mut self,
+        id: AssetId,
+        tax: assets::TaxBasis,
+    ) -> Result<(), LedgerError> {
+        self.check_asset_tax_basis(id, tax)?;
+        self.assets.get_mut(&id).expect("checked").tax = Some(tax);
+        Ok(())
+    }
+
+    /// The validation behind [`Self::set_asset_tax_basis`].
+    pub fn check_asset_tax_basis(
+        &self,
+        id: AssetId,
+        tax: assets::TaxBasis,
+    ) -> Result<(), LedgerError> {
+        if !self.assets.contains_key(&id) {
+            return Err(LedgerError::UnknownAsset(id));
+        }
+        tax.check().map_err(LedgerError::InvalidTaxBasis)
     }
 
     /// The asset whose current tag is `tag`, ignoring case.

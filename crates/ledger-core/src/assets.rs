@@ -80,6 +80,118 @@ pub struct Asset {
     /// ([`crate::Ledger::set_asset_acquisition`]).
     #[serde(default)]
     pub acquired_by: Option<crate::EntryId>,
+    /// Its federal tax basis, if recorded ([`crate::Ledger::set_asset_tax_basis`]).
+    /// Book cost is [`Asset::cost`]; tax basis can differ (a member's
+    /// contribution carries the member's basis, not its market value).
+    #[serde(default)]
+    pub tax: Option<TaxBasis>,
+}
+
+/// Which rule sets an asset's federal tax basis.
+///
+/// ```text
+/// SOURCE: docs/spec/sources/irs-partnership-basis.md: IRC §1012(a) (cost),
+///         IRC §723 (property a partner contributes keeps the partner's
+///         adjusted basis), Treas. Reg. §1.168(i)-4(b) (property converted
+///         from personal use depreciates from the lesser of its fair market
+///         value and its adjusted basis), IRC §704(c)(1)(C) (built-in loss).
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaxBasisRule {
+    /// Bought by the company: its cost (IRC §1012(a)), the book cost.
+    Cost,
+    /// Contributed by a member from business use: the member's adjusted
+    /// basis carries over (IRC §723).
+    Carryover,
+    /// Contributed by a member from personal use: depreciable basis is the
+    /// lesser of fair market value (the book cost) and the member's
+    /// adjusted basis (Treas. Reg. §1.168(i)-4(b), with IRC §723).
+    PersonalUseConversion,
+}
+
+impl TaxBasisRule {
+    /// Its wire name: `cost`, `carryover`, `personal_use_conversion`.
+    pub fn key(self) -> &'static str {
+        match self {
+            TaxBasisRule::Cost => "cost",
+            TaxBasisRule::Carryover => "carryover",
+            TaxBasisRule::PersonalUseConversion => "personal_use_conversion",
+        }
+    }
+
+    /// The rule named `key`.
+    pub fn parse(key: &str) -> Option<Self> {
+        [Self::Cost, Self::Carryover, Self::PersonalUseConversion]
+            .into_iter()
+            .find(|r| r.key() == key)
+    }
+}
+
+/// An asset's federal tax basis: the rule and, for a member's
+/// contribution, the member's adjusted basis at the time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaxBasis {
+    /// The rule.
+    pub rule: TaxBasisRule,
+    /// The contributing member's adjusted basis at contribution (cost less
+    /// any depreciation they took). `None` for [`TaxBasisRule::Cost`].
+    pub contributor_basis: Option<Decimal>,
+}
+
+impl TaxBasis {
+    /// Whether the record fits its rule: Cost takes no contributor basis;
+    /// Carryover and PersonalUseConversion require a non-negative one in
+    /// cents at most. Returns why not. Needs no asset, so a caller can check
+    /// before registering one.
+    pub fn check(&self) -> Result<(), String> {
+        use TaxBasisRule::*;
+        match (self.rule, self.contributor_basis) {
+            (Cost, Some(_)) => {
+                Err("a purchase's tax basis is its cost; give no contributor basis".into())
+            }
+            (Carryover | PersonalUseConversion, None) => {
+                Err("a contribution needs the contributing member's adjusted basis".into())
+            }
+            (_, Some(b)) if b.is_sign_negative() && !b.is_zero() => {
+                Err("a basis can't be negative".into())
+            }
+            (_, Some(b)) if b.normalize().scale() > 2 => Err("a basis is in cents at most".into()),
+            _ => Ok(()),
+        }
+    }
+}
+
+impl Asset {
+    /// Its depreciable federal tax basis, by its rule, or `None` if not
+    /// recorded.
+    ///
+    /// ```text
+    /// INVARIANTS:
+    ///   1. Cost: the book cost.
+    ///   2. Carryover: the contributor's adjusted basis.
+    ///   3. PersonalUseConversion: min(book cost, contributor's basis); the
+    ///      book cost of a contribution is its fair market value.
+    /// ```
+    pub fn tax_basis(&self) -> Option<Decimal> {
+        let t = self.tax?;
+        Some(match (t.rule, t.contributor_basis) {
+            (TaxBasisRule::Cost, _) => self.cost.amount,
+            (TaxBasisRule::Carryover, Some(b)) => b,
+            (TaxBasisRule::PersonalUseConversion, Some(b)) => b.min(self.cost.amount),
+            (_, None) => return None,
+        })
+    }
+
+    /// Built-in gain (positive) or loss (negative) at contribution, for
+    /// IRC §704(c): fair market value (the book cost) less the contributor's
+    /// adjusted basis. `None` for a purchase or when not recorded. A
+    /// built-in loss counts only for the contributing member
+    /// (§704(c)(1)(C)).
+    pub fn built_in_gain(&self) -> Option<Decimal> {
+        let b = self.tax?.contributor_basis?;
+        Some(self.cost.amount - b)
+    }
 }
 
 /// The longest asset tag.

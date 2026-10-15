@@ -1515,6 +1515,44 @@ pub struct RegisterAssetParams {
     /// The posted entry that put it on the books (its purchase, or a
     /// member's contribution of it); it must debit the cost account.
     pub acquisition_entry: Option<u64>,
+    /// The federal tax basis rule (see books.set_asset_tax_basis): cost,
+    /// carryover, or personal_use_conversion. Omit to record it later.
+    pub tax_basis_rule: Option<String>,
+    /// The contributing member's adjusted basis, for carryover and
+    /// personal_use_conversion.
+    pub contributor_basis: Option<String>,
+}
+
+/// Parameters for `books.set_asset_tax_basis`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SetAssetTaxBasisParams {
+    /// The asset: its id or tag.
+    pub asset: String,
+    /// "cost" (the company bought it: basis is its cost), "carryover" (a
+    /// member contributed business property: the member's adjusted basis,
+    /// IRC §723), or "personal_use_conversion" (a member contributed
+    /// personal-use property: the lesser of fair market value and the
+    /// member's adjusted basis, Treas. Reg. §1.168(i)-4(b)).
+    pub rule: String,
+    /// The contributing member's adjusted basis at contribution, decimal
+    /// string (what they paid, less any depreciation they took). Required
+    /// for carryover and personal_use_conversion; omit for cost.
+    pub contributor_basis: Option<String>,
+}
+
+/// An asset's federal tax basis, as tools report it.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct TaxBasisOut {
+    /// The rule: cost, carryover, or personal_use_conversion.
+    pub rule: String,
+    /// The contributing member's adjusted basis, decimal string, if a
+    /// contribution.
+    pub contributor_basis: Option<String>,
+    /// The depreciable federal tax basis, decimal string.
+    pub tax_basis: Option<String>,
+    /// Built-in gain (+) or loss (−) at contribution (fair market value less
+    /// the contributor's basis), IRC §704(c), decimal string.
+    pub built_in_gain: Option<String>,
 }
 
 /// Result of `books.register_asset`.
@@ -1639,6 +1677,8 @@ pub struct AssetSummary {
     pub serial: Option<String>,
     /// The entry that acquired it, if linked.
     pub acquisition_entry: Option<u64>,
+    /// Its federal tax basis, if recorded.
+    pub tax: Option<TaxBasisOut>,
     /// Asset description.
     pub description: String,
     /// Purchase date, YYYY-MM-DD.

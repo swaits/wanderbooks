@@ -28,11 +28,28 @@
 //!   5. Header and footer as on every statement: company, "Fixed Asset
 //!      Register", "As of DATE"; basis, prepared on, journal seq.
 //!   6. PDF: deterministic bytes; every text is data, never markup.
+//!   7. Tax basis beside book value: every line carries its tax basis
+//!      rule (in words: [`rule_label`], [`rule_cited`]), the contributor's
+//!      basis, the tax basis, and the built-in gain (loss), each the
+//!      register row's own (ledger_core::Asset::tax_basis,
+//!      Asset::built_in_gain), never re-derived here; a line with none
+//!      recorded says "Not recorded" and leaves the amounts blank.
+//!   8. The tax basis total is the register's total_tax_basis; when
+//!      missing_tax_basis > 0 a line says "Tax basis not recorded for N
+//!      asset(s)" (see [`missing_line`]).
+//!   9. The notes ([`notes`]) say that book value is fair market value at
+//!      contribution and tax basis follows its rule, and cite each rule
+//!      (IRC §1012(a), §723, Treas. Reg. §1.168(i)-4(b), IRC §704(c)).
+//!      The PDF marks each rule in the tax table with its note's number.
 //! ```
+//!
+//! SOURCE (7-9): docs/spec/rules.md B-25;
+//! docs/spec/sources/irs-partnership-basis.md.
 
 use crate::pdf::{INTER, PdfError};
 use crate::report::{ReportMeta, amount_parts, format_amount, long_date};
 use crate::xlsx::{Formats, XlsxError, footer, header, number};
+use ledger_core::TaxBasisRule;
 use ledger_core::reports::{AssetRegister, AssetRegisterRow};
 use rust_decimal::Decimal;
 use rust_xlsxwriter::{Format, FormatAlign, Workbook};
@@ -58,8 +75,134 @@ pub const COLUMNS: [&str; 10] = [
     "Status",
 ];
 
+/// The PDF's tax basis table's headings, left to right.
+pub const TAX_COLUMNS: [&str; 7] = [
+    "Tag",
+    "Description",
+    "Tax basis rule",
+    "Book cost",
+    "Contributor's basis",
+    "Tax basis",
+    "Built-in gain (loss)",
+];
+
+/// The XLSX headings, left to right: the book columns, the tax columns,
+/// then the status.
+pub const XLSX_COLUMNS: [&str; 14] = [
+    "Tag",
+    "Description",
+    "Serial",
+    "In service",
+    "Cost",
+    "Salvage",
+    "Life (months)",
+    "Accumulated depreciation",
+    "Book value",
+    "Tax basis rule",
+    "Contributor's basis",
+    "Tax basis",
+    "Built-in gain (loss)",
+    "Status",
+];
+
 /// The line shown when there are no assets.
 pub const EMPTY: &str = "No fixed assets";
+
+/// The tax table's title.
+pub const TAX_TITLE: &str = "Federal tax basis";
+
+/// The rule cell of an asset with no tax basis recorded.
+pub const NOT_RECORDED: &str = "Not recorded";
+
+/// A rule in short words, for the table: "Cost", "Carryover",
+/// "Personal-use conversion".
+pub fn rule_label(r: TaxBasisRule) -> &'static str {
+    match r {
+        TaxBasisRule::Cost => "Cost",
+        TaxBasisRule::Carryover => "Carryover",
+        TaxBasisRule::PersonalUseConversion => "Personal-use conversion",
+    }
+}
+
+/// A rule in words with its citation: "Cost", "Carryover (IRC §723)",
+/// "Personal-use conversion (Treas. Reg. §1.168(i)-4(b))".
+pub fn rule_cited(r: TaxBasisRule) -> &'static str {
+    match r {
+        TaxBasisRule::Cost => "Cost",
+        TaxBasisRule::Carryover => "Carryover (IRC §723)",
+        TaxBasisRule::PersonalUseConversion => {
+            "Personal-use conversion (Treas. Reg. §1.168(i)-4(b))"
+        }
+    }
+}
+
+/// The number of a rule's note in [`notes`].
+pub fn rule_mark(r: TaxBasisRule) -> &'static str {
+    match r {
+        TaxBasisRule::Cost => "1",
+        TaxBasisRule::Carryover => "2",
+        TaxBasisRule::PersonalUseConversion => "3",
+    }
+}
+
+/// One note under the register.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Note {
+    /// Its number, as the tax table marks it, or empty for a general note.
+    pub mark: String,
+    /// What it says.
+    pub text: String,
+}
+
+/// The notes (INVARIANT 9): book value against tax basis, then each
+/// rule's citation and the built-in gain (loss).
+pub fn notes() -> Vec<Note> {
+    let n = |mark: &str, text: &str| Note {
+        mark: mark.to_string(),
+        text: text.to_string(),
+    };
+    vec![
+        n(
+            "",
+            "Book value is the fair market value at contribution for property a member contributed, \
+             and the price paid for property the company bought; tax basis follows its rule and can \
+             differ. Depreciation here is book depreciation; tax depreciation starts from the tax \
+             basis and is the CPA's.",
+        ),
+        n(
+            rule_mark(TaxBasisRule::Cost),
+            "Cost: property the company bought has a basis of its cost (IRC §1012(a)).",
+        ),
+        n(
+            rule_mark(TaxBasisRule::Carryover),
+            "Carryover (IRC §723): property a member contributes keeps the member's adjusted \
+             basis at contribution (their cost less any depreciation they took).",
+        ),
+        n(
+            rule_mark(TaxBasisRule::PersonalUseConversion),
+            "Personal-use conversion (Treas. Reg. §1.168(i)-4(b)): property converted from \
+             personal use depreciates from the lesser of its fair market value and the member's \
+             adjusted basis at conversion.",
+        ),
+        n(
+            "4",
+            "Built-in gain (loss): fair market value at contribution less the contributor's basis \
+             (IRC §704(c)(1)(A)); a built-in loss is taken into account only for the contributing \
+             member (IRC §704(c)(1)(C)).",
+        ),
+    ]
+}
+
+/// "Tax basis not recorded for 1 asset" / "... for 2 assets", or `None`
+/// when every asset held has one.
+pub fn missing_line(missing: usize) -> Option<String> {
+    (missing > 0).then(|| {
+        format!(
+            "Tax basis not recorded for {missing} {}",
+            if missing == 1 { "asset" } else { "assets" }
+        )
+    })
+}
 
 /// One asset's line.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -86,6 +229,14 @@ pub struct AssetLine {
     pub status: String,
     /// Disposed by the date (shown, not in the totals).
     pub disposed: bool,
+    /// The tax basis rule, if recorded.
+    pub tax_rule: Option<TaxBasisRule>,
+    /// The contributing member's adjusted basis (a contribution only).
+    pub contributor_basis: Option<Decimal>,
+    /// The depreciable federal tax basis, if recorded.
+    pub tax_basis: Option<Decimal>,
+    /// Built-in gain (+) or loss (−) at contribution, if any.
+    pub built_in_gain: Option<Decimal>,
 }
 
 /// Which register column a reconciliation amount sits under.
@@ -122,6 +273,12 @@ pub struct RegisterLayout {
     /// Total cost, accumulated depreciation, and book value of the assets
     /// held.
     pub totals: [Decimal; 3],
+    /// Total tax basis of the assets held that have one.
+    pub tax_total: Decimal,
+    /// [`missing_line`] of the register's missing_tax_basis.
+    pub missing: Option<String>,
+    /// [`notes`].
+    pub notes: Vec<Note>,
     /// Cost then accumulated depreciation: per register, per books,
     /// difference.
     pub reconciliation: Vec<ReconLine>,
@@ -162,9 +319,16 @@ pub fn layout(r: &AssetRegister) -> RegisterLayout {
                 book_value: a.book_value,
                 status: status(a),
                 disposed: a.disposed.is_some(),
+                tax_rule: a.tax_rule,
+                contributor_basis: a.contributor_basis,
+                tax_basis: a.tax_basis,
+                built_in_gain: a.built_in_gain,
             })
             .collect(),
         totals: [r.total_cost, r.total_accumulated, r.total_book_value],
+        tax_total: r.total_tax_basis,
+        missing: missing_line(r.missing_tax_basis),
+        notes: notes(),
         reconciliation: vec![
             recon("Cost per register", r.total_cost, ReconColumn::Cost, false),
             recon("Cost per books", r.ledger_cost, ReconColumn::Cost, false),
@@ -199,20 +363,25 @@ pub fn layout(r: &AssetRegister) -> RegisterLayout {
 /// The fixed asset register as XLSX bytes.
 ///
 /// Layout as every statement (crate::xlsx INVARIANT 4): company, title,
-/// and date on rows 1-3, headings on row 5, one row per asset from row 6,
-/// amounts as numbers in the accounting format; then the totals row
-/// (double rule), an empty row, "Reconciliation to the books", and its
-/// lines with amounts under Cost and Accumulated depreciation.
+/// and date on rows 1-3, headings ([`XLSX_COLUMNS`]) on row 5, one row
+/// per asset from row 6, amounts as numbers in the accounting format, the
+/// tax rule in words with its citation ([`rule_cited`]); then the totals
+/// row (double rule) with the tax basis total under Tax basis, the
+/// missing tax basis line when there is one, an empty row, "Reconciliation
+/// to the books" and its lines with amounts under Cost and Accumulated
+/// depreciation, an empty row, and "Notes" with [`notes`].
 pub fn asset_register_xlsx(r: &AssetRegister, meta: &ReportMeta) -> Result<Vec<u8>, XlsxError> {
+    const AMOUNTS: [u16; 7] = [4, 5, 7, 8, 10, 11, 12];
+    const TOTALS: [u16; 4] = [4, 7, 8, 11];
     let l = layout(r);
     let mut workbook = Workbook::new();
     let sheet = workbook.add_worksheet();
     let f = Formats::new();
     sheet.set_name(TITLE)?;
-    let width = COLUMNS.len() as u16;
+    let width = XLSX_COLUMNS.len() as u16;
     let mut row = header(sheet, &f, meta, &l.title, &l.period, width)?;
-    for (i, h) in COLUMNS.iter().enumerate() {
-        let fmt = if (4..=8).contains(&i) {
+    for (i, h) in XLSX_COLUMNS.iter().enumerate() {
+        let fmt = if AMOUNTS.contains(&(i as u16)) || i == 6 {
             &f.header_right
         } else {
             &f.header
@@ -226,6 +395,7 @@ pub fn asset_register_xlsx(r: &AssetRegister, meta: &ReportMeta) -> Result<Vec<u
     }
     let quiet = Format::new().set_italic().set_font_color("#666666");
     let quiet_plain = f.plain.clone().set_italic().set_font_color("#666666");
+    let missing = Format::new().set_italic().set_font_color("#9A5B00");
     for a in &l.lines {
         let (text, amount) = if a.disposed {
             (&quiet, &quiet_plain)
@@ -246,17 +416,43 @@ pub fn asset_register_xlsx(r: &AssetRegister, meta: &ReportMeta) -> Result<Vec<u
         )?;
         number(sheet, row, 7, a.accumulated, amount)?;
         number(sheet, row, 8, a.book_value, amount)?;
-        sheet.write_string_with_format(row, 9, &a.status, text)?;
+        match a.tax_rule {
+            Some(rule) => sheet.write_string_with_format(row, 9, rule_cited(rule), text)?,
+            None => sheet.write_string_with_format(
+                row,
+                9,
+                NOT_RECORDED,
+                if a.disposed { text } else { &missing },
+            )?,
+        };
+        for (c, v) in [
+            (10, a.contributor_basis),
+            (11, a.tax_basis),
+            (12, a.built_in_gain),
+        ] {
+            if let Some(v) = v {
+                number(sheet, row, c, v, amount)?;
+            }
+        }
+        sheet.write_string_with_format(row, 13, &a.status, text)?;
         row += 1;
     }
     sheet.write_string_with_format(row, 0, "Total, assets held", &f.bold)?;
-    for c in (1..width).filter(|c| ![4, 7, 8].contains(c)) {
+    for c in (1..width).filter(|c| !TOTALS.contains(c)) {
         sheet.write_blank(row, c, &f.dollars_total)?;
     }
-    for (c, d) in [4u16, 7, 8].into_iter().zip(l.totals) {
+    for (c, d) in TOTALS
+        .into_iter()
+        .zip(l.totals.into_iter().chain([l.tax_total]))
+    {
         number(sheet, row, c, d, &f.dollars_total)?;
     }
-    row += 2;
+    row += 1;
+    if let Some(m) = &l.missing {
+        sheet.write_string_with_format(row, 0, m, &f.sub_label)?;
+        row += 1;
+    }
+    row += 1;
     sheet.write_string_with_format(row, 0, "Reconciliation to the books", &f.bold)?;
     row += 1;
     for line in &l.reconciliation {
@@ -276,6 +472,17 @@ pub fn asset_register_xlsx(r: &AssetRegister, meta: &ReportMeta) -> Result<Vec<u
             row += 1;
         }
     }
+    sheet.write_string_with_format(row, 0, "Notes", &f.bold)?;
+    row += 1;
+    for n in &l.notes {
+        let text = if n.mark.is_empty() {
+            n.text.clone()
+        } else {
+            format!("{}. {}", n.mark, n.text)
+        };
+        sheet.write_string_with_format(row, 0, text, &f.line_label)?;
+        row += 1;
+    }
     for (c, w) in [
         (0, 12.0),
         (1, 40.0),
@@ -286,11 +493,15 @@ pub fn asset_register_xlsx(r: &AssetRegister, meta: &ReportMeta) -> Result<Vec<u
         (6, 9.0),
         (7, 16.0),
         (8, 14.0),
-        (9, 34.0),
+        (9, 30.0),
+        (10, 14.0),
+        (11, 14.0),
+        (12, 14.0),
+        (13, 34.0),
     ] {
         sheet.set_column_width(c, w)?;
     }
-    footer(sheet, &f, meta, row.saturating_sub(1), width)?;
+    footer(sheet, &f, meta, row, width)?;
     Ok(workbook.save_to_buffer()?)
 }
 
@@ -311,6 +522,10 @@ fn amount(d: Decimal) -> serde_json::Value {
     serde_json::json!({ "digits": p.digits, "negative": p.negative })
 }
 
+fn maybe(d: Option<Decimal>) -> serde_json::Value {
+    d.map_or(serde_json::Value::Null, amount)
+}
+
 /// The PDF template's input: the layout, every amount split for
 /// alignment.
 pub fn template_data(r: &AssetRegister, meta: &ReportMeta) -> serde_json::Value {
@@ -321,6 +536,8 @@ pub fn template_data(r: &AssetRegister, meta: &ReportMeta) -> serde_json::Value 
         "period": l.period,
         "footer": meta.footer(),
         "columns": COLUMNS,
+        "tax_title": TAX_TITLE,
+        "tax_columns": TAX_COLUMNS,
         "empty": EMPTY,
         "lines": l.lines.iter().map(|a| serde_json::json!({
             "tag": a.tag,
@@ -334,8 +551,20 @@ pub fn template_data(r: &AssetRegister, meta: &ReportMeta) -> serde_json::Value 
             "book_value": amount(a.book_value),
             "status": a.status,
             "disposed": a.disposed,
+            "rule": a.tax_rule.map_or(NOT_RECORDED, rule_label),
+            "rule_mark": a.tax_rule.map_or("", rule_mark),
+            "recorded": a.tax_rule.is_some(),
+            "contributor_basis": maybe(a.contributor_basis),
+            "tax_basis": maybe(a.tax_basis),
+            "built_in_gain": maybe(a.built_in_gain),
         })).collect::<Vec<_>>(),
         "totals": l.totals.iter().map(|d| amount(*d)).collect::<Vec<_>>(),
+        "tax_total": amount(l.tax_total),
+        "missing": l.missing,
+        "notes": l.notes.iter().map(|n| serde_json::json!({
+            "mark": n.mark,
+            "text": n.text,
+        })).collect::<Vec<_>>(),
         "reconciliation": l.reconciliation.iter().map(|x| serde_json::json!({
             "label": x.label,
             "amount": amount(x.amount),

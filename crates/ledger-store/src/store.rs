@@ -1235,7 +1235,8 @@ impl Store {
         Ok(())
     }
 
-    /// Fetch a control account by code, creating it through the journaled
+    /// Fetch a control role's account (the one assigned to it, else by
+    /// code), creating it at its code through the journaled
     /// account path when missing. The ledger's internal ensure_account
     /// then no-ops, which keeps replay deterministic: every account
     /// creation is an `account.added` event.
@@ -1243,8 +1244,8 @@ impl Store {
         &mut self,
         c: &ledger_core::ControlAccount,
     ) -> Result<AccountId, StoreError> {
-        if let Some(a) = self.ledger.chart().find_by_code(c.code) {
-            return Ok(a.id);
+        if let Some(id) = self.ledger.role_account(c) {
+            return Ok(id);
         }
         self.add_account(c.code, c.name, c.account_type, None, false)
     }
@@ -2089,6 +2090,25 @@ impl Store {
             json!({"account_id": account, "code": code, "previous_code": previous}),
         )?;
         self.ledger.renumber_account(account, code)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
+    /// Assign a control role an account, or (`None`) return it to its code
+    /// (see `Ledger::assign_role`). Journaled as `role.assigned`, with the
+    /// account that filled the role before.
+    pub fn assign_role(
+        &mut self,
+        role: &str,
+        account: Option<AccountId>,
+    ) -> Result<(), StoreError> {
+        let c = self.ledger.check_assign_role(role, account)?;
+        let previous = self.ledger.role_account(c);
+        let line = self.append_journal(
+            "role.assigned",
+            json!({"role": c.key, "account_id": account, "previous_account_id": previous}),
+        )?;
+        self.ledger.assign_role(role, account)?;
         apply_line_to_sqlite(&self.conn, &line)?;
         Ok(())
     }
@@ -3285,6 +3305,15 @@ pub(crate) fn replay_line_into_ledger(
         "account.renumbered" => {
             ledger.renumber_account(get_u64(p, "account_id")?, get_str(p, "code")?)?;
         }
+        "role.assigned" => {
+            let account = match p.get("account_id") {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(v.as_u64().ok_or_else(|| {
+                    StoreError::JournalCorrupt("role.assigned account_id".into())
+                })?),
+            };
+            ledger.assign_role(get_str(p, "role")?, account)?;
+        }
         "account.tax_set" => {
             let pct = match p.get("deductible_percent").and_then(|v| v.as_str()) {
                 Some(s) => Some(s.parse().map_err(|_| {
@@ -3775,6 +3804,10 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
         }
         "payroll.taxes_remitted" => {
             // The entry was projected by its own events; this only names it.
+        }
+        "role.assigned" => {
+            // Roles live in the ledger (rebuilt by replay); the events
+            // mirror below keeps the history.
         }
         "receipt.attached" | "document.filed" => {
             conn.execute(

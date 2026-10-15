@@ -7,11 +7,12 @@
 //! and optionally `config.json`. If no store exists, one is created with the
 //! configured base currency. Company settings (name, fiscal year start,
 //! receipt threshold) come from the books dir's `wanderbooks.toml`, by
-//! default the one next to the data dir.
+//! default the one next to the data dir, and reload whenever it changes
+//! (settings.rs).
 
-use ledger_config as company;
 mod policy;
 mod server;
+mod settings;
 mod types;
 mod wire;
 
@@ -94,22 +95,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     // Logs go to stderr: stdout is the MCP channel.
     eprintln!("ledger-mcp: data dir {}", data_dir.display());
-    // An explicit --books-toml must exist; the default is optional.
-    let settings = match books_toml {
-        Some(path) => company::load(&path)?,
-        None => match data_dir.parent().map(|p| p.join("wanderbooks.toml")) {
-            Some(path) if path.exists() => company::load(&path)?,
-            _ => company::BooksSettings::default(),
-        },
+    // An explicit --books-toml must exist; the default (beside the data
+    // dir) is optional. Either is reloaded whenever it changes.
+    let source = settings::Source {
+        required: books_toml.is_some(),
+        books_toml: books_toml.unwrap_or_else(|| {
+            data_dir
+                .parent()
+                .map(|p| p.join("wanderbooks.toml"))
+                .unwrap_or_else(|| PathBuf::from("wanderbooks.toml"))
+        }),
+        config_json: config_path.clone(),
     };
-    eprintln!("ledger-mcp: company {:?}", settings.company.name);
-    let policy = company::effective_receipt_policy(&config_path, &settings)?;
-    let roles = server::CashRoles {
-        cash: settings.cash_accounts,
-        financing: settings.financing_accounts,
-        investing: settings.investing_accounts,
-    };
-    let company = settings.company;
+    let live = settings::Live::watching(source)?;
+    eprintln!("ledger-mcp: company {:?}", live.current().company.name);
+    let live = std::sync::Arc::new(std::sync::Mutex::new(live));
 
     let mut store = if data_dir.join(ledger_store::JOURNAL_FILE).exists() {
         open_waiting_for_lock(&data_dir)?
@@ -134,14 +134,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
     if let Some(addr) = http_addr {
         eprintln!("ledger-mcp: store verified, serving Streamable HTTP on {addr}");
-        rt.block_on(serve_http(addr, store, policy, company, roles))?;
+        rt.block_on(serve_http(addr, store, live))?;
         return Ok(());
     }
 
     eprintln!("ledger-mcp: store verified, serving over stdio");
-    let server = BooksServer::new(store, policy)
-        .with_company(company)
-        .with_cash_roles(roles);
+    let server = BooksServer::new(store, ReceiptPolicy::default()).with_live_settings(live);
     rt.block_on(async {
         // The wire answers what JSON-RPC requires that rmcp drops (wire.rs).
         let (input, output, writer) = wire::spawn(tokio::io::stdin(), tokio::io::stdout());
@@ -156,9 +154,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn serve_http(
     addr: String,
     store: Store,
-    policy: ReceiptPolicy,
-    company: company::Company,
-    roles: server::CashRoles,
+    live: std::sync::Arc<std::sync::Mutex<settings::Live>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use rmcp::transport::streamable_http_server::{
         StreamableHttpService, session::local::LocalSessionManager,
@@ -168,9 +164,8 @@ async fn serve_http(
     let store = Arc::new(std::sync::Mutex::new(store));
     let service = StreamableHttpService::new(
         move || {
-            let server = server::BooksServer::new_shared(store.clone(), policy.clone())
-                .with_company(company.clone())
-                .with_cash_roles(roles.clone());
+            let server = server::BooksServer::new_shared(store.clone(), ReceiptPolicy::default())
+                .with_live_settings(live.clone());
             Ok(server)
         },
         Arc::new(LocalSessionManager::default()),

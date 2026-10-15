@@ -52,7 +52,7 @@ pub use form1099::{Form1099, Vendor1099Line, Vendor1099Report, vendor_1099_repor
 pub use journal::{EntryId, EntryStatus, JournalEntry, JournalLine};
 pub use ledger::{
     ControlAccount, GENERAL_EXPENSES, Ledger, PAYABLES, PAYROLL, RECEIVABLES, RETAINED_EARNINGS,
-    REVENUE, ReconciliationReport, UnclearedLine,
+    REVENUE, ReconciliationReport, UnclearedLine, control_account, control_accounts,
 };
 pub use money::{Currency, Money};
 pub use payouts::{Payout, PayoutAdjustment, PayoutLine, PayoutTotals, payout_plan};

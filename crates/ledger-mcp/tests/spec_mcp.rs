@@ -609,6 +609,16 @@ fn happy_path(name: &str) -> Mcp {
         "books.renumber_account",
         json!({"account": "7000", "code": "7100"}),
     );
+    m.ok("books.settings", json!({}));
+    m.ok("books.roles", json!({}));
+    m.ok(
+        "books.assign_role",
+        json!({"role": "general_expense", "account": "7100"}),
+    );
+    m.ok(
+        "books.assign_role",
+        json!({"role": "general_expense", "account": null}),
+    );
     let deduction = cats["categories"]
         .as_array()
         .unwrap()
@@ -1981,4 +1991,203 @@ fn helpers_self_check() {
         &mut bad,
     );
     assert_eq!(bad.len(), 2, "{bad:?}");
+}
+
+// ------------------------------------- settings reload (settings.rs spec)
+
+/// INVARIANT 1: a call after an edit sees it, with no restart, and two
+/// same-size edits in a row are both seen (compared by content).
+#[test]
+fn settings_reload_on_the_next_call() {
+    let dir = test_dir("reload");
+    let toml = books_toml(&dir, "25.00", "");
+    let mut m = Mcp::start(&dir, &toml);
+    let s = m.ok("books.settings", json!({}));
+    assert_eq!(s["company"], "Spec Co");
+    assert_eq!(s["loads"], 1);
+    for name in ["Aaaa Co", "Bbbb Co"] {
+        let text = std::fs::read_to_string(&toml)
+            .unwrap()
+            .replace("Spec Co", name)
+            .replace("Aaaa Co", name);
+        std::fs::write(&toml, text).unwrap();
+        let s = m.ok("books.settings", json!({}));
+        assert_eq!(s["company"], name);
+        assert_eq!(s["reload_error"], Value::Null);
+    }
+    assert_eq!(m.ok("books.settings", json!({}))["loads"], 3);
+}
+
+/// INVARIANT 1, enforced: a lowered receipt threshold refuses the next
+/// post without a receipt.
+#[test]
+fn a_reloaded_threshold_is_enforced() {
+    let dir = test_dir("reload-threshold");
+    let toml = books_toml(&dir, "1000.00", "");
+    let mut m = Mcp::start(&dir, &toml);
+    m.accounts(BASE_CHART);
+    let first = m.draft(
+        "2026-03-01",
+        "small",
+        &[("6000", "debit", "1.00"), ("1000", "credit", "1.00")],
+    );
+    m.post(first).ok("under the threshold");
+    let text = std::fs::read_to_string(&toml)
+        .unwrap()
+        .replace("\"1000.00\"", "\"0.00\"");
+    std::fs::write(&toml, text).unwrap();
+    let second = m.draft(
+        "2026-03-02",
+        "small",
+        &[("6000", "debit", "1.00"), ("1000", "credit", "1.00")],
+    );
+    let out = m.post(second);
+    assert!(out.err_text().contains("receipt_required"), "{out:?}");
+    assert_eq!(m.entry_status(second), "draft");
+}
+
+/// INVARIANTS 2 and 3: a broken edit, and a named file gone missing, keep
+/// the last good settings and say why; fixing it loads again.
+#[test]
+fn a_broken_edit_keeps_the_last_good_settings() {
+    let dir = test_dir("reload-broken");
+    let toml = books_toml(&dir, "25.00", "");
+    let good = std::fs::read_to_string(&toml).unwrap();
+    let mut m = Mcp::start(&dir, &toml);
+    std::fs::write(
+        &toml,
+        good.replace("Spec Co", "Next Co")
+            .replace("[books]", "[books"),
+    )
+    .unwrap();
+    let s = m.ok("books.settings", json!({}));
+    assert_eq!(s["company"], "Spec Co");
+    assert!(s["reload_error"].is_string(), "{s}");
+    let digest = m.ok("books.digest", json!({"since": "2026-01-01"}));
+    assert!(
+        digest["settings_problems"][0]
+            .as_str()
+            .unwrap()
+            .contains("didn't load"),
+        "{digest}"
+    );
+    std::fs::remove_file(&toml).unwrap();
+    let s = m.ok("books.settings", json!({}));
+    assert!(
+        s["reload_error"].is_string(),
+        "a named file gone missing: {s}"
+    );
+    assert_eq!(s["books_toml_exists"], false);
+    assert_eq!(s["company"], "Spec Co");
+    std::fs::write(&toml, good.replace("Spec Co", "Fixed Co")).unwrap();
+    let s = m.ok("books.settings", json!({}));
+    assert_eq!(s["company"], "Fixed Co");
+    assert_eq!(s["reload_error"], Value::Null);
+    assert_eq!(s["loads"], 2);
+}
+
+/// books.settings and the digest list settings that disagree with the
+/// chart, each naming the setting.
+#[test]
+fn settings_that_disagree_with_the_chart_are_problems() {
+    let dir = test_dir("problems");
+    let toml = books_toml(
+        &dir,
+        "25.00",
+        "financing_accounts = [\"6000\"]\nclose_into = \"3000\"\n",
+    );
+    let mut m = Mcp::start(&dir, &toml);
+    m.accounts(BASE_CHART);
+    let s = m.ok("books.settings", json!({}));
+    let problems: Vec<String> = s["problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].contains("[books] financing_accounts names 6000"));
+    let text = std::fs::read_to_string(&toml)
+        .unwrap()
+        .replace("cash_accounts = [\"1000\"]", "cash_accounts = [\"1010\"]")
+        .replace("close_into = \"3000\"", "close_into = \"4000\"");
+    std::fs::write(&toml, text).unwrap();
+    let digest = m.ok("books.digest", json!({"since": "2026-01-01"}));
+    let problems = digest["settings_problems"].to_string();
+    assert!(
+        problems.contains("[books] cash_accounts names 1010, which isn't in the chart"),
+        "{problems}"
+    );
+    assert!(
+        problems.contains("[books] close_into names 4000"),
+        "{problems}"
+    );
+    assert!(
+        problems.contains("[books] financing_accounts names 6000"),
+        "{problems}"
+    );
+}
+
+/// books.assign_role steers what an invoice posts, and books.roles shows
+/// it; a refusal names the reason.
+#[test]
+fn assigned_roles_steer_invoices() {
+    let dir = test_dir("roles");
+    let toml = books_toml(&dir, "1000000.00", "");
+    let mut m = Mcp::start(&dir, &toml);
+    m.accounts(&[
+        ("1000", "Bank", "asset"),
+        ("1110", "Trade Receivables", "asset"),
+        ("4100", "Consulting Income", "revenue"),
+        ("6000", "Rent", "expense"),
+    ]);
+    let roles = m.ok("books.roles", json!({}));
+    let receivables = roles["roles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["role"] == "receivables")
+        .unwrap()
+        .clone();
+    assert_eq!(receivables["default_code"], "1200");
+    assert_eq!(receivables["assigned"], false);
+    assert_eq!(receivables["account_code"], Value::Null);
+    let err = m.refuse(
+        "books.assign_role",
+        json!({"role": "receivables", "account": "6000"}),
+    );
+    assert!(err.contains("accounts receivable"), "{err}");
+    let err = m.refuse(
+        "books.assign_role",
+        json!({"role": "receivable", "account": "1110"}),
+    );
+    assert!(err.contains("no role"), "{err}");
+    m.ok(
+        "books.assign_role",
+        json!({"role": "receivables", "account": "1110"}),
+    );
+    let roles = m.ok(
+        "books.assign_role",
+        json!({"role": "revenue", "account": "4100"}),
+    );
+    let revenue = roles["roles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["role"] == "revenue")
+        .unwrap()
+        .clone();
+    assert_eq!(revenue["assigned"], true);
+    assert_eq!(revenue["account_code"], "4100");
+    let customer = m.ok("books.add_customer", json!({"name": "Client"}))["id"]
+        .as_u64()
+        .unwrap();
+    m.ok(
+        "books.create_invoice",
+        json!({"party_id": customer, "date": "2026-02-01", "due_date": "2026-03-01",
+               "lines": [{"description": "Consulting", "amount": "500.00"}]}),
+    );
+    let tb = m.ok("books.trial_balance", json!({})).to_string();
+    assert!(tb.contains("1110") && tb.contains("4100"), "{tb}");
+    assert!(!tb.contains("\"1200\"") && !tb.contains("\"4000\""), "{tb}");
 }

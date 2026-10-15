@@ -143,7 +143,12 @@ anything. Keep it conversational; ask a few things at a time.
    tax form, close target) in `wanderbooks.toml`.
 3. Fill in `wanderbooks.toml` `[company]`: name, entity type, tax
    classification, formation state and date, EIN, address. Don't store
-   SSNs or full account numbers anywhere in this directory.
+   SSNs or full account numbers anywhere in this directory. The server
+   reloads the file on every change: check `books.settings` after each
+   edit (no `reload_error`, no `problems`).
+   If the imported chart numbers receivables, payables, revenue, payroll,
+   or retained earnings differently from the defaults (`books.roles`),
+   assign those roles to its accounts with `books.assign_role`.
 4. Record opening balances as one balanced opening entry (or the owners'
    first contributions). Verify the trial balance before moving on.
 5. File the formation documents they have (articles, EIN letter,
@@ -231,16 +236,86 @@ const CLAUDE_MD: &str = "@AGENTS.md\n";
 
 const WANDERBOOKS_TOML: &str = r#"# wanderbooks books dir config. [company] is filled in during onboarding —
 # the agent asks, the human answers, the agent writes it here.
+#
+# Every setting is optional. A commented-out line is an example to fill in
+# (uncomment it); a live line is the default. The MCP server and the
+# viewer reload this file when it changes: no restart needed.
 
 [company]
-name = ""
+# Legal name, for report headers.
+# name = "Acme Widgets LLC"
+# Shown in the profile. The journal's currency is fixed when the books are
+# created (books-data/config.json base_currency, default USD).
 base_currency = "USD"
+# "MM-01": a fiscal year starts on the first of a month and ends the day
+# before the next start (it ends on the last day of a month: IRS Pub. 538).
 fiscal_year_start = "01-01"
+# The return the business files: "schedule_c", "1065", "1120s", or "1120".
+# tax_form = "1065"
+# Or the federal classification, and the return follows from it:
+# "partnership", "S corporation", "C corporation", or "disregarded entity"
+# (Treas. Reg. §301.7701-3). tax_form wins when both are set.
+# tax_classification = "partnership"
+# Identity facts the CPA needs, each from a primary document (EIN letter,
+# certificate of organization). Any simple key = value line here shows in
+# the viewer's profile, labelled from its key.
+# entity_type = "LLC, multi-member, member-managed"
+# formation_state = "UT"
+# formed = "2026-01-15"
+# ein = "00-0000000"
+# address = "123 Main St, Salt Lake City, UT 84101"
+# Never store owners' SSNs (or any TIN) in this directory: its git history
+# keeps everything. The CPA collects them through their own channel.
+
+# Members of a multi-member LLC, one block each: shares come from the
+# operating agreement (IRC §704(a)), "50%" or "0.5", summing to 100%. Each
+# names a capital account in the chart, and optionally a distributions
+# account that a close zeroes into capital.
+# [[company.members]]
+# name = "Alex Rivera"
+# share = "50%"
+# capital_account = "3000"
+# distribution_account = "3100"
+#
+# [[company.members]]
+# name = "Sam Chen"
+# share = "50%"
+# capital_account = "3001"
+# distribution_account = "3101"
 
 [books]
+# The books' data, relative to this file. The tools take it from --data-dir
+# (the justfile, .mcp.json), not from here: move them together.
 data_dir = "books-data"
+# "accrual" or "cash", for report footers. Use the same method from year
+# to year (IRS Pub. 538).
 accounting_basis = "accrual"
+# An entry whose debits are strictly over this needs a receipt; "0.00"
+# means every entry (IRS Pub. 583: keep the documents that support your
+# books). A receipt_policy in books-data/config.json overrides it.
 receipt_threshold = "25.00"
+# Account codes that hold cash (bank, savings, cash on hand), for the cash
+# flow statement and dashboards. Unset: cash accounts are found by name.
+# cash_accounts = ["1000", "1010"]
+# Liabilities the cash flow statement treats as financing: loans, and what
+# owners advanced by paying company expenses (ASC 230-10-45-14(b)).
+# financing_accounts = ["2100"]
+# Assets it treats as investing: loans the company makes, investments it
+# buys (ASC 230-10-20). Registered fixed assets need not be listed.
+# investing_accounts = ["1400"]
+# Single owner only (with [[company.members]] a close goes to each
+# member's capital): the equity account a period close puts net income in.
+# Unset: Retained Earnings (3999).
+# close_into = "3000"
+# Equity accounts a close zeroes into close_into (or Retained Earnings):
+# draws, distributions, dividends.
+# close_sweep = ["3100"]
+
+# Which accounts invoices, bills, payroll, and closes post to (receivables,
+# payables, revenue, payroll, retained earnings) is not set here: those
+# roles are part of the books, journaled with books.assign_role and listed
+# by books.roles. Until assigned, each uses its default code (1200, 2000,
+# 4000, 6999, 3999, 6100, 6110, 2110-2150).
 
 [viewer]
 # When a session starts and the viewer isn't open (`just gui-status`), the

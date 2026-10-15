@@ -3742,6 +3742,7 @@ dependencies = [
  "ledger-core",
  "ledger-import",
  "ledger-store",
+ "ledger-vault",
  "mime_guess",
  "proptest",
  "rmcp",

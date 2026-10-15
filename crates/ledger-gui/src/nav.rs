@@ -59,6 +59,9 @@ pub enum Route {
     Reports(ReportKind),
     Accounts,
     Account(AccountId),
+    /// One reconciliation: its statement, balance, and the lines it
+    /// cleared.
+    Reconciliation(u64),
     /// The fixed asset register.
     Assets,
     /// One fixed asset.
@@ -83,7 +86,7 @@ impl Route {
             Route::Profit => Section::Profit,
             Route::Transactions | Route::Entry(_) => Section::Transactions,
             Route::Reports(_) => Section::Reports,
-            Route::Accounts | Route::Account(_) => Section::Accounts,
+            Route::Accounts | Route::Account(_) | Route::Reconciliation(_) => Section::Accounts,
             Route::Assets | Route::Asset(_) => Section::Assets,
             Route::Parties | Route::Party(_) => Section::Parties,
             Route::Documents | Route::Document(_) => Section::Documents,

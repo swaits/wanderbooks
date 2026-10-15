@@ -260,7 +260,7 @@ impl Vault {
     }
 
     fn path(&self, party: u64, kind: Kind) -> PathBuf {
-        self.dir.join(format!("{}-{party}.bin", kind.name()))
+        record_path(&self.dir, party, kind)
     }
 
     fn aad(party: u64, kind: Kind) -> Vec<u8> {
@@ -361,16 +361,39 @@ impl Vault {
     /// Delete everything the vault holds for a party (INVARIANT 6). Returns
     /// whether anything was there.
     pub fn purge(&self, party: u64) -> Result<bool, Error> {
-        let mut any = false;
-        for kind in [Kind::Tin, Kind::W9] {
-            match std::fs::remove_file(self.path(party, kind)) {
-                Ok(()) => any = true,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(Error::Io(e)),
-            }
-        }
-        Ok(any)
+        purge_records(&self.dir, party)
     }
+}
+
+fn record_path(dir: &Path, party: u64, kind: Kind) -> PathBuf {
+    dir.join(format!("{}-{party}.bin", kind.name()))
+}
+
+/// What the vault in `dir` holds for a party, `(TIN, W-9 file)`, without
+/// the key: whether each record's file exists (nothing is decrypted).
+pub fn records_held(dir: &Path, party: u64) -> Result<(bool, bool), Error> {
+    let exists = |kind| match std::fs::metadata(record_path(dir, party, kind)) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(Error::Io(e)),
+    };
+    Ok((exists(Kind::Tin)?, exists(Kind::W9)?))
+}
+
+/// Delete everything the vault in `dir` holds for a party (INVARIANT 6),
+/// without the key: purging must work even where the vault can't be read
+/// (the key lost, or books restored on another machine). Returns whether
+/// anything was there.
+pub fn purge_records(dir: &Path, party: u64) -> Result<bool, Error> {
+    let mut any = false;
+    for kind in [Kind::Tin, Kind::W9] {
+        match std::fs::remove_file(record_path(dir, party, kind)) {
+            Ok(()) => any = true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(Error::Io(e)),
+        }
+    }
+    Ok(any)
 }
 
 /// Write a file readable by its owner only (0600 on Unix), creating its

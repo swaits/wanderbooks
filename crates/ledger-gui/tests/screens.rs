@@ -64,6 +64,19 @@ fn screenshots() {
                 .map(|p| p.id)
         })
         .unwrap_or(1);
+    let reconciliation = loaded.reconciliations.last().map(|r| r.id).unwrap_or(1);
+    let voided = loaded
+        .reconciliations
+        .iter()
+        .find(|r| r.voided.is_some())
+        .map_or(reconciliation, |r| r.id);
+    // A document linked to more than one subject, else the last.
+    let linked_doc = loaded
+        .attachments
+        .iter()
+        .rev()
+        .find(|a| loaded.links_of(a.id).len() > 1)
+        .map_or(last_doc, |a| a.id);
     drop(loaded);
     let routes: Vec<(&str, Route)> = vec![
         ("overview", Route::Overview),
@@ -98,6 +111,9 @@ fn screenshots() {
         ("parties", Route::Parties),
         ("party", Route::Party(party)),
         ("document", Route::Document(last_doc)),
+        ("document-linked", Route::Document(linked_doc)),
+        ("reconciliation", Route::Reconciliation(reconciliation)),
+        ("reconciliation-voided", Route::Reconciliation(voided)),
         ("event", Route::JournalEvent(last_event)),
         ("documents", Route::Documents),
         ("company", Route::Company),

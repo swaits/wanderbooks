@@ -316,6 +316,12 @@ receipt_threshold = "25.00"
 # ("Wanderland Labs LLC" -> WL); 1 to 8 letters or digits.
 # asset_tag_prefix = "WL"
 
+# Whether entries name their counterparty (the party paid or paid by):
+# "suggest" (the default) has the agent propose one when an entry has none;
+# "require" refuses to post until it names one or is marked as having none
+# (a transfer between your own accounts); "off" never mentions it.
+# parties = "suggest"
+
 # Which accounts invoices, bills, payroll, and closes post to (receivables,
 # payables, revenue, payroll, retained earnings) is not set here: those
 # roles are part of the books, journaled with books.assign_role and listed

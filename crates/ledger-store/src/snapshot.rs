@@ -18,9 +18,12 @@ use crate::blob::BlobStore;
 use crate::error::StoreError;
 use crate::journal::{GENESIS_PREV, JournalLine, sha256_hex};
 use crate::store::{
-    Attachment, BLOBS_DIR, DB_FILE, JOURNAL_FILE, Store, apply_line_to_sqlite, compare_projections,
-    projection_rows, query_attachments, read_attachment_bytes, replay_line_into_ledger,
+    Attachment, BLOBS_DIR, DB_FILE, JOURNAL_FILE, Reconciliation, Statement, Store, Subject,
+    apply_line_to_sqlite, compare_projections, projection_rows, query_attachment_links,
+    query_attachments, query_reconciliations, query_statements, read_attachment_bytes,
+    replay_line_into_ledger,
 };
+use ledger_core::AccountId;
 use ledger_core::{Currency, EntryId, Ledger};
 use rusqlite::Connection;
 use std::io::{Read, Seek, SeekFrom};
@@ -214,6 +217,28 @@ impl Snapshot {
     /// optionally only one entry's.
     pub fn attachments(&self, entry_id: Option<EntryId>) -> Result<Vec<Attachment>, StoreError> {
         query_attachments(&self.conn, entry_id)
+    }
+
+    /// Every attachment link beyond a receipt's filing entry, as
+    /// (attachment id, subject), by attachment then subject: what
+    /// [`Store::attachment_links`] reads, for every attachment at once.
+    pub fn attachment_links(&self) -> Result<Vec<(u64, Subject)>, StoreError> {
+        query_attachment_links(&self.conn)
+    }
+
+    /// Recorded bank and card statements, optionally one account's, by
+    /// period end (as [`Store::statements`]).
+    pub fn statements(&self, account: Option<AccountId>) -> Result<Vec<Statement>, StoreError> {
+        query_statements(&self.conn, account)
+    }
+
+    /// Reconciliations, voided ones included, optionally one account's,
+    /// by date (as [`Store::reconciliations`]).
+    pub fn reconciliations(
+        &self,
+        account: Option<AccountId>,
+    ) -> Result<Vec<Reconciliation>, StoreError> {
+        query_reconciliations(&self.conn, account)
     }
 
     /// Compare the writer's SQLite database (opened read-only) with this

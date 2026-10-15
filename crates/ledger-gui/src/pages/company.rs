@@ -180,6 +180,32 @@ pub fn show(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                 );
             }
         });
+        let mut subjects = vec![ledger_store::Subject::Company];
+        subjects.extend(
+            b.ledger
+                .list_periods()
+                .iter()
+                .map(|x| ledger_store::Subject::Period(x.id)),
+        );
+        subjects.extend(
+            b.ledger
+                .schedules()
+                .map(|x| ledger_store::Subject::Schedule(x.id)),
+        );
+        let mut go = None;
+        super::documents::documents_card_with(
+            ui,
+            b,
+            "Company documents",
+            &subjects,
+            &[ledger_store::Subject::Company],
+            "No documents linked to the company, its periods, or its schedules yet (formation papers, the operating agreement, tax filings).",
+            &mut go,
+        );
+        ui.add_space(16.0);
+        if let Some(r) = go {
+            shell.go(r);
+        }
         assets(ui, b, shell);
         schedules(ui, b);
         recurring(ui, b);

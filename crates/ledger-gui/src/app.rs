@@ -199,6 +199,13 @@ impl App {
                 }
                 Route::Party(party_id)
             }
+            T::Reconciliation { id } => {
+                // Its own page: statement, balance, the lines it cleared.
+                if b.reconciliation(id).is_none() {
+                    return;
+                }
+                Route::Reconciliation(id)
+            }
             T::Search { query } => {
                 let st = &mut self.state.transactions;
                 st.query = query;

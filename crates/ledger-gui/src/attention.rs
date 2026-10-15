@@ -2,7 +2,8 @@
 //! and recurring entries due, open past periods, uncategorized tax lines,
 //! 1099 vendors without a W-9, overdue bills and invoices, money owed to
 //! owners, fixed asset depreciation not posted, assets without a tag or a
-//! tax basis, contractors and landlords paid without W-9 facts, and legal
+//! tax basis, contractors and landlords paid without W-9 facts, bank and
+//! card accounts not reconciled through last month, and legal
 //! rules (like the 1099 threshold) due for an update. Each item says
 //! what's wrong, where to look, and the prompt that
 //! asks the agent to fix it (the GUI never changes the books itself).
@@ -47,7 +48,19 @@ use rust_decimal::Decimal;
 ///      (PartyInfo::paid_ytd > 0),
 ///      unless its vendor is already a 1099 vendor without a W-9 above
 ///      (Todo, one per party, its prompt from
-///      pages::parties::collect_w9_prompt, naming books.set_w9).
+///      pages::parties::collect_w9_prompt, naming books.set_w9); a cash
+///      or card account (Books::reconcilable_accounts) whose
+///      Books::reconciliation_due is Some(date) (Todo, one per account,
+///      titled "Reconcile <account> through <date>", its prompt from
+///      pages::reconciliation::reconcile_prompt, naming
+///      books.record_statement and books.reconcile); when `[books]
+///      parties` isn't off, the posted entries dated this calendar year
+///      (Jan 1 through today) that name no party and aren't marked as
+///      having none (Ledger::entry_no_party), leaving out the ones the
+///      engine makes from a schedule (period closes, depreciation,
+///      amortization: no counterparty by nature) (one item: Info under
+///      suggest, Todo under require; its prompt names
+///      books.set_entry_party).
 ///   3. Nothing else: books with none of those yield no items.
 ///   4. Every item's prompt starts "In wanderbooks," or names
 ///      wanderbooks, and its amounts are the books' exact amounts.
@@ -351,6 +364,70 @@ pub fn find(b: &Books) -> Vec<Attention> {
                     fmt::dollars(bal),
                     a.code,
                     a.name
+                ),
+            });
+        }
+    }
+
+    for a in b.reconcilable_accounts() {
+        let Some(through) = b.reconciliation_due(a) else {
+            continue;
+        };
+        let name = b.account_name(a);
+        out.push(Attention {
+            severity: Severity::Todo,
+            title: format!("Reconcile {name} through {}", fmt::date(through)),
+            detail: match b.reconciled_through(a) {
+                Some(d) => format!(
+                    "Reconciled through {}. The monthly close reconciles it to each statement since.",
+                    fmt::date(d)
+                ),
+                None => "Never reconciled. The monthly close reconciles it to its statement.".into(),
+            },
+            target: Some(Route::Account(a)),
+            prompt: crate::pages::reconciliation::reconcile_prompt(b, a, through),
+        });
+    }
+
+    let policy = b.settings.parties;
+    if policy != ledger_config::PartyPolicy::Off {
+        let year_start = chrono::NaiveDate::from_ymd_opt(today.year(), 1, 1).expect("valid");
+        let unnamed: Vec<_> = b
+            .entries
+            .iter()
+            .filter(|e| {
+                e.status == EntryStatus::Posted
+                    && e.date >= year_start
+                    && e.date <= today
+                    && e.party_id.is_none()
+                    && b.ledger.entry_no_party(e.id).is_none()
+                    && !matches!(e.origin, "Period close" | "Depreciation" | "Amortization")
+            })
+            .collect();
+        if !unnamed.is_empty() {
+            let list: Vec<String> = unnamed
+                .iter()
+                .map(|e| format!("{} ({}, {})", e.id, e.description, e.date))
+                .collect();
+            out.push(Attention {
+                severity: if policy == ledger_config::PartyPolicy::Require {
+                    Severity::Todo
+                } else {
+                    Severity::Info
+                },
+                title: format!(
+                    "{} no counterparty",
+                    fmt::count(unnamed.len(), "entry names", "entries name")
+                ),
+                detail: format!(
+                    "Posted in {} with no party and not marked as having none. Tagging each entry with who it was with keeps the parties' totals and 1099s complete.",
+                    today.year()
+                ),
+                target: Some(Route::Transactions),
+                prompt: format!(
+                    "In wanderbooks, these posted entries from {} name no counterparty: {}. Propose a party for each, grouped by party (adding any that aren't in the directory yet), and once I agree, tag them with books.set_entry_party. For any with truly no counterparty (like a transfer between the company's own accounts), mark it with books.set_entry_party with party null and a no_party_reason.",
+                    today.year(),
+                    list.join("; ")
                 ),
             });
         }

@@ -180,3 +180,44 @@ fn purge_removes_a_party() {
     assert!(v.tin(2).unwrap().is_some());
     assert!(!v.purge(1).unwrap(), "nothing left to purge");
 }
+
+/// INVARIANT 6, without the key: `records_held` says what a party has on
+/// disk and `purge_records` deletes it, so a vault whose key is lost can
+/// still be purged.
+#[test]
+fn purge_and_holdings_need_no_key() {
+    let d = dir("keyless");
+    let v = vault(&d);
+    let tin = Tin::new("123456789", TinType::Ssn).unwrap();
+    v.put_tin(1, &tin).unwrap();
+    v.put_w9(
+        1,
+        &W9File {
+            file_name: "w9.pdf".into(),
+            mime_type: "application/pdf".into(),
+            bytes: b"%PDF".to_vec(),
+        },
+    )
+    .unwrap();
+    v.put_tin(2, &tin).unwrap();
+    std::fs::remove_file(d.join("keys/vault.key")).unwrap();
+    let vdir = d.join("vault");
+    assert_eq!(ledger_vault::records_held(&vdir, 1).unwrap(), (true, true));
+    assert_eq!(ledger_vault::records_held(&vdir, 2).unwrap(), (true, false));
+    assert_eq!(
+        ledger_vault::records_held(&vdir, 3).unwrap(),
+        (false, false)
+    );
+    assert!(ledger_vault::purge_records(&vdir, 1).unwrap());
+    assert_eq!(
+        ledger_vault::records_held(&vdir, 1).unwrap(),
+        (false, false)
+    );
+    assert_eq!(ledger_vault::records_held(&vdir, 2).unwrap(), (true, false));
+    assert!(!ledger_vault::purge_records(&vdir, 1).unwrap());
+    // A vault directory that doesn't exist holds nothing.
+    assert_eq!(
+        ledger_vault::records_held(&d.join("nowhere"), 1).unwrap(),
+        (false, false)
+    );
+}

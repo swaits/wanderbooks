@@ -11,11 +11,13 @@ use ledger_core::{
     AccountId, AccountType, AssetId, AssetRegister, AssetStatus, BillId, EntryId, EntryStatus,
     InvoiceId, Ledger, Party, PartyId, PayrollRunId, Side, Vendor1099Line, fixed_asset_register,
 };
-use ledger_store::{Attachment, JournalLine, Snapshot};
+use ledger_store::{Attachment, JournalLine, Reconciliation, Snapshot, Statement, Subject};
 use rust_decimal::Decimal;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
+
+use crate::nav::Route;
 
 /// One entry, indexed for listing and detail.
 #[derive(Clone, Debug)]
@@ -28,7 +30,9 @@ pub struct EntryInfo {
     pub amount: Decimal,
     /// Accounts touched, debits first: "6300 Software".
     pub accounts: Vec<AccountId>,
-    /// Indexes into [`Books::attachments`] of linked, current receipts.
+    /// Indexes into [`Books::attachments`] of its current receipts: the
+    /// files filed on it and the files linked to it (`attachment.linked`
+    /// with an entry subject), as the server's receipt policy counts them.
     pub receipts: Vec<usize>,
     /// How the entry came to be, in words.
     pub origin: &'static str,
@@ -216,6 +220,78 @@ pub struct Books {
     pub entry_assets: HashMap<EntryId, AssetId>,
     /// Every party's dealings with the company, by party id.
     pub parties: BTreeMap<PartyId, PartyInfo>,
+    /// Every attachment's subjects (see [`Books::links_of`]), by
+    /// attachment id; withdrawn attachments keep theirs.
+    pub links: BTreeMap<u64, Vec<Subject>>,
+    /// Recorded bank and card statements, by period end.
+    pub statements: Vec<Statement>,
+    /// Reconciliations, voided ones included, by date then id.
+    pub reconciliations: Vec<Reconciliation>,
+}
+
+/// A span of dates a party's money is summed over (the party page's and
+/// the directory's period picker).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PartyPeriod {
+    /// January 1 of today's year through today.
+    #[default]
+    ThisYear,
+    /// Last calendar year.
+    LastYear,
+    /// One calendar year (through today, if it is this one).
+    Year(i32),
+    /// The books' first entry through today.
+    AllTime,
+}
+
+/// What one party's posted entries moved over a span, and what for.
+///
+/// ```text
+/// GOAL: answer "how much did we spend with them, and how much did we
+///       get back?" (Stephen, 2026-10-15) with the books' own numbers.
+/// SOURCE: ledger_core::parties::activity (paid, received) and
+///         ledger_core::parties::money_accounts (the money set), with
+///         Books::cash_accounts, as PartyInfo uses them.
+/// INVARIANTS:
+///   1. paid, received: activity(ledger, party, span, cash accounts)'s,
+///      exactly.
+///   2. net() = paid − received.
+///   3. what_for: over the party's posted entries dated in the span, each
+///      account not in money_accounts with its debits − credits, the
+///      accounts whose sum is zero left out, largest magnitude first
+///      (then by account id). Positive: what money paid for; negative:
+///      where money received came from (or, on payables and
+///      receivables, what is still owed).
+///   4. Σ what_for = net(), exactly: every entry balances, so its
+///      non-money lines net to what its money lines moved (a reversal
+///      reverses both).
+///   5. entries: how many of the party's entries are posted and dated
+///      in the span.
+/// ```
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PartyFlow {
+    pub paid: Decimal,
+    pub received: Decimal,
+    pub what_for: Vec<(AccountId, Decimal)>,
+    pub entries: usize,
+}
+
+impl PartyFlow {
+    /// Paid out less received in.
+    pub fn net(&self) -> Decimal {
+        self.paid - self.received
+    }
+}
+
+/// One month of a party's money, for the out-versus-in chart.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PartyMonth {
+    /// The month's first day.
+    pub month: NaiveDate,
+    /// activity's paid over the month (clipped to the span).
+    pub paid: Decimal,
+    /// activity's received over the month (clipped to the span).
+    pub received: Decimal,
 }
 
 /// Whether what's on disk is what the journal says.
@@ -343,12 +419,34 @@ impl Books {
                 events.entry(id).or_default().push(i);
             }
         }
-        let mut receipts: HashMap<EntryId, Vec<usize>> = HashMap::new();
-        for (i, a) in attachments.iter().enumerate() {
-            if let (Some(e), None) = (a.entry_id, &a.withdrawn_at) {
-                receipts.entry(e).or_default().push(i);
+        let link_rows = snap.attachment_links().map_err(|e| e.to_string())?;
+        let mut links: BTreeMap<u64, Vec<Subject>> = BTreeMap::new();
+        for a in &attachments {
+            if let Some(e) = a.entry_id {
+                links.entry(a.id).or_default().push(Subject::Entry(e));
             }
         }
+        for (att, sub) in &link_rows {
+            links.entry(*att).or_default().push(*sub);
+        }
+        // An entry's receipts: filed on it, or linked to it (the server's
+        // receipt policy counts both).
+        let mut receipts: HashMap<EntryId, Vec<usize>> = HashMap::new();
+        for (i, a) in attachments.iter().enumerate() {
+            if a.withdrawn_at.is_some() {
+                continue;
+            }
+            for sub in links.get(&a.id).into_iter().flatten() {
+                if let Subject::Entry(e) = sub {
+                    let r = receipts.entry(*e).or_default();
+                    if !r.contains(&i) {
+                        r.push(i);
+                    }
+                }
+            }
+        }
+        let statements = snap.statements(None).map_err(|e| e.to_string())?;
+        let reconciliations = snap.reconciliations(None).map_err(|e| e.to_string())?;
         let fresh_from_seq = prev_seq.unwrap_or(journal.len() as u64);
         let mut fresh = HashSet::new();
         let closings = ledger.closing_entry_ids();
@@ -488,6 +586,9 @@ impl Books {
             asset_trails,
             entry_assets,
             parties: BTreeMap::new(),
+            links,
+            statements,
+            reconciliations,
         };
         books.parties = books.party_infos();
         books.kpis = books.compute_kpis();
@@ -819,6 +920,372 @@ impl Books {
             amount,
             periods: periods.into_iter().collect(),
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Attachment links, statements, reconciliations
+    // ------------------------------------------------------------------
+
+    /// One attachment by id.
+    pub fn attachment(&self, id: u64) -> Option<&Attachment> {
+        self.attachments.iter().find(|a| a.id == id)
+    }
+
+    /// Every subject an attachment is linked to: its filing entry (a
+    /// receipt filed on an entry) first, then its `attachment.linked`
+    /// subjects, as `Store::attachment_links` lists them.
+    pub fn links_of(&self, attachment_id: u64) -> &[Subject] {
+        self.links.get(&attachment_id).map_or(&[], |v| v.as_slice())
+    }
+
+    /// The current (not withdrawn) attachments linked to any of
+    /// `subjects`, each once, by id.
+    ///
+    /// ```text
+    /// GOAL: every subject's page shows the files that are evidence of it.
+    /// SOURCE: docs/parties-and-attachments.md (Attachments: an
+    ///         attachment links to any number of subjects; an entry's are
+    ///         those filed on it and those linked to it);
+    ///         Store::attachments_for, which this mirrors.
+    /// INVARIANTS:
+    ///   1. a is listed iff it isn't withdrawn and links_of(a) shares a
+    ///      subject with `subjects`.
+    ///   2. No attachment twice; ascending id.
+    /// ```
+    pub fn documents_for(&self, subjects: &[Subject]) -> Vec<&Attachment> {
+        self.attachments
+            .iter()
+            .filter(|a| a.withdrawn_at.is_none())
+            .filter(|a| self.links_of(a.id).iter().any(|s| subjects.contains(s)))
+            .collect()
+    }
+
+    /// The subjects whose documents an entry's page shows: the entry, and
+    /// the invoice, bill, or payroll run it records (those have no page
+    /// of their own).
+    pub fn entry_subjects(&self, id: EntryId) -> Vec<Subject> {
+        let l = &self.ledger;
+        let mut out = vec![Subject::Entry(id)];
+        out.extend(
+            l.invoices()
+                .into_iter()
+                .filter(|i| i.entry_id == id)
+                .map(|i| Subject::Invoice(i.id)),
+        );
+        out.extend(
+            l.bills()
+                .into_iter()
+                .filter(|b| b.entry_id == id)
+                .map(|b| Subject::Bill(b.id)),
+        );
+        out.extend(
+            l.list_payroll_runs()
+                .into_iter()
+                .filter(|r| r.entry_id == id)
+                .map(|r| Subject::PayrollRun(r.id)),
+        );
+        out
+    }
+
+    /// A subject in words: "#12 Adobe (…)", "1000 Operating Checking",
+    /// "WL-0001 MacBook Pro", a party's label, "Invoice 3", "Period 2025",
+    /// "Reconciliation of 1000 Operating Checking through Sep 30, 2026",
+    /// "the company".
+    pub fn subject_label(&self, s: Subject) -> String {
+        let l = &self.ledger;
+        match s {
+            Subject::Entry(e) => self
+                .entry(e)
+                .map(|x| format!("#{} {}", x.id, x.description))
+                .unwrap_or_else(|| format!("#{e}")),
+            Subject::Account(a) => self.account_label(a),
+            Subject::Asset(a) => self.asset_label(a),
+            Subject::Party(p) => self.party_label(p),
+            Subject::Invoice(i) => format!("Invoice {i}"),
+            Subject::Bill(i) => format!("Bill {i}"),
+            Subject::Period(i) => l
+                .list_periods()
+                .iter()
+                .find(|p| p.id == i)
+                .map(|p| format!("Period {}", p.name))
+                .unwrap_or_else(|| format!("Period {i}")),
+            Subject::PayrollRun(i) => match l.get_payroll_run(i) {
+                Some(r) => format!("Payroll {}", crate::fmt::date(r.date)),
+                None => format!("Payroll run {i}"),
+            },
+            Subject::Schedule(i) => l
+                .get_schedule(i)
+                .map(|x| x.description.clone())
+                .unwrap_or_else(|| format!("Schedule {i}")),
+            Subject::Reconciliation(i) => match self.reconciliation(i) {
+                Some(r) => format!(
+                    "Reconciliation of {} through {}",
+                    self.account_label(r.account_id),
+                    crate::fmt::date(r.statement_date)
+                ),
+                None => format!("Reconciliation {i}"),
+            },
+            Subject::Company => "the company".into(),
+        }
+    }
+
+    /// Where a subject opens: its page, or (an invoice, bill, or payroll
+    /// run) the entry that records it, or (a period, schedule, the
+    /// company) the company page.
+    pub fn subject_route(&self, s: Subject) -> Option<Route> {
+        let l = &self.ledger;
+        Some(match s {
+            Subject::Entry(e) => Route::Entry(e),
+            Subject::Account(a) => Route::Account(a),
+            Subject::Asset(a) => Route::Asset(a),
+            Subject::Party(p) => Route::Party(p),
+            Subject::Invoice(i) => Route::Entry(l.get_invoice(i)?.entry_id),
+            Subject::Bill(i) => Route::Entry(l.get_bill(i)?.entry_id),
+            Subject::PayrollRun(i) => Route::Entry(l.get_payroll_run(i)?.entry_id),
+            Subject::Reconciliation(i) => Route::Reconciliation(i),
+            Subject::Period(_) | Subject::Schedule(_) | Subject::Company => Route::Company,
+        })
+    }
+
+    /// The statement an attachment records, if any.
+    pub fn statement(&self, attachment_id: u64) -> Option<&Statement> {
+        self.statements
+            .iter()
+            .find(|s| s.attachment_id == attachment_id)
+    }
+
+    /// One account's recorded statements, by period end.
+    pub fn statements_for(&self, account: AccountId) -> Vec<&Statement> {
+        self.statements
+            .iter()
+            .filter(|s| s.account_id == account)
+            .collect()
+    }
+
+    /// One reconciliation by id.
+    pub fn reconciliation(&self, id: u64) -> Option<&Reconciliation> {
+        self.reconciliations.iter().find(|r| r.id == id)
+    }
+
+    /// One account's reconciliations, voided ones included, by date.
+    pub fn reconciliations_for(&self, account: AccountId) -> Vec<&Reconciliation> {
+        self.reconciliations
+            .iter()
+            .filter(|r| r.account_id == account)
+            .collect()
+    }
+
+    /// The latest statement date an account is reconciled through: the
+    /// newest reconciliation of it not voided (None: never reconciled).
+    pub fn reconciled_through(&self, account: AccountId) -> Option<NaiveDate> {
+        self.reconciliations
+            .iter()
+            .filter(|r| r.account_id == account && r.voided.is_none())
+            .map(|r| r.statement_date)
+            .max()
+    }
+
+    /// The last day of the month before today's.
+    pub fn last_month_end(&self) -> NaiveDate {
+        self.month_start() - chrono::Days::new(1)
+    }
+
+    /// The accounts the books expect to reconcile monthly: the cash
+    /// accounts, then the card accounts, each once.
+    pub fn reconcilable_accounts(&self) -> Vec<AccountId> {
+        let mut out = self.cash_accounts.clone();
+        for a in &self.card_accounts {
+            if !out.contains(a) {
+                out.push(*a);
+            }
+        }
+        out
+    }
+
+    /// When an account is due a reconciliation: the date it should be
+    /// reconciled through, else None.
+    ///
+    /// ```text
+    /// GOAL: the monthly close leaves every bank and card account
+    ///       reconciled through last month's end (docs/parties-and-
+    ///       attachments.md, Reconciliations: "an account with activity
+    ///       not reconciled through last month's end").
+    /// SOURCE: that rule; CONVENTION (a bank or card statement closes
+    ///         monthly; AGENTS.md's monthly close reconciles the bank).
+    /// INVARIANTS:
+    ///   1. Some(last_month_end()) iff the account has a posted line
+    ///      dated on or before last_month_end() (activity to reconcile)
+    ///      and reconciled_through(account) is None or earlier than
+    ///      last_month_end().
+    ///   2. None otherwise (including activity only this month).
+    /// ```
+    pub fn reconciliation_due(&self, account: AccountId) -> Option<NaiveDate> {
+        let through = self.last_month_end();
+        let active = self
+            .ledger
+            .posted_entries()
+            .any(|e| e.date() <= through && e.lines().iter().any(|l| l.account == account));
+        (active && self.reconciled_through(account).is_none_or(|d| d < through)).then_some(through)
+    }
+
+    // ------------------------------------------------------------------
+    // A party's money over a span
+    // ------------------------------------------------------------------
+
+    /// The dates a [`PartyPeriod`] covers: a year is January 1 to
+    /// December 31, cut at today; all time starts at the earliest entry
+    /// in the books (today when there is none).
+    pub fn party_span(&self, period: PartyPeriod) -> (NaiveDate, NaiveDate) {
+        let year = |y: i32| {
+            (
+                NaiveDate::from_ymd_opt(y, 1, 1).expect("valid"),
+                NaiveDate::from_ymd_opt(y, 12, 31)
+                    .expect("valid")
+                    .min(self.today),
+            )
+        };
+        match period {
+            PartyPeriod::ThisYear => year(self.today.year()),
+            PartyPeriod::LastYear => year(self.today.year() - 1),
+            PartyPeriod::Year(y) => year(y),
+            PartyPeriod::AllTime => {
+                let first = self
+                    .entries
+                    .iter()
+                    .map(|e| e.date)
+                    .min()
+                    .unwrap_or(self.today)
+                    .min(self.today);
+                (first, self.today)
+            }
+        }
+    }
+
+    /// The calendar year a period's 1099 amount is for (all time: this
+    /// year's).
+    pub fn party_period_year(&self, period: PartyPeriod) -> i32 {
+        match period {
+            PartyPeriod::LastYear => self.today.year() - 1,
+            PartyPeriod::Year(y) => y,
+            PartyPeriod::ThisYear | PartyPeriod::AllTime => self.today.year(),
+        }
+    }
+
+    /// A period in words: "This year (2026)", "Last year (2025)", "2024",
+    /// "All time".
+    pub fn party_period_label(&self, period: PartyPeriod) -> String {
+        let y = self.today.year();
+        match period {
+            PartyPeriod::ThisYear => format!("This year ({y})"),
+            PartyPeriod::LastYear => format!("Last year ({})", y - 1),
+            PartyPeriod::Year(x) => x.to_string(),
+            PartyPeriod::AllTime => "All time".into(),
+        }
+    }
+
+    /// The periods to offer for a party (None: for the directory): this
+    /// year, last year, every other year with a posted entry (the
+    /// party's, or any for the directory), newest first, then all time.
+    pub fn party_periods(&self, party: Option<PartyId>) -> Vec<PartyPeriod> {
+        let y = self.today.year();
+        let mut years: Vec<i32> = self
+            .entries
+            .iter()
+            .filter(|e| e.status == EntryStatus::Posted && e.date <= self.today)
+            .filter(|e| party.is_none_or(|p| e.party_id == Some(p)))
+            .map(|e| e.date.year())
+            .filter(|&x| x < y - 1)
+            .collect();
+        years.sort_unstable_by(|a, b| b.cmp(a));
+        years.dedup();
+        let mut out = vec![PartyPeriod::ThisYear, PartyPeriod::LastYear];
+        out.extend(years.into_iter().map(PartyPeriod::Year));
+        out.push(PartyPeriod::AllTime);
+        out
+    }
+
+    /// What a party's posted entries moved over `span` (see
+    /// [`PartyFlow`]). `with_breakdown` false leaves what_for empty (the
+    /// directory needs only the totals).
+    pub fn party_flow(
+        &self,
+        party: PartyId,
+        span: (NaiveDate, NaiveDate),
+        with_breakdown: bool,
+    ) -> PartyFlow {
+        let l = &self.ledger;
+        let a = ledger_core::parties::activity(l, party, span, &self.cash_accounts);
+        let posted: Vec<&ledger_core::JournalEntry> = a
+            .entries
+            .iter()
+            .filter_map(|&id| l.get_entry(id))
+            .filter(|e| {
+                e.status() == EntryStatus::Posted && e.date() >= span.0 && e.date() <= span.1
+            })
+            .collect();
+        let mut what_for = Vec::new();
+        if with_breakdown {
+            let money = ledger_core::parties::money_accounts(l, &self.cash_accounts);
+            let mut by: BTreeMap<AccountId, Decimal> = BTreeMap::new();
+            for e in &posted {
+                for line in e.lines().iter().filter(|x| !money.contains(&x.account)) {
+                    *by.entry(line.account).or_default() += match line.side {
+                        Side::Debit => line.amount.amount,
+                        Side::Credit => -line.amount.amount,
+                    };
+                }
+            }
+            what_for = by.into_iter().filter(|(_, v)| !v.is_zero()).collect();
+            what_for.sort_by(|x, y| y.1.abs().cmp(&x.1.abs()).then(x.0.cmp(&y.0)));
+        }
+        PartyFlow {
+            paid: a.paid,
+            received: a.received,
+            what_for,
+            entries: posted.len(),
+        }
+    }
+
+    /// A party's 1099 worksheet line for a calendar year and that year's
+    /// threshold: ledger-core's vendor_1099_report_with (cash and
+    /// financing accounts) line for its vendor record; None without a
+    /// vendor record in the report, or when the year's threshold isn't
+    /// known.
+    pub fn party_1099(&self, party: PartyId, year: i32) -> Option<(Vendor1099Line, Decimal)> {
+        let l = &self.ledger;
+        let vendor = l.get_party(party)?.vendor?;
+        let sources = ledger_core::PaymentAccounts {
+            cash: self.cash_accounts.clone(),
+            financing: self.financing_accounts.clone(),
+        };
+        let r = ledger_core::vendor_1099_report_with(l, year, None, &sources).ok()?;
+        let line = r.vendors.iter().find(|v| v.vendor_id == vendor)?.clone();
+        Some((line, r.threshold))
+    }
+
+    /// A party's money month by month over `span`: every month the span
+    /// touches, each month's activity clipped to the span (so the months
+    /// sum to the span's paid and received exactly).
+    pub fn party_months(&self, party: PartyId, span: (NaiveDate, NaiveDate)) -> Vec<PartyMonth> {
+        let mut out = Vec::new();
+        let mut m = NaiveDate::from_ymd_opt(span.0.year(), span.0.month(), 1).expect("valid");
+        while m <= span.1 {
+            let end = (m + chrono::Months::new(1) - chrono::Days::new(1)).min(span.1);
+            let start = m.max(span.0);
+            let a = ledger_core::parties::activity(
+                &self.ledger,
+                party,
+                (start, end),
+                &self.cash_accounts,
+            );
+            out.push(PartyMonth {
+                month: m,
+                paid: a.paid,
+                received: a.received,
+            });
+            m = m + chrono::Months::new(1);
+        }
+        out
     }
 
     /// Blob store path for an attachment.

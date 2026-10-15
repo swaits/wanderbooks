@@ -1,6 +1,8 @@
 //! The chart of accounts with balances, and one account's register: every
-//! posting with a running balance and the balance over time.
+//! posting with a running balance and the balance over time, its bank or
+//! card statements, its reconciliation history, and its documents.
 
+use super::assets::row;
 use super::page;
 use crate::app::Shell;
 use crate::books::Books;
@@ -11,9 +13,11 @@ use crate::widgets;
 use chrono::NaiveDate;
 use egui::{CornerRadius, RichText, Sense, Ui, vec2};
 use egui_phosphor::regular as icon;
+use ledger_core::AccountId;
 use ledger_core::AccountType;
 use ledger_core::analysis::balance_history;
 use ledger_core::reports::general_ledger;
+use ledger_store::Subject;
 use rust_decimal::Decimal;
 
 #[derive(Default)]
@@ -185,7 +189,10 @@ pub fn show_account(ui: &mut Ui, b: &Books, id: u64, shell: &mut Shell<'_>) {
                 .color(p.muted),
             &fmt::plain(&fmt::dollars(bal)).unwrap_or_default(),
         );
-        ui.add_space(14.0);
+        ui.add_space(6.0);
+        let mut go_to: Option<Route> = None;
+        reconciled_badge(ui, b, id);
+        ui.add_space(8.0);
         let hist = balance_history(&b.ledger, &[id]);
         if hist.len() > 1 && a.account_type.is_balance_sheet() {
             widgets::titled_card(
@@ -195,6 +202,19 @@ pub fn show_account(ui: &mut Ui, b: &Books, id: u64, shell: &mut Shell<'_>) {
                 |ui| crate::charts::balance_line(ui, &hist, b.today, 180.0),
             );
             ui.add_space(12.0);
+        }
+        statements_and_reconciliations(ui, b, id, &mut go_to);
+        super::documents::documents_card(
+            ui,
+            b,
+            "Documents",
+            &[Subject::Account(id)],
+            "No documents linked to this account (statements, the agreement that opened it).",
+            &mut go_to,
+        );
+        ui.add_space(14.0);
+        if let Some(r) = go_to.take() {
+            shell.go(r);
         }
         ui.horizontal_wrapped(|ui| {
             ui.label(
@@ -398,6 +418,182 @@ pub fn show_account(ui: &mut Ui, b: &Books, id: u64, shell: &mut Shell<'_>) {
         });
         if let Some(entry) = go {
             shell.go(Route::Entry(entry));
+        }
+    });
+}
+
+/// Where the account stands on reconciliation: "Reconciled through
+/// <date>" (in green when that covers last month, else with a notice and
+/// the agent prompt), or "Never reconciled" for an account the books
+/// expect to reconcile or one with statements. Nothing for other
+/// accounts.
+fn reconciled_badge(ui: &mut Ui, b: &Books, id: AccountId) {
+    let p = pal(ui.ctx());
+    let expected = b.reconcilable_accounts().contains(&id);
+    let through = b.reconciled_through(id);
+    if !expected && through.is_none() && b.statements_for(id).is_empty() {
+        return;
+    }
+    let due = b.reconciliation_due(id);
+    ui.horizontal_wrapped(|ui| {
+        match through {
+            Some(d) => {
+                let (fg, bg) = if due.is_some() {
+                    (p.warning, p.warning_soft)
+                } else {
+                    (p.positive, p.positive_soft)
+                };
+                widgets::pill(
+                    ui,
+                    &format!("{} Reconciled through {}", icon::CHECK_SQUARE, fmt::date(d)),
+                    fg,
+                    bg,
+                );
+            }
+            None => {
+                widgets::pill(ui, "Never reconciled", p.warning, p.warning_soft);
+            }
+        }
+        if let Some(d) = due {
+            ui.label(
+                RichText::new(format!(
+                    "Due through {}: the monthly close reconciles every bank and card account to its statement.",
+                    fmt::date(d)
+                ))
+                .font(theme::regular(12.5))
+                .color(p.muted),
+            );
+            widgets::copy_prompt(ui, &super::reconciliation::reconcile_prompt(b, id, d));
+        }
+    });
+}
+
+/// The account's statements (period, opening, closing, the file) and its
+/// reconciliations (date, statement balance, cleared lines, standing),
+/// side by side when there's room. Nothing when it has neither.
+fn statements_and_reconciliations(ui: &mut Ui, b: &Books, id: AccountId, go: &mut Option<Route>) {
+    let p = pal(ui.ctx());
+    let statements = b.statements_for(id);
+    let recs = b.reconciliations_for(id);
+    if statements.is_empty() && recs.is_empty() {
+        return;
+    }
+    super::columns(ui, 1100.0, &[1.0, 1.0], |col, ui| {
+        if col == 0 {
+            widgets::titled_card(
+                ui,
+                "Statements",
+                |_| {},
+                |ui| {
+                    if statements.is_empty() {
+                        ui.label(RichText::new("No statements recorded.").color(p.muted));
+                        return;
+                    }
+                    let amt = widgets::AMOUNT_MIN + 8.0;
+                    let w = ui.available_width().max(180.0 + amt * 2.0 + 120.0);
+                    widgets::min_width(ui, "statements", w, |ui| {
+                        let head =
+                            |t: &str, cw: f32, right: bool| (t.to_string(), cw, right, p.muted);
+                        row(
+                            ui,
+                            w,
+                            &[
+                                head("Period", 0.0, false),
+                                head("Opening", amt, true),
+                                head("Closing", amt, true),
+                            ],
+                            None,
+                            true,
+                            false,
+                        );
+                        widgets::rule(ui);
+                        for st in statements.iter().rev() {
+                            let file = b
+                                .attachment(st.attachment_id)
+                                .map_or_else(String::new, |a| a.file_name.clone());
+                            let resp = row(
+                                ui,
+                                w,
+                                &[
+                                    (
+                                        format!(
+                                            "{} – {}",
+                                            fmt::date_short(st.period_start),
+                                            fmt::date(st.period_end)
+                                        ),
+                                        0.0,
+                                        false,
+                                        p.text,
+                                    ),
+                                    (fmt::money(st.opening_balance), amt, true, p.muted),
+                                    (fmt::money(st.closing_balance), amt, true, p.text),
+                                ],
+                                Some((&format!("{} {file}", icon::FILE_PDF), p.faint)),
+                                false,
+                                true,
+                            );
+                            if resp.on_hover_text("Open the statement").clicked() {
+                                *go = Some(Route::Document(st.attachment_id));
+                            }
+                        }
+                    });
+                },
+            );
+        } else {
+            widgets::titled_card(
+                ui,
+                "Reconciliations",
+                |_| {},
+                |ui| {
+                    if recs.is_empty() {
+                        ui.label(RichText::new("Never reconciled.").color(p.muted));
+                        return;
+                    }
+                    let amt = widgets::AMOUNT_MIN + 8.0;
+                    let w = ui.available_width().max(130.0 + amt + 70.0 + 110.0);
+                    widgets::min_width(ui, "reconciliations", w, |ui| {
+                        let head =
+                            |t: &str, cw: f32, right: bool| (t.to_string(), cw, right, p.muted);
+                        row(
+                            ui,
+                            w,
+                            &[
+                                head("Through", 0.0, false),
+                                head("Balance", amt, true),
+                                head("Lines", 70.0, true),
+                            ],
+                            None,
+                            true,
+                            false,
+                        );
+                        widgets::rule(ui);
+                        for r in recs.iter().rev() {
+                            use super::reconciliation::Standing;
+                            let (sub, color) = match super::reconciliation::standing(b, r) {
+                                Standing::Current => ("Current".to_string(), p.positive),
+                                Standing::Superseded => ("Superseded".to_string(), p.faint),
+                                Standing::Voided(why) => (format!("Voided: {why}"), p.warning),
+                            };
+                            let text = if r.voided.is_some() { p.muted } else { p.text };
+                            let resp = row(
+                                ui,
+                                w,
+                                &[
+                                    (fmt::date(r.statement_date), 0.0, false, text),
+                                    (fmt::money(r.statement_balance), amt, true, text),
+                                    (r.cleared.len().to_string(), 70.0, true, p.muted),
+                                ],
+                                Some((&sub, color)),
+                                false,
+                                true,
+                            );
+                            if resp.on_hover_text("Open this reconciliation").clicked() {
+                                *go = Some(Route::Reconciliation(r.id));
+                            }
+                        }
+                    });
+                },
+            );
         }
     });
 }

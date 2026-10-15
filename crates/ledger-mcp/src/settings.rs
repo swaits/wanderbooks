@@ -50,9 +50,23 @@ pub struct Settings {
     /// The prefix of generated asset tags (`[books] asset_tag_prefix`, or
     /// the company's initials).
     pub asset_tag_prefix: String,
+    /// `[vault] key_file`: the TIN vault's key file (unset: the vault's
+    /// default, `ledger_vault::default_key_file`).
+    pub vault_key_file: Option<PathBuf>,
+    /// `[books] parties`: suggest, require, or never mention each entry's
+    /// counterparty.
+    pub parties: ledger_config::PartyPolicy,
 }
 
 impl Settings {
+    /// The vault key file in force: `[vault] key_file`, else the default
+    /// outside the books (`~/.config/wanderbooks/vault.key`).
+    pub fn key_file(&self) -> PathBuf {
+        self.vault_key_file
+            .clone()
+            .unwrap_or_else(ledger_vault::default_key_file)
+    }
+
     /// The prefix for generated asset tags ("FA" when none is set).
     pub fn tag_prefix(&self) -> &str {
         if self.asset_tag_prefix.is_empty() {
@@ -96,6 +110,8 @@ impl Source {
         let policy = ledger_config::effective_receipt_policy(&self.config_json, &books)?;
         Ok(Settings {
             asset_tag_prefix: books.asset_tag_prefix(),
+            vault_key_file: books.vault_key_file.clone(),
+            parties: books.parties,
             policy,
             roles: CashRoles {
                 cash: books.cash_accounts,

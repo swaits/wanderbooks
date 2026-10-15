@@ -332,6 +332,9 @@ open_at_start = "ask"
 const GITIGNORE: &str = r#"# The SQLite projection is disposable — it rebuilds from journal.jsonl.
 books-data/wanderbooks.db
 books-data/wanderbooks.db-*
+# Copies of a database that disagreed with the journal, kept when it is
+# rebuilt; disposable like the database itself.
+books-data/wanderbooks.mismatch.*
 # Held while an agent's MCP server has the books open: one writer at a time.
 books-data/wanderbooks.lock
 # Generated exports can always be regenerated from the journal.

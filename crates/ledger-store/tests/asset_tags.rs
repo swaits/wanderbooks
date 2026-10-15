@@ -798,3 +798,35 @@ fn an_asset_is_corrected_until_depreciation_is_posted() {
         Err(StoreError::AssetDepreciationPosted(_))
     ));
 }
+
+/// Regression (2026-10-15): reversing an asset's linked acquisition entry
+/// (a correction) must not stop the books from opening. The link was valid
+/// when made; the books open and verify, and the reversed link is reported
+/// for relinking.
+#[test]
+fn reversing_a_linked_acquisition_still_opens_and_verifies() {
+    let (dir, mut s, a, x, _) = fixture("relink");
+    let post = |s: &mut Store| {
+        let e = s.create_entry(date(2026, 1, 1), "contributed").unwrap();
+        s.add_line(e, a.cost, ledger_core::Side::Debit, usd("1200.00"))
+            .unwrap();
+        s.add_line(e, a.bank, ledger_core::Side::Credit, usd("1200.00"))
+            .unwrap();
+        s.post_entry(e).unwrap();
+        e
+    };
+    let first = post(&mut s);
+    s.set_asset_acquisition(x, first).unwrap();
+    s.reverse_entry(first, date(2026, 1, 2), "corrected")
+        .unwrap();
+    assert!(s.ledger().acquisition_reversed(x));
+    s.verify().unwrap();
+    drop(s);
+    let mut s = Store::open(&dir).expect("books with a reversed link open");
+    s.verify().unwrap();
+    let second = post(&mut s);
+    s.set_asset_acquisition(x, second).unwrap();
+    assert!(!s.ledger().acquisition_reversed(x));
+    drop(s);
+    Store::open(&dir).unwrap().verify().unwrap();
+}

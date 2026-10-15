@@ -1585,6 +1585,36 @@ impl Ledger {
         Ok(())
     }
 
+    /// Restore a link recorded earlier (a projection read-back): it was
+    /// checked when made, and a later correction (reversing that entry)
+    /// doesn't undo it; it only becomes a link to fix, by linking the
+    /// replacement. Checks only that the asset and entry exist. (Re-checking
+    /// against today's books refused to open them once a linked entry was
+    /// reversed, 2026-10-15.)
+    pub fn restore_asset_acquisition(
+        &mut self,
+        id: AssetId,
+        entry: EntryId,
+    ) -> Result<(), LedgerError> {
+        if !self.entries.contains_key(&entry) {
+            return Err(LedgerError::UnknownEntry(entry));
+        }
+        self.assets
+            .get_mut(&id)
+            .ok_or(LedgerError::UnknownAsset(id))?
+            .acquired_by = Some(entry);
+        Ok(())
+    }
+
+    /// Whether an asset's acquisition link points at an entry that has
+    /// since been reversed (to relink the replacement).
+    pub fn acquisition_reversed(&self, id: AssetId) -> bool {
+        self.assets
+            .get(&id)
+            .and_then(|a| a.acquired_by)
+            .is_some_and(|e| self.entries.values().any(|x| x.reversal_of() == Some(e)))
+    }
+
     /// The validation behind [`Self::set_asset_acquisition`].
     pub fn check_asset_acquisition(&self, id: AssetId, entry: EntryId) -> Result<(), LedgerError> {
         let asset = self.assets.get(&id).ok_or(LedgerError::UnknownAsset(id))?;

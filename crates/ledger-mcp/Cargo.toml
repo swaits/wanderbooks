@@ -15,6 +15,7 @@ ledger-core = { path = "../ledger-core" }
 ledger-store = { path = "../ledger-store" }
 ledger-import = { path = "../ledger-import" }
 ledger-config = { path = "../ledger-config" }
+ledger-vault = { path = "../ledger-vault" }
 base64 = "0.22"
 mime_guess = "2"
 rust_decimal = "1"

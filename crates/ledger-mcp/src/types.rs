@@ -356,6 +356,16 @@ pub struct Vendor1099Params {
     /// Override the reporting threshold, decimal string (default: $600
     /// through 2025, $2,000 from 2026).
     pub threshold: Option<String>,
+    /// True: each line carries its payee's full TIN, read from the TIN
+    /// vault (or a note saying why not). The output then holds full TINs:
+    /// for the CPA only, when the human asks for it. Default false (last
+    /// four digits only).
+    #[serde(default)]
+    pub include_tins: bool,
+    /// Also write the worksheet as CSV to this local path (TINs included
+    /// only with include_tins). Never inside the books dir; an existing
+    /// file is refused.
+    pub save_csv_to: Option<String>,
 }
 
 /// One vendor's year.
@@ -373,6 +383,18 @@ pub struct Vendor1099LineOut {
     pub paid: String,
     /// Marked for a 1099 and paid at least the threshold.
     pub reportable: bool,
+    /// The vendor's party.
+    pub party_id: Option<u64>,
+    /// The TIN's last four digits, from the party's W-9 facts.
+    pub tin_last4: Option<String>,
+    /// The full TIN, formatted (123-45-6789, 12-3456789): only with
+    /// include_tins, and only when the vault holds it.
+    pub tin: Option<String>,
+    /// The TIN's type (ssn, ein, itin): only with include_tins.
+    pub tin_type: Option<String>,
+    /// With include_tins, why `tin` is missing (not in the vault, the vault
+    /// locked, a record that doesn't match the books).
+    pub tin_note: Option<String>,
 }
 
 /// Result of `books.vendor_1099`.
@@ -388,6 +410,11 @@ pub struct Vendor1099Out {
     pub missing_w9: Vec<String>,
     /// Caveats for the human and CPA.
     pub notes: Vec<String>,
+    /// With include_tins: this output holds full TINs. For the CPA only;
+    /// never paste it anywhere else.
+    pub warning: Option<String>,
+    /// The CSV written with save_csv_to, if any.
+    pub saved_csv: Option<String>,
 }
 
 /// Parameters for `books.verify`.
@@ -436,6 +463,9 @@ pub struct ShowParams {
     pub asset: Option<String>,
     /// A party, by id or name (as `books.party`).
     pub party: Option<String>,
+    /// A reconciliation (id from `books.reconciliations`): its account's
+    /// page, with the reconciliation and its statement.
+    pub reconciliation: Option<u64>,
     /// Search the transactions list (description, account, vendor, amount).
     pub search: Option<String>,
     /// A page: overview, cash, profit, transactions, reports, accounts,
@@ -548,6 +578,8 @@ pub struct SettingsOut {
     pub basis: String,
     /// The receipt rule in force.
     pub receipt_rule: String,
+    /// `[books] parties`: "off", "suggest", or "require".
+    pub parties: String,
     /// `[[company.members]]`.
     pub members: Vec<MemberSettingOut>,
     /// `[books] cash_accounts`.
@@ -823,6 +855,11 @@ pub struct ImportBankCsvParams {
     /// "month_first" (mm/dd/yyyy, US banks) or "day_first" (dd/mm/yyyy).
     #[serde(default)]
     pub date_order: Option<String>,
+    /// The CSV as filed (`books.file_document` category import_source, or
+    /// any stored attachment): linked to the bank account imported into,
+    /// so the import traces to its source. Never linked to the drafts: a
+    /// bank export is not a receipt.
+    pub source_attachment_id: Option<u64>,
 }
 
 /// One imported bank transaction (as a draft entry).
@@ -847,6 +884,11 @@ pub struct ImportBankCsvOut {
     pub imported: Vec<ImportedTxnOut>,
     /// Number of transactions imported.
     pub count: usize,
+    /// The source attachment, if one was given.
+    pub source_attachment_id: Option<u64>,
+    /// True when this call linked it to the account (false when it already
+    /// was, or none was given).
+    pub source_linked: bool,
 }
 
 /// Parameters for `books.import_chart_csv`.
@@ -946,6 +988,10 @@ pub struct DraftEntryParams {
     /// party with a vendor record also tags the entry's vendor; given with
     /// `vendor`, both must name the same vendor.
     pub party: Option<String>,
+    /// Why the entry has no counterparty (a transfer between the company's
+    /// own accounts, an accrual), when `[books] parties = "require"` and
+    /// none applies. Not with `party` or `vendor`.
+    pub no_party_reason: Option<String>,
 }
 
 /// Result of `books.draft_entry`.
@@ -1061,6 +1107,34 @@ pub struct PostEntryOut {
     /// receipt threshold (same date, description, and debit accounts).
     /// Empty when no split is detected.
     pub split_detected: Vec<u64>,
+    /// `[books] parties`: "off", "suggest", or "require".
+    pub party_policy: String,
+    /// The entry's counterparty, when tagged.
+    pub party_id: Option<u64>,
+    /// Its name.
+    pub party: Option<String>,
+    /// Why it has none, when marked so.
+    pub no_party_reason: Option<String>,
+    /// True when the entry names no party and isn't marked as having none
+    /// (always false when the policy is "off"). Under "require", posting
+    /// with confirmed=true fails in this state.
+    pub party_missing: bool,
+    /// Likely counterparties, best first, when `party_missing`: tag one
+    /// with `books.set_entry_party`, or add the party with
+    /// `books.add_party` first.
+    pub party_suggestions: Vec<PartySuggestionOut>,
+}
+
+/// A likely counterparty for an entry.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct PartySuggestionOut {
+    /// The party's id.
+    pub party_id: u64,
+    /// Its name.
+    pub name: String,
+    /// Why: "named in the description", "named in a receipt", or "tagged
+    /// on entry N with the same description".
+    pub why: String,
 }
 
 /// Parameters for `books.reverse_entry`.
@@ -1107,6 +1181,11 @@ pub struct AttachReceiptParams {
     pub content_base64: String,
     /// Optional description.
     pub description: Option<String>,
+    /// More subjects to link it to in the same call (each journaled as its
+    /// own `attachment.linked`). Every subject is checked before anything
+    /// is filed: one bad subject files nothing.
+    #[serde(default)]
+    pub link_to: Vec<SubjectParam>,
 }
 
 /// Result of `books.attach_receipt`.
@@ -1118,12 +1197,15 @@ pub struct AttachReceiptOut {
     pub sha256: String,
     /// True when identical bytes were already stored (deduplicated).
     pub deduplicated: bool,
+    /// Everything it is linked to now (the entry it is filed on first).
+    pub links: Vec<SubjectOut>,
 }
 
 /// Parameters for `books.file_document`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct FileDocumentParams {
-    /// One of: formation, legal, tax, accounting, other.
+    /// One of: formation, legal, tax, accounting, statement, contract,
+    /// photo, warranty, import_source, other.
     pub category: String,
     /// Original file name.
     pub file_name: String,
@@ -1133,6 +1215,11 @@ pub struct FileDocumentParams {
     pub content_base64: String,
     /// Optional description.
     pub description: Option<String>,
+    /// Subjects to link it to in the same call (each journaled as its own
+    /// `attachment.linked`). Every subject is checked before anything is
+    /// filed: one bad subject files nothing.
+    #[serde(default)]
+    pub link_to: Vec<SubjectParam>,
 }
 
 /// Parameters for `books.link_receipt`.
@@ -1221,6 +1308,8 @@ pub struct ReceiptOut {
     pub withdrawn: bool,
     /// Why it was withdrawn, if it was.
     pub withdrawn_reason: Option<String>,
+    /// Everything it is linked to (the entry it is filed on first).
+    pub links: Vec<SubjectOut>,
 }
 
 /// Result of `books.list_receipts`.
@@ -1255,6 +1344,10 @@ pub struct GetReceiptOut {
     pub mime_type: String,
     /// Size in bytes.
     pub size_bytes: u64,
+    /// Description, if any.
+    pub description: Option<String>,
+    /// Everything it is linked to (the entry it is filed on first).
+    pub links: Vec<SubjectOut>,
     /// File bytes, base64-encoded.
     pub content_base64: String,
 }
@@ -1421,6 +1514,25 @@ pub struct DigestOut {
     /// didn't load, or a setting that disagrees with the chart. Fix each
     /// with the human, then check books.settings.
     pub settings_problems: Vec<String>,
+    /// Cash and card accounts (`[books] cash_accounts`, and liabilities
+    /// with a recorded statement) with activity not reconciled through the
+    /// end of last month: record each statement and reconcile it.
+    pub unreconciled_accounts: Vec<UnreconciledAccountOut>,
+}
+
+/// An account due for reconciliation (`books.digest`).
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct UnreconciledAccountOut {
+    /// Account code.
+    pub code: String,
+    /// Account name.
+    pub name: String,
+    /// The last statement date it is reconciled through, if any.
+    pub reconciled_through: Option<String>,
+    /// The date it should be reconciled through: the end of last month.
+    pub due_through: String,
+    /// The calls that complete it.
+    pub next_step: String,
 }
 
 /// A torn journal tail set aside on open.
@@ -1976,20 +2088,32 @@ pub struct MarkClearedOut {
     pub ok: bool,
 }
 
-/// Parameters for `books.reconcile`.
+/// Parameters for `books.reconcile`. Either a recorded statement
+/// (`statement_attachment`), or `account`, `statement_date`, and
+/// `statement_balance` for a check against any balance.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ReconcileParams {
-    /// Account id or code (e.g. "1000") to reconcile.
-    pub account: String,
-    /// Statement date, YYYY-MM-DD.
-    pub statement_date: String,
-    /// Statement balance, decimal string.
-    pub statement_balance: String,
+    /// Account id or code (e.g. "1000") to reconcile. With
+    /// statement_attachment, optional (it must be the statement's).
+    pub account: Option<String>,
+    /// Statement date, YYYY-MM-DD. With statement_attachment, optional
+    /// (it must be the statement's period end).
+    pub statement_date: Option<String>,
+    /// Statement balance, decimal string. With statement_attachment,
+    /// optional (it must be the statement's closing balance).
+    pub statement_balance: Option<String>,
+    /// The attachment holding the statement, recorded with
+    /// `books.record_statement`: reconcile to what it says.
+    pub statement_attachment: Option<u64>,
+    /// True: record the reconciliation (needs statement_attachment and a
+    /// difference of exactly zero). Without it, a preview that records
+    /// nothing.
+    pub confirmed: Option<bool>,
 }
 
-/// One uncleared line in the reconciliation report.
+/// One line in the reconciliation report.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct UnclearedLineOut {
+pub struct ReconcileLineOut {
     /// Entry id.
     pub entry_id: u64,
     /// Line index within the entry.
@@ -2007,8 +2131,14 @@ pub struct UnclearedLineOut {
 /// Output of `books.reconcile`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ReconcileOut {
+    /// "preview" (nothing recorded) or "reconciled" (recorded).
+    pub status: String,
     /// Account code.
     pub account_code: String,
+    /// The statement date reconciled through, YYYY-MM-DD.
+    pub statement_date: String,
+    /// The statement's attachment, when reconciling to a recorded one.
+    pub statement_attachment: Option<u64>,
     /// Book balance (all posted lines), decimal string.
     pub book_balance: String,
     /// Cleared balance (cleared lines on/before statement date), decimal string.
@@ -2018,7 +2148,14 @@ pub struct ReconcileOut {
     /// cleared_balance - statement_balance. Zero means reconciled.
     pub difference: String,
     /// Uncleared lines on/before the statement date.
-    pub uncleared_lines: Vec<UnclearedLineOut>,
+    pub uncleared_lines: Vec<ReconcileLineOut>,
+    /// Cleared lines on/before the statement date: what a confirmed
+    /// reconciliation records.
+    pub cleared_lines: Vec<ReconcileLineOut>,
+    /// Why confirmed=true would be refused now (empty: it would record).
+    pub problems: Vec<String>,
+    /// The recorded reconciliation (status "reconciled" only).
+    pub reconciliation: Option<ReconciliationOut>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2437,6 +2574,116 @@ pub struct SetW9Params {
     /// True: clear the W-9 facts (give no other fact).
     #[serde(default)]
     pub clear: bool,
+    /// The full TIN (nine digits, hyphens allowed), stored only in the
+    /// encrypted TIN vault, never in the books; the books keep its last
+    /// four. Needs tin_type. Never echoed back.
+    pub tin: Option<SecretTin>,
+    /// The TIN's type: ssn, ein, or itin. Required with tin.
+    pub tin_type: Option<String>,
+    /// A local PDF, PNG, or JPEG of the signed W-9: stored only in the
+    /// vault (it shows the full TIN), never with the receipts and
+    /// documents. Read it back with `books.get_w9`.
+    pub w9_file_path: Option<String>,
+}
+
+/// A full TIN as a tool takes it: text (or a JSON number) whose value is
+/// never printed: its Debug, and any error deserializing it, say nothing
+/// of the digits.
+#[derive(Clone, JsonSchema)]
+#[schemars(transparent)]
+pub struct SecretTin(pub String);
+
+impl std::fmt::Debug for SecretTin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SecretTin(..)")
+    }
+}
+
+impl<'de> Deserialize<'de> for SecretTin {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl serde::de::Visitor<'_> for V {
+            type Value = SecretTin;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a TIN: nine digits as a string")
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<SecretTin, E> {
+                Ok(SecretTin(v.to_string()))
+            }
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<SecretTin, E> {
+                Ok(SecretTin(v.to_string()))
+            }
+            fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<SecretTin, E> {
+                Err(E::custom("tin must be nine digits"))
+            }
+            fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<SecretTin, E> {
+                Err(E::custom("tin must be nine digits"))
+            }
+        }
+        d.deserialize_any(V)
+    }
+}
+
+/// Parameters for `books.get_w9`.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct GetW9Params {
+    /// The party: id or name.
+    pub party: String,
+    /// Where to write the W-9 file: a local path outside the books dir
+    /// (the file shows the full TIN; it must never be committed with the
+    /// books). An existing file is refused.
+    pub save_to: String,
+}
+
+/// Result of `books.get_w9`: where the file went, never its contents.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct GetW9Out {
+    /// The party.
+    pub party_id: u64,
+    /// The path written.
+    pub path: String,
+    /// The file's original name.
+    pub file_name: String,
+    /// Its size in bytes.
+    pub size_bytes: u64,
+    /// What to tell the human.
+    pub note: String,
+}
+
+/// Parameters for `books.purge_tin`.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct PurgeTinParams {
+    /// The party: id or name.
+    pub party: String,
+    /// Why (retention period over, the payee asked, a wrong TIN):
+    /// journaled with the W-9 facts.
+    pub reason: String,
+    /// True: delete the vault records and journal it. Without it, a
+    /// preview that changes nothing.
+    pub confirmed: Option<bool>,
+}
+
+/// Result of `books.purge_tin`.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct PurgeTinOut {
+    /// "preview" or "purged".
+    pub status: String,
+    /// The party.
+    pub party_id: u64,
+    /// Its name.
+    pub name: String,
+    /// Whether the vault holds (preview) or held (purged) its TIN.
+    pub tin_in_vault: bool,
+    /// Whether the vault holds (held) its W-9 file.
+    pub w9_file_in_vault: bool,
+    /// The TIN's last four digits, which the books keep.
+    pub tin_last4: Option<String>,
+    /// True when the purge is journaled (`party.w9_set` with the vault
+    /// record cleared and kept_at saying why); false when the party has no
+    /// W-9 facts to update.
+    pub journaled: bool,
+    /// What happens (preview) or happened.
+    pub note: String,
 }
 
 /// Parameters for `books.set_w4`: what a W-4 said, never the SSN. Either
@@ -2490,6 +2737,10 @@ pub struct SetEntryPartyParams {
     /// in `books.vendor_1099`); one without, or clearing, clears the vendor
     /// tag too.
     pub party: Option<String>,
+    /// With `party` null: mark the entry as having no counterparty, with
+    /// why (journaled as `entry.no_party`). Satisfies `[books] parties =
+    /// "require"`.
+    pub no_party_reason: Option<String>,
 }
 
 /// A party's W-9 facts.
@@ -2507,6 +2758,9 @@ pub struct W9Out {
     pub tin_last4: String,
     /// Where the form is kept.
     pub kept_at: String,
+    /// True when the books record a TIN vault record for it (the full TIN
+    /// is in the vault, never here).
+    pub in_vault: bool,
 }
 
 /// A party's W-4 facts.
@@ -2712,4 +2966,192 @@ pub struct PartyDetailOut {
     pub bills: Vec<PartyDocumentOut>,
     /// Payroll lines naming it, by run.
     pub payroll: Vec<PartyPayrollOut>,
+}
+
+// ---------------------------------------------------------------------------
+// Attachment links, statements, reconciliations
+// ---------------------------------------------------------------------------
+
+/// A reference: a number or text (a code, tag, or name).
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum RefId {
+    /// A number (an id; for an account, its code or id).
+    Number(u64),
+    /// Text: an account code, an asset tag, a party name, or an id.
+    Text(String),
+}
+
+/// What an attachment is linked to.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct SubjectParam {
+    /// entry, account, asset, party, invoice, bill, period, payroll_run,
+    /// schedule, reconciliation, or company.
+    pub kind: String,
+    /// Which one: an entry, invoice, bill, period, payroll run, schedule,
+    /// or reconciliation id; an account's code (or id); an asset's tag (or
+    /// id); a party's id or name. Omitted for the company.
+    pub id: Option<RefId>,
+}
+
+/// A subject in a tool's output.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct SubjectOut {
+    /// Its kind (as in SubjectParam).
+    pub kind: String,
+    /// Its id (absent for the company). For an account, the account id;
+    /// `label` gives the code.
+    pub id: Option<u64>,
+    /// Human words, e.g. "account 1000 Bank", "entry #5 January rent".
+    pub label: String,
+}
+
+/// Parameters for `books.link_attachment`.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct LinkAttachmentParams {
+    /// A stored attachment (receipt or document), not withdrawn.
+    pub attachment_id: u64,
+    /// What to link it to.
+    pub subject: SubjectParam,
+}
+
+/// Parameters for `books.unlink_attachment`.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct UnlinkAttachmentParams {
+    /// The attachment.
+    pub attachment_id: u64,
+    /// The subject to take it off.
+    pub subject: SubjectParam,
+    /// Why, recorded in the journal.
+    pub reason: String,
+}
+
+/// Result of `books.link_attachment` / `books.unlink_attachment`.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct AttachmentLinksOut {
+    /// The attachment.
+    pub attachment_id: u64,
+    /// Everything it is linked to now (the entry it is filed on first).
+    pub links: Vec<SubjectOut>,
+}
+
+/// Parameters for `books.attachments`.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct AttachmentsParams {
+    /// The subject whose files to list.
+    pub subject: SubjectParam,
+}
+
+/// Result of `books.attachments`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct AttachmentsOut {
+    /// The subject.
+    pub subject: SubjectOut,
+    /// Its files (for an entry: filed on it or linked to it), not
+    /// withdrawn, by id, each with all its links.
+    pub attachments: Vec<ReceiptOut>,
+}
+
+/// Parameters for `books.record_statement`.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct RecordStatementParams {
+    /// The filed statement (`books.file_document` category statement).
+    pub attachment_id: u64,
+    /// The bank, cash, or card account it is for: code or id.
+    pub account: String,
+    /// First day it covers, YYYY-MM-DD.
+    pub period_start: String,
+    /// Last day it covers (the statement date), YYYY-MM-DD.
+    pub period_end: String,
+    /// Opening balance as printed, in the account's normal direction
+    /// (what the bank holds for a bank account; what is owed for a card),
+    /// decimal string, cents at most.
+    pub opening_balance: String,
+    /// Closing balance as printed, same direction, decimal string.
+    pub closing_balance: String,
+}
+
+/// A recorded statement.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct StatementOut {
+    /// The attachment holding it.
+    pub attachment_id: u64,
+    /// Its file name.
+    pub file_name: String,
+    /// Account code.
+    pub account_code: String,
+    /// Account name.
+    pub account_name: String,
+    /// First day, YYYY-MM-DD.
+    pub period_start: String,
+    /// Last day (statement date), YYYY-MM-DD.
+    pub period_end: String,
+    /// Opening balance, decimal string.
+    pub opening_balance: String,
+    /// Closing balance, decimal string.
+    pub closing_balance: String,
+    /// The reconciliation (not voided) made against it, if any.
+    pub reconciliation_id: Option<u64>,
+}
+
+/// Parameters for `books.statements` and `books.reconciliations`.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct AccountFilterParams {
+    /// Only this account's (code or id). Omit for every account.
+    pub account: Option<String>,
+}
+
+/// Result of `books.statements`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct StatementsOut {
+    /// Recorded statements, by statement date.
+    pub statements: Vec<StatementOut>,
+}
+
+/// A cleared line a reconciliation recorded.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ClearedRefOut {
+    /// Entry id.
+    pub entry_id: u64,
+    /// Line index within the entry.
+    pub line_index: usize,
+}
+
+/// A recorded reconciliation.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ReconciliationOut {
+    /// Its id.
+    pub reconciliation_id: u64,
+    /// Account code.
+    pub account_code: String,
+    /// Account name.
+    pub account_name: String,
+    /// The statement date it reconciles through, YYYY-MM-DD.
+    pub statement_date: String,
+    /// The statement's closing balance, decimal string.
+    pub statement_balance: String,
+    /// The statement's attachment.
+    pub statement_attachment: u64,
+    /// The lines it found cleared.
+    pub cleared: Vec<ClearedRefOut>,
+    /// True when voided.
+    pub voided: bool,
+    /// Why it was voided, if it was.
+    pub voided_reason: Option<String>,
+}
+
+/// Parameters for `books.void_reconciliation`.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct VoidReconciliationParams {
+    /// The reconciliation's id.
+    pub reconciliation_id: u64,
+    /// Why, recorded in the journal.
+    pub reason: String,
+}
+
+/// Result of `books.reconciliations`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ReconciliationsOut {
+    /// Reconciliations (voided ones included, marked), by date.
+    pub reconciliations: Vec<ReconciliationOut>,
 }

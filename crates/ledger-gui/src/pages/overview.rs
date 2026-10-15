@@ -21,28 +21,28 @@ pub fn show(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
         widgets::page_header(ui, b.company_name(), &headline(b));
         kpis(ui, b, shell);
         let _ = k;
-        columns(ui, 980.0, &[2.0, 1.0], |i, ui| match i {
-            0 => {
-                let (more, _) = widgets::titled_card(
+        // What needs doing gets the page's full width, under the numbers:
+        // long items wrap in their own room instead of squeezing the chart.
+        attention(ui, b, shell);
+        ui.add_space(16.0);
+        let (more, _) = widgets::titled_card(
+            ui,
+            "Cash over time",
+            |ui| {
+                widgets::link(
                     ui,
-                    "Cash over time",
-                    |ui| {
-                        widgets::link(
-                            ui,
-                            RichText::new("Cash details")
-                                .font(theme::regular(12.5))
-                                .color(pal(ui.ctx()).accent),
-                        )
-                        .clicked()
-                    },
-                    |ui| charts::balance_line(ui, &b.cash_history(), b.today, 230.0),
-                );
-                if more {
-                    shell.go(Route::Cash);
-                }
-            }
-            _ => attention(ui, b, shell),
-        });
+                    RichText::new("Cash details")
+                        .font(theme::regular(12.5))
+                        .color(pal(ui.ctx()).accent),
+                )
+                .clicked()
+            },
+            |ui| charts::balance_line(ui, &b.cash_history(), b.today, 230.0),
+        );
+        if more {
+            shell.go(Route::Cash);
+        }
+        ui.add_space(16.0);
         columns(ui, 980.0, &[1.0, 1.0], |i, ui| match i {
             0 => income_vs_spending(ui, b, shell),
             _ => where_it_went(ui, b, shell),
@@ -253,33 +253,52 @@ fn color_for(c: egui::Color32, p: &theme::Palette) -> egui::Color32 {
     }
 }
 
+/// "Needs attention", full width: a summary of how many problems, to-dos,
+/// and notes there are, then each item as a row (its severity, the title
+/// that opens where to look, what's wrong, and the prompt for the agent at
+/// the right; stacked under the text when narrow). The first few show;
+/// the rest wait behind a button that says how many.
 fn attention(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
     let p = pal(ui.ctx());
+    let count = |s: Severity| b.attention.iter().filter(|a| a.severity == s).count();
     widgets::titled_card(
         ui,
         "Needs attention",
         |ui| {
-            if !b.attention.is_empty() {
-                widgets::pill(
-                    ui,
-                    &b.attention.len().to_string(),
-                    p.warning,
-                    p.warning_soft,
-                );
+            // Laid out right to left: problems end up first, reading on.
+            for (sev, one, many, fg, bg) in [
+                (Severity::Info, "note", "notes", p.muted, p.hover),
+                (Severity::Todo, "to do", "to do", p.warning, p.warning_soft),
+                (
+                    Severity::Problem,
+                    "problem",
+                    "problems",
+                    p.negative,
+                    p.negative_soft,
+                ),
+            ] {
+                let n = count(sev);
+                if n > 0 {
+                    widgets::pill(ui, &fmt::count(n, one, many), fg, bg);
+                }
             }
         },
         |ui| {
             if b.attention.is_empty() {
-                widgets::empty(
-                    ui,
-                    icon::CHECK_CIRCLE,
-                    "All clear",
-                    "Nothing is missing or overdue.",
-                );
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(icon::CHECK_CIRCLE)
+                            .size(18.0)
+                            .color(p.positive),
+                    );
+                    ui.label(
+                        RichText::new("All clear: nothing is missing or overdue.")
+                            .font(theme::regular(13.5))
+                            .color(p.muted),
+                    );
+                });
                 return;
             }
-            // No inner scrolling: the card grows to fit. Past a handful of
-            // items, the rest sit behind a button that says how many.
             const FIRST: usize = 6;
             let id = ui.id().with("attention-expanded");
             let mut expanded: bool = ui.ctx().data(|d| d.get_temp(id)).unwrap_or(false);
@@ -288,34 +307,59 @@ fn attention(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
             } else {
                 b.attention.len().min(FIRST)
             };
+            let wide = ui.available_width() >= 720.0;
             for (i, a) in b.attention.iter().take(shown).enumerate() {
                 if i > 0 {
-                    ui.add_space(4.0);
+                    ui.add_space(6.0);
                     widgets::rule(ui);
-                    ui.add_space(4.0);
+                    ui.add_space(6.0);
                 }
-                let (glyph, color) = match a.severity {
-                    Severity::Problem => (icon::WARNING_CIRCLE, p.negative),
-                    Severity::Todo => (icon::CIRCLE_DASHED, p.warning),
-                    Severity::Info => (icon::INFO, p.muted),
+                let (glyph, color, word) = match a.severity {
+                    Severity::Problem => (icon::WARNING_CIRCLE, p.negative, "Problem"),
+                    Severity::Todo => (icon::CIRCLE_DASHED, p.warning, "To do"),
+                    Severity::Info => (icon::INFO, p.muted, "Note"),
                 };
+                let full = ui.available_width();
+                let button_w = if wide { 150.0 } else { 0.0 };
                 ui.horizontal_top(|ui| {
-                    ui.label(RichText::new(glyph).size(16.0).color(color));
-                    ui.vertical(|ui| {
-                        let t = RichText::new(&a.title).font(theme::semibold(13.0));
-                        let r = widgets::link(ui, t);
-                        if r.clicked()
-                            && let Some(to) = &a.target
-                        {
-                            shell.go(to.clone());
-                        }
-                        ui.label(
-                            RichText::new(&a.detail)
-                                .font(theme::regular(12.0))
-                                .color(p.muted),
-                        );
-                        widgets::copy_prompt(ui, &a.prompt);
-                    });
+                    ui.label(RichText::new(glyph).size(18.0).color(color))
+                        .on_hover_text(word);
+                    let text_w = (full - 30.0 - button_w).max(120.0);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(text_w, 0.0),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.set_width(text_w);
+                            ui.spacing_mut().item_spacing.y = 2.0;
+                            let t = RichText::new(&a.title).font(theme::semibold(13.5));
+                            let r = ui.add(egui::Label::new(t).wrap().sense(egui::Sense::click()));
+                            if a.target.is_some() && r.hovered() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                            }
+                            if r.clicked()
+                                && let Some(to) = &a.target
+                            {
+                                shell.go(to.clone());
+                            }
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(&a.detail)
+                                        .font(theme::regular(12.5))
+                                        .color(p.muted),
+                                )
+                                .wrap(),
+                            );
+                            if !wide {
+                                ui.add_space(4.0);
+                                widgets::copy_prompt(ui, &a.prompt);
+                            }
+                        },
+                    );
+                    if wide {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                            widgets::copy_prompt(ui, &a.prompt);
+                        });
+                    }
                 });
             }
             let hidden = b.attention.len() - shown;

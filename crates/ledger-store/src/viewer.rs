@@ -68,6 +68,12 @@ pub enum ViewerTarget {
         /// Party id.
         party_id: u64,
     },
+    /// One reconciliation: its account, with the account's statements and
+    /// reconciliations.
+    Reconciliation {
+        /// Reconciliation id.
+        id: u64,
+    },
     /// The transactions list, searched.
     Search {
         /// Search text: description, account, vendor, amount.

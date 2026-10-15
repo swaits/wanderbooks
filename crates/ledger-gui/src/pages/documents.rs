@@ -1,5 +1,7 @@
-//! Every receipt and document the books hold, rendered: what it is, what
-//! entry it proves, and whether it was withdrawn (and why).
+//! Every receipt and document the books hold, rendered: what it is,
+//! everything it is linked to, and whether it was withdrawn (and why).
+//! Also the compact "Documents" card every subject's page shows
+//! ([`documents_card`]).
 
 use super::page;
 use crate::app::Shell;
@@ -11,7 +13,7 @@ use crate::theme::{self, pal};
 use crate::widgets;
 use egui::{CornerRadius, RichText, Sense, Stroke, Ui, vec2};
 use egui_phosphor::regular as icon;
-use ledger_store::Attachment;
+use ledger_store::{Attachment, Subject};
 
 #[derive(Default)]
 pub struct State {
@@ -275,22 +277,35 @@ fn detail(ui: &mut Ui, b: &Books, a: &Attachment, shell: &mut Shell<'_>) {
                         &a.blob_sha,
                     );
                     ui.end_row();
-                    if let Some(e) = a.entry_id {
-                        k(ui, "Proves");
-                        let label = b
-                            .entry(e)
-                            .map(|x| {
-                                format!("#{} {} ({})", x.id, x.description, fmt::dollars(x.amount))
-                            })
-                            .unwrap_or_else(|| format!("#{e}"));
-                        if widgets::link_truncated(ui, RichText::new(label).color(p.accent))
-                            .clicked()
-                        {
-                            shell.go(Route::Entry(e));
-                        }
+                    if let Some(st) = b.statement(a.id) {
+                        k(ui, "Statement");
+                        ui.add(
+                            egui::Label::new(format!(
+                                "{}, {} – {}",
+                                b.account_label(st.account_id),
+                                fmt::date(st.period_start),
+                                fmt::date(st.period_end)
+                            ))
+                            .wrap(),
+                        );
+                        ui.end_row();
+                        k(ui, "Opening");
+                        ui.label(fmt::dollars(st.opening_balance));
+                        ui.end_row();
+                        k(ui, "Closing");
+                        ui.label(
+                            RichText::new(fmt::dollars(st.closing_balance))
+                                .font(theme::semibold(13.5)),
+                        );
                         ui.end_row();
                     }
                 });
+            ui.add_space(10.0);
+            let mut go = None;
+            links_section(ui, b, a, &mut go);
+            if let Some(r) = go {
+                shell.go(r);
+            }
             ui.add_space(10.0);
             super::entry::render(ui, b, a, shell, ui.available_width());
             if let Some(d) = &a.description {
@@ -307,4 +322,244 @@ fn detail(ui: &mut Ui, b: &Books, a: &Attachment, shell: &mut Shell<'_>) {
                 );
             }
         });
+}
+
+/// The icon for a subject's kind.
+pub fn subject_icon(s: Subject) -> &'static str {
+    match s {
+        Subject::Entry(_) => icon::RECEIPT,
+        Subject::Account(_) => icon::TREE_STRUCTURE,
+        Subject::Asset(_) => icon::PACKAGE,
+        Subject::Party(_) => icon::ADDRESS_BOOK,
+        Subject::Invoice(_) | Subject::Bill(_) => icon::FILE_TEXT,
+        Subject::Period(_) => icon::CALENDAR_BLANK,
+        Subject::PayrollRun(_) => icon::USERS,
+        Subject::Schedule(_) => icon::CALENDAR_CHECK,
+        Subject::Reconciliation(_) => icon::CHECK_SQUARE,
+        Subject::Company => icon::BUILDINGS,
+    }
+}
+
+/// A small chip naming a subject, which opens it (see
+/// [`Books::subject_route`]) when it has somewhere to go.
+pub fn subject_chip(ui: &mut Ui, b: &Books, s: Subject, go: &mut Option<Route>) {
+    let p = pal(ui.ctx());
+    let route = b.subject_route(s);
+    // A reconciliation's chip names its date before anything is cut.
+    let mut label = match s {
+        Subject::Reconciliation(r) => b.reconciliation(r).map_or_else(
+            || b.subject_label(s),
+            |r| {
+                format!(
+                    "Reconciliation, {} through {}",
+                    b.account_name(r.account_id),
+                    fmt::date(r.statement_date)
+                )
+            },
+        ),
+        _ => b.subject_label(s),
+    };
+    if label.chars().count() > 60 {
+        label = label.chars().take(59).collect::<String>() + "…";
+    }
+    let r = ui.add(
+        egui::Button::new(
+            RichText::new(format!("{} {label}", subject_icon(s)))
+                .font(theme::regular(11.5))
+                .color(if route.is_some() { p.accent } else { p.muted }),
+        )
+        .fill(if route.is_some() {
+            p.accent_soft
+        } else {
+            p.hover
+        })
+        .stroke(Stroke::NONE)
+        .corner_radius(CornerRadius::same(255))
+        .min_size(vec2(0.0, 22.0)),
+    );
+    if let Some(to) = route
+        && r.on_hover_text(format!("Open {}", b.subject_label(s)))
+            .clicked()
+    {
+        *go = Some(to);
+    }
+}
+
+/// The compact list of the documents linked to `subjects`: each file's
+/// name (opening its document page), category and description, and the
+/// other places it is linked as chips that open them.
+///
+/// ```text
+/// GOAL: every subject's page shows the files that are evidence of it,
+///       and where else each one is evidence.
+/// SOURCE: docs/parties-and-attachments.md (Attachments, Viewer).
+/// INVARIANTS:
+///   1. Lists exactly Books::documents_for(subjects), in that order.
+///   2. A file's chips are links_of(file) less `here` (the page's own
+///      subject; [`documents_card`] passes `subjects`).
+///   3. Empty: `empty` in muted text (nothing else).
+/// ```
+pub fn documents_card_with(
+    ui: &mut Ui,
+    b: &Books,
+    title: &str,
+    subjects: &[Subject],
+    here: &[Subject],
+    empty: &str,
+    go: &mut Option<Route>,
+) {
+    let p = pal(ui.ctx());
+    let docs = b.documents_for(subjects);
+    widgets::titled_card(
+        ui,
+        title,
+        |ui| {
+            if !docs.is_empty() {
+                widgets::pill(ui, &docs.len().to_string(), p.muted, p.hover);
+            }
+        },
+        |ui| {
+            if docs.is_empty() {
+                ui.add(egui::Label::new(RichText::new(empty).color(p.muted)).wrap());
+                return;
+            }
+            for (i, d) in docs.iter().enumerate() {
+                if i > 0 {
+                    ui.add_space(4.0);
+                    widgets::rule(ui);
+                    ui.add_space(4.0);
+                }
+                document_row(ui, b, d, here, go);
+            }
+        },
+    );
+}
+
+/// [`documents_card_with`], the chips leaving out `subjects` themselves.
+pub fn documents_card(
+    ui: &mut Ui,
+    b: &Books,
+    title: &str,
+    subjects: &[Subject],
+    empty: &str,
+    go: &mut Option<Route>,
+) {
+    documents_card_with(ui, b, title, subjects, subjects, empty, go);
+}
+
+/// One file in a [`documents_card_with`].
+fn document_row(ui: &mut Ui, b: &Books, d: &Attachment, here: &[Subject], go: &mut Option<Route>) {
+    let p = pal(ui.ctx());
+    ui.horizontal_top(|ui| {
+        ui.label(RichText::new(file_icon(d)).size(18.0).color(p.muted));
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            if widgets::link_truncated(ui, RichText::new(&d.file_name).font(theme::semibold(13.0)))
+                .on_hover_text("Open this document")
+                .clicked()
+            {
+                *go = Some(Route::Document(d.id));
+            }
+            let mut sub = vec![];
+            match b.statement(d.id) {
+                None => sub.push(fmt::label(&d.category)),
+                Some(st) => sub.push(format!(
+                    "Statement {} – {}, closing {}",
+                    fmt::date_short(st.period_start),
+                    fmt::date(st.period_end),
+                    fmt::dollars(st.closing_balance)
+                )),
+            }
+            if let Some(desc) = &d.description {
+                sub.push(desc.clone());
+            }
+            ui.add(
+                egui::Label::new(
+                    RichText::new(sub.join(" · "))
+                        .font(theme::regular(11.5))
+                        .color(p.muted),
+                )
+                .wrap(),
+            );
+            let elsewhere: Vec<Subject> = b
+                .links_of(d.id)
+                .iter()
+                .copied()
+                .filter(|s| !here.contains(s))
+                .collect();
+            if !elsewhere.is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
+                    ui.label(
+                        RichText::new("Also on")
+                            .font(theme::regular(11.5))
+                            .color(p.faint),
+                    );
+                    for s in elsewhere {
+                        subject_chip(ui, b, s, go);
+                    }
+                });
+            }
+        });
+    });
+}
+
+/// A PDF or an image.
+pub fn file_icon(a: &Attachment) -> &'static str {
+    if a.mime_type == "application/pdf" {
+        icon::FILE_PDF
+    } else if a.mime_type.starts_with("image/") {
+        icon::FILE_IMAGE
+    } else {
+        icon::FILE
+    }
+}
+
+/// Everything a document is linked to: a chip per subject (an entry's
+/// with its date and amount in the label), opening it; and, for a
+/// statement, the reconciliations that used it.
+fn links_section(ui: &mut Ui, b: &Books, a: &Attachment, go: &mut Option<Route>) {
+    let p = pal(ui.ctx());
+    let links = b.links_of(a.id);
+    ui.label(
+        RichText::new("LINKED TO")
+            .font(theme::semibold(11.5))
+            .color(p.faint),
+    );
+    ui.add_space(4.0);
+    if links.is_empty() {
+        ui.label(
+            RichText::new("Nothing yet: filed on its own.")
+                .font(theme::regular(12.5))
+                .color(p.muted),
+        );
+    }
+    for s in links {
+        ui.horizontal(|ui| {
+            subject_chip(ui, b, *s, go);
+            if let Subject::Entry(e) = s
+                && let Some(x) = b.entry(*e)
+            {
+                ui.label(
+                    RichText::new(format!(
+                        "{} · {}",
+                        fmt::date(x.date),
+                        fmt::dollars(x.amount)
+                    ))
+                    .font(theme::regular(11.5))
+                    .color(p.muted),
+                );
+            }
+            if let Subject::Reconciliation(r) = s
+                && let Some(r) = b.reconciliation(*r)
+                && let Some(why) = &r.voided
+            {
+                ui.label(
+                    RichText::new(format!("voided: {why}"))
+                        .font(theme::regular(11.5))
+                        .color(p.warning),
+                );
+            }
+        });
+    }
 }

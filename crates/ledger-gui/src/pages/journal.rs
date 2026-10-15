@@ -93,23 +93,24 @@ fn tax_basis_text(b: &Books, asset_id: Option<u64>, p: &Value) -> String {
 }
 
 /// What an attachment link's subject (`{"kind": .., "id": ..}`) is, in
-/// words, and where it opens.
+/// words (Books::subject_label), and where it opens
+/// (Books::subject_route).
 fn subject_text(b: &Books, subject: Option<&Value>) -> (String, Option<Route>) {
-    let kind = subject
-        .and_then(|s| s.get("kind"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let id = subject.and_then(|s| s.get("id")).and_then(|v| v.as_u64());
-    match (kind, id) {
-        ("entry", Some(e)) => (format!("#{e}"), Some(Route::Entry(e))),
-        ("account", Some(a)) => (b.account_label(a), Some(Route::Account(a))),
-        ("asset", Some(a)) => (b.asset_label(a), Some(Route::Asset(a))),
-        ("party", Some(p)) => (b.party_label(p), Some(Route::Party(p))),
-        ("company", _) => ("the company".into(), Some(Route::Company)),
-        ("payroll_run", Some(i)) => (format!("payroll run {i}"), None),
-        (k, Some(i)) if !k.is_empty() => (format!("{} {i}", k.replace('_', " ")), None),
-        _ => ("a subject".into(), None),
+    let parsed =
+        subject.and_then(|v| serde_json::from_value::<ledger_store::Subject>(v.clone()).ok());
+    match parsed {
+        Some(ledger_store::Subject::Company) => ("the company".into(), Some(Route::Company)),
+        Some(sub) => (b.subject_label(sub), b.subject_route(sub)),
+        None => ("a subject".into(), None),
     }
+}
+
+/// A date from the payload, in words ("Sep 30, 2026"), or as written.
+fn date_text(p: &Value, k: &str) -> String {
+    let t = s(p, k);
+    t.parse::<chrono::NaiveDate>()
+        .map(fmt::date)
+        .unwrap_or_else(|_| t.to_string())
 }
 
 /// A party's label, or "a party" when the event names none.
@@ -272,10 +273,10 @@ pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
             Some(Event {
                 icon: icon::FILE_TEXT,
                 text: format!(
-                    "Statement for {}, {} to {}: closing balance {closing}",
+                    "Recorded {}'s statement, {} – {}: closing balance {closing}",
                     account.map_or("an account".into(), |a| b.account_label(a)),
-                    s(p, "period_start"),
-                    s(p, "period_end")
+                    date_text(p, "period_start"),
+                    date_text(p, "period_end")
                 ),
                 route: Some(Route::Document(att)),
                 also: account.map(Route::Account),
@@ -287,25 +288,48 @@ pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
                 .parse()
                 .map(fmt::dollars)
                 .unwrap_or_default();
+            let lines = p
+                .get("cleared")
+                .and_then(|v| v.as_array())
+                .map_or(0, |v| v.len());
             Some(Event {
                 icon: icon::CHECK_SQUARE,
                 text: format!(
-                    "Reconciled {} through {} at {balance}",
+                    "Reconciled {} through {} at {balance} ({} cleared)",
                     account.map_or("an account".into(), |a| b.account_label(a)),
-                    s(p, "statement_date")
+                    date_text(p, "statement_date"),
+                    fmt::count(lines, "line", "lines")
                 ),
-                route: account.map(Route::Account),
-                also: p
-                    .get("attachment_id")
+                route: p
+                    .get("id")
                     .and_then(|v| v.as_u64())
-                    .map(Route::Document),
+                    .map(Route::Reconciliation),
+                also: account.map(Route::Account),
             })
         }
-        "reconciliation.voided" => ev(
-            icon::PROHIBIT,
-            format!("Voided reconciliation {id}: {}", s(p, "reason")),
-            None,
-        ),
+        "reconciliation.voided" => {
+            let r = p
+                .get("id")
+                .and_then(|v| v.as_u64())
+                .and_then(|i| b.reconciliation(i));
+            Some(Event {
+                icon: icon::PROHIBIT,
+                text: match r {
+                    Some(r) => format!(
+                        "Voided the reconciliation of {} through {}: {}",
+                        b.account_label(r.account_id),
+                        fmt::date(r.statement_date),
+                        s(p, "reason")
+                    ),
+                    None => format!("Voided reconciliation {id}: {}", s(p, "reason")),
+                },
+                route: p
+                    .get("id")
+                    .and_then(|v| v.as_u64())
+                    .map(Route::Reconciliation),
+                also: r.map(|r| Route::Account(r.account_id)),
+            })
+        }
         "attachment.withdrawn" => ev(
             icon::ARCHIVE,
             format!("Withdrew {}: {}", attachment_name(b, att), s(p, "reason")),
@@ -697,6 +721,15 @@ pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
             ),
             entry_id.map(Route::Entry),
         ),
+        "entry.no_party" => ev(
+            icon::USER_MINUS,
+            format!(
+                "Entry #{} marked as having no counterparty: {}",
+                entry_id.unwrap_or(0),
+                s(p, "reason")
+            ),
+            entry_id.map(Route::Entry),
+        ),
         "line.cleared" => ev(
             icon::CHECK_SQUARE,
             format!("Cleared a line of #{}", entry_id.unwrap_or(0)),
@@ -933,11 +966,14 @@ fn detail(ui: &mut Ui, b: &Books, line: &JournalLine, shell: &mut Shell<'_>) {
             for r in ev.route.iter().chain(&ev.also) {
                 ui.add_space(6.0);
                 if ui
-                    .button(format!(
-                        "{} Open {}",
-                        icon::ARROW_SQUARE_OUT,
-                        crate::palette::describe(b, r)
-                    ))
+                    .button(format!("{} Open {}", icon::ARROW_SQUARE_OUT, {
+                        let d = crate::palette::describe(b, r);
+                        if d.is_empty() {
+                            r.section().title().to_string()
+                        } else {
+                            d
+                        }
+                    }))
                     .clicked()
                 {
                     shell.go(r.clone());

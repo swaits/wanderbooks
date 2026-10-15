@@ -9,7 +9,7 @@
 use super::assets::{Notice, facts, notice_box, row};
 use super::page;
 use crate::app::Shell;
-use crate::books::{Books, PartyInfo};
+use crate::books::{Books, PartyFlow, PartyInfo, PartyPeriod};
 use crate::fmt;
 use crate::nav::{ReportKind, Route};
 use crate::theme::{self, pal};
@@ -29,6 +29,59 @@ pub struct State {
     pub show_archived: bool,
     /// Search text: name or display name.
     pub query: String,
+    /// The span the money columns and a party's page sum over.
+    pub period: PartyPeriod,
+    /// How the directory is ordered.
+    pub sort: Sort,
+}
+
+/// The directory's order: by name, or by an amount, largest first.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Sort {
+    #[default]
+    Name,
+    PaidOut,
+    ReceivedIn,
+    Net,
+}
+
+/// The directory's rows for `st` in its order: [`listed`] by name, or by
+/// the chosen amount over `st.period` largest first (ties by name), each
+/// with its [`PartyFlow`] (totals only).
+pub fn sorted<'a>(b: &'a Books, st: &State) -> Vec<(&'a Party, PartyFlow)> {
+    let span = b.party_span(st.period);
+    let mut rows: Vec<(&Party, PartyFlow)> = listed(b, st)
+        .into_iter()
+        .map(|p| (p, b.party_flow(p.id, span, false)))
+        .collect();
+    let key = |f: &PartyFlow| match st.sort {
+        Sort::Name => Decimal::ZERO,
+        Sort::PaidOut => f.paid,
+        Sort::ReceivedIn => f.received,
+        Sort::Net => f.net(),
+    };
+    // Stable: equal amounts keep the by-name order.
+    rows.sort_by_key(|x| std::cmp::Reverse(key(&x.1)));
+    rows
+}
+
+/// The period chips: each of [`Books::party_periods`], the chosen one
+/// lit.
+fn period_chips(ui: &mut Ui, b: &Books, party: Option<PartyId>, period: &mut PartyPeriod) {
+    let p = pal(ui.ctx());
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+        ui.label(
+            RichText::new(format!("{} Period", icon::CALENDAR_BLANK))
+                .font(theme::regular(12.5))
+                .color(p.muted),
+        );
+        for x in b.party_periods(party) {
+            if chip(ui, &b.party_period_label(x), *period == x) {
+                *period = x;
+            }
+        }
+    });
 }
 
 /// A role in words, capitalized: "Payout platform".
@@ -270,14 +323,11 @@ fn chip(ui: &mut Ui, text: &str, on: bool) -> bool {
 /// The party directory.
 pub fn show_list(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
     let p = pal(ui.ctx());
-    let year = b.today.year();
     page(ui, "parties", |ui| {
         widgets::page_header(
             ui,
             "Parties",
-            &format!(
-                "Everyone the company deals with — vendors, contractors, customers, platforms, agencies — and what it paid each in {year}. Click one for everything the books hold about them."
-            ),
+            "Everyone the company deals with — vendors, contractors, customers, platforms, agencies — and what the company paid each and received from each. Click one for everything the books hold about them.",
         );
         if b.ledger.parties().next().is_none() {
             widgets::card(ui, |ui| {
@@ -322,8 +372,30 @@ pub fn show_list(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                 }
             }
         });
+        ui.add_space(8.0);
+        period_chips(ui, b, None, &mut st.period);
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+            ui.label(
+                RichText::new(format!("{} Sort", icon::SORT_DESCENDING))
+                    .font(theme::regular(12.5))
+                    .color(p.muted),
+            );
+            for (x, label) in [
+                (Sort::Name, "Name"),
+                (Sort::PaidOut, "Paid out"),
+                (Sort::ReceivedIn, "Received in"),
+                (Sort::Net, "Net"),
+            ] {
+                if chip(ui, label, st.sort == x) {
+                    st.sort = x;
+                }
+            }
+        });
         ui.add_space(12.0);
-        let rows = listed(b, st);
+        let period_label = b.party_period_label(st.period);
+        let rows = sorted(b, st);
         let missing: Vec<&Party> = b
             .ledger
             .parties()
@@ -356,42 +428,56 @@ pub fn show_list(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
         }
         let mut go = None;
         widgets::card(ui, |ui| {
-            let amt = widgets::AMOUNT_MIN + 24.0;
-            // Narrow, the roles and W-9 columns give way and the entry
-            // count goes, so the amount stays in view.
+            let amt = widgets::AMOUNT_MIN + 16.0;
+            // Narrow, the entry count and then the roles go (the role
+            // chips above still filter), so the amounts stay in view.
             let avail = ui.available_width();
-            let roles_w = (avail * 0.2).clamp(140.0, 210.0);
-            let w9_w = (avail * 0.2).clamp(160.0, 230.0);
-            let n_w = if avail >= 860.0 { 76.0 } else { 0.0 };
-            let fixed = roles_w + w9_w + n_w + amt;
-            let w = avail.max(fixed + 200.0);
+            let show_roles = avail >= 900.0;
+            let roles_w = if show_roles {
+                (avail * 0.16).clamp(120.0, 200.0)
+            } else {
+                0.0
+            };
+            let w9_w = (avail * 0.16).clamp(140.0, 210.0);
+            let n_w = if avail >= 1000.0 { 70.0 } else { 0.0 };
+            let fixed = roles_w + w9_w + n_w + amt * 3.0;
+            let w = avail.max(fixed + 180.0);
             // Cells without the entry count when it has no room.
-            let cells = |c: [(String, f32, bool, egui::Color32); 5]| -> Vec<_> {
+            let cells = |c: [(String, f32, bool, egui::Color32); 7]| -> Vec<_> {
                 c.into_iter()
                     .enumerate()
-                    .filter(|(i, _)| *i != 3 || n_w > 0.0)
+                    .filter(|(i, _)| (*i != 3 || n_w > 0.0) && (*i != 1 || show_roles))
                     .map(|(_, c)| c)
                     .collect()
             };
             widgets::min_width(ui, "party_list", w, |ui| {
-                let head = |t: &str, cw: f32, right: bool| (t.to_string(), cw, right, p.muted);
+                let head = |t: &str, cw: f32, right: bool, on: bool| {
+                    (
+                        t.to_string(),
+                        cw,
+                        right,
+                        if on { p.accent } else { p.muted },
+                    )
+                };
+                let sort = st.sort;
                 row(
                     ui,
                     w,
                     &cells([
-                        head("Name", 0.0, false),
-                        head("Roles", roles_w, false),
-                        head("W-9", w9_w, false),
-                        head("Entries", n_w, true),
-                        head(&format!("Paid in {year}"), amt, true),
+                        head("Name", 0.0, false, sort == Sort::Name),
+                        head("Roles", roles_w, false, false),
+                        head("W-9", w9_w, false, false),
+                        head("Entries", n_w, true, false),
+                        head("Paid out", amt, true, sort == Sort::PaidOut),
+                        head("Received in", amt, true, sort == Sort::ReceivedIn),
+                        head("Net", amt, true, sort == Sort::Net),
                     ]),
                     None,
                     true,
                     false,
                 );
                 widgets::rule(ui);
-                for x in &rows {
-                    let info = b.party(x.id).cloned().unwrap_or_default();
+                for (x, flow) in &rows {
                     let text = if x.archived { p.muted } else { p.text };
                     let status = w9_status(b, x);
                     let w9_color = match status {
@@ -413,7 +499,16 @@ pub fn show_list(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                         sub.push(format!("Party {}", x.id));
                     }
                     let sub = sub.join(" · ");
-                    let (paid, paid_color) = paid_cell(info.paid_ytd, p);
+                    let money = |d: Decimal, c| {
+                        if d.is_zero() {
+                            ("—".to_string(), p.faint)
+                        } else {
+                            (fmt::money(d), c)
+                        }
+                    };
+                    let (out_t, out_c) = money(flow.paid, p.text);
+                    let (in_t, in_c) = money(flow.received, p.positive);
+                    let (net_t, net_c) = paid_cell(flow.net(), p);
                     let resp = row(
                         ui,
                         w,
@@ -421,25 +516,21 @@ pub fn show_list(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                             (x.label().to_string(), 0.0, false, text),
                             (roles_text(x), roles_w, false, p.muted),
                             (status.text(), w9_w, false, w9_color),
-                            (info.entries.len().to_string(), n_w, true, p.muted),
-                            (paid, amt, true, paid_color),
+                            (flow.entries.to_string(), n_w, true, p.muted),
+                            (out_t, amt, true, out_c),
+                            (in_t, amt, true, in_c),
+                            (net_t, amt, true, net_c),
                         ]),
                         Some((sub.as_str(), p.faint)),
                         false,
                         true,
                     );
-                    let resp = resp.on_hover_text(if info.paid_ytd < Decimal::ZERO {
-                        format!(
-                            "Open this party. On net the company received {} from them in {year}.",
-                            fmt::dollars(-info.paid_ytd)
-                        )
-                    } else {
-                        "Open this party".to_string()
-                    });
+                    let resp = resp.on_hover_text("Open this party");
                     resp.context_menu(|ui| {
                         widgets::copy_item(ui, "Copy name", &x.name);
                         widgets::copy_item(ui, "Copy party id", &x.id.to_string());
-                        widgets::copy_item(ui, "Copy paid this year", &info.paid_ytd.to_string());
+                        widgets::copy_item(ui, "Copy paid out", &flow.paid.to_string());
+                        widgets::copy_item(ui, "Copy received in", &flow.received.to_string());
                     });
                     if resp.clicked() {
                         go = Some(x.id);
@@ -451,7 +542,7 @@ pub fn show_list(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
         ui.add(
             egui::Label::new(
                 RichText::new(format!(
-                    "Paid in {year}: what the party's posted entries since January 1 moved out of cash, cards, and what's owed back to whoever paid for the company; a plus is money received from them. The 1099 amount, on each party's page, is the 1099 worksheet's."
+                    "{period_label}: Paid out is what each party's posted entries moved out of cash, cards, and what's owed back to whoever paid for the company; Received in is what came back in; Net is paid out less received (a plus means more came in). Entries counts the posted ones in the period. The 1099 amount, on each party's page, is the 1099 worksheet's."
                 ))
                 .font(theme::regular(11.5))
                 .color(p.faint),
@@ -541,18 +632,46 @@ pub fn show_party(ui: &mut Ui, b: &Books, id: PartyId, shell: &mut Shell<'_>) {
         });
         ui.add_space(14.0);
 
-        // This year's totals.
+        // The money over the chosen period: out, in, and the net.
+        let period = shell.state.parties.period;
+        period_chips(ui, b, Some(id), &mut shell.state.parties.period);
+        ui.add_space(10.0);
+        let span = b.party_span(period);
+        let flow = b.party_flow(id, span, true);
+        let label = b.party_period_label(period);
+        let span_words = format!("{} – {}", fmt::date(span.0), fmt::date(span.1));
         let mut tiles: Vec<Tile> = Vec::new();
-        let received = info.paid_ytd < Decimal::ZERO;
         tiles.push((
-            if received {
-                format!("Received in {year}")
-            } else {
-                format!("Paid in {year}")
-            },
-            info.paid_ytd.abs(),
-            "Over this party's posted entries since January 1: credits less debits to cash, cards, and what's owed back to whoever paid for the company (received, when more came in than went out).".into(),
-            Some((fmt::count(info.entries.len(), "entry", "entries"), p.muted)),
+            "Paid out".into(),
+            flow.paid,
+            format!("{label}, {span_words}: what this party's posted entries moved out of cash, cards, and what's owed back to whoever paid for the company (net of refunds and reversals of payments)."),
+            Some((label.clone(), p.muted)),
+        ));
+        tiles.push((
+            "Received in".into(),
+            flow.received,
+            format!("{label}, {span_words}: what this party's posted entries brought into cash and those accounts (net of reversals)."),
+            Some((label.clone(), p.muted)),
+        ));
+        let net = flow.net();
+        tiles.push((
+            "Net".into(),
+            net.abs(),
+            "Paid out less received in.".into(),
+            Some((
+                if net < Decimal::ZERO {
+                    "more received than paid".to_string()
+                } else if net.is_zero() {
+                    "even".to_string()
+                } else {
+                    "more paid than received".to_string()
+                },
+                if net < Decimal::ZERO {
+                    p.positive
+                } else {
+                    p.muted
+                },
+            )),
         ));
         if party.customer.is_some() {
             tiles.push((
@@ -581,28 +700,33 @@ pub fn show_party(ui: &mut Ui, b: &Books, id: PartyId, shell: &mut Shell<'_>) {
                 }),
             ));
         }
-        if let Some(l) = &info.form_1099 {
-            let threshold = info.threshold_1099.unwrap_or_default();
+        let tax_year = b.party_period_year(period);
+        let form = if tax_year == year {
+            info.form_1099.clone().zip(info.threshold_1099)
+        } else {
+            b.party_1099(id, tax_year)
+        };
+        if let Some((l, threshold)) = &form {
             let sub = match l.form {
                 Some(_) if l.reportable => (
-                    format!("Reportable · threshold {}", fmt::dollars(threshold)),
+                    format!("Reportable · threshold {}", fmt::dollars(*threshold)),
                     p.warning,
                 ),
                 Some(_) => (
-                    format!("Under the {} threshold", fmt::dollars(threshold)),
+                    format!("Under the {} threshold", fmt::dollars(*threshold)),
                     p.muted,
                 ),
                 None => ("Not marked for a 1099".into(), p.muted),
             };
             tiles.push((
-                format!("1099 amount, {year}"),
+                format!("1099 amount, {tax_year}"),
                 l.paid,
                 "Cash paid in the calendar year, from the 1099 worksheet (ledger-core): posted entries tagged with its vendor record, net of refunds and reversals. Card payments aren't counted (the card issuer reports them).".into(),
                 Some(sub),
             ));
         }
         let n = tiles.len();
-        super::grid(ui, n, 190.0, 5, |i, ui| {
+        super::grid(ui, n, 170.0, 6, |i, ui| {
             let (label, value, how, sub) = &tiles[i];
             let r = widgets::kpi(
                 ui,
@@ -617,6 +741,13 @@ pub fn show_party(ui: &mut Ui, b: &Books, id: PartyId, shell: &mut Shell<'_>) {
             r.context_menu(|ui| widgets::copy_item(ui, "Copy amount", &value.to_string()));
         });
 
+        super::columns(ui, 860.0, &[1.0, 1.0], |col, ui| {
+            if col == 0 {
+                what_for_card(ui, b, &flow, &label, &mut go);
+            } else {
+                months_card(ui, b, id, span, &label);
+            }
+        });
         super::columns(ui, 860.0, &[1.0, 1.0], |col, ui| {
             if col == 0 {
                 facts_card(ui, party, &mut go);
@@ -648,6 +779,23 @@ pub fn show_party(ui: &mut Ui, b: &Books, id: PartyId, shell: &mut Shell<'_>) {
             payroll_card(ui, b, party, &info, &mut go);
             ui.add_space(14.0);
         }
+        let mut subjects = vec![ledger_store::Subject::Party(id)];
+        subjects.extend(
+            info.invoices
+                .iter()
+                .map(|i| ledger_store::Subject::Invoice(*i)),
+        );
+        subjects.extend(info.bills.iter().map(|i| ledger_store::Subject::Bill(*i)));
+        super::documents::documents_card_with(
+            ui,
+            b,
+            "Documents",
+            &subjects,
+            &[ledger_store::Subject::Party(id)],
+            "No documents linked to them (contracts, a W-9 is kept in the vault, correspondence).",
+            &mut go,
+        );
+        ui.add_space(14.0);
         widgets::titled_card(
             ui,
             "History",
@@ -1177,6 +1325,150 @@ fn payroll_card(ui: &mut Ui, b: &Books, party: &Party, info: &PartyInfo, go: &mu
                     }
                 }
             });
+        },
+    );
+}
+
+/// "What for": the period's money by the account on the other side of
+/// each entry ([`PartyFlow::what_for`]), which sums to the net exactly.
+fn what_for_card(ui: &mut Ui, b: &Books, flow: &PartyFlow, label: &str, go: &mut Option<Route>) {
+    let p = pal(ui.ctx());
+    widgets::titled_card(
+        ui,
+        "What for",
+        |ui| {
+            ui.label(
+                RichText::new(label)
+                    .font(theme::regular(12.0))
+                    .color(p.muted),
+            );
+        },
+        |ui| {
+            if flow.what_for.is_empty() {
+                ui.label(
+                    RichText::new("No posted entries with them in this period.").color(p.muted),
+                );
+                return;
+            }
+            let amt = widgets::AMOUNT_MIN + 16.0;
+            let w = ui.available_width().max(200.0 + amt);
+            let roles = [
+                (ledger_core::PAYABLES, "billed, not yet paid"),
+                (ledger_core::RECEIVABLES, "invoiced, not yet collected"),
+            ];
+            widgets::min_width(ui, "what_for", w, |ui| {
+                for (account, amount) in &flow.what_for {
+                    let note = roles
+                        .iter()
+                        .find(|(r, _)| b.ledger.role_account(r) == Some(*account))
+                        .map(|(_, n)| *n);
+                    let (text, color) = if *amount < Decimal::ZERO {
+                        (format!("+{}", fmt::money(-*amount)), p.positive)
+                    } else {
+                        (fmt::money(*amount), p.text)
+                    };
+                    let resp = row(
+                        ui,
+                        w,
+                        &[
+                            (b.account_label(*account), 0.0, false, p.text),
+                            (text, amt, true, color),
+                        ],
+                        note.map(|n| (n, p.faint)),
+                        false,
+                        true,
+                    );
+                    if resp.on_hover_text("Open the account's register").clicked() {
+                        *go = Some(Route::Account(*account));
+                    }
+                }
+                widgets::rule(ui);
+                let net = flow.net();
+                row(
+                    ui,
+                    w,
+                    &[
+                        ("Net".into(), 0.0, false, p.text),
+                        (
+                            if net < Decimal::ZERO {
+                                format!("+{}", fmt::money(-net))
+                            } else {
+                                fmt::money(net)
+                            },
+                            amt,
+                            true,
+                            if net < Decimal::ZERO {
+                                p.positive
+                            } else {
+                                p.text
+                            },
+                        ),
+                    ],
+                    None,
+                    true,
+                    false,
+                );
+            });
+            ui.add_space(4.0);
+            ui.add(
+                egui::Label::new(
+                    RichText::new("Each entry's other side: what the money paid for, or (with a plus) where money received came from. Sums to the net exactly.")
+                        .font(theme::regular(11.5))
+                        .color(p.faint),
+                )
+                .wrap(),
+            );
+        },
+    );
+}
+
+/// Out versus in, month by month over the period ([`Books::party_months`]).
+fn months_card(ui: &mut Ui, b: &Books, id: PartyId, span: (NaiveDate, NaiveDate), label: &str) {
+    let p = pal(ui.ctx());
+    let months = b.party_months(id, span);
+    // All time can be long: the chart shows the last 24 months of it.
+    let shown: Vec<_> = months.iter().rev().take(24).rev().collect();
+    widgets::titled_card(
+        ui,
+        "By month",
+        |ui| {
+            ui.label(
+                RichText::new(if months.len() > shown.len() {
+                    format!("{label}, last {} months", shown.len())
+                } else {
+                    label.to_string()
+                })
+                .font(theme::regular(12.0))
+                .color(p.muted),
+            );
+        },
+        |ui| {
+            if shown
+                .iter()
+                .all(|m| m.paid.is_zero() && m.received.is_zero())
+            {
+                widgets::empty(ui, icon::CHART_BAR, "No money moved", "");
+                return;
+            }
+            let multi_year =
+                shown.first().map(|m| m.month.year()) != shown.last().map(|m| m.month.year());
+            let groups: Vec<crate::charts::BarGroup> = shown
+                .iter()
+                .map(|m| crate::charts::BarGroup {
+                    label: if multi_year && m.month.month() == 1 {
+                        m.month.format("%b %y").to_string()
+                    } else {
+                        m.month.format("%b").to_string()
+                    },
+                    values: vec![m.paid, m.received],
+                })
+                .collect();
+            crate::charts::bar_chart(
+                ui,
+                &groups,
+                &[("Paid out", p.series[2]), ("Received in", p.series[1])],
+                200.0,
+            );
         },
     );
 }

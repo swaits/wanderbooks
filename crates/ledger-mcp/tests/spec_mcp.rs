@@ -175,6 +175,14 @@ fn test_dir(name: &str) -> PathBuf {
     dir
 }
 
+/// A directory beside the books dir `dir`, outside it (vault keys, files
+/// with TINs).
+fn outside(dir: &Path) -> PathBuf {
+    let d = PathBuf::from(format!("{}-outside", dir.display()));
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
 /// Write a `wanderbooks.toml` with the given receipt threshold and extra
 /// TOML (appended under `[books]` unless it opens its own table).
 fn books_toml(dir: &Path, threshold: &str, extra: &str) -> PathBuf {
@@ -201,6 +209,9 @@ fn spawn_child(dir: &Path, toml: &Path) -> Child {
         // books.show writes a viewer request here; keep it out of the
         // user's real runtime dir.
         .env("XDG_RUNTIME_DIR", &run)
+        // The TIN vault's default key file is under XDG_CONFIG_HOME: never
+        // the user's real one (the happy path names its own anyway).
+        .env("XDG_CONFIG_HOME", outside(dir).join("config"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -572,9 +583,13 @@ fn happy_path(name: &str) -> Mcp {
     let toml = books_toml(
         &dir,
         "1000000.00",
-        "financing_accounts = [\"2100\"]\n\
+        &format!(
+            "financing_accounts = [\"2100\"]\n\
          [[company.members]]\nname = \"A\"\nshare = \"50%\"\ncapital_account = \"3000\"\n\
-         [[company.members]]\nname = \"B\"\nshare = \"50%\"\ncapital_account = \"3001\"\n",
+         [[company.members]]\nname = \"B\"\nshare = \"50%\"\ncapital_account = \"3001\"\n\
+         [vault]\nkey_file = \"{}\"\n",
+            outside(&dir).join("vault.key").display()
+        ),
     );
     let mut m = Mcp::start(&dir, &toml);
 
@@ -675,6 +690,18 @@ fn happy_path(name: &str) -> Mcp {
         json!({"party": "Landlord", "received_on": "2026-01-03", "entity_type": "LLC (partnership)",
                "tin_last4": "4321", "kept_at": "CPA portal"}),
     );
+    let w9_pdf = outside(&dir).join("landlord-w9.pdf");
+    std::fs::write(&w9_pdf, b"%PDF-1.4 W-9 EIN 79-9714321").unwrap();
+    m.ok(
+        "books.set_w9",
+        json!({"party": "Landlord", "received_on": "2026-01-03", "entity_type": "LLC (partnership)",
+               "tin": "79-9714321", "tin_type": "ein", "w9_file_path": w9_pdf.to_str().unwrap()}),
+    );
+    m.ok(
+        "books.get_w9",
+        json!({"party": "Landlord",
+               "save_to": outside(&dir).join("landlord-w9-copy.pdf").to_str().unwrap()}),
+    );
     m.ok("books.parties", json!({"role": "landlord", "year": 2026}));
 
     // Owner contribution: draft, lines, receipt, preview, post.
@@ -748,6 +775,25 @@ fn happy_path(name: &str) -> Mcp {
     )["attachment_id"]
         .as_u64()
         .unwrap();
+    let filed = m.ok(
+        "books.file_document",
+        json!({"category": "contract", "file_name": "lease.txt", "mime_type": "text/plain",
+               "content_base64": b64(b"lease"), "link_to": [{"kind": "company"}]}),
+    )["attachment_id"]
+        .as_u64()
+        .unwrap();
+    m.ok(
+        "books.link_attachment",
+        json!({"attachment_id": filed, "subject": {"kind": "party", "id": "Landlord"}}),
+    );
+    m.ok(
+        "books.attachments",
+        json!({"subject": {"kind": "party", "id": "Landlord"}}),
+    );
+    m.ok(
+        "books.unlink_attachment",
+        json!({"attachment_id": filed, "subject": {"kind": "company"}, "reason": "a lease, not a formation document"}),
+    );
     let local = dir.join("local-receipt.txt");
     std::fs::write(&local, b"a local receipt").unwrap();
     m.ok(
@@ -899,14 +945,53 @@ fn happy_path(name: &str) -> Mcp {
     );
 
     // Bank import and reconciliation.
+    let csv = "Date,Description,Amount\n2026-03-05,Coffee,-4.50\n";
+    let source = m.ok(
+        "books.file_document",
+        json!({"category": "import_source", "file_name": "bank.csv", "mime_type": "text/csv",
+               "content_base64": b64(csv.as_bytes())}),
+    )["attachment_id"]
+        .as_u64()
+        .unwrap();
     m.ok(
         "books.import_bank_csv",
-        json!({"csv_text": "Date,Description,Amount\n2026-03-05,Coffee,-4.50\n",
-               "bank_account_code": "1000", "default_offset_code": "6999"}),
+        json!({"csv_text": csv, "bank_account_code": "1000", "default_offset_code": "6999",
+               "source_attachment_id": source}),
     );
     m.ok(
         "books.reconcile",
         json!({"account": "1000", "statement_date": "2026-12-31", "statement_balance": "100.00"}),
+    );
+    // January's statement: the contribution and the rent cleared.
+    m.ok(
+        "books.mark_cleared",
+        json!({"entry_id": e1, "line_index": 0, "cleared": true}),
+    );
+    let stmt = m.ok(
+        "books.file_document",
+        json!({"category": "statement", "file_name": "2026-01.pdf", "mime_type": "application/pdf",
+               "content_base64": b64(b"%PDF statement")}),
+    )["attachment_id"]
+        .as_u64()
+        .unwrap();
+    m.ok(
+        "books.record_statement",
+        json!({"attachment_id": stmt, "account": "1000", "period_start": "2026-01-01",
+               "period_end": "2026-01-31", "opening_balance": "0.00", "closing_balance": "9900.00"}),
+    );
+    m.ok("books.statements", json!({}));
+    m.ok("books.reconcile", json!({"statement_attachment": stmt}));
+    let rec = m.ok(
+        "books.reconcile",
+        json!({"statement_attachment": stmt, "confirmed": true}),
+    )["reconciliation"]["reconciliation_id"]
+        .as_u64()
+        .unwrap();
+    m.ok("books.reconciliations", json!({"account": "1000"}));
+    m.ok("books.show", json!({"reconciliation": rec}));
+    m.ok(
+        "books.void_reconciliation",
+        json!({"reconciliation_id": rec, "reason": "redo after the March import"}),
     );
 
     // Periods.
@@ -943,6 +1028,19 @@ fn happy_path(name: &str) -> Mcp {
     m.ok("books.digest", json!({"since": "2026-01-01"}));
     m.ok("books.search_entries", json!({"text": "rent", "limit": 10}));
     m.ok("books.vendor_1099", json!({"year": 2026}));
+    m.ok(
+        "books.vendor_1099",
+        json!({"year": 2026, "include_tins": true,
+               "save_csv_to": outside(&dir).join("1099.csv").to_str().unwrap()}),
+    );
+    m.ok(
+        "books.purge_tin",
+        json!({"party": "Landlord", "reason": "test purge"}),
+    );
+    m.ok(
+        "books.purge_tin",
+        json!({"party": "Landlord", "reason": "test purge", "confirmed": true}),
+    );
     m.ok("books.party", json!({"party": "Landlord", "year": 2026}));
     m.ok("books.party", json!({"party": "Pat", "year": 2026}));
     m.ok("books.party", json!({"party": "Client"}));

@@ -1210,10 +1210,11 @@ fn attention_is_pure_on_mixed_books() {
         assert_eq!(x.prompt, y.prompt);
         assert_eq!(x.severity, y.severity);
     }
-    // Two drafts, three posted without receipts.
+    // Two drafts, three posted without receipts (and the checking
+    // account, with activity before this month, due its reconciliation).
     let todos = first
         .iter()
-        .filter(|a| a.severity == Severity::Todo)
+        .filter(|a| a.severity == Severity::Todo && !a.title.starts_with("Reconcile "))
         .count();
     let problems = first
         .iter()

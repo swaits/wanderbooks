@@ -150,7 +150,12 @@ below.
   amounts wanderbooks may no longer know as of today (`{ name,
   known_through, catalog, source, why }`): research the current value or
   ask the human, then update it upstream (pull request or issue at
-  github.com/swaits/wanderbooks).
+  github.com/swaits/wanderbooks). `unreconciled_accounts` lists the cash
+  and card accounts due for reconciliation (`{ code, name,
+  reconciled_through?, due_through, next_step }`): every `[books]
+  cash_accounts` account and every liability with a recorded statement
+  that has posted activity through the end of last month but no
+  reconciliation (not voided) through it.
 
 ## Tools — fixed assets
 
@@ -226,12 +231,15 @@ through the policy.
 ## Tools — the viewer
 
 - `books.show { entry_id | account | report | attachment_id | asset |
-  party | search | page, start?, end? }` → `{ shown, note }`. Asks the
-  human's viewer (`ledger-gui`) to open an entry, an account register or a
-  report (for start/end dates if given), a stored file, an asset, a party
-  (by id or name, resolved as in "Tools — parties"), a transactions search,
-  or a page (`parties` among them). Exactly one target; entries, accounts,
-  attachments, assets, and parties are checked to exist. Never touches the books: the request is a small JSON file in
+  party | reconciliation | search | page, start?, end? }` → `{ shown,
+  note }`. Asks the human's viewer (`ledger-gui`) to open an entry, an
+  account register or a report (for start/end dates if given), a stored
+  file, an asset, a party (by id or name, resolved as in "Tools —
+  parties"), a reconciliation (by id: its account's page, with its
+  statements and reconciliations; viewer target `{show: "reconciliation",
+  id}`), a transactions search, or a page (`parties` among them). Exactly
+  one target; entries, accounts, attachments, assets, parties, and
+  reconciliations are checked to exist. Never touches the books: the request is a small JSON file in
   the user's runtime directory (`$XDG_RUNTIME_DIR/wanderbooks/viewer-<hash
   of the data dir>.json`), written atomically, watched by the viewer. A
   viewer started within two minutes of a request opens it; older requests
@@ -269,8 +277,9 @@ entries tagged with the vendor. Card payments move no asset (the card
 processor's 1099-K covers them), so they drop out; reversals of tagged
 entries carry the tag and net out. Thresholds: $600 for payments through
 2025, $2,000 from 2026 (indexed for inflation after 2026); always
-overridable, always for the CPA to confirm. TINs are never stored, only
-whether a W-9 is on file.
+overridable, always for the CPA to confirm. The books keep whether a W-9
+is on file and the TIN's last four; full TINs live only in the TIN vault
+("Tools — the TIN vault").
 
 - `books.list_vendors {}` → `{ vendors: [{ id, name, form_1099?,
   tin_on_file, party_id }] }`.
@@ -282,11 +291,21 @@ whether a W-9 is on file.
   takes `vendor` too; bills and their payments are tagged automatically.
   `books.set_entry_party` tags the vendor too when the party has a vendor
   record, so tagging by party counts for 1099s the same way.
-- `books.vendor_1099 { year, threshold? }` → `{ year, threshold, vendors:
-  [{ vendor_id, name, form_1099?, tin_on_file, paid, reportable }],
-  missing_w9, notes }`. For a year whose threshold wanderbooks doesn't know
-  (after 2026 until the indexed amount is added) it refuses with what to
-  do; pass `threshold` explicitly once the figure is confirmed.
+- `books.vendor_1099 { year, threshold?, include_tins?, save_csv_to? }` →
+  `{ year, threshold, vendors: [{ vendor_id, name, form_1099?, tin_on_file,
+  paid, reportable, party_id?, tin_last4?, tin?, tin_type?, tin_note? }],
+  missing_w9, notes, warning?, saved_csv? }`. For a year whose threshold
+  wanderbooks doesn't know (after 2026 until the indexed amount is added)
+  it refuses with what to do; pass `threshold` explicitly once the figure
+  is confirmed. `tin_last4` comes from the party's W-9 facts. With
+  `include_tins: true` (default false) each line carries `tin`, the full
+  TIN formatted as the IRS writes it (123-45-6789; 12-3456789 for an
+  EIN), and `tin_type`, read from the vault, or `tin_note` saying why not
+  (not in the vault, the vault locked, a record whose last four or hash
+  disagree with the books); `warning` then says the output holds full
+  TINs, for the CPA only. This is the only tool output that ever holds a
+  full TIN. `save_csv_to` also writes the worksheet as CSV (TINs only with
+  `include_tins`) to a new file outside the books dir, mode 0600.
 
 ## Tools — parties
 
@@ -330,10 +349,14 @@ texts are at most 500 characters, no control characters.
   `party.role_set`. Removing the last 1099 role with W-9 facts on file, or
   employee with W-4 facts, is refused: clear the facts first.
 - `books.set_w9 { party, received_on, entity_type, exempt_payee_code?,
-  fatca_code?, tin_last4, kept_at }` or `{ party, clear: true }` → the
-  party. Journaled as `party.w9_set`. A party with a vendor record also
-  gets the record's `tin_on_file` set to match (journaled as
-  `vendor.1099_set`), so `books.vendor_1099`'s `missing_w9` follows.
+  fatca_code?, tin_last4, kept_at, tin?, tin_type?, w9_file_path? }` or
+  `{ party, clear: true }` → the party. Journaled as `party.w9_set`. A
+  party with a vendor record also gets the record's `tin_on_file` set to
+  match (journaled as `vendor.1099_set`), so `books.vendor_1099`'s
+  `missing_w9` follows. `tin`, `tin_type`, and `w9_file_path` put the full
+  TIN and the signed form in the TIN vault (below); with them `tin_last4`
+  comes from the TIN (a given one must agree) and `kept_at` defaults to
+  `"wanderbooks vault"`.
 - `books.set_w4 { party, received_on, state, kept_at }` or `{ party, clear:
   true }` → the party. Journaled as `party.w4_set`.
 - `books.set_entry_party { entry_id, party? }` → the entry (as
@@ -354,7 +377,7 @@ texts are at most 500 characters, no control characters.
 The party (every mutating party tool returns it): `{ party_id, name,
 label, display_name?, roles, website?, address?, notes?, archived,
 vendor_id?, customer_id?, w9?: { received_on, entity_type,
-exempt_payee_code?, fatca_code?, tin_last4, kept_at }, w4?: { received_on,
+exempt_payee_code?, fatca_code?, tin_last4, kept_at, in_vault }, w4?: { received_on,
 state, kept_at } }`. `label` is the display name, else the name; `roles`
 include vendor and customer when it has those records.
 
@@ -383,11 +406,86 @@ include vendor and customer when it has those records.
   payments drop out); `form_1099` is the record's mark.
 - `gross_pay` / `net_pay`: payroll lines naming it, in the year.
 
+## Tools — the TIN vault
+
+Full TINs (SSN, EIN, ITIN) and signed W-9 forms, kept so the CPA's 1099
+worksheet is complete, never in the books (`ledger-vault`; design in
+`docs/parties-and-attachments.md` "The TIN vault"; B-26).
+
+- **Where:** `vault/` in the books dir (the parent of the data dir, beside
+  `wanderbooks.toml`; git-ignored), one file per record, each encrypted
+  (XChaCha20-Poly1305) and bound to its party. **Key:** the file named by
+  `[vault] key_file` in `wanderbooks.toml`, else
+  `~/.config/wanderbooks/vault.key` (`$XDG_CONFIG_HOME`), mode 0600,
+  created the first time a TIN or form is stored, never when reading. A
+  key file inside the books dir is refused, and so is storing into books
+  kept in git (a `.git` beside them) whose `.gitignore` doesn't list
+  `vault/`. Without the key the vault is
+  locked: the books open and verify; the worksheet says the TINs are
+  missing.
+- **Never out:** no tool output, error, or log holds more than a TIN's
+  last four, except `books.vendor_1099 { include_tins: true }`. The tool
+  arguments that take a TIN never echo it, even when refused.
+- `books.set_w9 { ..., tin, tin_type, w9_file_path? }` (above): validates
+  the TIN against its type (nine digits, hyphens allowed; an ITIN starts
+  with 9 and has an IRS group in digits 4-5; an SSN or EIN doesn't start
+  with 9), checks the facts on a copy of the ledger, then writes the vault
+  and journals the facts with `vault_record`, the SHA-256 of the TIN
+  record (of the form's record when only a form is given). The form (PDF,
+  PNG, JPEG; 25 MB at most) goes to the vault only, never the attachment
+  store. Facts given later without a TIN keep the vault record when their
+  last four agree with the vault's TIN, and are refused when they don't
+  (pass the new TIN, or purge). Clearing the facts (`clear: true`) is
+  refused while the vault holds the party's TIN or form: purge first.
+- `books.get_w9 { party, save_to }` → `{ party_id, path, file_name,
+  size_bytes, note }`. Writes the party's form from the vault to `save_to`:
+  a new file (an existing one is refused), in a folder that exists,
+  outside the books dir, mode 0600. Returns the path, never the contents.
+  Journals nothing.
+- `books.purge_tin { party, reason, confirmed? }` → `{ status: "preview" |
+  "purged", party_id, name, tin_in_vault, w9_file_in_vault, tin_last4?,
+  journaled, note }`. Without `confirmed`, a preview that changes nothing.
+  Confirmed, deletes the party's vault records (needs no key) and, when the
+  party has W-9 facts, journals `party.w9_set` with `vault_record` cleared,
+  the last four kept, and `kept_at` saying when and why it was purged.
+  Refused when the reason is blank or there is nothing to purge.
+
+## Tools — attachments
+
+A stored file (a receipt or a document) links to any number of subjects;
+a subject is `{ kind, id? }`: `entry` (id), `account` (code or id),
+`asset` (tag or id), `party` (id or name), `invoice`, `bill`, `period`,
+`payroll_run`, `schedule`, `reconciliation` (ids), or `company` (no id).
+Every subject is checked to exist. In outputs a subject is `{ kind, id?,
+label }` (`id` absent for the company; for an account, its id, with the
+code in `label`). A file linked to an entry is one of the entry's receipts:
+the receipt policy counts it.
+
+- `books.link_attachment { attachment_id, subject }` → `{ attachment_id,
+  links }`. Journaled as `attachment.linked`. Refused for an unknown or
+  withdrawn attachment, a subject that doesn't exist, or one it is linked
+  to already (or filed on).
+- `books.unlink_attachment { attachment_id, subject, reason }` → `{
+  attachment_id, links }`. Journaled as `attachment.unlinked` with the
+  reason; the file stays filed. Refused when the reason is blank, it isn't
+  linked there, it is filed on that entry (`books.unlink_receipt`), it is
+  a posted entry's last receipt under the receipt policy
+  (`receipt_required`), or it is the statement of a reconciliation not
+  voided.
+- `books.attachments { subject }` → `{ subject, attachments: [...] }`: the
+  files on a subject (an entry's: filed on it and linked to it), not
+  withdrawn, each as in `books.list_receipts`.
+- `link_to: [subject]` on `books.attach_receipt` and `books.file_document`
+  links the new file in the same call, each link its own
+  `attachment.linked`. All or nothing: every subject is checked (exists,
+  named once, not the entry it is filed on) before anything is filed.
+
 ## Tools — receipts & documents
 
-- `books.attach_receipt { entry_id?, file_name, mime_type, content_base64 }`
-  → `{ receipt_id, sha256, deduplicated, size_bytes }`. `entry_id` is
-  optional: a receipt can be filed before its entry exists.
+- `books.attach_receipt { entry_id?, file_name, mime_type, content_base64,
+  description?, link_to? }` → `{ attachment_id, sha256, deduplicated, links
+  }`. `entry_id` is optional: a receipt can be filed before its entry
+  exists. `link_to` as in "Tools — attachments".
 - `books.link_receipt { receipt_id, entry_id }` → link a previously filed
   (unlinked, not withdrawn) receipt to its entry. A receipt linked elsewhere
   must be unlinked first.
@@ -403,13 +501,19 @@ include vendor and customer when it has those records.
   blob store. Nothing in the evidence trail is ever erased — receipts change
   by new events, the same way entries change by reversals.
 - `books.list_receipts { entry_id?, include_withdrawn? }` → metadata list
-  (no bytes), each with `withdrawn` / `withdrawn_reason`. Withdrawn
-  attachments are omitted unless `include_withdrawn` is true.
-- `books.get_receipt { receipt_id }` → `{ metadata, content_base64 }`.
+  (no bytes), each with `withdrawn` / `withdrawn_reason` and `links` (every
+  subject it is linked to, its filing entry first). Withdrawn attachments
+  are omitted unless `include_withdrawn` is true. `entry_id` lists the
+  files filed on the entry and linked to it.
+- `books.get_receipt { attachment_id }` → `{ metadata, description?,
+  links, content_base64 }`.
 - `books.file_document { category: "formation" | "legal" | "tax" |
-  "accounting" | "other", file_name, mime_type, content_base64,
-  description? }` → `{ document_id, sha256, deduplicated }`. The Drive-folder
-  replacement (today's 01 Formation / 02 Legal / 03 Tax / 04 Accounting).
+  "accounting" | "statement" | "contract" | "photo" | "warranty" |
+  "import_source" | "other", file_name, mime_type, content_base64,
+  description?, link_to? }` → `{ attachment_id, sha256, deduplicated, links
+  }`. The Drive-folder replacement (today's 01 Formation / 02 Legal / 03
+  Tax / 04 Accounting). Never a W-9: it shows the full TIN (`books.set_w9
+  w9_file_path`).
 
 ## Receipt enforcement
 
@@ -512,8 +616,12 @@ posting.
 ## Tools — import
 
 - `books.import_bank_csv { csv_text, bank_account_code, default_offset_code,
-  rules? }` → creates one draft per transaction (QBO upload layout).
-  `rules` maps description substrings to account codes.
+  rules?, date_order?, source_attachment_id? }` → creates one draft per
+  transaction (QBO upload layout). `rules` maps description substrings to
+  account codes. `source_attachment_id` (the export as filed, category
+  `import_source`) is checked before any draft and linked to the bank
+  account (`source_linked`; false when it was already), never to the
+  drafts: a bank export is not a receipt.
 - `books.import_chart_csv { csv_text }` → creates accounts from
   `code,name,type,parent_code` CSV. All-or-nothing.
 - `books.import_local_file { path, category: "receipt" | "document", ... }`
@@ -590,11 +698,38 @@ R-FUTURE-3 and rides the engine roadmap, not the MCP layer.
 - `books.mark_cleared { entry_id, line_index, cleared }` → `{ ok }`.
   Only posted lines can be marked; the flag is workflow metadata, not
   accounting data (posted entries stay immutable).
-- `books.reconcile { account, statement_date, statement_balance }` →
-  `{ account_code, book_balance, cleared_balance, statement_balance,
-  difference, uncleared_lines: [{ entry_id, line_index, date, description,
-  side, amount }] }`. `difference` is cleared − statement; zero means
-  reconciled.
+- `books.record_statement { attachment_id, account, period_start,
+  period_end, opening_balance, closing_balance }` → the statement `{
+  attachment_id, file_name, account_code, account_name, period_start,
+  period_end, opening_balance, closing_balance, reconciliation_id? }`.
+  Records what a filed statement says (balances as printed, in the
+  account's normal direction, cents at most) and links it to the account.
+  Journaled as `statement.recorded` then `attachment.linked`. Refused for
+  an unknown or withdrawn attachment, one already recording a statement,
+  an account that isn't an asset or liability, or a period that runs
+  backwards.
+- `books.statements { account? }` → `{ statements }`, by statement date.
+- `books.reconcile { statement_attachment? | account, statement_date,
+  statement_balance, confirmed? }` → `{ status: "preview" | "reconciled",
+  account_code, statement_date, statement_attachment?, book_balance,
+  cleared_balance, statement_balance, difference, uncleared_lines,
+  cleared_lines, problems, reconciliation? }`, each line `{ entry_id,
+  line_index, date, description, side, amount }`. `difference` is cleared
+  − statement; zero means reconciled. With `statement_attachment` the
+  account, date, and balance are the recorded statement's (any given must
+  agree). Without `confirmed: true` it is a preview that records nothing;
+  `problems` lists why a confirmation would be refused. Confirmed, it
+  needs a recorded statement, a difference of exactly zero, and a date
+  after the account's last reconciliation not voided; it then journals
+  `reconciliation.completed` (the cleared lines, the statement) and links
+  the statement to it, returning `reconciliation`.
+- `books.reconciliations { account? }` → `{ reconciliations: [{
+  reconciliation_id, account_code, account_name, statement_date,
+  statement_balance, statement_attachment, cleared: [{ entry_id,
+  line_index }], voided, voided_reason? }] }`, voided ones included.
+- `books.void_reconciliation { reconciliation_id, reason }` → the
+  reconciliation, voided. Journaled as `reconciliation.voided`; the
+  account can be reconciled through that date again.
 
 ## Tools — A/R and A/P
 

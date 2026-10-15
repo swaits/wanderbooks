@@ -1147,3 +1147,169 @@ fn no_party_output_holds_a_full_tin() {
         assert!(digits.iter().all(|&n| n < 9), "{text}");
     }
 }
+
+// ---------------------------------------------------------------- [books] parties
+
+/// Books with the chart and extra `[books]` TOML.
+fn books_with(name: &str, extra: &str) -> Mcp {
+    let dir = test_dir(name);
+    let toml = books_toml(&dir, "Spec Co", extra);
+    let mut m = Mcp::start(&dir, &toml);
+    m.accounts(CHART);
+    m
+}
+
+/// Oracle: PostEntryOut party fields and the "suggest" default
+/// (docs/parties-and-attachments.md "Counterparties"): an untagged preview
+/// names likely parties (description, then the same description on an
+/// earlier tagged entry); nothing is refused.
+#[test]
+fn suggest_names_likely_parties_and_refuses_nothing() {
+    let mut m = books("suggest");
+    assert_eq!(
+        m.read_only("books.settings", json!({}))["parties"],
+        "suggest"
+    );
+    let apple = m.add_party("Apple Inc.", &[]);
+    let id = m.ok(
+        "books.draft_entry",
+        json!({"date": "2026-03-01", "description": "APPLE.COM/BILL iCloud"}),
+    )["entry_id"]
+        .as_u64()
+        .unwrap();
+    m.ok(
+        "books.add_line",
+        json!({"entry_id": id, "account": "6999", "side": "debit", "amount": "2.99"}),
+    );
+    m.ok(
+        "books.add_line",
+        json!({"entry_id": id, "account": "2050", "side": "credit", "amount": "2.99"}),
+    );
+    let pv = m.ok("books.post_entry", json!({"entry_id": id}));
+    assert_eq!(pv["party_policy"], "suggest");
+    assert_eq!(pv["party_missing"], true);
+    assert_eq!(pv["party_suggestions"][0]["party_id"], apple);
+    assert_eq!(
+        pv["party_suggestions"][0]["why"],
+        "named in the description"
+    );
+    m.ok(
+        "books.post_entry",
+        json!({"entry_id": id, "confirmed": true}),
+    );
+    // Tagged: the next entry with the same description is suggested from it.
+    m.ok(
+        "books.set_entry_party",
+        json!({"entry_id": id, "party": apple.to_string()}),
+    );
+    let other = m.add_party("Zed", &[]);
+    let _ = other;
+    let id2 = m.ok(
+        "books.draft_entry",
+        json!({"date": "2026-04-01", "description": "APPLE.COM/BILL iCloud"}),
+    )["entry_id"]
+        .as_u64()
+        .unwrap();
+    m.ok(
+        "books.add_line",
+        json!({"entry_id": id2, "account": "6999", "side": "debit", "amount": "2.99"}),
+    );
+    m.ok(
+        "books.add_line",
+        json!({"entry_id": id2, "account": "2050", "side": "credit", "amount": "2.99"}),
+    );
+    let pv = m.ok("books.post_entry", json!({"entry_id": id2}));
+    let s = pv["party_suggestions"].as_array().unwrap();
+    assert_eq!(s.len(), 1, "one party, listed once: {s:?}");
+    assert_eq!(s[0]["party_id"], apple);
+}
+
+/// Oracle: "require": posting is refused (party_required) and journals
+/// nothing until the entry names a party or is marked as having none;
+/// no_party_reason is refused alongside a party.
+#[test]
+fn require_refuses_until_tagged_or_marked_none() {
+    let mut m = books_with("require", "parties = \"require\"\n");
+    assert_eq!(
+        m.read_only("books.settings", json!({}))["parties"],
+        "require"
+    );
+    let bank = m.add_party("Bluevine", &["financial_institution"]);
+    let id = m.draft(
+        "2026-03-01",
+        json!({}),
+        &[("6999", "debit", "5.00"), ("1000", "credit", "5.00")],
+    );
+    let before = m.journal();
+    let e = m.refuse(
+        "books.post_entry",
+        json!({"entry_id": id, "confirmed": true}),
+    );
+    assert!(e.contains("party_required"), "{e}");
+    assert_eq!(m.journal(), before, "refusal journals nothing");
+    m.ok(
+        "books.set_entry_party",
+        json!({"entry_id": id, "party": bank.to_string()}),
+    );
+    let pv = m.ok(
+        "books.post_entry",
+        json!({"entry_id": id, "confirmed": true}),
+    );
+    assert_eq!(pv["status"], "posted");
+    assert_eq!(pv["party_id"], bank);
+    // Marked none at draft time: posts, and the reason is journaled.
+    let t = m.draft(
+        "2026-03-02",
+        json!({"no_party_reason": "transfer between own accounts"}),
+        &[("1300", "debit", "1.00"), ("1000", "credit", "1.00")],
+    );
+    let pv = m.ok(
+        "books.post_entry",
+        json!({"entry_id": t, "confirmed": true}),
+    );
+    assert_eq!(pv["no_party_reason"], "transfer between own accounts");
+    assert_eq!(pv["party_missing"], false);
+    assert_eq!(m.count("entry.no_party"), 1);
+    // Both at once is refused.
+    let e = m.refuse(
+        "books.draft_entry",
+        json!({"date": "2026-03-03", "description": "x", "party": "Bluevine", "no_party_reason": "none"}),
+    );
+    assert!(e.contains("no_party_reason"), "{e}");
+    let e = m.refuse(
+        "books.set_entry_party",
+        json!({"entry_id": t, "party": "Bluevine", "no_party_reason": "none"}),
+    );
+    assert!(e.contains("not both"), "{e}");
+    // Tagging later clears the mark; marking again needs no party.
+    m.ok(
+        "books.set_entry_party",
+        json!({"entry_id": t, "party": "Bluevine"}),
+    );
+    m.ok(
+        "books.set_entry_party",
+        json!({"entry_id": t, "no_party_reason": "own-account transfer"}),
+    );
+    let r = m.read_only("books.verify", json!({}));
+    assert_eq!(r["status"], "ok", "{r}");
+}
+
+/// Oracle: "off": the preview never raises a party; a bad value is a
+/// settings error.
+#[test]
+fn off_never_raises_it() {
+    let mut m = books_with("off", "parties = \"off\"\n");
+    m.add_party("Apple", &[]);
+    let id = m.draft(
+        "2026-03-01",
+        json!({}),
+        &[("6999", "debit", "5.00"), ("1000", "credit", "5.00")],
+    );
+    let pv = m.ok("books.post_entry", json!({"entry_id": id}));
+    assert_eq!(pv["party_missing"], false);
+    assert!(pv["party_suggestions"].as_array().unwrap().is_empty());
+    m.ok(
+        "books.post_entry",
+        json!({"entry_id": id, "confirmed": true}),
+    );
+}

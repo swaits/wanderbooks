@@ -1,7 +1,8 @@
 //! Ctrl+K: jump to anything. Pages, reports, accounts, entries (by text,
 //! amount, or #id), fixed assets (by tag, serial, or description), parties
-//! (vendors and customers among them, by name or display name), and
-//! documents, ranked by a simple fuzzy match.
+//! (vendors and customers among them, by name or display name),
+//! documents, bank and card statements, and reconciliations (by account
+//! and date), ranked by a simple fuzzy match.
 
 use crate::books::Books;
 use crate::fmt;
@@ -234,6 +235,15 @@ pub fn fuzzy(hay: &str, query: &str) -> Option<i32> {
 ///      case) adds 500.
 ///   6. Every party result opens Route::Party(its id); archived parties
 ///      are found too, and say so.
+/// INVARIANTS (statements and reconciliations):
+///   7. A statement is listed when the query fuzzily matches "statement",
+///      its account's code and name, its period's dates (as shown and as
+///      YYYY-MM-DD), and its file name; it opens Route::Document(its
+///      attachment).
+///   8. A reconciliation is listed when the query fuzzily matches
+///      "reconciliation reconciled", its account's code and name, and its
+///      statement date (as shown and as YYYY-MM-DD); it opens
+///      Route::Reconciliation(its id), voided ones too, saying so.
 /// ```
 pub fn search(b: &Books, query: &str) -> Vec<Item> {
     let q = query.trim();
@@ -371,6 +381,61 @@ pub fn search(b: &Books, query: &str) -> Vec<Item> {
                 });
             }
         }
+        for st in &b.statements {
+            let file = b
+                .attachment(st.attachment_id)
+                .map_or("", |a| a.file_name.as_str());
+            let hay = format!(
+                "statement {} {} {} {} {} {file}",
+                b.account_label(st.account_id),
+                fmt::date(st.period_start),
+                fmt::date(st.period_end),
+                st.period_start,
+                st.period_end
+            );
+            if let Some(score) = fuzzy(&hay, q) {
+                out.push(Item {
+                    icon: icon::FILE_TEXT,
+                    title: format!(
+                        "Statement: {}, {} – {}",
+                        b.account_name(st.account_id),
+                        fmt::date_short(st.period_start),
+                        fmt::date(st.period_end)
+                    ),
+                    detail: format!("Closing {} · {file}", fmt::dollars(st.closing_balance)),
+                    route: Route::Document(st.attachment_id),
+                    score,
+                });
+            }
+        }
+        for r in &b.reconciliations {
+            let hay = format!(
+                "reconciliation reconciled {} {} {}",
+                b.account_label(r.account_id),
+                fmt::date(r.statement_date),
+                r.statement_date
+            );
+            if let Some(score) = fuzzy(&hay, q) {
+                let mut detail = vec![
+                    fmt::dollars(r.statement_balance),
+                    fmt::count(r.cleared.len(), "cleared line", "cleared lines"),
+                ];
+                if r.voided.is_some() {
+                    detail.push("voided".into());
+                }
+                out.push(Item {
+                    icon: icon::CHECK_SQUARE,
+                    title: format!(
+                        "Reconciliation: {} through {}",
+                        b.account_name(r.account_id),
+                        fmt::date(r.statement_date)
+                    ),
+                    detail: detail.join(" · "),
+                    route: Route::Reconciliation(r.id),
+                    score,
+                });
+            }
+        }
         for a in &b.attachments {
             let hay = format!("{} {}", a.file_name, a.description.as_deref().unwrap_or(""));
             if let Some(score) = fuzzy(&hay, q) {
@@ -410,6 +475,7 @@ pub fn describe(b: &Books, r: &Route) -> String {
             .unwrap_or_default(),
         Route::Asset(id) => b.asset_label(*id),
         Route::Party(id) => b.party_label(*id),
+        Route::Reconciliation(id) => b.subject_label(ledger_store::Subject::Reconciliation(*id)),
         Route::JournalEvent(seq) => format!("Event {seq}"),
         _ => String::new(),
     }

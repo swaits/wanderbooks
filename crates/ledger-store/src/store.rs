@@ -821,6 +821,20 @@ impl Store {
         Ok(())
     }
 
+    /// Mark an entry as having no counterparty, with why
+    /// (`Ledger::set_entry_no_party`). Journaled as `entry.no_party
+    /// {entry_id, reason}`.
+    pub fn set_entry_no_party(&mut self, entry: EntryId, reason: &str) -> Result<(), StoreError> {
+        self.ledger.check_set_entry_no_party(entry, reason)?;
+        let line = self.append_journal(
+            "entry.no_party",
+            json!({"entry_id": entry, "reason": reason.trim()}),
+        )?;
+        self.ledger.set_entry_no_party(entry, reason)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
     /// Correct a registered asset's cost, salvage, life, or in-service date
     /// (see `Ledger::correct_asset`), with the reason. Refused once any
     /// depreciation for it is posted. Journaled as `asset.corrected`, with
@@ -2546,8 +2560,9 @@ impl Store {
     // Attachment links, statements, reconciliations
     // ------------------------------------------------------------------
 
-    /// Whether `subject` exists in the books.
-    fn subject_exists(&self, subject: Subject) -> Result<bool, StoreError> {
+    /// Whether `subject` exists in the books (what [`Store::link_attachment`]
+    /// checks, so callers can validate several subjects before linking any).
+    pub fn subject_exists(&self, subject: Subject) -> Result<bool, StoreError> {
         let l = &self.ledger;
         Ok(match subject {
             Subject::Entry(i) => l.get_entry(i).is_some(),
@@ -2776,39 +2791,7 @@ impl Store {
 
     /// Recorded statements, optionally one account's, by period end.
     pub fn statements(&self, account: Option<AccountId>) -> Result<Vec<Statement>, StoreError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT attachment_id, account_id, period_start, period_end, opening_balance, closing_balance FROM statements ORDER BY period_end, attachment_id",
-        )?;
-        let rows = stmt.query_map([], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, i64>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, String>(5)?,
-            ))
-        })?;
-        let mut out = Vec::new();
-        for row in rows {
-            let (att, acct, start, end, open, close) = row?;
-            if account.is_some_and(|a| a != acct as u64) {
-                continue;
-            }
-            let dec = |t: &str| {
-                t.parse::<Decimal>()
-                    .map_err(|_| StoreError::JournalCorrupt(format!("statement amount {t}")))
-            };
-            out.push(Statement {
-                attachment_id: att as u64,
-                account_id: acct as u64,
-                period_start: parse_date(&start)?,
-                period_end: parse_date(&end)?,
-                opening_balance: dec(&open)?,
-                closing_balance: dec(&close)?,
-            });
-        }
-        Ok(out)
+        query_statements(&self.conn, account)
     }
 
     /// Reconcile an account to a recorded statement: the books' cleared
@@ -2936,47 +2919,7 @@ impl Store {
         &self,
         account: Option<AccountId>,
     ) -> Result<Vec<Reconciliation>, StoreError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, account_id, statement_date, statement_balance, attachment_id, voided_reason FROM reconciliations ORDER BY statement_date, id",
-        )?;
-        let rows = stmt.query_map([], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, i64>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, i64>(4)?,
-                r.get::<_, Option<String>>(5)?,
-            ))
-        })?;
-        let mut out = Vec::new();
-        for row in rows {
-            let (id, acct, date, bal, att, voided) = row?;
-            if account.is_some_and(|a| a != acct as u64) {
-                continue;
-            }
-            let cleared: Vec<(EntryId, usize)> = self
-                .conn
-                .prepare(
-                    "SELECT entry_id, line_index FROM reconciliation_lines WHERE reconciliation_id = ? ORDER BY entry_id, line_index",
-                )?
-                .query_map(params![id], |r| {
-                    Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)? as usize))
-                })?
-                .collect::<Result<_, _>>()?;
-            out.push(Reconciliation {
-                id: id as u64,
-                account_id: acct as u64,
-                statement_date: parse_date(&date)?,
-                statement_balance: bal.parse().map_err(|_| {
-                    StoreError::JournalCorrupt(format!("reconciliation balance {bal}"))
-                })?,
-                attachment_id: att as u64,
-                cleared,
-                voided,
-            });
-        }
-        Ok(out)
+        query_reconciliations(&self.conn, account)
     }
 
     /// `(linked entry, withdrawn?)` for an attachment.
@@ -4138,6 +4081,9 @@ pub(crate) fn replay_line_into_ledger(
             };
             ledger.set_entry_party(get_u64(p, "entry_id")?, party)?;
         }
+        "entry.no_party" => {
+            ledger.set_entry_no_party(get_u64(p, "entry_id")?, get_str(p, "reason")?)?;
+        }
         "asset.corrected" => {
             ledger.correct_asset(
                 get_u64(p, "asset_id")?,
@@ -4710,7 +4656,7 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
             )?;
         }
         "role.assigned" | "party.added" | "party.updated" | "party.role_set" | "party.w9_set"
-        | "party.w4_set" | "entry.party_set" => {
+        | "party.w4_set" | "entry.party_set" | "entry.no_party" => {
             // Control roles and the party directory live in the ledger
             // (rebuilt by replay); the events mirror below keeps the
             // history.
@@ -5326,6 +5272,120 @@ pub struct Reconciliation {
     pub cleared: Vec<(EntryId, usize)>,
     /// Why it was voided, if it was.
     pub voided: Option<String>,
+}
+
+/// Recorded statements in the projection, optionally one account's, by
+/// period end (shared by [`Store::statements`] and the read-only
+/// snapshot).
+pub(crate) fn query_statements(
+    conn: &Connection,
+    account: Option<AccountId>,
+) -> Result<Vec<Statement>, StoreError> {
+    let mut stmt = conn.prepare(
+            "SELECT attachment_id, account_id, period_start, period_end, opening_balance, closing_balance FROM statements ORDER BY period_end, attachment_id",
+        )?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+            r.get::<_, String>(4)?,
+            r.get::<_, String>(5)?,
+        ))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (att, acct, start, end, open, close) = row?;
+        if account.is_some_and(|a| a != acct as u64) {
+            continue;
+        }
+        let dec = |t: &str| {
+            t.parse::<Decimal>()
+                .map_err(|_| StoreError::JournalCorrupt(format!("statement amount {t}")))
+        };
+        out.push(Statement {
+            attachment_id: att as u64,
+            account_id: acct as u64,
+            period_start: parse_date(&start)?,
+            period_end: parse_date(&end)?,
+            opening_balance: dec(&open)?,
+            closing_balance: dec(&close)?,
+        });
+    }
+    Ok(out)
+}
+
+/// Reconciliations in the projection, optionally one account's, by date
+/// (shared by [`Store::reconciliations`] and the read-only snapshot).
+pub(crate) fn query_reconciliations(
+    conn: &Connection,
+    account: Option<AccountId>,
+) -> Result<Vec<Reconciliation>, StoreError> {
+    let mut stmt = conn.prepare(
+            "SELECT id, account_id, statement_date, statement_balance, attachment_id, voided_reason FROM reconciliations ORDER BY statement_date, id",
+        )?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+            r.get::<_, i64>(4)?,
+            r.get::<_, Option<String>>(5)?,
+        ))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, acct, date, bal, att, voided) = row?;
+        if account.is_some_and(|a| a != acct as u64) {
+            continue;
+        }
+        let cleared: Vec<(EntryId, usize)> = conn
+                .prepare(
+                    "SELECT entry_id, line_index FROM reconciliation_lines WHERE reconciliation_id = ? ORDER BY entry_id, line_index",
+                )?
+                .query_map(params![id], |r| {
+                    Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)? as usize))
+                })?
+                .collect::<Result<_, _>>()?;
+        out.push(Reconciliation {
+            id: id as u64,
+            account_id: acct as u64,
+            statement_date: parse_date(&date)?,
+            statement_balance: bal
+                .parse()
+                .map_err(|_| StoreError::JournalCorrupt(format!("reconciliation balance {bal}")))?,
+            attachment_id: att as u64,
+            cleared,
+            voided,
+        });
+    }
+    Ok(out)
+}
+
+/// Every row of `attachment_links`: (attachment, subject), by attachment
+/// then subject. A receipt's filing entry isn't a row here (it is the
+/// attachment's `entry_id`).
+pub(crate) fn query_attachment_links(conn: &Connection) -> Result<Vec<(u64, Subject)>, StoreError> {
+    let mut stmt = conn.prepare(
+        "SELECT attachment_id, subject_kind, subject_id FROM attachment_links ORDER BY attachment_id, subject_kind, subject_id",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, i64>(2)?,
+        ))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (att, kind, id) = row?;
+        if let Some(sub) = Subject::from_parts(&kind, id as u64) {
+            out.push((att as u64, sub));
+        }
+    }
+    Ok(out)
 }
 
 /// Attachments in the projection, optionally only one entry's, by id.

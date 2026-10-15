@@ -521,8 +521,26 @@ and the full TIN lives only in the encrypted vault, outside the journal
 need the employee role; payroll lines that name their employee name a
 party with that role.
 
+The full TIN, when the books need it for the 1099 worksheet, lives in the
+TIN vault (`vault/` in the books dir, git-ignored; encrypted under a key
+file outside the books dir): `books.set_w9` `tin` writes it there and
+journals only the last four and the vault record's hash; the signed W-9
+goes there too, never to the attachment store. No tool output, error, or
+log holds a full TIN except `books.vendor_1099` with `include_tins`
+(DECISION, the owner, 2026-10-15: for the CPA, when asked); files holding
+one (`books.get_w9`, `save_csv_to`) are written only outside the books
+dir. `books.purge_tin` deletes a party's vault records and journals that
+it did.
+
 **Enforced:** `crate::parties` (has_full_tin, check_text, W9Facts::check,
 W4Facts::check), `Ledger::add_party`, `update_party`, `set_party_role`,
-`set_party_w9`, `set_party_w4`, `set_entry_party`, `validate_payroll`.
+`set_party_w9`, `set_party_w4`, `set_entry_party`, `validate_payroll`;
+`ledger-vault` (Tin::new, the encrypted records, records_held,
+purge_records); `ledger-mcp` `books.set_w9`, `books.get_w9`,
+`books.purge_tin`, `books.vendor_1099` (open_vault refuses a key file in
+the books dir; outside_books for files with a TIN).
 **Checked:** `ledger-core` `tests/spec_parties.rs`; `ledger-store`
-`tests/parties.rs`; `ledger-mcp` `tests/spec_parties.rs`.
+`tests/parties.rs`; `ledger-vault` `tests/vault.rs`; `ledger-mcp`
+`tests/spec_parties.rs`, `tests/spec_vault.rs` (every response, the log,
+and every file in the books dir outside `vault/` scanned for the TINs in
+any formatting).

@@ -10,6 +10,7 @@ pub mod journal;
 pub mod overview;
 pub mod parties;
 pub mod profit;
+pub mod reconciliation;
 pub mod reports;
 pub mod transactions;
 
@@ -54,6 +55,7 @@ pub fn show(ui: &mut Ui, b: &Books, route: &Route, shell: &mut Shell<'_>) {
         Route::Reports(kind) => reports::show(ui, b, *kind, shell),
         Route::Accounts => accounts::show_chart(ui, b, shell),
         Route::Account(id) => accounts::show_account(ui, b, *id, shell),
+        Route::Reconciliation(id) => reconciliation::show(ui, b, *id, shell),
         Route::Assets => assets::show_register(ui, b, shell),
         Route::Asset(id) => assets::show_asset(ui, b, *id, shell),
         Route::Parties => parties::show_list(ui, b, shell),

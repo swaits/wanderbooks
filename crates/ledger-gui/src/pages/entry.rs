@@ -107,6 +107,19 @@ pub fn detail(ui: &mut Ui, b: &Books, e: &EntryInfo, shell: &mut Shell<'_>) {
                     shell.go(Route::Party(party.id));
                 }
             }
+            if e.party_id.is_none()
+                && let Some(why) = b.ledger.entry_no_party(e.id)
+            {
+                ui.add_space(4.0);
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(format!("{} No counterparty: {why}", icon::USER_MINUS))
+                            .color(p.muted),
+                    )
+                    .wrap(),
+                )
+                .on_hover_text("Marked as having no counterparty (entry.no_party)");
+            }
             if let Some(&asset) = b.entry_assets.get(&e.id) {
                 ui.add_space(4.0);
                 if widgets::link(
@@ -268,18 +281,25 @@ pub fn detail(ui: &mut Ui, b: &Books, e: &EntryInfo, shell: &mut Shell<'_>) {
                 });
             ui.add_space(18.0);
 
-            // Receipts.
+            // Receipts and documents: filed on it, linked to it, or linked
+            // to the invoice, bill, or payroll run it records; a withdrawn
+            // receipt filed on it stays, marked.
+            let subjects = b.entry_subjects(e.id);
             let all_for_entry: Vec<&Attachment> = b
                 .attachments
                 .iter()
-                .filter(|a| a.entry_id == Some(e.id))
+                .filter(|a| {
+                    a.entry_id == Some(e.id)
+                        || (a.withdrawn_at.is_none()
+                            && b.links_of(a.id).iter().any(|s| subjects.contains(s)))
+                })
                 .collect();
             section(
                 ui,
                 if all_for_entry.len() == 1 {
                     "Receipt"
                 } else {
-                    "Receipts"
+                    "Receipts and documents"
                 },
             );
             if all_for_entry.is_empty() {
@@ -295,6 +315,29 @@ pub fn detail(ui: &mut Ui, b: &Books, e: &EntryInfo, shell: &mut Shell<'_>) {
                 }));
             }
             for a in all_for_entry {
+                let elsewhere: Vec<ledger_store::Subject> = b
+                    .links_of(a.id)
+                    .iter()
+                    .copied()
+                    .filter(|s| *s != ledger_store::Subject::Entry(e.id))
+                    .collect();
+                if !elsewhere.is_empty() {
+                    let mut go = None;
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
+                        ui.label(
+                            RichText::new("Linked to")
+                                .font(theme::regular(11.5))
+                                .color(p.faint),
+                        );
+                        for s in elsewhere {
+                            super::documents::subject_chip(ui, b, s, &mut go);
+                        }
+                    });
+                    if let Some(r) = go {
+                        shell.go(r);
+                    }
+                }
                 attachment_view(ui, b, a, shell, true);
                 ui.add_space(12.0);
             }

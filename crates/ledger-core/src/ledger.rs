@@ -266,6 +266,8 @@ pub struct Ledger {
     next_party_id: crate::PartyId,
     /// The party each entry is with (the counterparty).
     entry_parties: HashMap<EntryId, crate::PartyId>,
+    /// Entries marked as having no counterparty, with why.
+    entry_no_party: HashMap<EntryId, String>,
 }
 
 impl Ledger {
@@ -308,6 +310,7 @@ impl Ledger {
             parties: std::collections::BTreeMap::new(),
             next_party_id: 1,
             entry_parties: HashMap::new(),
+            entry_no_party: HashMap::new(),
         }
     }
 
@@ -605,6 +608,10 @@ impl Ledger {
             ("parties", self.parties == other.parties),
             ("next_party_id", self.next_party_id == other.next_party_id),
             ("entry_parties", self.entry_parties == other.entry_parties),
+            (
+                "entry_no_party",
+                self.entry_no_party == other.entry_no_party,
+            ),
         ]
         .into_iter()
         .filter(|(_, same)| !same)
@@ -2844,6 +2851,7 @@ impl Ledger {
                     .ok_or(LedgerError::UnknownParty(p))?
                     .vendor;
                 self.entry_parties.insert(entry, p);
+                self.entry_no_party.remove(&entry);
                 match vendor {
                     Some(v) => {
                         self.entry_vendors.insert(entry, v);
@@ -2859,6 +2867,51 @@ impl Ledger {
             }
         }
         Ok(())
+    }
+
+    /// Mark an entry as having no counterparty, with why (a transfer
+    /// between the company's own accounts, an accrual, a correction), so a
+    /// books policy that requires parties can tell "none" from "not yet".
+    ///
+    /// ```text
+    /// SOURCE: docs/parties-and-attachments.md "Counterparties"; DECISION
+    ///         (owner, 2026-10-15).
+    /// SCENARIOS:
+    ///   1. IF the entry is unknown, already names a party, or the reason
+    ///      is blank or fails the party text rules: SHOULD refuse.
+    ///   2. Tagging the entry with a party later clears the mark.
+    /// ```
+    pub fn set_entry_no_party(&mut self, entry: EntryId, reason: &str) -> Result<(), LedgerError> {
+        self.check_set_entry_no_party(entry, reason)?;
+        self.entry_no_party.insert(entry, reason.trim().to_string());
+        Ok(())
+    }
+
+    /// The validation behind [`Self::set_entry_no_party`].
+    pub fn check_set_entry_no_party(
+        &self,
+        entry: EntryId,
+        reason: &str,
+    ) -> Result<(), LedgerError> {
+        if !self.entries.contains_key(&entry) {
+            return Err(LedgerError::UnknownEntry(entry));
+        }
+        if self.entry_parties.contains_key(&entry) {
+            return Err(LedgerError::InvalidParty(format!(
+                "entry {entry} names a party; clear it first"
+            )));
+        }
+        if reason.trim().is_empty() {
+            return Err(LedgerError::InvalidParty(
+                "say why the entry has no counterparty".into(),
+            ));
+        }
+        crate::parties::check_text("reason", reason).map_err(LedgerError::InvalidParty)
+    }
+
+    /// Why an entry has no counterparty, when it was marked so.
+    pub fn entry_no_party(&self, entry: EntryId) -> Option<&str> {
+        self.entry_no_party.get(&entry).map(String::as_str)
     }
 
     /// The vendor an entry is tagged with.

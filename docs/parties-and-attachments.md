@@ -106,6 +106,13 @@ bill, payroll run, documents, and history. Members link to their capital
 accounts. Global search finds parties. Needs-attention: a contractor
 paid without W-9 facts; a 1099 party paid over the threshold.
 
+Money with a party (the owner, 2026-10-15: "how much have I spent on Apple
+versus how much did I get back"): paid out, received in, and net, for a
+chosen period (this year, last year, any year, all time), from
+`ledger_core::parties::activity`; what it was for (the non-money lines by
+account); a monthly out-vs-in chart; the 1099 amount for the calendar
+year. The directory shows the same columns, sortable.
+
 ## The TIN vault
 
 Decision (the owner, 2026-10-15): wanderbooks holds full TINs, so the 1099
@@ -138,6 +145,21 @@ worksheet it hands the CPA is complete, but never in the journal.
   contains a nine-digit run.
 - **Books without a vault** (another machine, a restored backup) still
   open and verify; the 1099 worksheet then says which TINs are missing.
+- **Tools** (built; `docs/mcp-interface.md` "Tools — the TIN vault"):
+  `books.set_w9` takes `tin` + `tin_type` and `w9_file_path` (the form
+  goes to the vault, never the attachment store) and journals the last
+  four with `vault_record`; facts that disagree with the vault's TIN are
+  refused, and clearing facts with a vault record needs a purge first.
+  `books.get_w9 {party, save_to}` writes the form to a new file outside the
+  books dir and returns only the path. `books.purge_tin {party, reason,
+  confirmed?}` previews, then deletes the records (no key needed) and
+  journals the purge as `party.w9_set` with `vault_record` cleared and
+  `kept_at` saying when and why. `books.vendor_1099 {include_tins: true}`
+  is the one output with full TINs (with a warning; `save_csv_to` writes
+  the CSV outside the books dir). A key file inside the books dir is
+  refused. `tests/spec_vault.rs` scans every tool response, the server's
+  log, and every file in the books dir outside `vault/` for the TINs in
+  any formatting.
 
 ## Attachments
 
@@ -158,6 +180,14 @@ that entry). A receipt is an attachment linked to an entry; the receipt
 policy counts links to the entry, as now. A file stored once can be
 linked to many subjects (no more refiling).
 
+Tools (built; `docs/mcp-interface.md` "Tools — attachments"):
+`books.link_attachment`, `books.unlink_attachment` (refused for a posted
+entry's last receipt under the receipt policy, and for a standing
+reconciliation's statement), `books.attachments {subject}`, `link_to` on
+`books.attach_receipt` and `books.file_document` (all or nothing), and
+`links` on every listed attachment. `books.file_document` takes the kinds
+below as its category (`receipt` is `books.attach_receipt`'s).
+
 ### Kinds
 
 `receipt`, `statement`, `contract`, `formation`, `legal`, `tax`,
@@ -177,11 +207,23 @@ is never edited; a later one supersedes it; `reconciliation.voided
 history with its statement; Needs-attention: an account with activity not
 reconciled through last month's end.
 
+Tools (built; `docs/mcp-interface.md` "Tools — bank reconciliation"):
+`books.record_statement`, `books.statements`, `books.reconcile` (preview
+by default; `statement_attachment` + `confirmed: true` records it),
+`books.reconciliations`, `books.void_reconciliation`; `books.show
+reconciliation`; `books.digest` `unreconciled_accounts` (the `[books]
+cash_accounts` and liabilities with statements, not reconciled through
+last month's end). The statement of a reconciliation not voided can't be
+unlinked from it.
+
 ### Import sources
 
-`books.import_bank_csv` files the CSV (kind `import_source`), links it to
-every entry it created, and records the row each came from, so every
-imported line traces to its source row.
+Built: file the export (`books.file_document` category `import_source`)
+and pass `source_attachment_id` to `books.import_bank_csv`; it is linked
+to the bank account imported into. Not to the drafts it creates: a file
+linked to an entry counts as its receipt, and a bank export is not one
+(DECISION, 2026-10-15, building the MCP tools). Recording the row each
+draft came from is not built yet.
 
 ### Projection
 
@@ -209,6 +251,28 @@ exact call that completes each, `books.todo` as the one punch list behind
 the digest, the viewer's Needs attention, and the session-start hook, and
 enforcement where a rule is a rule (tax basis at registration). The
 standard: do it now, completely.
+
+### Counterparties
+
+Decided (the owner, 2026-10-15): the books should be easy to make complete
+without forcing one style. `[books] parties = "off" | "suggest" |
+"require"`, default `"suggest"`:
+
+- `off`: never mention counterparties.
+- `suggest`: a draft or preview without a party names the likely one
+  (existing parties matched against the description, the receipt's text,
+  the vendor), or offers to create one; `next_steps` carries the exact
+  call. Nothing is refused.
+- `require`: posting is refused until the entry names a party or is
+  marked as having none (transfers, depreciation, amortization, closes
+  are exempt by kind).
+
+Also: memorized matches (journaled rules like description contains
+"OPENROUTER" → OpenRouter, applied by bank-CSV import and new drafts,
+reviewable and removable); a backfill punch list grouping untagged
+entries by likely party for one confirmation per group; 1099 nudges (a
+party given contractor or landlord, or a payment that looks like
+services to an individual, asks for the role and the W-9).
 
 ## After that: updates (check and seamless upgrade)
 

@@ -1164,58 +1164,16 @@ pub fn show_asset(ui: &mut Ui, b: &Books, id: AssetId, shell: &mut Shell<'_>) {
             },
         );
         ui.add_space(14.0);
-        let docs: Vec<_> = b
-            .attachments
-            .iter()
-            .filter(|x| {
-                x.withdrawn_at.is_none() && x.entry_id.is_some_and(|e| entries.contains(&e))
-            })
-            .collect();
-        widgets::titled_card(
+        let mut subjects = vec![ledger_store::Subject::Asset(id)];
+        subjects.extend(entries.iter().map(|e| ledger_store::Subject::Entry(*e)));
+        super::documents::documents_card_with(
             ui,
+            b,
             "Receipts and documents",
-            |_| {},
-            |ui| {
-                if docs.is_empty() {
-                    ui.label(
-                        RichText::new("None linked to its entries (depreciation needs none: the schedule is its evidence).")
-                            .color(p.muted),
-                    );
-                }
-                for d in &docs {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new(if d.mime_type == "application/pdf" {
-                                icon::FILE_PDF
-                            } else {
-                                icon::FILE_IMAGE
-                            })
-                            .color(p.muted),
-                        );
-                        if widgets::link_truncated(
-                            ui,
-                            RichText::new(format!(
-                                "{} · {} · entry #{}",
-                                d.file_name,
-                                fmt::label(&d.category),
-                                d.entry_id.unwrap_or(0)
-                            ))
-                            .font(theme::regular(13.0)),
-                        )
-                        .clicked()
-                        {
-                            go = Some(Route::Document(d.id));
-                        }
-                    });
-                    if let Some(desc) = &d.description {
-                        ui.label(
-                            RichText::new(desc)
-                                .font(theme::regular(11.5))
-                                .color(p.faint),
-                        );
-                    }
-                }
-            },
+            &subjects,
+            &[ledger_store::Subject::Asset(id)],
+            "None linked to it or its entries (photos, the warranty, the manual; depreciation needs none: the schedule is its evidence).",
+            &mut go,
         );
         ui.add_space(14.0);
 

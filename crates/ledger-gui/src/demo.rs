@@ -2,15 +2,17 @@
 //! small design studio (single-member LLC) with client invoices, template
 //! sales paid out by a platform, contractors (one without a W-9), rent on a
 //! recurring schedule, a credit card, a laptop on depreciation, prepaid
-//! insurance, owner draws, a closed year, PDF receipts, and a few loose
-//! ends for the "needs attention" list. Deterministic for a given `today`.
+//! insurance, owner draws, a closed year, PDF receipts, bank statements
+//! with reconciliations (one voided and redone), documents linked to the
+//! company, an asset, and a party, and a few loose ends for the "needs
+//! attention" list. Deterministic for a given `today`.
 
 use chrono::{Datelike, Days, Months, NaiveDate};
 use ledger_core::{
     AccountType, CloseTo, Currency, Form1099, Frequency, Money, NewAsset, NewRecurring,
     NewSchedule, ScheduleKind, Side, arap::DocumentLine,
 };
-use ledger_store::{Store, StoreError};
+use ledger_store::{Statement, Store, StoreError, Subject};
 use rust_decimal::Decimal;
 use std::path::Path;
 
@@ -339,7 +341,7 @@ pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
     let alex = s.add_party("Alex Rivera", &[ledger_core::Role::Member])?;
 
     // Formation documents.
-    s.file_document(
+    let (articles, _, _) = s.file_document(
         "formation",
         "Articles of Organization.pdf",
         "application/pdf",
@@ -353,7 +355,7 @@ pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
         ),
         Some("Filed with the state"),
     )?;
-    s.file_document(
+    let (ein_letter, _, _) = s.file_document(
         "tax",
         "IRS EIN confirmation.pdf",
         "application/pdf",
@@ -894,5 +896,163 @@ pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
         month_index += 1;
     }
     let _ = (bank_fees, client_class);
+
+    // The company's papers, linked to it; the laptop's warranty and
+    // photo, linked to the asset; Sam's contract, linked to Sam and the
+    // company.
+    s.link_attachment(articles, Subject::Company)?;
+    s.link_attachment(ein_letter, Subject::Company)?;
+    let (warranty, _, _) = s.file_document(
+        "warranty",
+        "MacBook Pro AppleCare.pdf",
+        "application/pdf",
+        &receipt_pdf(
+            "AppleCare+ for Mac",
+            &[
+                "Agreement for MacBook Pro 14-inch".into(),
+                format!("Coverage from {}", laptop_date.format("%B %-d, %Y")),
+                "Three years of hardware coverage".into(),
+            ],
+        ),
+        Some("Warranty, three years"),
+    )?;
+    s.link_attachment(warranty, Subject::Asset(asset))?;
+    let sam_party = s.ledger().party_of_vendor(sam).expect("linked");
+    let (contract_doc, _, _) = s.file_document(
+        "contract",
+        "Sam Okafor services agreement.pdf",
+        "application/pdf",
+        &receipt_pdf(
+            "Independent Contractor Agreement",
+            &[
+                "Juniper Studio LLC and Sam Okafor".into(),
+                "Illustration services, billed per project".into(),
+                format!("Signed {}", (start + Months::new(1)).format("%B %-d, %Y")),
+            ],
+        ),
+        Some("Signed agreement"),
+    )?;
+    s.link_attachment(contract_doc, Subject::Party(sam_party))?;
+    s.link_attachment(contract_doc, Subject::Company)?;
+
+    // Statements and reconciliations: savings reconciled through last
+    // month; checking through the month before (its first reconciliation
+    // voided and redone against the bank's reissued statement, one check
+    // outstanding at the first statement); the card never.
+    let month_end = |m: NaiveDate| m + Months::new(1) - Days::new(1);
+    let lines_on = |s: &Store, account: u64, through: NaiveDate| -> Vec<(u64, usize, NaiveDate)> {
+        let mut out = Vec::new();
+        for e in s.ledger().posted_entries() {
+            if e.date() <= through {
+                for (i, l) in e.lines().iter().enumerate() {
+                    if l.account == account && !s.ledger().is_cleared(e.id(), i) {
+                        out.push((e.id(), i, e.date()));
+                    }
+                }
+            }
+        }
+        out.sort_by_key(|x| (x.2, x.0, x.1));
+        out
+    };
+    let statement = |s: &mut Store,
+                     account: u64,
+                     name: &str,
+                     month: NaiveDate,
+                     note: &str,
+                     opening: Option<Decimal>|
+     -> Result<u64, StoreError> {
+        let end = month_end(month);
+        // The bank's opening is its last closing: what had cleared by then.
+        let opening = match opening {
+            Some(o) => o,
+            None => {
+                s.ledger()
+                    .reconciliation_report(account, month - Days::new(1), Decimal::ZERO)?
+                    .cleared_balance
+            }
+        };
+        let closing = s
+            .ledger()
+            .reconciliation_report(account, end, Decimal::ZERO)?
+            .cleared_balance;
+        let (att, _, _) = s.file_document(
+            "statement",
+            &format!(
+                "{name} statement {}{}.pdf",
+                month.format("%Y-%m"),
+                if note.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({})", note.to_lowercase())
+                }
+            ),
+            "application/pdf",
+            &receipt_pdf(
+                &format!("{name} statement"),
+                &[
+                    format!(
+                        "{} through {}",
+                        month.format("%B %-d, %Y"),
+                        end.format("%B %-d, %Y")
+                    ),
+                    format!("Opening balance: ${opening}"),
+                    format!("Closing balance: ${closing}"),
+                    note.to_string(),
+                ],
+            ),
+            Some(&format!("{name}, {}", month.format("%B %Y"))),
+        )?;
+        s.record_statement(Statement {
+            attachment_id: att,
+            account_id: account,
+            period_start: month,
+            period_end: end,
+            opening_balance: opening,
+            closing_balance: closing,
+        })?;
+        Ok(att)
+    };
+    let last_month = this_month - Months::new(1);
+    // Savings: every line through last month cleared.
+    for (e, i, _) in lines_on(&s, savings, month_end(last_month)) {
+        s.mark_cleared(e, i, true)?;
+    }
+    let st = statement(&mut s, savings, "Savings", last_month, "", None)?;
+    s.complete_reconciliation(st)?;
+    // Checking, three months back: the month's last check still out.
+    let m1 = this_month - Months::new(3);
+    let pending = lines_on(&s, checking, month_end(m1));
+    let outstanding = pending.last().map(|x| (x.0, x.1));
+    for (e, i, _) in pending {
+        if Some((e, i)) != outstanding {
+            s.mark_cleared(e, i, true)?;
+        }
+    }
+    let first = statement(&mut s, checking, "Operating Checking", m1, "", None)?;
+    let voided = s.complete_reconciliation(first)?;
+    s.void_reconciliation(
+        voided.id,
+        "The bank reissued this statement; reconciled again against the corrected copy",
+    )?;
+    let reissued = statement(&mut s, checking, "Operating Checking", m1, "Reissued", None)?;
+    let m1_closing = s
+        .ledger()
+        .reconciliation_report(checking, month_end(m1), Decimal::ZERO)?
+        .cleared_balance;
+    s.complete_reconciliation(reissued)?;
+    // Two months back: everything through it cleared.
+    let m2 = this_month - Months::new(2);
+    for (e, i, _) in lines_on(&s, checking, month_end(m2)) {
+        s.mark_cleared(e, i, true)?;
+    }
+    let second = statement(
+        &mut s,
+        checking,
+        "Operating Checking",
+        m2,
+        "",
+        Some(m1_closing),
+    )?;
+    s.complete_reconciliation(second)?;
     Ok(())
 }

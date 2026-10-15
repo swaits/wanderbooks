@@ -628,3 +628,289 @@ fn attention_asks_for_a_w9_until_its_facts_are_recorded() {
         }
     );
 }
+
+/// Paid out, received in, net, and what for, over each period, worked by
+/// hand from the fixture; the breakdown and the months sum to the money
+/// moved, exactly.
+#[test]
+fn party_money_by_period_and_what_for() {
+    use ledger_gui::books::PartyPeriod;
+    let f = fixture("periods");
+    let b = &f.books;
+    let o = &f.oracle;
+    let code = |c: &str| o.chart().find_by_code(c).unwrap().id;
+    let labor = code("6050");
+    let payables = o.role_account(&ledger_core::PAYABLES).unwrap();
+    let receivables = o.role_account(&ledger_core::RECEIVABLES).unwrap();
+    let flow = |p, period| b.party_flow(p, b.party_span(period), true);
+
+    // The spans.
+    assert_eq!(
+        b.party_span(PartyPeriod::ThisYear),
+        (d(2026, 1, 1), today())
+    );
+    assert_eq!(
+        b.party_span(PartyPeriod::LastYear),
+        (d(2025, 1, 1), d(2025, 12, 31))
+    );
+    assert_eq!(b.party_span(PartyPeriod::AllTime), (d(2025, 1, 1), today()));
+    assert_eq!(
+        b.party_periods(Some(f.sam)),
+        vec![
+            PartyPeriod::ThisYear,
+            PartyPeriod::LastYear,
+            PartyPeriod::AllTime
+        ]
+    );
+
+    // Sam this year: cash 1,000 + card 200 + owner 300 + (250 − 250
+    // reversed) + 500 of the 800 bill paid = 2,000 out. What for: labor
+    // 1,000 + 200 + 300 + 250 − 250 = 1,500, the bill's 800 (general
+    // expenses, the bill's account), less the 300 still owed on the bill
+    // (payables −800 + 500).
+    let sam = flow(f.sam, PartyPeriod::ThisYear);
+    assert_eq!((sam.paid, sam.received), (cents(200_000), Decimal::ZERO));
+    assert_eq!(sam.net(), cents(200_000));
+    assert_eq!(
+        sam.what_for,
+        vec![
+            (labor, cents(150_000)),
+            (code("6999"), cents(80_000)),
+            (payables, cents(-30_000))
+        ]
+    );
+    // Feb, Mar card, Apr owner, May and its reversal, the bill, its
+    // payment (the draft isn't posted).
+    assert_eq!(sam.entries, 7);
+    // Last year: December's 500.
+    let last = flow(f.sam, PartyPeriod::LastYear);
+    assert_eq!((last.paid, last.received), (cents(50_000), Decimal::ZERO));
+    assert_eq!(last.what_for, vec![(labor, cents(50_000))]);
+    assert_eq!(last.entries, 1);
+    // All time: both.
+    let all = flow(f.sam, PartyPeriod::AllTime);
+    assert_eq!(all.paid, cents(250_000));
+    assert_eq!(all.entries, 8);
+
+    // Acme this year: 600 received on the 1,000 invoice. What for: the
+    // revenue (1,000 in), less the 400 still receivable.
+    let acme = flow(f.acme, PartyPeriod::ThisYear);
+    assert_eq!((acme.paid, acme.received), (Decimal::ZERO, cents(60_000)));
+    assert_eq!(acme.net(), cents(-60_000));
+    let revenue = acme
+        .what_for
+        .iter()
+        .find(|(a, _)| *a != receivables)
+        .unwrap();
+    assert_eq!(revenue.1, cents(-100_000));
+    assert!(acme.what_for.contains(&(receivables, cents(40_000))));
+    // Last year: invoiced 400, nothing moved; what for nets to zero.
+    let acme_last = flow(f.acme, PartyPeriod::LastYear);
+    assert_eq!(
+        (acme_last.paid, acme_last.received),
+        (Decimal::ZERO, Decimal::ZERO)
+    );
+    assert_eq!(
+        acme_last.what_for.iter().map(|x| x.1).sum::<Decimal>(),
+        Decimal::ZERO
+    );
+
+    // Gumroad: the 90 deposit is 100 of sales less a 10 fee.
+    let g = flow(f.gumroad, PartyPeriod::ThisYear);
+    assert_eq!(g.received, cents(9_000));
+    assert_eq!(
+        g.what_for,
+        vec![(code("4100"), cents(-10_000)), (code("6000"), cents(1_000))]
+    );
+
+    // Every party, every period: the breakdown sums to the net, and the
+    // months to paid and received, exactly; the totals are activity's.
+    for p in o.parties() {
+        for period in b.party_periods(Some(p.id)) {
+            let span = b.party_span(period);
+            let fl = b.party_flow(p.id, span, true);
+            let a = ledger_core::parties::activity(o, p.id, span, &b.cash_accounts);
+            assert_eq!((fl.paid, fl.received), (a.paid, a.received));
+            assert_eq!(
+                fl.what_for.iter().map(|x| x.1).sum::<Decimal>(),
+                fl.net(),
+                "{} {period:?}",
+                p.name
+            );
+            let months = b.party_months(p.id, span);
+            assert_eq!(months.iter().map(|m| m.paid).sum::<Decimal>(), fl.paid);
+            assert_eq!(
+                months.iter().map(|m| m.received).sum::<Decimal>(),
+                fl.received
+            );
+        }
+    }
+    // Sam's months this year: Feb 1,000, Mar 200, Apr 300, May 0 (paid
+    // and reversed), Jun 500.
+    let months = b.party_months(f.sam, b.party_span(PartyPeriod::ThisYear));
+    assert_eq!(months.len(), 10);
+    let paid: Vec<Decimal> = months.iter().map(|m| m.paid).collect();
+    assert_eq!(
+        &paid[..6],
+        &[
+            Decimal::ZERO,
+            cents(100_000),
+            cents(20_000),
+            cents(30_000),
+            Decimal::ZERO,
+            cents(50_000)
+        ]
+    );
+
+    // The 1099 amount follows the period's calendar year.
+    let (line, _) = b.party_1099(f.sam, 2025).unwrap();
+    assert_eq!(line.paid, cents(50_000));
+    let (line, _) = b.party_1099(f.sam, 2026).unwrap();
+    assert_eq!(line.paid, cents(150_000));
+}
+
+#[test]
+fn directory_sorts_by_the_periods_amounts() {
+    use ledger_gui::books::PartyPeriod;
+    use ledger_gui::pages::parties::{Sort, sorted};
+    let f = fixture("sorted");
+    let b = &f.books;
+    let names =
+        |st: &State| -> Vec<PartyId> { sorted(b, st).into_iter().map(|(p, _)| p.id).collect() };
+    let mut st = State::default();
+    assert_eq!(
+        names(&st),
+        listed(b, &st).into_iter().map(|p| p.id).collect::<Vec<_>>()
+    );
+    st.sort = Sort::PaidOut;
+    assert_eq!(names(&st)[0], f.sam);
+    st.sort = Sort::ReceivedIn;
+    assert_eq!(&names(&st)[..2], &[f.acme, f.gumroad]);
+    st.sort = Sort::Net;
+    assert_eq!(names(&st)[0], f.sam);
+    assert_eq!(*names(&st).last().unwrap(), f.acme);
+    // Last year, only Sam was paid.
+    st.period = PartyPeriod::LastYear;
+    st.sort = Sort::PaidOut;
+    let rows = sorted(b, &st);
+    assert_eq!(rows[0].0.id, f.sam);
+    assert_eq!(rows[0].1.paid, cents(50_000));
+    assert!(rows[1..].iter().all(|(_, fl)| fl.paid.is_zero()));
+}
+
+/// Books with three posted entries this year: one tagged with a party,
+/// one marked as having none, one neither; under `parties` = `policy`
+/// (None: unset).
+fn counterparty_books(
+    tag: &str,
+    policy: Option<&str>,
+) -> (TempDir, Store, EntryId, EntryId, EntryId) {
+    let dir = TempDir::new(tag);
+    let mut s = Store::create(&dir.0.join("books-data"), Currency::USD).unwrap();
+    let cash = s
+        .add_account("1000", "Checking", AccountType::Asset, None, false)
+        .unwrap();
+    let savings = s
+        .add_account("1010", "Savings", AccountType::Asset, None, false)
+        .unwrap();
+    let labor = s
+        .add_account("6050", "Contract Labor", AccountType::Expense, None, false)
+        .unwrap();
+    let riley = s.add_party("Riley Chen", &[Role::Contractor]).unwrap();
+    let post = |s: &mut Store, date, what: &str, dr, cr| {
+        let e = s.create_entry(date, what).unwrap();
+        s.add_line(e, dr, Side::Debit, usd(10_000)).unwrap();
+        s.add_line(e, cr, Side::Credit, usd(10_000)).unwrap();
+        s.attach_receipt(Some(e), "r.pdf", "application/pdf", what.as_bytes(), None)
+            .unwrap();
+        s.post_entry(e).unwrap();
+        e
+    };
+    let tagged = post(&mut s, d(2026, 3, 1), "Riley", labor, cash);
+    s.set_entry_party(tagged, Some(riley)).unwrap();
+    let transfer = post(&mut s, d(2026, 4, 1), "To savings", savings, cash);
+    s.set_entry_no_party(transfer, "Between the company's own accounts")
+        .unwrap();
+    let unnamed = post(&mut s, d(2026, 5, 1), "Mystery payment", labor, cash);
+    if let Some(p) = policy {
+        std::fs::write(
+            dir.0.join("wanderbooks.toml"),
+            format!("[books]\nparties = \"{p}\"\n"),
+        )
+        .unwrap();
+    }
+    (dir, s, tagged, transfer, unnamed)
+}
+
+fn load_with_toml(dir: &Path) -> Books {
+    data::load_once(&Source {
+        data_dir: dir.join("books-data"),
+        books_toml: Some(dir.join("wanderbooks.toml")),
+        today: Some(today()),
+    })
+    .unwrap()
+}
+
+#[test]
+fn entries_without_a_counterparty_need_attention_unless_off() {
+    use ledger_gui::books::Severity;
+    let item = |b: &Books| {
+        attention::find(b)
+            .into_iter()
+            .find(|a| a.title.ends_with("no counterparty"))
+    };
+    // Unset is suggest: one note naming just the unmarked entry.
+    let (dir, mut s, _, transfer, unnamed) = counterparty_books("np-suggest", None);
+    let b = load_with_toml(&dir.0);
+    let a = item(&b).expect("an item");
+    assert_eq!(a.title, "1 entry names no counterparty");
+    assert_eq!(a.severity, Severity::Info);
+    assert!(a.prompt.starts_with("In wanderbooks,"));
+    assert!(a.prompt.contains("books.set_entry_party"));
+    assert!(
+        a.prompt
+            .contains(&format!("{unnamed} (Mystery payment, 2026-05-01)"))
+    );
+    assert!(!a.prompt.contains(&format!("{transfer} (")));
+    // The mark shows on the entry and reads in the journal.
+    assert_eq!(
+        b.ledger.entry_no_party(transfer),
+        Some("Between the company's own accounts")
+    );
+    let line = b
+        .journal
+        .iter()
+        .find(|l| l.line_type == "entry.no_party")
+        .unwrap();
+    let ev = describe(&b, line).unwrap();
+    assert_eq!(
+        ev.text,
+        format!(
+            "Entry #{transfer} marked as having no counterparty: Between the company's own accounts"
+        )
+    );
+    assert_eq!(ev.route, Some(Route::Entry(transfer)));
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1100.0, 900.0))
+        .build_eframe(|cc| App::with_books(&cc.egui_ctx, b, false, Route::Entry(transfer)));
+    h.run_steps(3);
+    use egui_kittest::kittest::Queryable;
+    h.get_by_label(&format!(
+        "{} No counterparty: Between the company's own accounts",
+        egui_phosphor::regular::USER_MINUS
+    ));
+    // Tagging the last one clears it.
+    let p = s.add_party("Mystery Co", &[Role::Contractor]).unwrap();
+    s.set_entry_party(unnamed, Some(p)).unwrap();
+    assert!(item(&load_with_toml(&dir.0)).is_none());
+
+    // Require: a to-do.
+    let (dir, _s, ..) = counterparty_books("np-require", Some("require"));
+    assert_eq!(
+        item(&load_with_toml(&dir.0)).unwrap().severity,
+        Severity::Todo
+    );
+    // Off: never mentioned.
+    let (dir, _s, ..) = counterparty_books("np-off", Some("off"));
+    assert!(item(&load_with_toml(&dir.0)).is_none());
+}

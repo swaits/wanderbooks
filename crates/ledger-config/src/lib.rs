@@ -112,6 +112,9 @@ pub struct BooksSettings {
     /// ("FL" for "FL-0001"). Unset: [`BooksSettings::asset_tag_prefix`]
     /// derives it from the company name.
     pub asset_tag_prefix: Option<String>,
+    /// `[books] parties`: how hard the agent asks for each entry's
+    /// counterparty. Unset: [`PartyPolicy::Suggest`].
+    pub parties: PartyPolicy,
     /// `[vault] key_file`: the TIN vault's key file. Unset: the vault's
     /// default (`~/.config/wanderbooks/vault.key`).
     pub vault_key_file: Option<std::path::PathBuf>,
@@ -212,6 +215,7 @@ struct BooksSection {
     #[serde(default)]
     investing_accounts: Vec<String>,
     asset_tag_prefix: Option<String>,
+    parties: Option<String>,
 }
 
 /// The return a federal tax classification files (docs/spec/sources/
@@ -532,7 +536,44 @@ pub fn parse(text: &str) -> Result<BooksSettings, String> {
             }
             None => None,
         },
+        parties: match raw.books.parties.as_deref() {
+            None | Some("suggest") => PartyPolicy::Suggest,
+            Some("off") => PartyPolicy::Off,
+            Some("require") | Some("required") => PartyPolicy::Require,
+            Some(other) => {
+                return Err(format!(
+                    "[books] parties {other:?}: \"off\", \"suggest\", or \"require\""
+                ));
+            }
+        },
     })
+}
+
+/// `[books] parties`: whether entries name their counterparty
+/// (docs/parties-and-attachments.md "Counterparties"; DECISION, owner,
+/// 2026-10-15: the default suggests, books may require or turn it off).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PartyPolicy {
+    /// Never mention counterparties.
+    Off,
+    /// A draft or preview without a party names the likely one; nothing
+    /// is refused.
+    #[default]
+    Suggest,
+    /// Posting is refused until the entry names a party or is marked as
+    /// having none.
+    Require,
+}
+
+impl PartyPolicy {
+    /// Its wire name.
+    pub fn key(self) -> &'static str {
+        match self {
+            PartyPolicy::Off => "off",
+            PartyPolicy::Suggest => "suggest",
+            PartyPolicy::Require => "require",
+        }
+    }
 }
 
 /// Load `wanderbooks.toml` from a path.
@@ -544,6 +585,25 @@ pub fn load(path: &Path) -> Result<BooksSettings, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `[books] parties`: suggest by default; off, suggest, require (and
+    /// "required") parse; anything else is refused, naming the choices.
+    #[test]
+    fn parties_policy() {
+        let base = "[company]\nname = \"Acme LLC\"\n[books]\n";
+        assert_eq!(parse(base).unwrap().parties, PartyPolicy::Suggest);
+        for (v, want) in [
+            ("off", PartyPolicy::Off),
+            ("suggest", PartyPolicy::Suggest),
+            ("require", PartyPolicy::Require),
+            ("required", PartyPolicy::Require),
+        ] {
+            let s = parse(&format!("{base}parties = \"{v}\"\n")).unwrap();
+            assert_eq!(s.parties, want, "{v}");
+        }
+        let e = parse(&format!("{base}parties = \"always\"\n")).unwrap_err();
+        assert!(e.contains("require"), "{e}");
+    }
 
     fn d(y: i32, m: u32, day: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(y, m, day).unwrap()

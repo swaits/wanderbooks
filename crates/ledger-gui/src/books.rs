@@ -489,17 +489,14 @@ impl Books {
     }
 }
 
-/// Customer or vendor names for entries created by invoices and bills and
-/// their payments, from the journal.
+/// Customer names for entries created by invoices and their payments,
+/// from the journal. (Bills and bill payments need nothing here: the
+/// ledger tags their entries with the vendor, which takes precedence.)
 fn parties(ledger: &Ledger, journal: &[JournalLine]) -> HashMap<EntryId, String> {
     let mut out = HashMap::new();
     let customer = |id: Option<u64>| {
         id.and_then(|c| ledger.get_customer(c))
             .map(|c| c.name.clone())
-    };
-    let vendor = |id: Option<u64>| {
-        id.and_then(|v| ledger.get_vendor(v))
-            .map(|v| v.name.clone())
     };
     let u = |p: &Value, k: &str| p.get(k).and_then(|v| v.as_u64());
     for line in journal {
@@ -513,12 +510,6 @@ fn parties(ledger: &Ledger, journal: &[JournalLine]) -> HashMap<EntryId, String>
                 u(p, "invoice_id")
                     .and_then(|i| ledger.get_invoice(i))
                     .map(|i| i.customer_id),
-            ),
-            "bill.created" => vendor(u(p, "vendor_id")),
-            "bill.paid" => vendor(
-                u(p, "bill_id")
-                    .and_then(|b| ledger.get_bill(b))
-                    .map(|b| b.vendor_id),
             ),
             _ => None,
         };

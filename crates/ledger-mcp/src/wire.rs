@@ -194,4 +194,43 @@ mod tests {
         );
         assert_eq!(classify("   "), Line::Skip);
     }
+
+    /// Counts the lines written to it; every flush fails.
+    struct FailingFlush(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    impl AsyncWrite for FailingFlush {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            let lines = buf.iter().filter(|&&b| b == b'\n').count();
+            self.0.fetch_add(lines, std::sync::atomic::Ordering::SeqCst);
+            std::task::Poll::Ready(Ok(buf.len()))
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Err(std::io::Error::other("closed")))
+        }
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// A client that can't take a flushed reply is gone: the writer stops
+    /// after the first, rather than writing on into a dead channel.
+    #[tokio::test]
+    async fn a_failed_flush_stops_the_writer() {
+        let written = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let input = std::io::Cursor::new(b"not json\nnor this\n".to_vec());
+        let (rmcp_in, rmcp_out, writer) = spawn(input, FailingFlush(written.clone()));
+        drop((rmcp_in, rmcp_out));
+        writer.await.unwrap();
+        assert_eq!(written.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
 }

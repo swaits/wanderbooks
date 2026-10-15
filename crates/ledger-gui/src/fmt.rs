@@ -244,6 +244,9 @@ mod tests {
         assert_eq!(plain("+1,000.005").as_deref(), Some("1000.005"));
         assert_eq!(plain("0.00").as_deref(), Some("0.00"));
         assert_eq!(plain("Debit"), None);
+        // Only digits and a point: the decimal parser alone takes these.
+        assert_eq!(plain("1_000.00"), None);
+        assert_eq!(plain("1e3"), None);
         assert_eq!(plain(""), None);
     }
 }

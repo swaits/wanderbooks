@@ -17,9 +17,11 @@ typst-pdf = "0.15.1"
 typst = "0.15.1"
 serde_json = "1"
 typst-layout = "0.15.1"
+qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
 
 [lints]
 workspace = true
 
 [dev-dependencies]
 proptest = "1"
+rqrr = { version = "0.11.0", default-features = false }

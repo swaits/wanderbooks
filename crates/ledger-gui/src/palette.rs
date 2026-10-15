@@ -1,5 +1,6 @@
 //! Ctrl+K: jump to anything. Pages, reports, accounts, entries (by text,
-//! amount, or #id), vendors, and documents, ranked by a simple fuzzy match.
+//! amount, or #id), fixed assets (by tag, serial, or description), vendors,
+//! and documents, ranked by a simple fuzzy match.
 
 use crate::books::Books;
 use crate::fmt;
@@ -16,12 +17,13 @@ pub struct Palette {
     focus: bool,
 }
 
-struct Item {
-    icon: &'static str,
-    title: String,
-    detail: String,
-    route: Route,
-    score: i32,
+/// One search result.
+pub struct Item {
+    pub icon: &'static str,
+    pub title: String,
+    pub detail: String,
+    pub route: Route,
+    pub score: i32,
 }
 
 impl Palette {
@@ -75,7 +77,7 @@ impl Palette {
                 let screen = ctx.content_rect().size();
                 ui.set_width(620.0_f32.min(screen.x - 48.0).max(200.0));
                 let edit = egui::TextEdit::singleline(&mut self.query)
-                    .hint_text("Search entries, accounts, vendors, documents, reports…")
+                    .hint_text("Search entries, accounts, assets, vendors, documents, reports…")
                     .font(theme::regular(16.0))
                     .frame(egui::Frame::NONE)
                     .desired_width(f32::INFINITY);
@@ -211,7 +213,19 @@ pub fn fuzzy(hay: &str, query: &str) -> Option<i32> {
     best.into_iter().flatten().max()
 }
 
-fn search(b: &Books, query: &str) -> Vec<Item> {
+/// What the palette lists for `query`, best first (at most 40).
+///
+/// ```text
+/// INVARIANTS (fixed assets; everything else as it was):
+///   1. An asset whose tag equals the trimmed query, ignoring ASCII case,
+///      scores 2000: above every other result (an entry's exact #id is
+///      1000).
+///   2. Otherwise an asset is listed when the query fuzzily matches its
+///      tag, serial, and description; a query found whole in its tag or
+///      serial (ignoring case) adds 500, in its description 50.
+///   3. Every asset result opens Route::Asset(its id).
+/// ```
+pub fn search(b: &Books, query: &str) -> Vec<Item> {
     let q = query.trim();
     let mut out: Vec<Item> = Vec::new();
     let mut add = |icon: &'static str, title: String, detail: String, route: Route, hay: &str| {
@@ -281,6 +295,40 @@ fn search(b: &Books, query: &str) -> Vec<Item> {
                 });
             }
         }
+        let ql = q.to_lowercase();
+        for a in b.ledger.registered_assets() {
+            let tag = a.tag.as_deref().unwrap_or("");
+            let serial = a.serial.as_deref().unwrap_or("");
+            let hay = format!("{tag} {serial} {}", a.description);
+            let score = if !tag.is_empty() && tag.eq_ignore_ascii_case(q) {
+                Some(2000)
+            } else {
+                fuzzy(&hay, q).map(|s| {
+                    let whole = |t: &str| !t.is_empty() && t.to_lowercase().contains(&ql);
+                    s + if whole(tag) || whole(serial) {
+                        500
+                    } else if whole(&a.description) {
+                        50
+                    } else {
+                        0
+                    }
+                })
+            };
+            if let Some(score) = score {
+                let mut detail = vec!["Fixed asset".to_string()];
+                if !serial.is_empty() {
+                    detail.push(format!("serial {serial}"));
+                }
+                detail.push(format!("in service {}", fmt::date(a.purchase_date)));
+                out.push(Item {
+                    icon: icon::PACKAGE,
+                    title: b.asset_label(a.id),
+                    detail: detail.join(" · "),
+                    route: Route::Asset(a.id),
+                    score,
+                });
+            }
+        }
         for v in b.ledger.list_vendors() {
             if let Some(score) = fuzzy(&v.name, q) {
                 out.push(Item {
@@ -329,6 +377,7 @@ pub fn describe(b: &Books, r: &Route) -> String {
             .find(|a| a.id == *id)
             .map(|a| a.file_name.clone())
             .unwrap_or_default(),
+        Route::Asset(id) => b.asset_label(*id),
         Route::JournalEvent(seq) => format!("Event {seq}"),
         _ => String::new(),
     }

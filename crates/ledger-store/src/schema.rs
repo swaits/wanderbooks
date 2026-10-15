@@ -5,7 +5,7 @@
 //! is the current version.
 
 /// Current schema version.
-pub const SCHEMA_VERSION: u32 = 8;
+pub const SCHEMA_VERSION: u32 = 9;
 
 /// Migrations, in order. `MIGRATIONS[i]` migrates from version `i` to `i+1`.
 pub const MIGRATIONS: &[&str] = &[
@@ -207,5 +207,18 @@ ALTER TABLE attachments ADD COLUMN mime_type TEXT;
 UPDATE attachments SET
   file_name = (SELECT original_name FROM blobs WHERE sha256 = attachments.blob_sha),
   mime_type = (SELECT mime_type FROM blobs WHERE sha256 = attachments.blob_sha);
+"#,
+    r#"
+-- v9: asset tags, serial numbers, and each asset's acquisition entry. assets.tag is the current tag;
+-- asset_tags_log keeps every tagging in journal order, because a tag is
+-- never reused by another asset even after a retag.
+ALTER TABLE assets ADD COLUMN tag TEXT;
+ALTER TABLE assets ADD COLUMN serial TEXT;
+ALTER TABLE assets ADD COLUMN acquisition_entry INTEGER;
+CREATE TABLE IF NOT EXISTS asset_tags_log(
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  asset_id INTEGER NOT NULL,
+  tag TEXT NOT NULL
+);
 "#,
 ];

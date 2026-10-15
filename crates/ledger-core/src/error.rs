@@ -116,6 +116,41 @@ pub enum LedgerError {
         placeholder: bool,
     },
 
+    /// An asset tag of the wrong form (see `assets::check_asset_tag`).
+    #[error("bad asset tag {tag:?}: {why}")]
+    InvalidAssetTag {
+        /// The tag given.
+        tag: String,
+        /// Why it was refused.
+        why: String,
+    },
+
+    /// Asset tags are never shared or reused: another asset holds, or
+    /// held, this one.
+    #[error("asset tag {tag:?} belongs to asset {asset}; tags are never reused, so choose another")]
+    AssetTagTaken {
+        /// The tag given.
+        tag: String,
+        /// The asset that holds or held it.
+        asset: u64,
+    },
+
+    /// An asset's acquisition entry must be a posted, unreversed entry
+    /// that debits the asset's cost account.
+    #[error("entry {entry} can't be asset {asset}'s acquisition: {why}")]
+    AcquisitionEntryMismatch {
+        /// The asset.
+        asset: u64,
+        /// The entry given.
+        entry: u64,
+        /// Why not.
+        why: String,
+    },
+
+    /// A serial number of the wrong form (see `assets::check_serial`).
+    #[error("bad serial number: {0}")]
+    InvalidSerial(String),
+
     /// No control role has that name (see `ledger_core::control_accounts`).
     #[error(
         "no role {0:?}; the roles are receivables, revenue, payables, general_expense, \

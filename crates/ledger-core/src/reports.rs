@@ -1038,27 +1038,32 @@ pub fn snapshot(ledger: &Ledger) -> Result<serde_json::Value, LedgerError> {
     let tb = trial_balance(ledger);
     let pl = unclosed_earnings(ledger)?;
     let bs = balance_sheet(ledger)?;
+    // By value, not by written scale: a sum taken in hash-map order can
+    // write the same zero as "0" or "0.00", and verify compared the
+    // strings, so two equal ledgers could differ at random (found
+    // 2026-10-15 by a flaky store test).
+    let v = |d: Decimal| d.normalize().to_string();
     Ok(serde_json::json!({
         "trial_balance": {
             "lines": tb.lines.iter().map(|l| serde_json::json!({
                 "code": l.code,
                 "name": l.name,
-                "debit": l.debit.to_string(),
-                "credit": l.credit.to_string(),
+                "debit": v(l.debit),
+                "credit": v(l.credit),
             })).collect::<Vec<_>>(),
-            "total_debits": tb.total_debits.to_string(),
-            "total_credits": tb.total_credits.to_string(),
+            "total_debits": v(tb.total_debits),
+            "total_credits": v(tb.total_credits),
         },
         "profit_and_loss": {
-            "revenue": pl.revenue.to_string(),
-            "expenses": pl.expenses.to_string(),
-            "net_income": pl.net_income().to_string(),
+            "revenue": v(pl.revenue),
+            "expenses": v(pl.expenses),
+            "net_income": v(pl.net_income()),
         },
         "balance_sheet": {
-            "assets": bs.assets.to_string(),
-            "liabilities": bs.liabilities.to_string(),
-            "equity": bs.equity.to_string(),
-            "current_earnings": bs.current_earnings.to_string(),
+            "assets": v(bs.assets),
+            "liabilities": v(bs.liabilities),
+            "equity": v(bs.equity),
+            "current_earnings": v(bs.current_earnings),
             "balanced": bs.balanced(),
         },
     }))
@@ -1523,4 +1528,160 @@ pub fn cash_flow(
         cash_beginning,
         cash_ending,
     })
+}
+
+/// One asset on the fixed asset register.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssetRegisterRow {
+    /// Asset id.
+    pub asset_id: crate::AssetId,
+    /// Its tag, if it has one.
+    pub tag: Option<String>,
+    /// What it is.
+    pub description: String,
+    /// The manufacturer's serial number, if recorded.
+    pub serial: Option<String>,
+    /// Placed in service (depreciation starts).
+    pub in_service: NaiveDate,
+    /// Capitalized cost.
+    pub cost: Decimal,
+    /// Salvage value.
+    pub salvage: Decimal,
+    /// Useful life in months.
+    pub useful_life_months: u32,
+    /// Accumulated depreciation by its schedule through the date (zero once
+    /// disposed: it left the books with the asset).
+    pub accumulated: Decimal,
+    /// Cost less accumulated (zero once disposed).
+    pub book_value: Decimal,
+    /// Disposal date and proceeds, if disposed by the date.
+    pub disposed: Option<(NaiveDate, Decimal)>,
+}
+
+/// The fixed asset register as of a date, reconciled to the general ledger.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssetRegister {
+    /// The date.
+    pub as_of: NaiveDate,
+    /// Every asset registered by the date, in registration order; disposed
+    /// ones carry their disposal and no cost on the books.
+    pub rows: Vec<AssetRegisterRow>,
+    /// Total cost of the assets still held.
+    pub total_cost: Decimal,
+    /// Their accumulated depreciation by schedule.
+    pub total_accumulated: Decimal,
+    /// Their book value.
+    pub total_book_value: Decimal,
+    /// The general ledger's balance (debit positive) of the assets' cost
+    /// accounts on the date.
+    pub ledger_cost: Decimal,
+    /// The general ledger's accumulated depreciation (credit positive) in
+    /// the assets' accumulated depreciation accounts on the date.
+    pub ledger_accumulated: Decimal,
+}
+
+impl AssetRegister {
+    /// Depreciation the schedules say is due by the date but the books
+    /// don't carry yet (run `run_depreciation`); negative if the books
+    /// carry more.
+    pub fn unposted_depreciation(&self) -> Decimal {
+        self.total_accumulated - self.ledger_accumulated
+    }
+
+    /// Cost in the ledger's cost accounts that no held asset accounts for
+    /// (equipment bought but not registered), or negative if registered
+    /// cost isn't in the books.
+    pub fn unregistered_cost(&self) -> Decimal {
+        self.ledger_cost - self.total_cost
+    }
+}
+
+/// The fixed asset register as of a date.
+///
+/// ```text
+/// GOAL: one list of everything the company owns as a fixed asset: what,
+///       which label, cost, depreciation, book value, and whether the
+///       books agree.
+/// SOURCE: docs/spec/rules.md B-15 (depreciation); DECISION (owner,
+///         2026-10-15): a fully featured asset register.
+/// INVARIANTS:
+///   1. Rows: the assets registered on or before as_of, in registration
+///      order; an asset disposed on or before as_of shows its disposal,
+///      zero accumulated and book value, and counts in no total.
+///   2. accumulated is the asset's schedule through as_of
+///      (assets::accumulated_depreciation); book_value = cost −
+///      accumulated.
+///   3. Totals are the sums over the held assets, exactly.
+///   4. ledger_cost and ledger_accumulated are the general ledger's
+///      balances on as_of of the distinct cost and accumulated
+///      depreciation accounts of the registered assets, so
+///      unposted_depreciation and unregistered_cost are zero exactly when
+///      register and books agree.
+/// ```
+pub fn fixed_asset_register(ledger: &Ledger, as_of: NaiveDate) -> AssetRegister {
+    use crate::AssetStatus;
+    let mut rows = Vec::new();
+    let (mut cost, mut accumulated) = (Decimal::ZERO, Decimal::ZERO);
+    let mut cost_accounts = std::collections::BTreeSet::new();
+    let mut accum_accounts = std::collections::BTreeSet::new();
+    for a in ledger
+        .registered_assets()
+        .filter(|a| a.purchase_date <= as_of)
+    {
+        cost_accounts.insert(a.cost_account);
+        accum_accounts.insert(a.accum_depr_account);
+        let disposed = match &a.status {
+            AssetStatus::Disposed { date, proceeds } if *date <= as_of => {
+                Some((*date, proceeds.amount))
+            }
+            _ => None,
+        };
+        let acc = if disposed.is_some() {
+            Decimal::ZERO
+        } else {
+            crate::assets::accumulated_depreciation(a, as_of)
+        };
+        if disposed.is_none() {
+            cost += a.cost.amount;
+            accumulated += acc;
+        }
+        rows.push(AssetRegisterRow {
+            asset_id: a.id,
+            tag: a.tag.clone(),
+            description: a.description.clone(),
+            serial: a.serial.clone(),
+            in_service: a.purchase_date,
+            cost: a.cost.amount,
+            salvage: a.salvage_value.amount,
+            useful_life_months: a.useful_life_months,
+            accumulated: acc,
+            book_value: if disposed.is_some() {
+                Decimal::ZERO
+            } else {
+                a.cost.amount - acc
+            },
+            disposed,
+        });
+    }
+    let tb = trial_balance_as_of(ledger, as_of);
+    let net = |id: crate::AccountId| -> Decimal {
+        let code = match ledger.chart().get(id) {
+            Some(a) => &a.code,
+            None => return Decimal::ZERO,
+        };
+        tb.lines
+            .iter()
+            .find(|l| &l.code == code)
+            .map(|l| l.debit - l.credit)
+            .unwrap_or(Decimal::ZERO)
+    };
+    AssetRegister {
+        as_of,
+        rows,
+        total_cost: cost,
+        total_accumulated: accumulated,
+        total_book_value: cost - accumulated,
+        ledger_cost: cost_accounts.iter().map(|&id| net(id)).sum(),
+        ledger_accumulated: -accum_accounts.iter().map(|&id| net(id)).sum::<Decimal>(),
+    }
 }

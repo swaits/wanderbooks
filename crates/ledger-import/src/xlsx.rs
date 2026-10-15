@@ -44,25 +44,25 @@ impl From<rust_xlsxwriter::XlsxError> for XlsxError {
 
 /// Accounting number formats: the `_)` reserves a closing parenthesis's
 /// width on positives so decimal points line up with negatives.
-const PLAIN: &str = "#,##0.00_);(#,##0.00)";
-const DOLLARS: &str = "$#,##0.00_);($#,##0.00)";
+pub(crate) const PLAIN: &str = "#,##0.00_);(#,##0.00)";
+pub(crate) const DOLLARS: &str = "$#,##0.00_);($#,##0.00)";
 
-struct Formats {
-    bold: Format,
-    company: Format,
-    centered: Format,
-    header: Format,
-    header_right: Format,
-    plain: Format,
-    dollars_sum: Format,
-    dollars_total: Format,
-    line_label: Format,
-    sub_label: Format,
-    note: Format,
+pub(crate) struct Formats {
+    pub(crate) bold: Format,
+    pub(crate) company: Format,
+    pub(crate) centered: Format,
+    pub(crate) header: Format,
+    pub(crate) header_right: Format,
+    pub(crate) plain: Format,
+    pub(crate) dollars_sum: Format,
+    pub(crate) dollars_total: Format,
+    pub(crate) line_label: Format,
+    pub(crate) sub_label: Format,
+    pub(crate) note: Format,
 }
 
 impl Formats {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let bold = Format::new().set_bold();
         let ruled = |f: Format| f.set_border_top(FormatBorder::Thin);
         Self {
@@ -97,7 +97,7 @@ impl Formats {
 
 /// Company, title, and period centered over `width` columns; returns the
 /// next free row.
-fn header(
+pub(crate) fn header(
     sheet: &mut Worksheet,
     f: &Formats,
     meta: &ReportMeta,
@@ -120,7 +120,7 @@ fn header(
 }
 
 /// Basis, preparation date, and journal seq under the last row.
-fn footer(
+pub(crate) fn footer(
     sheet: &mut Worksheet,
     f: &Formats,
     meta: &ReportMeta,
@@ -143,7 +143,7 @@ fn footer(
 /// with more than 13 digits before the cents can't show exactly: such an
 /// amount is written as its exact text instead, right-aligned, so the
 /// spreadsheet never shows a wrong number.
-fn number(
+pub(crate) fn number(
     sheet: &mut Worksheet,
     row: u32,
     col: u16,

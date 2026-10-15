@@ -23,6 +23,8 @@ pub struct Event {
     pub icon: &'static str,
     pub text: String,
     pub route: Option<Route>,
+    /// A second place it's about (the asset of a depreciation entry).
+    pub also: Option<Route>,
 }
 
 fn s<'a>(p: &'a Value, k: &str) -> &'a str {
@@ -58,7 +60,32 @@ pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
     let id = p.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
     let entry_id = p.get("entry_id").and_then(|v| v.as_u64());
     let att = p.get("attachment_id").and_then(|v| v.as_u64()).unwrap_or(0);
-    let ev = |icon, text: String, route: Option<Route>| Some(Event { icon, text, route });
+    let ev = |icon, text: String, route: Option<Route>| {
+        Some(Event {
+            icon,
+            text,
+            route,
+            also: None,
+        })
+    };
+    let asset_id = p.get("asset_id").and_then(|v| v.as_u64());
+    let asset = |id: Option<u64>| {
+        id.map(|a| {
+            b.ledger
+                .get_asset(a)
+                .map(|x| x.description.clone())
+                .unwrap_or_else(|| format!("asset {a}"))
+        })
+        .unwrap_or_default()
+    };
+    let with_asset = |icon, text: String| {
+        Some(Event {
+            icon,
+            text,
+            route: entry_id.map(Route::Entry),
+            also: asset_id.map(Route::Asset),
+        })
+    };
     match line.line_type.as_str() {
         "entry.created" | "entry.line_added" | "entry.line_class_set" => None,
         "store.created" => ev(icon::BOOK_OPEN, "Books created".into(), None),
@@ -223,17 +250,45 @@ pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
         "asset.registered" => ev(
             icon::PACKAGE,
             format!("Registered asset {}", s(p, "description")),
-            Some(Route::Company),
+            Some(Route::Asset(id)),
         ),
-        "asset.depreciation_posted" => ev(
+        "asset.tagged" => {
+            let tag = s(p, "tag");
+            let text = match p.get("previous_tag").and_then(|v| v.as_str()) {
+                Some(old) => format!("Retagged {} from {old} to {tag}", asset(asset_id)),
+                None => format!("Tagged {} {tag}", asset(asset_id)),
+            };
+            ev(icon::TAG, text, asset_id.map(Route::Asset))
+        }
+        "asset.serial_set" => {
+            let text = match p.get("serial").and_then(|v| v.as_str()) {
+                Some(serial) => format!("Serial number of {} set to {serial}", asset(asset_id)),
+                None => format!("Serial number of {} cleared", asset(asset_id)),
+            };
+            ev(icon::BARCODE, text, asset_id.map(Route::Asset))
+        }
+        "asset.depreciation_posted" => with_asset(
             icon::TREND_DOWN,
-            "Depreciation posted".into(),
-            entry_id.map(Route::Entry),
+            format!(
+                "Depreciation posted: {} {} ({})",
+                asset(asset_id),
+                s(p, "period"),
+                amount(p)
+            ),
         ),
-        "asset.disposed" => ev(
+        "asset.disposed" => with_asset(
             icon::TRASH,
-            "Asset disposed".into(),
-            entry_id.map(Route::Entry),
+            format!(
+                "Disposed {} on {} for {}",
+                asset(asset_id),
+                s(p, "date"),
+                p.get("proceeds")
+                    .and_then(|v| v.get("amount"))
+                    .and_then(|v| v.as_str())
+                    .and_then(|a| a.parse().ok())
+                    .map(fmt::dollars)
+                    .unwrap_or_default()
+            ),
         ),
         "schedule.registered" => ev(
             icon::CALENDAR,
@@ -310,6 +365,7 @@ pub fn describe_any(b: &Books, line: &JournalLine) -> Event {
             icon: icon::PENCIL_SIMPLE,
             text: format!("Drafted #{id} {}", s(p, "description")),
             route: Some(Route::Entry(id)),
+            also: None,
         },
         "entry.line_added" => {
             let amount = p
@@ -332,6 +388,7 @@ pub fn describe_any(b: &Books, line: &JournalLine) -> Event {
                     ),
                 ),
                 route: Some(Route::Entry(id)),
+                also: None,
             }
         }
         "entry.line_class_set" => {
@@ -350,12 +407,14 @@ pub fn describe_any(b: &Books, line: &JournalLine) -> Event {
                         .map_or(0, |i| i + 1)
                 ),
                 route: Some(Route::Entry(id)),
+                also: None,
             }
         }
         t => Event {
             icon: icon::DOT,
             text: t.to_string(),
             route: None,
+            also: None,
         },
     }
 }
@@ -510,7 +569,7 @@ fn detail(ui: &mut Ui, b: &Books, line: &JournalLine, shell: &mut Shell<'_>) {
             fact(ui, "Previous", &line.prev);
             let own = ledger_store::journal::sha256_hex(line.to_canonical().as_bytes());
             fact(ui, "This hash", &own);
-            if let Some(r) = &ev.route {
+            for r in ev.route.iter().chain(&ev.also) {
                 ui.add_space(6.0);
                 if ui
                     .button(format!(

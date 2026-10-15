@@ -446,3 +446,21 @@ postings stay where they are.
 `check_assign_role`, `Ledger::check_renumber_account` (an assigned role
 frees its code). **Checked:** `ledger-core` `tests/spec_roles.rs`;
 `ledger-store` replay of `role.assigned`.
+
+## B-24 Asset tags: one label per asset, never reused
+
+**Status:** DECISION (the owner, 2026-10-15)
+
+Each fixed asset may carry a tag, the label stuck on the thing itself
+(generated `PREFIX-0001` or the human's own: 1–32 ASCII letters, digits,
+`- _ . /`), and the manufacturer's serial number. Tags are unique ignoring
+case and are never reused by another asset, even after a retag or a
+disposal, so an old label can never point at the wrong thing. Both are
+journaled. The fixed asset register lists every asset as of a date and
+reconciles to the general ledger's cost and accumulated depreciation
+accounts.
+
+**Enforced:** `Ledger::set_asset_tag` / `check_asset_tag_for`,
+`assets::check_asset_tag`, `assets::check_serial`. **Checked:**
+`ledger-core` `tests/spec_asset_tags.rs`; `ledger-store`
+`tests/asset_tags.rs`; `ledger-mcp` `tests/spec_assets.rs`.

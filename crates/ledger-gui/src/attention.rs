@@ -1,7 +1,8 @@
 //! What the books need: drafts left unposted, missing receipts, schedules
 //! and recurring entries due, open past periods, uncategorized tax lines,
 //! 1099 vendors without a W-9, overdue bills and invoices, money owed to
-//! owners, and legal rules (like the 1099 threshold) due for an update. Each item says what's wrong, where to look, and the prompt that
+//! owners, fixed asset depreciation not posted and assets without a tag,
+//! and legal rules (like the 1099 threshold) due for an update. Each item says what's wrong, where to look, and the prompt that
 //! asks the agent to fix it (the GUI never changes the books itself).
 
 use crate::books::{Attention, Books, Severity};
@@ -31,7 +32,11 @@ use rust_decimal::Decimal;
 ///      invoices (Problem, one each, with the total); money owed to
 ///      owners (Info, per account with a balance); the database differing
 ///      from the journal or unreadable, and damaged or missing stored
-///      files (Problem).
+///      files (Problem); depreciation due through the last finished month
+///      and not posted (Books::depreciation_due amount > 0: Todo, one
+///      item); the asset register and the books' asset cost accounts
+///      disagreeing today (unregistered_cost != 0: Problem); an active
+///      asset in service with no tag (Todo, one per asset).
 ///   3. Nothing else: books with none of those yield no items.
 ///   4. Every item's prompt starts "In wanderbooks," or names
 ///      wanderbooks, and its amounts are the books' exact amounts.
@@ -304,6 +309,79 @@ pub fn find(b: &Books) -> Vec<Attention> {
                 ),
             });
         }
+    }
+
+    let due = b.depreciation_due(today);
+    if due.amount > Decimal::ZERO {
+        let months = if due.periods.is_empty() {
+            "every month not yet posted".to_string()
+        } else {
+            due.periods.join(", ")
+        };
+        out.push(Attention {
+            severity: Severity::Todo,
+            title: format!("Depreciation not posted through {}", fmt::date(due.through)),
+            detail: format!(
+                "{} scheduled and not yet in the books ({}).",
+                fmt::dollars(due.amount),
+                months
+            ),
+            target: Some(Route::Assets),
+            prompt: format!(
+                "In wanderbooks, run books.run_depreciation for {months} (depreciation due through {} and not posted: {}), then show me the fixed asset register.",
+                due.through,
+                fmt::dollars(due.amount)
+            ),
+        });
+    }
+    let register = b.asset_register(today);
+    let unregistered = register.unregistered_cost();
+    if !unregistered.is_zero() {
+        let (title, why) = if unregistered > Decimal::ZERO {
+            (
+                format!(
+                    "{} of equipment not in the asset register",
+                    fmt::dollars(unregistered)
+                ),
+                "The asset cost accounts hold more than the registered assets cost: something bought was never registered.",
+            )
+        } else {
+            (
+                format!(
+                    "{} of registered assets not in the books",
+                    fmt::dollars(-unregistered)
+                ),
+                "Registered assets cost more than their cost accounts hold: a purchase entry may be missing.",
+            )
+        };
+        out.push(Attention {
+            severity: Severity::Problem,
+            title,
+            detail: why.into(),
+            target: Some(Route::Assets),
+            prompt: format!(
+                "In wanderbooks, the fixed asset register and the asset cost accounts differ by {} today. Find what's behind it (books.list_assets and the cost accounts' registers) and tell me how to fix it.",
+                fmt::dollars(unregistered)
+            ),
+        });
+    }
+    for a in b.ledger.registered_assets().filter(|a| {
+        a.tag.is_none() && a.status == ledger_core::AssetStatus::Active && a.purchase_date <= today
+    }) {
+        out.push(Attention {
+            severity: Severity::Todo,
+            title: format!("No tag: {}", a.description),
+            detail: format!(
+                "Asset {}, in service {}. A tag is the label on the thing itself.",
+                a.id,
+                fmt::date(a.purchase_date)
+            ),
+            target: Some(Route::Asset(a.id)),
+            prompt: format!(
+                "In wanderbooks, label asset {} (\"{}\") with books.label_asset: give it the next generated tag unless I have my own, and its serial number if I can find it. Then print its label with books.asset_labels.",
+                a.id, a.description
+            ),
+        });
     }
 
     use ledger_store::DiskCheck;

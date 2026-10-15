@@ -426,14 +426,16 @@ pub struct ShowParams {
     pub account: Option<String>,
     /// A report: profit_and_loss, balance_sheet, cash_flow,
     /// members_equity, trial_balance, general_ledger, tax_summary,
-    /// vendor_1099, ar_aging, ap_aging.
+    /// vendor_1099, ar_aging, ap_aging, fixed_asset_register.
     pub report: Option<String>,
     /// A stored receipt or document (attachment id).
     pub attachment_id: Option<u64>,
+    /// A fixed asset, by tag or id.
+    pub asset: Option<String>,
     /// Search the transactions list (description, account, vendor, amount).
     pub search: Option<String>,
     /// A page: overview, cash, profit, transactions, reports, accounts,
-    /// documents, company, journal.
+    /// assets, documents, company, journal.
     pub page: Option<String>,
     /// For account and report: first date, YYYY-MM-DD.
     pub start: Option<String>,
@@ -1504,6 +1506,15 @@ pub struct RegisterAssetParams {
     pub accum_depr_account: String,
     /// Depreciation expense account, id or code.
     pub expense_account: String,
+    /// The asset tag for its label (letters, digits, - _ . /; at most 32).
+    /// Omit to generate the next one ("FL-0001", from `[books]
+    /// asset_tag_prefix` or the company's initials).
+    pub tag: Option<String>,
+    /// The manufacturer's serial number, if known.
+    pub serial: Option<String>,
+    /// The posted entry that put it on the books (its purchase, or a
+    /// member's contribution of it); it must debit the cost account.
+    pub acquisition_entry: Option<u64>,
 }
 
 /// Result of `books.register_asset`.
@@ -1511,6 +1522,61 @@ pub struct RegisterAssetParams {
 pub struct RegisterAssetOut {
     /// The new asset's id.
     pub asset_id: u64,
+    /// Its tag (given or generated).
+    pub tag: String,
+}
+
+/// Parameters for `books.label_asset`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct LabelAssetParams {
+    /// The asset: its id or its current tag.
+    pub asset: String,
+    /// A new tag (never another asset's, now or before). Omit to keep it.
+    pub tag: Option<String>,
+    /// The manufacturer's serial number. Omit to keep it.
+    pub serial: Option<String>,
+    /// True to clear the serial number.
+    pub clear_serial: Option<bool>,
+    /// Link the posted entry that put it on the books (purchase or
+    /// contribution; it must debit the asset's cost account and not be
+    /// reversed). Use after correcting that entry, to link the replacement.
+    pub acquisition_entry: Option<u64>,
+}
+
+/// Result of `books.label_asset`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct LabelAssetOut {
+    /// Asset id.
+    pub asset_id: u64,
+    /// Its tag now.
+    pub tag: Option<String>,
+    /// Its serial number now.
+    pub serial: Option<String>,
+    /// The entry that acquired it, if linked.
+    pub acquisition_entry: Option<u64>,
+}
+
+/// Parameters for `books.asset_labels`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AssetLabelsParams {
+    /// The assets to print (ids or tags), in order. Omit for every active
+    /// asset with a tag.
+    pub assets: Option<Vec<String>>,
+    /// Label positions to skip on the first sheet, to reuse a partly used
+    /// one (0 to 29). Default 0.
+    pub skip: Option<u32>,
+}
+
+/// Result of `books.asset_labels`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct AssetLabelsOut {
+    /// A file name for the sheet.
+    pub file_name: String,
+    /// The label sheet as PDF, base64. Avery 5160/8160 (US letter, 30
+    /// labels of 1" x 2-5/8"); print at 100% scale, not "fit to page".
+    pub content_base64: String,
+    /// The tags printed, in order.
+    pub tags: Vec<String>,
 }
 
 /// One month of a depreciation schedule.
@@ -1529,8 +1595,10 @@ pub struct ScheduleLineOut {
 /// Parameters for `books.asset_schedule`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AssetScheduleParams {
-    /// Asset id.
-    pub asset_id: u64,
+    /// Asset id (or pass `tag`).
+    pub asset_id: Option<u64>,
+    /// The asset's tag, instead of its id.
+    pub tag: Option<String>,
     /// Run the schedule through this date, YYYY-MM-DD. Defaults to the end
     /// of the asset's depreciable life.
     pub through: Option<String>,
@@ -1560,6 +1628,12 @@ pub struct AssetScheduleOut {
 pub struct AssetSummary {
     /// Asset id.
     pub asset_id: u64,
+    /// Its tag, if it has one.
+    pub tag: Option<String>,
+    /// Its serial number, if recorded.
+    pub serial: Option<String>,
+    /// The entry that acquired it, if linked.
+    pub acquisition_entry: Option<u64>,
     /// Asset description.
     pub description: String,
     /// Purchase date, YYYY-MM-DD.
@@ -1633,8 +1707,10 @@ pub struct SkippedDepreciation {
 /// Parameters for `books.dispose_asset`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DisposeAssetParams {
-    /// Asset id.
-    pub asset_id: u64,
+    /// Asset id (or pass `tag`).
+    pub asset_id: Option<u64>,
+    /// The asset's tag, instead of its id.
+    pub tag: Option<String>,
     /// Disposal date, YYYY-MM-DD.
     pub date: String,
     /// Cash (or receivable) received, decimal string.

@@ -54,7 +54,7 @@ use rust_decimal::Decimal;
 use std::sync::{Arc, Mutex};
 
 /// The agent operating contract, delivered via initialize.
-const INSTRUCTIONS: &str = "You are the bookkeeping agent for these books. The engine enforces the accounting; you enforce the workflow.\n\nRULES\n- Money is exact decimal. Always pass amounts as decimal strings (\"123.45\"), never floats.\n- Never post directly. The flow is draft (books.draft_entry) -> add lines (books.add_line) -> preview (books.post_entry without confirmed) -> review the preview -> post (books.post_entry with confirmed=true).\n- Every entry must balance: debits equal credits, exactly. Every line needs a real account from books.chart. The engine rejects anything else.\n- Receipts: any entry moving more than $25.00 in debits needs at least one receipt attached (books.attach_receipt) before posting. The server rejects the post otherwise. This is enforced, not a suggestion.\n- Never invent accounts. If the account you need does not exist, add it with books.add_account first.\n- Corrections go through books.reverse_entry. Posted entries are immutable; there is no edit.\n- Receipt corrections: receipts can change, but nothing is erased. To replace one, attach the new receipt, then books.unlink_receipt the old (with a reason); retire unwanted receipts or documents with books.withdraw_attachment (with a reason). The journal keeps every step.\n- After posting, check books.digest to review what changed, so a human can review too.\n- Amounts in every response are decimal strings. Treat them as exact.\n- Fixed assets: register with books.register_asset, inspect with books.asset_schedule and books.list_assets, post monthly depreciation with books.run_depreciation (exempt from the receipt policy; the schedule is the evidence), and dispose with books.dispose_asset (preview first; the bill of sale is the receipt). Depreciation is straight-line, book basis only - tax depreciation stays with the CPA.\n- Prepaid expenses and deferred revenue: record the original payment (with its receipt), then books.create_schedule; books.run_schedules posts the monthly amortization (preview first; exempt from the receipt policy like depreciation). Recurring entries (books.create_recurring, books.run_recurring) only ever create drafts: attach each actual receipt and post through the normal preview.\n- Platform payouts (app stores, payment processors, marketplaces): never book the net deposit as revenue. books.record_payout grosses it up (gross revenue, fees, adjustments) into a draft and refuses unless it reconciles to the cent; attach the payout statement, then preview and post.\n- The viewer: the human usually has the read-only viewer open beside you (`just gui`). When they ask to see something, and after you post, call books.show so it's on their screen.\n- 1099s: mark contractors and landlords with books.set_vendor_1099 (and whether their W-9 is on file; never store a TIN), and tag every payment to them with its vendor (books.draft_entry vendor, or books.set_entry_vendor; books.pay_bill tags automatically). books.vendor_1099 is the year-end worksheet for the CPA.\n- Rules that change with the law: wanderbooks knows some legal amounts (like the 1099 threshold) only through a given year and never guesses past it. When a tool refuses with \"wanderbooks knows the ... only through\", or books.digest lists stale_rules: check today's date, find the current figure from the official source (the refusal names the vendored source file) or ask the human (owner, CPA), confirm it with them, and pass it explicitly. Then update the rule for everyone: open a pull request at https://github.com/swaits/wanderbooks with the new value and its official text (best), or at least an issue; if you can't reach GitHub, give the human the issue text to file.\n- Control roles: invoices, bills, payroll, and closes post to the account filling each role (receivables, revenue, payables, general expense, retained earnings, payroll expense and withholdings); books.roles lists them. A role uses its default code (1200, 4000, 2000, 6999, 3999, 6100, 6110, 2110-2150) until it is assigned one of the chart's own accounts with books.assign_role (journaled). If the chart uses a default code for a different kind of account, the engine refuses and says which. It can't tell an account of the right type but another purpose (a hosting expense at payroll's 6100): check books.roles before running payroll, bills, or invoices. Never assign roles or renumber the human's accounts on your own: explain the conflict, and when they decide, assign the role to their account (best: their numbering stays) or books.renumber_account the account (its history stays).\n- Settings: wanderbooks.toml beside the books holds the company's facts and settings (name, fiscal year, tax form, members and their capital accounts, basis, receipt threshold, cash flow roles, close target); books.settings shows what is in force and lists problems, settings that disagree with the chart. Edit the file when the human tells you a company fact, when a tool refuses naming a wanderbooks.toml setting, when books.settings or books.digest lists a settings problem, and after books.renumber_account lists config_mentions. The server reloads the file whenever it changes, with no restart: after each edit, call books.settings and check reload_error is null (a broken edit leaves the last good settings in force) and problems is empty. Never put a member's SSN or any TIN in it.";
+const INSTRUCTIONS: &str = "You are the bookkeeping agent for these books. The engine enforces the accounting; you enforce the workflow.\n\nRULES\n- Money is exact decimal. Always pass amounts as decimal strings (\"123.45\"), never floats.\n- Never post directly. The flow is draft (books.draft_entry) -> add lines (books.add_line) -> preview (books.post_entry without confirmed) -> review the preview -> post (books.post_entry with confirmed=true).\n- Every entry must balance: debits equal credits, exactly. Every line needs a real account from books.chart. The engine rejects anything else.\n- Receipts: any entry moving more than $25.00 in debits needs at least one receipt attached (books.attach_receipt) before posting. The server rejects the post otherwise. This is enforced, not a suggestion.\n- Never invent accounts. If the account you need does not exist, add it with books.add_account first.\n- Corrections go through books.reverse_entry. Posted entries are immutable; there is no edit.\n- Receipt corrections: receipts can change, but nothing is erased. To replace one, attach the new receipt, then books.unlink_receipt the old (with a reason); retire unwanted receipts or documents with books.withdraw_attachment (with a reason). The journal keeps every step.\n- After posting, check books.digest to review what changed, so a human can review too.\n- Amounts in every response are decimal strings. Treat them as exact.\n- Fixed assets: register with books.register_asset, inspect with books.asset_schedule and books.list_assets, post monthly depreciation with books.run_depreciation (exempt from the receipt policy; the schedule is the evidence), and dispose with books.dispose_asset (preview first; the bill of sale is the receipt). Depreciation is straight-line, book basis only - tax depreciation stays with the CPA. Every asset gets a tag for the label on the thing itself (books.register_asset generates the next one, like FL-0001, unless the human has their own); record the manufacturer's serial number too, change either with books.label_asset, and print label sheets with books.asset_labels (save the PDF; print at 100% on Avery 5160/8160). Asset tools take the tag in place of the id. books.export fixed_asset_register is the register for the CPA; books.show asset opens one in the viewer.\n- Prepaid expenses and deferred revenue: record the original payment (with its receipt), then books.create_schedule; books.run_schedules posts the monthly amortization (preview first; exempt from the receipt policy like depreciation). Recurring entries (books.create_recurring, books.run_recurring) only ever create drafts: attach each actual receipt and post through the normal preview.\n- Platform payouts (app stores, payment processors, marketplaces): never book the net deposit as revenue. books.record_payout grosses it up (gross revenue, fees, adjustments) into a draft and refuses unless it reconciles to the cent; attach the payout statement, then preview and post.\n- The viewer: the human usually has the read-only viewer open beside you (`just gui`). When they ask to see something, and after you post, call books.show so it's on their screen.\n- 1099s: mark contractors and landlords with books.set_vendor_1099 (and whether their W-9 is on file; never store a TIN), and tag every payment to them with its vendor (books.draft_entry vendor, or books.set_entry_vendor; books.pay_bill tags automatically). books.vendor_1099 is the year-end worksheet for the CPA.\n- Rules that change with the law: wanderbooks knows some legal amounts (like the 1099 threshold) only through a given year and never guesses past it. When a tool refuses with \"wanderbooks knows the ... only through\", or books.digest lists stale_rules: check today's date, find the current figure from the official source (the refusal names the vendored source file) or ask the human (owner, CPA), confirm it with them, and pass it explicitly. Then update the rule for everyone: open a pull request at https://github.com/swaits/wanderbooks with the new value and its official text (best), or at least an issue; if you can't reach GitHub, give the human the issue text to file.\n- Control roles: invoices, bills, payroll, and closes post to the account filling each role (receivables, revenue, payables, general expense, retained earnings, payroll expense and withholdings); books.roles lists them. A role uses its default code (1200, 4000, 2000, 6999, 3999, 6100, 6110, 2110-2150) until it is assigned one of the chart's own accounts with books.assign_role (journaled). If the chart uses a default code for a different kind of account, the engine refuses and says which. It can't tell an account of the right type but another purpose (a hosting expense at payroll's 6100): check books.roles before running payroll, bills, or invoices. Never assign roles or renumber the human's accounts on your own: explain the conflict, and when they decide, assign the role to their account (best: their numbering stays) or books.renumber_account the account (its history stays).\n- Settings: wanderbooks.toml beside the books holds the company's facts and settings (name, fiscal year, tax form, members and their capital accounts, basis, receipt threshold, cash flow roles, close target); books.settings shows what is in force and lists problems, settings that disagree with the chart. Edit the file when the human tells you a company fact, when a tool refuses naming a wanderbooks.toml setting, when books.settings or books.digest lists a settings problem, and after books.renumber_account lists config_mentions. The server reloads the file whenever it changes, with no restart: after each edit, call books.settings and check reload_error is null (a broken edit leaves the last good settings in force) and problems is empty. Never put a member's SSN or any TIN in it.";
 
 /// Max receipt/document upload: 25 MB.
 const MAX_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
@@ -465,6 +465,36 @@ fn settings_problems(ledger: &Ledger, cfg: &Settings) -> Vec<String> {
         check("[books] close_sweep", code, &[Equity]);
     }
     out
+}
+
+/// An asset named by id or by tag (exactly one).
+fn resolve_asset(store: &Store, id: Option<u64>, tag: Option<&str>) -> Result<u64, String> {
+    match (id, tag) {
+        (Some(id), None) => store
+            .ledger()
+            .get_asset(id)
+            .map(|a| a.id)
+            .ok_or_else(|| format!("unknown asset {id}")),
+        (None, Some(tag)) => store
+            .ledger()
+            .asset_by_tag(tag)
+            .map(|a| a.id)
+            .ok_or_else(|| format!("no asset is tagged {tag:?}")),
+        _ => Err("name the asset by asset_id or by tag (one of them)".into()),
+    }
+}
+
+/// An asset named by a string that is its current tag or its id. A tag
+/// wins: tags like "1001" are allowed, and the label is what the human
+/// reads.
+fn resolve_asset_ref(store: &Store, r: &str) -> Result<u64, String> {
+    if let Some(a) = store.ledger().asset_by_tag(r) {
+        return Ok(a.id);
+    }
+    match r.parse::<u64>() {
+        Ok(id) if store.ledger().get_asset(id).is_some() => Ok(id),
+        _ => Err(format!("no asset has the tag or id {r:?}")),
+    }
 }
 
 /// Every control role and the account filling it, for books.roles.
@@ -1601,7 +1631,7 @@ impl BooksServer {
 
     #[tool(
         name = "books.show",
-        description = "Show something in the human's viewer (the read-only desktop app, `just gui`): an entry (with its lines, receipt, and history), an account's register (optionally for start/end dates), a report (optionally for start/end dates, split into month/quarter/year columns, compared with the prior period or prior year), a stored receipt or document, a search of the transactions, or a page. Give exactly one target; work out dates yourself (\"last quarter\" means its first and last day). Use it whenever the human asks to see something, and after posting so they can look at what you did. Changes nothing in the books.",
+        description = "Show something in the human's viewer (the read-only desktop app, `just gui`): an entry (with its lines, receipt, and history), an account's register (optionally for start/end dates), a report (optionally for start/end dates, split into month/quarter/year columns, compared with the prior period or prior year), a stored receipt or document, a fixed asset (by tag or id), a search of the transactions, or a page. Give exactly one target; work out dates yourself (\"last quarter\" means its first and last day). Use it whenever the human asks to see something, and after posting so they can look at what you did. Changes nothing in the books.",
         annotations(read_only_hint = true)
     )]
     async fn show(&self, params: Parameters<ShowParams>) -> Result<Json<ShowOut>, String> {
@@ -1614,6 +1644,7 @@ impl BooksServer {
             p.account.is_some(),
             p.report.is_some(),
             p.attachment_id.is_some(),
+            p.asset.is_some(),
             p.search.is_some(),
             p.page.is_some(),
         ]
@@ -1622,13 +1653,14 @@ impl BooksServer {
         .count();
         if given != 1 {
             return Err(
-                "give exactly one of entry_id, account, report, attachment_id, search, page".into(),
+                "give exactly one of entry_id, account, report, attachment_id, asset, search, page"
+                    .into(),
             );
         }
         for d in [&p.start, &p.end].into_iter().flatten() {
             parse_date(d)?;
         }
-        const REPORTS: [&str; 10] = [
+        const REPORTS: [&str; 11] = [
             "profit_and_loss",
             "balance_sheet",
             "cash_flow",
@@ -1639,19 +1671,35 @@ impl BooksServer {
             "vendor_1099",
             "ar_aging",
             "ap_aging",
+            "fixed_asset_register",
         ];
-        const PAGES: [&str; 9] = [
+        const PAGES: [&str; 10] = [
             "overview",
             "cash",
             "profit",
             "transactions",
             "reports",
             "accounts",
+            "assets",
             "documents",
             "company",
             "journal",
         ];
-        let (target, shown) = if let Some(id) = p.entry_id {
+        let (target, shown) = if let Some(r) = &p.asset {
+            let id = resolve_asset_ref(&store, r)?;
+            let a = ledger.get_asset(id).expect("resolved");
+            (
+                ViewerTarget::Asset { asset_id: id },
+                format!(
+                    "asset {}{}",
+                    a.tag
+                        .as_deref()
+                        .map(|t| format!("{t}, "))
+                        .unwrap_or_default(),
+                    a.description
+                ),
+            )
+        } else if let Some(id) = p.entry_id {
             let e = ledger
                 .get_entry(id)
                 .ok_or_else(|| format!("unknown entry {id}"))?;
@@ -2512,6 +2560,123 @@ impl BooksServer {
     }
 
     #[tool(
+        name = "books.label_asset",
+        description = "Link a fixed asset to the entry that acquired it (acquisition_entry), or set or change its tag (the label on the thing: letters, digits, - _ . /, at most 32; unique ignoring case and never reused by another asset, even after a retag or disposal) and its manufacturer serial number. The asset is its id or current tag. Journaled. Print labels with books.asset_labels."
+    )]
+    async fn label_asset(
+        &self,
+        params: Parameters<LabelAssetParams>,
+    ) -> Result<Json<LabelAssetOut>, String> {
+        let p = params.0;
+        let mut store = self.lock()?;
+        let id = resolve_asset_ref(&store, &p.asset)?;
+        let clear = p.clear_serial.unwrap_or(false);
+        if clear && p.serial.is_some() {
+            return Err("pass serial or clear_serial, not both".into());
+        }
+        if p.tag.is_none() && p.serial.is_none() && !clear && p.acquisition_entry.is_none() {
+            return Err(
+                "nothing to change: pass tag, serial, clear_serial, or acquisition_entry".into(),
+            );
+        }
+        if let Some(entry) = p.acquisition_entry {
+            store
+                .ledger()
+                .check_asset_acquisition(id, entry)
+                .map_err(|e| e.to_string())?;
+        }
+        // Both checked first, so a bad serial doesn't leave a new tag behind.
+        if let Some(tag) = &p.tag {
+            store
+                .ledger()
+                .check_asset_tag_for(Some(id), tag)
+                .map_err(|e| e.to_string())?;
+        }
+        let serial = if clear { None } else { p.serial.as_deref() };
+        if p.serial.is_some() || clear {
+            store
+                .ledger()
+                .check_asset_serial(id, serial)
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(tag) = &p.tag {
+            store.set_asset_tag(id, tag).map_err(|e| e.to_string())?;
+        }
+        if p.serial.is_some() || clear {
+            store
+                .set_asset_serial(id, serial)
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(entry) = p.acquisition_entry {
+            store
+                .set_asset_acquisition(id, entry)
+                .map_err(|e| e.to_string())?;
+        }
+        let a = store.ledger().get_asset(id).expect("resolved");
+        Ok(Json(LabelAssetOut {
+            asset_id: id,
+            tag: a.tag.clone(),
+            serial: a.serial.clone(),
+            acquisition_entry: a.acquired_by,
+        }))
+    }
+
+    #[tool(
+        name = "books.asset_labels",
+        description = "A printable sheet of asset labels (PDF, base64): each label shows the company, the tag, a QR code of the tag, the description, and the serial number. Avery 5160/8160 (US letter, 30 labels of 1\" x 2-5/8\"); skip reuses a partly used sheet. Omit assets for every active asset with a tag. Save the file and tell the human to print at 100% scale.",
+        annotations(read_only_hint = true)
+    )]
+    async fn asset_labels(
+        &self,
+        params: Parameters<AssetLabelsParams>,
+    ) -> Result<Json<AssetLabelsOut>, String> {
+        use base64::Engine as _;
+        let p = params.0;
+        let store = self.lock()?;
+        let ledger = store.ledger();
+        let assets: Vec<&ledger_core::Asset> = match &p.assets {
+            Some(refs) => refs
+                .iter()
+                .map(|r| {
+                    let id = resolve_asset_ref(&store, r)?;
+                    Ok(ledger.get_asset(id).expect("resolved"))
+                })
+                .collect::<Result<_, String>>()?,
+            None => ledger
+                .registered_assets()
+                .filter(|a| a.status == ledger_core::AssetStatus::Active && a.tag.is_some())
+                .collect(),
+        };
+        let labels = assets
+            .iter()
+            .map(|a| {
+                Ok(ledger_import::AssetLabel {
+                    tag: a.tag.clone().ok_or_else(|| {
+                        format!(
+                            "asset {} has no tag: give it one with books.label_asset first",
+                            a.id
+                        )
+                    })?,
+                    description: a.description.clone(),
+                    serial: a.serial.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let pdf = ledger_import::asset_labels_pdf(
+            &labels,
+            &self.settings().company.name,
+            ledger_import::LabelSheet::Avery5160,
+            p.skip.unwrap_or(0) as usize,
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(Json(AssetLabelsOut {
+            file_name: format!("asset-labels-{}.pdf", today()),
+            content_base64: base64::engine::general_purpose::STANDARD.encode(pdf),
+            tags: labels.into_iter().map(|l| l.tag).collect(),
+        }))
+    }
+
+    #[tool(
         name = "books.settings",
         description = "The settings in force from wanderbooks.toml (company, fiscal year, tax form, members, basis, receipt rule, cash flow roles, close target), the file they come from, and problems: settings that disagree with the chart, each saying what to change. The server reloads the file whenever it changes, with no restart; after editing it, call this to confirm the edit loaded (reload_error says why one didn't, and the last good settings stay in force).",
         annotations(read_only_hint = true)
@@ -2764,7 +2929,7 @@ impl BooksServer {
 
     #[tool(
         name = "books.export",
-        description = "Export a report. Reports: profit_and_loss, balance_sheet, cash_flow (needs cash_accounts), trial_balance (as_of), members_equity (multi-member LLC; members from wanderbooks.toml), general_ledger (by account: running balances, splits), general_journal (every entry in date order; alias journal). Formats: pdf and xlsx (base64) for the five statements; xlsx, csv, json for every report; iif for general_journal (QuickBooks Desktop). Dates: start/end for period reports (start defaults to the first entry, end to today), as_of for balance_sheet and trial_balance.",
+        description = "Export a report. Reports: profit_and_loss, balance_sheet, cash_flow (needs cash_accounts), trial_balance (as_of), members_equity (multi-member LLC; members from wanderbooks.toml), general_ledger (by account: running balances, splits), general_journal (every entry in date order; alias journal), fixed_asset_register (as_of: every asset with tag, serial, cost, depreciation, book value, reconciled to the books). Formats: pdf and xlsx (base64) for the five statements and fixed_asset_register; xlsx, csv, json for every report; iif for general_journal (QuickBooks Desktop). Dates: start/end for period reports (start defaults to the first entry, end to today), as_of for balance_sheet, trial_balance, and fixed_asset_register.",
         annotations(read_only_hint = true)
     )]
     async fn export(&self, params: Parameters<ExportParams>) -> Result<Json<ExportOut>, String> {
@@ -2811,9 +2976,12 @@ impl BooksServer {
             "profit_and_loss" => self.export_pnl(&format, p.start.as_deref(), p.end.as_deref())?,
             "balance_sheet" => self.export_balance_sheet(&format, p.as_of.as_deref())?,
             "cash_flow" => self.export_cash_flow(&format, &p)?,
+            "fixed_asset_register" => {
+                self.export_fixed_asset_register(&format, p.as_of.as_deref())?
+            }
             _ => {
                 return Err(format!(
-                    "bad report {:?}: expected general_journal, general_ledger, trial_balance, profit_and_loss, balance_sheet, cash_flow, members_equity, or tax_summary",
+                    "bad report {:?}: expected general_journal, general_ledger, trial_balance, profit_and_loss, balance_sheet, cash_flow, members_equity, tax_summary, or fixed_asset_register",
                     p.report
                 ));
             }
@@ -2893,6 +3061,14 @@ impl BooksServer {
         let store = self.lock()?;
         let meta = self.report_meta(&store);
         let ledger = store.ledger();
+        if report == "fixed_asset_register" {
+            let as_of = match p.as_of.as_deref() {
+                Some(s) => parse_date(s)?,
+                None => today(),
+            };
+            let r = ledger_core::fixed_asset_register(ledger, as_of);
+            return ledger_import::asset_register_xlsx(&r, &meta).map_err(|e| e.to_string());
+        }
         let xlsx = |r: XlsxReport<'_>| report_to_xlsx(&r, &meta).map_err(|e| e.to_string());
         match report {
             "general_ledger" => {
@@ -2918,6 +3094,14 @@ impl BooksServer {
         }
         let store = self.lock()?;
         let meta = self.report_meta(&store);
+        if report == "fixed_asset_register" {
+            let as_of = match p.as_of.as_deref() {
+                Some(s) => parse_date(s)?,
+                None => today(),
+            };
+            let r = ledger_core::fixed_asset_register(store.ledger(), as_of);
+            return ledger_import::asset_register_pdf(&r, &meta).map_err(|e| e.to_string());
+        }
         let st = self.layout_statement(store.ledger(), report, p)?;
         ledger_import::statement_pdf(&st, &meta).map_err(|e| e.to_string())
     }
@@ -2979,6 +3163,36 @@ impl BooksServer {
         let cost_account = resolve_account(&store, &p.cost_account)?;
         let accum_depr_account = resolve_account(&store, &p.accum_depr_account)?;
         let expense_account = resolve_account(&store, &p.expense_account)?;
+        let tag = match p.tag {
+            Some(t) => t,
+            None => store.ledger().next_asset_tag(self.settings().tag_prefix()),
+        };
+        // Checked before registering, so a bad tag or serial registers
+        // nothing.
+        store
+            .ledger()
+            .check_asset_tag_for(None, &tag)
+            .map_err(|e| e.to_string())?;
+        if let Some(serial) = &p.serial {
+            ledger_core::assets::check_serial(serial)
+                .map_err(|why| format!("bad serial number: {why}"))?;
+        }
+        if let Some(entry) = p.acquisition_entry {
+            let e = store
+                .ledger()
+                .get_entry(entry)
+                .ok_or_else(|| format!("unknown entry {entry}"))?;
+            if !e
+                .lines()
+                .iter()
+                .any(|l| l.account == cost_account && l.side == Side::Debit)
+                || e.status() != ledger_core::EntryStatus::Posted
+            {
+                return Err(format!(
+                    "entry {entry} can't be the acquisition: it must be posted and debit the cost account"
+                ));
+            }
+        }
         let asset_id = store
             .register_asset(NewAsset {
                 description: p.description,
@@ -2994,7 +3208,20 @@ impl BooksServer {
                 expense_account,
             })
             .map_err(|e| e.to_string())?;
-        Ok(Json(RegisterAssetOut { asset_id }))
+        store
+            .set_asset_tag(asset_id, &tag)
+            .map_err(|e| e.to_string())?;
+        if let Some(serial) = &p.serial {
+            store
+                .set_asset_serial(asset_id, Some(serial))
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(entry) = p.acquisition_entry {
+            store
+                .set_asset_acquisition(asset_id, entry)
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(Json(RegisterAssetOut { asset_id, tag }))
     }
 
     #[tool(
@@ -3008,10 +3235,11 @@ impl BooksServer {
     ) -> Result<Json<AssetScheduleOut>, String> {
         let p = params.0;
         let store = self.lock()?;
+        let asset_id = resolve_asset(&store, p.asset_id, p.tag.as_deref())?;
         let asset = store
             .ledger()
-            .get_asset(p.asset_id)
-            .ok_or_else(|| format!("unknown asset {}", p.asset_id))?
+            .get_asset(asset_id)
+            .ok_or_else(|| format!("unknown asset {asset_id}"))?
             .clone();
         // The schedule clamps to the depreciation end internally, so an
         // unbounded default just means "the whole life".
@@ -3055,6 +3283,9 @@ impl BooksServer {
             .registered_assets()
             .map(|a| AssetSummary {
                 asset_id: a.id,
+                tag: a.tag.clone(),
+                serial: a.serial.clone(),
+                acquisition_entry: a.acquired_by,
                 description: a.description.clone(),
                 purchase_date: a.purchase_date.to_string(),
                 cost: money(a.cost.amount),
@@ -3150,13 +3381,14 @@ impl BooksServer {
         let proceeds = Money::new(parse_amount(&p.proceeds)?, base);
         let proceeds_account = resolve_account(&store, &p.proceeds_account)?;
         let gain_loss_account = resolve_account(&store, &p.gain_loss_account)?;
+        let asset_id = resolve_asset(&store, p.asset_id, p.tag.as_deref())?;
         let asset = store
             .ledger()
-            .get_asset(p.asset_id)
-            .ok_or_else(|| format!("unknown asset {}", p.asset_id))?
+            .get_asset(asset_id)
+            .ok_or_else(|| format!("unknown asset {asset_id}"))?
             .clone();
         let preview = store
-            .dispose_preview(p.asset_id, date, proceeds)
+            .dispose_preview(asset_id, date, proceeds)
             .map_err(|e| e.to_string())?;
 
         // The would-be disposal entry's lines, for the preview and the
@@ -3203,7 +3435,7 @@ impl BooksServer {
 
         let out = DisposeAssetOut {
             status: "preview".to_string(),
-            asset_id: p.asset_id,
+            asset_id,
             entry_id: 0,
             accumulated: money(preview.accumulated),
             book_value: money(preview.book_value),
@@ -3227,7 +3459,7 @@ impl BooksServer {
                     self.settings().policy.describe()
                 ),
                 entry_id: None,
-                asset_id: Some(p.asset_id),
+                asset_id: Some(asset_id),
                 debits: debits.to_string(),
                 policy: self.settings().policy.describe(),
                 remedy_tool: "books.file_document".to_string(),
@@ -3243,7 +3475,7 @@ impl BooksServer {
         }
         let entry_id = store
             .dispose_asset(
-                p.asset_id,
+                asset_id,
                 date,
                 proceeds,
                 proceeds_account,
@@ -3930,7 +4162,7 @@ impl BooksServer {
 
     #[tool(
         name = "books.export_cpa_package",
-        description = "Build the CPA handoff package as a zip (base64): the profit and loss, balance sheet, cash flow, statement of changes in members' equity (multi-member LLCs), tax summary, and trial balance, each as PDF and XLSX; the general ledger (by account) and general journal (entry by entry) as XLSX; the journal as IIF (imports into QuickBooks Desktop); the 1099 worksheet as CSV; every receipt behind the year's entries (receipts/, with an index.csv tying each file to its entry) and the company's documents (documents/), unless include_receipts is false; and a README with the journal's verified hash. cash_accounts (e.g. [\"1000\"]) is required: the cash flow statement reconciles to them. as_of defaults to today; period reports cover the fiscal year to date.",
+        description = "Build the CPA handoff package as a zip (base64): the profit and loss, balance sheet, cash flow, statement of changes in members' equity (multi-member LLCs), tax summary, and trial balance, each as PDF and XLSX; the fixed asset register as PDF and XLSX when there are fixed assets; the general ledger (by account) and general journal (entry by entry) as XLSX; the journal as IIF (imports into QuickBooks Desktop); the 1099 worksheet as CSV; every receipt behind the year's entries (receipts/, with an index.csv tying each file to its entry) and the company's documents (documents/), unless include_receipts is false; and a README with the journal's verified hash. cash_accounts (e.g. [\"1000\"]) is required: the cash flow statement reconciles to them. as_of defaults to today; period reports cover the fiscal year to date.",
         annotations(read_only_hint = true)
     )]
     async fn export_cpa_package(
@@ -4010,6 +4242,18 @@ impl BooksServer {
         for (name, st) in &statements {
             files.push((format!("{name}.pdf"), pdf(st)?));
             files.push((format!("{name}.xlsx"), xlsx(XlsxReport::Statement(st))?));
+        }
+        // The fixed asset register, when there are fixed assets.
+        if ledger.registered_assets().next().is_some() {
+            let r = ledger_core::fixed_asset_register(ledger, as_of);
+            files.push((
+                "fixed-asset-register.pdf".into(),
+                ledger_import::asset_register_pdf(&r, &meta).map_err(|e| e.to_string())?,
+            ));
+            files.push((
+                "fixed-asset-register.xlsx".into(),
+                ledger_import::asset_register_xlsx(&r, &meta).map_err(|e| e.to_string())?,
+            ));
         }
         // The books behind them: by account, and entry by entry.
         let gl = ledger_core::general_ledger(ledger, fy, as_of).map_err(|e| e.to_string())?;
@@ -4248,6 +4492,79 @@ impl BooksServer {
             "TOTAL,,{},{}",
             money(tb.total_debits),
             money(tb.total_credits)
+        ));
+        Ok(csv)
+    }
+
+    /// The fixed asset register (ledger_core::fixed_asset_register) as
+    /// JSON or CSV, reconciled to the books.
+    fn export_fixed_asset_register(
+        &self,
+        format: &str,
+        as_of: Option<&str>,
+    ) -> Result<String, String> {
+        let store = self.lock()?;
+        let as_of = match as_of {
+            Some(s) => parse_date(s)?,
+            None => today(),
+        };
+        let r = ledger_core::fixed_asset_register(store.ledger(), as_of);
+        // The same words as the XLSX and PDF register.
+        let status = |row: &ledger_core::AssetRegisterRow| match row.disposed {
+            Some((d, p)) => format!("Disposed {d}, proceeds {}", money(p)),
+            None => "Active".to_string(),
+        };
+        if format == "json" {
+            return serde_json::to_string_pretty(&serde_json::json!({
+                "as_of": as_of.to_string(),
+                "assets": r.rows.iter().map(|a| serde_json::json!({
+                    "asset_id": a.asset_id,
+                    "tag": a.tag,
+                    "description": a.description,
+                    "serial": a.serial,
+                    "in_service": a.in_service.to_string(),
+                    "cost": money(a.cost),
+                    "salvage": money(a.salvage),
+                    "useful_life_months": a.useful_life_months,
+                    "accumulated": money(a.accumulated),
+                    "book_value": money(a.book_value),
+                    "status": status(a),
+                    "proceeds": a.disposed.map(|(_, p)| money(p)),
+                })).collect::<Vec<_>>(),
+                "total_cost": money(r.total_cost),
+                "total_accumulated": money(r.total_accumulated),
+                "total_book_value": money(r.total_book_value),
+                "ledger_cost": money(r.ledger_cost),
+                "ledger_accumulated": money(r.ledger_accumulated),
+                "unposted_depreciation": money(r.unposted_depreciation()),
+                "unregistered_cost": money(r.unregistered_cost()),
+            }))
+            .map_err(|e| e.to_string());
+        }
+        let mut csv = String::from(
+            "tag,description,serial,in_service,cost,salvage,useful_life_months,accumulated,book_value,status,proceeds\n",
+        );
+        for a in &r.rows {
+            csv.push_str(&format!(
+                "{},{},{},{},{},{},{},{},{},{},{}\n",
+                csv_escape(a.tag.as_deref().unwrap_or("")),
+                csv_escape(&a.description),
+                csv_escape(a.serial.as_deref().unwrap_or("")),
+                a.in_service,
+                money(a.cost),
+                money(a.salvage),
+                a.useful_life_months,
+                money(a.accumulated),
+                money(a.book_value),
+                status(a),
+                a.disposed.map(|(_, p)| money(p)).unwrap_or_default(),
+            ));
+        }
+        csv.push_str(&format!(
+            "TOTAL,,,,{},,,{},{},,",
+            money(r.total_cost),
+            money(r.total_accumulated),
+            money(r.total_book_value)
         ));
         Ok(csv)
     }

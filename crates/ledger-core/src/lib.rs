@@ -61,11 +61,12 @@ pub use periods::{
     CloseTo, MemberClose, MemberCloseRecord, Period, PeriodId, PeriodStatus, RETAINED_EARNINGS_CODE,
 };
 pub use reports::{
-    BalanceSheet, BalanceSheetStatement, CashFlowLine, CashFlowParams, CashFlowStatement,
-    ClassProfitAndLoss, GeneralLedger, LedgerAccount, LedgerPosting, MemberCapital,
-    MemberEquityColumn, MembersEquityStatement, ProfitAndLoss, ProfitAndLossStatement,
-    StatementLine, TrialBalance, TrialBalanceLine, balance_sheet_as_of, cash_flow, general_ledger,
-    members_equity, profit_and_loss_for_period, trial_balance_as_of,
+    AssetRegister, AssetRegisterRow, BalanceSheet, BalanceSheetStatement, CashFlowLine,
+    CashFlowParams, CashFlowStatement, ClassProfitAndLoss, GeneralLedger, LedgerAccount,
+    LedgerPosting, MemberCapital, MemberEquityColumn, MembersEquityStatement, ProfitAndLoss,
+    ProfitAndLossStatement, StatementLine, TrialBalance, TrialBalanceLine, balance_sheet_as_of,
+    cash_flow, fixed_asset_register, general_ledger, members_equity, profit_and_loss_for_period,
+    trial_balance_as_of,
 };
 pub use schedules::{
     AmortizationSchedule, Frequency, NewRecurring, NewSchedule, RecurringEntry, RecurringId,

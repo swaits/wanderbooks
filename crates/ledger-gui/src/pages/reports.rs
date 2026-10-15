@@ -943,6 +943,119 @@ fn aging(rows: Vec<ledger_core::AgingRow>, as_of: NaiveDate) -> Table {
     t
 }
 
+/// The fixed asset register on `as_of`: ledger-core's
+/// `fixed_asset_register`, laid out, with its reconciliation to the
+/// general ledger and what that says (the Assets page's notices).
+fn asset_register(b: &Books, as_of: NaiveDate) -> Table {
+    let r = b.asset_register(as_of);
+    let mut t = Table::new(vec![
+        "Cost".into(),
+        "Accumulated".into(),
+        "Book value".into(),
+    ]);
+    if r.rows.is_empty() {
+        t.note(format!(
+            "No fixed asset was in service by {}.",
+            fmt::date(as_of)
+        ));
+        return t;
+    }
+    t.section("Assets");
+    for x in &r.rows {
+        let label = match &x.tag {
+            Some(tag) => format!("{tag} · {}", x.description),
+            None => format!("{} (no tag)", x.description),
+        };
+        let mut detail = Vec::new();
+        if let Some(s) = &x.serial {
+            detail.push(format!("serial {s}"));
+        }
+        detail.push(format!("in service {}", fmt::date(x.in_service)));
+        detail.push(fmt::count(x.useful_life_months as usize, "month", "months"));
+        if !x.salvage.is_zero() {
+            detail.push(format!("salvage {}", fmt::dollars(x.salvage)));
+        }
+        let cells = match x.disposed {
+            Some(_) => {
+                detail.push(format!(
+                    "{}; cost {}",
+                    super::assets::status_text(x.disposed),
+                    fmt::dollars(x.cost)
+                ));
+                vec![Cell::none(), Cell::none(), Cell::none()]
+            }
+            None => vec![
+                Cell::of(x.cost),
+                Cell::of(x.accumulated),
+                Cell::of(x.book_value),
+            ],
+        };
+        t.rows.push(Row {
+            kind: Kind::Line,
+            label,
+            detail: detail.join(" · "),
+            cells,
+        });
+    }
+    t.row(
+        Kind::Grand,
+        "Total held",
+        vec![
+            Cell::of(r.total_cost),
+            Cell::of(r.total_accumulated),
+            Cell::of(r.total_book_value),
+        ],
+    );
+    t.section("Reconciliation to the books");
+    let start = b.kpis.first_entry.unwrap_or(as_of).min(as_of);
+    let held: Vec<_> = r
+        .rows
+        .iter()
+        .filter_map(|x| b.ledger.get_asset(x.asset_id))
+        .collect();
+    // One account behind a figure drills down to it.
+    let only = |ids: Vec<AccountId>| -> Option<Drill> {
+        let mut ids = ids;
+        ids.sort_unstable();
+        ids.dedup();
+        (ids.len() == 1).then(|| Drill {
+            account: ids[0],
+            start,
+            end: as_of,
+        })
+    };
+    let cost_drill = only(held.iter().map(|a| a.cost_account).collect());
+    let accum_drill = only(held.iter().map(|a| a.accum_depr_account).collect());
+    t.row(
+        Kind::Line,
+        "In the books",
+        vec![
+            Cell {
+                value: Some(r.ledger_cost),
+                drill: cost_drill,
+            },
+            Cell {
+                value: Some(r.ledger_accumulated),
+                drill: accum_drill,
+            },
+            Cell::of(r.ledger_cost - r.ledger_accumulated),
+        ],
+    );
+    t.row(
+        Kind::Subtotal,
+        "Register less books",
+        vec![
+            Cell::of(-r.unregistered_cost()),
+            Cell::of(r.unposted_depreciation()),
+            Cell::of(-r.unregistered_cost() - r.unposted_depreciation()),
+        ],
+    );
+    for n in super::assets::notices(b, &r) {
+        t.note(n.text);
+    }
+    t
+}
+
 // ----------------------------------------------------------------------
 // The page.
 
@@ -959,7 +1072,11 @@ const GROUPS: [(&str, &[ReportKind]); 3] = [
     ),
     (
         "Ledgers",
-        &[ReportKind::TrialBalance, ReportKind::GeneralLedger],
+        &[
+            ReportKind::TrialBalance,
+            ReportKind::GeneralLedger,
+            ReportKind::FixedAssetRegister,
+        ],
     ),
     (
         "Tax and aging",
@@ -1042,7 +1159,10 @@ fn report(ui: &mut Ui, b: &Books, kind: ReportKind, shell: &mut Shell<'_>, picke
     let p = pal(ui.ctx());
     let point_in_time = matches!(
         kind,
-        ReportKind::TrialBalance | ReportKind::ArAging | ReportKind::ApAging
+        ReportKind::TrialBalance
+            | ReportKind::ArAging
+            | ReportKind::ApAging
+            | ReportKind::FixedAssetRegister
     ) || (kind == ReportKind::BalanceSheet
         && shell.state.reports.columns == Columns::Total);
     let splittable = matches!(
@@ -1231,6 +1351,7 @@ fn report(ui: &mut Ui, b: &Books, kind: ReportKind, shell: &mut Shell<'_>, picke
             Some(t)
         }
         ReportKind::TrialBalance => Some(trial_balance(b, e)),
+        ReportKind::FixedAssetRegister => Some(asset_register(b, e)),
         ReportKind::MembersEquity => Some(owners_equity(b, s, e)),
         ReportKind::TaxSummary => {
             let mut t = tax(b, s, e);
@@ -1922,6 +2043,7 @@ mod tests {
         tables.push(("equity", owners_equity(&b, s, e)));
         tables.push(("tax", tax(&b, s, e)));
         tables.push(("ar", aging(b.ledger.ar_aging(e), e)));
+        tables.push(("assets", asset_register(&b, e)));
         tables.push(("gl", gl_table(&general_ledger(&b.ledger, s, e).unwrap())));
         let keep = std::env::var_os("PDF_DIR").map(std::path::PathBuf::from);
         for (name, t) in tables {

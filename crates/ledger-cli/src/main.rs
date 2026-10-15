@@ -311,6 +311,11 @@ receipt_threshold = "25.00"
 # draws, distributions, dividends.
 # close_sweep = ["3100"]
 
+# The prefix of generated asset tags (the labels on equipment: FL-0001,
+# FL-0002, ...). Unset: the company name's initials, without LLC/Inc
+# ("Fernhill Labs LLC" -> FL); 1 to 8 letters or digits.
+# asset_tag_prefix = "FL"
+
 # Which accounts invoices, bills, payroll, and closes post to (receivables,
 # payables, revenue, payroll, retained earnings) is not set here: those
 # roles are part of the books, journaled with books.assign_role and listed

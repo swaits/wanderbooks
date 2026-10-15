@@ -1,6 +1,6 @@
 //! Where you are and how you got there: a browser-style history.
 
-use ledger_core::{AccountId, EntryId};
+use ledger_core::{AccountId, AssetId, EntryId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ReportKind {
@@ -14,16 +14,18 @@ pub enum ReportKind {
     ArAging,
     ApAging,
     Vendor1099,
+    FixedAssetRegister,
 }
 
 impl ReportKind {
-    pub const ALL: [ReportKind; 10] = [
+    pub const ALL: [ReportKind; 11] = [
         ReportKind::ProfitAndLoss,
         ReportKind::BalanceSheet,
         ReportKind::CashFlow,
         ReportKind::MembersEquity,
         ReportKind::TrialBalance,
         ReportKind::GeneralLedger,
+        ReportKind::FixedAssetRegister,
         ReportKind::TaxSummary,
         ReportKind::Vendor1099,
         ReportKind::ArAging,
@@ -42,6 +44,7 @@ impl ReportKind {
             ReportKind::ArAging => "Receivables aging",
             ReportKind::ApAging => "Payables aging",
             ReportKind::Vendor1099 => "1099 worksheet",
+            ReportKind::FixedAssetRegister => "Fixed asset register",
         }
     }
 }
@@ -56,6 +59,10 @@ pub enum Route {
     Reports(ReportKind),
     Accounts,
     Account(AccountId),
+    /// The fixed asset register.
+    Assets,
+    /// One fixed asset.
+    Asset(AssetId),
     Documents,
     Document(u64),
     Company,
@@ -73,6 +80,7 @@ impl Route {
             Route::Transactions | Route::Entry(_) => Section::Transactions,
             Route::Reports(_) => Section::Reports,
             Route::Accounts | Route::Account(_) => Section::Accounts,
+            Route::Assets | Route::Asset(_) => Section::Assets,
             Route::Documents | Route::Document(_) => Section::Documents,
             Route::Company => Section::Company,
             Route::Journal | Route::JournalEvent(_) => Section::Journal,
@@ -88,19 +96,21 @@ pub enum Section {
     Transactions,
     Reports,
     Accounts,
+    Assets,
     Documents,
     Company,
     Journal,
 }
 
 impl Section {
-    pub const ALL: [Section; 9] = [
+    pub const ALL: [Section; 10] = [
         Section::Overview,
         Section::Cash,
         Section::Profit,
         Section::Transactions,
         Section::Reports,
         Section::Accounts,
+        Section::Assets,
         Section::Documents,
         Section::Company,
         Section::Journal,
@@ -114,6 +124,7 @@ impl Section {
             Section::Transactions => "Transactions",
             Section::Reports => "Reports",
             Section::Accounts => "Accounts",
+            Section::Assets => "Assets",
             Section::Documents => "Documents",
             Section::Company => "Company",
             Section::Journal => "Journal",
@@ -129,6 +140,7 @@ impl Section {
             Section::Transactions => i::LIST_BULLETS,
             Section::Reports => i::FILE_TEXT,
             Section::Accounts => i::TREE_STRUCTURE,
+            Section::Assets => i::PACKAGE,
             Section::Documents => i::FILES,
             Section::Company => i::BUILDINGS,
             Section::Journal => i::SCROLL,
@@ -143,6 +155,7 @@ impl Section {
             Section::Transactions => Route::Transactions,
             Section::Reports => Route::Reports(ReportKind::ProfitAndLoss),
             Section::Accounts => Route::Accounts,
+            Section::Assets => Route::Assets,
             Section::Documents => Route::Documents,
             Section::Company => Route::Company,
             Section::Journal => Route::Journal,

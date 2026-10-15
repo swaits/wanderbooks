@@ -1755,6 +1755,17 @@ impl Store {
                 "lines": plan.iter().map(|(a, s, m)| plain_line_json(*a, *s, *m)).collect::<Vec<_>>(),
             }),
         )?);
+        // Name the entry as a remittance, as payroll.run names a run's
+        // (readers like the viewer tell it from a hand-made entry by this).
+        let total: Decimal = plan
+            .iter()
+            .filter(|(_, s, _)| *s == Side::Debit)
+            .map(|(_, _, m)| m.amount)
+            .sum();
+        journaled.push(self.append_journal(
+            "payroll.taxes_remitted",
+            json!({"entry_id": entry_id, "date": date.to_string(), "total": total.to_string()}),
+        )?);
         let live = self.ledger.remit_payroll_taxes(date, cash_account)?;
         debug_assert_eq!(live, entry_id, "id allocator diverged from journal");
         for line in &journaled {
@@ -3294,6 +3305,10 @@ pub(crate) fn replay_line_into_ledger(
         | "attachment.withdrawn" => {
             // Not accounting state; the projection records them.
         }
+        "payroll.taxes_remitted" => {
+            // Names the remittance entry (rebuilt by the entry events just
+            // before it) for readers; no ledger state of its own.
+        }
         "asset.registered" => {
             let want = get_u64(p, "id")?;
             let got = ledger.register_asset(NewAsset {
@@ -3757,6 +3772,9 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
                     ],
                 )?;
             }
+        }
+        "payroll.taxes_remitted" => {
+            // The entry was projected by its own events; this only names it.
         }
         "receipt.attached" | "document.filed" => {
             conn.execute(

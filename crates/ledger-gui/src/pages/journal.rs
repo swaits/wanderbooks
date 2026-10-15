@@ -251,6 +251,14 @@ pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
             "Payroll run".into(),
             entry_id.map(Route::Entry),
         ),
+        "payroll.taxes_remitted" => ev(
+            icon::BANK,
+            format!(
+                "Remitted payroll taxes ({})",
+                fmt::dollars(s(p, "total").parse().unwrap_or_default())
+            ),
+            entry_id.map(Route::Entry),
+        ),
         "line.cleared" => ev(
             icon::CHECK_SQUARE,
             format!("Cleared a line of #{}", entry_id.unwrap_or(0)),

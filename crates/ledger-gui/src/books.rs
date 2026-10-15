@@ -387,7 +387,7 @@ impl Books {
         &self.settings.company.name
     }
 
-    /// Cash balance at the end of each day it changed.
+    /// Cash balance at the end of each day a cash account moved.
     pub fn cash_history(&self) -> Vec<(NaiveDate, Decimal)> {
         balance_history(&self.ledger, &self.cash_accounts)
     }

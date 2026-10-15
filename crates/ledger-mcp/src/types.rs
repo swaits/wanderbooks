@@ -1537,6 +1537,9 @@ pub struct LabelAssetParams {
     pub serial: Option<String>,
     /// True to clear the serial number.
     pub clear_serial: Option<bool>,
+    /// A new description (what it is, as the register and label print it).
+    /// Omit to keep it.
+    pub description: Option<String>,
     /// Link the posted entry that put it on the books (purchase or
     /// contribution; it must debit the asset's cost account and not be
     /// reversed). Use after correcting that entry, to link the replacement.
@@ -1554,6 +1557,8 @@ pub struct LabelAssetOut {
     pub serial: Option<String>,
     /// The entry that acquired it, if linked.
     pub acquisition_entry: Option<u64>,
+    /// Its description now.
+    pub description: String,
 }
 
 /// Parameters for `books.asset_labels`.

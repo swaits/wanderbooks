@@ -725,6 +725,28 @@ impl Store {
         Ok(())
     }
 
+    /// Change an asset's description (see `Ledger::set_asset_description`).
+    /// Journaled as `asset.described`, with the description it had.
+    pub fn set_asset_description(
+        &mut self,
+        id: AssetId,
+        description: &str,
+    ) -> Result<(), StoreError> {
+        self.ledger.check_asset_description(id, description)?;
+        let previous = self
+            .ledger
+            .get_asset(id)
+            .map(|a| a.description.clone())
+            .unwrap_or_default();
+        let line = self.append_journal(
+            "asset.described",
+            json!({"asset_id": id, "description": description, "previous_description": previous}),
+        )?;
+        self.ledger.set_asset_description(id, description)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
     /// Link an asset to the entry that put it on the books (see
     /// `Ledger::set_asset_acquisition`). Journaled as
     /// `asset.acquisition_linked`.
@@ -3430,6 +3452,9 @@ pub(crate) fn replay_line_into_ledger(
         "asset.tagged" => {
             ledger.set_asset_tag(get_u64(p, "asset_id")?, get_str(p, "tag")?)?;
         }
+        "asset.described" => {
+            ledger.set_asset_description(get_u64(p, "asset_id")?, get_str(p, "description")?)?;
+        }
         "asset.acquisition_linked" => {
             ledger.set_asset_acquisition(get_u64(p, "asset_id")?, get_u64(p, "entry_id")?)?;
         }
@@ -3902,6 +3927,12 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
             conn.execute(
                 "INSERT INTO asset_tags_log(asset_id, tag) VALUES (?, ?)",
                 params![id, tag],
+            )?;
+        }
+        "asset.described" => {
+            conn.execute(
+                "UPDATE assets SET description = ? WHERE id = ?",
+                params![get_str(p, "description")?, get_u64(p, "asset_id")? as i64],
             )?;
         }
         "asset.acquisition_linked" => {

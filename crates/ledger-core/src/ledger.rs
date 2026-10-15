@@ -1620,6 +1620,42 @@ impl Ledger {
         }
     }
 
+    /// Change an asset's description (what it is, as the register and its
+    /// label print it). Its accounting doesn't change.
+    ///
+    /// ```text
+    /// GOAL: keep the register's words right when they go stale (a
+    ///       corrected entry, a better name).
+    /// SOURCE: DECISION (owner, 2026-10-15).
+    /// SCENARIOS:
+    ///   1. IF the asset is unknown, or the description is blank: SHOULD
+    ///      refuse, changing nothing.
+    /// ```
+    pub fn set_asset_description(
+        &mut self,
+        id: AssetId,
+        description: &str,
+    ) -> Result<(), LedgerError> {
+        self.check_asset_description(id, description)?;
+        self.assets.get_mut(&id).expect("checked").description = description.to_string();
+        Ok(())
+    }
+
+    /// The validation behind [`Self::set_asset_description`].
+    pub fn check_asset_description(
+        &self,
+        id: AssetId,
+        description: &str,
+    ) -> Result<(), LedgerError> {
+        if !self.assets.contains_key(&id) {
+            return Err(LedgerError::UnknownAsset(id));
+        }
+        if description.trim().is_empty() {
+            return Err(LedgerError::EmptyAssetDescription);
+        }
+        Ok(())
+    }
+
     /// The asset whose current tag is `tag`, ignoring case.
     pub fn asset_by_tag(&self, tag: &str) -> Option<&Asset> {
         let id = self.asset_tags.get(&assets::tag_key(tag))?;

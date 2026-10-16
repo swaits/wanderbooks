@@ -583,8 +583,25 @@ asked): a refusal that quotes its input masks any TIN in it
 and a party text field refuses nine digits however they are separated
 (space, hyphen, dot, slash, underscore; `has_full_tin`). Files holding one (`books.get_w9`, `save_csv_to`, and the CPA
 package, whose K-1 and 1099 worksheets carry every member's and payee's
-TIN by default) are written only outside the books dir, and the package
-comes back only as its path. A locked vault or a missing TIN never fails
+TIN by default) are written only outside the books dir and outside the
+server's import folders (DECISION, P0 review, 2026-10-16: so none can be
+filed back in as a receipt and read out again), and the package comes
+back only as its path. No file holding a full TIN is filed into the books
+(DECISION, P0 review round 2, 2026-10-16): the server keeps, beside the
+vault, the SHA-256 of every file it read or wrote with full TINs (the W-9
+`books.set_w9` reads, recorded as it is read; each `books.get_w9` copy;
+a 1099 worksheet with TINs; a CPA package with TINs and each file in it
+that holds one), shared by every session and every later server for the
+books, and every way a file enters the books (`books.import_local_file`,
+`books.attach_receipt`, `books.file_document`) refuses those exact files,
+and refuses any text file (by its type or name, or because it decodes as
+UTF-8 or UTF-16) in which `has_full_tin` finds a TIN. What this can't
+catch: a changed copy of a binary file (a W-9 PDF re-saved or re-scanned),
+or a TIN in an image; `plan/served.md` P2 and P7 take the path tools and
+full TINs out of the agent's reach. The text scan reads nine digits with
+separators as a TIN, so a statement's text with a date run into an
+amount, or a long reference number, is refused too; such a file is filed
+as a PDF. A locked vault or a missing TIN never fails
 the package: it says which TINs are missing. `books.purge_tin` deletes a
 party's vault records and journals that it did.
 
@@ -597,12 +614,15 @@ records, records_held, purge_records); `ledger-mcp` `books.set_w9`,
 `books.set_tin`, `books.get_w9`, `books.purge_tin`, `books.vendor_1099`,
 `books.export_cpa_package` (open_vault refuses a key file in the books
 dir; outside_books for files with a TIN; vault_tin checks the vault
-against the books).
+against the books); `ledger-mcp` `tin_files` (the registry and the text
+scan, on every filing tool).
 **Checked:** `ledger-core` `tests/spec_parties.rs`; `ledger-store`
 `tests/parties.rs`; `ledger-vault` `tests/vault.rs`; `ledger-mcp`
 `tests/spec_parties.rs`, `tests/spec_vault.rs` (every response, the log,
 and every file in the books dir outside `vault/` scanned for the TINs in
-any formatting).
+any formatting), `tests/tin_files.rs`
+(`a_tin_bearing_file_is_refused_from_every_session_and_after_a_restart`),
+and the unit tests in `tin_files.rs`.
 
 ## B-27 The journal format gate: newer is not corrupt
 

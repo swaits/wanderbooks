@@ -173,8 +173,8 @@ pub fn detail(ui: &mut Ui, b: &Books, e: &EntryInfo, shell: &mut Shell<'_>) {
                     k(ui, "Amount");
                     widgets::copyable(
                         ui,
-                        RichText::new(fmt::dollars(e.amount)).font(theme::semibold(14.0)),
-                        &fmt::plain(&fmt::dollars(e.amount)).unwrap_or_default(),
+                        RichText::new(fmt::dollars_or(e.amount)).font(theme::semibold(14.0)),
+                        &fmt::plain(&fmt::dollars_or(e.amount)).unwrap_or_default(),
                     );
                     ui.end_row();
                     if let Some(c) = &created {
@@ -221,7 +221,9 @@ pub fn detail(ui: &mut Ui, b: &Books, e: &EntryInfo, shell: &mut Shell<'_>) {
                         widgets::amount_cell(ui, "Debit", amt_w, p.muted, false, false);
                         widgets::amount_cell(ui, "Credit", amt_w, p.muted, false, false);
                     });
-                    let (mut dr, mut cr) = (Decimal::ZERO, Decimal::ZERO);
+                    // None: past exact arithmetic (a draft line an earlier
+                    // version journaled, of any size: rules.md B-28).
+                    let (mut dr, mut cr) = (Some(Decimal::ZERO), Some(Decimal::ZERO));
                     for line in entry.lines() {
                         ui.horizontal(|ui| {
                             let w = ui.available_width() - amt_w * 2.0 - 16.0;
@@ -262,11 +264,11 @@ pub fn detail(ui: &mut Ui, b: &Books, e: &EntryInfo, shell: &mut Shell<'_>) {
                             let a = fmt::money(line.amount.amount);
                             let (d, c) = match line.side {
                                 Side::Debit => {
-                                    dr += line.amount.amount;
+                                    dr = dr.and_then(|t| t.checked_add(line.amount.amount));
                                     (a, String::new())
                                 }
                                 Side::Credit => {
-                                    cr += line.amount.amount;
+                                    cr = cr.and_then(|t| t.checked_add(line.amount.amount));
                                     (String::new(), a)
                                 }
                             };
@@ -277,21 +279,24 @@ pub fn detail(ui: &mut Ui, b: &Books, e: &EntryInfo, shell: &mut Shell<'_>) {
                     widgets::rule(ui);
                     ui.horizontal(|ui| {
                         let w = ui.available_width() - amt_w * 2.0 - 16.0;
-                        let balanced = dr == cr;
+                        let totalled = dr.is_some() && cr.is_some();
+                        let balanced = totalled && dr == cr;
                         let (r, _) = ui.allocate_exact_size(vec2(w, 22.0), egui::Sense::hover());
                         ui.painter().text(
                             r.left_center(),
                             egui::Align2::LEFT_CENTER,
                             if balanced {
                                 format!("{} Balanced", icon::CHECK)
-                            } else {
+                            } else if totalled {
                                 "Out of balance".into()
+                            } else {
+                                "Too large to total".into()
                             },
                             theme::regular(12.0),
                             if balanced { p.positive } else { p.negative },
                         );
-                        widgets::amount_cell(ui, &fmt::money(dr), amt_w, p.text, true, false);
-                        widgets::amount_cell(ui, &fmt::money(cr), amt_w, p.text, true, false);
+                        widgets::amount_cell(ui, &fmt::money_or(dr), amt_w, p.text, true, false);
+                        widgets::amount_cell(ui, &fmt::money_or(cr), amt_w, p.text, true, false);
                     });
                 });
             ui.add_space(18.0);
@@ -522,5 +527,52 @@ pub fn share_text(s: &crate::books::EntryParty) -> String {
             ledger_core::Share::Amount(a) => fmt::dollars(a),
             _ => String::new(),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{Build, d, find, old_books, render};
+
+    /// An entry's totals line: "Balanced" when its debits equal its
+    /// credits, "Out of balance" when they don't, "Too large to total"
+    /// when a side is past exact arithmetic (a draft an earlier version
+    /// journaled); its totals right-aligned under the lines' columns.
+    #[test]
+    fn an_entrys_totals_say_whether_it_balances() {
+        let mut b = Build::new("entry-totals");
+        let (cash, capital, rent) = (b.cash, b.capital, b.rent);
+        let _ = rent;
+        let posted = b.post(d(2026, 1, 2), cash, capital, 100_000);
+        let usd = |c: i64| ledger_core::Money::new(Decimal::new(c, 2), ledger_core::Currency::USD);
+        let (_dir, books) = b.books();
+        let (texts, p) = render(books, Route::Entry(posted), |_| {});
+        assert_eq!(
+            find(&texts, &format!("{} Balanced", icon::CHECK)).color,
+            p.positive
+        );
+        // Each column's amounts end at one edge: the lines' and the total's.
+        let mut edges: Vec<i32> = texts
+            .iter()
+            .filter(|t| t.text == fmt::money(Decimal::new(100_000, 2)))
+            .map(|t| (t.pos.x + t.width).round() as i32)
+            .collect();
+        assert_eq!(edges.len(), 4, "two lines and two totals");
+        edges.sort_unstable();
+        edges.dedup();
+        assert_eq!(edges.len(), 2, "two columns: {edges:?}");
+        let mut b = Build::new("entry-unbalanced");
+        let (cash, rent) = (b.cash, b.rent);
+        let draft = b.s.create_entry(d(2026, 3, 1), "half").unwrap();
+        b.s.add_line(draft, rent, Side::Debit, usd(1_000)).unwrap();
+        b.s.add_line(draft, cash, Side::Credit, usd(500)).unwrap();
+        let (_dir, books) = b.books();
+        let (texts, p) = render(books, Route::Entry(draft), |_| {});
+        assert_eq!(find(&texts, "Out of balance").color, p.negative);
+        // Its debits past exact arithmetic, its credits $1.00.
+        let (_dir, books) = old_books("x_draft_max_lines");
+        let (texts, p) = render(books, Route::Entry(1), |_| {});
+        assert_eq!(find(&texts, "Too large to total").color, p.negative);
     }
 }

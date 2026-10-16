@@ -158,7 +158,7 @@ fn an_unknown_year_threshold_is_never_guessed() {
         rule,
         year,
         known_through,
-        spec,
+        authority,
     } = &err
     else {
         panic!("expected RuleNotKnown, got {err:?}");
@@ -167,15 +167,20 @@ fn an_unknown_year_threshold_is_never_guessed() {
         (rule.as_str(), *year, *known_through),
         ("1099 reporting threshold", 2027, 2026)
     );
-    assert!(spec.ends_with("irs-1099-thresholds.md"), "{spec}");
+    assert!(authority.contains("https://www.irs.gov/"), "{authority}");
     let why = err.to_string();
     for needle in [
         "2027",
         "official source",
         "CPA",
-        "github.com/swaits/wanderbooks",
+        "irs.gov",
+        "tell the human",
     ] {
         assert!(why.contains(needle), "missing {needle:?} in: {why}");
+    }
+    // It reaches agents: it names the authority, never this repo.
+    for never in ["github", "pull request", "docs/", ".md"] {
+        assert!(!why.to_lowercase().contains(never), "{never:?} in: {why}");
     }
     let l = books();
     assert!(matches!(

@@ -113,7 +113,13 @@ pub fn balance_line(ui: &mut Ui, points: &[(NaiveDate, Decimal)], until: NaiveDa
     // X labels: first, last, and a few between.
     let n_labels = ((plot.width() / 90.0) as usize).clamp(1, 4);
     for i in 0..=n_labels {
-        let d = first + chrono::Days::new(((days * i as f64) / n_labels as f64).round() as u64);
+        // At most `last` (a one-day chart is one day wide, and its first day
+        // may be chrono's last).
+        let d = first
+            .checked_add_days(chrono::Days::new(
+                ((days * i as f64) / n_labels as f64).round() as u64,
+            ))
+            .map_or(last, |d| d.min(last));
         let align = match i {
             0 => Align2::LEFT_TOP,
             i if i == n_labels => Align2::RIGHT_TOP,
@@ -165,7 +171,9 @@ pub fn balance_line(ui: &mut Ui, points: &[(NaiveDate, Decimal)], until: NaiveDa
         && plot.x_range().contains(hp.x)
     {
         let frac = ((hp.x - plot.left()) / plot.width()) as f64;
-        let day = first + chrono::Days::new((frac * days).round() as u64);
+        let day = first
+            .checked_add_days(chrono::Days::new((frac * days).round() as u64))
+            .map_or(last, |d| d.min(last));
         let bal = points
             .iter()
             .take_while(|(d, _)| *d <= day)
@@ -417,4 +425,70 @@ pub fn sparkline(painter: &Painter, rect: Rect, values: &[f64], color: Color32) 
         })
         .collect();
     painter.add(Shape::line(pts, Stroke::new(1.5, color)));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui_kittest::Harness;
+
+    fn d(y: i32, m: u32, day: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, day).unwrap()
+    }
+
+    /// Every text a frame painted, with where it was painted.
+    fn painted(out: &egui::FullOutput) -> Vec<(String, egui::Pos2, f32)> {
+        fn walk(s: &egui::Shape, out: &mut Vec<(String, egui::Pos2, f32)>) {
+            match s {
+                egui::Shape::Text(t) => {
+                    out.push((t.galley.text().to_string(), t.pos, t.galley.size().x))
+                }
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        let mut texts = Vec::new();
+        for c in &out.shapes {
+            walk(&c.shape, &mut texts);
+        }
+        texts
+    }
+
+    /// charts::balance_line: the x axis is labeled with its first day, its
+    /// last, and days evenly between (rounded); hovering shows the balance on
+    /// the hovered day.
+    #[test]
+    fn the_balance_chart_labels_its_days_and_shows_the_hovered_one() {
+        let points = vec![
+            (d(2026, 1, 1), Decimal::new(10_000, 2)),
+            (d(2026, 1, 11), Decimal::new(5_000, 2)),
+        ];
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(800.0, 300.0))
+            .build_ui(move |ui| balance_line(ui, &points, d(2026, 1, 11), 200.0));
+        crate::theme::install_fonts(&h.ctx);
+        crate::theme::apply(&h.ctx, false);
+        h.run();
+        let texts = painted(h.output());
+        let labels: Vec<&str> = texts.iter().map(|(t, _, _)| t.as_str()).collect();
+        // Ten days, four gaps (the plot is wide): 0, 2.5, 5, 7.5, 10 rounded.
+        for want in ["Jan 1", "Jan 4", "Jan 6", "Jan 9", "Jan 11"] {
+            assert!(labels.contains(&want), "{want} not in {labels:?}");
+        }
+        // The plot runs from the first label's left edge to the last's right.
+        let (_, first, _) = texts.iter().find(|(t, _, _)| t == "Jan 1").unwrap();
+        let (_, last, w) = texts.iter().find(|(t, _, _)| t == "Jan 11").unwrap();
+        let (left, right) = (first.x, last.x + w);
+        for (frac, day) in [(0.3, d(2026, 1, 4)), (0.5, d(2026, 1, 6))] {
+            h.hover_at(egui::pos2(left + (right - left) * frac, first.y - 40.0));
+            h.run();
+            let texts = painted(h.output());
+            let want = crate::fmt::date(day);
+            assert!(
+                texts.iter().any(|(t, _, _)| *t == want),
+                "{want} not shown at {frac}: {:?}",
+                texts.iter().map(|(t, _, _)| t).collect::<Vec<_>>()
+            );
+        }
+    }
 }

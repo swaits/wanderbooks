@@ -1,0 +1,94 @@
+{
+  "assets": [],
+  "bills": [],
+  "entries": [
+    {
+      "date": "2026-03-01",
+      "description": "rent",
+      "id": 1,
+      "lines": [
+        {
+          "account": 3,
+          "amount": {
+            "amount": "10.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        },
+        {
+          "account": 1,
+          "amount": {
+            "amount": "10.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        }
+      ],
+      "reversal_of": null,
+      "status": "Posted"
+    }
+  ],
+  "entry_parties": [
+    [
+      1,
+      [
+        {
+          "party_id": 1,
+          "share": {
+            "amount": "2000000000000000.00"
+          }
+        }
+      ]
+    ]
+  ],
+  "invoices": [],
+  "payroll_runs": [],
+  "periods": [],
+  "recurring": [],
+  "schedules": [],
+  "snapshot": {
+    "Ok": {
+      "balance_sheet": {
+        "assets": "-10",
+        "balanced": true,
+        "current_earnings": "-10",
+        "equity": "-10",
+        "liabilities": "0"
+      },
+      "profit_and_loss": {
+        "expenses": "10",
+        "net_income": "-10",
+        "revenue": "0"
+      },
+      "trial_balance": {
+        "lines": [
+          {
+            "code": "1000",
+            "credit": "10",
+            "debit": "0",
+            "name": "Cash"
+          },
+          {
+            "code": "6000",
+            "credit": "0",
+            "debit": "10",
+            "name": "Rent"
+          }
+        ],
+        "total_credits": "10",
+        "total_debits": "10"
+      }
+    }
+  },
+  "verify": {
+    "Ok": null
+  }
+}

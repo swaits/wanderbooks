@@ -349,6 +349,25 @@ fn col_title(s: NaiveDate, e: NaiveDate, columns: Columns) -> String {
     }
 }
 
+/// The most columns a split report shows.
+const MAX_COLUMNS: i64 = 240;
+
+/// How many columns splitting `s..=e` by `columns` makes, when that is
+/// more than [`MAX_COLUMNS`]; counted from the months, before building
+/// any (a range across chrono's calendar is millions of months).
+fn too_many_columns(s: NaiveDate, e: NaiveDate, columns: Columns) -> Option<i64> {
+    let per = match columns {
+        Columns::Total => return None,
+        Columns::Month => 1,
+        Columns::Quarter => 3,
+        Columns::Year => 12,
+    };
+    let months = (i64::from(e.year()) - i64::from(s.year())) * 12 + i64::from(e.month())
+        - i64::from(s.month());
+    let n = months / per + 1;
+    (n > MAX_COLUMNS).then_some(n)
+}
+
 /// The column ranges for a range and split (with the prior period second
 /// when comparing a single column).
 fn column_ranges(st: &State, b: &Books) -> Vec<(NaiveDate, NaiveDate, String)> {
@@ -379,28 +398,25 @@ fn column_ranges(st: &State, b: &Books) -> Vec<(NaiveDate, NaiveDate, String)> {
     }
 }
 
+/// The period compared against, if any: None too when it falls before
+/// chrono's first day (a range from the books' first entry, which an
+/// earlier version may have dated there: rules.md B-28).
 fn prior(st: &State, s: NaiveDate, e: NaiveDate) -> Option<(NaiveDate, NaiveDate)> {
     match st.compare {
         Compare::None => None,
-        Compare::PriorYear => Some((s - Months::new(12), e - Months::new(12))),
+        Compare::PriorYear => Some((
+            s.checked_sub_months(Months::new(12))?,
+            e.checked_sub_months(Months::new(12))?,
+        )),
         Compare::PriorPeriod => {
             let days = (e - s).num_days() + 1;
-            let pe = s - Days::new(1);
-            Some((pe - Days::new(days as u64 - 1), pe))
+            let pe = s.checked_sub_days(Days::new(1))?;
+            Some((pe.checked_sub_days(Days::new(days as u64 - 1))?, pe))
         }
     }
 }
 
 type Cols = [(NaiveDate, NaiveDate, String)];
-
-fn to_jiff(d: NaiveDate) -> jiff::civil::Date {
-    jiff::civil::Date::new(d.year() as i16, d.month() as i8, d.day() as i8).expect("valid date")
-}
-
-fn from_jiff(d: jiff::civil::Date) -> NaiveDate {
-    NaiveDate::from_ymd_opt(i32::from(d.year()), d.month() as u32, d.day() as u32)
-        .expect("valid date")
-}
 
 // ----------------------------------------------------------------------
 // Builders.
@@ -756,7 +772,11 @@ fn owners_equity(b: &Books, s: NaiveDate, e: NaiveDate) -> Table {
         row(
             &mut t,
             Kind::Line,
-            &format!("Balance, {}", fmt::date(s - Days::new(1))),
+            &match s.pred_opt() {
+                Some(day_before) => format!("Balance, {}", fmt::date(day_before)),
+                // Nothing is dated before chrono's first day.
+                None => "Opening balance".into(),
+            },
             &|m| m.beginning,
         );
         row(&mut t, Kind::Line, "Contributions", &|m| m.contributions);
@@ -782,7 +802,8 @@ fn owners_equity(b: &Books, s: NaiveDate, e: NaiveDate) -> Table {
         ledger_core::analysis::accounts_of_type(&b.ledger, &[AccountType::Equity]);
     let (mut tb, mut te) = (Decimal::ZERO, Decimal::ZERO);
     for a in eq {
-        let begin = b.balance_on(a, s - Days::new(1));
+        // Nothing is dated before chrono's first day: nothing to begin with.
+        let begin = s.pred_opt().map_or(Decimal::ZERO, |d| b.balance_on(a, d));
         let end = b.balance_on(a, e);
         tb += begin;
         te += end;
@@ -804,7 +825,9 @@ fn owners_equity(b: &Books, s: NaiveDate, e: NaiveDate) -> Table {
             ],
         );
     }
-    let ni_begin = balance_sheet_as_of(&b.ledger, s - Days::new(1))
+    let ni_begin = s
+        .pred_opt()
+        .and_then(|d| balance_sheet_as_of(&b.ledger, d).ok())
         .map(|bs| bs.current_earnings)
         .unwrap_or_default();
     let ni_end = balance_sheet_as_of(&b.ledger, e)
@@ -901,7 +924,20 @@ fn tax(b: &Books, s: NaiveDate, e: NaiveDate) -> Table {
     t
 }
 
-fn aging(rows: Vec<ledger_core::AgingRow>, as_of: NaiveDate) -> Table {
+/// A report the books can't compute (rules.md B-28: books an earlier
+/// version wrote may hold amounts past exact arithmetic): no figures, and a
+/// note saying why, never a guess.
+fn cant_compute(mut t: Table, why: &ledger_core::LedgerError) -> Table {
+    t.note(format!(
+        "This report can't be computed: {why}. Ask the bookkeeper to find the record behind it."
+    ));
+    t
+}
+
+fn aging(
+    rows: Result<Vec<ledger_core::AgingRow>, ledger_core::LedgerError>,
+    as_of: NaiveDate,
+) -> Table {
     let mut t = Table::new(vec![
         "Current".into(),
         "1–30".into(),
@@ -910,18 +946,30 @@ fn aging(rows: Vec<ledger_core::AgingRow>, as_of: NaiveDate) -> Table {
         "Over 90".into(),
         "Total".into(),
     ]);
+    let rows = match rows {
+        Ok(rows) => rows,
+        Err(e) => return cant_compute(t, &e),
+    };
+    let too_large = || ledger_core::LedgerError::TooLargeToCompute("the aging's totals".into());
     let mut tot = [Decimal::ZERO; 6];
     for r in &rows {
+        let total = match r.total() {
+            Ok(total) => total,
+            Err(e) => return cant_compute(t, &e),
+        };
         let v = [
             r.current,
             r.days_30,
             r.days_60,
             r.days_90,
             r.days_90_plus,
-            r.total(),
+            total,
         ];
         for (i, x) in v.iter().enumerate() {
-            tot[i] += x;
+            match tot[i].checked_add(*x) {
+                Some(sum) => tot[i] = sum,
+                None => return cant_compute(t, &too_large()),
+            }
         }
         t.row(
             Kind::Line,
@@ -951,7 +999,6 @@ fn aging(rows: Vec<ledger_core::AgingRow>, as_of: NaiveDate) -> Table {
 /// with its rule (and citation) in the detail; the tax basis total is the
 /// register's.
 fn asset_register(b: &Books, as_of: NaiveDate) -> Table {
-    let r = b.asset_register(as_of);
     let mut t = Table::new(vec![
         "Cost".into(),
         "Accumulated".into(),
@@ -960,6 +1007,10 @@ fn asset_register(b: &Books, as_of: NaiveDate) -> Table {
         "Tax basis".into(),
         "Built-in gain (loss)".into(),
     ]);
+    let r = match b.asset_register(as_of) {
+        Ok(r) => r,
+        Err(e) => return cant_compute(t, &e),
+    };
     let none3 = || vec![Cell::none(), Cell::none(), Cell::none()];
     if r.rows.is_empty() {
         t.note(format!(
@@ -1271,19 +1322,9 @@ fn report(ui: &mut Ui, b: &Books, kind: ReportKind, shell: &mut Shell<'_>, picke
             });
         if let Range::Custom(s, e) = st.range {
             room(ui, 250.0);
-            let (mut js, mut je) = (to_jiff(s), to_jiff(e));
-            ui.add(
-                egui_extras::DatePickerButton::new(&mut js)
-                    .id_salt("from")
-                    .calendar_week(false),
-            );
+            let s = widgets::date_picker(ui, "from", s);
             ui.label(RichText::new("to").color(p.muted));
-            ui.add(
-                egui_extras::DatePickerButton::new(&mut je)
-                    .id_salt("to")
-                    .calendar_week(false),
-            );
-            let (s, e) = (from_jiff(js), from_jiff(je));
+            let e = widgets::date_picker(ui, "to", e);
             st.range = Range::Custom(s.min(e), e.max(s));
         }
         if splittable {
@@ -1317,9 +1358,22 @@ fn report(ui: &mut Ui, b: &Books, kind: ReportKind, shell: &mut Shell<'_>, picke
     ui.add_space(18.0);
 
     let (s, e) = st.range.dates(b);
+    // A split over a range from the books' first entry, which an earlier
+    // version may have dated thousands of years back (rules.md B-28),
+    // would be more columns than anyone can read or the frame can build:
+    // shown as one total, with a note saying so.
+    let split_note = splittable
+        .then(|| too_many_columns(s, e, st.columns))
+        .flatten()
+        .map(|n| {
+            format!(
+                "Split {} ways ({n} columns); more than {MAX_COLUMNS} can't be shown, so this is the total. Choose a shorter range to split it.",
+                fmt::words(&format!("{:?}", st.columns)).to_lowercase()
+            )
+        });
     let state = State {
         range: st.range,
-        columns: if splittable {
+        columns: if splittable && split_note.is_none() {
             st.columns
         } else {
             Columns::Total
@@ -1433,7 +1487,10 @@ fn report(ui: &mut Ui, b: &Books, kind: ReportKind, shell: &mut Shell<'_>, picke
             None
         }
     };
-    if let Some(t) = table {
+    if let Some(mut t) = table {
+        if let Some(n) = split_note {
+            t.note(n);
+        }
         render(ui, &t, &PdfInfo::new(b, kind.title(), &subtitle), shell);
     }
     if let Some(k) = pick {
@@ -2031,6 +2088,85 @@ fn vendor_1099(ui: &mut Ui, b: &Books, year: i32, shell: &mut Shell<'_>) {
 
 #[cfg(test)]
 mod tests {
+
+    /// A report shows the range and split chosen: last year's P&L by
+    /// month has a column for each of last year's months, not this year's.
+    #[test]
+    fn a_report_shows_the_range_and_split_chosen() {
+        use crate::test_support::{Build, d, find, has, render};
+        let mut b = Build::new("report-range");
+        let (cash, capital, rent) = (b.cash, b.capital, b.rent);
+        b.post(d(2025, 1, 2), cash, capital, 1_000_000);
+        b.post(d(2025, 3, 2), rent, cash, 10_000);
+        let (_dir, books) = b.books();
+        let (texts, _) = render(books, Route::Reports(ReportKind::ProfitAndLoss), |s| {
+            s.reports.range = Range::Custom(d(2025, 1, 1), d(2025, 12, 31));
+            s.reports.columns = Columns::Month;
+        });
+        find(&texts, "Mar 2025");
+        assert!(!has(&texts, "Mar 2026"));
+    }
+
+    /// prior: the period before, as long as the range in days, ending the
+    /// day before it starts; or the same days a year before; none before
+    /// chrono's first day.
+    #[test]
+    fn the_prior_period_is_as_long_and_just_before() {
+        let d = |y, m, day| NaiveDate::from_ymd_opt(y, m, day).unwrap();
+        let mut st = State::default();
+        assert_eq!(prior(&st, d(2026, 4, 1), d(2026, 6, 30)), None);
+        st.compare = Compare::PriorPeriod;
+        // 91 days: the 91 days through March 31.
+        assert_eq!(
+            prior(&st, d(2026, 4, 1), d(2026, 6, 30)),
+            Some((d(2025, 12, 31), d(2026, 3, 31)))
+        );
+        assert_eq!(
+            prior(&st, d(2026, 3, 1), d(2026, 3, 1)),
+            Some((d(2026, 2, 28), d(2026, 2, 28)))
+        );
+        assert_eq!(prior(&st, NaiveDate::MIN, d(2026, 1, 1)), None);
+        st.compare = Compare::PriorYear;
+        assert_eq!(
+            prior(&st, d(2026, 4, 1), d(2026, 6, 30)),
+            Some((d(2025, 4, 1), d(2025, 6, 30)))
+        );
+        assert_eq!(prior(&st, NaiveDate::MIN, d(2026, 1, 1)), None);
+    }
+
+    /// too_many_columns: a split's column count, counted from the months
+    /// (each started interval a column), only when past MAX_COLUMNS.
+    #[test]
+    fn too_many_columns_counts_the_columns_only_past_the_limit() {
+        let d = |y, m, day| NaiveDate::from_ymd_opt(y, m, day).unwrap();
+        assert_eq!(
+            too_many_columns(d(2006, 1, 1), d(2026, 12, 31), Columns::Total),
+            None
+        );
+        // 240 months, January 2007 through December 2026: at the limit.
+        assert_eq!(
+            too_many_columns(d(2007, 1, 15), d(2026, 12, 1), Columns::Month),
+            None
+        );
+        // 241 months.
+        assert_eq!(
+            too_many_columns(d(2006, 12, 31), d(2026, 12, 1), Columns::Month),
+            Some(241)
+        );
+        // 3,000 years by quarter, and by year.
+        assert_eq!(
+            too_many_columns(d(-500, 2, 1), d(2499, 11, 30), Columns::Quarter),
+            Some((2999 * 12 + 9) / 3 + 1)
+        );
+        assert_eq!(
+            too_many_columns(d(-500, 2, 1), d(2499, 11, 30), Columns::Year),
+            Some((2999 * 12 + 9) / 12 + 1)
+        );
+        assert_eq!(
+            too_many_columns(d(2000, 1, 1), d(2239, 12, 31), Columns::Year),
+            None
+        );
+    }
     use super::*;
 
     /// The fixed asset register report's tax columns are the register's:
@@ -2049,7 +2185,7 @@ mod tests {
             today: Some(today),
         })
         .unwrap();
-        let r = ledger_core::fixed_asset_register(&b.ledger, today);
+        let r = ledger_core::fixed_asset_register(&b.ledger, today).unwrap();
         assert!(!r.rows.is_empty(), "the demo has an asset");
         assert_eq!(r.missing_tax_basis, 0, "the demo's asset has a tax basis");
         let t = asset_register(&b, today);

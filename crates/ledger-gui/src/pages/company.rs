@@ -341,13 +341,30 @@ fn schedules(ui: &mut Ui, b: &Books) {
         |ui| {
             for s in list {
                 let total = s.total.amount;
-                let remaining = s.remaining();
-                let frac: f32 = if total.is_zero() {
-                    1.0
-                } else {
-                    ((total - remaining) / total).try_into().unwrap_or(0.0)
+                // A schedule an earlier version journaled may not compute
+                // (months past chrono's last day): said, never guessed.
+                let (remaining, due) = match (s.remaining(), s.due(b.today)) {
+                    (Ok(r), Ok(d)) => (r, d),
+                    (Err(e), _) | (_, Err(e)) => {
+                        ui.label(RichText::new(&s.description).font(theme::semibold(13.5)));
+                        ui.label(
+                            RichText::new(format!("Its plan can't be computed: {e}."))
+                                .font(theme::regular(12.0))
+                                .color(p.negative),
+                        );
+                        ui.add_space(8.0);
+                        continue;
+                    }
                 };
-                let due = s.due(b.today);
+                let recognized = total.checked_sub(remaining);
+                let frac: f32 = match recognized {
+                    _ if total.is_zero() => 1.0,
+                    Some(r) => r
+                        .checked_div(total)
+                        .and_then(|x| x.try_into().ok())
+                        .unwrap_or(0.0),
+                    None => 0.0,
+                };
                 ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new(&s.description).font(theme::semibold(13.5)));
                     ui.label(
@@ -369,7 +386,7 @@ fn schedules(ui: &mut Ui, b: &Books) {
                     frac,
                     &format!(
                         "{} of {} recognized · {} left",
-                        fmt::dollars(total - remaining),
+                        fmt::dollars_or(recognized),
                         fmt::dollars(total),
                         fmt::dollars(remaining)
                     ),
@@ -393,12 +410,11 @@ fn recurring(ui: &mut Ui, b: &Books) {
         |_| {},
         |ui| {
             for r in list {
-                let amount: Decimal = r
+                let amount = r
                     .lines
                     .iter()
                     .filter(|(_, s, _)| *s == ledger_core::Side::Debit)
-                    .map(|(_, _, m)| m.amount)
-                    .sum();
+                    .try_fold(Decimal::ZERO, |t, (_, _, m)| t.checked_add(m.amount));
                 let next = (0..)
                     .map_while(|k| {
                         r.frequency
@@ -412,7 +428,7 @@ fn recurring(ui: &mut Ui, b: &Books) {
                         RichText::new(format!(
                             "{} · {}",
                             fmt::words(&format!("{:?}", r.frequency)),
-                            fmt::dollars(amount)
+                            fmt::dollars_or(amount)
                         ))
                         .font(theme::regular(12.0))
                         .color(p.muted),
@@ -520,21 +536,24 @@ fn parties(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                         ui.label(RichText::new("No customers yet.").color(p.muted));
                     }
                     for c in customers {
-                        let owed: Decimal = (1..b.ledger.next_invoice_id())
+                        // None: a balance, or their sum, can't be computed.
+                        let owed = (1..b.ledger.next_invoice_id())
                             .filter_map(|i| b.ledger.get_invoice(i))
                             .filter(|i| i.customer_id == c.id)
-                            .map(|i| i.balance())
-                            .sum();
+                            .try_fold(Decimal::ZERO, |t, i| t.checked_add(i.balance().ok()?));
                         ui.horizontal_wrapped(|ui| {
                             name(ui, &c.name, b.ledger.party_of_customer(c.id));
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    if !owed.is_zero() {
+                                    if !owed.is_some_and(|o| o.is_zero()) {
                                         ui.label(
-                                            RichText::new(format!("owes {}", fmt::dollars(owed)))
-                                                .font(theme::regular(12.5))
-                                                .color(p.muted),
+                                            RichText::new(format!(
+                                                "owes {}",
+                                                fmt::dollars_or(owed)
+                                            ))
+                                            .font(theme::regular(12.5))
+                                            .color(p.muted),
                                         );
                                     }
                                 },
@@ -547,5 +566,96 @@ fn parties(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
     });
     if let Some(r) = go {
         shell.go(r);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{Build, beside, cents, d, find, has, render_all};
+    use ledger_core::arap::DocumentLine;
+    use ledger_core::{AccountType, Currency, Frequency, Money, NewRecurring, NewSchedule, Side};
+
+    /// The company page: each amortization schedule's recognized share as
+    /// a bar (three of twelve months posted: a quarter), each recurring
+    /// entry, and each customer with what they owe, theirs alone.
+    #[test]
+    fn the_company_page_says_what_each_record_holds() {
+        let mut b = Build::new("company");
+        let (cash, capital, rent) = (b.cash, b.capital, b.rent);
+        let prepaid =
+            b.s.add_account("1300", "Prepaid", AccountType::Asset, None, false)
+                .unwrap();
+        let insurance =
+            b.s.add_account("6300", "Insurance", AccountType::Expense, None, false)
+                .unwrap();
+        b.post(d(2026, 1, 2), cash, capital, 1_000_000);
+        b.post(d(2026, 1, 2), prepaid, cash, 120_000);
+        let usd = |c: i64| Money::new(cents(c), Currency::USD);
+        b.s.register_schedule(NewSchedule {
+            description: "Insurance plan".into(),
+            kind: ledger_core::ScheduleKind::PrepaidExpense,
+            total: usd(120_000),
+            start: d(2026, 1, 1),
+            months: 12,
+            balance_account: prepaid,
+            pl_account: insurance,
+        })
+        .unwrap();
+        b.s.run_schedules(d(2026, 3, 31)).unwrap();
+        b.s.register_recurring(NewRecurring {
+            description: "Office rent".into(),
+            lines: vec![
+                (rent, Side::Debit, usd(50_000)),
+                (cash, Side::Credit, usd(50_000)),
+            ],
+            frequency: Frequency::Monthly,
+            start: d(2026, 1, 20),
+            end: None,
+        })
+        .unwrap();
+        let line = |c: i64| {
+            vec![DocumentLine {
+                description: "work".into(),
+                amount: cents(c),
+            }]
+        };
+        let acme = b.s.add_customer("Acme").unwrap();
+        let beta = b.s.add_customer("Beta").unwrap();
+        b.s.add_customer("Gamma").unwrap();
+        b.s.create_invoice(acme, d(2026, 9, 1), d(2026, 10, 1), line(120_000))
+            .unwrap();
+        b.s.create_invoice(beta, d(2026, 9, 1), d(2026, 10, 1), line(20_000))
+            .unwrap();
+        let (_dir, books) = b.books();
+        let (texts, rects, p) = render_all(books, Route::Company, |_| {});
+        find(&texts, "Amortization schedules");
+        let label = find(
+            &texts,
+            "$300.00 of $1,200.00 recognized \u{b7} $900.00 left",
+        );
+        // The bar just above it: the track, and the part done.
+        let near = |fill: egui::Color32| {
+            rects
+                .iter()
+                .filter(|(r, f)| {
+                    *f == fill
+                        && r.height() <= 8.5
+                        && (label.pos.y - r.max.y) >= 0.0
+                        && (label.pos.y - r.max.y) < 12.0
+                })
+                .map(|(r, _)| r.width())
+                .fold(0.0f32, f32::max)
+        };
+        let (track, done) = (near(p.hover), near(p.accent));
+        assert!(track > 100.0, "track {track}");
+        assert!((done / track - 0.25).abs() < 0.01, "{done} of {track}");
+        find(&texts, "Recurring entries");
+        find(&texts, "Office rent");
+        find(&texts, "Vendors");
+        find(&texts, "Customers");
+        assert_eq!(beside(&texts, "Acme").text, "owes $1,200.00");
+        assert_eq!(beside(&texts, "Beta").text, "owes $200.00");
+        assert!(!has(&texts, "owes $0.00"));
     }
 }

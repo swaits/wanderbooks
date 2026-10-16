@@ -1673,8 +1673,15 @@ impl AssetRegister {
 ///      depreciation accounts of the registered assets, so
 ///      unposted_depreciation and unregistered_cost are zero exactly when
 ///      register and books agree.
+///   6. NEVER panics: a contributor basis is as journaled, of any size
+///      (rules.md B-28), and a total past exact arithmetic is refused
+///      (TooLargeToCompute).
 /// ```
-pub fn fixed_asset_register(ledger: &Ledger, as_of: NaiveDate) -> AssetRegister {
+pub fn fixed_asset_register(
+    ledger: &Ledger,
+    as_of: NaiveDate,
+) -> Result<AssetRegister, LedgerError> {
+    let too_large = |what: &str| LedgerError::TooLargeToCompute(format!("the register's {what}"));
     use crate::AssetStatus;
     let mut rows = Vec::new();
     let (mut cost, mut accumulated) = (Decimal::ZERO, Decimal::ZERO);
@@ -1699,10 +1706,18 @@ pub fn fixed_asset_register(ledger: &Ledger, as_of: NaiveDate) -> AssetRegister 
             crate::assets::accumulated_depreciation(a, as_of)
         };
         if disposed.is_none() {
-            cost += a.cost.amount;
-            accumulated += acc;
+            cost = cost
+                .checked_add(a.cost.amount)
+                .ok_or_else(|| too_large("cost"))?;
+            accumulated = accumulated
+                .checked_add(acc)
+                .ok_or_else(|| too_large("accumulated depreciation"))?;
             match a.tax_basis() {
-                Some(t) => tax_total += t,
+                Some(t) => {
+                    tax_total = tax_total
+                        .checked_add(t)
+                        .ok_or_else(|| too_large("tax basis"))?
+                }
                 None => tax_missing += 1,
             }
         }
@@ -1740,7 +1755,7 @@ pub fn fixed_asset_register(ledger: &Ledger, as_of: NaiveDate) -> AssetRegister 
             .map(|l| l.debit - l.credit)
             .unwrap_or(Decimal::ZERO)
     };
-    AssetRegister {
+    Ok(AssetRegister {
         as_of,
         rows,
         total_cost: cost,
@@ -1750,5 +1765,5 @@ pub fn fixed_asset_register(ledger: &Ledger, as_of: NaiveDate) -> AssetRegister 
         missing_tax_basis: tax_missing,
         ledger_cost: cost_accounts.iter().map(|&id| net(id)).sum(),
         ledger_accumulated: -accum_accounts.iter().map(|&id| net(id)).sum::<Decimal>(),
-    }
+    })
 }

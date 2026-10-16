@@ -30,6 +30,14 @@ thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "io-std", "sync"] }
 zip = "9.0.1"
 toml = "1"
+# The vault's TINs, decoded for the filing scan (tin_files.rs), are wiped
+# from memory when dropped, as the vault's own are.
+zeroize = "1"
+
+# O_NOFOLLOW and O_NONBLOCK for books.import_local_file's open (local_files.rs
+# INVARIANT 6): std has no names for these open flags.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [lints]
 workspace = true
@@ -39,3 +47,5 @@ tokio = { version = "1", features = ["time", "macros", "rt-multi-thread"] }
 rmcp = { version = "3", features = ["client", "transport-streamable-http-client-reqwest"] }
 jsonschema = { version = "0.58", default-features = false }
 proptest = "1"
+# read_only_tools_change_nothing compares the database by its rows (spec_mcp.rs).
+rusqlite = { version = "0.32", features = ["bundled"] }

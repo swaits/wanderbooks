@@ -1,0 +1,57 @@
+{
+  "assets": [],
+  "bills": [],
+  "entries": [
+    {
+      "date": "2026-03-01",
+      "description": "big draft",
+      "id": 1,
+      "lines": [
+        {
+          "account": 1,
+          "amount": {
+            "amount": "2000000000000000.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        }
+      ],
+      "reversal_of": null,
+      "status": "Draft"
+    }
+  ],
+  "entry_parties": [],
+  "invoices": [],
+  "payroll_runs": [],
+  "periods": [],
+  "recurring": [],
+  "schedules": [],
+  "snapshot": {
+    "Ok": {
+      "balance_sheet": {
+        "assets": "0",
+        "balanced": true,
+        "current_earnings": "0",
+        "equity": "0",
+        "liabilities": "0"
+      },
+      "profit_and_loss": {
+        "expenses": "0",
+        "net_income": "0",
+        "revenue": "0"
+      },
+      "trial_balance": {
+        "lines": [],
+        "total_credits": "0",
+        "total_debits": "0"
+      }
+    }
+  },
+  "verify": {
+    "Ok": null
+  }
+}

@@ -1,0 +1,5 @@
+{"payload":{"base_currency":"USD"},"prev":"0000000000000000000000000000000000000000000000000000000000000000","seq":1,"ts":"2026-10-17T07:55:28Z","type":"store.created"}
+{"payload":{"account_type":"Asset","code":"1000","currency":"USD","id":1,"name":"Cash","parent":null,"placeholder":false},"prev":"6b73bafa144d8ac8cd57745e8d7d4a35bc8cae9125a576162d7f7e133fbdb0ff","seq":2,"ts":"2026-10-17T07:55:28Z","type":"account.added"}
+{"payload":{"account_type":"Equity","code":"3000","currency":"USD","id":2,"name":"Capital","parent":null,"placeholder":false},"prev":"d6be9a4a8147780c397a14d3ccb362d8a62ead0f5e92b450c17e1d3029ae9bf4","seq":3,"ts":"2026-10-17T07:55:28Z","type":"account.added"}
+{"payload":{"account_type":"Expense","code":"6000","currency":"USD","id":3,"name":"Rent","parent":null,"placeholder":false},"prev":"8747c865cddfe1a1bc2c3d0834e8a46b9876516c5aab2698653f2ea34a9a4314","seq":4,"ts":"2026-10-17T07:55:28Z","type":"account.added"}
+{"payload":{"currency":"EUR","date":"2026-01-01","rate":"79228162514264337593543950335"},"prev":"9d1ecb55415c9c44b237754aa52191ef10f8288b11a2fcf81ca0c8d1b48db030","seq":5,"ts":"2026-10-17T07:55:28Z","type":"fx.rate_set"}

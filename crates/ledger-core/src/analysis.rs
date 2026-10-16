@@ -36,11 +36,15 @@ impl Interval {
 /// The first day of the calendar interval containing `d`.
 pub fn interval_start(d: NaiveDate, interval: Interval) -> NaiveDate {
     let month0 = (d.month0() / interval.months()) * interval.months();
+    // The first of a month of `d`'s own year: every year chrono holds has
+    // all twelve.
     NaiveDate::from_ymd_opt(d.year(), month0 + 1, 1).expect("valid")
 }
 
 /// `[start, end]` split on calendar interval boundaries, first and last
-/// pieces clipped to the range. Empty when `end < start`.
+/// pieces clipped to the range. Empty when `end < start`. Never panics:
+/// an interval that would end past chrono's last day ends at `end`
+/// (rules.md B-28: books an earlier version wrote may hold such dates).
 pub fn intervals(
     start: NaiveDate,
     end: NaiveDate,
@@ -49,7 +53,11 @@ pub fn intervals(
     let mut out = Vec::new();
     let mut from = interval_start(start, interval);
     while from <= end {
-        let next = from + Months::new(interval.months());
+        let Some(next) = from.checked_add_months(Months::new(interval.months())) else {
+            // The interval holding chrono's last day: nothing after it.
+            out.push((from.max(start), end));
+            break;
+        };
         let to = (next - Days::new(1)).min(end);
         out.push((from.max(start), to));
         from = next;
@@ -241,5 +249,38 @@ mod tests {
             ]
         );
         assert!(intervals(d(2026, 2, 1), d(2026, 1, 1), Interval::Month).is_empty());
+    }
+
+    /// At chrono's last day (books an earlier version wrote may hold it):
+    /// the last interval ends there, never a panic (rules.md B-28).
+    #[test]
+    fn intervals_reach_chronos_last_day() {
+        let y = NaiveDate::MAX.year();
+        assert_eq!(
+            intervals(d(y, 11, 20), NaiveDate::MAX, Interval::Month),
+            [(d(y, 11, 20), d(y, 11, 30)), (d(y, 12, 1), NaiveDate::MAX)]
+        );
+        assert_eq!(
+            intervals(d(y, 2, 2), NaiveDate::MAX, Interval::Year),
+            [(d(y, 2, 2), NaiveDate::MAX)]
+        );
+        assert_eq!(
+            intervals(d(y, 12, 31), NaiveDate::MAX, Interval::Quarter),
+            [(NaiveDate::MAX, NaiveDate::MAX)]
+        );
+        assert_eq!(
+            intervals(
+                NaiveDate::MIN,
+                d(NaiveDate::MIN.year(), 2, 3),
+                Interval::Month
+            ),
+            [
+                (NaiveDate::MIN, d(NaiveDate::MIN.year(), 1, 31)),
+                (
+                    d(NaiveDate::MIN.year(), 2, 1),
+                    d(NaiveDate::MIN.year(), 2, 3)
+                ),
+            ]
+        );
     }
 }

@@ -100,10 +100,15 @@ pub struct ScheduleOut {
     pub pl_account: String,
     /// Total, decimal string.
     pub total: String,
-    /// Not yet recognized, decimal string.
-    pub remaining: String,
-    /// Every month.
+    /// Not yet recognized, decimal string. Null when the plan can't be
+    /// computed (see `plan_error`).
+    pub remaining: Option<String>,
+    /// Every month (none when the plan can't be computed).
     pub months: Vec<ScheduleMonthOut>,
+    /// Why the plan can't be computed, when it can't: a schedule an
+    /// earlier version accepted whose months run past the last date the
+    /// books can compute. It opens and lists, and never posts.
+    pub plan_error: Option<String>,
 }
 
 /// Result of `books.list_schedules`.
@@ -363,8 +368,8 @@ pub struct Vendor1099Params {
     #[serde(default)]
     pub include_tins: bool,
     /// Also write the worksheet as CSV to this local path (TINs included
-    /// only with include_tins). Never inside the books dir; an existing
-    /// file is refused.
+    /// only with include_tins). Never inside the books dir, and with TINs
+    /// never in the server's import folders; an existing file is refused.
     pub save_csv_to: Option<String>,
 }
 
@@ -562,8 +567,9 @@ pub struct SettingsOut {
     pub books_toml: Option<String>,
     /// Whether that file exists (absent: the defaults apply).
     pub books_toml_exists: bool,
-    /// The config.json read for a receipt policy.
-    pub config_json: Option<String>,
+    /// Whether the server reads a receipt policy from a configuration
+    /// file of its own.
+    pub config_json_present: bool,
     /// Why the last edit failed to load, or null. While set, the settings
     /// below are the last ones that loaded: fix the file.
     pub reload_error: Option<String>,
@@ -578,8 +584,16 @@ pub struct SettingsOut {
     pub tax_form: Option<String>,
     /// `[books] accounting_basis`.
     pub basis: String,
-    /// The receipt rule in force.
+    /// The receipt rule in force (it shows a few account codes of each
+    /// kind, shortened; the two lists below hold them all).
     pub receipt_rule: String,
+    /// Every account code whose entries always need a receipt, whatever
+    /// the amount: the receipt policy's whole list, as written.
+    pub receipt_required_accounts: Vec<String>,
+    /// Every account code exempt from the receipt rule (an entry whose
+    /// every line is in one needs none): the policy's whole list, as
+    /// written.
+    pub receipt_exempt_accounts: Vec<String>,
     /// `[books] parties`: "off", "suggest", or "require".
     pub parties: String,
     /// `[[company.members]]`.
@@ -912,7 +926,8 @@ pub struct ImportChartCsvOut {
 /// Parameters for `books.import_local_file`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ImportLocalFileParams {
-    /// Absolute path to the file on the server's filesystem.
+    /// Absolute path to a regular file in the server's import folders (by
+    /// default your downloads folder).
     pub path: String,
     /// "receipt" or "document".
     pub category: String,
@@ -1447,8 +1462,12 @@ pub struct GetEntryOut {
     pub reversal_of: Option<u64>,
     /// Full lines.
     pub lines: Vec<EntryLineOut>,
-    /// Total debits, decimal string.
-    pub total: String,
+    /// Total debits, decimal string. Null when they are past exact
+    /// arithmetic (a draft an earlier version journaled; see
+    /// `total_error`): such a draft can't be posted.
+    pub total: Option<String>,
+    /// Why the total can't be computed, when it can't.
+    pub total_error: Option<String>,
     /// Attached receipts.
     pub receipts: Vec<PreviewReceipt>,
     /// The vendor the entry is tagged with, for 1099 tracking.
@@ -1564,13 +1583,13 @@ pub struct DigestOut {
     pub totals_by_account: Vec<DigestTotal>,
     /// Rules set by law (like the 1099 threshold) that wanderbooks may no
     /// longer know as of today. For each: research the current value from
-    /// the official source or ask the human (owner, CPA), then update it
-    /// for everyone with a pull request (or at least an issue) at
-    /// <https://github.com/swaits/wanderbooks>.
+    /// the official source or ask the human (owner, CPA), then tell the
+    /// human, who can report it upstream so the rule is updated for
+    /// everyone.
     pub stale_rules: Vec<StaleRule>,
     /// Appends cut off mid-line (a crash or power loss) that were set aside
     /// when the books were opened, since `since`. Nothing acknowledged was
-    /// lost; tell the human, and if they had just asked for a change,
+    /// lost; tell the human, and if they had asked for a change moments before,
     /// check it is there and redo it if not.
     pub journal_repairs: Vec<JournalRepair>,
     /// Settings in wanderbooks.toml that need changing: an edit that
@@ -1605,8 +1624,9 @@ pub struct JournalRepair {
     pub at: String,
     /// How many bytes were cut off.
     pub bytes: u64,
-    /// The file beside the journal they were saved to.
-    pub saved_as: String,
+    /// When the bytes were set aside, as the stamp they were saved under
+    /// (a human can find them by it).
+    pub set_aside: String,
 }
 
 /// A dated rule due for review (see `ledger_core::rules`).
@@ -1616,9 +1636,8 @@ pub struct StaleRule {
     pub name: String,
     /// The last year wanderbooks knows it for.
     pub known_through: i32,
-    /// Its entry in docs/spec/rules.md.
-    pub catalog: String,
-    /// The vendored official text in the wanderbooks repo.
+    /// The official source of its next value: the statute or
+    /// publication, with its address.
     pub source: String,
     /// Why it's due, and where the next value comes from.
     pub why: String,
@@ -1694,7 +1713,7 @@ pub struct RegisterAssetParams {
     /// Depreciation expense account, id or code.
     pub expense_account: String,
     /// The asset tag for its label (letters, digits, - _ . /; at most 32).
-    /// Omit to generate the next one ("WL-0001", from `[books]
+    /// Omit to generate the next one ("FA-0001", from `[books]
     /// asset_tag_prefix` or the company's initials).
     pub tag: Option<String>,
     /// The manufacturer's serial number, if known.
@@ -2559,7 +2578,7 @@ pub struct ExportCpaPackageParams {
     /// Where to write the package: a new `.zip` file, or an existing
     /// folder (the zip goes in it as `cpa-package-<as_of>.zip`). Written
     /// readable by its owner only. With TINs, never inside the books dir
-    /// (git keeps it forever, `exports/` included).
+    /// or the server's import folders.
     pub save_to: Option<String>,
 }
 
@@ -2680,7 +2699,8 @@ pub struct SetW9Params {
     pub tin: Option<SecretTin>,
     /// The TIN's type: ssn, ein, or itin. Required with tin.
     pub tin_type: Option<String>,
-    /// A local PDF, PNG, or JPEG of the signed W-9: stored only in the
+    /// A local PDF, PNG, or JPEG of the signed W-9, in the server's import
+    /// folders (by default your downloads folder): stored only in the
     /// vault (it shows the full TIN), never with the receipts and
     /// documents. Read it back with `books.get_w9`.
     pub w9_file_path: Option<String>,
@@ -2758,9 +2778,9 @@ pub struct TinOut {
 pub struct GetW9Params {
     /// The party: id or name.
     pub party: String,
-    /// Where to write the W-9 file: a local path outside the books dir
-    /// (the file shows the full TIN; it must never be committed with the
-    /// books). An existing file is refused.
+    /// Where to write the W-9 file: a new local file outside the books
+    /// and outside the server's import folders (the file shows the full
+    /// TIN). An existing file is refused.
     pub save_to: String,
 }
 
@@ -3055,8 +3075,9 @@ pub struct PartyEntryOut {
     pub description: String,
     /// "draft" or "posted".
     pub status: String,
-    /// Total debits, decimal string.
-    pub total: String,
+    /// Total debits, decimal string. Null for a draft whose debits are
+    /// past exact arithmetic (one an earlier version journaled).
+    pub total: Option<String>,
     /// Id of the reversed entry, for reversals.
     pub reversal_of: Option<u64>,
 }
@@ -3311,4 +3332,47 @@ pub struct VoidReconciliationParams {
 pub struct ReconciliationsOut {
     /// Reconciliations (voided ones included, marked), by date.
     pub reconciliations: Vec<ReconciliationOut>,
+}
+
+/// Parameters for `books.handbook`.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct HandbookParams {
+    /// The section to read: contract, entries, drafts-and-reversals, evidence-and-receipts, attachments, files-in-out, reconciliation, fixed-assets, prepaid-and-recurring, revenue-and-payouts, parties-and-tins, 1099, cpa-handoff, settings-and-conventions, viewer, rules-that-change, control-roles, tracing-figures, or "all" for the whole handbook in order. Omit for the index.
+    #[serde(default)]
+    pub section: Option<String>,
+}
+
+/// One handbook section in the index.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct HandbookSectionOut {
+    /// Section id, for `section` and `books://handbook/{id}`.
+    pub id: String,
+    /// Section title.
+    pub title: String,
+    /// The section's resource URI.
+    pub uri: String,
+    /// Length of the section's text, in characters.
+    pub chars: usize,
+}
+
+/// One handbook section's text.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct HandbookTextOut {
+    /// Section id.
+    pub id: String,
+    /// Section title.
+    pub title: String,
+    /// The section, as Markdown.
+    pub text: String,
+}
+
+/// Result of `books.handbook`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct HandbookOut {
+    /// Where to start reading.
+    pub read_first: String,
+    /// Every section, in reading order.
+    pub sections: Vec<HandbookSectionOut>,
+    /// The section asked for (null: none was).
+    pub section: Option<HandbookTextOut>,
 }

@@ -185,8 +185,8 @@ fn invoice_total_is_sum_of_lines_and_balance_is_total_minus_paid() {
         status: DocumentStatus::Partial,
         entry_id: 1,
     };
-    assert_eq!(inv.total(), dec("150.00"));
-    assert_eq!(inv.balance(), dec("90.00"));
+    assert_eq!(inv.total().unwrap(), dec("150.00"));
+    assert_eq!(inv.balance().unwrap(), dec("90.00"));
 }
 
 /// Oracle: Bill doc: total() is the sum of lines, balance() total - paid.
@@ -202,8 +202,8 @@ fn bill_total_is_sum_of_lines_and_balance_is_total_minus_paid() {
         status: DocumentStatus::Paid,
         entry_id: 9,
     };
-    assert_eq!(bill.total(), dec("20.00"));
-    assert_eq!(bill.balance(), Decimal::ZERO);
+    assert_eq!(bill.total().unwrap(), dec("20.00"));
+    assert_eq!(bill.balance().unwrap(), Decimal::ZERO);
 }
 
 // ------------------------------------------------------ pure validators
@@ -285,7 +285,7 @@ fn aging_due_today_is_current() {
 fn aging_not_yet_due_is_current() {
     let r = aging_bucket(d(2026, 12, 31), d(2026, 10, 13), dec("5"));
     assert_eq!(r.current, dec("5"));
-    assert_eq!(r.total(), dec("5"));
+    assert_eq!(r.total().unwrap(), dec("5"));
 }
 
 /// Oracle: aging_bucket SCENARIOS 2-5 at each edge (1, 30, 31, 60, 61, 90,
@@ -322,7 +322,7 @@ fn aging_row_total_sums_buckets() {
         days_90: dec("4"),
         days_90_plus: dec("0.25"),
     };
-    assert_eq!(r.total(), dec("10.75"));
+    assert_eq!(r.total().unwrap(), dec("10.75"));
 }
 
 proptest! {
@@ -343,7 +343,7 @@ proptest! {
         let mut want = [Decimal::ZERO; 5];
         want[expected_bucket(due, as_of)] = balance;
         prop_assert_eq!(b, want);
-        prop_assert_eq!(r.total(), balance);
+        prop_assert_eq!(r.total().unwrap(), balance);
     }
 
     /// Oracle: aging_bucket INVARIANT 2: never moves to a younger bucket as
@@ -451,10 +451,10 @@ fn create_invoice_posts_dr_receivables_cr_revenue_for_the_line_sum() {
 
     let inv = l.get_invoice(id).unwrap().clone();
     assert_eq!(inv.customer_id, c);
-    assert_eq!(inv.total(), dec("1234.56"));
+    assert_eq!(inv.total().unwrap(), dec("1234.56"));
     assert_eq!(inv.amount_paid, Decimal::ZERO);
     assert_eq!(inv.status, DocumentStatus::Open);
-    assert_eq!(inv.balance(), dec("1234.56"));
+    assert_eq!(inv.balance().unwrap(), dec("1234.56"));
 
     let e = l.get_entry(inv.entry_id).unwrap();
     assert_eq!(e.status(), EntryStatus::Posted);
@@ -755,7 +755,7 @@ fn receive_payment_partial_then_full() {
     let inv = l.get_invoice(id).unwrap();
     assert_eq!(inv.amount_paid, dec("100.00"));
     assert_eq!(inv.status, DocumentStatus::Partial);
-    assert_eq!(inv.balance(), dec("200.00"));
+    assert_eq!(inv.balance().unwrap(), dec("200.00"));
     assert_eq!(bal(&l, "1200"), dec("200.00"));
     assert_eq!(bal(&l, "1000"), dec("100.00"));
 
@@ -764,7 +764,7 @@ fn receive_payment_partial_then_full() {
     let inv = l.get_invoice(id).unwrap();
     assert_eq!(inv.amount_paid, dec("300.00"));
     assert_eq!(inv.status, DocumentStatus::Paid);
-    assert_eq!(inv.balance(), Decimal::ZERO);
+    assert_eq!(inv.balance().unwrap(), Decimal::ZERO);
     assert_eq!(bal(&l, "1200"), Decimal::ZERO);
     assert_eq!(bal(&l, "1000"), dec("300.00"));
 }
@@ -860,7 +860,7 @@ fn create_bill_posts_dr_general_expenses_cr_payables_tagged() {
 
     let bill = l.get_bill(id).unwrap().clone();
     assert_eq!(bill.vendor_id, v);
-    assert_eq!(bill.total(), dec("49.50"));
+    assert_eq!(bill.total().unwrap(), dec("49.50"));
     assert_eq!(bill.amount_paid, Decimal::ZERO);
     assert_eq!(bill.status, DocumentStatus::Open);
 
@@ -926,7 +926,7 @@ fn pay_bill_partial_then_full() {
     l.pay_bill(id, d(2026, 4, 6), dec("50.00"), cash).unwrap();
     let b = l.get_bill(id).unwrap();
     assert_eq!(b.status, DocumentStatus::Paid);
-    assert_eq!(b.balance(), Decimal::ZERO);
+    assert_eq!(b.balance().unwrap(), Decimal::ZERO);
     assert_eq!(bal(&l, "2000"), Decimal::ZERO);
     assert_eq!(bal(&l, "1000"), dec("-80.00"));
 }
@@ -999,7 +999,7 @@ fn ar_aging_example() {
     l.receive_payment(i4, d(2026, 9, 2), dec("7"), cash)
         .unwrap();
 
-    let mut rows = l.ar_aging(as_of);
+    let mut rows = l.ar_aging(as_of).unwrap();
     rows.sort_by(|x, y| x.name.cmp(&y.name));
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].name, "Acme");
@@ -1040,7 +1040,7 @@ fn ap_aging_example() {
         .create_bill(w, d(2026, 9, 1), d(2026, 9, 30), vec![line("c", "5")])
         .unwrap();
     l.pay_bill(pb, d(2026, 9, 5), dec("5"), cash).unwrap();
-    let rows = l.ap_aging(as_of);
+    let rows = l.ap_aging(as_of).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].name, "Hosting");
     assert_eq!(
@@ -1145,12 +1145,12 @@ proptest! {
         let mut open_sum = Decimal::ZERO;
         for (i, id) in ids.iter().enumerate() {
             let inv = l.get_invoice(*id).unwrap();
-            prop_assert_eq!(inv.total(), totals[i]);
+            prop_assert_eq!(inv.total().unwrap(), totals[i]);
             prop_assert_eq!(inv.amount_paid, expect_paid[i]);
-            prop_assert_eq!(inv.balance(), totals[i] - expect_paid[i]);
-            prop_assert!(inv.balance() >= Decimal::ZERO);
+            prop_assert_eq!(inv.balance().unwrap(), totals[i] - expect_paid[i]);
+            prop_assert!(inv.balance().unwrap() >= Decimal::ZERO);
             prop_assert_eq!(inv.status, status_law(expect_paid[i], totals[i]));
-            open_sum += inv.balance();
+            open_sum += inv.balance().unwrap();
         }
         prop_assert_eq!(bal(&l, "1200"), open_sum);
         prop_assert_eq!(bal(&l, "4000"), totals.iter().copied().sum::<Decimal>());
@@ -1159,7 +1159,7 @@ proptest! {
         // Aging as of a date spanning every bucket edge in turn.
         for as_of_off in [0i64, 1, 30, 31, 60, 61, 90, 91, 200] {
             let as_of = base + Duration::days(as_of_off);
-            let rows = l.ar_aging(as_of);
+            let rows = l.ar_aging(as_of).unwrap();
             let mut want: std::collections::BTreeMap<String, [Decimal; 5]> = Default::default();
             for (i, doc) in docs.iter().enumerate() {
                 // Payments (dated base + 5) count only once made: aging
@@ -1177,7 +1177,7 @@ proptest! {
                 rows.iter().map(|r| (r.name.clone(), buckets(r))).collect();
             prop_assert_eq!(rows.len(), got.len(), "one row per customer");
             prop_assert_eq!(&got, &want);
-            let row_sum: Decimal = rows.iter().map(|r| r.total()).sum();
+            let row_sum: Decimal = rows.iter().map(|r| r.total().unwrap()).sum();
             let want_sum: Decimal = want.values().flatten().copied().sum();
             prop_assert_eq!(row_sum, want_sum);
         }
@@ -1236,11 +1236,11 @@ proptest! {
         let mut open_sum = Decimal::ZERO;
         for (i, id) in ids.iter().enumerate() {
             let b = l.get_bill(*id).unwrap();
-            prop_assert_eq!(b.total(), totals[i]);
+            prop_assert_eq!(b.total().unwrap(), totals[i]);
             prop_assert_eq!(b.amount_paid, expect_paid[i]);
-            prop_assert_eq!(b.balance(), totals[i] - expect_paid[i]);
+            prop_assert_eq!(b.balance().unwrap(), totals[i] - expect_paid[i]);
             prop_assert_eq!(b.status, status_law(expect_paid[i], totals[i]));
-            open_sum += b.balance();
+            open_sum += b.balance().unwrap();
         }
         prop_assert_eq!(bal(&l, "2000"), open_sum);
         prop_assert_eq!(bal(&l, "6999"), totals.iter().copied().sum::<Decimal>());
@@ -1248,7 +1248,7 @@ proptest! {
 
         for as_of_off in [0i64, 15, 45, 75, 120] {
             let as_of = base + Duration::days(as_of_off);
-            let rows = l.ap_aging(as_of);
+            let rows = l.ap_aging(as_of).unwrap();
             let mut want: std::collections::BTreeMap<String, [Decimal; 5]> = Default::default();
             for (i, doc) in docs.iter().enumerate() {
                 // Payments (dated base + 3) count only once made.
@@ -1321,6 +1321,7 @@ fn aging_as_of_a_date_sees_only_what_existed_then() {
         .unwrap();
     let total = |as_of| -> Decimal {
         l.ar_aging(as_of)
+            .unwrap()
             .iter()
             .map(|r| buckets(r).iter().copied().sum::<Decimal>())
             .sum()
@@ -1332,5 +1333,5 @@ fn aging_as_of_a_date_sees_only_what_existed_then() {
     // Mar 15: both.
     assert_eq!(total(d(2026, 3, 15)), dec("700.00"));
     // Before anything was issued: nothing.
-    assert!(l.ar_aging(d(2025, 12, 31)).is_empty());
+    assert!(l.ar_aging(d(2025, 12, 31)).unwrap().is_empty());
 }

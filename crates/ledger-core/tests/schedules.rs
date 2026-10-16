@@ -75,7 +75,7 @@ fn a_prepaid_expense_is_expensed_month_by_month() {
         })
         .unwrap();
     // Through May: March, April, May, at month end, 100 each.
-    let due: Vec<_> = b.l.get_schedule(id).unwrap().due(d(5, 31));
+    let due: Vec<_> = b.l.get_schedule(id).unwrap().due(d(5, 31)).unwrap();
     assert_eq!(
         due,
         [
@@ -88,14 +88,21 @@ fn a_prepaid_expense_is_expensed_month_by_month() {
         b.l.post_schedule_month(id, month).unwrap();
     }
     assert!(
-        b.l.get_schedule(id).unwrap().due(d(5, 31)).is_empty(),
+        b.l.get_schedule(id)
+            .unwrap()
+            .due(d(5, 31))
+            .unwrap()
+            .is_empty(),
         "idempotent"
     );
     assert!(matches!(
         b.l.post_schedule_month(id, d(4, 30)),
         Err(LedgerError::InvalidSchedule(_))
     ));
-    assert_eq!(b.l.get_schedule(id).unwrap().remaining(), dec("900"));
+    assert_eq!(
+        b.l.get_schedule(id).unwrap().remaining().unwrap(),
+        dec("900")
+    );
     let bs = balance_sheet_as_of(&b.l, d(5, 31)).unwrap();
     let prepaid = bs.assets.iter().find(|a| a.code == "1300").unwrap();
     assert_eq!(prepaid.amount, dec("900"));
@@ -123,11 +130,12 @@ fn deferred_revenue_is_earned_to_the_cent() {
         b.l.get_schedule(id)
             .unwrap()
             .due(d(12, 31))
+            .unwrap()
             .into_iter()
             .map(|(_, a)| a)
             .collect();
     assert_eq!(plan, [dec("333.33"), dec("333.33"), dec("333.34")]);
-    for (m, _) in b.l.get_schedule(id).unwrap().due(d(12, 31)) {
+    for (m, _) in b.l.get_schedule(id).unwrap().due(d(12, 31)).unwrap() {
         b.l.post_schedule_month(id, m).unwrap();
     }
     let pl = profit_and_loss_for_period(&b.l, d(1, 1), d(3, 31), None).unwrap();

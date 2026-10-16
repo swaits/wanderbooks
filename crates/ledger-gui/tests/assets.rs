@@ -197,11 +197,11 @@ fn the_register_is_ledger_cores_register() {
         today(),
         d(2030, 1, 1),
     ] {
-        let mine = b.asset_register(as_of);
-        let oracle = fixed_asset_register(&f.oracle, as_of);
+        let mine = b.asset_register(as_of).unwrap();
+        let oracle = fixed_asset_register(&f.oracle, as_of).unwrap();
         assert_eq!(mine, oracle, "register on {as_of}");
     }
-    let r = b.asset_register(today());
+    let r = b.asset_register(today()).unwrap();
     assert_eq!(r.rows.len(), 3);
     let old = r.rows.iter().find(|x| x.asset_id == f.old).unwrap();
     assert_eq!(
@@ -218,11 +218,13 @@ fn the_register_is_ledger_cores_register() {
 fn depreciation_due_is_the_register_through_the_last_finished_month() {
     let f = fixture("due");
     let b = &f.books;
-    let due = b.depreciation_due(today());
+    let due = b.depreciation_due(today()).unwrap();
     assert_eq!(due.through, d(2026, 9, 30));
     assert_eq!(
         due.amount,
-        fixed_asset_register(&f.oracle, d(2026, 9, 30)).unposted_depreciation()
+        fixed_asset_register(&f.oracle, d(2026, 9, 30))
+            .unwrap()
+            .unposted_depreciation()
     );
     assert_eq!(due.periods, vec!["2026-08", "2026-09"]);
     // Independently: the laptop's August and September, the monitor's
@@ -240,14 +242,17 @@ fn depreciation_due_is_the_register_through_the_last_finished_month() {
         month(f.laptop, "2026-08") + month(f.laptop, "2026-09") + month(f.monitor, "2026-09")
     );
     // A month's last day counts that month as finished.
-    assert_eq!(b.depreciation_due(d(2026, 7, 31)).through, d(2026, 7, 31));
     assert_eq!(
-        b.depreciation_due(d(2026, 7, 31)).periods,
+        b.depreciation_due(d(2026, 7, 31)).unwrap().through,
+        d(2026, 7, 31)
+    );
+    assert_eq!(
+        b.depreciation_due(d(2026, 7, 31)).unwrap().periods,
         Vec::<String>::new()
     );
 
     // The notices name the due amount exactly, and the month under way.
-    let r = b.asset_register(today());
+    let r = b.asset_register(today()).unwrap();
     let n = notices(b, &r);
     assert!(n[0].problem);
     assert!(
@@ -403,7 +408,7 @@ fn attention_asks_for_depreciation_and_tags() {
     let f = fixture("attention");
     let b = &f.books;
     let items = attention::find(b);
-    let due = b.depreciation_due(today());
+    let due = b.depreciation_due(today()).unwrap();
     let dep = items
         .iter()
         .find(|a| a.title == "Depreciation not posted through Sep 30, 2026")
@@ -448,7 +453,7 @@ fn attention_asks_for_depreciation_and_tags() {
             .any(|t| t.contains("Depreciation") || t.starts_with("No tag")),
         "{titles:?}"
     );
-    assert_eq!(b.depreciation_due(today()).amount, Decimal::ZERO);
+    assert_eq!(b.depreciation_due(today()).unwrap().amount, Decimal::ZERO);
 }
 
 /// The viewer's tax figures are ledger-core's: each asset's
@@ -500,8 +505,8 @@ fn tax_basis_is_ledger_cores() {
         }
     );
     for as_of in [d(2026, 1, 31), d(2026, 6, 30), today()] {
-        let r = b.asset_register(as_of);
-        let oracle = fixed_asset_register(&f.oracle, as_of);
+        let r = b.asset_register(as_of).unwrap();
+        let oracle = fixed_asset_register(&f.oracle, as_of).unwrap();
         assert_eq!(r.total_tax_basis, oracle.total_tax_basis, "{as_of}");
         assert_eq!(r.missing_tax_basis, oracle.missing_tax_basis, "{as_of}");
         for x in &r.rows {
@@ -514,7 +519,7 @@ fn tax_basis_is_ledger_cores() {
     }
     // Today: the laptop's $3,000.00 (the monitor has none; the old laptop
     // is gone), and one missing, said in the notices.
-    let r = b.asset_register(today());
+    let r = b.asset_register(today()).unwrap();
     assert_eq!(r.total_tax_basis, Decimal::new(300_000, 2));
     assert_eq!(r.missing_tax_basis, 1);
     let want = missing_tax_notice(1).unwrap();
@@ -612,7 +617,7 @@ fn attention_asks_for_tax_basis() {
             .iter()
             .any(|a| a.title.starts_with("No tax basis"))
     );
-    let r = b.asset_register(today());
+    let r = b.asset_register(today()).unwrap();
     assert_eq!(r.missing_tax_basis, 0);
     assert!(
         !notices(&b, &r)
@@ -636,7 +641,7 @@ fn unregistered_equipment_is_flagged() {
     s.post_entry(e).unwrap();
     drop(s);
     let b = load(&f._dir.0, today());
-    let r = b.asset_register(today());
+    let r = b.asset_register(today()).unwrap();
     assert_eq!(r.unregistered_cost(), Decimal::new(45_000, 2));
     assert!(
         notices(&b, &r)
@@ -777,14 +782,14 @@ proptest! {
         let today = base + Days::new(today_off);
         let b = load(&dir.0, today);
         let at = base + Days::new(probe);
-        prop_assert_eq!(b.asset_register(at), fixed_asset_register(&oracle, at));
-        let due = b.depreciation_due(today);
+        prop_assert_eq!(b.asset_register(at).unwrap(), fixed_asset_register(&oracle, at).unwrap());
+        let due = b.depreciation_due(today).unwrap();
         prop_assert!(due.through <= today);
         prop_assert_eq!(due.through.succ_opt().unwrap().day0(), 0);
         prop_assert!(today - due.through < chrono::TimeDelta::days(32));
         prop_assert_eq!(
             due.amount,
-            fixed_asset_register(&oracle, due.through).unposted_depreciation()
+            fixed_asset_register(&oracle, due.through).unwrap().unposted_depreciation()
         );
         // Every period listed is unposted and in some schedule.
         for p in &due.periods {

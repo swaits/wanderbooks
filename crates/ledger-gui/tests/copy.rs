@@ -87,8 +87,12 @@ fn clicking_a_value_copies_it() {
 
     // An entry's amount, as a plain decimal.
     let books = data::load_once(&source).unwrap();
-    let e = books.entries.iter().find(|e| !e.amount.is_zero()).unwrap();
-    let (id, amount) = (e.id, e.amount);
+    let e = books
+        .entries
+        .iter()
+        .find(|e| e.amount.is_some_and(|a| !a.is_zero()))
+        .unwrap();
+    let (id, amount) = (e.id, e.amount.unwrap());
     drop(books);
     let mut h = open(Route::Entry(id));
     let shown = fmt::dollars(amount);

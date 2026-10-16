@@ -32,8 +32,13 @@ pub struct DatedRule {
     pub name: &'static str,
     /// Its entry in docs/spec/rules.md, e.g. "B-19".
     pub catalog: &'static str,
-    /// The vendored official text it comes from.
+    /// The vendored official text it comes from (a path in this repo,
+    /// for the people who update the rule).
     pub source: &'static str,
+    /// The authority itself, as an agent or a human can find it: the
+    /// statute or publication, with its official address. What every
+    /// agent-facing text names, never the repo's copy.
+    pub authority: &'static str,
     /// The last year wanderbooks knows the rule for.
     pub known_through: i32,
     /// When to look again, as (year, month, day): the day the next value
@@ -62,6 +67,7 @@ pub const THRESHOLD_1099: DatedRule = DatedRule {
     name: "1099 reporting threshold",
     catalog: "B-19",
     source: "docs/spec/sources/irs-1099-thresholds.md",
+    authority: "26 U.S.C. §6041(a) and (h) and the IRS's yearly figure in the Instructions for Forms 1099-MISC and 1099-NEC (https://www.irs.gov/instructions/i1099mec)",
     known_through: 2026,
     review: (2026, 11, 1),
     review_why: "26 U.S.C. §6041(h) indexes the threshold for calendar years after 2026, \

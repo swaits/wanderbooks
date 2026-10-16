@@ -19,7 +19,9 @@ use rust_decimal::Decimal;
 use std::collections::BTreeMap;
 
 fn pct(part: Decimal, whole: Decimal) -> Option<Decimal> {
-    (!whole.is_zero()).then(|| (part / whole * Decimal::from(100)).round_dp(1))
+    part.checked_div(whole)?
+        .checked_mul(Decimal::from(100))
+        .map(|x| x.round_dp(1))
 }
 
 pub fn show(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
@@ -289,6 +291,9 @@ fn by_customer(ui: &mut Ui, b: &Books) {
     let p = pal(ui.ctx());
     let (ys, ye) = b.fiscal_ytd();
     let mut by: BTreeMap<String, Decimal> = BTreeMap::new();
+    // An invoice an earlier version journaled may be past exact arithmetic:
+    // then the card says so instead of charting a wrong share.
+    let mut cant: Option<String> = None;
     for id in 1..b.ledger.next_invoice_id() {
         if let Some(inv) = b.ledger.get_invoice(id)
             && inv.date >= ys
@@ -299,8 +304,16 @@ fn by_customer(ui: &mut Ui, b: &Books) {
                 .get_customer(inv.customer_id)
                 .map(|c| c.name.clone())
                 .unwrap_or_default();
-            *by.entry(who).or_default() += inv.total();
+            let sum = by.entry(who).or_default();
+            match inv.total().ok().and_then(|t| sum.checked_add(t)) {
+                Some(t) => *sum = t,
+                None => cant = Some(format!("invoice {id}'s total can't be computed exactly")),
+            }
         }
+    }
+    let total = rows_total(&by);
+    if total.is_none() && cant.is_none() {
+        cant = Some("the invoices' total can't be computed exactly".into());
     }
     let mut rows: Vec<(String, Decimal)> = by.into_iter().collect();
     rows.sort_by_key(|r| std::cmp::Reverse(r.1));
@@ -309,6 +322,10 @@ fn by_customer(ui: &mut Ui, b: &Books) {
         "Invoiced by customer, this year",
         |_| {},
         |ui| {
+            if let Some(why) = &cant {
+                widgets::empty(ui, icon::USERS, "Can't be computed", why);
+                return;
+            }
             if rows.is_empty() {
                 widgets::empty(
                     ui,
@@ -318,7 +335,7 @@ fn by_customer(ui: &mut Ui, b: &Books) {
                 );
                 return;
             }
-            let total: Decimal = rows.iter().map(|r| r.1).sum();
+            let total = total.unwrap_or_default();
             if let Some((top, v)) = rows.first() {
                 ui.label(
                     RichText::new(format!(
@@ -333,6 +350,12 @@ fn by_customer(ui: &mut Ui, b: &Books) {
             charts::hbars(ui, &rows, p.series[1]);
         },
     );
+}
+
+/// The sum of the customers' totals, None past exact arithmetic.
+fn rows_total(by: &BTreeMap<String, Decimal>) -> Option<Decimal> {
+    by.values()
+        .try_fold(Decimal::ZERO, |t, v| t.checked_add(*v))
 }
 
 fn by_class(ui: &mut Ui, b: &Books) {
@@ -380,4 +403,42 @@ fn by_class(ui: &mut Ui, b: &Books) {
             );
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{Build, cents, d, find, render};
+    use ledger_core::arap::DocumentLine;
+
+    /// pct: part of whole as a percent, to one place; none of nothing.
+    #[test]
+    fn a_percent_of_a_whole() {
+        assert_eq!(pct(cents(2_500), cents(20_000)), Some(Decimal::new(125, 1)));
+        assert_eq!(pct(cents(1), cents(3)), Some(Decimal::new(333, 1)));
+        assert_eq!(pct(cents(1), Decimal::ZERO), None);
+        assert_eq!(pct(Decimal::MAX, Decimal::new(1, 2)), None);
+    }
+
+    /// "Invoiced by customer, this year": this fiscal year's invoices only.
+    #[test]
+    fn invoiced_by_customer_is_this_years() {
+        let mut b = Build::new("profit-customers");
+        let line = |c: i64| {
+            vec![DocumentLine {
+                description: "work".into(),
+                amount: cents(c),
+            }]
+        };
+        let acme = b.s.add_customer("Acme").unwrap();
+        let beta = b.s.add_customer("Beta").unwrap();
+        b.s.create_invoice(acme, d(2026, 3, 1), d(2026, 3, 31), line(30_000))
+            .unwrap();
+        b.s.create_invoice(beta, d(2025, 6, 1), d(2025, 6, 30), line(100_000))
+            .unwrap();
+        let (_dir, books) = b.books();
+        let (texts, _) = render(books, Route::Profit, |_| {});
+        find(&texts, "Invoiced by customer, this year");
+        find(&texts, "Acme is 100% of invoiced income.");
+    }
 }

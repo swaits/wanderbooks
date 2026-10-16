@@ -1,0 +1,24 @@
+# The harness that wrote tests/fixtures/old-books, through the Store API of
+# the version that wrote them (main 188c90ea, 2026-10-17), and that version's
+# expected.json (bin/expect). Not a workspace member: point the two paths at
+# a checkout of the writing version (`git archive 188c90ea | tar -x -C
+# wb-main`), then
+#   cargo run --bin writer -- OUT     (the P0 review's thirteen and control)
+#   cargo run --bin extras -- OUT     (the edges of chrono and Decimal)
+#   cargo run --bin extras2 -- OUT    (depreciation for 10000-01; 1,044 drafts)
+#   cargo run --bin older -- OUT      (x_older_rules, with its JournalWriter)
+#   cargo run --bin expect -- OUT     (expected.json beside each journal)
+# and copy each journal.jsonl, blobs/ and expected.json into old-books/.
+[package]
+name = "writer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ledger-core = { path = "wb-main/crates/ledger-core" }
+ledger-store = { path = "wb-main/crates/ledger-store" }
+chrono = "=0.4.45"
+rust_decimal = "=1.43.0"
+serde_json = "1"
+
+[workspace]

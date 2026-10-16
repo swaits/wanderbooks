@@ -88,6 +88,14 @@ fn outside(dir: &Path) -> PathBuf {
     d
 }
 
+/// The server's import root, beside the books dir `dir`: W-9 files handed
+/// to books.set_w9 by path. Never where the server writes TINs.
+fn inbox(dir: &Path) -> PathBuf {
+    let d = PathBuf::from(format!("{}-inbox", dir.display()));
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
 /// `wanderbooks.toml` with a company name, the receipt threshold, and
 /// extra `[books]` TOML; the vault key file is outside the books dir.
 fn books_toml(dir: &Path, threshold: &str, books_extra: &str) -> PathBuf {
@@ -114,6 +122,9 @@ impl Mcp {
             .arg(dir.join("books-data"))
             .arg("--books-toml")
             .arg(toml)
+            // Files handed over by path come only from here.
+            .arg("--import-root")
+            .arg(inbox(dir))
             .env("XDG_RUNTIME_DIR", &run)
             // Never the user's real vault key (the default key file is
             // under XDG_CONFIG_HOME); the tests name theirs anyway.
@@ -461,7 +472,7 @@ impl Mcp {
     }
     /// A W-9 file outside the books; it shows the TIN, like the real one.
     fn w9_file(&self, name: &str, tin: &str) -> PathBuf {
-        let p = self.outside().join(name);
+        let p = inbox(&self.books_dir()).join(name);
         std::fs::write(&p, format!("%PDF-1.4 Form W-9 TIN {tin}")).unwrap();
         p
     }
@@ -566,8 +577,8 @@ fn set_w9_refusals_write_nothing_anywhere() {
     let mut m = books("refusals");
     let acme = m.party_id("Acme Design");
     m.add_party("IRS", &["tax_agency"]);
-    let missing = m.outside().join("no-such-w9.pdf");
-    let txt = m.outside().join("w9.txt");
+    let missing = inbox(&m.books_dir()).join("no-such-w9.pdf");
+    let txt = inbox(&m.books_dir()).join("w9.txt");
     std::fs::write(&txt, "W-9").unwrap();
     for (party, extra) in [
         ("Acme Design", json!({"tin": "57193284", "tin_type": "ssn"})), // eight digits
@@ -722,6 +733,20 @@ fn the_w9_file_goes_to_the_vault_never_the_documents() {
             json!({"party": "Acme Design", "save_to": save_to.to_str().unwrap()}),
         );
     }
+    // Each refused as such, never as a failed write.
+    for (save_to, said) in [
+        (to.clone(), "a file is there already"),
+        (
+            m.outside().join("no/such/dir/w9.pdf"),
+            "the folder for that path doesn't exist",
+        ),
+    ] {
+        let why = m.refuse(
+            "books.get_w9",
+            json!({"party": "Acme Design", "save_to": save_to.to_str().unwrap()}),
+        );
+        assert!(why.contains(said), "{why}");
+    }
     // A party with no W-9 file in the vault.
     m.w9("Rent Co", json!({"tin": EIN, "tin_type": "ein"}));
     m.refuse(
@@ -739,6 +764,36 @@ fn the_w9_file_goes_to_the_vault_never_the_documents() {
     };
     assert_eq!(p["w9"]["in_vault"], true);
     assert_eq!(p["w9"]["kept_at"], "wanderbooks vault");
+}
+
+/// A W-9 file is a PDF, PNG or JPEG, by its extension in any case
+/// (.pdf, .png, .jpg, .jpeg): each is taken into the vault and comes back
+/// byte for byte, under its own name.
+#[test]
+fn every_w9_file_type_is_taken() {
+    let mut m = books("w9-types");
+    for (n, name) in ["w9.pdf", "w9.png", "w9.jpg", "w9.jpeg", "W9.JPG"]
+        .iter()
+        .enumerate()
+    {
+        let party = format!("Payee {n}");
+        m.add_party(&party, &["contractor"]);
+        let src = m.w9_file(name, "000");
+        let Out::Ok(p) = m.w9(
+            &party,
+            json!({"tin_last4": "0000", "w9_file_path": src.to_str().unwrap()}),
+        ) else {
+            panic!("{name} refused")
+        };
+        assert_eq!(p["w9"]["in_vault"], true, "{name}");
+        let to = m.outside().join(format!("copy-{n}"));
+        let out = m.ok(
+            "books.get_w9",
+            json!({"party": party, "save_to": to.to_str().unwrap()}),
+        );
+        assert_eq!(out["file_name"], *name);
+        assert_eq!(std::fs::read(&to).unwrap(), std::fs::read(&src).unwrap());
+    }
 }
 
 #[test]
@@ -811,7 +866,7 @@ fn a_key_file_inside_the_books_is_refused() {
     let why = m
         .w9("Acme Design", json!({"tin": SSN, "tin_type": "ssn"}))
         .err_text();
-    assert!(why.contains("inside the books dir"), "{why}");
+    assert!(why.contains("inside the books' folder"), "{why}");
     assert!(!dir.join("vault.key").exists());
     assert!(!dir.join("vault").exists());
 }
@@ -1184,7 +1239,7 @@ fn books_in_git_must_ignore_the_vault() {
         .w9("Acme Design", json!({"tin": SSN, "tin_type": "ssn"}))
         .err_text();
     assert!(
-        why.contains(".gitignore") && why.contains("vault/"),
+        why.contains("version history") && why.contains("Ask the human"),
         "{why}"
     );
     assert!(!m.vault().exists() && !m.key().exists());
@@ -1697,6 +1752,48 @@ fn a_package_with_tins_goes_only_outside_the_books() {
     assert!(!books.join("cpa.zip").exists());
 }
 
+/// A package goes to a new file in a folder that exists, with or without
+/// TINs: a missing folder and a taken file are each refused as such (not
+/// as a failed write); without TINs, a new .zip path or an existing folder
+/// takes it.
+#[test]
+fn a_package_goes_only_to_a_new_file_in_a_folder_that_exists() {
+    let mut m = k1_books("k1-dest");
+    let missing = m.outside().join("no/such/dir/cpa.zip");
+    let taken = m.outside().join("taken.zip");
+    std::fs::write(&taken, b"x").unwrap();
+    for tins in [true, false] {
+        for (to, said) in [
+            (&missing, "the folder for that path doesn't exist"),
+            (&taken, "a file is there already"),
+        ] {
+            let why = m.refuse(
+                "books.export_cpa_package",
+                json!({"as_of": "2026-12-31", "cash_accounts": ["1000"],
+                       "include_tins": tins, "save_to": to.to_str().unwrap()}),
+            );
+            assert!(why.contains(said), "include_tins {tins}: {why}");
+        }
+    }
+    assert_eq!(std::fs::read(&taken).unwrap(), b"x");
+    let to = m.outside().join("plain.zip");
+    m.read_only(
+        "books.export_cpa_package",
+        json!({"as_of": "2026-12-31", "cash_accounts": ["1000"],
+               "include_tins": false, "save_to": to.to_str().unwrap()}),
+    );
+    assert!(unzip(&to).contains_key("README.txt"));
+    let folder = m.outside().join("packages");
+    std::fs::create_dir_all(&folder).unwrap();
+    m.read_only(
+        "books.export_cpa_package",
+        json!({"as_of": "2026-12-31", "cash_accounts": ["1000"],
+               "include_tins": false, "save_to": folder.to_str().unwrap()}),
+    );
+    let saved: Vec<_> = std::fs::read_dir(&folder).unwrap().collect();
+    assert_eq!(saved.len(), 1, "one package in the folder");
+}
+
 /// A locked vault never fails the package: every TIN row says why, and
 /// tin_gaps lists each member and payee.
 #[test]
@@ -1775,6 +1872,35 @@ fn refusals_never_echo_a_tin() {
     }
 }
 
+/// B-26 for resource reads: a refused `resources/read` quotes the URI it
+/// was given, in its message and its data, and never repeats a TIN in it,
+/// however the URI carries one (a receipt id, a handbook section, an
+/// unknown path, a digest's `since`).
+#[test]
+fn resource_refusals_never_echo_a_tin() {
+    let mut m = books("resource-echo");
+    for uri in [
+        format!("books://receipts/{MEMBER_SSN_DIGITS}"),
+        format!("books://receipts/{MEMBER_SSN}"),
+        format!("books://handbook/{MEMBER_SSN}"),
+        format!("books://handbook/{MEMBER_SSN_DIGITS}"),
+        format!("books://{MEMBER_SSN_DIGITS}"),
+        format!("books://reports/{MEMBER_SSN}"),
+        format!("books://digest?since={MEMBER_SSN}"),
+        format!("books://digest?since={MEMBER_SSN_DIGITS}"),
+    ] {
+        let resp = m.rpc("resources/read", json!({"uri": uri}));
+        let err = resp
+            .get("error")
+            .unwrap_or_else(|| panic!("{uri} should be refused: {resp}"));
+        assert!(
+            !holds_tin(err.to_string().as_bytes(), MEMBER_SSN_DIGITS),
+            "{uri} echoed the TIN: {err}"
+        );
+        assert!(!err["message"].as_str().unwrap().is_empty(), "{err}");
+    }
+}
+
 /// k1::member_party: a vendor whose display name is a member's name, with
 /// a W-9 EIN in the vault, never puts its TIN on the member's K-1 row:
 /// the member's TIN is a gap.
@@ -1832,4 +1958,174 @@ fn joint_filers_are_noted_in_the_package() {
     let readme = String::from_utf8(pkg["README.txt"].clone()).unwrap();
     let note = "Stephen Example and Kat Example file a joint individual return: each receives their own Schedule K-1; both are reported on the one Form 1040 (Schedule E, Part II).";
     assert_eq!(readme.matches(note).count(), 1, "once per pair: {readme}");
+}
+
+/// The vault's files and their bytes, by path.
+fn vault_bytes(m: &Mcp) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+    files_under(&m.vault())
+        .into_iter()
+        .map(|p| {
+            let bytes = std::fs::read(&p).unwrap();
+            (p, bytes)
+        })
+        .collect()
+}
+
+/// MCP's idempotentHint ("calling it again with the same arguments has no
+/// further effect"; plan/served.md 4.9): a tool says so only when it is
+/// true of the books. Each tool here is called twice with the same
+/// arguments on a fixture where the first call does something; the hint is
+/// set exactly when the second call leaves the journal and the TIN vault
+/// byte for byte as the first left them. Every tool marked idempotent is in
+/// the table, so a new one is checked too.
+#[test]
+fn idempotent_tools_change_nothing_when_repeated() {
+    let mut m = books("idempotent");
+    m.accounts(&[
+        ("1200", "Receivables", "asset"),
+        ("1300", "Prepaid", "asset"),
+        ("1500", "Equipment", "asset"),
+        ("1501", "Accumulated Depreciation", "asset"),
+        ("6100", "Depreciation", "expense"),
+        ("6300", "Insurance", "expense"),
+    ]);
+    m.add_party("Dana Employee", &["employee"]);
+    let entry = m.post(
+        "2026-02-01",
+        json!({}),
+        &[("6000", "debit", "100.00"), ("1000", "credit", "100.00")],
+    );
+    let asset = m.ok(
+        "books.register_asset",
+        json!({"description": "Laptop", "purchase_date": "2026-01-15", "cost": "2400.00",
+               "useful_life_months": 24, "cost_account": "1500",
+               "accum_depr_account": "1501", "expense_account": "6100"}),
+    )["asset_id"]
+        .as_u64()
+        .unwrap();
+    m.ok(
+        "books.create_schedule",
+        json!({"kind": "prepaid_expense", "description": "Insurance", "total": "300.00",
+               "start": "2026-01-01", "months": 3, "balance_account": "1300",
+               "pl_account": "6300"}),
+    );
+    m.ok(
+        "books.create_recurring",
+        json!({"description": "Rent", "frequency": "monthly", "start": "2026-01-01",
+               "lines": [{"account": "6999", "side": "debit", "amount": "50.00"},
+                         {"account": "1000", "side": "credit", "amount": "50.00"}]}),
+    );
+    let category = m.read_only("books.tax_categories", json!({}))["categories"][0]["key"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let calls: Vec<(&str, Value)> = vec![
+        ("books.verify", json!({"blobs": true})),
+        (
+            "books.run_schedules",
+            json!({"through": "2026-03-31", "confirmed": true}),
+        ),
+        ("books.run_recurring", json!({"through": "2026-03-15"})),
+        (
+            "books.set_vendor_1099",
+            json!({"vendor": "Acme Design", "form_1099": "misc"}),
+        ),
+        (
+            "books.set_entry_vendor",
+            json!({"entry_id": entry, "vendor": "Acme Design"}),
+        ),
+        (
+            "books.label_asset",
+            json!({"asset": asset.to_string(), "serial": "SN-1"}),
+        ),
+        (
+            "books.set_asset_tax_basis",
+            json!({"asset": asset.to_string(), "rule": "cost"}),
+        ),
+        (
+            "books.assign_role",
+            json!({"role": "receivables", "account": "1200"}),
+        ),
+        (
+            "books.set_tax_category",
+            json!({"account": "6000", "category": category}),
+        ),
+        (
+            "books.run_depreciation",
+            json!({"period": "2026-03", "asset_id": asset}),
+        ),
+        (
+            "books.mark_cleared",
+            json!({"entry_id": entry, "line_index": 1, "cleared": true}),
+        ),
+        (
+            "books.update_party",
+            json!({"party": "Rent Co", "notes": "pays on the 1st"}),
+        ),
+        (
+            "books.set_party_roles",
+            json!({"party": "Rent Co", "add": ["financial_institution"]}),
+        ),
+        (
+            "books.set_w9",
+            json!({"party": "Acme Design", "received_on": "2026-01-05",
+                   "entity_type": "individual/sole proprietor", "tin": SSN, "tin_type": "ssn"}),
+        ),
+        (
+            "books.set_w9",
+            json!({"party": "Rent Co", "received_on": "2026-01-05", "entity_type": "llc",
+                   "tin_last4": "9105", "kept_at": "the office safe"}),
+        ),
+        (
+            "books.set_tin",
+            json!({"party": "Dana Employee", "tin": MEMBER_SSN, "tin_type": "ssn"}),
+        ),
+        (
+            "books.set_w4",
+            json!({"party": "Dana Employee", "received_on": "2026-01-05", "state": "UT",
+                   "kept_at": "the office safe"}),
+        ),
+        (
+            "books.set_entry_party",
+            json!({"entry_id": entry, "party": "Acme Design"}),
+        ),
+        (
+            "books.set_fx_rate",
+            json!({"currency": "EUR", "date": "2026-01-02", "rate": "1.10"}),
+        ),
+    ];
+    let list = m.rpc("tools/list", json!({}));
+    let marked: std::collections::BTreeSet<String> = list["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| t["annotations"]["idempotentHint"] == json!(true))
+        .map(|t| t["name"].as_str().unwrap().to_string())
+        .collect();
+    for name in &marked {
+        assert!(
+            calls.iter().any(|(n, _)| n == name),
+            "{name} is marked idempotent: add it to this table"
+        );
+    }
+    let mut repeats_change: std::collections::BTreeMap<&str, bool> = Default::default();
+    for (name, args) in &calls {
+        m.ok(name, args.clone());
+        let (journal, vault) = (m.journal(), vault_bytes(&m));
+        m.ok(name, args.clone());
+        let changed = m.journal() != journal || vault_bytes(&m) != vault;
+        *repeats_change.entry(name).or_default() |= changed;
+    }
+    let wrong: Vec<String> = repeats_change
+        .into_iter()
+        .filter(|(name, changed)| marked.contains(*name) == *changed)
+        .map(|(name, changed)| {
+            format!(
+                "{name}: marked idempotent {}, but a repeat {} the books",
+                marked.contains(name),
+                if changed { "changes" } else { "leaves alone" },
+            )
+        })
+        .collect();
+    assert!(wrong.is_empty(), "{wrong:#?}");
 }

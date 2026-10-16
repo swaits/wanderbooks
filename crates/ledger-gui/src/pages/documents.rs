@@ -202,7 +202,7 @@ fn tile(
             Some(x) => format!(
                 "#{e} · {} · {}",
                 fmt::date_short(x.date),
-                fmt::dollars(x.amount)
+                fmt::dollars_or(x.amount)
             ),
             None => format!("#{e}"),
         },
@@ -544,7 +544,7 @@ fn links_section(ui: &mut Ui, b: &Books, a: &Attachment, go: &mut Option<Route>)
                     RichText::new(format!(
                         "{} · {}",
                         fmt::date(x.date),
-                        fmt::dollars(x.amount)
+                        fmt::dollars_or(x.amount)
                     ))
                     .font(theme::regular(11.5))
                     .color(p.muted),
@@ -561,5 +561,29 @@ fn links_section(ui: &mut Ui, b: &Books, a: &Attachment, go: &mut Option<Route>)
                 );
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{Build, d, find, render};
+
+    /// A document's page lists what it is linked to: an entry with its date
+    /// and amount.
+    #[test]
+    fn a_document_lists_the_entry_it_is_linked_to() {
+        let mut b = Build::new("document-links");
+        let (cash, capital) = (b.cash, b.capital);
+        let e = b.post(d(2026, 1, 2), cash, capital, 100_000);
+        let (att, _, _) =
+            b.s.file_document("other", "note.pdf", "application/pdf", b"%PDF note", None)
+                .unwrap();
+        b.s.link_attachment(att, ledger_store::Subject::Entry(e))
+            .unwrap();
+        let (_dir, books) = b.books();
+        let (texts, _) = render(books, Route::Document(att), |_| {});
+        find(&texts, "LINKED TO");
+        find(&texts, "Jan 2, 2026 \u{b7} $1,000.00");
     }
 }

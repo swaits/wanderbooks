@@ -168,7 +168,18 @@ impl Period {
 }
 
 /// Validate a period's date range before creation.
+/// [`validate_period_order`], and both ends inside the calendar the books
+/// keep (crate::calendar; P0 review round 3, S1). For new periods; replay
+/// checks only the order (rules.md B-28).
 pub fn validate_period_range(start: NaiveDate, end: NaiveDate) -> Result<(), LedgerError> {
+    crate::calendar::check(start)?;
+    crate::calendar::check(end)?;
+    validate_period_order(start, end)
+}
+
+/// The check every journaled `period.created` passed when it was written
+/// (the rule through 2026-10-16): the end is not before the start.
+pub fn validate_period_order(start: NaiveDate, end: NaiveDate) -> Result<(), LedgerError> {
     if end < start {
         return Err(LedgerError::InvalidPeriodRange {
             start: start.to_string(),

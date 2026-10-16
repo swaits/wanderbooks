@@ -1,0 +1,67 @@
+{
+  "assets": [
+    {
+      "accum_depr_account": 4,
+      "acquired_by": null,
+      "cost": {
+        "amount": "1200.00",
+        "currency": [
+          85,
+          83,
+          68
+        ]
+      },
+      "cost_account": 5,
+      "description": "thing",
+      "expense_account": 3,
+      "id": 1,
+      "method": "StraightLine",
+      "purchase_date": "2026-01-01",
+      "salvage_value": {
+        "amount": "0",
+        "currency": [
+          85,
+          83,
+          68
+        ]
+      },
+      "serial": null,
+      "status": "Active",
+      "tag": null,
+      "tax": null,
+      "useful_life_months": 120000
+    }
+  ],
+  "bills": [],
+  "entries": [],
+  "entry_parties": [],
+  "invoices": [],
+  "payroll_runs": [],
+  "periods": [],
+  "recurring": [],
+  "schedules": [],
+  "snapshot": {
+    "Ok": {
+      "balance_sheet": {
+        "assets": "0",
+        "balanced": true,
+        "current_earnings": "0",
+        "equity": "0",
+        "liabilities": "0"
+      },
+      "profit_and_loss": {
+        "expenses": "0",
+        "net_income": "0",
+        "revenue": "0"
+      },
+      "trial_balance": {
+        "lines": [],
+        "total_credits": "0",
+        "total_debits": "0"
+      }
+    }
+  },
+  "verify": {
+    "Ok": null
+  }
+}

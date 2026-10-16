@@ -219,7 +219,7 @@ pub fn k1_detail(
             .iter()
             .map(|m| sum(e, Side::Credit, m.capital_account))
             .collect();
-        let takes = share_property(pool, &credits);
+        let takes = share_property(pool, &credits)?;
         for (i, m) in members.iter().enumerate() {
             let (credit, take) = (credits[i], takes[i]);
             if !(credit - take).is_zero() {
@@ -276,16 +276,27 @@ pub fn k1_detail(
 /// (INVARIANT 4): at most their total credit, in proportion to each
 /// credit, rounded toward zero to the cent, the leftover cents by largest
 /// remainder. Each part is at most its own credit.
-fn share_property(pool: Decimal, credits: &[Decimal]) -> Vec<Decimal> {
+/// Refused when whole × credit is beyond exact arithmetic (credits near
+/// the line limit; P0 review round 3, S1).
+fn share_property(pool: Decimal, credits: &[Decimal]) -> Result<Vec<Decimal>, LedgerError> {
     use rust_decimal::RoundingStrategy::ToZero;
-    let total: Decimal = credits.iter().sum();
+    let too_large =
+        || LedgerError::TooLargeToCompute("a member's share of contributed property".into());
+    let total = credits
+        .iter()
+        .try_fold(Decimal::ZERO, |t, c| t.checked_add(*c))
+        .ok_or_else(too_large)?;
     let whole = pool.min(total);
     if whole <= Decimal::ZERO || total <= Decimal::ZERO {
-        return vec![Decimal::ZERO; credits.len()];
+        return Ok(vec![Decimal::ZERO; credits.len()]);
     }
     // whole × credit is exact; ÷ total is exact whenever the share is a
     // whole number of cents, so truncating never loses a cent it is owed.
-    let exact: Vec<Decimal> = credits.iter().map(|c| whole * c / total).collect();
+    let exact: Vec<Decimal> = credits
+        .iter()
+        .map(|c| whole.checked_mul(*c).and_then(|x| x.checked_div(total)))
+        .collect::<Option<_>>()
+        .ok_or_else(too_large)?;
     let mut parts: Vec<Decimal> = exact
         .iter()
         .map(|x| x.round_dp_with_strategy(2, ToZero))
@@ -293,7 +304,7 @@ fn share_property(pool: Decimal, credits: &[Decimal]) -> Vec<Decimal> {
     let remainders: Vec<Decimal> = exact.iter().zip(&parts).map(|(x, p)| x - p).collect();
     crate::kernel::apportion(whole, &mut parts, &remainders, Decimal::new(1, 2))
         .expect("each part is short by under a cent, so the shortfall is under a cent per member");
-    parts
+    Ok(parts)
 }
 
 /// The party a member (by name, as in wanderbooks.toml) is in the
@@ -829,21 +840,38 @@ mod tests {
         flipped.reverse();
         assert_eq!(split(&bk, &flipped), vec![each, each]);
         assert_eq!(
-            share_property(d("401"), &[d("750"), d("250")]),
+            share_property(d("401"), &[d("750"), d("250")]).unwrap(),
             vec![d("300.75"), d("100.25")]
         );
         assert_eq!(
-            share_property(d("0.01"), &[d("5"), d("5")]),
+            share_property(d("0.01"), &[d("5"), d("5")]).unwrap(),
             vec![d("0.01"), d("0.00")]
         );
         // More property than credit (part financed): at most the credits.
         assert_eq!(
-            share_property(d("900"), &[d("300"), d("100")]),
+            share_property(d("900"), &[d("300"), d("100")]).unwrap(),
             vec![d("300"), d("100")]
         );
         assert_eq!(
-            share_property(d("50"), &[d("0"), d("0")]),
+            share_property(d("50"), &[d("0"), d("0")]).unwrap(),
             vec![d("0"), d("0")]
+        );
+        // Credits near the line limit: whole x credit is past exact
+        // arithmetic, so the split is refused, never a panic (P0 review
+        // round 3, S1); at a quarter of it, it still splits exactly.
+        let near = d("900000000000000");
+        assert!(matches!(
+            share_property(near, &[near, near]),
+            Err(LedgerError::TooLargeToCompute(_))
+        ));
+        assert!(matches!(
+            share_property(near, &[Decimal::MAX, Decimal::MAX]),
+            Err(LedgerError::TooLargeToCompute(_))
+        ));
+        let quarter = d("250000000000");
+        assert_eq!(
+            share_property(quarter, &[quarter, quarter]).unwrap(),
+            vec![d("125000000000"), d("125000000000")]
         );
     }
 

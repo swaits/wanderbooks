@@ -16,6 +16,22 @@ use ledger_core::reports::profit_and_loss_for_period;
 use ledger_core::{AccountType, EntryStatus, PeriodStatus, vendor_1099_report};
 use rust_decimal::Decimal;
 
+/// A figure the books can't compute (rules.md B-28: books an earlier
+/// version wrote may hold dates past chrono's calendar or amounts past
+/// exact arithmetic): a Problem saying so and why, never a guess.
+fn cant_compute(what: String, why: &ledger_core::LedgerError, target: Option<Route>) -> Attention {
+    Attention {
+        severity: Severity::Problem,
+        title: format!("{what} can't be computed"),
+        detail: format!("{why}."),
+        target,
+        prompt: format!(
+            "In wanderbooks, {} can't be computed ({why}). Find the record behind it and tell me how to correct it.",
+            what.to_lowercase()
+        ),
+    }
+}
+
 /// Everything the books need, as items to show.
 ///
 /// ```text
@@ -61,7 +77,11 @@ use rust_decimal::Decimal;
 ///      amortization: no counterparty by nature) (one item: Info under
 ///      suggest, Todo under require; its prompt names
 ///      books.set_entry_party).
-///   3. Nothing else: books with none of those yield no items.
+///   3. Nothing else: books with none of those yield no items, except
+///      that a figure behind an item that can't be computed (an
+///      amortization plan past chrono's last day, an aging past exact
+///      arithmetic: books an earlier version wrote, rules.md B-28) is one
+///      Problem item saying so, never a panic or a guess.
 ///   4. Every item's prompt starts "In wanderbooks," or names
 ///      wanderbooks, and its amounts are the books' exact amounts.
 /// ```
@@ -77,14 +97,14 @@ pub fn find(b: &Books) -> Vec<Attention> {
                 "#{} · {} · {}. Drafts appear in no report until posted.",
                 e.id,
                 fmt::date(e.date),
-                fmt::dollars(e.amount)
+                fmt::dollars_or(e.amount)
             ),
             target: Some(Route::Entry(e.id)),
             prompt: format!(
                 "In wanderbooks, review draft entry {} (\"{}\", {}): attach its receipt if it needs one, preview it, and post it if it's right.",
                 e.id,
                 e.description,
-                fmt::dollars(e.amount)
+                fmt::dollars_or(e.amount)
             ),
         });
     }
@@ -95,7 +115,9 @@ pub fn find(b: &Books) -> Vec<Attention> {
         .filter(|e| e.status == EntryStatus::Posted && e.missing_receipt)
         .collect();
     if missing.len() > 3 {
-        let total: Decimal = missing.iter().map(|e| e.amount).sum();
+        let total = missing
+            .iter()
+            .try_fold(Decimal::ZERO, |t, e| t.checked_add(e.amount?));
         let list: Vec<String> = missing
             .iter()
             .map(|e| format!("{} ({}, {})", e.id, e.description, e.date))
@@ -105,7 +127,7 @@ pub fn find(b: &Books) -> Vec<Attention> {
             title: format!("{} without receipts", fmt::count(missing.len(), "entry", "entries")),
             detail: format!(
                 "{} in entries with no receipt attached ({}).",
-                fmt::dollars(total),
+                fmt::dollars_or(total),
                 b.receipt_rule()
             ),
             target: Some(Route::Transactions),
@@ -123,7 +145,7 @@ pub fn find(b: &Books) -> Vec<Attention> {
                 "#{} · {} · {}: {}.",
                 e.id,
                 fmt::date(e.date),
-                fmt::dollars(e.amount),
+                fmt::dollars_or(e.amount),
                 b.receipt_rule()
             ),
             target: Some(Route::Entry(e.id)),
@@ -131,7 +153,7 @@ pub fn find(b: &Books) -> Vec<Attention> {
                 "In wanderbooks, entry {} (\"{}\", {} on {}) has no receipt. Find it and attach it with books.attach_receipt.",
                 e.id,
                 e.description,
-                fmt::dollars(e.amount),
+                fmt::dollars_or(e.amount),
                 e.date
             ),
         });
@@ -157,9 +179,31 @@ pub fn find(b: &Books) -> Vec<Attention> {
     }
 
     for s in b.ledger.schedules() {
-        let due = s.due(today);
+        // A schedule an earlier version journaled may not compute (its
+        // months past chrono's last day): say so, never guess.
+        let due = match s.due(today) {
+            Ok(due) => due,
+            Err(e) => {
+                out.push(cant_compute(
+                    format!("Amortization schedule \"{}\"", s.description),
+                    &e,
+                    Some(Route::Company),
+                ));
+                continue;
+            }
+        };
         if !due.is_empty() {
-            let total: Decimal = due.iter().map(|(_, a)| *a).sum();
+            let Some(total) = due
+                .iter()
+                .try_fold(Decimal::ZERO, |t, (_, a)| t.checked_add(*a))
+            else {
+                out.push(cant_compute(
+                    format!("Amortization schedule \"{}\"", s.description),
+                    &ledger_core::LedgerError::TooLargeToCompute("the months due".into()),
+                    Some(Route::Company),
+                ));
+                continue;
+            };
             out.push(Attention {
                 severity: Severity::Todo,
                 title: format!("Amortization due: {}", s.description),
@@ -230,7 +274,9 @@ pub fn find(b: &Books) -> Vec<Attention> {
     }
 
     // Rules set by law that wanderbooks may no longer know (rules.md;
-    // Stephen, 2026-10-13): research or ask, then update them for everyone.
+    // Stephen, 2026-10-13): the agent finds the figure from the authority
+    // or asks, confirms it, and passes it explicitly (the handbook's
+    // "Rules that change with the law"); the human reports it upstream.
     for rule in ledger_core::rules::stale_rules(today) {
         out.push(Attention {
             severity: Severity::Todo,
@@ -241,8 +287,8 @@ pub fn find(b: &Books) -> Vec<Attention> {
             ),
             target: None,
             prompt: format!(
-                "wanderbooks' {} is known only through {}. Find the current figure from the official source (see {} in the wanderbooks repo), or ask me or our CPA, and tell me what you found. Then update the rule for everyone: open a pull request at https://github.com/swaits/wanderbooks with the new value and its official source (or at least an issue).",
-                rule.name, rule.known_through, rule.source
+                "In wanderbooks, the {} is known only through {}. Find the current figure from the official authority, {}, or ask me or our CPA, and confirm it with me; then pass it explicitly wherever a tool asks for it. Tell me what you found and its official source, so I can report it upstream and the rule is updated for everyone.",
+                rule.name, rule.known_through, rule.authority
             ),
         });
     }
@@ -309,15 +355,39 @@ pub fn find(b: &Books) -> Vec<Attention> {
         });
     }
 
-    let overdue = |rows: Vec<ledger_core::AgingRow>| -> (usize, Decimal) {
-        let late: Vec<Decimal> = rows
+    // Overdue: (parties, total), or why it can't be computed (documents
+    // are restored as journaled, of any size).
+    let overdue = |rows: Result<Vec<ledger_core::AgingRow>, ledger_core::LedgerError>| {
+        let too_large = || ledger_core::LedgerError::TooLargeToCompute("the overdue total".into());
+        let late: Vec<Decimal> = rows?
             .iter()
-            .map(|r| r.days_30 + r.days_60 + r.days_90 + r.days_90_plus)
+            .map(|r| {
+                [r.days_60, r.days_90, r.days_90_plus]
+                    .into_iter()
+                    .try_fold(r.days_30, Decimal::checked_add)
+                    .ok_or_else(too_large)
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
             .filter(|d| !d.is_zero())
             .collect();
-        (late.len(), late.iter().sum())
+        let total = late
+            .iter()
+            .try_fold(Decimal::ZERO, |t, d| t.checked_add(*d))
+            .ok_or_else(too_large)?;
+        Ok::<_, ledger_core::LedgerError>((late.len(), total))
     };
-    let (n, total) = overdue(b.ledger.ap_aging(today));
+    let (n, total) = match overdue(b.ledger.ap_aging(today)) {
+        Ok(v) => v,
+        Err(e) => {
+            out.push(cant_compute(
+                "The payables aging".into(),
+                &e,
+                Some(Route::Reports(crate::nav::ReportKind::ApAging)),
+            ));
+            (0, Decimal::ZERO)
+        }
+    };
     if n > 0 {
         out.push(Attention {
             severity: Severity::Problem,
@@ -330,7 +400,17 @@ pub fn find(b: &Books) -> Vec<Attention> {
             prompt: "In wanderbooks, show me the A/P aging and which bills are past due.".into(),
         });
     }
-    let (n, total) = overdue(b.ledger.ar_aging(today));
+    let (n, total) = match overdue(b.ledger.ar_aging(today)) {
+        Ok(v) => v,
+        Err(e) => {
+            out.push(cant_compute(
+                "The receivables aging".into(),
+                &e,
+                Some(Route::Reports(crate::nav::ReportKind::ArAging)),
+            ));
+            (0, Decimal::ZERO)
+        }
+    };
     if n > 0 {
         out.push(Attention {
             severity: Severity::Problem,
@@ -433,8 +513,20 @@ pub fn find(b: &Books) -> Vec<Attention> {
         }
     }
 
-    let due = b.depreciation_due(today);
-    if due.amount > Decimal::ZERO {
+    // The register computes unless a contributor basis an earlier version
+    // journaled is past exact arithmetic: then one item says so.
+    let (due, register) = match (b.depreciation_due(today), b.asset_register(today)) {
+        (Ok(due), Ok(register)) => (Some(due), Some(register)),
+        (Err(e), _) | (_, Err(e)) => {
+            out.push(cant_compute(
+                "The fixed asset register".into(),
+                &e,
+                Some(Route::Reports(crate::nav::ReportKind::FixedAssetRegister)),
+            ));
+            (None, None)
+        }
+    };
+    if let Some(due) = due.filter(|d| d.amount > Decimal::ZERO) {
         let months = if due.periods.is_empty() {
             "every month not yet posted".to_string()
         } else {
@@ -456,8 +548,7 @@ pub fn find(b: &Books) -> Vec<Attention> {
             ),
         });
     }
-    let register = b.asset_register(today);
-    let unregistered = register.unregistered_cost();
+    let unregistered = register.map_or(Decimal::ZERO, |r| r.unregistered_cost());
     if !unregistered.is_zero() {
         let (title, why) = if unregistered > Decimal::ZERO {
             (
@@ -568,4 +659,81 @@ pub fn find(b: &Books) -> Vec<Attention> {
     }
     out.sort_by_key(|a| a.severity);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Empty books opened as of `today`.
+    fn books(tag: &str, today: chrono::NaiveDate) -> Books {
+        let dir =
+            std::env::temp_dir().join(format!("ledger-gui-attention-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let data_dir = dir.join("books-data");
+        ledger_store::Store::create(&data_dir, ledger_core::Currency::USD).unwrap();
+        let b = crate::data::load_once(&crate::data::Source {
+            data_dir,
+            books_toml: None,
+            today: Some(today),
+        })
+        .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        b
+    }
+
+    /// INVARIANTS 2 and 4: a dated rule past its review is one Todo item
+    /// whose prompt asks the agent to find the figure from the official
+    /// authority (named, never the repo's copy), confirm it with the human
+    /// and pass it explicitly, and to tell the human so it can be reported
+    /// upstream; before the review there is no such item. No prompt points
+    /// the agent at files, git, GitHub or pull requests.
+    #[test]
+    fn a_stale_rule_asks_for_the_authority_and_the_humans_confirmation() {
+        let rule = ledger_core::rules::THRESHOLD_1099;
+        let review = rule.review_after();
+        assert!(
+            find(&books("fresh", review.pred_opt().unwrap()))
+                .iter()
+                .all(|a| !a.title.contains(rule.name)),
+            "no item before the review date"
+        );
+        let items = find(&books("stale", review));
+        let stale: Vec<_> = items
+            .iter()
+            .filter(|a| a.title == format!("Check the {}", rule.name))
+            .collect();
+        assert_eq!(stale.len(), 1, "{items:?}");
+        let a = stale[0];
+        assert_eq!(a.severity, Severity::Todo);
+        assert!(
+            a.detail.contains(&rule.known_through.to_string()),
+            "{}",
+            a.detail
+        );
+        for want in [
+            "In wanderbooks,",
+            rule.name,
+            &rule.known_through.to_string(),
+            rule.authority,
+            "confirm it with me",
+            "pass it explicitly",
+            "report it upstream",
+        ] {
+            assert!(a.prompt.contains(want), "{want:?} missing: {}", a.prompt);
+        }
+        for item in &items {
+            let lower = item.prompt.to_lowercase();
+            for never in ["pull request", ".md", "docs/", rule.source] {
+                assert!(!lower.contains(never), "{never:?} in {}", item.prompt);
+            }
+            for word in lower.split(|c: char| !c.is_alphanumeric()) {
+                assert!(
+                    !["git", "github", "repo", "repository", "issue"].contains(&word),
+                    "{word:?} in {}",
+                    item.prompt
+                );
+            }
+        }
+    }
 }

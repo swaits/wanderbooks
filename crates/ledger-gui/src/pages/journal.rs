@@ -41,7 +41,14 @@ fn amount(p: &Value) -> String {
 
 fn entry_text(b: &Books, id: u64) -> String {
     b.entry(id)
-        .map(|e| format!("#{} {} ({})", e.id, e.description, fmt::dollars(e.amount)))
+        .map(|e| {
+            format!(
+                "#{} {} ({})",
+                e.id,
+                e.description,
+                fmt::dollars_or(e.amount)
+            )
+        })
         .unwrap_or_else(|| format!("#{id}"))
 }
 
@@ -1084,4 +1091,22 @@ fn detail(ui: &mut Ui, b: &Books, line: &JournalLine, shell: &mut Shell<'_>) {
                     ui.add(egui::Label::new(RichText::new(json).monospace().size(12.0)).wrap());
                 });
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{Build, d, find, render};
+
+    /// The journal names an entry it posted by number, description and
+    /// amount.
+    #[test]
+    fn the_journal_names_a_posted_entry() {
+        let mut b = Build::new("journal-posted");
+        let (cash, capital) = (b.cash, b.capital);
+        let e = b.post_as("Opening deposit", d(2026, 1, 2), cash, capital, 100_000);
+        let (_dir, books) = b.books();
+        let (texts, _) = render(books, Route::Journal, |_| {});
+        find(&texts, &format!("Posted #{e} Opening deposit ($1,000.00)"));
+    }
 }

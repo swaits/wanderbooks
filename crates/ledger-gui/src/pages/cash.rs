@@ -9,7 +9,7 @@ use crate::fmt;
 use crate::nav::Route;
 use crate::theme::{self, pal};
 use crate::widgets;
-use chrono::{Days, NaiveDate};
+use chrono::{Datelike, Days, NaiveDate};
 use egui::{CornerRadius, RichText, Sense, Ui, vec2};
 use egui_phosphor::regular as icon;
 use ledger_core::analysis::{Interval, balance_history, flows_by_interval, interval_start};
@@ -214,12 +214,27 @@ fn runway(ui: &mut Ui, b: &Books) {
                 );
                 ui.add_space(32.0);
                 if net < Decimal::ZERO {
-                    let months_left = (b.kpis.cash / -net).round_dp(1);
-                    let out = b.today
-                        + Days::new((months_left * Decimal::from(30)).try_into().unwrap_or(0u64));
-                    big(ui, "Runway", format!("{months_left} months"), p.text);
+                    // Checked: a sub-cent average (lines an earlier version
+                    // booked) makes a runway past any calendar.
+                    let months_left = b.kpis.cash.checked_div(-net).map(|m| m.round_dp(1));
+                    let out = months_left
+                        .and_then(|m| m.checked_mul(Decimal::from(30)))
+                        .and_then(|d| u64::try_from(d).ok())
+                        .and_then(|d| b.today.checked_add_days(Days::new(d)));
+                    big(
+                        ui,
+                        "Runway",
+                        months_left
+                            .map_or_else(|| fmt::CANT_COMPUTE.into(), |m| format!("{m} months")),
+                        p.text,
+                    );
                     ui.add_space(32.0);
-                    big(ui, "Cash runs out around", fmt::month(out), p.warning);
+                    big(
+                        ui,
+                        "Cash runs out around",
+                        out.map_or_else(|| "beyond any calendar date".into(), fmt::month),
+                        p.warning,
+                    );
                 } else {
                     big(ui, "Runway", "Cash is growing".into(), p.positive);
                 }
@@ -238,10 +253,46 @@ fn runway(ui: &mut Ui, b: &Books) {
     );
 }
 
+/// A recurring entry's ungenerated occurrences dated `from..=to` (and on
+/// or before its end), found from the occurrence just before `from`
+/// rather than walking from its start: a weekly entry an earlier version
+/// started at chrono's first day has millions of occurrences before today,
+/// and this runs every frame.
+fn occurrences_from(
+    r: &ledger_core::RecurringEntry,
+    from: NaiveDate,
+    to: NaiveDate,
+) -> Vec<NaiveDate> {
+    use ledger_core::Frequency;
+    let last = r.end.map_or(to, |e| e.min(to));
+    // How many periods from the start to `from`, rounded down, less one
+    // for a month-end clamp: never past the first occurrence on or after
+    // `from`.
+    let months = |d: NaiveDate| {
+        (i64::from(d.year()) - i64::from(r.start.year())) * 12 + i64::from(d.month())
+            - i64::from(r.start.month())
+    };
+    let k0 = match r.frequency {
+        Frequency::Weekly => (from - r.start).num_days() / 7,
+        Frequency::Monthly => months(from),
+        Frequency::Quarterly => months(from) / 3,
+        Frequency::Yearly => months(from) / 12,
+    } - 1;
+    let Ok(k0) = u32::try_from(k0.max(0)) else {
+        return Vec::new();
+    };
+    (k0..)
+        .map_while(|k| r.frequency.nth(r.start, k).filter(|d| *d <= last))
+        .filter(|d| *d >= from && !r.generated.contains(d))
+        .collect()
+}
+
 struct Upcoming {
     date: NaiveDate,
     label: String,
-    amount: Decimal,
+    /// None: it can't be computed exactly (a recurring template or a
+    /// document an earlier version journaled, past exact arithmetic).
+    amount: Option<Decimal>,
     route: Option<Route>,
 }
 
@@ -250,23 +301,18 @@ fn coming_up(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
     let horizon = b.today + Days::new(45);
     let mut items: Vec<Upcoming> = Vec::new();
     for r in b.ledger.recurring_entries() {
-        let cash: Decimal = r
+        let cash = r
             .lines
             .iter()
             .filter(|(a, _, _)| b.cash_accounts.contains(a))
-            .map(|(_, s, m)| {
+            .try_fold(Decimal::ZERO, |sum, (_, s, m)| {
                 if *s == ledger_core::Side::Debit {
-                    m.amount
+                    sum.checked_add(m.amount)
                 } else {
-                    -m.amount
+                    sum.checked_sub(m.amount)
                 }
-            })
-            .sum();
-        for d in r
-            .due(horizon)
-            .into_iter()
-            .filter(|d| *d > b.today - Days::new(1))
-        {
+            });
+        for d in occurrences_from(r, b.today, horizon) {
             items.push(Upcoming {
                 date: d,
                 label: format!("{} (recurring)", r.description),
@@ -275,43 +321,51 @@ fn coming_up(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
             });
         }
     }
+    // An open document: its balance, or None when it can't be computed
+    // (shown as such, never left out).
     for id in 1..b.ledger.next_invoice_id() {
-        if let Some(inv) = b.ledger.get_invoice(id)
-            && !inv.balance().is_zero()
-        {
-            let who = b
-                .ledger
-                .get_customer(inv.customer_id)
-                .map(|c| c.name.clone())
-                .unwrap_or_default();
-            let late = inv.due_date < b.today;
-            items.push(Upcoming {
-                date: inv.due_date,
-                label: format!(
-                    "Invoice {id} from {who}{}",
-                    if late { " — overdue" } else { "" }
-                ),
-                amount: inv.balance(),
-                route: Some(Route::Entry(inv.entry_id)),
-            });
+        let Some(inv) = b.ledger.get_invoice(id) else {
+            continue;
+        };
+        let balance = inv.balance().ok();
+        if balance.is_some_and(|x| x.is_zero()) {
+            continue;
         }
+        let who = b
+            .ledger
+            .get_customer(inv.customer_id)
+            .map(|c| c.name.clone())
+            .unwrap_or_default();
+        let late = inv.due_date < b.today;
+        items.push(Upcoming {
+            date: inv.due_date,
+            label: format!(
+                "Invoice {id} from {who}{}",
+                if late { " — overdue" } else { "" }
+            ),
+            amount: balance,
+            route: Some(Route::Entry(inv.entry_id)),
+        });
     }
     for id in 1..b.ledger.next_bill_id() {
-        if let Some(bill) = b.ledger.get_bill(id)
-            && !bill.balance().is_zero()
-        {
-            let who = b
-                .ledger
-                .get_vendor(bill.vendor_id)
-                .map(|v| v.name.clone())
-                .unwrap_or_default();
-            items.push(Upcoming {
-                date: bill.due_date,
-                label: format!("Bill {id} to {who}"),
-                amount: -bill.balance(),
-                route: Some(Route::Entry(bill.entry_id)),
-            });
+        let Some(bill) = b.ledger.get_bill(id) else {
+            continue;
+        };
+        let balance = bill.balance().ok();
+        if balance.is_some_and(|x| x.is_zero()) {
+            continue;
         }
+        let who = b
+            .ledger
+            .get_vendor(bill.vendor_id)
+            .map(|v| v.name.clone())
+            .unwrap_or_default();
+        items.push(Upcoming {
+            date: bill.due_date,
+            label: format!("Bill {id} to {who}"),
+            amount: balance.map(|x| -x),
+            route: Some(Route::Entry(bill.entry_id)),
+        });
     }
     items.sort_by_key(|i| i.date);
     let mut go = None;
@@ -335,19 +389,22 @@ fn coming_up(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                 );
                 return;
             }
-            let (inflow, outflow): (Decimal, Decimal) =
-                items.iter().fold((Decimal::ZERO, Decimal::ZERO), |a, i| {
-                    if i.amount > Decimal::ZERO {
-                        (a.0 + i.amount, a.1)
-                    } else {
-                        (a.0, a.1 - i.amount)
+            // None: an item, or the sum, can't be computed exactly.
+            let (inflow, outflow) = items.iter().fold(
+                (Some(Decimal::ZERO), Some(Decimal::ZERO)),
+                |(inflow, outflow), i| match i.amount {
+                    Some(a) if a > Decimal::ZERO => {
+                        (inflow.and_then(|x| x.checked_add(a)), outflow)
                     }
-                });
+                    Some(a) => (inflow, outflow.and_then(|x| x.checked_sub(a))),
+                    None => (None, None),
+                },
+            );
             ui.label(
                 RichText::new(format!(
                     "Expected in {} · expected out {}",
-                    fmt::dollars(inflow),
-                    fmt::dollars(outflow)
+                    fmt::dollars_or(inflow),
+                    fmt::dollars_or(outflow)
                 ))
                 .font(theme::semibold(13.0)),
             );
@@ -378,10 +435,11 @@ fn coming_up(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                             p.text,
                             r.width() - 70.0 - 130.0,
                         );
-                        let (txt, c) = if it.amount > Decimal::ZERO {
-                            (format!("+{}", fmt::money(it.amount)), p.positive)
-                        } else {
-                            (fmt::money(it.amount), p.text)
+                        let (txt, c) = match it.amount {
+                            Some(a) if a > Decimal::ZERO => {
+                                (format!("+{}", fmt::money(a)), p.positive)
+                            }
+                            a => (fmt::money_or(a), p.text),
                         };
                         ui.painter().text(
                             r.right_center() - vec2(6.0, 0.0),
@@ -411,7 +469,7 @@ fn biggest_outflows(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
         .filter(|e| {
             e.status == ledger_core::EntryStatus::Posted
                 && e.date > since
-                && e.cash_effect < Decimal::ZERO
+                && e.cash_effect.is_some_and(|c| c < Decimal::ZERO)
         })
         .collect();
     out.sort_by_key(|e| e.cash_effect);
@@ -449,7 +507,7 @@ fn biggest_outflows(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                 ui.painter().text(
                     r.right_center() - vec2(6.0, 0.0),
                     egui::Align2::RIGHT_CENTER,
-                    fmt::money(e.cash_effect),
+                    fmt::money_or(e.cash_effect),
                     theme::semibold(13.0),
                     p.text,
                 );
@@ -461,5 +519,209 @@ fn biggest_outflows(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
     );
     if let Some(id) = go {
         shell.go(Route::Entry(id));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ledger_core::{Frequency, RecurringEntry};
+
+    fn d(y: i32, m: u32, day: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, day).unwrap()
+    }
+
+    /// occurrences_from is the recurring entry's due dates in the window,
+    /// exactly, without walking from the start: month ends clamped, ends
+    /// and generated dates honored, a start after the window, and a start
+    /// at chrono's first day.
+    #[test]
+    fn occurrences_in_a_window_are_the_due_dates_in_it() {
+        for frequency in [
+            Frequency::Weekly,
+            Frequency::Monthly,
+            Frequency::Quarterly,
+            Frequency::Yearly,
+        ] {
+            for start in [
+                d(2020, 1, 31),
+                d(2024, 2, 29),
+                d(2026, 1, 10),
+                d(2026, 10, 20),
+                d(2027, 1, 1),
+                d(2027, 1, 15),
+            ] {
+                for (end, (from, to)) in [None, Some(d(2026, 11, 2))].into_iter().flat_map(|end| {
+                    // Windows a few weeks long, years long, and one
+                    // opening before the entry starts.
+                    [
+                        (d(2026, 10, 17), d(2026, 12, 1)),
+                        (d(2026, 6, 1), d(2028, 12, 31)),
+                        (d(2025, 12, 20), d(2027, 12, 31)),
+                    ]
+                    .map(|w| (end, w))
+                }) {
+                    let mut r = RecurringEntry {
+                        id: 1,
+                        description: "x".into(),
+                        lines: vec![],
+                        frequency,
+                        start,
+                        end,
+                        generated: Default::default(),
+                    };
+                    if let Some(first) = frequency.nth(start, 3) {
+                        r.generated.insert(first);
+                    }
+                    let want: Vec<NaiveDate> =
+                        r.due(to).into_iter().filter(|x| *x >= from).collect();
+                    assert_eq!(
+                        occurrences_from(&r, from, to),
+                        want,
+                        "{frequency:?} {start} {end:?} {from}..{to}"
+                    );
+                }
+            }
+        }
+        let far = RecurringEntry {
+            id: 1,
+            description: "weekly since chrono's first day".into(),
+            lines: vec![],
+            frequency: Frequency::Weekly,
+            start: NaiveDate::MIN,
+            end: None,
+            generated: Default::default(),
+        };
+        let got = occurrences_from(&far, d(2026, 10, 17), d(2026, 11, 30));
+        assert!((6..=7).contains(&got.len()), "{got:?}");
+        assert!(got.iter().all(|x| x.weekday() == NaiveDate::MIN.weekday()));
+    }
+
+    /// The cash page's burn and runway, from the last three full months:
+    /// burning $1,000.00 a month on $7,000.00 is a 7-month runway, out
+    /// around May 2027 (210 days from Oct 15); an average of zero is cash
+    /// growing, not a runway past any date.
+    #[test]
+    fn runway_is_cash_over_the_average_burn() {
+        use crate::test_support::{Build, find, render};
+        let mut b = Build::new("runway");
+        let (cash, capital, rent) = (b.cash, b.capital, b.rent);
+        b.post(d(2026, 1, 2), cash, capital, 1_000_000);
+        for m in [7, 8, 9] {
+            b.post(d(2026, m, 10), rent, cash, 100_000);
+        }
+        let (_dir, books) = b.books();
+        let (texts, p) = render(books, Route::Cash, |_| {});
+        let net = find(&texts, &fmt::dollars(Decimal::new(-100_000, 2)));
+        assert_eq!(net.color, p.negative);
+        find(&texts, "Runway");
+        find(&texts, "7 months");
+        find(&texts, "May 2027");
+        // Zero on average: growing (July out, August in, September quiet).
+        let mut b = Build::new("runway-flat");
+        let (cash, capital, rent) = (b.cash, b.capital, b.rent);
+        b.post(d(2026, 1, 2), cash, capital, 1_000_000);
+        b.post(d(2026, 7, 10), rent, cash, 100_000);
+        b.post(d(2026, 8, 10), cash, capital, 100_000);
+        let (_dir, books) = b.books();
+        let (texts, p) = render(books, Route::Cash, |_| {});
+        assert_eq!(find(&texts, "Cash is growing").color, p.positive);
+        assert!(!crate::test_support::has(
+            &texts,
+            "beyond any calendar date"
+        ));
+    }
+
+    /// "Coming up" lists recurring cash (its cash lines' sign: rent paid
+    /// out is negative, a recurring entry moving no cash zero, never
+    /// "+0.00"), open invoices (overdue only when due before today) and
+    /// open bills (negative), sorted by date, with the expected in and out.
+    #[test]
+    fn coming_up_is_what_cash_expects() {
+        use crate::test_support::{Build, cents, find, has, render};
+        use ledger_core::arap::DocumentLine;
+        use ledger_core::{AccountType, Currency, Frequency, Money, NewRecurring, Side};
+        let mut b = Build::new("coming-up");
+        let (cash, capital, rent) = (b.cash, b.capital, b.rent);
+        let accrued =
+            b.s.add_account("2000", "Accrued", AccountType::Liability, None, false)
+                .unwrap();
+        b.post(d(2026, 1, 2), cash, capital, 1_000_000);
+        let usd = |c: i64| Money::new(cents(c), Currency::USD);
+        for (what, cr, c, day) in [("Rent", cash, 50_000, 20), ("Accrual", accrued, 5_000, 25)] {
+            b.s.register_recurring(NewRecurring {
+                description: what.into(),
+                lines: vec![(rent, Side::Debit, usd(c)), (cr, Side::Credit, usd(c))],
+                frequency: Frequency::Monthly,
+                start: d(2026, 1, day),
+                end: None,
+            })
+            .unwrap();
+        }
+        let line = |c: i64| {
+            vec![DocumentLine {
+                description: "work".into(),
+                amount: cents(c),
+            }]
+        };
+        let acme = b.s.add_customer("Acme").unwrap();
+        let beta = b.s.add_customer("Beta").unwrap();
+        b.s.create_invoice(acme, d(2026, 9, 1), d(2026, 10, 1), line(120_000))
+            .unwrap();
+        b.s.create_invoice(beta, d(2026, 10, 1), d(2026, 10, 15), line(20_000))
+            .unwrap();
+        let supplier = b.s.add_vendor("Supplier").unwrap();
+        b.s.create_bill(supplier, d(2026, 10, 1), d(2026, 11, 5), line(30_000))
+            .unwrap();
+        let (_dir, books) = b.books();
+        let (texts, p) = render(books, Route::Cash, |_| {});
+        find(&texts, "Coming up");
+        find(&texts, "Invoice 1 from Acme \u{2014} overdue");
+        find(&texts, "Invoice 2 from Beta");
+        find(&texts, "Bill 1 to Supplier");
+        find(
+            &texts,
+            "Expected in $1,400.00 \u{b7} expected out $1,300.00",
+        );
+        let plus = |c: i64| format!("+{}", fmt::money(cents(c)));
+        assert_eq!(find(&texts, &plus(120_000)).color, p.positive);
+        assert_eq!(find(&texts, &plus(20_000)).color, p.positive);
+        assert_eq!(find(&texts, &fmt::money(cents(-50_000))).color, p.text);
+        assert_eq!(find(&texts, &fmt::money(cents(-30_000))).color, p.text);
+        assert_eq!(find(&texts, &fmt::money(Decimal::ZERO)).color, p.text);
+        assert!(!has(&texts, &plus(0)));
+        assert!(!has(&texts, &plus(50_000)));
+        assert!(!has(&texts, &plus(30_000)));
+    }
+
+    /// "Biggest payments": posted entries of the last 30 days that took
+    /// cash out, never older ones, deposits, or drafts.
+    #[test]
+    fn biggest_payments_are_recent_posted_outflows() {
+        use crate::test_support::{Build, find, has, render};
+        let mut b = Build::new("outflows");
+        let (cash, capital, rent) = (b.cash, b.capital, b.rent);
+        b.post_as("Opening", d(2026, 1, 2), cash, capital, 1_000_000);
+        b.post_as("Old rent", d(2026, 9, 10), rent, cash, 25_000);
+        b.post_as("October rent", d(2026, 10, 1), rent, cash, 25_000);
+        b.post_as("Deposit", d(2026, 10, 5), cash, capital, 5_000);
+        b.draft("Draft pay", d(2026, 10, 10), rent, cash, 7_000);
+        // Thirty days before today exactly: not in the last 30 days.
+        b.post_as("Edge payment", d(2026, 9, 15), rent, cash, 9_000);
+        // An expense the owner paid: no cash out.
+        b.post_as("Owner paid", d(2026, 10, 12), rent, capital, 4_000);
+        let (_dir, books) = b.books();
+        let (texts, _) = render(books, Route::Cash, |_| {});
+        find(&texts, "Biggest payments, last 30 days");
+        find(&texts, "October rent");
+        for gone in [
+            "Old rent",
+            "Deposit",
+            "Draft pay",
+            "Edge payment",
+            "Owner paid",
+        ] {
+            assert!(!has(&texts, gone), "{gone}");
+        }
     }
 }

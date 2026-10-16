@@ -552,9 +552,18 @@ pub struct EntryFlow {
 ///      2100), or a loan paying it off (Dr 2050 / Cr loan): net is the
 ///      amount, what for is the card, as if paid from the bank.
 /// ```
-pub fn entry_flow(entry: &crate::JournalEntry, money: &MoneyAccounts) -> EntryFlow {
+pub fn entry_flow(
+    entry: &crate::JournalEntry,
+    money: &MoneyAccounts,
+) -> Result<EntryFlow, crate::LedgerError> {
     use crate::Side;
     use rust_decimal::Decimal;
+    // A draft's lines are as journaled, of any size (rules.md B-28): every
+    // sum is checked, and one past exact arithmetic is refused.
+    let too_large =
+        || crate::LedgerError::TooLargeToCompute(format!("entry {}'s money flow", entry.id()));
+    let plus = |a: Decimal, b: Decimal| a.checked_add(b).ok_or_else(too_large);
+    let minus = |a: Decimal, b: Decimal| a.checked_sub(b).ok_or_else(too_large);
     let (mut cash_cr, mut cash_dr, mut liab_cr, mut liab_dr) =
         (Decimal::ZERO, Decimal::ZERO, Decimal::ZERO, Decimal::ZERO);
     for l in entry.lines() {
@@ -564,10 +573,10 @@ pub fn entry_flow(entry: &crate::JournalEntry, money: &MoneyAccounts) -> EntryFl
             money.liabilities.contains(&l.account),
             l.side,
         ) {
-            (true, _, Side::Credit) => cash_cr += a,
-            (true, _, Side::Debit) => cash_dr += a,
-            (false, true, Side::Credit) => liab_cr += a,
-            (false, true, Side::Debit) => liab_dr += a,
+            (true, _, Side::Credit) => cash_cr = plus(cash_cr, a)?,
+            (true, _, Side::Debit) => cash_dr = plus(cash_dr, a)?,
+            (false, true, Side::Credit) => liab_cr = plus(liab_cr, a)?,
+            (false, true, Side::Debit) => liab_dr = plus(liab_dr, a)?,
             _ => {}
         }
     }
@@ -581,13 +590,16 @@ pub fn entry_flow(entry: &crate::JournalEntry, money: &MoneyAccounts) -> EntryFl
     let add = |by: &mut std::collections::BTreeMap<crate::AccountId, Decimal>,
                order: &mut Vec<crate::AccountId>,
                account: crate::AccountId,
-               part: Decimal| {
+               part: Decimal|
+     -> Result<(), crate::LedgerError> {
         if !part.is_zero() {
             if !by.contains_key(&account) {
                 order.push(account);
             }
-            *by.entry(account).or_default() += part;
+            let sum = by.entry(account).or_default();
+            *sum = plus(*sum, part)?;
         }
+        Ok(())
     };
     for l in entry.lines() {
         let a = l.amount.amount;
@@ -607,7 +619,7 @@ pub fn entry_flow(entry: &crate::JournalEntry, money: &MoneyAccounts) -> EntryFl
                 }
             };
             match left.iter_mut().find(|(x, _)| *x == l.account) {
-                Some((_, v)) => *v += rest,
+                Some((_, v)) => *v = plus(*v, rest)?,
                 None => left.push((l.account, rest)),
             }
             part
@@ -617,36 +629,39 @@ pub fn entry_flow(entry: &crate::JournalEntry, money: &MoneyAccounts) -> EntryFl
                 Side::Credit => -a,
             }
         };
-        add(&mut by, &mut order, l.account, part);
+        add(&mut by, &mut order, l.account, part)?;
     }
-    let owed_down: Decimal = left
+    let owed_down = left
         .iter()
         .map(|(_, v)| *v)
         .filter(|v| *v > Decimal::ZERO)
-        .sum();
-    let owed_up: Decimal = -left
+        .try_fold(Decimal::ZERO, &plus)?;
+    let owed_up = -left
         .iter()
         .map(|(_, v)| *v)
         .filter(|v| *v < Decimal::ZERO)
-        .sum::<Decimal>();
+        .try_fold(Decimal::ZERO, &plus)?;
     let across = owed_down.min(owed_up);
     let mut across_left = across;
     for (account, v) in left {
         if v > Decimal::ZERO && !across_left.is_zero() {
             let take = v.min(across_left);
             across_left -= take;
-            add(&mut by, &mut order, account, take);
+            add(&mut by, &mut order, account, take)?;
         }
     }
-    let net = (cash_cr - cash_dr) + (liab_cr - liab_dr) + down - up + across;
-    EntryFlow {
+    let net = plus(
+        plus(minus(cash_cr, cash_dr)?, minus(liab_cr, liab_dr)?)?,
+        plus(minus(down, up)?, across)?,
+    )?;
+    Ok(EntryFlow {
         net,
         what_for: order
             .into_iter()
             .map(|a| (a, by[&a]))
             .filter(|(_, v)| !v.is_zero())
             .collect(),
-    }
+    })
 }
 
 /// One party's entries, and the money paid to and received from it in
@@ -702,7 +717,9 @@ pub fn activity_with(
         .filter(|&id| ledger.entry_names_party(id, party))
         .collect();
     let money = money_accounts(ledger, cash);
-    let net_out = |e: &crate::JournalEntry| entry_flow(e, &money).net;
+    // A posted entry's lines are in a line's range, so its flow computes;
+    // one that doesn't counts nothing and is listed as unresolved.
+    let net_out = |e: &crate::JournalEntry| entry_flow(e, &money).map(|f| f.net);
     let (mut paid, mut received) = (Decimal::ZERO, Decimal::ZERO);
     let mut unresolved = BTreeSet::new();
     for &id in &entries {
@@ -712,7 +729,10 @@ pub fn activity_with(
         if e.status() != crate::EntryStatus::Posted || e.date() < start || e.date() > end {
             continue;
         }
-        let net = net_out(e);
+        let Ok(net) = net_out(e) else {
+            unresolved.insert(id);
+            continue;
+        };
         if net.is_zero() {
             continue;
         }
@@ -732,7 +752,8 @@ pub fn activity_with(
                 .reversal_chain(id)
                 .first()
                 .and_then(|&root| ledger.get_entry(root))
-                .map_or(net, net_out),
+                .map_or(Ok(net), net_out)
+                .unwrap_or(net),
             None => net,
         };
         if side > Decimal::ZERO {

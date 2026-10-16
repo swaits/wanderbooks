@@ -3,7 +3,7 @@
 //! Round-trip persistence, tamper detection, rebuild-from-journal healing,
 //! blob deduplication and hash verification.
 
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 use ledger_core::{AccountType, Currency, Money, Side};
 use ledger_store::{JournalWriter, Store, StoreError};
 use rust_decimal::Decimal;
@@ -1586,6 +1586,337 @@ fn books_written_under_older_rules_still_open() {
         lines[1].amount.amount,
         "108.34567".parse::<Decimal>().unwrap()
     );
+}
+
+/// The books an earlier wanderbooks wrote, one directory each under
+/// tests/fixtures/old-books: its journal (and blobs) exactly as it wrote
+/// them, and expected.json, what that version computed from them. Each was
+/// written through main 188c90ea's Store API (or, for x_older_rules, its
+/// JournalWriter, as above), and expected.json by main's own code: verify,
+/// the canonical report snapshot, and every record as replayed. They hold
+/// what P0 bounds for new commands only (rules.md B-28): dates before 0001
+/// and after 9999 (to chrono's first and last days), draft, recurring and
+/// share amounts past the line limit (to Decimal's largest), a contributor
+/// basis past it, sub-cent document and payroll lines, an asset life of
+/// 10,000 years, schedules and assets running into chrono's last month,
+/// depreciation posted for 10000-01, one recurring run of 1,044 drafts.
+/// tests/fixtures/old-books-writer is the harness that wrote them; each
+/// later phase adds the books its version writes.
+fn old_books() -> Vec<PathBuf> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/old-books");
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(&root)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.is_dir())
+        .collect();
+    dirs.sort();
+    // The P0 review's thirteen and its control, and the edges added with
+    // them (2026-10-17).
+    assert!(dirs.len() >= 29, "{} old books", dirs.len());
+    dirs
+}
+
+/// A fixture's books (journal and blobs, never expected.json) in a fresh
+/// directory of its own for `test`: opening writes a database and a lock
+/// beside them.
+fn old_books_copy(fixture: &std::path::Path, test: &str) -> PathBuf {
+    fn copy(from: &std::path::Path, to: &std::path::Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for e in std::fs::read_dir(from).unwrap() {
+            let e = e.unwrap();
+            if e.file_name() == "expected.json" {
+                continue;
+            }
+            if e.file_type().unwrap().is_dir() {
+                copy(&e.path(), &to.join(e.file_name()));
+            } else {
+                std::fs::copy(e.path(), to.join(e.file_name())).unwrap();
+            }
+        }
+    }
+    let name = fixture.file_name().unwrap().to_string_lossy();
+    let dir = test_dir(&format!("old-books-{test}-{name}"));
+    copy(fixture, &dir);
+    dir
+}
+
+/// What expected.json records of a ledger (beside verify): the same JSON
+/// main's harness wrote, field for field.
+fn old_books_figures(l: &ledger_core::Ledger) -> serde_json::Value {
+    let entries: Vec<_> = (1..l.next_entry_id())
+        .filter_map(|id| l.get_entry(id))
+        .collect();
+    let parties: Vec<_> = (1..l.next_entry_id())
+        .map(|id| (id, l.entry_parties(id)))
+        .filter(|(_, p)| !p.is_empty())
+        .collect();
+    serde_json::json!({
+        "snapshot": ledger_core::reports::snapshot(l).map_err(|e| e.to_string()),
+        "entries": entries,
+        "assets": l.registered_assets().collect::<Vec<_>>(),
+        "periods": l.list_periods(),
+        "schedules": l.schedules().collect::<Vec<_>>(),
+        "recurring": l.recurring_entries().collect::<Vec<_>>(),
+        "invoices": l.invoices(),
+        "bills": l.bills(),
+        "payroll_runs": l.list_payroll_runs(),
+        "entry_parties": parties,
+    })
+}
+
+/// Contract (posted is forever, rules.md B-28; P0 review round 4,
+/// 2026-10-17): every book an earlier version wrote opens, in the writer
+/// (Store::open, its database rebuilt from the journal) and the viewer
+/// (Snapshot::load) alike, verifies as it did, and replays to exactly the
+/// figures that version computed: the trial balance, P&L and balance sheet,
+/// and every entry, asset, period, schedule, recurring entry, document,
+/// payroll run and share, to the last decimal place as journaled.
+#[test]
+fn books_an_earlier_version_wrote_open_to_its_figures() {
+    for fixture in old_books() {
+        let name = fixture.file_name().unwrap().to_string_lossy().to_string();
+        let expected: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(fixture.join("expected.json")).unwrap()).unwrap();
+        let dir = old_books_copy(&fixture, "figures");
+        let store = Store::open(&dir).unwrap_or_else(|e| panic!("{name}: the writer refused: {e}"));
+        let verify = store.verify().map(|_| ()).map_err(|e| e.to_string());
+        assert_eq!(
+            serde_json::json!(verify),
+            expected["verify"],
+            "{name}: verify"
+        );
+        let mut figures = old_books_figures(store.ledger());
+        figures["verify"] = expected["verify"].clone();
+        assert_eq!(figures, expected, "{name}: the writer's figures");
+        drop(store);
+        // And again from the database it built (no rebuild this time).
+        let store = Store::open(&dir).unwrap_or_else(|e| panic!("{name}: reopen: {e}"));
+        let mut again = old_books_figures(store.ledger());
+        again["verify"] = expected["verify"].clone();
+        assert_eq!(again, expected, "{name}: reopened");
+        drop(store);
+        let snap = ledger_store::Snapshot::load(&dir)
+            .unwrap_or_else(|e| panic!("{name}: the viewer refused: {e}"));
+        let mut viewed = old_books_figures(snap.ledger());
+        viewed["verify"] = expected["verify"].clone();
+        assert_eq!(viewed, expected, "{name}: the viewer's figures");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Every figure the engine derives from old books (B-28: computed, or
+/// refused with TooLargeToCompute or DateOutOfRange, never a panic): every
+/// report over the books' whole span and the calendar's, every asset's
+/// schedule and register row, every amortization plan, every recurring
+/// entry's due dates, aging, 1099 and K-1 worksheets, shares and money
+/// flows of every entry, documents, payroll, period closes, and
+/// reconciliations. Returns how many were refused, so a run that refuses
+/// everything can't pass unnoticed.
+fn every_figure_of(l: &ledger_core::Ledger) -> (usize, usize) {
+    use ledger_core::analysis::{self, Interval};
+    use ledger_core::reports;
+    let (mut ok, mut refused) = (0usize, 0usize);
+    let mut tally = |r: Result<(), ledger_core::LedgerError>| match r {
+        Ok(()) => ok += 1,
+        Err(
+            ledger_core::LedgerError::TooLargeToCompute(_)
+            | ledger_core::LedgerError::DateOutOfRange(_),
+        ) => refused += 1,
+        // Any other refusal is a reason the books give (an unknown
+        // account, a period already closed): answered, not a panic.
+        Err(_) => refused += 1,
+    };
+    let dates: Vec<NaiveDate> = (1..l.next_entry_id())
+        .filter_map(|id| l.get_entry(id))
+        .map(|e| e.date())
+        .chain(l.registered_assets().map(|a| a.purchase_date))
+        .chain(l.list_periods().iter().flat_map(|p| [p.start, p.end]))
+        .chain(l.schedules().map(|s| s.start))
+        .collect();
+    let first = dates.iter().min().copied().unwrap_or(NaiveDate::MIN);
+    let last = dates.iter().max().copied().unwrap_or(NaiveDate::MAX);
+    let spans = [
+        (first, last),
+        (
+            NaiveDate::from_ymd_opt(1, 1, 1).unwrap(),
+            NaiveDate::from_ymd_opt(9999, 12, 31).unwrap(),
+        ),
+        (NaiveDate::MIN, NaiveDate::MAX),
+    ];
+    let accounts: Vec<_> = l.chart().all().map(|a| a.id).collect();
+    let cash: Vec<_> = l
+        .chart()
+        .all()
+        .filter(|a| a.code == "1000")
+        .map(|a| a.id)
+        .collect();
+    let members: Vec<reports::MemberCapital> = l
+        .chart()
+        .all()
+        .filter(|a| a.account_type == AccountType::Equity)
+        .map(|a| reports::MemberCapital {
+            name: a.name.clone(),
+            capital_account: a.id,
+            distribution_account: None,
+            share: Decimal::ONE,
+        })
+        .collect();
+    tally(reports::snapshot(l).map(|_| ()));
+    let _ = reports::trial_balance(l);
+    tally(reports::balance_sheet(l).map(|_| ()));
+    tally(reports::unclosed_earnings(l).map(|_| ()));
+    tally(reports::profit_and_loss_by_class(l).map(|_| ()));
+    for (start, end) in spans {
+        for d in [start, end] {
+            let _ = reports::trial_balance_as_of(l, d);
+            tally(reports::balance_sheet_as_of(l, d).map(|_| ()));
+            tally(l.ar_aging(d).map(|_| ()));
+            tally(l.ap_aging(d).map(|_| ()));
+            tally(ledger_core::fixed_asset_register(l, d).map(|_| ()));
+            for r in l.recurring_entries() {
+                // Weekly from year 1 through chrono's last day is
+                // 13.7 million dates: through the books' own span only.
+                if d <= last {
+                    let _ = r.due(d);
+                }
+            }
+            for s in l.schedules() {
+                tally(s.due(d).map(|_| ()));
+            }
+            for a in l.registered_assets() {
+                let _ = ledger_core::depreciation_schedule(a, d);
+                let _ = ledger_core::book_value(a, d);
+                tally(
+                    ledger_core::disposal_amounts(
+                        a,
+                        d,
+                        Money::new(Decimal::ZERO, l.base_currency()),
+                    )
+                    .map(|_| ()),
+                );
+            }
+        }
+        tally(reports::profit_and_loss_for_period(l, start, end, None).map(|_| ()));
+        tally(reports::general_ledger(l, start, end).map(|_| ()));
+        tally(reports::members_equity(l, start, end, &members).map(|_| ()));
+        tally(
+            reports::cash_flow(
+                l,
+                &reports::CashFlowParams {
+                    start,
+                    end,
+                    cash_accounts: cash.clone(),
+                    financing_accounts: vec![],
+                    investing_accounts: vec![],
+                },
+            )
+            .map(|_| ()),
+        );
+        tally(ledger_core::k1::k1_worksheet(l, start, end, &members, &cash).map(|_| ()));
+        tally(ledger_core::tax_summary(l, start, end, None).map(|_| ()));
+        let _ = reports::cancelled_in_span(l, start, end);
+        // Interval series over a span of 524,000 years are not what anyone
+        // asks: the books' own span, and the calendar's in years.
+        if (end - start).num_days() < 400 * 366 {
+            for interval in [Interval::Month, Interval::Quarter, Interval::Year] {
+                let pieces = analysis::intervals(start, end, interval);
+                let ends: Vec<NaiveDate> = pieces.iter().map(|(_, e)| *e).collect();
+                let _ = analysis::balance_series(l, &accounts, &ends);
+                tally(analysis::pnl_by_interval(l, start, end, interval).map(|_| ()));
+                let _ = analysis::flows_by_interval(l, &accounts, start, end, interval);
+            }
+        } else {
+            let _ = analysis::intervals(start, end, Interval::Year).len();
+        }
+    }
+    let _ = analysis::balance_history(l, &accounts);
+    for year in [first.year(), last.year(), 2026] {
+        let sources = ledger_core::form1099::PaymentAccounts {
+            cash: cash.clone(),
+            financing: vec![],
+        };
+        tally(
+            ledger_core::form1099::vendor_1099_report_with_members(l, year, None, &sources, &[])
+                .map(|_| ()),
+        );
+    }
+    let money = ledger_core::parties::money_accounts(l, &cash);
+    let party_members: Vec<ledger_core::PartyMember> = l
+        .parties()
+        .map(|p| ledger_core::PartyMember {
+            party: p.id,
+            share: Decimal::new(5, 1),
+            capital: members.first().map_or(0, |m| m.capital_account),
+            distributions: None,
+        })
+        .collect();
+    for id in 1..l.next_entry_id() {
+        let Some(e) = l.get_entry(id) else { continue };
+        tally(ledger_core::parties::entry_flow(e, &money).map(|_| ()));
+        tally(ledger_core::shares::share_target(e, &money).map(|_| ()));
+        let _ = ledger_core::shares::resolve(e, l.entry_parties(id), &money, &party_members);
+        let _ = e.validate(l.chart());
+    }
+    for p in l.parties() {
+        for (start, end) in spans {
+            let _ =
+                ledger_core::parties::activity_with(l, p.id, (start, end), &cash, &party_members);
+        }
+    }
+    for inv in l.invoices() {
+        tally(inv.total().map(|_| ()));
+        tally(inv.balance().map(|_| ()));
+    }
+    for bill in l.bills() {
+        tally(bill.total().map(|_| ()));
+        tally(bill.balance().map(|_| ()));
+    }
+    for run in l.list_payroll_runs() {
+        for line in &run.lines {
+            tally(line.net_pay().map(|_| ()));
+        }
+    }
+    for s in l.schedules() {
+        tally(s.plan().map(|_| ()));
+        tally(s.remaining().map(|_| ()));
+    }
+    for p in l.list_periods() {
+        tally(l.preview_close_period(p.id).map(|_| ()));
+    }
+    for &account in &cash {
+        for d in [first, last] {
+            for balance in [Decimal::ZERO, Decimal::MAX, Decimal::MIN] {
+                tally(l.reconciliation_report(account, d, balance).map(|_| ()));
+            }
+        }
+    }
+    (ok, refused)
+}
+
+/// B-28 over every old book: each figure is computed or refused, never a
+/// panic, in the writer's ledger and the viewer's.
+#[test]
+fn every_figure_over_old_books_is_computed_or_refused() {
+    let (mut ok, mut refused) = (0, 0);
+    for fixture in old_books() {
+        let dir = old_books_copy(&fixture, "derived");
+        let store = Store::open(&dir).unwrap();
+        let (o, r) = every_figure_of(store.ledger());
+        drop(store);
+        let snap = ledger_store::Snapshot::load(&dir).unwrap();
+        assert_eq!(
+            every_figure_of(snap.ledger()),
+            (o, r),
+            "{}",
+            fixture.display()
+        );
+        ok += o;
+        refused += r;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    // Most figures compute; the edges refuse.
+    assert!(ok > refused, "{ok} computed, {refused} refused");
+    assert!(refused > 0, "none refused: the edges weren't reached");
 }
 
 /// Regression (fuzz_journal_line, 2026-10-13, crash-c9fa20f3): a journal

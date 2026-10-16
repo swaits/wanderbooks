@@ -20,6 +20,7 @@ pub mod account;
 pub mod analysis;
 pub mod arap;
 pub mod assets;
+pub mod calendar;
 pub mod classes;
 pub mod error;
 pub mod form1099;

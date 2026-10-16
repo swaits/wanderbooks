@@ -579,7 +579,14 @@ pub fn show_list(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
 
 /// A number tile on a party's page: label, amount, how it's computed,
 /// and the line under it.
-type Tile = (String, Decimal, String, Option<(String, egui::Color32)>);
+/// (label, value, how, sub); the value None when it can't be computed
+/// exactly (documents restored as an earlier version journaled them).
+type Tile = (
+    String,
+    Option<Decimal>,
+    String,
+    Option<(String, egui::Color32)>,
+);
 
 /// One party, completely.
 pub fn show_party(ui: &mut Ui, b: &Books, id: PartyId, shell: &mut Shell<'_>) {
@@ -665,20 +672,20 @@ pub fn show_party(ui: &mut Ui, b: &Books, id: PartyId, shell: &mut Shell<'_>) {
         let mut tiles: Vec<Tile> = Vec::new();
         tiles.push((
             "Paid out".into(),
-            flow.paid,
+            Some(flow.paid),
             format!("{label}, {span_words}: what this party's posted entries moved out of cash, cards, and what's owed back to whoever paid for the company (net of refunds and reversals of payments)."),
             Some((label.clone(), p.muted)),
         ));
         tiles.push((
             "Received in".into(),
-            flow.received,
+            Some(flow.received),
             format!("{label}, {span_words}: what this party's posted entries brought into cash and those accounts (net of reversals)."),
             Some((label.clone(), p.muted)),
         ));
         let net = flow.net();
         tiles.push((
             "Net".into(),
-            net.abs(),
+            Some(net.abs()),
             "Paid out less received in.".into(),
             Some((
                 if net < Decimal::ZERO {
@@ -716,7 +723,7 @@ pub fn show_party(ui: &mut Ui, b: &Books, id: PartyId, shell: &mut Shell<'_>) {
                 "What the company still owes on its bills today.".into(),
                 (!info.bills.is_empty()).then(|| {
                     (
-                        format!("{} billed in {year}", fmt::dollars(info.billed_ytd)),
+                        format!("{} billed in {year}", fmt::dollars_or(info.billed_ytd)),
                         p.muted,
                     )
                 }),
@@ -742,7 +749,7 @@ pub fn show_party(ui: &mut Ui, b: &Books, id: PartyId, shell: &mut Shell<'_>) {
             };
             tiles.push((
                 format!("1099 amount, {tax_year}"),
-                l.paid,
+                Some(l.paid),
                 "Cash paid in the calendar year, from the 1099 worksheet (ledger-core): posted entries tagged with its vendor record, net of refunds and reversals. Card payments aren't counted (the card issuer reports them).".into(),
                 Some(sub),
             ));
@@ -754,13 +761,15 @@ pub fn show_party(ui: &mut Ui, b: &Books, id: PartyId, shell: &mut Shell<'_>) {
                 ui,
                 widgets::Kpi {
                     label,
-                    value: fmt::dollars(*value),
+                    value: fmt::dollars_or(*value),
                     sub: sub.clone(),
                     spark: None,
                     how,
                 },
             );
-            r.context_menu(|ui| widgets::copy_item(ui, "Copy amount", &value.to_string()));
+            if let Some(v) = value {
+                r.context_menu(|ui| widgets::copy_item(ui, "Copy amount", &v.to_string()));
+            }
         });
 
         // A member's page is their capital account statement too.
@@ -1218,10 +1227,10 @@ fn entries_card(ui: &mut Ui, b: &Books, info: &PartyInfo, go: &mut Option<Route>
                         sub = format!(
                             "Their share, {} of {}, with {} · {sub}",
                             super::entry::share_text(mine),
-                            fmt::dollars(e.amount),
+                            fmt::dollars_or(e.amount),
                             others.join(" & ")
                         );
-                        amount = mine.resolved.map(|v| v.abs()).unwrap_or(e.amount);
+                        amount = mine.resolved.map(|v| v.abs()).or(e.amount);
                     }
                     let resp = row(
                         ui,
@@ -1231,7 +1240,7 @@ fn entries_card(ui: &mut Ui, b: &Books, info: &PartyInfo, go: &mut Option<Route>
                             (format!("#{}", e.id), 64.0, false, p.muted),
                             (e.description.clone(), 0.0, false, text),
                             (kind, 150.0, false, if draft { p.warning } else { p.muted }),
-                            (fmt::money(amount), amt, true, text),
+                            (fmt::money_or(amount), amt, true, text),
                         ],
                         Some((sub.as_str(), p.faint)),
                         false,
@@ -1239,7 +1248,9 @@ fn entries_card(ui: &mut Ui, b: &Books, info: &PartyInfo, go: &mut Option<Route>
                     );
                     resp.context_menu(|ui| {
                         widgets::copy_item(ui, "Copy entry number", &format!("#{}", e.id));
-                        widgets::copy_item(ui, "Copy amount", &e.amount.to_string());
+                        if let Some(a) = e.amount {
+                            widgets::copy_item(ui, "Copy amount", &a.to_string());
+                        }
                     });
                     if resp.on_hover_text("Open this entry").clicked() {
                         *go = Some(Route::Entry(e.id));
@@ -1290,8 +1301,8 @@ fn documents_card(ui: &mut Ui, b: &Books, info: &PartyInfo, go: &mut Option<Rout
                             i.date,
                             i.due_date,
                             i.status,
-                            i.total(),
-                            i.balance(),
+                            i.total().ok(),
+                            i.balance().ok(),
                             i.entry_id,
                         )
                     });
@@ -1305,15 +1316,15 @@ fn documents_card(ui: &mut Ui, b: &Books, info: &PartyInfo, go: &mut Option<Rout
                             i.date,
                             i.due_date,
                             i.status,
-                            i.total(),
-                            i.balance(),
+                            i.total().ok(),
+                            i.balance().ok(),
                             i.entry_id,
                         )
                     });
                 let mut docs: Vec<_> = invoices.chain(bills).collect();
                 docs.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
                 for (name, date, due, status, total, balance, entry) in docs {
-                    let late = !balance.is_zero() && due < b.today;
+                    let late = !balance.is_some_and(|x| x.is_zero()) && due < b.today;
                     let resp = row(
                         ui,
                         w,
@@ -1327,8 +1338,8 @@ fn documents_card(ui: &mut Ui, b: &Books, info: &PartyInfo, go: &mut Option<Rout
                                 if late { p.warning } else { p.text },
                             ),
                             (fmt::words(&format!("{status:?}")), 90.0, false, p.muted),
-                            (fmt::money(total), amt, true, p.text),
-                            (fmt::money(balance), amt, true, p.text),
+                            (fmt::money_or(total), amt, true, p.text),
+                            (fmt::money_or(balance), amt, true, p.text),
                         ],
                         None,
                         false,
@@ -1389,7 +1400,7 @@ fn payroll_card(ui: &mut Ui, b: &Books, party: &Party, info: &PartyInfo, go: &mu
                                 (format!("Run {}", run.id), 80.0, false, p.muted),
                                 (l.employee_name.clone(), 0.0, false, p.text),
                                 (fmt::money(l.gross_pay), amt, true, p.text),
-                                (fmt::money(l.net_pay()), amt, true, p.text),
+                                (fmt::money_or(l.net_pay().ok()), amt, true, p.text),
                             ],
                             None,
                             false,
@@ -1501,15 +1512,18 @@ fn what_for_card(ui: &mut Ui, b: &Books, flow: &PartyFlow, label: &str, go: &mut
 /// Out versus in, month by month over the period ([`Books::party_months`]).
 fn months_card(ui: &mut Ui, b: &Books, id: PartyId, span: (NaiveDate, NaiveDate), label: &str) {
     let p = pal(ui.ctx());
-    let months = b.party_months(id, span);
-    // All time can be long: the chart shows the last 24 months of it.
-    let shown: Vec<_> = months.iter().rev().take(24).rev().collect();
+    // All time can be long (from chrono's first day, in books an earlier
+    // version wrote): the chart shows the last 24 months of it, and only
+    // those are computed.
+    let clipped = crate::books::Books::last_months(span, 24);
+    let months = b.party_months(id, clipped);
+    let shown: Vec<_> = months.iter().collect();
     widgets::titled_card(
         ui,
         "By month",
         |ui| {
             ui.label(
-                RichText::new(if months.len() > shown.len() {
+                RichText::new(if clipped.0 > span.0 {
                     format!("{label}, last {} months", shown.len())
                 } else {
                     label.to_string()
@@ -1547,4 +1561,124 @@ fn months_card(ui: &mut Ui, b: &Books, id: PartyId, span: (NaiveDate, NaiveDate)
             );
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{Build, cents, d, find, render};
+    use ledger_core::arap::DocumentLine;
+
+    /// A customer's page: the entries tagged with them, and their invoices,
+    /// a due date marked late only for an invoice still owed after it.
+    #[test]
+    fn a_customers_page_lists_entries_and_marks_late_invoices() {
+        let mut b = Build::new("party-docs");
+        let cash = b.cash;
+        let acme = b.s.add_customer("Acme").unwrap();
+        let line = |c: i64| {
+            vec![DocumentLine {
+                description: "work".into(),
+                amount: cents(c),
+            }]
+        };
+        // Owed, not yet due; owed, due today; paid, past due; owed, past
+        // due.
+        b.s.create_invoice(acme, d(2026, 10, 1), d(2026, 11, 30), line(10_000))
+            .unwrap();
+        b.s.create_invoice(acme, d(2026, 10, 1), d(2026, 10, 15), line(5_000))
+            .unwrap();
+        let paid =
+            b.s.create_invoice(acme, d(2026, 8, 1), d(2026, 8, 31), line(20_000))
+                .unwrap();
+        b.s.receive_payment(paid, d(2026, 8, 20), cents(20_000), cash)
+            .unwrap();
+        b.s.create_invoice(acme, d(2026, 9, 1), d(2026, 9, 30), line(30_000))
+            .unwrap();
+        let (_dir, books) = b.books();
+        let party = books.ledger.party_of_customer(acme).unwrap();
+        let (texts, p) = render(books, Route::Party(party), |_| {});
+        find(&texts, "Entries");
+        // Four invoices and the payment.
+        find(&texts, "5 entries");
+        find(&texts, "Invoices and bills");
+        for due in [
+            d(2026, 11, 30),
+            d(2026, 10, 15),
+            d(2026, 8, 31),
+            d(2026, 9, 30),
+        ] {
+            let shown = texts.iter().filter(|t| t.text == fmt::date(due)).count();
+            assert_eq!(shown, 1, "{due}");
+        }
+        assert_eq!(find(&texts, &fmt::date(d(2026, 11, 30))).color, p.text);
+        assert_eq!(find(&texts, &fmt::date(d(2026, 10, 15))).color, p.text);
+        assert_eq!(find(&texts, &fmt::date(d(2026, 8, 31))).color, p.text);
+        assert_eq!(find(&texts, &fmt::date(d(2026, 9, 30))).color, p.warning);
+    }
+
+    /// An employee's page lists the payroll runs that name them.
+    #[test]
+    fn an_employees_page_lists_their_payroll_runs() {
+        let mut b = Build::new("party-payroll");
+        let (cash, capital) = (b.cash, b.capital);
+        b.post(d(2026, 1, 2), cash, capital, 1_000_000);
+        let pat = b.s.add_party("Pat", &[Role::Employee]).unwrap();
+        b.s.run_payroll(
+            d(2026, 3, 31),
+            vec![ledger_core::PayrollLine {
+                employee_name: "Pat".into(),
+                employee: Some(pat),
+                gross_pay: cents(100_000),
+                federal_withholding: cents(10_000),
+                state_withholding: Decimal::ZERO,
+                ss_employee: Decimal::ZERO,
+                medicare_employee: Decimal::ZERO,
+                ss_employer: Decimal::ZERO,
+                medicare_employer: Decimal::ZERO,
+                other_deductions: Decimal::ZERO,
+            }],
+            cash,
+        )
+        .unwrap();
+        let (_dir, books) = b.books();
+        let (texts, _) = render(books, Route::Party(pat), |_| {});
+        find(&texts, "Payroll runs");
+    }
+
+    /// A party's "By month" chart: all time over more than two years shows
+    /// its last 24 months, and says so; a shorter period, all of it.
+    #[test]
+    fn the_by_month_chart_says_when_it_shows_the_last_months() {
+        let mut b = Build::new("party-months");
+        let (cash, capital, rent) = (b.cash, b.capital, b.rent);
+        b.post(d(2023, 1, 2), cash, capital, 1_000_000);
+        let sam = b.s.add_party("Sam", &[Role::Contractor]).unwrap();
+        for date in [d(2023, 6, 1), d(2026, 3, 1)] {
+            let e = b.post(date, rent, cash, 10_000);
+            b.s.set_entry_party(e, Some(sam)).unwrap();
+        }
+        let (_dir, books) = b.books();
+        let (texts, _) = render(books, Route::Party(sam), |s| {
+            s.parties.period = PartyPeriod::AllTime
+        });
+        find(&texts, "By month");
+        assert!(
+            texts.iter().any(|t| t.text.ends_with(", last 24 months")),
+            "{:?}",
+            texts.iter().map(|t| &t.text).collect::<Vec<_>>()
+        );
+        let mut b = Build::new("party-months-short");
+        let (cash, capital, rent) = (b.cash, b.capital, b.rent);
+        b.post(d(2026, 1, 2), cash, capital, 1_000_000);
+        let sam = b.s.add_party("Sam", &[Role::Contractor]).unwrap();
+        let e = b.post(d(2026, 3, 1), rent, cash, 10_000);
+        b.s.set_entry_party(e, Some(sam)).unwrap();
+        let (_dir, books) = b.books();
+        let (texts, _) = render(books, Route::Party(sam), |s| {
+            s.parties.period = PartyPeriod::AllTime
+        });
+        find(&texts, "By month");
+        assert!(!texts.iter().any(|t| t.text.contains(", last ")));
+    }
 }

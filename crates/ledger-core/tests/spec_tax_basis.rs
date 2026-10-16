@@ -489,7 +489,7 @@ fn register_books() -> RegisterBooks {
 #[test]
 fn register_rows_carry_the_assets_tax_fields() {
     let b = register_books();
-    let r = fixed_asset_register(&b.l, date(2026, 6, 30));
+    let r = fixed_asset_register(&b.l, date(2026, 6, 30)).unwrap();
     assert_eq!(r.rows.len(), 5);
     for row in &r.rows {
         let a = b.l.get_asset(row.asset_id).unwrap();
@@ -535,12 +535,12 @@ fn register_rows_carry_the_assets_tax_fields() {
 #[test]
 fn register_tax_totals_cover_held_assets_only() {
     let b = register_books();
-    let r = fixed_asset_register(&b.l, date(2026, 6, 30));
+    let r = fixed_asset_register(&b.l, date(2026, 6, 30)).unwrap();
     // 3000.00 + 650.25 + 1200.00 (the disposed 360.00 left out).
     assert_eq!(r.total_tax_basis, d("4850.25"));
     assert_eq!(r.missing_tax_basis, 1);
     // Before the disposal date the old monitor is still held.
-    let r = fixed_asset_register(&b.l, date(2026, 2, 28));
+    let r = fixed_asset_register(&b.l, date(2026, 2, 28)).unwrap();
     assert_eq!(r.total_tax_basis, d("5210.25"));
     assert_eq!(r.missing_tax_basis, 1);
 }
@@ -552,11 +552,11 @@ fn a_disposed_asset_without_a_basis_is_not_missing() {
     let x = register(&mut l, &a, "Laptop", "1000.00");
     let y = register(&mut l, &a, "Desk", "400.00");
     l.dispose_asset(y, date(2026, 3, 31), usd("0.00")).unwrap();
-    let r = fixed_asset_register(&l, date(2026, 6, 30));
+    let r = fixed_asset_register(&l, date(2026, 6, 30)).unwrap();
     assert_eq!(r.missing_tax_basis, 1);
     assert_eq!(r.total_tax_basis, Decimal::ZERO);
     set(&mut l, x, TaxBasisRule::Carryover, Some("900.00"));
-    let r = fixed_asset_register(&l, date(2026, 6, 30));
+    let r = fixed_asset_register(&l, date(2026, 6, 30)).unwrap();
     assert_eq!(r.missing_tax_basis, 0);
     assert_eq!(r.total_tax_basis, d("900.00"));
 }
@@ -565,7 +565,7 @@ fn a_disposed_asset_without_a_basis_is_not_missing() {
 #[test]
 fn an_empty_register_has_no_tax_basis() {
     let (l, _) = fixture();
-    let r = fixed_asset_register(&l, date(2026, 6, 30));
+    let r = fixed_asset_register(&l, date(2026, 6, 30)).unwrap();
     assert!(r.rows.is_empty());
     assert_eq!(r.total_tax_basis, Decimal::ZERO);
     assert_eq!(r.missing_tax_basis, 0);
@@ -576,14 +576,14 @@ fn an_empty_register_has_no_tax_basis() {
 fn tax_basis_does_not_move_book_totals() {
     let (mut l, a) = fixture();
     let x = register(&mut l, &a, "Laptop", "1200.00");
-    let before = fixed_asset_register(&l, date(2026, 6, 30));
+    let before = fixed_asset_register(&l, date(2026, 6, 30)).unwrap();
     set(
         &mut l,
         x,
         TaxBasisRule::PersonalUseConversion,
         Some("2000.00"),
     );
-    let after = fixed_asset_register(&l, date(2026, 6, 30));
+    let after = fixed_asset_register(&l, date(2026, 6, 30)).unwrap();
     assert_eq!(after.total_cost, before.total_cost);
     assert_eq!(after.total_accumulated, before.total_accumulated);
     assert_eq!(after.total_book_value, before.total_book_value);
@@ -656,7 +656,7 @@ proptest! {
                 }
             }
         }
-        let r = fixed_asset_register(&l, date(2026, 6, 30));
+        let r = fixed_asset_register(&l, date(2026, 6, 30)).unwrap();
         prop_assert_eq!(r.total_tax_basis, expected_total);
         prop_assert_eq!(r.missing_tax_basis, expected_missing);
     }

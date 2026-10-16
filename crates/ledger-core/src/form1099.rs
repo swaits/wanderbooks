@@ -81,7 +81,7 @@ pub fn default_threshold(year: i32) -> Result<Decimal, LedgerError> {
             rule: rule.name.to_string(),
             year,
             known_through: rule.known_through,
-            spec: rule.source.to_string(),
+            authority: rule.authority.to_string(),
         });
     }
     Ok(if year <= 2025 {
@@ -190,14 +190,24 @@ fn payment(ledger: &Ledger, entry: &crate::JournalEntry, sources: &PaymentAccoun
 /// The vendor's part of `payment` when the entry names several parties:
 /// its resolved share scaled from the share target to the payment (the
 /// SCENARIOS of [`vendor_1099_report_with_members`], INVARIANT 3).
-fn vendor_part(payment: Decimal, share: Decimal, target: Decimal) -> Decimal {
+/// Refused, never wrapped or rounded early, when payment × share is
+/// beyond exact arithmetic (both near the line limit; P0 review round 3,
+/// S1).
+fn vendor_part(payment: Decimal, share: Decimal, target: Decimal) -> Result<Decimal, LedgerError> {
     if payment == target {
-        share
+        Ok(share)
     } else if target.is_zero() {
-        Decimal::ZERO
+        Ok(Decimal::ZERO)
     } else {
-        (payment * share / target)
-            .round_dp_with_strategy(2, rust_decimal::RoundingStrategy::MidpointAwayFromZero)
+        let scaled = payment
+            .checked_mul(share)
+            .and_then(|x| x.checked_div(target))
+            .ok_or_else(|| {
+                LedgerError::TooLargeToCompute(format!(
+                    "a vendor's share ({share}) of a payment of {payment}"
+                ))
+            })?;
+        Ok(scaled.round_dp_with_strategy(2, rust_decimal::RoundingStrategy::MidpointAwayFromZero))
     }
 }
 
@@ -281,7 +291,7 @@ pub fn vendor_1099_report_with_members(
                 Ok(parts) => {
                     match parts.into_iter().find(|(p, _)| Some(*p) == party) {
                         Some((_, share)) => {
-                            vendor_part(cash, share, crate::shares::share_target(entry, &money))
+                            vendor_part(cash, share, crate::shares::share_target(entry, &money)?)?
                         }
                         // Tagged by hand with a vendor none of the parties
                         // is: nothing to scale by, so the whole payment.
@@ -297,7 +307,10 @@ pub fn vendor_1099_report_with_members(
                 }
             }
         };
-        *paid.entry(vendor).or_default() += amount;
+        let total = paid.entry(vendor).or_default();
+        *total = total.checked_add(amount).ok_or_else(|| {
+            LedgerError::TooLargeToCompute("a vendor's payments for the year".into())
+        })?;
     }
     let mut vendors: Vec<Vendor1099Line> = ledger
         .list_vendors()
@@ -327,4 +340,31 @@ pub fn vendor_1099_report_with_members(
         vendors,
         unresolved,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// vendor_part: the vendor's share scaled from the share target to the
+    /// payment, exactly, rounded to the cent; refused, never a panic, when
+    /// payment x share is past exact arithmetic (P0 review round 3, S1).
+    #[test]
+    fn a_vendor_part_is_scaled_exactly_or_refused() {
+        let d = |s: &str| s.parse::<Decimal>().unwrap();
+        assert_eq!(vendor_part(d("100"), d("40"), d("100")), Ok(d("40")));
+        assert_eq!(vendor_part(d("50"), d("40"), d("100")), Ok(d("20")));
+        assert_eq!(vendor_part(d("1"), d("1"), d("3")), Ok(d("0.33")));
+        assert_eq!(vendor_part(d("2"), d("1"), d("3")), Ok(d("0.67")));
+        assert_eq!(vendor_part(d("5"), d("1"), d("0")), Ok(Decimal::ZERO));
+        let near = d("450000000000000");
+        assert!(matches!(
+            vendor_part(near * d("2"), near, near - d("1")),
+            Err(LedgerError::TooLargeToCompute(_))
+        ));
+        assert!(matches!(
+            vendor_part(Decimal::MAX, Decimal::MAX, d("1")),
+            Err(LedgerError::TooLargeToCompute(_))
+        ));
+    }
 }

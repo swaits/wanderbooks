@@ -134,7 +134,7 @@ fn full_disk_case(name: &str, drafts: u32) -> String {
 fn a_full_disk_mid_command_leaves_the_books_whole() {
     let db_first = full_disk_case("full-disk-db", 0);
     assert!(
-        db_first.contains("sqlite"),
+        db_first.contains("database error"),
         "expected the database to fill first: {db_first}"
     );
 }

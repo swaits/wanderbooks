@@ -15,7 +15,7 @@ use crate::fmt;
 use crate::nav::{ReportKind, Route};
 use crate::theme::{self, pal};
 use crate::widgets;
-use chrono::{Datelike, NaiveDate};
+use chrono::NaiveDate;
 use egui::{Color32, CornerRadius, Margin, RichText, Sense, Ui, vec2};
 use egui_phosphor::regular as icon;
 use ledger_core::{Asset, AssetId, AssetRegister, AssetRegisterRow, AssetStatus, TaxBasisRule};
@@ -59,7 +59,16 @@ pub fn notices(b: &Books, r: &AssetRegister) -> Vec<Notice> {
     let mut out = Vec::new();
     let unposted = r.unposted_depreciation();
     if unposted > Decimal::ZERO {
-        let due = b.depreciation_due(r.as_of);
+        let due = match b.depreciation_due(r.as_of) {
+            Ok(due) => due,
+            Err(e) => {
+                out.push(Notice {
+                    problem: true,
+                    text: format!("Depreciation due can't be computed: {e}."),
+                });
+                return out;
+            }
+        };
         let due_amount = due.amount.clamp(Decimal::ZERO, unposted);
         if due_amount > Decimal::ZERO {
             out.push(Notice {
@@ -398,16 +407,7 @@ fn date_controls(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) -> NaiveDate {
         ui.label(
             RichText::new(format!("{} As of", icon::CALENDAR_BLANK)).font(theme::semibold(13.5)),
         );
-        let mut d =
-            jiff::civil::Date::new(as_of.year() as i16, as_of.month() as i8, as_of.day() as i8)
-                .expect("valid date");
-        ui.add(
-            egui_extras::DatePickerButton::new(&mut d)
-                .id_salt("assets_as_of")
-                .calendar_week(false),
-        );
-        let picked = NaiveDate::from_ymd_opt(i32::from(d.year()), d.month() as u32, d.day() as u32)
-            .expect("valid date");
+        let picked = widgets::date_picker(ui, "assets_as_of", as_of);
         if picked != as_of {
             shell.state.assets.as_of = Some(picked);
         }
@@ -458,7 +458,20 @@ pub fn show_register(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
         }
         let as_of = date_controls(ui, b, shell);
         ui.add_space(12.0);
-        let r = b.asset_register(as_of);
+        let r = match b.asset_register(as_of) {
+            Ok(r) => r,
+            Err(e) => {
+                widgets::card(ui, |ui| {
+                    widgets::empty(
+                        ui,
+                        icon::PACKAGE,
+                        "The register can't be computed",
+                        &format!("{e}. Ask the bookkeeper to find the record behind it."),
+                    )
+                });
+                return;
+            }
+        };
         super::grid(ui, 4, 200.0, 4, |i, ui| {
             let (label, value, how, sub) = match i {
                 0 => (
@@ -722,8 +735,9 @@ fn reconciliation(ui: &mut Ui, b: &Books, r: &AssetRegister, shell: &mut Shell<'
                 );
                 let d = r.unposted_depreciation();
                 // Only the month under way: not a problem, just not yet.
-                let accruing =
-                    d > Decimal::ZERO && b.depreciation_due(r.as_of).amount <= Decimal::ZERO;
+                let accruing = d > Decimal::ZERO
+                    && b.depreciation_due(r.as_of)
+                        .is_ok_and(|due| due.amount <= Decimal::ZERO);
                 let color = if accruing { p.muted } else { diff_color(d) };
                 line(ui, "Difference (not yet posted)", d, true, color);
             });
@@ -814,11 +828,11 @@ pub fn show_asset(ui: &mut Ui, b: &Books, id: AssetId, shell: &mut Shell<'_>) {
         return;
     };
     let trail = b.asset_trail(id);
+    // Err: the register's totals can't be computed (a contributor basis an
+    // earlier version journaled, past exact arithmetic); said, never guessed.
     let today = b
         .asset_register(b.today)
-        .rows
-        .into_iter()
-        .find(|r| r.asset_id == id);
+        .map(|r| r.rows.into_iter().find(|r| r.asset_id == id));
     let mut go: Option<Route> = None;
     page(ui, "asset", |ui| {
         ui.horizontal(|ui| {
@@ -962,13 +976,21 @@ pub fn show_asset(ui: &mut Ui, b: &Books, id: AssetId, shell: &mut Shell<'_>) {
                                 }
                             });
                             ui.end_row();
-                            if let Some(r) = &today {
-                                k(ui, &format!("Accumulated, {}", fmt::date_short(b.today)));
-                                money(ui, r.accumulated, false);
-                                ui.end_row();
-                                k(ui, "Book value today");
-                                money(ui, r.book_value, true);
-                                ui.end_row();
+                            match &today {
+                                Ok(Some(r)) => {
+                                    k(ui, &format!("Accumulated, {}", fmt::date_short(b.today)));
+                                    money(ui, r.accumulated, false);
+                                    ui.end_row();
+                                    k(ui, "Book value today");
+                                    money(ui, r.book_value, true);
+                                    ui.end_row();
+                                }
+                                Ok(None) => {}
+                                Err(e) => {
+                                    k(ui, "Book value today");
+                                    ui.label(format!("can't be computed: {e}"));
+                                    ui.end_row();
+                                }
                             }
                             k(ui, "Posted in the books");
                             money(ui, trail.posted(), false);
@@ -1139,7 +1161,7 @@ pub fn show_asset(ui: &mut Ui, b: &Books, id: AssetId, shell: &mut Shell<'_>) {
                                 fmt::date(info.date),
                                 info.id,
                                 info.description,
-                                fmt::dollars(info.amount)
+                                fmt::dollars_or(info.amount)
                             ))
                             .font(theme::regular(13.0)),
                         )
@@ -1314,4 +1336,98 @@ pub(crate) fn facts(ui: &mut Ui, add: impl FnOnce(&mut Ui, &dyn Fn(&mut Ui, &str
             };
             add(ui, &k);
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{Build, Painted, beside, cents, d, find, render, today};
+    use ledger_core::{Currency, Money, NewAsset};
+
+    /// Two assets bought 2026-01-01 for $1,200.00 over 12 months and
+    /// $2,400.00 over 24 (both $100.00 a month), no depreciation posted.
+    fn two_assets(tag: &str) -> (crate::test_support::TempDir, Books, Vec<AssetId>) {
+        let mut b = Build::new(tag);
+        let mut add =
+            |code: &str, name: &str, ty| b.s.add_account(code, name, ty, None, false).unwrap();
+        let equipment = add("1500", "Equipment", ledger_core::AccountType::Asset);
+        let accum = add(
+            "1510",
+            "Accumulated Depreciation",
+            ledger_core::AccountType::Asset,
+        );
+        let depreciation = add("6100", "Depreciation", ledger_core::AccountType::Expense);
+        let (cash, capital) = (b.cash, b.capital);
+        b.post(d(2026, 1, 1), cash, capital, 1_000_000);
+        b.post(d(2026, 1, 1), equipment, cash, 360_000);
+        let ids = [(120_000, 12), (240_000, 24)]
+            .into_iter()
+            .map(|(cost, months)| {
+                b.s.register_asset(NewAsset {
+                    description: format!("Thing {months}"),
+                    purchase_date: d(2026, 1, 1),
+                    cost: Money::new(cents(cost), Currency::USD),
+                    salvage_value: Money::new(Decimal::ZERO, Currency::USD),
+                    useful_life_months: months,
+                    cost_account: equipment,
+                    accum_depr_account: accum,
+                    expense_account: depreciation,
+                })
+                .unwrap()
+            })
+            .collect();
+        let (dir, books) = b.books();
+        (dir, books, ids)
+    }
+
+    fn register_on(
+        tag: &str,
+        as_of: Option<NaiveDate>,
+    ) -> (Vec<Painted>, Color32, Color32, Color32) {
+        let (_dir, books, _) = two_assets(tag);
+        let (texts, p) = render(books, Route::Assets, |s| s.assets.as_of = as_of);
+        (texts, p.warning, p.muted, p.positive)
+    }
+
+    /// The register on its date, reconciled to the books: its cost, and
+    /// the depreciation the schedules have accrued but the books don't
+    /// carry: a problem when some is due through a finished month, just
+    /// accruing when only the month under way has any, agreeing when none.
+    #[test]
+    fn the_register_reconciles_to_the_books_on_its_date() {
+        let (texts, warning, muted, positive) = register_on("register-today", None);
+        find(&texts, "Fixed assets");
+        find(&texts, "Reconciliation to the books");
+        assert_eq!(
+            beside(&texts, "Cost in the register").text,
+            fmt::money(cents(360_000))
+        );
+        // Due through September: a problem.
+        assert_eq!(beside(&texts, "Difference (not yet posted)").color, warning);
+        // January 15th: nothing due through December, half a month accruing.
+        let (texts, _, muted2, _) = register_on("register-jan", Some(d(2026, 1, 15)));
+        assert_eq!(muted2, muted);
+        assert_eq!(beside(&texts, "Difference (not yet posted)").color, muted);
+        // Before the purchase: nothing to post, the books agree.
+        let (texts, _, _, _) = register_on("register-before", Some(d(2025, 12, 31)));
+        let none = beside(&texts, "Difference (not yet posted)");
+        assert_eq!(none.text, fmt::money(Decimal::ZERO));
+        assert_eq!(none.color, positive);
+    }
+
+    /// One asset's page shows its own book value today, not another's.
+    #[test]
+    fn an_assets_page_shows_its_own_book_value() {
+        for i in 0..2 {
+            let (_dir, books, ids) = two_assets(&format!("asset-page-{i}"));
+            let a = books.ledger.get_asset(ids[i]).unwrap().clone();
+            let want = ledger_core::book_value(&a, today());
+            let (texts, _) = render(books, Route::Asset(ids[i]), |_| {});
+            assert_eq!(
+                beside(&texts, "Book value today").text,
+                fmt::dollars(want),
+                "asset {i}"
+            );
+        }
+    }
 }

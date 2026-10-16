@@ -3744,9 +3744,11 @@ dependencies = [
  "ledger-import",
  "ledger-store",
  "ledger-vault",
+ "libc",
  "mime_guess",
  "proptest",
  "rmcp",
+ "rusqlite",
  "rust_decimal",
  "schemars",
  "serde",
@@ -3755,6 +3757,7 @@ dependencies = [
  "tokio",
  "toml 1.1.8+spec-1.1.0",
  "tower",
+ "zeroize",
  "zip 9.0.2",
 ]
 

@@ -1,0 +1,147 @@
+{
+  "assets": [
+    {
+      "accum_depr_account": 4,
+      "acquired_by": null,
+      "cost": {
+        "amount": "1200.00",
+        "currency": [
+          85,
+          83,
+          68
+        ]
+      },
+      "cost_account": 5,
+      "description": "late",
+      "expense_account": 3,
+      "id": 1,
+      "method": "StraightLine",
+      "purchase_date": "9999-01-01",
+      "salvage_value": {
+        "amount": "0",
+        "currency": [
+          85,
+          83,
+          68
+        ]
+      },
+      "serial": null,
+      "status": "Active",
+      "tag": null,
+      "tax": null,
+      "useful_life_months": 60
+    }
+  ],
+  "bills": [],
+  "entries": [
+    {
+      "date": "9999-12-31",
+      "description": "Depreciation — late — 9999-12",
+      "id": 1,
+      "lines": [
+        {
+          "account": 3,
+          "amount": {
+            "amount": "20.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        },
+        {
+          "account": 4,
+          "amount": {
+            "amount": "20.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        }
+      ],
+      "reversal_of": null,
+      "status": "Posted"
+    },
+    {
+      "date": "+10000-01-31",
+      "description": "Depreciation — late — 10000-01",
+      "id": 2,
+      "lines": [
+        {
+          "account": 3,
+          "amount": {
+            "amount": "20.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        },
+        {
+          "account": 4,
+          "amount": {
+            "amount": "20.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        }
+      ],
+      "reversal_of": null,
+      "status": "Posted"
+    }
+  ],
+  "entry_parties": [],
+  "invoices": [],
+  "payroll_runs": [],
+  "periods": [],
+  "recurring": [],
+  "schedules": [],
+  "snapshot": {
+    "Ok": {
+      "balance_sheet": {
+        "assets": "-40",
+        "balanced": true,
+        "current_earnings": "-40",
+        "equity": "-40",
+        "liabilities": "0"
+      },
+      "profit_and_loss": {
+        "expenses": "40",
+        "net_income": "-40",
+        "revenue": "0"
+      },
+      "trial_balance": {
+        "lines": [
+          {
+            "code": "1510",
+            "credit": "40",
+            "debit": "0",
+            "name": "Accum"
+          },
+          {
+            "code": "6000",
+            "credit": "0",
+            "debit": "40",
+            "name": "Rent"
+          }
+        ],
+        "total_credits": "40",
+        "total_debits": "40"
+      }
+    }
+  },
+  "verify": {
+    "Ok": null
+  }
+}

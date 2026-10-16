@@ -81,38 +81,91 @@ pub struct NewSchedule {
     pub pl_account: AccountId,
 }
 
-/// The last day of `d`'s month.
+/// The last day of `d`'s month: in chrono's last month (December 262142),
+/// NaiveDate::MAX, never a panic.
 pub fn month_end(d: NaiveDate) -> NaiveDate {
-    let first = NaiveDate::from_ymd_opt(d.year(), d.month(), 1).expect("valid");
-    first + Months::new(1) - Days::new(1)
+    d.with_day(1)
+        .and_then(|first| first.checked_add_months(Months::new(1)))
+        .and_then(|next| next.checked_sub_days(Days::new(1)))
+        .unwrap_or(NaiveDate::MAX)
 }
+
+/// The smallest total whose plan isn't computed exactly in cents (10^26):
+/// 26 integer digits and 2 decimals fill Decimal's 28 significant digits.
+pub const EXACT_LIMIT: Decimal =
+    Decimal::from_parts(0xe400_0000, 0xdcc8_0cd2, 0x0052_b7d2, false, 0);
 
 /// The schedule's monthly postings: (month-end date, amount). Equal
 /// amounts to the cent, the last month absorbing rounding, so they sum to
 /// the total exactly.
+///
+/// ```text
+/// INVARIANTS:
+///   1. The amounts sum to `total` exactly; all but the last are equal.
+///   2. NEVER panics: a schedule an earlier version journaled whose months
+///      run past chrono's last day is refused with DateOutOfRange, and one
+///      whose amounts exact arithmetic can't hold with TooLargeToCompute
+///      (rules.md B-28). `months` is at least 1 (validate_schedule_shape).
+///   3. NEVER rounds silently: a total of EXACT_LIMIT or more is refused
+///      with TooLargeToCompute. Below it every amount in cents, and every
+///      sum of them (none exceeds the total), fits Decimal's 28 significant
+///      digits, so INVARIANT 1 holds exactly; at it, Decimal's checked
+///      operations round instead of failing.
+/// ```
+///
+/// Replay is unaffected: a posted schedule month passed the line limit
+/// (kernel::MAX_LINE_AMOUNT), so no journaled schedule.posted belongs to a
+/// schedule with a total anywhere near EXACT_LIMIT.
 pub fn amortization_plan(
     total: Decimal,
     start: NaiveDate,
     months: u32,
-) -> Vec<(NaiveDate, Decimal)> {
-    let each = (total / Decimal::from(months)).round_dp(2);
-    let first = NaiveDate::from_ymd_opt(start.year(), start.month(), 1).expect("valid");
+) -> Result<Vec<(NaiveDate, Decimal)>, LedgerError> {
+    let too_large = || LedgerError::TooLargeToCompute(format!("a {months}-month plan of {total}"));
+    if total.abs() >= EXACT_LIMIT {
+        return Err(too_large());
+    }
+    let each = total
+        .checked_div(Decimal::from(months))
+        .ok_or_else(too_large)?
+        .round_dp(2);
+    let first = start
+        .with_day(1)
+        .ok_or(LedgerError::DateOutOfRange(start))?;
     (0..months)
         .map(|i| {
-            let date = month_end(first + Months::new(i));
+            let month = first
+                .checked_add_months(Months::new(i))
+                .ok_or(LedgerError::DateOutOfRange(start))?;
             let amount = if i + 1 == months {
-                total - each * Decimal::from(months - 1)
+                each.checked_mul(Decimal::from(months - 1))
+                    .and_then(|before| total.checked_sub(before))
+                    .ok_or_else(too_large)?
             } else {
                 each
             };
-            (date, amount)
+            Ok((month_end(month), amount))
         })
         .collect()
 }
 
-/// Validate a new schedule against the chart.
+/// Validate a new schedule against the chart: [`validate_schedule_shape`],
+/// the total in range and in cents, and its first and last months inside
+/// the calendar the books keep (crate::calendar; P0 review round 3, S1),
+/// so every month end of the plan is a date.
 pub fn validate_schedule(new: &NewSchedule, chart: &ChartOfAccounts) -> Result<(), LedgerError> {
     validate_schedule_shape(new, chart)?;
+    crate::calendar::check(new.start)?;
+    if !new
+        .start
+        .checked_add_months(Months::new(new.months - 1))
+        .is_some_and(crate::calendar::in_calendar)
+    {
+        return Err(LedgerError::InvalidSchedule(format!(
+            "{} months from {} run past 9999-12-31, the last day the books keep",
+            new.months, new.start
+        )));
+    }
     // Every month's posting derives from the total: one no line could
     // carry, or finer than a cent, is refused here, not at a month end
     // (found by the store's refusal property, 2026-10-13).
@@ -123,7 +176,9 @@ pub fn validate_schedule(new: &NewSchedule, chart: &ChartOfAccounts) -> Result<(
 }
 
 /// [`validate_schedule`] without the total's range and minor-unit checks
-/// added on 2026-10-13, for replaying journals written before them.
+/// added on 2026-10-13 or the calendar bound added in P0: the checks every
+/// journaled `schedule.registered` passed when it was written, for
+/// replaying journals written before them (rules.md B-28).
 pub fn validate_schedule_shape(
     new: &NewSchedule,
     chart: &ChartOfAccounts,
@@ -166,21 +221,31 @@ impl AmortizationSchedule {
         }
     }
 
-    /// Months due through `through` and not yet posted.
-    pub fn due(&self, through: NaiveDate) -> Vec<(NaiveDate, Decimal)> {
+    /// Its monthly postings ([`amortization_plan`]); refused, never a
+    /// panic, for one that can't be computed.
+    pub fn plan(&self) -> Result<Vec<(NaiveDate, Decimal)>, LedgerError> {
         amortization_plan(self.total.amount, self.start, self.months)
-            .into_iter()
-            .filter(|(d, _)| *d <= through && !self.posted.contains(d))
-            .collect()
     }
 
-    /// The amount not yet recognized.
-    pub fn remaining(&self) -> Decimal {
-        amortization_plan(self.total.amount, self.start, self.months)
+    /// Months due through `through` and not yet posted.
+    pub fn due(&self, through: NaiveDate) -> Result<Vec<(NaiveDate, Decimal)>, LedgerError> {
+        Ok(self
+            .plan()?
+            .into_iter()
+            .filter(|(d, _)| *d <= through && !self.posted.contains(d))
+            .collect())
+    }
+
+    /// The amount not yet recognized: the sum of the plan's unposted
+    /// months.
+    pub fn remaining(&self) -> Result<Decimal, LedgerError> {
+        self.plan()?
             .into_iter()
             .filter(|(d, _)| !self.posted.contains(d))
-            .map(|(_, a)| a)
-            .sum()
+            .try_fold(Decimal::ZERO, |sum, (_, a)| sum.checked_add(a))
+            .ok_or_else(|| {
+                LedgerError::TooLargeToCompute(format!("schedule {}'s remaining amount", self.id))
+            })
     }
 }
 
@@ -256,9 +321,36 @@ pub struct NewRecurring {
     pub end: Option<NaiveDate>,
 }
 
-/// Validate a new recurring entry: at least two lines, positive amounts,
-/// postable accounts, balanced, and an end not before the start.
+/// Validate a new recurring entry: [`validate_recurring_journaled`], its
+/// dates inside the calendar the books keep, and no line larger than a
+/// journal line may be (P0 review round 3, S1).
 pub fn validate_recurring(new: &NewRecurring, chart: &ChartOfAccounts) -> Result<(), LedgerError> {
+    // The size first: a line past the limit is out of range, whatever its
+    // sum would be.
+    if new
+        .lines
+        .iter()
+        .any(|(_, _, money)| money.amount > crate::kernel::MAX_LINE_AMOUNT)
+    {
+        return Err(LedgerError::AmountOutOfRange);
+    }
+    validate_recurring_journaled(new, chart)?;
+    crate::calendar::check(new.start)?;
+    if let Some(end) = new.end {
+        crate::calendar::check(end)?;
+    }
+    Ok(())
+}
+
+/// The checks every journaled `recurring.registered` passed when it was
+/// written (the rule through 2026-10-16): at least two lines, positive
+/// amounts, postable accounts, balanced, and an end not before the start.
+/// Replay applies exactly these (rules.md B-28). Sums too large for exact
+/// arithmetic are refused (TooLargeToCompute), never a panic.
+pub fn validate_recurring_journaled(
+    new: &NewRecurring,
+    chart: &ChartOfAccounts,
+) -> Result<(), LedgerError> {
     let bad = |m: String| Err(LedgerError::InvalidSchedule(m));
     if new.description.trim().is_empty() {
         return bad("description is required".into());
@@ -283,10 +375,13 @@ pub fn validate_recurring(new: &NewRecurring, chart: &ChartOfAccounts) -> Result
                 money.amount
             ));
         }
-        match side {
-            Side::Debit => debits += money.amount,
-            Side::Credit => credits += money.amount,
-        }
+        let total = match side {
+            Side::Debit => &mut debits,
+            Side::Credit => &mut credits,
+        };
+        *total = total
+            .checked_add(money.amount)
+            .ok_or_else(|| LedgerError::TooLargeToCompute("the recurring entry's total".into()))?;
     }
     if debits != credits {
         return bad(format!(
@@ -317,7 +412,7 @@ mod tests {
 
     #[test]
     fn plans_sum_exactly_and_land_on_month_ends() {
-        let plan = amortization_plan(Decimal::new(100_000, 2), d(2026, 11, 15), 3);
+        let plan = amortization_plan(Decimal::new(100_000, 2), d(2026, 11, 15), 3).unwrap();
         // 1,000.00 / 3 = 333.33, 333.33, 333.34.
         assert_eq!(
             plan,
@@ -327,8 +422,72 @@ mod tests {
                 (d(2027, 1, 31), Decimal::new(33_334, 2)),
             ]
         );
-        let leap = amortization_plan(Decimal::new(1200, 0), d(2028, 2, 1), 1);
+        let leap = amortization_plan(Decimal::new(1200, 0), d(2028, 2, 1), 1).unwrap();
         assert_eq!(leap, [(d(2028, 2, 29), Decimal::new(1200, 0))]);
+    }
+
+    /// A schedule an earlier version journaled, at chrono's last month or
+    /// with Decimal's largest total: its plan is computed where it can be,
+    /// refused where it can't, never a panic (rules.md B-28).
+    #[test]
+    fn plans_at_the_edges_are_computed_or_refused() {
+        assert_eq!(month_end(NaiveDate::MAX), NaiveDate::MAX);
+        assert_eq!(month_end(d(262_142, 12, 1)), NaiveDate::MAX);
+        assert_eq!(month_end(d(262_142, 11, 5)), d(262_142, 11, 30));
+        assert_eq!(month_end(NaiveDate::MIN), d(NaiveDate::MIN.year(), 1, 31));
+        // The last month chrono holds is a month of the plan.
+        assert_eq!(
+            amortization_plan(Decimal::new(300, 0), d(262_142, 11, 9), 2).unwrap(),
+            [
+                (d(262_142, 11, 30), Decimal::new(150, 0)),
+                (NaiveDate::MAX, Decimal::new(150, 0)),
+            ]
+        );
+        // One month further is none.
+        assert_eq!(
+            amortization_plan(Decimal::new(300, 0), d(262_142, 11, 9), 3),
+            Err(LedgerError::DateOutOfRange(d(262_142, 11, 9)))
+        );
+        // Past the line limit (replay takes any positive total): exact, the
+        // last month the remainder, right up to just under EXACT_LIMIT.
+        for big in ["2000000000000000.00", "99999999999999999999999999.99"] {
+            let big: Decimal = big.parse().unwrap();
+            let plan = amortization_plan(big, d(2026, 1, 1), 600).unwrap();
+            assert_eq!(plan.len(), 600);
+            assert_eq!(
+                plan.iter()
+                    .try_fold(Decimal::ZERO, |s, (_, a)| s.checked_add(*a)),
+                Some(big)
+            );
+        }
+        // At EXACT_LIMIT and beyond, Decimal would round: refused, never
+        // rounded (INVARIANT 3), in either sign.
+        assert_eq!(
+            EXACT_LIMIT,
+            Decimal::from_i128_with_scale(10_i128.pow(26), 0)
+        );
+        for total in [EXACT_LIMIT, -EXACT_LIMIT, Decimal::MAX, Decimal::MIN] {
+            assert!(matches!(
+                amortization_plan(total, d(2026, 1, 1), 600),
+                Err(LedgerError::TooLargeToCompute(_))
+            ));
+        }
+        let s = AmortizationSchedule {
+            id: 1,
+            description: "edge".into(),
+            kind: ScheduleKind::PrepaidExpense,
+            total: Money::new(Decimal::new(300, 0), crate::Currency::USD),
+            start: d(262_142, 11, 9),
+            months: 3,
+            balance_account: 1,
+            pl_account: 2,
+            posted: BTreeSet::new(),
+        };
+        assert!(s.due(NaiveDate::MAX).is_err());
+        assert!(s.remaining().is_err());
+        let s = AmortizationSchedule { months: 2, ..s };
+        assert_eq!(s.due(NaiveDate::MAX).unwrap().len(), 2);
+        assert_eq!(s.remaining(), Ok(Decimal::new(300, 0)));
     }
 
     #[test]

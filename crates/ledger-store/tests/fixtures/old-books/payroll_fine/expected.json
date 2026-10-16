@@ -1,0 +1,132 @@
+{
+  "assets": [],
+  "bills": [],
+  "entries": [
+    {
+      "date": "2026-03-01",
+      "description": "Payroll 2026-03-01",
+      "id": 1,
+      "lines": [
+        {
+          "account": 4,
+          "amount": {
+            "amount": "200.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        },
+        {
+          "account": 6,
+          "amount": {
+            "amount": "0.010000000000",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        },
+        {
+          "account": 1,
+          "amount": {
+            "amount": "199.990000000000",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        }
+      ],
+      "reversal_of": null,
+      "status": "Posted"
+    }
+  ],
+  "entry_parties": [],
+  "invoices": [],
+  "payroll_runs": [
+    {
+      "date": "2026-03-01",
+      "entry_id": 1,
+      "id": 1,
+      "lines": [
+        {
+          "employee": null,
+          "employee_name": "A",
+          "federal_withholding": "0.000000000001",
+          "gross_pay": "100.00",
+          "medicare_employee": "0",
+          "medicare_employer": "0",
+          "other_deductions": "0",
+          "ss_employee": "0",
+          "ss_employer": "0",
+          "state_withholding": "0"
+        },
+        {
+          "employee": null,
+          "employee_name": "B",
+          "federal_withholding": "0.009999999999",
+          "gross_pay": "100.00",
+          "medicare_employee": "0",
+          "medicare_employer": "0",
+          "other_deductions": "0",
+          "ss_employee": "0",
+          "ss_employer": "0",
+          "state_withholding": "0"
+        }
+      ]
+    }
+  ],
+  "periods": [],
+  "recurring": [],
+  "schedules": [],
+  "snapshot": {
+    "Ok": {
+      "balance_sheet": {
+        "assets": "-199.99",
+        "balanced": true,
+        "current_earnings": "-200",
+        "equity": "-200",
+        "liabilities": "0.01"
+      },
+      "profit_and_loss": {
+        "expenses": "200",
+        "net_income": "-200",
+        "revenue": "0"
+      },
+      "trial_balance": {
+        "lines": [
+          {
+            "code": "1000",
+            "credit": "199.99",
+            "debit": "0",
+            "name": "Cash"
+          },
+          {
+            "code": "2110",
+            "credit": "0.01",
+            "debit": "0",
+            "name": "Federal Withholding Payable"
+          },
+          {
+            "code": "6100",
+            "credit": "0",
+            "debit": "200",
+            "name": "Salary & Wage Expense"
+          }
+        ],
+        "total_credits": "200",
+        "total_debits": "200"
+      }
+    }
+  },
+  "verify": {
+    "Ok": null
+  }
+}

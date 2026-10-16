@@ -9,7 +9,8 @@
 //!         results with isError; "validate all tool inputs");
 //!         docs/spec/sources/jsonrpc-2.0.md (one response per request, id
 //!         echoed, result xor error); DECISION (Stephen, the operating
-//!         contract in INSTRUCTIONS and docs/mcp-interface.md).
+//!         contract in the connect text and handbook, handbook.rs, and
+//!         docs/mcp-interface.md).
 //! INVARIANTS:
 //!   1. Every tool's structured result MUST conform to its declared output
 //!      schema, and the same JSON MUST be in a text block.
@@ -30,8 +31,11 @@
 //!      whose id is the request's, and keep serving after any tool error.
 //! ```
 
+use crate::handbook;
+use crate::local_files::{ImportRoots, Places, Protected, resolved};
 use crate::policy::ReceiptPolicy;
 use crate::settings::{Live, Settings};
+use crate::tin_files;
 use crate::types::*;
 use chrono::NaiveDate;
 #[cfg(test)]
@@ -53,19 +57,152 @@ use rmcp::{ServerHandler, tool, tool_handler, tool_router};
 use rust_decimal::Decimal;
 use std::sync::{Arc, Mutex};
 
-/// The agent operating contract, delivered via initialize.
-const INSTRUCTIONS: &str = "You are the bookkeeping agent for these books. The engine enforces the accounting; you enforce the workflow.\n\nRULES\n- Money is exact decimal. Always pass amounts as decimal strings (\"123.45\"), never floats.\n- Never post directly. The flow is draft (books.draft_entry) -> add lines (books.add_line) -> preview (books.post_entry without confirmed) -> review the preview -> post (books.post_entry with confirmed=true).\n- Every entry must balance: debits equal credits, exactly. Every line needs a real account from books.chart. The engine rejects anything else.\n- Receipts: any entry moving more than $25.00 in debits needs at least one receipt attached (books.attach_receipt) before posting. The server rejects the post otherwise. This is enforced, not a suggestion.\n- Never invent accounts. If the account you need does not exist, add it with books.add_account first.\n- Corrections go through books.reverse_entry. Posted entries are immutable; there is no edit.\n- Receipt corrections: receipts can change, but nothing is erased. To replace one, attach the new receipt, then books.unlink_receipt the old (with a reason); retire unwanted receipts or documents with books.withdraw_attachment (with a reason). The journal keeps every step.\n- Attachments: file a file once and link it wherever it is evidence (books.link_attachment, or link_to on books.attach_receipt and books.file_document): an entry (a file linked to an entry counts as its receipt), an account, an asset, a party, an invoice, a bill, a period, a payroll run, a schedule, a reconciliation, or the company. books.attachments lists a subject's files; books.unlink_attachment takes a link off with a reason. File documents under their kind (statement, contract, photo, warranty, import_source, formation, legal, tax, accounting, other). File a bank export before importing it and pass source_attachment_id to books.import_bank_csv.\n- Reconciliations: every month, for each bank, cash, and card account, file the statement (books.file_document category statement), record what it says (books.record_statement), mark the lines it shows (books.mark_cleared), preview books.reconcile with statement_attachment, and confirm with confirmed=true once the difference is exactly zero: that records the reconciliation with its statement. Never confirm by forcing the numbers; find the difference. books.void_reconciliation (with a reason) undoes a mistake; books.void_statement (with a reason) a mis-recorded statement, to record it again. books.digest lists unreconciled_accounts: accounts not reconciled through the end of last month.\n- After posting, check books.digest to review what changed, so a human can review too.\n- Amounts in every response are decimal strings. Treat them as exact.\n- Fixed assets: register with books.register_asset, inspect with books.asset_schedule and books.list_assets, post monthly depreciation with books.run_depreciation (exempt from the receipt policy; the schedule is the evidence), and dispose with books.dispose_asset (preview first; the bill of sale is the receipt). Depreciation is straight-line, book basis only - tax depreciation stays with the CPA. Every asset gets a tag for the label on the thing itself (books.register_asset generates the next one, like WL-0001, unless the human has their own); record the manufacturer's serial number too, change either with books.label_asset, and print label sheets with books.asset_labels (save the PDF; print at 100% on Avery 5160/8160). Asset tools take the tag in place of the id. Record every asset's federal tax basis beside its book value (books.set_asset_tax_basis, or tax_basis_rule on books.register_asset): cost for a purchase; for a member's contribution, the member's adjusted basis (what they paid, less depreciation they took) with rule personal_use_conversion (their personal property: tax basis is the lesser of value and their basis) or carryover (their business property). Book value stays fair market value. books.export fixed_asset_register is the register for the CPA; books.show asset opens one in the viewer.\n- Prepaid expenses and deferred revenue: record the original payment (with its receipt), then books.create_schedule; books.run_schedules posts the monthly amortization (preview first; exempt from the receipt policy like depreciation). Recurring entries (books.create_recurring, books.run_recurring) only ever create drafts: attach each actual receipt and post through the normal preview.\n- Platform payouts (app stores, payment processors, marketplaces): never book the net deposit as revenue. books.record_payout grosses it up (gross revenue, fees, adjustments) into a draft and refuses unless it reconciles to the cent; attach the payout statement, then preview and post.\n- The viewer: the human usually has the read-only viewer open beside you (`just gui`). When they ask to see something, and after you post, call books.show so it's on their screen.\n- Parties: keep the directory current. Every counterparty (vendor, contractor, landlord, customer, payout platform, tax agency, bank or card issuer, member, employee) gets a party: books.add_party with its roles (books.add_vendor and books.add_customer link their record to the party of the same name, or make one). Tag every entry with its party (books.draft_entry party, or books.set_entry_party; a party with a vendor record tags the vendor for 1099s too). An entry with several counterparties names them all with parties ([{party, amount?|percent?}] on books.draft_entry or books.set_entry_party): there is no \"joint\" party. A joint member transaction (paid from or reimbursed to joint funds on Due to Shareholders, a contribution from joint funds, a distribution to both) names both members with no shares, and their shares derive (from their capital or distribution lines on the entry, else their [[company.members]] shares); when the split is uneven, or a party isn't a member, give each party an exact amount (or a percent). The post_entry preview lists each party's resolved share (parties) and refuses to post (party_shares, parties_error) until the shares add up to what the entry moved; show the split to the human before confirming. Every post_entry preview says where the entry stands (party_policy, party_missing, party_suggestions): under [books] parties = \"suggest\" (the default), when party_missing, name the likely party to the human and tag it (or add it) before confirming; under \"require\", posting is refused (party_required) until the entry names a party or is marked as having none (books.set_entry_party with party null and no_party_reason, or draft_entry no_party_reason: only for an entry with truly no counterparty, like a transfer between the company's own accounts); under \"off\", don't raise it. Record W-9 facts (books.set_w9) for contractors and landlords before paying them, and W-4 facts (books.set_w4) for employees before their first payroll; name the employee party on every books.run_payroll line. Never put a full TIN or SSN anywhere in the books, only the last four digits: the engine refuses any nine-digit number in a party field. The full TIN goes only to the encrypted TIN vault, and every member's and every 1099 payee's belongs there: books.set_tin (party, tin, tin_type: ssn, ein, itin; any role, so each member's SSN for their K-1) and books.set_w9 with tin and tin_type for a payee's W-9, and the signed form with w9_file_path (never books.file_document or books.attach_receipt: the form shows the TIN). Never repeat a TIN back to the human, in chat, a description, note, file name, commit message, or anywhere else; tools show the last four only. books.get_w9 saves the form to a path outside the books for the human; books.purge_tin (preview, then confirmed, with a reason) deletes a TIN no longer needed. books.parties lists the directory, books.party shows one party with the year's totals, and books.show party opens it in the viewer. Archive (books.update_party archived) parties no longer dealt with; never delete history.\n- 1099s: mark contractors and landlords with books.set_vendor_1099 (and whether their W-9 is on file), and tag every payment to them with its vendor or party (books.draft_entry vendor or party, books.set_entry_vendor, or books.set_entry_party; books.pay_bill tags automatically). books.vendor_1099 is the year-end worksheet for the CPA; with include_tins: true (only when the human asks for the CPA's copy) it carries the full TINs from the vault, the one output that does: hand it over (save_csv_to, a path outside the books) and never repeat those numbers anywhere else.\n- CPA package: books.export_cpa_package carries every member's and 1099 payee's full TIN from the vault (the K-1 worksheet, k1-members.csv, and the 1099 worksheet), so it needs save_to, a new .zip or a folder outside the books dir (never the books or its exports/: git keeps them forever). Tell the human the path it was saved to; never open, read, attach, or copy the file, and never echo its TINs. tin_gaps lists each member or payee whose TIN it lacks and why: collect them (books.set_tin, books.set_w9) and export again.\n- Rules that change with the law: wanderbooks knows some legal amounts (like the 1099 threshold) only through a given year and never guesses past it. When a tool refuses with \"wanderbooks knows the ... only through\", or books.digest lists stale_rules: check today's date, find the current figure from the official source (the refusal names the vendored source file) or ask the human (owner, CPA), confirm it with them, and pass it explicitly. Then update the rule for everyone: open a pull request at https://github.com/swaits/wanderbooks with the new value and its official text (best), or at least an issue; if you can't reach GitHub, give the human the issue text to file.\n- Control roles: invoices, bills, payroll, and closes post to the account filling each role (receivables, revenue, payables, general expense, retained earnings, payroll expense and withholdings); books.roles lists them. A role uses its default code (1200, 4000, 2000, 6999, 3999, 6100, 6110, 2110-2150) until it is assigned one of the chart's own accounts with books.assign_role (journaled). If the chart uses a default code for a different kind of account, the engine refuses and says which. It can't tell an account of the right type but another purpose (a hosting expense at payroll's 6100): check books.roles before running payroll, bills, or invoices. Never assign roles or renumber the human's accounts on your own: explain the conflict, and when they decide, assign the role to their account (best: their numbering stays) or books.renumber_account the account (its history stays).\n- Settings: wanderbooks.toml beside the books holds the company's facts and settings (name, fiscal year, tax form, members and their capital accounts, basis, receipt threshold, cash flow roles, close target); books.settings shows what is in force and lists problems, settings that disagree with the chart. Edit the file when the human tells you a company fact, when a tool refuses naming a wanderbooks.toml setting, when books.settings or books.digest lists a settings problem, and after books.renumber_account lists config_mentions. The server reloads the file whenever it changes, with no restart: after each edit, call books.settings and check reload_error is null (a broken edit leaves the last good settings in force) and problems is empty. Never put a member's SSN or any TIN in it.";
-
 /// Max receipt/document upload: 25 MB.
 const MAX_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
 
 /// The server. One store, one receipt policy, shared across tool calls.
 /// `Store` is `!Sync`, so access is serialized through a mutex; the server
-/// is single-writer by construction.
+/// is single-writer by construction. Tool bodies (synchronous disk and
+/// SQLite work) run on tokio's blocking threads, never on the async
+/// workers, so a long call can't stall the transport ([`run_blocking`]).
 #[derive(Clone)]
 pub struct BooksServer {
-    store: Arc<Mutex<Store>>,
+    store: Arc<SharedStore>,
     settings: Arc<Mutex<Live>>,
+    import_roots: Arc<ImportRoots>,
+}
+
+/// The one store every session shares, and whether it may still be used.
+///
+/// ```text
+/// GOAL: a request that dies half way never leaves the server serving
+///       books that differ from their journal.
+/// SOURCE: DECISION (review of P0, 2026-10-16): fail closed. The journal
+///         is appended before memory changes (docs/receipt-store.md), so a
+///         panic between the two leaves memory behind the record (a
+///         reused next id would be journaled forever).
+/// INVARIANTS:
+///   1. Once a request panics (its blocking task, or while it holds the
+///      store), `stopped` is set and never cleared in this process.
+///   2. While `stopped`, every request is refused with STOPPED, before
+///      it touches the store; a restart re-verifies the journal.
+/// ```
+pub struct SharedStore {
+    store: tokio::sync::Mutex<Store>,
+    stopped: std::sync::atomic::AtomicBool,
+    /// The books' base currency, fixed at their creation: read without
+    /// the lock (the connect text names it).
+    currency: Currency,
+}
+
+impl SharedStore {
+    /// Share an open store.
+    pub fn new(store: Store) -> Arc<Self> {
+        Arc::new(Self {
+            currency: store.base_currency(),
+            store: tokio::sync::Mutex::new(store),
+            stopped: std::sync::atomic::AtomicBool::new(false),
+        })
+    }
+
+    fn stopped(&self) -> bool {
+        self.stopped.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn stop(&self) {
+        self.stopped
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Why a file with full TINs isn't written into an import root.
+const TIN_FILE_IN_ROOT: &str = "a file with full TINs is never saved in the server's import folders (by default your downloads folder), where it could be filed back into the books: save it elsewhere, such as your documents folder";
+
+/// What every request gets after an internal error (SharedStore
+/// INVARIANT 2).
+const STOPPED: &str = "the books server stopped taking requests after an internal error, to protect the books: ask the human to restart the books server (the books are checked again when it starts)";
+
+/// Why the vault won't open with a key file inside the books.
+const KEY_IN_BOOKS: &str = "the TIN vault's key file is inside the books' folder, beside the records it unlocks: ask the human to move it out of the books and set [vault] key_file in the settings";
+
+/// Why the vault won't store into books whose version history would keep
+/// its records.
+const VAULT_IN_HISTORY: &str = "the TIN vault can't store anything here yet: the books' folder is kept under version history that doesn't leave the vault out, so its records would be kept forever. Ask the human to leave the vault folder out of that history, then try again";
+
+/// Why a file with a full TIN isn't written inside the books.
+const INSIDE_BOOKS: &str = "that path is inside the books' folder, whose files are kept forever: a file with a full TIN goes elsewhere, such as the human's documents folder";
+
+/// The store, locked for one stretch of synchronous work. Not `Send`, so
+/// the compiler refuses any tool future that would hold it across an
+/// `.await` (tool futures must be `Send`): the lock is never held while a
+/// task is suspended. Dropped by a panic, it stops the server
+/// (SharedStore INVARIANT 1).
+pub struct StoreGuard<'a> {
+    guard: tokio::sync::MutexGuard<'a, Store>,
+    shared: &'a SharedStore,
+    _not_send: std::marker::PhantomData<*const ()>,
+}
+
+impl Drop for StoreGuard<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.shared.stop();
+        }
+    }
+}
+
+impl std::ops::Deref for StoreGuard<'_> {
+    type Target = Store;
+    fn deref(&self) -> &Store {
+        &self.guard
+    }
+}
+
+impl std::ops::DerefMut for StoreGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Store {
+        &mut self.guard
+    }
+}
+
+/// Run a request's future to completion on one of tokio's blocking
+/// threads (`spawn_blocking`), where the store lock is taken with
+/// `blocking_lock`. The future is driven here, by parking this thread
+/// until it is woken, not by the runtime: tool bodies are synchronous
+/// work, and `blocking_lock` may not be called from the runtime's own
+/// `block_on`. A stopped server runs nothing; a request that panics stops
+/// it (SharedStore), and gets STOPPED, never the panic's own text.
+async fn run_blocking<T, F>(shared: &Arc<SharedStore>, make: F) -> Result<T, rmcp::ErrorData>
+where
+    T: Send + 'static,
+    F: FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>> + Send + 'static,
+{
+    if shared.stopped() {
+        return Err(rmcp::ErrorData::internal_error(STOPPED, None));
+    }
+    let joined = tokio::task::spawn_blocking(move || {
+        struct Unpark(std::thread::Thread);
+        impl std::task::Wake for Unpark {
+            fn wake(self: Arc<Self>) {
+                self.0.unpark();
+            }
+        }
+        let waker = std::task::Waker::from(Arc::new(Unpark(std::thread::current())));
+        let mut cx = std::task::Context::from_waker(&waker);
+        let mut fut = make();
+        loop {
+            if let std::task::Poll::Ready(out) = fut.as_mut().poll(&mut cx) {
+                return out;
+            }
+            std::thread::park();
+        }
+    })
+    .await;
+    joined.map_err(|e| {
+        if e.is_panic() {
+            shared.stop();
+        }
+        rmcp::ErrorData::internal_error(STOPPED, None)
+    })
 }
 
 #[cfg(test)]
@@ -232,19 +369,26 @@ impl BooksServer {
 
     /// Build the server around an open store.
     pub fn new(store: Store, policy: ReceiptPolicy) -> Self {
-        Self::new_shared(Arc::new(Mutex::new(store)), policy)
+        Self::new_shared(SharedStore::new(store), policy)
     }
 
     /// Build the server around a shared store (for HTTP: each connection
     /// gets a handle to the same store).
-    pub fn new_shared(store: Arc<Mutex<Store>>, policy: ReceiptPolicy) -> Self {
+    pub fn new_shared(store: Arc<SharedStore>, policy: ReceiptPolicy) -> Self {
         Self {
             store,
             settings: Arc::new(Mutex::new(Live::fixed(Settings {
                 policy,
                 ..Settings::default()
             }))),
+            import_roots: Arc::new(ImportRoots::defaults()),
         }
+    }
+
+    /// The folders `books.import_local_file` may read from (local_files.rs).
+    pub fn with_import_roots(mut self, roots: ImportRoots) -> Self {
+        self.import_roots = Arc::new(roots);
+        self
     }
 
     /// Take the settings from files, reloading them whenever they change
@@ -278,6 +422,11 @@ impl BooksServer {
     /// `call_tool` and `read_resource`, if their files changed).
     fn settings(&self) -> Arc<Settings> {
         self.live().current()
+    }
+
+    /// The books' base currency code, e.g. "USD".
+    fn currency(&self) -> &str {
+        self.store.currency.code()
     }
 
     /// The cash flow statement from account codes, each list defaulting to
@@ -337,7 +486,7 @@ impl BooksServer {
     fn member_capitals(&self, ledger: &Ledger) -> Result<Vec<ledger_core::MemberCapital>, String> {
         if self.settings().company.members.is_empty() {
             return Err(
-                "no members configured: add [[company.members]] (name, share, capital_account) to wanderbooks.toml"
+                "no members configured: add [[company.members]] (name, share, capital_account) to the settings"
                     .to_string(),
             );
         }
@@ -387,7 +536,7 @@ impl BooksServer {
                 .chart()
                 .find_by_code(c)
                 .map(|a| a.id)
-                .ok_or_else(|| format!("wanderbooks.toml names unknown account {c}"))
+                .ok_or_else(|| format!("the settings name unknown account {c}"))
         };
         if !self.settings().company.members.is_empty() {
             return Ok(ledger_core::CloseTo::Members(
@@ -512,6 +661,121 @@ impl BooksServer {
         books_dir(store).join("vault")
     }
 
+    /// What is never read through a path, even inside an import root
+    /// (local_files.rs INVARIANT 3; Protected::of): the data dir, the
+    /// vault, the key file in force and the default one (a key left there
+    /// from before still unlocks the vault), and the folders it seals; and
+    /// the rest of the books dir.
+    fn protected(&self, store: &Store) -> Protected {
+        Protected::of(
+            &places(store, &self.settings()),
+            &self.import_roots.usable(),
+        )
+    }
+
+    /// Refuse bytes on their way into the books (books.attach_receipt,
+    /// books.file_document, books.import_local_file) if they carry a full
+    /// TIN: a file the server read or wrote with TINs, or text holding one
+    /// the vault holds or one printed as an SSN or EIN is (tin_files.rs
+    /// INVARIANT 3), or text probing for one (INVARIANT 4).
+    fn refuse_tin_file(
+        &self,
+        store: &Store,
+        bytes: &[u8],
+        mime_type: &str,
+        file_name: &str,
+    ) -> Result<(), String> {
+        tin_files::refuse(
+            &Self::vault_dir(store),
+            bytes,
+            mime_type,
+            file_name,
+            || known_tin_last4(store),
+            || self.vault_tins(store),
+        )
+    }
+
+    /// Every full TIN the vault holds for a party of the books, for the
+    /// filing scan only (tin_files.rs INVARIANT 3a): never returned or
+    /// logged. None when the vault can't be opened (its key missing or
+    /// bad), and none for a record that can't be read: the scan then
+    /// falls back to the printed shapes.
+    fn vault_tins(&self, store: &Store) -> Vec<ledger_vault::Tin> {
+        let Ok(vault) = self.open_vault(store, false) else {
+            return Vec::new();
+        };
+        store
+            .ledger()
+            .parties()
+            .filter_map(|p| vault.tin(p.id).ok().flatten())
+            .collect()
+    }
+
+    /// Read a file an agent names (books.import_local_file, books.set_w9
+    /// w9_file_path) through the import roots' lockdown (local_files.rs),
+    /// with its canonical path.
+    fn read_local(&self, path: &str) -> Result<(std::path::PathBuf, Vec<u8>), String> {
+        let protected = {
+            let store = self.lock()?;
+            self.protected(&store)
+        };
+        self.import_roots
+            .read(path.trim(), &protected, MAX_UPLOAD_BYTES)
+    }
+
+    /// Where a file holding full TINs may be written: a new file outside
+    /// the books (outside_books) and outside every import root, so it can
+    /// never be filed back in as a receipt and read out again.
+    fn tin_file_dest(&self, store: &Store, path: &str) -> Result<std::path::PathBuf, String> {
+        let dest = outside_books(store, path)?;
+        self.outside_import_roots(&dest)?;
+        Ok(dest)
+    }
+
+    fn outside_import_roots(&self, dest: &std::path::Path) -> Result<(), String> {
+        if self.import_roots.contains(dest) {
+            return Err(TIN_FILE_IN_ROOT.to_string());
+        }
+        Ok(())
+    }
+
+    /// Read a W-9 file (PDF, PNG, or JPEG, 25 MB at most) for the vault,
+    /// through the import roots' lockdown like any local file: the type
+    /// is judged by where the path really leads (a link named w9.pdf to
+    /// another file is that file).
+    fn read_w9_file(&self, path: &str) -> Result<ledger_vault::W9File, String> {
+        let (canonical, bytes) = self.read_local(path)?;
+        // Not recorded here: set_w9 records it once the call can only
+        // succeed, just before the vault write (tin_files.rs INVARIANT 1),
+        // so a refused call never marks an ordinary file.
+        let mime_type = match canonical
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_lowercase)
+            .as_deref()
+        {
+            Some("pdf") => "application/pdf",
+            Some("png") => "image/png",
+            Some("jpg" | "jpeg") => "image/jpeg",
+            _ => return Err("w9_file_path is a PDF, PNG, or JPEG (.pdf, .png, .jpg)".into()),
+        };
+        Ok(ledger_vault::W9File {
+            file_name: canonical
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "w9".into()),
+            mime_type: mime_type.to_string(),
+            bytes,
+        })
+    }
+
+    /// Record a file read or written with full TINs (tin_files.rs
+    /// INVARIANT 2), before it is written out: every session, and every
+    /// later server for these books, refuses it.
+    fn wrote_tins(store: &Store, bytes: &[u8]) -> Result<(), String> {
+        tin_files::record(&Self::vault_dir(store), bytes)
+    }
+
     /// Open the TIN vault with the key file in force (`[vault] key_file`,
     /// else `~/.config/wanderbooks/vault.key`), creating the key only when
     /// `create` (storing a TIN); reading never creates one. A key file
@@ -521,10 +785,7 @@ impl BooksServer {
     fn open_vault(&self, store: &Store, create: bool) -> Result<ledger_vault::Vault, String> {
         let key = self.settings().key_file();
         if is_inside(&books_dir(store), &key) {
-            return Err(format!(
-                "the vault key file {} is inside the books dir: move it outside (default ~/.config/wanderbooks/vault.key) and set [vault] key_file in wanderbooks.toml",
-                key.display()
-            ));
+            return Err(KEY_IN_BOOKS.to_string());
         }
         // Writing: a git repository must ignore the vault, or its records
         // would be committed (and could never be purged).
@@ -535,25 +796,35 @@ impl BooksServer {
                 .lines()
                 .any(|l| matches!(l.trim(), "vault/" | "/vault/" | "vault" | "/vault"));
             if !ignored {
-                return Err(format!(
-                    "the books dir {} is a git repository whose .gitignore doesn't list vault/: add a line \"vault/\" to it first, so the TIN vault is never committed",
-                    books.display()
-                ));
+                return Err(VAULT_IN_HISTORY.to_string());
             }
         }
+        // No message names the key file or the books' folders.
         ledger_vault::Vault::open(&Self::vault_dir(store), &key, create).map_err(|e| match e {
-            ledger_vault::Error::NoKey(k) => format!(
-                "the TIN vault is locked: its key file {} is missing (restore it from the human's password manager, or set [vault] key_file in wanderbooks.toml)",
-                k.display()
-            ),
+            ledger_vault::Error::NoKey(_) => "the TIN vault is locked: its key file is missing (restore it from the human's password manager, or set [vault] key_file in the settings)".to_string(),
+            ledger_vault::Error::BadKey(_) => "the TIN vault's key file is not a vault key (64 hex digits): restore it from the human's password manager".to_string(),
+            ledger_vault::Error::Io(e) => format!("the TIN vault can't be read: {}", e.kind()),
             other => other.to_string(),
         })
     }
 
-    fn lock(&self) -> Result<std::sync::MutexGuard<'_, Store>, String> {
-        self.store
-            .lock()
-            .map_err(|_| "store lock poisoned".to_string())
+    /// Lock the store. Called only on a blocking thread (every request
+    /// runs through [`run_blocking`]); `blocking_lock` panics on an async
+    /// worker.
+    fn lock(&self) -> Result<StoreGuard<'_>, String> {
+        if self.store.stopped() {
+            return Err(STOPPED.to_string());
+        }
+        let guard = self.store.store.blocking_lock();
+        // A request that panicked while this one waited stopped it.
+        if self.store.stopped() {
+            return Err(STOPPED.to_string());
+        }
+        Ok(StoreGuard {
+            guard,
+            shared: &self.store,
+            _not_send: std::marker::PhantomData,
+        })
     }
 
     /// Fail with the structured `receipt_required` error when the receipt
@@ -580,17 +851,21 @@ impl BooksServer {
         {
             return Ok(());
         }
-        let total = ReceiptPolicy::entry_debits(entry);
+        // A draft's debits may be past exact arithmetic (rules.md B-28):
+        // then the refusal says so in place of the sum.
+        let (total, debits) = match ReceiptPolicy::entry_debits(entry) {
+            Ok(t) => (money(t), t.to_string()),
+            Err(e) => (e.to_string(), e.to_string()),
+        };
         Err(ReceiptRequiredError {
             code: "receipt_required".to_string(),
             message: format!(
-                "entry {entry_id} moves {} in debits ({}); unlinking its last receipt would leave it without one.",
-                money(total),
+                "entry {entry_id} moves {total} in debits ({}); unlinking its last receipt would leave it without one.",
                 self.settings().policy.describe()
             ),
             entry_id: Some(entry_id),
             asset_id: None,
-            debits: total.to_string(),
+            debits,
             policy: self.settings().policy.describe(),
             remedy_tool: "books.attach_receipt".to_string(),
             remedy_hint: format!(
@@ -606,9 +881,26 @@ impl BooksServer {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// A date: exactly YYYY-MM-DD, a real day in the calendar the books keep
+/// (0001-01-01 through 9999-12-31, `ledger_core::calendar`). No sign, no
+/// space, no five-digit year: every date past here is one date arithmetic
+/// reaches (P0 review round 3, S1).
 fn parse_date(s: &str) -> Result<NaiveDate, String> {
-    NaiveDate::parse_from_str(s, "%Y-%m-%d")
-        .map_err(|_| format!("bad date {s:?}: expected YYYY-MM-DD"))
+    let shaped = s.len() == 10
+        && s.bytes().enumerate().all(|(i, b)| {
+            if i == 4 || i == 7 {
+                b == b'-'
+            } else {
+                b.is_ascii_digit()
+            }
+        });
+    shaped
+        .then(|| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+        .flatten()
+        .filter(|d| ledger_core::calendar::in_calendar(*d))
+        .ok_or_else(|| {
+            format!("bad date {s:?}: expected YYYY-MM-DD, a real day from 0001-01-01 to 9999-12-31")
+        })
 }
 
 /// A decimal string, exactly `-?digits[.digits]` (INVARIANT 3).
@@ -634,10 +926,10 @@ fn settings_problems(ledger: &Ledger, cfg: &Settings) -> Vec<String> {
     let mut check = |setting: &str, code: &str, want: &[AccountType]| {
         match ledger.chart().find_by_code(code) {
             None => out.push(format!(
-                "{setting} names {code}, which isn't in the chart: add that account, or change {setting} in wanderbooks.toml"
+                "{setting} names {code}, which isn't in the chart: add that account, or change {setting} in the settings"
             )),
             Some(a) if !want.contains(&a.account_type) => out.push(format!(
-                "{setting} names {code} \"{}\", a {:?} account, but needs {}: change {setting} in wanderbooks.toml",
+                "{setting} names {code} \"{}\", a {:?} account, but needs {}: change {setting} in the settings",
                 a.name,
                 a.account_type,
                 want.iter().map(|t| format!("{t:?}")).collect::<Vec<_>>().join(" or "),
@@ -755,20 +1047,20 @@ fn parse_period_mcp(period: &str) -> Result<(i32, u32), String> {
     let mut parts = period.split('-');
     let year: i32 = parts.next().ok_or_else(err)?.parse().map_err(|_| err())?;
     let month: u32 = parts.next().ok_or_else(err)?.parse().map_err(|_| err())?;
-    if parts.next().is_some() || year < 1 || !(1..=12).contains(&month) {
+    // A month of the calendar the books keep (ledger_core::calendar).
+    if parts.next().is_some() || !(1..=9999).contains(&year) || !(1..=12).contains(&month) {
         return Err(err());
     }
     Ok((year, month))
 }
 
-/// Last calendar day of a month.
-fn last_day_of_month(year: i32, month: u32) -> NaiveDate {
-    let first = NaiveDate::from_ymd_opt(year, month, 1).expect("valid period");
-    first
-        .checked_add_months(chrono::Months::new(1))
-        .expect("month arithmetic")
-        .pred_opt()
-        .expect("month arithmetic")
+/// Last calendar day of a month: refused, never a panic, for one chrono
+/// can't reach (P0 review round 3, S1).
+fn last_day_of_month(year: i32, month: u32) -> Result<NaiveDate, String> {
+    NaiveDate::from_ymd_opt(year, month, 1)
+        .and_then(|first| first.checked_add_months(chrono::Months::new(1)))
+        .and_then(|next| next.pred_opt())
+        .ok_or_else(|| format!("bad period {year:04}-{month:02}: no such month"))
 }
 
 fn parse_account_type(s: &str) -> Result<AccountType, String> {
@@ -871,25 +1163,8 @@ fn redact_refusal(
     out: Result<rmcp::model::CallToolResponse, rmcp::ErrorData>,
 ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
     use ledger_core::parties::{has_full_tin, redact_full_tins};
-    use serde_json::Value;
-    fn redact_value(v: &mut Value) {
-        match v {
-            Value::String(t) if has_full_tin(t) => *t = redact_full_tins(t).into_owned(),
-            Value::Array(a) => a.iter_mut().for_each(redact_value),
-            Value::Object(o) => o.values_mut().for_each(redact_value),
-            _ => {}
-        }
-    }
     match out {
-        Err(mut e) => {
-            if has_full_tin(&e.message) {
-                e.message = redact_full_tins(&e.message).into_owned().into();
-            }
-            if let Some(d) = e.data.as_mut() {
-                redact_value(d);
-            }
-            Err(e)
-        }
+        Err(e) => Err(redact_error(e)),
         Ok(rmcp::model::CallToolResponse::Complete(mut r)) if r.is_error == Some(true) => {
             for c in &mut r.content {
                 if let rmcp::model::ContentBlock::Text(t) = c
@@ -905,6 +1180,93 @@ fn redact_refusal(
         }
         other => other,
     }
+}
+
+/// An error with any full TIN in its message or data masked (B-26): a
+/// tool's, or a resource read's, which quotes the URI it was given.
+fn redact_error(mut e: rmcp::ErrorData) -> rmcp::ErrorData {
+    use ledger_core::parties::{has_full_tin, redact_full_tins};
+    if has_full_tin(&e.message) {
+        e.message = redact_full_tins(&e.message).into_owned().into();
+    }
+    if let Some(d) = e.data.as_mut() {
+        redact_value(d);
+    }
+    e
+}
+
+/// Every string in `v` with any full TIN masked.
+fn redact_value(v: &mut serde_json::Value) {
+    use ledger_core::parties::{has_full_tin, redact_full_tins};
+    use serde_json::Value;
+    match v {
+        Value::String(t) if has_full_tin(t) => *t = redact_full_tins(t).into_owned(),
+        Value::Array(a) => a.iter_mut().for_each(redact_value),
+        Value::Object(o) => o.values_mut().for_each(redact_value),
+        _ => {}
+    }
+}
+
+/// The resources the server lists (resources/list): fixed reports, the
+/// digest, and the handbook, by section.
+fn resource_list() -> Vec<Resource> {
+    let mk = |uri: &str, name: &str, title: &str, description: &str| {
+        let mut r = Resource::new(uri, name);
+        r.title = Some(title.to_string());
+        r.description = Some(description.to_string());
+        r.mime_type = Some("application/json".to_string());
+        r
+    };
+    let resources = vec![
+        mk(
+            "books://chart",
+            "chart",
+            "Chart of accounts",
+            "All accounts with codes, types, and hierarchy.",
+        ),
+        mk(
+            "books://reports/trial-balance",
+            "trial-balance",
+            "Trial balance",
+            "Current trial balance, debits equal credits.",
+        ),
+        mk(
+            "books://reports/balance-sheet",
+            "balance-sheet",
+            "Balance sheet",
+            "Assets, liabilities, equity.",
+        ),
+        mk(
+            "books://reports/profit-and-loss",
+            "profit-and-loss",
+            "Profit and loss",
+            "Revenue, expenses, net income.",
+        ),
+        mk(
+            "books://digest",
+            "digest",
+            "Activity digest",
+            "What changed in the books, since the start of this month or ?since=YYYY-MM-DD.",
+        ),
+        mk(
+            handbook::URI,
+            "handbook",
+            "Handbook",
+            "The bookkeeping guide: its sections, each at books://handbook/{id}.",
+        ),
+    ];
+    let mut resources = resources;
+    for (id, md) in handbook::SECTIONS {
+        let mut r = mk(
+            &format!("{}/{id}", handbook::URI),
+            &format!("handbook-{id}"),
+            handbook::title(md),
+            "A section of the bookkeeping guide.",
+        );
+        r.mime_type = Some("text/markdown".to_string());
+        resources.push(r);
+    }
+    resources
 }
 
 /// The subject kinds, for messages.
@@ -1158,34 +1520,61 @@ fn books_dir(store: &Store) -> std::path::PathBuf {
     d.parent().map(std::path::Path::to_path_buf).unwrap_or(d)
 }
 
-/// `path` made absolute through its nearest existing ancestor (symlinks
-/// resolved), so a path that doesn't exist yet can still be placed.
-fn resolved(path: &std::path::Path) -> std::path::PathBuf {
-    let abs = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .unwrap_or_else(|_| std::path::PathBuf::from("/"))
-            .join(path)
-    };
-    let mut rest = Vec::new();
-    let mut at = abs.as_path();
-    loop {
-        if let Ok(c) = at.canonicalize() {
-            let mut out = c;
-            for part in rest.iter().rev() {
-                out.push(part);
-            }
-            return out;
-        }
-        match (at.parent(), at.file_name()) {
-            (Some(parent), Some(name)) => {
-                rest.push(name.to_os_string());
-                at = parent;
-            }
-            _ => return abs,
-        }
+/// The last four digits of every TIN the books know of, from the journal
+/// (each party's TIN and W-9 facts), never the vault: the filing scan's
+/// probe bound (tin_files.rs INVARIANT 4).
+fn known_tin_last4(store: &Store) -> Vec<u32> {
+    store
+        .ledger()
+        .parties()
+        .flat_map(|p| {
+            [
+                p.tin.as_ref().map(|t| t.last4.as_str()),
+                p.w9.as_ref().map(|w| w.tin_last4.as_str()),
+            ]
+        })
+        .flatten()
+        .filter_map(|l| l.parse().ok())
+        .collect()
+}
+
+/// Where these books keep what an import must never read
+/// (local_files.rs): the data dir, the books dir, the vault, the key file
+/// in force and the default one, and the home folder.
+fn places(store: &Store, settings: &Settings) -> Places {
+    Places {
+        data_dir: store.data_dir().to_path_buf(),
+        books_dir: books_dir(store),
+        vault_dir: BooksServer::vault_dir(store),
+        key_files: vec![settings.key_file(), ledger_vault::default_key_file()],
+        home: std::env::var_os("HOME").map(std::path::PathBuf::from),
     }
+}
+
+/// The import roots a server for these books may use (local_files.rs
+/// INVARIANT 0): a named root that is `/`, the home folder or holds it,
+/// or holds the books, the vault or a key, is refused (the server doesn't
+/// start); a default one is dropped, leaving none. The text is for the
+/// human starting the server, on its standard error.
+pub fn guard_import_roots(
+    store: &Store,
+    settings: &Settings,
+    roots: ImportRoots,
+) -> Result<ImportRoots, String> {
+    let places = places(store, settings);
+    let explicit = roots.explicit();
+    let (roots, refused) = roots.guard(places.home.as_deref(), &places.keep_out());
+    if let Some((root, why)) = refused.first() {
+        let msg = format!(
+            "import folder {} can't be used: {why}. Name a folder that holds none of them, such as your downloads folder",
+            root.display()
+        );
+        if explicit {
+            return Err(msg);
+        }
+        eprintln!("ledger-mcp: {msg}; books.import_local_file has no folder to read from");
+    }
+    Ok(roots)
 }
 
 /// Whether `path` is `dir` or inside it.
@@ -1201,21 +1590,23 @@ fn outside_books(store: &Store, path: &str) -> Result<std::path::PathBuf, String
         return Err("give a path to write to".into());
     }
     if is_inside(&books_dir(store), &p) {
-        return Err(format!(
-            "{} is inside the books dir ({}), which git keeps forever: a file with a full TIN must go elsewhere",
-            p.display(),
-            books_dir(store).display()
-        ));
+        return Err(INSIDE_BOOKS.to_string());
     }
     match p.parent() {
         Some(d) if d.as_os_str().is_empty() || d.is_dir() => {}
-        _ => return Err(format!("the folder for {} doesn't exist", p.display())),
+        _ => return Err(NO_FOLDER.to_string()),
     }
     if p.exists() {
-        return Err(format!("{} exists already: name a new file", p.display()));
+        return Err(EXISTS.to_string());
     }
     Ok(p)
 }
+
+/// A path to write to whose folder doesn't exist.
+const NO_FOLDER: &str = "the folder for that path doesn't exist: name a file in a folder that does";
+
+/// A path to write to that is taken.
+const EXISTS: &str = "a file is there already: name a new file";
 
 /// Where `books.export_cpa_package` writes its zip: `to` itself when it
 /// names a `.zip` file, or `file_name` in `to` when it is an existing
@@ -1246,18 +1637,15 @@ fn package_dest(
     };
     if tins {
         return outside_books(store, &dest.to_string_lossy()).map_err(|e| {
-            format!("{e} (the CPA package holds full TINs; save it outside the books, e.g. in ~/Documents)")
+            format!("{e} (the CPA package holds full TINs; save it outside the books)")
         });
     }
     match dest.parent() {
         Some(d) if d.as_os_str().is_empty() || d.is_dir() => {}
-        _ => return Err(format!("the folder for {} doesn't exist", dest.display())),
+        _ => return Err(NO_FOLDER.to_string()),
     }
     if dest.exists() {
-        return Err(format!(
-            "{} exists already: name a new file",
-            dest.display()
-        ));
+        return Err(EXISTS.to_string());
     }
     Ok(dest)
 }
@@ -1377,42 +1765,6 @@ fn vault_tin(
     Ok(t)
 }
 
-/// Read a W-9 file (PDF, PNG, or JPEG, 25 MB at most) for the vault.
-fn read_w9_file(path: &str) -> Result<ledger_vault::W9File, String> {
-    let p = std::path::Path::new(path.trim());
-    let mime_type = match p
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(str::to_lowercase)
-        .as_deref()
-    {
-        Some("pdf") => "application/pdf",
-        Some("png") => "image/png",
-        Some("jpg" | "jpeg") => "image/jpeg",
-        _ => return Err("w9_file_path is a PDF, PNG, or JPEG (.pdf, .png, .jpg)".into()),
-    };
-    let meta = std::fs::metadata(p).map_err(|e| format!("can't read {}: {e}", p.display()))?;
-    if !meta.is_file() {
-        return Err(format!("{} is not a file", p.display()));
-    }
-    if meta.len() > MAX_UPLOAD_BYTES as u64 {
-        return Err(format!(
-            "{} is {} bytes; the limit is {MAX_UPLOAD_BYTES}",
-            p.display(),
-            meta.len()
-        ));
-    }
-    let bytes = std::fs::read(p).map_err(|e| format!("can't read {}: {e}", p.display()))?;
-    Ok(ledger_vault::W9File {
-        file_name: p
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "w9".into()),
-        mime_type: mime_type.to_string(),
-        bytes,
-    })
-}
-
 /// Parse role names (`Role::key`), refusing any unknown one.
 fn parse_roles(roles: &[String]) -> Result<Vec<ledger_core::Role>, String> {
     roles
@@ -1496,20 +1848,39 @@ fn status_key(s: DocumentStatus) -> String {
 fn party_document(
     id: u64,
     (date, due): (NaiveDate, NaiveDate),
-    (total, paid): (Decimal, Decimal),
+    (total, balance, paid): (
+        Result<Decimal, ledger_core::LedgerError>,
+        Result<Decimal, ledger_core::LedgerError>,
+        Decimal,
+    ),
     status: DocumentStatus,
     entry_id: u64,
-) -> PartyDocumentOut {
-    PartyDocumentOut {
+) -> Result<PartyDocumentOut, String> {
+    Ok(PartyDocumentOut {
         id,
         date: date.to_string(),
         due_date: due.to_string(),
-        total: money(total),
+        total: money(total.map_err(|e| e.to_string())?),
         paid: money(paid),
-        balance: money(total - paid),
+        balance: money(balance.map_err(|e| e.to_string())?),
         status: status_key(status),
         entry_id,
-    }
+    })
+}
+
+/// The sum of `values`, each computed or refused: refused (as text) when
+/// one is, or when the sum is past exact arithmetic. Figures an earlier
+/// version journaled are as journaled (rules.md B-28).
+fn checked_sum(
+    values: impl IntoIterator<Item = Result<Decimal, ledger_core::LedgerError>>,
+    what: &str,
+) -> Result<Decimal, String> {
+    values.into_iter().try_fold(Decimal::ZERO, |sum, v| {
+        let v = v.map_err(|e| e.to_string())?;
+        sum.checked_add(v).ok_or_else(|| {
+            ledger_core::LedgerError::TooLargeToCompute(what.to_string()).to_string()
+        })
+    })
 }
 
 /// Everything the books did with one party (`PartyTotalsOut` defines it).
@@ -1615,15 +1986,19 @@ fn lines_settled(entry: &JournalEntry) -> bool {
     if entry.status() == ledger_core::EntryStatus::Posted {
         return true;
     }
-    let side = |s: Side| -> Decimal {
+    // A draft's lines are as journaled, of any size (rules.md B-28): sides
+    // past exact arithmetic are not settled lines.
+    let side = |s: Side| -> Option<Decimal> {
         entry
             .lines()
             .iter()
             .filter(|l| l.side == s)
-            .map(|l| l.amount.amount)
-            .sum()
+            .try_fold(Decimal::ZERO, |sum, l| sum.checked_add(l.amount.amount))
     };
-    !entry.lines().is_empty() && side(Side::Debit) == side(Side::Credit)
+    match (side(Side::Debit), side(Side::Credit)) {
+        (Some(debits), Some(credits)) => !entry.lines().is_empty() && debits == credits,
+        _ => false,
+    }
 }
 
 /// Refuse shares that don't resolve against the entry's lines, once the
@@ -1899,7 +2274,7 @@ fn cash_flow_statement(
     let cash_accounts = resolve(cash_codes, "cash")?;
     if cash_accounts.is_empty() {
         return Err(
-            "cash_accounts is required for the cash flow statement (pass it, or set [books] cash_accounts in wanderbooks.toml)"
+            "cash_accounts is required for the cash flow statement (pass it, or set [books] cash_accounts in the settings)"
                 .to_string(),
         );
     }
@@ -1944,6 +2319,23 @@ fn today() -> NaiveDate {
     chrono::Local::now().date_naive()
 }
 
+/// The `since` of a `books://digest` read: the query's `since=`, or, bare
+/// or with an empty `since=`, the first day of `today`'s month (this
+/// month so far).
+fn digest_since(query: &str, today: NaiveDate) -> String {
+    query
+        .split('&')
+        .find_map(|kv| kv.strip_prefix("since="))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            chrono::Datelike::with_day(&today, 1)
+                .unwrap_or(today)
+                .to_string()
+        })
+}
+
 /// Resolve a statement's date range: `end` defaults to today and `start` to
 /// the first posted entry (where "from the beginning" really begins, so no
 /// statement says "0001-01-01"), or to `end` for empty books.
@@ -1971,6 +2363,9 @@ fn statement_range(
 }
 
 fn schedule_out(ledger: &Ledger, s: &ledger_core::AmortizationSchedule) -> ScheduleOut {
+    // A schedule an earlier version journaled may run past the last date
+    // chrono holds (rules.md B-28): shown, with why its plan can't be.
+    let plan = s.plan();
     let code = |id| {
         ledger
             .chart()
@@ -1989,15 +2384,24 @@ fn schedule_out(ledger: &Ledger, s: &ledger_core::AmortizationSchedule) -> Sched
         balance_account: code(s.balance_account),
         pl_account: code(s.pl_account),
         total: money(s.total.amount),
-        remaining: money(s.remaining()),
-        months: ledger_core::schedules::amortization_plan(s.total.amount, s.start, s.months)
-            .into_iter()
-            .map(|(d, a)| ScheduleMonthOut {
-                date: d.to_string(),
-                amount: money(a),
-                posted: s.posted.contains(&d),
+        remaining: plan.as_ref().ok().and(s.remaining().ok()).map(money),
+        months: plan
+            .as_ref()
+            .map(|plan| {
+                plan.iter()
+                    .map(|(d, a)| ScheduleMonthOut {
+                        date: d.to_string(),
+                        amount: money(*a),
+                        posted: s.posted.contains(d),
+                    })
+                    .collect()
             })
-            .collect(),
+            .unwrap_or_default(),
+        // A null remaining is always explained (ScheduleOut::plan_error).
+        plan_error: plan
+            .err()
+            .or_else(|| s.remaining().err())
+            .map(|e| e.to_string()),
     }
 }
 
@@ -2053,9 +2457,63 @@ fn lines_out(lines: &[ledger_core::StatementLine]) -> Vec<StatementLineOut> {
 #[tool_router]
 impl BooksServer {
     #[tool(
+        name = "books.handbook",
+        title = "Bookkeeping handbook",
+        description = "The guide to keeping these books: every procedure and rule, by section. Read the contract section first, then each section you need, before bookkeeping. Without section: the index; with section: that section's text (also at books://handbook/{id}); section \"all\": the whole handbook.",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    async fn handbook(
+        &self,
+        params: Parameters<HandbookParams>,
+    ) -> Result<Json<HandbookOut>, String> {
+        let settings = self.settings();
+        let sections = handbook::SECTIONS
+            .iter()
+            .map(|(id, _)| {
+                let text = handbook::section(id, &settings, self.currency()).unwrap_or_default();
+                HandbookSectionOut {
+                    id: id.to_string(),
+                    title: handbook::title(&text).to_string(),
+                    uri: format!("{}/{id}", handbook::URI),
+                    chars: text.chars().count(),
+                }
+            })
+            .collect();
+        let section = match params.0.section.as_deref().map(str::trim) {
+            None => None,
+            Some(id) => {
+                let text = handbook::section(id, &settings, self.currency()).ok_or_else(|| {
+                    let ids: Vec<&str> = handbook::SECTIONS.iter().map(|(id, _)| *id).collect();
+                    format!(
+                        "no handbook section {id:?}: the sections are {}, or \"{}\" for all of them",
+                        ids.join(", "),
+                        handbook::ALL
+                    )
+                })?;
+                let title = if id == handbook::ALL {
+                    "The whole handbook".to_string()
+                } else {
+                    handbook::title(&text).to_string()
+                };
+                Some(HandbookTextOut {
+                    id: id.to_string(),
+                    title,
+                    text,
+                })
+            }
+        };
+        Ok(Json(HandbookOut {
+            read_first: "Read the contract section first: the rules every entry follows. Then each section you need, or section \"all\" for the whole handbook.".to_string(),
+            sections,
+            section,
+        }))
+    }
+
+    #[tool(
         name = "books.chart",
+        title = "Chart of accounts",
         description = "List the chart of accounts with current balances. Start here: every line you post must use a real account from this chart.",
-        annotations(read_only_hint = true)
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn chart(&self) -> Result<Json<ChartOut>, String> {
         let store = self.lock()?;
@@ -2089,7 +2547,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.add_account",
-        description = "Add an account to the chart. Codes must be unique; check books.chart first."
+        title = "Add an account",
+        description = "Add an account to the chart. Codes must be unique; check books.chart first.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
     )]
     async fn add_account(
         &self,
@@ -2111,8 +2575,9 @@ impl BooksServer {
 
     #[tool(
         name = "books.trial_balance",
+        title = "Trial balance",
         description = "The trial balance as of a date (default today): every account with a non-zero balance, debit and credit columns and totals. Debits must equal credits.",
-        annotations(read_only_hint = true)
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn trial_balance(
         &self,
@@ -2144,8 +2609,9 @@ impl BooksServer {
 
     #[tool(
         name = "books.profit_and_loss",
+        title = "Profit and loss",
         description = "Profit and loss for a period: revenue, expenses, net income. Dates are YYYY-MM-DD; omit for all time. Pass class (name or id) to filter to one division.",
-        annotations(read_only_hint = true)
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn profit_and_loss(
         &self,
@@ -2176,8 +2642,9 @@ impl BooksServer {
 
     #[tool(
         name = "books.balance_sheet",
+        title = "Balance sheet",
         description = "The balance sheet as of a date: assets, liabilities, equity (including current earnings). Omit as_of for today.",
-        annotations(read_only_hint = true)
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn balance_sheet(
         &self,
@@ -2201,8 +2668,9 @@ impl BooksServer {
 
     #[tool(
         name = "books.cash_flow",
+        title = "Cash flow statement",
         description = "Cash flow statement (indirect method) for a period: net income, depreciation add-back, working-capital changes, investing (asset purchases, disposal proceeds), financing. The three sections reconcile to the net change in the given cash accounts.",
-        annotations(read_only_hint = true)
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn cash_flow(
         &self,
@@ -2242,7 +2710,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.draft_entry",
-        description = "Start a draft journal entry. Drafts are journaled and survive restarts, but don't affect reports until posted; add lines with books.add_line. Pass party (id or name) for the counterparty: every entry with a vendor, platform, agency, bank, member, or contractor names its party (a party with a vendor record tags the vendor too, for 1099s). An entry with several counterparties passes parties instead, each with an amount, a percent, or neither (derived): name both members on a joint member transaction and let their shares derive."
+        title = "Draft an entry",
+        description = "Start a draft journal entry. Drafts are journaled and survive restarts, but don't affect reports until posted; add lines with books.add_line. Pass party (id or name) for the counterparty: every entry with a vendor, platform, agency, bank, member, or contractor names its party (a party with a vendor record tags the vendor too, for 1099s). An entry with several counterparties passes parties instead, each with an amount, a percent, or neither (derived): name both members on a joint member transaction and let their shares derive.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
     )]
     async fn draft_entry(
         &self,
@@ -2322,7 +2796,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.add_line",
-        description = "Add one line to a draft entry. Amount is a decimal string, never a float. The entry must balance before posting. For foreign-currency lines, pass foreign_currency, foreign_amount, and fx_rate (foreign -> base); the base amount is computed as foreign_amount * fx_rate. Pass class (name or id) to tag the line for divisional tracking."
+        title = "Add a line to a draft",
+        description = "Add one line to a draft entry. Amount is a decimal string, never a float. The entry must balance before posting. For foreign-currency lines, pass foreign_currency, foreign_amount, and fx_rate (foreign -> base); the base amount is computed as foreign_amount * fx_rate. Pass class (name or id) to tag the line for divisional tracking.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
     )]
     async fn add_line(
         &self,
@@ -2381,7 +2861,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.post_entry",
-        description = "Post a draft entry. Without confirmed=true this returns a preview (lines, resulting balances, receipt checklist) and posts nothing. With confirmed=true it posts after enforcing the receipt policy."
+        title = "Post an entry",
+        description = "Post a draft entry. Without confirmed=true this returns a preview (lines, resulting balances, receipt checklist) and posts nothing. With confirmed=true it posts after enforcing the receipt policy.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn post_entry(
         &self,
@@ -2401,7 +2887,8 @@ impl BooksServer {
         entry
             .validate(store.ledger().chart())
             .map_err(|e| e.to_string())?;
-        let total = ReceiptPolicy::entry_debits(&entry);
+        // Validated: its lines are in a line's range, so their sum is exact.
+        let total = ReceiptPolicy::entry_debits(&entry).map_err(|e| e.to_string())?;
         if let Some(expected) = p.expected_total {
             let want = parse_amount(&expected)?;
             if total != want {
@@ -2537,7 +3024,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.reverse_entry",
-        description = "Reverse a posted entry with an offsetting entry. Without confirmed=true returns a preview; reversals are exempt from the receipt policy."
+        title = "Reverse an entry",
+        description = "Reverse a posted entry with an offsetting entry. Without confirmed=true returns a preview; reversals are exempt from the receipt policy.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn reverse_entry(
         &self,
@@ -2586,7 +3079,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.attach_receipt",
-        description = "Attach a receipt (base64 file bytes) to an entry, or file it unlinked and link later with books.link_receipt. Files are content-addressed and deduplicated. link_to links it to more subjects in the same call (another entry it also supports, an asset, a party, ...: see books.link_attachment); every subject is checked first, so one bad subject files nothing."
+        title = "Attach a receipt",
+        description = "Attach a receipt (base64 file bytes) to an entry, or file it unlinked and link later with books.link_receipt. Files are content-addressed and deduplicated. link_to links it to more subjects in the same call (another entry it also supports, an asset, a party, ...: see books.link_attachment); every subject is checked first, so one bad subject files nothing. A file holding a full TIN is refused: one the server read or wrote with TINs, or text with a TIN the vault keeps or an SSN or EIN printed 3-2-4 or 2-7 with hyphens.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
     )]
     async fn attach_receipt(
         &self,
@@ -2611,6 +3110,7 @@ impl BooksServer {
             return Err(format!("unknown entry {e}"));
         }
         let link_to = check_link_to(&store, p.entry_id, &p.link_to)?;
+        self.refuse_tin_file(&store, &bytes, &p.mime_type, &p.file_name)?;
         let (attachment_id, sha256, deduplicated) = store
             .attach_receipt(
                 p.entry_id,
@@ -2635,7 +3135,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.file_document",
-        description = "File a document into the content-addressed store: category formation, legal, tax, accounting, statement (a bank or card statement: then books.record_statement), contract, photo, warranty, import_source (a bank export), or other. link_to links it to subjects in the same call (an account, an asset, a party, the company, ...: see books.link_attachment); every subject is checked first, so one bad subject files nothing. Never file a W-9 here (it shows the full TIN): books.set_w9 w9_file_path puts it in the vault."
+        title = "File a document",
+        description = "File a document into the content-addressed store: category formation, legal, tax, accounting, statement (a bank or card statement: then books.record_statement), contract, photo, warranty, import_source (a bank export), or other. link_to links it to subjects in the same call (an account, an asset, a party, the company, ...: see books.link_attachment); every subject is checked first, so one bad subject files nothing. Never file a W-9 here (it shows the full TIN): books.set_w9 w9_file_path puts it in the vault. A file holding a full TIN is refused: one the server read or wrote with TINs, or text with a TIN the vault keeps or an SSN or EIN printed 3-2-4 or 2-7 with hyphens.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
     )]
     async fn file_document(
         &self,
@@ -2665,6 +3171,7 @@ impl BooksServer {
         }
         let mut store = self.lock()?;
         let link_to = check_link_to(&store, None, &p.link_to)?;
+        self.refuse_tin_file(&store, &bytes, &p.mime_type, &p.file_name)?;
         let (attachment_id, sha256, deduplicated) = store
             .file_document(
                 &p.category,
@@ -2689,7 +3196,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.link_receipt",
-        description = "Link a previously filed (unlinked) receipt to an entry."
+        title = "Link a receipt to an entry",
+        description = "Link a previously filed (unlinked) receipt to an entry.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
     )]
     async fn link_receipt(
         &self,
@@ -2705,7 +3218,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.unlink_receipt",
-        description = "Detach a receipt from its entry, with a reason recorded in the journal. The receipt stays filed (unlinked); link it elsewhere or withdraw it with books.withdraw_attachment. The receipt policy still holds: an entry that requires a receipt cannot be left with none, so to replace a receipt attach the new one first, then unlink the old."
+        title = "Unlink a receipt",
+        description = "Detach a receipt from its entry, with a reason recorded in the journal. The receipt stays filed (unlinked); link it elsewhere or withdraw it with books.withdraw_attachment. The receipt policy still holds: an entry that requires a receipt cannot be left with none, so to replace a receipt attach the new one first, then unlink the old.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn unlink_receipt(
         &self,
@@ -2745,7 +3264,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.withdraw_attachment",
-        description = "Withdraw an unlinked receipt or a filed document, with a reason recorded in the journal. It drops out of books.list_receipts and can never be linked again. Nothing is deleted: the bytes stay in the blob store and the journal keeps the filing and the withdrawal. Unlink a linked receipt first."
+        title = "Withdraw a receipt or document",
+        description = "Withdraw an unlinked receipt or a filed document, with a reason recorded in the journal. It drops out of books.list_receipts and can never be linked again. Nothing is deleted: the bytes stay in the blob store and the journal keeps the filing and the withdrawal. Unlink a linked receipt first.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn withdraw_attachment(
         &self,
@@ -2774,7 +3299,13 @@ impl BooksServer {
     /// ```
     #[tool(
         name = "books.link_attachment",
-        description = "Link a stored receipt or document to a subject, so one file is evidence wherever it applies without filing it again. subject: {kind, id}: entry (id), account (code or id: its statements, the agreement that opened it), asset (tag or id: photos, warranty, manual), party (id or name: contracts, correspondence), invoice, bill, period (its close package), payroll_run, schedule (the prepaid contract), reconciliation, or company (no id: formation documents). A file linked to an entry counts as one of its receipts. Journaled as attachment.linked. Returns the attachment's links."
+        title = "Link a file to a subject",
+        description = "Link a stored receipt or document to a subject, so one file is evidence wherever it applies without filing it again. subject: {kind, id}: entry (id), account (code or id: its statements, the agreement that opened it), asset (tag or id: photos, warranty, manual), party (id or name: contracts, correspondence), invoice, bill, period (its close package), payroll_run, schedule (the prepaid contract), reconciliation, or company (no id: formation documents). A file linked to an entry counts as one of its receipts. Journaled as attachment.linked. Returns the attachment's links.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
     )]
     async fn link_attachment(
         &self,
@@ -2813,7 +3344,13 @@ impl BooksServer {
     /// ```
     #[tool(
         name = "books.unlink_attachment",
-        description = "Take a link (books.link_attachment) off a subject, with the reason recorded in the journal. The file stays filed and keeps its other links. A receipt filed on an entry comes off with books.unlink_receipt instead. Refused when it would leave a posted entry the receipt policy covers without a receipt (attach the replacement first), or take the statement off a reconciliation that isn't voided. Journaled as attachment.unlinked. Returns the attachment's links."
+        title = "Unlink a file from a subject",
+        description = "Take a link (books.link_attachment) off a subject, with the reason recorded in the journal. The file stays filed and keeps its other links. A receipt filed on an entry comes off with books.unlink_receipt instead. Refused when it would leave a posted entry the receipt policy covers without a receipt (attach the replacement first), or take the statement off a reconciliation that isn't voided. Journaled as attachment.unlinked. Returns the attachment's links.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn unlink_attachment(
         &self,
@@ -2871,8 +3408,9 @@ impl BooksServer {
 
     #[tool(
         name = "books.attachments",
+        title = "Files linked to a subject",
         description = "The files on a subject ({kind, id} as in books.link_attachment): for an entry, the receipts filed on it and the files linked to it; for anything else, the files linked to it. Withdrawn files are left out. Each comes with all its links.",
-        annotations(read_only_hint = true)
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn attachments(
         &self,
@@ -2894,8 +3432,9 @@ impl BooksServer {
 
     #[tool(
         name = "books.list_receipts",
+        title = "List receipts and documents",
         description = "List receipts and filed documents, optionally filtered to one entry (filed on it or linked to it), each with everything it is linked to (links). Withdrawn attachments are hidden unless include_withdrawn=true. For any other subject's files, books.attachments.",
-        annotations(read_only_hint = true)
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn list_receipts(
         &self,
@@ -2916,8 +3455,9 @@ impl BooksServer {
 
     #[tool(
         name = "books.get_receipt",
+        title = "Get a receipt",
         description = "Fetch a receipt or document's metadata (with everything it is linked to) and base64 bytes. Bytes are hash-verified on read.",
-        annotations(read_only_hint = true)
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn get_receipt(
         &self,
@@ -2948,8 +3488,9 @@ impl BooksServer {
 
     #[tool(
         name = "books.get_entry",
+        title = "Get an entry",
         description = "Full detail of one entry: lines, totals, status, and attached receipts.",
-        annotations(read_only_hint = true)
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn get_entry(
         &self,
@@ -2966,11 +3507,16 @@ impl BooksServer {
             .lines()
             .iter()
             .map(|l| {
-                let a = store.ledger().chart().get(l.account).unwrap();
+                // A draft line an earlier version journaled may name an
+                // account the chart doesn't have (rules.md B-28).
+                let (code, name) = match store.ledger().chart().get(l.account) {
+                    Some(a) => (a.code.clone(), a.name.clone()),
+                    None => (String::new(), format!("(no account {})", l.account)),
+                };
                 EntryLineOut {
                     account_id: l.account,
-                    code: a.code.clone(),
-                    name: a.name.clone(),
+                    code,
+                    name,
                     side: match l.side {
                         Side::Debit => "debit".to_string(),
                         Side::Credit => "credit".to_string(),
@@ -2980,6 +3526,7 @@ impl BooksServer {
             })
             .collect();
         let (parties, parties_error) = entry_parties_out(&store, &self.settings(), &entry);
+        let total = ReceiptPolicy::entry_debits(&entry);
         Ok(Json(GetEntryOut {
             entry_id: p.entry_id,
             date: entry.date().to_string(),
@@ -2990,7 +3537,8 @@ impl BooksServer {
             },
             reversal_of: entry.reversal_of(),
             lines,
-            total: money(ReceiptPolicy::entry_debits(&entry)),
+            total: total.as_ref().ok().map(|t| money(*t)),
+            total_error: total.err().map(|e| e.to_string()),
             receipts: preview_receipts(&store, p.entry_id)?,
             vendor: store
                 .ledger()
@@ -3014,8 +3562,9 @@ impl BooksServer {
 
     #[tool(
         name = "books.search_entries",
+        title = "Search entries",
         description = "Search posted entries by account, date range, and description text. Newest first.",
-        annotations(read_only_hint = true)
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn search_entries(
         &self,
@@ -3039,7 +3588,7 @@ impl BooksServer {
                 .ledger()
                 .get_entry(r.id)
                 .ok_or_else(|| format!("entry {} missing from ledger", r.id))?;
-            let total = ReceiptPolicy::entry_debits(e);
+            let total = ReceiptPolicy::entry_debits(e).map_err(|e| e.to_string())?;
             let receipt_count = store
                 .list_attachments(Some(r.id))
                 .map_err(|e| e.to_string())?
@@ -3058,8 +3607,9 @@ impl BooksServer {
 
     #[tool(
         name = "books.show",
-        description = "Show something in the human's viewer (the read-only desktop app, `just gui`): an entry (with its lines, receipt, and history), an account's register (optionally for start/end dates), a report (optionally for start/end dates, split into month/quarter/year columns, compared with the prior period or prior year), a stored receipt or document, a fixed asset (by tag or id), a party (by id or name: who they are and everything the company did with them), a reconciliation (by id: its account with its statements and reconciliations), a search of the transactions, or a page. Give exactly one target; work out dates yourself (\"last quarter\" means its first and last day). Use it whenever the human asks to see something, and after posting so they can look at what you did. Changes nothing in the books.",
-        annotations(read_only_hint = true)
+        title = "Show in the viewer",
+        description = "Show something in the human's viewer (the read-only desktop app): an entry (with its lines, receipt, and history), an account's register (optionally for start/end dates), a report (optionally for start/end dates, split into month/quarter/year columns, compared with the prior period or prior year), a stored receipt or document, a fixed asset (by tag or id), a party (by id or name: who they are and everything the company did with them), a reconciliation (by id: its account with its statements and reconciliations), a search of the transactions, or a page. Give exactly one target; work out dates yourself (\"last quarter\" means its first and last day). Use it whenever the human asks to see something, and after posting so they can look at what you did. Changes nothing in the books.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn show(&self, params: Parameters<ShowParams>) -> Result<Json<ShowOut>, String> {
         use ledger_store::viewer::{ViewerTarget, request};
@@ -3248,14 +3798,21 @@ impl BooksServer {
         Ok(Json(ShowOut {
             shown: shown.clone(),
             note: format!(
-                "Sent to the viewer: {shown}. If it isn't open, the human can open it with `just gui` (within a couple of minutes, it opens right there)."
+                "Sent to the viewer: {shown}. If it isn't open, ask the human to open the viewer (within a couple of minutes, it opens right there)."
             ),
         }))
     }
 
     #[tool(
         name = "books.verify",
-        description = "Check the books end to end: the journal's hash chain; a fresh replay against the live ledger; every table of the SQLite database, row for row, against a fresh projection of the journal (rebuilding the database from the journal if it drifted, keeping the old file); and, by default, every stored receipt and document against its SHA-256. Run it whenever a number looks wrong or a human asks whether the books are intact."
+        title = "Verify the books",
+        description = "Check the books end to end: the journal's hash chain; a fresh replay against the live ledger; every table of the books' database, row for row, against a fresh projection of the journal (rebuilding the database from the journal if it drifted, keeping the old copy); and, by default, every stored receipt and document against its SHA-256. Run it whenever a number looks wrong or a human asks whether the books are intact.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn verify(&self, params: Parameters<VerifyParams>) -> Result<Json<VerifyOut>, String> {
         let mut store = self.lock()?;
@@ -3292,8 +3849,9 @@ impl BooksServer {
 
     #[tool(
         name = "books.digest",
+        title = "Activity digest",
         description = "What changed since a date: entries posted, per-account movement, and receipt coverage; plus what needs doing: rules due for review, settings problems, and cash and card accounts not reconciled through the end of last month (unreconciled_accounts). Built for human review.",
-        annotations(read_only_hint = true)
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn digest(&self, params: Parameters<DigestParams>) -> Result<Json<DigestOut>, String> {
         let p = params.0;
@@ -3314,7 +3872,7 @@ impl BooksServer {
                 entry_id: e.id(),
                 date: e.date().to_string(),
                 description: e.description().to_string(),
-                total: money(ReceiptPolicy::entry_debits(e)),
+                total: money(ReceiptPolicy::entry_debits(e).map_err(|e| e.to_string())?),
                 reversal_of: e.reversal_of(),
                 receipt_count: receipts.len() as u64,
                 receipt_required: required,
@@ -3342,8 +3900,7 @@ impl BooksServer {
             .map(|r| StaleRule {
                 name: r.name.to_string(),
                 known_through: r.known_through,
-                catalog: r.catalog.to_string(),
-                source: r.source.to_string(),
+                source: r.authority.to_string(),
                 why: r.review_why.to_string(),
             })
             .collect();
@@ -3352,10 +3909,14 @@ impl BooksServer {
             .map_err(|e| e.to_string())?
             .into_iter()
             .filter(|(at, _, _)| at.get(..10).is_some_and(|d| d >= p.since.as_str()))
+            // The stamp only: the file's name would name the journal.
             .map(|(at, bytes, saved_as)| JournalRepair {
                 at,
                 bytes,
-                saved_as,
+                set_aside: saved_as
+                    .rsplit_once(".torn.")
+                    .map(|(_, stamp)| stamp.to_string())
+                    .unwrap_or_default(),
             })
             .collect();
         let unreconciled_accounts = self.unreconciled_accounts(&store, today)?;
@@ -3371,7 +3932,9 @@ impl BooksServer {
                 if let Some(e) = self.live().status().error {
                     problems.insert(
                         0,
-                        format!("wanderbooks.toml didn't load (the last good settings are in force): {e}"),
+                        format!(
+                            "the settings didn't load (the last good settings are in force): {e}"
+                        ),
                     );
                 }
                 problems
@@ -3381,7 +3944,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.import_bank_csv",
-        description = "Import a QuickBooks-style bank/credit-card CSV: 3 columns Date,Description,Amount (payments negative), or 4 columns Date,Description, money out, money in (Intuit heads them Credit,Debit). Slash dates must settle month-first or day-first from the file itself or from date_order (\"month_first\" for mm/dd, \"day_first\" for dd/mm); ask the human when the tool says the dates read either way. Creates one DRAFT entry per transaction, all or none: bank account on one side, categorized offset on the other (the longest matching rule pattern, else default_offset_code). Review with books.digest, then post. File the export first (books.file_document category import_source) and pass source_attachment_id: it is linked to the bank account, so the import traces to its source (never to the drafts: a bank export is not a receipt)."
+        title = "Import a bank CSV as drafts",
+        description = "Import a QuickBooks-style bank/credit-card CSV: 3 columns Date,Description,Amount (payments negative), or 4 columns Date,Description, money out, money in (Intuit heads them Credit,Debit). Slash dates must settle month-first or day-first from the file itself or from date_order (\"month_first\" for mm/dd, \"day_first\" for dd/mm); ask the human when the tool says the dates read either way. Creates one DRAFT entry per transaction, all or none: bank account on one side, categorized offset on the other (the longest matching rule pattern, else default_offset_code). Review with books.digest, then post. File the export first (books.file_document category import_source) and pass source_attachment_id: it is linked to the bank account, so the import traces to its source (never to the drafts: a bank export is not a receipt).",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
     )]
     async fn import_bank_csv(
         &self,
@@ -3513,7 +4082,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.create_schedule",
-        description = "Spread a prepaid expense (asset expensed monthly, e.g. a year of insurance paid up front) or deferred revenue (liability earned monthly, e.g. an annual subscription collected up front) evenly over the months it covers, to the cent (the last month absorbs rounding). Record the original payment first (Dr prepaid / Cr cash, with its receipt; or Dr cash / Cr deferred revenue). Returns the monthly plan; post it with books.run_schedules."
+        title = "Create an amortization schedule",
+        description = "Spread a prepaid expense (asset expensed monthly, e.g. a year of insurance paid up front) or deferred revenue (liability earned monthly, e.g. an annual subscription collected up front) evenly over the months it covers, to the cent (the last month absorbs rounding). Record the original payment first (Dr prepaid / Cr cash, with its receipt; or Dr cash / Cr deferred revenue). Returns the monthly plan; post it with books.run_schedules.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
     )]
     async fn create_schedule(
         &self,
@@ -3552,8 +4127,9 @@ impl BooksServer {
 
     #[tool(
         name = "books.list_schedules",
+        title = "List amortization schedules",
         description = "Amortization schedules (prepaid expenses, deferred revenue): each month's amount, what has posted, and what remains.",
-        annotations(read_only_hint = true)
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn list_schedules(&self) -> Result<Json<ListSchedulesOut>, String> {
         let store = self.lock()?;
@@ -3568,7 +4144,14 @@ impl BooksServer {
 
     #[tool(
         name = "books.run_schedules",
-        description = "Post every amortization schedule's months ending on or before `through` (default today) that haven't posted. Idempotent: a month posts once. Without confirmed=true, returns the postings it would make. Exempt from the receipt policy: the schedule is the evidence (the original payment carries the receipt)."
+        title = "Post scheduled amortization",
+        description = "Post every amortization schedule's months ending on or before `through` (default today) that haven't posted. Idempotent: a month posts once. Without confirmed=true, returns the postings it would make. Exempt from the receipt policy: the schedule is the evidence (the original payment carries the receipt).",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn run_schedules(
         &self,
@@ -3580,11 +4163,15 @@ impl BooksServer {
             None => today(),
         };
         let mut store = self.lock()?;
-        let mut due: Vec<(NaiveDate, u64, Decimal)> = store
-            .ledger()
-            .schedules()
-            .flat_map(|s| s.due(through).into_iter().map(move |(d, a)| (d, s.id, a)))
-            .collect();
+        // A schedule whose plan can't be computed refuses the run, naming
+        // it, before any month posts.
+        let mut due: Vec<(NaiveDate, u64, Decimal)> = Vec::new();
+        for s in store.ledger().schedules() {
+            let months = s
+                .due(through)
+                .map_err(|e| format!("schedule {}: {e}", s.id))?;
+            due.extend(months.into_iter().map(|(d, a)| (d, s.id, a)));
+        }
         due.sort();
         let describe = |store: &Store, id: u64, date: NaiveDate| -> Result<String, String> {
             Ok(store
@@ -3633,7 +4220,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.create_recurring",
-        description = "A recurring entry (rent, a subscription, a loan payment): balanced lines and a frequency (weekly, monthly, quarterly, yearly) from a start date, optionally ending. books.run_recurring turns due occurrences into drafts, never posted entries: attach each actual receipt and post through the normal preview."
+        title = "Create a recurring entry",
+        description = "A recurring entry (rent, a subscription, a loan payment): balanced lines and a frequency (weekly, monthly, quarterly, yearly) from a start date, optionally ending. books.run_recurring turns due occurrences into drafts, never posted entries: attach each actual receipt and post through the normal preview.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
     )]
     async fn create_recurring(
         &self,
@@ -3681,8 +4274,9 @@ impl BooksServer {
 
     #[tool(
         name = "books.list_recurring",
+        title = "List recurring entries",
         description = "Recurring entries and the occurrences generated so far.",
-        annotations(read_only_hint = true)
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn list_recurring(&self) -> Result<Json<ListRecurringOut>, String> {
         let store = self.lock()?;
@@ -3697,7 +4291,14 @@ impl BooksServer {
 
     #[tool(
         name = "books.run_recurring",
-        description = "Turn every recurring entry's occurrences on or before `through` (default today) into drafts. Idempotent: an occurrence generates once. Occurrences dated in a closed period are not generated; they come back in `skipped_closed_period` for the human to decide. Each draft then goes through the normal flow: attach the receipt, preview, post."
+        title = "Draft recurring entries",
+        description = "Turn every recurring entry's occurrences on or before `through` (default today) into drafts. Idempotent: an occurrence generates once. Occurrences dated in a closed period are not generated; they come back in `skipped_closed_period` for the human to decide. Each draft then goes through the normal flow: attach the receipt, preview, post.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn run_recurring(
         &self,
@@ -3735,7 +4336,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.record_payout",
-        description = "Record a platform payout (app store, payment processor, marketplace) grossed up: Dr the deposit account the net deposit, Dr fee accounts the fees withheld, Dr/Cr adjustments (refunds, chargebacks, reserves, taxes withheld), Cr revenue the gross sales (several lines and classes allowed). Refuses unless gross - fees +/- adjustments equals the deposit to the cent, and says by how much it's off. Creates a draft: attach the payout statement as its receipt, preview, and post."
+        title = "Record a platform payout",
+        description = "Record a platform payout (app store, payment processor, marketplace) grossed up: Dr the deposit account the net deposit, Dr fee accounts the fees withheld, Dr/Cr adjustments (refunds, chargebacks, reserves, taxes withheld), Cr revenue the gross sales (several lines and classes allowed). Refuses unless gross - fees +/- adjustments equals the deposit to the cent, and says by how much it's off. Creates a draft: attach the payout statement as its receipt, preview, and post.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
     )]
     async fn record_payout(
         &self,
@@ -3813,8 +4420,9 @@ impl BooksServer {
 
     #[tool(
         name = "books.list_vendors",
+        title = "List vendors",
         description = "Vendors, with which 1099 each gets, whether its W-9 is on file, and the party each belongs to (books.party).",
-        annotations(read_only_hint = true)
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn list_vendors(&self) -> Result<Json<ListVendorsOut>, String> {
         let store = self.lock()?;
@@ -3836,7 +4444,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.set_vendor_1099",
-        description = "Mark which information return a vendor gets: \"nec\" (1099-NEC: contractors, freelancers, attorneys), \"misc\" (1099-MISC: rent, royalties, prizes), or \"none\" (corporations generally, merchants, anyone paid only by card). Record whether a W-9 is on file; never store the TIN itself. Ask the human when unsure; the CPA confirms."
+        title = "Set a vendor's 1099 status",
+        description = "Mark which information return a vendor gets: \"nec\" (1099-NEC: contractors, freelancers, attorneys), \"misc\" (1099-MISC: rent, royalties, prizes), or \"none\" (corporations generally, merchants, anyone paid only by card). Record whether a W-9 is on file; never store the TIN itself. Ask the human when unsure; the CPA confirms.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
     )]
     async fn set_vendor_1099(
         &self,
@@ -3867,7 +4481,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.set_entry_vendor",
-        description = "Tag an entry (draft or posted) with the vendor it paid, for 1099 tracking, or omit vendor to clear the tag. Reporting metadata only: amounts never change. On an entry naming several parties (books.set_entry_party parties) the parties stay as they are: the vendor of a party already named is tagged with every share kept; any other vendor, or clearing the tag while its party is named, is refused (change the parties instead). An entry and its reversal are tagged together. books.pay_bill tags its payments automatically; books.draft_entry takes a vendor too."
+        title = "Tag an entry's vendor",
+        description = "Tag an entry (draft or posted) with the vendor it paid, for 1099 tracking, or omit vendor to clear the tag. Reporting metadata only: amounts never change. On an entry naming several parties (books.set_entry_party parties) the parties stay as they are: the vendor of a party already named is tagged with every share kept; any other vendor, or clearing the tag while its party is named, is refused (change the parties instead). An entry and its reversal are tagged together. books.pay_bill tags its payments automatically; books.draft_entry takes a vendor too.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
     )]
     async fn set_entry_vendor(
         &self,
@@ -3893,8 +4513,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.vendor_1099",
-        description = "1099 worksheet for a calendar year: cash paid to each vendor (credits minus debits to the [books] cash and financing accounts on entries tagged with the vendor, so card payments, which the card processor reports on 1099-K, are excluded; on an entry naming several parties, only the vendor's resolved share of that payment), which vendors are reportable (marked NEC/MISC and paid at least the threshold: $600 through 2025, $2,000 in 2026, indexed for inflation after that), which are missing a W-9, and each payee's TIN last four. include_tins: true adds each payee's full TIN from the TIN vault (or why it can't): only when the human asks for the CPA's worksheet, and never repeat those TINs anywhere else; save_csv_to also writes the worksheet as CSV to a new file outside the books dir. For a year whose threshold wanderbooks doesn't know yet it refuses rather than guess: get the figure from the IRS or the human, pass it as `threshold`, and update the rule for everyone (pull request or issue at github.com/swaits/wanderbooks). For the CPA to confirm.",
-        annotations(read_only_hint = true)
+        title = "1099 worksheet",
+        description = "1099 worksheet for a calendar year: cash paid to each vendor (credits minus debits to the [books] cash and financing accounts on entries tagged with the vendor, so card payments, which the card processor reports on 1099-K, are excluded; on an entry naming several parties, only the vendor's resolved share of that payment), which vendors are reportable (marked NEC/MISC and paid at least the threshold: $600 through 2025, $2,000 in 2026, indexed for inflation after that), which are missing a W-9, and each payee's TIN last four. include_tins: true adds each payee's full TIN from the TIN vault (or why it can't): only when the human asks for the CPA's worksheet, and never repeat those TINs anywhere else; save_csv_to also writes the worksheet as CSV to a new file outside the books dir. For a year whose threshold wanderbooks doesn't know yet it refuses rather than guess: get the figure from the IRS or the human, pass it as `threshold`, and tell the human, who can report it upstream so the rule is updated for everyone. For the CPA to confirm.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
     )]
     async fn vendor_1099(
         &self,
@@ -3991,7 +4616,11 @@ impl BooksServer {
         let saved_csv = match &p.save_csv_to {
             None => None,
             Some(path) => {
-                let dest = outside_books(&store, path)?;
+                let dest = if p.include_tins {
+                    self.tin_file_dest(&store, path)?
+                } else {
+                    outside_books(&store, path)?
+                };
                 let mut csv =
                     String::from("vendor_id,name,form_1099,paid,reportable,w9_on_file,tin_last4");
                 if p.include_tins {
@@ -4016,6 +4645,9 @@ impl BooksServer {
                     csv.push_str(&cells.join(","));
                     csv.push('\n');
                 }
+                if p.include_tins {
+                    Self::wrote_tins(&store, csv.as_bytes())?;
+                }
                 write_private_new(&dest, csv.as_bytes())?;
                 Some(dest.display().to_string())
             }
@@ -4033,8 +4665,9 @@ impl BooksServer {
 
     #[tool(
         name = "books.chart_template",
-        description = "A starter chart of accounts for a kind of business (sole proprietorship, partnership or multi-member LLC, S corporation, C corporation): the right equity and owner-pay accounts (draws; per-partner capital and distributions plus guaranteed payments; officer compensation and distributions; dividends and income tax), common income and expense accounts with tax categories assigned, and the wanderbooks.toml settings that go with it. A proposal: review it with the human, adjust, then books.import_chart_csv.",
-        annotations(read_only_hint = true)
+        title = "Starter chart of accounts",
+        description = "A starter chart of accounts for a kind of business (sole proprietorship, partnership or multi-member LLC, S corporation, C corporation): the right equity and owner-pay accounts (draws; per-partner capital and distributions plus guaranteed payments; officer compensation and distributions; dividends and income tax), common income and expense accounts with tax categories assigned, and the settings that go with it. A proposal: review it with the human, adjust, then books.import_chart_csv.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn chart_template(
         &self,
@@ -4057,8 +4690,9 @@ impl BooksServer {
 
     #[tool(
         name = "books.tax_categories",
-        description = "The tax categories an account can map to (where it lands on the income tax return), filtered to the business's return when wanderbooks.toml says which (tax_form or tax_classification). Each has a default deductible percent (meals 50, nondeductible 0) and guidance. Categories are stable keys, not form line numbers.",
-        annotations(read_only_hint = true)
+        title = "Tax categories",
+        description = "The tax categories an account can map to (where it lands on the income tax return), filtered to the business's return when the settings say which (tax_form or tax_classification). Each has a default deductible percent (meals 50, nondeductible 0) and guidance. Categories are stable keys, not form line numbers.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn tax_categories(&self) -> Result<Json<TaxCategoriesOut>, String> {
         let form = self.settings().company.tax_form;
@@ -4086,7 +4720,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.renumber_account",
-        description = "Give an account a new code. Only the code changes: its id, name, and every entry posted to it stay, so balances and reports don't move. Refuses a code in use, or a control account's code (invoices, bills, payroll, closes) for an account of the wrong type. Lists any wanderbooks.toml settings that still name the old code. Never renumber the human's accounts on your own: only when they ask."
+        title = "Renumber an account",
+        description = "Give an account a new code. Only the code changes: its id, name, and every entry posted to it stay, so balances and reports don't move. Refuses a code in use, or a control account's code (invoices, bills, payroll, closes) for an account of the wrong type. Lists any settings that still name the old code. Never renumber the human's accounts on your own: only when they ask.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn renumber_account(
         &self,
@@ -4115,7 +4755,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.label_asset",
-        description = "Change a fixed asset's description, link it to the entry that acquired it (acquisition_entry), or set or change its tag (the label on the thing: letters, digits, - _ . /, at most 32; unique ignoring case and never reused by another asset, even after a retag or disposal) and its manufacturer serial number. The asset is its id or current tag. Journaled. Print labels with books.asset_labels."
+        title = "Label a fixed asset",
+        description = "Change a fixed asset's description, link it to the entry that acquired it (acquisition_entry), or set or change its tag (the label on the thing: letters, digits, - _ . /, at most 32; unique ignoring case and never reused by another asset, even after a retag or disposal) and its manufacturer serial number. The asset is its id or current tag. Journaled. Print labels with books.asset_labels.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
     )]
     async fn label_asset(
         &self,
@@ -4195,7 +4841,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.correct_asset",
-        description = "Correct a registered fixed asset's cost, salvage value, useful life, or in-service date when it was registered wrong, with the reason; omitted fields keep their values. Refused once any depreciation for it is posted (correct with entries then). Its tag, serial, links, and tax basis record stay; correct the entry that put it on the books too, so the books and the register agree (books.export fixed_asset_register shows any difference). Journaled with the old figures."
+        title = "Correct a fixed asset",
+        description = "Correct a registered fixed asset's cost, salvage value, useful life, or in-service date when it was registered wrong, with the reason; omitted fields keep their values. Refused once any depreciation for it is posted (correct with entries then). Its tag, serial, links, and tax basis record stay; correct the entry that put it on the books too, so the books and the register agree (books.export fixed_asset_register shows any difference). Journaled with the old figures.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn correct_asset(
         &self,
@@ -4238,7 +4890,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.set_asset_tax_basis",
-        description = "Record a fixed asset's federal tax basis beside its book value: rule cost (the company bought it: basis is its cost, IRC §1012), carryover (a member contributed business property: the member's adjusted basis, IRC §723), or personal_use_conversion (a member contributed personal-use property: the lesser of fair market value, which is the book cost, and the member's adjusted basis, Treas. Reg. §1.168(i)-4(b)). Contributions take the member's adjusted basis (what they paid, less any depreciation they took). Reports the tax basis and the built-in gain or loss (IRC §704(c)). Journaled; book figures don't change. Every asset should have one: the register and the CPA package show it."
+        title = "Set an asset's tax basis",
+        description = "Record a fixed asset's federal tax basis beside its book value: rule cost (the company bought it: basis is its cost, IRC §1012), carryover (a member contributed business property: the member's adjusted basis, IRC §723), or personal_use_conversion (a member contributed personal-use property: the lesser of fair market value, which is the book cost, and the member's adjusted basis, Treas. Reg. §1.168(i)-4(b)). Contributions take the member's adjusted basis (what they paid, less any depreciation they took). Reports the tax basis and the built-in gain or loss (IRC §704(c)). Journaled; book figures don't change. Every asset should have one: the register and the CPA package show it.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
     )]
     async fn set_asset_tax_basis(
         &self,
@@ -4257,8 +4915,9 @@ impl BooksServer {
 
     #[tool(
         name = "books.asset_labels",
+        title = "Asset label sheet",
         description = "A printable sheet of asset labels (PDF, base64): each label shows the company, the tag, a QR code of the tag, the description, and the serial number. Avery 5160/8160 (US letter, 30 labels of 1\" x 2-5/8\"); skip reuses a partly used sheet. Omit assets for every active asset with a tag. Save the file and tell the human to print at 100% scale.",
-        annotations(read_only_hint = true)
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn asset_labels(
         &self,
@@ -4312,8 +4971,9 @@ impl BooksServer {
 
     #[tool(
         name = "books.settings",
-        description = "The settings in force from wanderbooks.toml (company, fiscal year, tax form, members, basis, receipt rule, cash flow roles, close target), the file they come from, and problems: settings that disagree with the chart, each saying what to change. The server reloads the file whenever it changes, with no restart; after editing it, call this to confirm the edit loaded (reload_error says why one didn't, and the last good settings stay in force).",
-        annotations(read_only_hint = true)
+        title = "Settings in force",
+        description = "The settings in force (company, fiscal year, tax form, members, basis, receipt rule with every account it requires or exempts, cash flow roles, close target), where they come from, and problems: settings that disagree with the chart, each saying what to change. The server reloads them whenever they change, with no restart; after a change, call this to confirm it loaded (reload_error says why one didn't, and the last good settings stay in force).",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn settings_tool(&self) -> Result<Json<SettingsOut>, String> {
         let status = self.live().status();
@@ -4323,14 +4983,16 @@ impl BooksServer {
         Ok(Json(SettingsOut {
             books_toml: status.books_toml.map(|p| p.display().to_string()),
             books_toml_exists: status.books_toml_exists,
-            config_json: status.config_json.map(|p| p.display().to_string()),
+            config_json_present: status.config_json_present,
             reload_error: status.error,
             loads: status.loads,
             company: c.name.clone(),
             fiscal_year_start: format!("{:02}-{:02}", c.fiscal_year_start.0, c.fiscal_year_start.1),
             tax_form: c.tax_form.map(|f| f.label().to_string()),
             basis: c.basis.clone(),
-            receipt_rule: cfg.policy.rule(),
+            receipt_rule: cfg.policy.rule(self.currency()),
+            receipt_required_accounts: cfg.policy.receipt_required_accounts.clone(),
+            receipt_exempt_accounts: cfg.policy.receipt_exempt_accounts.clone(),
             parties: cfg.parties.key().to_string(),
             members: c
                 .members
@@ -4354,8 +5016,9 @@ impl BooksServer {
 
     #[tool(
         name = "books.roles",
+        title = "Control account roles",
         description = "The control roles invoices, bills, payroll, and closes post to (receivables, revenue, payables, general expense, retained earnings, payroll expense and withholdings), and the account filling each: the one assigned with books.assign_role, else the account at the role's default code.",
-        annotations(read_only_hint = true)
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn roles(&self) -> Result<Json<RolesOut>, String> {
         let store = self.lock()?;
@@ -4366,7 +5029,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.assign_role",
-        description = "Assign a control role (see books.roles) one of the chart's own accounts, so invoices, bills, payroll, or closes post there instead of the default code; account null returns the role to its default code. Journaled. Refuses an account of the wrong type, a placeholder, one already filling another role, and moving a receivables, payables, withholding, or retained earnings role while its account holds a balance (move the balance with an entry first). Posted entries never change. Only when the human agrees."
+        title = "Assign a control role",
+        description = "Assign a control role (see books.roles) one of the chart's own accounts, so invoices, bills, payroll, or closes post there instead of the default code; account null returns the role to its default code. Journaled. Refuses an account of the wrong type, a placeholder, one already filling another role, and moving a receivables, payables, withholding, or retained earnings role while its account holds a balance (move the balance with an entry first). Posted entries never change. Only when the human agrees.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn assign_role(
         &self,
@@ -4388,7 +5057,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.set_tax_category",
-        description = "Map a revenue or expense account to a tax category (see books.tax_categories), optionally overriding its deductible percent; category null clears it. Drives the tax_summary report."
+        title = "Set an account's tax category",
+        description = "Map a revenue or expense account to a tax category (see books.tax_categories), optionally overriding its deductible percent; category null clears it. Drives the tax_summary report.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
     )]
     async fn set_tax_category(
         &self,
@@ -4419,7 +5094,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.import_chart_csv",
-        description = "Import a chart of accounts from CSV (header: code,name,type,parent_code). Types: asset, liability, equity, revenue, expense. Parents must come before children. Fails on the first bad row; nothing is half-imported."
+        title = "Import a chart of accounts",
+        description = "Import a chart of accounts from CSV (header: code,name,type,parent_code). Types: asset, liability, equity, revenue, expense. Parents must come before children. Fails on the first bad row; nothing is half-imported.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
     )]
     async fn import_chart_csv(
         &self,
@@ -4506,31 +5187,37 @@ impl BooksServer {
 
     #[tool(
         name = "books.import_local_file",
-        description = "Import a file from the server's local filesystem into the blob store (receipt or document). Used for backfills: the agent downloads from Google Drive (or elsewhere) to a temp path, then calls this. Path must be absolute."
+        title = "File a local file",
+        description = "File a receipt or document from a file on this computer: an absolute path to a regular file in the server's import folders (by default your downloads folder; save it there first). Files of the books themselves are never read. A file the server read or wrote with full TINs (a W-9, a 1099 worksheet, a CPA package or a file from one), and text holding a TIN the vault keeps or a number printed as an SSN or EIN is (digits 3-2-4 or 2-7 joined by hyphens), are refused: they never go into the books.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
     )]
     async fn import_local_file(
         &self,
         params: Parameters<ImportLocalFileParams>,
     ) -> Result<Json<ImportLocalFileOut>, String> {
         let p = params.0;
-        let path = std::path::Path::new(&p.path);
-        if !path.is_absolute() {
-            return Err("path must be absolute".to_string());
-        }
-        let bytes = std::fs::read(path).map_err(|e| format!("read {}: {e}", p.path))?;
-        if bytes.len() > 25 * 1024 * 1024 {
-            return Err("file exceeds 25 MB limit".to_string());
-        }
+        // The name and type are those of the file read, where the path
+        // really leads (a link named receipt.pdf to a CSV is a CSV).
+        let (canonical, bytes) = self.read_local(&p.path)?;
         let file_name = p.file_name.unwrap_or_else(|| {
-            path.file_name()
+            canonical
+                .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("file")
                 .to_string()
         });
-        let mime_type = mime_guess::from_path(path)
+        let mime_type = mime_guess::from_path(&canonical)
             .first_or_octet_stream()
             .to_string();
         let mut store = self.lock()?;
+        // A file the server read or wrote with full TINs, or text holding
+        // one (the vault's, or one printed as an SSN or EIN is), never goes
+        // into the books (tin_files.rs).
+        self.refuse_tin_file(&store, &bytes, &mime_type, &file_name)?;
         let (attachment_id, sha256, deduplicated) = match p.category.as_str() {
             "receipt" => store
                 .attach_receipt(
@@ -4565,8 +5252,9 @@ impl BooksServer {
 
     #[tool(
         name = "books.export",
-        description = "Export a report. Reports: profit_and_loss, balance_sheet, cash_flow (needs cash_accounts), trial_balance (as_of), members_equity (multi-member LLC; members from wanderbooks.toml), general_ledger (by account: running balances, splits), general_journal (every entry in date order; alias journal), fixed_asset_register (as_of: every asset with tag, serial, cost, depreciation, book value, reconciled to the books). Formats: pdf and xlsx (base64) for the five statements and fixed_asset_register; xlsx, csv, json for every report; iif for general_journal (QuickBooks Desktop). Dates: start/end for period reports (start defaults to the first entry, end to today), as_of for balance_sheet, trial_balance, and fixed_asset_register.",
-        annotations(read_only_hint = true)
+        title = "Export a report",
+        description = "Export a report. Reports: profit_and_loss, balance_sheet, cash_flow (needs cash_accounts), trial_balance (as_of), members_equity (multi-member LLC; members from the settings), general_ledger (by account: running balances, splits), general_journal (every entry in date order; alias journal), fixed_asset_register (as_of: every asset with tag, serial, cost, depreciation, book value, reconciled to the books). Formats: pdf and xlsx (base64) for the five statements and fixed_asset_register; xlsx, csv, json for every report; iif for general_journal (QuickBooks Desktop). Dates: start/end for period reports (start defaults to the first entry, end to today), as_of for balance_sheet, trial_balance, and fixed_asset_register.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn export(&self, params: Parameters<ExportParams>) -> Result<Json<ExportOut>, String> {
         let p = params.0;
@@ -4702,7 +5390,7 @@ impl BooksServer {
                 Some(s) => parse_date(s)?,
                 None => today(),
             };
-            let r = ledger_core::fixed_asset_register(ledger, as_of);
+            let r = ledger_core::fixed_asset_register(ledger, as_of).map_err(|e| e.to_string())?;
             return ledger_import::asset_register_xlsx(&r, &meta).map_err(|e| e.to_string());
         }
         let xlsx = |r: XlsxReport<'_>| report_to_xlsx(&r, &meta).map_err(|e| e.to_string());
@@ -4735,7 +5423,8 @@ impl BooksServer {
                 Some(s) => parse_date(s)?,
                 None => today(),
             };
-            let r = ledger_core::fixed_asset_register(store.ledger(), as_of);
+            let r = ledger_core::fixed_asset_register(store.ledger(), as_of)
+                .map_err(|e| e.to_string())?;
             return ledger_import::asset_register_pdf(&r, &meta).map_err(|e| e.to_string());
         }
         let st = self.layout_statement(store.ledger(), report, p)?;
@@ -4787,7 +5476,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.register_asset",
-        description = "Register a fixed asset (equipment, vehicles, buildings). Links three accounts: cost (asset), accumulated depreciation (asset, contra), depreciation expense. Depreciation is straight-line, book basis only — tax depreciation (MACRS, Section 179) stays with the CPA."
+        title = "Register a fixed asset",
+        description = "Register a fixed asset (equipment, vehicles, buildings). Links three accounts: cost (asset), accumulated depreciation (asset, contra), depreciation expense. Depreciation is straight-line, book basis only — tax depreciation (MACRS, Section 179) stays with the CPA.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
     )]
     async fn register_asset(
         &self,
@@ -4880,8 +5575,9 @@ impl BooksServer {
 
     #[tool(
         name = "books.asset_schedule",
+        title = "Depreciation schedule",
         description = "Month-by-month straight-line depreciation schedule for an asset: period, amount, accumulated, book value. Partial first and last months are prorated by days; the lifetime total is exactly cost minus salvage.",
-        annotations(read_only_hint = true)
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn asset_schedule(
         &self,
@@ -4926,8 +5622,9 @@ impl BooksServer {
 
     #[tool(
         name = "books.list_assets",
+        title = "List fixed assets",
         description = "List all registered fixed assets with accumulated depreciation and book value as of today.",
-        annotations(read_only_hint = true)
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn list_assets(&self) -> Result<Json<ListAssetsOut>, String> {
         let store = self.lock()?;
@@ -4958,7 +5655,14 @@ impl BooksServer {
 
     #[tool(
         name = "books.run_depreciation",
-        description = "Post one month of depreciation (Dr Depreciation Expense / Cr Accumulated Depreciation) for one asset, or for every active asset when asset_id is omitted. Idempotent: re-running a posted period returns the original entry instead of double-posting. Depreciation is an allocation, not money movement, so it is exempt from the receipt policy; the registered asset and its schedule are the evidence."
+        title = "Post depreciation",
+        description = "Post one month of depreciation (Dr Depreciation Expense / Cr Accumulated Depreciation) for one asset, or for every active asset when asset_id is omitted. Idempotent: re-running a posted period returns the original entry instead of double-posting. Depreciation is an allocation, not money movement, so it is exempt from the receipt policy; the registered asset and its schedule are the evidence.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn run_depreciation(
         &self,
@@ -4966,6 +5670,7 @@ impl BooksServer {
     ) -> Result<Json<RunDepreciationOut>, String> {
         let p = params.0;
         let (py, pm) = parse_period_mcp(&p.period)?;
+        let period_end = last_day_of_month(py, pm)?;
         let mut store = self.lock()?;
         let targets: Vec<(u64, String)> = match p.asset_id {
             Some(id) => {
@@ -4990,7 +5695,6 @@ impl BooksServer {
             if p.asset_id.is_none()
                 && let Some(asset) = store.ledger().get_asset(id)
             {
-                let period_end = last_day_of_month(py, pm);
                 let touches = depreciation_schedule(asset, period_end)
                     .iter()
                     .any(|l| l.period == p.period);
@@ -5023,7 +5727,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.dispose_asset",
-        description = "Dispose of a fixed asset (sell or retire). Without confirmed=true returns a preview — book value, gain/loss, the auto-posted final depreciation, and the disposal entry's lines — and posts nothing. With confirmed=true posts the disposal entry (plus any missing final-period depreciation) after enforcing the receipt policy: file the bill of sale with books.file_document first and pass its attachment ids as receipt_attachment_ids. Name the buyer (buyer: a party id or name): it is the entry's party, and [books] parties = \"require\" refuses a sale without one; a retirement with no proceeds and no buyer is marked as having no counterparty."
+        title = "Dispose of a fixed asset",
+        description = "Dispose of a fixed asset (sell or retire). Without confirmed=true returns a preview — book value, gain/loss, the auto-posted final depreciation, and the disposal entry's lines — and posts nothing. With confirmed=true posts the disposal entry (plus any missing final-period depreciation) after enforcing the receipt policy: file the bill of sale with books.file_document first and pass its attachment ids as receipt_attachment_ids. Name the buyer (buyer: a party id or name): it is the entry's party, and [books] parties = \"require\" refuses a sale without one; a retirement with no proceeds and no buyer is marked as having no counterparty.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn dispose_asset(
         &self,
@@ -5175,7 +5885,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.create_period",
-        description = "Create an accounting period (month, quarter, year). Dates are YYYY-MM-DD, inclusive."
+        title = "Create a period",
+        description = "Create an accounting period (month, quarter, year). Dates are YYYY-MM-DD, inclusive.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
     )]
     async fn create_period(
         &self,
@@ -5191,7 +5907,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.close_period",
-        description = "Close an accounting period. The closing entry, dated at period end, zeroes revenue and expense balances as of that date into Retained Earnings, or, for a multi-member LLC (members in wanderbooks.toml), into each member's capital account by share. Periods close in order. Without confirmed=true, returns the exact closing entry it would post and closes nothing. With confirmed=true, posts it and marks the period closed. Closed periods reject new entries."
+        title = "Close a period",
+        description = "Close an accounting period. The closing entry, dated at period end, zeroes revenue and expense balances as of that date into Retained Earnings, or, for a multi-member LLC (members in the settings), into each member's capital account by share. Periods close in order. Without confirmed=true, returns the exact closing entry it would post and closes nothing. With confirmed=true, posts it and marks the period closed. Closed periods reject new entries.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn close_period(
         &self,
@@ -5249,7 +5971,9 @@ impl BooksServer {
 
     #[tool(
         name = "books.list_periods",
-        description = "List all accounting periods with their status."
+        title = "List periods",
+        description = "List all accounting periods with their status.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn list_periods(&self) -> Result<Json<ListPeriodsOut>, String> {
         let store = self.lock()?;
@@ -5278,7 +6002,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.mark_cleared",
-        description = "Mark a posted entry's line as cleared (or uncleared) for bank reconciliation. Only posted lines can be marked."
+        title = "Mark a line cleared",
+        description = "Mark a posted entry's line as cleared (or uncleared) for bank reconciliation. Only posted lines can be marked.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
     )]
     async fn mark_cleared(
         &self,
@@ -5317,7 +6047,13 @@ impl BooksServer {
     /// ```
     #[tool(
         name = "books.reconcile",
-        description = "Reconcile a bank, cash, or card account against a statement. Give statement_attachment (a statement recorded with books.record_statement: its account, period end, and closing balance), or account, statement_date, and statement_balance for a quick check against any balance. Returns the book balance, cleared balance, statement balance, the difference (cleared minus statement; zero means reconciled), the cleared and uncleared lines through the statement date, and the problems that would stop it being recorded. Without confirmed=true it is a preview and records nothing. With confirmed=true and a recorded statement it records the reconciliation (journaled as reconciliation.completed, linked to the statement), refused unless the difference is exactly zero and it comes after the account's last reconciliation. Mark lines cleared with books.mark_cleared first."
+        title = "Reconcile an account",
+        description = "Reconcile a bank, cash, or card account against a statement. Give statement_attachment (a statement recorded with books.record_statement: its account, period end, and closing balance), or account, statement_date, and statement_balance for a quick check against any balance. Returns the book balance, cleared balance, statement balance, the difference (cleared minus statement; zero means reconciled), the cleared and uncleared lines through the statement date, and the problems that would stop it being recorded. Without confirmed=true it is a preview and records nothing. With confirmed=true and a recorded statement it records the reconciliation (journaled as reconciliation.completed, linked to the statement), refused unless the difference is exactly zero and it comes after the account's last reconciliation. Mark lines cleared with books.mark_cleared first.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn reconcile(
         &self,
@@ -5486,7 +6222,13 @@ impl BooksServer {
     /// ```
     #[tool(
         name = "books.record_statement",
-        description = "Record what a filed bank or card statement says (file it first: books.file_document category statement): the account it is for (code or id; an asset or liability), the period it covers (period_start, period_end: the statement date), and its opening and closing balances as printed, in the account's normal direction (what the bank holds; what the card is owed), decimal strings. Links the statement to the account. Then reconcile to it: books.reconcile statement_attachment. Journaled as statement.recorded. Returns the statement."
+        title = "Record a statement",
+        description = "Record what a filed bank or card statement says (file it first: books.file_document category statement): the account it is for (code or id; an asset or liability), the period it covers (period_start, period_end: the statement date), and its opening and closing balances as printed, in the account's normal direction (what the bank holds; what the card is owed), decimal strings. Links the statement to the account. Then reconcile to it: books.reconcile statement_attachment. Journaled as statement.recorded. Returns the statement.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
     )]
     async fn record_statement(
         &self,
@@ -5511,8 +6253,9 @@ impl BooksServer {
 
     #[tool(
         name = "books.statements",
+        title = "List statements",
         description = "Recorded bank and card statements (books.record_statement), optionally one account's (code or id), by statement date: the attachment, account, period, opening and closing balances, and the reconciliation made against it, if any.",
-        annotations(read_only_hint = true)
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn statements(
         &self,
@@ -5536,8 +6279,9 @@ impl BooksServer {
 
     #[tool(
         name = "books.reconciliations",
+        title = "List reconciliations",
         description = "Recorded reconciliations (books.reconcile confirmed), optionally one account's (code or id), by statement date: the account, the statement date and balance, the statement's attachment, the lines it found cleared, and whether it was voided (and why).",
-        annotations(read_only_hint = true)
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn reconciliations(
         &self,
@@ -5572,7 +6316,13 @@ impl BooksServer {
     /// ```
     #[tool(
         name = "books.void_statement",
-        description = "Void a recorded statement that was recorded wrong (a mistyped balance or period), with the reason recorded in the journal, so the same filed statement can be recorded again with books.record_statement. Refused while a reconciliation not voided rests on it (books.void_reconciliation first). Nothing is erased: the journal keeps what it said. Journaled as statement.voided. Returns the statement as it was recorded."
+        title = "Void a statement",
+        description = "Void a recorded statement that was recorded wrong (a mistyped balance or period), with the reason recorded in the journal, so the same filed statement can be recorded again with books.record_statement. Refused while a reconciliation not voided rests on it (books.void_reconciliation first). Nothing is erased: the journal keeps what it said. Journaled as statement.voided. Returns the statement as it was recorded.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn void_statement(
         &self,
@@ -5603,7 +6353,13 @@ impl BooksServer {
     /// ```
     #[tool(
         name = "books.void_reconciliation",
-        description = "Void a recorded reconciliation that was a mistake, with the reason recorded in the journal, so the account can be reconciled through that date again. Nothing is erased: it stays listed in books.reconciliations, marked voided. Journaled as reconciliation.voided. Returns it."
+        title = "Void a reconciliation",
+        description = "Void a recorded reconciliation that was a mistake, with the reason recorded in the journal, so the account can be reconciled through that date again. Nothing is erased: it stays listed in books.reconciliations, marked voided. Journaled as reconciliation.voided. Returns it.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn void_reconciliation(
         &self,
@@ -5629,7 +6385,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.add_customer",
-        description = "Add a customer record for accounts receivable (invoices). It links to the party of the same name that has no customer record yet (ignoring case), else to a new party; the output names both ids."
+        title = "Add a customer",
+        description = "Add a customer record for accounts receivable (invoices). It links to the party of the same name that has no customer record yet (ignoring case), else to a new party; the output names both ids.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
     )]
     async fn add_customer(
         &self,
@@ -5647,7 +6409,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.add_vendor",
-        description = "Add a vendor record for accounts payable (bills) and 1099s. It links to the party of the same name that has no vendor record yet (ignoring case), else to a new party; the output names both ids."
+        title = "Add a vendor",
+        description = "Add a vendor record for accounts payable (bills) and 1099s. It links to the party of the same name that has no vendor record yet (ignoring case), else to a new party; the output names both ids.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
     )]
     async fn add_vendor(
         &self,
@@ -5669,7 +6437,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.add_party",
-        description = "Add a party to the directory: anyone the company deals with (a contractor, landlord, payout platform, tax agency, government agency, bank or card issuer, member, employee). Name it as on its documents (unique among parties not archived); give its roles: contractor, employee, member, payout_platform, tax_agency, government_agency, financial_institution, landlord. Vendor and customer aren't given by hand: books.add_vendor and books.add_customer add those records and link them to the party of the same name. Never put a full TIN or SSN in any party field: the engine refuses nine-digit numbers. Journaled as party.added; returns the party."
+        title = "Add a party",
+        description = "Add a party to the directory: anyone the company deals with (a contractor, landlord, payout platform, tax agency, government agency, bank or card issuer, member, employee). Name it as on its documents (unique among parties not archived); give its roles: contractor, employee, member, payout_platform, tax_agency, government_agency, financial_institution, landlord. Vendor and customer aren't given by hand: books.add_vendor and books.add_customer add those records and link them to the party of the same name. Never put a full TIN or SSN in any party field: the engine refuses nine-digit numbers. Journaled as party.added; returns the party.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
     )]
     async fn add_party(
         &self,
@@ -5689,7 +6463,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.update_party",
-        description = "Change a party's facts: name, display_name, website, address, notes, archived. Give only the fields to change; an empty string clears display_name, website, address, or notes. Every field is checked before any is written, so a bad one (a blank or taken name, a full TIN, over 500 characters) changes nothing; each is journaled as its own party.updated. Archive a party you no longer deal with (its history stays; it then goes by id). Returns the party."
+        title = "Update a party",
+        description = "Change a party's facts: name, display_name, website, address, notes, archived. Give only the fields to change; an empty string clears display_name, website, address, or notes. Every field is checked before any is written, so a bad one (a blank or taken name, a full TIN, over 500 characters) changes nothing; each is journaled as its own party.updated. Archive a party you no longer deal with (its history stays; it then goes by id). Returns the party.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
     )]
     async fn update_party(
         &self,
@@ -5740,7 +6520,14 @@ impl BooksServer {
 
     #[tool(
         name = "books.set_party_roles",
-        description = "Give a party roles (add) or take them away (remove): contractor, employee, member, payout_platform, tax_agency, government_agency, financial_institution, landlord. Vendor and customer follow their records and can't be set by hand. Adds apply before removes; a role it already has (or lacks) is left alone. Removing a party's last 1099 role (contractor, landlord) needs its W-9 facts cleared first (books.set_w9 clear), and removing employee its W-4 facts. All or nothing: a refusal changes nothing. Each change is journaled as party.role_set. Returns the party."
+        title = "Set a party's roles",
+        description = "Give a party roles (add) or take them away (remove): contractor, employee, member, payout_platform, tax_agency, government_agency, financial_institution, landlord. Vendor and customer follow their records and can't be set by hand. Adds apply before removes; a role it already has (or lacks) is left alone. Removing a party's last 1099 role (contractor, landlord) needs its W-9 facts cleared first (books.set_w9 clear), and removing employee its W-4 facts. All or nothing: a refusal changes nothing. Each change is journaled as party.role_set. Returns the party.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn set_party_roles(
         &self,
@@ -5826,7 +6613,13 @@ impl BooksServer {
     /// ```
     #[tool(
         name = "books.set_w9",
-        description = "Record what a contractor's or landlord's W-9 says, or clear it (clear: true alone): the date received (received_on), line 3 entity type, line 4 exempt payee and FATCA codes, the TIN's last four digits, and where the form is kept. Give the full TIN as tin with tin_type (ssn, ein, itin) and it goes only to the encrypted TIN vault (vault/ beside the books, git-ignored; its key outside the books, created on first use): the books keep its last four (tin_last4 is then optional, and refused if it disagrees) and a hash of the vault record, in the W-9 facts and the party's TIN facts alike (party.tin_set, as books.set_tin), and kept_at defaults to \"wanderbooks vault\". The CPA package carries the full TIN to the CPA. Give w9_file_path (a local PDF, PNG, or JPEG of the signed form) and the form goes to the vault too, never to the receipts and documents; read it back with books.get_w9. Never put a TIN in any other field, note, description, or file: the engine refuses any nine-digit number, and no tool output echoes one. The party needs a 1099 role (contractor or landlord: books.set_party_roles). Record it before paying them. A party with a vendor record also gets its W-9 marked on file there (books.vendor_1099 missing_w9). Clearing W-9 facts whose TIN is in the vault needs books.purge_tin first. Journaled as party.w9_set. Returns the party (the TIN's last four only)."
+        title = "Record W-9 facts",
+        description = "Record what a contractor's or landlord's W-9 says, or clear it (clear: true alone): the date received (received_on), line 3 entity type, line 4 exempt payee and FATCA codes, the TIN's last four digits, and where the form is kept. Give the full TIN as tin with tin_type (ssn, ein, itin) and it goes only to the encrypted TIN vault (its key kept outside the books, created on first use): the books keep its last four (tin_last4 is then optional, and refused if it disagrees) and a hash of the vault record, in the W-9 facts and the party's TIN facts alike (party.tin_set, as books.set_tin), and kept_at defaults to \"wanderbooks vault\". The CPA package carries the full TIN to the CPA. Give w9_file_path (a local PDF, PNG, or JPEG of the signed form) and the form goes to the vault too, never to the receipts and documents; read it back with books.get_w9. Never put a TIN in any other field, note, description, or file: the engine refuses any nine-digit number, and no tool output echoes one. The party needs a 1099 role (contractor or landlord: books.set_party_roles). Record it before paying them. A party with a vendor record also gets its W-9 marked on file there (books.vendor_1099 missing_w9). Clearing W-9 facts whose TIN is in the vault needs books.purge_tin first. Journaled as party.w9_set. Returns the party (the TIN's last four only).",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn set_w9(&self, params: Parameters<SetW9Params>) -> Result<Json<PartyOut>, String> {
         let p = params.0;
@@ -5883,7 +6676,11 @@ impl BooksServer {
                 vault_record: None,
             })
         };
-        let w9_file = p.w9_file_path.as_deref().map(read_w9_file).transpose()?;
+        let w9_file = p
+            .w9_file_path
+            .as_deref()
+            .map(|path| self.read_w9_file(path))
+            .transpose()?;
         let mut store = self.lock()?;
         let id = resolve_party(&store, &p.party)?;
         let existing = store.ledger().get_party(id).and_then(|p| p.w9.clone());
@@ -5951,6 +6748,12 @@ impl BooksServer {
                 }
                 f.vault_record = if tin.is_some() || w9_file.is_some() {
                     let vault = self.open_vault(&store, true)?;
+                    // The W-9 read is recorded before the vault keeps it:
+                    // never filed into the books (tin_files.rs INVARIANT
+                    // 1). Only now: every check has passed.
+                    if let Some(w) = &w9_file {
+                        Self::wrote_tins(&store, &w.bytes)?;
+                    }
                     let tin_hash = match &tin {
                         Some(t) => Some(vault.put_tin(id, t).map_err(|e| e.to_string())?),
                         None => None,
@@ -6032,7 +6835,13 @@ impl BooksServer {
     /// ```
     #[tool(
         name = "books.set_tin",
-        description = "Put a party's full taxpayer identification number in the encrypted TIN vault: tin (nine digits, hyphens allowed) and tin_type (ssn, ein, itin). Any role: collect every member's (their K-1 needs it) and every 1099 payee's (books.set_w9 tin records a W-9's TIN the same way). The books keep only its type, last four, and a hash of the vault record (journaled as party.tin_set); books.export_cpa_package carries the full number to the CPA. A party whose W-9 facts name another last four is refused: a payee's new TIN comes with its new W-9 (books.set_w9). Never repeat a TIN in chat, descriptions, notes, commit messages, or file names. Returns the party (the last four only)."
+        title = "Store a TIN in the vault",
+        description = "Put a party's full taxpayer identification number in the encrypted TIN vault: tin (nine digits, hyphens allowed) and tin_type (ssn, ein, itin). Any role: collect every member's (their K-1 needs it) and every 1099 payee's (books.set_w9 tin records a W-9's TIN the same way). The books keep only its type, last four, and a hash of the vault record (journaled as party.tin_set); books.export_cpa_package carries the full number to the CPA. A party whose W-9 facts name another last four is refused: a payee's new TIN comes with its new W-9 (books.set_w9). Never repeat a TIN in chat, descriptions, notes, version-history messages, or file names. Returns the party (the last four only).",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn set_tin(&self, params: Parameters<SetTinParams>) -> Result<Json<PartyOut>, String> {
         let p = params.0;
@@ -6108,13 +6917,19 @@ impl BooksServer {
     /// ```
     #[tool(
         name = "books.get_w9",
-        description = "Write a party's signed W-9 file from the TIN vault to a local path (save_to: a new file outside the books dir, since the form shows the full TIN) and return the path, never the contents. Give the human the path; never open, read, or attach the file yourself. Nothing is journaled."
+        title = "Write out a W-9",
+        description = "Write a party's signed W-9 file from the TIN vault to a local path (save_to: a new file outside the books dir, since the form shows the full TIN) and return the path, never the contents. Give the human the path; never open, read, or attach the file yourself. Nothing is journaled.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
     )]
     async fn get_w9(&self, params: Parameters<GetW9Params>) -> Result<Json<GetW9Out>, String> {
         let p = params.0;
         let store = self.lock()?;
         let id = resolve_party(&store, &p.party)?;
-        let dest = outside_books(&store, &p.save_to)?;
+        let dest = self.tin_file_dest(&store, &p.save_to)?;
         let file = self
             .open_vault(&store, false)?
             .w9(id)
@@ -6124,6 +6939,7 @@ impl BooksServer {
                     "the TIN vault holds no W-9 file for party {id}: store one with books.set_w9 w9_file_path"
                 )
             })?;
+        Self::wrote_tins(&store, &file.bytes)?;
         write_private_new(&dest, &file.bytes)?;
         Ok(Json(GetW9Out {
             party_id: id,
@@ -6158,7 +6974,13 @@ impl BooksServer {
     /// ```
     #[tool(
         name = "books.purge_tin",
-        description = "Delete a party's full TIN and W-9 file from the TIN vault (after the retention period, at the payee's request, or to replace a wrong one), with the reason. Without confirmed=true it previews what the vault holds and changes nothing. Confirmed, the records are deleted for good and the books journal it: the party's TIN facts (party.tin_set: purged says when and why) and W-9 facts (party.w9_set: kept_at says so) keep the last four and drop the vault record. Works without the vault key. The next CPA package then lacks that TIN (and says so)."
+        title = "Purge a TIN from the vault",
+        description = "Delete a party's full TIN and W-9 file from the TIN vault (after the retention period, at the payee's request, or to replace a wrong one), with the reason. Without confirmed=true it previews what the vault holds and changes nothing. Confirmed, the records are deleted for good and the books journal it: the party's TIN facts (party.tin_set: purged says when and why) and W-9 facts (party.w9_set: kept_at says so) keep the last four and drop the vault record. Works without the vault key. The next CPA package then lacks that TIN (and says so).",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn purge_tin(
         &self,
@@ -6265,7 +7087,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.set_w4",
-        description = "Record what an employee's W-4 says, or clear it (clear: true alone): the date received (received_on), the work state (two letters), and where the form is kept. Never the SSN. The party needs the employee role. Record it before their first payroll. Journaled as party.w4_set. Returns the party."
+        title = "Record W-4 facts",
+        description = "Record what an employee's W-4 says, or clear it (clear: true alone): the date received (received_on), the work state (two letters), and where the form is kept. Never the SSN. The party needs the employee role. Record it before their first payroll. Journaled as party.w4_set. Returns the party.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
     )]
     async fn set_w4(&self, params: Parameters<SetW4Params>) -> Result<Json<PartyOut>, String> {
         let p = params.0;
@@ -6295,8 +7123,9 @@ impl BooksServer {
 
     #[tool(
         name = "books.parties",
+        title = "List parties",
         description = "The party directory, by id: each party's name, label, roles (vendor and customer included), vendor and customer record ids, whether W-9 facts (with the TIN's last four) and W-4 facts are on file, archived, and what was paid to and received from it in the year (default this year; defined as in books.party). Filter by role; archived parties only with include_archived.",
-        annotations(read_only_hint = true)
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn parties(
         &self,
@@ -6340,8 +7169,9 @@ impl BooksServer {
 
     #[tool(
         name = "books.party",
+        title = "Get a party",
         description = "One party, by id or name: its facts and roles, vendor and customer record ids, the year's totals (default this year: paid to it, received from it, invoiced, billed, the 1099 amount for a vendor, payroll gross and net), what it is owed and owes now (open bills and invoices), every entry it is on (tagged with it or its vendor record, its invoices and their payments, and their reversals), its invoices and bills, and the payroll lines naming it. Totals come from the journal: the output's schema says exactly how.",
-        annotations(read_only_hint = true)
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn party(&self, params: Parameters<PartyParams>) -> Result<Json<PartyDetailOut>, String> {
         let p = params.0;
@@ -6366,7 +7196,7 @@ impl BooksServer {
                     ledger_core::EntryStatus::Posted => "posted",
                 }
                 .to_string(),
-                total: money(ReceiptPolicy::entry_debits(e)),
+                total: ReceiptPolicy::entry_debits(e).ok().map(money),
                 reversal_of: e.reversal_of(),
             })
             .collect();
@@ -6387,42 +7217,48 @@ impl BooksServer {
             }
             None => None,
         };
+        // Documents and runs are restored as journaled (rules.md B-28): a
+        // total past exact arithmetic refuses the answer, never a panic.
         let mut payroll = Vec::new();
         let (mut gross, mut net) = (Decimal::ZERO, Decimal::ZERO);
         for run in ledger.list_payroll_runs() {
             for line in run.lines.iter().filter(|l| l.employee == Some(id)) {
+                let line_net = line.net_pay().map_err(|e| e.to_string())?;
                 if in_year(run.date) {
-                    gross += line.gross_pay;
-                    net += line.net_pay();
+                    gross = checked_sum([Ok(gross), Ok(line.gross_pay)], "gross pay")?;
+                    net = checked_sum([Ok(net), Ok(line_net)], "net pay")?;
                 }
                 payroll.push(PartyPayrollOut {
                     run_id: run.id,
                     date: run.date.to_string(),
                     entry_id: run.entry_id,
                     gross_pay: money(line.gross_pay),
-                    net_pay: money(line.net_pay()),
+                    net_pay: money(line_net),
                 });
             }
         }
         let totals = PartyTotalsOut {
             paid: money(act.paid),
             received: money(act.received),
-            invoiced: money(
+            invoiced: money(checked_sum(
                 invoices
                     .iter()
                     .filter(|i| in_year(i.date))
-                    .map(|i| i.total())
-                    .sum(),
-            ),
-            billed: money(
-                bills
-                    .iter()
-                    .filter(|b| in_year(b.date))
-                    .map(|b| b.total())
-                    .sum(),
-            ),
-            owed: money(bills.iter().map(|b| b.balance()).sum()),
-            receivable: money(invoices.iter().map(|i| i.balance()).sum()),
+                    .map(|i| i.total()),
+                "the year's invoices",
+            )?),
+            billed: money(checked_sum(
+                bills.iter().filter(|b| in_year(b.date)).map(|b| b.total()),
+                "the year's bills",
+            )?),
+            owed: money(checked_sum(
+                bills.iter().map(|b| b.balance()),
+                "what is owed",
+            )?),
+            receivable: money(checked_sum(
+                invoices.iter().map(|i| i.balance()),
+                "what is receivable",
+            )?),
             amount_1099,
             form_1099: party
                 .vendor
@@ -6442,31 +7278,37 @@ impl BooksServer {
                     party_document(
                         i.id,
                         (i.date, i.due_date),
-                        (i.total(), i.amount_paid),
+                        (i.total(), i.balance(), i.amount_paid),
                         i.status,
                         i.entry_id,
                     )
                 })
-                .collect(),
+                .collect::<Result<_, _>>()?,
             bills: bills
                 .iter()
                 .map(|b| {
                     party_document(
                         b.id,
                         (b.date, b.due_date),
-                        (b.total(), b.amount_paid),
+                        (b.total(), b.balance(), b.amount_paid),
                         b.status,
                         b.entry_id,
                     )
                 })
-                .collect(),
+                .collect::<Result<_, _>>()?,
             payroll,
         }))
     }
 
     #[tool(
         name = "books.set_entry_party",
-        description = "Tag an entry (draft or posted) with the party it was with (id or name), or pass party null (or omit it) to clear the tag. A party with a vendor record also tags the entry's vendor, so a payment to a contractor or landlord counts in books.vendor_1099; a party without one, or clearing, clears the vendor tag. For an entry with several counterparties pass parties instead: [{party, amount?|percent?}], each share an exact amount (cents), a percent (summing to 100; leftover cents to the first party), or neither (derived: a sole party gets all; members named together get what their capital or distributions lines say, else their [[company.members]] share; once the entry is posted, a derived split among several parties is recorded as the exact amounts it resolves to, so a later change to [[company.members]] never re-splits posted history). Name both members on a joint member transaction (a reimbursement on 2100, a joint contribution) and let the shares derive; give amounts when a split is uneven. Refused: a party twice, mixed kinds of share, two parties with vendor records, and, once the entry has balanced lines, shares that don't add up to what it moved. Metadata only: amounts never change. An entry and its reversal carry the same parties: tagging either tags both, so each party's part nets to zero. Journaled as entry.party_set (one party) or entry.parties_set (parties). Returns the entry (as books.get_entry), each party's share resolved."
+        title = "Tag an entry's parties",
+        description = "Tag an entry (draft or posted) with the party it was with (id or name), or pass party null (or omit it) to clear the tag. A party with a vendor record also tags the entry's vendor, so a payment to a contractor or landlord counts in books.vendor_1099; a party without one, or clearing, clears the vendor tag. For an entry with several counterparties pass parties instead: [{party, amount?|percent?}], each share an exact amount (cents), a percent (summing to 100; leftover cents to the first party), or neither (derived: a sole party gets all; members named together get what their capital or distributions lines say, else their [[company.members]] share; once the entry is posted, a derived split among several parties is recorded as the exact amounts it resolves to, so a later change to [[company.members]] never re-splits posted history). Name both members on a joint member transaction (a reimbursement on 2100, a joint contribution) and let the shares derive; give amounts when a split is uneven. Refused: a party twice, mixed kinds of share, two parties with vendor records, and, once the entry has balanced lines, shares that don't add up to what it moved. Metadata only: amounts never change. An entry and its reversal carry the same parties: tagging either tags both, so each party's part nets to zero. Journaled as entry.party_set (one party) or entry.parties_set (parties). Returns the entry (as books.get_entry), each party's share resolved.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
     )]
     async fn set_entry_party(
         &self,
@@ -6545,7 +7387,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.create_invoice",
-        description = "Create a sales invoice. Auto-posts Dr Accounts Receivable / Cr Revenue. Lines are {description, amount} with decimal-string amounts."
+        title = "Create and post an invoice",
+        description = "Create a sales invoice. Auto-posts Dr Accounts Receivable / Cr Revenue. Lines are {description, amount} with decimal-string amounts.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn create_invoice(
         &self,
@@ -6577,14 +7425,20 @@ impl BooksServer {
             .ok_or_else(|| format!("invoice {id} not found after creation"))?;
         Ok(Json(CreateDocumentOut {
             id,
-            total: inv.total().to_string(),
+            total: inv.total().map_err(|e| e.to_string())?.to_string(),
             entry_id: inv.entry_id,
         }))
     }
 
     #[tool(
         name = "books.create_bill",
-        description = "Create a vendor bill. Auto-posts Dr General Expenses / Cr Accounts Payable. Lines are {description, amount} with decimal-string amounts."
+        title = "Create and post a bill",
+        description = "Create a vendor bill. Auto-posts Dr General Expenses / Cr Accounts Payable. Lines are {description, amount} with decimal-string amounts.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn create_bill(
         &self,
@@ -6616,14 +7470,20 @@ impl BooksServer {
             .ok_or_else(|| format!("bill {id} not found after creation"))?;
         Ok(Json(CreateDocumentOut {
             id,
-            total: bill.total().to_string(),
+            total: bill.total().map_err(|e| e.to_string())?.to_string(),
             entry_id: bill.entry_id,
         }))
     }
 
     #[tool(
         name = "books.receive_payment",
-        description = "Record a customer payment against an invoice. Posts Dr Cash / Cr A/R."
+        title = "Receive an invoice payment",
+        description = "Record a customer payment against an invoice. Posts Dr Cash / Cr A/R.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn receive_payment(
         &self,
@@ -6646,7 +7506,7 @@ impl BooksServer {
             .ok_or_else(|| format!("invoice {} not found", p.document_id))?;
         Ok(Json(PaymentOut {
             entry_id,
-            remaining: inv.balance().to_string(),
+            remaining: inv.balance().map_err(|e| e.to_string())?.to_string(),
             status: match inv.status {
                 DocumentStatus::Open => "open".to_string(),
                 DocumentStatus::Partial => "partial".to_string(),
@@ -6657,7 +7517,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.pay_bill",
-        description = "Pay a vendor bill. Posts Dr A/P / Cr Cash."
+        title = "Pay a bill",
+        description = "Pay a vendor bill. Posts Dr A/P / Cr Cash.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn pay_bill(
         &self,
@@ -6680,7 +7546,7 @@ impl BooksServer {
             .ok_or_else(|| format!("bill {} not found", p.document_id))?;
         Ok(Json(PaymentOut {
             entry_id,
-            remaining: bill.balance().to_string(),
+            remaining: bill.balance().map_err(|e| e.to_string())?.to_string(),
             status: match bill.status {
                 DocumentStatus::Open => "open".to_string(),
                 DocumentStatus::Partial => "partial".to_string(),
@@ -6691,7 +7557,9 @@ impl BooksServer {
 
     #[tool(
         name = "books.ar_aging",
-        description = "A/R aging report as of a date: outstanding balances per customer, bucketed by days past due (current, 30, 60, 90, 90+)."
+        title = "Receivables aging",
+        description = "A/R aging report as of a date: outstanding balances per customer, bucketed by days past due (current, 30, 60, 90, 90+).",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn ar_aging(&self, params: Parameters<AgingParams>) -> Result<Json<AgingOut>, String> {
         let p = params.0;
@@ -6699,10 +7567,11 @@ impl BooksServer {
         let rows = store
             .ledger()
             .ar_aging(parse_date(&p.as_of)?)
+            .map_err(|e| e.to_string())?
             .into_iter()
             .map(|r| {
-                let total = r.total().to_string();
-                AgingRowOut {
+                let total = r.total().map_err(|e| e.to_string())?.to_string();
+                Ok(AgingRowOut {
                     name: r.name,
                     current: money(r.current),
                     days_30: money(r.days_30),
@@ -6710,15 +7579,17 @@ impl BooksServer {
                     days_90: money(r.days_90),
                     days_90_plus: money(r.days_90_plus),
                     total,
-                }
+                })
             })
-            .collect();
+            .collect::<Result<_, String>>()?;
         Ok(Json(AgingOut { rows }))
     }
 
     #[tool(
         name = "books.ap_aging",
-        description = "A/P aging report as of a date: outstanding balances per vendor, bucketed by days past due (current, 30, 60, 90, 90+)."
+        title = "Payables aging",
+        description = "A/P aging report as of a date: outstanding balances per vendor, bucketed by days past due (current, 30, 60, 90, 90+).",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn ap_aging(&self, params: Parameters<AgingParams>) -> Result<Json<AgingOut>, String> {
         let p = params.0;
@@ -6726,10 +7597,11 @@ impl BooksServer {
         let rows = store
             .ledger()
             .ap_aging(parse_date(&p.as_of)?)
+            .map_err(|e| e.to_string())?
             .into_iter()
             .map(|r| {
-                let total = r.total().to_string();
-                AgingRowOut {
+                let total = r.total().map_err(|e| e.to_string())?.to_string();
+                Ok(AgingRowOut {
                     name: r.name,
                     current: money(r.current),
                     days_30: money(r.days_30),
@@ -6737,9 +7609,9 @@ impl BooksServer {
                     days_90: money(r.days_90),
                     days_90_plus: money(r.days_90_plus),
                     total,
-                }
+                })
             })
-            .collect();
+            .collect::<Result<_, String>>()?;
         Ok(Json(AgingOut { rows }))
     }
 
@@ -6749,7 +7621,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.set_fx_rate",
-        description = "Record a historical FX rate: how much base currency one unit of the foreign currency buys on the given date. For reference; lines store their own rate at entry time."
+        title = "Set an exchange rate",
+        description = "Record a historical FX rate: how much base currency one unit of the foreign currency buys on the given date. For reference; lines store their own rate at entry time.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
     )]
     async fn set_fx_rate(
         &self,
@@ -6770,7 +7648,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.run_payroll",
-        description = "Run payroll for a pay date. Each line carries one employee's gross pay and every withholding/deduction as decimal strings — the engine cuts one balanced entry (Dr Salary & Wage Expense, Dr Payroll Tax Expense for the employer share, Cr the withholding payables, Cr cash for net pay). Auto-creates the 61xx/21xx accounts. All amounts are decimal strings, never floats. Name each line's employee party (employee: id or name, a party with the employee role; add one with books.add_party and record its W-4 with books.set_w4 first): new runs should, so the run shows on the employee's books.party."
+        title = "Run payroll",
+        description = "Run payroll for a pay date. Each line carries one employee's gross pay and every withholding/deduction as decimal strings — the engine cuts one balanced entry (Dr Salary & Wage Expense, Dr Payroll Tax Expense for the employer share, Cr the withholding payables, Cr cash for net pay). Auto-creates the 61xx/21xx accounts. All amounts are decimal strings, never floats. Name each line's employee party (employee: id or name, a party with the employee role; add one with books.add_party and record its W-4 with books.set_w4 first): new runs should, so the run shows on the employee's books.party.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn run_payroll(
         &self,
@@ -6819,7 +7703,7 @@ impl BooksServer {
         if self.settings().parties == ledger_config::PartyPolicy::Require
             && lines
                 .iter()
-                .any(|l| l.employee.is_none() && !l.net_pay().is_zero())
+                .any(|l| l.employee.is_none() && l.net_pay().is_ok_and(|n| !n.is_zero()))
         {
             return Err(party_required(
                 "name each payroll line's employee party (employee), so the entry names who was paid",
@@ -6832,8 +7716,8 @@ impl BooksServer {
             .ledger()
             .get_payroll_run(run_id)
             .ok_or_else(|| format!("payroll run {run_id} not found after creation"))?;
-        let total_gross: Decimal = run.lines.iter().map(|l| l.gross_pay).sum();
-        let total_net: Decimal = run.lines.iter().map(|l| l.net_pay()).sum();
+        let total_gross = checked_sum(run.lines.iter().map(|l| Ok(l.gross_pay)), "gross pay")?;
+        let total_net = checked_sum(run.lines.iter().map(|l| l.net_pay()), "net pay")?;
         Ok(Json(RunPayrollOut {
             run_id,
             entry_id: run.entry_id,
@@ -6844,7 +7728,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.remit_payroll_taxes",
-        description = "Remit all outstanding payroll tax payables (federal/state withholding, SS, Medicare, other deductions) to cash in one balanced entry. Name the tax agency paid (agency: a party id or name, e.g. the IRS): it is the entry's party, and [books] parties = \"require\" refuses without it."
+        title = "Remit payroll taxes",
+        description = "Remit all outstanding payroll tax payables (federal/state withholding, SS, Medicare, other deductions) to cash in one balanced entry. Name the tax agency paid (agency: a party id or name, e.g. the IRS): it is the entry's party, and [books] parties = \"require\" refuses without it.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            open_world_hint = false
+        )
     )]
     async fn remit_payroll_taxes(
         &self,
@@ -6884,8 +7774,9 @@ impl BooksServer {
 
     #[tool(
         name = "books.list_payroll_runs",
+        title = "List payroll runs",
         description = "List payroll runs in id order: date, employee count, totals, and the posted entry id.",
-        annotations(read_only_hint = true)
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn list_payroll_runs(&self) -> Result<Json<ListPayrollRunsOut>, String> {
         let store = self.lock()?;
@@ -6893,16 +7784,19 @@ impl BooksServer {
             .list_payroll_runs()
             .into_iter()
             .map(|r| {
-                let total_gross: Decimal = r.lines.iter().map(|l| l.gross_pay).sum();
-                PayrollRunOut {
+                // A run is as journaled (rules.md B-28): a total past exact
+                // arithmetic refuses the list, never a panic.
+                let total_gross =
+                    checked_sum(r.lines.iter().map(|l| Ok(l.gross_pay)), "gross pay")?;
+                Ok(PayrollRunOut {
                     id: r.id,
                     date: r.date.to_string(),
                     employee_count: r.lines.len(),
                     total_gross: money(total_gross),
                     entry_id: r.entry_id,
-                }
+                })
             })
-            .collect();
+            .collect::<Result<_, String>>()?;
         Ok(Json(ListPayrollRunsOut { runs }))
     }
 
@@ -6912,7 +7806,13 @@ impl BooksServer {
 
     #[tool(
         name = "books.add_class",
-        description = "Add a tracking class for divisional P&L (e.g. an app, website, or channel). Tag journal lines with it via books.add_line's class param, then report per division."
+        title = "Add a class",
+        description = "Add a tracking class for divisional P&L (e.g. an app, website, or channel). Tag journal lines with it via books.add_line's class param, then report per division.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
     )]
     async fn add_class(
         &self,
@@ -6926,8 +7826,9 @@ impl BooksServer {
 
     #[tool(
         name = "books.list_classes",
+        title = "List classes",
         description = "List tracking classes in id order.",
-        annotations(read_only_hint = true)
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn list_classes(&self) -> Result<Json<ListClassesOut>, String> {
         let store = self.lock()?;
@@ -6944,8 +7845,9 @@ impl BooksServer {
 
     #[tool(
         name = "books.profit_and_loss_by_class",
+        title = "Profit and loss by class",
         description = "P&L broken down by tracking class for a period, plus an unclassified row for untagged lines. Dates are YYYY-MM-DD; omit for all time.",
-        annotations(read_only_hint = true)
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn profit_and_loss_by_class(
         &self,
@@ -7070,8 +7972,13 @@ impl BooksServer {
     /// ```
     #[tool(
         name = "books.export_cpa_package",
+        title = "CPA handoff package",
         description = "Build the CPA handoff package as a zip: the profit and loss, balance sheet, cash flow, statement of changes in members' equity (multi-member LLCs), tax summary, and trial balance, each as PDF and XLSX; the fixed asset register as PDF and XLSX when there are fixed assets; the general ledger (by account) and general journal (entry by entry) as XLSX; the journal as IIF (imports into QuickBooks Desktop); the 1099 worksheet as CSV; with members, the K-1 worksheet (k1-members.csv: per member their party, share, capital account, TIN, and beginning capital, contributions in cash and in property, share of income, distributions, and ending capital for the fiscal year to date); every receipt behind the year's entries, filed on them or linked to them (receipts/, with an index.csv tying each file to its entry) and the company's documents (documents/), unless include_receipts is false; and a README with the journal's verified hash. By default (include_tins) the K-1 and 1099 worksheets carry every member's and payee's full TIN from the TIN vault, so the package is saved, never returned: save_to (a new .zip path or an existing folder, outside the books dir) is required, and the output gives only its path; tell the human where it is and never open, attach, or copy it. A locked vault or a missing TIN doesn't stop the package: tin_gaps lists each one (collect them with books.set_tin or books.set_w9 and export again). include_tins: false builds it with last fours only, returned as base64 unless save_to is given. cash_accounts (e.g. [\"1000\"]) is required: the cash flow statement reconciles to them. as_of defaults to today; period reports cover the fiscal year to date.",
-        annotations(read_only_hint = true)
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = false
+        )
     )]
     async fn export_cpa_package(
         &self,
@@ -7098,6 +8005,11 @@ impl BooksServer {
             .as_deref()
             .map(|to| package_dest(&store, to, &file_name, p.include_tins))
             .transpose()?;
+        if p.include_tins
+            && let Some(d) = &dest
+        {
+            self.outside_import_roots(d)?;
+        }
         let meta = self.report_meta(&store);
         let ledger = store.ledger();
         // The vault, opened once and never creating a key: locked, each
@@ -7304,7 +8216,7 @@ impl BooksServer {
         }
         // The fixed asset register, when there are fixed assets.
         if ledger.registered_assets().next().is_some() {
-            let r = ledger_core::fixed_asset_register(ledger, as_of);
+            let r = ledger_core::fixed_asset_register(ledger, as_of).map_err(|e| e.to_string())?;
             files.push((
                 "fixed-asset-register.pdf".into(),
                 ledger_import::asset_register_pdf(&r, &meta).map_err(|e| e.to_string())?,
@@ -7465,6 +8377,7 @@ impl BooksServer {
             files.push(k1);
         }
         let seq = store.journal_seq();
+        let vault_dir = Self::vault_dir(&store);
         drop(store);
         files.push((
             "general-journal.iif".into(),
@@ -7551,6 +8464,20 @@ impl BooksServer {
         let shown = |path: &std::path::Path| path.display().to_string();
         let (content_base64, saved_to, note) = match &dest {
             Some(path) => {
+                if p.include_tins {
+                    // The zip and each file in it that holds a TIN (the
+                    // K-1 and 1099 worksheets): one extracted is refused
+                    // too (tin_files.rs INVARIANT 1).
+                    for (name, bytes) in &files {
+                        let filed = name.starts_with("receipts/") || name.starts_with("documents/");
+                        if !filed
+                            && ledger_core::parties::has_full_tin(&String::from_utf8_lossy(bytes))
+                        {
+                            tin_files::record(&vault_dir, bytes)?;
+                        }
+                    }
+                    tin_files::record(&vault_dir, &zip_buf)?;
+                }
                 write_private_new(path, &zip_buf)?;
                 let note = if p.include_tins {
                     format!(
@@ -7701,7 +8628,8 @@ impl BooksServer {
             Some(s) => parse_date(s)?,
             None => today(),
         };
-        let r = ledger_core::fixed_asset_register(store.ledger(), as_of);
+        let r =
+            ledger_core::fixed_asset_register(store.ledger(), as_of).map_err(|e| e.to_string())?;
         // The same words as the XLSX and PDF register.
         let status = |row: &ledger_core::AssetRegisterRow| match row.disposed {
             Some((d, p)) => format!("Disposed {d}, proceeds {}", money(p)),
@@ -8131,13 +9059,18 @@ impl BooksServer {
                 serde_json::to_string_pretty(&out).map_err(|e| e.to_string())
             }
             "books://digest" => {
-                let since = query
-                    .split('&')
-                    .find_map(|kv| kv.strip_prefix("since="))
-                    .unwrap_or("")
-                    .to_string();
+                let since = digest_since(query, today());
                 let Json(out) = self.digest(Parameters(DigestParams { since })).await?;
                 serde_json::to_string_pretty(&out).map_err(|e| e.to_string())
+            }
+            handbook::URI => {
+                let Json(out) = self.handbook(Parameters(HandbookParams::default())).await?;
+                serde_json::to_string_pretty(&out).map_err(|e| e.to_string())
+            }
+            _ if path.starts_with(&format!("{}/", handbook::URI)) => {
+                let id = &path[handbook::URI.len() + 1..];
+                handbook::section(id, &self.settings(), self.currency())
+                    .ok_or_else(|| format!("unknown handbook section: {id}"))
             }
             _ if path.starts_with("books://receipts/") => {
                 let id: u64 = path
@@ -8162,24 +9095,42 @@ impl ServerHandler for BooksServer {
         request: rmcp::model::CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
-        // Pick up an edited wanderbooks.toml before the tool runs.
+        // Pick up an edited settings file before the tool runs.
         self.live().refresh();
-        let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
-        redact_refusal(Self::tool_router().call(tcc).await)
+        let server = self.clone();
+        let result = run_blocking(&self.store, move || {
+            Box::pin(async move {
+                let tcc =
+                    rmcp::handler::server::tool::ToolCallContext::new(&server, request, context);
+                Self::tool_router().call(tcc).await
+            })
+        })
+        .await;
+        // A failed run (the server stopped, or this request panicked) is a
+        // plain refusal, redacted like every other.
+        let result = match result {
+            Ok(out) => out,
+            Err(e) => Ok(rmcp::model::CallToolResponse::Complete(
+                rmcp::model::CallToolResult::error(vec![rmcp::model::ContentBlock::text(
+                    e.message.to_string(),
+                )]),
+            )),
+        };
+        redact_refusal(result)
     }
 
     fn get_info(&self) -> ServerConfig {
+        // A client connecting after a settings change sees the change.
+        self.live().refresh();
         ServerConfig::new(
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_resources()
                 .build(),
         )
-        // Tell the agent the policy these books actually use.
-        .with_instructions(INSTRUCTIONS.replace(
-            "any entry moving more than $25.00 in debits needs at least one receipt",
-            &self.settings().policy.rule(),
-        ))
+        // The rules in brief, with the policy these books actually use;
+        // the rest is in the handbook.
+        .with_instructions(handbook::connect_text(&self.settings(), self.currency()))
         .with_server_info(Implementation::new(
             "wanderbooks",
             env!("CARGO_PKG_VERSION"),
@@ -8191,46 +9142,7 @@ impl ServerHandler for BooksServer {
         _request: Option<rmcp::model::PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, rmcp::ErrorData> {
-        let mk = |uri: &str, name: &str, title: &str, description: &str| {
-            let mut r = Resource::new(uri, name);
-            r.title = Some(title.to_string());
-            r.description = Some(description.to_string());
-            r.mime_type = Some("application/json".to_string());
-            r
-        };
-        let resources = vec![
-            mk(
-                "books://chart",
-                "chart",
-                "Chart of accounts",
-                "All accounts with codes, types, and hierarchy.",
-            ),
-            mk(
-                "books://reports/trial-balance",
-                "trial-balance",
-                "Trial balance",
-                "Current trial balance, debits equal credits.",
-            ),
-            mk(
-                "books://reports/balance-sheet",
-                "balance-sheet",
-                "Balance sheet",
-                "Assets, liabilities, equity.",
-            ),
-            mk(
-                "books://reports/profit-and-loss",
-                "profit-and-loss",
-                "Profit and loss",
-                "Revenue, expenses, net income.",
-            ),
-            mk(
-                "books://digest",
-                "digest",
-                "Activity digest",
-                "What changed in the books. Optional ?since=YYYY-MM-DD query.",
-            ),
-        ];
-        Ok(ListResourcesResult::with_all_items(resources))
+        Ok(ListResourcesResult::with_all_items(resource_list()))
     }
 
     async fn read_resource(
@@ -8240,13 +9152,28 @@ impl ServerHandler for BooksServer {
     ) -> Result<ReadResourceResponse, rmcp::ErrorData> {
         self.live().refresh();
         let uri = request.uri.clone();
-        let text = self.resource_text(&uri).await.map_err(|e| {
-            rmcp::ErrorData::resource_not_found(uri.clone(), Some(serde_json::json!({"reason": e})))
+        let server = self.clone();
+        let at = uri.clone();
+        let text = run_blocking(&self.store, move || {
+            Box::pin(async move { server.resource_text(&at).await })
+        })
+        .await?;
+        // A refusal quotes the URI it was given: masked like a tool's.
+        let text = text.map_err(|e| {
+            redact_error(rmcp::ErrorData::resource_not_found(
+                uri.clone(),
+                Some(serde_json::json!({"reason": e})),
+            ))
         })?;
+        let mime_type = if uri.starts_with(&format!("{}/", handbook::URI)) {
+            "text/markdown"
+        } else {
+            "application/json"
+        };
         Ok(ReadResourceResponse::Complete(ReadResourceResult::new(
             vec![ResourceContents::TextResourceContents {
                 uri,
-                mime_type: Some("application/json".to_string()),
+                mime_type: Some(mime_type.to_string()),
                 text,
                 meta: None,
             }],
@@ -8273,6 +9200,52 @@ mod tests {
             std::env::temp_dir().join(format!("ledger-mcp-unit-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         Store::create(&dir, Currency::USD).unwrap()
+    }
+
+    /// lines_settled: posted, or a draft with lines whose debits equal its
+    /// credits; a draft whose sides are past exact arithmetic (one an
+    /// earlier version journaled, rules.md B-28) is not settled.
+    #[test]
+    fn settled_lines_are_posted_or_balanced_drafts() {
+        let mut l = Ledger::new(Currency::USD);
+        let cash = l
+            .add_account("1000", "Cash", ledger_core::AccountType::Asset, None, false)
+            .unwrap();
+        let rent = l
+            .add_account(
+                "6000",
+                "Rent",
+                ledger_core::AccountType::Expense,
+                None,
+                false,
+            )
+            .unwrap();
+        let mut draft = |lines: &[(u64, Side, Decimal)]| {
+            let e = l.create_entry(d(2026, 3, 1), "x");
+            for (a, side, amount) in lines {
+                l.replay_add_line(e, *a, *side, Money::new(*amount, Currency::USD))
+                    .unwrap();
+            }
+            e
+        };
+        let ten = Decimal::TEN;
+        let empty = draft(&[]);
+        let balanced = draft(&[(rent, Side::Debit, ten), (cash, Side::Credit, ten)]);
+        let unbalanced = draft(&[(rent, Side::Debit, ten), (cash, Side::Credit, Decimal::ONE)]);
+        let huge = draft(&[
+            (rent, Side::Debit, Decimal::MAX),
+            (rent, Side::Debit, Decimal::MAX),
+            (cash, Side::Credit, Decimal::MAX),
+            (cash, Side::Credit, Decimal::MAX),
+        ]);
+        let posted = draft(&[(rent, Side::Debit, ten), (cash, Side::Credit, ten)]);
+        l.post_entry(posted).unwrap();
+        let settled = |e: u64| lines_settled(l.get_entry(e).unwrap());
+        assert!(!settled(empty));
+        assert!(settled(balanced));
+        assert!(!settled(unbalanced));
+        assert!(!settled(huge));
+        assert!(settled(posted));
     }
 
     fn post(s: &mut Store, date: NaiveDate, dr: AccountId, cr: AccountId, amount: &str) -> u64 {
@@ -8312,12 +9285,16 @@ mod tests {
         assert_eq!(MAX_UPLOAD_BYTES, 26_214_400);
     }
 
-    /// A period is "YYYY-MM": year at least 1, month 1-12, nothing more.
+    /// A period is "YYYY-MM": a year of the calendar the books keep
+    /// (1-9999), month 1-12, nothing more; its last day is a date, never a
+    /// panic (P0 review round 3, S1: "999999-01" and "262142-12" once
+    /// stopped the server).
     #[test]
     fn periods_are_a_year_and_a_month() {
         assert_eq!(parse_period_mcp("2026-01"), Ok((2026, 1)));
         assert_eq!(parse_period_mcp("2026-12"), Ok((2026, 12)));
         assert_eq!(parse_period_mcp("0001-01"), Ok((1, 1)));
+        assert_eq!(parse_period_mcp("9999-12"), Ok((9999, 12)));
         for bad in [
             "2026-13",
             "2026-00",
@@ -8327,8 +9304,53 @@ mod tests {
             "x-01",
             "2026-",
             "",
+            "10000-01",
+            "999999-01",
+            "262142-12",
+            "262143-01",
+            "-5-01",
         ] {
             assert!(parse_period_mcp(bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(last_day_of_month(2028, 2), Ok(d(2028, 2, 29)));
+        assert_eq!(last_day_of_month(9999, 12), Ok(d(9999, 12, 31)));
+        assert_eq!(last_day_of_month(1, 1), Ok(d(1, 1, 31)));
+        for (y, m) in [(262142, 12), (999999, 1), (2026, 13), (2026, 0)] {
+            assert!(last_day_of_month(y, m).is_err(), "{y}-{m}");
+        }
+    }
+
+    /// A date is exactly YYYY-MM-DD, a real day from 0001-01-01 to
+    /// 9999-12-31 (ledger_core::calendar): no sign, no space, no fifth
+    /// year digit, no year 0 (P0 review round 3, S1).
+    #[test]
+    fn dates_are_four_digit_years_and_real_days() {
+        assert_eq!(parse_date("2026-02-28"), Ok(d(2026, 2, 28)));
+        assert_eq!(parse_date("2028-02-29"), Ok(d(2028, 2, 29)));
+        assert_eq!(parse_date("0001-01-01"), Ok(d(1, 1, 1)));
+        assert_eq!(parse_date("9999-12-31"), Ok(d(9999, 12, 31)));
+        for bad in [
+            "0000-01-01",
+            "0000-00-00",
+            "2026-02-29",
+            "2026-02-30",
+            "2026-13-01",
+            "2026-1-05",
+            "2026-01-5",
+            " 2026-01-05",
+            "2026-01-05 ",
+            "+2026-01-05",
+            "-0001-01-01",
+            "+262142-12-31",
+            "-262143-01-01",
+            "99999-12-31",
+            "2026/01/05",
+            "2026-01-05T00:00",
+            "２０２６-01-05",
+            "",
+        ] {
+            let err = parse_date(bad).expect_err(bad);
+            assert!(err.contains("0001-01-01 to 9999-12-31"), "{bad:?}: {err}");
         }
     }
 
@@ -8525,5 +9547,683 @@ mod tests {
         assert_eq!(m("5.8"), "5.80");
         assert_eq!(m("-207.68"), "-207.68");
         assert_eq!(m("12.3456"), "12.3456");
+    }
+
+    /// Every tool says what it is and what it does to the books (plan
+    /// 4.9, "Annotations (P0)"): a title and readOnlyHint on all; a
+    /// mutating tool also says whether it is destructive. None asks the
+    /// client for an interaction of its own (owner decision 2026-10-16:
+    /// no added prompts).
+    #[test]
+    fn annotations_complete() {
+        // Every tool's hints, pinned (MCP's ToolAnnotations): R read-only;
+        // W changes the books, additively; D destructive (posts, or
+        // overwrites, unlinks, voids, purges what was there: a vault
+        // record, a link, a reconciliation); I idempotent (a repeat with
+        // the same arguments leaves the journal and the vault as they
+        // were: spec_vault's idempotent_tools_change_nothing_when_repeated
+        // calls each twice). export_cpa_package writes a file, so it is
+        // not read-only.
+        type Hints = (Option<bool>, Option<bool>, Option<bool>);
+        const R: Hints = (Some(true), None, None);
+        const W: Hints = (Some(false), Some(false), None);
+        const D: Hints = (Some(false), Some(true), None);
+        const WI: Hints = (Some(false), Some(false), Some(true));
+        const DI: Hints = (Some(false), Some(true), Some(true));
+        let table: [(&str, Hints); 94] = [
+            ("books.handbook", R),
+            ("books.chart", R),
+            ("books.add_account", W),
+            ("books.trial_balance", R),
+            ("books.profit_and_loss", R),
+            ("books.balance_sheet", R),
+            ("books.cash_flow", R),
+            ("books.draft_entry", W),
+            ("books.add_line", W),
+            ("books.post_entry", D),
+            ("books.reverse_entry", D),
+            ("books.attach_receipt", W),
+            ("books.file_document", W),
+            ("books.link_receipt", W),
+            ("books.unlink_receipt", D),
+            ("books.withdraw_attachment", D),
+            ("books.link_attachment", W),
+            ("books.unlink_attachment", D),
+            ("books.attachments", R),
+            ("books.list_receipts", R),
+            ("books.get_receipt", R),
+            ("books.get_entry", R),
+            ("books.search_entries", R),
+            ("books.show", R),
+            ("books.verify", WI),
+            ("books.digest", R),
+            ("books.import_bank_csv", W),
+            ("books.create_schedule", W),
+            ("books.list_schedules", R),
+            ("books.run_schedules", DI),
+            ("books.create_recurring", W),
+            ("books.list_recurring", R),
+            ("books.run_recurring", DI),
+            ("books.record_payout", W),
+            ("books.list_vendors", R),
+            ("books.set_vendor_1099", W),
+            ("books.set_entry_vendor", W),
+            ("books.vendor_1099", W),
+            ("books.chart_template", R),
+            ("books.tax_categories", R),
+            ("books.renumber_account", D),
+            ("books.label_asset", W),
+            ("books.correct_asset", D),
+            ("books.set_asset_tax_basis", W),
+            ("books.asset_labels", R),
+            ("books.settings", R),
+            ("books.roles", R),
+            ("books.assign_role", D),
+            ("books.set_tax_category", W),
+            ("books.import_chart_csv", W),
+            ("books.import_local_file", W),
+            ("books.export", R),
+            ("books.register_asset", W),
+            ("books.asset_schedule", R),
+            ("books.list_assets", R),
+            ("books.run_depreciation", DI),
+            ("books.dispose_asset", D),
+            ("books.create_period", W),
+            ("books.close_period", D),
+            ("books.list_periods", R),
+            ("books.mark_cleared", W),
+            ("books.reconcile", D),
+            ("books.record_statement", W),
+            ("books.statements", R),
+            ("books.reconciliations", R),
+            ("books.void_statement", D),
+            ("books.void_reconciliation", D),
+            ("books.add_customer", W),
+            ("books.add_vendor", W),
+            ("books.add_party", W),
+            ("books.update_party", W),
+            ("books.set_party_roles", WI),
+            ("books.set_w9", D),
+            ("books.set_tin", D),
+            ("books.get_w9", W),
+            ("books.purge_tin", D),
+            ("books.set_w4", W),
+            ("books.parties", R),
+            ("books.party", R),
+            ("books.set_entry_party", W),
+            ("books.create_invoice", D),
+            ("books.create_bill", D),
+            ("books.receive_payment", D),
+            ("books.pay_bill", D),
+            ("books.ar_aging", R),
+            ("books.ap_aging", R),
+            ("books.set_fx_rate", W),
+            ("books.run_payroll", D),
+            ("books.remit_payroll_taxes", D),
+            ("books.list_payroll_runs", R),
+            ("books.add_class", W),
+            ("books.list_classes", R),
+            ("books.profit_and_loss_by_class", R),
+            ("books.export_cpa_package", W),
+        ];
+        let tools = BooksServer::tool_router().list_all();
+        assert_eq!(tools.len(), table.len());
+        let mut names: Vec<&str> = table.iter().map(|(n, _)| *n).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), table.len(), "a tool is in the table twice");
+        for t in &tools {
+            let name = &t.name;
+            assert!(
+                t.title.as_deref().is_some_and(|s| !s.trim().is_empty()),
+                "{name} has no title"
+            );
+            let a = t
+                .annotations
+                .as_ref()
+                .unwrap_or_else(|| panic!("{name} has no annotations"));
+            let want = table
+                .iter()
+                .find(|(n, _)| n == name)
+                .unwrap_or_else(|| panic!("{name} is not in the table"))
+                .1;
+            assert_eq!(
+                (a.read_only_hint, a.destructive_hint, a.idempotent_hint),
+                want,
+                "{name}: (readOnlyHint, destructiveHint, idempotentHint)"
+            );
+            let json = serde_json::to_string(t).unwrap().to_lowercase();
+            for word in ["requiresuserinteraction", "requires_user_interaction"] {
+                assert!(!json.contains(word), "{name} asks for user interaction");
+            }
+            // The books are a closed world: no tool reaches beyond them.
+            assert_eq!(
+                a.open_world_hint,
+                Some(false),
+                "{name} has no openWorldHint false"
+            );
+        }
+        // docs/mcp-interface.md names the 25 destructive tools.
+        assert_eq!(table.iter().filter(|(_, h)| h.1 == Some(true)).count(), 25);
+    }
+
+    /// Every refusal an agent can be given whose text is fixed here, or
+    /// in the crates under the server: the error templates of every
+    /// variant (scanned from their sources, so a new variant is linted
+    /// too), representative values of those whose text is built, and the
+    /// server's own refusal constants.
+    fn agent_refusals() -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = Vec::new();
+        for (krate, src) in [
+            (
+                "ledger-core",
+                include_str!("../../ledger-core/src/error.rs"),
+            ),
+            (
+                "ledger-store",
+                include_str!("../../ledger-store/src/error.rs"),
+            ),
+            (
+                "ledger-vault",
+                include_str!("../../ledger-vault/src/lib.rs"),
+            ),
+            (
+                "ledger-import bank",
+                include_str!("../../ledger-import/src/bank_csv.rs"),
+            ),
+            (
+                "ledger-import chart",
+                include_str!("../../ledger-import/src/chart_csv.rs"),
+            ),
+            (
+                "ledger-import iif",
+                include_str!("../../ledger-import/src/iif.rs"),
+            ),
+            (
+                "ledger-import pdf",
+                include_str!("../../ledger-import/src/pdf.rs"),
+            ),
+            (
+                "ledger-import xlsx",
+                include_str!("../../ledger-import/src/xlsx.rs"),
+            ),
+        ] {
+            let mut rest = src;
+            let mut n = 0;
+            while let Some(at) = rest.find("#[error(") {
+                rest = &rest[at + 8..];
+                let end = rest.find(")]").expect("an #[error] attribute ends");
+                out.push((format!("{krate} error template"), rest[..end].to_string()));
+                rest = &rest[end..];
+                n += 1;
+            }
+            assert!(n > 0, "{krate}: no error templates found");
+        }
+        let newer = |verified| ledger_store::StoreError::NewerJournal {
+            seq: 7,
+            event_type: "settings.set".into(),
+            need: "journal format 2".into(),
+            verified,
+        };
+        out.push(("NewerJournal".into(), newer(true).to_string()));
+        out.push(("NewerJournal unverified".into(), newer(false).to_string()));
+        out.push((
+            "RuleNotKnown".into(),
+            ledger_core::form1099::default_threshold(9999)
+                .unwrap_err()
+                .to_string(),
+        ));
+        for (what, text) in [
+            ("STOPPED", STOPPED),
+            ("TIN_FILE_IN_ROOT", TIN_FILE_IN_ROOT),
+            ("KEY_IN_BOOKS", KEY_IN_BOOKS),
+            ("VAULT_IN_HISTORY", VAULT_IN_HISTORY),
+            ("INSIDE_BOOKS", INSIDE_BOOKS),
+            ("NO_FOLDER", NO_FOLDER),
+            ("EXISTS", EXISTS),
+            ("local_files::CHANGED", crate::local_files::CHANGED),
+            (
+                "local_files::NO_SUCH_FILE",
+                crate::local_files::NO_SUCH_FILE,
+            ),
+            ("local_files::NO_ROOTS", crate::local_files::NO_ROOTS),
+            ("local_files::SEALED", crate::local_files::SEALED),
+            (
+                "local_files::IN_THE_BOOKS",
+                crate::local_files::IN_THE_BOOKS,
+            ),
+            ("local_files::HARD_LINKED", crate::local_files::HARD_LINKED),
+            ("local_files::NOT_REGULAR", crate::local_files::NOT_REGULAR),
+            ("tin_files::TIN_FILE", tin_files::TIN_FILE),
+            ("tin_files::TIN_HELD", tin_files::TIN_HELD),
+            ("tin_files::TIN_PROBE", tin_files::TIN_PROBE),
+            ("tin_files::TIN_PRINTED", tin_files::TIN_PRINTED),
+        ] {
+            out.push((what.to_string(), text.to_string()));
+        }
+        out
+    }
+
+    /// No text an agent is given sends it to the books' files or to tools
+    /// outside these (plan I-12): no helper commands, home paths, data
+    /// dir names or flags, file names of the books, git, GitHub, pull
+    /// requests, repo docs, the old company's examples, or suggestions to
+    /// read files. Linted whole: every tool's JSON (title, description,
+    /// input and output schemas), every resource, the connect text, every
+    /// handbook section, and every refusal fixed in code
+    /// ([`agent_refusals`]). (No resource templates are advertised yet.)
+    /// What `tool_text_lint` finds in one text beyond its fixed list: a
+    /// helper command however it ends (`just` as a word before a
+    /// backtick, a line break, a tab or the end), and where the books are
+    /// ("beside the books"; "books dir" except in the tools and refusals
+    /// that say a file with a TIN is saved outside it, save_to and
+    /// save_csv_to).
+    fn helper_or_location(what: &str, text: &str) -> Vec<String> {
+        let lower = text.to_lowercase();
+        let mut found = Vec::new();
+        for (at, _) in lower.match_indices("just") {
+            let prev = lower[..at].chars().next_back();
+            let next = lower[at + 4..].chars().next();
+            let word_start = !prev.is_some_and(|c| c.is_alphanumeric() || c == '_');
+            if word_start && matches!(next, None | Some('`' | '\n' | '\r' | '\t')) {
+                found.push(format!("{what} names a helper command (`just`)"));
+            }
+        }
+        if lower.contains("beside the books") {
+            found.push(format!(
+                "{what} says where the books are: \"beside the books\""
+            ));
+        }
+        let saves = [
+            "books.vendor_1099",
+            "books.get_w9",
+            "books.export_cpa_package",
+        ]
+        .iter()
+        .any(|t| what == format!("tool {t}"))
+            || lower.contains("save_to")
+            || lower.contains("save_csv_to");
+        if lower.contains("books dir") && !saves {
+            found.push(format!("{what} says where the books are: \"books dir\""));
+        }
+        found
+    }
+
+    /// The lint's own checks catch what they name, and pass ordinary words.
+    #[test]
+    fn tool_text_lint_catches_helpers_and_locations() {
+        for (text, n) in [
+            ("run `just`", 1),
+            ("run just\nthen", 1),
+            ("run just\tgui", 1),
+            ("run just", 1),
+            ("just`gui`", 1),
+            ("Just\n", 1),
+            ("adjust`", 0),
+            ("just after posting", 0),
+            ("just, then", 0),
+            ("justly", 0),
+            ("the file beside the books", 1),
+            ("in the books dir", 1),
+            ("save_to: a path outside the books dir", 0),
+            ("the books directory", 1),
+            ("bookshelf", 0),
+        ] {
+            assert_eq!(helper_or_location("text", text).len(), n, "{text:?}");
+        }
+        assert!(helper_or_location("tool books.get_w9", "outside the books dir").is_empty());
+        assert_eq!(
+            helper_or_location("tool books.chart", "outside the books dir").len(),
+            1
+        );
+    }
+
+    #[test]
+    fn tool_text_lint() {
+        const NEVER: &[&str] = &[
+            "just ",
+            "~/",
+            "/home",
+            ".config/wanderbooks",
+            "books-data/",
+            "data dir",
+            "--data-dir",
+            "--import-root",
+            "vault.key",
+            "journal.jsonl",
+            ".jsonl",
+            "sqlite",
+            ".gitignore",
+            "github",
+            "pull request",
+            "docs/",
+            ".md",
+            "read the journal",
+            "the journal is the evidence",
+            "read the file",
+            "open the file",
+            "cat ",
+            "wl-0001",
+        ];
+        // Whole words only: "digit" and "committee" are fine.
+        const NEVER_WORDS: &[&str] = &["git", "commit"];
+        let mut texts: Vec<(String, String)> = Vec::new();
+        for t in BooksServer::tool_router().list_all() {
+            texts.push((
+                format!("tool {}", t.name),
+                serde_json::to_string(&t).unwrap(),
+            ));
+        }
+        for r in resource_list() {
+            texts.push((
+                format!("resource {}", r.uri),
+                serde_json::to_string(&r).unwrap(),
+            ));
+        }
+        texts.extend(agent_refusals());
+        for threshold in ["0.00", "25.00"] {
+            let settings = Settings {
+                policy: ReceiptPolicy {
+                    require_receipts_above: threshold.into(),
+                    ..ReceiptPolicy::default()
+                },
+                ..Settings::default()
+            };
+            texts.push((
+                "connect text".into(),
+                handbook::connect_text(&settings, "USD"),
+            ));
+            for (id, _) in handbook::SECTIONS {
+                texts.push((
+                    format!("handbook {id}"),
+                    handbook::section(id, &settings, "USD").unwrap(),
+                ));
+            }
+        }
+        let words = |text: &str| {
+            text.split(|c: char| !c.is_alphanumeric() && c != '_')
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        };
+        let mut found: Vec<String> = Vec::new();
+        for (what, text) in &texts {
+            // A handbook resource's own address is not a file name.
+            let lower = text.to_lowercase().replace("books://handbook", "");
+            for bad in NEVER {
+                if let Some(at) = lower.find(bad) {
+                    let from = lower[..at]
+                        .char_indices()
+                        .rev()
+                        .nth(40)
+                        .map_or(0, |(i, _)| i);
+                    let near: String = lower[from..].chars().take(100).collect();
+                    found.push(format!("{what} contains {bad:?}: ...{near}..."));
+                }
+            }
+            let w = words(&lower);
+            for bad in NEVER_WORDS {
+                if w.iter().any(|x| x == bad) {
+                    found.push(format!("{what} says {bad:?}"));
+                }
+            }
+        }
+        for (what, text) in &texts {
+            found.extend(helper_or_location(what, text));
+        }
+        assert!(found.is_empty(), "{}", found.join("\n"));
+        // The settings file may be named in schemas (its fields are edited
+        // there until settings move into the books, P1), but no tool's
+        // title or description, no refusal, the connect text and no
+        // handbook section names it: it is the file books.settings names.
+        let mut prose: Vec<(String, String)> = BooksServer::tool_router()
+            .list_all()
+            .iter()
+            .map(|t| {
+                (
+                    format!("tool {}", t.name),
+                    format!(
+                        "{} {}",
+                        t.title.as_deref().unwrap_or_default(),
+                        t.description.as_deref().unwrap_or_default()
+                    ),
+                )
+            })
+            .collect();
+        prose.extend(
+            texts
+                .into_iter()
+                .filter(|(what, _)| !what.starts_with("tool ")),
+        );
+        for (what, text) in &prose {
+            assert!(
+                !text.to_lowercase().contains("wanderbooks.toml"),
+                "{what} names the settings file: {text}"
+            );
+        }
+    }
+
+    /// Tool descriptions are at most 700 characters (plan I-12). The
+    /// ones over it today are listed, each to be shortened in P5 when its
+    /// text moves into the handbook; no new one may join them, and one
+    /// that shrinks under the cap must leave the list.
+    #[test]
+    fn tool_descriptions_fit_700_characters() {
+        // Shorten in P5.
+        const OVER: &[&str] = &[
+            "books.export",
+            "books.export_cpa_package",
+            "books.import_bank_csv",
+            "books.reconcile",
+            "books.set_entry_party",
+            "books.set_w9",
+            "books.show",
+            "books.vendor_1099",
+        ];
+        let mut over: Vec<String> = BooksServer::tool_router()
+            .list_all()
+            .iter()
+            .filter(|t| t.description.as_deref().unwrap_or_default().chars().count() > 700)
+            .map(|t| t.name.to_string())
+            .collect();
+        over.sort();
+        assert_eq!(over, OVER, "tool descriptions over 700 characters");
+    }
+
+    /// How many masked TINs a text holds.
+    fn data_masked(text: &str) -> usize {
+        text.matches("•••-••-••••").count() + text.matches("•••••••••").count()
+    }
+
+    /// redact_error (B-26): every full TIN in an error's message and data
+    /// is masked, wherever the data holds it (a string, in an array, in a
+    /// nested object), and what holds none is left as it was.
+    #[test]
+    fn redact_error_masks_every_tin_in_the_message_and_data() {
+        let tin = "571-93-2846";
+        let e = redact_error(rmcp::ErrorData::resource_not_found(
+            format!("books://receipts/{tin}"),
+            Some(serde_json::json!({
+                "reason": format!("bad receipt resource URI: {tin}"),
+                "list": ["plain", tin, ["deeper 571932846"]],
+                "nested": {"uri": tin, "n": 5, "fine": "no tin here 2026-10-16"},
+            })),
+        ));
+        let text = format!("{} {}", e.message, e.data.as_ref().unwrap());
+        assert!(!text.contains(tin) && !text.contains("571932846"), "{text}");
+        assert_eq!(data_masked(&text), 5, "every TIN masked: {text}");
+        let data = e.data.unwrap();
+        assert_eq!(data["list"][0], "plain");
+        assert_eq!(data["nested"]["n"], 5);
+        assert_eq!(data["nested"]["fine"], "no tin here 2026-10-16");
+    }
+
+    /// Fail closed (SharedStore INVARIANTS 1-2): a request that panics,
+    /// with the store held or not, stops the server, and every later
+    /// request, tool or lock, is refused with the plain STOPPED message,
+    /// never the panic's text (which could carry anything, a TIN
+    /// included).
+    #[test]
+    fn a_request_that_panics_stops_the_server() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        type Body = fn(BooksServer) -> Result<u64, String>;
+        async fn run(
+            server: &BooksServer,
+            body: Body,
+        ) -> Result<Result<u64, String>, rmcp::ErrorData> {
+            let s = server.clone();
+            run_blocking(&server.store, move || Box::pin(async move { body(s) })).await
+        }
+        let bodies: [(&str, Body); 2] = [
+            ("holding the store", |s| {
+                let _store = s.lock()?;
+                panic!("mid-mutation 123-45-6789");
+            }),
+            ("without the store", |_| {
+                panic!("before the lock 123-45-6789")
+            }),
+        ];
+        for (how, body) in bodies {
+            let server = BooksServer::new(store("stops"), ReceiptPolicy::default());
+            rt.block_on(async {
+                let seq: Body = |s| s.lock().map(|st| st.journal_seq());
+                assert_eq!(run(&server, seq).await.unwrap(), Ok(1), "{how}");
+                let died = run(&server, body).await.unwrap_err();
+                assert_eq!(died.message, STOPPED, "{how}");
+                // Every later request is refused, before it runs.
+                let after = run(&server, seq).await.unwrap_err();
+                assert_eq!(after.message, STOPPED, "{how}");
+                // So is any session sharing the store (HTTP).
+                let other = BooksServer::new_shared(server.store.clone(), ReceiptPolicy::default());
+                assert_eq!(run(&other, seq).await.unwrap_err().message, STOPPED);
+            });
+            // And the lock itself, from any thread.
+            let s = server.clone();
+            let locked = std::thread::spawn(move || s.lock().map(|_| ()))
+                .join()
+                .unwrap();
+            assert_eq!(locked, Err(STOPPED.to_string()), "{how}");
+        }
+
+        // A guard dropped by a panic on a thread of its own stops it too.
+        let server = BooksServer::new(store("stops-thread"), ReceiptPolicy::default());
+        let s = server.clone();
+        let died = std::thread::spawn(move || {
+            let _store = s.lock().unwrap();
+            panic!("mid-mutation");
+        })
+        .join();
+        assert!(died.is_err());
+        assert_eq!(server.lock().map(|_| ()), Err(STOPPED.to_string()));
+    }
+
+    /// run_blocking drives a request to completion even when it waits: a
+    /// future that is pending until another thread wakes it completes,
+    /// with its own result (the waker unparks the request's thread).
+    #[test]
+    fn a_request_that_waits_is_woken_and_completes() {
+        /// Pending on its first poll, woken from another thread shortly
+        /// after; ready on the next.
+        struct WakeLater(bool);
+        impl std::future::Future for WakeLater {
+            type Output = u64;
+            fn poll(
+                mut self: std::pin::Pin<&mut Self>,
+                cx: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<u64> {
+                if self.0 {
+                    return std::task::Poll::Ready(7);
+                }
+                self.0 = true;
+                let waker = cx.waker().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    waker.wake();
+                });
+                std::task::Poll::Pending
+            }
+        }
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let shared = SharedStore::new(store("wakes"));
+        let got = rt.block_on(async {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                run_blocking(&shared, || Box::pin(WakeLater(false))),
+            )
+            .await
+        });
+        // A request never woken would hold its thread: don't wait for it.
+        rt.shutdown_background();
+        assert_eq!(got.ok().and_then(Result::ok), Some(7), "never woken");
+    }
+
+    /// A client that connects after the settings changed is told the rule
+    /// now in force (plan P0, "get_info calls refresh()"): the connect text
+    /// is composed from the settings as they are at initialize, not as
+    /// they were when the server started.
+    #[test]
+    fn a_new_session_is_told_the_settings_in_force() {
+        let dir = std::env::temp_dir().join(format!(
+            "ledger-mcp-unit-{}-info-settings",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let toml = dir.join("wanderbooks.toml");
+        let threshold = |t: &str| {
+            std::fs::write(
+                &toml,
+                format!("[company]\nname = \"Info Co\"\n[books]\nreceipt_threshold = \"{t}\"\n"),
+            )
+            .unwrap();
+        };
+        threshold("25.00");
+        let live = crate::settings::Live::watching(crate::settings::Source {
+            books_toml: toml.clone(),
+            required: true,
+            config_json: dir.join("config.json"),
+        })
+        .unwrap();
+        let server = BooksServer::new(store("info"), ReceiptPolicy::default())
+            .with_live_settings(Arc::new(Mutex::new(live)));
+        let told = |s: &BooksServer| rmcp::ServerHandler::get_info(s).instructions.unwrap();
+        let before = told(&server);
+        assert!(before.contains("more than 25.00 USD in debits"), "{before}");
+        threshold("0.00");
+        let after = told(&server);
+        assert!(
+            after.contains("every entry needs at least one receipt"),
+            "{after}"
+        );
+        assert!(!after.contains("25.00"), "{after}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A bare books://digest, or one with an empty since=, covers this
+    /// month so far: since is the 1st of today's month, on any day of it
+    /// (not today, which only agrees on the 1st). A given since is kept.
+    #[test]
+    fn a_bare_digest_covers_this_month_so_far() {
+        for (day, want) in [(16, "2026-10-01"), (1, "2026-10-01"), (31, "2026-10-01")] {
+            let t = d(2026, 10, day);
+            for q in ["", "since=", "since=%20", "x=1", "x=1&since="] {
+                let q = q.replace("%20", " ");
+                assert_eq!(digest_since(&q, t), want, "{q:?} on {t}");
+            }
+        }
+        assert_eq!(
+            digest_since("since=2026-01-05", d(2026, 10, 16)),
+            "2026-01-05"
+        );
+        assert_eq!(
+            digest_since("x=1&since=2026-01-05", d(2026, 10, 16)),
+            "2026-01-05"
+        );
+        assert_eq!(digest_since("", d(2027, 1, 9)), "2027-01-01");
     }
 }

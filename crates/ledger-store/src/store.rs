@@ -187,6 +187,10 @@ pub struct Attachment {
 /// write-path signature reads as input rather than stored state.
 pub type PayrollLineInput = PayrollLine;
 
+/// The most recurring drafts one [`Store::run_recurring`] creates: more is
+/// refused, so a far-off date can't make one request write without end.
+pub const MAX_RECURRING_RUN: usize = 1000;
+
 /// The store: one writer, one data directory.
 ///
 /// `Store` is `Send` but not `Sync` (it owns a `rusqlite::Connection`).
@@ -1088,9 +1092,12 @@ impl Store {
         let mut total = Decimal::ZERO;
         for a in amounts {
             let s: String = a?;
-            total += s
+            let amount = s
                 .parse::<Decimal>()
                 .map_err(|_| StoreError::JournalCorrupt(format!("bad amount {s}")))?;
+            total = total.checked_add(amount).ok_or_else(|| {
+                StoreError::JournalCorrupt(format!("asset {asset_id}'s depreciation is too large"))
+            })?;
         }
         Ok(total)
     }
@@ -1124,7 +1131,7 @@ impl Store {
             return Err(LedgerError::AssetAlreadyDisposed(asset_id).into());
         }
         let (year, month) = parse_period(period)?;
-        let period_end = last_day_of_month(year, month);
+        let period_end = last_day_of_month(year, month)?;
         let sched = ledger_core::depreciation_schedule(&asset, period_end);
         let line = sched.iter().find(|l| l.period == period).ok_or_else(|| {
             StoreError::JournalCorrupt(format!(
@@ -1212,6 +1219,11 @@ impl Store {
         if proceeds.amount < Decimal::ZERO {
             return Err(LedgerError::NegativeProceeds(proceeds.amount).into());
         }
+        // Proceeds are a line of the disposal entry (P0 review round 3, S1).
+        if !ledger_core::kernel::Amount::in_line_range(proceeds.amount) {
+            return Err(LedgerError::AmountOutOfRange.into());
+        }
+        ledger_core::calendar::check(date)?;
         if proceeds.currency != self.base_currency {
             return Err(LedgerError::CurrencyMismatch {
                 expected: self.base_currency.code().to_string(),
@@ -1231,8 +1243,16 @@ impl Store {
         } else {
             (target - posted).max(Decimal::ZERO)
         };
-        let accumulated = posted + final_depreciation;
-        let book_value = asset.cost.amount - accumulated;
+        let too_large =
+            || StoreError::JournalCorrupt(format!("asset {asset_id}'s depreciation is too large"));
+        let accumulated = posted
+            .checked_add(final_depreciation)
+            .ok_or_else(too_large)?;
+        let book_value = asset
+            .cost
+            .amount
+            .checked_sub(accumulated)
+            .ok_or_else(too_large)?;
         Ok(DisposalPreview {
             asset_id,
             date,
@@ -1311,6 +1331,11 @@ impl Store {
         if proceeds.amount < Decimal::ZERO {
             return Err(LedgerError::NegativeProceeds(proceeds.amount).into());
         }
+        // Proceeds are a line of the disposal entry (P0 review round 3, S1).
+        if !ledger_core::kernel::Amount::in_line_range(proceeds.amount) {
+            return Err(LedgerError::AmountOutOfRange.into());
+        }
+        ledger_core::calendar::check(date)?;
         if proceeds.currency != self.base_currency {
             return Err(LedgerError::CurrencyMismatch {
                 expected: self.base_currency.code().to_string(),
@@ -2005,7 +2030,7 @@ impl Store {
         let run_id = self.ledger.next_payroll_run_id();
         let entry_id = self.ledger.next_entry_id();
         let base = self.base_currency;
-        let plan = payroll_entry_plan(&lines, accounts, cash_account, base);
+        let plan = payroll_entry_plan(&lines, accounts, cash_account, base)?;
         let description = format!("Payroll {date}");
         let mut journaled = Vec::with_capacity(plan.len() + 3);
         journaled.push(self.append_journal(
@@ -2360,11 +2385,13 @@ impl Store {
         &mut self,
         through: NaiveDate,
     ) -> Result<Vec<(ledger_core::ScheduleId, NaiveDate, EntryId)>, StoreError> {
-        let mut due: Vec<(NaiveDate, ledger_core::ScheduleId)> = self
-            .ledger
-            .schedules()
-            .flat_map(|s| s.due(through).into_iter().map(move |(d, _)| (d, s.id)))
-            .collect();
+        // A schedule whose plan can't be computed (one an earlier version
+        // journaled, past chrono's last day) refuses the run, before any
+        // month posts.
+        let mut due: Vec<(NaiveDate, ledger_core::ScheduleId)> = Vec::new();
+        for s in self.ledger.schedules() {
+            due.extend(s.due(through)?.into_iter().map(|(d, _)| (d, s.id)));
+        }
         due.sort();
         let mut out = Vec::with_capacity(due.len());
         for (month, id) in due {
@@ -2414,7 +2441,8 @@ impl Store {
     /// as drafts. Each journaled as `recurring.generated`. Returns
     /// (recurring entry, date, draft) for each. Occurrences dated in a
     /// closed period are left ungenerated (a closed period takes no new
-    /// entries); [`Ledger::recurring_in_closed_periods`] lists them.
+    /// entries); [`Ledger::recurring_in_closed_periods`] lists them. At
+    /// most [`MAX_RECURRING_RUN`] drafts in one call; more is refused whole.
     pub fn run_recurring(
         &mut self,
         through: NaiveDate,
@@ -2424,6 +2452,17 @@ impl Store {
             .recurring_entries()
             .flat_map(|r| r.due(through).into_iter().map(move |d| (d, r.id)))
             .collect();
+        // One call journals at most MAX_RECURRING_RUN drafts: a far-off
+        // `through` (a weekly entry through 9999) would otherwise write
+        // hundreds of thousands of lines in one request (P0 review round
+        // 3, S1).
+        if due.len() > MAX_RECURRING_RUN {
+            return Err(LedgerError::InvalidSchedule(format!(
+                "running recurring entries through {through} would create {} drafts, more than {MAX_RECURRING_RUN} at once: run them through an earlier date first",
+                due.len()
+            ))
+            .into());
+        }
         due.sort();
         let mut out = Vec::with_capacity(due.len());
         for (date, id) in due {
@@ -2897,6 +2936,19 @@ impl Store {
             .any(|b| b.normalize().scale() > 2)
         {
             return bad("balances are in cents at most");
+        }
+        // No larger than a line may move: a reconciliation subtracts them
+        // (P0 review round 3, S1).
+        if [st.opening_balance, st.closing_balance]
+            .iter()
+            .any(|b| b.abs() > ledger_core::kernel::MAX_LINE_AMOUNT)
+        {
+            return bad("balances are at most 1000000000000000");
+        }
+        if !ledger_core::calendar::in_calendar(st.period_start)
+            || !ledger_core::calendar::in_calendar(st.period_end)
+        {
+            return bad("the period is outside 0001-01-01 through 9999-12-31");
         }
         if self.statement(st.attachment_id)?.is_some() {
             return bad("that attachment already records a statement");
@@ -3595,7 +3647,7 @@ impl Store {
                         .map_err(|_| StoreError::JournalCorrupt(format!("bad currency {c}")))?,
                 ))
             };
-            let got = ledger.register_asset(NewAsset {
+            let got = ledger.replay_register_asset(NewAsset {
                 description,
                 purchase_date: parse_date(&purchase_date)?,
                 cost: parse_amt(&cost_amount, &cost_currency)?,
@@ -3617,7 +3669,7 @@ impl Store {
                 let proceeds = proceeds_amount.as_deref().ok_or_else(|| {
                     StoreError::JournalCorrupt("disposed without proceeds".into())
                 })?;
-                ledger.dispose_asset(
+                ledger.replay_dispose_asset(
                     got,
                     parse_date(date)?,
                     parse_amt(proceeds, &cost_currency)?,
@@ -3655,7 +3707,7 @@ impl Store {
         for row in taxes {
             let (id, rule, basis) = row?;
             let tax = tax_basis_from_journal(&json!({"rule": rule, "contributor_basis": basis}))?;
-            ledger.set_asset_tax_basis(id as u64, tax)?;
+            ledger.replay_set_asset_tax_basis(id as u64, tax)?;
         }
         let mut qstmt = self.conn.prepare(
             "SELECT id, acquisition_entry FROM assets WHERE acquisition_entry IS NOT NULL ORDER BY id",
@@ -3889,6 +3941,11 @@ fn parse_side(s: &str) -> Result<Side, StoreError> {
     }
 }
 
+/// A journaled date: any date chrono reads as `%Y-%m-%d`, as every
+/// earlier version accepted ("+10000-01-01" and "-0001-01-01" included).
+/// The calendar the books keep (ledger_core::calendar) bounds new
+/// commands, never replay: a date an earlier version journaled always
+/// replays (rules.md B-28).
 fn parse_date(s: &str) -> Result<chrono::NaiveDate, StoreError> {
     chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
         .map_err(|_| StoreError::JournalCorrupt(format!("bad date {s}")))
@@ -3914,20 +3971,20 @@ fn parse_period(period: &str) -> Result<(i32, u32), StoreError> {
     let mut parts = period.split('-');
     let year: i32 = parts.next().ok_or_else(err)?.parse().map_err(|_| err())?;
     let month: u32 = parts.next().ok_or_else(err)?.parse().map_err(|_| err())?;
-    if parts.next().is_some() || year < 1 || !(1..=12).contains(&month) {
+    // A month of the calendar the books keep (ledger_core::calendar).
+    if parts.next().is_some() || !(1..=9999).contains(&year) || !(1..=12).contains(&month) {
         return Err(err());
     }
     Ok((year, month))
 }
 
-/// Last calendar day of a month.
-fn last_day_of_month(year: i32, month: u32) -> NaiveDate {
-    let first = NaiveDate::from_ymd_opt(year, month, 1).expect("valid period");
-    first
-        .checked_add_months(Months::new(1))
-        .expect("month arithmetic")
-        .pred_opt()
-        .expect("month arithmetic")
+/// Last calendar day of a month; refused, never a panic, for a month
+/// chrono can't reach.
+fn last_day_of_month(year: i32, month: u32) -> Result<NaiveDate, StoreError> {
+    NaiveDate::from_ymd_opt(year, month, 1)
+        .and_then(|first| first.checked_add_months(Months::new(1)))
+        .and_then(|next| next.pred_opt())
+        .ok_or_else(|| StoreError::JournalCorrupt(format!("no month {year:04}-{month:02}")))
 }
 
 fn get_u64(p: &Value, key: &str) -> Result<u64, StoreError> {
@@ -4115,7 +4172,7 @@ pub(crate) fn replay_line_into_ledger(
                     ))
                 })
                 .collect::<Result<Vec<_>, StoreError>>()?;
-            let got = ledger.register_recurring(ledger_core::NewRecurring {
+            let got = ledger.replay_register_recurring(ledger_core::NewRecurring {
                 description: get_str(p, "description")?.to_string(),
                 lines,
                 frequency: serde_json::from_value(p["frequency"].clone())?,
@@ -4210,7 +4267,7 @@ pub(crate) fn replay_line_into_ledger(
         }
         "asset.registered" => {
             let want = get_u64(p, "id")?;
-            let got = ledger.register_asset(NewAsset {
+            let got = ledger.replay_register_asset(NewAsset {
                 description: get_str(p, "description")?.to_string(),
                 purchase_date: parse_date(get_str(p, "purchase_date")?)?,
                 cost: parse_money(p, "cost")?,
@@ -4292,13 +4349,13 @@ pub(crate) fn replay_line_into_ledger(
             let parties: Vec<ledger_core::PartyShare> =
                 serde_json::from_value(p["parties"].clone())
                     .map_err(|_| StoreError::JournalCorrupt("entry.parties_set parties".into()))?;
-            ledger.set_entry_parties(get_u64(p, "entry_id")?, &parties)?;
+            ledger.replay_set_entry_parties(get_u64(p, "entry_id")?, &parties)?;
         }
         "entry.no_party" => {
             ledger.set_entry_no_party(get_u64(p, "entry_id")?, get_str(p, "reason")?)?;
         }
         "asset.corrected" => {
-            ledger.correct_asset(
+            ledger.replay_correct_asset(
                 get_u64(p, "asset_id")?,
                 ledger_core::AssetCorrection {
                     cost: parse_money(p, "cost")?,
@@ -4310,7 +4367,7 @@ pub(crate) fn replay_line_into_ledger(
         }
         "asset.tax_basis_set" => {
             let tax = tax_basis_from_journal(p)?;
-            ledger.set_asset_tax_basis(get_u64(p, "asset_id")?, tax)?;
+            ledger.replay_set_asset_tax_basis(get_u64(p, "asset_id")?, tax)?;
         }
         "asset.described" => {
             ledger.set_asset_description(get_u64(p, "asset_id")?, get_str(p, "description")?)?;
@@ -4334,7 +4391,7 @@ pub(crate) fn replay_line_into_ledger(
         }
         "asset.disposed" => {
             let id = get_u64(p, "asset_id")?;
-            ledger.dispose_asset(
+            ledger.replay_dispose_asset(
                 id,
                 parse_date(get_str(p, "date")?)?,
                 parse_money(p, "proceeds")?,
@@ -4512,14 +4569,16 @@ fn apply_document_payment(
     let paid: Decimal = paid_str
         .parse()
         .map_err(|_| StoreError::JournalCorrupt(format!("bad amount_paid {paid_str}")))?;
-    let new_paid = paid + amount;
+    let too_large = || StoreError::JournalCorrupt(format!("{table} {id}: amounts too large"));
+    let new_paid = paid.checked_add(amount).ok_or_else(too_large)?;
     let lines: Vec<Value> = serde_json::from_str(&lines_json)
         .map_err(|_| StoreError::JournalCorrupt("bad lines_json".into()))?;
     let mut total = Decimal::ZERO;
     for l in &lines {
-        total += get_str(l, "amount")?
+        let amount = get_str(l, "amount")?
             .parse::<Decimal>()
             .map_err(|_| StoreError::JournalCorrupt("bad line amount".into()))?;
+        total = total.checked_add(amount).ok_or_else(too_large)?;
     }
     let status = if new_paid.is_zero() {
         "open"

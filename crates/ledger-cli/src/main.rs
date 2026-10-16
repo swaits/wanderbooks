@@ -126,12 +126,17 @@ a second. Everything else they see, you show them.
   requires a receipt — the server enforces this, don't argue with it. One
   file per receipt: PDF preferred, an image is fine.
 - **Show the numbers.** After every mutation, show the affected balances.
-  When the human questions a figure, trace it to journal entries.
+  When the human questions a figure, trace it to journal entries with the
+  tools (`books.get_entry`, `books.search_entries`).
+- **Only through the tools.** The books are reached only through the
+  wanderbooks MCP tools. Never open, list or parse the books' files on
+  disk (journal, blobs, database, vault), not even to look. If a tool
+  can't answer, say so.
 
 ## First run: onboarding
 
-If `books-data/journal.jsonl` is missing or empty, onboard before recording
-anything. Keep it conversational; ask a few things at a time.
+If the books are empty (`books.chart` lists no accounts), onboard before
+recording anything. Keep it conversational; ask a few things at a time.
 
 1. Ask: company legal name, entity type (sole proprietorship or
    single-member LLC, partnership or multi-member LLC, S corp, C corp),
@@ -200,8 +205,8 @@ Bank feeds aren't automatic here: import the bank's CSV export
   `books.verify` is clean.
 - A CPA who wants to look around can get a read-only copy of this
   directory (it's a git repository: push it to a private remote and give
-  them read access) and open it with `wanderbooks gui`, or `ledger-gui
-  --data-dir books-data`. Nothing they do there can change the books.
+  them read access) and open it with `wanderbooks gui`. Nothing they do
+  there can change the books.
 
 ## Session start
 
@@ -222,14 +227,15 @@ human tells you their preference, write it there.
   search).
 - `books.digest` is the review surface — "what did you do with my books
   lately." Offer it; don't make the human ask.
-- Reports are pure functions of the journal. If a number looks wrong, the
-  journal is the evidence — read it, don't guess.
+- Reports are pure functions of the journal. If a number looks wrong,
+  trace it through the tools: `books.get_entry`, `books.search_entries`,
+  or `books.export` with report `journal` or `general_ledger`. Don't guess.
 - Integrity: `books.verify` checks the journal's hash chain, the database
   against the journal (rebuilding it if it drifted), and every stored
   file. Run it when a number looks wrong or the human asks.
 - Back up: `just backup` after every session that posted entries. The git
-  history of this directory is the archive; `books-data/journal.jsonl` is
-  the system of record and the SQLite database is disposable.
+  history of this directory is the archive; the journal is the system of
+  record and the database is disposable.
 "#;
 
 const CLAUDE_MD: &str = "@AGENTS.md\n";

@@ -1383,7 +1383,8 @@ fn a_joint_reimbursement_names_both_members_and_splits_by_share() {
         "books.post_entry",
         json!({"entry_id": id, "confirmed": true}),
     );
-    assert_eq!(m.count("entry.parties_set"), 1);
+    // Named derived on the draft, then fixed at the amounts it posted at.
+    assert_eq!(m.count("entry.parties_set"), 2);
     for who in ["Stephen Waits", "Katherine Pendergast"] {
         let t = m.party(who, 2026)["totals"].clone();
         assert_eq!(t["paid"], "50.00", "{who}'s half");
@@ -1562,4 +1563,156 @@ fn under_require_several_parties_satisfy_the_policy() {
         "0.00"
     );
     m.read_only("books.verify", json!({}));
+}
+
+/// docs/parties-and-attachments.md "Counterparties" (require): the
+/// engine's own posting paths name their counterparty or are refused
+/// before anything posts. books.run_payroll names the employee party on
+/// the entry (so their books.party counts the net pay); a line by name
+/// only is refused. books.remit_payroll_taxes needs `agency`;
+/// books.dispose_asset needs `buyer` for a sale, and marks a retirement
+/// with no proceeds as having none.
+#[test]
+fn under_require_engine_postings_name_their_counterparty() {
+    let mut m = books_with("require-engine", "parties = \"require\"\n");
+    m.accounts(&[
+        ("1500", "Equipment", "asset"),
+        ("1510", "Accumulated Depreciation", "asset"),
+        ("6500", "Depreciation", "expense"),
+        ("7100", "Gain or Loss on Disposal", "revenue"),
+    ]);
+    let pat = m.add_party("Pat Doe", &["employee"]);
+    let irs = m.add_party("IRS", &["tax_agency"]);
+    let buyer = m.add_party("Buyer Co", &[]);
+    let mut by_name = pat_line("Pat Doe");
+    by_name.as_object_mut().unwrap().remove("employee");
+    by_name["employee_name"] = json!("Pat Doe");
+    let e = m.refuse(
+        "books.run_payroll",
+        json!({"date": "2026-02-15", "cash_account": "1000", "lines": [by_name]}),
+    );
+    assert!(e.contains("party_required"), "{e}");
+    let run = m.ok(
+        "books.run_payroll",
+        json!({"date": "2026-02-15", "cash_account": "1000", "lines": [pat_line("Pat Doe")]}),
+    );
+    let entry = m.read_only("books.get_entry", json!({"entry_id": run["entry_id"]}));
+    assert_eq!(entry["parties"][0]["party_id"], json!(pat), "{entry}");
+    assert_eq!(m.party("Pat Doe", 2026)["totals"]["paid"], "773.50");
+    let e = m.refuse(
+        "books.remit_payroll_taxes",
+        json!({"date": "2026-03-01", "cash_account": "1000"}),
+    );
+    assert!(e.contains("party_required"), "{e}");
+    let r = m.ok(
+        "books.remit_payroll_taxes",
+        json!({"date": "2026-03-01", "cash_account": "1000", "agency": "IRS"}),
+    );
+    let entry = m.read_only("books.get_entry", json!({"entry_id": r["entry_id"]}));
+    assert_eq!(entry["parties"][0]["party_id"], json!(irs), "{entry}");
+    // Assets: one sold, one retired.
+    let reg = |m: &mut Mcp, tag: &str| {
+        m.ok(
+            "books.register_asset",
+            json!({"description": "Laptop", "purchase_date": "2026-01-10", "cost": "1200.00",
+                   "salvage_value": "0.00", "useful_life_months": 36, "cost_account": "1500",
+                   "accum_depr_account": "1510", "expense_account": "6500", "tag": tag,
+                   "tax_basis_rule": "cost"}),
+        )["asset_id"]
+            .as_u64()
+            .unwrap()
+    };
+    let (sold, retired) = (reg(&mut m, "LAP-1"), reg(&mut m, "LAP-2"));
+    let sale = json!({"asset_id": sold, "date": "2026-06-30", "proceeds": "500.00",
+                      "proceeds_account": "1000", "gain_loss_account": "7100",
+                      "confirmed": true});
+    let before = m.journal();
+    let e = m.refuse("books.dispose_asset", sale.clone());
+    assert!(e.contains("party_required"), "{e}");
+    assert!(m.journal() == before, "refused, nothing journaled");
+    let mut with_buyer = sale;
+    with_buyer["buyer"] = json!("Buyer Co");
+    let d = m.ok("books.dispose_asset", with_buyer);
+    let entry = m.read_only("books.get_entry", json!({"entry_id": d["entry_id"]}));
+    assert_eq!(entry["parties"][0]["party_id"], json!(buyer), "{entry}");
+    let d = m.ok(
+        "books.dispose_asset",
+        json!({"asset_id": retired, "date": "2026-06-30", "proceeds": "0.00",
+               "proceeds_account": "1000", "gain_loss_account": "7100", "confirmed": true}),
+    );
+    let entry = m.read_only("books.get_entry", json!({"entry_id": d["entry_id"]}));
+    assert!(entry["no_party_reason"].is_string(), "{entry}");
+    assert_eq!(m.ok("books.verify", json!({}))["status"], "ok");
+}
+
+/// fix_derived_shares INVARIANT 1 (docs/parties-and-attachments.md
+/// "Shares": posted is forever, the split included): a joint
+/// reimbursement posted with derived shares at 50/50 keeps 50.00 each when
+/// the members' shares later become 60/40, and when a member is archived;
+/// a draft still follows the settings until it posts.
+#[test]
+fn a_posted_derived_split_survives_settings_changes_and_archiving() {
+    let mut m = member_books("shares-fixed", "");
+    let posted = m.post(
+        "2026-03-01",
+        both(),
+        &[("2100", "debit", "100.00"), ("1000", "credit", "100.00")],
+    );
+    let e = m.read_only("books.get_entry", json!({"entry_id": posted}));
+    assert_eq!(
+        resolved(&e),
+        [
+            ("Stephen Waits".to_string(), "50.00".to_string()),
+            ("Katherine Pendergast".to_string(), "50.00".to_string())
+        ]
+    );
+    assert_eq!(e["parties"][0]["share"], "amount", "fixed when posted: {e}");
+    assert_eq!(e["parties"][0]["amount"], "50.00", "{e}");
+    let draft = m.draft(
+        "2026-03-02",
+        both(),
+        &[("2100", "debit", "100.00"), ("1000", "credit", "100.00")],
+    );
+    // The members' split changes to 60/40.
+    let toml = m.data.parent().unwrap().join("wanderbooks.toml");
+    let text = std::fs::read_to_string(&toml).unwrap();
+    let changed = text
+        .replacen("share = \"50%\"", "share = \"60%\"", 1)
+        .replacen("share = \"50%\"", "share = \"40%\"", 1);
+    std::fs::write(&toml, changed).unwrap();
+    // The server reloads it on change: wait until the draft reads 60/40.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let d = loop {
+        let d = m.ok("books.post_entry", json!({"entry_id": draft}));
+        if resolved(&d)[0].1 == "60.00" || std::time::Instant::now() > deadline {
+            break d;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    assert_eq!(
+        resolved(&d),
+        [
+            ("Stephen Waits".to_string(), "60.00".to_string()),
+            ("Katherine Pendergast".to_string(), "40.00".to_string())
+        ],
+        "a draft follows the settings"
+    );
+    let e = m.read_only("books.get_entry", json!({"entry_id": posted}));
+    assert_eq!(
+        resolved(&e),
+        [
+            ("Stephen Waits".to_string(), "50.00".to_string()),
+            ("Katherine Pendergast".to_string(), "50.00".to_string())
+        ],
+        "posted history keeps its split"
+    );
+    // Katherine archived: her history stays, and Stephen's.
+    let kat = e["parties"][1]["party_id"].as_u64().unwrap();
+    m.ok(
+        "books.update_party",
+        json!({"party": kat.to_string(), "archived": true}),
+    );
+    assert_eq!(m.party("Stephen Waits", 2026)["totals"]["paid"], "50.00");
+    assert_eq!(m.party(&kat.to_string(), 2026)["totals"]["paid"], "50.00");
+    assert_eq!(m.ok("books.verify", json!({}))["status"], "ok");
 }

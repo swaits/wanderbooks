@@ -362,11 +362,14 @@ fn each_partys_totals_are_the_books_numbers() {
     assert!(out > Decimal::ZERO);
     assert_eq!(info(f.irs).paid_ytd, out);
 
-    // Pat: both runs (one by party, one by name), no tagged entries.
+    // Pat: both runs (one by party, one by name). The run by party names
+    // Pat on its entry (Ledger::run_payroll INVARIANT 3): its net pay,
+    // 1,000.00 − 100.00 − 30.00 − 62.00 − 14.50 = 793.50, paid to Pat;
+    // the run by name only names no one.
     let pat = info(f.pat);
     assert_eq!(pat.payroll_runs.len(), 2);
-    assert!(pat.entries.is_empty());
-    assert_eq!(pat.paid_ytd, Decimal::ZERO);
+    assert_eq!(pat.entries.len(), 1);
+    assert_eq!(pat.paid_ytd, cents(79_350));
 
     // Every entry's party is the one whose list holds it.
     for e in &b.entries {
@@ -1437,7 +1440,7 @@ fn owed_to_members_reads_the_financing_accounts_first() {
 
 /// Without [books] cash_accounts the capital statement reads money as
 /// core does (every asset account but receivables: Books::
-/// k1_cash_accounts), so the laptop on 1500 reads as cash: Stephen's 2026
+/// money_cash_accounts), so the laptop on 1500 reads as cash: Stephen's 2026
 /// contributions are $600.00 cash, none property. The Cash page keeps its
 /// name-based guess ("Bluevine" names no cash word: no cash accounts).
 #[test]
@@ -1446,7 +1449,7 @@ fn without_cash_accounts_the_capital_statement_reads_money_as_core_does() {
     write_member_toml(&m.dir.0, "");
     let b = load_with_toml(&m.dir.0);
     let id = |c: &str| b.ledger.chart().find_by_code(c).unwrap().id;
-    assert_eq!(b.k1_cash_accounts, vec![id("1000"), id("1500")]);
+    assert_eq!(b.money_cash_accounts, vec![id("1000"), id("1500")]);
     assert!(
         b.cash_accounts.is_empty(),
         "the Cash page's guess is unchanged"
@@ -1469,5 +1472,78 @@ fn without_cash_accounts_the_capital_statement_reads_money_as_core_does() {
     assert_eq!(
         (all.contributions_cash, all.contributions_property),
         (cents(160_000), Decimal::ZERO)
+    );
+}
+
+/// PartyTotalsOut's promise ("the viewer shows the same numbers"): with no
+/// `[books] cash_accounts`, party money reads cash as core does (every
+/// asset account but receivables, as the server passes it), and the year
+/// is the calendar year, so a posted entry dated after today counts.
+/// Equipment bought from Checking (an asset for an asset: no money moved,
+/// under core's every-asset fallback) and software dated next month, both
+/// with Apple: 99.00 paid, in the viewer and the server alike (the viewer
+/// used to say 2,000.00: its name-based cash guess, cut at today).
+#[test]
+fn party_money_is_the_servers_without_cash_accounts_and_after_today() {
+    use ledger_gui::books::PartyPeriod;
+    let dir = TempDir::new("server-numbers");
+    let mut s = Store::create(&dir.0.join("books-data"), Currency::USD).unwrap();
+    let checking = s
+        .add_account("1000", "Checking", AccountType::Asset, None, false)
+        .unwrap();
+    let equipment = s
+        .add_account("1500", "Equipment", AccountType::Asset, None, false)
+        .unwrap();
+    let capital = s
+        .add_account("3000", "Capital", AccountType::Equity, None, false)
+        .unwrap();
+    let software = s
+        .add_account("6200", "Software", AccountType::Expense, None, false)
+        .unwrap();
+    let e = s.create_entry(d(2026, 1, 1), "Opening").unwrap();
+    s.add_line(e, checking, Side::Debit, usd(1_000_000))
+        .unwrap();
+    s.add_line(e, capital, Side::Credit, usd(1_000_000))
+        .unwrap();
+    s.post_entry(e).unwrap();
+    let apple_v = s.add_vendor("Apple").unwrap();
+    let apple = s.ledger().party_of_vendor(apple_v).unwrap();
+    for (date, account, c) in [
+        (d(2026, 5, 1), equipment, 200_000),
+        (d(2026, 11, 20), software, 9_900),
+    ] {
+        let e = s.create_entry(date, "Apple").unwrap();
+        s.add_line(e, account, Side::Debit, usd(c)).unwrap();
+        s.add_line(e, checking, Side::Credit, usd(c)).unwrap();
+        s.post_entry(e).unwrap();
+        s.set_entry_party(e, Some(apple)).unwrap();
+    }
+    let oracle = s.ledger().clone();
+    drop(s);
+    let b = load(&dir.0);
+    // What books.party computes: activity_with over the calendar year
+    // with the (empty) cash_accounts setting.
+    let server = ledger_core::parties::activity_with(
+        &oracle,
+        apple,
+        (d(2026, 1, 1), d(2026, 12, 31)),
+        &[],
+        &[],
+    );
+    assert_eq!(
+        (server.paid, server.received),
+        (cents(9_900), Decimal::ZERO)
+    );
+    let span = b.party_span(PartyPeriod::ThisYear);
+    assert_eq!(span, (d(2026, 1, 1), d(2026, 11, 20)));
+    let flow = b.party_flow(apple, span, true);
+    assert_eq!((flow.paid, flow.received), (server.paid, server.received));
+    assert_eq!(b.party(apple).unwrap().paid_ytd, cents(9_900));
+    let months = b.party_months(apple, span);
+    assert_eq!(months.len(), 11);
+    assert_eq!(months.iter().map(|m| m.paid).sum::<Decimal>(), cents(9_900));
+    assert_eq!(
+        b.party_span(PartyPeriod::AllTime),
+        (d(2026, 1, 1), d(2026, 11, 20))
     );
 }

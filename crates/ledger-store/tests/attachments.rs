@@ -1273,3 +1273,151 @@ fn everything_survives_replay_and_verifies() {
     assert_eq!(view(&s, &subjects), before, "full replay");
     s.verify().unwrap();
 }
+
+// ------------------------------------------- withdrawn and voided statements
+
+/// Oracle: complete_reconciliation SCENARIOS 1 and 4 (a withdrawn
+/// statement file: AttachmentWithdrawn, before anything is journaled);
+/// statements ("a withdrawn file retires its statement"). The statement's
+/// account link is taken off and the file withdrawn; confirming then must
+/// record no reconciliation, and the statement is no longer listed.
+#[test]
+fn a_withdrawn_statement_records_no_reconciliation() {
+    let dir = test_dir("withdrawn-statement");
+    let (mut s, fx) = fixture(&dir);
+    let a = jan_cash(&mut s, &fx, "jan.pdf");
+    clear_jan(&mut s, &fx);
+    s.unlink_attachment(a, Subject::Account(fx.cash), "filed wrong")
+        .unwrap();
+    s.withdraw_attachment(a, "filed wrong").unwrap();
+    let e = refused_nothing_journaled(&mut s, &dir, "withdrawn", |s| s.complete_reconciliation(a));
+    assert!(
+        matches!(e, StoreError::AttachmentWithdrawn(x) if x == a),
+        "{e:?}"
+    );
+    assert!(s.reconciliations(None).unwrap().is_empty());
+    assert_eq!(s.statement(a).unwrap(), None);
+    assert!(s.statements(Some(fx.cash)).unwrap().is_empty());
+    s.verify().unwrap();
+}
+
+/// Oracle: void_statement SCENARIOS 1–4 and INVARIANT 1; record_statement
+/// SCENARIO 2 (a voided statement is recorded afresh on the same file);
+/// the docs' `statement.voided {attachment_id, reason}`. A January
+/// statement mistyped at 830.00 is voided and recorded again at 380.00,
+/// then reconciled; voiding it while that reconciliation stands is
+/// refused. Reopening and a full replay agree.
+#[test]
+fn a_mis_recorded_statement_is_voided_and_recorded_again() {
+    let dir = test_dir("void-statement");
+    let (mut s, fx) = fixture(&dir);
+    let a = doc(&mut s, "jan.pdf");
+    let typo = stmt(
+        a,
+        fx.cash,
+        date(2026, 1, 1),
+        date(2026, 1, 31),
+        "0.00",
+        "830.00",
+    );
+    s.record_statement(typo).unwrap();
+    for blank in ["", "  "] {
+        let e = refused_nothing_journaled(&mut s, &dir, "blank", |s| s.void_statement(a, blank));
+        assert!(matches!(e, StoreError::ReasonRequired), "{e:?}");
+    }
+    let plain = doc(&mut s, "plain.pdf");
+    let e = refused_nothing_journaled(&mut s, &dir, "no statement", |s| {
+        s.void_statement(plain, "why")
+    });
+    assert!(matches!(e, StoreError::InvalidStatement(_)), "{e:?}");
+    s.void_statement(a, "closing balance mistyped").unwrap();
+    let (kind, payload) = journal(&dir).last().cloned().unwrap();
+    assert_eq!(kind, "statement.voided");
+    assert_eq!(
+        payload,
+        json!({"attachment_id": a, "reason": "closing balance mistyped"})
+    );
+    assert_eq!(s.statement(a).unwrap(), None);
+    assert!(s.statements(None).unwrap().is_empty());
+    let e = refused_nothing_journaled(&mut s, &dir, "voided twice", |s| {
+        s.void_statement(a, "again")
+    });
+    assert!(matches!(e, StoreError::InvalidStatement(_)), "{e:?}");
+    let right = stmt(
+        a,
+        fx.cash,
+        date(2026, 1, 1),
+        date(2026, 1, 31),
+        "0.00",
+        "380.00",
+    );
+    s.record_statement(right.clone()).unwrap();
+    assert_eq!(s.statements(None).unwrap(), vec![right.clone()]);
+    clear_jan(&mut s, &fx);
+    let rec = s.complete_reconciliation(a).unwrap();
+    let e = refused_nothing_journaled(&mut s, &dir, "backs a reconciliation", |s| {
+        s.void_statement(a, "why")
+    });
+    assert!(matches!(e, StoreError::ReconciliationRefused(_)), "{e:?}");
+    s.verify().unwrap();
+    drop(s);
+    delete_db(&dir);
+    let s = Store::open(&dir).unwrap();
+    assert_eq!(s.statements(None).unwrap(), vec![right]);
+    assert_eq!(s.reconciliations(None).unwrap(), vec![rec]);
+    s.verify().unwrap();
+}
+
+/// Oracle: mark_cleared SCENARIOS 1–3. A line January's reconciliation
+/// recorded as cleared can't be un-cleared while it stands; once it is
+/// voided it can. A line dated in January but cleared later (an
+/// outstanding item) may still be cleared.
+#[test]
+fn a_reconciled_line_stays_cleared_until_the_reconciliation_is_voided() {
+    let dir = test_dir("reconciled-line");
+    let (mut s, fx) = fixture(&dir);
+    let a = jan_cash(&mut s, &fx, "jan.pdf");
+    clear_jan(&mut s, &fx);
+    let rec = s.complete_reconciliation(a).unwrap();
+    let e = refused_nothing_journaled(&mut s, &dir, "un-clear", |s| {
+        s.mark_cleared(fx.e2, 1, false)
+    });
+    assert!(matches!(e, StoreError::ReconciliationRefused(_)), "{e:?}");
+    assert!(s.ledger().is_cleared(fx.e2, 1));
+    // An outstanding January item cleared afterwards: allowed.
+    let late = post(
+        &mut s,
+        date(2026, 1, 30),
+        "Check 101",
+        fx.expense,
+        fx.cash,
+        "10.00",
+    );
+    s.mark_cleared(late, 1, true).unwrap();
+    s.mark_cleared(late, 1, false).unwrap();
+    s.void_reconciliation(rec.id, "redo").unwrap();
+    s.mark_cleared(fx.e2, 1, false).unwrap();
+    assert!(!s.ledger().is_cleared(fx.e2, 1));
+    s.verify().unwrap();
+}
+
+/// Oracle: link_receipt SCENARIO 5 (already linked to that entry: refuse,
+/// AlreadyLinked, journaling nothing), the mirror of link_attachment
+/// SCENARIO 2. A file linked to an entry can't then be filed on it too.
+#[test]
+fn a_file_linked_to_an_entry_cannot_also_be_filed_on_it() {
+    let dir = test_dir("linked-then-filed");
+    let (mut s, fx) = fixture(&dir);
+    let (a, _, _) = s
+        .attach_receipt(None, "r.pdf", "application/pdf", b"%PDF r", None)
+        .unwrap();
+    s.link_attachment(a, Subject::Entry(fx.e2)).unwrap();
+    let e = refused_nothing_journaled(&mut s, &dir, "filed on too", |s| s.link_receipt(a, fx.e2));
+    assert!(
+        matches!(e, StoreError::AlreadyLinked(x, _) if x == a),
+        "{e:?}"
+    );
+    // Another entry is fine: filed on one, linked to another.
+    s.link_receipt(a, fx.e3).unwrap();
+    s.verify().unwrap();
+}

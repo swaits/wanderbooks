@@ -1252,6 +1252,40 @@ fn entry_flow_scenarios() {
     // Split payment: part bank, part card.
     let f = case(&[(exp, D, "100.00"), (bank, C, "60.00"), (card, C, "40.00")]);
     assert_eq!(f.net, dec("100.00"));
+    // 7. A member pays the card bill from their own funds, or a loan pays
+    // it off: the issuer is paid, for the card, as from the bank.
+    for funder in [members, loan] {
+        let f = case(&[(card, D, "300.00"), (funder, C, "300.00")]);
+        assert_eq!(f.net, dec("300.00"));
+        assert_eq!(f.what_for, vec![(card, dec("300.00"))]);
+    }
+    // Part bank, part a member.
+    let f = case(&[
+        (card, D, "300.00"),
+        (bank, C, "200.00"),
+        (members, C, "100.00"),
+    ]);
+    assert_eq!(f.net, dec("300.00"));
+    assert_eq!(f.what_for, vec![(card, dec("300.00"))]);
+    // 4. A charge and its refund on one card offset there: no card paid
+    // down, 80.00 paid by card.
+    let f = case(&[
+        (exp, D, "100.00"),
+        (card, C, "100.00"),
+        (card, D, "20.00"),
+        (exp, C, "20.00"),
+    ]);
+    assert_eq!(f.net, dec("80.00"));
+    assert_eq!(f.what_for, vec![(exp, dec("80.00"))]);
+    // Paying the card from the bank while the issuer charges a fee on it:
+    // 300.00 cash plus the 50.00 fee by card.
+    let f = case(&[
+        (card, D, "300.00"),
+        (bank, C, "300.00"),
+        (exp, D, "50.00"),
+        (card, C, "50.00"),
+    ]);
+    assert_eq!(f.net, dec("350.00"));
 }
 
 // ------------------------------------------------------- party shares
@@ -1698,6 +1732,62 @@ mod shares {
         });
     }
 
+    /// set_entry_no_party INVARIANT 1 and SCENARIO 3: a marked transfer's
+    /// reversal carries the mark; marking a reversed entry marks the
+    /// whole chain; naming a party on any of them clears it on all.
+    #[test]
+    fn a_no_party_mark_follows_the_reversal_chain() {
+        let mut b = books();
+        let own = |b: &mut Books| {
+            let (due, bank) = (b.due, b.bank);
+            post(
+                &mut b.l,
+                &[(due, Side::Debit, "10.00"), (bank, Side::Credit, "10.00")],
+            )
+        };
+        let e = own(&mut b);
+        b.l.set_entry_no_party(e, "transfer between our own accounts")
+            .unwrap();
+        let r = b.l.reverse_entry(e, date(2026, 5, 2), "undo").unwrap();
+        assert_eq!(
+            b.l.entry_no_party(r),
+            Some("transfer between our own accounts")
+        );
+        // Marked after it was reversed: the whole chain.
+        let e2 = own(&mut b);
+        let r2 = b.l.reverse_entry(e2, date(2026, 5, 2), "undo").unwrap();
+        b.l.set_entry_no_party(r2, "accrual").unwrap();
+        assert_eq!(b.l.entry_no_party(e2), Some("accrual"));
+        assert_eq!(b.l.entry_no_party(r2), Some("accrual"));
+        // A party named on the original clears both.
+        b.l.set_entry_party(e2, Some(b.acme)).unwrap();
+        assert_eq!(b.l.entry_no_party(e2), None);
+        assert_eq!(b.l.entry_no_party(r2), None);
+        refused(&mut b.l, "chain names a party", |l| {
+            l.set_entry_no_party(r2, "none")
+        });
+    }
+
+    /// set_entry_vendor SCENARIO 3: tagging a vendor names its party and
+    /// clears a no-party mark, so the entry never carries both; clearing
+    /// the vendor afterwards leaves no stale mark to satisfy "require".
+    #[test]
+    fn tagging_a_vendor_clears_a_no_party_mark() {
+        let mut b = books();
+        let e = b.l.try_create_entry(date(2026, 5, 1), "hosting").unwrap();
+        b.l.add_line(e, b.exp, Side::Debit, usd("12.00")).unwrap();
+        b.l.add_line(e, b.bank, Side::Credit, usd("12.00")).unwrap();
+        b.l.set_entry_no_party(e, "none really").unwrap();
+        let v = b.l.add_vendor("Namecheap").unwrap();
+        let pv = b.l.party_of_vendor(v).unwrap();
+        b.l.set_entry_vendor(e, Some(v)).unwrap();
+        assert_eq!(b.l.entry_parties(e), &[PartyShare::whole(pv)]);
+        assert_eq!(b.l.entry_no_party(e), None);
+        b.l.set_entry_vendor(e, None).unwrap();
+        assert!(b.l.entry_parties(e).is_empty());
+        assert_eq!(b.l.entry_no_party(e), None);
+    }
+
     /// Reversals carry every share; the pair nets to zero for each party.
     #[test]
     fn reversal_carries_all_shares() {
@@ -1737,6 +1827,33 @@ mod shares {
         let a = ledger_core::parties::activity(&b.l, b.acme, year(), &[b.bank]);
         assert_eq!(a.paid, d("12.34"));
         assert!(a.entries.contains(&e));
+    }
+
+    /// activity_with INVARIANT 2: a reversal of a reversal reinstates the
+    /// payment on its root original's side: paid, never a negative
+    /// received.
+    #[test]
+    fn reversing_a_reversal_reinstates_the_payment_as_paid() {
+        let mut b = books();
+        let a = post(
+            &mut b.l,
+            &[
+                (b.exp, Side::Debit, "100.00"),
+                (b.bank, Side::Credit, "100.00"),
+            ],
+        );
+        b.l.set_entry_party(a, Some(b.acme)).unwrap();
+        let r1 = b.l.reverse_entry(a, date(2026, 5, 2), "undo").unwrap();
+        let r2 = b.l.reverse_entry(r1, date(2026, 5, 3), "redo").unwrap();
+        let act = ledger_core::parties::activity(&b.l, b.acme, year(), &[b.bank]);
+        assert_eq!(act.entries, std::collections::BTreeSet::from([a, r1, r2]));
+        assert_eq!((act.paid, act.received), (d("100.00"), Decimal::ZERO));
+        // A third level takes it back out again, still on the paid side.
+        let _r3 =
+            b.l.reverse_entry(r2, date(2026, 5, 4), "undo again")
+                .unwrap();
+        let act = ledger_core::parties::activity(&b.l, b.acme, year(), &[b.bank]);
+        assert_eq!((act.paid, act.received), (Decimal::ZERO, Decimal::ZERO));
     }
 
     fn cents() -> impl Strategy<Value = Decimal> {

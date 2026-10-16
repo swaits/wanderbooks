@@ -1463,6 +1463,9 @@ pub struct GetEntryOut {
     pub parties: Vec<EntryPartyOut>,
     /// Why the shares don't resolve, when they don't.
     pub parties_error: Option<String>,
+    /// Why it has no counterparty, when it is marked so (a reversal
+    /// carries its original's mark).
+    pub no_party_reason: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1989,6 +1992,12 @@ pub struct DisposeAssetParams {
     /// sale) to link to the disposal entry on posting. Required when the
     /// receipt policy applies.
     pub receipt_attachment_ids: Option<Vec<u64>>,
+    /// The buyer (party id or name), named on the disposal entry. Under
+    /// `[books] parties = "require"` a sale with proceeds needs one; a
+    /// retirement with no proceeds and no buyer is marked as having no
+    /// counterparty.
+    #[serde(default)]
+    pub buyer: Option<String>,
     /// Confirm the disposal. Without confirmed=true returns a preview and
     /// posts nothing.
     pub confirmed: Option<bool>,
@@ -2416,6 +2425,10 @@ pub struct RemitPayrollTaxesParams {
     pub date: String,
     /// Cash account id or code the remittance comes from.
     pub cash_account: String,
+    /// The tax agency paid (party id or name, e.g. the IRS), named on the
+    /// remittance entry. Required under `[books] parties = "require"`.
+    #[serde(default)]
+    pub agency: Option<String>,
 }
 
 /// Output of `books.remit_payroll_taxes`.
@@ -2530,8 +2543,10 @@ pub struct ExportCpaPackageParams {
     /// `[books] investing_accounts`.
     #[serde(default)]
     pub investing_accounts: Vec<String>,
-    /// Include every receipt for the year's entries and the company's
-    /// documents (default true).
+    /// Include every receipt for the year's entries (every current file
+    /// filed on or linked to each posted entry, one copy per entry, each
+    /// with a row in receipts/index.csv) and the company's documents (the
+    /// files behind no entry) (default true).
     #[serde(default = "default_true")]
     pub include_receipts: bool,
     /// Carry every member's and 1099 payee's full TIN from the TIN vault
@@ -2986,10 +3001,12 @@ pub struct ListPartiesOut {
 /// liability (a card, a member paying for it, a loan; not payables or
 /// payroll withholdings), with cash that pays a liability down counting
 /// once, as paid to that liability's creditor (a reimbursement to the
-/// members, a card payment to the issuer), and cash raised by a liability
-/// counting as received from the lender. Positive is paid to the party,
-/// negative received from it; a reversal counts against its original's
-/// side. A transfer between the company's own cash accounts nets to zero.
+/// members, a card payment to the issuer), a liability paid down by
+/// another counting the same way (a member paying the card from their own
+/// funds, a loan paying it off), and cash raised by a liability counting
+/// as received from the lender. Positive is paid to the party, negative
+/// received from it; a reversal counts against its root original's side
+/// (reversing the reversal counts on that side again). A transfer between the company's own cash accounts nets to zero.
 /// A bill is not paid until its payment is.
 /// An entry naming several parties counts each one's share of that money
 /// (its amount, its percent, or its derived share: see
@@ -3269,6 +3286,15 @@ pub struct ReconciliationOut {
     pub voided: bool,
     /// Why it was voided, if it was.
     pub voided_reason: Option<String>,
+}
+
+/// Parameters for `books.void_statement`.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct VoidStatementParams {
+    /// The attachment whose recorded statement to void.
+    pub attachment_id: u64,
+    /// Why (what was recorded wrong), recorded in the journal.
+    pub reason: String,
 }
 
 /// Parameters for `books.void_reconciliation`.

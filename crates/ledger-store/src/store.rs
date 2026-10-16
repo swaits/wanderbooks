@@ -1473,12 +1473,39 @@ impl Store {
 
     /// Mark a posted entry's line cleared (or uncleared) for bank
     /// reconciliation. Journaled as `line.cleared`.
+    ///
+    /// ```text
+    /// GOAL: a recorded reconciliation stays proof: the lines it cleared
+    ///       stay cleared while it stands.
+    /// SOURCE: docs/parties-and-attachments.md "Reconciliations" (never
+    ///         edited; void to redo).
+    /// SCENARIOS:
+    ///   1. IF the line is one a reconciliation not voided recorded as
+    ///      cleared and `cleared` is false: SHOULD refuse
+    ///      (ReconciliationRefused, naming it: void it first), journaling
+    ///      nothing.
+    ///   2. Clearing a line dated on or before a reconciliation (an
+    ///      outstanding check that clears next month) is allowed: the
+    ///      later statement shows it.
+    ///   3. Otherwise as Ledger::mark_cleared.
+    /// ```
     pub fn mark_cleared(
         &mut self,
         entry_id: EntryId,
         line_index: usize,
         cleared: bool,
     ) -> Result<(), StoreError> {
+        if !cleared
+            && let Some(r) = self
+                .reconciliations(None)?
+                .into_iter()
+                .find(|r| r.voided.is_none() && r.cleared.contains(&(entry_id, line_index)))
+        {
+            return Err(StoreError::ReconciliationRefused(format!(
+                "entry {entry_id} line {line_index} is cleared by reconciliation {} (account {} through {}): void that reconciliation (with a reason) to un-clear it",
+                r.id, r.account_id, r.statement_date
+            )));
+        }
         let mut next = self.ledger.clone();
         next.mark_cleared(entry_id, line_index, cleared)?;
         let line = self.append_journal(
@@ -2477,7 +2504,12 @@ impl Store {
     ///   2. IF it is withdrawn: SHOULD refuse (AttachmentWithdrawn).
     ///   3. IF it is linked (to any entry): SHOULD refuse (AttachmentLinked).
     ///   4. IF the entry is unknown: SHOULD refuse.
-    ///   5. Otherwise: SHOULD journal `receipt.linked`.
+    ///   5. IF it is already linked to that entry (link_attachment): SHOULD
+    ///      refuse (AlreadyLinked) BECAUSE filed on and linked to the same
+    ///      entry is one receipt counted once, which neither unlink_receipt
+    ///      nor unlink_attachment could then take off (link_attachment
+    ///      SCENARIO 2, the other way round).
+    ///   6. Otherwise: SHOULD journal `receipt.linked`.
     /// ```
     pub fn link_receipt(
         &mut self,
@@ -2488,6 +2520,10 @@ impl Store {
             .get_entry(entry_id)
             .ok_or(LedgerError::UnknownEntry(entry_id))?;
         self.check_linkable(attachment_id)?;
+        let subject = Subject::Entry(entry_id);
+        if self.attachment_links(attachment_id)?.contains(&subject) {
+            return Err(StoreError::AlreadyLinked(attachment_id, subject.describe()));
+        }
         let line = self.append_journal(
             "receipt.linked",
             json!({ "attachment_id": attachment_id, "entry_id": entry_id }),
@@ -2763,10 +2799,12 @@ impl Store {
     ///      then `attachment.linked` to the account.
     /// SCENARIOS:
     ///   1. IF the attachment is unknown or withdrawn, already records a
-    ///      statement, the account is unknown or not an asset or liability
-    ///      (a bank, cash, or card account), the period runs backwards, or
-    ///      a balance has more than two decimal places: SHOULD refuse,
-    ///      journaling nothing.
+    ///      statement (not voided), the account is unknown or not an asset
+    ///      or liability (a bank, cash, or card account), the period runs
+    ///      backwards, or a balance has more than two decimal places:
+    ///      SHOULD refuse, journaling nothing.
+    ///   2. IF its statement was voided (void_statement): records it
+    ///      afresh, the correction of a mis-recorded statement.
     /// ```
     pub fn record_statement(&mut self, st: Statement) -> Result<(), StoreError> {
         let (_, withdrawn) = self.attachment_state(st.attachment_id)?;
@@ -2818,7 +2856,57 @@ impl Store {
         Ok(())
     }
 
-    /// The statement an attachment records, if any.
+    /// Void a recorded statement, with the reason: what it says was
+    /// recorded wrong (a mistyped balance or period), or it shouldn't have
+    /// been recorded. Journaled as `statement.voided {attachment_id,
+    /// reason}`.
+    ///
+    /// ```text
+    /// GOAL: a mis-recorded statement can be corrected on the record,
+    ///       nothing erased (the journal keeps what it said and why it was
+    ///       voided).
+    /// SOURCE: docs/parties-and-attachments.md "Reconciliations"; R-13a.
+    /// INVARIANTS:
+    ///   1. After it, the statement is no longer listed (statements,
+    ///      statement), backs no reconciliation, and the same attachment
+    ///      may record a statement again (record_statement).
+    /// SCENARIOS:
+    ///   1. IF the reason is blank: SHOULD refuse (ReasonRequired).
+    ///   2. IF the attachment records no statement: SHOULD refuse.
+    ///   3. IF a reconciliation not voided names it: SHOULD refuse
+    ///      (ReconciliationRefused: void that reconciliation first).
+    ///   4. Every refusal journals nothing.
+    /// ```
+    pub fn void_statement(&mut self, attachment_id: u64, reason: &str) -> Result<(), StoreError> {
+        let reason = reason.trim();
+        if reason.is_empty() {
+            return Err(StoreError::ReasonRequired);
+        }
+        if self.statement(attachment_id)?.is_none() {
+            return Err(StoreError::InvalidStatement(format!(
+                "attachment {attachment_id} records no statement"
+            )));
+        }
+        if let Some(r) = self
+            .reconciliations(None)?
+            .into_iter()
+            .find(|r| r.voided.is_none() && r.attachment_id == attachment_id)
+        {
+            return Err(StoreError::ReconciliationRefused(format!(
+                "statement {attachment_id} backs reconciliation {}: void that reconciliation first",
+                r.id
+            )));
+        }
+        let line = self.append_journal(
+            "statement.voided",
+            json!({"attachment_id": attachment_id, "reason": reason}),
+        )?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
+    /// The statement an attachment records, if any (not voided, its file
+    /// not withdrawn).
     pub fn statement(&self, attachment_id: u64) -> Result<Option<Statement>, StoreError> {
         Ok(self
             .statements(None)?
@@ -2826,7 +2914,9 @@ impl Store {
             .find(|s| s.attachment_id == attachment_id))
     }
 
-    /// Recorded statements, optionally one account's, by period end.
+    /// Recorded statements, optionally one account's, by period end: those
+    /// not voided whose file isn't withdrawn (a withdrawn file retires its
+    /// statement).
     pub fn statements(&self, account: Option<AccountId>) -> Result<Vec<Statement>, StoreError> {
         query_statements(&self.conn, account)
     }
@@ -2851,16 +2941,23 @@ impl Store {
     ///   4. Journaled as `reconciliation.completed`; never edited (void and
     ///      redo).
     /// SCENARIOS:
-    ///   1. IF the attachment records no statement: SHOULD refuse.
+    ///   1. IF the attachment is withdrawn: SHOULD refuse
+    ///      (AttachmentWithdrawn). IF it records no statement (or only a
+    ///      voided one): SHOULD refuse.
     ///   2. IF the books differ from the statement: SHOULD refuse with
     ///      NotReconciled naming the difference.
     ///   3. IF a reconciliation not voided is dated on or after it: SHOULD
     ///      refuse.
+    ///   4. Every refusal comes before anything is journaled.
     /// ```
     pub fn complete_reconciliation(
         &mut self,
         statement_attachment: u64,
     ) -> Result<Reconciliation, StoreError> {
+        let (_, withdrawn) = self.attachment_state(statement_attachment)?;
+        if withdrawn {
+            return Err(StoreError::AttachmentWithdrawn(statement_attachment));
+        }
         let st = self.statement(statement_attachment)?.ok_or_else(|| {
             StoreError::InvalidStatement(format!(
                 "attachment {statement_attachment} records no statement (record_statement first)"
@@ -4029,6 +4126,7 @@ pub(crate) fn replay_line_into_ledger(
         "attachment.linked"
         | "attachment.unlinked"
         | "statement.recorded"
+        | "statement.voided"
         | "reconciliation.completed"
         | "reconciliation.voided" => {
             // Evidence, not accounting state: the projection records them.
@@ -4666,6 +4764,14 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
                     get_str(p, "opening_balance")?,
                     get_str(p, "closing_balance")?,
                 ],
+            )?;
+        }
+        "statement.voided" => {
+            // The journal keeps what it said; the projection lists only
+            // statements that stand.
+            conn.execute(
+                "DELETE FROM statements WHERE attachment_id = ?",
+                params![get_u64(p, "attachment_id")? as i64],
             )?;
         }
         "reconciliation.completed" => {
@@ -5326,13 +5432,14 @@ pub struct Reconciliation {
 
 /// Recorded statements in the projection, optionally one account's, by
 /// period end (shared by [`Store::statements`] and the read-only
-/// snapshot).
+/// snapshot): those not voided, leaving out any whose attachment is
+/// withdrawn.
 pub(crate) fn query_statements(
     conn: &Connection,
     account: Option<AccountId>,
 ) -> Result<Vec<Statement>, StoreError> {
     let mut stmt = conn.prepare(
-            "SELECT attachment_id, account_id, period_start, period_end, opening_balance, closing_balance FROM statements ORDER BY period_end, attachment_id",
+            "SELECT attachment_id, account_id, period_start, period_end, opening_balance, closing_balance FROM statements WHERE attachment_id NOT IN (SELECT id FROM attachments WHERE withdrawn_at IS NOT NULL) ORDER BY period_end, attachment_id",
         )?;
     let rows = stmt.query_map([], |r| {
         Ok((

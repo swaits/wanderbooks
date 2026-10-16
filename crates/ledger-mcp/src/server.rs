@@ -54,7 +54,7 @@ use rust_decimal::Decimal;
 use std::sync::{Arc, Mutex};
 
 /// The agent operating contract, delivered via initialize.
-const INSTRUCTIONS: &str = "You are the bookkeeping agent for these books. The engine enforces the accounting; you enforce the workflow.\n\nRULES\n- Money is exact decimal. Always pass amounts as decimal strings (\"123.45\"), never floats.\n- Never post directly. The flow is draft (books.draft_entry) -> add lines (books.add_line) -> preview (books.post_entry without confirmed) -> review the preview -> post (books.post_entry with confirmed=true).\n- Every entry must balance: debits equal credits, exactly. Every line needs a real account from books.chart. The engine rejects anything else.\n- Receipts: any entry moving more than $25.00 in debits needs at least one receipt attached (books.attach_receipt) before posting. The server rejects the post otherwise. This is enforced, not a suggestion.\n- Never invent accounts. If the account you need does not exist, add it with books.add_account first.\n- Corrections go through books.reverse_entry. Posted entries are immutable; there is no edit.\n- Receipt corrections: receipts can change, but nothing is erased. To replace one, attach the new receipt, then books.unlink_receipt the old (with a reason); retire unwanted receipts or documents with books.withdraw_attachment (with a reason). The journal keeps every step.\n- Attachments: file a file once and link it wherever it is evidence (books.link_attachment, or link_to on books.attach_receipt and books.file_document): an entry (a file linked to an entry counts as its receipt), an account, an asset, a party, an invoice, a bill, a period, a payroll run, a schedule, a reconciliation, or the company. books.attachments lists a subject's files; books.unlink_attachment takes a link off with a reason. File documents under their kind (statement, contract, photo, warranty, import_source, formation, legal, tax, accounting, other). File a bank export before importing it and pass source_attachment_id to books.import_bank_csv.\n- Reconciliations: every month, for each bank, cash, and card account, file the statement (books.file_document category statement), record what it says (books.record_statement), mark the lines it shows (books.mark_cleared), preview books.reconcile with statement_attachment, and confirm with confirmed=true once the difference is exactly zero: that records the reconciliation with its statement. Never confirm by forcing the numbers; find the difference. books.void_reconciliation (with a reason) undoes a mistake. books.digest lists unreconciled_accounts: accounts not reconciled through the end of last month.\n- After posting, check books.digest to review what changed, so a human can review too.\n- Amounts in every response are decimal strings. Treat them as exact.\n- Fixed assets: register with books.register_asset, inspect with books.asset_schedule and books.list_assets, post monthly depreciation with books.run_depreciation (exempt from the receipt policy; the schedule is the evidence), and dispose with books.dispose_asset (preview first; the bill of sale is the receipt). Depreciation is straight-line, book basis only - tax depreciation stays with the CPA. Every asset gets a tag for the label on the thing itself (books.register_asset generates the next one, like WL-0001, unless the human has their own); record the manufacturer's serial number too, change either with books.label_asset, and print label sheets with books.asset_labels (save the PDF; print at 100% on Avery 5160/8160). Asset tools take the tag in place of the id. Record every asset's federal tax basis beside its book value (books.set_asset_tax_basis, or tax_basis_rule on books.register_asset): cost for a purchase; for a member's contribution, the member's adjusted basis (what they paid, less depreciation they took) with rule personal_use_conversion (their personal property: tax basis is the lesser of value and their basis) or carryover (their business property). Book value stays fair market value. books.export fixed_asset_register is the register for the CPA; books.show asset opens one in the viewer.\n- Prepaid expenses and deferred revenue: record the original payment (with its receipt), then books.create_schedule; books.run_schedules posts the monthly amortization (preview first; exempt from the receipt policy like depreciation). Recurring entries (books.create_recurring, books.run_recurring) only ever create drafts: attach each actual receipt and post through the normal preview.\n- Platform payouts (app stores, payment processors, marketplaces): never book the net deposit as revenue. books.record_payout grosses it up (gross revenue, fees, adjustments) into a draft and refuses unless it reconciles to the cent; attach the payout statement, then preview and post.\n- The viewer: the human usually has the read-only viewer open beside you (`just gui`). When they ask to see something, and after you post, call books.show so it's on their screen.\n- Parties: keep the directory current. Every counterparty (vendor, contractor, landlord, customer, payout platform, tax agency, bank or card issuer, member, employee) gets a party: books.add_party with its roles (books.add_vendor and books.add_customer link their record to the party of the same name, or make one). Tag every entry with its party (books.draft_entry party, or books.set_entry_party; a party with a vendor record tags the vendor for 1099s too). An entry with several counterparties names them all with parties ([{party, amount?|percent?}] on books.draft_entry or books.set_entry_party): there is no \"joint\" party. A joint member transaction (paid from or reimbursed to joint funds on Due to Shareholders, a contribution from joint funds, a distribution to both) names both members with no shares, and their shares derive (from their capital or distribution lines on the entry, else their [[company.members]] shares); when the split is uneven, or a party isn't a member, give each party an exact amount (or a percent). The post_entry preview lists each party's resolved share (parties) and refuses to post (party_shares, parties_error) until the shares add up to what the entry moved; show the split to the human before confirming. Every post_entry preview says where the entry stands (party_policy, party_missing, party_suggestions): under [books] parties = \"suggest\" (the default), when party_missing, name the likely party to the human and tag it (or add it) before confirming; under \"require\", posting is refused (party_required) until the entry names a party or is marked as having none (books.set_entry_party with party null and no_party_reason, or draft_entry no_party_reason: only for an entry with truly no counterparty, like a transfer between the company's own accounts); under \"off\", don't raise it. Record W-9 facts (books.set_w9) for contractors and landlords before paying them, and W-4 facts (books.set_w4) for employees before their first payroll; name the employee party on every books.run_payroll line. Never put a full TIN or SSN anywhere in the books, only the last four digits: the engine refuses any nine-digit number in a party field. The full TIN goes only to the encrypted TIN vault, and every member's and every 1099 payee's belongs there: books.set_tin (party, tin, tin_type: ssn, ein, itin; any role, so each member's SSN for their K-1) and books.set_w9 with tin and tin_type for a payee's W-9, and the signed form with w9_file_path (never books.file_document or books.attach_receipt: the form shows the TIN). Never repeat a TIN back to the human, in chat, a description, note, file name, commit message, or anywhere else; tools show the last four only. books.get_w9 saves the form to a path outside the books for the human; books.purge_tin (preview, then confirmed, with a reason) deletes a TIN no longer needed. books.parties lists the directory, books.party shows one party with the year's totals, and books.show party opens it in the viewer. Archive (books.update_party archived) parties no longer dealt with; never delete history.\n- 1099s: mark contractors and landlords with books.set_vendor_1099 (and whether their W-9 is on file), and tag every payment to them with its vendor or party (books.draft_entry vendor or party, books.set_entry_vendor, or books.set_entry_party; books.pay_bill tags automatically). books.vendor_1099 is the year-end worksheet for the CPA; with include_tins: true (only when the human asks for the CPA's copy) it carries the full TINs from the vault, the one output that does: hand it over (save_csv_to, a path outside the books) and never repeat those numbers anywhere else.\n- CPA package: books.export_cpa_package carries every member's and 1099 payee's full TIN from the vault (the K-1 worksheet, k1-members.csv, and the 1099 worksheet), so it needs save_to, a new .zip or a folder outside the books dir (never the books or its exports/: git keeps them forever). Tell the human the path it was saved to; never open, read, attach, or copy the file, and never echo its TINs. tin_gaps lists each member or payee whose TIN it lacks and why: collect them (books.set_tin, books.set_w9) and export again.\n- Rules that change with the law: wanderbooks knows some legal amounts (like the 1099 threshold) only through a given year and never guesses past it. When a tool refuses with \"wanderbooks knows the ... only through\", or books.digest lists stale_rules: check today's date, find the current figure from the official source (the refusal names the vendored source file) or ask the human (owner, CPA), confirm it with them, and pass it explicitly. Then update the rule for everyone: open a pull request at https://github.com/swaits/wanderbooks with the new value and its official text (best), or at least an issue; if you can't reach GitHub, give the human the issue text to file.\n- Control roles: invoices, bills, payroll, and closes post to the account filling each role (receivables, revenue, payables, general expense, retained earnings, payroll expense and withholdings); books.roles lists them. A role uses its default code (1200, 4000, 2000, 6999, 3999, 6100, 6110, 2110-2150) until it is assigned one of the chart's own accounts with books.assign_role (journaled). If the chart uses a default code for a different kind of account, the engine refuses and says which. It can't tell an account of the right type but another purpose (a hosting expense at payroll's 6100): check books.roles before running payroll, bills, or invoices. Never assign roles or renumber the human's accounts on your own: explain the conflict, and when they decide, assign the role to their account (best: their numbering stays) or books.renumber_account the account (its history stays).\n- Settings: wanderbooks.toml beside the books holds the company's facts and settings (name, fiscal year, tax form, members and their capital accounts, basis, receipt threshold, cash flow roles, close target); books.settings shows what is in force and lists problems, settings that disagree with the chart. Edit the file when the human tells you a company fact, when a tool refuses naming a wanderbooks.toml setting, when books.settings or books.digest lists a settings problem, and after books.renumber_account lists config_mentions. The server reloads the file whenever it changes, with no restart: after each edit, call books.settings and check reload_error is null (a broken edit leaves the last good settings in force) and problems is empty. Never put a member's SSN or any TIN in it.";
+const INSTRUCTIONS: &str = "You are the bookkeeping agent for these books. The engine enforces the accounting; you enforce the workflow.\n\nRULES\n- Money is exact decimal. Always pass amounts as decimal strings (\"123.45\"), never floats.\n- Never post directly. The flow is draft (books.draft_entry) -> add lines (books.add_line) -> preview (books.post_entry without confirmed) -> review the preview -> post (books.post_entry with confirmed=true).\n- Every entry must balance: debits equal credits, exactly. Every line needs a real account from books.chart. The engine rejects anything else.\n- Receipts: any entry moving more than $25.00 in debits needs at least one receipt attached (books.attach_receipt) before posting. The server rejects the post otherwise. This is enforced, not a suggestion.\n- Never invent accounts. If the account you need does not exist, add it with books.add_account first.\n- Corrections go through books.reverse_entry. Posted entries are immutable; there is no edit.\n- Receipt corrections: receipts can change, but nothing is erased. To replace one, attach the new receipt, then books.unlink_receipt the old (with a reason); retire unwanted receipts or documents with books.withdraw_attachment (with a reason). The journal keeps every step.\n- Attachments: file a file once and link it wherever it is evidence (books.link_attachment, or link_to on books.attach_receipt and books.file_document): an entry (a file linked to an entry counts as its receipt), an account, an asset, a party, an invoice, a bill, a period, a payroll run, a schedule, a reconciliation, or the company. books.attachments lists a subject's files; books.unlink_attachment takes a link off with a reason. File documents under their kind (statement, contract, photo, warranty, import_source, formation, legal, tax, accounting, other). File a bank export before importing it and pass source_attachment_id to books.import_bank_csv.\n- Reconciliations: every month, for each bank, cash, and card account, file the statement (books.file_document category statement), record what it says (books.record_statement), mark the lines it shows (books.mark_cleared), preview books.reconcile with statement_attachment, and confirm with confirmed=true once the difference is exactly zero: that records the reconciliation with its statement. Never confirm by forcing the numbers; find the difference. books.void_reconciliation (with a reason) undoes a mistake; books.void_statement (with a reason) a mis-recorded statement, to record it again. books.digest lists unreconciled_accounts: accounts not reconciled through the end of last month.\n- After posting, check books.digest to review what changed, so a human can review too.\n- Amounts in every response are decimal strings. Treat them as exact.\n- Fixed assets: register with books.register_asset, inspect with books.asset_schedule and books.list_assets, post monthly depreciation with books.run_depreciation (exempt from the receipt policy; the schedule is the evidence), and dispose with books.dispose_asset (preview first; the bill of sale is the receipt). Depreciation is straight-line, book basis only - tax depreciation stays with the CPA. Every asset gets a tag for the label on the thing itself (books.register_asset generates the next one, like WL-0001, unless the human has their own); record the manufacturer's serial number too, change either with books.label_asset, and print label sheets with books.asset_labels (save the PDF; print at 100% on Avery 5160/8160). Asset tools take the tag in place of the id. Record every asset's federal tax basis beside its book value (books.set_asset_tax_basis, or tax_basis_rule on books.register_asset): cost for a purchase; for a member's contribution, the member's adjusted basis (what they paid, less depreciation they took) with rule personal_use_conversion (their personal property: tax basis is the lesser of value and their basis) or carryover (their business property). Book value stays fair market value. books.export fixed_asset_register is the register for the CPA; books.show asset opens one in the viewer.\n- Prepaid expenses and deferred revenue: record the original payment (with its receipt), then books.create_schedule; books.run_schedules posts the monthly amortization (preview first; exempt from the receipt policy like depreciation). Recurring entries (books.create_recurring, books.run_recurring) only ever create drafts: attach each actual receipt and post through the normal preview.\n- Platform payouts (app stores, payment processors, marketplaces): never book the net deposit as revenue. books.record_payout grosses it up (gross revenue, fees, adjustments) into a draft and refuses unless it reconciles to the cent; attach the payout statement, then preview and post.\n- The viewer: the human usually has the read-only viewer open beside you (`just gui`). When they ask to see something, and after you post, call books.show so it's on their screen.\n- Parties: keep the directory current. Every counterparty (vendor, contractor, landlord, customer, payout platform, tax agency, bank or card issuer, member, employee) gets a party: books.add_party with its roles (books.add_vendor and books.add_customer link their record to the party of the same name, or make one). Tag every entry with its party (books.draft_entry party, or books.set_entry_party; a party with a vendor record tags the vendor for 1099s too). An entry with several counterparties names them all with parties ([{party, amount?|percent?}] on books.draft_entry or books.set_entry_party): there is no \"joint\" party. A joint member transaction (paid from or reimbursed to joint funds on Due to Shareholders, a contribution from joint funds, a distribution to both) names both members with no shares, and their shares derive (from their capital or distribution lines on the entry, else their [[company.members]] shares); when the split is uneven, or a party isn't a member, give each party an exact amount (or a percent). The post_entry preview lists each party's resolved share (parties) and refuses to post (party_shares, parties_error) until the shares add up to what the entry moved; show the split to the human before confirming. Every post_entry preview says where the entry stands (party_policy, party_missing, party_suggestions): under [books] parties = \"suggest\" (the default), when party_missing, name the likely party to the human and tag it (or add it) before confirming; under \"require\", posting is refused (party_required) until the entry names a party or is marked as having none (books.set_entry_party with party null and no_party_reason, or draft_entry no_party_reason: only for an entry with truly no counterparty, like a transfer between the company's own accounts); under \"off\", don't raise it. Record W-9 facts (books.set_w9) for contractors and landlords before paying them, and W-4 facts (books.set_w4) for employees before their first payroll; name the employee party on every books.run_payroll line. Never put a full TIN or SSN anywhere in the books, only the last four digits: the engine refuses any nine-digit number in a party field. The full TIN goes only to the encrypted TIN vault, and every member's and every 1099 payee's belongs there: books.set_tin (party, tin, tin_type: ssn, ein, itin; any role, so each member's SSN for their K-1) and books.set_w9 with tin and tin_type for a payee's W-9, and the signed form with w9_file_path (never books.file_document or books.attach_receipt: the form shows the TIN). Never repeat a TIN back to the human, in chat, a description, note, file name, commit message, or anywhere else; tools show the last four only. books.get_w9 saves the form to a path outside the books for the human; books.purge_tin (preview, then confirmed, with a reason) deletes a TIN no longer needed. books.parties lists the directory, books.party shows one party with the year's totals, and books.show party opens it in the viewer. Archive (books.update_party archived) parties no longer dealt with; never delete history.\n- 1099s: mark contractors and landlords with books.set_vendor_1099 (and whether their W-9 is on file), and tag every payment to them with its vendor or party (books.draft_entry vendor or party, books.set_entry_vendor, or books.set_entry_party; books.pay_bill tags automatically). books.vendor_1099 is the year-end worksheet for the CPA; with include_tins: true (only when the human asks for the CPA's copy) it carries the full TINs from the vault, the one output that does: hand it over (save_csv_to, a path outside the books) and never repeat those numbers anywhere else.\n- CPA package: books.export_cpa_package carries every member's and 1099 payee's full TIN from the vault (the K-1 worksheet, k1-members.csv, and the 1099 worksheet), so it needs save_to, a new .zip or a folder outside the books dir (never the books or its exports/: git keeps them forever). Tell the human the path it was saved to; never open, read, attach, or copy the file, and never echo its TINs. tin_gaps lists each member or payee whose TIN it lacks and why: collect them (books.set_tin, books.set_w9) and export again.\n- Rules that change with the law: wanderbooks knows some legal amounts (like the 1099 threshold) only through a given year and never guesses past it. When a tool refuses with \"wanderbooks knows the ... only through\", or books.digest lists stale_rules: check today's date, find the current figure from the official source (the refusal names the vendored source file) or ask the human (owner, CPA), confirm it with them, and pass it explicitly. Then update the rule for everyone: open a pull request at https://github.com/swaits/wanderbooks with the new value and its official text (best), or at least an issue; if you can't reach GitHub, give the human the issue text to file.\n- Control roles: invoices, bills, payroll, and closes post to the account filling each role (receivables, revenue, payables, general expense, retained earnings, payroll expense and withholdings); books.roles lists them. A role uses its default code (1200, 4000, 2000, 6999, 3999, 6100, 6110, 2110-2150) until it is assigned one of the chart's own accounts with books.assign_role (journaled). If the chart uses a default code for a different kind of account, the engine refuses and says which. It can't tell an account of the right type but another purpose (a hosting expense at payroll's 6100): check books.roles before running payroll, bills, or invoices. Never assign roles or renumber the human's accounts on your own: explain the conflict, and when they decide, assign the role to their account (best: their numbering stays) or books.renumber_account the account (its history stays).\n- Settings: wanderbooks.toml beside the books holds the company's facts and settings (name, fiscal year, tax form, members and their capital accounts, basis, receipt threshold, cash flow roles, close target); books.settings shows what is in force and lists problems, settings that disagree with the chart. Edit the file when the human tells you a company fact, when a tool refuses naming a wanderbooks.toml setting, when books.settings or books.digest lists a settings problem, and after books.renumber_account lists config_mentions. The server reloads the file whenever it changes, with no restart: after each edit, call books.settings and check reload_error is null (a broken edit leaves the last good settings in force) and problems is empty. Never put a member's SSN or any TIN in it.";
 
 /// Max receipt/document upload: 25 MB.
 const MAX_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
@@ -461,13 +461,17 @@ impl BooksServer {
         })
     }
 
-    /// Cash and card accounts due for reconciliation: the `[books]
-    /// cash_accounts` and every liability with a recorded statement, with
-    /// posted activity through the end of last month, not reconciled
-    /// through it.
+    /// Cash and card accounts due for reconciliation
+    /// (ledger_store::reconcilable, the viewer's Needs-attention rule):
+    /// the cash accounts (`[books] cash_accounts`, else assets named for
+    /// cash), the card accounts (liabilities named "card", before their
+    /// first statement), and every other liability with a recorded
+    /// statement, with posted activity through the end of last month, not
+    /// reconciled through it.
     ///
     /// ```text
-    /// GOAL: the monthly close's reconciliation step can't be forgotten.
+    /// GOAL: the monthly close's reconciliation step can't be forgotten,
+    ///       and the digest and the viewer agree on what is due.
     /// SOURCE: docs/parties-and-attachments.md "Reconciliations" (Needs
     ///         attention: an account with activity not reconciled through
     ///         last month's end).
@@ -477,40 +481,17 @@ impl BooksServer {
         store: &Store,
         today: NaiveDate,
     ) -> Result<Vec<UnreconciledAccountOut>, String> {
+        use ledger_store::reconcilable;
         let ledger = store.ledger();
-        let due = chrono::Datelike::with_day(&today, 1)
-            .and_then(|d| d.pred_opt())
-            .expect("a month before today");
-        let mut accounts: Vec<AccountId> = self
-            .settings()
-            .roles
-            .cash
-            .iter()
-            .filter_map(|c| ledger.chart().find_by_code(c).map(|a| a.id))
-            .collect();
-        for st in store.statements(None).map_err(|e| e.to_string())? {
-            if ledger
-                .chart()
-                .get(st.account_id)
-                .is_some_and(|a| a.account_type == AccountType::Liability)
-            {
-                accounts.push(st.account_id);
-            }
-        }
-        accounts.sort_unstable();
-        accounts.dedup();
+        let cash = reconcilable::cash_accounts(ledger, &self.settings().roles.cash);
+        let statements = store.statements(None).map_err(|e| e.to_string())?;
+        let reconciliations = store.reconciliations(None).map_err(|e| e.to_string())?;
         let mut out = Vec::new();
-        for id in accounts {
-            let active = ledger
-                .posted_entries()
-                .any(|e| e.date() <= due && e.lines().iter().any(|l| l.account == id));
-            if !active {
+        for id in reconcilable::reconcilable_accounts(ledger, &cash, &statements) {
+            let Some(due) = reconcilable::reconciliation_due(ledger, &reconciliations, id, today)
+            else {
                 continue;
-            }
-            let through = reconciled_through(store, id)?;
-            if through.is_some_and(|t| t >= due) {
-                continue;
-            }
+            };
             let (code, name) = code_name(store, id);
             out.push(UnreconciledAccountOut {
                 next_step: format!(
@@ -518,7 +499,8 @@ impl BooksServer {
                 ),
                 code,
                 name,
-                reconciled_through: through.map(|d| d.to_string()),
+                reconciled_through: reconcilable::reconciled_through(&reconciliations, id)
+                    .map(|d| d.to_string()),
                 due_through: due.to_string(),
             });
         }
@@ -1565,6 +1547,19 @@ fn party_activity(
     })
 }
 
+/// The `party_required` refusal for an engine-posted entry (payroll, a
+/// remittance, a disposal) that names no counterparty under `[books]
+/// parties = "require"`: `what` says what to pass.
+fn party_required(what: &str) -> String {
+    serde_json::json!({
+        "code": "party_required",
+        "message": format!(
+            "these books require a counterparty on every entry ([books] parties = \"require\"): {what} (add the party with books.add_party first if it's new)"
+        ),
+    })
+    .to_string()
+}
+
 /// The chart's ids for these account codes (codes it lacks are skipped).
 fn cash_ids(ledger: &Ledger, codes: &[String]) -> Vec<AccountId> {
     codes
@@ -1648,6 +1643,58 @@ fn check_shares_resolve(
     }
     let (money, members) = share_context(ledger, settings);
     ledger_core::shares::resolve(entry, shares, &money, &members).map(|_| ())
+}
+
+/// Fix a posted entry's derived split among several parties: journal the
+/// exact amounts they resolve to now, so a later change to
+/// `[[company.members]]` (a new income split, a member archived) never
+/// re-splits posted history.
+///
+/// ```text
+/// GOAL: posted is forever, the split between its parties included.
+/// SOURCE: AGENTS.md ("Posted is forever"); docs/parties-and-attachments.md
+///         "Shares"; ledger_core::shares INVARIANT 10 (derived several:
+///         the members' capital lines, else their income shares, both read
+///         from the settings).
+/// INVARIANTS:
+///   1. Only a posted entry naming two or more parties with derived shares
+///      changes: its shares become Amount(|part|) for each party, in
+///      order, journaled as entry.parties_set (the reversal chain too), so
+///      each party's resolved part is exactly what it was.
+///   2. Nothing changes when the shares don't resolve, or a part is zero
+///      (an amount must be positive): the entry keeps its derived shares.
+/// ```
+fn fix_derived_shares(store: &mut Store, settings: &Settings, entry_id: u64) -> Result<(), String> {
+    let ledger = store.ledger();
+    let Some(entry) = ledger.get_entry(entry_id) else {
+        return Ok(());
+    };
+    let shares = ledger.entry_parties(entry_id);
+    if entry.status() != ledger_core::EntryStatus::Posted
+        || shares.len() < 2
+        || !shares
+            .iter()
+            .any(|s| matches!(s.share, ledger_core::Share::Derived))
+    {
+        return Ok(());
+    }
+    let (money, members) = share_context(ledger, settings);
+    let Ok(parts) = ledger_core::shares::resolve(entry, shares, &money, &members) else {
+        return Ok(());
+    };
+    if parts.iter().any(|(_, v)| v.is_zero()) {
+        return Ok(());
+    }
+    let fixed: Vec<ledger_core::PartyShare> = parts
+        .into_iter()
+        .map(|(party, v)| ledger_core::PartyShare {
+            party,
+            share: ledger_core::Share::Amount(v.abs()),
+        })
+        .collect();
+    store
+        .set_entry_parties(entry_id, &fixed)
+        .map_err(|e| e.to_string())
 }
 
 /// An entry's parties for output, each share resolved, and why they don't
@@ -2482,6 +2529,7 @@ impl BooksServer {
             .to_tool_error());
         }
         store.post_entry(p.entry_id).map_err(|e| e.to_string())?;
+        fix_derived_shares(&mut store, &self.settings(), p.entry_id)?;
         let mut posted = out;
         posted.status = "posted".to_string();
         Ok(Json(posted))
@@ -2957,6 +3005,10 @@ impl BooksServer {
                 .map(|p| p.label().to_string()),
             parties,
             parties_error,
+            no_party_reason: store
+                .ledger()
+                .entry_no_party(p.entry_id)
+                .map(str::to_string),
         }))
     }
 
@@ -4971,7 +5023,7 @@ impl BooksServer {
 
     #[tool(
         name = "books.dispose_asset",
-        description = "Dispose of a fixed asset (sell or retire). Without confirmed=true returns a preview — book value, gain/loss, the auto-posted final depreciation, and the disposal entry's lines — and posts nothing. With confirmed=true posts the disposal entry (plus any missing final-period depreciation) after enforcing the receipt policy: file the bill of sale with books.file_document first and pass its attachment ids as receipt_attachment_ids."
+        description = "Dispose of a fixed asset (sell or retire). Without confirmed=true returns a preview — book value, gain/loss, the auto-posted final depreciation, and the disposal entry's lines — and posts nothing. With confirmed=true posts the disposal entry (plus any missing final-period depreciation) after enforcing the receipt policy: file the bill of sale with books.file_document first and pass its attachment ids as receipt_attachment_ids. Name the buyer (buyer: a party id or name): it is the entry's party, and [books] parties = \"require\" refuses a sale without one; a retirement with no proceeds and no buyer is marked as having no counterparty."
     )]
     async fn dispose_asset(
         &self,
@@ -4985,6 +5037,11 @@ impl BooksServer {
         let proceeds_account = resolve_account(&store, &p.proceeds_account)?;
         let gain_loss_account = resolve_account(&store, &p.gain_loss_account)?;
         let asset_id = resolve_asset(&store, p.asset_id, p.tag.as_deref())?;
+        let buyer = p
+            .buyer
+            .as_deref()
+            .map(|r| resolve_party(&store, r))
+            .transpose()?;
         let asset = store
             .ledger()
             .get_asset(asset_id)
@@ -5076,6 +5133,14 @@ impl BooksServer {
         for aid in &attachment_ids {
             store.check_linkable(*aid).map_err(|e| e.to_string())?;
         }
+        if buyer.is_none()
+            && !proceeds.amount.is_zero()
+            && self.settings().parties == ledger_config::PartyPolicy::Require
+        {
+            return Err(party_required(
+                "pass buyer: the party the asset was sold to",
+            ));
+        }
         let entry_id = store
             .dispose_asset(
                 asset_id,
@@ -5090,6 +5155,14 @@ impl BooksServer {
                 .link_receipt(*aid, entry_id)
                 .map_err(|e| e.to_string())?;
         }
+        match buyer {
+            Some(b) => store.set_entry_party(entry_id, Some(b)),
+            None if proceeds.amount.is_zero() => {
+                store.set_entry_no_party(entry_id, "asset retired with no proceeds")
+            }
+            None => Ok(()),
+        }
+        .map_err(|e| e.to_string())?;
         let mut posted = out;
         posted.status = "posted".to_string();
         posted.entry_id = entry_id;
@@ -5235,7 +5308,8 @@ impl BooksServer {
     /// SCENARIOS:
     ///   1. IF statement_attachment is given: the account, date, and
     ///      balance are the statement's; any given that disagree: SHOULD
-    ///      refuse.
+    ///      refuse. IF its attachment is withdrawn (the statement retired)
+    ///      or its statement voided: SHOULD refuse, preview or not.
     ///   2. IF it isn't: account, statement_date, and statement_balance are
     ///      required, and confirmed=true SHOULD refuse.
     ///   3. IF confirmed=true and problems is not empty: SHOULD refuse,
@@ -5265,7 +5339,11 @@ impl BooksServer {
             .transpose()?;
         let (account, date, balance) = match p.statement_attachment {
             Some(att) => {
-                find_attachment(&store, att)?;
+                if find_attachment(&store, att)?.withdrawn_at.is_some() {
+                    return Err(format!(
+                        "attachment {att} is withdrawn, so its statement is retired: file the statement again and record it (books.record_statement)"
+                    ));
+                }
                 let st = store
                     .statement(att)
                     .map_err(|e| e.to_string())?
@@ -5479,6 +5557,38 @@ impl BooksServer {
             .map(|r| reconciliation_out(&store, r))
             .collect();
         Ok(Json(ReconciliationsOut { reconciliations }))
+    }
+
+    /// ```text
+    /// GOAL: correct a mis-recorded statement on the record.
+    /// SOURCE: Store::void_statement.
+    /// SCENARIOS:
+    ///   1. IF the attachment records no statement, a reconciliation not
+    ///      voided rests on it, or the reason is blank: SHOULD refuse,
+    ///      journaling nothing.
+    ///   2. Otherwise: journaled as `statement.voided`; books.statements no
+    ///      longer lists it, and the same attachment can record the
+    ///      statement again (books.record_statement).
+    /// ```
+    #[tool(
+        name = "books.void_statement",
+        description = "Void a recorded statement that was recorded wrong (a mistyped balance or period), with the reason recorded in the journal, so the same filed statement can be recorded again with books.record_statement. Refused while a reconciliation not voided rests on it (books.void_reconciliation first). Nothing is erased: the journal keeps what it said. Journaled as statement.voided. Returns the statement as it was recorded."
+    )]
+    async fn void_statement(
+        &self,
+        params: Parameters<VoidStatementParams>,
+    ) -> Result<Json<StatementOut>, String> {
+        let p = params.0;
+        let mut store = self.lock()?;
+        let st = store
+            .statement(p.attachment_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("attachment {} records no statement", p.attachment_id))?;
+        let out = statement_out(&store, &st)?;
+        store
+            .void_statement(p.attachment_id, &p.reason)
+            .map_err(|e| e.to_string())?;
+        Ok(Json(out))
     }
 
     /// ```text
@@ -6356,7 +6466,7 @@ impl BooksServer {
 
     #[tool(
         name = "books.set_entry_party",
-        description = "Tag an entry (draft or posted) with the party it was with (id or name), or pass party null (or omit it) to clear the tag. A party with a vendor record also tags the entry's vendor, so a payment to a contractor or landlord counts in books.vendor_1099; a party without one, or clearing, clears the vendor tag. For an entry with several counterparties pass parties instead: [{party, amount?|percent?}], each share an exact amount (cents), a percent (summing to 100; leftover cents to the first party), or neither (derived: a sole party gets all; members named together get what their capital or distributions lines say, else their [[company.members]] share). Name both members on a joint member transaction (a reimbursement on 2100, a joint contribution) and let the shares derive; give amounts when a split is uneven. Refused: a party twice, mixed kinds of share, two parties with vendor records, and, once the entry has balanced lines, shares that don't add up to what it moved. Metadata only: amounts never change. An entry and its reversal carry the same parties: tagging either tags both, so each party's part nets to zero. Journaled as entry.party_set (one party) or entry.parties_set (parties). Returns the entry (as books.get_entry), each party's share resolved."
+        description = "Tag an entry (draft or posted) with the party it was with (id or name), or pass party null (or omit it) to clear the tag. A party with a vendor record also tags the entry's vendor, so a payment to a contractor or landlord counts in books.vendor_1099; a party without one, or clearing, clears the vendor tag. For an entry with several counterparties pass parties instead: [{party, amount?|percent?}], each share an exact amount (cents), a percent (summing to 100; leftover cents to the first party), or neither (derived: a sole party gets all; members named together get what their capital or distributions lines say, else their [[company.members]] share; once the entry is posted, a derived split among several parties is recorded as the exact amounts it resolves to, so a later change to [[company.members]] never re-splits posted history). Name both members on a joint member transaction (a reimbursement on 2100, a joint contribution) and let the shares derive; give amounts when a split is uneven. Refused: a party twice, mixed kinds of share, two parties with vendor records, and, once the entry has balanced lines, shares that don't add up to what it moved. Metadata only: amounts never change. An entry and its reversal carry the same parties: tagging either tags both, so each party's part nets to zero. Journaled as entry.party_set (one party) or entry.parties_set (parties). Returns the entry (as books.get_entry), each party's share resolved."
     )]
     async fn set_entry_party(
         &self,
@@ -6418,6 +6528,7 @@ impl BooksServer {
                     store
                         .set_entry_parties(p.entry_id, &sh)
                         .map_err(|e| e.to_string())?;
+                    fix_derived_shares(&mut store, &settings, p.entry_id)?;
                 }
                 (party, None, None) => {
                     store
@@ -6705,6 +6816,15 @@ impl BooksServer {
                 })
             })
             .collect::<Result<_, String>>()?;
+        if self.settings().parties == ledger_config::PartyPolicy::Require
+            && lines
+                .iter()
+                .any(|l| l.employee.is_none() && !l.net_pay().is_zero())
+        {
+            return Err(party_required(
+                "name each payroll line's employee party (employee), so the entry names who was paid",
+            ));
+        }
         let run_id = store
             .run_payroll(parse_date(&p.date)?, lines, cash)
             .map_err(|e| e.to_string())?;
@@ -6724,7 +6844,7 @@ impl BooksServer {
 
     #[tool(
         name = "books.remit_payroll_taxes",
-        description = "Remit all outstanding payroll tax payables (federal/state withholding, SS, Medicare, other deductions) to cash in one balanced entry."
+        description = "Remit all outstanding payroll tax payables (federal/state withholding, SS, Medicare, other deductions) to cash in one balanced entry. Name the tax agency paid (agency: a party id or name, e.g. the IRS): it is the entry's party, and [books] parties = \"require\" refuses without it."
     )]
     async fn remit_payroll_taxes(
         &self,
@@ -6733,6 +6853,14 @@ impl BooksServer {
         let p = params.0;
         let mut store = self.lock()?;
         let cash = resolve_account(&store, &p.cash_account)?;
+        let agency = p
+            .agency
+            .as_deref()
+            .map(|r| resolve_party(&store, r))
+            .transpose()?;
+        if agency.is_none() && self.settings().parties == ledger_config::PartyPolicy::Require {
+            return Err(party_required("pass agency: the tax agency paid"));
+        }
         // Total before remitting, for the response.
         let total: Decimal = store
             .ledger()
@@ -6743,6 +6871,11 @@ impl BooksServer {
         let entry_id = store
             .remit_payroll_taxes(parse_date(&p.date)?, cash)
             .map_err(|e| e.to_string())?;
+        if let Some(a) = agency {
+            store
+                .set_entry_party(entry_id, Some(a))
+                .map_err(|e| e.to_string())?;
+        }
         Ok(Json(RemitPayrollTaxesOut {
             entry_id,
             total: money(total),
@@ -6937,7 +7070,7 @@ impl BooksServer {
     /// ```
     #[tool(
         name = "books.export_cpa_package",
-        description = "Build the CPA handoff package as a zip: the profit and loss, balance sheet, cash flow, statement of changes in members' equity (multi-member LLCs), tax summary, and trial balance, each as PDF and XLSX; the fixed asset register as PDF and XLSX when there are fixed assets; the general ledger (by account) and general journal (entry by entry) as XLSX; the journal as IIF (imports into QuickBooks Desktop); the 1099 worksheet as CSV; with members, the K-1 worksheet (k1-members.csv: per member their party, share, capital account, TIN, and beginning capital, contributions in cash and in property, share of income, distributions, and ending capital for the fiscal year to date); every receipt behind the year's entries (receipts/, with an index.csv tying each file to its entry) and the company's documents (documents/), unless include_receipts is false; and a README with the journal's verified hash. By default (include_tins) the K-1 and 1099 worksheets carry every member's and payee's full TIN from the TIN vault, so the package is saved, never returned: save_to (a new .zip path or an existing folder, outside the books dir) is required, and the output gives only its path; tell the human where it is and never open, attach, or copy it. A locked vault or a missing TIN doesn't stop the package: tin_gaps lists each one (collect them with books.set_tin or books.set_w9 and export again). include_tins: false builds it with last fours only, returned as base64 unless save_to is given. cash_accounts (e.g. [\"1000\"]) is required: the cash flow statement reconciles to them. as_of defaults to today; period reports cover the fiscal year to date.",
+        description = "Build the CPA handoff package as a zip: the profit and loss, balance sheet, cash flow, statement of changes in members' equity (multi-member LLCs), tax summary, and trial balance, each as PDF and XLSX; the fixed asset register as PDF and XLSX when there are fixed assets; the general ledger (by account) and general journal (entry by entry) as XLSX; the journal as IIF (imports into QuickBooks Desktop); the 1099 worksheet as CSV; with members, the K-1 worksheet (k1-members.csv: per member their party, share, capital account, TIN, and beginning capital, contributions in cash and in property, share of income, distributions, and ending capital for the fiscal year to date); every receipt behind the year's entries, filed on them or linked to them (receipts/, with an index.csv tying each file to its entry) and the company's documents (documents/), unless include_receipts is false; and a README with the journal's verified hash. By default (include_tins) the K-1 and 1099 worksheets carry every member's and payee's full TIN from the TIN vault, so the package is saved, never returned: save_to (a new .zip path or an existing folder, outside the books dir) is required, and the output gives only its path; tell the human where it is and never open, attach, or copy it. A locked vault or a missing TIN doesn't stop the package: tin_gaps lists each one (collect them with books.set_tin or books.set_w9 and export again). include_tins: false builds it with last fours only, returned as base64 unless save_to is given. cash_accounts (e.g. [\"1000\"]) is required: the cash flow statement reconciles to them. as_of defaults to today; period reports cover the fiscal year to date.",
         annotations(read_only_hint = true)
     )]
     async fn export_cpa_package(
@@ -7252,8 +7385,11 @@ impl BooksServer {
                 format!("{e}\n").into_bytes(),
             )),
         }
-        // The evidence: every current receipt on the year's posted entries,
-        // and the company's documents, with an index tying them together.
+        // The evidence: every current file behind the year's posted
+        // entries, filed on them or linked to them (a file linked to an
+        // entry counts as its receipt), one copy per entry with a row in
+        // the index; and the company's documents, the files behind no
+        // entry.
         let mut receipt_count = 0;
         if p.include_receipts {
             let clean = |s: &str| -> String {
@@ -7272,44 +7408,55 @@ impl BooksServer {
                 if a.withdrawn_at.is_some() {
                     continue;
                 }
-                let bytes = store.attachment_bytes(a.id).map_err(|e| e.to_string())?;
-                match a.entry_id.and_then(|e| ledger.get_entry(e)) {
-                    Some(e)
-                        if e.status() == ledger_core::EntryStatus::Posted
-                            && e.date() >= fy
-                            && e.date() <= as_of =>
+                let mut behind: Vec<u64> = a.entry_id.into_iter().collect();
+                for sub in store.attachment_links(a.id).map_err(|e| e.to_string())? {
+                    if let ledger_store::Subject::Entry(e) = sub
+                        && !behind.contains(&e)
                     {
-                        let name = format!(
-                            "receipts/{}-entry-{}-{}",
-                            e.date(),
-                            e.id(),
-                            clean(&a.file_name)
-                        );
-                        let amount: Decimal = e
-                            .lines()
-                            .iter()
-                            .filter(|l| l.side == Side::Debit)
-                            .map(|l| l.amount.amount)
-                            .sum();
-                        index.push_str(&format!(
-                            "{},{},\"{}\",{},{},{}\n",
-                            e.id(),
-                            e.date(),
-                            e.description().replace('"', "\"\""),
-                            money(amount),
-                            name,
-                            a.blob_sha
-                        ));
-                        files.push((name, bytes));
-                        receipt_count += 1;
+                        behind.push(e);
                     }
-                    None if a.entry_id.is_none() && a.category != "receipts" => {
+                }
+                behind.sort_unstable();
+                let bytes = store.attachment_bytes(a.id).map_err(|e| e.to_string())?;
+                if behind.is_empty() {
+                    if a.category != "receipts" {
                         files.push((
                             format!("documents/{}/{}", clean(&a.category), clean(&a.file_name)),
                             bytes,
                         ));
                     }
-                    _ => {}
+                    continue;
+                }
+                for e in behind.iter().filter_map(|&e| ledger.get_entry(e)) {
+                    if e.status() != ledger_core::EntryStatus::Posted
+                        || e.date() < fy
+                        || e.date() > as_of
+                    {
+                        continue;
+                    }
+                    let name = format!(
+                        "receipts/{}-entry-{}-{}",
+                        e.date(),
+                        e.id(),
+                        clean(&a.file_name)
+                    );
+                    let amount: Decimal = e
+                        .lines()
+                        .iter()
+                        .filter(|l| l.side == Side::Debit)
+                        .map(|l| l.amount.amount)
+                        .sum();
+                    index.push_str(&format!(
+                        "{},{},\"{}\",{},{},{}\n",
+                        e.id(),
+                        e.date(),
+                        e.description().replace('"', "\"\""),
+                        money(amount),
+                        name,
+                        a.blob_sha
+                    ));
+                    files.push((name, bytes.clone()));
+                    receipt_count += 1;
                 }
             }
             files.push(("receipts/index.csv".into(), index.into_bytes()));

@@ -1386,6 +1386,11 @@ impl Ledger {
         if let Some(p) = self.entry_parties.get(&entry).cloned() {
             self.entry_parties.insert(id, p);
         }
+        // An entry with no counterparty is reversed with none either
+        // (set_entry_no_party INVARIANT 1).
+        if let Some(why) = self.entry_no_party.get(&entry).cloned() {
+            self.entry_no_party.insert(id, why);
+        }
         Ok(id)
     }
 
@@ -2461,8 +2466,10 @@ impl Ledger {
     ///   2. Tagging MUST change no amount (it's metadata, allowed on posted
     ///      entries).
     ///   3. On an entry naming no party or one: Some(v) makes v's party the
-    ///      entry's one party (all of it); None clears the party too when
-    ///      it was the vendor's.
+    ///      entry's one party (all of it) and clears a no-party mark
+    ///      (set_entry_parties INVARIANT 3: an entry never names a party
+    ///      and carries the mark at once); None clears the party too when
+    ///      it was the vendor's, and leaves no mark.
     ///   4. On an entry naming several parties, Some(v) with v's party
     ///      among them sets the tag and keeps every party and share as
     ///      they are. IF v's party is not among them (or v has none):
@@ -2541,6 +2548,9 @@ impl Ledger {
                 {
                     self.entry_parties
                         .insert(entry, vec![crate::PartyShare::whole(p)]);
+                }
+                if self.entry_parties.contains_key(&entry) {
+                    self.entry_no_party.remove(&entry);
                 }
             }
             None => {
@@ -3175,14 +3185,25 @@ impl Ledger {
     /// ```text
     /// SOURCE: docs/parties-and-attachments.md "Counterparties"; DECISION
     ///         (Stephen, 2026-10-15).
+    /// INVARIANTS:
+    ///   1. An entry and its reversal (and theirs: Self::reversal_chain)
+    ///      carry the same mark, as they name the same parties
+    ///      (set_entry_parties INVARIANT 5): marking any one marks the
+    ///      chain, and reverse_entry copies the mark to the reversal.
     /// SCENARIOS:
     ///   1. IF the entry is unknown, already names a party, or the reason
     ///      is blank or fails the party text rules: SHOULD refuse.
-    ///   2. Tagging the entry with a party later clears the mark.
+    ///   2. Tagging the entry with a party later clears the mark
+    ///      (set_entry_parties, set_entry_party, set_entry_vendor), on the
+    ///      whole chain.
+    ///   3. A transfer between the company's own accounts marked, then
+    ///      reversed: the reversal is marked with the same reason.
     /// ```
     pub fn set_entry_no_party(&mut self, entry: EntryId, reason: &str) -> Result<(), LedgerError> {
         self.check_set_entry_no_party(entry, reason)?;
-        self.entry_no_party.insert(entry, reason.trim().to_string());
+        for e in self.reversal_chain(entry) {
+            self.entry_no_party.insert(e, reason.trim().to_string());
+        }
         Ok(())
     }
 
@@ -3195,10 +3216,16 @@ impl Ledger {
         if !self.entries.contains_key(&entry) {
             return Err(LedgerError::UnknownEntry(entry));
         }
-        if self.entry_parties.contains_key(&entry) {
-            return Err(LedgerError::InvalidParty(format!(
-                "entry {entry} names a party; clear it first"
-            )));
+        if let Some(e) = self
+            .reversal_chain(entry)
+            .into_iter()
+            .find(|e| self.entry_parties.contains_key(e))
+        {
+            return Err(LedgerError::InvalidParty(if e == entry {
+                format!("entry {entry} names a party; clear it first")
+            } else {
+                format!("entry {entry}'s reversal chain entry {e} names a party; clear it first")
+            }));
         }
         if reason.trim().is_empty() {
             return Err(LedgerError::InvalidParty(
@@ -4102,9 +4129,18 @@ impl Ledger {
     ///      FICA, Cr 2110-2150 the withholdings and both shares of FICA, Cr cash
     ///      net pay.
     ///   2. Net pay MUST equal gross minus the employee's withholdings.
+    ///   3. When every line with net pay names its employee party, the entry
+    ///      names those parties (Self::entry_parties), each with its net pay
+    ///      (summed over its lines): the whole of it for one employee, else
+    ///      an exact amount each, so each employee's books.party counts what
+    ///      they were paid. Lines named by employee_name only (or shares
+    ///      Self::set_entry_parties would refuse) leave the entry naming no
+    ///      party (the agent tags it).
     /// SCENARIOS:
     ///   1. IF any amount is negative, gross is zero, or withholdings exceed
     ///      gross: SHOULD refuse.
+    ///   2. Pat (net 1,500.00) and Sam (net 900.00), both parties: the entry
+    ///      names Pat 1,500.00 and Sam 900.00.
     /// ```
     pub fn run_payroll(
         &mut self,
@@ -4131,6 +4167,7 @@ impl Ledger {
             self.add_line(entry, account, side, amount)?;
         }
         self.post_entry(entry)?;
+        self.name_payroll_parties(entry, &lines)?;
         let id = self.next_payroll_run_id;
         self.next_payroll_run_id += 1;
         self.payroll_runs.insert(
@@ -4143,6 +4180,45 @@ impl Ledger {
             },
         );
         Ok(id)
+    }
+
+    /// [`Self::run_payroll`] INVARIANT 3: name the employees a payroll
+    /// entry paid as its parties, each with their net pay. Live and on
+    /// replay ([`Self::replay_payroll_run`]) alike.
+    fn name_payroll_parties(
+        &mut self,
+        entry: EntryId,
+        lines: &[PayrollLine],
+    ) -> Result<(), LedgerError> {
+        let mut paid: Vec<(crate::PartyId, Decimal)> = Vec::new();
+        let mut unnamed = false;
+        for l in lines.iter().filter(|l| !l.net_pay().is_zero()) {
+            match l.employee {
+                Some(p) => match paid.iter_mut().find(|(x, _)| *x == p) {
+                    Some((_, v)) => *v += l.net_pay(),
+                    None => paid.push((p, l.net_pay())),
+                },
+                None => unnamed = true,
+            }
+        }
+        if !unnamed && !paid.is_empty() {
+            let shares: Vec<crate::PartyShare> = match paid.as_slice() {
+                [(p, _)] => vec![crate::PartyShare::whole(*p)],
+                _ => paid
+                    .iter()
+                    .map(|&(party, v)| crate::PartyShare {
+                        party,
+                        share: crate::Share::Amount(v),
+                    })
+                    .collect(),
+            };
+            // Shares set_entry_parties would refuse (two employees with
+            // vendor records) leave the entry for the agent to tag.
+            if self.check_set_entry_parties(entry, &shares).is_ok() {
+                self.set_entry_parties(entry, &shares)?;
+            }
+        }
+        Ok(())
     }
 
     /// Current balances of the payroll tax payable accounts (`2110`–`2150`),
@@ -4245,6 +4321,9 @@ impl Ledger {
             return Err(LedgerError::ReplayIdMismatch(id, self.next_payroll_run_id));
         }
         self.next_payroll_run_id += 1;
+        if self.entries.contains_key(&entry_id) {
+            self.name_payroll_parties(entry_id, &lines)?;
+        }
         self.payroll_runs.insert(
             id,
             PayrollRun {

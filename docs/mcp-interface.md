@@ -138,8 +138,9 @@ below.
   preview/confirm pattern as post.
 - `books.get_entry { entry_id }` → full entry with lines, receipts, and
   its `vendor`, `party_id`, and `party` (the party's label, when it names
-  exactly one) tags, and `parties` / `parties_error` as in the
-  `post_entry` preview.
+  exactly one) tags, `parties` / `parties_error` as in the `post_entry`
+  preview, and `no_party_reason` when it is marked as having no
+  counterparty.
 - `books.search_entries { account?, date_from?, date_to?, text?, limit?, offset? }`
   → entries with lines, newest first. `limit` caps at 100.
 - `books.trial_balance { as_of? }` → `as_of`, lines, totals, `balanced`
@@ -165,10 +166,13 @@ below.
   ask the human, then update it upstream (pull request or issue at
   github.com/swaits/wanderbooks). `unreconciled_accounts` lists the cash
   and card accounts due for reconciliation (`{ code, name,
-  reconciled_through?, due_through, next_step }`): every `[books]
-  cash_accounts` account and every liability with a recorded statement
-  that has posted activity through the end of last month but no
-  reconciliation (not voided) through it.
+  reconciled_through?, due_through, next_step }`): the cash accounts
+  (`[books] cash_accounts`, else asset accounts named for cash: cash,
+  bank, checking, savings, money market), the card accounts (liabilities
+  named "card", before their first statement), and every other liability
+  with a recorded statement, that have posted activity through the end of
+  last month but no reconciliation (not voided) through it. The viewer's
+  Needs attention uses the same rule (`ledger_store::reconcilable`).
 
 ## Tools — fixed assets
 
@@ -197,11 +201,16 @@ so the lifetime total is exactly (cost − salvage).
   → per-asset `{ entry_id, amount, already_posted }`, plus `skipped` for
   assets outside their useful life. Idempotent per asset and period.
 - `books.dispose_asset { asset_id | tag, date, proceeds, proceeds_account,
-  gain_loss_account, confirmed?, receipt_attachment_ids? }` → without
+  gain_loss_account, buyer?, confirmed?, receipt_attachment_ids? }` →
+  without
   confirmation: `{ status: "preview", ... }` and posts nothing; with
   `confirmed: true`: auto-posts missing final-period depreciation, then
   posts the balanced disposal entry. Subject to receipt policy (bill of
-  sale); monthly depreciation is exempt as an allocation.
+  sale); monthly depreciation is exempt as an allocation. `buyer` (a
+  party) is the disposal entry's party; under `[books] parties =
+  "require"` a sale with proceeds without one is refused before anything
+  posts (`party_required`); a retirement with no proceeds and no buyer is
+  marked as having no counterparty.
 - `books.export { report: "fixed_asset_register", format: json | csv,
   as_of? }`: every asset registered by the date (tag, serial, cost,
   depreciation by schedule, book value, disposal), totals, and the
@@ -447,12 +456,19 @@ include vendor and customer when it has those records.
   payables and payroll withholding roles (`books.roles`). A liability
   counts as how the company paid or was paid: a card, a member paying for
   it, a loan.
-- `paid` / `received`: each entry's money lines, credits minus debits; a
-  positive net was paid to the party, a negative one received from it; a
-  reversal counts against its original's side. A bill isn't paid until its
-  payment is; an entry only moving money between money accounts nets to
-  zero. An entry naming several parties counts this party's resolved
-  share only (an entry whose shares don't resolve counts for none).
+- `paid` / `received`: each entry's money lines, credits minus debits
+  (`ledger_core::parties::entry_flow`), with a liability paid down
+  counting once, as paid to its creditor: by cash (a reimbursement to the
+  members, a card payment) or by another liability (a member paying the
+  card from their own funds, a loan paying it off); cash raised by a
+  liability is received from the lender. A positive net was paid to the
+  party, a negative one received from it; a reversal counts against its
+  root original's side (reversing the reversal counts on that side
+  again). A bill isn't paid until its payment is; a transfer between the
+  company's own cash accounts nets to zero. An entry naming several
+  parties counts this party's resolved share only (an entry whose shares
+  don't resolve counts for none). The year is the whole calendar year;
+  the viewer's party page and directory show these same numbers.
 - `invoiced` / `billed`: its invoices' and bills' totals dated in the year.
   `owed` / `receivable`: its open bills' and invoices' balances now (every
   year).
@@ -565,7 +581,8 @@ the receipt policy counts it.
   exists. `link_to` as in "Tools — attachments".
 - `books.link_receipt { receipt_id, entry_id }` → link a previously filed
   (unlinked, not withdrawn) receipt to its entry. A receipt linked elsewhere
-  must be unlinked first.
+  must be unlinked first; one already linked to that entry
+  (`books.link_attachment`) is refused, as filing it there twice.
 - `books.unlink_receipt { attachment_id, reason }` → `{ ok, entry_id,
   remaining_receipts }`. Detaches a receipt from its entry; it stays filed,
   unlinked. Journaled as `receipt.unlinked` with the reason. Subject to the
@@ -782,10 +799,17 @@ R-FUTURE-3 and rides the engine roadmap, not the MCP layer.
   Records what a filed statement says (balances as printed, in the
   account's normal direction, cents at most) and links it to the account.
   Journaled as `statement.recorded` then `attachment.linked`. Refused for
-  an unknown or withdrawn attachment, one already recording a statement,
-  an account that isn't an asset or liability, or a period that runs
-  backwards.
-- `books.statements { account? }` → `{ statements }`, by statement date.
+  an unknown or withdrawn attachment, one already recording a statement
+  (not voided), an account that isn't an asset or liability, or a period
+  that runs backwards.
+- `books.statements { account? }` → `{ statements }`, by statement date:
+  those not voided whose file isn't withdrawn (withdrawing a statement's
+  file retires it).
+- `books.void_statement { attachment_id, reason }` → the statement as it
+  was recorded. For a statement recorded wrong: journaled as
+  `statement.voided`; it is no longer listed, backs no reconciliation, and
+  the same attachment can record it again. Refused while a reconciliation
+  not voided rests on it.
 - `books.reconcile { statement_attachment? | account, statement_date,
   statement_balance, confirmed? }` → `{ status: "preview" | "reconciled",
   account_code, statement_date, statement_attachment?, book_balance,
@@ -796,8 +820,9 @@ R-FUTURE-3 and rides the engine roadmap, not the MCP layer.
   account, date, and balance are the recorded statement's (any given must
   agree). Without `confirmed: true` it is a preview that records nothing;
   `problems` lists why a confirmation would be refused. Confirmed, it
-  needs a recorded statement, a difference of exactly zero, and a date
-  after the account's last reconciliation not voided; it then journals
+  needs a recorded statement (its file not withdrawn: refused before
+  anything is journaled), a difference of exactly zero, and a date after
+  the account's last reconciliation not voided; it then journals
   `reconciliation.completed` (the cleared lines, the statement) and links
   the statement to it, returning `reconciliation`.
 - `books.reconciliations { account? }` → `{ reconciliations: [{
@@ -807,6 +832,10 @@ R-FUTURE-3 and rides the engine roadmap, not the MCP layer.
 - `books.void_reconciliation { reconciliation_id, reason }` → the
   reconciliation, voided. Journaled as `reconciliation.voided`; the
   account can be reconciled through that date again.
+- `books.mark_cleared` refuses to un-clear a line a reconciliation not
+  voided recorded as cleared: void the reconciliation first. Clearing a
+  line dated on or before a reconciliation (an outstanding check that
+  clears on a later statement) is allowed.
 
 ## Tools — A/R and A/P
 
@@ -851,9 +880,15 @@ entries.
   `employee` names the employee's party (id or name; it must have the
   employee role, else nothing is written); new runs should name it, and
   `employee_name` then defaults to the party's name. A line needs one or
-  the other.
-- `books.remit_payroll_taxes { date, cash_account }` → `{ entry_id, total }`.
-  Clears every payroll payable to cash in one entry.
+  the other. When every line with net pay names its party, the entry
+  names those parties, each with its net pay, so each employee's
+  `books.party` counts it; under `[books] parties = "require"` a line
+  with net pay and no party is refused before anything posts
+  (`party_required`).
+- `books.remit_payroll_taxes { date, cash_account, agency? }` → `{
+  entry_id, total }`. Clears every payroll payable to cash in one entry,
+  naming `agency` (the tax agency's party) on it; required under
+  `[books] parties = "require"` (`party_required`, nothing posted).
 - `books.list_payroll_runs` → `{ runs: [{ id, date, employee_count,
   total_gross, entry_id }] }`.
 
@@ -874,6 +909,12 @@ entries.
 - `books.export_cpa_package { as_of?, cash_accounts?, financing_accounts?,
   investing_accounts?, include_receipts?, include_tins?, save_to? }` →
   `{ file_name, content_base64?, saved_to?, tins_included, tin_gaps, note }`.
+  **Receipts** (`include_receipts`, default true): `receipts/` holds every
+  current file behind each posted entry of the fiscal year to date, filed
+  on it or linked to it (`books.link_attachment`; a linked file counts as
+  the entry's receipt), one copy per entry, each with a row in
+  `receipts/index.csv`; `documents/<category>/` holds the files behind no
+  entry, receipts excepted.
   **TINs** (`include_tins`, default true; DECISION, Stephen, 2026-10-15):
   the K-1 worksheet and the 1099 worksheet carry every member's and
   payee's full TIN from the vault, so the zip is written to `save_to` (a
@@ -892,10 +933,14 @@ entries.
   contributions_cash, contributions_property, net_income, distributions,
   other, ending_capital` for the fiscal year to date: the statement of
   members' equity's figures (`ledger_core::k1`), contributions split into
-  property (what a contribution debits to asset accounts other than cash,
-  receivables, and prepaid accounts: a prepaid schedule's account, or one
-  named "prepaid") and cash (the rest, including a service the members
-  paid ahead). Property in an entry crediting several members is shared
+  property (what an entry crediting a member's capital debits to asset
+  accounts other than cash and receivables: equipment, software, or a
+  prepaid service contract the members owned and handed over straight to
+  capital, e.g. AppleCare+ contributed with a laptop) and cash (the rest:
+  deposits, and what the members paid for the company, including a
+  service they paid a vendor ahead for, booked through Due to
+  Shareholders and then converted to capital; DECISION, Stephen,
+  2026-10-15). Property in an entry crediting several members is shared
   in proportion to their credits. An entry and its reversal both in the
   year cancel: neither is a contribution or a distribution. A member's
   party is the party with the member's name (not a display name) and the

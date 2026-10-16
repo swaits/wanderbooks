@@ -1148,6 +1148,155 @@ fn void_reconciliation_lets_it_be_redone() {
     assert_ne!(redo["reconciliation"]["reconciliation_id"], json!(rid));
 }
 
+/// books.reconcile SCENARIO 1: a statement whose file was withdrawn is
+/// retired; the preview and the confirmation are refused, and nothing is
+/// journaled (it used to return an error after journaling
+/// reconciliation.completed). books.statements no longer lists it.
+#[test]
+fn a_withdrawn_statement_is_retired_and_reconciles_nothing() {
+    let mut m = books("withdrawn-statement");
+    let (dep, pay) = january(&mut m);
+    m.clear(dep, 0);
+    m.clear(pay, 1);
+    let st = m.statement("1000", "2026-01-01", "2026-01-31", "800.00");
+    m.ok(
+        "books.unlink_attachment",
+        json!({"attachment_id": st, "subject": {"kind": "account", "id": 1}, "reason": "wrong file"}),
+    );
+    m.ok(
+        "books.withdraw_attachment",
+        json!({"attachment_id": st, "reason": "wrong file"}),
+    );
+    let why = m.refuse("books.reconcile", json!({"statement_attachment": st}));
+    assert!(why.contains("withdrawn"), "{why}");
+    m.refuse(
+        "books.reconcile",
+        json!({"statement_attachment": st, "confirmed": true}),
+    );
+    assert_eq!(m.count("reconciliation.completed"), 0);
+    assert!(
+        m.read_only("books.reconciliations", json!({}))["reconciliations"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        m.read_only("books.statements", json!({}))["statements"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(m.ok("books.verify", json!({}))["status"], "ok");
+}
+
+/// books.void_statement SCENARIOS 1–2: a statement recorded with the wrong
+/// closing balance is voided and recorded again on the same file, then
+/// reconciles; voiding it while that reconciliation stands is refused.
+#[test]
+fn a_mis_recorded_statement_is_voided_and_recorded_again() {
+    let mut m = books("void-statement");
+    let (dep, pay) = january(&mut m);
+    m.clear(dep, 0);
+    m.clear(pay, 1);
+    let st = m.statement("1000", "2026-01-01", "2026-01-31", "880.00");
+    m.refuse(
+        "books.void_statement",
+        json!({"attachment_id": st, "reason": " "}),
+    );
+    let v = m.ok(
+        "books.void_statement",
+        json!({"attachment_id": st, "reason": "closing balance mistyped"}),
+    );
+    assert_eq!(v["closing_balance"], "880.00");
+    assert_eq!(m.count("statement.voided"), 1);
+    m.refuse(
+        "books.void_statement",
+        json!({"attachment_id": st, "reason": "again"}),
+    );
+    assert!(
+        m.read_only("books.statements", json!({}))["statements"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    m.ok(
+        "books.record_statement",
+        json!({"attachment_id": st, "account": "1000", "period_start": "2026-01-01",
+               "period_end": "2026-01-31", "opening_balance": "0.00", "closing_balance": "800.00"}),
+    );
+    m.ok(
+        "books.reconcile",
+        json!({"statement_attachment": st, "confirmed": true}),
+    );
+    m.refuse(
+        "books.void_statement",
+        json!({"attachment_id": st, "reason": "why"}),
+    );
+    // A line the reconciliation cleared stays cleared while it stands.
+    m.refuse(
+        "books.mark_cleared",
+        json!({"entry_id": pay, "line_index": 1, "cleared": false}),
+    );
+    assert_eq!(m.ok("books.verify", json!({}))["status"], "ok");
+}
+
+/// books.export_cpa_package `include_receipts`: receipts/ holds every
+/// current file behind each posted entry, filed on it or linked to it (a
+/// linked file counts as the entry's receipt, so the receipt policy let
+/// the entry post), one copy per entry with an index row; documents/ holds
+/// the files behind no entry. A linked-only receipt used to be left out
+/// of the package entirely.
+#[test]
+fn the_cpa_package_carries_receipts_linked_to_entries() {
+    use base64::Engine as _;
+    let mut m = books_at("cpa-linked", "0.00", "");
+    let receipt = m.receipt(None, b"%PDF linked receipt");
+    let e = m.draft(
+        "2026-03-01",
+        json!({}),
+        &[("6999", "debit", "40.00"), ("1000", "credit", "40.00")],
+    );
+    m.link(receipt, json!({"kind": "entry", "id": e}));
+    // A contract linked to the same entry is evidence for it too.
+    m.doc(
+        "contract",
+        b"%PDF contract",
+        json!([{"kind": "entry", "id": e}]),
+    );
+    m.ok(
+        "books.post_entry",
+        json!({"entry_id": e, "confirmed": true}),
+    );
+    let pkg = m.ok(
+        "books.export_cpa_package",
+        json!({"as_of": "2026-12-31", "cash_accounts": ["1000"], "include_tins": false}),
+    );
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(pkg["content_base64"].as_str().unwrap())
+        .unwrap();
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    let names: Vec<String> = (0..zip.len())
+        .map(|i| zip.by_index(i).unwrap().name().unwrap().to_string())
+        .collect();
+    let mut index = String::new();
+    std::io::Read::read_to_string(&mut zip.by_name("receipts/index.csv").unwrap(), &mut index)
+        .unwrap();
+    let rows: Vec<&str> = index.lines().skip(1).collect();
+    let for_e: Vec<&&str> = rows
+        .iter()
+        .filter(|r| r.starts_with(&format!("{e},")))
+        .collect();
+    assert_eq!(for_e.len(), 2, "the linked receipt and contract: {index}");
+    for r in for_e {
+        let file = r.split(',').nth(4).unwrap();
+        assert!(names.iter().any(|n| n == file), "{file} in {names:?}");
+    }
+    assert!(
+        !names.iter().any(|n| n.starts_with("documents/contract")),
+        "the contract is behind an entry, filed with it: {names:?}"
+    );
+}
+
 // ------------------------------------------------- import sources
 
 #[test]
@@ -1243,9 +1392,12 @@ fn unreconciled(m: &mut Mcp) -> Vec<String> {
         .collect()
 }
 
-/// Cash accounts (`[books] cash_accounts`) and card accounts with
-/// statements are listed until reconciled through the end of last month;
-/// accounts without activity by then aren't.
+/// Cash accounts (`[books] cash_accounts`), card accounts (liabilities
+/// named "card", before their first statement, so the first
+/// reconciliation is asked for), and any other liability once it has a
+/// statement are listed until reconciled through the end of last month;
+/// accounts without activity by then aren't (ledger_store::reconcilable,
+/// the viewer's rule too).
 #[test]
 fn the_digest_lists_accounts_not_reconciled_through_last_month() {
     let mut m = books("digest");
@@ -1263,10 +1415,15 @@ fn the_digest_lists_accounts_not_reconciled_through_last_month() {
         json!({}),
         &[("6999", "debit", "40.00"), ("2050", "credit", "40.00")],
     );
+    let owed = m.post(
+        &day,
+        json!({}),
+        &[("6999", "debit", "15.00"), ("2100", "credit", "15.00")],
+    );
     assert_eq!(
         unreconciled(&mut m),
-        ["1000"],
-        "the card has no statement yet"
+        ["1000", "2050"],
+        "the card is due before its first statement; 2100 isn't a card"
     );
     let d = m.read_only("books.digest", json!({"since": "2020-01-01"}));
     let row = &d["unreconciled_accounts"][0];
@@ -1278,15 +1435,21 @@ fn the_digest_lists_accounts_not_reconciled_through_last_month() {
             .unwrap()
             .contains("books.record_statement")
     );
-    // The card's statement makes it a card account to reconcile.
     let card_st = m.statement("2050", &start, &day, "40.00");
-    assert_eq!(unreconciled(&mut m), ["1000", "2050"]);
     m.clear(card, 1);
     m.ok(
         "books.reconcile",
         json!({"statement_attachment": card_st, "confirmed": true}),
     );
     assert_eq!(unreconciled(&mut m), ["1000"]);
+    // A liability not named for a card joins with its first statement.
+    let owed_st = m.statement("2100", &start, &day, "15.00");
+    assert_eq!(unreconciled(&mut m), ["1000", "2100"]);
+    m.clear(owed, 1);
+    m.ok(
+        "books.reconcile",
+        json!({"statement_attachment": owed_st, "confirmed": true}),
+    );
     m.clear(dep, 0);
     let st = m.statement("1000", &start, &day, "100.00");
     m.ok(

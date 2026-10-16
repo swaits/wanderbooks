@@ -77,11 +77,18 @@ they are control roles in the journal (rules.md B-23).
 
 ## Transports
 
-1. **stdio** (build first). For Claude Code, Claude Desktop, local agents.
-   No auth — the OS user boundary is the auth.
-2. **Streamable HTTP** (later in the phase). For remote access (phone, travel
-   laptop). Bearer token, binds 127.0.0.1 or the tailnet interface only.
-   Binding 0.0.0.0 is an explicit human decision, never a default.
+- **stdio** (default): `ledger-mcp --data-dir PATH`. For Claude Code,
+  Claude Desktop and other local agents. No auth: the OS user boundary is
+  the only boundary.
+- **Streamable HTTP**: `ledger-mcp --data-dir PATH --http 127.0.0.1:8080`.
+  Serves MCP at `http://127.0.0.1:8080/mcp` via rmcp's tower integration.
+  **There is no authentication on this transport today**: no token and
+  no Origin check. The only guard is rmcp's default `Host` check, which
+  accepts `localhost`, `127.0.0.1` and `::1`. Any local process that can
+  reach the port can read and change the books. Bind it to loopback only;
+  binding a LAN, tailnet or public interface is an explicit human
+  decision, never a default. Auth, scopes and Origin validation arrive
+  with the served books (`plan/served.md`, P2).
 
 ## Server instructions
 
@@ -724,13 +731,6 @@ posting.
   → imports a file from the server's filesystem. The Drive backfill path:
   the agent downloads from Google Drive via the CLI to a temp path, then
   calls this. Keeps Drive credentials out of the server.
-
-## Transports
-
-- **stdio** (default): `ledger-mcp --data-dir PATH`. For local agents.
-- **Streamable HTTP**: `ledger-mcp --data-dir PATH --http 127.0.0.1:8080`.
-  Serves MCP at `http://127.0.0.1:8080/mcp` via rmcp's tower integration.
-  For network clients; bind to loopback unless you know what you're doing.
 
 ## Resources (read-only)
 

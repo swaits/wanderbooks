@@ -144,7 +144,6 @@ fn agents_md_carries_the_contract() {
         "Posted is forever",
         "reversing entries",
         "receipt",
-        "journal.jsonl",
         "onboard",
         "chart_template",
         "to the cent",
@@ -153,6 +152,32 @@ fn agents_md_carries_the_contract() {
         "open_at_start",
     ] {
         assert!(md.contains(phrase), "AGENTS.md mentions {phrase:?}");
+    }
+}
+
+/// The agent reaches the books only through the MCP tools. The scaffolded
+/// AGENTS.md once said "the journal is the evidence — read it", and an
+/// agent `cat`ed the journal file instead of asking the books.
+#[test]
+fn agents_md_reaches_the_books_only_through_tools() {
+    let tmp = tempfile::tempdir().unwrap();
+    let books = tmp.path().join("b");
+    assert!(new(tmp.path(), &books, &[]).0);
+    let md = fs::read_to_string(books.join("AGENTS.md")).unwrap();
+    for phrase in [
+        "only through the",
+        "wanderbooks MCP tools",
+        "Never open, list or parse",
+        "books.get_entry",
+        "books.search_entries",
+        "general_ledger",
+        "can't answer, say so.",
+    ] {
+        assert!(md.contains(phrase), "AGENTS.md says {phrase:?}");
+    }
+    // Nothing points the agent at the books' files.
+    for path in ["books-data", "journal.jsonl", "wanderbooks.db", "read it"] {
+        assert!(!md.contains(path), "AGENTS.md never mentions {path:?}");
     }
 }
 

@@ -399,7 +399,7 @@ pub fn find(b: &Books) -> Vec<Attention> {
                 e.status == EntryStatus::Posted
                     && e.date >= year_start
                     && e.date <= today
-                    && e.party_id.is_none()
+                    && e.parties.is_empty()
                     && b.ledger.entry_no_party(e.id).is_none()
                     && !matches!(e.origin, "Period close" | "Depreciation" | "Amortization")
             })

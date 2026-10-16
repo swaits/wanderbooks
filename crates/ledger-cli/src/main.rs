@@ -270,18 +270,22 @@ fiscal_year_start = "01-01"
 # Members of a multi-member LLC, one block each: shares come from the
 # operating agreement (IRC §704(a)), "50%" or "0.5", summing to 100%. Each
 # names a capital account in the chart, and optionally a distributions
-# account that a close zeroes into capital.
+# account that a close zeroes into capital. Spouses who file one joint
+# return each name the other in files_jointly_with (each still gets their
+# own K-1; the CPA package notes both go on one Form 1040).
 # [[company.members]]
 # name = "Alex Rivera"
 # share = "50%"
 # capital_account = "3000"
 # distribution_account = "3100"
+# files_jointly_with = "Sam Chen"
 #
 # [[company.members]]
 # name = "Sam Chen"
 # share = "50%"
 # capital_account = "3001"
 # distribution_account = "3101"
+# files_jointly_with = "Alex Rivera"
 
 [books]
 # The books' data, relative to this file. The tools take it from --data-dir

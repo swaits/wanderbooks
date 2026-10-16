@@ -234,6 +234,14 @@ closed period).
   period at a time: a member's ending on one statement is their beginning
   on the next, to the cent, and a member's period income is the
   roll-forward's remainder (their share within a rounding cent).
+- A correction undoes what it corrects (B-9): an entry and its reversal
+  both in a statement's span are neither contributions nor
+  distributions (`reports::cancelled_in_span`; the K-1 worksheet reads
+  the same). The K-1 worksheet's contributed property (Item L) is what
+  the member owned and handed over, with its own basis (§723): never a
+  prepaid service they paid for the company (cash), and shared among
+  members credited in one entry in proportion to their credits
+  (`k1` INVARIANTS 3, 4, 6).
 
 **Enforced:** `CloseTo::Members`, `periods::allocate`,
 `kernel::apportion`, `members_equity`. **Checked:** Kani
@@ -387,6 +395,38 @@ bill is not paid until it is (`form1099::vendor_1099_report_with`,
 checked by `payments_come_from_cash_and_financing_only`). A W-9 is on
 file by the vendor's flag or its party's W-9 facts.
 
+An entry naming several parties (a payment shared between a contractor
+and a member; `ledger_core::shares`) counts only the vendor's share
+toward its 1099: what was paid to the payee (§6041(a)), not what the
+entry moved for others. The share is resolved (`shares::resolve`)
+against the entry's flow, the same target the MCP server checks shares
+against, then scaled to the 1099 payment: the share unchanged when the
+payment equals the target (the usual case, an expense paid from cash or
+by a member), else payment × share ÷ target, rounded to the nearest cent,
+half away from zero (so a part charged to a card scales out, 1099-K). A
+percent split's leftover cent goes to the party named first (shares
+INVARIANT 8). A reversal carries the shares and subtracts the same part,
+and re-apportioning either one re-apportions the other
+(`Ledger::set_entry_parties` INVARIANT 5), so the pair nets to zero. The
+vendor tag follows the parties: on an entry naming several,
+`set_entry_vendor` never replaces their shares (refused unless the
+vendor's party is named), and a vendor record never links to a party
+named beside another vendor (`add_vendor`), checked by
+`tagging_the_vendor_keeps_a_shared_entrys_parties`,
+`clearing_the_vendor_on_a_shared_entry_is_refused`,
+`re_apportioning_a_reversed_entry_re_apportions_its_reversal`,
+`a_named_party_gaining_a_vendor_record_keeps_one_vendor_per_entry`.
+Shares that don't resolve count the whole payment toward the vendor (the
+conservative answer) and the entry is listed (`Vendor1099Report::
+unresolved`; a `books.vendor_1099` note). An entry naming one party
+counts as before (`form1099::vendor_1099_report_with_members`, checked
+by `a_shared_payment_counts_the_vendors_share`,
+`a_percent_split_gives_the_leftover_cent_to_the_first`,
+`a_reversed_shared_payment_nets_to_zero`,
+`a_shared_payment_partly_on_a_card_scales_to_the_payment`,
+`unresolved_shares_count_in_full_and_are_listed`). DECISION (Stephen,
+2026-10-15: shares).
+
 **Enforced:** `form1099::default_threshold`, a dated rule
 (`ledger_core::rules::THRESHOLD_1099`, known through 2026, review from
 2026-11-01). For a later year the engine refuses with `RuleNotKnown`
@@ -525,20 +565,35 @@ The full TIN, when the books need it for the 1099 worksheet, lives in the
 TIN vault (`vault/` in the books dir, git-ignored; encrypted under a key
 file outside the books dir): `books.set_w9` `tin` writes it there and
 journals only the last four and the vault record's hash; the signed W-9
-goes there too, never to the attachment store. No tool output, error, or
-log holds a full TIN except `books.vendor_1099` with `include_tins`
-(DECISION, Stephen, 2026-10-15: for the CPA, when asked); files holding
-one (`books.get_w9`, `save_csv_to`) are written only outside the books
-dir. `books.purge_tin` deletes a party's vault records and journals that
-it did.
+goes there too, never to the attachment store. Any party may have its
+TIN in the vault, whatever its roles: every member's (for their K-1) and
+every 1099 payee's belongs there (DECISION, Stephen, 2026-10-15: "In the
+vault, that's the WHOLE reason we built it. And it needs to be in the
+damn CPA package."). `books.set_tin` stores one for any party; the books
+journal its TIN facts (type, last four, the record's hash:
+`party.tin_set`), which never disagree with its W-9 facts' last four. No
+tool output, error, or log holds a full TIN except `books.vendor_1099`
+with `include_tins` (DECISION, Stephen, 2026-10-15: for the CPA, when
+asked): a refusal that quotes its input masks any TIN in it
+(`parties::redact_full_tins`, checked by `refusals_never_echo_a_tin`),
+and a party text field refuses nine digits however they are separated
+(space, hyphen, dot, slash, underscore; `has_full_tin`). Files holding one (`books.get_w9`, `save_csv_to`, and the CPA
+package, whose K-1 and 1099 worksheets carry every member's and payee's
+TIN by default) are written only outside the books dir, and the package
+comes back only as its path. A locked vault or a missing TIN never fails
+the package: it says which TINs are missing. `books.purge_tin` deletes a
+party's vault records and journals that it did.
 
 **Enforced:** `crate::parties` (has_full_tin, check_text, W9Facts::check,
 W4Facts::check), `Ledger::add_party`, `update_party`, `set_party_role`,
-`set_party_w9`, `set_party_w4`, `set_entry_party`, `validate_payroll`;
-`ledger-vault` (Tin::new, the encrypted records, records_held,
-purge_records); `ledger-mcp` `books.set_w9`, `books.get_w9`,
-`books.purge_tin`, `books.vendor_1099` (open_vault refuses a key file in
-the books dir; outside_books for files with a TIN).
+`set_party_w9`, `set_party_w4`, `set_party_tin` (TinFacts::check; TIN and
+W-9 facts agree), `set_entry_party`, `validate_payroll`; `ledger-core`
+`k1` (the K-1 worksheet); `ledger-vault` (Tin::new, the encrypted
+records, records_held, purge_records); `ledger-mcp` `books.set_w9`,
+`books.set_tin`, `books.get_w9`, `books.purge_tin`, `books.vendor_1099`,
+`books.export_cpa_package` (open_vault refuses a key file in the books
+dir; outside_books for files with a TIN; vault_tin checks the vault
+against the books).
 **Checked:** `ledger-core` `tests/spec_parties.rs`; `ledger-store`
 `tests/parties.rs`; `ledger-vault` `tests/vault.rs`; `ledger-mcp`
 `tests/spec_parties.rs`, `tests/spec_vault.rs` (every response, the log,

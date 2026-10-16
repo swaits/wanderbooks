@@ -790,6 +790,21 @@ impl Store {
         Ok(())
     }
 
+    /// Record or clear a party's taxpayer-ID facts (the TIN's type, last
+    /// four, and vault record; never the number). Journaled as
+    /// `party.tin_set`.
+    pub fn set_party_tin(
+        &mut self,
+        id: ledger_core::PartyId,
+        facts: Option<ledger_core::TinFacts>,
+    ) -> Result<(), StoreError> {
+        self.ledger.check_set_party_tin(id, facts.as_ref())?;
+        let line = self.append_journal("party.tin_set", json!({"id": id, "facts": facts}))?;
+        self.ledger.set_party_tin(id, facts)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
     /// Record or clear a party's W-4 facts. Journaled as `party.w4_set`.
     pub fn set_party_w4(
         &mut self,
@@ -817,6 +832,28 @@ impl Store {
             json!({"entry_id": entry, "party_id": party}),
         )?;
         self.ledger.set_entry_party(entry, party)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
+    /// Name the parties an entry was with, each with their share, or clear
+    /// them (an empty list): `Ledger::set_entry_parties`. Checked before
+    /// journaling, so a refusal journals nothing. Journaled as
+    /// `entry.parties_set {entry_id, parties: [{party_id, share}]}`, a share
+    /// being `{"amount": "30.00"}`, `{"percent": "60"}`, or `"derived"`.
+    /// Whether the shares resolve against the entry's lines depends on the
+    /// settings: callers check `ledger_core::shares::resolve` first.
+    pub fn set_entry_parties(
+        &mut self,
+        entry: EntryId,
+        parties: &[ledger_core::PartyShare],
+    ) -> Result<(), StoreError> {
+        self.ledger.check_set_entry_parties(entry, parties)?;
+        let line = self.append_journal(
+            "entry.parties_set",
+            json!({"entry_id": entry, "parties": parties}),
+        )?;
+        self.ledger.set_entry_parties(entry, parties)?;
         apply_line_to_sqlite(&self.conn, &line)?;
         Ok(())
     }
@@ -4072,6 +4109,12 @@ pub(crate) fn replay_line_into_ledger(
                 .map_err(|_| StoreError::JournalCorrupt("party.w4_set facts".into()))?;
             ledger.set_party_w4(get_u64(p, "id")?, facts)?;
         }
+        "party.tin_set" => {
+            let facts: Option<ledger_core::TinFacts> =
+                serde_json::from_value(p["facts"].clone())
+                    .map_err(|_| StoreError::JournalCorrupt("party.tin_set facts".into()))?;
+            ledger.set_party_tin(get_u64(p, "id")?, facts)?;
+        }
         "entry.party_set" => {
             let party = match p.get("party_id") {
                 None | Some(Value::Null) => None,
@@ -4080,6 +4123,12 @@ pub(crate) fn replay_line_into_ledger(
                 })?),
             };
             ledger.set_entry_party(get_u64(p, "entry_id")?, party)?;
+        }
+        "entry.parties_set" => {
+            let parties: Vec<ledger_core::PartyShare> =
+                serde_json::from_value(p["parties"].clone())
+                    .map_err(|_| StoreError::JournalCorrupt("entry.parties_set parties".into()))?;
+            ledger.set_entry_parties(get_u64(p, "entry_id")?, &parties)?;
         }
         "entry.no_party" => {
             ledger.set_entry_no_party(get_u64(p, "entry_id")?, get_str(p, "reason")?)?;
@@ -4656,7 +4705,8 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
             )?;
         }
         "role.assigned" | "party.added" | "party.updated" | "party.role_set" | "party.w9_set"
-        | "party.w4_set" | "entry.party_set" | "entry.no_party" => {
+        | "party.w4_set" | "party.tin_set" | "entry.party_set" | "entry.parties_set"
+        | "entry.no_party" => {
             // Control roles and the party directory live in the ledger
             // (rebuilt by replay); the events mirror below keeps the
             // history.

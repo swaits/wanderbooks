@@ -24,6 +24,7 @@ pub mod classes;
 pub mod error;
 pub mod form1099;
 pub mod journal;
+pub mod k1;
 pub mod kernel;
 pub mod ledger;
 pub mod money;
@@ -36,6 +37,7 @@ mod proofs;
 pub mod reports;
 pub mod rules;
 pub mod schedules;
+pub mod shares;
 pub mod tax;
 
 pub use account::{Account, AccountId, AccountType, ChartOfAccounts, Side};
@@ -52,7 +54,7 @@ pub use classes::{Class, ClassId};
 pub use error::LedgerError;
 pub use form1099::{
     Form1099, PaymentAccounts, Vendor1099Line, Vendor1099Report, vendor_1099_report,
-    vendor_1099_report_with,
+    vendor_1099_report_with, vendor_1099_report_with_members,
 };
 pub use journal::{EntryId, EntryStatus, JournalEntry, JournalLine};
 pub use ledger::{
@@ -60,7 +62,7 @@ pub use ledger::{
     REVENUE, ReconciliationReport, UnclearedLine, control_account, control_accounts,
 };
 pub use money::{Currency, Money};
-pub use parties::{Party, PartyField, PartyId, Role, W4Facts, W9Facts};
+pub use parties::{Party, PartyField, PartyId, Role, TinFacts, TinType, W4Facts, W9Facts};
 pub use payouts::{Payout, PayoutAdjustment, PayoutLine, PayoutTotals, payout_plan};
 pub use payroll::{PayrollLine, PayrollRun, PayrollRunId};
 pub use periods::{
@@ -78,4 +80,5 @@ pub use schedules::{
     AmortizationSchedule, Frequency, NewRecurring, NewSchedule, RecurringEntry, RecurringId,
     ScheduleId, ScheduleKind, TemplateLine,
 };
+pub use shares::{PartyMember, PartyShare, Share};
 pub use tax::{TaxCategory, TaxForm, TaxKind, TaxSummary, TaxSummaryLine, tax_summary};

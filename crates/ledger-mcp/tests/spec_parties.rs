@@ -1313,3 +1313,253 @@ fn off_never_raises_it() {
         json!({"entry_id": id, "confirmed": true}),
     );
 }
+
+// ------------------------------------------------- party shares
+//
+// Oracles: SetEntryPartyParams.parties and PartyShareParam (the declared
+// share rules), EntryPartyOut, PostEntryOut.parties / parties_error (code
+// party_shares), PartyTotalsOut (each party's share), and
+// docs/mcp-interface.md "Several parties". Values worked by hand.
+
+/// Books with both members (50/50, capital 3000 and 3001) in the settings
+/// and the directory; `extra` goes under `[books]`.
+fn member_books(name: &str, extra: &str) -> Mcp {
+    let dir = test_dir(name);
+    let toml = books_toml(
+        &dir,
+        "Spec Co",
+        &format!(
+            "{extra}\n[[company.members]]\nname = \"Stephen Waits\"\nshare = \"50%\"\ncapital_account = \"3000\"\n\
+             [[company.members]]\nname = \"Katherine Pendergast\"\nshare = \"50%\"\ncapital_account = \"3001\"\n"
+        ),
+    );
+    let mut m = Mcp::start(&dir, &toml);
+    m.accounts(CHART);
+    m.accounts(&[("3001", "Capital K", "equity")]);
+    m.add_party("Stephen Waits", &["member"]);
+    m.add_party("Katherine Pendergast", &["member"]);
+    m
+}
+
+fn both() -> Value {
+    json!({"parties": [{"party": "Stephen Waits"}, {"party": "Katherine Pendergast"}]})
+}
+
+fn resolved(v: &Value) -> Vec<(String, String)> {
+    v["parties"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| {
+            (
+                p["party"].as_str().unwrap().to_string(),
+                p["resolved"].as_str().unwrap_or("null").to_string(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_joint_reimbursement_names_both_members_and_splits_by_share() {
+    let mut m = member_books("shares-joint", "");
+    let id = m.draft(
+        "2026-04-01",
+        both(),
+        &[("2100", "debit", "100.00"), ("1000", "credit", "100.00")],
+    );
+    let preview = m.ok("books.post_entry", json!({"entry_id": id}));
+    assert_eq!(
+        resolved(&preview),
+        [
+            ("Stephen Waits".to_string(), "50.00".to_string()),
+            ("Katherine Pendergast".to_string(), "50.00".to_string())
+        ]
+    );
+    assert_eq!(preview["parties"][0]["share"], "derived");
+    assert!(preview["party_id"].is_null(), "no sole party");
+    assert!(preview["parties_error"].is_null());
+    assert_eq!(preview["party_missing"], false);
+    m.ok(
+        "books.post_entry",
+        json!({"entry_id": id, "confirmed": true}),
+    );
+    assert_eq!(m.count("entry.parties_set"), 1);
+    for who in ["Stephen Waits", "Katherine Pendergast"] {
+        let t = m.party(who, 2026)["totals"].clone();
+        assert_eq!(t["paid"], "50.00", "{who}'s half");
+    }
+    let list = m.read_only("books.parties", json!({"year": 2026}));
+    let paid: Vec<&str> = list["parties"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["paid"].as_str().unwrap())
+        .collect();
+    assert_eq!(paid, ["50.00", "50.00"]);
+}
+
+#[test]
+fn a_joint_contribution_derives_from_the_capital_lines() {
+    let mut m = member_books("shares-capital", "");
+    let id = m.post(
+        "2026-01-02",
+        both(),
+        &[
+            ("1000", "debit", "300.00"),
+            ("3000", "credit", "200.00"),
+            ("3001", "credit", "100.00"),
+        ],
+    );
+    let e = m.read_only("books.get_entry", json!({"entry_id": id}));
+    assert_eq!(
+        resolved(&e),
+        [
+            ("Stephen Waits".to_string(), "-200.00".to_string()),
+            ("Katherine Pendergast".to_string(), "-100.00".to_string())
+        ]
+    );
+    assert_eq!(
+        m.party("Stephen Waits", 2026)["totals"]["received"],
+        "200.00"
+    );
+    assert_eq!(
+        m.party("Katherine Pendergast", 2026)["totals"]["received"],
+        "100.00"
+    );
+}
+
+#[test]
+fn explicit_amounts_and_percents_apportion_exactly() {
+    let mut m = member_books("shares-explicit", "");
+    m.add_party("Riley", &["contractor"]);
+    let id = m.post(
+        "2026-05-01",
+        json!({"party": "Riley"}),
+        &[("6000", "debit", "100.00"), ("1000", "credit", "100.00")],
+    );
+    let e = m.ok(
+        "books.set_entry_party",
+        json!({"entry_id": id, "parties": [
+            {"party": "Riley", "amount": "70.00"},
+            {"party": "Stephen Waits", "amount": "30.00"},
+        ]}),
+    );
+    assert_eq!(e["parties"][0]["share"], "amount");
+    assert_eq!(e["parties"][0]["amount"], "70.00");
+    assert_eq!(e["parties"][1]["resolved"], "30.00");
+    assert_eq!(m.party("Riley", 2026)["totals"]["paid"], "70.00");
+    let e = m.ok(
+        "books.set_entry_party",
+        json!({"entry_id": id, "parties": [
+            {"party": "Riley", "percent": "33.333"},
+            {"party": "Stephen Waits", "percent": "66.667"},
+        ]}),
+    );
+    // 33.333 → 33.33, 66.667 → 66.66; the leftover cent to the first.
+    assert_eq!(e["parties"][0]["resolved"], "33.34");
+    assert_eq!(e["parties"][1]["resolved"], "66.66");
+    assert_eq!(e["parties"][0]["percent"], "33.333");
+    assert_eq!(m.count("entry.parties_set"), 2);
+}
+
+#[test]
+fn shares_that_dont_add_up_are_refused_changing_nothing() {
+    let mut m = member_books("shares-refused", "");
+    m.add_party("Riley", &["contractor"]);
+    let id = m.post(
+        "2026-05-01",
+        json!({}),
+        &[("6000", "debit", "100.00"), ("1000", "credit", "100.00")],
+    );
+    let set = |parties: Value| json!({"entry_id": id, "parties": parties});
+    let why = m.refuse(
+        "books.set_entry_party",
+        set(json!([{"party": "Riley", "amount": "60.00"}, {"party": "Stephen Waits", "amount": "30.00"}])),
+    );
+    assert!(why.contains("sum"), "{why}");
+    m.refuse(
+        "books.set_entry_party",
+        set(json!([{"party": "Riley", "percent": "50"}, {"party": "Stephen Waits", "percent": "40"}])),
+    );
+    m.refuse(
+        "books.set_entry_party",
+        set(json!([{"party": "Riley"}, {"party": "Riley"}])),
+    );
+    m.refuse(
+        "books.set_entry_party",
+        set(json!([{"party": "Riley", "amount": "50.00", "percent": "50"}])),
+    );
+    m.refuse(
+        "books.set_entry_party",
+        set(json!([{"party": "Riley", "amount": "50.00"}, {"party": "Stephen Waits"}])),
+    );
+    // Derived for a non-member among several.
+    m.refuse(
+        "books.set_entry_party",
+        set(json!([{"party": "Riley"}, {"party": "Stephen Waits"}])),
+    );
+    m.refuse(
+        "books.set_entry_party",
+        json!({"entry_id": id, "party": "Riley", "parties": [{"party": "Riley"}]}),
+    );
+    assert_eq!(m.count("entry.parties_set"), 0);
+}
+
+#[test]
+fn a_draft_whose_shares_dont_add_up_previews_the_error_and_wont_post() {
+    let mut m = member_books("shares-draft", "");
+    let id = m.draft(
+        "2026-06-01",
+        json!({"parties": [
+            {"party": "Stephen Waits", "amount": "10.00"},
+            {"party": "Katherine Pendergast", "amount": "10.00"},
+        ]}),
+        &[("2100", "debit", "25.00"), ("1000", "credit", "25.00")],
+    );
+    let preview = m.ok("books.post_entry", json!({"entry_id": id}));
+    assert!(preview["parties_error"].is_string(), "{preview}");
+    assert!(preview["parties"][0]["resolved"].is_null());
+    let why = m.refuse(
+        "books.post_entry",
+        json!({"entry_id": id, "confirmed": true}),
+    );
+    assert!(why.contains("party_shares"), "{why}");
+    m.ok(
+        "books.set_entry_party",
+        json!({"entry_id": id, "parties": [
+            {"party": "Stephen Waits", "amount": "15.00"},
+            {"party": "Katherine Pendergast", "amount": "10.00"},
+        ]}),
+    );
+    m.ok(
+        "books.post_entry",
+        json!({"entry_id": id, "confirmed": true}),
+    );
+    assert_eq!(m.party("Stephen Waits", 2026)["totals"]["paid"], "15.00");
+}
+
+#[test]
+fn under_require_several_parties_satisfy_the_policy() {
+    let mut m = member_books("shares-require", "parties = \"require\"");
+    let id = m.draft(
+        "2026-07-01",
+        both(),
+        &[("2100", "debit", "40.00"), ("1000", "credit", "40.00")],
+    );
+    let preview = m.ok("books.post_entry", json!({"entry_id": id}));
+    assert_eq!(preview["party_missing"], false);
+    m.ok(
+        "books.post_entry",
+        json!({"entry_id": id, "confirmed": true}),
+    );
+    // The reversal carries both shares.
+    m.ok(
+        "books.reverse_entry",
+        json!({"entry_id": id, "date": "2026-07-02", "description": "undo", "confirmed": true}),
+    );
+    assert_eq!(
+        m.party("Katherine Pendergast", 2026)["totals"]["paid"],
+        "0.00"
+    );
+    m.read_only("books.verify", json!({}));
+}

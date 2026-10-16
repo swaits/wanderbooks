@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 
 use chrono::NaiveDate;
-use ledger_core::parties::{check_text, has_full_tin, name_key};
+use ledger_core::parties::{check_text, has_full_tin, name_key, redact_full_tins};
 use ledger_core::{
     AccountId, AccountType, Currency, EntryId, Ledger, Money, Party, PartyField, PartyId,
     PayrollLine, Role, Side, W4Facts, W9Facts,
@@ -129,6 +129,7 @@ fn bare_party(name: &str) -> Party {
         archived: false,
         w9: None,
         w4: None,
+        tin: None,
         vendor: None,
         customer: None,
     }
@@ -151,8 +152,9 @@ fn pay_line(name: &str, employee: Option<PartyId>) -> PayrollLine {
 
 // ------------------------------------------------- has_full_tin truth table
 
-/// Oracle: `has_full_tin` doc ("a run of nine digits, with at most one
-/// space or hyphen between neighbors") and INVARIANT 1.
+/// Oracle: `has_full_tin` doc ("a run of nine digits, with at most three
+/// separators (space, hyphen, dot, slash, underscore, a Unicode dash or
+/// no-break space) between neighbors") and INVARIANT 1.
 #[test]
 fn has_full_tin_truth_table() {
     let cases: &[(&str, bool)] = &[
@@ -164,11 +166,20 @@ fn has_full_tin_truth_table() {
         ("1-2-3-4-5-6-7-8-9", true),
         ("TIN 123456789 on file", true), // inside longer text
         ("abc123456789def", true),
-        ("12  3456789", false), // two spaces break the run: 2 + 7 digits
-        ("12--3456789", false), // two hyphens
-        ("12 -3456789", false), // space and hyphen between neighbors
-        ("12\t3456789", false), // a tab is not a space
-        ("12345678", false),    // eight digits
+        ("12  3456789", true), // two spaces
+        ("12--3456789", true), // two hyphens
+        ("12 -3456789", true), // space and hyphen between neighbors
+        ("638.27.4915", true), // dots
+        ("wrong one, was 638.27.4915", true),
+        ("571/93/2846", true),               // slashes
+        ("571_93_2846", true),               // underscores
+        ("Bob 571 - 93 - 2846", true),       // three separators
+        ("571\u{2013}93\u{2013}2846", true), // en dashes
+        ("571\u{a0}93\u{a0}2846", true),     // no-break spaces
+        ("12    3456789", false),            // four separators break the run: 2 + 7
+        ("571, 93, 2846", false),            // a comma is not a separator
+        ("12\t3456789", false),              // a tab is not a space
+        ("12345678", false),                 // eight digits
         ("123-45-678", false),
         ("1234", false),
         ("", false),
@@ -179,6 +190,38 @@ fn has_full_tin_truth_table() {
     for (text, want) in cases {
         assert_eq!(has_full_tin(text), *want, "has_full_tin({text:?})");
     }
+}
+
+/// Oracle: `redact_full_tins` doc: every run `has_full_tin` finds has its
+/// digits masked, separators kept; other text is untouched.
+#[test]
+fn redact_full_tins_masks_every_full_tin() {
+    assert_eq!(
+        redact_full_tins("unknown party \"571-93-2846\""),
+        "unknown party \"•••-••-••••\""
+    );
+    assert_eq!(
+        redact_full_tins("was 638.27.4915 and 12-3456789, call 801-555"),
+        "was •••.••.•••• and ••-•••••••, call 801-555"
+    );
+    assert_eq!(
+        redact_full_tins("invalid type: integer `571932846`"),
+        "invalid type: integer `•••••••••`"
+    );
+    assert_eq!(redact_full_tins("party 12 of 3"), "party 12 of 3");
+    for t in ["571 - 93 - 2846", "５７１９３２８４６", "1234567890"] {
+        assert!(!has_full_tin(&redact_full_tins(t)), "{t}");
+    }
+}
+
+/// Oracle: `check_text` refuses what `has_full_tin` finds, so a purge
+/// reason or note quoting the old number with dots is refused (B-26: no
+/// party field may hold a nine-digit number).
+#[test]
+fn check_text_refuses_a_dotted_tin() {
+    assert!(check_text("purged", "wrong one, was 638.27.4915").is_err());
+    assert!(check_text("no_party_reason", "ssn 571.93.2846").is_err());
+    assert!(check_text("name", "Bob 571 - 93 - 2846").is_err());
 }
 
 /// Oracle: INVARIANT 1 says "any run of nine digits"; a run of ten digits
@@ -1209,4 +1252,572 @@ fn entry_flow_scenarios() {
     // Split payment: part bank, part card.
     let f = case(&[(exp, D, "100.00"), (bank, C, "60.00"), (card, C, "40.00")]);
     assert_eq!(f.net, dec("100.00"));
+}
+
+// ------------------------------------------------------- party shares
+//
+// Oracles: the spec block of `ledger_core::shares` (DEFINITIONS,
+// INVARIANTS 1–10, SCENARIOS 1–5), `Ledger::set_entry_parties` (INVARIANTS
+// 1–4), `parties::activity_with` (INVARIANTS 1–4), and
+// docs/parties-and-attachments.md "Shares". Values worked by hand.
+
+mod shares {
+    use super::{d, date, refused, usd};
+    use ledger_core::parties::{activity_with, money_accounts};
+    use ledger_core::shares::{check_shares, resolve};
+    use ledger_core::{
+        AccountId, AccountType, Currency, EntryId, Ledger, PartyId, PartyMember, PartyShare, Role,
+        Share, Side,
+    };
+    use proptest::prelude::*;
+    use rust_decimal::Decimal;
+
+    struct Books {
+        l: Ledger,
+        bank: AccountId,
+        due: AccountId,
+        cap_s: AccountId,
+        cap_k: AccountId,
+        equip: AccountId,
+        exp: AccountId,
+        stephen: PartyId,
+        kat: PartyId,
+        acme: PartyId,
+        members: Vec<PartyMember>,
+    }
+
+    /// Bluevine 1000, Due to Shareholders 2100, capital 3000 and 3001,
+    /// equipment 1500, an expense 6050; members Stephen and Katherine at
+    /// 50/50; a party Acme (no records).
+    fn books() -> Books {
+        let mut l = Ledger::new(Currency::USD);
+        let add = |l: &mut Ledger, c: &str, t| l.add_account(c, c, t, None, false).unwrap();
+        let bank = add(&mut l, "1000", AccountType::Asset);
+        let equip = add(&mut l, "1500", AccountType::Asset);
+        let due = add(&mut l, "2100", AccountType::Liability);
+        let cap_s = add(&mut l, "3000", AccountType::Equity);
+        let cap_k = add(&mut l, "3001", AccountType::Equity);
+        let exp = add(&mut l, "6050", AccountType::Expense);
+        let stephen = l.add_party("Stephen Waits", &[Role::Member]).unwrap();
+        let kat = l
+            .add_party("Katherine Pendergast", &[Role::Member])
+            .unwrap();
+        let acme = l.add_party("Acme", &[Role::Contractor]).unwrap();
+        let half = d("0.5");
+        let members = vec![
+            PartyMember {
+                party: stephen,
+                share: half,
+                capital: cap_s,
+                distributions: None,
+            },
+            PartyMember {
+                party: kat,
+                share: half,
+                capital: cap_k,
+                distributions: None,
+            },
+        ];
+        Books {
+            l,
+            bank,
+            due,
+            cap_s,
+            cap_k,
+            equip,
+            exp,
+            stephen,
+            kat,
+            acme,
+            members,
+        }
+    }
+
+    fn post(l: &mut Ledger, lines: &[(AccountId, Side, &str)]) -> EntryId {
+        let e = l.try_create_entry(date(2026, 5, 1), "joint").unwrap();
+        for (a, s, v) in lines {
+            l.add_line(e, *a, *s, usd(v)).unwrap();
+        }
+        l.post_entry(e).unwrap();
+        e
+    }
+
+    fn derived(ps: &[PartyId]) -> Vec<PartyShare> {
+        ps.iter().map(|&p| PartyShare::whole(p)).collect()
+    }
+
+    fn amounts(ps: &[(PartyId, &str)]) -> Vec<PartyShare> {
+        ps.iter()
+            .map(|&(party, v)| PartyShare {
+                party,
+                share: Share::Amount(d(v)),
+            })
+            .collect()
+    }
+
+    fn percents(ps: &[(PartyId, &str)]) -> Vec<PartyShare> {
+        ps.iter()
+            .map(|&(party, v)| PartyShare {
+                party,
+                share: Share::Percent(d(v)),
+            })
+            .collect()
+    }
+
+    fn resolved(b: &Books, e: EntryId) -> Result<Vec<(PartyId, Decimal)>, String> {
+        let money = money_accounts(&b.l, &[b.bank]);
+        resolve(
+            b.l.get_entry(e).unwrap(),
+            b.l.entry_parties(e),
+            &money,
+            &b.members,
+        )
+    }
+
+    fn year() -> (chrono::NaiveDate, chrono::NaiveDate) {
+        (date(2026, 1, 1), date(2026, 12, 31))
+    }
+
+    fn paid_received(b: &Books, p: PartyId) -> (Decimal, Decimal) {
+        let a = activity_with(&b.l, p, year(), &[b.bank], &b.members);
+        (a.paid, a.received)
+    }
+
+    /// SCENARIO 1: a reimbursement to both members, derived, 50/50.
+    #[test]
+    fn reimbursing_both_members_splits_by_member_share() {
+        let mut b = books();
+        let e = post(
+            &mut b.l,
+            &[
+                (b.due, Side::Debit, "100.00"),
+                (b.bank, Side::Credit, "100.00"),
+            ],
+        );
+        b.l.set_entry_parties(e, &derived(&[b.stephen, b.kat]))
+            .unwrap();
+        assert_eq!(
+            resolved(&b, e).unwrap(),
+            vec![(b.stephen, d("50.00")), (b.kat, d("50.00"))]
+        );
+        assert_eq!(b.l.entry_party(e), None, "two parties: no sole party");
+        assert!(b.l.entry_names_party(e, b.kat));
+        assert_eq!(paid_received(&b, b.stephen), (d("50.00"), Decimal::ZERO));
+        assert_eq!(paid_received(&b, b.kat), (d("50.00"), Decimal::ZERO));
+    }
+
+    /// SCENARIO 2: a joint contribution derives from the capital lines.
+    #[test]
+    fn joint_contribution_derives_from_capital_lines() {
+        let mut b = books();
+        let e = post(
+            &mut b.l,
+            &[
+                (b.bank, Side::Debit, "300.00"),
+                (b.cap_s, Side::Credit, "200.00"),
+                (b.cap_k, Side::Credit, "100.00"),
+            ],
+        );
+        b.l.set_entry_parties(e, &derived(&[b.stephen, b.kat]))
+            .unwrap();
+        assert_eq!(
+            resolved(&b, e).unwrap(),
+            vec![(b.stephen, d("-200.00")), (b.kat, d("-100.00"))]
+        );
+        assert_eq!(paid_received(&b, b.stephen), (Decimal::ZERO, d("200.00")));
+        assert_eq!(paid_received(&b, b.kat), (Decimal::ZERO, d("100.00")));
+    }
+
+    /// SCENARIO 3: property contributed moves no money; the shares are of
+    /// the total, and activity counts nothing.
+    #[test]
+    fn property_contribution_resolves_against_the_total() {
+        let mut b = books();
+        let e = post(
+            &mut b.l,
+            &[
+                (b.equip, Side::Debit, "1000.00"),
+                (b.cap_s, Side::Credit, "500.00"),
+                (b.cap_k, Side::Credit, "500.00"),
+            ],
+        );
+        b.l.set_entry_parties(e, &derived(&[b.stephen, b.kat]))
+            .unwrap();
+        assert_eq!(
+            resolved(&b, e).unwrap(),
+            vec![(b.stephen, d("500.00")), (b.kat, d("500.00"))]
+        );
+        assert_eq!(paid_received(&b, b.stephen), (Decimal::ZERO, Decimal::ZERO));
+    }
+
+    /// Capital lines that don't account for the whole flow are refused.
+    #[test]
+    fn capital_lines_short_of_the_flow_are_refused() {
+        let mut b = books();
+        let e = post(
+            &mut b.l,
+            &[
+                (b.bank, Side::Debit, "300.00"),
+                (b.cap_s, Side::Credit, "200.00"),
+                (b.exp, Side::Credit, "100.00"),
+            ],
+        );
+        b.l.set_entry_parties(e, &derived(&[b.stephen, b.kat]))
+            .unwrap();
+        assert!(resolved(&b, e).is_err());
+        let a = activity_with(&b.l, b.stephen, year(), &[b.bank], &b.members);
+        assert!(a.unresolved.contains(&e));
+        assert_eq!((a.paid, a.received), (Decimal::ZERO, Decimal::ZERO));
+    }
+
+    /// SCENARIO 4: percent rounding, remainder to the first party.
+    #[test]
+    fn percent_rounding_gives_the_remainder_to_the_first() {
+        let mut b = books();
+        let c = b.l.add_party("Third", &[]).unwrap();
+        let e = post(
+            &mut b.l,
+            &[
+                (b.exp, Side::Debit, "100.00"),
+                (b.bank, Side::Credit, "100.00"),
+            ],
+        );
+        b.l.set_entry_parties(
+            e,
+            &percents(&[(b.acme, "33.33"), (b.stephen, "33.33"), (c, "33.34")]),
+        )
+        .unwrap();
+        assert_eq!(
+            resolved(&b, e).unwrap(),
+            vec![
+                (b.acme, d("33.33")),
+                (b.stephen, d("33.33")),
+                (c, d("33.34"))
+            ]
+        );
+        b.l.set_entry_parties(
+            e,
+            &percents(&[(b.acme, "33.333"), (b.stephen, "33.333"), (c, "33.334")]),
+        )
+        .unwrap();
+        assert_eq!(
+            resolved(&b, e).unwrap(),
+            vec![
+                (b.acme, d("33.34")),
+                (b.stephen, d("33.33")),
+                (c, d("33.33"))
+            ]
+        );
+    }
+
+    /// SCENARIO 5 and INVARIANT 7: amounts must sum to what moved.
+    #[test]
+    fn amounts_must_sum_to_the_flow() {
+        let mut b = books();
+        let e = post(
+            &mut b.l,
+            &[
+                (b.exp, Side::Debit, "100.00"),
+                (b.bank, Side::Credit, "100.00"),
+            ],
+        );
+        b.l.set_entry_parties(e, &amounts(&[(b.stephen, "60.00"), (b.kat, "30.00")]))
+            .unwrap();
+        assert!(resolved(&b, e).is_err());
+        b.l.set_entry_parties(e, &amounts(&[(b.stephen, "70.00"), (b.kat, "30.00")]))
+            .unwrap();
+        assert_eq!(
+            resolved(&b, e).unwrap(),
+            vec![(b.stephen, d("70.00")), (b.kat, d("30.00"))]
+        );
+        assert_eq!(paid_received(&b, b.stephen), (d("70.00"), Decimal::ZERO));
+    }
+
+    /// INVARIANT 10: several derived shares need members.
+    #[test]
+    fn derived_needs_members_for_several_parties() {
+        let mut b = books();
+        let e = post(
+            &mut b.l,
+            &[
+                (b.exp, Side::Debit, "10.00"),
+                (b.bank, Side::Credit, "10.00"),
+            ],
+        );
+        b.l.set_entry_parties(e, &derived(&[b.stephen, b.acme]))
+            .unwrap();
+        assert!(resolved(&b, e).is_err());
+        // With no members passed (plain activity), two members can't derive.
+        b.l.set_entry_parties(e, &derived(&[b.stephen, b.kat]))
+            .unwrap();
+        let money = money_accounts(&b.l, &[b.bank]);
+        assert!(resolve(b.l.get_entry(e).unwrap(), b.l.entry_parties(e), &money, &[]).is_err());
+        // A sole party needs no members.
+        b.l.set_entry_parties(e, &derived(&[b.acme])).unwrap();
+        assert_eq!(resolved(&b, e).unwrap(), vec![(b.acme, d("10.00"))]);
+    }
+
+    /// INVARIANT 10: income shares rescale to the members named.
+    #[test]
+    fn member_shares_rescale_to_those_named() {
+        let mut b = books();
+        let third = b.l.add_party("Third Member", &[Role::Member]).unwrap();
+        let cap_t =
+            b.l.add_account("3002", "Capital T", AccountType::Equity, None, false)
+                .unwrap();
+        b.members[0].share = d("0.5");
+        b.members[1].share = d("0.3");
+        b.members.push(PartyMember {
+            party: third,
+            share: d("0.2"),
+            capital: cap_t,
+            distributions: None,
+        });
+        let e = post(
+            &mut b.l,
+            &[
+                (b.due, Side::Debit, "80.00"),
+                (b.bank, Side::Credit, "80.00"),
+            ],
+        );
+        b.l.set_entry_parties(e, &derived(&[b.stephen, b.kat]))
+            .unwrap();
+        assert_eq!(
+            resolved(&b, e).unwrap(),
+            vec![(b.stephen, d("50.00")), (b.kat, d("30.00"))]
+        );
+    }
+
+    /// INVARIANTS 1–5 of shares and set_entry_parties 1: refusals change
+    /// nothing.
+    #[test]
+    fn bad_shares_are_refused_changing_nothing() {
+        let mut b = books();
+        let e = post(
+            &mut b.l,
+            &[
+                (b.exp, Side::Debit, "10.00"),
+                (b.bank, Side::Credit, "10.00"),
+            ],
+        );
+        let (s, k) = (b.stephen, b.kat);
+        refused(&mut b.l, "duplicate", |l| {
+            l.set_entry_parties(e, &derived(&[s, s]))
+        });
+        refused(&mut b.l, "unknown party", |l| {
+            l.set_entry_parties(e, &derived(&[s, 999]))
+        });
+        refused(&mut b.l, "unknown entry", |l| {
+            l.set_entry_parties(999, &derived(&[s]))
+        });
+        refused(&mut b.l, "mixed kinds", |l| {
+            l.set_entry_parties(
+                e,
+                &[
+                    PartyShare {
+                        party: s,
+                        share: Share::Amount(d("5.00")),
+                    },
+                    PartyShare::whole(k),
+                ],
+            )
+        });
+        refused(&mut b.l, "percents sum to 99", |l| {
+            l.set_entry_parties(e, &percents(&[(s, "50"), (k, "49")]))
+        });
+        refused(&mut b.l, "percent over 100", |l| {
+            l.set_entry_parties(e, &percents(&[(s, "101"), (k, "-1")]))
+        });
+        refused(&mut b.l, "finer than a cent", |l| {
+            l.set_entry_parties(e, &amounts(&[(s, "5.005"), (k, "4.995")]))
+        });
+        refused(&mut b.l, "zero amount", |l| {
+            l.set_entry_parties(e, &amounts(&[(s, "10.00"), (k, "0")]))
+        });
+        let v1 = b.l.add_vendor("Vendor One").unwrap();
+        let v2 = b.l.add_vendor("Vendor Two").unwrap();
+        let (p1, p2) = (
+            b.l.party_of_vendor(v1).unwrap(),
+            b.l.party_of_vendor(v2).unwrap(),
+        );
+        refused(&mut b.l, "two vendors", |l| {
+            l.set_entry_parties(e, &amounts(&[(p1, "5.00"), (p2, "5.00")]))
+        });
+        // The checker agrees on its own.
+        assert!(check_shares(&percents(&[(s, "100")]), |_| true).is_ok());
+        assert!(check_shares(&percents(&[(s, "60"), (k, "40.0")]), |_| true).is_ok());
+    }
+
+    /// set_entry_parties INVARIANT 2: the vendor tag follows the one party
+    /// with a vendor record; clearing clears it.
+    #[test]
+    fn vendor_tag_follows_the_one_vendor_party() {
+        let mut b = books();
+        let e = post(
+            &mut b.l,
+            &[
+                (b.exp, Side::Debit, "10.00"),
+                (b.bank, Side::Credit, "10.00"),
+            ],
+        );
+        let v = b.l.add_vendor("Vendor One").unwrap();
+        let pv = b.l.party_of_vendor(v).unwrap();
+        b.l.set_entry_parties(e, &amounts(&[(pv, "6.00"), (b.stephen, "4.00")]))
+            .unwrap();
+        assert_eq!(b.l.entry_vendor(e), Some(v));
+        b.l.set_entry_parties(e, &derived(&[b.stephen, b.kat]))
+            .unwrap();
+        assert_eq!(b.l.entry_vendor(e), None);
+        b.l.set_entry_parties(e, &[]).unwrap();
+        assert!(b.l.entry_parties(e).is_empty());
+    }
+
+    /// Single-party tagging is one derived share; INVARIANT 3: naming a
+    /// party clears the no-party mark, and the mark is refused while
+    /// parties are named.
+    #[test]
+    fn single_party_and_no_party_mark() {
+        let mut b = books();
+        let e = post(
+            &mut b.l,
+            &[
+                (b.exp, Side::Debit, "10.00"),
+                (b.bank, Side::Credit, "10.00"),
+            ],
+        );
+        b.l.set_entry_party(e, Some(b.acme)).unwrap();
+        assert_eq!(b.l.entry_parties(e), &[PartyShare::whole(b.acme)]);
+        assert_eq!(b.l.entry_party(e), Some(b.acme));
+        b.l.set_entry_party(e, None).unwrap();
+        b.l.set_entry_no_party(e, "own transfer").unwrap();
+        b.l.set_entry_parties(e, &derived(&[b.stephen, b.kat]))
+            .unwrap();
+        assert_eq!(b.l.entry_no_party(e), None);
+        refused(&mut b.l, "no-party while named", |l| {
+            l.set_entry_no_party(e, "none")
+        });
+    }
+
+    /// Reversals carry every share; the pair nets to zero for each party.
+    #[test]
+    fn reversal_carries_all_shares() {
+        let mut b = books();
+        let e = post(
+            &mut b.l,
+            &[
+                (b.exp, Side::Debit, "90.00"),
+                (b.bank, Side::Credit, "90.00"),
+            ],
+        );
+        let shares = amounts(&[(b.stephen, "60.00"), (b.kat, "30.00")]);
+        b.l.set_entry_parties(e, &shares).unwrap();
+        let r = b.l.reverse_entry(e, date(2026, 5, 2), "undo").unwrap();
+        assert_eq!(b.l.entry_parties(r), shares.as_slice());
+        assert_eq!(
+            resolved(&b, r).unwrap(),
+            vec![(b.stephen, d("-60.00")), (b.kat, d("-30.00"))]
+        );
+        assert_eq!(paid_received(&b, b.stephen), (Decimal::ZERO, Decimal::ZERO));
+        assert_eq!(paid_received(&b, b.kat), (Decimal::ZERO, Decimal::ZERO));
+    }
+
+    /// Plain `activity` is activity_with no members: a sole party still
+    /// counts the whole net.
+    #[test]
+    fn activity_counts_a_sole_party_in_full() {
+        let mut b = books();
+        let e = post(
+            &mut b.l,
+            &[
+                (b.exp, Side::Debit, "12.34"),
+                (b.bank, Side::Credit, "12.34"),
+            ],
+        );
+        b.l.set_entry_party(e, Some(b.acme)).unwrap();
+        let a = ledger_core::parties::activity(&b.l, b.acme, year(), &[b.bank]);
+        assert_eq!(a.paid, d("12.34"));
+        assert!(a.entries.contains(&e));
+    }
+
+    fn cents() -> impl Strategy<Value = Decimal> {
+        (1i64..10_000_000).prop_map(|c| Decimal::new(c, 2))
+    }
+
+    proptest! {
+        /// INVARIANT 6: resolved shares sum to the target exactly, each
+        /// with its sign, for percents (any split summing to 100, to
+        /// three decimals), member-derived splits, and capital lines.
+        #[test]
+        fn resolved_shares_sum_exactly(
+            total in cents(),
+            refund in any::<bool>(),
+            cuts in proptest::collection::vec(1u32..100_000, 1..6),
+            member_share in 1u32..1000,
+        ) {
+            let mut b = books();
+            let (dr, cr) = if refund { (b.bank, b.exp) } else { (b.exp, b.bank) };
+            let t = total.to_string();
+            let e = post(&mut b.l, &[(dr, Side::Debit, &t), (cr, Side::Credit, &t)]);
+            let target = if refund { -total } else { total };
+            // Percents: cut 100.000 at sorted points.
+            let mut points: Vec<u32> = cuts.iter().map(|c| c % 100_000).collect();
+            points.sort_unstable();
+            points.dedup();
+            points.retain(|&p| p > 0);
+            let mut bounds = vec![0u32];
+            bounds.extend(points);
+            bounds.push(100_000);
+            let mut ps = Vec::new();
+            for (i, w) in bounds.windows(2).enumerate() {
+                let party = b.l.add_party(&format!("P{i}"), &[]).unwrap();
+                ps.push((party, Decimal::new(i64::from(w[1] - w[0]), 3)));
+            }
+            let shares: Vec<PartyShare> = ps
+                .iter()
+                .map(|&(party, p)| PartyShare { party, share: Share::Percent(p) })
+                .collect();
+            b.l.set_entry_parties(e, &shares).unwrap();
+            let r = resolved(&b, e).unwrap();
+            prop_assert_eq!(r.iter().map(|(_, v)| *v).sum::<Decimal>(), target);
+            prop_assert!(r.iter().all(|(_, v)| v.is_zero() || v.is_sign_negative() == refund));
+            prop_assert!(r.iter().all(|(_, v)| v.normalize().scale() <= 2));
+            // Member-derived with uneven income shares.
+            let s = Decimal::new(i64::from(member_share), 3);
+            b.members[0].share = s;
+            b.members[1].share = Decimal::ONE - s;
+            b.l.set_entry_parties(e, &derived(&[b.stephen, b.kat])).unwrap();
+            let r = resolved(&b, e).unwrap();
+            prop_assert_eq!(r.iter().map(|(_, v)| *v).sum::<Decimal>(), target);
+            // Amounts that sum: split at the first party's resolved part.
+            let first = r[0].1.abs();
+            let rest = total - first;
+            if !first.is_zero() && !rest.is_zero() {
+                b.l.set_entry_parties(e, &[
+                    PartyShare { party: b.stephen, share: Share::Amount(first) },
+                    PartyShare { party: b.kat, share: Share::Amount(rest) },
+                ]).unwrap();
+                let r = resolved(&b, e).unwrap();
+                prop_assert_eq!(r.iter().map(|(_, v)| *v).sum::<Decimal>(), target);
+            }
+        }
+
+        /// Capital-line derivation: two members contribute any amounts in
+        /// one entry; each gets their own line, summing to the flow.
+        #[test]
+        fn capital_line_shares_sum_exactly(a in cents(), c in cents()) {
+            let mut b = books();
+            let total = a + c;
+            let e = post(&mut b.l, &[
+                (b.bank, Side::Debit, &total.to_string()),
+                (b.cap_s, Side::Credit, &a.to_string()),
+                (b.cap_k, Side::Credit, &c.to_string()),
+            ]);
+            b.l.set_entry_parties(e, &derived(&[b.stephen, b.kat])).unwrap();
+            let r = resolved(&b, e).unwrap();
+            prop_assert_eq!(r, vec![(b.stephen, -a), (b.kat, -c)]);
+            let sa = activity_with(&b.l, b.stephen, year(), &[b.bank], &b.members);
+            let sk = activity_with(&b.l, b.kat, year(), &[b.bank], &b.members);
+            prop_assert_eq!(sa.received + sk.received, total);
+        }
+    }
 }

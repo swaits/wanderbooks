@@ -55,6 +55,12 @@ pub struct Member {
     /// Code of their distributions account, if distributions are recorded
     /// separately from capital (zeroed into capital at close).
     pub distribution_account: Option<String>,
+    /// `files_jointly_with`: the other member this member files a joint
+    /// individual return with (spouses). Each still gets their own K-1
+    /// (a partnership reports each partner separately, IRS Instructions
+    /// for Form 1065, Schedule K-1); both K-1s go on the one Form 1040
+    /// (Schedule E, Part II). Informational: the CPA package says so.
+    pub files_jointly_with: Option<String>,
 }
 
 impl Default for Company {
@@ -73,6 +79,34 @@ impl Default for Company {
 }
 
 impl Company {
+    /// The members as party shares see them ([`ledger_core::PartyMember`]):
+    /// each member whose name (ignoring case and surrounding space) is a
+    /// party with the member role not archived, and whose capital account
+    /// is in the chart. Members missing either are left out, so their
+    /// shares can't be derived (and the viewer shows no capital
+    /// statement for them).
+    pub fn party_members(&self, ledger: &ledger_core::Ledger) -> Vec<ledger_core::PartyMember> {
+        self.members
+            .iter()
+            .filter_map(|m| {
+                let party = ledger.party_by_name(&m.name)?;
+                if !party.roles.contains(&ledger_core::Role::Member) {
+                    return None;
+                }
+                Some(ledger_core::PartyMember {
+                    party: party.id,
+                    share: m.share,
+                    capital: ledger.chart().find_by_code(&m.capital_account)?.id,
+                    distributions: m
+                        .distribution_account
+                        .as_deref()
+                        .and_then(|c| ledger.chart().find_by_code(c))
+                        .map(|a| a.id),
+                })
+            })
+            .collect()
+    }
+
     /// The fiscal year containing `d`: `(first day, last day)`, inclusive.
     pub fn fiscal_year_containing(&self, d: NaiveDate) -> (NaiveDate, NaiveDate) {
         let (m, day) = self.fiscal_year_start;
@@ -199,6 +233,7 @@ struct MemberToml {
     share: String,
     capital_account: Option<String>,
     distribution_account: Option<String>,
+    files_jointly_with: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
@@ -411,6 +446,10 @@ pub fn parse(text: &str) -> Result<BooksSettings, String> {
                 .distribution_account
                 .map(|d| d.trim().to_string())
                 .filter(|d| !d.is_empty()),
+            files_jointly_with: m
+                .files_jointly_with
+                .map(|d| d.trim().to_string())
+                .filter(|d| !d.is_empty()),
         });
     }
     for (i, m) in company.members.iter().enumerate() {
@@ -434,6 +473,32 @@ pub fn parse(text: &str) -> Result<BooksSettings, String> {
                     "{}'s distributions account {} is {}'s capital account",
                     other.name, m.capital_account, m.name
                 ));
+            }
+        }
+    }
+    // files_jointly_with names another member, and both say so.
+    for m in &company.members {
+        if let Some(j) = &m.files_jointly_with {
+            if *j == m.name {
+                return Err(format!(
+                    "member {}: files_jointly_with names themself",
+                    m.name
+                ));
+            }
+            match company.members.iter().find(|o| o.name == *j) {
+                None => {
+                    return Err(format!(
+                        "member {}: files_jointly_with {j:?} isn't a member",
+                        m.name
+                    ));
+                }
+                Some(o) if o.files_jointly_with.as_deref() != Some(m.name.as_str()) => {
+                    return Err(format!(
+                        "member {} files jointly with {j}, but {j}'s files_jointly_with doesn't name {}: set it on both",
+                        m.name, m.name
+                    ));
+                }
+                Some(_) => {}
             }
         }
     }
@@ -586,6 +651,44 @@ pub fn load(path: &Path) -> Result<BooksSettings, String> {
 mod tests {
     use super::*;
 
+    /// files_jointly_with: names another member, on both sides.
+    #[test]
+    fn files_jointly_with() {
+        let m = |a: &str, b: &str| {
+            format!(
+                "[company]\nname = \"X\"\n[[company.members]]\nname = \"A\"\nshare = \"50%\"\ncapital_account = \"3000\"\n{a}\n[[company.members]]\nname = \"B\"\nshare = \"50%\"\ncapital_account = \"3001\"\n{b}\n"
+            )
+        };
+        let ok = parse(&m(
+            "files_jointly_with = \"B\"",
+            "files_jointly_with = \"A\"",
+        ))
+        .unwrap();
+        assert_eq!(
+            ok.company.members[0].files_jointly_with.as_deref(),
+            Some("B")
+        );
+        assert!(
+            parse(&m("files_jointly_with = \"B\"", ""))
+                .unwrap_err()
+                .contains("set it on both")
+        );
+        assert!(
+            parse(&m("files_jointly_with = \"C\"", ""))
+                .unwrap_err()
+                .contains("isn't a member")
+        );
+        assert!(
+            parse(&m("files_jointly_with = \"A\"", ""))
+                .unwrap_err()
+                .contains("themself")
+        );
+        assert_eq!(
+            parse(&m("", "")).unwrap().company.members[1].files_jointly_with,
+            None
+        );
+    }
+
     /// `[books] parties`: suggest by default; off, suggest, require (and
     /// "required") parse; anything else is refused, naming the choices.
     #[test]
@@ -691,12 +794,14 @@ mod tests {
                     share: half,
                     capital_account: "3000".into(),
                     distribution_account: None,
+                    files_jointly_with: None,
                 },
                 Member {
                     name: "Katherine Pendergast".into(),
                     share: half,
                     capital_account: "3001".into(),
                     distribution_account: None,
+                    files_jointly_with: None,
                 },
             ]
         );

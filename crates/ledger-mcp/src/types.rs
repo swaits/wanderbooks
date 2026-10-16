@@ -550,6 +550,8 @@ pub struct MemberSettingOut {
     pub capital_account: String,
     /// Distributions account code, if any.
     pub distribution_account: Option<String>,
+    /// The member they file a joint individual return with, if any.
+    pub files_jointly_with: Option<String>,
 }
 
 /// Result of `books.settings`.
@@ -990,8 +992,53 @@ pub struct DraftEntryParams {
     pub party: Option<String>,
     /// Why the entry has no counterparty (a transfer between the company's
     /// own accounts, an accrual), when `[books] parties = "require"` and
-    /// none applies. Not with `party` or `vendor`.
+    /// none applies. Not with `party`, `parties`, or `vendor`.
     pub no_party_reason: Option<String>,
+    /// Several parties, each with their share (as `books.set_entry_party`
+    /// `parties`), in place of `party`. Not with `party`, `vendor`, or
+    /// `no_party_reason`. Whether the shares add up is checked once the
+    /// entry has balanced lines (`books.post_entry` refuses until they do).
+    pub parties: Option<Vec<PartyShareParam>>,
+}
+
+/// One party named on an entry, with their share. Give `amount` or
+/// `percent`, or neither (derived): a sole party gets all of it; members
+/// named together get what their capital (or distributions) lines on the
+/// entry say, else their `[[company.members]]` share. Every party on an
+/// entry gives the same kind of share.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct PartyShareParam {
+    /// The party: id or name.
+    pub party: String,
+    /// Exactly this much of what the entry moved, a positive decimal
+    /// string in cents ("30.00"). The amounts must sum to what the entry
+    /// moved (its counterparty money, or its total when it moves none).
+    pub amount: Option<String>,
+    /// This percent of what the entry moved, a decimal string ("60",
+    /// "33.333"); the percents must sum to exactly 100. Each part is
+    /// rounded down to the cent and the leftover cents go to the first
+    /// party listed.
+    pub percent: Option<String>,
+}
+
+/// One party on an entry, with its share and what it resolves to.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct EntryPartyOut {
+    /// Party id.
+    pub party_id: u64,
+    /// Its label (display name, else name).
+    pub party: String,
+    /// "amount", "percent", or "derived".
+    pub share: String,
+    /// The amount given, for an amount share, decimal string.
+    pub amount: Option<String>,
+    /// The percent given, for a percent share, decimal string.
+    pub percent: Option<String>,
+    /// Its exact part of what the entry moved (positive: paid to it;
+    /// negative: received from it; for an entry moving no money, its part
+    /// of the total), decimal string. Null when the shares don't resolve
+    /// (see `parties_error`).
+    pub resolved: Option<String>,
 }
 
 /// Result of `books.draft_entry`.
@@ -1109,10 +1156,17 @@ pub struct PostEntryOut {
     pub split_detected: Vec<u64>,
     /// `[books] parties`: "off", "suggest", or "require".
     pub party_policy: String,
-    /// The entry's counterparty, when tagged.
+    /// The entry's counterparty, when it names exactly one.
     pub party_id: Option<u64>,
     /// Its name.
     pub party: Option<String>,
+    /// Every party the entry names, each with its share resolved to the
+    /// cent against the entry's lines (they sum to what it moved).
+    pub parties: Vec<EntryPartyOut>,
+    /// Why the parties' shares don't resolve against the lines (amounts
+    /// that don't sum, a derived share for a non-member), when they don't.
+    /// Posting with confirmed=true fails (party_shares) in this state.
+    pub parties_error: Option<String>,
     /// Why it has none, when marked so.
     pub no_party_reason: Option<String>,
     /// True when the entry names no party and isn't marked as having none
@@ -1399,10 +1453,16 @@ pub struct GetEntryOut {
     pub receipts: Vec<PreviewReceipt>,
     /// The vendor the entry is tagged with, for 1099 tracking.
     pub vendor: Option<String>,
-    /// The id of the party the entry is tagged with (its counterparty).
+    /// The id of the party the entry is tagged with (its counterparty),
+    /// when it names exactly one.
     pub party_id: Option<u64>,
     /// That party's label (display name, else name).
     pub party: Option<String>,
+    /// Every party the entry names, with their shares resolved (as in the
+    /// `books.post_entry` preview).
+    pub parties: Vec<EntryPartyOut>,
+    /// Why the shares don't resolve, when they don't.
+    pub parties_error: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2474,6 +2534,18 @@ pub struct ExportCpaPackageParams {
     /// documents (default true).
     #[serde(default = "default_true")]
     pub include_receipts: bool,
+    /// Carry every member's and 1099 payee's full TIN from the TIN vault
+    /// in the K-1 and 1099 worksheets (default true: the CPA needs them).
+    /// Then `save_to` is required, outside the books dir, and the package
+    /// never comes back in the output. False: last fours only, and the
+    /// zip comes back as base64 unless `save_to` is given.
+    #[serde(default = "default_true")]
+    pub include_tins: bool,
+    /// Where to write the package: a new `.zip` file, or an existing
+    /// folder (the zip goes in it as `cpa-package-<as_of>.zip`). Written
+    /// readable by its owner only. With TINs, never inside the books dir
+    /// (git keeps it forever, `exports/` included).
+    pub save_to: Option<String>,
 }
 
 /// Output of `books.export_cpa_package`.
@@ -2481,8 +2553,21 @@ pub struct ExportCpaPackageParams {
 pub struct ExportCpaPackageOut {
     /// File name, e.g. "cpa-package-2026-10-11.zip".
     pub file_name: String,
-    /// The zip, base64-encoded.
-    pub content_base64: String,
+    /// The zip, base64-encoded: only when it isn't saved (`save_to`
+    /// absent, which needs include_tins false).
+    pub content_base64: Option<String>,
+    /// The path the zip was written to, when saved. Tell the human; never
+    /// open it, attach it, or copy it into the books.
+    pub saved_to: Option<String>,
+    /// Whether the worksheets carry full TINs from the vault.
+    pub tins_included: bool,
+    /// With TINs: each member or 1099 payee whose TIN the package lacks,
+    /// and why (not in the vault, the vault locked, ...). Collect them
+    /// with books.set_tin or books.set_w9.
+    #[serde(default)]
+    pub tin_gaps: Vec<String>,
+    /// What to tell the human.
+    pub note: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -2624,6 +2709,35 @@ impl<'de> Deserialize<'de> for SecretTin {
     }
 }
 
+/// Parameters for `books.set_tin`: a party's full taxpayer
+/// identification number, for the TIN vault only.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct SetTinParams {
+    /// The party: id or name. Any role (a member, a contractor, ...).
+    pub party: String,
+    /// The full TIN (nine digits, hyphens allowed), stored only in the
+    /// encrypted TIN vault; the books keep its type and last four. Never
+    /// echoed back.
+    pub tin: SecretTin,
+    /// The TIN's type: ssn, ein, or itin.
+    pub tin_type: String,
+}
+
+/// A party's taxpayer-ID facts: never more of the number than its last
+/// four.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct TinOut {
+    /// ssn, ein, or itin.
+    pub tin_type: String,
+    /// The last four digits.
+    pub last4: String,
+    /// True while the TIN vault holds the full number (by the books'
+    /// record of it).
+    pub in_vault: bool,
+    /// When and why the vault's copy was purged, if it was.
+    pub purged: Option<String>,
+}
+
 /// Parameters for `books.get_w9`.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct GetW9Params {
@@ -2678,9 +2792,10 @@ pub struct PurgeTinOut {
     pub w9_file_in_vault: bool,
     /// The TIN's last four digits, which the books keep.
     pub tin_last4: Option<String>,
-    /// True when the purge is journaled (`party.w9_set` with the vault
-    /// record cleared and kept_at saying why); false when the party has no
-    /// W-9 facts to update.
+    /// True when the purge is journaled: `party.tin_set` with the vault
+    /// record cleared and `purged` saying when and why, and `party.w9_set`
+    /// likewise (kept_at) when the party has W-9 facts; false when the
+    /// books have no facts to update.
     pub journaled: bool,
     /// What happens (preview) or happened.
     pub note: String,
@@ -2737,6 +2852,16 @@ pub struct SetEntryPartyParams {
     /// in `books.vendor_1099`); one without, or clearing, clears the vendor
     /// tag too.
     pub party: Option<String>,
+    /// Several parties, each with their share, in place of `party`
+    /// (journaled as `entry.parties_set`; an empty list clears). Name both
+    /// members on a joint member transaction and let the shares derive;
+    /// give amounts (or percents) when a split is uneven or a party isn't a
+    /// member. Refused: a party named twice, an unknown party, mixed kinds
+    /// of share, percents not summing to 100, two parties with vendor
+    /// records (a 1099 counts a payment toward one vendor; the one vendor
+    /// party's record is tagged), and, once the entry has balanced lines,
+    /// shares that don't add up to what it moved.
+    pub parties: Option<Vec<PartyShareParam>>,
     /// With `party` null: mark the entry as having no counterparty, with
     /// why (journaled as `entry.no_party`). Satisfies `[books] parties =
     /// "require"`.
@@ -2804,6 +2929,8 @@ pub struct PartyOut {
     pub w9: Option<W9Out>,
     /// W-4 facts, if on file.
     pub w4: Option<W4Out>,
+    /// Taxpayer-ID facts (any role), if on file: type and last four.
+    pub tin: Option<TinOut>,
 }
 
 /// One party in `books.parties`.
@@ -2864,8 +2991,12 @@ pub struct ListPartiesOut {
 /// negative received from it; a reversal counts against its original's
 /// side. A transfer between the company's own cash accounts nets to zero.
 /// A bill is not paid until its payment is.
-/// (`ledger_core::parties::activity` computes it; the viewer shows the
-/// same numbers.)
+/// An entry naming several parties counts each one's share of that money
+/// (its amount, its percent, or its derived share: see
+/// `books.set_entry_party` `parties`); an entry whose shares don't resolve
+/// counts for none of them.
+/// (`ledger_core::parties::activity_with`, with the `[[company.members]]`,
+/// computes it; the viewer shows the same numbers.)
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct PartyTotalsOut {
     /// Paid to the party, decimal string.

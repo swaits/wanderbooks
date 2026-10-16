@@ -147,7 +147,7 @@ fn mcp_end_to_end_over_stdio() {
     // Tool listing: the narrow tools; chart is read-only.
     let list = mcp.request("tools/list", json!({}));
     let tools = list["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 91, "expected 91 tools, got {}", tools.len());
+    assert_eq!(tools.len(), 92, "expected 92 tools, got {}", tools.len());
     let chart = tools.iter().find(|t| t["name"] == "books.chart").unwrap();
     assert_eq!(chart["annotations"]["readOnlyHint"], true);
     assert!(
@@ -875,11 +875,14 @@ fn mcp_statement_pdfs_and_cpa_package_over_stdio() {
     assert!(err.contains("not pdf"), "{err}");
 
     // The CPA package carries all three statements.
-    let err = mcp.call_err("books.export_cpa_package", json!({"as_of": "2026-10-31"}));
+    let err = mcp.call_err(
+        "books.export_cpa_package",
+        json!({"as_of": "2026-10-31", "include_tins": false}),
+    );
     assert!(err.contains("cash_accounts"), "{err}");
     let pkg = mcp.call(
         "books.export_cpa_package",
-        json!({"as_of": "2026-10-31", "cash_accounts": ["1000"]}),
+        json!({"as_of": "2026-10-31", "cash_accounts": ["1000"], "include_tins": false}),
     );
     let zip_bytes = b64.decode(pkg["content_base64"].as_str().unwrap()).unwrap();
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes)).unwrap();
@@ -931,7 +934,7 @@ fn mcp_statement_pdfs_and_cpa_package_over_stdio() {
     // Without receipts, a lighter package.
     let light = mcp.call(
         "books.export_cpa_package",
-        json!({"as_of": "2026-10-31", "cash_accounts": ["1000"], "include_receipts": false}),
+        json!({"as_of": "2026-10-31", "cash_accounts": ["1000"], "include_receipts": false, "include_tins": false}),
     );
     let light = zip::ZipArchive::new(std::io::Cursor::new(
         b64.decode(light["content_base64"].as_str().unwrap())

@@ -1,4 +1,49 @@
-# STATUS — 2026-10-11 (all 10 natural next steps done; repo now public)
+# STATUS — 2026-10-16: "Served" planned, P0 paused mid-build
+
+## Now: Served (plan/served.md), paused 2026-10-16
+
+The 2026-10-16 audit of the first company's books (62 verified findings,
+20 engine defects) and the design discussion that followed produced
+`plan/served.md`: the books become a server that owns its data, agents
+reach them only through the MCP from anywhere, settings and conventions
+move into the journal, no scaffold. Phases P0-P10; the owner's decisions
+of 2026-10-16 are at the top of the plan and bind every phase.
+
+**Paused** on 2026-10-16 to save the owner's weekly usage credits. Resume
+lean: finish work solo or with one reviewer; big multi-agent fan-outs
+only when the owner asks.
+
+**P0 (guard rails) state** — three jj workspaces beside this checkout,
+none merged into `main` (main = the plan commit only):
+
+| Workspace | Change | State |
+|---|---|---|
+| `../wanderbooks-p0-misc` | `qntm` "P0: pin dev tools, honest transports doc, tools-only template" | done, committed, gates run for ledger-cli |
+| `../wanderbooks-p0-mcp` | `nuxl` WIP (~1,600 lines, 26 files) | stopped mid-build: import_local_file lockdown (roots = downloads + system temp; refuse data dir, books dir, vault, key dir, symlink escapes), tool annotations on all tools, short connect text + `books.handbook` tool/resources, bare `books://digest`, tokio mutex + spawn_blocking. Unknown how far each item got; not gated |
+| `../wanderbooks-p0-store` | `vnqq` WIP (~1,100 lines, 15 files) | stopped mid-build: `StoreError::NewerJournal`, `journal.format_set`, GUI/Snapshot distinction. Not gated |
+
+**To resume P0:** in each WIP workspace, diff against main, finish the
+items listed under "### P0" in `plan/served.md` (scope, tests, acceptance),
+run `just check` there; then stack misc -> store -> mcp on `main` in the
+default workspace, run `just check` and `cargo mutants --in-diff` on the
+P0 diff (output under ~/.cache/wanderbooks/mutants), one adversarial
+review, push (origin + github), `jj workspace forget` the three and
+delete their directories. After P0 lands, the owner reconnects the MCP
+(`/mcp` or a new session) so the new connect text loads.
+
+**Before-snapshots for later phases:** the first company's reports as of
+2026-10-11 and 2026-10-16 (journal head `d1ccd2fd…`, 355 events) are
+saved in that books dir under `goldens/p0-2026-10-16/` (exported through
+the MCP, no TINs). P1+ must reproduce them except where the P3 change log
+adjudicates a difference (cash flow, defect 1).
+
+**Then:** P1 (journal-native settings and conventions), P2 (serve locally,
+cutover; ask the owner the three plain-English cutover questions in
+plan section 10.3 first), P3-P10 as planned.
+
+---
+
+# Earlier status — 2026-10-11 (all 10 natural next steps done; repo now public)
 
 ## Where we are
 

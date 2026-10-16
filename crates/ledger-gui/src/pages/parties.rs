@@ -157,6 +157,9 @@ pub fn party_icon(p: &Party) -> &'static str {
     }
 }
 
+/// What a TIN kept in the vault says on hover.
+const TIN_COPY_HOVER: &str = "Click to copy the full number (right-click: digits only). It's read from the encrypted vault and never shown; the books keep only the last four.";
+
 /// The last four of a TIN, masked the way a truncated TIN is printed:
 /// "•••-••-1234". The books never hold more than these four digits.
 pub fn masked_tin(last4: &str) -> String {
@@ -774,7 +777,7 @@ pub fn show_party(ui: &mut Ui, b: &Books, id: PartyId, shell: &mut Shell<'_>) {
         });
         super::columns(ui, 860.0, &[1.0, 1.0], |col, ui| {
             if col == 0 {
-                facts_card(ui, party, &mut go);
+                facts_card(ui, b, party, &mut go);
             } else {
                 let mut any = false;
                 if b.files_1099(party) || party.w9.is_some() {
@@ -861,7 +864,7 @@ pub fn show_party(ui: &mut Ui, b: &Books, id: PartyId, shell: &mut Shell<'_>) {
 }
 
 /// Who they are: names, website, address, notes, ids.
-fn facts_card(ui: &mut Ui, party: &Party, go: &mut Option<Route>) {
+fn facts_card(ui: &mut Ui, b: &Books, party: &Party, go: &mut Option<Route>) {
     let p = pal(ui.ctx());
     widgets::titled_card(
         ui,
@@ -908,10 +911,18 @@ fn facts_card(ui: &mut Ui, party: &Party, go: &mut Option<Route>) {
                 ui.end_row();
                 k(ui, "Taxpayer ID");
                 match &party.tin {
+                    Some(t) if t.vault_record.is_some() => {
+                        widgets::secret_copyable(
+                            ui,
+                            RichText::new(tin_on_file(t)).monospace(),
+                            TIN_COPY_HOVER,
+                            || b.tin_from_vault(party.id),
+                        );
+                    }
                     Some(t) => {
                         ui.label(RichText::new(tin_on_file(t)).monospace())
                             .on_hover_text(
-                                "Only the last four digits are in the books; the full number is kept in the encrypted TIN vault, for the CPA package.",
+                                "Only the last four digits are in the books; the full number isn't in the vault.",
                             );
                     }
                     None => {
@@ -1008,10 +1019,19 @@ fn w9_card(ui: &mut Ui, b: &Books, party: &Party) {
                 ui.label(w.fatca_code.as_deref().unwrap_or("none"));
                 ui.end_row();
                 k(ui, "TIN");
-                ui.label(RichText::new(masked_tin(&w.tin_last4)).monospace())
-                    .on_hover_text(
-                        "Only the last four digits are in the books; the full number is kept in the vault.",
+                if w.vault_record.is_some() {
+                    widgets::secret_copyable(
+                        ui,
+                        RichText::new(masked_tin(&w.tin_last4)).monospace(),
+                        TIN_COPY_HOVER,
+                        || b.tin_from_vault(party.id),
                     );
+                } else {
+                    ui.label(RichText::new(masked_tin(&w.tin_last4)).monospace())
+                        .on_hover_text(
+                            "Only the last four digits are in the books; the full number isn't in the vault (the form is kept elsewhere).",
+                        );
+                }
                 ui.end_row();
                 k(ui, "Kept at");
                 ui.label(&w.kept_at);

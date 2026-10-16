@@ -235,13 +235,18 @@ damn CPA package."
 - **Where:** `vault/` in the books dir, listed in `.gitignore`. Never in
   the hash-chained journal, the SQLite projection, git, an export other
   than the 1099 worksheet and the CPA package (saved outside the books
-  dir), or the viewer. Nothing outside the vault holds more than the last
-  four digits.
+  dir), or anything the viewer draws. Nothing outside the vault holds
+  more than the last four digits.
 - **Who:** any party, whatever its roles: every member (their K-1 needs
   it) and every 1099 payee. The books keep the party's TIN facts (type,
   last four, the vault record's hash; `party.tin_set`), which never
   disagree with its W-9 facts' last four. The viewer shows "TIN on file
-  ••••1234 (SSN)" on the party's page, never more.
+  ••••1234 (SSN)" on the party's page, never more; clicking it copies the
+  full number (right-click: digits only), read from the vault at that
+  moment with the key in force, so people can paste it into a form
+  (Stephen, 2026-10-16: "people still need to actually access these
+  things"). The viewer never creates a key: without one it says the vault
+  is locked.
 - **What:** per party, the full TIN, its type (SSN, EIN, ITIN), and the
   W-9 file itself, each encrypted at rest (XChaCha20-Poly1305, one random
   nonce per record; the file format carries a version and the party id as

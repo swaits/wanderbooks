@@ -3702,6 +3702,7 @@ dependencies = [
  "ledger-core",
  "ledger-import",
  "ledger-store",
+ "ledger-vault",
  "notify",
  "proptest",
  "rust_decimal",

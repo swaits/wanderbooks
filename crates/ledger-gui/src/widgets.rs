@@ -308,6 +308,90 @@ pub fn copyable(ui: &mut Ui, text: RichText, value: &str) -> Response {
     .inner
 }
 
+/// A secret that copies itself when clicked but is never drawn: `text` is
+/// its masked form; `fetch` reads the real value, only on a click (or the
+/// right-click menu's "Copy digits only"). A fetch that fails shows why,
+/// beside it, for a few seconds.
+pub fn secret_copyable(
+    ui: &mut Ui,
+    text: RichText,
+    hover: &str,
+    fetch: impl Fn() -> Result<String, String>,
+) -> Response {
+    let id = ui.id().with(("secret-copy", text.text()));
+    let err_id = id.with("error");
+    let p = pal(ui.ctx());
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        let r = ui.add(egui::Label::new(text).sense(Sense::click()));
+        let recent = recently_copied(ui, id);
+        let (slot, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
+        if r.hovered() || recent {
+            ui.painter().text(
+                slot.center(),
+                egui::Align2::CENTER_CENTER,
+                if recent {
+                    egui_phosphor::regular::CHECK
+                } else {
+                    egui_phosphor::regular::COPY
+                },
+                egui::FontId::proportional(12.0),
+                if recent { p.positive } else { p.muted },
+            );
+        }
+        if r.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        let copy = |ui: &mut Ui, digits_only: bool| match fetch() {
+            Ok(v) => {
+                let v: String = if digits_only {
+                    v.chars().filter(char::is_ascii_digit).collect()
+                } else {
+                    v
+                };
+                ui.ctx().data_mut(|d| d.remove::<(f64, String)>(err_id));
+                copy_now(ui, id, &v);
+            }
+            Err(e) => {
+                let now = ui.input(|i| i.time);
+                ui.ctx().data_mut(|d| d.insert_temp(err_id, (now, e)));
+            }
+        };
+        let r = r.on_hover_text(if recent { "Copied" } else { hover });
+        if r.clicked() {
+            copy(ui, false);
+        }
+        r.context_menu(|ui| {
+            if ui
+                .button(format!("{} Copy", egui_phosphor::regular::COPY))
+                .clicked()
+            {
+                copy(ui, false);
+                ui.close();
+            }
+            if ui
+                .button(format!("{} Copy digits only", egui_phosphor::regular::COPY))
+                .clicked()
+            {
+                copy(ui, true);
+                ui.close();
+            }
+        });
+        let failed: Option<(f64, String)> = ui.ctx().data(|d| d.get_temp(err_id));
+        let now = ui.input(|i| i.time);
+        if let Some((at, e)) = failed.filter(|(at, _)| now - at < 6.0) {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_secs_f64(6.0 - (now - at)));
+            ui.add(
+                egui::Label::new(RichText::new(e).font(theme::regular(12.0)).color(p.warning))
+                    .wrap(),
+            );
+        }
+        r
+    })
+    .inner
+}
+
 /// A "Copy …" item for a right-click menu.
 pub fn copy_item(ui: &mut Ui, label: &str, value: &str) {
     if ui

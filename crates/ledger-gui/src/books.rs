@@ -15,7 +15,7 @@ use ledger_store::{Attachment, JournalLine, Reconciliation, Snapshot, Statement,
 use rust_decimal::Decimal;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::nav::Route;
 
@@ -1470,6 +1470,58 @@ impl Books {
         )
     }
 
+    /// The books dir: the folder holding `books-data/` (and `vault/`).
+    fn books_dir(&self) -> PathBuf {
+        let d = self
+            .data_dir
+            .canonicalize()
+            .unwrap_or_else(|_| self.data_dir.clone());
+        d.parent().map(Path::to_path_buf).unwrap_or(d)
+    }
+
+    /// A party's full TIN from the encrypted vault, formatted
+    /// ("123-45-6789" for an SSN or ITIN, "12-3456789" for an EIN), for the
+    /// clipboard only: never drawn on screen.
+    ///
+    /// ```text
+    /// INVARIANT 1: read only on demand (a click), never on load or paint.
+    /// INVARIANT 2: never creates a key file; a missing key is a locked
+    ///   vault ("restore it from your password manager").
+    /// INVARIANT 3: the key file in force is the server's: [vault]
+    ///   key_file, else ~/.config/wanderbooks/vault.key; one inside the
+    ///   books dir is refused, as the server refuses it.
+    /// INVARIANT 4: an error never carries the digits (the vault's errors
+    ///   are redacted); a party with no record is "not in the vault".
+    /// ```
+    pub fn tin_from_vault(&self, party: PartyId) -> Result<String, String> {
+        let key = self
+            .settings
+            .vault_key_file
+            .clone()
+            .unwrap_or_else(ledger_vault::default_key_file);
+        let books = self.books_dir();
+        if resolved(&key).starts_with(resolved(&books)) {
+            return Err(format!(
+                "The vault key file {} is inside the books folder: move it out and set [vault] key_file.",
+                key.display()
+            ));
+        }
+        let vault = ledger_vault::Vault::open(&books.join("vault"), &key, false).map_err(
+            |e| match e {
+                ledger_vault::Error::NoKey(k) => format!(
+                    "The vault is locked: its key file {} is missing. Restore it from your password manager.",
+                    k.display()
+                ),
+                other => other.to_string(),
+            },
+        )?;
+        match vault.tin(party) {
+            Ok(Some(t)) => Ok(t.formatted()),
+            Ok(None) => Err("Not in the vault on this computer.".into()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
     /// One entry's what-for, for one party (see [`PartyFlow`] INVARIANT
     /// 3): its fraction of the entry's entry_flow what_for, summing to its
     /// money share exactly (zero when the entry moves no money, like a
@@ -1894,4 +1946,29 @@ fn origin(events: &[usize], journal: &[JournalLine], closing: bool) -> &'static 
 /// as the server's digest reads them).
 fn cash_accounts(ledger: &Ledger, settings: &BooksSettings) -> Vec<AccountId> {
     ledger_store::reconcilable::cash_accounts(ledger, &settings.cash_accounts)
+}
+
+/// `path` made absolute through its nearest existing ancestor (symlinks
+/// resolved), so a path that doesn't exist yet can still be placed: the
+/// server's rule for where the vault key may live.
+fn resolved(path: &Path) -> PathBuf {
+    let abs = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_default().join(path)
+    };
+    let mut base = abs.as_path();
+    let mut rest = Vec::new();
+    while !base.exists() {
+        match (base.file_name(), base.parent()) {
+            (Some(name), Some(up)) => {
+                rest.push(name.to_os_string());
+                base = up;
+            }
+            _ => return abs,
+        }
+    }
+    let mut out = base.canonicalize().unwrap_or_else(|_| base.to_path_buf());
+    out.extend(rest.into_iter().rev());
+    out
 }

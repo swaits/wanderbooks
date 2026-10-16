@@ -354,7 +354,9 @@ goes by id). A number that is one party's id and another party's name is
 refused, never guessed.
 
 **Roles:** `vendor`, `contractor`, `customer`, `employee`, `member`,
-`payout_platform`, `tax_agency`, `financial_institution`, `landlord`.
+`payout_platform`, `tax_agency`, `government_agency` (regulators and
+registries that don't tax: a division of corporations, a licensing board),
+`financial_institution`, `landlord`.
 Vendor and customer follow the records and are never set by hand.
 
 **Rules the engine enforces** (each refusal changes nothing, the journal

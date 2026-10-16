@@ -94,6 +94,7 @@ pub fn role_label(r: Role) -> &'static str {
         Role::Member => "Member",
         Role::PayoutPlatform => "Payout platform",
         Role::TaxAgency => "Tax agency",
+        Role::GovernmentAgency => "Government agency",
         Role::FinancialInstitution => "Bank or card issuer",
         Role::Landlord => "Landlord",
     }
@@ -109,6 +110,7 @@ pub fn role_noun(r: Role) -> &'static str {
         Role::Member => "a member",
         Role::PayoutPlatform => "a payout platform",
         Role::TaxAgency => "a tax agency",
+        Role::GovernmentAgency => "a government agency",
         Role::FinancialInstitution => "a bank or card issuer",
         Role::Landlord => "a landlord",
     }
@@ -134,6 +136,8 @@ pub fn party_icon(p: &Party) -> &'static str {
     let has = |x| r.contains(&x);
     if has(Role::TaxAgency) {
         icon::BANK
+    } else if has(Role::GovernmentAgency) {
+        icon::SEAL_CHECK
     } else if has(Role::FinancialInstitution) {
         icon::BUILDING_OFFICE
     } else if has(Role::PayoutPlatform) {

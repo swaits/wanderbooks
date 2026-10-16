@@ -326,7 +326,7 @@ fn gets_1099_is_contractor_and_landlord_only() {
 #[test]
 fn role_keys_round_trip() {
     let all: BTreeSet<Role> = Role::ALL.into_iter().collect();
-    assert_eq!(all.len(), 9, "nine distinct roles");
+    assert_eq!(all.len(), 10, "ten distinct roles");
     for r in [
         Role::Vendor,
         Role::Contractor,
@@ -335,6 +335,7 @@ fn role_keys_round_trip() {
         Role::Member,
         Role::PayoutPlatform,
         Role::TaxAgency,
+        Role::GovernmentAgency,
         Role::FinancialInstitution,
         Role::Landlord,
     ] {
@@ -343,6 +344,7 @@ fn role_keys_round_trip() {
     }
     assert_eq!(Role::PayoutPlatform.key(), "payout_platform");
     assert_eq!(Role::TaxAgency.key(), "tax_agency");
+    assert_eq!(Role::GovernmentAgency.key(), "government_agency");
     assert_eq!(Role::FinancialInstitution.key(), "financial_institution");
     assert_eq!(Role::Contractor.key(), "contractor");
     assert_eq!(Role::parse("boss"), None);

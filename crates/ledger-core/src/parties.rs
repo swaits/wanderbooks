@@ -51,6 +51,9 @@ pub enum Role {
     PayoutPlatform,
     /// Taxes the company (the IRS, a state).
     TaxAgency,
+    /// Regulates or registers the company without taxing it (a secretary
+    /// of state, a division of corporations, a licensing board).
+    GovernmentAgency,
     /// Holds the company's money or credit (a bank, a card issuer).
     FinancialInstitution,
     /// Rents property to the company (gets a 1099-MISC for rent).
@@ -59,7 +62,7 @@ pub enum Role {
 
 impl Role {
     /// Every role, in display order.
-    pub const ALL: [Role; 9] = [
+    pub const ALL: [Role; 10] = [
         Role::Vendor,
         Role::Contractor,
         Role::Customer,
@@ -67,6 +70,7 @@ impl Role {
         Role::Member,
         Role::PayoutPlatform,
         Role::TaxAgency,
+        Role::GovernmentAgency,
         Role::FinancialInstitution,
         Role::Landlord,
     ];
@@ -81,6 +85,7 @@ impl Role {
             Role::Member => "member",
             Role::PayoutPlatform => "payout_platform",
             Role::TaxAgency => "tax_agency",
+            Role::GovernmentAgency => "government_agency",
             Role::FinancialInstitution => "financial_institution",
             Role::Landlord => "landlord",
         }

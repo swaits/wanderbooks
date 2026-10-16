@@ -1079,6 +1079,7 @@ fn parties_lists_by_id_and_filters_by_role() {
     let a = m.add_party("Acme Design", &["contractor"]);
     let i = m.add_party("IRS", &["tax_agency"]);
     let b = m.add_party("Bluevine", &["financial_institution"]);
+    let u = m.add_party("Utah Division of Corporations", &["government_agency"]);
     let all = m.read_only("books.parties", json!({}));
     assert!(all["year"].is_i64(), "defaults to this year");
     let ids: Vec<u64> = all["parties"]
@@ -1087,7 +1088,7 @@ fn parties_lists_by_id_and_filters_by_role() {
         .iter()
         .map(|p| p["party_id"].as_u64().unwrap())
         .collect();
-    assert_eq!(ids, [a, i, b]);
+    assert_eq!(ids, [a, i, b, u]);
     let row = &all["parties"][0];
     assert_eq!(row["name"], "Acme Design");
     assert_eq!(row["label"], "Acme Design");
@@ -1098,6 +1099,10 @@ fn parties_lists_by_id_and_filters_by_role() {
     let agencies = m.read_only("books.parties", json!({"role": "tax_agency"}));
     assert_eq!(agencies["parties"].as_array().unwrap().len(), 1);
     assert_eq!(agencies["parties"][0]["party_id"], json!(i));
+    // A regulator is its own role, not a tax agency.
+    let regulators = m.read_only("books.parties", json!({"role": "government_agency"}));
+    assert_eq!(regulators["parties"].as_array().unwrap().len(), 1);
+    assert_eq!(regulators["parties"][0]["party_id"], json!(u));
     m.refuse("books.parties", json!({"role": "wizard"}));
 }
 

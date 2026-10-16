@@ -25,7 +25,8 @@ Party {
   name: String,                // legal or trade name, as on documents
   display_name: Option<String>,
   roles: BTreeSet<Role>,       // set by hand: contractor, employee, member, payout_platform,
-                               // tax_agency, financial_institution, landlord (vendor and
+                               // tax_agency, government_agency, financial_institution,
+                               // landlord (vendor and
                                // customer follow the records; see all_roles)
   website: Option<String>,
   address: Option<String>,     // business address; no personal PII beyond it

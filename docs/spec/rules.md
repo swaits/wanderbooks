@@ -603,3 +603,69 @@ against the books).
 `tests/spec_parties.rs`, `tests/spec_vault.rs` (every response, the log,
 and every file in the books dir outside `vault/` scanned for the TINs in
 any formatting).
+
+## B-27 The journal format gate: newer is not corrupt
+
+**Status:** DECISION (Stephen, 2026-10-16; `plan/served.md` 5.1 and P0);
+DECISION (P0 review, 2026-10-16: a line's own hash is checked before the
+line is called newer; the envelope and its hash are frozen across
+formats)
+
+Every journal line has a type, and a version of wanderbooks reads a fixed
+set of them (`ledger_store::format::EVENT_TYPES`). A newer version may
+write a type an older one doesn't know, or declare a newer journal format
+with a `journal.format_set {format, features}` line before the first event
+that needs it. An older reader stops at the first line it can't read and
+says so: it never skips a line (the books it showed would differ from the
+record without saying so), and it never calls newer books corrupt.
+
+What every journal format shares is frozen, so that an older reader can
+always follow the chain one line past the first line it can't read. A
+line is the envelope `{seq, ts, type, payload, prev}` and nothing beside
+it; its hash (what the next line's `prev` holds) is the SHA-256 of its
+canonical JSON: keys sorted at every depth, no whitespace. A newer format
+puts its new fields inside `payload`, never in the envelope, and never
+changes how a line is hashed. A line with a key beside the envelope's is
+refused as newer, never read with the key dropped, and its hash covers
+the key, so the next line still checks it.
+
+Damage stays corruption. A line's seq and `prev` are checked before the
+gate, and its own hash is checked by the next line's `prev`; so when the
+gate refuses a line, the reader reads the next one first, taking only its
+`prev` (any JSON object with a string `prev`: it may use floats, a string
+seq or keys of a format this version doesn't read). If that `prev` doesn't
+match, the refused line was altered after it was written (a flipped bit in
+its type reads like an unknown type): corrupt. If it matches, the refused
+line is intact; the reader says so, and that it can't check the lines
+after it. If there is no next line, or it has no `prev` this version can
+read, nothing checks the refused line: the reader says it needs a newer
+wanderbooks or the line is damaged, and to run verify after updating, and
+never that it is intact. A newer format number is newer whatever the rest
+of its declaration looks like (a newer format may shape its features
+differently); a malformed declaration of a format this version reads is
+corrupt. A blank line, or one that isn't UTF-8 JSON, is damage, to the
+writer and the viewer alike: both read the journal as bytes split on
+newlines. A writer never declares a format it couldn't read back, or
+lowers the format in force. Opening the books checks every complete line
+before it changes anything: a cut-off last line is set aside only when the
+lines before it pass, so an older version never alters newer books.
+
+**Enforced:** `ledger_store::format` (`JournalFormat::admit`, `declared`,
+`gate`, `settle`, `declaration`), `journal::ENVELOPE_KEYS`,
+`JournalLine::parse`, `journal::read_journal_and_format`,
+`Snapshot::read_new`, `Store::open`, `Store::declare_journal_format`,
+`StoreError::NewerJournal` (its `verified` flag picks the message).
+**Checked:** `ledger-store` `tests/format.rs` (`old_reader_gets_newer_journal`,
+`a_damaged_line_that_looks_newer_is_corrupt_when_the_next_line_checks_it`,
+`an_unreadable_last_line_is_reported_as_newer_or_damaged`,
+`a_newer_line_the_next_line_chains_onto_is_newer_and_intact`,
+`a_newer_format_frames_its_lines_its_own_way`,
+`an_unknown_envelope_key_is_newer_and_checked_through`,
+`a_refused_line_followed_by_a_garbled_line_is_unverified`,
+`a_line_that_is_not_utf8_is_corrupt_for_the_viewer_and_the_writer`,
+`an_old_reader_never_repairs_newer_books`,
+`a_blank_line_is_corrupt_for_the_viewer_and_the_writer`,
+`damaged_journals_are_still_corrupt`) and the unit tests in `format.rs`;
+`ledger-gui` `tests/newer_journal.rs`; `ledger-mcp` `tests/startup.rs`;
+the `fuzz_store_replay` target (the writer and the viewer agree on newer
+versus bad).

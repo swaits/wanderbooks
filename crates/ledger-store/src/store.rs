@@ -32,6 +32,7 @@
 
 use crate::blob::BlobStore;
 use crate::error::StoreError;
+use crate::format::JournalFormat;
 use crate::journal::{
     GENESIS_PREV, JournalLine, JournalWriter, read_and_verify_journal, sha256_hex,
 };
@@ -202,6 +203,8 @@ pub struct Store {
     blobs: BlobStore,
     ledger: Ledger,
     base_currency: Currency,
+    /// The journal format in force (the format gate's record).
+    format: JournalFormat,
 }
 
 /// One filing of bytes into the blob store and journal.
@@ -254,6 +257,7 @@ impl Store {
             blobs: BlobStore::open(&data_dir.join(BLOBS_DIR))?,
             ledger: Ledger::new(base_currency),
             base_currency,
+            format: JournalFormat::default(),
         };
         let line = store.journal.append(
             "store.created",
@@ -279,10 +283,19 @@ impl Store {
     /// SCENARIOS:
     ///   1. IF there is no journal: SHOULD refuse (NotFound).
     ///   2. IF another writer has the books: SHOULD refuse (Locked).
-    ///   3. IF the last line is cut off (no newline): SHOULD set it aside,
-    ///      truncate, and journal `journal.tail_repaired`.
+    ///   3. IF the last line is cut off (no newline) and every complete
+    ///      line passes (its chain, the format gate, the first line's
+    ///      store.created, and its replay into the ledger, all in memory):
+    ///      SHOULD set it aside, truncate, and journal
+    ///      `journal.tail_repaired`; IF a complete line fails: SHOULD
+    ///      refuse with the journal byte for byte as it was.
     ///   4. IF a complete line fails its hash, parse, or `seq`: SHOULD refuse
     ///      - NEVER repair or skip it (that is corruption, for a human).
+    ///   4a. IF a whole, chained line is one this version can't read (an
+    ///      unknown type, a newer journal format, a key beside the
+    ///      envelope's): SHOULD refuse with NewerJournal before touching
+    ///      the database or the journal, a cut-off last line included
+    ///      BECAUSE a newer wanderbooks wrote it, and may be appending.
     ///   5. IF the database is missing: SHOULD rebuild it from the journal.
     ///   6. IF the database fails SQLite's integrity check, or records a
     ///      base currency other than the journal's: SHOULD keep it aside
@@ -297,14 +310,31 @@ impl Store {
         }
         // The writer lock first: nothing is read until no one else writes.
         let lock = lock_books(data_dir)?;
-        // An append cut off mid-line was never acknowledged: set it aside.
-        let torn = crate::journal::repair_torn_tail(&journal_path)?;
-        // Single verified scan; the writer reuses it.
-        let lines = read_and_verify_journal(&journal_path)?;
-        let journal = JournalWriter::from_lines(&journal_path, &lines)?;
+        // Single verified scan of the complete lines, through the format
+        // gate, before anything is changed: books from a newer wanderbooks
+        // are refused whole, never read in part, and never altered (a
+        // newer version may be mid-append). The writer reuses the scan.
+        let raw = std::fs::read(&journal_path)?;
+        let complete = raw.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
+        let (lines, format) = crate::journal::verify_journal_and_format(&raw[..complete])?;
         // The base currency comes from the journal, the source of truth; a
         // journal without a sound store.created line is corrupt.
         let base_currency = journal_currency(&lines)?;
+        // Every complete line replayed, in memory, before anything on disk
+        // changes (SCENARIO 3): a line the books can't apply refuses the
+        // open with the journal and the database as they were.
+        let mut ledger = Ledger::new(base_currency);
+        for line in &lines {
+            replay_line_into_ledger(&mut ledger, line, base_currency)?;
+        }
+        // Only then is an append cut off mid-line (never acknowledged) set
+        // aside, and journaled below.
+        let torn = if complete < raw.len() {
+            crate::journal::repair_torn_tail(&journal_path)?
+        } else {
+            None
+        };
+        let journal = JournalWriter::from_lines(&journal_path, &lines)?;
         let db_path = data_dir.join(DB_FILE);
         let mut fresh_db = !db_path.exists();
         let damage = if fresh_db {
@@ -350,8 +380,9 @@ impl Store {
             journal,
             conn,
             blobs: BlobStore::open(&data_dir.join(BLOBS_DIR))?,
-            ledger: Ledger::new(base_currency),
+            ledger,
             base_currency,
+            format,
         };
         store.catch_up(&lines)?;
         if let Some(t) = torn {
@@ -448,8 +479,9 @@ impl Store {
         Ok(())
     }
 
-    /// Replay the journal: hydrate the in-memory ledger fully, and apply to
-    /// SQLite every line past `last_applied_seq`.
+    /// Catch the projection up: apply to SQLite every line past
+    /// `last_applied_seq` (the ledger is already the replay of every line,
+    /// done in memory by [`Store::open`] before anything changed).
     fn catch_up(&mut self, lines: &[JournalLine]) -> Result<(), StoreError> {
         let last_applied: u64 = self
             .conn
@@ -461,11 +493,10 @@ impl Store {
             .optional()?
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
-        for line in lines {
-            replay_line_into_ledger(&mut self.ledger, line, self.base_currency)?;
-            if line.seq > last_applied {
-                apply_line_to_sqlite(&self.conn, line)?;
-            }
+        // The ledger is already their replay (Store::open): only the
+        // projection is caught up here.
+        for line in lines.iter().filter(|l| l.seq > last_applied) {
+            apply_line_to_sqlite(&self.conn, line)?;
         }
         Ok(())
     }
@@ -482,6 +513,41 @@ impl Store {
     /// Base currency of this store.
     pub fn base_currency(&self) -> Currency {
         self.base_currency
+    }
+
+    /// The journal format in force: format 1 unless the books declared
+    /// another with `journal.format_set`.
+    pub fn journal_format(&self) -> &JournalFormat {
+        &self.format
+    }
+
+    /// Declare the journal format: journal a `journal.format_set` line.
+    /// A writer declares the format before the first event that needs it,
+    /// so an older reader stops at the declaration and says it is too old.
+    ///
+    /// ```text
+    /// GOAL: books that tell every reader which format they are in.
+    /// SOURCE: rules.md B-27; plan/served.md 5.1 (format gate).
+    /// SCENARIOS:
+    ///   1. IF the format is newer than SUPPORTED_JOURNAL_FORMAT, or 0:
+    ///      SHOULD refuse (FormatRefused), journaling nothing
+    ///      BECAUSE this version couldn't open the books it left.
+    ///   2. IF the format is lower than the one in force: SHOULD refuse
+    ///      BECAUSE events written under it may need the higher one.
+    ///   3. IF a feature isn't in KNOWN_FEATURES: SHOULD refuse.
+    ///   4. Otherwise: SHOULD journal it (features sorted, once each) and
+    ///      make it the format in force.
+    /// ```
+    pub fn declare_journal_format(
+        &mut self,
+        format: u32,
+        features: &[&str],
+    ) -> Result<(), StoreError> {
+        let payload = self.format.declaration(format, features)?;
+        let line = self.append_journal(crate::format::FORMAT_SET, payload)?;
+        self.format = crate::format::declared(&line)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
     }
 
     /// Every torn journal tail set aside on open, oldest first, as
@@ -4416,11 +4482,14 @@ pub(crate) fn replay_line_into_ledger(
             )?;
         }
         "journal.tail_repaired" => {}
-        other => {
-            return Err(StoreError::JournalCorrupt(format!(
-                "unknown line type: {other}"
-            )));
+        "journal.format_set" => {
+            // No ledger state; a format this version can't read is
+            // refused here too, for callers that skip the gate.
+            crate::format::declared(line)?;
         }
+        // A whole, chained line of a type this version doesn't know: a
+        // newer wanderbooks wrote it (the format gate).
+        _ => return Err(crate::format::unknown_type(line)),
     }
     Ok(())
 }
@@ -4643,7 +4712,7 @@ pub(crate) fn apply_line_to_sqlite(
 fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreError> {
     let p = &line.payload;
     match line.line_type.as_str() {
-        "store.created" | "journal.tail_repaired" => {}
+        "store.created" | "journal.tail_repaired" | "journal.format_set" => {}
         "account.added" => {
             conn.execute(
                 "INSERT INTO accounts(id, code, name, type, parent, placeholder, currency) VALUES (?,?,?,?,?,?,?)",
@@ -5197,11 +5266,7 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
                 ],
             )?;
         }
-        other => {
-            return Err(StoreError::JournalCorrupt(format!(
-                "unknown line type: {other}"
-            )));
-        }
+        _ => return Err(crate::format::unknown_type(line)),
     }
     conn.execute(
         "INSERT INTO events(type, payload, created_at) VALUES (?,?,?)",
@@ -5607,12 +5672,20 @@ fn row_to_attachment(r: &rusqlite::Row) -> rusqlite::Result<Attachment> {
     })
 }
 
-/// The base currency of the books, from the journal's first line, which
-/// must be `store.created`.
+/// The base currency of a journal: its first line's, which must be a
+/// sound `store.created` ([`created_currency`]).
 fn journal_currency(lines: &[JournalLine]) -> Result<Currency, StoreError> {
     let first = lines
         .first()
         .ok_or_else(|| StoreError::JournalCorrupt("journal has no store.created line".into()))?;
+    created_currency(first)
+}
+
+/// The base currency the journal's first line sets: it must be a
+/// `store.created` line naming a currency, or the journal is corrupt. The
+/// one rule for the writer ([`Store::open`]) and the viewer
+/// ([`crate::Snapshot`]), so the two never read different books.
+pub(crate) fn created_currency(first: &JournalLine) -> Result<Currency, StoreError> {
     if first.line_type != "store.created" {
         return Err(StoreError::JournalCorrupt(
             "journal's first line is not store.created".into(),

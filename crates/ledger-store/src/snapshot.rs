@@ -16,7 +16,8 @@
 
 use crate::blob::BlobStore;
 use crate::error::StoreError;
-use crate::journal::{GENESIS_PREV, JournalLine, sha256_hex};
+use crate::format::JournalFormat;
+use crate::journal::{GENESIS_PREV, JournalLine};
 use crate::store::{
     Attachment, BLOBS_DIR, DB_FILE, JOURNAL_FILE, Reconciliation, Statement, Store, Subject,
     apply_line_to_sqlite, compare_projections, projection_rows, query_attachment_links,
@@ -71,6 +72,8 @@ pub struct Snapshot {
     offset: u64,
     /// Hash of the last line read: what the next line must chain onto.
     head: String,
+    /// The journal format in force (the format gate's record).
+    format: JournalFormat,
 }
 
 impl Snapshot {
@@ -91,6 +94,7 @@ impl Snapshot {
             lines: Vec::new(),
             offset: 0,
             head: GENESIS_PREV.to_string(),
+            format: JournalFormat::default(),
         };
         snap.read_new()?;
         Ok(snap)
@@ -114,7 +118,16 @@ impl Snapshot {
     ///   1. IF nothing was appended: SHOULD return 0 and change nothing.
     ///   2. IF the file shrank or no longer chains (a restore, a repaired
     ///      tail): SHOULD reload from scratch.
-    ///   3. IF a complete new line fails its hash or parse: SHOULD refuse.
+    ///   3. IF a complete new line fails its hash or parse (a blank line
+    ///      included, as the writer reads it): SHOULD refuse.
+    ///   4. IF a complete new line is whole and chained but one this
+    ///      version can't read (an unknown type, a newer format, a key
+    ///      beside the envelope's): SHOULD refuse with NewerJournal
+    ///      (verified or not as format::settle finds it: a next line whose
+    ///      prev doesn't match makes it corrupt), applying
+    ///      none of the new lines (as the writer refuses the books whole),
+    ///      and refuse the same way on every refresh until wanderbooks is
+    ///      updated; what was read before stays.
     /// ```
     pub fn refresh(&mut self) -> Result<usize, StoreError> {
         let len = std::fs::metadata(self.data_dir.join(JOURNAL_FILE))?.len();
@@ -145,40 +158,63 @@ impl Snapshot {
             return Ok(0);
         };
         let complete = &buf[..=last_newline];
-        let mut added = 0;
-        for raw in complete.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
-            let line: JournalLine = JournalLine::parse(raw).map_err(|e| {
-                StoreError::JournalCorrupt(format!(
-                    "seq {}: unparseable line: {e}",
-                    self.lines.len() + 1
-                ))
+        // First check every new line, as the writer does when it opens the
+        // books: parse, seq, chain, then the format gate, stopping at the
+        // first failure. A batch holding a line this version can't read is
+        // refused whole, so the viewer and the writer give the same answer
+        // for the same journal.
+        let mut format = self.format.clone();
+        let mut head = self.head.clone();
+        let mut checked: Vec<(JournalLine, String, u64)> = Vec::new();
+        let mut raws = complete
+            .split_inclusive(|&b| b == b'\n')
+            .map(|raw| (raw.len() as u64, &raw[..raw.len() - 1]))
+            .peekable();
+        while let Some((len, raw)) = raws.next() {
+            let seq = self.lines.len() + checked.len() + 1;
+            // A blank complete line is no line at all: corrupt, as the
+            // writer finds it (it never writes one).
+            let read = crate::journal::read_line(raw).map_err(|e| {
+                StoreError::JournalCorrupt(format!("seq {seq}: unparseable line: {e}"))
             })?;
-            let want_seq = self.lines.len() as u64 + 1;
-            if line.seq != want_seq {
+            let line = &read.line;
+            if line.seq != seq as u64 {
                 return Err(StoreError::JournalCorrupt(format!(
-                    "seq gap: expected {want_seq}, found {}",
+                    "seq gap: expected {seq}, found {}",
                     line.seq
                 )));
             }
-            if line.prev != self.head {
+            if line.prev != head {
                 return Err(StoreError::JournalCorrupt(format!(
                     "hash chain broken at seq {}",
                     line.seq
                 )));
             }
+            if let Err(refused) = crate::format::gate(&read, &mut |l| format.admit(l)) {
+                // Its own hash is checked by the next line's prev, when
+                // there is one (format::settle).
+                let next = raws.peek().map(|(_, raw)| *raw);
+                return Err(crate::format::settle(refused, &read.hash, next));
+            }
+            head = read.hash;
+            checked.push((read.line, head.clone(), len));
+        }
+        // Then apply them. The offset advances line by line, so if replay
+        // refuses one, the snapshot holds exactly the lines before it.
+        let added = checked.len();
+        for (line, hash, len) in checked {
             if line.seq == 1 {
-                let code = line.payload["base_currency"].as_str().unwrap_or("USD");
-                self.base_currency = Currency::new(code)
-                    .map_err(|_| StoreError::JournalCorrupt(format!("bad base_currency {code}")))?;
+                // The writer's rule: the first line is a sound store.created.
+                self.base_currency = crate::store::created_currency(&line)?;
                 self.ledger = Ledger::new(self.base_currency);
             }
+            self.format.admit(&line)?;
             replay_line_into_ledger(&mut self.ledger, &line, self.base_currency)?;
             apply_line_to_sqlite(&self.conn, &line)?;
-            self.head = sha256_hex(line.to_canonical().as_bytes());
+            self.head = hash;
             self.lines.push(line);
-            added += 1;
+            self.offset += len;
         }
-        self.offset += complete.len() as u64;
         Ok(added)
     }
 
@@ -190,6 +226,12 @@ impl Snapshot {
     /// The books' base currency.
     pub fn base_currency(&self) -> Currency {
         self.base_currency
+    }
+
+    /// The journal format in force: format 1 unless the books declared
+    /// another with `journal.format_set`.
+    pub fn journal_format(&self) -> &JournalFormat {
+        &self.format
     }
 
     /// The data directory.

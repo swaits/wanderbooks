@@ -20,6 +20,7 @@
 
 pub mod blob;
 pub mod error;
+pub mod format;
 pub mod journal;
 pub mod reconcilable;
 pub mod schema;
@@ -29,6 +30,7 @@ pub mod viewer;
 
 pub use blob::BlobStore;
 pub use error::StoreError;
+pub use format::{JournalFormat, SUPPORTED_JOURNAL_FORMAT};
 pub use journal::{GENESIS_PREV, JournalLine, JournalWriter};
 pub use snapshot::{DiskCheck, Snapshot};
 pub use store::{

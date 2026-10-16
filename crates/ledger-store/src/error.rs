@@ -55,6 +55,33 @@ pub enum StoreError {
     #[error("journal corrupt: {0}")]
     JournalCorrupt(String),
 
+    /// A whole, correctly chained journal line this version can't read:
+    /// a newer wanderbooks wrote the books. When the line after it chains
+    /// onto it (`verified`), its own bytes are checked: it is intact,
+    /// though the lines after it are the newer version's to check. When
+    /// nothing checks it (it is the last line, or the next has no `prev`
+    /// this version can read), it is either newer or damaged, and the
+    /// message says so (rules.md B-27).
+    #[error("{}", newer_journal_text(*seq, event_type, need, *verified))]
+    NewerJournal {
+        /// The first line this version can't read.
+        seq: u64,
+        /// Its type.
+        event_type: String,
+        /// What reading it needs: a journal format, features, or an event
+        /// type this version doesn't know.
+        need: String,
+        /// Whether the line's own hash was checked (the next line's `prev`
+        /// matches it). False when nothing checks it: a damaged line would
+        /// read the same.
+        verified: bool,
+    },
+
+    /// A journal format this version can't declare: newer than it reads,
+    /// lower than the books already use, or with a feature it doesn't know.
+    #[error("{0}")]
+    FormatRefused(String),
+
     /// Replay produced different ids than the journal recorded.
     #[error("replay mismatch: {0}")]
     ReplayMismatch(String),
@@ -108,4 +135,27 @@ pub enum StoreError {
     /// The requested base currency differs from the store's.
     #[error("base currency mismatch: store is {0}, requested {1}")]
     CurrencyMismatch(String, String),
+}
+
+/// What [`StoreError::NewerJournal`] says. Only a line whose own hash was
+/// checked lets it say that line is intact; it never vouches for the
+/// lines after it, which this version can't read.
+fn newer_journal_text(seq: u64, event_type: &str, need: &str, verified: bool) -> String {
+    let format = crate::format::SUPPORTED_JOURNAL_FORMAT;
+    if verified {
+        format!(
+            "these books were written by a newer version of wanderbooks: journal line {seq} \
+             ({event_type}) needs {need}, and this version reads journal format {format}. \
+             Update wanderbooks to open them. Line {seq} is intact (the line after it checks \
+             it); this version can't check the lines after it"
+        )
+    } else {
+        format!(
+            "journal line {seq} ({event_type}) needs {need}, and this version reads journal \
+             format {format}. Nothing this version can read checks that line (it is the last \
+             line, or the line after it isn't one this version reads): either a newer version \
+             of wanderbooks wrote it, or the line is damaged. Update wanderbooks, then run \
+             verify to tell which"
+        )
+    }
 }

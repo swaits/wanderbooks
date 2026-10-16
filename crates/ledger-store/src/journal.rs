@@ -10,11 +10,12 @@
 //! and the chain verifies.
 
 use crate::error::StoreError;
+use crate::format::JournalFormat;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// `prev` value of the first journal line: 64 zeros.
@@ -28,9 +29,11 @@ pub struct JournalLine {
     /// UTC timestamp, RFC 3339. Recorded, never trusted for ordering.
     pub ts: String,
     /// Event type, e.g. `account.added`, `entry.posted`, `asset.tagged`:
-    /// every type the store writes has a replay arm in
-    /// `replay_line_into_ledger` (an unknown type is refused as corrupt),
-    /// and journal text in the viewer (`ledger-gui` tests check both).
+    /// every type the store writes is in [`crate::format::EVENT_TYPES`],
+    /// has a replay arm in `replay_line_into_ledger`, and has journal text
+    /// in the viewer (`ledger-store` and `ledger-gui` tests check). A type
+    /// this version doesn't know is refused as `NewerJournal`, not as
+    /// corrupt: a newer wanderbooks wrote it.
     #[serde(rename = "type")]
     pub line_type: String,
     /// The full domain facts. Everything a replay needs.
@@ -67,6 +70,12 @@ fn sort_value(v: &Value) -> Value {
     }
 }
 
+/// The keys of a journal line, the same in every journal format
+/// (rules.md B-27): a newer format adds its fields inside `payload`, never
+/// beside it, and a line's hash is always the SHA-256 of its canonical
+/// JSON ([`canonical_json`]), whatever the format.
+pub const ENVELOPE_KEYS: [&str; 5] = ["payload", "prev", "seq", "ts", "type"];
+
 impl JournalLine {
     /// Parse one journal line, refusing what the journal never holds.
     ///
@@ -74,20 +83,68 @@ impl JournalLine {
     /// GOAL: read a journal line so that its canonical form (which the
     ///       hash chain covers) is a fixed point.
     /// SOURCE: R-2 (no floats in money paths); found by fuzz_journal_line
-    ///         (2026-10-13): a float payload re-canonicalized differently.
+    ///         (2026-10-13): a float payload re-canonicalized differently;
+    ///         rules.md B-27 (the envelope is frozen).
     /// INVARIANTS:
     ///   1. NEVER accepts a floating-point number anywhere in the line:
     ///      amounts are decimal strings and ids are integers.
-    ///   2. For an accepted line, parse(canonical) re-canonicalizes to the
+    ///   2. NEVER drops a key: a line with a key beside the five of
+    ///      ENVELOPE_KEYS is refused (the store's reader calls it newer).
+    ///   3. For an accepted line, parse(canonical) re-canonicalizes to the
     ///      same bytes.
     /// ```
     pub fn parse(raw: &[u8]) -> Result<JournalLine, String> {
-        let value: Value = serde_json::from_slice(raw).map_err(|e| e.to_string())?;
-        if has_float(&value) {
-            return Err("a number with a fraction or exponent; the journal holds none".into());
+        let read = read_line(raw)?;
+        if read.unknown_keys.is_empty() {
+            Ok(read.line)
+        } else {
+            Err(format!(
+                "line fields this version doesn't know: {}",
+                read.unknown_keys.join(", ")
+            ))
         }
-        serde_json::from_value(value).map_err(|e| e.to_string())
     }
+}
+
+/// One journal line as the store's readers take it in.
+pub(crate) struct ReadLine {
+    /// The line, without any key this version doesn't know.
+    pub line: JournalLine,
+    /// SHA-256 of the line's canonical JSON, every key included: what the
+    /// next line's `prev` must be.
+    pub hash: String,
+    /// Keys beside [`ENVELOPE_KEYS`], sorted: none in any line this
+    /// version writes.
+    pub unknown_keys: Vec<String>,
+}
+
+/// Read one journal line (JournalLine::parse INVARIANT 1), keeping the
+/// keys this version doesn't know out of the line but in its hash, so a
+/// reader can still check the chain through it.
+pub(crate) fn read_line(raw: &[u8]) -> Result<ReadLine, String> {
+    let mut value: Value = serde_json::from_slice(raw).map_err(|e| e.to_string())?;
+    if has_float(&value) {
+        return Err("a number with a fraction or exponent; the journal holds none".into());
+    }
+    let hash = sha256_hex(canonical_json(&value).as_bytes());
+    let mut unknown_keys = Vec::new();
+    if let Value::Object(map) = &mut value {
+        unknown_keys = map
+            .keys()
+            .filter(|k| !ENVELOPE_KEYS.contains(&k.as_str()))
+            .cloned()
+            .collect();
+        unknown_keys.sort();
+        for k in &unknown_keys {
+            map.remove(k);
+        }
+    }
+    let line = serde_json::from_value(value).map_err(|e| e.to_string())?;
+    Ok(ReadLine {
+        line,
+        hash,
+        unknown_keys,
+    })
 }
 
 fn has_float(v: &Value) -> bool {
@@ -193,16 +250,72 @@ impl JournalWriter {
 
 /// Read and fully verify a journal: every line parses, seqs are gapless from
 /// 1, and the hash chain is intact. Any failure names the offending seq.
+/// This is the journal's own integrity, whatever its lines' types; opening
+/// the books also passes every line through the format gate
+/// ([`read_journal_and_format`]).
 pub fn read_and_verify_journal(path: &Path) -> Result<Vec<JournalLine>, StoreError> {
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
+    verify_lines(&std::fs::read(path)?, |_| Ok(()))
+}
+
+/// [`read_and_verify_journal`] with the format gate, also returning the
+/// journal format in force.
+///
+/// ```text
+/// GOAL: books read whole and verified, or refused with the reason.
+/// SOURCE: docs/receipt-store.md "Line format"; rules.md B-27.
+/// INVARIANTS:
+///   1. Line by line, in order: parse, seq, chain, then the format gate.
+///   2. Damage before the first line this version can't read is
+///      JournalCorrupt, that line included: its seq and prev are checked
+///      before the gate, and its own hash by the next line's prev
+///      (format::settle), so a flipped bit in its type is corrupt, not
+///      newer.
+///   3. At the first whole, chained line this version can't read (an
+///      unknown type, a newer journal.format_set, or a key beside the
+///      envelope's): SHOULD stop with NewerJournal (verified when the next
+///      line's prev matches it; unverified, saying "newer or damaged",
+///      when there is no next line or it has no prev this version can
+///      read)
+///      BECAUSE a newer format may frame later lines in ways this version
+///      can't check; judging them is the newer version's job.
+///   4. The journal is read as bytes, split on newlines, as the viewer
+///      reads it (crate::Snapshot): a line that isn't UTF-8 JSON is
+///      JournalCorrupt, never an I/O error.
+/// ```
+pub fn read_journal_and_format(
+    path: &Path,
+) -> Result<(Vec<JournalLine>, JournalFormat), StoreError> {
+    verify_journal_and_format(&std::fs::read(path)?)
+}
+
+/// [`read_journal_and_format`] over a journal's bytes (`raw`).
+pub(crate) fn verify_journal_and_format(
+    raw: &[u8],
+) -> Result<(Vec<JournalLine>, JournalFormat), StoreError> {
+    let mut format = JournalFormat::default();
+    let lines = verify_lines(raw, |line| format.admit(line))?;
+    Ok((lines, format))
+}
+
+/// Check each line of `raw` (bytes, split on newlines; a final newline
+/// ends the last line): its parse, seq and chain, then `admit` on it, in
+/// order; the first failure stops the read.
+fn verify_lines(
+    raw: &[u8],
+    mut admit: impl FnMut(&JournalLine) -> Result<(), StoreError>,
+) -> Result<Vec<JournalLine>, StoreError> {
     let mut lines = Vec::new();
+    if raw.is_empty() {
+        return Ok(lines);
+    }
+    let body = raw.strip_suffix(b"\n").unwrap_or(raw);
     let mut expected_prev = GENESIS_PREV.to_string();
-    for (i, raw) in reader.lines().enumerate() {
-        let raw = raw?;
-        let line: JournalLine = JournalLine::parse(raw.as_bytes()).map_err(|e| {
+    let mut raws = body.split(|&b| b == b'\n').enumerate().peekable();
+    while let Some((i, raw)) = raws.next() {
+        let read = read_line(raw).map_err(|e| {
             StoreError::JournalCorrupt(format!("seq {}: unparseable line: {e}", i + 1))
         })?;
+        let line = &read.line;
         let want_seq = i as u64 + 1;
         if line.seq != want_seq {
             return Err(StoreError::JournalCorrupt(format!(
@@ -216,8 +329,14 @@ pub fn read_and_verify_journal(path: &Path) -> Result<Vec<JournalLine>, StoreErr
                 line.seq
             )));
         }
-        expected_prev = sha256_hex(line.to_canonical().as_bytes());
-        lines.push(line);
+        if let Err(refused) = crate::format::gate(&read, &mut admit) {
+            // A line's own hash is checked only by the next line's prev:
+            // read it before saying whether the books are newer or damaged.
+            let next = raws.peek().map(|(_, next)| *next);
+            return Err(crate::format::settle(refused, &read.hash, next));
+        }
+        expected_prev = read.hash;
+        lines.push(read.line);
     }
     Ok(lines)
 }

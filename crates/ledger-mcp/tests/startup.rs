@@ -172,3 +172,42 @@ fn a_held_lock_is_refused_not_waited_on_forever() {
         "gave up before waiting"
     );
 }
+
+/// Books written by a newer wanderbooks: the server won't start on them,
+/// and says to update it, not that the books are corrupt (rules.md B-27).
+#[test]
+fn newer_books_are_refused_as_newer_not_corrupt() {
+    let dir = temp("newer");
+    drop(ledger_store::Store::create(&dir, ledger_core::Currency::USD).unwrap());
+    let mut w = ledger_store::JournalWriter::open(&dir.join(ledger_store::JOURNAL_FILE)).unwrap();
+    w.append(
+        "journal.format_set",
+        serde_json::json!({"format": 2, "features": []}),
+    )
+    .unwrap();
+    // The next line chains onto it, so its bytes are checked (B-27).
+    w.append(
+        "fx.rate_set",
+        serde_json::json!({"currency": "EUR", "date": "2026-10-01", "rate": "1.10"}),
+    )
+    .unwrap();
+    let journal = std::fs::read(dir.join(ledger_store::JOURNAL_FILE)).unwrap();
+    let out = Command::new(BIN)
+        .arg("--data-dir")
+        .arg(&dir)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("written by a newer version of wanderbooks"),
+        "{err}"
+    );
+    assert!(err.contains("Update wanderbooks"), "{err}");
+    assert!(!err.contains("corrupt"), "{err}");
+    assert_eq!(
+        std::fs::read(dir.join(ledger_store::JOURNAL_FILE)).unwrap(),
+        journal
+    );
+}

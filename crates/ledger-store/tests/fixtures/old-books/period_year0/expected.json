@@ -1,0 +1,46 @@
+{
+  "assets": [],
+  "bills": [],
+  "entries": [],
+  "entry_parties": [],
+  "invoices": [],
+  "payroll_runs": [],
+  "periods": [
+    {
+      "close_seq": null,
+      "closing_entry": null,
+      "end": "0000-12-31",
+      "id": 1,
+      "member_close": null,
+      "name": "y0",
+      "start": "0000-01-01",
+      "status": "Open"
+    }
+  ],
+  "recurring": [],
+  "schedules": [],
+  "snapshot": {
+    "Ok": {
+      "balance_sheet": {
+        "assets": "0",
+        "balanced": true,
+        "current_earnings": "0",
+        "equity": "0",
+        "liabilities": "0"
+      },
+      "profit_and_loss": {
+        "expenses": "0",
+        "net_income": "0",
+        "revenue": "0"
+      },
+      "trial_balance": {
+        "lines": [],
+        "total_credits": "0",
+        "total_debits": "0"
+      }
+    }
+  },
+  "verify": {
+    "Ok": null
+  }
+}

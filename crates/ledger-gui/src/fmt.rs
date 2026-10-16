@@ -31,6 +31,21 @@ pub fn money(d: Decimal) -> String {
     }
 }
 
+/// What the viewer shows for a figure the books can't compute (rules.md
+/// B-28: an earlier version's draft lines, shares, or bases past exact
+/// arithmetic): said in words, never a number.
+pub const CANT_COMPUTE: &str = "too large to compute";
+
+/// [`money`], or [`CANT_COMPUTE`] for a figure the books can't compute.
+pub fn money_or(d: Option<Decimal>) -> String {
+    d.map_or_else(|| CANT_COMPUTE.to_string(), money)
+}
+
+/// [`dollars`], or [`CANT_COMPUTE`] for a figure the books can't compute.
+pub fn dollars_or(d: Option<Decimal>) -> String {
+    d.map_or_else(|| CANT_COMPUTE.to_string(), dollars)
+}
+
 /// Accounting style: negatives in parentheses, `(1,234.56)`.
 pub fn accounting(d: Decimal) -> String {
     let s = group(d.abs());
@@ -216,6 +231,18 @@ pub fn tax_form(f: ledger_core::TaxForm) -> &'static str {
 mod tests {
     use super::*;
     use std::str::FromStr;
+
+    /// money_or / dollars_or: a figure as money_ or dollars does, and one
+    /// the books can't compute in words, never a number (rules.md B-28).
+    #[test]
+    fn a_figure_or_why_not() {
+        let v = Decimal::new(-123_456, 2);
+        assert_eq!(money_or(Some(v)), money(v));
+        assert_eq!(dollars_or(Some(v)), dollars(v));
+        assert_eq!(money_or(None), CANT_COMPUTE);
+        assert_eq!(dollars_or(None), CANT_COMPUTE);
+        assert_eq!(CANT_COMPUTE, "too large to compute");
+    }
 
     fn dec(s: &str) -> Decimal {
         Decimal::from_str(s).unwrap()

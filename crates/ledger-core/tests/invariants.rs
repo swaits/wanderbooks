@@ -196,20 +196,52 @@ fn negative_amount_line_is_rejected() {
     );
 }
 
+fn kernel_max() -> Decimal {
+    ledger_core::kernel::MAX_LINE_AMOUNT
+}
+
 #[test]
 fn out_of_range_amount_is_rejected() {
     let c = fixture_company();
     let mut ledger = c.ledger;
-    // Big enough to overflow a sum: an error, never a panic.
+    // Big enough to overflow a sum: an error, never a panic, as soon as
+    // the line is added (a draft is summed before it posts: its debits,
+    // its parties' shares; P0 review round 3, S1). Replayed as an earlier
+    // version wrote it (rules.md B-28): accepted into its draft, whose
+    // post refuses it, never a panic.
     let id = ledger.create_entry(date(21), "Too big");
-    let big = Money::new(Decimal::MAX, Currency::USD);
-    ledger.add_line(id, c.cash, Side::Debit, big).unwrap();
-    ledger.add_line(id, c.cash, Side::Debit, big).unwrap();
-    ledger.add_line(id, c.equity, Side::Credit, big).unwrap();
+    let old = ledger.create_entry(date(21), "Too big, journaled before the bound");
+    for amount in [
+        Decimal::MAX,
+        Decimal::MIN,
+        kernel_max() + Decimal::new(1, 2),
+    ] {
+        let big = Money::new(amount, Currency::USD);
+        assert_eq!(
+            ledger.add_line(id, c.cash, Side::Debit, big).unwrap_err(),
+            LedgerError::AmountOutOfRange
+        );
+        ledger
+            .replay_add_line(old, c.cash, Side::Debit, big)
+            .unwrap();
+    }
+    let max_usd = Money::new(Decimal::MAX, Currency::USD);
+    ledger
+        .replay_add_line(old, c.equity, Side::Credit, max_usd)
+        .unwrap();
     assert_eq!(
-        ledger.post_entry(id).unwrap_err(),
+        ledger.post_entry(old).unwrap_err(),
         LedgerError::AmountOutOfRange
     );
+    assert_eq!(
+        ledger.replay_post_entry(old).unwrap_err(),
+        LedgerError::AmountOutOfRange
+    );
+    // The largest line goes in, and posts.
+    let max = Money::new(kernel_max(), Currency::USD);
+    ledger.add_line(id, c.cash, Side::Debit, max).unwrap();
+    ledger.add_line(id, c.equity, Side::Credit, max).unwrap();
+    ledger.post_entry(id).unwrap();
     // Too precise: refused as soon as it is added (finer than a cent)...
     let id = ledger.create_entry(date(21), "Too precise");
     let tiny = Money::new("0.00000000001".parse().unwrap(), Currency::USD);
@@ -1426,7 +1458,7 @@ fn replayed_documents_and_payments_rebuild_the_records() {
         .unwrap();
     let i = l.get_invoice(inv).unwrap();
     assert_eq!(i.amount_paid, Decimal::from(50));
-    assert_eq!(i.balance(), Decimal::from(50));
+    assert_eq!(i.balance().unwrap(), Decimal::from(50));
     assert_eq!(i.status, DocumentStatus::Partial);
 
     let bill = l.next_bill_id();

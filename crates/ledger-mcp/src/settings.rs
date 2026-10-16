@@ -107,7 +107,9 @@ impl Source {
         } else {
             ledger_config::BooksSettings::default()
         };
-        let policy = ledger_config::effective_receipt_policy(&self.config_json, &books)?;
+        // config.json sits in the data dir, which no message names.
+        let policy = ledger_config::effective_receipt_policy(&self.config_json, &books)
+            .map_err(|e| e.replace(&self.config_json.display().to_string(), "config.json"))?;
         Ok(Settings {
             asset_tag_prefix: books.asset_tag_prefix(),
             vault_key_file: books.vault_key_file.clone(),
@@ -140,8 +142,9 @@ pub struct Status {
     pub books_toml: Option<PathBuf>,
     /// Whether that file exists now.
     pub books_toml_exists: bool,
-    /// The config.json read.
-    pub config_json: Option<PathBuf>,
+    /// Whether a config.json is read (it sits in the data dir, which is
+    /// never named).
+    pub config_json_present: bool,
     /// Why the last change failed to load (the last good settings stay in
     /// force), or `None`.
     pub error: Option<String>,
@@ -219,7 +222,7 @@ impl Live {
         Status {
             books_toml: self.source.as_ref().map(|s| s.books_toml.clone()),
             books_toml_exists: self.source.as_ref().is_some_and(|s| s.books_toml.exists()),
-            config_json: self.source.as_ref().map(|s| s.config_json.clone()),
+            config_json_present: self.source.as_ref().is_some_and(|s| s.config_json.exists()),
             error: self.error.clone(),
             loads: self.loads,
         }
@@ -282,6 +285,19 @@ mod tests {
         assert!(live.status().error.is_some());
     }
 
+    /// config.json sits in the data dir, which no tool result names: a
+    /// broken one is reported by name, never by its path.
+    #[test]
+    fn a_broken_config_json_never_names_the_data_dir() {
+        let d = dir("json-broken");
+        std::fs::write(d.join("config.json"), "{ not json").unwrap();
+        let err = Live::watching(source(&d, false)).unwrap_err();
+        assert!(err.contains("config.json"), "{err}");
+        assert!(!err.contains(d.to_str().unwrap()), "{err}");
+        let status = Live::fixed(Settings::default()).status();
+        assert!(!status.config_json_present);
+    }
+
     /// The receipt policy in config.json is watched too.
     #[test]
     fn the_config_json_policy_reloads() {
@@ -292,14 +308,14 @@ mod tests {
         )
         .unwrap();
         let mut live = Live::watching(source(&d, true)).unwrap();
-        let before = live.current().policy.rule();
+        let before = live.current().policy.rule("USD");
         std::fs::write(
             d.join("config.json"),
             r#"{"receipt_policy": {"require_receipts_above": "0.00"}}"#,
         )
         .unwrap();
         live.refresh();
-        assert_ne!(live.current().policy.rule(), before);
+        assert_ne!(live.current().policy.rule("USD"), before);
         assert!(live.status().error.is_none(), "{:?}", live.status().error);
     }
 

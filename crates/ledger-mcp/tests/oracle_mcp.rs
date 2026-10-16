@@ -85,6 +85,14 @@ fn books_toml(dir: &Path, threshold: &str) -> PathBuf {
     path
 }
 
+/// The server's import root, beside the books (never the books dir): files
+/// given to books.import_local_file.
+fn inbox(dir: &Path) -> PathBuf {
+    let inbox = dir.with_extension("inbox");
+    std::fs::create_dir_all(&inbox).unwrap();
+    inbox
+}
+
 fn data_dir(dir: &Path) -> PathBuf {
     dir.join("books-data")
 }
@@ -99,6 +107,8 @@ impl Mcp {
             .arg(data_dir(dir))
             .arg("--books-toml")
             .arg(&toml)
+            .arg("--import-root")
+            .arg(inbox(dir))
             .env("XDG_RUNTIME_DIR", &run)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -1868,6 +1878,14 @@ fn digest_reports_journal_repairs_since_the_date() {
     assert_eq!(repairs.len(), 1, "the digest reports it: {out}");
     assert_eq!(repairs[0]["at"], want[0].0.as_str());
     assert_eq!(repairs[0]["bytes"], json!(want[0].1));
+    // Only the stamp the bytes were set aside under: never the journal's
+    // file name (plan I-12).
+    let stamp = want[0].2.rsplit_once(".torn.").unwrap().1;
+    assert_eq!(repairs[0]["set_aside"], stamp);
+    assert!(
+        !out.to_string().contains(ledger_store::JOURNAL_FILE),
+        "{out}"
+    );
     let mut m = Mcp::start(&dir, "1000000.00");
     let later = m.ok("books.digest", json!({"since": "2999-01-01"}));
     assert_eq!(later["journal_repairs"], json!([]), "none since 2999");
@@ -2115,7 +2133,10 @@ fn receipts_and_documents_round_trip() {
         json!({"category": "legal", "file_name": "oa.png", "mime_type": "image/png",
                "content_base64": b64e(second), "description": "Operating agreement"}),
     );
-    let local_doc = dir.join("ein-letter.pdf");
+    // Local files come from outside the books, in the server's import
+    // folder (local_files.rs).
+    let inbox = inbox(&dir);
+    let local_doc = inbox.join("ein-letter.pdf");
     std::fs::write(&local_doc, b"EIN letter bytes").unwrap();
     let c = m.ok(
         "books.import_local_file",
@@ -2123,7 +2144,7 @@ fn receipts_and_documents_round_trip() {
                "document_category": "tax", "description": "IRS CP 575"}),
     );
     assert_eq!(c["file_name"], "ein-letter.pdf");
-    let local_receipt = dir.join("scan.png");
+    let local_receipt = inbox.join("scan.png");
     std::fs::write(&local_receipt, b"a scanned receipt").unwrap();
     let r = m.ok(
         "books.import_local_file",
@@ -2135,6 +2156,18 @@ fn receipts_and_documents_round_trip() {
         "books.import_local_file",
         json!({"path": local_receipt.to_str().unwrap(), "category": "photo"}),
     );
+    // Nothing of the books is ever read back in through a path: outside
+    // the import folders, it gets the one refusal any path there gets.
+    let journal = data_dir(&dir).join(ledger_store::JOURNAL_FILE);
+    for p in [journal, dir.join("wanderbooks-1000000.00.toml")] {
+        assert!(p.exists());
+        let why = m.refuse(
+            "books.import_local_file",
+            json!({"path": p.to_str().unwrap(), "category": "document"}),
+        );
+        assert!(why.contains("import folders"), "{why}");
+        assert!(!why.contains(dir.to_str().unwrap()), "names a path: {why}");
+    }
 
     // (result, bytes, file name, MIME type, entry, description)
     type Case<'a> = (&'a Value, &'a [u8], &'a str, &'a str, Option<u64>, &'a str);
@@ -2217,6 +2250,18 @@ fn receipts_and_documents_round_trip() {
 fn uploads_up_to_25_mib_are_accepted_and_no_more() {
     const LIMIT: usize = 25 * 1024 * 1024;
     let dir = test_dir("limits");
+    // Over 50 MB of books: removed however the test ends (the system temp
+    // dir is often RAM, and a mutation run starts this test hundreds of
+    // times).
+    struct Cleanup(Vec<PathBuf>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            for d in &self.0 {
+                let _ = std::fs::remove_dir_all(d);
+            }
+        }
+    }
+    let _cleanup = Cleanup(vec![dir.clone(), inbox(&dir)]);
     let s = new_store(&dir);
     drop(s);
     let mut m = Mcp::start(&dir, "1000000.00");
@@ -2247,7 +2292,7 @@ fn uploads_up_to_25_mib_are_accepted_and_no_more() {
     }
 
     for (n, accepted) in [(2 * 1024 * 1024, true), (LIMIT, true), (LIMIT + 1, false)] {
-        let path = dir.join(format!("local-{n}.bin"));
+        let path = inbox(&dir).join(format!("local-{n}.bin"));
         std::fs::write(&path, vec![b'c' ^ (n % 7) as u8; n]).unwrap();
         let args = json!({"path": path.to_str().unwrap(), "category": "receipt"});
         if accepted {

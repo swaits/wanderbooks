@@ -126,8 +126,22 @@ pub fn payout_plan(
                 a.code
             )));
         }
+        // No larger than a journal line may be: the payout's totals are
+        // sums of them (P0 review round 3, S1).
+        if !crate::kernel::Amount::in_line_range(amount) {
+            return Err(LedgerError::ValueOutOfRange(format!(
+                "{role} amount {amount} on {}",
+                a.code
+            )));
+        }
         Ok(())
     };
+    if !crate::kernel::Amount::in_line_range(payout.deposit) {
+        return Err(LedgerError::ValueOutOfRange(format!(
+            "deposit {}",
+            payout.deposit
+        )));
+    }
     let deposit_account = chart
         .get(payout.deposit_account)
         .ok_or(LedgerError::UnknownAccount(payout.deposit_account))?;

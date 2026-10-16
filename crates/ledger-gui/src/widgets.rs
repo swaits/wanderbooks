@@ -564,3 +564,25 @@ pub fn fit_font(
     }
     font((size * width / measured).floor().max(floor))
 }
+
+/// A date picker for `d` (`id` its egui id salt), returning the date
+/// picked. The picker's calendar holds years -9999 through 9999; a date
+/// outside them (books an earlier version wrote may hold one, rules.md
+/// B-28) is shown as text and kept, never truncated into another year.
+pub fn date_picker(ui: &mut Ui, id: &str, d: chrono::NaiveDate) -> chrono::NaiveDate {
+    use chrono::Datelike;
+    let jiff_date = i16::try_from(d.year())
+        .ok()
+        .and_then(|y| jiff::civil::Date::new(y, d.month() as i8, d.day() as i8).ok());
+    let Some(mut j) = jiff_date else {
+        ui.label(crate::fmt::date(d));
+        return d;
+    };
+    ui.add(
+        egui_extras::DatePickerButton::new(&mut j)
+            .id_salt(id)
+            .calendar_week(false),
+    );
+    chrono::NaiveDate::from_ymd_opt(i32::from(j.year()), j.month() as u32, j.day() as u32)
+        .unwrap_or(d)
+}

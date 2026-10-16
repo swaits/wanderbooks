@@ -231,7 +231,37 @@ fn registration_rejects_date_overflow() {
             expense_account: expense,
         })
         .unwrap_err();
-    assert!(matches!(err, ledger_core::LedgerError::AssetDateOverflow));
+    assert!(matches!(
+        err,
+        ledger_core::LedgerError::DateOutOfRange(d) if d == NaiveDate::MAX
+    ));
+    // Inside the calendar the books keep (ledger_core::calendar), but a
+    // life that runs past its last day: refused too, whatever chrono
+    // could still reach (P0 review round 3, S1).
+    let new = |date: NaiveDate, months: u32| NewAsset {
+        description: "Late machine".to_string(),
+        purchase_date: date,
+        cost: usd("1000"),
+        salvage_value: usd("0"),
+        useful_life_months: months,
+        cost_account: cost,
+        accum_depr_account: accum,
+        expense_account: expense,
+    };
+    let d = |y, m, day| NaiveDate::from_ymd_opt(y, m, day).unwrap();
+    for (date, months) in [
+        (d(9999, 6, 1), 12),
+        (d(9999, 12, 31), 1),
+        (d(2026, 1, 1), u32::MAX),
+    ] {
+        assert!(matches!(
+            ledger.register_asset(new(date, months)).unwrap_err(),
+            ledger_core::LedgerError::AssetDateOverflow
+        ));
+    }
+    // A life that ends on the calendar's last day is kept.
+    ledger.register_asset(new(d(9999, 11, 30), 1)).unwrap();
+    ledger.register_asset(new(d(1, 1, 1), 12)).unwrap();
 }
 
 #[test]

@@ -780,7 +780,7 @@ fn register_agrees_with_the_books_when_depreciation_is_posted() {
     let (mut l, _, laptop, server) = register_fixture();
     l.set_asset_tag(laptop, "FL-0001").unwrap();
     l.set_asset_serial(laptop, Some("C02XG0FDJGH5")).unwrap();
-    let r = fixed_asset_register(&l, date(2026, 3, 31));
+    let r = fixed_asset_register(&l, date(2026, 3, 31)).unwrap();
     assert_eq!(r.as_of, date(2026, 3, 31));
     assert_eq!(r.rows.len(), 2);
     // INVARIANT 1: registration order.
@@ -817,7 +817,7 @@ fn register_agrees_with_the_books_when_depreciation_is_posted() {
 #[test]
 fn register_shows_unposted_depreciation() {
     let (l, _, _, _) = register_fixture();
-    let r = fixed_asset_register(&l, date(2026, 4, 30));
+    let r = fixed_asset_register(&l, date(2026, 4, 30)).unwrap();
     assert_eq!(r.total_accumulated, d("4400.00"));
     assert_eq!(r.ledger_accumulated, d("3300.00"));
     assert_eq!(r.unposted_depreciation(), d("1100.00"));
@@ -830,7 +830,7 @@ fn register_shows_unposted_depreciation() {
 fn register_shows_overposted_depreciation_as_negative() {
     let (mut l, a, _, _) = register_fixture();
     depreciate(&mut l, &a, a.accum, date(2026, 3, 31), "50.00");
-    let r = fixed_asset_register(&l, date(2026, 3, 31));
+    let r = fixed_asset_register(&l, date(2026, 3, 31)).unwrap();
     assert_eq!(r.ledger_accumulated, d("3350.00"));
     assert_eq!(r.unposted_depreciation(), d("-50.00"));
 }
@@ -839,7 +839,7 @@ fn register_shows_overposted_depreciation_as_negative() {
 #[test]
 fn register_ledger_balances_are_as_of_the_date() {
     let (l, _, _, _) = register_fixture();
-    let r = fixed_asset_register(&l, date(2026, 2, 28));
+    let r = fixed_asset_register(&l, date(2026, 2, 28)).unwrap();
     assert_eq!(r.total_accumulated, d("2200.00"));
     assert_eq!(r.ledger_accumulated, d("2200.00"));
     assert_eq!(r.ledger_cost, d("14400.00"));
@@ -852,7 +852,7 @@ fn register_ledger_balances_are_as_of_the_date() {
 fn register_accumulated_mid_month_follows_the_schedule() {
     let (l, _, laptop, server) = register_fixture();
     let on = date(2026, 5, 17);
-    let r = fixed_asset_register(&l, on);
+    let r = fixed_asset_register(&l, on).unwrap();
     let la = accumulated_depreciation(l.get_asset(laptop).unwrap(), on);
     let sa = accumulated_depreciation(l.get_asset(server).unwrap(), on);
     assert_eq!(r.rows[0].accumulated, la);
@@ -867,7 +867,7 @@ fn register_accumulated_mid_month_follows_the_schedule() {
 fn register_shows_unregistered_cost() {
     let (mut l, a, _, _) = register_fixture();
     buy(&mut l, &a, a.equipment, date(2026, 2, 10), "500.00");
-    let r = fixed_asset_register(&l, date(2026, 3, 31));
+    let r = fixed_asset_register(&l, date(2026, 3, 31)).unwrap();
     assert_eq!(r.ledger_cost, d("14900.00"));
     assert_eq!(r.total_cost, d("14400.00"));
     assert_eq!(r.unregistered_cost(), d("500.00"));
@@ -875,7 +875,7 @@ fn register_shows_unregistered_cost() {
     let (mut l2, a2) = fixture();
     l2.register_asset(equipment(&a2, "Unpaid", "800.00", 8, date(2026, 1, 1)))
         .unwrap();
-    let r2 = fixed_asset_register(&l2, date(2026, 1, 31));
+    let r2 = fixed_asset_register(&l2, date(2026, 1, 31)).unwrap();
     assert_eq!(r2.ledger_cost, Decimal::ZERO);
     assert_eq!(r2.unregistered_cost(), d("-800.00"));
     assert_eq!(r2.unposted_depreciation(), d("100.00"));
@@ -889,11 +889,11 @@ fn register_leaves_out_assets_not_yet_in_service() {
     let chair = l
         .register_asset(equipment(&a, "Chair", "600.00", 6, date(2026, 6, 1)))
         .unwrap();
-    let r = fixed_asset_register(&l, date(2026, 5, 31));
+    let r = fixed_asset_register(&l, date(2026, 5, 31)).unwrap();
     let ids: Vec<AssetId> = r.rows.iter().map(|x| x.asset_id).collect();
     assert_eq!(ids, vec![laptop, server]);
     assert_eq!(r.ledger_cost, d("14400.00"));
-    let r = fixed_asset_register(&l, date(2026, 6, 1));
+    let r = fixed_asset_register(&l, date(2026, 6, 1)).unwrap();
     let ids: Vec<AssetId> = r.rows.iter().map(|x| x.asset_id).collect();
     assert_eq!(ids, vec![laptop, server, chair]);
     assert_eq!(
@@ -901,7 +901,7 @@ fn register_leaves_out_assets_not_yet_in_service() {
         accumulated_depreciation(l.get_asset(chair).unwrap(), date(2026, 6, 1))
     );
     // Before anything: empty and zero.
-    let r = fixed_asset_register(&l, date(2025, 12, 31));
+    let r = fixed_asset_register(&l, date(2025, 12, 31)).unwrap();
     assert!(r.rows.is_empty());
     assert_eq!(r.total_cost, Decimal::ZERO);
     assert_eq!(r.total_accumulated, Decimal::ZERO);
@@ -934,7 +934,7 @@ fn register_shows_a_disposed_asset_outside_the_totals() {
     let (mut l, a, laptop, server) = register_fixture();
     l.set_asset_tag(server, "FL-0002").unwrap();
     dispose_server(&mut l, &a, server);
-    let r = fixed_asset_register(&l, date(2026, 6, 30));
+    let r = fixed_asset_register(&l, date(2026, 6, 30)).unwrap();
     assert_eq!(r.rows.len(), 2, "a disposed asset still has a row");
     let s = r.rows.iter().find(|x| x.asset_id == server).unwrap();
     assert_eq!(s.disposed, Some((date(2026, 6, 30), d("2000.00"))));
@@ -959,7 +959,7 @@ fn register_shows_a_disposed_asset_outside_the_totals() {
 fn register_before_the_disposal_date_shows_the_asset_held() {
     let (mut l, a, _, server) = register_fixture();
     dispose_server(&mut l, &a, server);
-    let r = fixed_asset_register(&l, date(2026, 5, 31));
+    let r = fixed_asset_register(&l, date(2026, 5, 31)).unwrap();
     let s = r.rows.iter().find(|x| x.asset_id == server).unwrap();
     assert_eq!(s.disposed, None);
     assert_eq!(s.accumulated, d("500.00"));
@@ -992,7 +992,7 @@ fn register_sums_the_gl_over_distinct_asset_accounts() {
     for m in 1..=3 {
         depreciate(&mut l, &a, a.vehicles_accum, month_end(m), "500.00");
     }
-    let r = fixed_asset_register(&l, date(2026, 3, 31));
+    let r = fixed_asset_register(&l, date(2026, 3, 31)).unwrap();
     assert_eq!(r.rows[2].salvage, d("6000.00"));
     assert_eq!(r.rows[2].accumulated, d("1500.00"));
     assert_eq!(r.rows[2].book_value, d("34500.00"));
@@ -1013,7 +1013,7 @@ fn register_ignores_accounts_no_asset_uses() {
     // Vehicles bought but never registered under 1520: not one of the
     // registered assets' accounts.
     buy(&mut l, &a, a.vehicles, date(2026, 1, 1), "9000.00");
-    let r = fixed_asset_register(&l, date(2026, 3, 31));
+    let r = fixed_asset_register(&l, date(2026, 3, 31)).unwrap();
     assert_eq!(r.ledger_cost, d("14400.00"));
     assert_eq!(r.unregistered_cost(), Decimal::ZERO);
 }
@@ -1022,7 +1022,7 @@ fn register_ignores_accounts_no_asset_uses() {
 #[test]
 fn register_of_no_assets_is_empty() {
     let (l, _) = fixture();
-    let r = fixed_asset_register(&l, date(2026, 12, 31));
+    let r = fixed_asset_register(&l, date(2026, 12, 31)).unwrap();
     assert!(r.rows.is_empty());
     assert_eq!(r.ledger_cost, Decimal::ZERO);
     assert_eq!(r.ledger_accumulated, Decimal::ZERO);

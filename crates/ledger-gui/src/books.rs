@@ -9,7 +9,8 @@ use ledger_core::analysis::{balance_history, balance_series};
 use ledger_core::reports::{balance_sheet_as_of, profit_and_loss_for_period};
 use ledger_core::{
     AccountId, AccountType, AssetId, AssetRegister, AssetStatus, BillId, EntryId, EntryStatus,
-    InvoiceId, Ledger, Party, PartyId, PayrollRunId, Side, Vendor1099Line, fixed_asset_register,
+    InvoiceId, Ledger, LedgerError, Party, PartyId, PayrollRunId, Side, Vendor1099Line,
+    fixed_asset_register,
 };
 use ledger_store::{Attachment, JournalLine, Reconciliation, Snapshot, Statement, Subject};
 use rust_decimal::Decimal;
@@ -26,8 +27,10 @@ pub struct EntryInfo {
     pub date: NaiveDate,
     pub description: String,
     pub status: EntryStatus,
-    /// Total debits.
-    pub amount: Decimal,
+    /// Total debits; None when they can't be summed exactly (a draft's
+    /// lines are as an earlier version journaled them, of any size:
+    /// rules.md B-28).
+    pub amount: Option<Decimal>,
     /// Accounts touched, debits first: "6300 Software".
     pub accounts: Vec<AccountId>,
     /// Indexes into [`Books::attachments`] of its current receipts: the
@@ -44,8 +47,9 @@ pub struct EntryInfo {
     /// Covered by the receipt policy (the server's rule) and has no receipt.
     pub missing_receipt: bool,
     /// Net effect on cash accounts: positive in, negative out, zero if the
-    /// entry doesn't touch cash.
-    pub cash_effect: Decimal,
+    /// entry doesn't touch cash; None when it can't be summed exactly (as
+    /// `amount`).
+    pub cash_effect: Option<Decimal>,
     /// The counterparty's name: its directory party's label (see
     /// [`PartyInfo`] for which entries are a party's; several parties'
     /// labels joined with " & "), else its vendor's or invoice customer's
@@ -142,6 +146,9 @@ impl AssetTrail {
 ///   4. open_invoices = Σ Invoice::balance() over its customer record's
 ///      invoices; open_bills = Σ Bill::balance() over its vendor record's
 ///      bills (any date: what is still owed today).
+///   4a. Each of 3 and 4 is None when it can't be summed exactly (a
+///      document is restored as an earlier version journaled it, of any
+///      size: rules.md B-28), never a wrong number.
 ///   5. form_1099: its vendor record's line in
 ///      vendor_1099_report_with(ledger, year, None, cash and financing
 ///      accounts), when it has a vendor
@@ -160,10 +167,10 @@ pub struct PartyInfo {
     pub id: PartyId,
     pub entries: Vec<EntryId>,
     pub paid_ytd: Decimal,
-    pub invoiced_ytd: Decimal,
-    pub billed_ytd: Decimal,
-    pub open_invoices: Decimal,
-    pub open_bills: Decimal,
+    pub invoiced_ytd: Option<Decimal>,
+    pub billed_ytd: Option<Decimal>,
+    pub open_invoices: Option<Decimal>,
+    pub open_bills: Option<Decimal>,
     pub invoices: Vec<InvoiceId>,
     pub bills: Vec<BillId>,
     pub payroll_runs: Vec<PayrollRunId>,
@@ -629,12 +636,7 @@ impl Books {
                     }
                 }
             }
-            let amount: Decimal = e
-                .lines()
-                .iter()
-                .filter(|l| l.side == Side::Debit)
-                .map(|l| l.amount.amount)
-                .sum();
+            let amount = ledger_config::ReceiptPolicy::entry_debits(e).ok();
             let rec = receipts.remove(&id).unwrap_or_default();
             let vendor = ledger
                 .entry_vendor(id)
@@ -648,15 +650,14 @@ impl Books {
                 && e.reversal_of().is_none()
                 && rec.is_empty()
                 && policy.receipt_required(&ledger, e);
-            let cash_effect: Decimal = e
+            let cash_effect = e
                 .lines()
                 .iter()
                 .filter(|l| cash_accounts.contains(&l.account))
-                .map(|l| match l.side {
-                    Side::Debit => l.amount.amount,
-                    Side::Credit => -l.amount.amount,
-                })
-                .sum();
+                .try_fold(Decimal::ZERO, |sum, l| match l.side {
+                    Side::Debit => sum.checked_add(l.amount.amount),
+                    Side::Credit => sum.checked_sub(l.amount.amount),
+                });
             // Core tags every entry with its counterparty (hand tags,
             // vendor tags, bills, invoices, their payments, reversals).
             let party_id = ledger.entry_party(id);
@@ -689,9 +690,9 @@ impl Books {
             let mut haystack = format!(
                 "{} {} #{} {}",
                 e.description(),
-                crate::fmt::money(amount),
+                crate::fmt::money_or(amount),
                 id,
-                amount
+                amount.map_or_else(String::new, |a| a.to_string())
             );
             for a in &accounts {
                 if let Some(acct) = ledger.chart().get(*a) {
@@ -912,8 +913,8 @@ impl Books {
     }
 
     /// The fixed asset register on `as_of`, exactly as ledger-core
-    /// computes it.
-    pub fn asset_register(&self, as_of: NaiveDate) -> AssetRegister {
+    /// computes it (refused when its totals can't be computed exactly).
+    pub fn asset_register(&self, as_of: NaiveDate) -> Result<AssetRegister, LedgerError> {
         fixed_asset_register(&self.ledger, as_of)
     }
 
@@ -960,6 +961,10 @@ impl Books {
         let l = &self.ledger;
         let year = self.today.year();
         let in_year = |d: NaiveDate| d.year() == year;
+        // A sum that can't be computed exactly stays None (INVARIANT 4a).
+        let add = |sum: &mut Option<Decimal>, v: Result<Decimal, LedgerError>| {
+            *sum = sum.and_then(|s| s.checked_add(v.ok()?));
+        };
         let mut out: BTreeMap<PartyId, PartyInfo> = l
             .parties()
             .map(|p| {
@@ -967,6 +972,10 @@ impl Books {
                     p.id,
                     PartyInfo {
                         id: p.id,
+                        invoiced_ytd: Some(Decimal::ZERO),
+                        billed_ytd: Some(Decimal::ZERO),
+                        open_invoices: Some(Decimal::ZERO),
+                        open_bills: Some(Decimal::ZERO),
                         ..Default::default()
                     },
                 )
@@ -989,9 +998,9 @@ impl Books {
                 .and_then(|p| out.get_mut(&p))
             {
                 info.invoices.push(id);
-                info.open_invoices += inv.balance();
+                add(&mut info.open_invoices, inv.balance());
                 if in_year(inv.date) {
-                    info.invoiced_ytd += inv.total();
+                    add(&mut info.invoiced_ytd, inv.total());
                 }
             }
         }
@@ -1002,9 +1011,9 @@ impl Books {
                 .and_then(|p| out.get_mut(&p))
             {
                 info.bills.push(id);
-                info.open_bills += bill.balance();
+                add(&mut info.open_bills, bill.balance());
                 if in_year(bill.date) {
-                    info.billed_ytd += bill.total();
+                    add(&mut info.billed_ytd, bill.total());
                 }
             }
         }
@@ -1076,15 +1085,20 @@ impl Books {
     }
 
     /// Depreciation due through the last finished month on or before
-    /// `as_of` and not yet posted (see [`DepreciationDue`]).
-    pub fn depreciation_due(&self, as_of: NaiveDate) -> DepreciationDue {
-        let through = if as_of.succ_opt().is_some_and(|d| d.day() == 1) {
+    /// `as_of` and not yet posted (see [`DepreciationDue`]); refused when
+    /// the register can't be computed.
+    pub fn depreciation_due(&self, as_of: NaiveDate) -> Result<DepreciationDue, LedgerError> {
+        // A month's last day, or chrono's last day; else the end of the
+        // month before (none before chrono's first month: its first day).
+        let through = if as_of.succ_opt().is_none_or(|d| d.day() == 1) {
             as_of
         } else {
-            NaiveDate::from_ymd_opt(as_of.year(), as_of.month(), 1).expect("valid")
-                - chrono::Days::new(1)
+            as_of
+                .with_day(1)
+                .and_then(|m| m.pred_opt())
+                .unwrap_or(NaiveDate::MIN)
         };
-        let amount = self.asset_register(through).unposted_depreciation();
+        let amount = self.asset_register(through)?.unposted_depreciation();
         let mut periods = std::collections::BTreeSet::new();
         for a in self
             .ledger
@@ -1101,11 +1115,11 @@ impl Books {
                 }
             }
         }
-        DepreciationDue {
+        Ok(DepreciationDue {
             through,
             amount,
             periods: periods.into_iter().collect(),
-        }
+        })
     }
 
     // ------------------------------------------------------------------
@@ -1344,11 +1358,21 @@ impl Books {
                 .max()
                 .map_or(self.today, |d| d.max(self.today))
         };
+        // Years come from entries' dates and today, so chrono holds them;
+        // one past its edge is clipped to them.
         let year = |y: i32| {
             (
-                NaiveDate::from_ymd_opt(y, 1, 1).expect("valid"),
+                NaiveDate::from_ymd_opt(y, 1, 1).unwrap_or(if y < 0 {
+                    NaiveDate::MIN
+                } else {
+                    NaiveDate::MAX
+                }),
                 NaiveDate::from_ymd_opt(y, 12, 31)
-                    .expect("valid")
+                    .unwrap_or(if y < 0 {
+                        NaiveDate::MIN
+                    } else {
+                        NaiveDate::MAX
+                    })
                     .min(last_posted(Some(y))),
             )
         };
@@ -1436,7 +1460,12 @@ impl Books {
             let money = ledger_core::parties::money_accounts(l, &self.cash_accounts);
             let mut by: BTreeMap<AccountId, Decimal> = BTreeMap::new();
             for e in &posted {
-                let flow = ledger_core::parties::entry_flow(e, &money);
+                // A posted entry's flow computes (its lines are in a line's
+                // range); one that doesn't, activity counts as unresolved
+                // and counts nothing, so neither does what it was for.
+                let Ok(flow) = ledger_core::parties::entry_flow(e, &money) else {
+                    continue;
+                };
                 let parts = self.party_what_for(e, party, &flow);
                 for (account, amount) in parts {
                     *by.entry(account).or_default() += amount;
@@ -1548,19 +1577,20 @@ impl Books {
             return flow.what_for.clone();
         }
         let resolved = self.party_share(e, party);
+        // Posted lines are in a line's range, so these sums and products
+        // compute; one past exact arithmetic counts nothing, as an entry
+        // whose shares don't resolve.
         let target = if flow.net.is_zero() {
-            e.lines()
-                .iter()
-                .filter(|l| l.side == Side::Debit)
-                .map(|l| l.amount.amount)
-                .sum::<Decimal>()
+            match ledger_config::ReceiptPolicy::entry_debits(e) {
+                Ok(t) => t,
+                Err(_) => return Vec::new(),
+            }
         } else {
             flow.net
         };
-        if target.is_zero() {
+        let Some(fraction) = resolved.checked_div(target) else {
             return Vec::new();
-        }
-        let fraction = resolved / target;
+        };
         let money_share = if flow.net.is_zero() {
             Decimal::ZERO
         } else {
@@ -1578,11 +1608,20 @@ impl Books {
             if me.is_some_and(|m| m.capital == a || m.distributions == Some(a)) {
                 own.push((a, v));
             } else if !member_line(a) {
-                scaled.push((a, (v * fraction).round_dp_with_strategy(2, ToZero)));
+                let Some(part) = v.checked_mul(fraction) else {
+                    return Vec::new();
+                };
+                scaled.push((a, part.round_dp_with_strategy(2, ToZero)));
             }
         }
-        let have: Decimal = own.iter().chain(&scaled).map(|(_, v)| *v).sum();
-        let left = money_share - have;
+        let Some(left) = own
+            .iter()
+            .chain(&scaled)
+            .try_fold(Decimal::ZERO, |t, (_, v)| t.checked_add(*v))
+            .and_then(|have| money_share.checked_sub(have))
+        else {
+            return Vec::new();
+        };
         if !left.is_zero() {
             match scaled.first_mut() {
                 Some(first) => first.1 += left,
@@ -1750,21 +1789,42 @@ impl Books {
     /// A party's money month by month over `span`: every month the span
     /// touches, each month's activity clipped to the span (so the months
     /// sum to the span's paid and received exactly).
+    ///
+    /// Every month the span touches is one activity scan, so callers clip
+    /// the span to the months they show ([`Books::last_months`]): books
+    /// an earlier version wrote may run from chrono's first day (rules.md
+    /// B-28). Chrono's last month ends the walk, never a panic.
     pub fn party_months(&self, party: PartyId, span: (NaiveDate, NaiveDate)) -> Vec<PartyMonth> {
         let mut out = Vec::new();
-        let mut m = NaiveDate::from_ymd_opt(span.0.year(), span.0.month(), 1).expect("valid");
-        while m <= span.1 {
-            let end = (m + chrono::Months::new(1) - chrono::Days::new(1)).min(span.1);
-            let start = m.max(span.0);
+        let mut m = span.0.with_day(1);
+        while let Some(month) = m.filter(|m| *m <= span.1) {
+            let next = month.checked_add_months(chrono::Months::new(1));
+            let end = next
+                .and_then(|n| n.pred_opt())
+                .unwrap_or(NaiveDate::MAX)
+                .min(span.1);
+            let start = month.max(span.0);
             let a = self.activity(party, (start, end));
             out.push(PartyMonth {
-                month: m,
+                month,
                 paid: a.paid,
                 received: a.received,
             });
-            m = m + chrono::Months::new(1);
+            m = next;
         }
         out
+    }
+
+    /// The last `n` months of `span` (n >= 1): the span from the first of
+    /// the month n - 1 months before its end, or the whole span when it is
+    /// shorter.
+    pub fn last_months(span: (NaiveDate, NaiveDate), n: u32) -> (NaiveDate, NaiveDate) {
+        let first = span
+            .1
+            .with_day(1)
+            .and_then(|m| m.checked_sub_months(chrono::Months::new(n.saturating_sub(1))))
+            .unwrap_or(NaiveDate::MIN);
+        (span.0.max(first), span.1)
     }
 
     /// Blob store path for an attachment.
@@ -1776,31 +1836,34 @@ impl Books {
 /// An entry flow's what_for apportioned to one party's `share` of its net:
 /// the whole of it when the share is the net; else each account's amount
 /// times share / net, rounded toward zero to the cent, the cents left over
-/// going to the first account, so the parts sum to `share` exactly.
+/// going to the first account, so the parts sum to `share` exactly. None
+/// when amount times share is past exact arithmetic (both near the line
+/// limit), never a panic or a rounded guess.
 pub fn share_of_what_for(
     flow: &ledger_core::parties::EntryFlow,
     share: Decimal,
-) -> Vec<(AccountId, Decimal)> {
+) -> Option<Vec<(AccountId, Decimal)>> {
     use rust_decimal::RoundingStrategy::ToZero;
     if share == flow.net || flow.what_for.is_empty() {
-        return flow.what_for.clone();
+        return Some(flow.what_for.clone());
     }
     if flow.net.is_zero() || share.is_zero() {
-        return Vec::new();
+        return Some(Vec::new());
     }
     let mut parts: Vec<(AccountId, Decimal)> = flow
         .what_for
         .iter()
         .map(|(a, v)| {
-            (
-                *a,
-                (*v * share / flow.net).round_dp_with_strategy(2, ToZero),
-            )
+            let part = v.checked_mul(share)?.checked_div(flow.net)?;
+            Some((*a, part.round_dp_with_strategy(2, ToZero)))
         })
-        .collect();
-    let left = share - parts.iter().map(|(_, v)| *v).sum::<Decimal>();
-    parts[0].1 += left;
-    parts
+        .collect::<Option<_>>()?;
+    let have = parts
+        .iter()
+        .try_fold(Decimal::ZERO, |t, (_, v)| t.checked_add(*v))?;
+    let left = share.checked_sub(have)?;
+    parts[0].1 = parts[0].1.checked_add(left)?;
+    Some(parts)
 }
 
 /// Every registered asset's trail, from the journal (depreciation,

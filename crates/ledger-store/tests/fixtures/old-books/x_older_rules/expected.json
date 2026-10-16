@@ -1,0 +1,96 @@
+{
+  "assets": [],
+  "bills": [],
+  "entries": [
+    {
+      "date": "2026-03-01",
+      "description": "draft",
+      "id": 1,
+      "lines": [
+        {
+          "account": 999,
+          "amount": {
+            "amount": "10.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        },
+        {
+          "account": 1,
+          "amount": {
+            "amount": "108.34567",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "foreign_amount": "100.00",
+          "foreign_currency": [
+            69,
+            85,
+            82
+          ],
+          "side": "Credit"
+        }
+      ],
+      "reversal_of": null,
+      "status": "Draft"
+    }
+  ],
+  "entry_parties": [],
+  "invoices": [],
+  "payroll_runs": [],
+  "periods": [
+    {
+      "close_seq": null,
+      "closing_entry": null,
+      "end": "2026-01-31",
+      "id": 1,
+      "member_close": null,
+      "name": "2026-01",
+      "start": "2026-01-01",
+      "status": "Open"
+    },
+    {
+      "close_seq": null,
+      "closing_entry": null,
+      "end": "2026-02-15",
+      "id": 2,
+      "member_close": null,
+      "name": "straddle",
+      "start": "2026-01-15",
+      "status": "Open"
+    }
+  ],
+  "recurring": [],
+  "schedules": [],
+  "snapshot": {
+    "Ok": {
+      "balance_sheet": {
+        "assets": "0",
+        "balanced": true,
+        "current_earnings": "0",
+        "equity": "0",
+        "liabilities": "0"
+      },
+      "profit_and_loss": {
+        "expenses": "0",
+        "net_income": "0",
+        "revenue": "0"
+      },
+      "trial_balance": {
+        "lines": [],
+        "total_credits": "0",
+        "total_debits": "0"
+      }
+    }
+  },
+  "verify": {
+    "Ok": null
+  }
+}

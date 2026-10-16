@@ -1,0 +1,70 @@
+{
+  "assets": [],
+  "bills": [],
+  "entries": [],
+  "entry_parties": [],
+  "invoices": [],
+  "payroll_runs": [],
+  "periods": [],
+  "recurring": [
+    {
+      "description": "big",
+      "end": null,
+      "frequency": "monthly",
+      "generated": [],
+      "id": 1,
+      "lines": [
+        [
+          3,
+          "Debit",
+          {
+            "amount": "2000000000000000.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          }
+        ],
+        [
+          1,
+          "Credit",
+          {
+            "amount": "2000000000000000.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          }
+        ]
+      ],
+      "start": "2026-01-01"
+    }
+  ],
+  "schedules": [],
+  "snapshot": {
+    "Ok": {
+      "balance_sheet": {
+        "assets": "0",
+        "balanced": true,
+        "current_earnings": "0",
+        "equity": "0",
+        "liabilities": "0"
+      },
+      "profit_and_loss": {
+        "expenses": "0",
+        "net_income": "0",
+        "revenue": "0"
+      },
+      "trial_balance": {
+        "lines": [],
+        "total_credits": "0",
+        "total_debits": "0"
+      }
+    }
+  },
+  "verify": {
+    "Ok": null
+  }
+}

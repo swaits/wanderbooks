@@ -710,8 +710,8 @@ fn dispose_asset_refuses_bad_disposals_unchanged() {
 /// shares are not withheld from the employee).
 #[test]
 fn net_pay_is_gross_minus_employee_withholdings() {
-    assert_eq!(alice().net_pay(), d("3567.50"));
-    assert_eq!(bob().net_pay(), d("1697.00"));
+    assert_eq!(alice().net_pay().unwrap(), d("3567.50"));
+    assert_eq!(bob().net_pay().unwrap(), d("1697.00"));
 }
 
 /// Oracle: validate_payroll_lines doc "non-empty".
@@ -762,7 +762,7 @@ fn validate_lines_refuses_negative_net_pay() {
 fn validate_lines_accepts_zero_net_pay() {
     let mut ln = alice();
     ln.other_deductions = d("3767.50");
-    assert_eq!(ln.net_pay(), d("0"));
+    assert_eq!(ln.net_pay().unwrap(), d("0"));
     assert_eq!(validate_payroll_lines(&[ln]), Ok(()));
 }
 
@@ -772,7 +772,7 @@ fn validate_lines_accepts_zero_net_pay() {
 /// Cr cash 3567.50. Debits = credits = 5382.50.
 #[test]
 fn entry_plan_matches_hand_worked_entry() {
-    let plan = payroll_entry_plan(&[alice()], PA, PLAN_CASH, Currency::USD);
+    let plan = payroll_entry_plan(&[alice()], PA, PLAN_CASH, Currency::USD).unwrap();
     let got: Vec<(AccountId, Side, Money)> = plan;
     let want = [
         (1, Side::Debit, usd("5000.00")),
@@ -797,7 +797,7 @@ fn entry_plan_matches_hand_worked_entry() {
 /// withholding and no other deductions, so no 2120 or 2150 line.
 #[test]
 fn entry_plan_skips_zero_totals() {
-    let plan = payroll_entry_plan(&[bob()], PA, PLAN_CASH, Currency::USD);
+    let plan = payroll_entry_plan(&[bob()], PA, PLAN_CASH, Currency::USD).unwrap();
     assert!(plan.iter().all(|(_, _, m)| !m.amount.is_zero()));
     assert!(
         plan.iter()
@@ -1232,14 +1232,14 @@ proptest! {
     #[test]
     fn prop_entry_plan_laws(lines in prop::collection::vec(arb_line(), 1..5)) {
         prop_assert_eq!(validate_payroll_lines(&lines), Ok(()));
-        let plan = payroll_entry_plan(&lines, PA, PLAN_CASH, Currency::USD);
+        let plan = payroll_entry_plan(&lines, PA, PLAN_CASH, Currency::USD).unwrap();
         let (dr, cr) = plan_totals(&plan);
         prop_assert_eq!(dr, cr);
         prop_assert!(plan.iter().all(|(_, _, m)| m.amount > Decimal::ZERO && m.currency == Currency::USD));
         let sum = |f: fn(&PayrollLine) -> Decimal| -> Decimal { lines.iter().map(f).sum() };
         for l in &lines {
             prop_assert_eq!(
-                l.net_pay(),
+                l.net_pay().unwrap(),
                 l.gross_pay - l.federal_withholding - l.state_withholding
                     - l.ss_employee - l.medicare_employee - l.other_deductions
             );
@@ -1251,7 +1251,7 @@ proptest! {
         prop_assert_eq!(plan_sum(&plan, PA.ss_payable, Side::Credit), sum(|l| l.ss_employee + l.ss_employer));
         prop_assert_eq!(plan_sum(&plan, PA.medicare_payable, Side::Credit), sum(|l| l.medicare_employee + l.medicare_employer));
         prop_assert_eq!(plan_sum(&plan, PA.other_payable, Side::Credit), sum(|l| l.other_deductions));
-        prop_assert_eq!(plan_sum(&plan, PLAN_CASH, Side::Credit), sum(|l| l.net_pay()));
+        prop_assert_eq!(plan_sum(&plan, PLAN_CASH, Side::Credit), sum(|l| l.net_pay().unwrap()));
     }
 
     /// Oracle: payroll_remit_plan doc "balances by construction": Σ Dr = Cr
@@ -1289,7 +1289,7 @@ proptest! {
         let cost: Decimal = lines.iter().map(|x| x.gross_pay + x.ss_employer + x.medicare_employer).sum();
         let withheld: Decimal = lines
             .iter()
-            .map(|x| x.gross_pay - x.net_pay() + x.ss_employer + x.medicare_employer)
+            .map(|x| x.gross_pay - x.net_pay().unwrap() + x.ss_employer + x.medicare_employer)
             .sum();
         let owed: Decimal = l.payroll_tax_payables().iter().map(|(_, b)| *b).sum();
         prop_assert_eq!(owed, withheld);

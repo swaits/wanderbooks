@@ -27,11 +27,20 @@ impl Mcp {
     }
 
     fn spawn_with(data_dir: &std::path::Path, extra: &[&std::ffi::OsStr]) -> Self {
+        Self::spawn_env(data_dir, extra, &[])
+    }
+
+    fn spawn_env(
+        data_dir: &std::path::Path,
+        extra: &[&std::ffi::OsStr],
+        env: &[(&str, &std::path::Path)],
+    ) -> Self {
         let bin = env!("CARGO_BIN_EXE_ledger-mcp");
         let mut child = Command::new(bin)
             .arg("--data-dir")
             .arg(data_dir)
             .args(extra)
+            .envs(env.iter().map(|(k, v)| (*k, v.as_os_str())))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -147,7 +156,7 @@ fn mcp_end_to_end_over_stdio() {
     // Tool listing: the narrow tools; chart is read-only.
     let list = mcp.request("tools/list", json!({}));
     let tools = list["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 93, "expected 93 tools, got {}", tools.len());
+    assert_eq!(tools.len(), 94, "expected 94 tools, got {}", tools.len());
     let chart = tools.iter().find(|t| t["name"] == "books.chart").unwrap();
     assert_eq!(chart["annotations"]["readOnlyHint"], true);
     assert!(
@@ -742,6 +751,541 @@ fn mcp_resources_over_stdio() {
 
     // Unknown resource → JSON-RPC error.
     let resp = mcp.request_raw("resources/read", json!({"uri": "books://nope"}));
+    assert!(resp.get("error").is_some());
+}
+
+/// `--import-root` replaces the default import root (the downloads
+/// folder): a file in the named folder is filed; one beside it is not.
+#[test]
+fn import_root_flag_replaces_the_defaults() {
+    let dir = test_dir("import-root");
+    let inbox = dir.with_extension("inbox");
+    std::fs::create_dir_all(&inbox).unwrap();
+    let inside = inbox.join("receipt.txt");
+    let temp = dir.with_extension("elsewhere.txt");
+    for p in [&inside, &temp] {
+        std::fs::write(p, b"a receipt").unwrap();
+    }
+    let mut mcp = Mcp::spawn_with(
+        &dir.join("books-data"),
+        &[std::ffi::OsStr::new("--import-root"), inbox.as_os_str()],
+    );
+    mcp.request(
+        "initialize",
+        json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+        }),
+    );
+    mcp.notify("notifications/initialized");
+    let ok = mcp.call(
+        "books.import_local_file",
+        json!({"path": inside.to_str().unwrap(), "category": "receipt"}),
+    );
+    assert_eq!(ok["file_name"], "receipt.txt");
+    let why = mcp.call_err(
+        "books.import_local_file",
+        json!({"path": temp.to_str().unwrap(), "category": "receipt"}),
+    );
+    assert!(
+        why.contains("no such file in the server's import folders"),
+        "{why}"
+    );
+}
+
+/// Start a session: initialize, then initialized.
+fn init(mcp: &mut Mcp) -> Value {
+    let init = mcp.request(
+        "initialize",
+        json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+        }),
+    );
+    mcp.notify("notifications/initialized");
+    init
+}
+
+/// Through the real tools, inside a root (local_files.rs INVARIANTS 1-3,
+/// Protected::of; S1 and S5 of the P0 review, I of round 2): the key
+/// file in force, moved into the root after the server started (a root
+/// holding the books or a key is refused at startup: startup.rs), is
+/// sealed with what its link leads to and their folders, but never the
+/// root itself; links in the root to the journal or a vault record lead
+/// outside it, and get the one refusal a missing file gets (INVARIANT 2).
+/// books.import_local_file and books.set_w9's w9_file_path agree.
+#[test]
+fn import_local_file_and_set_w9_refuse_the_key_vault_and_journal_inside_a_root() {
+    use std::os::unix::fs::symlink;
+    let dir = test_dir("sealed-in-root");
+    let root = dir.join("root");
+    let books = dir.join("books");
+    let data = books.join("books-data");
+    let tray = root.join("drop");
+    let config = dir.join("config");
+    for d in [
+        &data,
+        &tray,
+        &root.join("alias"),
+        &root.join("hidden"),
+        &config.join("wanderbooks"),
+    ] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    std::fs::write(root.join("hidden/real.key"), "ab".repeat(32)).unwrap();
+    std::fs::write(root.join("hidden/notes.pdf"), b"%PDF beside the key").unwrap();
+    std::fs::write(root.join("loose.key"), "ef".repeat(32)).unwrap();
+    symlink(root.join("hidden/real.key"), root.join("alias/vault.key")).unwrap();
+    std::fs::write(config.join("wanderbooks/vault.key"), "cd".repeat(32)).unwrap();
+    let settings = |key: &std::path::Path| {
+        std::fs::write(
+            books.join("wanderbooks.toml"),
+            format!(
+                "[company]\nname = \"Sealed Co\"\n[vault]\nkey_file = \"{}\"\n",
+                key.display()
+            ),
+        )
+        .unwrap();
+    };
+    // Started with the default key (outside the root), so it starts.
+    settings(&config.join("wanderbooks/vault.key"));
+    std::fs::write(tray.join("receipt.pdf"), b"%PDF a receipt").unwrap();
+    std::fs::write(tray.join("w9.pdf"), b"%PDF\xff W-9 scan").unwrap();
+    let root_arg = [std::ffi::OsStr::new("--import-root"), root.as_os_str()];
+    let mut mcp = Mcp::spawn_env(&data, &root_arg, &[("XDG_CONFIG_HOME", &config)]);
+    init(&mut mcp);
+    mcp.call(
+        "books.add_party",
+        json!({"name": "Acme", "roles": ["contractor"]}),
+    );
+    mcp.call(
+        "books.set_tin",
+        json!({"party": "Acme", "tin": "291-12-2846", "tin_type": "ssn"}),
+    );
+    let journal = data.join(ledger_store::JOURNAL_FILE);
+    let vault_record = books
+        .join("vault")
+        .read_dir()
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.extension().is_some_and(|e| e == "bin"))
+        .unwrap();
+    for (name, to) in [
+        ("journal-link.pdf", journal.clone()),
+        ("record-link.pdf", vault_record.clone()),
+        ("default-key-link.pdf", config.join("wanderbooks/vault.key")),
+        ("dangling-link.pdf", config.join("wanderbooks/missing.key")),
+    ] {
+        symlink(&to, tray.join(name)).unwrap();
+    }
+    // The key in force moves into the root (a link, alias/vault.key ->
+    // hidden/real.key); the settings reload.
+    settings(&root.join("alias/vault.key"));
+    let refuse = |mcp: &mut Mcp, path: &std::path::Path, why: &str| {
+        let path = path.to_str().unwrap();
+        let err = mcp.call_err(
+            "books.import_local_file",
+            json!({"path": path, "category": "document"}),
+        );
+        assert!(err.contains(why), "{path}: {err}");
+        assert!(!err.contains(dir.to_str().unwrap()), "names a path: {err}");
+        let err = mcp.call_err(
+            "books.set_w9",
+            json!({"party": "Acme", "received_on": "2026-01-03", "entity_type": "Individual",
+                   "tin": "291-12-2846", "tin_type": "ssn", "w9_file_path": path}),
+        );
+        assert!(err.contains(why), "{path}: {err}");
+    };
+    for p in [
+        root.join("hidden/real.key"),
+        root.join("hidden/notes.pdf"),
+        root.join("alias/vault.key"),
+    ] {
+        refuse(&mut mcp, &p, "belongs to the books or the TIN vault");
+    }
+    for p in [
+        journal.clone(),
+        vault_record,
+        config.join("wanderbooks/vault.key"),
+        tray.join("journal-link.pdf"),
+        tray.join("record-link.pdf"),
+        tray.join("default-key-link.pdf"),
+        tray.join("dangling-link.pdf"),
+        tray.join("missing.pdf"),
+    ] {
+        refuse(
+            &mut mcp,
+            &p,
+            "no such file in the server's import folders (by default your downloads folder)",
+        );
+    }
+    // A key kept loose in the root itself seals the key, not the root.
+    settings(&root.join("loose.key"));
+    refuse(
+        &mut mcp,
+        &root.join("loose.key"),
+        "belongs to the books or the TIN vault",
+    );
+    // Ordinary files in the root are filed (with the key the vault was
+    // made with back in force).
+    mcp.call(
+        "books.import_local_file",
+        json!({"path": tray.join("receipt.pdf").to_str().unwrap(), "category": "receipt"}),
+    );
+    // A link is filed under the name and type of the file it leads to.
+    std::fs::write(tray.join("photo.png"), b"\x89PNG a photo").unwrap();
+    symlink(tray.join("photo.png"), tray.join("named-like.pdf")).unwrap();
+    let filed = mcp.call(
+        "books.import_local_file",
+        json!({"path": tray.join("named-like.pdf").to_str().unwrap(), "category": "receipt"}),
+    );
+    assert_eq!(filed["file_name"], "photo.png");
+    let back = mcp.call(
+        "books.get_receipt",
+        json!({"attachment_id": filed["attachment_id"]}),
+    );
+    assert_eq!(back["mime_type"], "image/png", "{back}");
+    settings(&config.join("wanderbooks/vault.key"));
+    mcp.call(
+        "books.set_w9",
+        json!({"party": "Acme", "received_on": "2026-01-03", "entity_type": "Individual",
+               "tin": "291-12-2846", "tin_type": "ssn",
+               "w9_file_path": tray.join("w9.pdf").to_str().unwrap()}),
+    );
+}
+
+/// Outputs that carry full TINs (books.get_w9, books.vendor_1099 with
+/// include_tins, books.export_cpa_package with TINs) are never written
+/// into an import root, and a copy of one moved into a root is refused by
+/// its bytes: a TIN-bearing file can't be filed back in as a receipt and
+/// read out through books.get_receipt (S7 of the P0 review, 2026-10-16).
+#[test]
+fn tin_bearing_files_never_land_where_they_could_be_filed_back_in() {
+    let dir = test_dir("tin-files");
+    let root = dir.join("inbox");
+    let out = dir.join("out");
+    let config = dir.join("config");
+    for d in [&root, &out, &config] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    std::fs::write(root.join("w9.pdf"), b"%PDF W-9 TIN 291-12-2846").unwrap();
+    let root_arg = [std::ffi::OsStr::new("--import-root"), root.as_os_str()];
+    let mut mcp = Mcp::spawn_env(
+        &dir.join("books").join("books-data"),
+        &root_arg,
+        &[("XDG_CONFIG_HOME", &config)],
+    );
+    init(&mut mcp);
+    mcp.call(
+        "books.add_account",
+        json!({"code": "1000", "name": "Cash", "account_type": "asset"}),
+    );
+    mcp.call(
+        "books.add_party",
+        json!({"name": "Acme", "roles": ["contractor"]}),
+    );
+    mcp.call(
+        "books.set_w9",
+        json!({"party": "Acme", "received_on": "2026-01-03", "entity_type": "Individual",
+               "tin": "291-12-2846", "tin_type": "ssn",
+               "w9_file_path": root.join("w9.pdf").to_str().unwrap()}),
+    );
+    let in_root = |name: &str| root.join(name).to_str().unwrap().to_string();
+    for (tool, args) in [
+        (
+            "books.get_w9",
+            json!({"party": "Acme", "save_to": in_root("copy.pdf")}),
+        ),
+        (
+            "books.vendor_1099",
+            json!({"year": 2026, "include_tins": true, "save_csv_to": in_root("1099.csv")}),
+        ),
+        (
+            "books.export_cpa_package",
+            json!({"cash_accounts": ["1000"], "save_to": in_root("cpa.zip")}),
+        ),
+        (
+            "books.export_cpa_package",
+            json!({"cash_accounts": ["1000"], "save_to": root.to_str().unwrap()}),
+        ),
+    ] {
+        let why = mcp.call_err(tool, args);
+        assert!(
+            why.contains("never saved in the server's import folders"),
+            "{tool}: {why}"
+        );
+    }
+    assert_eq!(
+        std::fs::read_dir(&root).unwrap().count(),
+        1,
+        "wrote into the root"
+    );
+    // Saved elsewhere, then moved into the root: refused by its bytes.
+    let w9 = out.join("copy.pdf");
+    mcp.call(
+        "books.get_w9",
+        json!({"party": "Acme", "save_to": w9.to_str().unwrap()}),
+    );
+    let csv = out.join("1099.csv");
+    mcp.call(
+        "books.vendor_1099",
+        json!({"year": 2026, "include_tins": true, "save_csv_to": csv.to_str().unwrap()}),
+    );
+    for (from, name) in [(&w9, "receipt.pdf"), (&csv, "statement.csv")] {
+        std::fs::copy(from, root.join(name)).unwrap();
+        let why = mcp.call_err(
+            "books.import_local_file",
+            json!({"path": in_root(name), "category": "receipt"}),
+        );
+        assert!(why.contains("wrote with full TINs"), "{why}");
+    }
+    // Without TINs, the 1099 worksheet may go anywhere a file may.
+    mcp.call(
+        "books.vendor_1099",
+        json!({"year": 2026, "save_csv_to": in_root("plain.csv")}),
+    );
+}
+
+/// The connect text and the receipt rule show a few account codes of each
+/// kind, shortened, and say books.settings lists them: it does, every one,
+/// uncut, so no account the rule names is out of the agent's reach.
+#[test]
+fn every_receipt_account_left_out_of_the_connect_text_is_in_books_settings() {
+    let dir = test_dir("receipt-accounts");
+    let long = "6000-A-CODE-LONGER-THAN-ANY-RULE-SHOWS-IT";
+    let required: Vec<String> = std::iter::once(long.to_string())
+        .chain((1..20).map(|i| format!("{}", 6000 + i)))
+        .collect();
+    let exempt: Vec<String> = (0..12).map(|i| format!("{}", 1100 + i)).collect();
+    std::fs::write(
+        dir.join("config.json"),
+        json!({"receipt_policy": {"require_receipts_above": "0.00",
+               "receipt_required_accounts": required, "receipt_exempt_accounts": exempt}})
+        .to_string(),
+    )
+    .unwrap();
+    let mut mcp = Mcp::spawn(&dir);
+    let init = mcp.request(
+        "initialize",
+        json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+        }),
+    );
+    mcp.notify("notifications/initialized");
+    let connect = init["result"]["instructions"].as_str().unwrap().to_string();
+    assert!(connect.contains("books.settings lists"), "{connect}");
+    let settings = mcp.call("books.settings", json!({}));
+    let rule = settings["receipt_rule"].as_str().unwrap();
+    assert!(rule.contains("books.settings lists them"), "{rule}");
+    let listed = |key: &str| -> Vec<String> {
+        settings[key]
+            .as_array()
+            .unwrap_or_else(|| panic!("books.settings has no {key}: {settings}"))
+            .iter()
+            .map(|c| c.as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(listed("receipt_required_accounts"), required);
+    assert_eq!(listed("receipt_exempt_accounts"), exempt);
+    // Some codes really are left out of the connect text and the rule,
+    // and the long one is shown cut there, whole here.
+    let left_out: Vec<&String> = required
+        .iter()
+        .chain(&exempt)
+        .filter(|c| !connect.contains(c.as_str()))
+        .collect();
+    assert!(left_out.len() > 20, "{connect}");
+    assert!(!rule.contains(long), "{rule}");
+    for code in left_out {
+        assert!(
+            listed("receipt_required_accounts").contains(code)
+                || listed("receipt_exempt_accounts").contains(code),
+            "{code} is in neither the connect text nor books.settings"
+        );
+    }
+}
+
+/// A bare `books://digest` (no `since`) reads this month so far: an entry
+/// dated this month is in it, one dated last month is not (plan P0).
+/// "This month" is the server's: read from its own bare digest, never this
+/// process's clock, and the run starts over on fresh books if the month
+/// turns while it runs (midnight on the 1st).
+#[test]
+fn digest_resource_bare_reads() {
+    for attempt in 0..3 {
+        if digest_bare_reads_once(attempt) {
+            return;
+        }
+    }
+    panic!("the month kept turning while the test ran");
+}
+
+/// One run of `digest_resource_bare_reads`: false if the server's month
+/// turned during it (nothing is checked then).
+fn digest_bare_reads_once(attempt: u32) -> bool {
+    let dir = test_dir(&format!("digest-bare-{attempt}"));
+    let mut mcp = Mcp::spawn(&dir.join("books-data"));
+    mcp.request(
+        "initialize",
+        json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+        }),
+    );
+    mcp.notify("notifications/initialized");
+    let since = |mcp: &mut Mcp, uri: &str| -> Value {
+        let read = mcp.request("resources/read", json!({"uri": uri}));
+        let text = read["result"]["contents"][0]["text"].as_str().unwrap();
+        serde_json::from_str(text).unwrap()
+    };
+    // The server's first day of this month.
+    let first: chrono::NaiveDate = since(&mut mcp, "books://digest")["since"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(chrono::Datelike::day(&first), 1, "{first}");
+    let before = first.pred_opt().unwrap();
+    for (code, name, typ) in [("1000", "Cash", "asset"), ("6000", "Fees", "expense")] {
+        mcp.call(
+            "books.add_account",
+            json!({"code": code, "name": name, "account_type": typ}),
+        );
+    }
+    for (date, what) in [(first, "this month"), (before, "last month")] {
+        let id = mcp.call(
+            "books.draft_entry",
+            json!({"date": date.to_string(), "description": what}),
+        )["entry_id"]
+            .as_u64()
+            .unwrap();
+        for (side, code) in [("debit", "6000"), ("credit", "1000")] {
+            mcp.call(
+                "books.add_line",
+                json!({"entry_id": id, "account": code, "side": side, "amount": "5.00"}),
+            );
+        }
+        mcp.call(
+            "books.post_entry",
+            json!({"entry_id": id, "confirmed": true}),
+        );
+    }
+    // Bare, and with an empty since=, alike (the default date itself is
+    // pinned on every day of a month in server.rs's unit test).
+    for uri in ["books://digest", "books://digest?since="] {
+        let digest = since(&mut mcp, uri);
+        if digest["since"] != first.to_string() {
+            return false;
+        }
+        let seen: Vec<&str> = digest["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["description"].as_str().unwrap())
+            .collect();
+        assert_eq!(seen, ["this month"], "{uri}");
+    }
+    true
+}
+
+/// The handbook is one tool and one resource per section, with the
+/// receipt rule in force rendered in; the connect text points to it.
+#[test]
+fn handbook_tool_and_resources_over_stdio() {
+    let dir = test_dir("handbook");
+    let mut mcp = Mcp::spawn(&dir.join("books-data"));
+    let init = mcp.request(
+        "initialize",
+        json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+        }),
+    );
+    let instructions = init["result"]["instructions"].as_str().unwrap();
+    assert!(instructions.chars().count() <= 1400);
+    // The first 512 characters (not bytes: a name may be multibyte).
+    let lead: String = instructions.chars().take(512).collect();
+    assert!(lead.contains("books.handbook"));
+    mcp.notify("notifications/initialized");
+    let index = mcp.call("books.handbook", json!({}));
+    let sections = index["sections"].as_array().unwrap();
+    assert_eq!(sections[0]["id"], "contract");
+    assert!(index["read_first"].as_str().unwrap().contains("contract"));
+    assert_eq!(index["section"], Value::Null);
+    // The schema names every section, and "all".
+    let list = mcp.request("tools/list", json!({}));
+    let tool = list["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "books.handbook")
+        .unwrap()
+        .clone();
+    let said = tool["inputSchema"]["properties"]["section"]["description"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    for s in sections {
+        let id = s["id"].as_str().unwrap();
+        assert!(said.contains(id), "the schema doesn't name {id}: {said}");
+    }
+    assert!(said.contains("\"all\""), "{said}");
+    // Section "all": every section's text, in order, under its own title.
+    let all = mcp.call("books.handbook", json!({"section": "all"}));
+    assert_eq!(all["section"]["title"], "The whole handbook");
+    let text = all["section"]["text"].as_str().unwrap();
+    let mut at = 0;
+    for s in sections {
+        let one = mcp.call("books.handbook", json!({"section": s["id"]}));
+        // A section is titled by its heading, as the index lists it.
+        assert_eq!(one["section"]["title"], s["title"]);
+        let part = one["section"]["text"].as_str().unwrap();
+        assert_eq!(
+            part.lines().next().unwrap(),
+            format!("# {}", s["title"].as_str().unwrap())
+        );
+        at += text[at..].find(part).expect("a section missing from all") + part.len();
+    }
+    let one = mcp.call(
+        "books.handbook",
+        json!({"section": "evidence-and-receipts"}),
+    );
+    let text = one["section"]["text"].as_str().unwrap();
+    assert!(text.contains("needs at least one receipt"), "{text}");
+    assert!(!text.contains("{evidence_rule}"));
+    let why = mcp.call_err("books.handbook", json!({"section": "nope"}));
+    assert!(why.contains("contract"), "{why}");
+
+    let list = mcp.request("resources/list", json!({}));
+    let uris: Vec<&str> = list["result"]["resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["uri"].as_str().unwrap())
+        .collect();
+    assert!(uris.contains(&"books://handbook"));
+    for s in sections {
+        let uri = s["uri"].as_str().unwrap();
+        assert!(uris.contains(&uri), "{uri} not listed");
+        let read = mcp.request("resources/read", json!({"uri": uri}));
+        let c = &read["result"]["contents"][0];
+        assert_eq!(c["mimeType"], "text/markdown");
+        assert_eq!(
+            c["text"].as_str().unwrap().chars().count() as u64,
+            s["chars"].as_u64().unwrap()
+        );
+    }
+    let read = mcp.request("resources/read", json!({"uri": "books://handbook"}));
+    let idx: Value =
+        serde_json::from_str(read["result"]["contents"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(idx["sections"].as_array().unwrap().len(), sections.len());
+    let resp = mcp.request_raw("resources/read", json!({"uri": "books://handbook/nope"}));
     assert!(resp.get("error").is_some());
 }
 
@@ -1603,7 +2147,8 @@ fn mcp_vendor_1099_over_stdio() {
     for needle in [
         "only through 2026",
         "official source",
-        "github.com/swaits/wanderbooks",
+        "irs.gov",
+        "tell the human",
     ] {
         assert!(why.contains(needle), "missing {needle:?} in: {why}");
     }

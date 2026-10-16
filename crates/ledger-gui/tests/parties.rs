@@ -294,9 +294,9 @@ fn each_partys_totals_are_the_books_numbers() {
     let sam = info(f.sam);
     assert_eq!(sam.paid_ytd, cents(200_000));
     let bill = o.get_bill(1).unwrap();
-    assert_eq!(sam.billed_ytd, bill.total());
-    assert_eq!(sam.open_bills, bill.balance());
-    assert_eq!(sam.open_bills, cents(30_000));
+    assert_eq!(sam.billed_ytd, bill.total().ok());
+    assert_eq!(sam.open_bills, bill.balance().ok());
+    assert_eq!(sam.open_bills, Some(cents(30_000)));
     assert_eq!(sam.bills, vec![1]);
     // The 1099 amount is ledger-core's worksheet line, exactly.
     let r = vendor_1099_report(o, 2026, None).unwrap();
@@ -336,14 +336,20 @@ fn each_partys_totals_are_the_books_numbers() {
         invoices
             .iter()
             .filter(|i| i.date >= d(2026, 1, 1))
-            .map(|i| i.total())
+            .map(|i| i.total().unwrap())
             .sum::<Decimal>()
+            .into()
     );
     assert_eq!(
         acme.open_invoices,
-        invoices.iter().map(|i| i.balance()).sum::<Decimal>()
+        Some(
+            invoices
+                .iter()
+                .map(|i| i.balance().unwrap())
+                .sum::<Decimal>()
+        )
     );
-    assert_eq!(acme.open_invoices, cents(80_000));
+    assert_eq!(acme.open_invoices, Some(cents(80_000)));
     assert_eq!(acme.invoices.len(), 2);
     assert!(acme.form_1099.is_none());
 

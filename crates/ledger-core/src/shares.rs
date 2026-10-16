@@ -119,7 +119,33 @@ pub struct PartyMember {
 /// The structural checks on an entry's shares (the module's INVARIANTS 1–4;
 /// 5 needs the directory and is [`crate::Ledger::check_set_entry_parties`]'s).
 /// `known` says whether a party is in the directory. Returns why not.
+///
+/// For new shares: [`check_shares_journaled`], and no amount larger than a
+/// line may be (kernel::MAX_LINE_AMOUNT; P0 review round 3, S1). Replay
+/// checks only [`check_shares_journaled`] (rules.md B-28).
 pub fn check_shares(shares: &[PartyShare], known: impl Fn(PartyId) -> bool) -> Result<(), String> {
+    check_shares_journaled(shares, known)?;
+    for s in shares {
+        if let Share::Amount(a) = s.share
+            && a > crate::kernel::MAX_LINE_AMOUNT
+        {
+            return Err(format!(
+                "party {}'s amount {a} is larger than any entry may move (at most 1000000000000000)",
+                s.party
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The checks every journaled `entry.parties_set` passed when it was
+/// written (the rule through 2026-10-16): [`check_shares`] without the
+/// amount's upper bound. Replay applies exactly these, so books an earlier
+/// version wrote always open (rules.md B-28).
+pub fn check_shares_journaled(
+    shares: &[PartyShare],
+    known: impl Fn(PartyId) -> bool,
+) -> Result<(), String> {
     let mut seen = std::collections::BTreeSet::new();
     for s in shares {
         if !known(s.party) {
@@ -178,35 +204,59 @@ pub fn check_shares(shares: &[PartyShare], known: impl Fn(PartyId) -> bool) -> R
 
 /// What the shares are split over: the entry's flow net, else its total
 /// debits (the module's DEFINITIONS).
-pub fn share_target(entry: &JournalEntry, money: &crate::parties::MoneyAccounts) -> Decimal {
-    let net = crate::parties::entry_flow(entry, money).net;
+/// Refused (TooLargeToCompute), never a panic, when a sum is past exact
+/// arithmetic: a draft's lines and an entry's shares are as journaled, of
+/// any size (rules.md B-28).
+pub fn share_target(
+    entry: &JournalEntry,
+    money: &crate::parties::MoneyAccounts,
+) -> Result<Decimal, crate::LedgerError> {
+    let net = crate::parties::entry_flow(entry, money)?.net;
     if net.is_zero() {
         entry
             .lines()
             .iter()
             .filter(|l| l.side == Side::Debit)
-            .map(|l| l.amount.amount)
-            .sum()
+            .try_fold(Decimal::ZERO, |s, l| s.checked_add(l.amount.amount))
+            .ok_or_else(|| too_large(format!("entry {}'s debits", entry.id())))
     } else {
-        net
+        Ok(net)
     }
+}
+
+/// The refusal of a sum past exact arithmetic.
+fn too_large(what: String) -> crate::LedgerError {
+    crate::LedgerError::TooLargeToCompute(what)
+}
+
+/// The sum of `values`, or None past exact arithmetic.
+fn checked_sum(values: impl IntoIterator<Item = Decimal>) -> Option<Decimal> {
+    values
+        .into_iter()
+        .try_fold(Decimal::ZERO, |s, v| s.checked_add(v))
 }
 
 /// Split `magnitude` (non-negative) by `weights` (positive, any sum): each
 /// part rounded toward zero to the cent, the cents left over to the first.
-fn split_first(magnitude: Decimal, weights: &[Decimal]) -> Vec<Decimal> {
+/// None when a product or sum is past exact arithmetic.
+fn split_first(magnitude: Decimal, weights: &[Decimal]) -> Option<Vec<Decimal>> {
     use rust_decimal::RoundingStrategy::ToZero;
-    let total: Decimal = weights.iter().copied().sum();
+    let total = checked_sum(weights.iter().copied())?;
     if weights.is_empty() || total.is_zero() {
-        return vec![Decimal::ZERO; weights.len()];
+        return Some(vec![Decimal::ZERO; weights.len()]);
     }
     let mut parts: Vec<Decimal> = weights
         .iter()
-        .map(|w| (magnitude * w / total).round_dp_with_strategy(2, ToZero))
-        .collect();
-    let left = magnitude - parts.iter().copied().sum::<Decimal>();
-    parts[0] += left;
-    parts
+        .map(|w| {
+            magnitude
+                .checked_mul(*w)
+                .and_then(|x| x.checked_div(total))
+                .map(|x| x.round_dp_with_strategy(2, ToZero))
+        })
+        .collect::<Option<_>>()?;
+    let left = magnitude.checked_sub(checked_sum(parts.iter().copied())?)?;
+    parts[0] = parts[0].checked_add(left)?;
+    Some(parts)
 }
 
 /// Each party's exact part of what `entry` moved (the module's INVARIANTS
@@ -218,7 +268,8 @@ pub fn resolve(
     money: &crate::parties::MoneyAccounts,
     members: &[PartyMember],
 ) -> Result<Vec<(PartyId, Decimal)>, String> {
-    let target = share_target(entry, money);
+    let target = share_target(entry, money).map_err(|e| e.to_string())?;
+    let past_exact = || too_large(format!("entry {}'s shares", entry.id())).to_string();
     let magnitude = target.abs();
     let signed = |v: Decimal| if target.is_sign_negative() { -v } else { v };
     let Some(first) = shares.first() else {
@@ -233,7 +284,7 @@ pub fn resolve(
                     _ => Decimal::ZERO,
                 })
                 .collect();
-            let sum: Decimal = amounts.iter().copied().sum();
+            let sum = checked_sum(amounts.iter().copied()).ok_or_else(past_exact)?;
             if sum != magnitude {
                 return Err(format!(
                     "the parties' amounts sum to {sum}, but entry {} moved {magnitude}",
@@ -250,7 +301,7 @@ pub fn resolve(
                     _ => Decimal::ZERO,
                 })
                 .collect();
-            split_first(magnitude, &weights)
+            split_first(magnitude, &weights).ok_or_else(past_exact)?
         }
         Share::Derived if shares.len() == 1 => vec![magnitude],
         Share::Derived => {
@@ -274,19 +325,17 @@ pub fn resolve(
                 let parts: Vec<Decimal> = named
                     .iter()
                     .map(|m| {
-                        entry
-                            .lines()
-                            .iter()
-                            .filter(|l| on(m, l.account))
-                            .map(|l| match l.side {
+                        checked_sum(entry.lines().iter().filter(|l| on(m, l.account)).map(|l| {
+                            match l.side {
                                 Side::Credit => l.amount.amount,
                                 Side::Debit => -l.amount.amount,
-                            })
-                            .sum::<Decimal>()
-                            .abs()
+                            }
+                        }))
+                        .map(|s| s.abs())
                     })
-                    .collect();
-                let sum: Decimal = parts.iter().copied().sum();
+                    .collect::<Option<_>>()
+                    .ok_or_else(past_exact)?;
+                let sum = checked_sum(parts.iter().copied()).ok_or_else(past_exact)?;
                 if sum != magnitude {
                     return Err(format!(
                         "the members' capital lines on entry {} come to {sum}, but it moved {magnitude}: give each member an amount",
@@ -302,7 +351,7 @@ pub fn resolve(
                             .into(),
                     );
                 }
-                split_first(magnitude, &weights)
+                split_first(magnitude, &weights).ok_or_else(past_exact)?
             }
         }
     };

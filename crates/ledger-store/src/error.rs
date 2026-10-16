@@ -40,7 +40,7 @@ pub enum StoreError {
     Io(#[from] std::io::Error),
 
     /// SQLite error.
-    #[error("sqlite error: {0}")]
+    #[error("database error: {0}")]
     Rusqlite(#[from] rusqlite::Error),
 
     /// JSON error.

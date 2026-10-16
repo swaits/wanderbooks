@@ -15,6 +15,8 @@ pub mod nav;
 pub mod pages;
 pub mod palette;
 mod receipts;
+#[cfg(test)]
+mod test_support;
 mod theme;
 mod widgets;
 

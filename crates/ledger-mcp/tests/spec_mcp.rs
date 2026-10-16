@@ -2,7 +2,7 @@
 //! binary.
 //!
 //! Expected behavior comes only from the GOAL/SOURCE/INVARIANTS blocks of
-//! `src/server.rs` and `src/policy.rs`, the server's `INSTRUCTIONS`,
+//! `src/server.rs` and `src/policy.rs`, the server's connect text and handbook,
 //! `docs/mcp-interface.md`, `docs/spec/sources/{mcp-tools,jsonrpc-2.0,
 //! irs-records}.md`, and the server's own `tools/list` (the declared
 //! interface: names, input and output schemas). Where those are silent the
@@ -13,12 +13,15 @@
 //! 2.0 §5); a refused call (isError or a JSON-RPC error) leaves
 //! `journal.jsonl` byte-identical (server invariant 2); a success has
 //! `structuredContent` that validates against the tool's `outputSchema`
-//! and the same JSON in a text block (invariant 1); and no money key holds
-//! a JSON number or a string outside `^-?\d+\.\d{2,}$` (invariant 3).
+//! and the same JSON in a text block (invariant 1); no money key holds
+//! a JSON number or a string outside `^-?\d+\.\d{2,}$` (invariant 3);
+//! and a tool annotated readOnlyHint leaves the journal and the set of
+//! files under the data dir as they were, success or refusal (plan 4.9,
+//! "Annotations (P0)": the hint is true in behaviour).
 
 use proptest::prelude::*;
 use serde_json::{Value, json};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -152,6 +155,8 @@ struct Mcp {
     validators: HashMap<String, jsonschema::Validator>,
     /// Tools that returned a success at least once.
     exercised: BTreeSet<String>,
+    /// readOnlyHint tools that succeeded and were seen to change nothing.
+    read_only_checked: BTreeSet<String>,
     /// Invariant 3 (amounts out) violations: `tool: path = value`.
     money_violations: Vec<String>,
 }
@@ -177,6 +182,14 @@ fn test_dir(name: &str) -> PathBuf {
 
 /// A directory beside the books dir `dir`, outside it (vault keys, files
 /// with TINs).
+/// The import root beside the books dir `dir`: files the tests hand the
+/// server by path (books.import_local_file, books.set_w9 w9_file_path).
+fn inbox(dir: &Path) -> PathBuf {
+    let d = dir.with_extension("inbox");
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
 fn outside(dir: &Path) -> PathBuf {
     let d = PathBuf::from(format!("{}-outside", dir.display()));
     std::fs::create_dir_all(&d).unwrap();
@@ -206,6 +219,10 @@ fn spawn_child(dir: &Path, toml: &Path) -> Child {
         .arg(dir.join("books-data"))
         .arg("--books-toml")
         .arg(toml)
+        // Local files come only from here (the default is the downloads
+        // folder): never the books, never where the server writes.
+        .arg("--import-root")
+        .arg(inbox(dir))
         // books.show writes a viewer request here; keep it out of the
         // user's real runtime dir.
         .env("XDG_RUNTIME_DIR", &run)
@@ -243,6 +260,7 @@ impl Mcp {
             schemas: HashMap::new(),
             validators: HashMap::new(),
             exercised: BTreeSet::new(),
+            read_only_checked: BTreeSet::new(),
             money_violations: Vec::new(),
         };
         let init = mcp.rpc(
@@ -272,6 +290,48 @@ impl Mcp {
 
     fn journal(&self) -> Vec<u8> {
         std::fs::read(self.data.join("journal.jsonl")).unwrap_or_default()
+    }
+
+    /// What a read-only tool must leave as it was: every file under the
+    /// data dir, the books dir's vault/ and its settings file, by path,
+    /// each with the SHA-256 of its contents. The database is compared by
+    /// what it holds (every row of every table, in order: SQLite moves
+    /// pages between the file and its write-ahead log on its own, and a
+    /// reader writes its read marks into the shared-memory file), so the
+    /// -wal and -shm files are left out.
+    fn data_files(&self) -> BTreeMap<PathBuf, String> {
+        fn walk(dir: &Path, out: &mut BTreeMap<PathBuf, String>) {
+            for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+                let p = e.path();
+                let name = p.file_name().unwrap().to_string_lossy().into_owned();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if name.ends_with("-wal") || name.ends_with("-shm") {
+                    continue;
+                } else if name == ledger_store::DB_FILE {
+                    out.insert(p.clone(), db_digest(&p));
+                } else {
+                    let bytes = std::fs::read(&p).unwrap_or_default();
+                    out.insert(p, ledger_store::journal::sha256_hex(&bytes));
+                }
+            }
+        }
+        let mut out = BTreeMap::new();
+        walk(&self.data, &mut out);
+        let books = self.data.parent().unwrap();
+        walk(&books.join("vault"), &mut out);
+        let toml = books.join("wanderbooks.toml");
+        out.insert(
+            toml.clone(),
+            ledger_store::journal::sha256_hex(&std::fs::read(&toml).unwrap_or_default()),
+        );
+        out
+    }
+
+    fn read_only(&self, name: &str) -> bool {
+        self.schemas
+            .get(name)
+            .is_some_and(|t| t["annotations"]["readOnlyHint"] == json!(true))
     }
 
     fn send_line(&mut self, line: &str) {
@@ -315,6 +375,7 @@ impl Mcp {
     /// Call a tool and check invariants 1, 2, 3 and 7 on the outcome.
     fn tool(&mut self, name: &str, args: Value) -> Out {
         let before = self.journal();
+        let files = self.read_only(name).then(|| self.data_files());
         let resp = self.rpc("tools/call", json!({"name": name, "arguments": args}));
         let out = if let Some(err) = resp.get("error") {
             Out::RpcErr(err.clone())
@@ -336,6 +397,20 @@ impl Mcp {
                 self.journal() == before,
                 "invariant 2: refused {name} {args} changed the journal ({out:?})"
             );
+        }
+        if let Some(files) = files {
+            assert!(
+                self.journal() == before,
+                "readOnlyHint: {name} {args} changed the journal"
+            );
+            assert_eq!(
+                self.data_files(),
+                files,
+                "readOnlyHint: {name} {args} changed the files of the books"
+            );
+            if !out.refused() {
+                self.read_only_checked.insert(name.to_string());
+            }
         }
         out
     }
@@ -694,7 +769,7 @@ fn happy_path(name: &str) -> Mcp {
         json!({"party": "Landlord", "received_on": "2026-01-03", "entity_type": "LLC (partnership)",
                "tin_last4": "4321", "kept_at": "CPA portal"}),
     );
-    let w9_pdf = outside(&dir).join("landlord-w9.pdf");
+    let w9_pdf = inbox(&dir).join("landlord-w9.pdf");
     std::fs::write(&w9_pdf, b"%PDF-1.4 W-9 EIN 79-9714321").unwrap();
     m.ok(
         "books.set_w9",
@@ -798,7 +873,8 @@ fn happy_path(name: &str) -> Mcp {
         "books.unlink_attachment",
         json!({"attachment_id": filed, "subject": {"kind": "company"}, "reason": "a lease, not a formation document"}),
     );
-    let local = dir.join("local-receipt.txt");
+    // From outside the books, in the server's import folder.
+    let local = inbox(&dir).join("local-receipt.txt");
     std::fs::write(&local, b"a local receipt").unwrap();
     m.ok(
         "books.import_local_file",
@@ -1017,6 +1093,10 @@ fn happy_path(name: &str) -> Mcp {
         json!({"period_id": p, "confirmed": true}),
     );
 
+    // The handbook: its index, and a section.
+    m.ok("books.handbook", json!({}));
+    m.ok("books.handbook", json!({"section": "contract"}));
+
     // Reports over the populated books.
     m.ok("books.chart", json!({}));
     m.ok("books.trial_balance", json!({"as_of": "2026-12-31"}));
@@ -1100,6 +1180,26 @@ fn inv1_every_tool_result_matches_its_output_schema() {
         .filter(|t| !m.exercised.contains(*t))
         .collect();
     assert!(missing.is_empty(), "tools never exercised: {missing:?}");
+}
+
+/// The read-only hint is true in behaviour: every tool annotated
+/// readOnlyHint succeeded on the fixture company and left the journal,
+/// every file under the data dir (its contents, the database by every row
+/// it holds), the vault and the settings file exactly as they were
+/// (checked in [`Mcp::tool`] on every call).
+#[test]
+fn read_only_tools_change_nothing() {
+    let m = happy_path("read-only");
+    let read_only: Vec<&String> = m.schemas.keys().filter(|t| m.read_only(t)).collect();
+    assert!(read_only.len() > 30, "only {read_only:?}");
+    let unchecked: Vec<&&String> = read_only
+        .iter()
+        .filter(|t| !m.read_only_checked.contains(**t))
+        .collect();
+    assert!(
+        unchecked.is_empty(),
+        "read-only tools never checked: {unchecked:?}"
+    );
 }
 
 /// Invariant 3, amounts out, weak form: no money key ever holds a JSON
@@ -2363,4 +2463,37 @@ fn assigned_roles_steer_invoices() {
     let tb = m.ok("books.trial_balance", json!({})).to_string();
     assert!(tb.contains("1110") && tb.contains("4100"), "{tb}");
     assert!(!tb.contains("\"1200\"") && !tb.contains("\"4000\""), "{tb}");
+}
+
+/// The database at `path` by what it holds: every row of every table, in
+/// rowid order, as text, hashed. Read through a read-only connection
+/// beside the server's (WAL mode lets a reader in while it writes).
+fn db_digest(path: &Path) -> String {
+    let conn =
+        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .unwrap();
+    let mut tables: Vec<String> = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    tables.sort();
+    let mut dump = String::new();
+    for t in &tables {
+        dump.push_str(&format!("table {t}\n"));
+        let mut stmt = conn
+            .prepare(&format!("SELECT * FROM \"{t}\" ORDER BY rowid"))
+            .unwrap();
+        let cols = stmt.column_count();
+        let mut rows = stmt.query([]).unwrap();
+        while let Some(row) = rows.next().unwrap() {
+            for i in 0..cols {
+                dump.push_str(&format!("{:?}\t", row.get_ref(i).unwrap()));
+            }
+            dump.push('\n');
+        }
+    }
+    ledger_store::journal::sha256_hex(dump.as_bytes())
 }

@@ -35,6 +35,23 @@ pub enum LedgerError {
     #[error("journal line amount is out of range (at most 1000000000000000, ten decimal places)")]
     AmountOutOfRange,
 
+    /// A date outside the calendar the books keep (`crate::calendar`):
+    /// four-digit years, 0001-01-01 through 9999-12-31.
+    #[error("date {0} is outside the calendar the books keep (0001-01-01 through 9999-12-31)")]
+    DateOutOfRange(chrono::NaiveDate),
+
+    /// An amount other than a journal line's (a document line, a payout, a
+    /// payroll figure, a statement balance, a share, a basis) larger than
+    /// one quadrillion or with more than ten decimal places: a mistake, and
+    /// one that could overflow exact arithmetic.
+    #[error("{0} is out of range (at most 1000000000000000, ten decimal places)")]
+    ValueOutOfRange(String),
+
+    /// A figure the books derive (a sum, or a share of one) too large for
+    /// exact arithmetic: refused, never rounded or wrapped.
+    #[error("{0} is too large to compute exactly")]
+    TooLargeToCompute(String),
+
     /// An amount finer than its currency's smallest unit (ISO 4217 minor
     /// units): no one can pay a fraction of a cent (rules.md B-3).
     #[error(
@@ -205,13 +222,13 @@ pub enum LedgerError {
 
     /// A rule set by law (a dollar threshold, a rate) isn't known to
     /// wanderbooks for the year asked; the engine never guesses (see
-    /// [`crate::rules`]).
+    /// [`crate::rules`]). The text names the authority, never this repo:
+    /// it reaches agents.
     #[error(
         "wanderbooks knows the {rule} only through {known_through}, not for {year}. \
-         Find the {year} figure from the official source (see {spec}) or ask the books' \
-         owner or CPA, and pass it explicitly. Then update the rule for everyone: open a \
-         pull request (or at least an issue) at https://github.com/swaits/wanderbooks with \
-         the new value and its official source."
+         Find the {year} figure from the official source, {authority}, or ask the books' \
+         owner or CPA, and pass it explicitly. Then tell the human the figure and where \
+         it came from, so the rule can be updated for everyone."
     )]
     RuleNotKnown {
         /// The rule's plain name.
@@ -220,8 +237,8 @@ pub enum LedgerError {
         year: i32,
         /// The last year the rule is known for.
         known_through: i32,
-        /// The vendored official source of the rule.
-        spec: String,
+        /// The official source of the rule (`DatedRule::authority`).
+        authority: String,
     },
 
     /// A child account subdivides its parent, so it must be the same type

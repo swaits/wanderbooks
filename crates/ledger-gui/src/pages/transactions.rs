@@ -138,13 +138,13 @@ fn row(ui: &mut Ui, b: &Books, e: &EntryInfo, on: bool, since_update: f64) -> eg
         widgets::copy_item(
             ui,
             "Copy amount",
-            &fmt::plain(&fmt::money(e.amount)).unwrap_or_default(),
+            &fmt::plain(&fmt::money_or(e.amount)).unwrap_or_default(),
         );
-        if !e.cash_effect.is_zero() {
+        if !e.cash_effect.is_some_and(|c| c.is_zero()) {
             widgets::copy_item(
                 ui,
                 "Copy cash effect",
-                &fmt::plain(&fmt::money(e.cash_effect)).unwrap_or_default(),
+                &fmt::plain(&fmt::money_or(e.cash_effect)).unwrap_or_default(),
             );
         }
         widgets::copy_item(ui, "Copy entry number", &format!("#{}", e.id));
@@ -182,12 +182,11 @@ fn row(ui: &mut Ui, b: &Books, e: &EntryInfo, on: bool, since_update: f64) -> eg
     // icon and the amount. Cash in reads green with a plus, cash out with
     // a minus; entries that don't move cash show their size, muted.
     let text_left = left + 44.0;
-    let (amount, color) = if e.cash_effect > rust_decimal::Decimal::ZERO {
-        (format!("+{}", fmt::money(e.cash_effect)), p.positive)
-    } else if e.cash_effect < rust_decimal::Decimal::ZERO {
-        (fmt::money(e.cash_effect), p.text)
-    } else {
-        (fmt::money(e.amount), p.muted)
+    let (amount, color) = match e.cash_effect {
+        Some(c) if c > rust_decimal::Decimal::ZERO => (format!("+{}", fmt::money(c)), p.positive),
+        Some(c) if c < rust_decimal::Decimal::ZERO => (fmt::money(c), p.text),
+        Some(_) => (fmt::money_or(e.amount), p.muted),
+        None => (fmt::CANT_COMPUTE.to_string(), p.muted),
     };
     let amount_w = painter
         .layout_no_wrap(amount.clone(), theme::semibold(14.0), color)
@@ -292,6 +291,71 @@ fn filters(ui: &mut Ui, b: &Books, st: &mut State) {
             .clicked()
         {
             st.account = None;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{Build, d, find, harness, has, painted};
+
+    /// A transaction row: cash in green with a plus, cash out with its
+    /// minus, an entry moving no cash its size, muted; the description
+    /// 44 points right of the date; and its menu offers the cash effect
+    /// only when there is one.
+    #[test]
+    fn a_transaction_row_says_how_it_moved_cash() {
+        let mut b = Build::new("transactions");
+        let (cash, capital, rent) = (b.cash, b.capital, b.rent);
+        b.post_as("Deposit in", d(2026, 10, 2), cash, capital, 100_000);
+        b.post_as("Rent out", d(2026, 10, 3), rent, cash, 25_000);
+        b.post_as("Owner paid rent", d(2026, 10, 4), rent, capital, 4_000);
+        let (_dir, books) = b.books();
+        let mut h = harness(books, Route::Transactions);
+        let texts = painted(h.output());
+        let p = crate::theme::pal(&h.ctx);
+        let money = |c: i64| fmt::money(rust_decimal::Decimal::new(c, 2));
+        assert_eq!(
+            find(&texts, &format!("+{}", money(100_000))).color,
+            p.positive
+        );
+        assert_eq!(find(&texts, &money(-25_000)).color, p.text);
+        assert_eq!(find(&texts, &money(4_000)).color, p.muted);
+        assert!(!has(&texts, &format!("+{}", money(-25_000))));
+        // The description beside its day: 44 points right of the date.
+        let desc = find(&texts, "Deposit in");
+        let day = texts
+            .iter()
+            .filter(|t| t.text == "2" && (t.pos.y - desc.pos.y).abs() < 30.0)
+            .min_by(|a, b| a.pos.x.total_cmp(&b.pos.x))
+            .expect("the day");
+        assert!(
+            (desc.pos.x - day.pos.x - 44.0).abs() < 1.0,
+            "{} vs {}",
+            desc.pos.x,
+            day.pos.x
+        );
+        // The menus: "Copy cash effect" for cash moved, none for none.
+        for (row, offered) in [("Deposit in", true), ("Owner paid rent", false)] {
+            let at = find(&painted(h.output()), row).pos + egui::vec2(4.0, 4.0);
+            h.hover_at(at);
+            h.run_steps(2);
+            for pressed in [true, false] {
+                h.event(egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Secondary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                });
+                h.run_steps(2);
+            }
+            let menu = painted(h.output());
+            let item = |label: &str| menu.iter().any(|t| t.text.ends_with(label));
+            assert!(item("Copy entry number"), "{row}: no menu");
+            assert_eq!(item("Copy cash effect"), offered, "{row}");
+            h.key_press(egui::Key::Escape);
+            h.run_steps(3);
         }
     }
 }

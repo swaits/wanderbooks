@@ -1,0 +1,54 @@
+{
+  "assets": [],
+  "bills": [],
+  "entries": [],
+  "entry_parties": [],
+  "invoices": [],
+  "payroll_runs": [],
+  "periods": [],
+  "recurring": [],
+  "schedules": [
+    {
+      "balance_account": 4,
+      "description": "late",
+      "id": 1,
+      "kind": "prepaid_expense",
+      "months": 12,
+      "pl_account": 3,
+      "posted": [],
+      "start": "9999-06-01",
+      "total": {
+        "amount": "1200.00",
+        "currency": [
+          85,
+          83,
+          68
+        ]
+      }
+    }
+  ],
+  "snapshot": {
+    "Ok": {
+      "balance_sheet": {
+        "assets": "0",
+        "balanced": true,
+        "current_earnings": "0",
+        "equity": "0",
+        "liabilities": "0"
+      },
+      "profit_and_loss": {
+        "expenses": "0",
+        "net_income": "0",
+        "revenue": "0"
+      },
+      "trial_balance": {
+        "lines": [],
+        "total_credits": "0",
+        "total_debits": "0"
+      }
+    }
+  },
+  "verify": {
+    "Ok": null
+  }
+}

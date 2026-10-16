@@ -155,9 +155,24 @@ pub struct TaxBasis {
 impl TaxBasis {
     /// Whether the record fits its rule: Cost takes no contributor basis;
     /// Carryover and PersonalUseConversion require a non-negative one in
-    /// cents at most. Returns why not. Needs no asset, so a caller can check
-    /// before registering one.
+    /// cents at most, and no larger than a cost may be
+    /// (kernel::MAX_LINE_AMOUNT: the register sums them; P0 review round 3,
+    /// S1). Returns why not. Needs no asset, so a caller can check before
+    /// registering one. Replay checks only [`Self::check_journaled`].
     pub fn check(&self) -> Result<(), String> {
+        self.check_journaled()?;
+        match self.contributor_basis {
+            Some(b) if b > crate::kernel::MAX_LINE_AMOUNT => {
+                Err("a basis is at most 1000000000000000".into())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// The checks every journaled `asset.tax_basis_set` passed when it was
+    /// written (the rule through 2026-10-16): [`Self::check`] without the
+    /// upper bound. Replay applies exactly these (rules.md B-28).
+    pub fn check_journaled(&self) -> Result<(), String> {
         use TaxBasisRule::*;
         match (self.rule, self.contributor_basis) {
             (Cost, Some(_)) => {
@@ -307,14 +322,23 @@ pub struct ScheduleLine {
     pub book_value: Decimal,
 }
 
+/// The days in a month of a year chrono holds, without stepping to the
+/// next month, so chrono's last month (December 262142, whose next month
+/// chrono can't hold) has its 31 days too (rules.md B-28: a schedule an
+/// earlier version accepted is computed, never a panic).
 fn days_in_month(year: i32, month: u32) -> u32 {
-    let first = NaiveDate::from_ymd_opt(year, month, 1).expect("valid month");
-    let next = if month == 12 {
-        NaiveDate::from_ymd_opt(year + 1, 1, 1).expect("valid month")
-    } else {
-        NaiveDate::from_ymd_opt(year, month + 1, 1).expect("valid month")
-    };
-    (next - first).num_days() as u32
+    match month {
+        2 if NaiveDate::from_ymd_opt(year, 2, 29).is_some() => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    }
+}
+
+/// The first day of the month after `month_start`'s, or `None` past
+/// chrono's last day (the month containing NaiveDate::MAX).
+fn next_month_start(month_start: NaiveDate) -> Option<NaiveDate> {
+    month_start.checked_add_months(Months::new(1))
 }
 
 /// The last day depreciation accrues: purchase + life, or disposal, whichever
@@ -378,18 +402,18 @@ pub fn depreciation_schedule(asset: &Asset, through: NaiveDate) -> Vec<ScheduleL
     let mut accumulated_rounded = Decimal::ZERO;
     // Walk calendar months from the purchase month.
     let (mut year, mut month) = (asset.purchase_date.year(), asset.purchase_date.month());
-    loop {
-        let month_start = NaiveDate::from_ymd_opt(year, month, 1).expect("valid month");
+    // Past chrono's last month there is no month to walk, and nothing left
+    // to accrue: accrual_end is at most NaiveDate::MAX.
+    while let Some(month_start) = NaiveDate::from_ymd_opt(year, month, 1) {
         if month_start >= accrual_end {
             break;
         }
         let dim = days_in_month(year, month);
-        let month_end_excl = month_start
-            .checked_add_months(Months::new(1))
-            .expect("month arithmetic");
-        // Days held this month: overlap of [purchase_date, accrual_end) with the month.
+        // Days held this month: overlap of [purchase_date, accrual_end) with
+        // the month. In chrono's last month there is no next month to end
+        // at, and accrual_end (at most NaiveDate::MAX) is the bound.
         let held_start = asset.purchase_date.max(month_start);
-        let held_end = accrual_end.min(month_end_excl);
+        let held_end = next_month_start(month_start).map_or(accrual_end, |n| accrual_end.min(n));
         let days_held = (held_end - held_start).num_days().max(0) as u32;
         if days_held > 0 {
             let exact = monthly_rate * Decimal::from(days_held) / Decimal::from(dim);
@@ -416,9 +440,12 @@ pub fn depreciation_schedule(asset: &Asset, through: NaiveDate) -> Vec<ScheduleL
     // absorb any month-length drift so the lifetime total is exactly
     // (cost − salvage). The drift is bounded by a fraction of one month's
     // charge, so the final month stays positive.
+    // The final month named as the lines name theirs: chrono's "%Y" signs
+    // a year past 9999 ("+10004"), and the lines don't, so books an
+    // earlier version wrote with such a life true up too (rules.md B-28).
     if let Some(last) = out.last_mut()
         && let Some(day_before_end) = end.pred_opt()
-        && last.period == day_before_end.format("%Y-%m").to_string()
+        && last.period == format!("{:04}-{:02}", day_before_end.year(), day_before_end.month())
     {
         let plug = depreciable - accumulated_rounded;
         last.amount += plug;

@@ -35,5 +35,6 @@ pub use journal::{GENESIS_PREV, JournalLine, JournalWriter};
 pub use snapshot::{DiskCheck, Snapshot};
 pub use store::{
     Attachment, DB_FILE, DepreciationRun, DisposalPreview, EntryRow, EventRow, JOURNAL_FILE,
-    LOCK_FILE, PayrollLineInput, Reconciliation, Statement, Store, Subject, VerifyReport,
+    LOCK_FILE, MAX_RECURRING_RUN, PayrollLineInput, Reconciliation, Statement, Store, Subject,
+    VerifyReport,
 };

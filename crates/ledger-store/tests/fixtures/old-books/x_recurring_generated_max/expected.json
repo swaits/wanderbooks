@@ -1,0 +1,174 @@
+{
+  "assets": [],
+  "bills": [],
+  "entries": [
+    {
+      "date": "2026-01-01",
+      "description": "huge",
+      "id": 1,
+      "lines": [
+        {
+          "account": 3,
+          "amount": {
+            "amount": "39614081257132168796771975167",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        },
+        {
+          "account": 1,
+          "amount": {
+            "amount": "39614081257132168796771975167",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        }
+      ],
+      "reversal_of": null,
+      "status": "Draft"
+    },
+    {
+      "date": "2026-02-01",
+      "description": "huge",
+      "id": 2,
+      "lines": [
+        {
+          "account": 3,
+          "amount": {
+            "amount": "39614081257132168796771975167",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        },
+        {
+          "account": 1,
+          "amount": {
+            "amount": "39614081257132168796771975167",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        }
+      ],
+      "reversal_of": null,
+      "status": "Draft"
+    },
+    {
+      "date": "2026-03-01",
+      "description": "huge",
+      "id": 3,
+      "lines": [
+        {
+          "account": 3,
+          "amount": {
+            "amount": "39614081257132168796771975167",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        },
+        {
+          "account": 1,
+          "amount": {
+            "amount": "39614081257132168796771975167",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        }
+      ],
+      "reversal_of": null,
+      "status": "Draft"
+    }
+  ],
+  "entry_parties": [],
+  "invoices": [],
+  "payroll_runs": [],
+  "periods": [],
+  "recurring": [
+    {
+      "description": "huge",
+      "end": "2026-03-31",
+      "frequency": "monthly",
+      "generated": [
+        "2026-01-01",
+        "2026-02-01",
+        "2026-03-01"
+      ],
+      "id": 1,
+      "lines": [
+        [
+          3,
+          "Debit",
+          {
+            "amount": "39614081257132168796771975167",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          }
+        ],
+        [
+          1,
+          "Credit",
+          {
+            "amount": "39614081257132168796771975167",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          }
+        ]
+      ],
+      "start": "2026-01-01"
+    }
+  ],
+  "schedules": [],
+  "snapshot": {
+    "Ok": {
+      "balance_sheet": {
+        "assets": "0",
+        "balanced": true,
+        "current_earnings": "0",
+        "equity": "0",
+        "liabilities": "0"
+      },
+      "profit_and_loss": {
+        "expenses": "0",
+        "net_income": "0",
+        "revenue": "0"
+      },
+      "trial_balance": {
+        "lines": [],
+        "total_credits": "0",
+        "total_debits": "0"
+      }
+    }
+  },
+  "verify": {
+    "Ok": null
+  }
+}

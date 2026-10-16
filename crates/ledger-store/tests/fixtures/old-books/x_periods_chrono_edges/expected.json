@@ -1,0 +1,175 @@
+{
+  "assets": [],
+  "bills": [],
+  "entries": [
+    {
+      "date": "+262142-06-01",
+      "description": "edge",
+      "id": 1,
+      "lines": [
+        {
+          "account": 1,
+          "amount": {
+            "amount": "100.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        },
+        {
+          "account": 2,
+          "amount": {
+            "amount": "100.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        }
+      ],
+      "reversal_of": null,
+      "status": "Posted"
+    },
+    {
+      "date": "+262142-07-01",
+      "description": "edge",
+      "id": 2,
+      "lines": [
+        {
+          "account": 3,
+          "amount": {
+            "amount": "40.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        },
+        {
+          "account": 1,
+          "amount": {
+            "amount": "40.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        }
+      ],
+      "reversal_of": null,
+      "status": "Posted"
+    },
+    {
+      "date": "+262142-12-31",
+      "description": "Close period last",
+      "id": 3,
+      "lines": [
+        {
+          "account": 3,
+          "amount": {
+            "amount": "40.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        },
+        {
+          "account": 4,
+          "amount": {
+            "amount": "40.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        }
+      ],
+      "reversal_of": null,
+      "status": "Posted"
+    }
+  ],
+  "entry_parties": [],
+  "invoices": [],
+  "payroll_runs": [],
+  "periods": [
+    {
+      "close_seq": null,
+      "closing_entry": null,
+      "end": "-262143-12-31",
+      "id": 1,
+      "member_close": null,
+      "name": "first",
+      "start": "-262143-01-01",
+      "status": "Open"
+    },
+    {
+      "close_seq": 1,
+      "closing_entry": 3,
+      "end": "+262142-12-31",
+      "id": 2,
+      "member_close": null,
+      "name": "last",
+      "start": "+262142-01-01",
+      "status": "Closed"
+    }
+  ],
+  "recurring": [],
+  "schedules": [],
+  "snapshot": {
+    "Ok": {
+      "balance_sheet": {
+        "assets": "60",
+        "balanced": true,
+        "current_earnings": "0",
+        "equity": "60",
+        "liabilities": "0"
+      },
+      "profit_and_loss": {
+        "expenses": "0",
+        "net_income": "0",
+        "revenue": "0"
+      },
+      "trial_balance": {
+        "lines": [
+          {
+            "code": "1000",
+            "credit": "0",
+            "debit": "60",
+            "name": "Cash"
+          },
+          {
+            "code": "3000",
+            "credit": "100",
+            "debit": "0",
+            "name": "Capital"
+          },
+          {
+            "code": "3999",
+            "credit": "0",
+            "debit": "40",
+            "name": "Retained Earnings"
+          }
+        ],
+        "total_credits": "100",
+        "total_debits": "100"
+      }
+    }
+  },
+  "verify": {
+    "Ok": null
+  }
+}

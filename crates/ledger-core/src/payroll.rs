@@ -48,14 +48,20 @@ pub struct PayrollLine {
 
 impl PayrollLine {
     /// Gross minus all employee withholdings and deductions. Must be >= 0:
-    /// you cannot withhold more than the employee earned.
-    pub fn net_pay(&self) -> Decimal {
-        self.gross_pay
-            - self.federal_withholding
-            - self.state_withholding
-            - self.ss_employee
-            - self.medicare_employee
-            - self.other_deductions
+    /// you cannot withhold more than the employee earned. Refused
+    /// (TooLargeToCompute), never a panic, past exact arithmetic: a run is
+    /// restored as journaled (rules.md B-28).
+    pub fn net_pay(&self) -> Result<Decimal, LedgerError> {
+        [
+            self.federal_withholding,
+            self.state_withholding,
+            self.ss_employee,
+            self.medicare_employee,
+            self.other_deductions,
+        ]
+        .into_iter()
+        .try_fold(self.gross_pay, Decimal::checked_sub)
+        .ok_or_else(|| LedgerError::TooLargeToCompute(format!("{}'s net pay", self.employee_name)))
     }
 }
 
@@ -116,8 +122,35 @@ pub fn validate_payroll_lines(lines: &[PayrollLine]) -> Result<(), LedgerError> 
                 return Err(LedgerError::NegativePayrollAmount(amount));
             }
         }
-        if line.net_pay() < Decimal::ZERO {
+        check_payroll_ranges(std::slice::from_ref(line))?;
+        if line.net_pay()? < Decimal::ZERO {
             return Err(LedgerError::NegativeNetPay(line.employee_name.clone()));
+        }
+    }
+    Ok(())
+}
+
+/// Every amount of every line no larger than a journal line may be
+/// (kernel::MAX_LINE_AMOUNT, ten decimal places), so net pay and the run's
+/// totals are exact (P0 review round 3, S1). For new runs only: replay
+/// restores a run as journaled (rules.md B-28).
+pub fn check_payroll_ranges(lines: &[PayrollLine]) -> Result<(), LedgerError> {
+    for line in lines {
+        for amount in [
+            line.gross_pay,
+            line.federal_withholding,
+            line.state_withholding,
+            line.ss_employee,
+            line.medicare_employee,
+            line.ss_employer,
+            line.medicare_employer,
+            line.other_deductions,
+        ] {
+            if !crate::kernel::Amount::in_line_range(amount) {
+                return Err(LedgerError::ValueOutOfRange(format!(
+                    "payroll amount {amount}"
+                )));
+            }
         }
     }
     Ok(())
@@ -131,21 +164,28 @@ pub fn validate_payroll_lines(lines: &[PayrollLine]) -> Result<(), LedgerError> 
 /// journaled entry and the posted entry are built from the same math. The
 /// plan always balances: debits are gross + employer FICA, credits are the
 /// payables + net, and net is defined as gross minus employee withholdings.
+/// Refused (TooLargeToCompute) when a total is past exact arithmetic.
 pub fn payroll_entry_plan(
     lines: &[PayrollLine],
     accounts: PayrollAccounts,
     cash_account: AccountId,
     base: Currency,
-) -> Vec<(AccountId, Side, Money)> {
-    let sum = |f: fn(&PayrollLine) -> Decimal| lines.iter().map(f).sum::<Decimal>();
-    let gross = sum(|l| l.gross_pay);
-    let employer = sum(|l| l.ss_employer + l.medicare_employer);
-    let federal = sum(|l| l.federal_withholding);
-    let state = sum(|l| l.state_withholding);
-    let ss = sum(|l| l.ss_employee + l.ss_employer);
-    let medicare = sum(|l| l.medicare_employee + l.medicare_employer);
-    let other = sum(|l| l.other_deductions);
-    let net = sum(|l| l.net_pay());
+) -> Result<Vec<(AccountId, Side, Money)>, LedgerError> {
+    let too_large = || LedgerError::TooLargeToCompute("the payroll run's totals".into());
+    let sum = |f: &dyn Fn(&PayrollLine) -> Option<Decimal>| {
+        lines
+            .iter()
+            .try_fold(Decimal::ZERO, |t, l| t.checked_add(f(l)?))
+            .ok_or_else(too_large)
+    };
+    let gross = sum(&|l| Some(l.gross_pay))?;
+    let employer = sum(&|l| l.ss_employer.checked_add(l.medicare_employer))?;
+    let federal = sum(&|l| Some(l.federal_withholding))?;
+    let state = sum(&|l| Some(l.state_withholding))?;
+    let ss = sum(&|l| l.ss_employee.checked_add(l.ss_employer))?;
+    let medicare = sum(&|l| l.medicare_employee.checked_add(l.medicare_employer))?;
+    let other = sum(&|l| Some(l.other_deductions))?;
+    let net = sum(&|l| l.net_pay().ok())?;
     let mut plan = Vec::new();
     let mut push = |account: AccountId, side: Side, amount: Decimal| {
         if !amount.is_zero() {
@@ -160,7 +200,7 @@ pub fn payroll_entry_plan(
     push(accounts.medicare_payable, Side::Credit, medicare);
     push(accounts.other_payable, Side::Credit, other);
     push(cash_account, Side::Credit, net);
-    plan
+    Ok(plan)
 }
 
 /// The remittance entry's lines: Dr each payable with a non-zero balance,
@@ -222,7 +262,7 @@ mod tests {
     fn net_pay_math() {
         let l = line("Ada");
         // 5000 - 750 - 250 - 310 - 72.50 - 100 = 3517.50
-        assert_eq!(l.net_pay(), d(351_750));
+        assert_eq!(l.net_pay().unwrap(), d(351_750));
     }
 
     #[test]
@@ -236,7 +276,7 @@ mod tests {
         );
         let mut over = line("Cat");
         over.other_deductions = d(99_999_999);
-        assert!(over.net_pay() < Decimal::ZERO);
+        assert!(over.net_pay().unwrap() < Decimal::ZERO);
         assert_eq!(
             validate_payroll_lines(std::slice::from_ref(&over)),
             Err(LedgerError::NegativeNetPay("Cat".to_string()))
@@ -260,7 +300,7 @@ mod tests {
         let mut l = line("Ada");
         l.state_withholding = Decimal::ZERO;
         l.other_deductions = Decimal::ZERO;
-        let plan = payroll_entry_plan(&[l], accounts, cash, Currency::USD);
+        let plan = payroll_entry_plan(&[l], accounts, cash, Currency::USD).unwrap();
         assert_eq!(plan.len(), 6); // gross, employer tax, fed, ss, medicare, cash
         let mut debits = Decimal::ZERO;
         let mut credits = Decimal::ZERO;

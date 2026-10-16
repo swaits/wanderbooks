@@ -998,7 +998,7 @@ proptest! {
                 .filter(|l| l.side == Side::Debit)
                 .map(|l| l.amount.amount)
                 .sum();
-            prop_assert_eq!(info.amount, debits, "amount of #{}", id);
+            prop_assert_eq!(info.amount, Some(debits), "amount of #{}", id);
             prop_assert_eq!(
                 info.receipts.len(),
                 built.receipts.get(&id).copied().unwrap_or(0),
@@ -1014,7 +1014,7 @@ proptest! {
                         Side::Credit => -l.amount.amount,
                     })
                     .sum();
-                prop_assert_eq!(info.cash_effect, net, "cash effect of #{}", id);
+                prop_assert_eq!(info.cash_effect, Some(net), "cash effect of #{}", id);
 
                 let has_receipt = built.receipts.contains_key(&id);
                 if e.reversal_of().is_some() {

@@ -17,7 +17,7 @@ use chrono::NaiveDate;
 use ledger_core::parties::{check_text, has_full_tin, name_key, redact_full_tins};
 use ledger_core::{
     AccountId, AccountType, Currency, EntryId, Ledger, Money, Party, PartyField, PartyId,
-    PayrollLine, Role, Side, W4Facts, W9Facts,
+    PartyShare, PayrollLine, Role, Side, W4Facts, W9Facts,
 };
 use proptest::prelude::*;
 use rust_decimal::Decimal;
@@ -959,6 +959,78 @@ fn payroll_employee_must_have_the_employee_role() {
     assert_eq!(rec.lines[0].employee, Some(alice));
 }
 
+/// Oracle: name_payroll_parties doc: a payroll entry names the employees
+/// it paid as its parties, each with their net pay (one employee: the whole
+/// entry), live and on replay alike; a line naming no employee leaves the
+/// entry untagged; a line paying nothing names no one.
+#[test]
+fn a_payroll_entry_names_the_employees_it_paid() {
+    let (mut l, fx) = fixture();
+    let alice = l.add_party("Alice", &[Role::Employee]).unwrap();
+    let bob = l.add_party("Bob", &[Role::Employee]).unwrap();
+    let day = date(2026, 2, 27);
+    let net = d("823.50");
+    let run = l
+        .run_payroll(day, vec![pay_line("Alice", Some(alice))], fx.cash)
+        .unwrap();
+    let entry = l.get_payroll_run(run).unwrap().entry_id;
+    assert_eq!(l.entry_parties(entry), &[PartyShare::whole(alice)]);
+    // Alice twice (her two lines one share) and Bob: exact amounts.
+    let lines = vec![
+        pay_line("Alice", Some(alice)),
+        pay_line("Bob", Some(bob)),
+        pay_line("Alice", Some(alice)),
+    ];
+    let run = l.run_payroll(day, lines.clone(), fx.cash).unwrap();
+    let entry = l.get_payroll_run(run).unwrap().entry_id;
+    let amounts = |a: Decimal, b: Decimal| {
+        vec![
+            PartyShare {
+                party: alice,
+                share: ledger_core::Share::Amount(a),
+            },
+            PartyShare {
+                party: bob,
+                share: ledger_core::Share::Amount(b),
+            },
+        ]
+    };
+    assert_eq!(l.entry_parties(entry), amounts(net + net, net).as_slice());
+    // The same run replayed names them the same way.
+    let replayed = l.create_entry(day, "Payroll replayed");
+    let hosting = l.chart().find_by_code("6050").unwrap().id;
+    l.add_line(replayed, hosting, Side::Debit, usd("1.00"))
+        .unwrap();
+    l.add_line(replayed, fx.cash, Side::Credit, usd("1.00"))
+        .unwrap();
+    l.post_entry(replayed).unwrap();
+    let id = l.next_payroll_run_id();
+    l.replay_payroll_run(id, day, lines, replayed).unwrap();
+    assert_eq!(
+        l.entry_parties(replayed),
+        amounts(net + net, net).as_slice()
+    );
+    // A line naming no employee: the entry is left for the agent to tag.
+    let run = l
+        .run_payroll(
+            day,
+            vec![pay_line("Alice", Some(alice)), pay_line("Old", None)],
+            fx.cash,
+        )
+        .unwrap();
+    let entry = l.get_payroll_run(run).unwrap().entry_id;
+    assert!(l.entry_parties(entry).is_empty());
+    // A line that pays nothing (all withheld) names no one, so Bob's run
+    // is his alone.
+    let mut nothing = pay_line("Old", None);
+    nothing.federal_withholding = d("923.50");
+    let run = l
+        .run_payroll(day, vec![nothing, pay_line("Bob", Some(bob))], fx.cash)
+        .unwrap();
+    let entry = l.get_payroll_run(run).unwrap().entry_id;
+    assert_eq!(l.entry_parties(entry), &[PartyShare::whole(bob)]);
+}
+
 // ---------------------------------------------------------------- invariants
 
 /// INVARIANTS 1–4 plus the vendor/party tag sync, over the whole ledger.
@@ -1181,6 +1253,126 @@ fn a_vault_record_hash_with_nine_digits_is_accepted() {
     assert_eq!(facts.check(), Ok(()));
 }
 
+/// Oracle: parties::entry_flow DEFINITIONS (across): one liability paying
+/// down two (a member paying both cards from their own funds): across is
+/// taken from the debited liabilities in order of first appearance, each
+/// at most what is left of it, until across is used up.
+#[test]
+fn entry_flow_takes_across_in_order_until_used_up() {
+    use ledger_core::parties::{entry_flow, money_accounts};
+    use ledger_core::{AccountType, Currency, Ledger, Money, Side};
+    let mut l = Ledger::new(Currency::USD);
+    let mut acct = |code: &str, t| l.add_account(code, code, t, None, false).unwrap();
+    let bank = acct("1000", AccountType::Asset);
+    let card_a = acct("2050", AccountType::Liability);
+    let card_b = acct("2060", AccountType::Liability);
+    let members = acct("2100", AccountType::Liability);
+    let capital = acct("3000", AccountType::Equity);
+    let fees = acct("6000", AccountType::Expense);
+    let money = money_accounts(&l, &[bank]);
+    let e = l.create_entry(NaiveDate::from_ymd_opt(2026, 5, 1).unwrap(), "x");
+    for (a, side, amt) in [
+        (card_a, Side::Debit, "30.00"),
+        (card_b, Side::Debit, "20.00"),
+        (fees, Side::Debit, "5.00"),
+        (members, Side::Credit, "25.00"),
+        (bank, Side::Credit, "15.00"),
+        (capital, Side::Credit, "15.00"),
+    ] {
+        l.add_line(e, a, side, Money::new(d(amt), Currency::USD))
+            .unwrap();
+    }
+    let f = entry_flow(l.get_entry(e).unwrap(), &money).unwrap();
+    // down = min(liab_dr 50, cash_cr 15) = 15: card A's first 15. Left:
+    // card A 15, card B 20, members -25; across = min(35, 25) = 25: card
+    // A's 15, then 10 of card B's 20, and nothing more.
+    assert_eq!(f.net, d("30.00"));
+    assert_eq!(
+        f.what_for,
+        vec![
+            (card_a, d("30.00")),
+            (fees, d("5.00")),
+            (capital, d("-15.00")),
+            (card_b, d("10.00"))
+        ]
+    );
+}
+
+/// Oracle: shares::share_target: an entry moving no money splits over its
+/// total debits, whatever its credits (a draft not yet balanced).
+#[test]
+fn a_share_target_without_money_is_the_debits() {
+    use ledger_core::parties::money_accounts;
+    use ledger_core::{AccountType, Currency, Ledger, Money, Side};
+    let mut l = Ledger::new(Currency::USD);
+    let bank = l
+        .add_account("1000", "Bank", AccountType::Asset, None, false)
+        .unwrap();
+    let equip = l
+        .add_account("1500", "Equipment", AccountType::Asset, None, false)
+        .unwrap();
+    let capital = l
+        .add_account("3000", "Capital", AccountType::Equity, None, false)
+        .unwrap();
+    let money = money_accounts(&l, &[bank]);
+    let e = l.create_entry(NaiveDate::from_ymd_opt(2026, 5, 1).unwrap(), "x");
+    l.add_line(e, equip, Side::Debit, Money::new(d("10.00"), Currency::USD))
+        .unwrap();
+    l.add_line(
+        e,
+        capital,
+        Side::Credit,
+        Money::new(d("4.00"), Currency::USD),
+    )
+    .unwrap();
+    assert_eq!(
+        ledger_core::shares::share_target(l.get_entry(e).unwrap(), &money),
+        Ok(d("10.00"))
+    );
+}
+
+/// Oracle: shares::resolve INVARIANT 10: members named on an entry that
+/// touches their capital share it by their capital lines, credits less
+/// debits.
+#[test]
+fn derived_member_shares_net_their_capital_lines() {
+    use ledger_core::parties::money_accounts;
+    use ledger_core::{AccountType, Currency, Ledger, Money, Side};
+    let mut l = Ledger::new(Currency::USD);
+    let mut acct = |code: &str, t| l.add_account(code, code, t, None, false).unwrap();
+    let bank = acct("1000", AccountType::Asset);
+    let cap_a = acct("3000", AccountType::Equity);
+    let cap_b = acct("3001", AccountType::Equity);
+    let a = l.add_party("A", &[Role::Member]).unwrap();
+    let b = l.add_party("B", &[Role::Member]).unwrap();
+    let money = money_accounts(&l, &[bank]);
+    let member = |party, capital| ledger_core::PartyMember {
+        party,
+        share: d("0.5"),
+        capital,
+        distributions: None,
+    };
+    let members = [member(a, cap_a), member(b, cap_b)];
+    let e = l.create_entry(NaiveDate::from_ymd_opt(2026, 5, 1).unwrap(), "x");
+    for (acct, side, amt) in [
+        (bank, Side::Debit, "100.00"),
+        (cap_a, Side::Credit, "100.00"),
+        (cap_a, Side::Debit, "30.00"),
+        (cap_b, Side::Credit, "30.00"),
+    ] {
+        l.add_line(e, acct, side, Money::new(d(amt), Currency::USD))
+            .unwrap();
+    }
+    let shares = [PartyShare::whole(a), PartyShare::whole(b)].map(|mut s| {
+        s.share = ledger_core::Share::Derived;
+        s
+    });
+    assert_eq!(
+        ledger_core::shares::resolve(l.get_entry(e).unwrap(), &shares, &money, &members),
+        Ok(vec![(a, d("-70.00")), (b, d("-30.00"))])
+    );
+}
+
 /// Oracle: parties::entry_flow SCENARIOS 1–6, worked by hand; what_for
 /// always sums to net.
 #[test]
@@ -1211,7 +1403,7 @@ fn entry_flow_scenarios() {
             )
             .unwrap();
         }
-        let f = entry_flow(l.get_entry(e).unwrap(), &money);
+        let f = entry_flow(l.get_entry(e).unwrap(), &money).unwrap();
         let sum: Decimal = f.what_for.iter().map(|(_, v)| *v).sum();
         assert_eq!(sum, f.net, "what_for sums to net: {f:?}");
         f

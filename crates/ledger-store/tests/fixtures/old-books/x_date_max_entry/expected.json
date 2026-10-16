@@ -1,0 +1,90 @@
+{
+  "assets": [],
+  "bills": [],
+  "entries": [
+    {
+      "date": "+262142-12-31",
+      "description": "edge",
+      "id": 1,
+      "lines": [
+        {
+          "account": 1,
+          "amount": {
+            "amount": "10.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Debit"
+        },
+        {
+          "account": 2,
+          "amount": {
+            "amount": "10.00",
+            "currency": [
+              85,
+              83,
+              68
+            ]
+          },
+          "side": "Credit"
+        }
+      ],
+      "reversal_of": null,
+      "status": "Posted"
+    },
+    {
+      "date": "+262142-12-31",
+      "description": "draft at the edge",
+      "id": 2,
+      "lines": [],
+      "reversal_of": null,
+      "status": "Draft"
+    }
+  ],
+  "entry_parties": [],
+  "invoices": [],
+  "payroll_runs": [],
+  "periods": [],
+  "recurring": [],
+  "schedules": [],
+  "snapshot": {
+    "Ok": {
+      "balance_sheet": {
+        "assets": "10",
+        "balanced": true,
+        "current_earnings": "0",
+        "equity": "10",
+        "liabilities": "0"
+      },
+      "profit_and_loss": {
+        "expenses": "0",
+        "net_income": "0",
+        "revenue": "0"
+      },
+      "trial_balance": {
+        "lines": [
+          {
+            "code": "1000",
+            "credit": "0",
+            "debit": "10",
+            "name": "Cash"
+          },
+          {
+            "code": "3000",
+            "credit": "10",
+            "debit": "0",
+            "name": "Capital"
+          }
+        ],
+        "total_credits": "10",
+        "total_debits": "10"
+      }
+    }
+  },
+  "verify": {
+    "Ok": null
+  }
+}

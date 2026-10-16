@@ -309,7 +309,7 @@ pub fn search(b: &Books, query: &str) -> Vec<Item> {
                 out.push(Item {
                     icon: icon::RECEIPT,
                     title: format!("#{} {}", e.id, e.description),
-                    detail: format!("{} · {}", fmt::date(e.date), fmt::dollars(e.amount)),
+                    detail: format!("{} · {}", fmt::date(e.date), fmt::dollars_or(e.amount)),
                     route: Route::Entry(e.id),
                     score: score + bonus,
                 });

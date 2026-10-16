@@ -93,15 +93,37 @@ pub struct Invoice {
     pub entry_id: u64,
 }
 
+/// The sum of a document's lines; refused (TooLargeToCompute), never a
+/// panic, past exact arithmetic. A document is restored from its journal
+/// line as written (rules.md B-28), so its lines are bounded only by what
+/// the version that wrote it checked.
+pub fn document_total(lines: &[DocumentLine], what: &str) -> Result<Decimal, LedgerError> {
+    lines
+        .iter()
+        .try_fold(Decimal::ZERO, |sum, l| sum.checked_add(l.amount))
+        .ok_or_else(|| LedgerError::TooLargeToCompute(format!("{what}'s total")))
+}
+
+/// What is still owed on a document: its total less what was paid.
+fn document_balance(total: Decimal, paid: Decimal, what: &str) -> Result<Decimal, LedgerError> {
+    total
+        .checked_sub(paid)
+        .ok_or_else(|| LedgerError::TooLargeToCompute(format!("{what}'s balance")))
+}
+
 impl Invoice {
-    /// Total of all lines.
-    pub fn total(&self) -> Decimal {
-        self.lines.iter().map(|l| l.amount).sum()
+    /// Total of all lines ([`document_total`]).
+    pub fn total(&self) -> Result<Decimal, LedgerError> {
+        document_total(&self.lines, &format!("invoice {}", self.id))
     }
 
     /// Amount still owed.
-    pub fn balance(&self) -> Decimal {
-        self.total() - self.amount_paid
+    pub fn balance(&self) -> Result<Decimal, LedgerError> {
+        document_balance(
+            self.total()?,
+            self.amount_paid,
+            &format!("invoice {}", self.id),
+        )
     }
 }
 
@@ -127,18 +149,24 @@ pub struct Bill {
 }
 
 impl Bill {
-    /// Total of all lines.
-    pub fn total(&self) -> Decimal {
-        self.lines.iter().map(|l| l.amount).sum()
+    /// Total of all lines ([`document_total`]).
+    pub fn total(&self) -> Result<Decimal, LedgerError> {
+        document_total(&self.lines, &format!("bill {}", self.id))
     }
 
     /// Amount still owed.
-    pub fn balance(&self) -> Decimal {
-        self.total() - self.amount_paid
+    pub fn balance(&self) -> Result<Decimal, LedgerError> {
+        document_balance(
+            self.total()?,
+            self.amount_paid,
+            &format!("bill {}", self.id),
+        )
     }
 }
 
-/// Validate document lines: at least one, all positive amounts.
+/// Validate document lines: at least one, all positive amounts, each in a
+/// journal line's range. For new documents; replay restores them as
+/// journaled (rules.md B-28).
 pub fn validate_lines(lines: &[DocumentLine]) -> Result<(), LedgerError> {
     if lines.is_empty() {
         return Err(LedgerError::EmptyDocumentLines);
@@ -147,12 +175,24 @@ pub fn validate_lines(lines: &[DocumentLine]) -> Result<(), LedgerError> {
         if line.amount <= Decimal::ZERO {
             return Err(LedgerError::InvalidDocumentLineAmount(line.amount));
         }
+        // No larger than a journal line may be (kernel::MAX_LINE_AMOUNT):
+        // the document's total is summed from them (P0 review round 3, S1).
+        if !crate::kernel::Amount::in_line_range(line.amount) {
+            return Err(LedgerError::ValueOutOfRange(format!(
+                "document line amount {}",
+                line.amount
+            )));
+        }
     }
     Ok(())
 }
 
-/// Validate that due date is not before the document date.
+/// Validate that due date is not before the document date, and both are
+/// in the calendar the books keep (P0 review round 3, S1). For new
+/// documents; replay restores them as journaled (rules.md B-28).
 pub fn validate_due_date(date: NaiveDate, due_date: NaiveDate) -> Result<(), LedgerError> {
+    crate::calendar::check(date)?;
+    crate::calendar::check(due_date)?;
     if due_date < date {
         return Err(LedgerError::DueBeforeDate(due_date.to_string()));
     }
@@ -188,9 +228,33 @@ pub struct AgingRow {
 }
 
 impl AgingRow {
-    /// Total outstanding.
-    pub fn total(&self) -> Decimal {
-        self.current + self.days_30 + self.days_60 + self.days_90 + self.days_90_plus
+    /// Total outstanding; refused past exact arithmetic.
+    pub fn total(&self) -> Result<Decimal, LedgerError> {
+        [self.days_30, self.days_60, self.days_90, self.days_90_plus]
+            .into_iter()
+            .try_fold(self.current, Decimal::checked_add)
+            .ok_or_else(|| LedgerError::TooLargeToCompute(format!("{}'s aging total", self.name)))
+    }
+
+    /// Add `other`'s buckets to this row's; refused past exact arithmetic.
+    pub(crate) fn add(&mut self, other: &AgingRow) -> Result<(), LedgerError> {
+        let too_large = || LedgerError::TooLargeToCompute(format!("{}'s aging", self.name));
+        let sum = |a: Decimal, b: Decimal| a.checked_add(b).ok_or_else(too_large);
+        let (current, days_30, days_60, days_90, days_90_plus) = (
+            sum(self.current, other.current)?,
+            sum(self.days_30, other.days_30)?,
+            sum(self.days_60, other.days_60)?,
+            sum(self.days_90, other.days_90)?,
+            sum(self.days_90_plus, other.days_90_plus)?,
+        );
+        (
+            self.current,
+            self.days_30,
+            self.days_60,
+            self.days_90,
+            self.days_90_plus,
+        ) = (current, days_30, days_60, days_90, days_90_plus);
+        Ok(())
     }
 }
 
@@ -271,7 +335,7 @@ mod tests {
             )
             .unwrap();
         let invoice = l.get_invoice(inv).unwrap();
-        assert_eq!(invoice.total(), "1000.00".parse().unwrap());
+        assert_eq!(invoice.total().unwrap(), "1000.00".parse().unwrap());
         assert_eq!(invoice.status, DocumentStatus::Open);
 
         // A/R has a debit balance of 1000.
@@ -289,7 +353,7 @@ mod tests {
         .unwrap();
         let invoice = l.get_invoice(inv).unwrap();
         assert_eq!(invoice.status, DocumentStatus::Partial);
-        assert_eq!(invoice.balance(), "600.00".parse().unwrap());
+        assert_eq!(invoice.balance().unwrap(), "600.00".parse().unwrap());
 
         // Full payment.
         l.receive_payment(
@@ -449,7 +513,7 @@ mod tests {
         )
         .unwrap();
         let as_of = NaiveDate::from_ymd_opt(2026, 10, 1).unwrap();
-        let aging = l.ar_aging(as_of);
+        let aging = l.ar_aging(as_of).unwrap();
         assert_eq!(aging.len(), 1);
         assert_eq!(aging[0].current, "100".parse().unwrap());
         assert_eq!(aging[0].days_60, "200".parse().unwrap());

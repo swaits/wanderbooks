@@ -378,7 +378,8 @@ impl Ledger {
             .schedules
             .get(&id)
             .ok_or_else(|| LedgerError::InvalidSchedule(format!("unknown schedule {id}")))?;
-        let (date, amount) = schedules::amortization_plan(s.total.amount, s.start, s.months)
+        let (date, amount) = s
+            .plan()?
             .into_iter()
             .find(|(d, _)| *d == month_end)
             .ok_or_else(|| {
@@ -439,6 +440,23 @@ impl Ledger {
     /// Register a recurring entry. Returns its id.
     pub fn register_recurring(&mut self, new: NewRecurring) -> Result<RecurringId, LedgerError> {
         schedules::validate_recurring(&new, &self.chart)?;
+        self.insert_recurring(new)
+    }
+
+    /// [`Self::register_recurring`] with the checks every journaled
+    /// `recurring.registered` passed when it was written
+    /// (schedules::validate_recurring_journaled), for replay only
+    /// (rules.md B-28). Never for new work.
+    pub fn replay_register_recurring(
+        &mut self,
+        new: NewRecurring,
+    ) -> Result<RecurringId, LedgerError> {
+        schedules::validate_recurring_journaled(&new, &self.chart)?;
+        self.insert_recurring(new)
+    }
+
+    /// Put a checked recurring entry in under the next id.
+    fn insert_recurring(&mut self, new: NewRecurring) -> Result<RecurringId, LedgerError> {
         let id = self.next_recurring_id;
         self.next_recurring_id += 1;
         self.recurring.insert(
@@ -515,7 +533,9 @@ impl Ledger {
         let (description, lines) = (r.description.clone(), r.lines.clone());
         let entry = self.create_entry(date, &description);
         for (account, side, money) in lines {
-            if let Err(e) = self.add_line(entry, account, side, money) {
+            // The template's lines as journaled: no size bound (rules.md
+            // B-28); a draft too large to post is refused at its post.
+            if let Err(e) = self.add_line_journaled(entry, account, side, money, false) {
                 self.entries.remove(&entry);
                 self.next_entry_id = entry;
                 return Err(e);
@@ -1028,6 +1048,8 @@ impl Ledger {
     /// GOAL: start a draft entry for new work.
     /// SOURCE: docs/spec/rules.md B-12; Lean invariant Inv.draftsOpen.
     /// SCENARIOS:
+    ///   0. IF the date is outside the calendar the books keep
+    ///      (crate::calendar): SHOULD refuse (DateOutOfRange).
     ///   1. IF the date falls in a closed period:
     ///      - SHOULD refuse (ClosedPeriod)
     ///      - NEVER create a draft there
@@ -1039,6 +1061,7 @@ impl Ledger {
         date: NaiveDate,
         description: &str,
     ) -> Result<EntryId, LedgerError> {
+        crate::calendar::check(date)?;
         if let Some(pid) = self.closed_period_containing(date) {
             return Err(LedgerError::ClosedPeriod(pid, date.to_string()));
         }
@@ -1076,8 +1099,29 @@ impl Ledger {
         side: Side,
         amount: Money,
     ) -> Result<(), LedgerError> {
+        self.add_line_journaled(entry, account, side, amount, true)
+    }
+
+    /// [`Self::add_line`]'s checks: the account, the minor unit, and (when
+    /// `bounded`, for new work) the size. A draft line larger than any
+    /// posting could carry is refused when it is added, not only at the
+    /// post (P0 review round 3, S1); a recurring entry's draft is generated
+    /// with the checks its template passed when it was journaled
+    /// (`bounded` false), so a journaled `recurring.generated` always
+    /// replays (rules.md B-28).
+    fn add_line_journaled(
+        &mut self,
+        entry: EntryId,
+        account: AccountId,
+        side: Side,
+        amount: Money,
+        bounded: bool,
+    ) -> Result<(), LedgerError> {
         self.check_line_account(account)?;
         check_minor_units(amount)?;
+        if bounded {
+            check_line_size(amount.amount)?;
+        }
         self.replay_add_line(entry, account, side, amount)
     }
 
@@ -1094,8 +1138,10 @@ impl Ledger {
         Ok(())
     }
 
-    /// [`Self::add_line`] without the account check added on 2026-10-13,
-    /// for replaying journals written before it. Never for new work.
+    /// [`Self::add_line`] without the account check added on 2026-10-13 or
+    /// the size bound added in P0, for replaying journals written before
+    /// them (rules.md B-28): a draft line replays as journaled, and its post
+    /// refuses it if it is out of range. Never for new work.
     pub fn replay_add_line(
         &mut self,
         entry: EntryId,
@@ -1179,6 +1225,7 @@ impl Ledger {
         if base_amount <= Decimal::ZERO {
             return Err(LedgerError::InvalidFxRate(fx_rate));
         }
+        check_line_size(base_amount)?;
         self.replay_add_line_fx(
             entry,
             account,
@@ -1190,9 +1237,9 @@ impl Ledger {
     }
 
     /// A foreign-currency line exactly as a journal recorded it: the base
-    /// amount as booked (rounded or not, by the rule of its day) and the
-    /// foreign original. For replay only; new work uses
-    /// [`Self::add_line_fx`].
+    /// amount as booked (rounded or not, by the rule of its day, and of any
+    /// size: the bound is the command's, rules.md B-28) and the foreign
+    /// original. For replay only; new work uses [`Self::add_line_fx`].
     pub fn replay_add_line_fx(
         &mut self,
         entry: EntryId,
@@ -1405,7 +1452,26 @@ impl Ledger {
 
     /// Pure pre-validation for [`Self::register_asset`]: every check that
     /// does not mutate, so journaling stores can validate before journaling.
+    /// [`Self::validate_new_asset_journaled`], and both ends of the life
+    /// inside the calendar the books keep (crate::calendar): a life that
+    /// runs past 9999-12-31 is refused like one past chrono's last day (P0
+    /// review round 3, S1).
     pub fn validate_new_asset(&self, new: &NewAsset) -> Result<(), LedgerError> {
+        self.check_new_asset(new, true)
+    }
+
+    /// The checks every journaled `asset.registered` and `asset.corrected`
+    /// passed when it was written (the rule through 2026-10-16):
+    /// [`Self::validate_new_asset`] without the calendar bound, the end of
+    /// the life only representable. Replay applies exactly these
+    /// (rules.md B-28).
+    pub fn validate_new_asset_journaled(&self, new: &NewAsset) -> Result<(), LedgerError> {
+        self.check_new_asset(new, false)
+    }
+
+    /// The checks of [`Self::validate_new_asset`] (`strict`) or
+    /// [`Self::validate_new_asset_journaled`], in one order.
+    fn check_new_asset(&self, new: &NewAsset, strict: bool) -> Result<(), LedgerError> {
         if new.description.trim().is_empty() {
             return Err(LedgerError::EmptyAssetDescription);
         }
@@ -1437,12 +1503,15 @@ impl Ledger {
         }
         // The schedule walks every month of the asset's life; a purchase
         // date near the end of the calendar would overflow date arithmetic
-        // (and hang or panic the schedule). Reject it up front.
-        if new
+        // (and hang or panic the schedule). Reject it up front. New ones
+        // keep both ends inside the calendar the books keep.
+        if strict {
+            crate::calendar::check(new.purchase_date)?;
+        }
+        let end = new
             .purchase_date
-            .checked_add_months(Months::new(new.useful_life_months))
-            .is_none()
-        {
+            .checked_add_months(Months::new(new.useful_life_months));
+        if !end.is_some_and(|end| !strict || crate::calendar::in_calendar(end)) {
             return Err(LedgerError::AssetDateOverflow);
         }
         assets::validate_asset_accounts(
@@ -1468,6 +1537,20 @@ impl Ledger {
     /// ```
     pub fn register_asset(&mut self, new: NewAsset) -> Result<AssetId, LedgerError> {
         self.validate_new_asset(&new)?;
+        self.insert_asset(new)
+    }
+
+    /// [`Self::register_asset`] with the checks every journaled
+    /// `asset.registered` passed when it was written
+    /// ([`Self::validate_new_asset_journaled`]), for replay only (rules.md
+    /// B-28). Never for new work.
+    pub fn replay_register_asset(&mut self, new: NewAsset) -> Result<AssetId, LedgerError> {
+        self.validate_new_asset_journaled(&new)?;
+        self.insert_asset(new)
+    }
+
+    /// Put a checked asset on the register under the next id.
+    fn insert_asset(&mut self, new: NewAsset) -> Result<AssetId, LedgerError> {
         let id = self.next_asset_id;
         self.next_asset_id += 1;
         self.assets.insert(
@@ -1744,6 +1827,25 @@ impl Ledger {
         Ok(())
     }
 
+    /// [`Self::set_asset_tax_basis`] with the checks every journaled
+    /// `asset.tax_basis_set` passed when it was written
+    /// (TaxBasis::check_journaled: no upper bound), for replay only
+    /// (rules.md B-28). Never for new work.
+    pub fn replay_set_asset_tax_basis(
+        &mut self,
+        id: AssetId,
+        tax: assets::TaxBasis,
+    ) -> Result<(), LedgerError> {
+        let asset = self
+            .assets
+            .get_mut(&id)
+            .ok_or(LedgerError::UnknownAsset(id))?;
+        tax.check_journaled()
+            .map_err(LedgerError::InvalidTaxBasis)?;
+        asset.tax = Some(tax);
+        Ok(())
+    }
+
     /// The validation behind [`Self::set_asset_tax_basis`].
     pub fn check_asset_tax_basis(
         &self,
@@ -1778,12 +1880,32 @@ impl Ledger {
         fix: assets::AssetCorrection,
     ) -> Result<(), LedgerError> {
         self.check_correct_asset(id, &fix)?;
+        self.apply_asset_correction(id, fix);
+        Ok(())
+    }
+
+    /// [`Self::correct_asset`] with the checks every journaled
+    /// `asset.corrected` passed when it was written
+    /// ([`Self::validate_new_asset_journaled`]), for replay only (rules.md
+    /// B-28). Never for new work.
+    pub fn replay_correct_asset(
+        &mut self,
+        id: AssetId,
+        fix: assets::AssetCorrection,
+    ) -> Result<(), LedgerError> {
+        let corrected = self.corrected_asset(id, &fix)?;
+        self.validate_new_asset_journaled(&corrected)?;
+        self.apply_asset_correction(id, fix);
+        Ok(())
+    }
+
+    /// Write checked corrected figures onto the asset.
+    fn apply_asset_correction(&mut self, id: AssetId, fix: assets::AssetCorrection) {
         let a = self.assets.get_mut(&id).expect("checked");
         a.cost = fix.cost;
         a.salvage_value = fix.salvage_value;
         a.useful_life_months = fix.useful_life_months;
         a.purchase_date = fix.purchase_date;
-        Ok(())
     }
 
     /// The validation behind [`Self::correct_asset`].
@@ -1792,11 +1914,21 @@ impl Ledger {
         id: AssetId,
         fix: &assets::AssetCorrection,
     ) -> Result<(), LedgerError> {
+        self.validate_new_asset(&self.corrected_asset(id, fix)?)
+    }
+
+    /// The active asset `id` as `fix` would leave it, as a registration to
+    /// check.
+    fn corrected_asset(
+        &self,
+        id: AssetId,
+        fix: &assets::AssetCorrection,
+    ) -> Result<NewAsset, LedgerError> {
         let a = self.assets.get(&id).ok_or(LedgerError::UnknownAsset(id))?;
         if a.status != AssetStatus::Active {
             return Err(LedgerError::AssetAlreadyDisposed(id));
         }
-        self.validate_new_asset(&NewAsset {
+        Ok(NewAsset {
             description: a.description.clone(),
             purchase_date: fix.purchase_date,
             cost: fix.cost,
@@ -1846,6 +1978,37 @@ impl Ledger {
         date: NaiveDate,
         proceeds: Money,
     ) -> Result<(), LedgerError> {
+        self.check_dispose_asset(id, date, proceeds, true)?;
+        self.assets.get_mut(&id).expect("asset exists").status =
+            AssetStatus::Disposed { date, proceeds };
+        Ok(())
+    }
+
+    /// [`Self::dispose_asset`] with the checks every journaled
+    /// `asset.disposed` passed when it was written (no bound on the
+    /// proceeds or the date beyond the disposal's own), for replay only
+    /// (rules.md B-28). Never for new work.
+    pub fn replay_dispose_asset(
+        &mut self,
+        id: AssetId,
+        date: NaiveDate,
+        proceeds: Money,
+    ) -> Result<(), LedgerError> {
+        self.check_dispose_asset(id, date, proceeds, false)?;
+        self.assets.get_mut(&id).expect("asset exists").status =
+            AssetStatus::Disposed { date, proceeds };
+        Ok(())
+    }
+
+    /// The checks of [`Self::dispose_asset`] (`strict`) or
+    /// [`Self::replay_dispose_asset`].
+    fn check_dispose_asset(
+        &self,
+        id: AssetId,
+        date: NaiveDate,
+        proceeds: Money,
+        strict: bool,
+    ) -> Result<(), LedgerError> {
         if proceeds.currency != self.base_currency {
             return Err(LedgerError::CurrencyMismatch {
                 expected: self.base_currency.code().to_string(),
@@ -1855,8 +2018,14 @@ impl Ledger {
         let asset = self.assets.get(&id).ok_or(LedgerError::UnknownAsset(id))?;
         // Pure math validates activeness, proceeds sign, and date order.
         crate::disposal_amounts(asset, date, proceeds)?;
-        self.assets.get_mut(&id).expect("asset exists").status =
-            AssetStatus::Disposed { date, proceeds };
+        if strict {
+            // Proceeds are a line of the disposal entry, and its date one
+            // the books keep (P0 review round 3, S1).
+            if !kernel::Amount::in_line_range(proceeds.amount) {
+                return Err(LedgerError::AmountOutOfRange);
+            }
+            crate::calendar::check(date)?;
+        }
         Ok(())
     }
 
@@ -1909,14 +2078,16 @@ impl Ledger {
     }
 
     /// [`Self::create_period`] without the nesting rule added on
-    /// 2026-10-13, for replaying journals written before it.
+    /// 2026-10-13 or the calendar bound added in P0 (only the order is
+    /// checked, periods::validate_period_order), for replaying journals
+    /// written before them (rules.md B-28).
     pub fn replay_create_period(
         &mut self,
         name: &str,
         start: NaiveDate,
         end: NaiveDate,
     ) -> Result<PeriodId, LedgerError> {
-        periods::validate_period_range(start, end)?;
+        periods::validate_period_order(start, end)?;
         let id = self.next_period_id;
         self.next_period_id += 1;
         self.periods.insert(
@@ -3116,6 +3287,35 @@ impl Ledger {
         shares: &[crate::PartyShare],
     ) -> Result<(), LedgerError> {
         let vendor = self.check_set_entry_parties(entry, shares)?;
+        self.apply_entry_parties(entry, shares, vendor);
+        Ok(())
+    }
+
+    /// [`Self::set_entry_parties`] with the checks every journaled
+    /// `entry.parties_set` passed when it was written
+    /// (crate::shares::check_shares_journaled: no upper bound on an
+    /// amount), for replay only (rules.md B-28). Never for new work.
+    pub fn replay_set_entry_parties(
+        &mut self,
+        entry: EntryId,
+        shares: &[crate::PartyShare],
+    ) -> Result<(), LedgerError> {
+        if !self.entries.contains_key(&entry) {
+            return Err(LedgerError::UnknownEntry(entry));
+        }
+        let vendor = self.party_shares_vendor(shares, false)?;
+        self.apply_entry_parties(entry, shares, vendor);
+        Ok(())
+    }
+
+    /// Record checked shares on the entry's reversal chain
+    /// ([`Self::set_entry_parties`] INVARIANTS 2-5).
+    fn apply_entry_parties(
+        &mut self,
+        entry: EntryId,
+        shares: &[crate::PartyShare],
+        vendor: Option<VendorId>,
+    ) {
         for e in self.reversal_chain(entry) {
             if shares.is_empty() {
                 self.entry_parties.remove(&e);
@@ -3133,7 +3333,6 @@ impl Ledger {
                 }
             }
         }
-        Ok(())
     }
 
     /// The validation behind [`Self::set_entry_parties`]: returns the
@@ -3156,11 +3355,26 @@ impl Ledger {
         &self,
         shares: &[crate::PartyShare],
     ) -> Result<Option<VendorId>, LedgerError> {
+        self.party_shares_vendor(shares, true)
+    }
+
+    /// [`Self::check_party_shares`], with crate::shares::check_shares when
+    /// `strict` (new work) or check_shares_journaled (replay).
+    fn party_shares_vendor(
+        &self,
+        shares: &[crate::PartyShare],
+        strict: bool,
+    ) -> Result<Option<VendorId>, LedgerError> {
         if let Some(s) = shares.iter().find(|s| !self.parties.contains_key(&s.party)) {
             return Err(LedgerError::UnknownParty(s.party));
         }
-        crate::shares::check_shares(shares, |p| self.parties.contains_key(&p))
-            .map_err(LedgerError::InvalidParty)?;
+        let known = |p| self.parties.contains_key(&p);
+        if strict {
+            crate::shares::check_shares(shares, known)
+        } else {
+            crate::shares::check_shares_journaled(shares, known)
+        }
+        .map_err(LedgerError::InvalidParty)?;
         let vendors: Vec<(crate::PartyId, VendorId)> = shares
             .iter()
             .filter_map(|s| self.parties[&s.party].vendor.map(|v| (s.party, v)))
@@ -3551,7 +3765,8 @@ impl Ledger {
             .get(&invoice_id)
             .ok_or(LedgerError::UnknownInvoice(invoice_id))?
             .clone();
-        let balance = invoice.balance();
+        let total = invoice.total()?;
+        let balance = invoice.balance()?;
         if amount > balance {
             return Err(LedgerError::Overpayment(amount, balance));
         }
@@ -3574,8 +3789,9 @@ impl Ledger {
         self.add_line(entry, ar, Side::Credit, money)?;
         self.post_entry(entry)?;
         let inv = self.invoices.get_mut(&invoice_id).expect("invoice exists");
+        // At most the balance: the sum is at most the total.
         inv.amount_paid += amount;
-        inv.status = arap::derive_status(inv.amount_paid, inv.total());
+        inv.status = arap::derive_status(inv.amount_paid, total);
         let customer = inv.customer_id;
         self.invoice_payments
             .entry(invoice_id)
@@ -3627,7 +3843,8 @@ impl Ledger {
             .get(&bill_id)
             .ok_or(LedgerError::UnknownBill(bill_id))?
             .clone();
-        let balance = bill.balance();
+        let total = bill.total()?;
+        let balance = bill.balance()?;
         if amount > balance {
             return Err(LedgerError::Overpayment(amount, balance));
         }
@@ -3651,7 +3868,7 @@ impl Ledger {
         self.post_entry(entry)?;
         let b = self.bills.get_mut(&bill_id).expect("bill exists");
         b.amount_paid += amount;
-        b.status = arap::derive_status(b.amount_paid, b.total());
+        b.status = arap::derive_status(b.amount_paid, total);
         self.bill_payments
             .entry(bill_id)
             .or_default()
@@ -3678,6 +3895,9 @@ impl Ledger {
         if id != self.next_invoice_id {
             return Err(LedgerError::ReplayIdMismatch(id, self.next_invoice_id));
         }
+        // Restored exactly as journaled: replay checks no line or date
+        // (none did when it was written; rules.md B-28). Figures derived
+        // from them (the total, aging) refuse what they can't compute.
         self.next_invoice_id += 1;
         self.invoices.insert(
             id,
@@ -3711,6 +3931,9 @@ impl Ledger {
         if id != self.next_bill_id {
             return Err(LedgerError::ReplayIdMismatch(id, self.next_bill_id));
         }
+        // Restored exactly as journaled: replay checks no line or date
+        // (none did when it was written; rules.md B-28). Figures derived
+        // from them (the total, aging) refuse what they can't compute.
         self.next_bill_id += 1;
         self.bills.insert(
             id,
@@ -3745,12 +3968,18 @@ impl Ledger {
             .invoices
             .get_mut(&invoice_id)
             .ok_or(LedgerError::UnknownInvoice(invoice_id))?;
-        inv.amount_paid += amount;
+        // No bound on a journaled payment (rules.md B-28); a sum past exact
+        // arithmetic is refused, never wrapped, before anything changes.
+        let total = inv.total()?;
+        inv.amount_paid = inv
+            .amount_paid
+            .checked_add(amount)
+            .ok_or_else(|| LedgerError::TooLargeToCompute("the invoice's paid amount".into()))?;
         self.invoice_payments
             .entry(invoice_id)
             .or_default()
             .push((entry_id, amount));
-        inv.status = arap::derive_status(inv.amount_paid, inv.total());
+        inv.status = arap::derive_status(inv.amount_paid, total);
         let customer = inv.customer_id;
         self.tag_customer(entry_id, customer);
         Ok(())
@@ -3769,8 +3998,14 @@ impl Ledger {
             .bills
             .get_mut(&bill_id)
             .ok_or(LedgerError::UnknownBill(bill_id))?;
-        bill.amount_paid += amount;
-        bill.status = arap::derive_status(bill.amount_paid, bill.total());
+        // No bound on a journaled payment (rules.md B-28); a sum past exact
+        // arithmetic is refused, never wrapped, before anything changes.
+        let total = bill.total()?;
+        bill.amount_paid = bill
+            .amount_paid
+            .checked_add(amount)
+            .ok_or_else(|| LedgerError::TooLargeToCompute("the bill's paid amount".into()))?;
+        bill.status = arap::derive_status(bill.amount_paid, total);
         self.bill_payments
             .entry(bill_id)
             .or_default()
@@ -3781,8 +4016,10 @@ impl Ledger {
     }
 
     /// A/R aging as of a date: one row per customer with an outstanding
-    /// balance, bucketed by days past due.
-    pub fn ar_aging(&self, as_of: NaiveDate) -> Vec<AgingRow> {
+    /// balance, bucketed by days past due. Refused (TooLargeToCompute),
+    /// never a panic, when a sum is past exact arithmetic: documents are
+    /// restored as journaled (rules.md B-28).
+    pub fn ar_aging(&self, as_of: NaiveDate) -> Result<Vec<AgingRow>, LedgerError> {
         let mut by_customer: HashMap<CustomerId, AgingRow> = HashMap::new();
         for inv in self.invoices.values() {
             // Only what existed by `as_of`: issued by then, less payments
@@ -3790,7 +4027,10 @@ impl Ledger {
             if inv.date > as_of {
                 continue;
             }
-            let balance = inv.total() - self.paid_by(self.invoice_payments.get(&inv.id), as_of);
+            let paid = self.paid_by(self.invoice_payments.get(&inv.id), as_of)?;
+            let balance = inv.total()?.checked_sub(paid).ok_or_else(|| {
+                LedgerError::TooLargeToCompute(format!("invoice {}'s balance", inv.id))
+            })?;
             if balance.is_zero() {
                 continue;
             }
@@ -3809,38 +4049,42 @@ impl Ledger {
                     days_90: Decimal::ZERO,
                     days_90_plus: Decimal::ZERO,
                 });
-            entry.current += row.current;
-            entry.days_30 += row.days_30;
-            entry.days_60 += row.days_60;
-            entry.days_90 += row.days_90;
-            entry.days_90_plus += row.days_90_plus;
+            entry.add(&row)?;
         }
         let mut rows: Vec<AgingRow> = by_customer.into_values().collect();
         rows.sort_by(|a, b| a.name.cmp(&b.name));
-        rows
+        Ok(rows)
     }
 
     /// What a document's payments add up to through `as_of`: payments are
     /// posted entries, dated.
-    fn paid_by(&self, payments: Option<&Vec<(EntryId, Decimal)>>, as_of: NaiveDate) -> Decimal {
+    fn paid_by(
+        &self,
+        payments: Option<&Vec<(EntryId, Decimal)>>,
+        as_of: NaiveDate,
+    ) -> Result<Decimal, LedgerError> {
         payments
             .into_iter()
             .flatten()
             .filter(|(e, _)| self.get_entry(*e).is_some_and(|e| e.date() <= as_of))
-            .map(|(_, amount)| *amount)
-            .sum()
+            .try_fold(Decimal::ZERO, |sum, (_, amount)| sum.checked_add(*amount))
+            .ok_or_else(|| LedgerError::TooLargeToCompute("a document's payments".into()))
     }
 
     /// A/P aging as of a date: one row per vendor with an outstanding
-    /// balance, bucketed by days past due.
-    pub fn ap_aging(&self, as_of: NaiveDate) -> Vec<AgingRow> {
+    /// balance, bucketed by days past due; refused as
+    /// [`Self::ar_aging`] is.
+    pub fn ap_aging(&self, as_of: NaiveDate) -> Result<Vec<AgingRow>, LedgerError> {
         let mut by_vendor: HashMap<VendorId, AgingRow> = HashMap::new();
         for bill in self.bills.values() {
             // Only what existed by `as_of` (see `ar_aging`).
             if bill.date > as_of {
                 continue;
             }
-            let balance = bill.total() - self.paid_by(self.bill_payments.get(&bill.id), as_of);
+            let paid = self.paid_by(self.bill_payments.get(&bill.id), as_of)?;
+            let balance = bill.total()?.checked_sub(paid).ok_or_else(|| {
+                LedgerError::TooLargeToCompute(format!("bill {}'s balance", bill.id))
+            })?;
             if balance.is_zero() {
                 continue;
             }
@@ -3857,15 +4101,11 @@ impl Ledger {
                 days_90: Decimal::ZERO,
                 days_90_plus: Decimal::ZERO,
             });
-            entry.current += row.current;
-            entry.days_30 += row.days_30;
-            entry.days_60 += row.days_60;
-            entry.days_90 += row.days_90;
-            entry.days_90_plus += row.days_90_plus;
+            entry.add(&row)?;
         }
         let mut rows: Vec<AgingRow> = by_vendor.into_values().collect();
         rows.sort_by(|a, b| a.name.cmp(&b.name));
-        rows
+        Ok(rows)
     }
 
     // ------------------------------------------------------------------
@@ -3942,6 +4182,13 @@ impl Ledger {
             .chart
             .get(account)
             .ok_or(LedgerError::UnknownAccount(account))?;
+        // A statement says what an account holds: no more than a line may
+        // move, so the difference is exact (P0 review round 3, S1).
+        if !kernel::Amount::in_line_range(statement_balance) {
+            return Err(LedgerError::ValueOutOfRange(format!(
+                "statement balance {statement_balance}"
+            )));
+        }
         let normal = acct.account_type.normal_side();
         let mut book = Decimal::ZERO;
         let mut cleared = Decimal::ZERO;
@@ -3987,7 +4234,9 @@ impl Ledger {
                 cleared
             },
             statement_balance,
-            difference: cleared - statement_balance,
+            difference: cleared.checked_sub(statement_balance).ok_or_else(|| {
+                LedgerError::TooLargeToCompute("the reconciliation's difference".into())
+            })?,
             uncleared_lines,
         })
     }
@@ -4162,7 +4411,7 @@ impl Ledger {
         let accounts = self.payroll_accounts();
         let entry = self.try_create_entry(date, &format!("Payroll {date}"))?;
         for (account, side, amount) in
-            payroll_entry_plan(&lines, accounts, cash_account, self.base_currency)
+            payroll_entry_plan(&lines, accounts, cash_account, self.base_currency)?
         {
             self.add_line(entry, account, side, amount)?;
         }
@@ -4192,11 +4441,21 @@ impl Ledger {
     ) -> Result<(), LedgerError> {
         let mut paid: Vec<(crate::PartyId, Decimal)> = Vec::new();
         let mut unnamed = false;
-        for l in lines.iter().filter(|l| !l.net_pay().is_zero()) {
+        for l in lines {
+            // A run is restored as journaled (rules.md B-28): its figures
+            // are checked, and a net past exact arithmetic refused.
+            let net = l.net_pay()?;
+            if net.is_zero() {
+                continue;
+            }
             match l.employee {
                 Some(p) => match paid.iter_mut().find(|(x, _)| *x == p) {
-                    Some((_, v)) => *v += l.net_pay(),
-                    None => paid.push((p, l.net_pay())),
+                    Some((_, v)) => {
+                        *v = v.checked_add(net).ok_or_else(|| {
+                            LedgerError::TooLargeToCompute(format!("party {p}'s net pay"))
+                        })?
+                    }
+                    None => paid.push((p, net)),
                 },
                 None => unnamed = true,
             }
@@ -4320,6 +4579,8 @@ impl Ledger {
         if id != self.next_payroll_run_id {
             return Err(LedgerError::ReplayIdMismatch(id, self.next_payroll_run_id));
         }
+        // Restored exactly as journaled: the run's figures are checked by
+        // the command, not by replay (rules.md B-28).
         self.next_payroll_run_id += 1;
         if self.entries.contains_key(&entry_id) {
             self.name_payroll_parties(entry_id, &lines)?;
@@ -4440,6 +4701,16 @@ pub(crate) fn check_minor_units(amount: Money) -> Result<(), LedgerError> {
         }
         _ => Ok(()),
     }
+}
+
+/// Refuse a new line larger than any posting could carry
+/// (kernel::MAX_LINE_AMOUNT; P0 review round 3, S1). Only the size: the
+/// minor unit is check_minor_units', and the post checks the full range.
+fn check_line_size(amount: Decimal) -> Result<(), LedgerError> {
+    if amount.abs() > kernel::MAX_LINE_AMOUNT {
+        return Err(LedgerError::AmountOutOfRange);
+    }
+    Ok(())
 }
 
 /// A members close's (capital account, share) list, in order: what a run

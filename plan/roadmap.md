@@ -22,7 +22,15 @@ The primary interface is MCP, not a cloned GUI (the owner's call, 2026-10-10).
 - Parallel run with the sheet; cutover per the cutover rule
   (`docs/parallel-run.md`).
 
-## Phase 3 — Oracle harness (next)
+## Served (next, 2026-10-16)
+
+The books become a server that owns its data; every agent reaches them
+only through the MCP, from anywhere; no scaffold. Phases P0 (guard
+rails) through P10 (full re-audit of the first company's books through
+the MCP alone), with the owner's decisions of 2026-10-16:
+`plan/served.md`.
+
+## Phase 3 — Oracle harness
 
 - `ledger-oracle`: fixture books through our engine and other
   implementations (GnuCash headless first), automatic `snapshot()`

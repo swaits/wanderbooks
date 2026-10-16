@@ -5669,7 +5669,7 @@ impl BooksServer {
 
     #[tool(
         name = "books.add_party",
-        description = "Add a party to the directory: anyone the company deals with (a contractor, landlord, payout platform, tax agency, bank or card issuer, member, employee). Name it as on its documents (unique among parties not archived); give its roles: contractor, employee, member, payout_platform, tax_agency, financial_institution, landlord. Vendor and customer aren't given by hand: books.add_vendor and books.add_customer add those records and link them to the party of the same name. Never put a full TIN or SSN in any party field: the engine refuses nine-digit numbers. Journaled as party.added; returns the party."
+        description = "Add a party to the directory: anyone the company deals with (a contractor, landlord, payout platform, tax agency, government agency, bank or card issuer, member, employee). Name it as on its documents (unique among parties not archived); give its roles: contractor, employee, member, payout_platform, tax_agency, government_agency, financial_institution, landlord. Vendor and customer aren't given by hand: books.add_vendor and books.add_customer add those records and link them to the party of the same name. Never put a full TIN or SSN in any party field: the engine refuses nine-digit numbers. Journaled as party.added; returns the party."
     )]
     async fn add_party(
         &self,
@@ -5740,7 +5740,7 @@ impl BooksServer {
 
     #[tool(
         name = "books.set_party_roles",
-        description = "Give a party roles (add) or take them away (remove): contractor, employee, member, payout_platform, tax_agency, financial_institution, landlord. Vendor and customer follow their records and can't be set by hand. Adds apply before removes; a role it already has (or lacks) is left alone. Removing a party's last 1099 role (contractor, landlord) needs its W-9 facts cleared first (books.set_w9 clear), and removing employee its W-4 facts. All or nothing: a refusal changes nothing. Each change is journaled as party.role_set. Returns the party."
+        description = "Give a party roles (add) or take them away (remove): contractor, employee, member, payout_platform, tax_agency, government_agency, financial_institution, landlord. Vendor and customer follow their records and can't be set by hand. Adds apply before removes; a role it already has (or lacks) is left alone. Removing a party's last 1099 role (contractor, landlord) needs its W-9 facts cleared first (books.set_w9 clear), and removing employee its W-4 facts. All or nothing: a refusal changes nothing. Each change is journaled as party.role_set. Returns the party."
     )]
     async fn set_party_roles(
         &self,

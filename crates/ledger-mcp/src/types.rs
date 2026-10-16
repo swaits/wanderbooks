@@ -2601,7 +2601,7 @@ pub struct AddPartyParams {
     /// surrounding space) among parties not archived; never a full TIN.
     pub name: String,
     /// Roles: contractor, employee, member, payout_platform, tax_agency,
-    /// financial_institution, landlord. Not vendor or customer: those come
+    /// government_agency, financial_institution, landlord. Not vendor or customer: those come
     /// with their records (`books.add_vendor`, `books.add_customer`, which
     /// link to the party of the same name). May be empty.
     #[serde(default)]

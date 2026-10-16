@@ -52,7 +52,7 @@ pub fn detail(ui: &mut Ui, b: &Books, e: &EntryInfo, shell: &mut Shell<'_>) {
                 };
                 widgets::pill(ui, e.origin, p.muted, p.hover);
                 if let Some(v) = &e.vendor
-                    && e.party_id.is_none()
+                    && e.parties.is_empty()
                 {
                     widgets::pill(ui, &format!("{} {v}", icon::STOREFRONT), p.muted, p.hover);
                 }
@@ -87,27 +87,42 @@ pub fn detail(ui: &mut Ui, b: &Books, e: &EntryInfo, shell: &mut Shell<'_>) {
                     shell.go(Route::Entry(r));
                 }
             }
-            if let Some(party) = e.party_id.and_then(|id| b.ledger.get_party(id)) {
+            let several = e.parties.len() > 1;
+            for share in &e.parties {
+                let Some(party) = b.ledger.get_party(share.id) else {
+                    continue;
+                };
                 ui.add_space(4.0);
-                if widgets::link(
-                    ui,
-                    RichText::new(format!(
-                        "{} {}",
-                        super::parties::party_icon(party),
-                        party.label()
+                let mut text = format!("{} {}", super::parties::party_icon(party), party.label());
+                if several {
+                    text.push_str(&format!(" · {}", share_text(share)));
+                }
+                if widgets::link(ui, RichText::new(text).color(p.accent))
+                    .on_hover_text(format!(
+                        "{} this entry is with ({}): open them",
+                        if several {
+                            "One of the parties"
+                        } else {
+                            "The party"
+                        },
+                        super::parties::roles_text(party).to_lowercase()
                     ))
-                    .color(p.accent),
-                )
-                .on_hover_text(format!(
-                    "The party this entry is with ({}): open them",
-                    super::parties::roles_text(party).to_lowercase()
-                ))
-                .clicked()
+                    .clicked()
                 {
                     shell.go(Route::Party(party.id));
                 }
             }
-            if e.party_id.is_none()
+            if several && e.parties.iter().any(|x| x.resolved.is_none()) {
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(format!(
+                        "{} The parties' shares don't add up to what this entry moved",
+                        icon::WARNING
+                    ))
+                    .color(p.negative),
+                );
+            }
+            if e.parties.is_empty()
                 && let Some(why) = b.ledger.entry_no_party(e.id)
             {
                 ui.add_space(4.0);
@@ -488,5 +503,24 @@ pub fn render(ui: &mut Ui, b: &Books, a: &Attachment, shell: &mut Shell<'_>, wid
                 ui.add_space(6.0);
             }
         }
+    }
+}
+
+/// One party's share of an entry, in words: "$50.00 (derived)", "$70.00",
+/// "$33.34 (33.333%)", or the share alone when it doesn't resolve.
+pub fn share_text(s: &crate::books::EntryParty) -> String {
+    let how = match s.share {
+        ledger_core::Share::Amount(_) => None,
+        ledger_core::Share::Percent(p) => Some(format!("{}%", p.normalize())),
+        ledger_core::Share::Derived => Some("derived".to_string()),
+    };
+    match (s.resolved, how) {
+        (Some(v), Some(h)) => format!("{} ({h})", fmt::dollars(v.abs())),
+        (Some(v), None) => fmt::dollars(v.abs()),
+        (None, Some(h)) => h,
+        (None, None) => match s.share {
+            ledger_core::Share::Amount(a) => fmt::dollars(a),
+            _ => String::new(),
+        },
     }
 }

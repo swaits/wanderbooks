@@ -54,7 +54,7 @@ use rust_decimal::Decimal;
 use std::sync::{Arc, Mutex};
 
 /// The agent operating contract, delivered via initialize.
-const INSTRUCTIONS: &str = "You are the bookkeeping agent for these books. The engine enforces the accounting; you enforce the workflow.\n\nRULES\n- Money is exact decimal. Always pass amounts as decimal strings (\"123.45\"), never floats.\n- Never post directly. The flow is draft (books.draft_entry) -> add lines (books.add_line) -> preview (books.post_entry without confirmed) -> review the preview -> post (books.post_entry with confirmed=true).\n- Every entry must balance: debits equal credits, exactly. Every line needs a real account from books.chart. The engine rejects anything else.\n- Receipts: any entry moving more than $25.00 in debits needs at least one receipt attached (books.attach_receipt) before posting. The server rejects the post otherwise. This is enforced, not a suggestion.\n- Never invent accounts. If the account you need does not exist, add it with books.add_account first.\n- Corrections go through books.reverse_entry. Posted entries are immutable; there is no edit.\n- Receipt corrections: receipts can change, but nothing is erased. To replace one, attach the new receipt, then books.unlink_receipt the old (with a reason); retire unwanted receipts or documents with books.withdraw_attachment (with a reason). The journal keeps every step.\n- Attachments: file a file once and link it wherever it is evidence (books.link_attachment, or link_to on books.attach_receipt and books.file_document): an entry (a file linked to an entry counts as its receipt), an account, an asset, a party, an invoice, a bill, a period, a payroll run, a schedule, a reconciliation, or the company. books.attachments lists a subject's files; books.unlink_attachment takes a link off with a reason. File documents under their kind (statement, contract, photo, warranty, import_source, formation, legal, tax, accounting, other). File a bank export before importing it and pass source_attachment_id to books.import_bank_csv.\n- Reconciliations: every month, for each bank, cash, and card account, file the statement (books.file_document category statement), record what it says (books.record_statement), mark the lines it shows (books.mark_cleared), preview books.reconcile with statement_attachment, and confirm with confirmed=true once the difference is exactly zero: that records the reconciliation with its statement. Never confirm by forcing the numbers; find the difference. books.void_reconciliation (with a reason) undoes a mistake. books.digest lists unreconciled_accounts: accounts not reconciled through the end of last month.\n- After posting, check books.digest to review what changed, so a human can review too.\n- Amounts in every response are decimal strings. Treat them as exact.\n- Fixed assets: register with books.register_asset, inspect with books.asset_schedule and books.list_assets, post monthly depreciation with books.run_depreciation (exempt from the receipt policy; the schedule is the evidence), and dispose with books.dispose_asset (preview first; the bill of sale is the receipt). Depreciation is straight-line, book basis only - tax depreciation stays with the CPA. Every asset gets a tag for the label on the thing itself (books.register_asset generates the next one, like FL-0001, unless the human has their own); record the manufacturer's serial number too, change either with books.label_asset, and print label sheets with books.asset_labels (save the PDF; print at 100% on Avery 5160/8160). Asset tools take the tag in place of the id. Record every asset's federal tax basis beside its book value (books.set_asset_tax_basis, or tax_basis_rule on books.register_asset): cost for a purchase; for a member's contribution, the member's adjusted basis (what they paid, less depreciation they took) with rule personal_use_conversion (their personal property: tax basis is the lesser of value and their basis) or carryover (their business property). Book value stays fair market value. books.export fixed_asset_register is the register for the CPA; books.show asset opens one in the viewer.\n- Prepaid expenses and deferred revenue: record the original payment (with its receipt), then books.create_schedule; books.run_schedules posts the monthly amortization (preview first; exempt from the receipt policy like depreciation). Recurring entries (books.create_recurring, books.run_recurring) only ever create drafts: attach each actual receipt and post through the normal preview.\n- Platform payouts (app stores, payment processors, marketplaces): never book the net deposit as revenue. books.record_payout grosses it up (gross revenue, fees, adjustments) into a draft and refuses unless it reconciles to the cent; attach the payout statement, then preview and post.\n- The viewer: the human usually has the read-only viewer open beside you (`just gui`). When they ask to see something, and after you post, call books.show so it's on their screen.\n- Parties: keep the directory current. Every counterparty (vendor, contractor, landlord, customer, payout platform, tax agency, bank or card issuer, member, employee) gets a party: books.add_party with its roles (books.add_vendor and books.add_customer link their record to the party of the same name, or make one). Tag every entry with its party (books.draft_entry party, or books.set_entry_party; a party with a vendor record tags the vendor for 1099s too). Every post_entry preview says where the entry stands (party_policy, party_missing, party_suggestions): under [books] parties = \"suggest\" (the default), when party_missing, name the likely party to the human and tag it (or add it) before confirming; under \"require\", posting is refused (party_required) until the entry names a party or is marked as having none (books.set_entry_party with party null and no_party_reason, or draft_entry no_party_reason: only for an entry with truly no counterparty, like a transfer between the company's own accounts); under \"off\", don't raise it. Record W-9 facts (books.set_w9) for contractors and landlords before paying them, and W-4 facts (books.set_w4) for employees before their first payroll; name the employee party on every books.run_payroll line. Never put a full TIN or SSN anywhere in the books, only the last four digits: the engine refuses any nine-digit number in a party field. The full TIN goes only to the encrypted TIN vault: books.set_w9 with tin and tin_type (ssn, ein, itin), and the signed form with w9_file_path (never books.file_document or books.attach_receipt: the form shows the TIN). Never repeat a TIN back to the human, in a description, note, file name, commit, or anywhere else; tools show the last four only. books.get_w9 saves the form to a path outside the books for the human; books.purge_tin (preview, then confirmed, with a reason) deletes a TIN no longer needed. books.parties lists the directory, books.party shows one party with the year's totals, and books.show party opens it in the viewer. Archive (books.update_party archived) parties no longer dealt with; never delete history.\n- 1099s: mark contractors and landlords with books.set_vendor_1099 (and whether their W-9 is on file), and tag every payment to them with its vendor or party (books.draft_entry vendor or party, books.set_entry_vendor, or books.set_entry_party; books.pay_bill tags automatically). books.vendor_1099 is the year-end worksheet for the CPA; with include_tins: true (only when the human asks for the CPA's copy) it carries the full TINs from the vault, the one output that does: hand it over (save_csv_to, a path outside the books) and never repeat those numbers anywhere else.\n- Rules that change with the law: wanderbooks knows some legal amounts (like the 1099 threshold) only through a given year and never guesses past it. When a tool refuses with \"wanderbooks knows the ... only through\", or books.digest lists stale_rules: check today's date, find the current figure from the official source (the refusal names the vendored source file) or ask the human (owner, CPA), confirm it with them, and pass it explicitly. Then update the rule for everyone: open a pull request at https://github.com/swaits/wanderbooks with the new value and its official text (best), or at least an issue; if you can't reach GitHub, give the human the issue text to file.\n- Control roles: invoices, bills, payroll, and closes post to the account filling each role (receivables, revenue, payables, general expense, retained earnings, payroll expense and withholdings); books.roles lists them. A role uses its default code (1200, 4000, 2000, 6999, 3999, 6100, 6110, 2110-2150) until it is assigned one of the chart's own accounts with books.assign_role (journaled). If the chart uses a default code for a different kind of account, the engine refuses and says which. It can't tell an account of the right type but another purpose (a hosting expense at payroll's 6100): check books.roles before running payroll, bills, or invoices. Never assign roles or renumber the human's accounts on your own: explain the conflict, and when they decide, assign the role to their account (best: their numbering stays) or books.renumber_account the account (its history stays).\n- Settings: wanderbooks.toml beside the books holds the company's facts and settings (name, fiscal year, tax form, members and their capital accounts, basis, receipt threshold, cash flow roles, close target); books.settings shows what is in force and lists problems, settings that disagree with the chart. Edit the file when the human tells you a company fact, when a tool refuses naming a wanderbooks.toml setting, when books.settings or books.digest lists a settings problem, and after books.renumber_account lists config_mentions. The server reloads the file whenever it changes, with no restart: after each edit, call books.settings and check reload_error is null (a broken edit leaves the last good settings in force) and problems is empty. Never put a member's SSN or any TIN in it.";
+const INSTRUCTIONS: &str = "You are the bookkeeping agent for these books. The engine enforces the accounting; you enforce the workflow.\n\nRULES\n- Money is exact decimal. Always pass amounts as decimal strings (\"123.45\"), never floats.\n- Never post directly. The flow is draft (books.draft_entry) -> add lines (books.add_line) -> preview (books.post_entry without confirmed) -> review the preview -> post (books.post_entry with confirmed=true).\n- Every entry must balance: debits equal credits, exactly. Every line needs a real account from books.chart. The engine rejects anything else.\n- Receipts: any entry moving more than $25.00 in debits needs at least one receipt attached (books.attach_receipt) before posting. The server rejects the post otherwise. This is enforced, not a suggestion.\n- Never invent accounts. If the account you need does not exist, add it with books.add_account first.\n- Corrections go through books.reverse_entry. Posted entries are immutable; there is no edit.\n- Receipt corrections: receipts can change, but nothing is erased. To replace one, attach the new receipt, then books.unlink_receipt the old (with a reason); retire unwanted receipts or documents with books.withdraw_attachment (with a reason). The journal keeps every step.\n- Attachments: file a file once and link it wherever it is evidence (books.link_attachment, or link_to on books.attach_receipt and books.file_document): an entry (a file linked to an entry counts as its receipt), an account, an asset, a party, an invoice, a bill, a period, a payroll run, a schedule, a reconciliation, or the company. books.attachments lists a subject's files; books.unlink_attachment takes a link off with a reason. File documents under their kind (statement, contract, photo, warranty, import_source, formation, legal, tax, accounting, other). File a bank export before importing it and pass source_attachment_id to books.import_bank_csv.\n- Reconciliations: every month, for each bank, cash, and card account, file the statement (books.file_document category statement), record what it says (books.record_statement), mark the lines it shows (books.mark_cleared), preview books.reconcile with statement_attachment, and confirm with confirmed=true once the difference is exactly zero: that records the reconciliation with its statement. Never confirm by forcing the numbers; find the difference. books.void_reconciliation (with a reason) undoes a mistake. books.digest lists unreconciled_accounts: accounts not reconciled through the end of last month.\n- After posting, check books.digest to review what changed, so a human can review too.\n- Amounts in every response are decimal strings. Treat them as exact.\n- Fixed assets: register with books.register_asset, inspect with books.asset_schedule and books.list_assets, post monthly depreciation with books.run_depreciation (exempt from the receipt policy; the schedule is the evidence), and dispose with books.dispose_asset (preview first; the bill of sale is the receipt). Depreciation is straight-line, book basis only - tax depreciation stays with the CPA. Every asset gets a tag for the label on the thing itself (books.register_asset generates the next one, like FL-0001, unless the human has their own); record the manufacturer's serial number too, change either with books.label_asset, and print label sheets with books.asset_labels (save the PDF; print at 100% on Avery 5160/8160). Asset tools take the tag in place of the id. Record every asset's federal tax basis beside its book value (books.set_asset_tax_basis, or tax_basis_rule on books.register_asset): cost for a purchase; for a member's contribution, the member's adjusted basis (what they paid, less depreciation they took) with rule personal_use_conversion (their personal property: tax basis is the lesser of value and their basis) or carryover (their business property). Book value stays fair market value. books.export fixed_asset_register is the register for the CPA; books.show asset opens one in the viewer.\n- Prepaid expenses and deferred revenue: record the original payment (with its receipt), then books.create_schedule; books.run_schedules posts the monthly amortization (preview first; exempt from the receipt policy like depreciation). Recurring entries (books.create_recurring, books.run_recurring) only ever create drafts: attach each actual receipt and post through the normal preview.\n- Platform payouts (app stores, payment processors, marketplaces): never book the net deposit as revenue. books.record_payout grosses it up (gross revenue, fees, adjustments) into a draft and refuses unless it reconciles to the cent; attach the payout statement, then preview and post.\n- The viewer: the human usually has the read-only viewer open beside you (`just gui`). When they ask to see something, and after you post, call books.show so it's on their screen.\n- Parties: keep the directory current. Every counterparty (vendor, contractor, landlord, customer, payout platform, tax agency, bank or card issuer, member, employee) gets a party: books.add_party with its roles (books.add_vendor and books.add_customer link their record to the party of the same name, or make one). Tag every entry with its party (books.draft_entry party, or books.set_entry_party; a party with a vendor record tags the vendor for 1099s too). An entry with several counterparties names them all with parties ([{party, amount?|percent?}] on books.draft_entry or books.set_entry_party): there is no \"joint\" party. A joint member transaction (paid from or reimbursed to joint funds on Due to Shareholders, a contribution from joint funds, a distribution to both) names both members with no shares, and their shares derive (from their capital or distribution lines on the entry, else their [[company.members]] shares); when the split is uneven, or a party isn't a member, give each party an exact amount (or a percent). The post_entry preview lists each party's resolved share (parties) and refuses to post (party_shares, parties_error) until the shares add up to what the entry moved; show the split to the human before confirming. Every post_entry preview says where the entry stands (party_policy, party_missing, party_suggestions): under [books] parties = \"suggest\" (the default), when party_missing, name the likely party to the human and tag it (or add it) before confirming; under \"require\", posting is refused (party_required) until the entry names a party or is marked as having none (books.set_entry_party with party null and no_party_reason, or draft_entry no_party_reason: only for an entry with truly no counterparty, like a transfer between the company's own accounts); under \"off\", don't raise it. Record W-9 facts (books.set_w9) for contractors and landlords before paying them, and W-4 facts (books.set_w4) for employees before their first payroll; name the employee party on every books.run_payroll line. Never put a full TIN or SSN anywhere in the books, only the last four digits: the engine refuses any nine-digit number in a party field. The full TIN goes only to the encrypted TIN vault, and every member's and every 1099 payee's belongs there: books.set_tin (party, tin, tin_type: ssn, ein, itin; any role, so each member's SSN for their K-1) and books.set_w9 with tin and tin_type for a payee's W-9, and the signed form with w9_file_path (never books.file_document or books.attach_receipt: the form shows the TIN). Never repeat a TIN back to the human, in chat, a description, note, file name, commit message, or anywhere else; tools show the last four only. books.get_w9 saves the form to a path outside the books for the human; books.purge_tin (preview, then confirmed, with a reason) deletes a TIN no longer needed. books.parties lists the directory, books.party shows one party with the year's totals, and books.show party opens it in the viewer. Archive (books.update_party archived) parties no longer dealt with; never delete history.\n- 1099s: mark contractors and landlords with books.set_vendor_1099 (and whether their W-9 is on file), and tag every payment to them with its vendor or party (books.draft_entry vendor or party, books.set_entry_vendor, or books.set_entry_party; books.pay_bill tags automatically). books.vendor_1099 is the year-end worksheet for the CPA; with include_tins: true (only when the human asks for the CPA's copy) it carries the full TINs from the vault, the one output that does: hand it over (save_csv_to, a path outside the books) and never repeat those numbers anywhere else.\n- CPA package: books.export_cpa_package carries every member's and 1099 payee's full TIN from the vault (the K-1 worksheet, k1-members.csv, and the 1099 worksheet), so it needs save_to, a new .zip or a folder outside the books dir (never the books or its exports/: git keeps them forever). Tell the human the path it was saved to; never open, read, attach, or copy the file, and never echo its TINs. tin_gaps lists each member or payee whose TIN it lacks and why: collect them (books.set_tin, books.set_w9) and export again.\n- Rules that change with the law: wanderbooks knows some legal amounts (like the 1099 threshold) only through a given year and never guesses past it. When a tool refuses with \"wanderbooks knows the ... only through\", or books.digest lists stale_rules: check today's date, find the current figure from the official source (the refusal names the vendored source file) or ask the human (owner, CPA), confirm it with them, and pass it explicitly. Then update the rule for everyone: open a pull request at https://github.com/swaits/wanderbooks with the new value and its official text (best), or at least an issue; if you can't reach GitHub, give the human the issue text to file.\n- Control roles: invoices, bills, payroll, and closes post to the account filling each role (receivables, revenue, payables, general expense, retained earnings, payroll expense and withholdings); books.roles lists them. A role uses its default code (1200, 4000, 2000, 6999, 3999, 6100, 6110, 2110-2150) until it is assigned one of the chart's own accounts with books.assign_role (journaled). If the chart uses a default code for a different kind of account, the engine refuses and says which. It can't tell an account of the right type but another purpose (a hosting expense at payroll's 6100): check books.roles before running payroll, bills, or invoices. Never assign roles or renumber the human's accounts on your own: explain the conflict, and when they decide, assign the role to their account (best: their numbering stays) or books.renumber_account the account (its history stays).\n- Settings: wanderbooks.toml beside the books holds the company's facts and settings (name, fiscal year, tax form, members and their capital accounts, basis, receipt threshold, cash flow roles, close target); books.settings shows what is in force and lists problems, settings that disagree with the chart. Edit the file when the human tells you a company fact, when a tool refuses naming a wanderbooks.toml setting, when books.settings or books.digest lists a settings problem, and after books.renumber_account lists config_mentions. The server reloads the file whenever it changes, with no restart: after each edit, call books.settings and check reload_error is null (a broken edit leaves the last good settings in force) and problems is empty. Never put a member's SSN or any TIN in it.";
 
 /// Max receipt/document upload: 25 MB.
 const MAX_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
@@ -140,7 +140,10 @@ fn suggest_parties(store: &Store, entry: &JournalEntry) -> Result<Vec<PartySugge
     for e in ledger.posted_entries() {
         if e.id() != entry.id()
             && e.description().trim().to_lowercase() == key
-            && let Some(p) = ledger.entry_party(e.id()).and_then(|i| ledger.get_party(i))
+            && let Some(p) = ledger
+                .entry_parties(e.id())
+                .first()
+                .and_then(|s| ledger.get_party(s.party))
             && !p.archived
         {
             push(
@@ -171,6 +174,24 @@ fn payment_accounts(
         cash: ids(&roles.cash),
         financing: ids(&roles.financing),
     }
+}
+
+/// The 1099 worksheet for `year`, the one every tool and the CPA package
+/// use: payments out of [`payment_accounts`], an entry's shares resolved
+/// with the settings' members (as [`share_context`] checks them).
+fn vendor_1099_report(
+    ledger: &ledger_core::Ledger,
+    settings: &Settings,
+    year: i32,
+    threshold: Option<Decimal>,
+) -> Result<ledger_core::Vendor1099Report, ledger_core::LedgerError> {
+    ledger_core::vendor_1099_report_with_members(
+        ledger,
+        year,
+        threshold,
+        &payment_accounts(ledger, &settings.roles),
+        &settings.company.party_members(ledger),
+    )
 }
 
 impl BooksServer {
@@ -858,6 +879,52 @@ fn resolve_party(store: &Store, party: &str) -> Result<ledger_core::PartyId, Str
     }
 }
 
+/// Mask any full TIN in a refusal (`ledger_core::parties::redact_full_tins`):
+/// a refusal that quotes its input (an unknown party, a bad amount, a
+/// parameter of the wrong type) never echoes a TIN the agent put in the
+/// wrong field. No tool output, error, or log holds a full TIN
+/// (docs/spec/rules.md B-26); a successful result is left alone, since
+/// the one that may (`books.vendor_1099` with `include_tins`) is one.
+fn redact_refusal(
+    out: Result<rmcp::model::CallToolResponse, rmcp::ErrorData>,
+) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
+    use ledger_core::parties::{has_full_tin, redact_full_tins};
+    use serde_json::Value;
+    fn redact_value(v: &mut Value) {
+        match v {
+            Value::String(t) if has_full_tin(t) => *t = redact_full_tins(t).into_owned(),
+            Value::Array(a) => a.iter_mut().for_each(redact_value),
+            Value::Object(o) => o.values_mut().for_each(redact_value),
+            _ => {}
+        }
+    }
+    match out {
+        Err(mut e) => {
+            if has_full_tin(&e.message) {
+                e.message = redact_full_tins(&e.message).into_owned().into();
+            }
+            if let Some(d) = e.data.as_mut() {
+                redact_value(d);
+            }
+            Err(e)
+        }
+        Ok(rmcp::model::CallToolResponse::Complete(mut r)) if r.is_error == Some(true) => {
+            for c in &mut r.content {
+                if let rmcp::model::ContentBlock::Text(t) = c
+                    && has_full_tin(&t.text)
+                {
+                    t.text = redact_full_tins(&t.text).into_owned();
+                }
+            }
+            if let Some(v) = r.structured_content.as_mut() {
+                redact_value(v);
+            }
+            Ok(rmcp::model::CallToolResponse::Complete(r))
+        }
+        other => other,
+    }
+}
+
 /// The subject kinds, for messages.
 const SUBJECT_KINDS: &str = "entry, account, asset, party, invoice, bill, period, payroll_run, schedule, reconciliation, company";
 
@@ -1168,6 +1235,51 @@ fn outside_books(store: &Store, path: &str) -> Result<std::path::PathBuf, String
     Ok(p)
 }
 
+/// Where `books.export_cpa_package` writes its zip: `to` itself when it
+/// names a `.zip` file, or `file_name` in `to` when it is an existing
+/// folder. A new file, in a folder that exists; with TINs, outside the
+/// books dir (which git commits, `exports/` included).
+fn package_dest(
+    store: &Store,
+    to: &str,
+    file_name: &str,
+    tins: bool,
+) -> Result<std::path::PathBuf, String> {
+    let raw = std::path::PathBuf::from(to.trim());
+    if to.trim().is_empty() {
+        return Err("give save_to: a new .zip path or an existing folder".into());
+    }
+    let dest = if raw.is_dir() {
+        raw.join(file_name)
+    } else if raw
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("zip"))
+    {
+        raw
+    } else {
+        return Err(format!(
+            "save_to {} is neither an existing folder nor a .zip file",
+            raw.display()
+        ));
+    };
+    if tins {
+        return outside_books(store, &dest.to_string_lossy()).map_err(|e| {
+            format!("{e} (the CPA package holds full TINs; save it outside the books, e.g. in ~/Documents)")
+        });
+    }
+    match dest.parent() {
+        Some(d) if d.as_os_str().is_empty() || d.is_dir() => {}
+        _ => return Err(format!("the folder for {} doesn't exist", dest.display())),
+    }
+    if dest.exists() {
+        return Err(format!(
+            "{} exists already: name a new file",
+            dest.display()
+        ));
+    }
+    Ok(dest)
+}
+
 /// Write a new file readable by its owner only (0600 on Unix).
 fn write_private_new(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
     use std::io::Write;
@@ -1203,6 +1315,84 @@ fn tin_type_key(t: ledger_vault::TinType) -> &'static str {
         ledger_vault::TinType::Ein => "ein",
         ledger_vault::TinType::Itin => "itin",
     }
+}
+
+/// The books' name for a vault TIN's type.
+fn tin_kind(t: ledger_vault::TinType) -> ledger_core::TinType {
+    match t {
+        ledger_vault::TinType::Ssn => ledger_core::TinType::Ssn,
+        ledger_vault::TinType::Ein => ledger_core::TinType::Ein,
+        ledger_vault::TinType::Itin => ledger_core::TinType::Itin,
+    }
+}
+
+/// The full TIN the vault holds for a party, checked against what the
+/// books record of it; else why not, in words for a worksheet's note (the
+/// note never holds more than a last four).
+///
+/// ```text
+/// GOAL: a worksheet for the CPA carries a TIN only when the vault and the
+///       books agree on it, and says why when it can't.
+/// INVARIANTS:
+///   1. The party's TIN facts, when on file, have the vault TIN's type and
+///      last four, and the record's hash when they name one.
+///   2. Its W-9 facts, when on file, have the vault TIN's last four; with
+///      no TIN facts, the W-9 facts' vault record is the record's hash.
+///   3. A vault that can't be opened or read, or holds no TIN for the
+///      party, is a note, never an error (a package never fails on it).
+/// ```
+fn vault_tin(
+    ledger: &Ledger,
+    vault: &Result<ledger_vault::Vault, String>,
+    party: ledger_core::PartyId,
+) -> Result<ledger_vault::Tin, String> {
+    let vault = vault.as_ref().map_err(String::clone)?;
+    let t = vault
+        .tin(party)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| {
+            "TIN not in the vault: record it with books.set_tin (or books.set_w9 tin, from the W-9)"
+                .to_string()
+        })?;
+    let hash = vault.record_hash(party).ok().flatten();
+    let p = ledger.get_party(party);
+    let (facts, w9) = (
+        p.and_then(|p| p.tin.as_ref()),
+        p.and_then(|p| p.w9.as_ref()),
+    );
+    if facts.is_none() && w9.is_none() {
+        return Err(
+            "the vault holds a TIN but the books have no record of it: record it again with books.set_tin"
+                .into(),
+        );
+    }
+    if let Some(f) = facts {
+        if f.last4 != t.last4() || f.tin_type != tin_kind(t.kind) {
+            return Err(format!(
+                "the vault's TIN ({}, ending {}) isn't the one the books record ({}, ending {}): record the right one with books.set_tin",
+                tin_type_key(t.kind),
+                t.last4(),
+                f.tin_type.key(),
+                f.last4
+            ));
+        }
+        if f.vault_record.is_some() && f.vault_record != hash {
+            return Err("the vault record isn't the one the books recorded: record the TIN again with books.set_tin".into());
+        }
+    }
+    if let Some(f) = w9 {
+        if f.tin_last4 != t.last4() {
+            return Err(format!(
+                "the vault's TIN ends in {}, the W-9 facts say {}: check the W-9 and fix with books.set_w9",
+                t.last4(),
+                f.tin_last4
+            ));
+        }
+        if facts.is_none() && f.vault_record.is_some() && f.vault_record != hash {
+            return Err("the vault record isn't the one the books recorded: check the W-9 and record it again with books.set_w9 tin".into());
+        }
+    }
+    Ok(t)
 }
 
 /// Read a W-9 file (PDF, PNG, or JPEG, 25 MB at most) for the vault.
@@ -1294,6 +1484,12 @@ fn party_out(p: &ledger_core::Party) -> PartyOut {
             state: w.state.clone(),
             kept_at: w.kept_at.clone(),
         }),
+        tin: p.tin.as_ref().map(|t| TinOut {
+            tin_type: t.tin_type.key().to_string(),
+            last4: t.last4.clone(),
+            in_vault: t.vault_record.is_some(),
+            purged: t.purged.clone(),
+        }),
     }
 }
 
@@ -1345,29 +1541,154 @@ struct PartyActivity {
 }
 
 /// The party's entries and the year's money paid and received
-/// (`PartyTotalsOut`): ledger_core::parties::activity over the calendar
-/// year, with the `[books] cash_accounts`.
+/// (`PartyTotalsOut`): ledger_core::parties::activity_with over the
+/// calendar year, with the `[books] cash_accounts` and the members (so an
+/// entry naming several parties counts this one's share).
 fn party_activity(
     store: &Store,
     party: &ledger_core::Party,
-    cash_codes: &[String],
+    settings: &Settings,
     year: i32,
 ) -> Result<PartyActivity, String> {
     let ledger = store.ledger();
-    let cash: Vec<AccountId> = cash_codes
-        .iter()
-        .filter_map(|c| ledger.chart().find_by_code(c).map(|a| a.id))
-        .collect();
+    let cash = cash_ids(ledger, &settings.roles.cash);
     let span = (
         NaiveDate::from_ymd_opt(year, 1, 1).ok_or("year out of range")?,
         NaiveDate::from_ymd_opt(year, 12, 31).ok_or("year out of range")?,
     );
-    let a = ledger_core::parties::activity(ledger, party.id, span, &cash);
+    let members = settings.company.party_members(ledger);
+    let a = ledger_core::parties::activity_with(ledger, party.id, span, &cash, &members);
     Ok(PartyActivity {
         entries: a.entries,
         paid: a.paid,
         received: a.received,
     })
+}
+
+/// The chart's ids for these account codes (codes it lacks are skipped).
+fn cash_ids(ledger: &Ledger, codes: &[String]) -> Vec<AccountId> {
+    codes
+        .iter()
+        .filter_map(|c| ledger.chart().find_by_code(c).map(|a| a.id))
+        .collect()
+}
+
+/// What party shares resolve with ([`ledger_core::shares::resolve`]): the
+/// money accounts over the `[books] cash_accounts`, and the members.
+fn share_context(
+    ledger: &Ledger,
+    settings: &Settings,
+) -> (
+    ledger_core::parties::MoneyAccounts,
+    Vec<ledger_core::PartyMember>,
+) {
+    (
+        ledger_core::parties::money_accounts(ledger, &cash_ids(ledger, &settings.roles.cash)),
+        settings.company.party_members(ledger),
+    )
+}
+
+/// `parties` params as shares: each party resolved, `amount` or `percent`
+/// parsed (not both), neither meaning derived.
+fn parse_shares(
+    store: &Store,
+    params: &[PartyShareParam],
+) -> Result<Vec<ledger_core::PartyShare>, String> {
+    params
+        .iter()
+        .map(|p| {
+            let party = resolve_party(store, &p.party)?;
+            let share = match (&p.amount, &p.percent) {
+                (Some(_), Some(_)) => {
+                    return Err(format!(
+                        "party {}: give an amount or a percent, not both",
+                        p.party
+                    ));
+                }
+                (Some(a), None) => ledger_core::Share::Amount(parse_amount(a)?),
+                (None, Some(pc)) => ledger_core::Share::Percent(parse_amount(pc)?),
+                (None, None) => ledger_core::Share::Derived,
+            };
+            Ok(ledger_core::PartyShare { party, share })
+        })
+        .collect()
+}
+
+/// Whether an entry's lines are final enough to check shares against:
+/// posted, or a draft with lines whose debits equal its credits.
+fn lines_settled(entry: &JournalEntry) -> bool {
+    if entry.status() == ledger_core::EntryStatus::Posted {
+        return true;
+    }
+    let side = |s: Side| -> Decimal {
+        entry
+            .lines()
+            .iter()
+            .filter(|l| l.side == s)
+            .map(|l| l.amount.amount)
+            .sum()
+    };
+    !entry.lines().is_empty() && side(Side::Debit) == side(Side::Credit)
+}
+
+/// Refuse shares that don't resolve against the entry's lines, once the
+/// lines are settled ([`lines_settled`]).
+fn check_shares_resolve(
+    store: &Store,
+    settings: &Settings,
+    entry_id: u64,
+    shares: &[ledger_core::PartyShare],
+) -> Result<(), String> {
+    let ledger = store.ledger();
+    let entry = ledger
+        .get_entry(entry_id)
+        .ok_or_else(|| format!("unknown entry {entry_id}"))?;
+    if !lines_settled(entry) {
+        return Ok(());
+    }
+    let (money, members) = share_context(ledger, settings);
+    ledger_core::shares::resolve(entry, shares, &money, &members).map(|_| ())
+}
+
+/// An entry's parties for output, each share resolved, and why they don't
+/// resolve when they don't.
+fn entry_parties_out(
+    store: &Store,
+    settings: &Settings,
+    entry: &JournalEntry,
+) -> (Vec<EntryPartyOut>, Option<String>) {
+    let ledger = store.ledger();
+    let shares = ledger.entry_parties(entry.id());
+    let (accounts, members) = share_context(ledger, settings);
+    let (resolved, error) = match ledger_core::shares::resolve(entry, shares, &accounts, &members) {
+        Ok(r) => (Some(r), None),
+        Err(e) => (None, Some(e)),
+    };
+    let out = shares
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let (kind, amount, percent) = match s.share {
+                ledger_core::Share::Amount(a) => ("amount", Some(money(a)), None),
+                ledger_core::Share::Percent(p) => {
+                    ("percent", None, Some(p.normalize().to_string()))
+                }
+                ledger_core::Share::Derived => ("derived", None, None),
+            };
+            EntryPartyOut {
+                party_id: s.party,
+                party: ledger
+                    .get_party(s.party)
+                    .map(|p| p.label().to_string())
+                    .unwrap_or_else(|| format!("party {}", s.party)),
+                share: kind.to_string(),
+                amount,
+                percent,
+                resolved: resolved.as_ref().map(|r| money(r[i].1)),
+            }
+        })
+        .collect();
+    (out, error)
 }
 
 /// The party's customer record's invoices, by id.
@@ -1874,7 +2195,7 @@ impl BooksServer {
 
     #[tool(
         name = "books.draft_entry",
-        description = "Start a draft journal entry. Drafts are journaled and survive restarts, but don't affect reports until posted; add lines with books.add_line. Pass party (id or name) for the counterparty: every entry with a vendor, platform, agency, bank, member, or contractor names its party (a party with a vendor record tags the vendor too, for 1099s)."
+        description = "Start a draft journal entry. Drafts are journaled and survive restarts, but don't affect reports until posted; add lines with books.add_line. Pass party (id or name) for the counterparty: every entry with a vendor, platform, agency, bank, member, or contractor names its party (a party with a vendor record tags the vendor too, for 1099s). An entry with several counterparties passes parties instead, each with an amount, a percent, or neither (derived): name both members on a joint member transaction and let their shares derive."
     )]
     async fn draft_entry(
         &self,
@@ -1899,10 +2220,26 @@ impl BooksServer {
             .as_deref()
             .map(str::trim)
             .filter(|r| !r.is_empty());
-        if no_party.is_some() && (party.is_some() || vendor.is_some()) {
+        let shares = p
+            .parties
+            .as_deref()
+            .map(|ps| parse_shares(&store, ps))
+            .transpose()?;
+        if no_party.is_some() && (party.is_some() || vendor.is_some() || shares.is_some()) {
             return Err(
-                "no_party_reason is for an entry with no counterparty: pass it without party or vendor".into(),
+                "no_party_reason is for an entry with no counterparty: pass it without party, parties, or vendor".into(),
             );
+        }
+        if shares.is_some() && (party.is_some() || vendor.is_some()) {
+            return Err(
+                "pass party (one) or parties (several, with shares), not both; a vendor party in parties tags its vendor record".into(),
+            );
+        }
+        if let Some(sh) = &shares {
+            store
+                .ledger()
+                .check_party_shares(sh)
+                .map_err(|e| e.to_string())?;
         }
         if let (Some(v), Some(pid)) = (vendor, party) {
             let party_vendor = store.ledger().get_party(pid).and_then(|p| p.vendor);
@@ -1915,7 +2252,11 @@ impl BooksServer {
         let id = store
             .create_entry(date, &p.description)
             .map_err(|e| e.to_string())?;
-        if party.is_some() {
+        if let Some(sh) = shares.filter(|sh| !sh.is_empty()) {
+            store
+                .set_entry_parties(id, &sh)
+                .map_err(|e| e.to_string())?;
+        } else if party.is_some() {
             store
                 .set_entry_party(id, party)
                 .map_err(|e| e.to_string())?;
@@ -2039,12 +2380,14 @@ impl BooksServer {
         let receipt_missing = receipt_required && receipts.is_empty();
         let party_policy = self.settings().parties;
         let party_id = store.ledger().entry_party(p.entry_id);
+        let (parties, parties_error) = entry_parties_out(&store, &self.settings(), &entry);
         let no_party_reason = store
             .ledger()
             .entry_no_party(p.entry_id)
             .map(str::to_string);
+        // Any party, or a no-party mark, satisfies the policy.
         let party_missing = party_policy != ledger_config::PartyPolicy::Off
-            && party_id.is_none()
+            && parties.is_empty()
             && no_party_reason.is_none();
         let party_suggestions = if party_missing {
             suggest_parties(&store, &entry)?
@@ -2067,12 +2410,26 @@ impl BooksServer {
             party: party_id
                 .and_then(|i| store.ledger().get_party(i))
                 .map(|x| x.name.clone()),
+            parties,
+            parties_error,
             no_party_reason,
             party_missing,
             party_suggestions,
         };
         if !p.confirmed.unwrap_or(false) {
             return Ok(Json(out));
+        }
+        if let Some(why) = &out.parties_error {
+            return Err(serde_json::json!({
+                "code": "party_shares",
+                "message": format!(
+                    "entry {}'s party shares don't add up: {why}. Fix them with books.set_entry_party parties (amounts that sum to what it moved, or percents summing to 100).",
+                    p.entry_id
+                ),
+                "entry_id": p.entry_id,
+                "remedy_tool": "books.set_entry_party",
+            })
+            .to_string());
         }
         if party_missing && party_policy == ledger_config::PartyPolicy::Require {
             let names: Vec<String> = out
@@ -2574,6 +2931,7 @@ impl BooksServer {
                 }
             })
             .collect();
+        let (parties, parties_error) = entry_parties_out(&store, &self.settings(), &entry);
         Ok(Json(GetEntryOut {
             entry_id: p.entry_id,
             date: entry.date().to_string(),
@@ -2597,6 +2955,8 @@ impl BooksServer {
                 .entry_party(p.entry_id)
                 .and_then(|id| store.ledger().get_party(id))
                 .map(|p| p.label().to_string()),
+            parties,
+            parties_error,
         }))
     }
 
@@ -3455,7 +3815,7 @@ impl BooksServer {
 
     #[tool(
         name = "books.set_entry_vendor",
-        description = "Tag an entry (draft or posted) with the vendor it paid, for 1099 tracking, or omit vendor to clear the tag. Reporting metadata only: amounts never change. books.pay_bill tags its payments automatically; books.draft_entry takes a vendor too."
+        description = "Tag an entry (draft or posted) with the vendor it paid, for 1099 tracking, or omit vendor to clear the tag. Reporting metadata only: amounts never change. On an entry naming several parties (books.set_entry_party parties) the parties stay as they are: the vendor of a party already named is tagged with every share kept; any other vendor, or clearing the tag while its party is named, is refused (change the parties instead). An entry and its reversal are tagged together. books.pay_bill tags its payments automatically; books.draft_entry takes a vendor too."
     )]
     async fn set_entry_vendor(
         &self,
@@ -3481,7 +3841,7 @@ impl BooksServer {
 
     #[tool(
         name = "books.vendor_1099",
-        description = "1099 worksheet for a calendar year: cash paid to each vendor (credits minus debits to asset accounts on entries tagged with the vendor, so card payments, which the card processor reports on 1099-K, are excluded), which vendors are reportable (marked NEC/MISC and paid at least the threshold: $600 through 2025, $2,000 in 2026, indexed for inflation after that), which are missing a W-9, and each payee's TIN last four. include_tins: true adds each payee's full TIN from the TIN vault (or why it can't): only when the human asks for the CPA's worksheet, and never repeat those TINs anywhere else; save_csv_to also writes the worksheet as CSV to a new file outside the books dir. For a year whose threshold wanderbooks doesn't know yet it refuses rather than guess: get the figure from the IRS or the human, pass it as `threshold`, and update the rule for everyone (pull request or issue at github.com/swaits/wanderbooks). For the CPA to confirm.",
+        description = "1099 worksheet for a calendar year: cash paid to each vendor (credits minus debits to the [books] cash and financing accounts on entries tagged with the vendor, so card payments, which the card processor reports on 1099-K, are excluded; on an entry naming several parties, only the vendor's resolved share of that payment), which vendors are reportable (marked NEC/MISC and paid at least the threshold: $600 through 2025, $2,000 in 2026, indexed for inflation after that), which are missing a W-9, and each payee's TIN last four. include_tins: true adds each payee's full TIN from the TIN vault (or why it can't): only when the human asks for the CPA's worksheet, and never repeat those TINs anywhere else; save_csv_to also writes the worksheet as CSV to a new file outside the books dir. For a year whose threshold wanderbooks doesn't know yet it refuses rather than guess: get the figure from the IRS or the human, pass it as `threshold`, and update the rule for everyone (pull request or issue at github.com/swaits/wanderbooks). For the CPA to confirm.",
         annotations(read_only_hint = true)
     )]
     async fn vendor_1099(
@@ -3493,13 +3853,8 @@ impl BooksServer {
         let store = self.lock()?;
         // A year past what wanderbooks knows is refused with guidance
         // (research or ask, pass `threshold`, then update the rule).
-        let r = ledger_core::vendor_1099_report_with(
-            store.ledger(),
-            p.year,
-            threshold,
-            &payment_accounts(store.ledger(), &self.settings().roles),
-        )
-        .map_err(|e| e.to_string())?;
+        let r = vendor_1099_report(store.ledger(), &self.settings(), p.year, threshold)
+            .map_err(|e| e.to_string())?;
         let missing_w9 = r
             .vendors
             .iter()
@@ -3530,6 +3885,16 @@ impl BooksServer {
                 p.year
             ));
         }
+        if !r.unresolved.is_empty() {
+            notes.push(format!(
+                "Entries {} name several parties whose shares don't resolve, so each counts in full toward its vendor: fix the shares with books.set_entry_party.",
+                r.unresolved
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
         let ledger = store.ledger();
         // With include_tins, the vault is opened once (never creating a
         // key: a locked vault becomes a note on each line).
@@ -3537,9 +3902,11 @@ impl BooksServer {
         let mut vendors = Vec::new();
         for v in r.vendors {
             let party_id = ledger.party_of_vendor(v.vendor_id);
-            let facts = party_id
-                .and_then(|id| ledger.get_party(id))
-                .and_then(|p| p.w9.clone());
+            let tin_last4 = party_id.and_then(|id| ledger.get_party(id)).and_then(|p| {
+                p.w9.as_ref()
+                    .map(|f| f.tin_last4.clone())
+                    .or_else(|| p.tin.as_ref().map(|t| t.last4.clone()))
+            });
             let mut line = Vendor1099LineOut {
                 vendor_id: v.vendor_id,
                 name: v.name,
@@ -3548,45 +3915,20 @@ impl BooksServer {
                 paid: money(v.paid),
                 reportable: v.reportable,
                 party_id,
-                tin_last4: facts.as_ref().map(|f| f.tin_last4.clone()),
+                tin_last4,
                 tin: None,
                 tin_type: None,
                 tin_note: None,
             };
             if let Some(vault) = &vault {
-                line.tin_note = match (vault, party_id) {
-                    (_, None) => Some("no party for this vendor".into()),
-                    (Err(e), _) => Some(e.clone()),
-                    (Ok(vault), Some(pid)) => match vault.tin(pid) {
-                        Err(e) => Some(e.to_string()),
-                        Ok(None) => Some(
-                            "not in the vault: record it with books.set_w9 tin (from the W-9)"
-                                .into(),
-                        ),
-                        Ok(Some(t)) => {
-                            let hash = vault.record_hash(pid).ok().flatten();
-                            match &facts {
-                                None => Some(
-                                    "the vault holds a TIN but the books have no W-9 facts: record them with books.set_w9"
-                                        .into(),
-                                ),
-                                Some(f) if f.tin_last4 != t.last4() => Some(format!(
-                                    "the vault's TIN ends in {}, the W-9 facts say {}: check the W-9 and fix with books.set_w9",
-                                    t.last4(),
-                                    f.tin_last4
-                                )),
-                                Some(f) if f.vault_record.is_some() && f.vault_record != hash => {
-                                    Some("the vault record isn't the one the books recorded: check the W-9 and record it again with books.set_w9 tin".into())
-                                }
-                                Some(_) => {
-                                    line.tin = Some(t.formatted());
-                                    line.tin_type = Some(tin_type_key(t.kind).to_string());
-                                    None
-                                }
-                            }
-                        }
-                    },
-                };
+                match party_id.map(|pid| vault_tin(ledger, vault, pid)) {
+                    None => line.tin_note = Some("no party for this vendor".into()),
+                    Some(Err(why)) => line.tin_note = Some(why),
+                    Some(Ok(t)) => {
+                        line.tin = Some(t.formatted());
+                        line.tin_type = Some(tin_type_key(t.kind).to_string());
+                    }
+                }
             }
             vendors.push(line);
         }
@@ -3946,6 +4288,7 @@ impl BooksServer {
                     share: m.share.normalize().to_string(),
                     capital_account: m.capital_account.clone(),
                     distribution_account: m.distribution_account.clone(),
+                    files_jointly_with: m.files_jointly_with.clone(),
                 })
                 .collect(),
             cash_accounts: cfg.roles.cash.clone(),
@@ -5373,7 +5716,7 @@ impl BooksServer {
     /// ```
     #[tool(
         name = "books.set_w9",
-        description = "Record what a contractor's or landlord's W-9 says, or clear it (clear: true alone): the date received (received_on), line 3 entity type, line 4 exempt payee and FATCA codes, the TIN's last four digits, and where the form is kept. Give the full TIN as tin with tin_type (ssn, ein, itin) and it goes only to the encrypted TIN vault (vault/ beside the books, git-ignored; its key outside the books, created on first use): the books keep its last four (tin_last4 is then optional, and refused if it disagrees) and a hash of the vault record, and kept_at defaults to \"wanderbooks vault\". Give w9_file_path (a local PDF, PNG, or JPEG of the signed form) and the form goes to the vault too, never to the receipts and documents; read it back with books.get_w9. Never put a TIN in any other field, note, description, or file: the engine refuses any nine-digit number, and no tool output echoes one. The party needs a 1099 role (contractor or landlord: books.set_party_roles). Record it before paying them. A party with a vendor record also gets its W-9 marked on file there (books.vendor_1099 missing_w9). Clearing W-9 facts whose TIN is in the vault needs books.purge_tin first. Journaled as party.w9_set. Returns the party (the TIN's last four only)."
+        description = "Record what a contractor's or landlord's W-9 says, or clear it (clear: true alone): the date received (received_on), line 3 entity type, line 4 exempt payee and FATCA codes, the TIN's last four digits, and where the form is kept. Give the full TIN as tin with tin_type (ssn, ein, itin) and it goes only to the encrypted TIN vault (vault/ beside the books, git-ignored; its key outside the books, created on first use): the books keep its last four (tin_last4 is then optional, and refused if it disagrees) and a hash of the vault record, in the W-9 facts and the party's TIN facts alike (party.tin_set, as books.set_tin), and kept_at defaults to \"wanderbooks vault\". The CPA package carries the full TIN to the CPA. Give w9_file_path (a local PDF, PNG, or JPEG of the signed form) and the form goes to the vault too, never to the receipts and documents; read it back with books.get_w9. Never put a TIN in any other field, note, description, or file: the engine refuses any nine-digit number, and no tool output echoes one. The party needs a 1099 role (contractor or landlord: books.set_party_roles). Record it before paying them. A party with a vendor record also gets its W-9 marked on file there (books.vendor_1099 missing_w9). Clearing W-9 facts whose TIN is in the vault needs books.purge_tin first. Journaled as party.w9_set. Returns the party (the TIN's last four only)."
     )]
     async fn set_w9(&self, params: Parameters<SetW9Params>) -> Result<Json<PartyOut>, String> {
         let p = params.0;
@@ -5434,6 +5777,13 @@ impl BooksServer {
         let mut store = self.lock()?;
         let id = resolve_party(&store, &p.party)?;
         let existing = store.ledger().get_party(id).and_then(|p| p.w9.clone());
+        let party_tin = store.ledger().get_party(id).and_then(|p| p.tin.clone());
+        // A new TIN with another last four replaces the party's TIN facts:
+        // cleared first, so the two never disagree on the record (B-26).
+        let replace_tin = tin
+            .as_ref()
+            .is_some_and(|t| party_tin.as_ref().is_some_and(|pt| pt.last4 != t.last4()));
+        let mut tin_facts: Option<ledger_core::TinFacts> = None;
         let vault_dir = Self::vault_dir(&store);
         let (held_tin, held_w9) =
             ledger_vault::records_held(&vault_dir, id).map_err(|e| e.to_string())?;
@@ -5470,9 +5820,25 @@ impl BooksServer {
                 // (INVARIANT 3).
                 let mut rehearsal = store.ledger().clone();
                 f.vault_record = Some("0".repeat(64));
+                let stand_in = tin.as_ref().map(|t| ledger_core::TinFacts {
+                    tin_type: tin_kind(t.kind),
+                    last4: t.last4().to_string(),
+                    vault_record: Some("0".repeat(64)),
+                    purged: None,
+                });
+                if replace_tin {
+                    rehearsal
+                        .set_party_tin(id, None)
+                        .map_err(|e| e.to_string())?;
+                }
                 rehearsal
                     .set_party_w9(id, Some(f.clone()))
                     .map_err(|e| e.to_string())?;
+                if stand_in.is_some() {
+                    rehearsal
+                        .set_party_tin(id, stand_in.clone())
+                        .map_err(|e| e.to_string())?;
+                }
                 f.vault_record = if tin.is_some() || w9_file.is_some() {
                     let vault = self.open_vault(&store, true)?;
                     let tin_hash = match &tin {
@@ -5498,11 +5864,24 @@ impl BooksServer {
                 } else {
                     None
                 };
+                // The TIN's facts carry the same record as the W-9's.
+                tin_facts = stand_in.map(|t| ledger_core::TinFacts {
+                    vault_record: f.vault_record.clone(),
+                    ..t
+                });
                 Some(f)
             }
         };
         let on_file = facts.is_some();
+        if replace_tin {
+            store.set_party_tin(id, None).map_err(|e| e.to_string())?;
+        }
         store.set_party_w9(id, facts).map_err(|e| e.to_string())?;
+        if tin_facts.is_some() {
+            store
+                .set_party_tin(id, tin_facts)
+                .map_err(|e| e.to_string())?;
+        }
         // Keep the vendor record's W-9 flag (the 1099 worksheet's) in step.
         let vendor = store
             .ledger()
@@ -5515,6 +5894,87 @@ impl BooksServer {
         {
             store
                 .set_vendor_1099(v, form, on_file)
+                .map_err(|e| e.to_string())?;
+        }
+        let party = store.ledger().get_party(id).expect("resolved");
+        Ok(Json(party_out(party)))
+    }
+
+    /// ```text
+    /// GOAL: any party's full TIN (a member's SSN for their K-1, a payee's
+    ///       from their W-9) kept where the CPA package can carry it, and
+    ///       nowhere else.
+    /// SOURCE: docs/parties-and-attachments.md "The TIN vault"; B-26;
+    ///         DECISION (owner, 2026-10-15): "In the vault, that's the
+    ///         WHOLE reason we built it. And it needs to be in the damn CPA
+    ///         package."
+    /// INVARIANTS:
+    ///   1. The full TIN goes only to the vault (set_w9's path: key outside
+    ///      the books, created on first use; books in git must ignore
+    ///      vault/); `party.tin_set` journals its type, last four, and the
+    ///      record's hash. The output never holds more than the last four.
+    ///   2. Any role.
+    ///   3. The facts are checked (on a copy of the ledger) before the vault
+    ///      is written; a refusal journals nothing and writes no record.
+    ///   4. W-9 facts on file must have the same last four (else refused:
+    ///      a payee's new TIN comes with its W-9, books.set_w9); when they
+    ///      do, their vault record follows the new record (`party.w9_set`).
+    /// ```
+    #[tool(
+        name = "books.set_tin",
+        description = "Put a party's full taxpayer identification number in the encrypted TIN vault: tin (nine digits, hyphens allowed) and tin_type (ssn, ein, itin). Any role: collect every member's (their K-1 needs it) and every 1099 payee's (books.set_w9 tin records a W-9's TIN the same way). The books keep only its type, last four, and a hash of the vault record (journaled as party.tin_set); books.export_cpa_package carries the full number to the CPA. A party whose W-9 facts name another last four is refused: a payee's new TIN comes with its new W-9 (books.set_w9). Never repeat a TIN in chat, descriptions, notes, commit messages, or file names. Returns the party (the last four only)."
+    )]
+    async fn set_tin(&self, params: Parameters<SetTinParams>) -> Result<Json<PartyOut>, String> {
+        let p = params.0;
+        let tin = ledger_vault::Tin::new(p.tin.0.trim(), parse_tin_type(&p.tin_type)?)
+            .map_err(|e| e.to_string())?;
+        let mut store = self.lock()?;
+        let id = resolve_party(&store, &p.party)?;
+        let w9 = store.ledger().get_party(id).and_then(|p| p.w9.clone());
+        let stand_in = ledger_core::TinFacts {
+            tin_type: tin_kind(tin.kind),
+            last4: tin.last4().to_string(),
+            vault_record: Some("0".repeat(64)),
+            purged: None,
+        };
+        // Rehearse on a copy before the vault is written (INVARIANT 3).
+        let mut rehearsal = store.ledger().clone();
+        rehearsal
+            .set_party_tin(id, Some(stand_in.clone()))
+            .map_err(|e| e.to_string())?;
+        if let Some(f) = &w9 {
+            rehearsal
+                .set_party_w9(
+                    id,
+                    Some(ledger_core::W9Facts {
+                        vault_record: Some("0".repeat(64)),
+                        ..f.clone()
+                    }),
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        let vault = self.open_vault(&store, true)?;
+        let hash = vault.put_tin(id, &tin).map_err(|e| e.to_string())?;
+        store
+            .set_party_tin(
+                id,
+                Some(ledger_core::TinFacts {
+                    vault_record: Some(hash.clone()),
+                    ..stand_in
+                }),
+            )
+            .map_err(|e| e.to_string())?;
+        if let Some(f) = w9
+            && f.vault_record.as_deref() != Some(hash.as_str())
+        {
+            store
+                .set_party_w9(
+                    id,
+                    Some(ledger_core::W9Facts {
+                        vault_record: Some(hash),
+                        ..f
+                    }),
+                )
                 .map_err(|e| e.to_string())?;
         }
         let party = store.ledger().get_party(id).expect("resolved");
@@ -5575,9 +6035,10 @@ impl BooksServer {
     /// INVARIANTS:
     ///   1. Without confirmed=true: a preview, changing nothing.
     ///   2. Confirmed: the party's vault records (TIN and W-9 file) are
-    ///      deleted, needing no key; and when the party has W-9 facts,
-    ///      `party.w9_set` journals them with the vault record cleared and
-    ///      kept_at saying when and why (the last four stay).
+    ///      deleted, needing no key; when the party has TIN facts,
+    ///      `party.tin_set` journals them with the vault record cleared
+    ///      and `purged` saying when and why, and when it has W-9 facts,
+    ///      `party.w9_set` likewise in kept_at (the last four stay).
     ///   3. The new facts are checked before anything is deleted; a refusal
     ///      changes nothing.
     /// SCENARIOS:
@@ -5587,7 +6048,7 @@ impl BooksServer {
     /// ```
     #[tool(
         name = "books.purge_tin",
-        description = "Delete a party's full TIN and W-9 file from the TIN vault (after the retention period, at the payee's request, or to replace a wrong one), with the reason. Without confirmed=true it previews what the vault holds and changes nothing. Confirmed, the records are deleted for good and the books journal it: the party's W-9 facts (party.w9_set) keep the last four, drop the vault record, and say when and why it was purged in kept_at. Works without the vault key."
+        description = "Delete a party's full TIN and W-9 file from the TIN vault (after the retention period, at the payee's request, or to replace a wrong one), with the reason. Without confirmed=true it previews what the vault holds and changes nothing. Confirmed, the records are deleted for good and the books journal it: the party's TIN facts (party.tin_set: purged says when and why) and W-9 facts (party.w9_set: kept_at says so) keep the last four and drop the vault record. Works without the vault key. The next CPA package then lacks that TIN (and says so)."
     )]
     async fn purge_tin(
         &self,
@@ -5604,26 +6065,35 @@ impl BooksServer {
         let vault_dir = Self::vault_dir(&store);
         let (held_tin, held_w9) =
             ledger_vault::records_held(&vault_dir, id).map_err(|e| e.to_string())?;
-        let recorded = party.w9.as_ref().is_some_and(|f| f.vault_record.is_some());
+        let recorded = party.w9.as_ref().is_some_and(|f| f.vault_record.is_some())
+            || party.tin.as_ref().is_some_and(|t| t.vault_record.is_some());
         if !held_tin && !held_w9 && !recorded {
             return Err(format!(
-                "the TIN vault holds nothing for party {id} ({}) and its W-9 facts name no vault record",
+                "the TIN vault holds nothing for party {id} ({}) and its W-9 and TIN facts name no vault record",
                 party.name
             ));
         }
+        let why = format!("purged from the wanderbooks vault on {}: {reason}", today());
         let new_facts = party.w9.clone().map(|f| ledger_core::W9Facts {
             vault_record: None,
-            kept_at: format!(
-                "not kept: purged from the wanderbooks vault on {}: {reason}",
-                today()
-            ),
+            kept_at: format!("not kept: {why}"),
             ..f
         });
+        let new_tin = party.tin.clone().map(|t| ledger_core::TinFacts {
+            vault_record: None,
+            purged: Some(why.clone()),
+            ..t
+        });
+        // Both checked before anything is deleted (INVARIANT 3).
+        let mut rehearsal = store.ledger().clone();
         if let Some(f) = &new_facts {
-            store
-                .ledger()
-                .clone()
+            rehearsal
                 .set_party_w9(id, Some(f.clone()))
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(t) = &new_tin {
+            rehearsal
+                .set_party_tin(id, Some(t.clone()))
                 .map_err(|e| e.to_string())?;
         }
         let mut out = PurgeTinOut {
@@ -5632,7 +6102,11 @@ impl BooksServer {
             name: party.name.clone(),
             tin_in_vault: held_tin,
             w9_file_in_vault: held_w9,
-            tin_last4: party.w9.as_ref().map(|f| f.tin_last4.clone()),
+            tin_last4: party
+                .w9
+                .as_ref()
+                .map(|f| f.tin_last4.clone())
+                .or_else(|| party.tin.as_ref().map(|t| t.last4.clone())),
             journaled: false,
             note: format!(
                 "Confirming deletes {} for good{}. Make sure the CPA has what they need first.",
@@ -5642,10 +6116,14 @@ impl BooksServer {
                     (false, true) => "the W-9 file",
                     (false, false) => "nothing in the vault (the books' record of it is cleared)",
                 },
-                if new_facts.is_some() {
-                    " and journals the purge in the W-9 facts (party.w9_set; the last four stay)"
-                } else {
-                    ""
+                match (new_facts.is_some(), new_tin.is_some()) {
+                    (true, true) =>
+                        " and journals the purge in the TIN and W-9 facts (party.tin_set, party.w9_set; the last four stay)",
+                    (false, true) =>
+                        " and journals the purge in the TIN facts (party.tin_set; the last four stay)",
+                    (true, false) =>
+                        " and journals the purge in the W-9 facts (party.w9_set; the last four stay)",
+                    (false, false) => "",
                 }
             ),
         };
@@ -5657,11 +6135,17 @@ impl BooksServer {
             store.set_party_w9(id, Some(f)).map_err(|e| e.to_string())?;
             out.journaled = true;
         }
+        if let Some(t) = new_tin {
+            store
+                .set_party_tin(id, Some(t))
+                .map_err(|e| e.to_string())?;
+            out.journaled = true;
+        }
         out.status = "purged".into();
         out.note = format!(
             "Purged from the vault{}.",
             if out.journaled {
-                "; the W-9 facts record when and why"
+                "; the books record when and why"
             } else {
                 ""
             }
@@ -5715,7 +6199,7 @@ impl BooksServer {
             .map(|r| parse_roles(&[r.to_string()]).map(|v| v[0]))
             .transpose()?;
         let year = p.year.unwrap_or_else(this_year);
-        let cash = self.settings().roles.cash.clone();
+        let settings = self.settings();
         let store = self.lock()?;
         let mut parties = Vec::new();
         for party in store.ledger().parties() {
@@ -5725,7 +6209,7 @@ impl BooksServer {
             if role.is_some_and(|r| !party.all_roles().contains(&r)) {
                 continue;
             }
-            let act = party_activity(&store, party, &cash, year)?;
+            let act = party_activity(&store, party, &settings, year)?;
             parties.push(PartySummaryOut {
                 party_id: party.id,
                 name: party.name.clone(),
@@ -5752,12 +6236,12 @@ impl BooksServer {
     async fn party(&self, params: Parameters<PartyParams>) -> Result<Json<PartyDetailOut>, String> {
         let p = params.0;
         let year = p.year.unwrap_or_else(this_year);
-        let cash = self.settings().roles.cash.clone();
+        let settings = self.settings();
         let store = self.lock()?;
         let ledger = store.ledger();
         let id = resolve_party(&store, &p.party)?;
         let party = ledger.get_party(id).expect("resolved");
-        let act = party_activity(&store, party, &cash, year)?;
+        let act = party_activity(&store, party, &settings, year)?;
         let in_year = |d: NaiveDate| chrono::Datelike::year(&d) == year;
         let mut entries: Vec<PartyEntryOut> = act
             .entries
@@ -5781,13 +6265,8 @@ impl BooksServer {
         let bills = party_bills(ledger, party);
         let amount_1099 = match party.vendor {
             Some(v) => {
-                let r = ledger_core::vendor_1099_report_with(
-                    ledger,
-                    year,
-                    Some(Decimal::ZERO),
-                    &payment_accounts(ledger, &self.settings().roles),
-                )
-                .map_err(|e| e.to_string())?;
+                let r = vendor_1099_report(ledger, &self.settings(), year, Some(Decimal::ZERO))
+                    .map_err(|e| e.to_string())?;
                 Some(money(
                     r.vendors
                         .iter()
@@ -5877,7 +6356,7 @@ impl BooksServer {
 
     #[tool(
         name = "books.set_entry_party",
-        description = "Tag an entry (draft or posted) with the party it was with (id or name), or pass party null (or omit it) to clear the tag. A party with a vendor record also tags the entry's vendor, so a payment to a contractor or landlord counts in books.vendor_1099; a party without one, or clearing, clears the vendor tag. Metadata only: amounts never change. Journaled as entry.party_set. Returns the entry (as books.get_entry)."
+        description = "Tag an entry (draft or posted) with the party it was with (id or name), or pass party null (or omit it) to clear the tag. A party with a vendor record also tags the entry's vendor, so a payment to a contractor or landlord counts in books.vendor_1099; a party without one, or clearing, clears the vendor tag. For an entry with several counterparties pass parties instead: [{party, amount?|percent?}], each share an exact amount (cents), a percent (summing to 100; leftover cents to the first party), or neither (derived: a sole party gets all; members named together get what their capital or distributions lines say, else their [[company.members]] share). Name both members on a joint member transaction (a reimbursement on 2100, a joint contribution) and let the shares derive; give amounts when a split is uneven. Refused: a party twice, mixed kinds of share, two parties with vendor records, and, once the entry has balanced lines, shares that don't add up to what it moved. Metadata only: amounts never change. An entry and its reversal carry the same parties: tagging either tags both, so each party's part nets to zero. Journaled as entry.party_set (one party) or entry.parties_set (parties). Returns the entry (as books.get_entry), each party's share resolved."
     )]
     async fn set_entry_party(
         &self,
@@ -5885,23 +6364,43 @@ impl BooksServer {
     ) -> Result<Json<GetEntryOut>, String> {
         let p = params.0;
         {
+            let settings = self.settings();
             let mut store = self.lock()?;
             let party = p
                 .party
                 .as_deref()
                 .map(|r| resolve_party(&store, r))
                 .transpose()?;
+            let shares = p
+                .parties
+                .as_deref()
+                .map(|ps| parse_shares(&store, ps))
+                .transpose()?;
             let reason = p
                 .no_party_reason
                 .as_deref()
                 .map(str::trim)
                 .filter(|r| !r.is_empty());
-            match (party, reason) {
-                (Some(_), Some(_)) => {
+            match (party, reason, shares) {
+                (Some(_), _, Some(_)) => {
+                    return Err(
+                        "pass party (one) or parties (several, with shares), not both".into(),
+                    );
+                }
+                (_, Some(_), Some(_)) => {
+                    return Err("pass parties or a no_party_reason, not both".into());
+                }
+                (Some(_), Some(_), None) => {
                     return Err("pass a party or a no_party_reason, not both".into());
                 }
-                (None, Some(r)) => {
-                    if store.ledger().entry_party(p.entry_id).is_some() {
+                (None, Some(r), _) => {
+                    if !store.ledger().entry_parties(p.entry_id).is_empty() {
+                        // Check the mark before clearing, so a refusal
+                        // journals nothing.
+                        if r.trim().is_empty() {
+                            return Err("say why the entry has no counterparty".into());
+                        }
+                        ledger_core::parties::check_text("reason", r)?;
                         store
                             .set_entry_party(p.entry_id, None)
                             .map_err(|e| e.to_string())?;
@@ -5910,7 +6409,17 @@ impl BooksServer {
                         .set_entry_no_party(p.entry_id, r)
                         .map_err(|e| e.to_string())?;
                 }
-                (party, None) => {
+                (None, None, Some(sh)) => {
+                    store
+                        .ledger()
+                        .check_set_entry_parties(p.entry_id, &sh)
+                        .map_err(|e| e.to_string())?;
+                    check_shares_resolve(&store, &settings, p.entry_id, &sh)?;
+                    store
+                        .set_entry_parties(p.entry_id, &sh)
+                        .map_err(|e| e.to_string())?;
+                }
+                (party, None, None) => {
                     store
                         .set_entry_party(p.entry_id, party)
                         .map_err(|e| e.to_string())?;
@@ -6405,9 +6914,30 @@ impl BooksServer {
     // CPA handoff package
     // ------------------------------------------------------------------
 
+    /// ```text
+    /// GOAL: everything the CPA needs for the return in one zip, the K-1s'
+    ///       and 1099s' TINs included, without a full TIN ever landing in
+    ///       the books (a git repository) or the conversation.
+    /// SOURCE: docs/mcp-interface.md; B-26; DECISION (owner,
+    ///         2026-10-15): "it needs to be in the damn CPA package."
+    /// INVARIANTS:
+    ///   1. With include_tins (the default) the zip is only ever written to
+    ///      save_to, a new file outside the books dir (0600), and the output
+    ///      is its path, never its bytes; without save_to it is refused.
+    ///      include_tins false: last fours only, base64 unless save_to.
+    ///   2. With members, k1-members.csv has one row per [[company.members]]
+    ///      member: name, party, share, capital account, TIN and type, and
+    ///      the K-1 worksheet's capital figures (ledger_core::k1) for the
+    ///      fiscal year to date. The 1099 worksheet adds each payee's party,
+    ///      last four, TIN, and type.
+    ///   3. A locked vault or a missing TIN never fails the package: the
+    ///      row says why (vault_tin), the README lists it, and so does
+    ///      tin_gaps (members, and 1099 payees that are reportable).
+    ///   4. Read-only: nothing is journaled.
+    /// ```
     #[tool(
         name = "books.export_cpa_package",
-        description = "Build the CPA handoff package as a zip (base64): the profit and loss, balance sheet, cash flow, statement of changes in members' equity (multi-member LLCs), tax summary, and trial balance, each as PDF and XLSX; the fixed asset register as PDF and XLSX when there are fixed assets; the general ledger (by account) and general journal (entry by entry) as XLSX; the journal as IIF (imports into QuickBooks Desktop); the 1099 worksheet as CSV; every receipt behind the year's entries (receipts/, with an index.csv tying each file to its entry) and the company's documents (documents/), unless include_receipts is false; and a README with the journal's verified hash. cash_accounts (e.g. [\"1000\"]) is required: the cash flow statement reconciles to them. as_of defaults to today; period reports cover the fiscal year to date.",
+        description = "Build the CPA handoff package as a zip: the profit and loss, balance sheet, cash flow, statement of changes in members' equity (multi-member LLCs), tax summary, and trial balance, each as PDF and XLSX; the fixed asset register as PDF and XLSX when there are fixed assets; the general ledger (by account) and general journal (entry by entry) as XLSX; the journal as IIF (imports into QuickBooks Desktop); the 1099 worksheet as CSV; with members, the K-1 worksheet (k1-members.csv: per member their party, share, capital account, TIN, and beginning capital, contributions in cash and in property, share of income, distributions, and ending capital for the fiscal year to date); every receipt behind the year's entries (receipts/, with an index.csv tying each file to its entry) and the company's documents (documents/), unless include_receipts is false; and a README with the journal's verified hash. By default (include_tins) the K-1 and 1099 worksheets carry every member's and payee's full TIN from the TIN vault, so the package is saved, never returned: save_to (a new .zip path or an existing folder, outside the books dir) is required, and the output gives only its path; tell the human where it is and never open, attach, or copy it. A locked vault or a missing TIN doesn't stop the package: tin_gaps lists each one (collect them with books.set_tin or books.set_w9 and export again). include_tins: false builds it with last fours only, returned as base64 unless save_to is given. cash_accounts (e.g. [\"1000\"]) is required: the cash flow statement reconciles to them. as_of defaults to today; period reports cover the fiscal year to date.",
         annotations(read_only_hint = true)
     )]
     async fn export_cpa_package(
@@ -6416,13 +6946,31 @@ impl BooksServer {
     ) -> Result<Json<ExportCpaPackageOut>, String> {
         use ledger_import::{XlsxReport, report, report_to_xlsx, statement_pdf};
         let p = params.0;
-        let as_of = match p.as_of {
-            Some(s) => parse_date(&s)?,
+        let as_of = match &p.as_of {
+            Some(s) => parse_date(s)?,
             None => today(),
         };
+        // A package with full TINs is only ever a file outside the books,
+        // never tool output (INVARIANT 1).
+        if p.include_tins && p.save_to.is_none() {
+            return Err(
+                "the CPA package carries every member's and 1099 payee's full TIN (include_tins, the default), so it is saved, never returned: pass save_to, a new .zip path or an existing folder outside the books dir, then tell the human where it is. (include_tins: false builds one with last fours only, returned as base64.)"
+                    .into(),
+            );
+        }
+        let file_name = format!("cpa-package-{as_of}.zip");
         let store = self.lock()?;
+        let dest = p
+            .save_to
+            .as_deref()
+            .map(|to| package_dest(&store, to, &file_name, p.include_tins))
+            .transpose()?;
         let meta = self.report_meta(&store);
         let ledger = store.ledger();
+        // The vault, opened once and never creating a key: locked, each
+        // TIN row says so and the package is built anyway (INVARIANT 3).
+        let vault = p.include_tins.then(|| self.open_vault(&store, false));
+        let mut tin_gaps: Vec<String> = Vec::new();
 
         // Fiscal year to date, per wanderbooks.toml's fiscal_year_start.
         let (fy_start, _) = self.settings().company.fiscal_year_containing(as_of);
@@ -6467,10 +7015,143 @@ impl BooksServer {
                 ),
             ),
         ];
+        let mut k1_csv: Option<(String, Vec<u8>)> = None;
         if !self.settings().company.members.is_empty() {
-            let me = ledger_core::members_equity(ledger, fy, as_of, &self.member_capitals(ledger)?)
+            let capitals = self.member_capitals(ledger)?;
+            let me = ledger_core::members_equity(ledger, fy, as_of, &capitals)
                 .map_err(|e| e.to_string())?;
             statements.push(("members-equity", report::members_equity(&me)));
+            // The K-1 worksheet: each member's capital account for the
+            // year (Schedule K-1 Item L) and their TIN (INVARIANT 2).
+            let cash_codes = if p.cash_accounts.is_empty() {
+                &self.settings().roles.cash
+            } else {
+                &p.cash_accounts
+            };
+            let cash: Vec<AccountId> = cash_codes
+                .iter()
+                .filter_map(|c| ledger.chart().find_by_code(c).map(|a| a.id))
+                .collect();
+            k1_csv = Some(
+                match ledger_core::k1::k1_worksheet(ledger, fy, as_of, &capitals, &cash) {
+                    Ok(rows) => {
+                        let mut w = String::from("member,party_id,share,capital_account,");
+                        w.push_str(if p.include_tins {
+                            "tin,tin_type,tin_note,"
+                        } else {
+                            "tin_last4,tin_type,"
+                        });
+                        w.push_str("beginning_capital,contributions_cash,contributions_property,net_income,distributions,other,ending_capital\n");
+                        for (row, m) in rows.iter().zip(&self.settings().company.members) {
+                            let party = ledger_core::k1::member_party(ledger, &m.name);
+                            let facts = party
+                                .and_then(|id| ledger.get_party(id))
+                                .and_then(|p| p.tin.clone());
+                            let mut cells = vec![
+                                csv_escape(&m.name),
+                                party.map(|id| id.to_string()).unwrap_or_default(),
+                                m.share.to_string(),
+                                m.capital_account.clone(),
+                            ];
+                            match &vault {
+                                Some(vault) => {
+                                    let got = match party {
+                                        None => Err(format!(
+                                            "TIN not in the vault: no party named {:?} with the member role (books.add_party with role member, or books.set_party_roles, then books.set_tin)",
+                                            m.name
+                                        )),
+                                        Some(id) => vault_tin(ledger, vault, id),
+                                    };
+                                    match got {
+                                        Ok(t) => {
+                                            cells.push(t.formatted());
+                                            cells.push(tin_type_key(t.kind).into());
+                                            cells.push(String::new());
+                                        }
+                                        Err(why) => {
+                                            tin_gaps.push(format!("member {}: {why}", m.name));
+                                            cells.push(String::new());
+                                            cells.push(
+                                                facts
+                                                    .map(|f| f.tin_type.key().to_string())
+                                                    .unwrap_or_default(),
+                                            );
+                                            cells.push(csv_escape(&why));
+                                        }
+                                    }
+                                }
+                                None => {
+                                    cells.push(
+                                        facts.as_ref().map(|f| f.last4.clone()).unwrap_or_default(),
+                                    );
+                                    cells.push(
+                                        facts
+                                            .map(|f| f.tin_type.key().to_string())
+                                            .unwrap_or_default(),
+                                    );
+                                }
+                            }
+                            for v in [
+                                row.beginning,
+                                row.contributions_cash,
+                                row.contributions_property,
+                                row.net_income,
+                                row.distributions,
+                                row.other,
+                                row.ending,
+                            ] {
+                                cells.push(money(v));
+                            }
+                            w.push_str(&cells.join(","));
+                            w.push('\n');
+                        }
+                        // The members together: ties to the 1065's Schedule L
+                        // capital and the statement of members' equity. Not
+                        // a K-1 (each member gets their own).
+                        if rows.len() > 1 {
+                            let sum = |f: fn(&ledger_core::k1::K1Row) -> Decimal| {
+                                rows.iter().map(f).sum::<Decimal>()
+                            };
+                            let share: Decimal = self
+                                .settings()
+                                .company
+                                .members
+                                .iter()
+                                .map(|m| m.share)
+                                .sum();
+                            let mut cells = vec![
+                                csv_escape("Total, all members (not a K-1)"),
+                                String::new(),
+                                share.to_string(),
+                                String::new(),
+                                String::new(),
+                                String::new(),
+                            ];
+                            if p.include_tins && vault.is_some() {
+                                cells.push(String::new());
+                            }
+                            for v in [
+                                sum(|r| r.beginning),
+                                sum(|r| r.contributions_cash),
+                                sum(|r| r.contributions_property),
+                                sum(|r| r.net_income),
+                                sum(|r| r.distributions),
+                                sum(|r| r.other),
+                                sum(|r| r.ending),
+                            ] {
+                                cells.push(money(v));
+                            }
+                            w.push_str(&cells.join(","));
+                            w.push('\n');
+                        }
+                        ("k1-members.csv".into(), w.into_bytes())
+                    }
+                    Err(e) => (
+                        "k1-members-NOT-INCLUDED.txt".into(),
+                        format!("{e}\n").into_bytes(),
+                    ),
+                },
+            );
         }
         statements.push((
             "tax-summary",
@@ -6512,23 +7193,55 @@ impl BooksServer {
         ));
         // 1099 worksheet for the calendar year of as_of.
         let year = chrono::Datelike::year(&as_of);
-        match ledger_core::vendor_1099_report_with(
-            ledger,
-            year,
-            None,
-            &payment_accounts(ledger, &self.settings().roles),
-        ) {
+        match vendor_1099_report(ledger, &self.settings(), year, None) {
             Ok(r1099) => {
-                let mut w = String::from("vendor,form,w9_on_file,paid,reportable\n");
+                let mut w = String::from("vendor,form,w9_on_file,paid,reportable");
+                if vault.is_some() {
+                    w.push_str(",party_id,tin_last4,tin,tin_type,tin_note");
+                }
+                w.push('\n');
                 for v in &r1099.vendors {
                     w.push_str(&format!(
-                        "\"{}\",{},{},{},{}\n",
+                        "\"{}\",{},{},{},{}",
                         v.name.replace('"', "\"\""),
                         v.form.map(|f| f.label()).unwrap_or(""),
                         v.tin_on_file,
                         money(v.paid),
                         v.reportable
                     ));
+                    // The payee's full TIN from the vault (INVARIANT 2).
+                    if let Some(vault) = &vault {
+                        let party = ledger.party_of_vendor(v.vendor_id);
+                        let last4 = party.and_then(|id| ledger.get_party(id)).and_then(|p| {
+                            p.w9.as_ref()
+                                .map(|f| f.tin_last4.clone())
+                                .or_else(|| p.tin.as_ref().map(|t| t.last4.clone()))
+                        });
+                        let got = match party {
+                            None => Err("TIN not in the vault: no party for this vendor".into()),
+                            Some(id) => vault_tin(ledger, vault, id),
+                        };
+                        let (tin, kind, note) = match got {
+                            Ok(t) => (
+                                t.formatted(),
+                                tin_type_key(t.kind).to_string(),
+                                String::new(),
+                            ),
+                            Err(why) => {
+                                if v.reportable {
+                                    tin_gaps.push(format!("1099 payee {}: {why}", v.name));
+                                }
+                                (String::new(), String::new(), why)
+                            }
+                        };
+                        w.push_str(&format!(
+                            ",{},{},{tin},{kind},{}",
+                            party.map(|id| id.to_string()).unwrap_or_default(),
+                            last4.unwrap_or_default(),
+                            csv_escape(&note)
+                        ));
+                    }
+                    w.push('\n');
                 }
                 files.push((format!("1099-worksheet-{year}.csv"), w.into_bytes()));
             }
@@ -6601,6 +7314,9 @@ impl BooksServer {
             }
             files.push(("receipts/index.csv".into(), index.into_bytes()));
         }
+        if let Some(k1) = k1_csv {
+            files.push(k1);
+        }
         let seq = store.journal_seq();
         drop(store);
         files.push((
@@ -6608,13 +7324,58 @@ impl BooksServer {
             self.export_iif()?.into_bytes(),
         ));
         let readme = format!(
-            "{name} — books package for the CPA\n\nFiscal year to date: {fy_start} through {as_of_s}. {basis} basis.\nKept in wanderbooks: double-entry books from an append-only, hash-chained journal ({seq} events, verified).\n\nStatements (PDF and XLSX): profit and loss, balance sheet, cash flow, {members}tax summary, trial balance.\nLedgers (XLSX): general ledger by account; general journal entry by entry.\ngeneral-journal.iif: every posted entry, for import into QuickBooks Desktop.\n1099-worksheet-{year}.csv: cash paid per vendor marked for a 1099, against the year's threshold.\n{receipts}\nThe tax summary maps accounts to return categories; it's a worksheet, not a filing. Questions go to the owners, who can ask their bookkeeping agent to trace any number to its entries and receipts.\n",
+            "{name} — books package for the CPA\n\nFiscal year to date: {fy_start} through {as_of_s}. {basis} basis.\nKept in wanderbooks: double-entry books from an append-only, hash-chained journal ({seq} events, verified).\n\nStatements (PDF and XLSX): profit and loss, balance sheet, cash flow, {members}tax summary, trial balance.\nLedgers (XLSX): general ledger by account; general journal entry by entry.\ngeneral-journal.iif: every posted entry, for import into QuickBooks Desktop.\n1099-worksheet-{year}.csv: cash paid per vendor marked for a 1099, against the year's threshold{payee_tins}.\n{k1}{receipts}{tins}\nThe tax summary maps accounts to return categories; it's a worksheet, not a filing. Questions go to the owners, who can ask their bookkeeping agent to trace any number to its entries and receipts.\n",
             name = self.settings().company.name,
             basis = self.settings().company.basis,
             members = if self.settings().company.members.is_empty() {
                 ""
             } else {
                 "members' equity, "
+            },
+            payee_tins = if p.include_tins {
+                ", with each payee's TIN"
+            } else {
+                ""
+            },
+            k1 = if self.settings().company.members.is_empty() {
+                String::new()
+            } else {
+                {
+                    let mut k = format!(
+                        "k1-members.csv: each member's capital account for the year (Schedule K-1 Item L: beginning, contributions in cash and in property, share of income, distributions, ending), with their {}; the last row totals the members (not a K-1) to tie to Schedule L and the statement of members' equity.\n",
+                        if p.include_tins {
+                            "taxpayer ID"
+                        } else {
+                            "taxpayer ID's last four"
+                        }
+                    );
+                    let members = &self.settings().company.members;
+                    for (i, m) in members.iter().enumerate() {
+                        if let Some(j) = &m.files_jointly_with
+                            && members[..i].iter().all(|o| o.name != *j)
+                        {
+                            k.push_str(&format!(
+                                "{} and {j} file a joint individual return: each receives their own Schedule K-1; both are reported on the one Form 1040 (Schedule E, Part II).\n",
+                                m.name
+                            ));
+                        }
+                    }
+                    k
+                }
+            },
+            tins = if p.include_tins {
+                let mut t = String::from(
+                    "\nThis package holds full taxpayer identification numbers: keep it out of email and shared folders, and delete copies once filed.\n",
+                );
+                if !tin_gaps.is_empty() {
+                    t.push_str("TINs not included:\n");
+                    for g in &tin_gaps {
+                        t.push_str(&format!("- {g}\n"));
+                    }
+                }
+                t
+            } else {
+                String::new()
             },
             receipts = if p.include_receipts {
                 format!(
@@ -6640,12 +7401,47 @@ impl BooksServer {
             zip.finish().map_err(|e| e.to_string())?;
         }
 
-        Ok(Json(ExportCpaPackageOut {
-            file_name: format!("cpa-package-{as_of}.zip"),
-            content_base64: base64::Engine::encode(
-                &base64::engine::general_purpose::STANDARD,
-                &zip_buf,
+        let shown = |path: &std::path::Path| path.display().to_string();
+        let (content_base64, saved_to, note) = match &dest {
+            Some(path) => {
+                write_private_new(path, &zip_buf)?;
+                let note = if p.include_tins {
+                    format!(
+                        "Saved the CPA package to {} (readable by you only). It holds full TINs: tell the human where it is, never open, attach, or copy it into the books, and have them delete it once the CPA has it.{}",
+                        shown(path),
+                        if tin_gaps.is_empty() {
+                            String::new()
+                        } else {
+                            format!(
+                                " {} TIN(s) are missing (tin_gaps): collect them with books.set_tin or books.set_w9 and export again.",
+                                tin_gaps.len()
+                            )
+                        }
+                    )
+                } else {
+                    format!(
+                        "Saved the CPA package to {} (last fours only).",
+                        shown(path)
+                    )
+                };
+                (None, Some(shown(path)), note)
+            }
+            None => (
+                Some(base64::Engine::encode(
+                    &base64::engine::general_purpose::STANDARD,
+                    &zip_buf,
+                )),
+                None,
+                "The package, without full TINs (include_tins false).".to_string(),
             ),
+        };
+        Ok(Json(ExportCpaPackageOut {
+            file_name,
+            content_base64,
+            saved_to,
+            tins_included: p.include_tins,
+            tin_gaps,
+            note,
         }))
     }
 }
@@ -7222,7 +8018,7 @@ impl ServerHandler for BooksServer {
         // Pick up an edited wanderbooks.toml before the tool runs.
         self.live().refresh();
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
-        Self::tool_router().call(tcc).await
+        redact_refusal(Self::tool_router().call(tcc).await)
     }
 
     fn get_info(&self) -> ServerConfig {
@@ -7348,12 +8144,14 @@ mod tests {
                     share: Decimal::new(5, 1),
                     capital_account: "3000".into(),
                     distribution_account: Some("3100".into()),
+                    files_jointly_with: None,
                 },
                 Member {
                     name: "Bo".into(),
                     share: Decimal::new(5, 1),
                     capital_account: "3001".into(),
                     distribution_account: None,
+                    files_jointly_with: None,
                 },
             ],
             ..Company::default()

@@ -159,6 +159,21 @@ pub fn masked_tin(last4: &str) -> String {
     format!("•••-••-{last4}")
 }
 
+/// A party's taxpayer-ID facts as the viewer shows them: "TIN on file
+/// ••••1234 (SSN)", never more than the last four; once purged from the
+/// vault, "TIN ••••1234 (SSN), purged from the vault".
+pub fn tin_on_file(t: &ledger_core::TinFacts) -> String {
+    if t.vault_record.is_none() && t.purged.is_some() {
+        format!(
+            "TIN ••••{} ({}), purged from the vault",
+            t.last4,
+            t.tin_type.label()
+        )
+    } else {
+        format!("TIN on file ••••{} ({})", t.last4, t.tin_type.label())
+    }
+}
+
 /// Where a party stands on its W-9.
 ///
 /// ```text
@@ -741,6 +756,11 @@ pub fn show_party(ui: &mut Ui, b: &Books, id: PartyId, shell: &mut Shell<'_>) {
             r.context_menu(|ui| widgets::copy_item(ui, "Copy amount", &value.to_string()));
         });
 
+        // A member's page is their capital account statement too.
+        if let Some(st) = b.capital_statement(id, span) {
+            super::capital::capital_card(ui, b, &st, party.label(), &mut go);
+            ui.add_space(14.0);
+        }
         super::columns(ui, 860.0, &[1.0, 1.0], |col, ui| {
             if col == 0 {
                 what_for_card(ui, b, &flow, &label, &mut go);
@@ -881,6 +901,19 @@ fn facts_card(ui: &mut Ui, party: &Party, go: &mut Option<Route>) {
                     RichText::new(party.id.to_string()),
                     &party.id.to_string(),
                 );
+                ui.end_row();
+                k(ui, "Taxpayer ID");
+                match &party.tin {
+                    Some(t) => {
+                        ui.label(RichText::new(tin_on_file(t)).monospace())
+                            .on_hover_text(
+                                "Only the last four digits are in the books; the full number is kept in the encrypted TIN vault, for the CPA package.",
+                            );
+                    }
+                    None => {
+                        ui.label(RichText::new("not recorded").color(p.faint));
+                    }
+                }
                 ui.end_row();
                 if let Some(v) = party.vendor {
                     k(ui, "Vendor record");
@@ -1141,12 +1174,31 @@ fn entries_card(ui: &mut Ui, b: &Books, info: &PartyInfo, go: &mut Option<Route>
                     let text = if draft { p.muted } else { p.text };
                     let accounts: Vec<String> =
                         e.accounts.iter().map(|a| b.account_name(*a)).collect();
-                    let sub = accounts.join(" → ");
+                    let mut sub = accounts.join(" → ");
                     let kind = if draft {
                         format!("{} · draft", e.origin)
                     } else {
                         e.origin.to_string()
                     };
+                    // Shared with other parties: show their part.
+                    let mut amount = e.amount;
+                    if e.parties.len() > 1
+                        && let Some(mine) = e.parties.iter().find(|x| x.id == info.id)
+                    {
+                        let others: Vec<&str> = e
+                            .parties
+                            .iter()
+                            .filter(|x| x.id != info.id)
+                            .map(|x| x.label.as_str())
+                            .collect();
+                        sub = format!(
+                            "Their share, {} of {}, with {} · {sub}",
+                            super::entry::share_text(mine),
+                            fmt::dollars(e.amount),
+                            others.join(" & ")
+                        );
+                        amount = mine.resolved.map(|v| v.abs()).unwrap_or(e.amount);
+                    }
                     let resp = row(
                         ui,
                         w,
@@ -1155,7 +1207,7 @@ fn entries_card(ui: &mut Ui, b: &Books, info: &PartyInfo, go: &mut Option<Route>
                             (format!("#{}", e.id), 64.0, false, p.muted),
                             (e.description.clone(), 0.0, false, text),
                             (kind, 150.0, false, if draft { p.warning } else { p.muted }),
-                            (fmt::money(e.amount), amt, true, text),
+                            (fmt::money(amount), amt, true, text),
                         ],
                         Some((sub.as_str(), p.faint)),
                         false,

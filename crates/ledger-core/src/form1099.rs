@@ -13,7 +13,9 @@
 //! are reported by the card processor on 1099-K, not by the payer. A bill
 //! (Cr payables) is not a payment until it is paid, and a prepayment
 //! (Dr prepaid, Cr cash) counts in full when made: §6041 reports payments
-//! made in the year.
+//! made in the year. An entry with several parties (a payment shared
+//! between a contractor and a member) counts only the vendor's share of
+//! that payment ([`vendor_1099_report_with_members`]).
 //!
 //! Thresholds are set by law and change; [`default_threshold`] encodes
 //! them and the report takes an override. Confirm with the CPA.
@@ -115,6 +117,10 @@ pub struct Vendor1099Report {
     pub threshold: Decimal,
     /// Every vendor marked for a 1099 or paid in the year, by name.
     pub vendors: Vec<Vendor1099Line>,
+    /// Entries naming several parties whose shares didn't resolve, in
+    /// posting order: each counted in full toward its vendor until its
+    /// shares are fixed ([`vendor_1099_report_with_members`] INVARIANT 4).
+    pub unresolved: Vec<crate::EntryId>,
 }
 
 /// Cash paid per vendor in calendar `year`, from posted entries tagged
@@ -155,31 +161,109 @@ impl PaymentAccounts {
     }
 }
 
-/// [`vendor_1099_report`], counting payments out of `sources`.
-///
-/// ```text
-/// SOURCE: docs/spec/rules.md B-19 (26 U.S.C. §6041(a): payments made in
-///         the year; card payments go on 1099-K).
-/// INVARIANTS:
-///   1. A vendor's amount is credits minus debits to `sources` on its
-///      tagged posted entries dated in `year`.
-/// SCENARIOS:
-///   1. Paid from cash, or by a member through a financing liability:
-///      counts. Charged to a card, or billed and unpaid: doesn't.
-///   2. A prepayment (Dr prepaid, Cr cash) counts in full; a refund to
-///      cash and a reversal subtract.
-/// ```
+/// [`vendor_1099_report`], counting payments out of `sources`, with no
+/// members: [`vendor_1099_report_with_members`] with none (an entry naming
+/// several parties then needs amount or percent shares to resolve, which
+/// a vendor beside anyone always does, since a vendor is not a member).
 pub fn vendor_1099_report_with(
     ledger: &Ledger,
     year: i32,
     threshold: Option<Decimal>,
     sources: &PaymentAccounts,
 ) -> Result<Vendor1099Report, LedgerError> {
+    vendor_1099_report_with_members(ledger, year, threshold, sources, &[])
+}
+
+/// What an entry paid out of `sources`: credits minus debits to them.
+fn payment(ledger: &Ledger, entry: &crate::JournalEntry, sources: &PaymentAccounts) -> Decimal {
+    entry
+        .lines()
+        .iter()
+        .filter(|l| sources.includes(ledger, l.account))
+        .map(|l| match l.side {
+            crate::Side::Credit => l.amount.amount,
+            crate::Side::Debit => -l.amount.amount,
+        })
+        .sum()
+}
+
+/// The vendor's part of `payment` when the entry names several parties:
+/// its resolved share scaled from the share target to the payment (the
+/// SCENARIOS of [`vendor_1099_report_with_members`], INVARIANT 3).
+fn vendor_part(payment: Decimal, share: Decimal, target: Decimal) -> Decimal {
+    if payment == target {
+        share
+    } else if target.is_zero() {
+        Decimal::ZERO
+    } else {
+        (payment * share / target)
+            .round_dp_with_strategy(2, rust_decimal::RoundingStrategy::MidpointAwayFromZero)
+    }
+}
+
+/// [`vendor_1099_report`], counting payments out of `sources`, each
+/// vendor's part of an entry with several parties resolved with `members`
+/// (the company's members, from the settings).
+///
+/// ```text
+/// SOURCE: docs/spec/rules.md B-19 (26 U.S.C. §6041(a): payments made in
+///         the year; card payments go on 1099-K); crate::shares (an entry
+///         with several parties, each with their share; DECISION, owner,
+///         2026-10-15).
+/// DEFINITIONS:
+///   payment(e): credits minus debits to `sources` on entry e.
+///   money: crate::parties::money_accounts(ledger, sources.cash), what the
+///     shares resolve against (the MCP server checks them with the same).
+///   target(e): crate::shares::share_target(e, money): the entry_flow net,
+///     else the total debits.
+/// INVARIANTS:
+///   1. Only posted entries dated in `year` and tagged with a vendor
+///      (Ledger::entry_vendor) count, toward that vendor.
+///   2. An entry naming at most one party (Ledger::entry_parties): the
+///      vendor's amount is payment(e), exactly as before shares.
+///   3. An entry naming several parties (one of them the vendor's party,
+///      crate::shares INVARIANT 5): the vendor's amount is its resolved
+///      share s (crate::shares::resolve with money and `members`) scaled
+///      to the payment: s when payment(e) = target(e) (no rounding: an
+///      expense paid from cash or by a member), else
+///      payment(e) × s / target(e) rounded to the nearest cent, half away
+///      from zero (0 when the payment is 0: charged to a card; 0 when the
+///      target is 0). The other parties' parts are not anyone's 1099.
+///   4. An entry naming several parties whose shares don't resolve (the
+///      members changed in the settings, say): counts payment(e) in full
+///      toward the vendor, the conservative answer, and is listed in
+///      `unresolved` so the human fixes the shares.
+/// SCENARIOS:
+///   1. Paid from cash, or by a member through a financing liability:
+///      counts. Charged to a card, or billed and unpaid: doesn't.
+///   2. A prepayment (Dr prepaid, Cr cash) counts in full; a refund to
+///      cash and a reversal subtract.
+///   3. $1,000.00 from the bank (Dr contract labor / Cr 1000) shared 60/40
+///      by amount between a contractor and a member: the contractor's
+///      1099 counts 600.00.
+///   4. $100.01 from the bank, 50% / 50% contractor first: the
+///      contractor gets 50.01 (the leftover cent goes to the first party,
+///      crate::shares INVARIANT 8); named second, 50.00.
+///   5. $1,000.00 split 60/40, 600.00 of it from the bank and 400.00 on
+///      the card: payment 600.00, target 1,000.00, the contractor counts
+///      600.00 × 600.00 / 1,000.00 = 360.00.
+///   6. Reversing scenario 3: the reversal carries the shares, resolves
+///      to −600.00, and the year nets to 0.00.
+/// ```
+pub fn vendor_1099_report_with_members(
+    ledger: &Ledger,
+    year: i32,
+    threshold: Option<Decimal>,
+    sources: &PaymentAccounts,
+    members: &[crate::PartyMember],
+) -> Result<Vendor1099Report, LedgerError> {
     let threshold = match threshold {
         Some(t) => t,
         None => default_threshold(year)?,
     };
+    let money = crate::parties::money_accounts(ledger, &sources.cash);
     let mut paid: std::collections::HashMap<VendorId, Decimal> = Default::default();
+    let mut unresolved = Vec::new();
     for entry in ledger.posted_entries() {
         if entry.date().year() != year {
             continue;
@@ -187,16 +271,33 @@ pub fn vendor_1099_report_with(
         let Some(vendor) = ledger.entry_vendor(entry.id()) else {
             continue;
         };
-        let cash: Decimal = entry
-            .lines()
-            .iter()
-            .filter(|l| sources.includes(ledger, l.account))
-            .map(|l| match l.side {
-                crate::Side::Credit => l.amount.amount,
-                crate::Side::Debit => -l.amount.amount,
-            })
-            .sum();
-        *paid.entry(vendor).or_default() += cash;
+        let cash = payment(ledger, entry, sources);
+        let shares = ledger.entry_parties(entry.id());
+        let amount = if shares.len() < 2 {
+            cash
+        } else {
+            let party = ledger.party_of_vendor(vendor);
+            match crate::shares::resolve(entry, shares, &money, members) {
+                Ok(parts) => {
+                    match parts.into_iter().find(|(p, _)| Some(*p) == party) {
+                        Some((_, share)) => {
+                            vendor_part(cash, share, crate::shares::share_target(entry, &money))
+                        }
+                        // Tagged by hand with a vendor none of the parties
+                        // is: nothing to scale by, so the whole payment.
+                        None => {
+                            unresolved.push(entry.id());
+                            cash
+                        }
+                    }
+                }
+                Err(_) => {
+                    unresolved.push(entry.id());
+                    cash
+                }
+            }
+        };
+        *paid.entry(vendor).or_default() += amount;
     }
     let mut vendors: Vec<Vendor1099Line> = ledger
         .list_vendors()
@@ -224,5 +325,6 @@ pub fn vendor_1099_report_with(
         year,
         threshold,
         vendors,
+        unresolved,
     })
 }

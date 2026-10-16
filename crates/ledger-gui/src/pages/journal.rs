@@ -473,6 +473,30 @@ pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
             };
             ev(icon::IDENTIFICATION_CARD, text, pid.map(Route::Party))
         }
+        "party.tin_set" => {
+            let pid = p.get("id").and_then(|v| v.as_u64());
+            let name = party_name(b, pid);
+            let text = match p.get("facts").filter(|f| !f.is_null()) {
+                Some(f) => {
+                    let kind = match f.get("tin_type").and_then(|v| v.as_str()) {
+                        Some("ssn") => "SSN",
+                        Some("ein") => "EIN",
+                        Some("itin") => "ITIN",
+                        _ => "TIN",
+                    };
+                    let l4 = f.get("last4").and_then(|v| v.as_str()).unwrap_or("????");
+                    if f.get("purged").is_some_and(|v| !v.is_null()) {
+                        format!("Purged {name}'s {kind} (••••{l4}) from the vault")
+                    } else {
+                        format!(
+                            "Taxpayer ID for {name} recorded: {kind} ending {l4}, kept in the vault"
+                        )
+                    }
+                }
+                None => format!("Taxpayer ID facts for {name} cleared"),
+            };
+            ev(icon::IDENTIFICATION_CARD, text, pid.map(Route::Party))
+        }
         "party.w4_set" => {
             let pid = p.get("id").and_then(|v| v.as_u64());
             let name = party_name(b, pid);
@@ -490,6 +514,59 @@ pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
                 None => format!("W-4 facts for {name} cleared"),
             };
             ev(icon::IDENTIFICATION_BADGE, text, pid.map(Route::Party))
+        }
+        "entry.parties_set" => {
+            let e = entry_id.unwrap_or(0);
+            let named: Vec<(u64, String)> = p
+                .get("parties")
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|x| {
+                    let id = x.get("party_id").and_then(|v| v.as_u64())?;
+                    let share = match x.get("share") {
+                        Some(Value::Object(o)) => o
+                            .get("amount")
+                            .and_then(|v| v.as_str())
+                            .map(|a| {
+                                rust_decimal::Decimal::from_str_exact(a)
+                                    .map(fmt::dollars)
+                                    .unwrap_or_else(|_| a.to_string())
+                            })
+                            .or_else(|| {
+                                o.get("percent")
+                                    .and_then(|v| v.as_str())
+                                    .map(|pc| format!("{pc}%"))
+                            }),
+                        _ => None,
+                    };
+                    let name = party_name(b, Some(id));
+                    Some((
+                        id,
+                        match share {
+                            Some(sh) => format!("{name} ({sh})"),
+                            None => name,
+                        },
+                    ))
+                })
+                .collect();
+            Some(Event {
+                icon: icon::ADDRESS_BOOK,
+                text: if named.is_empty() {
+                    format!("Cleared the parties of #{e}")
+                } else {
+                    format!(
+                        "Tagged #{e} with {}",
+                        named
+                            .iter()
+                            .map(|(_, n)| n.as_str())
+                            .collect::<Vec<_>>()
+                            .join(" and ")
+                    )
+                },
+                route: entry_id.map(Route::Entry),
+                also: named.first().map(|(id, _)| Route::Party(*id)),
+            })
         }
         "entry.party_set" => {
             let pid = p.get("party_id").and_then(|v| v.as_u64());

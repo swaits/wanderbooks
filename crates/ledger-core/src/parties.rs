@@ -16,7 +16,11 @@
 //!      run of nine digits (single spaces or hyphens between them allowed)
 //!      is refused. A W-9's TIN is kept as its last four digits only.
 //!   2. W-9 facts need a 1099 role (contractor or landlord); W-4 facts need
-//!      the employee role.
+//!      the employee role. Taxpayer-ID facts (`TinFacts`: the TIN's type,
+//!      last four, and vault record) are allowed for any role: members
+//!      need theirs for K-1s.
+//!   2a. A party's TIN facts and W-9 facts never disagree: both on file
+//!      means the same last four (DECISION, owner, 2026-10-15).
 //!   3. Names are unique, ignoring case and surrounding space, among parties
 //!      not archived.
 //!   4. Every vendor and customer record links to exactly one party.
@@ -116,6 +120,75 @@ pub struct W9Facts {
     pub vault_record: Option<String>,
 }
 
+/// A taxpayer identification number's type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TinType {
+    /// Social Security number (an individual).
+    Ssn,
+    /// Employer identification number (a business).
+    Ein,
+    /// IRS individual taxpayer identification number.
+    Itin,
+}
+
+impl TinType {
+    /// Its wire name: ssn, ein, or itin.
+    pub fn key(self) -> &'static str {
+        match self {
+            TinType::Ssn => "ssn",
+            TinType::Ein => "ein",
+            TinType::Itin => "itin",
+        }
+    }
+
+    /// How a form names it: SSN, EIN, or ITIN.
+    pub fn label(self) -> &'static str {
+        match self {
+            TinType::Ssn => "SSN",
+            TinType::Ein => "EIN",
+            TinType::Itin => "ITIN",
+        }
+    }
+}
+
+/// What the books know of a party's taxpayer identification number,
+/// without the number: its type, its last four digits, and the hash of
+/// the TIN vault record that holds it in full. Any role may have one
+/// (a member's SSN for their K-1, a contractor's from their W-9).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TinFacts {
+    /// SSN, EIN, or ITIN.
+    pub tin_type: TinType,
+    /// The last four digits (exactly four digits).
+    pub last4: String,
+    /// SHA-256 of the vault record holding the full TIN; `None` once the
+    /// record is purged (or when the vault never held it).
+    #[serde(default)]
+    pub vault_record: Option<String>,
+    /// When and why the vault's copy was purged, if it was.
+    #[serde(default)]
+    pub purged: Option<String>,
+}
+
+impl TinFacts {
+    /// Check the facts' form. Returns why not.
+    pub fn check(&self) -> Result<(), String> {
+        if self.last4.len() != 4 || !self.last4.chars().all(|c| c.is_ascii_digit()) {
+            return Err("a TIN's last four is exactly four digits".into());
+        }
+        if let Some(h) = &self.vault_record
+            && (h.len() != 64 || !h.chars().all(|c| c.is_ascii_hexdigit()))
+        {
+            return Err("vault_record is a SHA-256 in hex".into());
+        }
+        if let Some(t) = &self.purged {
+            check_text("purged", t)?;
+        }
+        Ok(())
+    }
+}
+
 /// What a W-4 said, without the SSN.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct W4Facts {
@@ -157,6 +230,10 @@ pub struct Party {
     /// W-4 facts (employee).
     #[serde(default)]
     pub w4: Option<W4Facts>,
+    /// Taxpayer-ID facts (any role): the TIN's type and last four, and
+    /// its vault record. The full number is only ever in the vault.
+    #[serde(default)]
+    pub tin: Option<TinFacts>,
     /// Its vendor record, if it bills the company.
     #[serde(default)]
     pub vendor: Option<crate::VendorId>,
@@ -190,35 +267,94 @@ pub fn name_key(name: &str) -> String {
     name.trim().to_lowercase()
 }
 
-/// Whether `text` holds a run of nine digits, with at most one space or
-/// hyphen between neighbors (an SSN, EIN, or ITIN however it's written).
-/// Any Unicode numeral counts as a digit (full-width, Arabic-Indic, ...),
-/// so a number can't slip through in another script.
-pub fn has_full_tin(text: &str) -> bool {
-    let chars: Vec<char> = text.chars().collect();
+/// The characters that may sit between a TIN's digits: space, hyphen,
+/// dot, slash, underscore, and the Unicode dashes and no-break space
+/// (`291-12-2846`, `291.12.2846`, `291/12/2846`, `291 - 12 - 2846`).
+fn tin_separator(c: char) -> bool {
+    matches!(
+        c,
+        ' ' | '-'
+            | '.'
+            | '/'
+            | '_'
+            | '\u{a0}'
+            | '\u{2010}'
+            | '\u{2011}'
+            | '\u{2012}'
+            | '\u{2013}'
+            | '\u{2014}'
+            | '\u{2212}'
+    )
+}
+
+/// The most separators that may sit between two of a TIN's digits
+/// (`" - "` is three).
+const MAX_TIN_GAP: usize = 3;
+
+/// Each run in `chars` that holds nine digits or more, as (first, last)
+/// char indices of its digits: digits with at most [`MAX_TIN_GAP`]
+/// separators ([`tin_separator`]) between neighbors.
+fn full_tin_runs(chars: &[char]) -> Vec<(usize, usize)> {
+    let mut runs = Vec::new();
     let mut i = 0;
     while i < chars.len() {
-        if chars[i].is_numeric() {
-            let (mut digits, mut j) = (1, i + 1);
-            while j < chars.len() && digits < 9 {
-                if chars[j].is_numeric() {
-                    digits += 1;
-                    j += 1;
-                } else if matches!(chars[j], ' ' | '-')
-                    && chars.get(j + 1).is_some_and(|c| c.is_numeric())
-                {
-                    j += 1;
-                } else {
-                    break;
-                }
+        if !chars[i].is_numeric() {
+            i += 1;
+            continue;
+        }
+        let (mut digits, mut last, mut j) = (1, i, i + 1);
+        while j < chars.len() {
+            if chars[j].is_numeric() {
+                digits += 1;
+                last = j;
+                j += 1;
+                continue;
             }
-            if digits >= 9 {
-                return true;
+            let gap = chars[j..].iter().take_while(|c| tin_separator(**c)).count();
+            if (1..=MAX_TIN_GAP).contains(&gap)
+                && chars.get(j + gap).is_some_and(|c| c.is_numeric())
+            {
+                j += gap;
+            } else {
+                break;
             }
         }
-        i += 1;
+        if digits >= 9 {
+            runs.push((i, last));
+        }
+        i = last + 1;
     }
-    false
+    runs
+}
+
+/// Whether `text` holds a run of nine digits, with at most three
+/// separators (space, hyphen, dot, slash, underscore, a Unicode dash or
+/// no-break space) between neighbors: an SSN, EIN, or ITIN however it's
+/// written (`291-12-2846`, `291.12.2846`, `291 - 12 - 2846`). Any Unicode
+/// numeral counts as a digit (full-width, Arabic-Indic, ...), so a number
+/// can't slip through in another script.
+pub fn has_full_tin(text: &str) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    !full_tin_runs(&chars).is_empty()
+}
+
+/// `text` with every run [`has_full_tin`] finds masked: each of its
+/// digits becomes `•`, separators kept. For refusals that quote what they
+/// were given, so no error echoes a full TIN (docs/spec/rules.md B-26).
+pub fn redact_full_tins(text: &str) -> std::borrow::Cow<'_, str> {
+    let mut chars: Vec<char> = text.chars().collect();
+    let runs = full_tin_runs(&chars);
+    if runs.is_empty() {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    for (first, last) in runs {
+        for c in &mut chars[first..=last] {
+            if c.is_numeric() {
+                *c = '•';
+            }
+        }
+    }
+    std::borrow::Cow::Owned(chars.into_iter().collect())
 }
 
 /// Check one party text field: not a full TIN, at most 500 characters, no
@@ -312,6 +448,10 @@ pub struct Activity {
     pub paid: rust_decimal::Decimal,
     /// Received from it in the span (net of reversals of receipts).
     pub received: rust_decimal::Decimal,
+    /// Posted entries in the span naming it among several parties whose
+    /// shares don't resolve against the entry and the members given
+    /// ([`crate::shares::resolve`]): counted in neither total.
+    pub unresolved: BTreeSet<crate::EntryId>,
 }
 
 /// The accounts [`entry_flow`] reads money from: the cash accounts (every
@@ -457,37 +597,59 @@ pub fn entry_flow(entry: &crate::JournalEntry, money: &MoneyAccounts) -> EntryFl
 }
 
 /// One party's entries, and the money paid to and received from it in
-/// `start..=end`.
+/// `start..=end`, with no members ([`activity_with`] with none: an entry
+/// naming several parties then needs explicit shares to count).
+pub fn activity(
+    ledger: &crate::Ledger,
+    party: PartyId,
+    span: (NaiveDate, NaiveDate),
+    cash: &[crate::AccountId],
+) -> Activity {
+    activity_with(ledger, party, span, cash, &[])
+}
+
+/// One party's entries, and its share of the money paid to and received
+/// from the entries' parties in `start..=end`.
 ///
 /// ```text
 /// GOAL: one answer to "what did we pay them this year?" for the MCP
-///       server and the viewer alike.
-/// SOURCE: docs/parties-and-attachments.md (Parties); DECISION (owner,
-///         2026-10-15).
+///       server and the viewer alike, right when an entry was with
+///       several parties.
+/// SOURCE: docs/parties-and-attachments.md (Parties, Shares); DECISION
+///         (owner, 2026-10-15).
 /// INVARIANTS:
-///   1. entries: every entry Ledger::entry_party names the party
+///   1. entries: every entry Ledger::entry_parties names the party in
 ///      (hand tags, vendor tags, bills and their payments, invoices and
 ///      their payments, and reversals of any of these carry it).
-///   2. Each posted entry dated in the span counts its entry_flow net:
-///      positive is a payment, negative a receipt. A reversal counts on
-///      its original's side, so it subtracts.
-///   3. A card charge counts as paid (the company paid them, by card); a
+///   2. Each posted entry dated in the span whose entry_flow net is not
+///      zero counts the party's resolved share of it
+///      (crate::shares::resolve with `members`; the whole net for a sole
+///      party): positive is a payment, negative a receipt. A reversal
+///      counts on its original's side, so it subtracts.
+///   3. An entry moving no money (net zero, like property contributed)
+///      counts nothing. An entry whose shares don't resolve counts
+///      nothing and is listed in `unresolved`.
+///   4. Over all the parties an entry names, the shares counted sum to its
+///      net exactly (crate::shares INVARIANT 6).
+///   5. A card charge counts as paid (the company paid them, by card); a
 ///      bill doesn't until it is paid. Not the 1099 amount: that is
 ///      form1099::vendor_1099_report_with.
 /// ```
-pub fn activity(
+pub fn activity_with(
     ledger: &crate::Ledger,
     party: PartyId,
     (start, end): (NaiveDate, NaiveDate),
     cash: &[crate::AccountId],
+    members: &[crate::PartyMember],
 ) -> Activity {
     use rust_decimal::Decimal;
     let entries: BTreeSet<crate::EntryId> = (0..ledger.next_entry_id())
-        .filter(|&id| ledger.entry_party(id) == Some(party))
+        .filter(|&id| ledger.entry_names_party(id, party))
         .collect();
     let money = money_accounts(ledger, cash);
     let net_out = |e: &crate::JournalEntry| entry_flow(e, &money).net;
     let (mut paid, mut received) = (Decimal::ZERO, Decimal::ZERO);
+    let mut unresolved = BTreeSet::new();
     for &id in &entries {
         let Some(e) = ledger.get_entry(id) else {
             continue;
@@ -496,19 +658,34 @@ pub fn activity(
             continue;
         }
         let net = net_out(e);
+        if net.is_zero() {
+            continue;
+        }
+        let share = match crate::shares::resolve(e, ledger.entry_parties(id), &money, members) {
+            Ok(parts) => parts
+                .into_iter()
+                .find(|(p, _)| *p == party)
+                .map(|(_, v)| v)
+                .unwrap_or_default(),
+            Err(_) => {
+                unresolved.insert(id);
+                continue;
+            }
+        };
         let side = match e.reversal_of().and_then(|o| ledger.get_entry(o)) {
             Some(original) => net_out(original),
             None => net,
         };
         if side > Decimal::ZERO {
-            paid += net;
+            paid += share;
         } else {
-            received -= net;
+            received -= share;
         }
     }
     Activity {
         entries,
         paid,
         received,
+        unresolved,
     }
 }

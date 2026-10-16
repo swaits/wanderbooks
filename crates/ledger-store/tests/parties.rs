@@ -752,3 +752,190 @@ fn books_from_before_parties_open_and_get_parties_by_replay() {
     let s = Store::open(&dst).unwrap();
     assert_eq!(view(s.ledger()), before);
 }
+
+// ------------------------------------------------------- party shares
+
+/// Oracle: Store::set_entry_parties doc (`entry.parties_set {entry_id,
+/// parties: [{party_id, share}]}`, a share `{"amount": "30.00"}`,
+/// `{"percent": "60"}`, or `"derived"`; refusals journal nothing) and
+/// Store::verify (a fresh replay equals the live ledger).
+mod shares {
+    use super::*;
+    use ledger_core::{PartyShare, Share};
+
+    fn share(party: PartyId, share: Share) -> PartyShare {
+        PartyShare { party, share }
+    }
+
+    #[test]
+    fn set_entry_parties_journals_one_event_with_each_share() {
+        let dir = test_dir("shares-event");
+        let (mut s, fx) = fixture(&dir);
+        let a = s.add_party("Tobin Harlow", &[Role::Member]).unwrap();
+        let b = s
+            .add_party("Morgan Ellis", &[Role::Member])
+            .unwrap();
+        let ((), pl) = one_event(&mut s, &dir, "entry.parties_set", |s| {
+            s.set_entry_parties(fx.entry, &[PartyShare::whole(a), PartyShare::whole(b)])
+                .unwrap()
+        });
+        assert_eq!(
+            pl,
+            json!({"entry_id": fx.entry, "parties": [
+                {"party_id": a, "share": "derived"},
+                {"party_id": b, "share": "derived"},
+            ]})
+        );
+        let ((), pl) = one_event(&mut s, &dir, "entry.parties_set", |s| {
+            s.set_entry_parties(
+                fx.entry,
+                &[
+                    share(a, Share::Amount(dec("300.00"))),
+                    share(b, Share::Amount(dec("200.00"))),
+                ],
+            )
+            .unwrap()
+        });
+        assert_eq!(
+            pl,
+            json!({"entry_id": fx.entry, "parties": [
+                {"party_id": a, "share": {"amount": "300.00"}},
+                {"party_id": b, "share": {"amount": "200.00"}},
+            ]})
+        );
+        let ((), pl) = one_event(&mut s, &dir, "entry.parties_set", |s| {
+            s.set_entry_parties(
+                fx.entry,
+                &[
+                    share(a, Share::Percent(dec("60"))),
+                    share(b, Share::Percent(dec("40"))),
+                ],
+            )
+            .unwrap()
+        });
+        assert_eq!(
+            pl["parties"][0]["share"],
+            json!({"percent": "60"}),
+            "percent shares journal as strings"
+        );
+        assert_eq!(s.ledger().entry_parties(fx.entry).len(), 2);
+        assert_eq!(s.ledger().entry_party(fx.entry), None);
+    }
+
+    #[test]
+    fn refusals_journal_nothing() {
+        let dir = test_dir("shares-refused");
+        let (mut s, fx) = fixture(&dir);
+        let a = s.add_party("A", &[Role::Member]).unwrap();
+        let b = s.add_party("B", &[Role::Member]).unwrap();
+        let v1 = s.add_vendor("V1").unwrap();
+        let v2 = s.add_vendor("V2").unwrap();
+        let (p1, p2) = (
+            s.ledger().party_of_vendor(v1).unwrap(),
+            s.ledger().party_of_vendor(v2).unwrap(),
+        );
+        let cases: Vec<(&str, EntryId, Vec<PartyShare>)> = vec![
+            ("unknown entry", fx.entry + 99, vec![PartyShare::whole(a)]),
+            ("unknown party", fx.entry, vec![PartyShare::whole(999)]),
+            (
+                "duplicate",
+                fx.entry,
+                vec![PartyShare::whole(a), PartyShare::whole(a)],
+            ),
+            (
+                "mixed",
+                fx.entry,
+                vec![share(a, Share::Percent(dec("50"))), PartyShare::whole(b)],
+            ),
+            (
+                "percent sum",
+                fx.entry,
+                vec![
+                    share(a, Share::Percent(dec("50"))),
+                    share(b, Share::Percent(dec("40"))),
+                ],
+            ),
+            (
+                "sub-cent",
+                fx.entry,
+                vec![
+                    share(a, Share::Amount(dec("250.001"))),
+                    share(b, Share::Amount(dec("249.999"))),
+                ],
+            ),
+            (
+                "two vendors",
+                fx.entry,
+                vec![
+                    share(p1, Share::Amount(dec("250.00"))),
+                    share(p2, Share::Amount(dec("250.00"))),
+                ],
+            ),
+        ];
+        for (what, e, shares) in cases {
+            refused_nothing_journaled(&mut s, &dir, what, |s| s.set_entry_parties(e, &shares));
+        }
+    }
+
+    #[test]
+    fn replay_gives_equal_state() {
+        let dir = test_dir("shares-replay");
+        let (mut s, fx) = fixture(&dir);
+        let a = s.add_party("Tobin Harlow", &[Role::Member]).unwrap();
+        let b = s
+            .add_party("Morgan Ellis", &[Role::Member])
+            .unwrap();
+        let v = s.add_vendor("Contractor").unwrap();
+        let pv = s.ledger().party_of_vendor(v).unwrap();
+        s.set_entry_parties(
+            fx.entry,
+            &[
+                share(a, Share::Amount(dec("300.00"))),
+                share(b, Share::Amount(dec("200.00"))),
+            ],
+        )
+        .unwrap();
+        // A second entry shared with a vendor party, then reversed.
+        let other = s.create_entry(date(2026, 2, 1), "Split work").unwrap();
+        let exp = s
+            .add_account("6000", "Work", AccountType::Expense, None, false)
+            .unwrap();
+        s.add_line(other, exp, Side::Debit, usd("90.00")).unwrap();
+        s.add_line(other, fx.cash, Side::Credit, usd("90.00"))
+            .unwrap();
+        s.post_entry(other).unwrap();
+        s.set_entry_parties(
+            other,
+            &[
+                share(pv, Share::Percent(dec("66.67"))),
+                share(a, Share::Percent(dec("33.33"))),
+            ],
+        )
+        .unwrap();
+        assert_eq!(s.ledger().entry_vendor(other), Some(v));
+        let r = s.reverse_entry(other, date(2026, 2, 2), "undo").unwrap();
+        assert_eq!(s.ledger().entry_parties(r), s.ledger().entry_parties(other));
+        // An old-style single tag after a multi-party one.
+        let third = s.create_entry(date(2026, 3, 1), "Draft").unwrap();
+        s.set_entry_parties(third, &[PartyShare::whole(a), PartyShare::whole(b)])
+            .unwrap();
+        s.set_entry_party(third, Some(b)).unwrap();
+        s.verify().unwrap();
+        let live = s.ledger().clone();
+        drop(s);
+        for db in [true, false] {
+            if !db {
+                delete_db(&dir);
+            }
+            let s = Store::open(&dir).unwrap();
+            assert!(
+                *s.ledger() == live,
+                "replay (db {db}): {:?}",
+                s.ledger().differs_from(&live)
+            );
+            assert_eq!(s.ledger().entry_parties(r).len(), 2);
+            assert_eq!(s.ledger().entry_party(third), Some(b));
+            s.verify().unwrap();
+        }
+    }
+}

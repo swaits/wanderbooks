@@ -8,7 +8,7 @@ use egui_kittest::Harness;
 use ledger_core::arap::DocumentLine;
 use ledger_core::{
     AccountType, Currency, EntryId, Form1099, Money, PartyField, PartyId, PayrollLine, Role, Side,
-    W4Facts, W9Facts, vendor_1099_report,
+    TinFacts, TinType, W4Facts, W9Facts, vendor_1099_report,
 };
 use ledger_gui::books::Books;
 use ledger_gui::nav::{Route, Section};
@@ -577,6 +577,56 @@ fn w9_text_never_shows_more_than_the_last_four() {
     );
 }
 
+/// pages/journal.rs `party.tin_set`: recorded, purged, and cleared, each
+/// in plain language with the TIN's type and last four, never more of it.
+#[test]
+fn tin_text_never_shows_more_than_the_last_four() {
+    let f = fixture("tintext");
+    let mut s = Store::open(&f.dir.0.join("books-data")).unwrap();
+    let facts = |tin_type, purged: Option<&str>| TinFacts {
+        tin_type,
+        last4: "4915".into(),
+        vault_record: purged.is_none().then(|| "ab".repeat(32)),
+        purged: purged.map(str::to_string),
+    };
+    s.set_party_tin(f.pat, Some(facts(TinType::Ssn, None)))
+        .unwrap();
+    s.set_party_tin(
+        f.pat,
+        Some(facts(
+            TinType::Ssn,
+            Some("purged from the wanderbooks vault on 2026-10-15: retention over"),
+        )),
+    )
+    .unwrap();
+    s.set_party_tin(f.pat, None).unwrap();
+    s.set_party_tin(f.pat, Some(facts(TinType::Itin, None)))
+        .unwrap();
+    drop(s);
+    let b = load(&f.dir.0);
+    let events: Vec<_> = b
+        .journal
+        .iter()
+        .filter(|l| l.line_type == "party.tin_set")
+        .filter_map(|l| describe(&b, l))
+        .collect();
+    let texts: Vec<&str> = events.iter().map(|e| e.text.as_str()).collect();
+    assert_eq!(
+        texts,
+        vec![
+            "Taxpayer ID for Pat Lee recorded: SSN ending 4915, kept in the vault",
+            "Purged Pat Lee's SSN (••••4915) from the vault",
+            "Taxpayer ID facts for Pat Lee cleared",
+            "Taxpayer ID for Pat Lee recorded: ITIN ending 4915, kept in the vault",
+        ]
+    );
+    assert!(events.iter().all(|e| e.route == Some(Route::Party(f.pat))));
+    // No more than four digits in any of them.
+    for t in &texts {
+        assert!(t.chars().filter(|c| c.is_ascii_digit()).count() <= 4, "{t}");
+    }
+}
+
 #[test]
 fn attention_asks_for_a_w9_until_its_facts_are_recorded() {
     let f = fixture("attention");
@@ -913,4 +963,511 @@ fn entries_without_a_counterparty_need_attention_unless_off() {
     // Off: never mentioned.
     let (dir, _s, ..) = counterparty_books("np-off", Some("off"));
     assert!(item(&load_with_toml(&dir.0)).is_none());
+}
+
+// ------------------------------------------------------- party shares and the capital statement
+//
+// Oracles: EntryParty (resolved shares), PartyFlow (each party's share),
+// CapitalStatement (INVARIANTS 1–6), ledger_core::k1, docs/parties-and-attachments.md
+// "Shares" and "A member's capital statement". Values worked by hand.
+
+struct MemberBooks {
+    dir: TempDir,
+    tobin: PartyId,
+    mo: PartyId,
+    reimburse: EntryId,
+    property: EntryId,
+    distribution: EntryId,
+}
+
+/// Two 50/50 members. 2025: a joint cash contribution of $1,000.00 each.
+/// 2026: equipment contributed ($600.00 each, Feb), an expense paid from
+/// joint funds ($300.00 on 2100, Mar), revenue $1,000.00 (Apr), $100.00
+/// of 2100 reimbursed to both (May), $200.00 distributed to each (Jun),
+/// and Jan–Jun closed to the members ($700.00 net: $350.00 each).
+fn member_books(tag: &str) -> MemberBooks {
+    let dir = TempDir::new(tag);
+    let mut s = Store::create(&dir.0.join("books-data"), Currency::USD).unwrap();
+    let acct = |s: &mut Store, c: &str, n: &str, t| s.add_account(c, n, t, None, false).unwrap();
+    let bank = acct(&mut s, "1000", "Bluevine", AccountType::Asset);
+    let equip = acct(&mut s, "1500", "Equipment", AccountType::Asset);
+    let due = acct(
+        &mut s,
+        "2100",
+        "Due to Shareholders",
+        AccountType::Liability,
+    );
+    let cap_s = acct(
+        &mut s,
+        "3000",
+        "Owner Capital — Tobin Harlow",
+        AccountType::Equity,
+    );
+    let cap_k = acct(
+        &mut s,
+        "3001",
+        "Owner Capital — Morgan Ellis",
+        AccountType::Equity,
+    );
+    let rev = acct(&mut s, "4000", "App Revenue", AccountType::Revenue);
+    let exp = acct(&mut s, "6050", "Domain & Hosting", AccountType::Expense);
+    let tobin = s.add_party("Tobin Harlow", &[Role::Member]).unwrap();
+    let mo = s
+        .add_party("Morgan Ellis", &[Role::Member])
+        .unwrap();
+    let both = [
+        ledger_core::PartyShare::whole(tobin),
+        ledger_core::PartyShare::whole(mo),
+    ];
+    let post = |s: &mut Store, date, what: &str, lines: &[(u64, Side, i64)]| {
+        let e = s.create_entry(date, what).unwrap();
+        for &(a, side, c) in lines {
+            s.add_line(e, a, side, usd(c)).unwrap();
+        }
+        s.post_entry(e).unwrap();
+        e
+    };
+    let open = post(
+        &mut s,
+        d(2025, 6, 1),
+        "Opening contribution",
+        &[
+            (bank, Side::Debit, 200_000),
+            (cap_s, Side::Credit, 100_000),
+            (cap_k, Side::Credit, 100_000),
+        ],
+    );
+    s.set_entry_parties(open, &both).unwrap();
+    let property = post(
+        &mut s,
+        d(2026, 2, 1),
+        "Laptop contributed",
+        &[
+            (equip, Side::Debit, 120_000),
+            (cap_s, Side::Credit, 60_000),
+            (cap_k, Side::Credit, 60_000),
+        ],
+    );
+    s.set_entry_parties(property, &both).unwrap();
+    post(
+        &mut s,
+        d(2026, 3, 1),
+        "Hosting from joint funds",
+        &[(exp, Side::Debit, 30_000), (due, Side::Credit, 30_000)],
+    );
+    post(
+        &mut s,
+        d(2026, 4, 1),
+        "Sales",
+        &[(bank, Side::Debit, 100_000), (rev, Side::Credit, 100_000)],
+    );
+    let reimburse = post(
+        &mut s,
+        d(2026, 5, 1),
+        "Reimburse the household",
+        &[(due, Side::Debit, 10_000), (bank, Side::Credit, 10_000)],
+    );
+    s.set_entry_parties(reimburse, &both).unwrap();
+    let distribution = post(
+        &mut s,
+        d(2026, 6, 1),
+        "Distribution",
+        &[
+            (cap_s, Side::Debit, 20_000),
+            (cap_k, Side::Debit, 20_000),
+            (bank, Side::Credit, 40_000),
+        ],
+    );
+    s.set_entry_parties(distribution, &both).unwrap();
+    let period = s
+        .create_period("H1 2026", d(2026, 1, 1), d(2026, 6, 30))
+        .unwrap();
+    let half = Decimal::new(5, 1);
+    s.close_period_to(
+        period,
+        &ledger_core::periods::CloseTo::Members(vec![
+            ledger_core::MemberClose {
+                capital: cap_s,
+                share: half,
+                distributions: None,
+            },
+            ledger_core::MemberClose {
+                capital: cap_k,
+                share: half,
+                distributions: None,
+            },
+        ]),
+    )
+    .unwrap();
+    write_member_toml(&dir.0, "cash_accounts = [\"1000\"]\n");
+    MemberBooks {
+        dir,
+        tobin,
+        mo,
+        reimburse,
+        property,
+        distribution,
+    }
+}
+
+/// The fixture's wanderbooks.toml, with `books` as its `[books]` table.
+fn write_member_toml(dir: &Path, books: &str) {
+    std::fs::write(
+        dir.join("wanderbooks.toml"),
+        format!(
+            "[books]\n{books}[company]\nname = \"Fernhill Labs LLC\"\n\
+             [[company.members]]\nname = \"Tobin Harlow\"\nshare = \"50%\"\ncapital_account = \"3000\"\n\
+             [[company.members]]\nname = \"Morgan Ellis\"\nshare = \"50%\"\ncapital_account = \"3001\"\n"
+        ),
+    )
+    .unwrap();
+}
+
+/// Post one entry to the fixture's books after the fact.
+fn post_more(m: &MemberBooks, date: NaiveDate, lines: &[(&str, Side, i64)]) -> EntryId {
+    let mut s = Store::open(&m.dir.0.join("books-data")).unwrap();
+    let e = s.create_entry(date, "Later").unwrap();
+    for &(code, side, c) in lines {
+        let a = s.ledger().chart().find_by_code(code).unwrap().id;
+        s.add_line(e, a, side, usd(c)).unwrap();
+    }
+    s.post_entry(e).unwrap();
+    e
+}
+
+#[test]
+fn entries_list_every_party_with_its_resolved_share() {
+    let m = member_books("shares-entries");
+    let b = load_with_toml(&m.dir.0);
+    let e = b.entry(m.reimburse).unwrap();
+    assert_eq!(e.party_id, None, "two parties: no sole party");
+    assert_eq!(
+        e.parties
+            .iter()
+            .map(|p| (p.id, p.resolved))
+            .collect::<Vec<_>>(),
+        vec![(m.tobin, Some(cents(5_000))), (m.mo, Some(cents(5_000)))]
+    );
+    assert_eq!(
+        e.party.as_deref(),
+        Some("Tobin Harlow & Morgan Ellis")
+    );
+    // Property: net zero, shares of the total.
+    let e = b.entry(m.property).unwrap();
+    assert_eq!(e.parties[1].resolved, Some(cents(60_000)));
+    // The journal says who, for parties_set.
+    let line = b
+        .journal
+        .iter()
+        .find(|l| l.line_type == "entry.parties_set")
+        .unwrap();
+    let ev = describe(&b, line).unwrap();
+    assert!(
+        ev.text.contains("Tobin Harlow and Morgan Ellis"),
+        "{}",
+        ev.text
+    );
+}
+
+#[test]
+fn a_members_money_is_their_share() {
+    let m = member_books("shares-flow");
+    let b = load_with_toml(&m.dir.0);
+    let span = (d(2026, 1, 1), today());
+    for who in [m.tobin, m.mo] {
+        let f = b.party_flow(who, span, true);
+        // Half the reimbursement plus their own distribution; the
+        // property moved no money.
+        assert_eq!(f.paid, cents(25_000));
+        assert_eq!(f.received, Decimal::ZERO);
+        let what: Decimal = f.what_for.iter().map(|(_, v)| *v).sum();
+        assert_eq!(what, f.net(), "what for sums to the net");
+        assert!(b.party(who).unwrap().entries.contains(&m.distribution));
+    }
+    assert_eq!(b.party(m.mo).unwrap().paid_ytd, cents(25_000));
+}
+
+#[test]
+fn a_members_page_is_their_capital_statement() {
+    let m = member_books("capital");
+    let b = load_with_toml(&m.dir.0);
+    let st = b
+        .capital_statement(m.tobin, (d(2026, 1, 1), today()))
+        .expect("a member");
+    assert_eq!(st.share, Decimal::new(5, 1));
+    assert_eq!(st.opening, cents(100_000));
+    assert_eq!(st.contributions_cash, Decimal::ZERO);
+    assert_eq!(st.contributions_property, cents(60_000));
+    assert_eq!(st.income_share, cents(35_000));
+    assert_eq!(st.distributions_taken, cents(20_000));
+    assert_eq!(st.closing, cents(175_000));
+    assert_eq!(
+        st.closing,
+        st.opening + st.contributions_cash + st.contributions_property + st.income_share
+            - st.distributions_taken
+    );
+    assert_eq!(st.other, Decimal::ZERO);
+    // No [books] financing_accounts: 2100's name says "due to"; $300.00
+    // advanced less $100.00 reimbursed, half each.
+    assert_eq!(st.due_to_members, cents(20_000));
+    assert_eq!(st.owed_to_member, cents(10_000));
+    // The lines behind it (k1_detail INVARIANT 5), in journal order.
+    use ledger_gui::books::CapitalKind as K;
+    let kinds: Vec<(EntryId, K, Decimal)> = st
+        .lines
+        .iter()
+        .map(|l| (l.entry, l.kind, l.amount))
+        .collect();
+    assert_eq!(kinds.len(), 3);
+    assert_eq!(
+        kinds[0],
+        (m.property, K::PropertyContribution, cents(60_000))
+    );
+    assert_eq!(kinds[1], (m.distribution, K::Distribution, cents(-20_000)));
+    assert_eq!((kinds[2].1, kinds[2].2), (K::IncomeShare, cents(35_000)));
+    // Over all time: the 2025 contribution is cash (1000 is
+    // [books] cash_accounts), the laptop property.
+    let all = b
+        .capital_statement(m.mo, (d(2025, 1, 1), today()))
+        .unwrap();
+    assert_eq!(all.opening, Decimal::ZERO);
+    assert_eq!(all.contributions_cash, cents(100_000));
+    assert_eq!(all.contributions_property, cents(60_000));
+    assert_eq!(all.income_share, cents(35_000));
+    assert_eq!(all.distributions_taken, cents(20_000));
+    assert_eq!(all.closing, cents(175_000));
+    // Not a member: no statement.
+    let mut s = Store::open(&m.dir.0.join("books-data")).unwrap();
+    let other = s.add_party("Riley Chen", &[Role::Contractor]).unwrap();
+    drop(s);
+    let b = load_with_toml(&m.dir.0);
+    assert!(
+        b.capital_statement(other, (d(2026, 1, 1), today()))
+            .is_none()
+    );
+    // The page shows it.
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1440.0, 1400.0))
+        .build_eframe(|cc| App::with_books(&cc.egui_ctx, b, false, Route::Party(m.tobin)));
+    h.run_steps(3);
+    use egui_kittest::kittest::Queryable;
+    h.get_by_label("Capital account");
+    h.get_by_label("Contributions of property (at fair market value)");
+}
+
+/// The viewer's statement is the K-1 worksheet's row, field for field,
+/// over any span (CapitalStatement INVARIANT 1): ledger_core::k1 called
+/// here with the members and cash accounts as the CPA package builds them.
+#[test]
+fn the_capital_statement_is_the_k1_worksheet_row() {
+    let m = member_books("capital-k1");
+    // Income not yet closed, so beginnings carry undistributed earnings.
+    post_more(
+        &m,
+        d(2026, 7, 1),
+        &[
+            ("1000", Side::Debit, 10_000),
+            ("4000", Side::Credit, 10_000),
+        ],
+    );
+    for (books, fallback) in [("cash_accounts = [\"1000\"]\n", false), ("", true)] {
+        write_member_toml(&m.dir.0, books);
+        let b = load_with_toml(&m.dir.0);
+        let chart = b.ledger.chart();
+        let id = |c: &str| chart.find_by_code(c).unwrap().id;
+        let members =
+            [("Tobin Harlow", "3000"), ("Morgan Ellis", "3001")].map(|(name, code)| {
+                ledger_core::MemberCapital {
+                    name: name.into(),
+                    capital_account: id(code),
+                    distribution_account: None,
+                    share: Decimal::new(5, 1),
+                }
+            });
+        let cash: Vec<_> = if fallback {
+            let mut all: Vec<_> = ledger_core::parties::money_accounts(&b.ledger, &[])
+                .cash
+                .into_iter()
+                .collect();
+            all.sort_unstable();
+            all
+        } else {
+            vec![id("1000")]
+        };
+        for span in [
+            (d(2025, 1, 1), today()),
+            (d(2026, 1, 1), today()),
+            (d(2026, 2, 1), d(2026, 5, 31)),
+            (d(2026, 7, 1), today()),
+            (d(2026, 8, 1), today()),
+        ] {
+            let rows =
+                ledger_core::k1::k1_worksheet(&b.ledger, span.0, span.1, &members, &cash).unwrap();
+            for (who, row) in [m.tobin, m.mo].into_iter().zip(&rows) {
+                let st = b.capital_statement(who, span).unwrap();
+                assert_eq!(
+                    (
+                        st.share,
+                        st.opening,
+                        st.contributions_cash,
+                        st.contributions_property,
+                        st.income_share,
+                        st.distributions_taken,
+                        st.other,
+                        st.closing,
+                    ),
+                    (
+                        row.share,
+                        row.beginning,
+                        row.contributions_cash,
+                        row.contributions_property,
+                        row.net_income,
+                        row.distributions,
+                        row.other,
+                        row.ending,
+                    ),
+                    "{} over {span:?} (fallback {fallback})",
+                    row.name
+                );
+                assert_eq!(
+                    st.closing,
+                    st.opening
+                        + st.contributions_cash
+                        + st.contributions_property
+                        + st.income_share
+                        - st.distributions_taken
+                        + st.other
+                );
+            }
+        }
+    }
+}
+
+/// Income not yet closed is the member's (members_equity INVARIANT 3):
+/// $100.00 of July revenue, unclosed, is $50.00 each of income in the
+/// span and of capital after it. Tobin, 2026: 1,000 + 600 + (350 + 50)
+/// − 200 = 1,800. July on: 1,750 + 50 = 1,800. August on: opening 1,800
+/// (the July income carried), nothing moved.
+#[test]
+fn the_capital_statement_counts_income_not_yet_closed() {
+    let m = member_books("capital-unclosed");
+    post_more(
+        &m,
+        d(2026, 7, 1),
+        &[
+            ("1000", Side::Debit, 10_000),
+            ("4000", Side::Credit, 10_000),
+        ],
+    );
+    let b = load_with_toml(&m.dir.0);
+    let st = b
+        .capital_statement(m.tobin, (d(2026, 1, 1), today()))
+        .unwrap();
+    assert_eq!(st.opening, cents(100_000));
+    assert_eq!(st.income_share, cents(40_000));
+    assert_eq!(st.closing, cents(180_000));
+    // The close is still the only income line: July's has no entry on
+    // capital (INVARIANT 3).
+    let closes: Decimal = st
+        .lines
+        .iter()
+        .filter(|l| l.kind == ledger_gui::books::CapitalKind::IncomeShare)
+        .map(|l| l.amount)
+        .sum();
+    assert_eq!(closes, cents(35_000));
+    let july = b
+        .capital_statement(m.tobin, (d(2026, 7, 1), today()))
+        .unwrap();
+    assert_eq!(
+        (july.opening, july.income_share, july.closing),
+        (cents(175_000), cents(5_000), cents(180_000))
+    );
+    assert!(july.lines.is_empty());
+    let aug = b
+        .capital_statement(m.mo, (d(2026, 8, 1), today()))
+        .unwrap();
+    assert_eq!(
+        (aug.opening, aug.income_share, aug.closing),
+        (cents(180_000), Decimal::ZERO, cents(180_000))
+    );
+}
+
+/// "Owed to them" reads [books] financing_accounts first (INVARIANT 5):
+/// with 2200 "Member advances" ($40.00 advanced in July) as the financing
+/// account, 2100's "due to" name no longer counts: $40.00, $20.00 each.
+/// Without the setting, the name rule: 2100's $200.00 (2200's name says
+/// neither "due to" nor "owed to").
+#[test]
+fn owed_to_members_reads_the_financing_accounts_first() {
+    let m = member_books("capital-financing");
+    let mut s = Store::open(&m.dir.0.join("books-data")).unwrap();
+    s.add_account(
+        "2200",
+        "Member advances",
+        AccountType::Liability,
+        None,
+        false,
+    )
+    .unwrap();
+    drop(s);
+    post_more(
+        &m,
+        d(2026, 7, 2),
+        &[("6050", Side::Debit, 4_000), ("2200", Side::Credit, 4_000)],
+    );
+    let span = (d(2026, 1, 1), today());
+    write_member_toml(
+        &m.dir.0,
+        "cash_accounts = [\"1000\"]\nfinancing_accounts = [\"2200\"]\n",
+    );
+    let b = load_with_toml(&m.dir.0);
+    let st = b.capital_statement(m.mo, span).unwrap();
+    assert_eq!(
+        (st.due_to_members, st.owed_to_member),
+        (cents(4_000), cents(2_000))
+    );
+    write_member_toml(&m.dir.0, "cash_accounts = [\"1000\"]\n");
+    let b = load_with_toml(&m.dir.0);
+    let st = b.capital_statement(m.mo, span).unwrap();
+    assert_eq!(
+        (st.due_to_members, st.owed_to_member),
+        (cents(20_000), cents(10_000))
+    );
+}
+
+/// Without [books] cash_accounts the capital statement reads money as
+/// core does (every asset account but receivables: Books::
+/// k1_cash_accounts), so the laptop on 1500 reads as cash: Tobin's 2026
+/// contributions are $600.00 cash, none property. The Cash page keeps its
+/// name-based guess ("Bluevine" names no cash word: no cash accounts).
+#[test]
+fn without_cash_accounts_the_capital_statement_reads_money_as_core_does() {
+    let m = member_books("capital-no-cash");
+    write_member_toml(&m.dir.0, "");
+    let b = load_with_toml(&m.dir.0);
+    let id = |c: &str| b.ledger.chart().find_by_code(c).unwrap().id;
+    assert_eq!(b.k1_cash_accounts, vec![id("1000"), id("1500")]);
+    assert!(
+        b.cash_accounts.is_empty(),
+        "the Cash page's guess is unchanged"
+    );
+    let st = b
+        .capital_statement(m.tobin, (d(2026, 1, 1), today()))
+        .unwrap();
+    assert_eq!(
+        (st.contributions_cash, st.contributions_property),
+        (cents(60_000), Decimal::ZERO)
+    );
+    assert_eq!(
+        st.lines[0].kind,
+        ledger_gui::books::CapitalKind::CashContribution
+    );
+    assert_eq!(st.closing, cents(175_000));
+    let all = b
+        .capital_statement(m.mo, (d(2025, 1, 1), today()))
+        .unwrap();
+    assert_eq!(
+        (all.contributions_cash, all.contributions_property),
+        (cents(160_000), Decimal::ZERO)
+    );
 }

@@ -8,7 +8,11 @@
 //! (DECISION, owner, 2026-10-15): a full TIN is never in the journal, the
 //! SQLite projection, the viewer, or any tool output, except the 1099
 //! worksheet for the CPA when asked (`books.vendor_1099` with
-//! `include_tins`). The harness is `tests/spec_parties.rs`'s, with a
+//! `include_tins`); and the vault holds everyone's, members included, for
+//! the CPA package, which carries them only in a zip saved outside the
+//! books dir (DECISION, owner, 2026-10-15: "In the vault, that's the
+//! WHOLE reason we built it. And it needs to be in the damn CPA
+//! package."). The harness is `tests/spec_parties.rs`'s, with a
 //! transcript of every response and the server's stderr kept, and the vault
 //! key in a temp file outside the books dir (never `~/.config`).
 
@@ -355,8 +359,13 @@ const CHART: &[(&str, &str, &str)] = &[
 /// Books with the chart (no receipts needed), a contractor "Acme Design"
 /// with a vendor record marked NEC, and a landlord "Rent Co".
 fn books(name: &str) -> Mcp {
+    books_with(name, "")
+}
+
+/// `books`, with `extra` TOML after `[books]` (members, say).
+fn books_with(name: &str, extra: &str) -> Mcp {
     let dir = test_dir(name);
-    let toml = books_toml(&dir, "1000000.00", "");
+    let toml = books_toml(&dir, "1000000.00", extra);
     let mut m = Mcp::start(&dir, &toml);
     m.accounts(CHART);
     m.add_party("Acme Design", &["contractor"]);
@@ -374,6 +383,54 @@ const SSN: &str = "291-12-2846";
 const SSN_DIGITS: &str = "291122846";
 const EIN: &str = "12-3279105";
 const EIN_DIGITS: &str = "123279105";
+/// A member's SSN, unlike the others.
+const MEMBER_SSN: &str = "241-40-4915";
+const MEMBER_SSN_DIGITS: &str = "241404915";
+
+/// Every file in a zip, by name.
+fn unzip(path: &Path) -> HashMap<String, Vec<u8>> {
+    let mut z = zip::ZipArchive::new(std::fs::File::open(path).unwrap()).unwrap();
+    let mut out = HashMap::new();
+    for i in 0..z.len() {
+        let mut f = z.by_index(i).unwrap();
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut f, &mut bytes).unwrap();
+        out.insert(f.name().unwrap().to_string(), bytes);
+    }
+    out
+}
+
+/// A CSV's rows (header first) as maps from column name to cell, cells
+/// split on commas outside double quotes.
+fn csv_rows(bytes: &[u8]) -> Vec<HashMap<String, String>> {
+    let split = |l: &str| {
+        let (mut cells, mut cur, mut quoted) = (Vec::new(), String::new(), false);
+        let mut chars = l.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '"' if quoted && chars.peek() == Some(&'"') => {
+                    cur.push('"');
+                    chars.next();
+                }
+                '"' => quoted = !quoted,
+                ',' if !quoted => cells.push(std::mem::take(&mut cur)),
+                c => cur.push(c),
+            }
+        }
+        cells.push(cur);
+        cells
+    };
+    let text = String::from_utf8(bytes.to_vec()).unwrap();
+    let mut lines = text.lines();
+    let head = split(lines.next().expect("a header"));
+    lines
+        .map(|l| {
+            let cells = split(l);
+            assert_eq!(cells.len(), head.len(), "{l}");
+            head.iter().cloned().zip(cells).collect()
+        })
+        .collect()
+}
 
 impl Mcp {
     fn books_dir(&self) -> PathBuf {
@@ -921,7 +978,10 @@ fn purge_deletes_the_vault_records_and_journals_why() {
 /// encrypted.
 #[test]
 fn no_full_tin_leaves_the_vault_except_the_worksheet_when_asked() {
-    let mut m = books("no-leak");
+    let mut m = books_with(
+        "no-leak",
+        "[[company.members]]\nname = \"Mo\"\nshare = \"100%\"\ncapital_account = \"3000\"\n",
+    );
     let src = m.w9_file("acme-w9.pdf", SSN);
     m.w9(
         "Acme Design",
@@ -958,6 +1018,21 @@ fn no_full_tin_leaves_the_vault_except_the_worksheet_when_asked() {
         json!({"party": "Acme Design", "notes": format!("ssn {SSN}")}),
     );
     m.refuse("books.add_party", json!({"name": format!("Acme {EIN}")}));
+    // A member's SSN, by books.set_tin, and refusals of it.
+    m.add_party("Mo", &["member"]);
+    m.ok(
+        "books.set_tin",
+        json!({"party": "Mo", "tin": MEMBER_SSN, "tin_type": "ssn"}),
+    );
+    for args in [
+        json!({"party": "Mo", "tin": MEMBER_SSN, "tin_type": "itin"}),
+        json!({"party": "Mo", "tin": MEMBER_SSN_DIGITS.parse::<u64>().unwrap() as f64,
+               "tin_type": "ssn"}),
+        json!({"party": "Nobody", "tin": MEMBER_SSN, "tin_type": "ssn"}),
+        json!({"party": "Rent Co", "tin": MEMBER_SSN, "tin_type": "ssn"}),
+    ] {
+        m.refuse("books.set_tin", args);
+    }
     // Everything else, read and write.
     for (tool, args) in [
         ("books.parties", json!({})),
@@ -988,8 +1063,15 @@ fn no_full_tin_leaves_the_vault_except_the_worksheet_when_asked() {
         ),
         (
             "books.export_cpa_package",
-            json!({"as_of": "2026-12-31", "cash_accounts": ["1000"]}),
+            json!({"as_of": "2026-12-31", "cash_accounts": ["1000"], "include_tins": false}),
         ),
+        (
+            "books.export_cpa_package",
+            json!({"as_of": "2026-12-31", "cash_accounts": ["1000"],
+                   "save_to": m.outside().join("cpa.zip").to_str().unwrap()}),
+        ),
+        ("books.party", json!({"party": "Mo"})),
+        ("books.parties", json!({"role": "member"})),
         (
             "books.purge_tin",
             json!({"party": "Rent Co", "reason": "preview only"}),
@@ -1029,7 +1111,8 @@ fn no_full_tin_leaves_the_vault_except_the_worksheet_when_asked() {
                 tool == "books.vendor_1099" && resp.contains("\"warning\":\"This worksheet");
             !worksheet
                 && (holds_tin(resp.as_bytes(), SSN_DIGITS)
-                    || holds_tin(resp.as_bytes(), EIN_DIGITS))
+                    || holds_tin(resp.as_bytes(), EIN_DIGITS)
+                    || holds_tin(resp.as_bytes(), MEMBER_SSN_DIGITS))
         })
         .collect();
     assert!(leaks.is_empty(), "full TINs in tool output: {leaks:?}");
@@ -1037,6 +1120,23 @@ fn no_full_tin_leaves_the_vault_except_the_worksheet_when_asked() {
     // The server's log.
     let log = std::fs::read(m.outside().join("stderr.log")).unwrap();
     assert!(!holds_tin(&log, SSN_DIGITS) && !holds_tin(&log, EIN_DIGITS));
+    assert!(!holds_tin(&log, MEMBER_SSN_DIGITS));
+    // The package saved outside the books carries them all: the member's
+    // in the K-1 worksheet, the payees' in the 1099 worksheet.
+    let pkg = unzip(&m.outside().join("cpa.zip"));
+    assert!(holds_tin(&pkg["k1-members.csv"], MEMBER_SSN_DIGITS));
+    let w1099 = &pkg["1099-worksheet-2026.csv"];
+    assert!(holds_tin(w1099, SSN_DIGITS) && holds_tin(w1099, EIN_DIGITS));
+    for (name, bytes) in &pkg {
+        if name != "k1-members.csv" && name != "1099-worksheet-2026.csv" {
+            assert!(
+                !holds_tin(bytes, SSN_DIGITS)
+                    && !holds_tin(bytes, EIN_DIGITS)
+                    && !holds_tin(bytes, MEMBER_SSN_DIGITS),
+                "{name} in the package holds a TIN"
+            );
+        }
+    }
     // Every byte in the books dir outside the vault: the journal, the
     // database (and its WAL), the stored files, the settings.
     let books = m.books_dir();
@@ -1047,7 +1147,9 @@ fn no_full_tin_leaves_the_vault_except_the_worksheet_when_asked() {
         }
         let bytes = std::fs::read(&f).unwrap();
         assert!(
-            !holds_tin(&bytes, SSN_DIGITS) && !holds_tin(&bytes, EIN_DIGITS),
+            !holds_tin(&bytes, SSN_DIGITS)
+                && !holds_tin(&bytes, EIN_DIGITS)
+                && !holds_tin(&bytes, MEMBER_SSN_DIGITS),
             "{} holds a full TIN",
             f.display()
         );
@@ -1058,11 +1160,13 @@ fn no_full_tin_leaves_the_vault_except_the_worksheet_when_asked() {
     }
     // The vault holds them encrypted only.
     let vault_files = files_under(&m.vault());
-    assert!(vault_files.len() >= 3, "{vault_files:?}");
+    assert!(vault_files.len() >= 4, "{vault_files:?}");
     for f in vault_files {
         let bytes = std::fs::read(&f).unwrap();
         assert!(
-            !holds_tin(&bytes, SSN_DIGITS) && !holds_tin(&bytes, EIN_DIGITS),
+            !holds_tin(&bytes, SSN_DIGITS)
+                && !holds_tin(&bytes, EIN_DIGITS)
+                && !holds_tin(&bytes, MEMBER_SSN_DIGITS),
             "{} holds a TIN in the clear",
             f.display()
         );
@@ -1093,4 +1197,639 @@ fn books_in_git_must_ignore_the_vault() {
         !m.w9("Acme Design", json!({"tin": SSN, "tin_type": "ssn"}))
             .refused()
     );
+}
+
+// ------------------------------------------------- books.set_tin, any role
+
+/// The TIN facts a party's last `party.tin_set` journaled.
+impl Mcp {
+    fn journaled_tin(&self, party: u64) -> Value {
+        String::from_utf8(self.journal())
+            .unwrap()
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter(|v| v["type"] == "party.tin_set" || v["line_type"] == "party.tin_set")
+            .rfind(|v| v["payload"]["id"] == json!(party))
+            .map(|v| v["payload"]["facts"].clone())
+            .expect("a party.tin_set")
+    }
+}
+
+/// Any role may have its TIN in the vault: a member (for the K-1), an
+/// employee, a customer, a party with no role at all. The books journal
+/// its type, last four, and record hash; the output shows the last four.
+#[test]
+fn set_tin_takes_any_party_members_included() {
+    let mut m = books("set-tin");
+    for (name, roles) in [
+        ("Mo", vec!["member"]),
+        ("Pat", vec!["employee"]),
+        ("Nobody In Particular", vec![]),
+    ] {
+        let id = m.add_party(name, &roles);
+        let p = m.ok(
+            "books.set_tin",
+            json!({"party": name, "tin": MEMBER_SSN, "tin_type": "ssn"}),
+        );
+        assert_eq!(p["tin"]["last4"], "4915", "{p}");
+        assert_eq!(p["tin"]["tin_type"], "ssn");
+        assert_eq!(p["tin"]["in_vault"], true);
+        assert!(!holds_tin(p.to_string().as_bytes(), MEMBER_SSN_DIGITS));
+        assert!(m.vault().join(format!("tin-{id}.bin")).exists());
+        let facts = m.journaled_tin(id);
+        assert_eq!(facts["last4"], "4915");
+        assert_eq!(facts["tin_type"], "ssn");
+        assert_eq!(facts["vault_record"].as_str().unwrap().len(), 64);
+        assert_eq!(m.party(name, 2026)["party"]["tin"]["last4"], "4915");
+    }
+    // A customer (its role comes with its record).
+    m.ok("books.add_customer", json!({"name": "Client"}));
+    let p = m.ok(
+        "books.set_tin",
+        json!({"party": "Client", "tin": EIN, "tin_type": "ein"}),
+    );
+    assert_eq!(p["tin"]["last4"], "9105");
+    assert!(p["roles"].as_array().unwrap().contains(&json!("customer")));
+    // An EIN for a member that is a company; a replacement TIN.
+    let mo = m.party_id("Mo");
+    let first = m.journaled_tin(mo)["vault_record"].clone();
+    m.ok(
+        "books.set_tin",
+        json!({"party": "Mo", "tin": EIN, "tin_type": "ein"}),
+    );
+    let facts = m.journaled_tin(mo);
+    assert_eq!(
+        (facts["last4"].clone(), facts["tin_type"].clone()),
+        (json!("9105"), json!("ein"))
+    );
+    assert_ne!(facts["vault_record"], first);
+    assert!(!holds_tin(&m.journal(), EIN_DIGITS));
+    assert_eq!(m.ok("books.verify", json!({}))["status"], "ok");
+}
+
+#[test]
+fn set_tin_refusals_write_nothing() {
+    let mut m = books("set-tin-refusals");
+    m.add_party("Mo", &["member"]);
+    // A W-9 payee whose W-9 facts name another last four.
+    m.w9(
+        "Acme Design",
+        json!({"tin_last4": "1111", "kept_at": "binder"}),
+    );
+    let acme = m.party_id("Acme Design");
+    for (party, tin, kind) in [
+        ("Mo", json!("57193284"), "ssn"),    // eight digits
+        ("Mo", json!("902-67-2846"), "ssn"), // SSN starting 9
+        ("Mo", json!(SSN), "itin"),          // not an ITIN
+        ("Mo", json!(SSN), "passport"),      // no such type
+        ("Mo", json!(291122846.0), "ssn"),   // a float
+        ("Nobody", json!(SSN), "ssn"),        // no such party
+        ("Acme Design", json!(SSN), "ssn"),   // W-9 says 1111
+    ] {
+        let why = m.refuse(
+            "books.set_tin",
+            json!({"party": party, "tin": tin, "tin_type": kind}),
+        );
+        assert!(!holds_tin(why.as_bytes(), SSN_DIGITS), "{why}");
+    }
+    m.refuse("books.set_tin", json!({"party": "Mo", "tin_type": "ssn"}));
+    assert!(!m.vault().join(format!("tin-{acme}.bin")).exists());
+    assert!(!m.key().exists(), "no key made for a refusal");
+    assert_eq!(m.count("party.tin_set"), 0);
+}
+
+/// A W-9 with a TIN records the party's TIN facts too, and the two never
+/// disagree: set_tin agreeing with the W-9 moves its vault record along; a
+/// W-9 with a new last four replaces the TIN facts.
+#[test]
+fn w9_and_tin_facts_agree() {
+    let mut m = books("w9-tin");
+    let acme = m.party_id("Acme Design");
+    m.w9("Acme Design", json!({"tin": SSN, "tin_type": "ssn"}));
+    let p = m.party("Acme Design", 2026);
+    assert_eq!(p["party"]["tin"]["last4"], "2846");
+    assert_eq!(p["party"]["tin"]["in_vault"], true);
+    let (w9, tin) = (m.journaled_w9(acme), m.journaled_tin(acme));
+    assert_eq!(w9["vault_record"], tin["vault_record"]);
+    // books.set_tin with the same number: both facts follow the new record.
+    m.ok(
+        "books.set_tin",
+        json!({"party": "Acme Design", "tin": SSN, "tin_type": "ssn"}),
+    );
+    let (w9b, tinb) = (m.journaled_w9(acme), m.journaled_tin(acme));
+    assert_ne!(tinb["vault_record"], tin["vault_record"], "a fresh nonce");
+    assert_eq!(w9b["vault_record"], tinb["vault_record"]);
+    // W-9 facts without a TIN that disagree with the TIN facts: refused.
+    m.refuse(
+        "books.set_w9",
+        json!({"party": "Acme Design", "received_on": "2026-01-05",
+               "entity_type": "x", "tin_last4": "1111", "kept_at": "binder"}),
+    );
+    // A new W-9 with a new TIN: the TIN facts are replaced (cleared first).
+    let before = m.count("party.tin_set");
+    m.w9(
+        "Acme Design",
+        json!({"tin": "620-37-1111", "tin_type": "ssn"}),
+    );
+    assert_eq!(m.count("party.tin_set"), before + 2, "cleared, then set");
+    assert_eq!(m.journaled_tin(acme)["last4"], "1111");
+    assert_eq!(m.journaled_w9(acme)["tin_last4"], "1111");
+    m.pay("Acme Design", "2500.00");
+    let v = m.read_only(
+        "books.vendor_1099",
+        json!({"year": 2026, "include_tins": true}),
+    );
+    assert_eq!(v["vendors"][0]["tin"], "620-37-1111");
+    assert_eq!(m.ok("books.verify", json!({}))["status"], "ok");
+}
+
+/// books.purge_tin covers TIN facts: a member's record goes, the books
+/// keep the last four and say when and why.
+#[test]
+fn purge_covers_tin_facts() {
+    let mut m = books("purge-tin-facts");
+    let mo = m.add_party("Mo", &["member"]);
+    m.ok(
+        "books.set_tin",
+        json!({"party": "Mo", "tin": MEMBER_SSN, "tin_type": "ssn"}),
+    );
+    let p = m.ok(
+        "books.purge_tin",
+        json!({"party": "Mo", "reason": "left the company"}),
+    );
+    assert_eq!(p["status"], "preview");
+    assert_eq!(p["tin_in_vault"], true);
+    assert_eq!(p["tin_last4"], "4915");
+    let p = m.ok(
+        "books.purge_tin",
+        json!({"party": "Mo", "reason": "left the company", "confirmed": true}),
+    );
+    assert_eq!(p["journaled"], true);
+    assert!(!m.vault().join(format!("tin-{mo}.bin")).exists());
+    let facts = m.journaled_tin(mo);
+    assert!(facts["vault_record"].is_null(), "{facts}");
+    assert_eq!(facts["last4"], "4915");
+    assert!(
+        facts["purged"]
+            .as_str()
+            .unwrap()
+            .contains("left the company")
+    );
+    let party = m.party("Mo", 2026);
+    assert_eq!(party["party"]["tin"]["in_vault"], false);
+    m.refuse(
+        "books.purge_tin",
+        json!({"party": "Mo", "reason": "again", "confirmed": true}),
+    );
+    assert_eq!(m.ok("books.verify", json!({}))["status"], "ok");
+}
+
+// ------------------------------------------------- the CPA package
+
+const MEMBERS: &str = "[[company.members]]\nname = \"Tobin Example\"\nshare = \"50%\"\ncapital_account = \"3000\"\n\
+     [[company.members]]\nname = \"Mo Example\"\nshare = \"50%\"\ncapital_account = \"3001\"\n";
+
+/// Books for the K-1 worksheet, hand-worked:
+///
+/// ```text
+/// 2025-06-01  Dr 1000 2000 / Cr 3000 1000, Cr 3001 1000   both contribute cash
+/// 2025-07-01  Dr 1000  400 / Cr 4000  400                 2025 income, 200 each
+/// 2026-02-01  Dr 1500  600 / Cr 3000  600                 Tobin: equipment
+/// 2026-03-01  Dr 1000  500 / Cr 3001  500                 Mo: cash
+/// 2026-03-15  Dr 6999  100 / Cr 3000  100                 Tobin paid an expense
+/// 2026-04-01  Dr 1000 1000 / Cr 4000 1000                 revenue
+/// 2026-05-01  Dr 3000 150, Dr 3001 150 / Cr 1000 300      distributions
+/// 2026-03-01  Dr 6000 2500 / Cr 1000 2500                 Acme Design (m.pay)
+/// 2026: net income 1000 - 100 - 2500 = -1600, -800 each.
+///   Tobin: beginning 1200, cash 100, property 600, income -800,
+///            distributions 150, ending 950.
+///   Mo:     beginning 1200, cash 500, property 0, income -800,
+///            distributions 150, ending 750.
+///   Check: bank 1100 + equipment 600 = 1700 = 950 + 750.
+/// ```
+///
+/// Tobin's party has his SSN in the vault; Mo's has none. Acme Design
+/// (NEC, an EIN in the vault) is paid 2,500.00 in 2026.
+fn k1_books(name: &str) -> Mcp {
+    let mut m = books_with(name, MEMBERS);
+    m.accounts(&[
+        ("1500", "Equipment", "asset"),
+        ("3001", "Capital Mo", "equity"),
+        ("4000", "App Revenue", "revenue"),
+    ]);
+    m.add_party("Tobin Example", &["member"]);
+    m.add_party("Mo Example", &["member"]);
+    m.ok(
+        "books.set_tin",
+        json!({"party": "Tobin Example", "tin": MEMBER_SSN, "tin_type": "ssn"}),
+    );
+    m.w9("Acme Design", json!({"tin": EIN, "tin_type": "ein"}));
+    let none = json!({});
+    m.post(
+        "2025-06-01",
+        none.clone(),
+        &[
+            ("1000", "debit", "2000.00"),
+            ("3000", "credit", "1000.00"),
+            ("3001", "credit", "1000.00"),
+        ],
+    );
+    m.post(
+        "2025-07-01",
+        none.clone(),
+        &[("1000", "debit", "400.00"), ("4000", "credit", "400.00")],
+    );
+    m.post(
+        "2026-02-01",
+        none.clone(),
+        &[("1500", "debit", "600.00"), ("3000", "credit", "600.00")],
+    );
+    m.post(
+        "2026-03-01",
+        none.clone(),
+        &[("1000", "debit", "500.00"), ("3001", "credit", "500.00")],
+    );
+    m.post(
+        "2026-03-15",
+        none.clone(),
+        &[("6999", "debit", "100.00"), ("3000", "credit", "100.00")],
+    );
+    m.post(
+        "2026-04-01",
+        none.clone(),
+        &[("1000", "debit", "1000.00"), ("4000", "credit", "1000.00")],
+    );
+    m.post(
+        "2026-05-01",
+        none,
+        &[
+            ("3000", "debit", "150.00"),
+            ("3001", "debit", "150.00"),
+            ("1000", "credit", "300.00"),
+        ],
+    );
+    m.pay("Acme Design", "2500.00");
+    m
+}
+
+/// The package carries the K-1 worksheet (one row per member: party,
+/// share, capital account, TIN, and the hand-worked capital figures) and
+/// the 1099 worksheet with full TINs, saved outside the books only; a
+/// missing TIN is a gap, never a failure.
+#[test]
+fn the_cpa_package_carries_the_k1_and_1099_worksheets_with_tins() {
+    let mut m = k1_books("k1");
+    let to = m.outside().join("cpa-2026.zip");
+    let out = m.read_only(
+        "books.export_cpa_package",
+        json!({"as_of": "2026-12-31", "cash_accounts": ["1000"],
+               "save_to": to.to_str().unwrap()}),
+    );
+    assert_eq!(out["saved_to"], json!(to.display().to_string()));
+    assert!(out["content_base64"].is_null(), "never the bytes: {out}");
+    assert_eq!(out["tins_included"], true);
+    assert!(
+        out["note"]
+            .as_str()
+            .unwrap()
+            .contains(&to.display().to_string())
+    );
+    let gaps: Vec<&str> = out["tin_gaps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|g| g.as_str().unwrap())
+        .collect();
+    assert_eq!(gaps.len(), 1, "{gaps:?}");
+    assert!(gaps[0].contains("Mo Example") && gaps[0].contains("TIN not in the vault"));
+    assert!(!holds_tin(out.to_string().as_bytes(), MEMBER_SSN_DIGITS));
+    assert!(!holds_tin(out.to_string().as_bytes(), EIN_DIGITS));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&to).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "the package is the owner's only");
+    }
+    let pkg = unzip(&to);
+    let k1 = csv_rows(&pkg["k1-members.csv"]);
+    assert_eq!(k1.len(), 3, "two members and their total");
+    let (tobin, mo) = (&k1[0], &k1[1]);
+    // The total row: not a K-1; ties to the balance sheet (1,700.00).
+    let total = &k1[2];
+    assert_eq!(total["member"], "Total, all members (not a K-1)");
+    assert_eq!(total["tin"], "");
+    for (col, v) in [
+        ("beginning_capital", "2400.00"),
+        ("contributions_cash", "600.00"),
+        ("contributions_property", "600.00"),
+        ("net_income", "-1600.00"),
+        ("distributions", "300.00"),
+        ("other", "0.00"),
+        ("ending_capital", "1700.00"),
+    ] {
+        assert_eq!(total[col], v, "{col}");
+    }
+    let sid = m.party_id("Tobin Example");
+    let kid = m.party_id("Mo Example");
+    for (row, want) in [
+        (
+            tobin,
+            [
+                ("member", "Tobin Example"),
+                ("party_id", sid.to_string().as_str()),
+                ("share", "0.50"),
+                ("capital_account", "3000"),
+                ("tin", MEMBER_SSN),
+                ("tin_type", "ssn"),
+                ("tin_note", ""),
+                ("beginning_capital", "1200.00"),
+                ("contributions_cash", "100.00"),
+                ("contributions_property", "600.00"),
+                ("net_income", "-800.00"),
+                ("distributions", "150.00"),
+                ("other", "0.00"),
+                ("ending_capital", "950.00"),
+            ],
+        ),
+        (
+            mo,
+            [
+                ("member", "Mo Example"),
+                ("party_id", kid.to_string().as_str()),
+                ("share", "0.50"),
+                ("capital_account", "3001"),
+                ("tin", ""),
+                ("tin_type", ""),
+                ("tin_note", "TIN not in the vault"),
+                ("beginning_capital", "1200.00"),
+                ("contributions_cash", "500.00"),
+                ("contributions_property", "0.00"),
+                ("net_income", "-800.00"),
+                ("distributions", "150.00"),
+                ("other", "0.00"),
+                ("ending_capital", "750.00"),
+            ],
+        ),
+    ] {
+        for (col, v) in want {
+            let got = row
+                .get(col)
+                .unwrap_or_else(|| panic!("no column {col}: {row:?}"));
+            if col == "tin_note" && !v.is_empty() {
+                assert!(got.starts_with(v), "{col}: {got}");
+            } else if col == "share" {
+                assert_eq!(
+                    got.trim_end_matches('0').trim_end_matches('.'),
+                    "0.5",
+                    "{col}"
+                );
+            } else {
+                assert_eq!(got, v, "{col} of {row:?}");
+            }
+        }
+    }
+    // The 1099 worksheet: the payee's full TIN.
+    let w = csv_rows(&pkg["1099-worksheet-2026.csv"]);
+    let acme = w.iter().find(|r| r["vendor"] == "Acme Design").unwrap();
+    assert_eq!(acme["tin"], EIN);
+    assert_eq!(acme["tin_type"], "ein");
+    assert_eq!(acme["tin_last4"], "9105");
+    assert_eq!(acme["reportable"], "true");
+    let readme = String::from_utf8(pkg["README.txt"].clone()).unwrap();
+    assert!(
+        readme.contains("k1-members.csv") && readme.contains("Mo Example"),
+        "{readme}"
+    );
+    assert!(!holds_tin(readme.as_bytes(), MEMBER_SSN_DIGITS));
+    // Nothing of it in the books dir.
+    for f in files_under(&m.books_dir()) {
+        if f.starts_with(m.vault()) {
+            continue;
+        }
+        let b = std::fs::read(&f).unwrap();
+        assert!(
+            !holds_tin(&b, MEMBER_SSN_DIGITS) && !holds_tin(&b, EIN_DIGITS),
+            "{}",
+            f.display()
+        );
+        assert!(!f.to_string_lossy().ends_with(".zip"), "{}", f.display());
+    }
+
+    // A folder: the zip goes in it, by its name.
+    let folder = m.outside().join("for-casey");
+    std::fs::create_dir_all(&folder).unwrap();
+    let out = m.read_only(
+        "books.export_cpa_package",
+        json!({"as_of": "2026-12-31", "cash_accounts": ["1000"],
+               "save_to": folder.to_str().unwrap()}),
+    );
+    assert_eq!(
+        out["saved_to"],
+        json!(
+            folder
+                .join("cpa-package-2026-12-31.zip")
+                .display()
+                .to_string()
+        )
+    );
+
+    // Without TINs: last fours only, returned as base64.
+    let out = m.read_only(
+        "books.export_cpa_package",
+        json!({"as_of": "2026-12-31", "cash_accounts": ["1000"], "include_tins": false}),
+    );
+    assert_eq!(out["tins_included"], false);
+    let zip = base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        out["content_base64"].as_str().unwrap(),
+    )
+    .unwrap();
+    let plain_path = m.outside().join("plain.zip");
+    std::fs::write(&plain_path, &zip).unwrap();
+    let plain = unzip(&plain_path);
+    let k1 = csv_rows(&plain["k1-members.csv"]);
+    assert_eq!(k1[0]["tin_last4"], "4915");
+    assert!(!k1[0].contains_key("tin"));
+    assert_eq!(k1[0]["ending_capital"], "950.00");
+    for bytes in plain.values() {
+        assert!(!holds_tin(bytes, MEMBER_SSN_DIGITS) && !holds_tin(bytes, EIN_DIGITS));
+    }
+}
+
+/// With TINs the package is never returned and never lands in the books:
+/// no save_to, a path in the books dir or its exports/, an existing file,
+/// or a path that is neither a folder nor a .zip is refused.
+#[test]
+fn a_package_with_tins_goes_only_outside_the_books() {
+    let mut m = k1_books("k1-where");
+    let why = m.refuse(
+        "books.export_cpa_package",
+        json!({"as_of": "2026-12-31", "cash_accounts": ["1000"]}),
+    );
+    assert!(why.contains("save_to"), "{why}");
+    let books = m.books_dir();
+    std::fs::create_dir_all(books.join("exports")).unwrap();
+    let existing = m.outside().join("taken.zip");
+    std::fs::write(&existing, b"x").unwrap();
+    for to in [
+        books.join("cpa.zip"),
+        books.join("exports"),
+        books.join("exports/cpa.zip"),
+        m.data.join("cpa.zip"),
+        books.join("vault/../cpa.zip"),
+        existing.clone(),
+        m.outside().join("cpa.txt"),
+        m.outside().join("no/such/dir/cpa.zip"),
+    ] {
+        m.refuse(
+            "books.export_cpa_package",
+            json!({"as_of": "2026-12-31", "cash_accounts": ["1000"],
+                   "save_to": to.to_str().unwrap()}),
+        );
+    }
+    assert_eq!(std::fs::read(&existing).unwrap(), b"x");
+    assert!(
+        std::fs::read_dir(books.join("exports"))
+            .unwrap()
+            .next()
+            .is_none()
+    );
+    assert!(!books.join("cpa.zip").exists());
+}
+
+/// A locked vault never fails the package: every TIN row says why, and
+/// tin_gaps lists each member and payee.
+#[test]
+fn a_locked_vault_still_builds_the_package() {
+    let mut m = k1_books("k1-locked");
+    std::fs::remove_file(m.key()).unwrap();
+    let to = m.outside().join("cpa.zip");
+    let out = m.read_only(
+        "books.export_cpa_package",
+        json!({"as_of": "2026-12-31", "cash_accounts": ["1000"],
+               "save_to": to.to_str().unwrap()}),
+    );
+    let gaps = out["tin_gaps"].as_array().unwrap();
+    assert_eq!(gaps.len(), 3, "two members and Acme: {gaps:?}");
+    assert!(
+        gaps.iter().all(|g| g.as_str().unwrap().contains("locked")),
+        "{gaps:?}"
+    );
+    assert!(!m.key().exists(), "reading never makes a key");
+    let pkg = unzip(&to);
+    let k1 = csv_rows(&pkg["k1-members.csv"]);
+    let members: Vec<_> = k1
+        .iter()
+        .filter(|r| !r["member"].starts_with("Total"))
+        .collect();
+    assert_eq!(members.len(), 2);
+    assert!(
+        members
+            .iter()
+            .all(|r| r["tin"].is_empty() && r["tin_note"].contains("locked"))
+    );
+    assert_eq!(k1[0]["ending_capital"], "950.00", "the numbers are there");
+    let w = csv_rows(&pkg["1099-worksheet-2026.csv"]);
+    assert!(w.iter().all(|r| r["tin"].is_empty()));
+}
+
+/// B-26 ("No tool output, error, or log holds a full TIN"): a TIN put in
+/// the wrong field is refused, and the refusal never repeats it, however
+/// it was written: as a party name, a bare number where a string goes, or
+/// a share's percent.
+#[test]
+fn refusals_never_echo_a_tin() {
+    let mut m = books("echo");
+    let id = m.post(
+        "2026-02-01",
+        json!({}),
+        &[("6999", "debit", "100.00"), ("1000", "credit", "100.00")],
+    );
+    for (tool, args) in [
+        (
+            "books.set_tin",
+            json!({"party": MEMBER_SSN, "tin": MEMBER_SSN, "tin_type": "ssn"}),
+        ),
+        (
+            "books.set_tin",
+            json!({"party": MEMBER_SSN_DIGITS.parse::<u64>().unwrap(), "tin": MEMBER_SSN,
+                   "tin_type": "ssn"}),
+        ),
+        (
+            "books.purge_tin",
+            json!({"party": "241.40.4915", "reason": "x", "confirmed": true}),
+        ),
+        (
+            "books.set_entry_party",
+            json!({"entry_id": id, "parties": [
+                {"party": "Acme Design", "percent": MEMBER_SSN},
+                {"party": MEMBER_SSN, "amount": "1.00"},
+            ]}),
+        ),
+    ] {
+        let why = m.refuse(tool, args.clone());
+        assert!(
+            !holds_tin(why.as_bytes(), MEMBER_SSN_DIGITS),
+            "{tool} {args} echoed the TIN: {why}"
+        );
+    }
+}
+
+/// k1::member_party: a vendor whose display name is a member's name, with
+/// a W-9 EIN in the vault, never puts its TIN on the member's K-1 row:
+/// the member's TIN is a gap.
+#[test]
+fn a_k1_row_never_carries_another_partys_tin() {
+    let mut m = k1_books("k1-lookalike");
+    m.ok(
+        "books.update_party",
+        json!({"party": "Mo Example", "archived": true}),
+    );
+    m.add_party("KE Consulting LLC", &["contractor"]);
+    m.ok(
+        "books.update_party",
+        json!({"party": "KE Consulting LLC", "display_name": "Mo Example"}),
+    );
+    m.w9(
+        "KE Consulting LLC",
+        json!({"tin": "12-3456789", "tin_type": "ein"}),
+    );
+    let to = m.outside().join("cpa-lookalike.zip");
+    let out = m.read_only(
+        "books.export_cpa_package",
+        json!({"as_of": "2026-12-31", "cash_accounts": ["1000"],
+               "save_to": to.to_str().unwrap()}),
+    );
+    let gaps = out["tin_gaps"].to_string();
+    assert!(gaps.contains("member Mo Example"), "{gaps}");
+    let pkg = unzip(&to);
+    let k1 = csv_rows(&pkg["k1-members.csv"]);
+    let mo = k1.iter().find(|r| r["member"] == "Mo Example").unwrap();
+    assert_eq!(mo["tin"], "", "{mo:?}");
+    assert_eq!(mo["party_id"], "", "{mo:?}");
+    assert!(!holds_tin(&pkg["k1-members.csv"], "123456789"));
+}
+
+/// Members who file a joint individual return (files_jointly_with on
+/// both): the README says each gets their own K-1 and both go on one Form
+/// 1040; books.settings reports it; a one-sided setting is a settings error.
+#[test]
+fn joint_filers_are_noted_in_the_package() {
+    let joint = "[[company.members]]\nname = \"Tobin Example\"\nshare = \"50%\"\ncapital_account = \"3000\"\nfiles_jointly_with = \"Mo Example\"\n\
+         [[company.members]]\nname = \"Mo Example\"\nshare = \"50%\"\ncapital_account = \"3001\"\nfiles_jointly_with = \"Tobin Example\"\n";
+    let mut m = books_with("joint", joint);
+    m.accounts(&[("3001", "Capital Mo", "equity")]);
+    let s = m.read_only("books.settings", json!({}));
+    assert_eq!(s["members"][0]["files_jointly_with"], "Mo Example");
+    assert_eq!(s["members"][1]["files_jointly_with"], "Tobin Example");
+    let to = m.outside().join("joint.zip");
+    m.read_only(
+        "books.export_cpa_package",
+        json!({"as_of": "2026-12-31", "cash_accounts": ["1000"],
+               "save_to": to.to_str().unwrap()}),
+    );
+    let pkg = unzip(&to);
+    let readme = String::from_utf8(pkg["README.txt"].clone()).unwrap();
+    let note = "Tobin Example and Mo Example file a joint individual return: each receives their own Schedule K-1; both are reported on the one Form 1040 (Schedule E, Part II).";
+    assert_eq!(readme.matches(note).count(), 1, "once per pair: {readme}");
 }

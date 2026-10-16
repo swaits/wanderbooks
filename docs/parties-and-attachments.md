@@ -62,7 +62,8 @@ Rules (to vendor as B-26 with sources):
 ### Links
 
 - Entries: `entry.party_set {entry_id, party_id|null}` generalizes
-  `entry.vendor_set`; an entry has one counterparty.
+  `entry.vendor_set` (one counterparty); `entry.parties_set` names
+  several, each with a share (below).
 - Invoices and bills already name a customer or vendor id: those are
   party ids after migration.
 - Payroll lines name an employee party id (old runs keep their name
@@ -74,8 +75,93 @@ Rules (to vendor as B-26 with sources):
 `PartyField` per event, `{field, value}`: name, display_name, website,
 address, notes, archived), `party.role_set {id, role, on}`,
 `party.w9_set {id, facts|null}`, `party.w4_set {id, facts|null}`,
-`entry.party_set {entry_id, party_id|null}`. Replayed and projected like
+`party.tin_set {id, facts|null}` (TIN facts: type, last four, vault
+record, when purged), `entry.party_set {entry_id, party_id|null}`,
+`entry.parties_set {entry_id, parties: [{party_id, share}]}` (a share is
+`{"amount": "30.00"}`, `{"percent": "60"}`, or `"derived"`; `[]`
+clears). Replayed and projected like
 the rest; every event gets viewer journal text (the GUI test enforces it).
+
+### Shares: an entry with several parties
+
+DECISION (the owner, 2026-10-15): there is no "joint" party. A joint
+transaction is with both members and shows on both members' pages, each
+with their share; apportioning is explicit and exact when it isn't
+derived. Spec: `ledger_core::shares`.
+
+- An entry names a list of `PartyShare {party, share}`; `Share` is
+  `Amount(d)`, `Percent(p)`, or `Derived`. Tagging one party
+  (`set_entry_party`) is one derived share: all of it.
+  `Ledger::entry_party` means "the sole party"; `entry_parties` lists
+  them all.
+- **What a share is of:** the entry's `entry_flow` net (what it moved
+  with its counterparties), or its total debits when the net is zero (a
+  member contributing property moves no money but is still theirs).
+- **Amount:** exactly that, positive, in cents; the amounts must sum to
+  what the entry moved.
+- **Percent:** more than 0, at most 100, summing to exactly 100. Each part
+  is rounded toward zero to the cent and the leftover cents (fewer than
+  one per party) go to the first party in order.
+- **Derived:** a sole party gets all of it. Several parties must all be
+  members (`[[company.members]]` matched by name to a party with the
+  member role; core is handed them as `PartyMember`s). If the entry has
+  lines on a named member's capital or distributions account, each
+  member gets what their own lines say (and those must account for all
+  it moved); otherwise each gets their income share, rescaled to the
+  members named, rounded as percents are.
+- **Refused** (journaling nothing): a party named twice, an unknown
+  party, mixed kinds of share, percents not summing to 100, an amount
+  finer than a cent, and two parties with vendor records. A 1099 counts
+  a payment toward a single vendor: the vendor tag follows the one party
+  with a vendor record, and the 1099 worksheet counts the whole payment
+  toward it, so name a vendor among others only when the whole payment
+  was its (otherwise record its part as its own entry). Whether shares
+  add up depends on the settings (cash accounts, members), so core
+  checks only their form; the MCP server checks they resolve once the
+  entry has balanced lines, and `post_entry` refuses (`party_shares`)
+  until they do. Replay never consults settings.
+- **Money:** `parties::activity_with` counts each party's resolved share;
+  an entry moving no money counts nothing; an entry whose shares don't
+  resolve counts for no one (listed as unresolved). Reversals carry
+  every share, so a reversal subtracts each party's part; re-tagging
+  either one (parties, shares, or vendor) re-tags the other, so the pair
+  always nets to zero.
+- **For the agent:** a joint member transaction (a reimbursement on Due
+  to Shareholders, a contribution or distribution from joint funds)
+  names both members with no shares and lets them derive; an uneven
+  split gives amounts.
+
+### A member's capital statement
+
+A member's party page (role member, named in `[[company.members]]`,
+whose capital account is in the chart) is their capital account
+statement over the page's period (`Books::capital_statement`). Every
+figure is the CPA package's K-1 worksheet row for that member and span
+(`ledger_core::k1::k1_detail`, itself the statement of changes in
+members' equity split into cash and property), so the page and the
+K-1 never disagree:
+
+- capital at the start of the period (including their share of earnings
+  not yet closed into capital);
+- add contributions of cash (deposits, and what they paid for the
+  company) and of property (debits to asset accounts that are neither
+  cash nor receivables, at the value booked: fair market value);
+- add their share of the period's net income, closed or not;
+- less distributions;
+- any other change in their capital, when there is one;
+- capital at the end of the period (always opening plus the movements,
+  exactly);
+- their share of profit, loss, and capital; and their part of what the
+  company owes the members jointly, split by the members' shares: the
+  balance of the `[books] financing_accounts` liabilities (the
+  liabilities members advance), or, only when that is not set, of the
+  liability accounts named "due to" / "owed to" (such as 2100 Due to
+  Shareholders).
+
+Cash and property are told apart by `[books] cash_accounts`. Without it
+the statement reads money as the engine does (every asset account but
+receivables), so every contribution reads as cash; set `cash_accounts`
+to see property apart. (The Cash page keeps its own name-based guess.)
 
 ### Migration
 
@@ -87,7 +173,13 @@ same name share one party; a second vendor of a taken name gets a new
 party named "Name (2)" (names stay unique). Vendor and customer names
 obey the party text rules (no full TIN). `entry.vendor_set` also sets the
 entry's party, and `entry.party_set` to a party with a vendor record sets
-the vendor tag: one counterparty.
+the vendor tag: one counterparty. On an entry naming several parties the
+vendor tag follows the parties, never the other way: `entry.vendor_set`
+for the vendor of a party already named keeps every share; for any other
+vendor, or clearing the tag while its party is named, it is refused. A
+vendor record can't link to a party named beside another party with a
+vendor record (refused: the entry would name two vendors); linking one
+tags the entries naming the party that have no vendor tag yet.
 
 ### Tools
 
@@ -115,13 +207,22 @@ year. The directory shows the same columns, sortable.
 
 ## The TIN vault
 
-Decision (the owner, 2026-10-15): wanderbooks holds full TINs, so the 1099
-worksheet it hands the CPA is complete, but never in the journal.
+Decision (the owner, 2026-10-15): wanderbooks holds full TINs, so what it
+hands the CPA is complete, but never in the journal. The vault holds
+everyone's, members included, and the CPA package carries them: "In the
+vault, that's the WHOLE reason we built it. And it needs to be in the
+damn CPA package."
 
 - **Where:** `vault/` in the books dir, listed in `.gitignore`. Never in
   the hash-chained journal, the SQLite projection, git, an export other
-  than the 1099 worksheet, or the viewer. Nothing outside the vault holds
-  more than the last four digits.
+  than the 1099 worksheet and the CPA package (saved outside the books
+  dir), or the viewer. Nothing outside the vault holds more than the last
+  four digits.
+- **Who:** any party, whatever its roles: every member (their K-1 needs
+  it) and every 1099 payee. The books keep the party's TIN facts (type,
+  last four, the vault record's hash; `party.tin_set`), which never
+  disagree with its W-9 facts' last four. The viewer shows "TIN on file
+  ••••1234 (SSN)" on the party's page, never more.
 - **What:** per party, the full TIN, its type (SSN, EIN, ITIN), and the
   W-9 file itself, each encrypted at rest (XChaCha20-Poly1305, one random
   nonce per record; the file format carries a version and the party id as
@@ -139,24 +240,35 @@ worksheet it hands the CPA is complete, but never in the journal.
 - **Purge:** `books.purge_tin {party, reason}` deletes the vault record
   (after the retention period, or on request) and journals that it was
   purged; the journal's facts stay.
-- **Use:** only `books.vendor_1099` with `include_tins: true` (and the CPA
-  package, when asked) decrypts them. The MCP server never returns a TIN
-  in any other tool, log, or error. Tests check that no other output
-  contains a nine-digit run.
+- **Use:** `books.vendor_1099` with `include_tins: true` and
+  `books.export_cpa_package` (its K-1 worksheet, `k1-members.csv`, and its
+  1099 worksheet; `include_tins` defaults to true there) decrypt them.
+  The package is written only to `save_to`, outside the books dir, and
+  the tool returns its path; it is refused without one. The MCP server
+  never returns a TIN in any other tool, log, or error. Tests check that
+  no other output contains a nine-digit run.
 - **Books without a vault** (another machine, a restored backup) still
-  open and verify; the 1099 worksheet then says which TINs are missing.
+  open and verify; the 1099 worksheet and the CPA package then say which
+  TINs are missing (`tin_gaps`), and the package is still built.
 - **Tools** (built; `docs/mcp-interface.md` "Tools — the TIN vault"):
   `books.set_w9` takes `tin` + `tin_type` and `w9_file_path` (the form
   goes to the vault, never the attachment store) and journals the last
   four with `vault_record`; facts that disagree with the vault's TIN are
   refused, and clearing facts with a vault record needs a purge first.
+  With a TIN it also records the party's TIN facts. `books.set_tin
+  {party, tin, tin_type}` stores any party's TIN (a member's SSN, say) the
+  same way and journals `party.tin_set`; a party whose W-9 facts name
+  another last four is refused (a payee's new TIN comes with its W-9).
   `books.get_w9 {party, save_to}` writes the form to a new file outside the
   books dir and returns only the path. `books.purge_tin {party, reason,
   confirmed?}` previews, then deletes the records (no key needed) and
   journals the purge as `party.w9_set` with `vault_record` cleared and
-  `kept_at` saying when and why. `books.vendor_1099 {include_tins: true}`
-  is the one output with full TINs (with a warning; `save_csv_to` writes
-  the CSV outside the books dir). A key file inside the books dir is
+  `kept_at` saying when and why, and `party.tin_set` with `vault_record`
+  cleared and `purged` saying when and why. `books.vendor_1099 {include_tins: true}`
+  is the one tool output with full TINs (with a warning; `save_csv_to`
+  writes the CSV outside the books dir); `books.export_cpa_package
+  {save_to}` writes them in its zip, outside the books dir, and returns
+  only the path. A key file inside the books dir is
   refused. `tests/spec_vault.rs` scans every tool response, the server's
   log, and every file in the books dir outside `vault/` for the TINs in
   any formatting.

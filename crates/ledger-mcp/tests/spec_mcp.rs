@@ -682,6 +682,10 @@ fn happy_path(name: &str) -> Mcp {
         json!({"party": "Pat", "received_on": "2026-01-02", "state": "UT", "kept_at": "binder"}),
     );
     m.ok(
+        "books.set_tin",
+        json!({"party": "Pat", "tin": "291-12-2846", "tin_type": "ssn"}),
+    );
+    m.ok(
         "books.set_party_roles",
         json!({"party": "Landlord", "add": ["landlord"]}),
     );
@@ -1069,7 +1073,12 @@ fn happy_path(name: &str) -> Mcp {
     }
     m.ok(
         "books.export_cpa_package",
-        json!({"as_of": "2026-12-31", "include_receipts": false}),
+        json!({"as_of": "2026-12-31", "include_receipts": false, "include_tins": false}),
+    );
+    m.ok(
+        "books.export_cpa_package",
+        json!({"as_of": "2026-12-31", "include_receipts": false,
+               "save_to": outside(&dir).join("cpa.zip").to_str().unwrap()}),
     );
 
     m

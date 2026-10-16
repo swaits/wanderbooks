@@ -809,6 +809,33 @@ pub struct MembersEquityStatement {
     pub total: MemberEquityColumn,
 }
 
+/// The posted entries in `[start, end]` that cancel: each reversal dated
+/// in the span with the original it reverses, when that is dated in the
+/// span too. Paired in journal order, an entry at most once, so in a chain
+/// (an entry, its reversal, the reversal's reversal) the first two cancel
+/// and the third, which reinstates the original, counts.
+pub fn cancelled_in_span(
+    ledger: &Ledger,
+    start: NaiveDate,
+    end: NaiveDate,
+) -> BTreeSet<crate::EntryId> {
+    let in_span = |d: NaiveDate| d >= start && d <= end;
+    let mut out = BTreeSet::new();
+    for e in ledger.posted_entries().filter(|e| in_span(e.date())) {
+        if let Some(o) = e.reversal_of()
+            && ledger
+                .get_entry(o)
+                .is_some_and(|x| x.status() == crate::EntryStatus::Posted && in_span(x.date()))
+            && !out.contains(&o)
+            && !out.contains(&e.id())
+        {
+            out.insert(o);
+            out.insert(e.id());
+        }
+    }
+    out
+}
+
 /// Build the statement of changes in members' equity for `[start, end]`.
 ///
 /// Each member's capital account supplies contributions (credits) and
@@ -843,8 +870,16 @@ pub struct MembersEquityStatement {
 ///      already moved into capital were rounded by that close, B-13.)
 ///   4. NEVER hide an unexplained change: it goes in "other".
 ///   5. An entry dated `start` is period activity, not beginning capital.
+///   6. An entry and its reversal both dated in the span cancel
+///      ([`cancelled_in_span`]): neither is a contribution or a
+///      distribution, since the correction undoes the original (B-9: "it
+///      is just as if you had written nothing"). A reversal whose original
+///      is outside the span counts by side, like any entry.
 /// SCENARIOS:
 ///   1. IF shares don't sum to 1, or are not positive: SHOULD refuse.
+///   2. A joint 1,000.00 contribution (500.00 each) reversed the next day:
+///      contributions 0.00 and distributions 0.00 for each member, not
+///      500.00 of each.
 /// ```
 pub fn members_equity(
     ledger: &Ledger,
@@ -901,12 +936,15 @@ pub fn members_equity(
     // Contributions and distributions move a capital account; a closing
     // entry allocating earnings into it is income, already counted below.
     let closings = ledger.closing_entry_ids();
+    let cancelled = cancelled_in_span(ledger, start, end);
     let flows = |id: crate::AccountId| -> (Decimal, Decimal) {
         let (mut credits, mut debits) = (Decimal::ZERO, Decimal::ZERO);
-        for e in ledger
-            .posted_entries()
-            .filter(|e| e.date() >= start && e.date() <= end && !closings.contains(&e.id()))
-        {
+        for e in ledger.posted_entries().filter(|e| {
+            e.date() >= start
+                && e.date() <= end
+                && !closings.contains(&e.id())
+                && !cancelled.contains(&e.id())
+        }) {
             for l in e.lines().iter().filter(|l| l.account == id) {
                 match l.side {
                     crate::Side::Credit => credits += l.amount.amount,

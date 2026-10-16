@@ -2,6 +2,7 @@
 
 pub mod accounts;
 pub mod assets;
+pub mod capital;
 pub mod cash;
 pub mod company;
 pub mod documents;

@@ -33,7 +33,10 @@ to 100%) drives the statement of members' equity, `[books]
 accounting_basis` ("accrual" or "cash", default accrual) labels report
 footers, and `[books] receipt_threshold` sets the receipt policy unless
 `config.json` sets `receipt_policy`. Members may name a
-`distribution_account`; single-owner businesses may set `[books] close_into`
+`distribution_account`, and `files_jointly_with` (spouses filing one joint
+return; the CPA package's README notes their two K-1s go on one Form 1040,
+and k1-members.csv ends with a members' total, not a K-1, that ties to
+Schedule L); single-owner businesses may set `[books] close_into`
 (the equity account a close puts net income in; default Retained Earnings)
 and `close_sweep` (draw, distribution, or dividend accounts closed into it).
 The cash flow statement's account roles are `[books] cash_accounts` (what
@@ -112,21 +115,31 @@ below.
 - `books.chart` → `{ accounts: [{ id, code, name, type, parent, placeholder,
   balance }] }`. Balances included: one call answers "what do we have."
 - `books.draft_entry { date: "2026-10-10", description: "...", vendor?,
-  party? }` → `{ entry_id, status: "draft" }`. `party` tags the
-  counterparty (see "Tools — parties"); given with `vendor`, both must name
-  the same vendor record, else nothing is drafted.
+  party?, parties?, no_party_reason? }` → `{ entry_id, status: "draft" }`.
+  `party` tags the counterparty (see "Tools — parties"); given with
+  `vendor`, both must name the same vendor record, else nothing is
+  drafted. `parties` names several, each with a share (as
+  `books.set_entry_party`), in place of `party` and `vendor`.
 - `books.add_line { entry_id, account: "1000" | <id>, side: "debit" | "credit",
   amount: "123.45" }` → `{ ok: true }`. A refused line (unknown account or
   class, bad amount) adds nothing.
 - `books.post_entry { entry_id, confirmed }` → `{ status, entry_id, date,
   description, total, lines (with resulting balances), receipts,
-  receipt_required, receipt_missing, split_detected }`. Without
-  `confirmed: true`, `status` is `"preview"` and nothing changes; with it,
-  the receipt policy is enforced and `status` is `"posted"`.
+  receipt_required, receipt_missing, split_detected, party_policy,
+  party_id?, party?, parties, parties_error?, no_party_reason?,
+  party_missing, party_suggestions }`. Without `confirmed: true`, `status`
+  is `"preview"` and nothing changes; with it, the receipt policy is
+  enforced and `status` is `"posted"`. `parties` lists every party the
+  entry names with its share resolved to the cent (`{ party_id, party,
+  share: "amount" | "percent" | "derived", amount?, percent?, resolved }`);
+  when the shares don't add up to what the entry moved, `parties_error`
+  says why and confirming fails with code `party_shares`.
 - `books.reverse_entry { entry_id, date, description, confirmed }` → same
   preview/confirm pattern as post.
 - `books.get_entry { entry_id }` → full entry with lines, receipts, and
-  its `vendor`, `party_id`, and `party` (the party's label) tags.
+  its `vendor`, `party_id`, and `party` (the party's label, when it names
+  exactly one) tags, and `parties` / `parties_error` as in the
+  `post_entry` preview.
 - `books.search_entries { account?, date_from?, date_to?, text?, limit?, offset? }`
   → entries with lines, newest first. `limit` caps at 100.
 - `books.trial_balance { as_of? }` → `as_of`, lines, totals, `balanced`
@@ -290,14 +303,22 @@ is on file and the TIN's last four; full TINs live only in the TIN vault
   the tag. Metadata only: posted entries may be tagged. `books.draft_entry`
   takes `vendor` too; bills and their payments are tagged automatically.
   `books.set_entry_party` tags the vendor too when the party has a vendor
-  record, so tagging by party counts for 1099s the same way.
+  record, so tagging by party counts for 1099s the same way. On an entry
+  naming several parties the parties are `books.set_entry_party`'s:
+  tagging the vendor of a party already named keeps every share as it
+  is; tagging a vendor whose party isn't named, or clearing the tag while
+  its party is named, is refused (drop or add the party with `parties`
+  instead). An entry and its reversal always carry the same tags.
 - `books.vendor_1099 { year, threshold?, include_tins?, save_csv_to? }` →
   `{ year, threshold, vendors: [{ vendor_id, name, form_1099?, tin_on_file,
   paid, reportable, party_id?, tin_last4?, tin?, tin_type?, tin_note? }],
   missing_w9, notes, warning?, saved_csv? }`. For a year whose threshold
   wanderbooks doesn't know (after 2026 until the indexed amount is added)
   it refuses with what to do; pass `threshold` explicitly once the figure
-  is confirmed. `tin_last4` comes from the party's W-9 facts. With
+  is confirmed. On an entry naming several parties, `paid` counts only
+  the vendor's resolved share of the payment (rules.md B-19); an entry
+  whose shares don't resolve counts in full and `notes` names it.
+  `tin_last4` comes from the party's W-9 facts. With
   `include_tins: true` (default false) each line carries `tin`, the full
   TIN formatted as the IRS writes it (123-45-6789; 12-3456789 for an
   EIN), and `tin_type`, read from the vault, or `tin_note` saying why not
@@ -359,11 +380,44 @@ texts are at most 500 characters, no control characters.
   `"wanderbooks vault"`.
 - `books.set_w4 { party, received_on, state, kept_at }` or `{ party, clear:
   true }` → the party. Journaled as `party.w4_set`.
-- `books.set_entry_party { entry_id, party? }` → the entry (as
-  `books.get_entry`). `party` null or omitted clears the tag. A party with
-  a vendor record also tags the entry's vendor; one without, or clearing,
-  clears the vendor tag. Metadata only; posted entries may be tagged.
-  Journaled as `entry.party_set`.
+- `books.set_entry_party { entry_id, party?, parties?, no_party_reason? }`
+  → the entry (as `books.get_entry`). `party` null or omitted clears the
+  tag. A party with a vendor record also tags the entry's vendor; one
+  without, or clearing, clears the vendor tag. Metadata only; posted
+  entries may be tagged. Tagging an entry that was reversed, or a
+  reversal, tags the other too (the whole reversal chain), so each
+  party's part of the pair still nets to zero. Journaled as
+  `entry.party_set`.
+  `no_party_reason` (with no party) marks an entry as having no
+  counterparty (`entry.no_party`).
+- **Several parties:** `parties: [{ party, amount? | percent? }]`, in
+  place of `party`, names every counterparty with its share; `[]` clears.
+  Journaled as `entry.parties_set { entry_id, parties: [{ party_id, share
+  }] }`, `share` being `{"amount": "30.00"}`, `{"percent": "60"}`, or
+  `"derived"`. Each share, of what the entry moved (its `entry_flow` net;
+  for an entry moving no money, like property contributed, its total):
+  - `amount`: exactly that, positive, in cents; the amounts must sum to
+    what it moved.
+  - `percent`: that percent; the percents must sum to exactly 100. Each
+    part is rounded down to the cent and the leftover cents go to the
+    first party listed.
+  - neither (derived): a sole party gets all of it. Members named
+    together (parties with the member role named in `[[company.members]]`)
+    get what their own capital and distributions lines on the entry say,
+    when it has any (these must account for all it moved); else their
+    `[[company.members]]` shares, rescaled to the members named, rounded as
+    percents are. A derived share for a non-member among several is
+    refused.
+  Every party gives the same kind of share. Refused, journaling nothing: a
+  party named twice, an unknown party, mixed kinds, percents not summing
+  to 100, an amount finer than a cent, two parties with vendor records (a
+  1099 counts a payment toward one vendor; the one vendor party's record
+  is tagged and counts the whole payment), and, once the entry has
+  balanced lines, shares that don't resolve. A draft's shares are checked
+  against its lines again at `post_entry`. Under `[books] parties =
+  "require"`, any party (or the no-party mark) satisfies the check.
+  Reversals carry every share. There is no "joint" party: a joint member
+  transaction names both members and lets the shares derive.
 - `books.parties { role?, include_archived?, year? }` → `{ year, parties:
   [{ party_id, name, label, roles, vendor_id?, customer_id?, w9_on_file,
   tin_last4?, w4_on_file, archived, paid, received }] }`, by id.
@@ -397,7 +451,8 @@ include vendor and customer when it has those records.
   positive net was paid to the party, a negative one received from it; a
   reversal counts against its original's side. A bill isn't paid until its
   payment is; an entry only moving money between money accounts nets to
-  zero.
+  zero. An entry naming several parties counts this party's resolved
+  share only (an entry whose shares don't resolve counts for none).
 - `invoiced` / `billed`: its invoices' and bills' totals dated in the year.
   `owed` / `receivable`: its open bills' and invoices' balances now (every
   year).
@@ -408,9 +463,12 @@ include vendor and customer when it has those records.
 
 ## Tools — the TIN vault
 
-Full TINs (SSN, EIN, ITIN) and signed W-9 forms, kept so the CPA's 1099
-worksheet is complete, never in the books (`ledger-vault`; design in
-`docs/parties-and-attachments.md` "The TIN vault"; B-26).
+Full TINs (SSN, EIN, ITIN) and signed W-9 forms, kept so what the CPA
+gets is complete (every member's TIN for their K-1, every payee's for
+their 1099), never in the books (`ledger-vault`; design in
+`docs/parties-and-attachments.md` "The TIN vault"; B-26). DECISION
+(the owner, 2026-10-15): the vault holds everyone's TIN, members included,
+and the CPA package carries them.
 
 - **Where:** `vault/` in the books dir (the parent of the data dir, beside
   `wanderbooks.toml`; git-ignored), one file per record, each encrypted
@@ -424,14 +482,31 @@ worksheet is complete, never in the books (`ledger-vault`; design in
   locked: the books open and verify; the worksheet says the TINs are
   missing.
 - **Never out:** no tool output, error, or log holds more than a TIN's
-  last four, except `books.vendor_1099 { include_tins: true }`. The tool
-  arguments that take a TIN never echo it, even when refused.
+  last four, except `books.vendor_1099 { include_tins: true }`; the CPA
+  package carries them only in its zip, written outside the books dir.
+  The tool arguments that take a TIN never echo it, even when refused.
+- **TIN facts:** any party (any role) may have `tin` facts:
+  `{ tin_type: "ssn" | "ein" | "itin", last4, vault_record?, purged? }`,
+  journaled as `party.tin_set {id, facts|null}` and shown in every party
+  output as `tin: { tin_type, last4, in_vault, purged? }`. They never
+  disagree with the party's W-9 facts: both on file means the same last
+  four (the engine refuses otherwise).
+- `books.set_tin { party, tin, tin_type }` → the party. Validates the TIN
+  as `books.set_w9` does, checks the facts on a copy of the ledger, writes
+  the TIN to the vault (the same key and git-ignore checks), and journals
+  `party.tin_set` with the record's hash. Any role. A party whose W-9
+  facts name another last four is refused (a payee's new TIN comes with
+  its W-9: `books.set_w9`); one whose W-9 facts agree gets their
+  `vault_record` updated too (`party.w9_set`).
 - `books.set_w9 { ..., tin, tin_type, w9_file_path? }` (above): validates
   the TIN against its type (nine digits, hyphens allowed; an ITIN starts
   with 9 and has an IRS group in digits 4-5; an SSN or EIN doesn't start
   with 9), checks the facts on a copy of the ledger, then writes the vault
   and journals the facts with `vault_record`, the SHA-256 of the TIN
-  record (of the form's record when only a form is given). The form (PDF,
+  record (of the form's record when only a form is given). With a TIN it
+  also journals the party's TIN facts (`party.tin_set`, as
+  `books.set_tin`); a TIN with a new last four clears the old TIN facts
+  first (`party.tin_set` null), so the two never disagree. The form (PDF,
   PNG, JPEG; 25 MB at most) goes to the vault only, never the attachment
   store. Facts given later without a TIN keep the vault record when their
   last four agree with the vault's TIN, and are refused when they don't
@@ -447,8 +522,10 @@ worksheet is complete, never in the books (`ledger-vault`; design in
   journaled, note }`. Without `confirmed`, a preview that changes nothing.
   Confirmed, deletes the party's vault records (needs no key) and, when the
   party has W-9 facts, journals `party.w9_set` with `vault_record` cleared,
-  the last four kept, and `kept_at` saying when and why it was purged.
-  Refused when the reason is blank or there is nothing to purge.
+  the last four kept, and `kept_at` saying when and why it was purged;
+  when it has TIN facts, `party.tin_set` likewise, with `purged` saying
+  when and why. Refused when the reason is blank or there is nothing to
+  purge.
 
 ## Tools — attachments
 
@@ -794,8 +871,38 @@ entries.
 
 ## Tools — CPA handoff
 
-- `books.export_cpa_package { as_of?, cash_accounts?, financing_accounts?, investing_accounts? }`
-  → `{ file_name, content_base64 }`. A zip with the full set, each
+- `books.export_cpa_package { as_of?, cash_accounts?, financing_accounts?,
+  investing_accounts?, include_receipts?, include_tins?, save_to? }` →
+  `{ file_name, content_base64?, saved_to?, tins_included, tin_gaps, note }`.
+  **TINs** (`include_tins`, default true; DECISION, the owner, 2026-10-15):
+  the K-1 worksheet and the 1099 worksheet carry every member's and
+  payee's full TIN from the vault, so the zip is written to `save_to` (a
+  new `.zip` path, or an existing folder it goes in as
+  `cpa-package-<as_of>.zip`; outside the books dir, `exports/` included;
+  mode 0600) and the output is its path, never its bytes; without
+  `save_to` it is refused. A locked vault or a missing TIN never fails the
+  package: the row says why ("TIN not in the vault", "the TIN vault is
+  locked", a record that disagrees with the books), the README lists it,
+  and `tin_gaps` names each member and each reportable payee without one.
+  `include_tins: false`: last fours only, returned as `content_base64`
+  unless `save_to` is given. **K-1 worksheet** (`k1-members.csv`, with
+  `[[company.members]]`): one row per member, in order: `member,
+  party_id, share, capital_account, tin, tin_type, tin_note` (without
+  TINs: `tin_last4, tin_type`), then `beginning_capital,
+  contributions_cash, contributions_property, net_income, distributions,
+  other, ending_capital` for the fiscal year to date: the statement of
+  members' equity's figures (`ledger_core::k1`), contributions split into
+  property (what a contribution debits to asset accounts other than cash,
+  receivables, and prepaid accounts: a prepaid schedule's account, or one
+  named "prepaid") and cash (the rest, including a service the members
+  paid ahead). Property in an entry crediting several members is shared
+  in proportion to their credits. An entry and its reversal both in the
+  year cancel: neither is a contribution or a distribution. A member's
+  party is the party with the member's name (not a display name) and the
+  member role, as the viewer's capital statement finds it; with none, the
+  member's TIN is a gap.
+  **1099 worksheet** with TINs adds `party_id, tin_last4, tin, tin_type,
+  tin_note`. A zip with the full set, each
   statement as PDF and XLSX: `profit-and-loss`, `balance-sheet`,
   `cash-flow` (reconciled to `cash_accounts`), `members-equity`
   (multi-member LLCs), `trial-balance`; plus `general-ledger.xlsx` and

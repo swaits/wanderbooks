@@ -2598,7 +2598,7 @@ fn cpa_package_holds_the_year_and_its_evidence() {
     let mut m = Mcp::start(&dir, "1000000.00");
     let out = m.ok(
         "books.export_cpa_package",
-        json!({"as_of": END, "cash_accounts": ["1000"]}),
+        json!({"as_of": END, "cash_accounts": ["1000"], "include_tins": false}),
     );
     assert_eq!(out["file_name"], format!("cpa-package-{END}.zip"));
     let files = unzip(&b64d(out["content_base64"].as_str().unwrap()));
@@ -2707,7 +2707,7 @@ fn cpa_package_holds_the_year_and_its_evidence() {
     // Without receipts: no evidence at all.
     let out = m.ok(
         "books.export_cpa_package",
-        json!({"as_of": END, "cash_accounts": ["1000"], "include_receipts": false}),
+        json!({"as_of": END, "cash_accounts": ["1000"], "include_receipts": false, "include_tins": false}),
     );
     let files = unzip(&b64d(out["content_base64"].as_str().unwrap()));
     assert!(

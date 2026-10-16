@@ -458,6 +458,45 @@ pub fn search(b: &Books, query: &str) -> Vec<Item> {
     out
 }
 
+/// The breadcrumb for a route, outermost first: its section, any page it
+/// sits under (a reconciliation under its account), then the route
+/// itself. Each crumb is its text and where clicking it goes; `None` for
+/// the page you're on, which isn't a link.
+///
+/// ```text
+/// INVARIANTS:
+///   1. The first crumb is the section's title, going to Section::home.
+///   2. The last crumb is the current page: describe(r) when it says
+///      anything, else the section itself (a section's own page).
+///   3. Only the last crumb is None; a crumb whose route is the current
+///      one is never a link.
+/// ```
+pub fn crumbs(b: Option<&Books>, r: &Route) -> Vec<(String, Option<Route>)> {
+    let section = r.section();
+    let here = b.map(|b| describe(b, r)).unwrap_or_default();
+    let mut out = vec![(section.title().to_string(), Some(section.home()))];
+    if let (Some(b), Route::Reconciliation(id)) = (b, r)
+        && let Some(rec) = b.reconciliation(*id)
+    {
+        let account = Route::Account(rec.account_id);
+        out.push((describe(b, &account), Some(account)));
+    }
+    if here.is_empty() {
+        out.truncate(1);
+    } else {
+        out.push((here, None));
+    }
+    for c in &mut out {
+        if c.1.as_ref() == Some(r) {
+            c.1 = None;
+        }
+    }
+    if let Some(last) = out.last_mut() {
+        last.1 = None;
+    }
+    out
+}
+
 /// A short description of a route for the breadcrumb.
 pub fn describe(b: &Books, r: &Route) -> String {
     match r {

@@ -112,7 +112,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let live = std::sync::Arc::new(std::sync::Mutex::new(live));
 
     let mut store = if data_dir.join(ledger_store::JOURNAL_FILE).exists() {
-        open_waiting_for_lock(&data_dir)?
+        match open_waiting_for_lock(&data_dir) {
+            Ok(store) => store,
+            // Books from a newer wanderbooks are fine; this server is old.
+            // Say so in plain words (the error's text), and leave them be.
+            Err(e @ ledger_store::StoreError::NewerJournal { .. }) => {
+                eprintln!("ledger-mcp: {e}");
+                std::process::exit(1);
+            }
+            Err(e) => return Err(e.into()),
+        }
     } else {
         let code = config.base_currency.as_deref().unwrap_or("USD");
         let currency = Currency::new(code).map_err(|_| format!("bad base currency {code:?}"))?;

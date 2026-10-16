@@ -8,7 +8,7 @@
 use crate::books::{Books, Integrity};
 use chrono::NaiveDate;
 use ledger_config::BooksSettings;
-use ledger_store::Snapshot;
+use ledger_store::{Snapshot, StoreError};
 use notify::{RecursiveMode, Watcher};
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -62,9 +62,30 @@ impl Loader {
 
 /// Load once, synchronously (tests and one-shot tools).
 pub fn load_once(source: &Source) -> Result<Books, String> {
-    let snap = Snapshot::load(&source.data_dir).map_err(|e| e.to_string())?;
+    let snap = Snapshot::load(&source.data_dir).map_err(|e| {
+        problem(&e, || {
+            format!("Can't read the books in {}", source.data_dir.display())
+        })
+    })?;
     let integrity = Integrity::check(&snap, &mut HashSet::new());
     Books::build(&snap, settings(source)?, today(source), None, integrity)
+}
+
+/// What the viewer says when the books can't be read. Books from a newer
+/// wanderbooks aren't broken, so they get the plain "update" message on its
+/// own, never a failure framing; anything else is `context: error`.
+pub fn problem(e: &StoreError, context: impl FnOnce() -> String) -> String {
+    match e {
+        StoreError::NewerJournal { .. } => {
+            let text = e.to_string();
+            let mut chars = text.chars();
+            chars
+                .next()
+                .map(|c| c.to_uppercase().chain(chars).collect())
+                .unwrap_or_default()
+        }
+        _ => format!("{}: {e}", context()),
+    }
 }
 
 fn today(source: &Source) -> NaiveDate {
@@ -95,10 +116,9 @@ fn run(source: Source, ctx: egui::Context, tx: Sender<Update>) {
         match Snapshot::load(&source.data_dir) {
             Ok(s) => break s,
             Err(e) => {
-                send(Update::Error(format!(
-                    "Can't read the books in {}: {e}",
-                    source.data_dir.display()
-                )));
+                send(Update::Error(problem(&e, || {
+                    format!("Can't read the books in {}", source.data_dir.display())
+                })));
                 std::thread::sleep(Duration::from_secs(2));
             }
         }
@@ -178,7 +198,9 @@ fn run(source: Source, ctx: egui::Context, tx: Sender<Update>) {
         let grew = match snap.refresh() {
             Ok(n) => n > 0,
             Err(e) => {
-                send(Update::Error(format!("Reading the journal failed: {e}")));
+                send(Update::Error(problem(&e, || {
+                    "Reading the journal failed".into()
+                })));
                 continue;
             }
         };

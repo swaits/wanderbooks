@@ -785,6 +785,11 @@ pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
             format!("Cut-off journal line set aside ({} bytes)", p["bytes"]),
             None,
         ),
+        "journal.format_set" => ev(
+            icon::FILE_TEXT,
+            format!("Journal format {} declared", p["format"]),
+            None,
+        ),
         "recurring.generated" => ev(
             icon::REPEAT,
             "Recurring draft created".into(),

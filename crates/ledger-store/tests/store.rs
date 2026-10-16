@@ -1523,7 +1523,8 @@ mod refusals {
 /// of books written before them. A journal holding what the new rules
 /// refuse (a child account of another type, partially overlapping periods,
 /// a draft line on a missing account) must still open and verify; replay
-/// goes through Ledger::replay_*.
+/// goes through Ledger::replay_*. Each phase adds what its books hold (P0,
+/// 2026-10-16: the journal format declared, `journal.format_set` format 1).
 #[test]
 fn books_written_under_older_rules_still_open() {
     use serde_json::json;
@@ -1535,6 +1536,8 @@ fn books_written_under_older_rules_still_open() {
     drop(store);
     // What an older wanderbooks could have written.
     let mut w = JournalWriter::open(&dir.join(ledger_store::JOURNAL_FILE)).unwrap();
+    w.append("journal.format_set", json!({"format": 1, "features": []}))
+        .unwrap();
     w.append(
         "account.added",
         json!({"id": 2, "code": "1010", "name": "Rent", "account_type": "Expense",
@@ -1573,6 +1576,7 @@ fn books_written_under_older_rules_still_open() {
     let _ = std::fs::remove_file(dir.join(ledger_store::DB_FILE));
     let store = Store::open(&dir).expect("older books still open");
     store.verify().unwrap();
+    assert_eq!(store.journal_format().format, 1);
     assert_eq!(store.ledger().chart().len(), 2);
     assert_eq!(store.ledger().list_periods().len(), 2);
     let lines = store.ledger().get_entry(1).unwrap().lines();

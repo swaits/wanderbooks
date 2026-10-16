@@ -3,13 +3,18 @@
 // Raw bytes (fuzz_store_open) almost never pass the hash chain, so they
 // never reach replay. Here the journal is written by the real
 // JournalWriter (whole lines, gapless seq, correct prev), starting with a
-// real store.created; the events after it are fuzz-chosen types with
-// payloads built from the field names replay reads. Oracles:
+// real store.created most of the time (else a store.created with a
+// fuzz-chosen currency or payload, or another type: the writer and the
+// viewer share one rule for the first line); the events after it are
+// fuzz-chosen types with payloads built from the field names replay
+// reads. Oracles:
 //   1. Opening never panics or hangs (an Err is fine: bad facts are
 //      refused).
 //   2. Books that open must verify (live ledger = replay = projection).
 //   3. The viewer (Snapshot::load) accepts exactly the journals the writer
 //      does, and then holds the same ledger.
+//   4. When both refuse, they agree on whether the books are newer
+//      (NewerJournal: a type or format this version doesn't read) or bad.
 #![no_main]
 
 use arbitrary::{Arbitrary, Unstructured};
@@ -25,6 +30,7 @@ const TYPES: &[&str] = &[
     "line.cleared", "payroll.run", "period.closed", "period.created", "receipt.attached",
     "receipt.linked", "receipt.unlinked", "recurring.generated", "recurring.registered",
     "schedule.posted", "schedule.registered", "vendor.1099_set", "vendor.added",
+    "journal.format_set", "settings.set",
 ];
 
 const FIELDS: &[&str] = &[
@@ -38,7 +44,7 @@ const FIELDS: &[&str] = &[
     "rate", "reason", "recurring_id", "reversal_of", "reverses", "salvage_value",
     "schedule_id", "share", "side", "size_bytes", "start", "tax_category", "tin_on_file",
     "total", "useful_life_months", "vendor_id", "type", "account_type", "rounding",
-    "members", "distributions", "sweep",
+    "members", "distributions", "sweep", "format", "features",
 ];
 
 /// A value replay might plausibly see: small ids, amounts as decimal
@@ -78,7 +84,13 @@ fuzz_target!(|data: &[u8]| {
     std::fs::create_dir_all(&dir).unwrap();
     {
         let mut w = ledger_store::JournalWriter::open(&dir.join(ledger_store::JOURNAL_FILE)).unwrap();
-        w.append("store.created", json!({"base_currency": "USD"})).unwrap();
+        let (first, payload) = match u.int_in_range(0..=7).unwrap_or(0) {
+            0 => ("store.created", object(&mut u, 0).unwrap_or_default()),
+            1 => (*u.choose(TYPES).unwrap_or(&"account.added"), object(&mut u, 0).unwrap_or_default()),
+            2 => ("store.created", json!({"base_currency": value(&mut u, 0).unwrap_or_default()})),
+            _ => ("store.created", json!({"base_currency": "USD"})),
+        };
+        w.append(first, payload).unwrap();
         for _ in 0..u.int_in_range(0..=24).unwrap_or(0) {
             let (Ok(t), Ok(p)) = (u.choose(TYPES), object(&mut u, 0)) else { break };
             w.append(t, p).unwrap();
@@ -94,7 +106,12 @@ fuzz_target!(|data: &[u8]| {
                 "the viewer and the writer read different books"
             );
         }
-        (Err(_), Err(_)) => {}
+        (Err(a), Err(b)) => {
+            let newer = |e: &ledger_store::StoreError| {
+                matches!(e, ledger_store::StoreError::NewerJournal { .. })
+            };
+            assert_eq!(newer(&a), newer(&b), "the writer says {a}; the viewer says {b}");
+        }
         (Ok(_), Err(e)) => panic!("the writer opens books the viewer refuses: {e}"),
         (Err(e), Ok(_)) => panic!("the viewer loads books the writer refuses: {e}"),
     }

@@ -997,6 +997,11 @@ fn happy_path(name: &str) -> Mcp {
         "books.void_reconciliation",
         json!({"reconciliation_id": rec, "reason": "redo after the March import"}),
     );
+    // Voided, its statement can be voided too, to record it again.
+    m.ok(
+        "books.void_statement",
+        json!({"attachment_id": stmt, "reason": "closing balance mistyped"}),
+    );
 
     // Periods.
     let p = m.ok(

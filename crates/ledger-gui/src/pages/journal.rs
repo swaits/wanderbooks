@@ -282,6 +282,16 @@ pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
                 also: account.map(Route::Account),
             })
         }
+        "statement.voided" => Some(Event {
+            icon: icon::PROHIBIT,
+            text: format!(
+                "Voided the statement recorded on {}: {}",
+                attachment_name(b, att),
+                s(p, "reason")
+            ),
+            route: Some(Route::Document(att)),
+            also: None,
+        }),
         "reconciliation.completed" => {
             let account = p.get("account_id").and_then(|v| v.as_u64());
             let balance = s(p, "statement_balance")

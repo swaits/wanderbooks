@@ -603,3 +603,49 @@ fn books_show_opens_a_reconciliation() {
     h.state_mut().show(ViewerTarget::Reconciliation { id: 999 });
     assert_eq!(h.state_mut().route(), &Route::Reconciliation(r));
 }
+
+/// ledger_store::reconcilable INVARIANT 1, the digest's rule: a liability
+/// not named for a card (an Amex) joins the accounts to reconcile once it
+/// has a recorded statement, so Needs attention asks for it as the digest
+/// does (it used to be listed by the digest only).
+#[test]
+fn a_liability_with_a_statement_needs_reconciling_whatever_its_name() {
+    let mut f = fixture("amex");
+    let amex = f
+        .store
+        .add_account("2060", "Amex", AccountType::Liability, None, false)
+        .unwrap();
+    let software = f.store.ledger().chart().find_by_code("6300").unwrap().id;
+    let e = f.store.create_entry(d(2026, 9, 3), "Amex charge").unwrap();
+    f.store
+        .add_line(e, software, Side::Debit, usd(1_000))
+        .unwrap();
+    f.store.add_line(e, amex, Side::Credit, usd(1_000)).unwrap();
+    f.store.post_entry(e).unwrap();
+    let b = load(&f.dir.0);
+    assert!(!b.reconcilable_accounts().contains(&amex));
+    let (att, _, _) = f
+        .store
+        .file_document(
+            "statement",
+            "amex-aug.pdf",
+            "application/pdf",
+            b"amex aug",
+            None,
+        )
+        .unwrap();
+    f.store
+        .record_statement(Statement {
+            attachment_id: att,
+            account_id: amex,
+            period_start: d(2026, 8, 1),
+            period_end: d(2026, 8, 31),
+            opening_balance: Decimal::ZERO,
+            closing_balance: Decimal::ZERO,
+        })
+        .unwrap();
+    let b = load(&f.dir.0);
+    assert!(b.reconcilable_accounts().contains(&amex));
+    assert_eq!(b.reconciliation_due(amex), Some(d(2026, 9, 30)));
+    assert!(reconcile_items(&b).contains(&"Reconcile Amex through Sep 30, 2026".to_string()));
+}

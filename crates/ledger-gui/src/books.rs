@@ -63,8 +63,9 @@ pub struct EntryInfo {
 /// One party an entry names, with its share.
 ///
 /// ```text
-/// SOURCE: ledger_core::shares (resolve), with Books::cash_accounts and
-///         Books::members, as the server's books.get_entry resolves them.
+/// SOURCE: ledger_core::shares (resolve), with Books::money_cash_accounts
+///         and Books::members, as the server's books.get_entry resolves
+///         them.
 /// INVARIANTS:
 ///   1. resolved: the party's part from ledger_core::shares::resolve, None
 ///      when the entry's shares don't resolve; over an entry's parties the
@@ -124,11 +125,12 @@ impl AssetTrail {
 ///   The party's entries: Ledger::entry_parties names it, alone or among
 ///     others (core tags hand tags, vendor tags, bills, invoices, their
 ///     payments, reversals).
-///   The year: the calendar year of `today`, Jan 1 through today (the
-///     year 1099s are counted in).
+///   The year: the calendar year of `today`, Jan 1 through Dec 31 (the
+///     year 1099s are counted in, and books.party's year: a posted entry,
+///     invoice, or bill dated later this year counts).
 ///   Money: Books::activity (ledger_core::parties::activity_with with
-///     Books::cash_accounts and Books::members: a party's share of an
-///     entry naming several; the same numbers books.party reports).
+///     Books::money_cash_accounts and Books::members: a party's share of
+///     an entry naming several; the same numbers books.party reports).
 /// INVARIANTS:
 ///   1. entries: every entry that is the party's, drafts included, in
 ///      Books::entries order (newest first).
@@ -233,17 +235,19 @@ pub struct Books {
     pub members: Vec<ledger_core::PartyMember>,
     /// `[books] financing_accounts`, resolved (empty when not set).
     pub financing_accounts: Vec<AccountId>,
-    /// The cash accounts the member capital statement hands
-    /// ledger_core::k1 to tell cash from property: `[books]
-    /// cash_accounts`, resolved; when that is empty, core's fallback
-    /// (ledger_core::parties::money_accounts: every asset account but
-    /// receivables), so the viewer reads money as core does. Without the
-    /// setting every contribution therefore reads as cash: property can't
-    /// be told from cash without knowing which accounts hold cash.
-    /// Kept apart from `cash_accounts`, whose name-based guess the Cash
-    /// page, dashboard and charts keep (changing those is out of scope:
-    /// "every asset" would put equipment on the Cash page).
-    pub k1_cash_accounts: Vec<AccountId>,
+    /// The cash accounts every number the server also reports reads
+    /// money with: `[books] cash_accounts`, resolved; when that is empty,
+    /// core's fallback (ledger_core::parties::money_accounts: every asset
+    /// account but receivables), exactly as the server passes them. Party
+    /// money (Books::activity, shares, what for), the party 1099 line, and
+    /// the member capital statement (ledger_core::k1, to tell cash from
+    /// property) all use it, so the viewer shows books.party's,
+    /// books.parties' and the K-1 export's numbers. Without the setting
+    /// every contribution therefore reads as cash: property can't be told
+    /// from cash without knowing which accounts hold cash. Kept apart from
+    /// `cash_accounts`, whose name-based guess the Cash page, dashboard and
+    /// charts keep ("every asset" would put equipment on the Cash page).
+    pub money_cash_accounts: Vec<AccountId>,
     /// `[books] investing_accounts`, resolved (empty when not set).
     pub investing_accounts: Vec<AccountId>,
     pub card_accounts: Vec<AccountId>,
@@ -292,8 +296,8 @@ pub enum PartyPeriod {
 ///       get back?" (owner, 2026-10-15) with the books' own numbers.
 /// SOURCE: ledger_core::parties::activity_with (paid, received) and
 ///         ledger_core::parties::entry_flow (what for), with
-///         Books::cash_accounts and Books::members, as PartyInfo uses
-///         them.
+///         Books::money_cash_accounts and Books::members, as PartyInfo
+///         uses them.
 /// INVARIANTS:
 ///   1. paid, received: Books::activity(party, span)'s, exactly.
 ///   2. net() = paid − received.
@@ -364,11 +368,11 @@ pub struct CapitalLine {
 /// SOURCE: ledger_core::k1::k1_detail (members_equity's roll-forward,
 ///         split into cash and property); ledger_config::Company::members
 ///         ([[company.members]], all of them, in order, as the CPA
-///         package builds its MemberCapital list); Books::k1_cash_accounts;
+///         package builds its MemberCapital list); Books::money_cash_accounts;
 ///         Books::financing_accounts; DECISION (the due-to accounts, and
 ///         the cash fallback, below).
 /// DEFINITIONS:
-///   row: k1_detail(span, members, k1_cash_accounts).rows[i], i this
+///   row: k1_detail(span, members, money_cash_accounts).rows[i], i this
 ///     member's position in [[company.members]] (matched by capital
 ///     account).
 /// INVARIANTS:
@@ -538,14 +542,13 @@ impl Books {
         let receipt_threshold = policy.threshold();
         let cash_accounts = cash_accounts(&ledger, &settings);
         let members = settings.company.party_members(&ledger);
-        let share_money = ledger_core::parties::money_accounts(&ledger, &cash_accounts);
         let codes = |cs: &[String]| -> Vec<AccountId> {
             cs.iter()
                 .filter_map(|c| ledger.chart().find_by_code(c).map(|a| a.id))
                 .collect()
         };
         let financing_accounts = codes(&settings.financing_accounts);
-        let k1_cash_accounts = {
+        let money_cash_accounts = {
             let configured = codes(&settings.cash_accounts);
             if configured.is_empty() {
                 let mut all: Vec<AccountId> = ledger_core::parties::money_accounts(&ledger, &[])
@@ -558,15 +561,9 @@ impl Books {
                 configured
             }
         };
+        let share_money = ledger_core::parties::money_accounts(&ledger, &money_cash_accounts);
         let investing_accounts = codes(&settings.investing_accounts);
-        let card_accounts: Vec<AccountId> = ledger
-            .chart()
-            .all()
-            .filter(|a| {
-                a.account_type == AccountType::Liability && a.name.to_lowercase().contains("card")
-            })
-            .map(|a| a.id)
-            .collect();
+        let card_accounts = ledger_store::reconcilable::card_accounts(&ledger);
 
         // Journal events per entry.
         let mut events: HashMap<EntryId, Vec<usize>> = HashMap::new();
@@ -755,7 +752,7 @@ impl Books {
             cash_accounts,
             members,
             financing_accounts,
-            k1_cash_accounts,
+            money_cash_accounts,
             investing_accounts,
             card_accounts,
             fresh,
@@ -962,8 +959,7 @@ impl Books {
     fn party_infos(&self) -> BTreeMap<PartyId, PartyInfo> {
         let l = &self.ledger;
         let year = self.today.year();
-        let year_start = NaiveDate::from_ymd_opt(year, 1, 1).expect("valid");
-        let in_year = |d: NaiveDate| d >= year_start && d <= self.today;
+        let in_year = |d: NaiveDate| d.year() == year;
         let mut out: BTreeMap<PartyId, PartyInfo> = l
             .parties()
             .map(|p| {
@@ -977,7 +973,7 @@ impl Books {
             })
             .collect();
         for (id, info) in out.iter_mut() {
-            let a = self.activity(*id, (year_start, self.today));
+            let a = self.activity(*id, self.party_span(PartyPeriod::ThisYear));
             info.entries = self
                 .entries
                 .iter()
@@ -1281,15 +1277,15 @@ impl Books {
     }
 
     /// The accounts the books expect to reconcile monthly: the cash
-    /// accounts, then the card accounts, each once.
+    /// accounts, then the card accounts, then any other liability with a
+    /// recorded statement, each once (ledger_store::reconcilable, the
+    /// server's digest rule).
     pub fn reconcilable_accounts(&self) -> Vec<AccountId> {
-        let mut out = self.cash_accounts.clone();
-        for a in &self.card_accounts {
-            if !out.contains(a) {
-                out.push(*a);
-            }
-        }
-        out
+        ledger_store::reconcilable::reconcilable_accounts(
+            &self.ledger,
+            &self.cash_accounts,
+            &self.statements,
+        )
     }
 
     /// When an account is due a reconciliation: the date it should be
@@ -1301,7 +1297,9 @@ impl Books {
     ///       attachments.md, Reconciliations: "an account with activity
     ///       not reconciled through last month's end").
     /// SOURCE: that rule; CONVENTION (a bank or card statement closes
-    ///         monthly; AGENTS.md's monthly close reconciles the bank).
+    ///         monthly; AGENTS.md's monthly close reconciles the bank);
+    ///         ledger_store::reconcilable (the server's digest reads the
+    ///         same function).
     /// INVARIANTS:
     ///   1. Some(last_month_end()) iff the account has a posted line
     ///      dated on or before last_month_end() (activity to reconcile)
@@ -1310,28 +1308,48 @@ impl Books {
     ///   2. None otherwise (including activity only this month).
     /// ```
     pub fn reconciliation_due(&self, account: AccountId) -> Option<NaiveDate> {
-        let through = self.last_month_end();
-        let active = self
-            .ledger
-            .posted_entries()
-            .any(|e| e.date() <= through && e.lines().iter().any(|l| l.account == account));
-        (active && self.reconciled_through(account).is_none_or(|d| d < through)).then_some(through)
+        ledger_store::reconcilable::reconciliation_due(
+            &self.ledger,
+            &self.reconciliations,
+            account,
+            self.today,
+        )
     }
 
     // ------------------------------------------------------------------
     // A party's money over a span
     // ------------------------------------------------------------------
 
-    /// The dates a [`PartyPeriod`] covers: a year is January 1 to
-    /// December 31, cut at today; all time starts at the earliest entry
-    /// in the books (today when there is none).
+    /// The dates a [`PartyPeriod`] covers.
+    ///
+    /// ```text
+    /// GOAL: the viewer's totals are books.party's for the same year
+    ///       (PartyTotalsOut: "the viewer shows the same numbers").
+    /// INVARIANTS:
+    ///   1. A year is January 1 to December 31, cut at the later of today
+    ///      and its last posted entry: no posted entry of the year falls
+    ///      outside it (so its sums are the calendar year's exactly), and
+    ///      months after today with nothing posted aren't shown.
+    ///   2. All time starts at the earliest entry in the books (today when
+    ///      there is none) and ends at the later of today and the last
+    ///      posted entry.
+    /// ```
     pub fn party_span(&self, period: PartyPeriod) -> (NaiveDate, NaiveDate) {
+        let last_posted = |within: Option<i32>| {
+            self.entries
+                .iter()
+                .filter(|e| e.status == EntryStatus::Posted)
+                .filter(|e| within.is_none_or(|y| e.date.year() == y))
+                .map(|e| e.date)
+                .max()
+                .map_or(self.today, |d| d.max(self.today))
+        };
         let year = |y: i32| {
             (
                 NaiveDate::from_ymd_opt(y, 1, 1).expect("valid"),
                 NaiveDate::from_ymd_opt(y, 12, 31)
                     .expect("valid")
-                    .min(self.today),
+                    .min(last_posted(Some(y))),
             )
         };
         match period {
@@ -1346,7 +1364,7 @@ impl Books {
                     .min()
                     .unwrap_or(self.today)
                     .min(self.today);
-                (first, self.today)
+                (first, last_posted(None))
             }
         }
     }
@@ -1419,29 +1437,7 @@ impl Books {
             let mut by: BTreeMap<AccountId, Decimal> = BTreeMap::new();
             for e in &posted {
                 let flow = ledger_core::parties::entry_flow(e, &money);
-                let share = if l.entry_parties(e.id()).len() == 1 {
-                    flow.net
-                } else {
-                    self.party_share(e, party)
-                };
-                // A member's own capital lines are what their share was
-                // for, when they account for it exactly.
-                let own: Vec<(AccountId, Decimal)> = self
-                    .member(party)
-                    .map(|m| {
-                        flow.what_for
-                            .iter()
-                            .copied()
-                            .filter(|(a, _)| *a == m.capital || Some(*a) == m.distributions)
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let parts =
-                    if !own.is_empty() && own.iter().map(|(_, v)| *v).sum::<Decimal>() == share {
-                        own
-                    } else {
-                        share_of_what_for(&flow, share)
-                    };
+                let parts = self.party_what_for(e, party, &flow);
                 for (account, amount) in parts {
                     *by.entry(account).or_default() += amount;
                 }
@@ -1457,8 +1453,9 @@ impl Books {
         }
     }
 
-    /// ledger_core::parties::activity_with over `span`, with the books'
-    /// cash accounts and members: the one source of a party's money.
+    /// ledger_core::parties::activity_with over `span`, with
+    /// Books::money_cash_accounts and the members: the one source of a
+    /// party's money, the server's own (books.party, books.parties).
     pub fn activity(
         &self,
         party: PartyId,
@@ -1468,9 +1465,82 @@ impl Books {
             &self.ledger,
             party,
             span,
-            &self.cash_accounts,
+            &self.money_cash_accounts,
             &self.members,
         )
+    }
+
+    /// One entry's what-for, for one party (see [`PartyFlow`] INVARIANT
+    /// 3): its fraction of the entry's entry_flow what_for, summing to its
+    /// money share exactly (zero when the entry moves no money, like a
+    /// bill or a contribution of property).
+    ///
+    /// ```text
+    /// The fraction: 1 for an entry with one party; else its resolved
+    ///   share over what the shares split (the net, or the entry's total
+    ///   debits when the net is zero).
+    /// A member's own capital and distribution lines are theirs in full;
+    ///   another member's are never theirs. Every other line is scaled by
+    ///   the fraction (to the cent, toward zero), and the first scaled line
+    ///   takes the leftover so the parts sum to the money share.
+    /// ```
+    pub fn party_what_for(
+        &self,
+        e: &ledger_core::JournalEntry,
+        party: PartyId,
+        flow: &ledger_core::parties::EntryFlow,
+    ) -> Vec<(AccountId, Decimal)> {
+        use rust_decimal::RoundingStrategy::ToZero;
+        let parties = self.ledger.entry_parties(e.id()).len();
+        if parties <= 1 {
+            return flow.what_for.clone();
+        }
+        let resolved = self.party_share(e, party);
+        let target = if flow.net.is_zero() {
+            e.lines()
+                .iter()
+                .filter(|l| l.side == Side::Debit)
+                .map(|l| l.amount.amount)
+                .sum::<Decimal>()
+        } else {
+            flow.net
+        };
+        if target.is_zero() {
+            return Vec::new();
+        }
+        let fraction = resolved / target;
+        let money_share = if flow.net.is_zero() {
+            Decimal::ZERO
+        } else {
+            resolved
+        };
+        let me = self.member(party).copied();
+        let member_line = |a: AccountId| {
+            self.members
+                .iter()
+                .any(|m| m.capital == a || m.distributions == Some(a))
+        };
+        let mut own: Vec<(AccountId, Decimal)> = Vec::new();
+        let mut scaled: Vec<(AccountId, Decimal)> = Vec::new();
+        for &(a, v) in &flow.what_for {
+            if me.is_some_and(|m| m.capital == a || m.distributions == Some(a)) {
+                own.push((a, v));
+            } else if !member_line(a) {
+                scaled.push((a, (v * fraction).round_dp_with_strategy(2, ToZero)));
+            }
+        }
+        let have: Decimal = own.iter().chain(&scaled).map(|(_, v)| *v).sum();
+        let left = money_share - have;
+        if !left.is_zero() {
+            match scaled.first_mut() {
+                Some(first) => first.1 += left,
+                None => own.push((e.lines()[0].account, left)),
+            }
+        }
+        own.into_iter()
+            .chain(scaled)
+            .filter(|(_, v)| !v.is_zero())
+            .collect()
     }
 
     /// A party's resolved share of an entry's flow (its entry_flow net
@@ -1499,7 +1569,8 @@ impl Books {
             .iter()
             .position(|x| x.capital_account == m.capital)?;
         let detail =
-            ledger_core::k1::k1_detail(l, span.0, span.1, &members, &self.k1_cash_accounts).ok()?;
+            ledger_core::k1::k1_detail(l, span.0, span.1, &members, &self.money_cash_accounts)
+                .ok()?;
         let row = detail.rows.get(i)?;
         let lines: Vec<CapitalLine> = detail
             .lines
@@ -1605,18 +1676,21 @@ impl Books {
     }
 
     /// A party's 1099 worksheet line for a calendar year and that year's
-    /// threshold: ledger-core's vendor_1099_report_with (cash and
-    /// financing accounts) line for its vendor record; None without a
-    /// vendor record in the report, or when the year's threshold isn't
-    /// known.
+    /// threshold: ledger-core's vendor_1099_report_with_members line for
+    /// its vendor record, with Books::money_cash_accounts, the financing
+    /// accounts and the members (the server's books.vendor_1099 and
+    /// books.party amount_1099); None without a vendor record in the
+    /// report, or when the year's threshold isn't known.
     pub fn party_1099(&self, party: PartyId, year: i32) -> Option<(Vendor1099Line, Decimal)> {
         let l = &self.ledger;
         let vendor = l.get_party(party)?.vendor?;
         let sources = ledger_core::PaymentAccounts {
-            cash: self.cash_accounts.clone(),
+            cash: self.money_cash_accounts.clone(),
             financing: self.financing_accounts.clone(),
         };
-        let r = ledger_core::vendor_1099_report_with(l, year, None, &sources).ok()?;
+        let r =
+            ledger_core::vendor_1099_report_with_members(l, year, None, &sources, &self.members)
+                .ok()?;
         let line = r.vendors.iter().find(|v| v.vendor_id == vendor)?.clone();
         Some((line, r.threshold))
     }
@@ -1816,26 +1890,8 @@ fn origin(events: &[usize], journal: &[JournalLine], closing: bool) -> &'static 
 }
 
 /// Cash accounts: from `[books] cash_accounts`, else asset accounts whose
-/// names say they hold cash.
+/// names say they hold cash (ledger_store::reconcilable::cash_accounts,
+/// as the server's digest reads them).
 fn cash_accounts(ledger: &Ledger, settings: &BooksSettings) -> Vec<AccountId> {
-    if !settings.cash_accounts.is_empty() {
-        return settings
-            .cash_accounts
-            .iter()
-            .filter_map(|c| ledger.chart().find_by_code(c).map(|a| a.id))
-            .collect();
-    }
-    ledger
-        .chart()
-        .all()
-        .filter(|a| {
-            let n = a.name.to_lowercase();
-            a.account_type == AccountType::Asset
-                && !a.placeholder
-                && ["cash", "bank", "checking", "savings", "money market"]
-                    .iter()
-                    .any(|w| n.contains(w))
-        })
-        .map(|a| a.id)
-        .collect()
+    ledger_store::reconcilable::cash_accounts(ledger, &settings.cash_accounts)
 }

@@ -238,8 +238,12 @@ closed period).
   both in a statement's span are neither contributions nor
   distributions (`reports::cancelled_in_span`; the K-1 worksheet reads
   the same). The K-1 worksheet's contributed property (Item L) is what
-  the member owned and handed over, with its own basis (§723): never a
-  prepaid service they paid for the company (cash), and shared among
+  the member owned and handed over, with its own basis (§723): a prepaid
+  service contract credited straight to capital is property (a contract
+  handed over), while a prepaid service they paid a vendor for on the
+  company's behalf, booked through Due to Shareholders (Dr prepaid / Cr
+  2100, then Dr 2100 / Cr capital), is cash (DECISION, the owner,
+  2026-10-15); and it is shared among
   members credited in one entry in proportion to their credits
   (`k1` INVARIANTS 3, 4, 6).
 

@@ -17,18 +17,19 @@
 //!   2. contributions_cash + contributions_property = contributions,
 //!      exactly, per member.
 //!   3. Property is what an entry crediting a member's capital account
-//!      debits to asset accounts that are neither cash (`cash`),
-//!      receivables, nor prepaid: equipment, a vehicle, software a member
-//!      hands the company. The rest of a contribution is cash: deposits,
-//!      and what a member paid for the company (an expense, a debt they
-//!      took on, e.g. Dr 2100 / Cr capital, or a service paid in advance).
-//!      A prepaid account is the balance account of a prepaid-expense
-//!      schedule, or an asset account whose name says "prepaid" (1300
-//!      Prepaid Expenses before its schedule exists): a member paying the
-//!      company's service in advance paid cash on its behalf, and it reads
-//!      the same booked to capital directly or through 2100. Item L
-//!      property is property the member owned, with its own basis
-//!      (§723), never cash they spent for the company.
+//!      debits to asset accounts that are neither cash (`cash`) nor
+//!      receivables: equipment, a vehicle, software, or the unexpired part
+//!      of a service contract (AppleCare+, a prepaid subscription) that a
+//!      member owned and hands the company, each with its own basis
+//!      (§723). The rest of a contribution is cash: deposits, and what a
+//!      member paid for the company (an expense booked straight to
+//!      capital, or a debt they took on, e.g. Dr 2100 / Cr capital). A
+//!      member who pays a vendor for the company's prepaid service is
+//!      booked through Due to Shareholders (Dr prepaid / Cr 2100), then
+//!      converted (Dr 2100 / Cr capital): cash. A prepaid credited
+//!      straight to capital is a contract they handed over: property.
+//!      (DECISION, owner, 2026-10-15, after the AppleCare+ contributed
+//!      with the MacBook read as cash.)
 //!   4. Within one entry, the property (at most the members' credits in
 //!      it) is shared among the members credited in proportion to their
 //!      credits, to the cent, leftover cents by largest remainder
@@ -52,12 +53,16 @@
 //!   1. A joint 1,000.00 contribution (Dr 1000 / Cr 3000 500, Cr 3001
 //!      500) reversed the next day: each member 0.00 contributed, 0.00
 //!      distributed.
-//!   2. Members prepay an annual service from joint funds straight to
-//!      capital (Dr 1300 Prepaid 3,000 / Cr 3000 1,500, Cr 3001 1,500):
-//!      1,500.00 cash each, no property.
+//!   2. Members pay a vendor ahead for the company's annual service from
+//!      joint funds, through Due to Shareholders (Dr 1300 Prepaid 3,000 /
+//!      Cr 2100 3,000), later converted to capital (Dr 2100 3,000 / Cr
+//!      3000 1,500, Cr 3001 1,500): 1,500.00 cash each, no property.
 //!   3. A joint mixed contribution (Dr 1000 600, Dr 1500 400 / Cr 3000
 //!      500, Cr 3001 500): each member 300.00 cash and 200.00 property,
 //!      whichever member is listed first.
+//!   4. Members hand the company a service contract they already owned,
+//!      straight to capital (Dr 1300 Prepaid 3,000 / Cr 3000 1,500, Cr
+//!      3001 1,500): 1,500.00 property each, no cash.
 //! ```
 
 use crate::reports::{MemberCapital, members_equity};
@@ -165,18 +170,13 @@ pub fn k1_detail(
     let receivables = ledger.role_account(&crate::RECEIVABLES);
     let closings = ledger.closing_entry_ids();
     let cancelled = crate::reports::cancelled_in_span(ledger, start, end);
-    let prepaid: Vec<AccountId> = ledger
-        .schedules()
-        .filter(|s| s.kind == crate::schedules::ScheduleKind::PrepaidExpense)
-        .map(|s| s.balance_account)
-        .collect();
     let property_account = |id: AccountId| {
         !cash.contains(&id)
             && Some(id) != receivables
-            && !prepaid.contains(&id)
-            && ledger.chart().get(id).is_some_and(|a| {
-                a.account_type == AccountType::Asset && !a.name.to_lowercase().contains("prepaid")
-            })
+            && ledger
+                .chart()
+                .get(id)
+                .is_some_and(|a| a.account_type == AccountType::Asset)
     };
     let sum = |e: &crate::JournalEntry, side: Side, account: AccountId| -> Decimal {
         e.lines()
@@ -701,13 +701,13 @@ mod tests {
         assert_eq!(split(&bk, &ms), vec![back, back]);
     }
 
-    /// INVARIANT 3 and SCENARIO 2, by hand: members prepay a 3,000 annual
-    /// service straight to capital (Dr 1300 Prepaid / Cr 3000 1,500, Cr
-    /// 3001 1,500): 1,500 cash each, no property, as when routed through
-    /// 2100. A prepaid-expense schedule's account is prepaid whatever its
-    /// name.
+    /// INVARIANT 3, by hand: a contract the members hand over (Dr 1300
+    /// Prepaid 25 / Cr 3000 12.50, Cr 3001 12.50, the AppleCare+ with the
+    /// MacBook) is property, 12.50 each. Members paying a 3,000 annual
+    /// service for the company go through 2100: Dr 1300 / Cr 2100 3,000,
+    /// then Dr 2100 / Cr 3000 1,500, Cr 3001 1,500: 1,500 cash each.
     #[test]
-    fn a_prepaid_service_paid_by_members_is_cash() {
+    fn a_contract_handed_over_is_property_a_service_paid_for_is_cash() {
         let mut bk = books();
         let (prepaid, a, b) = (bk.prepaid, bk.a, bk.b);
         post(
@@ -715,45 +715,90 @@ mod tests {
             1,
             5,
             &[
-                (prepaid, Side::Debit, "3000"),
+                (prepaid, Side::Debit, "25"),
+                (a, Side::Credit, "12.50"),
+                (b, Side::Credit, "12.50"),
+            ],
+        );
+        let ms = members(&bk);
+        let handed = (d("0"), d("12.50"), d("0"));
+        assert_eq!(split(&bk, &ms), vec![handed, handed]);
+        let due =
+            bk.l.add_account(
+                "2100",
+                "Due to Members",
+                AccountType::Liability,
+                None,
+                false,
+            )
+            .unwrap();
+        post(
+            &mut bk.l,
+            2,
+            1,
+            &[(prepaid, Side::Debit, "3000"), (due, Side::Credit, "3000")],
+        );
+        post(
+            &mut bk.l,
+            2,
+            2,
+            &[
+                (due, Side::Debit, "3000"),
+                (a, Side::Credit, "1500"),
+                (b, Side::Credit, "1500"),
+            ],
+        );
+        let each = (d("1500"), d("12.50"), d("0"));
+        assert_eq!(split(&bk, &ms), vec![each, each]);
+    }
+
+    /// SCENARIOS 2 and 4 exactly as the module doc states them: 3,000 of
+    /// prepaid service through 2100 is 1,500.00 cash each; the same 3,000
+    /// straight to capital is 1,500.00 property each.
+    #[test]
+    fn scenarios_2_and_4_prepaid_through_2100_is_cash_straight_to_capital_is_property() {
+        let mut bk = books();
+        let (prepaid, a, b) = (bk.prepaid, bk.a, bk.b);
+        let due =
+            bk.l.add_account(
+                "2100",
+                "Due to Shareholders",
+                AccountType::Liability,
+                None,
+                false,
+            )
+            .unwrap();
+        post(
+            &mut bk.l,
+            1,
+            5,
+            &[(prepaid, Side::Debit, "3000"), (due, Side::Credit, "3000")],
+        );
+        post(
+            &mut bk.l,
+            1,
+            6,
+            &[
+                (due, Side::Debit, "3000"),
                 (a, Side::Credit, "1500"),
                 (b, Side::Credit, "1500"),
             ],
         );
         let ms = members(&bk);
-        let each = (d("1500"), d("0"), d("0"));
-        assert_eq!(split(&bk, &ms), vec![each, each]);
-        // An account named otherwise, backing a prepaid schedule.
-        let ins =
-            bk.l.add_account(
-                "1310",
-                "Insurance paid ahead",
-                AccountType::Asset,
-                None,
-                false,
-            )
-            .unwrap();
-        let exp =
-            bk.l.add_account("6300", "Insurance", AccountType::Expense, None, false)
-                .unwrap();
+        let cash = (d("1500"), d("0"), d("0"));
+        assert_eq!(split(&bk, &ms), vec![cash, cash]);
         post(
             &mut bk.l,
             2,
             1,
-            &[(ins, Side::Debit, "1200"), (a, Side::Credit, "1200")],
+            &[
+                (prepaid, Side::Debit, "3000"),
+                (a, Side::Credit, "1500"),
+                (b, Side::Credit, "1500"),
+            ],
         );
-        assert_eq!(split(&bk, &ms)[0].1, d("1200"), "no schedule yet: property");
-        bk.l.register_schedule(crate::schedules::NewSchedule {
-            description: "2026 insurance".into(),
-            kind: crate::schedules::ScheduleKind::PrepaidExpense,
-            total: Money::new(d("1200"), Currency::USD),
-            start: NaiveDate::from_ymd_opt(2026, 2, 1).unwrap(),
-            months: 12,
-            balance_account: ins,
-            pl_account: exp,
-        })
-        .unwrap();
-        assert_eq!(split(&bk, &ms)[0], (d("2700"), d("0"), d("0")));
+        let both = (d("1500"), d("1500"), d("0"));
+        assert_eq!(split(&bk, &ms), vec![both, both]);
     }
 
     /// INVARIANT 4 and SCENARIO 3, by hand: Dr 1000 600, Dr 1500 400 /

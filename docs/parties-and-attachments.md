@@ -109,6 +109,16 @@ derived. Spec: `ledger_core::shares`.
   member gets what their own lines say (and those must account for all
   it moved); otherwise each gets their income share, rescaled to the
   members named, rounded as percents are.
+- **Posted is forever, the split included:** when an entry naming
+  several parties with derived shares posts (or a posted entry is tagged
+  so), the server records the exact amounts they resolve to
+  (`entry.parties_set` with amounts), so a later change to
+  `[[company.members]]` (a new income split, a member archived) never
+  re-splits posted history. A draft's derived shares follow the settings
+  until it posts. An archived member stays a member for their history
+  (`Company::party_members` falls back to the archived party of that
+  name). Entries posted with derived shares before this rule keep them
+  until re-tagged with `books.set_entry_party`.
 - **Refused** (journaling nothing): a party named twice, an unknown
   party, mixed kinds of share, percents not summing to 100, an amount
   finer than a cent, and two parties with vendor records. A 1099 counts
@@ -126,6 +136,14 @@ derived. Spec: `ledger_core::shares`.
   every share, so a reversal subtracts each party's part; re-tagging
   either one (parties, shares, or vendor) re-tags the other, so the pair
   always nets to zero.
+  A reversal counts on its root original's side, so reversing the
+  reversal reinstates the payment as paid (never a negative received).
+- **One number everywhere:** `books.party`, `books.parties`, and the
+  viewer's party page and directory read cash as the server does
+  (`[books] cash_accounts`, else every asset account but receivables)
+  and count the whole calendar year, so a posted entry dated later this
+  year counts in both. The viewer shows the year up to the later of today
+  and its last posted entry.
 - **For the agent:** a joint member transaction (a reimbursement on Due
   to Shareholders, a contribution or distribution from joint funds)
   names both members with no shares and lets them derive; an uneven
@@ -315,17 +333,26 @@ statement_balance, cleared: [(entry_id, line)], attachment_id}`. It
 refuses unless the difference is exactly zero and a statement for that
 account and date is attached (the receipt rule's twin). A reconciliation
 is never edited; a later one supersedes it; `reconciliation.voided
-{id, reason}` exists for mistakes. Viewer: per-account reconciliation
+{id, reason}` exists for mistakes. While it stands, the lines it
+recorded as cleared can't be un-cleared (void it first), and nothing is
+journaled when it is refused (a withdrawn statement file included). A
+statement recorded wrong is voided (`statement.voided {attachment_id,
+reason}`, refused while a reconciliation rests on it) and recorded again
+on the same file; withdrawing a statement's file retires its statement. Viewer: per-account reconciliation
 history with its statement; Needs-attention: an account with activity not
 reconciled through last month's end.
 
 Tools (built; `docs/mcp-interface.md` "Tools — bank reconciliation"):
 `books.record_statement`, `books.statements`, `books.reconcile` (preview
 by default; `statement_attachment` + `confirmed: true` records it),
-`books.reconciliations`, `books.void_reconciliation`; `books.show
-reconciliation`; `books.digest` `unreconciled_accounts` (the `[books]
-cash_accounts` and liabilities with statements, not reconciled through
-last month's end). The statement of a reconciliation not voided can't be
+`books.reconciliations`, `books.void_reconciliation`,
+`books.void_statement`; `books.show
+reconciliation`; `books.digest` `unreconciled_accounts` and the
+viewer's Needs attention, one rule (`ledger_store::reconcilable`): the
+cash accounts (`[books] cash_accounts`, else assets named for cash), the
+card accounts (liabilities named "card", before their first statement),
+and other liabilities with statements, not reconciled through last
+month's end). The statement of a reconciliation not voided can't be
 unlinked from it.
 
 ### Import sources
@@ -378,6 +405,18 @@ without forcing one style. `[books] parties = "off" | "suggest" |
 - `require`: posting is refused until the entry names a party or is
   marked as having none (transfers, depreciation, amortization, closes
   are exempt by kind).
+  The engine's own posting paths name their counterparty or are refused
+  first, so nothing posts around the rule: `books.run_payroll` names each
+  line's employee party on the entry (each with their net pay) and, under
+  `require`, refuses a line without one; `books.remit_payroll_taxes`
+  takes `agency` (required under `require`); `books.dispose_asset` takes
+  `buyer` (required under `require` for a sale with proceeds; a
+  retirement with no proceeds and no buyer is marked as having none).
+- **Marks follow the chain:** a reversal carries its original's parties,
+  shares, vendor tag, and no-party mark; marking or tagging any entry of a
+  reversal chain marks or tags them all. Tagging a vendor (or any party)
+  clears a no-party mark, so an entry never names a party and carries the
+  mark at once.
 
 Also: memorized matches (journaled rules like description contains
 "OPENROUTER" → OpenRouter, applied by bank-CSV import and new drafts,

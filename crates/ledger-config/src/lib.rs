@@ -81,18 +81,26 @@ impl Default for Company {
 impl Company {
     /// The members as party shares see them ([`ledger_core::PartyMember`]):
     /// each member whose name (ignoring case and surrounding space) is a
-    /// party with the member role not archived, and whose capital account
-    /// is in the chart. Members missing either are left out, so their
-    /// shares can't be derived (and the viewer shows no capital
-    /// statement for them).
+    /// party with the member role, and whose capital account is in the
+    /// chart. The party not archived of that name when there is one, else
+    /// the most recent archived one: archiving a member ("no longer dealt
+    /// with; history stays") never takes their history away. Members
+    /// missing either are left out, so their shares can't be derived (and
+    /// the viewer shows no capital statement for them).
     pub fn party_members(&self, ledger: &ledger_core::Ledger) -> Vec<ledger_core::PartyMember> {
+        let is_member = |p: &&ledger_core::Party| p.roles.contains(&ledger_core::Role::Member);
         self.members
             .iter()
             .filter_map(|m| {
-                let party = ledger.party_by_name(&m.name)?;
-                if !party.roles.contains(&ledger_core::Role::Member) {
-                    return None;
-                }
+                let key = ledger_core::parties::name_key(&m.name);
+                let party = match ledger.party_by_name(&m.name) {
+                    Some(p) => Some(p).filter(is_member)?,
+                    None => ledger
+                        .parties()
+                        .filter(|p| p.archived && ledger_core::parties::name_key(&p.name) == key)
+                        .filter(is_member)
+                        .max_by_key(|p| p.id)?,
+                };
                 Some(ledger_core::PartyMember {
                     party: party.id,
                     share: m.share,

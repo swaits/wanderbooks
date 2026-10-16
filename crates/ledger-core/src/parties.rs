@@ -514,22 +514,38 @@ pub struct EntryFlow {
 ///   down = min(liab_dr, cash_cr): cash paying down a liability (its
 ///     creditor is paid; the liability is what for);
 ///   up = min(liab_cr, cash_dr): a liability raising cash (borrowing: the
-///     lender pays the company).
+///     lender pays the company);
+///   left(a), for each money liability a: its debits less what of them
+///     `down` takes, less its credits less what of them `up` takes (`down`
+///     and `up` taken from its lines in line order), so one account's
+///     debits and credits offset first;
+///   across = min(Σ left(a) > 0, Σ −left(a) < 0): one liability paying
+///     down another (a member paying the card from their own funds: Dr
+///     2050 / Cr 2100; a loan paying off a card): the debited liability's
+///     creditor is paid, by the credited one's.
 /// INVARIANTS:
-///   1. net = (cash_cr − cash_dr) + (liab_cr − liab_dr) + down − up.
+///   1. net = (cash_cr − cash_dr) + (liab_cr − liab_dr) + down − up
+///      + across.
 ///   2. what_for: every line not on a money account (debits − credits),
 ///      plus `down` on the debited liabilities and −`up` on the credited
-///      ones (in line order), zero sums left out, accounts merged; its sum
-///      is net exactly, because the entry balances.
+///      ones (in line order), plus `across` on the liabilities with
+///      left(a) > 0 (in order of first appearance), zero sums left out,
+///      accounts merged; its sum is net exactly, because the entry
+///      balances.
 /// SCENARIOS:
 ///   1. Expense from the bank, on a card, or paid by a member for the
 ///      company (Dr expense / Cr 1000, 2050, or 2100): net is the amount.
 ///   2. Reimbursing members (Dr 2100 / Cr 1000) or paying a card (Dr 2050 /
 ///      Cr 1000): net is the amount, what for is the liability.
 ///   3. A loan (Dr 1000 / Cr loan): net is minus the amount (received).
-///   4. A refund (Dr 1000 or Dr card / Cr expense): negative net.
+///   4. A refund (Dr 1000 or Dr card / Cr expense): negative net. A charge
+///      and a refund on the same card in one entry net on that card: no
+///      card paid down.
 ///   5. A transfer between the company's own cash accounts: zero.
 ///   6. A member contributing property (Dr equipment / Cr capital): zero.
+///   7. A member paying the card bill from their own funds (Dr 2050 / Cr
+///      2100), or a loan paying it off (Dr 2050 / Cr loan): net is the
+///      amount, what for is the card, as if paid from the bank.
 /// ```
 pub fn entry_flow(entry: &crate::JournalEntry, money: &MoneyAccounts) -> EntryFlow {
     use crate::Side;
@@ -552,40 +568,72 @@ pub fn entry_flow(entry: &crate::JournalEntry, money: &MoneyAccounts) -> EntryFl
     }
     let down = liab_dr.min(cash_cr);
     let up = liab_cr.min(cash_dr);
-    let net = (cash_cr - cash_dr) + (liab_cr - liab_dr) + down - up;
     let mut by: std::collections::BTreeMap<crate::AccountId, Decimal> = Default::default();
     let (mut down_left, mut up_left) = (down, up);
     let mut order: Vec<crate::AccountId> = Vec::new();
+    // left(a) per money liability, in order of first appearance.
+    let mut left: Vec<(crate::AccountId, Decimal)> = Vec::new();
+    let add = |by: &mut std::collections::BTreeMap<crate::AccountId, Decimal>,
+               order: &mut Vec<crate::AccountId>,
+               account: crate::AccountId,
+               part: Decimal| {
+        if !part.is_zero() {
+            if !by.contains_key(&account) {
+                order.push(account);
+            }
+            *by.entry(account).or_default() += part;
+        }
+    };
     for l in entry.lines() {
         let a = l.amount.amount;
         let part = if money.cash.contains(&l.account) {
             Decimal::ZERO
         } else if money.liabilities.contains(&l.account) {
-            match l.side {
+            let (part, rest) = match l.side {
                 Side::Debit => {
                     let take = a.min(down_left);
                     down_left -= take;
-                    take
+                    (take, a - take)
                 }
                 Side::Credit => {
                     let take = a.min(up_left);
                     up_left -= take;
-                    -take
+                    (-take, -(a - take))
                 }
+            };
+            match left.iter_mut().find(|(x, _)| *x == l.account) {
+                Some((_, v)) => *v += rest,
+                None => left.push((l.account, rest)),
             }
+            part
         } else {
             match l.side {
                 Side::Debit => a,
                 Side::Credit => -a,
             }
         };
-        if !part.is_zero() {
-            if !by.contains_key(&l.account) {
-                order.push(l.account);
-            }
-            *by.entry(l.account).or_default() += part;
+        add(&mut by, &mut order, l.account, part);
+    }
+    let owed_down: Decimal = left
+        .iter()
+        .map(|(_, v)| *v)
+        .filter(|v| *v > Decimal::ZERO)
+        .sum();
+    let owed_up: Decimal = -left
+        .iter()
+        .map(|(_, v)| *v)
+        .filter(|v| *v < Decimal::ZERO)
+        .sum::<Decimal>();
+    let across = owed_down.min(owed_up);
+    let mut across_left = across;
+    for (account, v) in left {
+        if v > Decimal::ZERO && !across_left.is_zero() {
+            let take = v.min(across_left);
+            across_left -= take;
+            add(&mut by, &mut order, account, take);
         }
     }
+    let net = (cash_cr - cash_dr) + (liab_cr - liab_dr) + down - up + across;
     EntryFlow {
         net,
         what_for: order
@@ -625,7 +673,9 @@ pub fn activity(
 ///      zero counts the party's resolved share of it
 ///      (crate::shares::resolve with `members`; the whole net for a sole
 ///      party): positive is a payment, negative a receipt. A reversal
-///      counts on its original's side, so it subtracts.
+///      counts on its root original's side (the first entry of
+///      Ledger::reversal_chain), so a reversal subtracts and a reversal
+///      of that reversal adds back, on the same side.
 ///   3. An entry moving no money (net zero, like property contributed)
 ///      counts nothing. An entry whose shares don't resolve counts
 ///      nothing and is listed in `unresolved`.
@@ -672,8 +722,12 @@ pub fn activity_with(
                 continue;
             }
         };
-        let side = match e.reversal_of().and_then(|o| ledger.get_entry(o)) {
-            Some(original) => net_out(original),
+        let side = match e.reversal_of() {
+            Some(_) => ledger
+                .reversal_chain(id)
+                .first()
+                .and_then(|&root| ledger.get_entry(root))
+                .map_or(net, net_out),
             None => net,
         };
         if side > Decimal::ZERO {

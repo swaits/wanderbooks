@@ -627,33 +627,46 @@ impl App {
                         }
                         ui.add_space(8.0);
                         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                            let crumb = self
-                                .books
-                                .as_ref()
-                                .map(|b| crate::palette::describe(b, &self.nav.current))
-                                .unwrap_or_default();
-                            let section = self.nav.current.section().title();
-                            // Narrow, the crumb alone says where you are.
-                            if crumb.is_empty() || ui.available_width() >= 260.0 {
-                                ui.add(
-                                    egui::Label::new(
-                                        RichText::new(section)
-                                            .font(theme::regular(13.5))
-                                            .color(p.muted),
-                                    )
-                                    .truncate(),
-                                );
-                            }
-                            if !crumb.is_empty() {
-                                if ui.available_width() >= 260.0 - 80.0 {
+                            let crumbs =
+                                crate::palette::crumbs(self.books.as_deref(), &self.nav.current);
+                            // Narrow, the last crumb alone says where you are.
+                            let skip = if ui.available_width() >= 260.0 {
+                                0
+                            } else {
+                                crumbs.len() - 1
+                            };
+                            let last = crumbs.len() - 1;
+                            let mut go = None;
+                            for (i, (text, to)) in crumbs.iter().enumerate().skip(skip) {
+                                if i > skip && ui.available_width() >= 260.0 - 80.0 {
                                     ui.label(RichText::new(icon::CARET_RIGHT).color(p.faint));
                                 }
-                                ui.add(
-                                    egui::Label::new(
-                                        RichText::new(crumb).font(theme::semibold(13.5)),
-                                    )
-                                    .truncate(),
-                                );
+                                let rich = if i == last && i > 0 {
+                                    RichText::new(text).font(theme::semibold(13.5))
+                                } else {
+                                    RichText::new(text)
+                                        .font(theme::regular(13.5))
+                                        .color(p.muted)
+                                };
+                                let label = egui::Label::new(rich).truncate();
+                                match to {
+                                    Some(to) => {
+                                        let r = ui.add(label.sense(egui::Sense::click()));
+                                        if r.hovered() {
+                                            ui.ctx()
+                                                .set_cursor_icon(egui::CursorIcon::PointingHand);
+                                        }
+                                        if r.on_hover_text(format!("Go to {text}")).clicked() {
+                                            go = Some(to.clone());
+                                        }
+                                    }
+                                    None => {
+                                        ui.add(label);
+                                    }
+                                }
+                            }
+                            if let Some(to) = go {
+                                self.nav.go(to);
                             }
                         });
                     });

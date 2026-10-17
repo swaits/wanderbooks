@@ -46,7 +46,9 @@
 //!      walk) and never blocking (a pipe swapped in can't hang a thread);
 //!      no folder on the walk, and not the file, is a protected place (by
 //!      device and inode: a protected folder renamed into a root); and the
-//!      file opened is the checked file (device and inode), with one link.
+//!      file opened is the checked file (device and inode, and size,
+//!      modification and change times: a filesystem may hand a deleted
+//!      file's inode number to the next file made), with one link.
 //! ```
 
 use std::io::Read;
@@ -512,7 +514,20 @@ fn open_walk(canonical: &Path, _avoid: &[(u64, u64)]) -> Result<std::fs::File, S
 #[cfg(unix)]
 fn same_file(checked: &std::fs::Metadata, opened: &std::fs::Metadata) -> Result<(), String> {
     use std::os::unix::fs::MetadataExt;
-    if (checked.dev(), checked.ino()) == (opened.dev(), opened.ino()) {
+    // The inode number alone isn't the file: once a file is deleted, its
+    // number may go to the next one made (found on CI's filesystem,
+    // 2026-10-17). Its size and times tell the two apart; a rename, a new
+    // link or a write changes the change time.
+    let id = |m: &std::fs::Metadata| {
+        (
+            m.dev(),
+            m.ino(),
+            m.size(),
+            (m.mtime(), m.mtime_nsec()),
+            (m.ctime(), m.ctime_nsec()),
+        )
+    };
+    if id(checked) == id(opened) {
         Ok(())
     } else {
         Err(CHANGED.to_string())
@@ -946,8 +961,9 @@ mod tests {
     }
 
     /// INVARIANT 6: a file swapped after the check is never read. Another
-    /// file renamed over it differs by inode; a symlink is never followed;
-    /// a pipe neither blocks the open nor is read.
+    /// file renamed over it differs by inode; one that took the deleted
+    /// file's inode number differs by its size and times; a symlink is
+    /// never followed; a pipe neither blocks the open nor is read.
     #[test]
     fn a_file_swapped_after_the_check_is_never_read() {
         let t = tree("swap");
@@ -955,13 +971,12 @@ mod tests {
         let target = dl.join("swapped.pdf");
         let check = |what: &str| {
             std::fs::write(&target, b"checked bytes").unwrap();
-            let (canonical, meta) =
-                inspect(&t.roots.usable(), target.to_str().unwrap(), &t.protected)
-                    .unwrap_or_else(|e| panic!("{what}: {e}"));
-            std::fs::remove_file(&target).unwrap();
-            (canonical, meta)
+            inspect(&t.roots.usable(), target.to_str().unwrap(), &t.protected)
+                .unwrap_or_else(|e| panic!("{what}: {e}"))
         };
 
+        // Another file, made while the checked one still exists (so its
+        // own inode), renamed over it.
         let (canonical, meta) = check("rename");
         std::fs::write(dl.join("other.pdf"), b"other bytes").unwrap();
         std::fs::rename(dl.join("other.pdf"), &target).unwrap();
@@ -969,8 +984,37 @@ mod tests {
             read_checked(&canonical, &meta, &t.protected.inodes(), 100),
             Err(CHANGED.to_string())
         );
+        std::fs::remove_file(&target).unwrap();
+
+        // The checked file deleted and another made in its place, which
+        // a filesystem may give the same inode number: its device and
+        // inode match, and the file is still another.
+        let (canonical, meta) = check("reused inode");
+        std::fs::remove_file(&target).unwrap();
+        std::fs::write(&target, b"other bytes").unwrap();
+        assert_eq!(
+            read_checked(&canonical, &meta, &t.protected.inodes(), 100),
+            Err(CHANGED.to_string())
+        );
+        std::fs::remove_file(&target).unwrap();
+        // The same inode, written after the check: another file now.
+        let (canonical, meta) = check("rewritten");
+        std::fs::write(&target, b"rewritten bytes").unwrap();
+        assert_eq!(
+            read_checked(&canonical, &meta, &t.protected.inodes(), 100),
+            Err(CHANGED.to_string())
+        );
+        std::fs::remove_file(&target).unwrap();
+        let (canonical, meta) = check("unchanged");
+        assert_eq!(
+            read_checked(&canonical, &meta, &t.protected.inodes(), 100),
+            Ok(b"checked bytes".to_vec()),
+            "the checked file itself is read"
+        );
+        std::fs::remove_file(&target).unwrap();
 
         let (canonical, meta) = check("symlink");
+        std::fs::remove_file(&target).unwrap();
         symlink(t.base.join("tmp/keys/vault.key"), &target).unwrap();
         assert_eq!(
             read_checked(&canonical, &meta, &t.protected.inodes(), 100),
@@ -979,6 +1023,7 @@ mod tests {
         std::fs::remove_file(&target).unwrap();
 
         let (canonical, meta) = check("fifo");
+        std::fs::remove_file(&target).unwrap();
         let made = std::process::Command::new("mkfifo")
             .arg(&target)
             .status()

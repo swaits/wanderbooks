@@ -1,31 +1,33 @@
-# STATUS — 2026-10-16: "Served" planned, P0 in final review
+# STATUS — 2026-10-17: "Served" P0 landed and live; P1 next
 
-## Now: Served (plan/served.md), P0 in final review
+## Now: Served (plan/served.md), P0 done, P1 next
 
 The 2026-10-16 audit of the first company's books (62 verified findings,
 20 engine defects) and the design discussion that followed produced
 `plan/served.md`: the books become a server that owns its data, agents
 reach them only through the MCP from anywhere, settings and conventions
 move into the journal, no scaffold. Phases P0-P10; the owner's decisions
-of 2026-10-16 are at the top of the plan and bind every phase. A 21st
-defect turned up in P0 (the CPA package's IIF ignores `as_of`; P3).
+of 2026-10-16 are at the top of the plan and bind every phase. P0 turned
+up defects 21 (the CPA package's IIF ignores `as_of`) and 22
+(depreciation's final month plugs mid-month); both are for P3.
 
-Resume lean: finish work solo or with one reviewer; big multi-agent
-fan-outs only when the owner asks.
+The owner's bar (2026-10-17): this is bookkeeping software and it has to
+be perfect. Full verification every phase (review rounds until clean,
+`just check`, `just prove`, `cargo mutants --in-diff`, goldens);
+economize only on waste.
 
-**P0 (guard rails) state:** built and gated, stacked on `main` in the
-default workspace (not merged, not pushed), through two review rounds:
-`qntm` (pins, transports doc, tools-only template), `vnqq` (the store's
-format gate: newer is not corrupt; the envelope and its hash frozen
-across formats; no repair of newer books), `nuxl` (connect text and
-handbook, annotations, the import roots' lockdown, fail closed, no file
-with a full TIN filed into the books), `rros` (docs), and this plan note.
-`just check` passes on the stack, and `cargo mutants --in-diff` has run
-on the P0 diff, every round (counts in `docs/testing.md`; output under
-~/.cache/wanderbooks/mutants). Left for P0: the owner's final review,
-then move `main` and push (origin + GitHub); the three P0 workspaces are
-already gone. After P0 lands, the owner reconnects
-the MCP (`/mcp` or a new session) so the new connect text loads.
+**P0 (guard rails): done.** On `main` at `391634a`, pushed (origin +
+GitHub): pins, transports doc, tools-only template; the store's format
+gate (newer is not corrupt; the envelope and its hash frozen across
+formats; no repair of newer books; command vs replay validators, B-28);
+the short connect text and `books.handbook`; tool annotations; the import
+roots' lockdown (Downloads only by default); fail closed; no file with a
+full TIN filed into the books. Four review rounds, the last clean.
+Cutover on the first company's books, 2026-10-17: `books.verify` ok
+(366 events, head unchanged), and the CPA package as of 2026-10-11 and
+2026-10-17 canonically byte-identical before and after (record in that
+books dir, `goldens/p0-cutover-2026-10-17/`). Connect text with their
+settings: 1,396 characters.
 
 **Before-snapshots for later phases:** the first company's reports as of
 2026-10-11 and 2026-10-16 (journal head `d1ccd2fd…`, 355 events) are

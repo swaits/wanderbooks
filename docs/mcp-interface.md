@@ -52,7 +52,7 @@ so an edit takes effect on the next call with no restart. A broken edit
 keeps the last good settings in force and is reported until fixed; the
 data dir and base currency are fixed at startup (`ledger-mcp/src/settings.rs`).
 
-- `books.settings {}` → `{ books_toml, books_toml_exists, config_json,
+- `books.settings {}` → `{ books_toml, books_toml_exists, config_json_present,
   reload_error, loads, company, fiscal_year_start, tax_form, basis,
   receipt_rule, members, cash_accounts, financing_accounts,
   investing_accounts, close_into, close_sweep, problems }`: the settings in
@@ -92,14 +92,127 @@ they are control roles in the journal (rules.md B-23).
 
 ## Server instructions
 
-The MCP `initialize` response carries an `instructions` string: the agent
-operating contract (below) in condensed form. The model reads it at the start
-of every session, before any tool call. Tool descriptions repeat the relevant
-fragment at the point of use (`post_entry`'s description states the
-preview-before-post rule; `attach_receipt`'s states the receipt rule). Prose
-guidance is therefore delivered twice — once at session start, once at the
-tool — but it is guidance, not enforcement. Enforcement is the receipt policy
-below.
+The MCP `initialize` response carries an `instructions` string, the
+**connect text** (`ledger-mcp/src/handbook.rs`), composed in `get_info`
+from the settings in force when the client connects (the settings are
+re-read first, so a client connecting after an edit is told the new rule).
+It is short on purpose: clients cut long instructions (one cut the old
+text at 4,096 characters), so it is at most **1,400 characters**, and its
+first paragraph, at most **512**, stands alone: the entry point
+(`books.handbook`), the rule that these tools are the only way to the books
+(never local files), decimal-string amounts, and the
+draft → lines → preview → confirmed post flow. The second paragraph adds
+that every entry balances and uses real accounts from `books.chart`; the
+parties rule in force (`[books] parties`: under "require" every entry
+the agent posts names its party or a no-party reason, since closes,
+depreciation and amortization post with none; under "suggest" name it
+where there is one; under "off" nothing); corrections by reversal; the receipt rule in force
+(`ReceiptPolicy::rule`: the exact threshold in the books' base currency,
+never rounded, the accounts that always need a receipt and those exempt,
+and that reversals need none); the exemptions (depreciation and
+amortization, whose schedules are the evidence, and closes, derived from
+the books); that `books.create_invoice`, `books.create_bill`,
+`books.receive_payment`, `books.pay_bill`, `books.run_payroll` and
+`books.remit_payroll_taxes` post at once without a receipt check; TINs
+only into the vault; show the numbers, and after posting check
+`books.digest` and offer it to the human; and the
+one local file the agent may edit, the settings file `books.settings`
+names (until settings move into the journal, P1). When a long rule (many
+accounts, a huge threshold, a long name) would push it past 1,400
+characters, it drops the tracing hint first (the handbook's
+tracing-figures section has it), then the reasons in parentheses, then the
+tracing hint for good and lists fewer account codes (at last only how many
+there are; `books.settings` lists every one, uncut, in
+`receipt_required_accounts` and `receipt_exempt_accounts`), then words
+that only help; never the rule itself. A company with no name yet (the
+settings' default) is "a new company". The company name in it is one line of plain text (control characters and
+line breaks become spaces, Unicode format characters such as bidi
+overrides and zero-width spaces are dropped), cut to 56 characters.
+`instructions_budget` (the longest rule, every parties setting) and
+`the_company_name_is_one_plain_line` check it.
+
+The long guidance is the **handbook**, compiled in from
+`ledger-mcp/handbook/*.md`, with the receipt rule in force rendered in:
+
+- `books.handbook { section? }` (read-only) → `{ read_first, sections:
+  [{ id, title, uri, chars }], section: { id, title, text } | null }`.
+  Without `section`, the index (`read_first` says to read `contract`
+  first); with a section id, that section's Markdown; with `"all"`, the
+  whole handbook in reading order. The input schema lists the ids:
+  contract, entries, drafts-and-reversals, evidence-and-receipts,
+  attachments, files-in-out, reconciliation, fixed-assets,
+  prepaid-and-recurring, revenue-and-payouts, parties-and-tins, 1099,
+  cpa-handoff, settings-and-conventions, viewer, rules-that-change,
+  control-roles, tracing-figures.
+- The same as resources: `books://handbook` (the index, JSON) and
+  `books://handbook/{section}` (Markdown, `text/markdown`), one listed per
+  section.
+
+No text the agent is given (tool JSON with its schemas, resources, connect
+text, handbook, and every refusal fixed in code: each error variant's
+template in the crates under the server, scanned from source, built error
+texts, and the server's refusal constants) names a helper command, a home
+path, the data dir or its flag, the import-root flag, a file of the books
+(`.jsonl`, the database, `vault.key`, `.gitignore`), git, GitHub, a pull
+request, a repo doc (`docs/`, `.md`), or tells the agent to read the
+books' files; no tool title or description, connect text or handbook
+section names `wanderbooks.toml` (the input and output schemas name it by
+design, for `books.settings`' `books_toml`) (`tool_text_lint`). A rule set by law that the books
+don't know for a year names its official source (the statute or
+publication, with its address) and says to tell the human.
+Tool descriptions are at most 700 characters; eight longer ones are listed
+in `tool_descriptions_fit_700_characters`, to be shortened in P5.
+
+**Annotations.** Every tool has a `title` and a `readOnlyHint`; every tool
+that changes anything also has a `destructiveHint`, true for these 25:
+`books.post_entry`, `books.reverse_entry`, `books.unlink_receipt`,
+`books.unlink_attachment`, `books.withdraw_attachment`,
+`books.correct_asset`, `books.dispose_asset`, `books.run_depreciation`,
+`books.run_schedules`, `books.run_recurring`, `books.renumber_account`,
+`books.assign_role`, `books.close_period`, `books.reconcile`,
+`books.void_statement`, `books.void_reconciliation`, `books.set_w9`,
+`books.set_tin` (both overwrite a vault record), `books.purge_tin`,
+`books.create_invoice`, `books.create_bill`, `books.receive_payment`,
+`books.pay_bill`, `books.run_payroll`, `books.remit_payroll_taxes`; and an
+`idempotentHint` on the five that a repeat with the same arguments leaves
+the journal and the vault as they were: `books.verify`,
+`books.run_depreciation`, `books.run_schedules`, `books.run_recurring` and
+`books.set_party_roles` (a setter such as `books.update_party`,
+`books.set_fx_rate` or `books.set_tin` journals a line, and `books.set_tin`
+seals a new vault record, every time, so none carries it;
+`idempotent_tools_change_nothing_when_repeated` calls each candidate twice
+to check). Every tool's
+`openWorldHint` is false: the books are a closed world, and no tool
+reaches beyond them. `books.export_cpa_package` writes a file, so it is
+not read-only. No tool carries `requiresUserInteraction` (owner decision
+2026-10-16: no added prompts). `annotations_complete` pins all of this.
+The read-only hint is true in behaviour: `spec_mcp` checks, on every call,
+that a read-only tool leaves the journal, the contents of every file under
+the data dir (the database by every row of every table; SQLite's -wal and
+-shm files, which move pages and hold read marks on their own, aside),
+the vault and the settings file as they were
+(`read_only_tools_change_nothing`).
+
+**Failing closed.** Tool bodies run on blocking threads, one at a time on
+the store. If a request panics (an internal error), the journal may hold a
+line the memory doesn't, so the server stops taking requests: every later
+call, on every session sharing the store, is refused with "the books
+server stopped taking requests after an internal error, to protect the
+books: ask the human to restart the books server", never the panic's own
+text. A restart re-verifies the journal
+(`a_request_that_panics_stops_the_server`). So a panic an input can reach
+would be a denial of service, and none can be: the dates a tool takes
+are four-digit years and real days, its amounts at most a journal
+line's, and a recurring run bounded; books an earlier version wrote past
+those bounds still open (replay accepts what that version accepted), so
+every figure the server derives from them (a draft's total, a schedule's
+plan, aging, a party's totals, the asset register) is computed or
+refused ("too large to compute exactly", or a date outside the calendar
+the books keep), never a panic (rules.md B-28). `tests/hostile_args.rs`
+drives every tool with generated hostile arguments and every resource
+with generated URIs, checks after each call that the server still
+serves, restarts it after them to check the books reopen, and drives
+every tool over every book in ledger-store's `tests/fixtures/old-books`.
 
 ## Tool design principles
 
@@ -119,6 +232,7 @@ below.
 
 ## Tools — books
 
+- `books.handbook { section? }`: the guide (see "Server instructions").
 - `books.chart` → `{ accounts: [{ id, code, name, type, parent, placeholder,
   balance }] }`. Balances included: one call answers "what do we have."
 - `books.draft_entry { date: "2026-10-10", description: "...", vendor?,
@@ -147,7 +261,10 @@ below.
   its `vendor`, `party_id`, and `party` (the party's label, when it names
   exactly one) tags, `parties` / `parties_error` as in the `post_entry`
   preview, and `no_party_reason` when it is marked as having no
-  counterparty.
+  counterparty. `total` (its debits) is null, with `total_error` saying
+  why, for a draft an earlier version journaled whose lines exact
+  arithmetic can't sum; a draft line on an account the chart doesn't have
+  (older books hold such drafts) shows an empty code and "(no account N)".
 - `books.search_entries { account?, date_from?, date_to?, text?, limit?, offset? }`
   → entries with lines, newest first. `limit` caps at 100.
 - `books.trial_balance { as_of? }` → `as_of`, lines, totals, `balanced`
@@ -240,9 +357,13 @@ through the policy.
 
 - `books.create_schedule { kind: "prepaid_expense" | "deferred_revenue",
   description, total, start, months, balance_account, pl_account }` →
-  `{ schedule_id, ..., total, remaining, months: [{ date, amount, posted }] }`.
-  Prepaid needs an asset and an expense account; deferred revenue a
-  liability and a revenue account.
+  `{ schedule_id, ..., total, remaining, months: [{ date, amount, posted }],
+  plan_error }`. Prepaid needs an asset and an expense account; deferred
+  revenue a liability and a revenue account. `plan_error` is null, except
+  for a schedule an earlier version accepted whose months run past the
+  last date the books can compute: then it says why, `remaining` is null
+  and `months` empty, and `books.run_schedules` refuses until it is dealt
+  with.
 - `books.list_schedules {}` → `{ schedules: [...] }`, same shape.
 - `books.run_schedules { through?, confirmed? }` → `{ status: "preview" |
   "posted", postings: [{ schedule_id, date, description, amount,
@@ -533,15 +654,46 @@ and the CPA package carries them.
   `books.set_tin`); a TIN with a new last four clears the old TIN facts
   first (`party.tin_set` null), so the two never disagree. The form (PDF,
   PNG, JPEG; 25 MB at most) goes to the vault only, never the attachment
-  store. Facts given later without a TIN keep the vault record when their
+  store. `w9_file_path` is read exactly as `books.import_local_file` reads
+  a path (the import roots, the sealed places, no links followed out of
+  them), and its type is judged by the file the path really leads to.
+  Facts given later without a TIN keep the vault record when their
   last four agree with the vault's TIN, and are refused when they don't
   (pass the new TIN, or purge). Clearing the facts (`clear: true`) is
   refused while the vault holds the party's TIN or form: purge first.
 - `books.get_w9 { party, save_to }` → `{ party_id, path, file_name,
   size_bytes, note }`. Writes the party's form from the vault to `save_to`:
   a new file (an existing one is refused), in a folder that exists,
-  outside the books dir, mode 0600. Returns the path, never the contents.
-  Journals nothing.
+  outside the books dir and outside the import roots, mode 0600. Returns
+  the path, never the contents. Journals nothing. The same holds for
+  `books.vendor_1099`'s `save_csv_to` with `include_tins` and
+  `books.export_cpa_package`'s `save_to` with TINs: a file with full TINs
+  never lands where it could be filed back in. Nor does one go in from
+  elsewhere: the server keeps, beside the vault, the SHA-256 of every file
+  it read or wrote with full TINs (the W-9 `books.set_w9` reads, recorded
+  once the call has passed every check, just before the vault keeps it,
+  so a refused call marks no file; each of these outputs; each file inside a CPA package
+  that holds a TIN), shared by every session and kept across restarts,
+  and every filing tool (`books.import_local_file`, `books.attach_receipt`,
+  `books.file_document`) refuses those exact files and any text file
+  (CSV, TSV, text, JSON, IIF, XML, HTML, Markdown, by type, name or UTF-8
+  or UTF-16 decoding, UTF-16 with a byte-order mark or NUL-interleaved
+  without one) holding a full TIN, storing nothing. A text file
+  holds one when it has a TIN the vault holds, anywhere, as nine digits,
+  3-2-4 joined by hyphens, spaces or dots, or 2-7 joined by a hyphen or a
+  space (compared on the server; a vault that can't be opened leaves the
+  next test alone), or a stand-alone number printed as an SSN or EIN is
+  (123-45-6789, 12-3456789; no digit, and no hyphen or dot followed by a
+  digit, beside it). Bank exports pass: routing and account numbers,
+  long references and dates next to amounts are not TINs (rules.md B-26).
+  No probing: a text with more than two TIN-shaped numbers ending in the
+  last four of a TIN the books know is refused before the vault is
+  opened, in the same words whether or not one is that TIN, so the vault
+  is compared against at most two candidates a filing (rules.md B-26).
+  An altered copy of a binary file (a W-9 PDF re-saved or re-scanned),
+  and a TIN the vault doesn't hold written another way, are not
+  detected: P2 and P7 take the path tools and full TINs out of the
+  agent's reach.
 - `books.purge_tin { party, reason, confirmed? }` → `{ status: "preview" |
   "purged", party_id, name, tin_in_vault, w9_file_in_vault, tin_last4?,
   journaled, note }`. Without `confirmed`, a preview that changes nothing.
@@ -630,9 +782,11 @@ posting.
   (account codes that always require receipts, e.g. meals and travel) and
   `receipt_exempt_accounts` (e.g. automated bank fees). Human-edited and
   versioned with the deployment.
-- **Preview.** Every `post_entry` / `reverse_entry` preview includes the
-  receipt checklist (`attached: [...]`, `required_but_missing: bool`), so the
-  human sees it before confirming.
+- **Preview.** Every `post_entry` preview includes the receipt checklist
+  (`receipts: [...]`, `receipt_required: bool`, `receipt_missing: bool`,
+  `split_detected: [...]`), so the human sees it before confirming. A
+  `reverse_entry` preview carries none: a reversal needs no receipt (the
+  original carries the evidence).
 - **Hard error.** Confirming a posting that violates the policy fails with a
   structured, machine-readable error (JSON in the tool-error string):
   `{ "code": "receipt_required", "message": "…", "entry_id": 5,
@@ -728,9 +882,41 @@ posting.
 - `books.import_chart_csv { csv_text }` → creates accounts from
   `code,name,type,parent_code` CSV. All-or-nothing.
 - `books.import_local_file { path, category: "receipt" | "document", ... }`
-  → imports a file from the server's filesystem. The Drive backfill path:
-  the agent downloads from Google Drive via the CLI to a temp path, then
-  calls this. Keeps Drive credentials out of the server.
+  → files a file from the server's own disk, read only from the **import
+  roots**: each `--import-root DIR` given to `ledger-mcp` (repeatable), or
+  by default the downloads folder only (`$XDG_DOWNLOAD_DIR`, else
+  `~/Downloads`). No root may be `/`, the home folder or a folder holding
+  it, a folder holding the books dir, the data dir (where a symlinked one
+  really is), the vault or a vault key, or a folder inside the books dir,
+  the data dir or the vault (every file there would be refused): a named
+  root like that stops
+  the server at startup, saying why; a default one is dropped. The default
+  is used only when it is a real folder that isn't the home folder (an
+  `XDG_DOWNLOAD_DIR` of `$HOME/` falls back to `~/Downloads`, and to no
+  root when that doesn't exist; an import then says the server has no
+  import folder). The path must be absolute, with no `.` or `..` name,
+  and where it leads (every link followed) a regular file strictly inside
+  a root, with one hard link. Refusals never name a path and never probe:
+  a path that is missing, a dangling link, outside the roots, or with a
+  `.` or `..` name (refused before anything is looked up: `a/b/..`
+  resolves only when `b` is a folder) gets one refusal, "no
+  such file in the server's import folders (by default your downloads
+  folder): save it there first". Inside a root, the books' sealed places
+  (the data dir, the vault, the key file in force and the default one,
+  where each leads, `~/.config/wanderbooks`, and the key files' folders
+  unless that folder is the home folder, a root, or holds one) are refused
+  as "belongs to the books or the TIN vault"; anything else in the books
+  dir is refused with "save a copy of it in the server's import folders
+  first". The file is opened by a walk from `/`, one name at a time, each
+  folder with `openat(O_DIRECTORY | O_NOFOLLOW)` and the file with
+  `O_NOFOLLOW | O_NONBLOCK`, so a folder on the path swapped for a link
+  after the check fails the open and a pipe can't hang the server; no step
+  may land on a protected place by device and inode (one renamed into a
+  root), and the file opened must be the checked one (device, inode, one
+  link). It is filed under the name and type of the file the path leads
+  to. Files holding full TINs are refused as above
+  (`ledger-mcp/src/local_files.rs`, `tin_files.rs`). Deleted in P2
+  (uploads replace it).
 
 ## Resources (read-only)
 
@@ -740,7 +926,10 @@ Hand-rolled on `ServerHandler` (rmcp 3.x has no resource macros):
 - `books://chart`
 - `books://reports/trial-balance`, `books://reports/balance-sheet`,
   `books://reports/profit-and-loss`
-- `books://digest?since=2026-10-01`
+- `books://digest?since=2026-10-01`; bare (or with an empty `since=`),
+  this month so far
+- `books://handbook` (the index) and `books://handbook/{section}` (one per
+  section, Markdown)
 - `books://receipts/{id}` — receipt metadata + base64 bytes
 
 Resources exist so read-only clients (dashboards, the future read-only GUI,
@@ -756,7 +945,7 @@ in the server's tool descriptions, so the model reads it at use time):
    in prose.
 3. **Attach receipts at record time.** A material entry without its source
    document is an incomplete entry. File first, link later if the entry
-   isn't ready. Postings at or above the receipt policy threshold *cannot*
+   isn't ready. Postings strictly above the receipt policy threshold *cannot*
    post without one — the server refuses with `receipt_required`.
 4. **When unsure of categorization, draft and ask.** A draft is cheap; a
    wrong posting is a reversal. Never guess-post.

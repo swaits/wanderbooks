@@ -589,19 +589,55 @@ filed back in as a receipt and read out again), and the package comes
 back only as its path. No file holding a full TIN is filed into the books
 (DECISION, P0 review round 2, 2026-10-16): the server keeps, beside the
 vault, the SHA-256 of every file it read or wrote with full TINs (the W-9
-`books.set_w9` reads, recorded as it is read; each `books.get_w9` copy;
+`books.set_w9` reads, recorded once the call has passed every check, just
+before the vault keeps it, so a refused call marks no file; each
+`books.get_w9` copy;
 a 1099 worksheet with TINs; a CPA package with TINs and each file in it
 that holds one), shared by every session and every later server for the
 books, and every way a file enters the books (`books.import_local_file`,
 `books.attach_receipt`, `books.file_document`) refuses those exact files,
 and refuses any text file (by its type or name, or because it decodes as
-UTF-8 or UTF-16) in which `has_full_tin` finds a TIN. What this can't
-catch: a changed copy of a binary file (a W-9 PDF re-saved or re-scanned),
-or a TIN in an image; `plan/served.md` P2 and P7 take the path tools and
-full TINs out of the agent's reach. The text scan reads nine digits with
-separators as a TIN, so a statement's text with a date run into an
-amount, or a long reference number, is refused too; such a file is filed
-as a PDF. A locked vault or a missing TIN never fails
+UTF-8 or UTF-16, with a byte-order mark or, NUL-interleaved, without one)
+holding (a) a TIN the vault holds for a party of the
+books, anywhere in the text, as nine digits in a row, as 3-2-4 digits
+joined by hyphens, spaces or dots, or as 2-7 digits joined by a hyphen
+or a space (compared on the server against the decrypted vault, never
+returned or logged; a vault that can't be opened leaves (b) alone), or
+(b) a number printed as an SSN or EIN is, standing alone: 3-2-4 digits
+joined by hyphens (123-45-6789) or 2-7 joined by a hyphen (12-3456789),
+with no digit, and no hyphen or dot followed by a digit, on either side.
+Full-width digits and Unicode hyphens and spaces count as their ASCII
+kin (`tin_files.rs`). The text check is narrow on purpose (DECISION,
+the owner, 2026-10-16): bank exports are filed for reconciliation, and
+their routing numbers, long references and dates next to amounts are
+not TINs; the broad `has_full_tin` reading stays on what the server says
+(refusals and results). Because (a) compares against the vault, its
+answer would tell an agent whether a text it chose holds a vault TIN;
+the tools show each TIN's last four, so an agent filing texts full of
+nine-digit numbers ending in those four could find the TIN in about 17
+filings. So (a) answers for at most two candidates a filing (DECISION,
+P0 review, 2026-10-16): before the vault is opened, a text holding more
+than two distinct TIN-shaped numbers (in any rendering (a) reads; one
+number written several ways counts once) that end in the last four of a
+TIN the books know (each party's TIN facts and W-9 facts, read from the
+books; once the vault is opened, its own records' last fours too) is
+refused with words of its own ("more than two numbers shaped like a
+TIN"), the same byte for byte whether or not one of them is a vault TIN
+and whether or not the vault is open; only a text with no more than two
+is compared against the vault. With the last four known, a TIN is one of
+100,000 numbers, so finding one this way takes on the order of 50,000
+filings, each one refused and seen. What this can't catch: a changed
+copy of a binary file (a W-9 PDF re-saved or re-scanned), a TIN in an
+image, or a TIN the vault doesn't hold written other than (b);
+`plan/served.md` P2 and P7 take the path tools and full TINs out of the
+agent's reach. A known limit, open until then: (a) still answers for two
+candidates a filing, so an agent that makes those 50,000 refused filings
+can find a TIN; P2's access log records every call, refusals included,
+and P7's human-only TIN channel takes full TINs, and with them this
+check, off the agent's path. A bank export holding three numbers that
+happen to end in a known last four is refused the same way (filed as a
+PDF instead).
+A locked vault or a missing TIN never fails
 the package: it says which TINs are missing. `books.purge_tin` deletes a
 party's vault records and journals that it did.
 
@@ -614,15 +650,18 @@ records, records_held, purge_records); `ledger-mcp` `books.set_w9`,
 `books.set_tin`, `books.get_w9`, `books.purge_tin`, `books.vendor_1099`,
 `books.export_cpa_package` (open_vault refuses a key file in the books
 dir; outside_books for files with a TIN; vault_tin checks the vault
-against the books); `ledger-mcp` `tin_files` (the registry and the text
-scan, on every filing tool).
+against the books); `ledger-mcp` `tin_files` (the registry, the text
+scan and its probe bound, on every filing tool; `known_tin_last4` gives
+the books' last fours).
 **Checked:** `ledger-core` `tests/spec_parties.rs`; `ledger-store`
 `tests/parties.rs`; `ledger-vault` `tests/vault.rs`; `ledger-mcp`
 `tests/spec_parties.rs`, `tests/spec_vault.rs` (every response, the log,
 and every file in the books dir outside `vault/` scanned for the TINs in
 any formatting), `tests/tin_files.rs`
-(`a_tin_bearing_file_is_refused_from_every_session_and_after_a_restart`),
-and the unit tests in `tin_files.rs`.
+(`a_tin_bearing_file_is_refused_from_every_session_and_after_a_restart`,
+`text_with_a_vault_tin_or_a_printed_one_is_refused_and_a_bank_export_is_not`,
+`text_probing_for_a_tin_is_refused_alike_by_every_filing_tool`), and the
+unit tests in `tin_files.rs`.
 
 ## B-27 The journal format gate: newer is not corrupt
 
@@ -689,3 +728,103 @@ lines before it pass, so an older version never alters newer books.
 `ledger-gui` `tests/newer_journal.rs`; `ledger-mcp` `tests/startup.rs`;
 the `fuzz_store_replay` target (the writer and the viewer agree on newer
 versus bad).
+
+## B-28 What new commands take: four-digit years, amounts a line can carry
+
+**Status:** CONVENTION (ISO 8601's basic calendar dates have four-digit
+years, as do the spreadsheet and PDF formats the books export to);
+DECISION (P0 review round 3, 2026-10-16, finding S1: the server stops
+for every session when a request panics, so no input may reach one);
+DECISION (P0 review round 4, 2026-10-17: posted is forever, so the
+bounds are the commands', never replay's)
+
+**New commands.** Every date a command takes or derives is in
+0001-01-01 through 9999-12-31 (`ledger_core::calendar`): a date given
+to a tool is exactly YYYY-MM-DD, a real day in that range (no sign, no
+space, no fifth year digit); a period is a month of it; a new schedule's
+last month, a new asset's last day of depreciation, a new recurring
+entry's start and end, a new period, a new invoice's or bill's date and
+due date, a disposal's date stay in it. Every amount a command takes,
+not only a posted line's, is at most a journal line's
+(1,000,000,000,000,000, `kernel::MAX_LINE_AMOUNT`): a draft line (by
+size; its precision is checked when it posts), a document line, a
+payout's lines and deposit, every payroll figure, a statement's
+balances, a party's share, a contributor's basis, disposal proceeds, a
+recurring template's lines. One run of the recurring entries creates at
+most 1,000 drafts (`MAX_RECURRING_RUN`); a later date is run in steps.
+
+**Replay accepts every line an earlier version accepted.** The bounds
+above came after books were written, and posted is forever (B-8): a
+journal an earlier wanderbooks wrote opens, in the writer and the
+viewer alike, and replays to the same figures, forever. Replay applies
+each check exactly as the version before the bound did: a journaled date
+is any date chrono reads as `%Y-%m-%d` (chrono's own range, about
+262,000 years either way, written "+10000-01-01" past 9999); a draft
+line, a recurring template, a party's share, a contributor's basis, a
+document line, a payment, a payroll run and disposal proceeds carry no
+upper bound beyond what their own rules always said (positive, cents,
+balanced, and so on); a schedule's months are 1 to 600 and an asset's
+life ends on a date chrono holds. The checks split in two: the
+command's (`Ledger::add_line`, `register_asset`, `TaxBasis::check`,
+`shares::check_shares`, ...) and replay's (`replay_add_line`,
+`replay_register_asset`, `TaxBasis::check_journaled`,
+`shares::check_shares_journaled`, ...), and every bound has its pair of
+tests: the command refuses past it; replay of an old line past it is
+accepted.
+
+**Derived figures refuse, never panic.** Because replay accepts what
+the commands now refuse, every figure the books derive is computed with
+checked arithmetic: a sum or product exact arithmetic can't hold is
+refused with "too large to compute exactly" (`TooLargeToCompute`), and
+a date past chrono's last day with `DateOutOfRange`, at the point of
+computation (a draft's debits, a document's total and balance, aging,
+net pay, a payroll plan, an entry's money flow and its shares'
+resolution, the fixed asset register, an amortization plan), never
+wrapped, rounded early or panicked on, and the server stays up. Date
+walks reach chrono's last day without stepping past it (an asset's
+depreciation in December 262142, an interval ending at
+`NaiveDate::MAX`). A replayed line whose own figures overflow (a
+recurring template whose debits Decimal can't sum: no version could
+write it, and the last one panicked replaying it) is refused as the
+books open, never a panic.
+
+**Enforced:** `ledger_core::calendar`; `Ledger::try_create_entry`,
+`add_line`, `add_line_fx`, `validate_new_asset`, `dispose_asset`,
+`schedules::validate_schedule`, `validate_recurring`,
+`periods::validate_period_range`, `arap::validate_lines`,
+`validate_due_date`, `payroll::check_payroll_ranges`, `payout_plan`,
+`shares::check_shares`, `TaxBasis::check`, `reconciliation_report`; for
+replay, `replay_add_line`, `replay_add_line_fx`,
+`replay_register_asset`, `replay_correct_asset`,
+`replay_dispose_asset`, `replay_set_asset_tax_basis`,
+`replay_set_entry_parties`, `replay_register_recurring`,
+`replay_register_schedule` (`validate_schedule_shape`),
+`replay_create_period` (`validate_period_order`), `replay_invoice`,
+`replay_bill`, `replay_invoice_payment`, `replay_bill_payment`,
+`replay_payroll_run`, `validate_new_asset_journaled`,
+`validate_recurring_journaled`, `check_shares_journaled`,
+`TaxBasis::check_journaled`; derived: `Invoice::total`/`balance`,
+`Bill::total`/`balance`, `AgingRow::total`, `ar_aging`, `ap_aging`,
+`PayrollLine::net_pay`, `payroll_entry_plan`, `parties::entry_flow`,
+`shares::share_target`, `shares::resolve`, `fixed_asset_register`,
+`schedules::amortization_plan`, `month_end`, `depreciation_schedule`,
+`analysis::intervals`, `form1099::vendor_part`, `k1::share_property`,
+`ReceiptPolicy::entry_debits`; `ledger-store` `parse_date` (replay:
+chrono's range), `parse_period`, `last_day_of_month`,
+`record_statement`, `dispose_preview`, `run_recurring`; `ledger-mcp`
+`parse_date`, `parse_period_mcp`, `last_day_of_month`.
+**Checked:** `ledger-core` `tests/spec_bounds.rs` (each bound and its
+replay pair), `calendar.rs`, the unit tests of `amortization_plan`,
+`intervals`, `vendor_part` and `share_property`, `assets.rs`
+`registration_rejects_date_overflow`, `invariants.rs`
+`out_of_range_amount_is_rejected`; `ledger-store` `tests/store.rs`
+`books_an_earlier_version_wrote_open_to_its_figures` (every book in
+`tests/fixtures/old-books`, written by main 188c90ea, opens in the writer
+and the viewer and replays to exactly the figures main computed) and
+`every_figure_over_old_books_is_computed_or_refused`, `tests/bounds.rs`;
+`ledger-mcp` `tests/hostile_args.rs` (every tool with generated hostile
+arguments and every resource with generated URIs: the server never
+stops, and the books reopen after; the inputs that once panicked,
+pinned; every tool over every old book) and `server.rs`
+`periods_are_a_year_and_a_month`, `dates_are_four_digit_years_and_real_days`;
+`ledger-gui` `tests/old_books.rs`.

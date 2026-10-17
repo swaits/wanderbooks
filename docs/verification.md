@@ -215,6 +215,20 @@ Be precise about the claims:
   (those have their own property tests), and persistence (the journal
   store's hash chain is tested in `ledger-store`).
 
+### P0 guard rails (2026-10-16)
+
+P0 (`plan/served.md`) added no kernel arithmetic and no new law about
+balances, so it added no Kani harness and no Lean theorem; nothing here
+was weakened. What it added is checked by tests and properties (listed in
+`docs/testing.md`, "P0 guard rails"): the journal format gate (newer is
+never called corrupt, damage always is; the envelope and its hash are
+frozen across formats, rules.md B-27), the server failing closed after a
+panic, the import roots' lockdown (a property over generated paths, and a
+component walk that refuses a folder swapped for a link), files with full
+TINs kept out of the books (B-26), and the agent text lint. Out of scope
+for proof today: the format gate and the walk are I/O, and the model in
+`verify/lean` stops at the ledger.
+
 ## Running it
 
 ```sh

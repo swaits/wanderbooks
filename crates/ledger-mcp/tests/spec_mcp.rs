@@ -219,6 +219,16 @@ fn spawn_child(dir: &Path, toml: &Path) -> Child {
         .arg(dir.join("books-data"))
         .arg("--books-toml")
         .arg(toml)
+        // A settings file naming the vault's key (the happy path's) names
+        // it on the command line too, as books that move their settings
+        // in must.
+        .args(
+            std::fs::read_to_string(toml)
+                .is_ok_and(|t| t.contains("[vault]"))
+                .then(|| ["--vault-key-file".into(), outside(dir).join("vault.key")])
+                .into_iter()
+                .flatten(),
+        )
         // Local files come only from here (the default is the downloads
         // folder): never the books, never where the server writes.
         .arg("--import-root")
@@ -1092,6 +1102,77 @@ fn happy_path(name: &str) -> Mcp {
         "books.close_period",
         json!({"period_id": p, "confirmed": true}),
     );
+
+    // How the books are kept: start, conventions, decisions, open items,
+    // a template and an approval, and the settings file moving in.
+    m.ok("books.start", json!({}));
+    m.ok("books.start", json!({"focus": "close"}));
+    m.ok("books.conventions", json!({}));
+    m.ok("books.decisions", json!({}));
+    m.ok("books.open_items", json!({}));
+    m.ok(
+        "books.set_convention",
+        json!({"id": "note-1", "kind": "note", "title": "A note",
+               "body_md": "Kept for the test.", "decided_by": "A"}),
+    );
+    m.ok(
+        "books.set_convention",
+        json!({"id": "contribution", "kind": "posting_template",
+               "title": "Joint contribution",
+               "body_md": "Cash in from both members, half each.",
+               "structured": {"lines": [
+                   {"account": "1000", "side": "debit", "share": "1"},
+                   {"account": "3000", "side": "credit", "share": "0.5"},
+                   {"account": "3001", "side": "credit", "share": "0.5"}]},
+               "decided_by": "A", "decided_on": "2026-10-16"}),
+    );
+    let drafted = m.ok(
+        "books.draft_from_template",
+        json!({"template_id": "contribution", "date": "2026-06-01",
+               "amount": "100.01", "no_party_reason": "between the members"}),
+    );
+    m.ok(
+        "books.approve_entry",
+        json!({"entry_id": drafted["entry_id"], "approver": "A"}),
+    );
+    m.ok(
+        "books.retire_convention",
+        json!({"id": "note-1", "reason": "Done with it.", "decided_by": "A"}),
+    );
+    m.ok("books.conventions", json!({"include_retired": true}));
+    m.ok(
+        "books.record_decision",
+        json!({"subject": "Basis", "decision_md": "Accrual.",
+               "decided_by": ["A", "B"], "decided_on": "2026-01-01"}),
+    );
+    m.ok("books.decisions", json!({"include_superseded": true}));
+    let item = m.ok(
+        "books.raise_item",
+        json!({"title": "Mail the letter", "due": "2026-11-01", "decided_by": "A"}),
+    )["id"]
+        .as_u64()
+        .unwrap();
+    m.ok(
+        "books.resolve_item",
+        json!({"id": item, "resolution": "Mailed.", "decided_by": "A"}),
+    );
+    m.ok("books.open_items", json!({"include_resolved": true}));
+    let toml_text = std::fs::read_to_string(&toml).unwrap();
+    m.ok(
+        "books.import_settings",
+        json!({"toml_text": toml_text, "decided_by": "A"}),
+    );
+    m.ok(
+        "books.import_settings",
+        json!({"toml_text": toml_text, "decided_by": "A", "confirmed": true}),
+    );
+    m.ok(
+        "books.set_setting",
+        json!({"changes": [{"key": "company.timezone", "value": "America/Denver"}],
+               "decided_by": "A"}),
+    );
+    m.ok("books.export_settings", json!({}));
+    m.ok("books.start", json!({}));
 
     // The handbook: its index, and a section.
     m.ok("books.handbook", json!({}));

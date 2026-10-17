@@ -279,6 +279,81 @@ since `asset_long_life` alone takes three minutes a run):
   ran past 9999 never trued up and could depreciate past its salvage
   (`spec_replayed_extremes.rs` `a_life_past_9999_trues_up_to_the_cent`).
 
+## P1: the books keep how they are kept (2026-10-17)
+
+| Law | Test |
+|---|---|
+| Replay is pure: after any sequence of settings, convention, decision, open-item, template and approval commands, valid or refused, the live store, the store reopened from its journal and the viewer's snapshot hold the same settings and conventions, and the store verifies (database row for row) | `ledger-store` `tests/settings.rs` `settings_replay_is_pure` (proptest, 512 cases per check; 2,000 by hand, release, passed) |
+| The first such change declares journal format 2, once; a change to what is set journals nothing; refused changes journal nothing | `the_first_change_declares_format_2`, `refused_changes_journal_nothing` |
+| Approval rules block nothing until enforced; then an entry a rule covers posts only once its approver approved it as it stands | `approval_rules_off_by_default`; `ledger-mcp` `spec_kept.rs` `approval_rules_through_the_server` |
+| A template drafts exactly, odd cents by largest remainder, its slots named by each draft, all or nothing | `templates_draft_exactly_or_not_at_all`, `template_slots_take_the_account_each_draft_names`, `templates_draft_through_the_server`, core `splits_are_exact` |
+| Books written under P1 open to the same record forever | `books_written_under_p1_open_to_their_record` (fixture `old-books/p1_record`, also in every old-books test of the store, the viewer and the server) |
+| A settings file imports exactly, reads as it did, and an export round-trips; a masked EIN never imports | `ledger-config` codec unit tests, `tests/codec_props.rs` `exports_round_trip` (512 cases), `ledger-cli` `the_toml_and_its_examples_import_and_round_trip` |
+| Moving settings in: set refused before, the preview records nothing, the file never read after (not even to start), an import that reads differently or loses the vault key refused, the EIN only ever masked | `spec_kept.rs` `a_settings_file_moves_into_the_books`, `an_import_that_reads_differently_is_refused`, `an_import_needs_the_vault_key_on_the_command_line` |
+| books.start fits in 8 KB and says what it cut | `start_fits_in_8_kb` |
+| Values are canonical; no full TIN but the company's EIN; settings hold together; replay takes shapes | core `settings::tests` |
+| Every new tool on the happy path, schema-checked; read-only tools change nothing; idempotent tools repeat as no-ops | `spec_mcp.rs` `inv1_*`, `read_only_tools_change_nothing`; `spec_vault.rs` `idempotent_tools_change_nothing_when_repeated` |
+| The connect text names books.start in its lead and where settings live, in budget, journaled or not | `instructions_budget`, `a_typical_company_gets_the_whole_connect_text` |
+| Fuzzed journals of the new events open in the writer and the viewer alike, verify, and read every way without a panic | `fuzz_settings_replay` (and `fuzz_store_replay` with the new types) |
+| A record changes no figure | Lean `Step.record_changes_no_figure`, `Reachable.records` |
+
+### P1 mutation testing (2026-10-17)
+
+Every mutant in the P1 diff (`--in-diff`), per crate, against that
+crate's tests and its nearest callers' (the recipes' settings:
+`STORE_CASES=64`, `MCP_CASES=16`, no shrinking). First run, then after
+targeted tests:
+
+| Crate | Mutants | First run: caught / timeouts / unviable / missed | Missed after |
+|---|---|---|---|
+| `ledger-core` (with `ledger-store`'s tests) | 486 | 318 / 5 / 41 / 122 | 1 (equivalent) |
+| `ledger-config` (with `ledger-cli`'s) | 72 | 44 / 0 / 2 / 26 | 0 |
+| `ledger-store` | 113 | 81 / 0 / 28 / 4 | 1 (equivalent) |
+| `ledger-mcp` | 260 | 156 / 0 / 96 / 8 | 0 |
+| `ledger-gui` | 25 | 7 / 12 / 3 / 3 | 0 |
+
+No survivor was a bug; each was a test gap, now closed by a test of
+the law it broke:
+
+- **Core.** `tests/settings_units.rs`: every settings accessor's exact
+  value, the company profile and its order, every party-policy
+  spelling, fiscal-year bounds off January, the TIN detector's joiner
+  limits, each text, share and month-day boundary, every tax
+  classification and the return it names, the one-quadrillion cap,
+  today in the company's time zone, and the display of members, lists
+  and the masked EIN. `tests/conventions_units.rs`: slot names (32 and
+  33 characters), summaries cut at 160 characters, template bounds (2
+  and 50 lines kept, 1 and 51 refused, a share out of (0, 1] named by
+  its line), the approval fingerprint against an independent FNV-1a of
+  the hashed text, approval rules at the limit and one cent over
+  (debits only), and which fields make a convention's revision.
+- **Store.** An empty import still moves the books in (once); a
+  posting template replay can't read is newer.
+- **Config.** The TOML comment scanner (a `#` in basic and literal
+  strings, an escaped quote), comments carried by an import, a masked
+  EIN matching, not matching and into empty books, an empty list
+  changing nothing, `differences` naming each field, the export's
+  provenance lines, `effective_receipt_policy` with and without
+  `config.json` (`tests/effective_policy.rs`).
+- **MCP.** `Live::journaled` reads no file, `sync` reloads once per
+  change; the books://start, settings and conventions resources; a
+  renumber names exactly the conventions that name the old code.
+- **Viewer.** The Company page's cards (`tests/kept.rs`): live
+  conventions and not retired ones, standing decisions and not
+  superseded ones, open items and not resolved ones, who decided each
+  and when, a late item saying so in words ("overdue since", added for
+  this: colour alone told only the sighted), and the empty-profile copy
+  of books that keep their settings. `--vault-key-file` wins over the
+  settings and an unknown argument exits 2 (`tests/vault_key_flag.rs`).
+  The first run's 12 timeouts were builds slowed by parallel work: the
+  rerun caught them all.
+
+Equivalent: `holds_printed_tin` mapping a full-width digit by `/`
+instead of `-` (every such digit becomes the digit 1: it asks only
+whether a character is a digit), and `approval_gate`'s fast path (`||`
+made `&&`: with rules off or none, the probe's `approvals_missing` is
+empty either way, so only the cost differs).
+
 ## Benchmarks (baseline 2026-10-13)
 
 No budget, by decision (the owner, 2026-10-13: the books do little work

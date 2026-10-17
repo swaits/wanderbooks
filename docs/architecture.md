@@ -104,6 +104,23 @@ every complete line before it changes anything: a torn tail is set aside
 only when the gate passes, so an older version never alters newer books.
 Rule: `docs/spec/rules.md` B-27.
 
+## How the books are kept, in the books (P1)
+
+Settings, conventions, decisions, open items and approvals are journaled
+(journal format 2, declared with `journal.format_set` before the first
+such line, so a P0 reader stops there with "update wanderbooks"). The
+engine keeps them beside the ledger (`ledger_core::settings::Settings`,
+`ledger_core::conventions::Conventions`, fields of `Ledger`), so the store,
+its replay and the viewer's `Snapshot` share one reading; `Ledger::
+differs_from` and `verify` compare them, and the projection has a table
+for each (schema v12). `ledger-config` is the codec between them and a
+`wanderbooks.toml` (`codec::import`, `codec::export`) and still reads the
+file for books that predate P1 (the "file" source, until
+`books.import_settings`). The server (`settings::Live`) takes the books'
+settings whenever their last `settings.set` changes (on every lock of the
+store) and then never reads a file; "today" is the company's time zone's,
+set per request. Rule: `docs/spec/rules.md` B-29.
+
 ## The MCP server's store lock (`ledger-mcp`, P0)
 
 One `Store` is shared by every session (`SharedStore`: a

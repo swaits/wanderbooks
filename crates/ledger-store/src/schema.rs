@@ -5,7 +5,7 @@
 //! is the current version.
 
 /// Current schema version.
-pub const SCHEMA_VERSION: u32 = 11;
+pub const SCHEMA_VERSION: u32 = 12;
 
 /// Migrations, in order. `MIGRATIONS[i]` migrates from version `i` to `i+1`.
 pub const MIGRATIONS: &[&str] = &[
@@ -265,6 +265,63 @@ CREATE TABLE IF NOT EXISTS reconciliation_lines(
   entry_id INTEGER NOT NULL,
   line_index INTEGER NOT NULL,
   PRIMARY KEY(reconciliation_id, entry_id, line_index)
+);
+"#,
+    r#"
+-- v12: the books' own record of how they are kept (journal format 2,
+-- plan/served.md 5.2): settings in force (each value as canonical JSON,
+-- with the seq and source that set it), conventions (the current
+-- revision of each, and its retirement), decisions, open items, and
+-- approvals of draft entries.
+CREATE TABLE IF NOT EXISTS settings(
+  key TEXT PRIMARY KEY,
+  value_json TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  source_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS conventions(
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  title TEXT NOT NULL,
+  body_md TEXT NOT NULL,
+  structured_json TEXT NULL,
+  source_json TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  revision INTEGER NOT NULL,
+  retired_reason TEXT NULL,
+  retired_source_json TEXT NULL,
+  retired_seq INTEGER NULL
+);
+CREATE TABLE IF NOT EXISTS decisions(
+  id INTEGER PRIMARY KEY,
+  subject TEXT NOT NULL,
+  decision_md TEXT NOT NULL,
+  decided_by_json TEXT NOT NULL,
+  decided_on TEXT NOT NULL,
+  evidence_attachment INTEGER NULL,
+  supersedes INTEGER NULL,
+  citation TEXT NULL,
+  seq INTEGER NOT NULL,
+  superseded_by INTEGER NULL
+);
+CREATE TABLE IF NOT EXISTS open_items(
+  id INTEGER PRIMARY KEY,
+  title TEXT NOT NULL,
+  detail_md TEXT NULL,
+  due TEXT NULL,
+  source_json TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  resolution TEXT NULL,
+  resolved_source_json TEXT NULL,
+  resolved_seq INTEGER NULL
+);
+CREATE TABLE IF NOT EXISTS entry_approvals(
+  seq INTEGER PRIMARY KEY,
+  entry_id INTEGER NOT NULL,
+  approver TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  note TEXT NULL,
+  source_json TEXT NOT NULL
 );
 "#,
 ];

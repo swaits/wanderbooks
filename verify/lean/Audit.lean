@@ -35,3 +35,5 @@ open Wanderbooks
 #print axioms Apportion.ranks_perm
 #print axioms Apportion.apportion_sum
 #print axioms Apportion.apportion_sum_of_shortfall
+#print axioms Step.record_changes_no_figure
+#print axioms Reachable.records

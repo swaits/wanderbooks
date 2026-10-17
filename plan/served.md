@@ -743,6 +743,18 @@ The first company keeps working between phases.
 - The GUI is correct with the toml renamed away.
 - `books.start` v1 is at most 8 KB.
 
+**As built (2026-10-17), and where it departs from the scope above (engineering calls):**
+- One event per change set: `settings.set {changes: [{key, value|null}], source}` is all or nothing (an import is one line); there is no separate `settings.cleared` (a null value clears). `effective_from` is not built: no key needs it yet, and effective-dated members are the varying-interest rule (§706(d)), which changes figures and belongs with the P3 allocation work. A later format adds it.
+- Keys are flat (`company.formation_state`, `company.irs_name_control`, ...), not one `company.legal{}` object: each fact gets its own source, which is what "facts carry their source" asks. `company.members` keeps member names (matched to parties as before); `company.cpa` is text. `policy.capitalization`, `require_tax_category`, `attestation_bar`, `cpa_package_requires_audit`, `audit_cadence` and `books.schedule_convention` arrive with the phases that use them (P3, P8).
+- `ledger-view` (`attention::find` moved out of the viewer) moves to P5, where its first user (`books.start`'s needs_attention, `next_steps`) lands; P1 has no server-side consumer, and moving 700 lines of the viewer for nothing would be risk without use. `attention_server_equals_gui` goes with it.
+- The "due to" heuristic keeps reading account names: `financing_accounts` also holds bank loans, which aren't "paid personally".
+- Approval rules are checked by the engine (`Ledger::approvals_missing`) and enforced by the store: `Store::post_entry` refuses a covered draft until approved, and the operations that post at once (invoices, bills, payments, payroll, remittances, disposals) are refused when a rule covers the entry they would post (`approval_gate`: draft it instead). Reversals, closes, depreciation and amortization are exempt. An approval records the draft's fingerprint (date, description, lines, classes); any change voids it. A rule names accounts that take postings, and an account a rule names can't be renumbered until the rule is revised.
+- `books.import_settings` takes only the file the server reads, whole (compared key by key with the server's own reading), never turns approval rules on, and on books that keep their own settings changes nothing (review round 1: an agent-transcribed text could drop the EIN).
+- `books.start` v1 leaves `book.id`, `book.url`, `head.last_handoff`, the `agent` input and `alwaysLoad` for P5 (they need the served book identity and tool search).
+- Posting templates take slots (`{expense}`): an account each draft names, so "an expense a member paid: Dr <expense> / Cr 2100" is one template.
+- A vault key file is never a books setting: `--vault-key-file` on the server and the viewer, and an import is refused unless the key in force stays the same.
+- The connect text's lead names `books.start` first, then the handbook.
+
 ### P2: Serve locally, hidden away, and the the first company cutover
 
 **Scope:**

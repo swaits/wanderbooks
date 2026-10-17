@@ -22,6 +22,7 @@ pub mod arap;
 pub mod assets;
 pub mod calendar;
 pub mod classes;
+pub mod conventions;
 pub mod error;
 pub mod form1099;
 pub mod journal;
@@ -38,6 +39,7 @@ mod proofs;
 pub mod reports;
 pub mod rules;
 pub mod schedules;
+pub mod settings;
 pub mod shares;
 pub mod tax;
 

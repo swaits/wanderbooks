@@ -10,7 +10,12 @@ theorems below hold in *every* state reachable from empty books, by any
 sequence of commands, of any length.
 
 Mirrors `Ledger::add_account`, `try_create_entry`, `post_entry`,
-`reverse_entry`, `create_period`, and `close_period_to`.
+`reverse_entry`, `create_period`, and `close_period_to`; and, as one step
+`record`, everything the books keep about how they are kept: settings,
+conventions, decisions, open items and approvals (`apply_settings`,
+`apply_convention`, `apply_decision`, `apply_open_item`,
+`apply_approval`, and their retirements and resolutions), each a record
+the step adds and nothing else.
 -/
 
 namespace Wanderbooks
@@ -57,15 +62,18 @@ structure Period where
 /-- Whether a day falls in a period. -/
 def Period.contains (p : Period) (d : Nat) : Bool := decide (p.start ≤ d ∧ d ≤ p.stop)
 
-/-- The books: chart, posted entries in posting order, drafts, periods. -/
+/-- The books: chart, posted entries in posting order, drafts, periods,
+and the record of how they are kept (settings, conventions, decisions,
+open items, approvals), each record abstracted to a number. -/
 structure Ledger where
   chart : Chart
   posted : List Entry
   drafts : List Entry
   periods : List Period
+  records : List Nat
 
 /-- Empty books. -/
-def Ledger.empty : Ledger := ⟨[], [], [], []⟩
+def Ledger.empty : Ledger := ⟨[], [], [], [], []⟩
 
 /-- Whether a closed period contains a day. -/
 def Ledger.closedOn (L : Ledger) (d : Nat) : Prop :=
@@ -119,6 +127,10 @@ inductive Step : Ledger → Ledger → Prop
         = net (closings (nominalCodes L.chart) (allLines (through p.stop L.posted))))
       (id : Nat) :
       Step L { L with posted := L.posted ++ closingFor L p ts id, periods := closeIn p L.periods }
+  /-- `apply_settings`, `apply_convention`, `apply_decision`,
+  `apply_open_item`, `apply_approval` and their retirements and
+  resolutions: a record of how the books are kept, and nothing else. -/
+  | record (L : Ledger) (r : Nat) : Step L { L with records := r :: L.records }
 
 /-- States reachable from empty books. -/
 inductive Reachable : Ledger → Prop
@@ -225,6 +237,7 @@ theorem Step.inv {L L' : Ledger} (s : Step L L') (h : Inv L) : Inv L' := by
       rcases closedOn_closeIn L p d.date hcl with hcl | ⟨-, hc⟩
       · exact h.draftsOpen d hd hcl
       · simp [hdrafts d hd] at hc
+  | record r => exact ⟨h.distinct, h.accepted, h.known, h.draftsOpen⟩
 
 /-- **The invariant holds in every reachable state.** -/
 theorem Reachable.inv {L : Ledger} (r : Reachable L) : Inv L := by
@@ -292,6 +305,7 @@ theorem Step.extends {L L' : Ledger} (s : Step L L') : ∃ t, L'.posted = L.post
   | reverse e _ r => exact ⟨[r], rfl⟩
   | openPeriod => exact ⟨[], by simp⟩
   | close p _ _ _ _ _ ts _ _ id => exact ⟨closingFor L p ts id, rfl⟩
+  | record => exact ⟨[], by simp⟩
 
 /-- Any number of steps. -/
 inductive Steps : Ledger → Ledger → Prop
@@ -442,5 +456,28 @@ theorem statements_add_up (t : AccountType) (b c : Nat) (h : b ≤ c) (es : List
       = typeTotal t (allLines (through b es)) chart
         + typeTotal t (allLines (between b c es)) chart :=
   typeTotal_split t _ _ _ (fun a => movement_split a b c h es) chart
+
+/-! ## How the books are kept changes no figure -/
+
+/-- **A record changes nothing the books hold**: a settings change, a
+convention, a decision, an open item or an approval leaves the chart, every
+posted entry, every draft and every period exactly as they were. (The
+`record` step touches only `records` by definition: this pins the model.
+The engine's side is checked in Rust by `settings_replay_is_pure`.
+Settings that change how the same entries are presented, such as the
+fiscal year, are outside the model.) -/
+theorem Step.record_changes_no_figure (L : Ledger) (r : Nat) :
+    let L' : Ledger := { L with records := r :: L.records }
+    L'.chart = L.chart ∧ L'.posted = L.posted ∧ L'.drafts = L.drafts ∧ L'.periods = L.periods :=
+  ⟨rfl, rfl, rfl, rfl⟩
+
+/-- **Any number of records changes no figure**, and they keep the
+invariant: a reachable state plus records is reachable, with the same
+books. -/
+theorem Reachable.records {L : Ledger} (h : Reachable L) (rs : List Nat) :
+    Reachable { L with records := rs ++ L.records } := by
+  induction rs with
+  | nil => simpa using h
+  | cons r rs ih => exact Reachable.step ih (Step.record _ r)
 
 end Wanderbooks

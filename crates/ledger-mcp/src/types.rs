@@ -562,8 +562,21 @@ pub struct MemberSettingOut {
 /// Result of `books.settings`.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct SettingsOut {
-    /// The wanderbooks.toml the server reads (null: settings built in, not
-    /// from a file).
+    /// Where the settings come from: "books" (the books keep them; change
+    /// them with books.set_setting) or "file" (a settings file these books
+    /// still read: move it in with books.import_settings).
+    pub source: String,
+    /// The company's time zone (IANA), or null: the computer's.
+    pub timezone: Option<String>,
+    /// Today, in that time zone.
+    pub today: String,
+    /// Whether approval rules block posting: "off" or "enforce".
+    pub approval_rules: String,
+    /// Every setting the books know: what it takes, its value (null:
+    /// unset, its default applies), and who set it.
+    pub keys: Vec<crate::server::SettingKeyOut>,
+    /// The wanderbooks.toml the server reads (null: the books keep their
+    /// own settings, or settings built in).
     pub books_toml: Option<String>,
     /// Whether that file exists (absent: the defaults apply).
     pub books_toml_exists: bool,
@@ -1192,6 +1205,21 @@ pub struct PostEntryOut {
     /// with `books.set_entry_party`, or add the party with
     /// `books.add_party` first.
     pub party_suggestions: Vec<PartySuggestionOut>,
+    /// Approvals the entry still needs before it posts, when the books
+    /// enforce approval rules (`policy.approval_rules = enforce`): each
+    /// rule covering it and its approver. Empty otherwise. Record each
+    /// with `books.approve_entry` once the approver says yes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub approvals_missing: Vec<ApprovalNeededOut>,
+}
+
+/// An approval an entry needs.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ApprovalNeededOut {
+    /// The approval rule (a convention id).
+    pub rule: String,
+    /// Who approves.
+    pub approver: String,
 }
 
 /// A likely counterparty for an entry.

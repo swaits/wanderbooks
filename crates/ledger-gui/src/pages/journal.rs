@@ -834,6 +834,75 @@ pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
             format!("Cleared a line of #{}", entry_id.unwrap_or(0)),
             entry_id.map(Route::Entry),
         ),
+        // The books' record of how they are kept (journal format 2).
+        "settings.set" => {
+            let keys: Vec<&str> = p["changes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|c| c.get("key").and_then(|k| k.as_str()))
+                .collect();
+            let by = s(&p["source"], "decided_by");
+            ev(
+                icon::GEAR_SIX,
+                if keys.is_empty() {
+                    format!("Settings moved into the books ({by})")
+                } else {
+                    format!("Settings changed: {} ({by})", keys.join(", "))
+                },
+                Some(Route::Company),
+            )
+        }
+        "convention.set" => ev(
+            icon::SCROLL,
+            format!(
+                "Convention: {} ({}, {})",
+                s(p, "title"),
+                s(p, "kind").replace('_', " "),
+                s(&p["source"], "decided_by")
+            ),
+            Some(Route::Company),
+        ),
+        "convention.retired" => ev(
+            icon::SCROLL,
+            format!("Convention {} retired: {}", s(p, "id"), s(p, "reason")),
+            Some(Route::Company),
+        ),
+        "decision.recorded" => ev(
+            icon::GAVEL,
+            format!(
+                "Decision: {} ({}, {})",
+                s(p, "subject"),
+                p["decided_by"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|v| v.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" and "),
+                s(p, "decided_on")
+            ),
+            Some(Route::Company),
+        ),
+        "open_item.raised" => ev(
+            icon::FLAG,
+            format!("Open item #{id}: {}", s(p, "title")),
+            Some(Route::Company),
+        ),
+        "open_item.resolved" => ev(
+            icon::CHECK_CIRCLE,
+            format!("Open item #{id} resolved: {}", s(p, "resolution")),
+            Some(Route::Company),
+        ),
+        "entry.approved" => ev(
+            icon::SEAL_CHECK,
+            format!(
+                "Entry #{} approved by {}",
+                entry_id.unwrap_or(0),
+                s(p, "approver")
+            ),
+            entry_id.map(Route::Entry),
+        ),
         other => ev(
             icon::DOT,
             other.to_string(),

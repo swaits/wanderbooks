@@ -262,6 +262,9 @@ fiscal_year_start = "01-01"
 # "partnership", "S corporation", "C corporation", or "disregarded entity"
 # (Treas. Reg. §301.7701-3). tax_form wins when both are set.
 # tax_classification = "partnership"
+# The company's time zone (an IANA name): what "today" means for the
+# books. Unset: the computer's.
+# timezone = "America/Denver"
 # Identity facts the CPA needs, each from a primary document (EIN letter,
 # certificate of organization). Any simple key = value line here shows in
 # the viewer's profile, labelled from its key.
@@ -304,6 +307,10 @@ accounting_basis = "accrual"
 # means every entry (IRS Pub. 583: keep the documents that support your
 # books). A receipt_policy in books-data/config.json overrides it.
 receipt_threshold = "25.00"
+# Accounts whose entries always need a receipt, whatever the amount; and
+# accounts exempt from the rule (an entry whose every line is in one).
+# receipt_required_accounts = ["6200"]
+# receipt_exempt_accounts = ["6999"]
 # Account codes that hold cash (bank, savings, cash on hand), for the cash
 # flow statement and dashboards. Unset: cash accounts are found by name.
 # cash_accounts = ["1000", "1010"]
@@ -331,6 +338,11 @@ receipt_threshold = "25.00"
 # "require" refuses to post until it names one or is marked as having none
 # (a transfer between your own accounts); "off" never mentions it.
 # parties = "suggest"
+
+# Approval rules (conventions naming who approves which entries) block a
+# post until approved only under "enforce"; "off" (the default) records
+# them and blocks nothing.
+# approval_rules = "off"
 
 # Which accounts invoices, bills, payroll, and closes post to (receivables,
 # payables, revenue, payroll, retained earnings) is not set here: those

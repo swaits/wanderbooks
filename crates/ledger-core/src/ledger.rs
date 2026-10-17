@@ -204,6 +204,10 @@ pub struct ReconciliationReport {
     pub uncleared_lines: Vec<UnclearedLine>,
 }
 
+/// What a posting template drafts: its description, and the lines
+/// `(account, side, amount)` ([`Ledger::template_lines`]).
+pub type TemplateDraft = (Option<String>, Vec<(AccountId, Side, Money)>);
+
 /// The books. Single-currency (see R-5); owns id allocation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Ledger {
@@ -269,6 +273,11 @@ pub struct Ledger {
     entry_parties: HashMap<EntryId, Vec<crate::PartyShare>>,
     /// Entries marked as having no counterparty, with why.
     entry_no_party: HashMap<EntryId, String>,
+    /// The settings the journal holds ([`crate::settings`]).
+    settings: crate::settings::Settings,
+    /// Conventions, decisions, open items and approvals
+    /// ([`crate::conventions`]).
+    conventions: crate::conventions::Conventions,
 }
 
 impl Ledger {
@@ -312,6 +321,8 @@ impl Ledger {
             next_party_id: 1,
             entry_parties: HashMap::new(),
             entry_no_party: HashMap::new(),
+            settings: crate::settings::Settings::default(),
+            conventions: crate::conventions::Conventions::default(),
         }
     }
 
@@ -633,6 +644,8 @@ impl Ledger {
                 "entry_no_party",
                 self.entry_no_party == other.entry_no_party,
             ),
+            ("settings", self.settings == other.settings),
+            ("conventions", self.conventions == other.conventions),
         ]
         .into_iter()
         .filter(|(_, same)| !same)
@@ -849,6 +862,19 @@ impl Ledger {
         }
         if self.chart.find_by_code(code).is_some() {
             return Err(LedgerError::DuplicateAccountCode(code.to_string()));
+        }
+        // An approval rule names accounts by code: renumbering one it names
+        // would leave the rule covering nothing (or, later, another
+        // account). It is revised first (crate::conventions INVARIANT 3).
+        if let Some((rule, _)) = self
+            .conventions
+            .approval_rules()
+            .find(|(_, r)| r.as_ref().is_none_or(|r| r.accounts.contains(&a.code)))
+        {
+            return Err(LedgerError::InvalidConvention(format!(
+                "approval rule {} names account {}: retire it (books.retire_convention) or revise it without that account (books.set_convention), renumber, then set the rule again with the new code",
+                rule.id, a.code
+            )));
         }
         if let Some(c) =
             control_accounts().find(|c| c.code == code && !self.roles.contains_key(c.key))
@@ -2829,7 +2855,7 @@ impl Ledger {
                 id
             }
         };
-        let p = self.parties.get_mut(&id).expect("just found or made");
+        let p = self.parties.get_mut(&id).expect("found or made above");
         if vendor {
             p.vendor = Some(record);
         } else {
@@ -4595,6 +4621,533 @@ impl Ledger {
             },
         );
         Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // Settings, conventions, decisions, open items, approvals
+    // ------------------------------------------------------------------
+
+    /// The settings the journal holds ([`crate::settings`]).
+    pub fn settings(&self) -> &crate::settings::Settings {
+        &self.settings
+    }
+
+    /// Check a settings change before it is journaled: every value
+    /// canonical, changes that change nothing left out, the result whole
+    /// (crate::settings INVARIANTS 1, 2, 4), and the fiscal year never
+    /// moved under a closed period. Changes nothing.
+    pub fn check_settings(
+        &self,
+        changes: &[crate::settings::Change],
+        source: &crate::settings::Source,
+    ) -> Result<Vec<crate::settings::Change>, LedgerError> {
+        self.check_settings_adopting(changes, source, false)
+    }
+
+    /// [`Self::check_settings`] for books moving a settings file in
+    /// (`adopting`): their first `settings.set` takes the fiscal year they
+    /// were kept under (the import proves it is the file's), so it moves
+    /// nothing, closed periods or not.
+    pub fn check_settings_adopting(
+        &self,
+        changes: &[crate::settings::Change],
+        source: &crate::settings::Source,
+        adopting: bool,
+    ) -> Result<Vec<crate::settings::Change>, LedgerError> {
+        let made = self
+            .settings
+            .check_changes(changes, source)
+            .map_err(LedgerError::InvalidSetting)?;
+        // The fiscal year can't move under closed periods: they were
+        // closed by it, and the year's earnings would restate (a tax year
+        // changes only with the IRS's consent, Form 1128). Books moving a
+        // settings file in take the year they were kept under.
+        if !(adopting && !self.settings.is_journaled())
+            && made.iter().any(|c| c.key == "company.fiscal_year_start")
+        {
+            let mut next = self.settings.clone();
+            next.apply(&made, source, 0)
+                .map_err(LedgerError::InvalidSetting)?;
+            let (before, after) = (
+                self.settings.company("").fiscal_year_start,
+                next.company("").fiscal_year_start,
+            );
+            if before != after
+                && self
+                    .periods
+                    .values()
+                    .any(|p| p.status == crate::PeriodStatus::Closed)
+            {
+                return Err(LedgerError::InvalidSetting(format!(
+                    "company.fiscal_year_start can't change from {:02}-{:02} to {:02}-{:02}: periods are closed under it (a changed tax year needs the IRS's consent, Form 1128; ask the CPA)",
+                    before.0, before.1, after.0, after.1
+                )));
+            }
+        }
+        Ok(made)
+    }
+
+    /// Apply a journaled settings change (`settings.set` at `seq`): as
+    /// checked when made, or as replayed (shape only, rules.md B-28).
+    pub fn apply_settings(
+        &mut self,
+        changes: &[crate::settings::Change],
+        source: &crate::settings::Source,
+        seq: u64,
+    ) -> Result<(), LedgerError> {
+        self.settings
+            .apply(changes, source, seq)
+            .map_err(LedgerError::InvalidSetting)
+    }
+
+    /// Conventions, decisions, open items and approvals.
+    pub fn conventions(&self) -> &crate::conventions::Conventions {
+        &self.conventions
+    }
+
+    /// Check a convention before it is journaled: its id, text and
+    /// structure (crate::conventions::check_new), and that every account a
+    /// posting template or approval rule names is in the chart (a
+    /// template's, one that takes postings). Returns it as it will be
+    /// journaled; changes nothing.
+    pub fn check_convention(
+        &self,
+        c: &crate::conventions::NewConvention,
+    ) -> Result<crate::conventions::NewConvention, LedgerError> {
+        let bad = LedgerError::InvalidConvention;
+        let c = crate::conventions::check_new(c).map_err(bad)?;
+        let old = self.conventions.convention(&c.id);
+        if old.is_some_and(|o| o.retired.is_some()) {
+            return Err(bad(format!(
+                "convention {} is retired; ids are never reused: choose a new one",
+                c.id
+            )));
+        }
+        if let Some(o) = old.filter(|o| o.kind != c.kind) {
+            return Err(bad(format!(
+                "convention {} is a {}; its kind can't change (retire it and set a new id)",
+                c.id,
+                o.kind.key()
+            )));
+        }
+        let probe = crate::conventions::Convention {
+            id: c.id.clone(),
+            kind: c.kind,
+            title: c.title.clone(),
+            body_md: c.body_md.clone(),
+            structured: c.structured.clone(),
+            source: c.source.clone(),
+            seq: 0,
+            revision: 1,
+            retired: None,
+        };
+        if let Some(t) = probe.template() {
+            for l in t
+                .lines
+                .iter()
+                .filter(|l| crate::conventions::slot(&l.account).is_none())
+            {
+                let a = self.chart.find_by_code(&l.account).ok_or_else(|| {
+                    bad(format!(
+                        "template account {} is not in the chart",
+                        l.account
+                    ))
+                })?;
+                if a.placeholder {
+                    return Err(bad(format!(
+                        "template account {} is a placeholder; templates post to accounts that take postings",
+                        l.account
+                    )));
+                }
+            }
+        }
+        if let Some(r) = probe.approval_rule() {
+            for code in &r.accounts {
+                match self.chart.find_by_code(code) {
+                    None => {
+                        return Err(bad(format!(
+                            "approval rule account {code} is not in the chart"
+                        )));
+                    }
+                    Some(a) if a.placeholder => {
+                        return Err(bad(format!(
+                            "approval rule account {code} is a placeholder (a heading), which no line posts to: name the accounts under it"
+                        )));
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+        if old.is_some_and(|o| {
+            o.title == c.title && o.body_md == c.body_md && o.structured == c.structured
+        }) {
+            return Err(bad(format!(
+                "convention {} already says exactly that",
+                c.id
+            )));
+        }
+        Ok(c)
+    }
+
+    /// Apply a journaled `convention.set` at `seq` (checked when made;
+    /// replay takes it as journaled).
+    pub fn apply_convention(
+        &mut self,
+        c: crate::conventions::NewConvention,
+        seq: u64,
+    ) -> Result<(), LedgerError> {
+        self.conventions
+            .apply_convention(c, seq)
+            .map_err(LedgerError::InvalidConvention)
+    }
+
+    /// Check a retirement before it is journaled: the convention is live,
+    /// the reason and source are sound.
+    pub fn check_retire_convention(
+        &self,
+        id: &str,
+        reason: &str,
+        source: &crate::settings::Source,
+    ) -> Result<String, LedgerError> {
+        let bad = LedgerError::InvalidConvention;
+        source.check().map_err(bad)?;
+        let reason = crate::settings::long_text("reason", reason, crate::settings::MAX_LONG_TEXT)
+            .map_err(bad)?;
+        match self.conventions.convention(id) {
+            None => Err(bad(format!(
+                "unknown convention {id:?}: books.conventions lists them"
+            ))),
+            Some(c) if c.retired.is_some() => {
+                Err(bad(format!("convention {id} is already retired")))
+            }
+            Some(_) => Ok(reason),
+        }
+    }
+
+    /// Apply a journaled `convention.retired` at `seq`.
+    pub fn apply_retire_convention(
+        &mut self,
+        id: &str,
+        reason: String,
+        source: crate::settings::Source,
+        seq: u64,
+    ) -> Result<(), LedgerError> {
+        self.conventions
+            .apply_retire(id, reason, source, seq)
+            .map_err(LedgerError::InvalidConvention)
+    }
+
+    /// Check a decision before it is journaled; returns it as it will be
+    /// journaled, under the id it will get. Changes nothing. (Its
+    /// evidence attachment is the store's to check.)
+    pub fn check_decision(
+        &self,
+        d: &crate::conventions::NewDecision,
+    ) -> Result<(u64, crate::conventions::NewDecision), LedgerError> {
+        let bad = LedgerError::InvalidConvention;
+        let d = crate::conventions::check_decision(d).map_err(bad)?;
+        if let Some(old) = d.supersedes {
+            match self.conventions.decision(old) {
+                None => {
+                    return Err(bad(format!(
+                        "decision {old} doesn't exist: books.decisions lists them"
+                    )));
+                }
+                Some(o) if o.superseded_by.is_some() => {
+                    return Err(bad(format!(
+                        "decision {old} was already superseded by {}",
+                        o.superseded_by.unwrap_or_default()
+                    )));
+                }
+                Some(_) => {}
+            }
+        }
+        Ok((self.conventions.next_decision_id(), d))
+    }
+
+    /// Apply a journaled `decision.recorded` under `id` at `seq`.
+    pub fn apply_decision(
+        &mut self,
+        id: u64,
+        d: crate::conventions::NewDecision,
+        seq: u64,
+    ) -> Result<(), LedgerError> {
+        self.conventions
+            .apply_decision(id, d, seq)
+            .map_err(LedgerError::InvalidConvention)
+    }
+
+    /// Check an open item before it is journaled; returns it, under the
+    /// id it will get.
+    pub fn check_open_item(
+        &self,
+        i: &crate::conventions::NewOpenItem,
+    ) -> Result<(u64, crate::conventions::NewOpenItem), LedgerError> {
+        let i = crate::conventions::check_open_item(i).map_err(LedgerError::InvalidConvention)?;
+        Ok((self.conventions.next_open_item_id(), i))
+    }
+
+    /// Apply a journaled `open_item.raised` under `id` at `seq`.
+    pub fn apply_open_item(
+        &mut self,
+        id: u64,
+        i: crate::conventions::NewOpenItem,
+        seq: u64,
+    ) -> Result<(), LedgerError> {
+        self.conventions
+            .apply_raise(id, i, seq)
+            .map_err(LedgerError::InvalidConvention)
+    }
+
+    /// Check a resolution before it is journaled: the item is open, the
+    /// text and source are sound.
+    pub fn check_resolve_item(
+        &self,
+        id: u64,
+        resolution: &str,
+        source: &crate::settings::Source,
+    ) -> Result<String, LedgerError> {
+        let bad = LedgerError::InvalidConvention;
+        source.check().map_err(bad)?;
+        let text =
+            crate::settings::long_text("resolution", resolution, crate::settings::MAX_LONG_TEXT)
+                .map_err(bad)?;
+        match self.conventions.open_item(id) {
+            None => Err(bad(format!(
+                "unknown open item {id}: books.open_items lists them"
+            ))),
+            Some(i) if i.resolved.is_some() => {
+                Err(bad(format!("open item {id} is already resolved")))
+            }
+            Some(_) => Ok(text),
+        }
+    }
+
+    /// Apply a journaled `open_item.resolved` at `seq`.
+    pub fn apply_resolve_item(
+        &mut self,
+        id: u64,
+        resolution: String,
+        source: crate::settings::Source,
+        seq: u64,
+    ) -> Result<(), LedgerError> {
+        self.conventions
+            .apply_resolve(id, resolution, source, seq)
+            .map_err(LedgerError::InvalidConvention)
+    }
+
+    /// Check an approval before it is journaled: `entry` is a draft, the
+    /// approver is named, the note and source are sound. Returns the
+    /// approval as it will be journaled (its fingerprint is the draft's
+    /// now: crate::conventions INVARIANT 3).
+    pub fn check_approval(
+        &self,
+        entry: EntryId,
+        approver: &str,
+        note: Option<&str>,
+        source: &crate::settings::Source,
+    ) -> Result<crate::conventions::Approval, LedgerError> {
+        let bad = LedgerError::InvalidConvention;
+        source.check().map_err(bad)?;
+        let e = self
+            .entries
+            .get(&entry)
+            .ok_or(LedgerError::UnknownEntry(entry))?;
+        if e.status() == EntryStatus::Posted {
+            return Err(LedgerError::EntryAlreadyPosted(entry));
+        }
+        Ok(crate::conventions::Approval {
+            approver: crate::settings::line_text("approver", approver, crate::settings::MAX_TEXT)
+                .map_err(bad)?,
+            fingerprint: self.approval_fingerprint(e),
+            note: note
+                .map(|n| crate::settings::long_text("note", n, crate::settings::MAX_LONG_TEXT))
+                .transpose()
+                .map_err(bad)?,
+            source: source.clone(),
+            seq: 0,
+        })
+    }
+
+    /// Apply a journaled `entry.approved` at `seq` (the entry must exist).
+    pub fn apply_approval(
+        &mut self,
+        entry: EntryId,
+        approval: crate::conventions::Approval,
+    ) -> Result<(), LedgerError> {
+        if !self.entries.contains_key(&entry) {
+            return Err(LedgerError::UnknownEntry(entry));
+        }
+        self.conventions.apply_approval(entry, approval);
+        Ok(())
+    }
+
+    /// An entry's fingerprint for approvals, with who it is with
+    /// (crate::conventions::fingerprint).
+    fn approval_fingerprint(&self, e: &JournalEntry) -> String {
+        crate::conventions::fingerprint(
+            e,
+            self.entry_parties
+                .get(&e.id())
+                .map_or(&[][..], Vec::as_slice),
+            self.entry_no_party.get(&e.id()).map(String::as_str),
+        )
+    }
+
+    /// The approvals `entry` still needs before it posts: each live
+    /// approval rule covering it whose approver hasn't approved it as it
+    /// stands, as `(rule id, approver)`. Empty under
+    /// `policy.approval_rules = off` (crate::conventions INVARIANT 3).
+    pub fn approvals_missing(&self, entry: EntryId) -> Result<Vec<(String, String)>, LedgerError> {
+        if self.settings.approval_rules() == crate::settings::ApprovalMode::Off {
+            return Ok(Vec::new());
+        }
+        let e = self
+            .entries
+            .get(&entry)
+            .ok_or(LedgerError::UnknownEntry(entry))?;
+        let codes: Vec<&str> = e
+            .lines()
+            .iter()
+            .filter_map(|l| self.chart.get(l.account).map(|a| a.code.as_str()))
+            .collect();
+        let debits = e
+            .lines()
+            .iter()
+            .filter(|l| l.side == Side::Debit)
+            .try_fold(Decimal::ZERO, |t, l| t.checked_add(l.amount.amount))
+            .ok_or_else(|| LedgerError::TooLargeToCompute(format!("entry {entry}'s debits")))?;
+        let approvals = self.conventions.approvals(entry);
+        let key = crate::parties::name_key;
+        let mut missing = Vec::new();
+        for (c, r) in self.conventions.approval_rules() {
+            // A rule this version can't read covers everything (fail
+            // closed): no approver it names can be matched.
+            let Some(r) = r else {
+                missing.push((c.id.clone(), "an approver this version can't read".into()));
+                continue;
+            };
+            let by_account =
+                r.accounts.is_empty() || r.accounts.iter().any(|a| codes.contains(&a.as_str()));
+            let by_amount = r
+                .amount_over
+                .as_deref()
+                .and_then(crate::settings::decimal)
+                .is_none_or(|over| debits > over);
+            let covered = by_account && by_amount;
+            let now = self.approval_fingerprint(e);
+            let approved = approvals
+                .iter()
+                .any(|a| key(&a.approver) == key(&r.approver) && a.fingerprint == now);
+            if covered && !approved {
+                missing.push((c.id.clone(), r.approver.clone()));
+            }
+        }
+        Ok(missing)
+    }
+
+    /// The lines a posting template drafts for `amount` (crate::
+    /// conventions INVARIANT 2): `(account, side, amount)`, each side
+    /// summing to `amount` exactly, and the template's description.
+    /// `slots` names the account (by code) for each of the template's
+    /// slots (`{expense}` → `"expense"`): every slot, and nothing else.
+    pub fn template_lines(
+        &self,
+        template_id: &str,
+        amount: Decimal,
+        slots: &std::collections::BTreeMap<String, String>,
+    ) -> Result<TemplateDraft, LedgerError> {
+        let bad = LedgerError::InvalidConvention;
+        let c = self.conventions.convention(template_id).ok_or_else(|| {
+            bad(format!(
+                "unknown convention {template_id:?}: books.conventions lists the templates"
+            ))
+        })?;
+        if c.retired.is_some() {
+            return Err(bad(format!("template {template_id} is retired")));
+        }
+        let t = c.template().ok_or_else(|| {
+            bad(format!(
+                "convention {template_id} is a {}, not a posting template",
+                c.kind.key()
+            ))
+        })?;
+        let wanted: std::collections::BTreeSet<&str> = t
+            .lines
+            .iter()
+            .filter_map(|l| crate::conventions::slot(&l.account))
+            .collect();
+        let missing: Vec<&str> = wanted
+            .iter()
+            .copied()
+            .filter(|w| !slots.contains_key(*w))
+            .collect();
+        if !missing.is_empty() {
+            return Err(bad(format!(
+                "template {template_id} needs an account for {}: pass accounts {{{}}}",
+                missing.join(", "),
+                missing
+                    .iter()
+                    .map(|m| format!("\"{m}\": \"<code>\""))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        }
+        if let Some(extra) = slots.keys().find(|k| !wanted.contains(k.as_str())) {
+            return Err(bad(format!(
+                "template {template_id} has no slot {extra:?}{}",
+                if wanted.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "; its slots: {}",
+                        wanted.iter().copied().collect::<Vec<_>>().join(", ")
+                    )
+                }
+            )));
+        }
+        if amount <= Decimal::ZERO {
+            return Err(bad(format!("amount {amount} must be above zero")));
+        }
+        if amount > crate::kernel::MAX_LINE_AMOUNT {
+            return Err(LedgerError::AmountOutOfRange);
+        }
+        check_minor_units(Money::new(amount, self.base_currency))?;
+        let places = self.base_currency.minor_units();
+        let mut out = Vec::new();
+        for side in [Side::Debit, Side::Credit] {
+            let lines: Vec<_> = t.lines.iter().filter(|l| l.side == side).collect();
+            let shares: Vec<Decimal> = lines
+                .iter()
+                .map(|l| crate::settings::decimal(&l.share).unwrap_or_default())
+                .collect();
+            let parts = crate::conventions::split(amount, &shares, places).ok_or_else(|| {
+                LedgerError::TooLargeToCompute(format!("template {template_id} at {amount}"))
+            })?;
+            for (l, part) in lines.iter().zip(parts) {
+                if part <= Decimal::ZERO {
+                    return Err(bad(format!(
+                        "{amount} is too small to split by template {template_id}: account {}'s part would be {part}",
+                        l.account
+                    )));
+                }
+                let code = match crate::conventions::slot(&l.account) {
+                    Some(name) => slots[name].as_str(),
+                    None => l.account.as_str(),
+                };
+                let a = self
+                    .chart
+                    .find_by_code(code)
+                    .ok_or_else(|| bad(format!("template account {code} is not in the chart")))?;
+                if a.placeholder {
+                    return Err(bad(format!(
+                        "account {code} is a placeholder (a heading); a template posts to accounts that take postings"
+                    )));
+                }
+                out.push((a.id, side, Money::new(part, self.base_currency)));
+            }
+        }
+        Ok((t.description, out))
     }
 
     // ------------------------------------------------------------------

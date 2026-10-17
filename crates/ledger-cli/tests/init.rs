@@ -418,3 +418,41 @@ fn the_toml_shows_every_setting_the_config_reads() {
         assert!(has(sect, key), "[{sect}] {key} is in the template");
     }
 }
+
+/// Moving the scaffolded settings file, and every example in it, into
+/// books: each imports, reads as the file does (the import refuses
+/// otherwise), and exporting it back and importing the export changes
+/// nothing (plan/served.md P1: toml_round_trip_zero_events).
+#[test]
+fn the_toml_and_its_examples_import_and_round_trip() {
+    use ledger_core::settings::{Settings, Source};
+    let tmp = tempfile::tempdir().unwrap();
+    let (_, text) = scaffolded_toml(tmp.path());
+    let single_owner = |ex: &str| ex.starts_with("close_into ");
+    let source = Source {
+        decided_by: "onboarding".into(),
+        decided_on: chrono_date(),
+        citation: None,
+        note: None,
+    };
+    for file in [
+        text.clone(),
+        uncomment(&text, |ex| !single_owner(ex)),
+        uncomment(&text, single_owner),
+    ] {
+        let import = ledger_config::codec::import(&file, None, &Settings::default(), "USD")
+            .unwrap_or_else(|e| panic!("imports: {e}\n{file}"));
+        assert!(import.unknown.is_empty(), "{:?}", import.unknown);
+        let mut books = Settings::default();
+        let changes = books.check_changes(&import.changes, &source).unwrap();
+        books.apply(&changes, &source, 1).unwrap();
+        let export = ledger_config::codec::export(&books, "USD");
+        let again = ledger_config::codec::import(&export, None, &books, "USD")
+            .unwrap_or_else(|e| panic!("the export imports: {e}\n{export}"));
+        assert!(again.changes.is_empty(), "{:?}\n{export}", again.changes);
+    }
+}
+
+fn chrono_date() -> chrono::NaiveDate {
+    chrono::NaiveDate::from_ymd_opt(2026, 10, 17).unwrap()
+}

@@ -48,7 +48,7 @@ pub fn show(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                     ui,
                     icon::BANK,
                     "No cash accounts found",
-                    "Name an asset account \"checking\", \"savings\", or \"cash\", or set [books] cash_accounts in wanderbooks.toml.",
+                    "Name an asset account \"checking\", \"savings\", or \"cash\", or ask the agent to set the books' cash accounts.",
                 )
             });
             return;

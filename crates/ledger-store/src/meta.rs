@@ -1,0 +1,380 @@
+//! Journal payloads of the books' own record of how they are kept:
+//! settings, conventions, decisions, open items and approvals (journal
+//! format 2, plan/served.md 5.2). One encoder and one decoder per event,
+//! so the writer and every reader (replay, the projection, the viewer)
+//! read a line the same way.
+//!
+//! ```text
+//! GOAL: every event round-trips: decode(encode(x)) == x.
+//! INVARIANTS:
+//!   1. A payload missing a field, or with a field of the wrong type, is
+//!      JournalCorrupt; optional fields may be absent or null.
+//!   2. Decoding checks shape only (rules.md B-28): what a command checks
+//!      (limits, the chart) stays with the command.
+//! ```
+
+use crate::error::StoreError;
+use chrono::NaiveDate;
+use ledger_core::conventions::{Approval, ConventionKind, NewConvention, NewDecision, NewOpenItem};
+use ledger_core::settings::{Change, Source};
+use serde_json::{Map, Value, json};
+
+/// The journal format these events need: an older reader stops at the
+/// declaration (format gate) instead of misreading them.
+pub const FORMAT: u32 = 2;
+
+fn corrupt(event: &str, what: &str) -> StoreError {
+    StoreError::JournalCorrupt(format!("{event}: missing or invalid '{what}'"))
+}
+
+fn str_of(p: &Value, event: &str, k: &str) -> Result<String, StoreError> {
+    p.get(k)
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| corrupt(event, k))
+}
+
+fn opt_str(p: &Value, event: &str, k: &str) -> Result<Option<String>, StoreError> {
+    match p.get(k) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.clone())),
+        Some(_) => Err(corrupt(event, k)),
+    }
+}
+
+fn u64_of(p: &Value, event: &str, k: &str) -> Result<u64, StoreError> {
+    p.get(k)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| corrupt(event, k))
+}
+
+fn opt_u64(p: &Value, event: &str, k: &str) -> Result<Option<u64>, StoreError> {
+    match p.get(k) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v.as_u64().map(Some).ok_or_else(|| corrupt(event, k)),
+    }
+}
+
+fn date_of(s: &str, event: &str, k: &str) -> Result<NaiveDate, StoreError> {
+    NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| corrupt(event, k))
+}
+
+fn opt_date(p: &Value, event: &str, k: &str) -> Result<Option<NaiveDate>, StoreError> {
+    opt_str(p, event, k)?
+        .map(|s| date_of(&s, event, k))
+        .transpose()
+}
+
+/// Insert `v` under `k` unless it is `None`.
+fn put<T: Into<Value>>(o: &mut Map<String, Value>, k: &str, v: Option<T>) {
+    if let Some(v) = v {
+        o.insert(k.to_string(), v.into());
+    }
+}
+
+/// A source as journaled: `{decided_by, decided_on, citation?, note?}`.
+pub fn source_json(s: &Source) -> Value {
+    let mut o = Map::new();
+    o.insert("decided_by".into(), json!(s.decided_by));
+    o.insert("decided_on".into(), json!(s.decided_on.to_string()));
+    put(&mut o, "citation", s.citation.clone());
+    put(&mut o, "note", s.note.clone());
+    Value::Object(o)
+}
+
+/// A journaled source (`p[k]`).
+pub fn source_of(p: &Value, event: &str, k: &str) -> Result<Source, StoreError> {
+    let s = p
+        .get(k)
+        .filter(|v| v.is_object())
+        .ok_or_else(|| corrupt(event, k))?;
+    Ok(Source {
+        decided_by: str_of(s, event, "decided_by")?,
+        decided_on: date_of(&str_of(s, event, "decided_on")?, event, "source.decided_on")?,
+        citation: opt_str(s, event, "citation")?,
+        note: opt_str(s, event, "note")?,
+    })
+}
+
+/// `settings.set {changes: [{key, value|null}], source}`.
+pub fn settings_set(changes: &[Change], source: &Source) -> Value {
+    json!({
+        "changes": changes
+            .iter()
+            .map(|c| json!({ "key": c.key, "value": c.value.clone().unwrap_or(Value::Null) }))
+            .collect::<Vec<_>>(),
+        "source": source_json(source),
+    })
+}
+
+/// Read a `settings.set`.
+pub fn settings_set_of(p: &Value) -> Result<(Vec<Change>, Source), StoreError> {
+    const E: &str = "settings.set";
+    let changes = p
+        .get("changes")
+        .and_then(Value::as_array)
+        .ok_or_else(|| corrupt(E, "changes"))?
+        .iter()
+        .map(|c| {
+            Ok(Change {
+                key: str_of(c, E, "key")?,
+                value: match c.get("value") {
+                    None => return Err(corrupt(E, "value")),
+                    Some(Value::Null) => None,
+                    Some(v) => Some(v.clone()),
+                },
+            })
+        })
+        .collect::<Result<Vec<_>, StoreError>>()?;
+    Ok((changes, source_of(p, E, "source")?))
+}
+
+/// `convention.set {id, kind, title, body_md, structured?, source}`.
+pub fn convention_set(c: &NewConvention) -> Value {
+    let mut o = Map::new();
+    o.insert("id".into(), json!(c.id));
+    o.insert("kind".into(), json!(c.kind.key()));
+    o.insert("title".into(), json!(c.title));
+    o.insert("body_md".into(), json!(c.body_md));
+    put(&mut o, "structured", c.structured.clone());
+    o.insert("source".into(), source_json(&c.source));
+    Value::Object(o)
+}
+
+/// Read a `convention.set`.
+pub fn convention_set_of(p: &Value) -> Result<NewConvention, StoreError> {
+    const E: &str = "convention.set";
+    Ok(NewConvention {
+        id: str_of(p, E, "id")?,
+        kind: ConventionKind::parse(&str_of(p, E, "kind")?).ok_or_else(|| corrupt(E, "kind"))?,
+        title: str_of(p, E, "title")?,
+        body_md: str_of(p, E, "body_md")?,
+        structured: p.get("structured").filter(|v| !v.is_null()).cloned(),
+        source: source_of(p, E, "source")?,
+    })
+}
+
+/// `convention.retired {id, reason, source}`.
+pub fn convention_retired(id: &str, reason: &str, source: &Source) -> Value {
+    json!({ "id": id, "reason": reason, "source": source_json(source) })
+}
+
+/// Read a `convention.retired`: `(id, reason, source)`.
+pub fn convention_retired_of(p: &Value) -> Result<(String, String, Source), StoreError> {
+    const E: &str = "convention.retired";
+    Ok((
+        str_of(p, E, "id")?,
+        str_of(p, E, "reason")?,
+        source_of(p, E, "source")?,
+    ))
+}
+
+/// `decision.recorded {id, subject, decision_md, decided_by, decided_on,
+/// evidence_attachment?, supersedes?, citation?}`.
+pub fn decision_recorded(id: u64, d: &NewDecision) -> Value {
+    let mut o = Map::new();
+    o.insert("id".into(), json!(id));
+    o.insert("subject".into(), json!(d.subject));
+    o.insert("decision_md".into(), json!(d.decision_md));
+    o.insert("decided_by".into(), json!(d.decided_by));
+    o.insert("decided_on".into(), json!(d.decided_on.to_string()));
+    put(&mut o, "evidence_attachment", d.evidence_attachment);
+    put(&mut o, "supersedes", d.supersedes);
+    put(&mut o, "citation", d.citation.clone());
+    Value::Object(o)
+}
+
+/// Read a `decision.recorded`: `(id, decision)`.
+pub fn decision_recorded_of(p: &Value) -> Result<(u64, NewDecision), StoreError> {
+    const E: &str = "decision.recorded";
+    let decided_by = p
+        .get("decided_by")
+        .and_then(Value::as_array)
+        .and_then(|a| {
+            a.iter()
+                .map(|v| v.as_str().map(str::to_string))
+                .collect::<Option<Vec<_>>>()
+        })
+        .ok_or_else(|| corrupt(E, "decided_by"))?;
+    Ok((
+        u64_of(p, E, "id")?,
+        NewDecision {
+            subject: str_of(p, E, "subject")?,
+            decision_md: str_of(p, E, "decision_md")?,
+            decided_by,
+            decided_on: date_of(&str_of(p, E, "decided_on")?, E, "decided_on")?,
+            evidence_attachment: opt_u64(p, E, "evidence_attachment")?,
+            supersedes: opt_u64(p, E, "supersedes")?,
+            citation: opt_str(p, E, "citation")?,
+        },
+    ))
+}
+
+/// `open_item.raised {id, title, detail_md?, due?, source}`.
+pub fn open_item_raised(id: u64, i: &NewOpenItem) -> Value {
+    let mut o = Map::new();
+    o.insert("id".into(), json!(id));
+    o.insert("title".into(), json!(i.title));
+    put(&mut o, "detail_md", i.detail_md.clone());
+    put(&mut o, "due", i.due.map(|d| d.to_string()));
+    o.insert("source".into(), source_json(&i.source));
+    Value::Object(o)
+}
+
+/// Read an `open_item.raised`: `(id, item)`.
+pub fn open_item_raised_of(p: &Value) -> Result<(u64, NewOpenItem), StoreError> {
+    const E: &str = "open_item.raised";
+    Ok((
+        u64_of(p, E, "id")?,
+        NewOpenItem {
+            title: str_of(p, E, "title")?,
+            detail_md: opt_str(p, E, "detail_md")?,
+            due: opt_date(p, E, "due")?,
+            source: source_of(p, E, "source")?,
+        },
+    ))
+}
+
+/// `open_item.resolved {id, resolution, source}`.
+pub fn open_item_resolved(id: u64, resolution: &str, source: &Source) -> Value {
+    json!({ "id": id, "resolution": resolution, "source": source_json(source) })
+}
+
+/// Read an `open_item.resolved`: `(id, resolution, source)`.
+pub fn open_item_resolved_of(p: &Value) -> Result<(u64, String, Source), StoreError> {
+    const E: &str = "open_item.resolved";
+    Ok((
+        u64_of(p, E, "id")?,
+        str_of(p, E, "resolution")?,
+        source_of(p, E, "source")?,
+    ))
+}
+
+/// `entry.approved {entry_id, approver, fingerprint, note?, source}`.
+pub fn entry_approved(entry: u64, a: &Approval) -> Value {
+    let mut o = Map::new();
+    o.insert("entry_id".into(), json!(entry));
+    o.insert("approver".into(), json!(a.approver));
+    o.insert("fingerprint".into(), json!(a.fingerprint));
+    put(&mut o, "note", a.note.clone());
+    o.insert("source".into(), source_json(&a.source));
+    Value::Object(o)
+}
+
+/// Read an `entry.approved` at `seq`: `(entry, approval)`.
+pub fn entry_approved_of(p: &Value, seq: u64) -> Result<(u64, Approval), StoreError> {
+    const E: &str = "entry.approved";
+    Ok((
+        u64_of(p, E, "entry_id")?,
+        Approval {
+            approver: str_of(p, E, "approver")?,
+            fingerprint: str_of(p, E, "fingerprint")?,
+            note: opt_str(p, E, "note")?,
+            source: source_of(p, E, "source")?,
+            seq,
+        },
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ledger_core::conventions::ConventionKind;
+
+    fn src() -> Source {
+        Source {
+            decided_by: "A".into(),
+            decided_on: NaiveDate::from_ymd_opt(2026, 10, 17).unwrap(),
+            citation: Some("c".into()),
+            note: None,
+        }
+    }
+
+    /// GOAL: every event round-trips.
+    #[test]
+    fn round_trips() {
+        let ch = vec![
+            Change {
+                key: "company.name".into(),
+                value: Some(json!("X")),
+            },
+            Change {
+                key: "books.close_into".into(),
+                value: None,
+            },
+        ];
+        assert_eq!(
+            settings_set_of(&settings_set(&ch, &src())).unwrap(),
+            (ch, src())
+        );
+        let c = NewConvention {
+            id: "t".into(),
+            kind: ConventionKind::PostingTemplate,
+            title: "T".into(),
+            body_md: "B".into(),
+            structured: Some(json!({"lines": []})),
+            source: src(),
+        };
+        assert_eq!(convention_set_of(&convention_set(&c)).unwrap(), c);
+        assert_eq!(
+            convention_retired_of(&convention_retired("t", "r", &src())).unwrap(),
+            ("t".into(), "r".into(), src())
+        );
+        let d = NewDecision {
+            subject: "S".into(),
+            decision_md: "D".into(),
+            decided_by: vec!["A".into(), "B".into()],
+            decided_on: src().decided_on,
+            evidence_attachment: Some(7),
+            supersedes: None,
+            citation: None,
+        };
+        assert_eq!(
+            decision_recorded_of(&decision_recorded(3, &d)).unwrap(),
+            (3, d)
+        );
+        let i = NewOpenItem {
+            title: "T".into(),
+            detail_md: Some("d".into()),
+            due: Some(src().decided_on),
+            source: src(),
+        };
+        assert_eq!(
+            open_item_raised_of(&open_item_raised(4, &i)).unwrap(),
+            (4, i)
+        );
+        assert_eq!(
+            open_item_resolved_of(&open_item_resolved(4, "done", &src())).unwrap(),
+            (4, "done".into(), src())
+        );
+        let a = Approval {
+            approver: "A".into(),
+            fingerprint: "00ff".into(),
+            note: None,
+            source: src(),
+            seq: 9,
+        };
+        assert_eq!(
+            entry_approved_of(&entry_approved(5, &a), 9).unwrap(),
+            (5, a)
+        );
+    }
+
+    /// INVARIANT 1.
+    #[test]
+    fn bad_shapes_are_corrupt() {
+        assert!(
+            settings_set_of(&json!({"changes": [{"key": "k"}], "source": source_json(&src())}))
+                .is_err()
+        );
+        assert!(settings_set_of(&json!({"changes": []})).is_err());
+        assert!(convention_set_of(&json!({"id": "t", "kind": "nope", "title": "T", "body_md": "B", "source": source_json(&src())})).is_err());
+        assert!(decision_recorded_of(&json!({"id": 1, "subject": "S", "decision_md": "D", "decided_by": [1], "decided_on": "2026-10-17"})).is_err());
+        assert!(
+            open_item_raised_of(
+                &json!({"id": 1, "title": "T", "due": 5, "source": source_json(&src())})
+            )
+            .is_err()
+        );
+    }
+}

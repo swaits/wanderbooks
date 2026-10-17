@@ -22,6 +22,7 @@ pub mod blob;
 pub mod error;
 pub mod format;
 pub mod journal;
+pub mod meta;
 pub mod reconcilable;
 pub mod schema;
 pub mod snapshot;

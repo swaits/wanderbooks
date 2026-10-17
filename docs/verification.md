@@ -87,7 +87,9 @@ Each law, and what proves it. Kani harnesses are in
 ### The books over time
 
 The Lean model (`Ledger.lean`) describes the engine as a state machine:
-add an account, start a draft, post, reverse, open a period, close one.
+add an account, start a draft, post, reverse, open a period, close one,
+and record how the books are kept (a setting, convention, decision, open
+item or approval: one step, `record`, each record abstracted to a number).
 Each step carries the checks the engine makes before it mutates. These
 theorems hold in **every state reachable from empty books, by any
 sequence of commands, of any length**:
@@ -106,6 +108,18 @@ sequence of commands, of any length**:
     commands adds, removes, or changes an entry dated in it, and it stays
     closed.
     - Lean `Step.frozen`, `Steps.frozen`
+13a. **How the books are kept changes no entry**: in the model, a record
+    (a setting, convention, decision, open item or approval) leaves the
+    chart, every posted entry, every draft and every period exactly as they
+    were, and any number of them keeps a reachable state reachable. The
+    model's `record` step touches only the records by definition, so the
+    proof says the model is sound, not the engine; the engine's side is
+    checked by `settings_replay_is_pure`, which snapshots every figure and
+    entry around each record (rules.md B-29). Settings that change how the
+    same entries are presented (the fiscal year, cash flow roles, members)
+    are outside this law by design.
+    - Lean `Step.record_changes_no_figure`, `Reachable.records` (no
+      axioms at all) · property `settings_replay_is_pure`
 
 ### Closing
 

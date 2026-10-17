@@ -202,25 +202,48 @@ fn show(h: &mut Harness<'_, App>, route: Route) {
     h.run_steps(1);
 }
 
-/// INVARIANTS 1-2, in four shards run side by side.
+/// How many shards the old books are rendered in, side by side.
+const SHARDS: usize = 8;
+
+/// INVARIANTS 1-2, in eight shards run side by side.
 #[test]
 fn every_page_renders_over_books_an_earlier_version_wrote_0() {
-    every_page_renders(0, 4);
+    every_page_renders(0, SHARDS);
 }
 
 #[test]
 fn every_page_renders_over_books_an_earlier_version_wrote_1() {
-    every_page_renders(1, 4);
+    every_page_renders(1, SHARDS);
 }
 
 #[test]
 fn every_page_renders_over_books_an_earlier_version_wrote_2() {
-    every_page_renders(2, 4);
+    every_page_renders(2, SHARDS);
 }
 
 #[test]
 fn every_page_renders_over_books_an_earlier_version_wrote_3() {
-    every_page_renders(3, 4);
+    every_page_renders(3, SHARDS);
+}
+
+#[test]
+fn every_page_renders_over_books_an_earlier_version_wrote_4() {
+    every_page_renders(4, SHARDS);
+}
+
+#[test]
+fn every_page_renders_over_books_an_earlier_version_wrote_5() {
+    every_page_renders(5, SHARDS);
+}
+
+#[test]
+fn every_page_renders_over_books_an_earlier_version_wrote_6() {
+    every_page_renders(6, SHARDS);
+}
+
+#[test]
+fn every_page_renders_over_books_an_earlier_version_wrote_7() {
+    every_page_renders(7, SHARDS);
 }
 
 /// Every page over the old books whose index is `shard` mod `of`.
@@ -395,4 +418,43 @@ fn figures_that_cant_be_computed_are_said() {
         "{:?}",
         b.attention
     );
+}
+
+/// Books that keep their own settings (written under P1) show them, never
+/// the settings file beside them, which here says otherwise (another
+/// name, a July fiscal year, a $25 receipt rule): the viewer reads the
+/// settings as the server does (plan/served.md P1, Accept).
+#[test]
+fn books_that_keep_their_settings_never_read_the_file() {
+    let dir = stage("p1_record");
+    let b = load(&dir);
+    assert_eq!(b.settings.company.name, "Fixture Labs LLC");
+    assert_eq!(b.settings.company.fiscal_year_start, (1, 1));
+    assert_eq!(b.receipt_threshold, rust_decimal::Decimal::ZERO);
+    assert_eq!(b.settings.timezone, None, "the fixture cleared it");
+    assert_eq!(b.settings.company.members.len(), 2);
+    assert!(
+        b.settings
+            .company
+            .profile
+            .iter()
+            .any(|(k, v)| k == "ein" && v == "98-7814321"),
+        "the viewer is the human's: the EIN in full"
+    );
+    // Every new event has its own sentence in the journal page.
+    for line in b.journal.iter().filter(|l| {
+        [
+            "settings.set",
+            "convention.set",
+            "convention.retired",
+            "decision.recorded",
+            "open_item.raised",
+            "open_item.resolved",
+            "entry.approved",
+        ]
+        .contains(&l.line_type.as_str())
+    }) {
+        let e = ledger_gui::pages::journal::describe(&b, line).expect("described");
+        assert_ne!(e.text, line.line_type, "{} has no sentence", line.line_type);
+    }
 }

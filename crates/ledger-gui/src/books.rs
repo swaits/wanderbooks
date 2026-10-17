@@ -540,12 +540,17 @@ impl Books {
         let ledger = snap.ledger().clone();
         let attachments = snap.attachments(None).map_err(|e| e.to_string())?;
         let journal = snap.journal().to_vec();
-        // The server's own rule (config.json, else wanderbooks.toml), so
-        // the viewer flags exactly what the server would refuse.
-        let policy = ledger_config::effective_receipt_policy(
-            &snap.data_dir().join("config.json"),
-            &settings,
-        )?;
+        // The server's own rule (the books' settings when they keep them,
+        // else config.json, else wanderbooks.toml), so the viewer flags
+        // exactly what the server would refuse.
+        let policy = if ledger.settings().is_journaled() {
+            ledger_config::codec::receipt_policy(ledger.settings())
+        } else {
+            ledger_config::effective_receipt_policy(
+                &snap.data_dir().join("config.json"),
+                &settings,
+            )?
+        };
         let receipt_threshold = policy.threshold();
         let cash_accounts = cash_accounts(&ledger, &settings);
         let members = settings.company.party_members(&ledger);
@@ -1516,22 +1521,21 @@ impl Books {
     /// INVARIANT 1: read only on demand (a click), never on load or paint.
     /// INVARIANT 2: never creates a key file; a missing key is a locked
     ///   vault ("restore it from your password manager").
-    /// INVARIANT 3: the key file in force is the server's: [vault]
-    ///   key_file, else ~/.config/wanderbooks/vault.key; one inside the
-    ///   books dir is refused, as the server refuses it.
+    /// INVARIANT 3: the key file in force is the server's: the one given
+    ///   on the command line (--vault-key-file), else a settings file's
+    ///   [vault] key_file, else ~/.config/wanderbooks/vault.key; one
+    ///   inside the books dir is refused, as the server refuses it.
     /// INVARIANT 4: an error never carries the digits (the vault's errors
     ///   are redacted); a party with no record is "not in the vault".
     /// ```
     pub fn tin_from_vault(&self, party: PartyId) -> Result<String, String> {
-        let key = self
-            .settings
-            .vault_key_file
-            .clone()
+        let key = crate::vault_key_file()
+            .or_else(|| self.settings.vault_key_file.clone())
             .unwrap_or_else(ledger_vault::default_key_file);
         let books = self.books_dir();
         if resolved(&key).starts_with(resolved(&books)) {
             return Err(format!(
-                "The vault key file {} is inside the books folder: move it out and set [vault] key_file.",
+                "The vault key file {} is inside the books folder: move it out, and name its new place to the server and the viewer (--vault-key-file).",
                 key.display()
             ));
         }

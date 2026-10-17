@@ -62,11 +62,11 @@ fn says_update(text: &str) {
 #[test]
 fn the_viewer_says_update_for_newer_books_and_corrupt_for_damaged_ones() {
     for (tag, line_type, payload) in [
-        ("type", "settings.set", json!({"key": "company.name"})),
+        ("type", "period.attested", json!({"key": "company.name"})),
         (
             "format",
             "journal.format_set",
-            json!({"format": 2, "features": []}),
+            json!({"format": 3, "features": []}),
         ),
     ] {
         let data = books(tag);

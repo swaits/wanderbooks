@@ -97,7 +97,7 @@ just          # lists the recipes: check, build, prove, demo, ...
 ```
 crates/ledger-core/    # engine: money, accounts, journal, ledger, reports
 crates/ledger-store/   # journal + SQLite projection + blob store
-crates/ledger-mcp/     # MCP server: 64 tools, resources, receipt policy
+crates/ledger-mcp/     # MCP server: 108 tools, resources, handbook, receipt policy
 crates/ledger-import/  # QBO CSV import, IIF/XLSX export
 crates/ledger-config/  # wanderbooks.toml company settings
 crates/ledger-cli/     # `wanderbooks new`: one-command books dir + agent

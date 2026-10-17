@@ -1,4 +1,4 @@
-//! `ledger-gui [--data-dir PATH] [--books-toml PATH] [--today YYYY-MM-DD] [--demo]`
+//! `ledger-gui [--data-dir PATH] [--books-toml PATH] [--vault-key-file PATH] [--today YYYY-MM-DD] [--demo]`
 //!
 //! Opens the books read-only and follows them live. With no flags it looks
 //! for `books-data/` and `wanderbooks.toml` in the current directory.
@@ -17,11 +17,16 @@ fn main() -> eframe::Result<()> {
         match a.as_str() {
             "--data-dir" => data_dir = args.next().map(PathBuf::from),
             "--books-toml" => books_toml = args.next().map(PathBuf::from),
+            "--vault-key-file" => {
+                if let Some(k) = args.next() {
+                    ledger_gui::set_vault_key_file(PathBuf::from(k));
+                }
+            }
             "--today" => today = args.next().and_then(|d| d.parse().ok()),
             "--demo" => demo = true,
             "-h" | "--help" => {
                 println!(
-                    "usage: ledger-gui [--data-dir PATH] [--books-toml PATH] [--today YYYY-MM-DD] [--demo]"
+                    "usage: ledger-gui [--data-dir PATH] [--books-toml PATH] [--vault-key-file PATH] [--today YYYY-MM-DD] [--demo]"
                 );
                 return Ok(());
             }

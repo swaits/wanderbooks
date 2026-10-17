@@ -68,7 +68,9 @@ pub fn load_once(source: &Source) -> Result<Books, String> {
         })
     })?;
     let integrity = Integrity::check(&snap, &mut HashSet::new());
-    Books::build(&snap, settings(source)?, today(source), None, integrity)
+    let settings = settings(source, &snap)?;
+    let today = today(source, &settings);
+    Books::build(&snap, settings, today, None, integrity)
 }
 
 /// What the viewer says when the books can't be read. Books from a newer
@@ -88,13 +90,25 @@ pub fn problem(e: &StoreError, context: impl FnOnce() -> String) -> String {
     }
 }
 
-fn today(source: &Source) -> NaiveDate {
+/// Today: as fixed for tests, else in the company's time zone, else the
+/// computer's.
+fn today(source: &Source, settings: &BooksSettings) -> NaiveDate {
     source
         .today
-        .unwrap_or_else(|| chrono::Local::now().date_naive())
+        .unwrap_or_else(|| ledger_core::settings::today_in(settings.timezone.as_deref()))
 }
 
-fn settings(source: &Source) -> Result<BooksSettings, String> {
+/// The settings: the books' own when they keep them (the settings file is
+/// then never read, as the server never reads it), else the settings
+/// file's.
+fn settings(source: &Source, snap: &Snapshot) -> Result<BooksSettings, String> {
+    let books = snap.ledger().settings();
+    if books.is_journaled() {
+        return Ok(ledger_config::codec::books_settings(
+            books,
+            snap.ledger().base_currency().code(),
+        ));
+    }
     match &source.books_toml {
         Some(p) if p.exists() => ledger_config::load(p),
         _ => Ok(BooksSettings::default()),
@@ -128,9 +142,10 @@ fn run(source: Source, ctx: egui::Context, tx: Sender<Update>) {
     let mut build = |snap: &Snapshot, prev: Option<u64>| -> (Update, ledger_store::DiskCheck) {
         let integrity = Integrity::check(snap, &mut verified);
         let disk = integrity.disk.clone();
-        let update = match settings(&source)
-            .and_then(|s| Books::build(snap, s, today(&source), prev, integrity))
-        {
+        let update = match settings(&source, snap).and_then(|s| {
+            let today = today(&source, &s);
+            Books::build(snap, s, today, prev, integrity)
+        }) {
             Ok(b) => Update::Books(Arc::new(b)),
             Err(e) => Update::Error(e),
         };
@@ -181,7 +196,12 @@ fn run(source: Source, ctx: egui::Context, tx: Sender<Update>) {
         }
     }
     let mut toml_mtime = mtime(&source.books_toml);
-    let mut day = today(&source);
+    let day_now = |snap: &Snapshot| {
+        settings(&source, snap)
+            .map(|s| today(&source, &s))
+            .unwrap_or_else(|_| today(&source, &BooksSettings::default()))
+    };
+    let mut day = day_now(&snap);
     loop {
         match ev_rx.recv_timeout(Duration::from_secs(3)) {
             Ok(()) => {
@@ -205,7 +225,7 @@ fn run(source: Source, ctx: egui::Context, tx: Sender<Update>) {
             }
         };
         let toml_now = mtime(&source.books_toml);
-        let new_day = today(&source);
+        let new_day = day_now(&snap);
         // The writer journals first and updates its database right after:
         // a "behind" database usually catches up a moment later, so look
         // again rather than leave a stale warning up.

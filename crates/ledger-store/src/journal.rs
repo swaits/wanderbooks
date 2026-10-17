@@ -242,6 +242,12 @@ impl JournalWriter {
         self.next_seq
     }
 
+    /// The head of the chain: the last line's seq (0 for an empty
+    /// journal) and its hash (the genesis value for an empty one).
+    pub fn head(&self) -> (u64, &str) {
+        (self.next_seq - 1, &self.prev_hash)
+    }
+
     /// Path of the journal file.
     pub fn path(&self) -> &Path {
         &self.path

@@ -118,21 +118,21 @@ fn assert_corrupt<T>(got: Result<T, StoreError>) {
 
 /// Oracle (plan/served.md 5.1): an older reader meets books a newer
 /// wanderbooks wrote. A valid line of an unknown type, and a declared
-/// format 2, are each NewerJournal, from the writer and the viewer alike,
+/// format 3, are each NewerJournal, from the writer and the viewer alike,
 /// and the refusal reads nothing further: the database isn't rebuilt and
 /// the journal is untouched.
 #[test]
 fn old_reader_gets_newer_journal() {
     let cases = [
         (
-            "settings.set",
+            "period.attested",
             json!({"key": "company.name", "value": "X"}),
             "an event type this version doesn't know",
         ),
         (
             FORMAT_SET,
-            json!({"format": 2, "features": []}),
-            "journal format 2",
+            json!({"format": 3, "features": []}),
+            "journal format 3",
         ),
         (
             FORMAT_SET,
@@ -218,12 +218,12 @@ fn the_writer_and_the_viewer_agree_on_newer_books() {
         &[
             // Chained and of a known type, but replay refuses it.
             ("entry.posted", json!({"id": 99})),
-            ("settings.set", json!({"key": "company.name"})),
+            ("period.attested", json!({"key": "company.name"})),
         ],
     )[1];
     let need = "an event type this version doesn't know";
-    assert_newer(Store::open(&dir), seq, "settings.set", need, false);
-    assert_newer(Snapshot::load(&dir), seq, "settings.set", need, false);
+    assert_newer(Store::open(&dir), seq, "period.attested", need, false);
+    assert_newer(Snapshot::load(&dir), seq, "period.attested", need, false);
 }
 
 /// Damage stays corruption, whatever the damaged line's type: the gate
@@ -256,8 +256,8 @@ fn damaged_journals_are_still_corrupt() {
         }),
     ];
     let newer = [
-        (FORMAT_SET, json!({"format": 2, "features": []})),
-        ("settings.set", json!({"key": "company.name"})),
+        (FORMAT_SET, json!({"format": 3, "features": []})),
+        ("period.attested", json!({"key": "company.name"})),
     ];
     for (name, damage) in damages {
         for (i, last) in newer.iter().enumerate() {
@@ -541,32 +541,32 @@ fn a_newer_format_frames_its_lines_its_own_way() {
     let nexts: [(&str, Next, Option<bool>); 6] = [
         (
             "float",
-            |seq, prev| json!({"seq": seq, "ts": "t", "type": "settings.set", "payload": {"rate": 0.5}, "prev": prev}),
+            |seq, prev| json!({"seq": seq, "ts": "t", "type": "period.attested", "payload": {"rate": 0.5}, "prev": prev}),
             Some(true),
         ),
         (
             "string-seq",
-            |seq, prev| json!({"seq": seq.to_string(), "ts": "t", "type": "settings.set", "payload": {}, "prev": prev}),
+            |seq, prev| json!({"seq": seq.to_string(), "ts": "t", "type": "period.attested", "payload": {}, "prev": prev}),
             Some(true),
         ),
         (
             "envelope-key",
-            |seq, prev| json!({"seq": seq, "ts": "t", "type": "settings.set", "payload": {}, "prev": prev, "actor": "agent"}),
+            |seq, prev| json!({"seq": seq, "ts": "t", "type": "period.attested", "payload": {}, "prev": prev, "actor": "agent"}),
             Some(true),
         ),
         (
             "no-prev",
-            |seq, prev| json!({"seq": seq, "ts": "t", "type": "settings.set", "payload": {}, "parent": prev}),
+            |seq, prev| json!({"seq": seq, "ts": "t", "type": "period.attested", "payload": {}, "parent": prev}),
             Some(false),
         ),
         (
             "prev-not-text",
-            |seq, _| json!({"seq": seq, "ts": "t", "type": "settings.set", "payload": {}, "prev": 1.5}),
+            |seq, _| json!({"seq": seq, "ts": "t", "type": "period.attested", "payload": {}, "prev": 1.5}),
             Some(false),
         ),
         (
             "wrong-prev",
-            |seq, _| json!({"seq": seq, "ts": "t", "type": "settings.set", "payload": {"rate": 0.5}, "prev": "00"}),
+            |seq, _| json!({"seq": seq, "ts": "t", "type": "period.attested", "payload": {"rate": 0.5}, "prev": "00"}),
             None,
         ),
     ];
@@ -575,7 +575,7 @@ fn a_newer_format_frames_its_lines_its_own_way() {
         books(&dir);
         let seq = append(
             &dir,
-            &[(FORMAT_SET, json!({"format": 2, "features": ["actors"]}))],
+            &[(FORMAT_SET, json!({"format": 3, "features": ["actors"]}))],
         )[0];
         let (_, hash) = last_line(&dir);
         append_raw(
@@ -584,8 +584,8 @@ fn a_newer_format_frames_its_lines_its_own_way() {
         );
         match verified {
             Some(v) => {
-                assert_newer(Store::open(&dir), seq, FORMAT_SET, "journal format 2", v);
-                assert_newer(Snapshot::load(&dir), seq, FORMAT_SET, "journal format 2", v);
+                assert_newer(Store::open(&dir), seq, FORMAT_SET, "journal format 3", v);
+                assert_newer(Snapshot::load(&dir), seq, FORMAT_SET, "journal format 3", v);
             }
             None => {
                 assert_corrupt(Store::open(&dir));
@@ -661,11 +661,11 @@ fn a_line_that_is_not_utf8_is_corrupt_for_the_viewer_and_the_writer() {
         } else {
             // After a refused line, it is a next line without a readable
             // prev: unverified, for both.
-            let seq = append(&dir, &[("settings.set", json!({}))])[0];
+            let seq = append(&dir, &[("period.attested", json!({}))])[0];
             append_raw(&dir, b"{\"prev\":\"\xff\"}\n");
             let need = "an event type this version doesn't know";
-            assert_newer(Store::open(&dir), seq, "settings.set", need, false);
-            assert_newer(Snapshot::load(&dir), seq, "settings.set", need, false);
+            assert_newer(Store::open(&dir), seq, "period.attested", need, false);
+            assert_newer(Snapshot::load(&dir), seq, "period.attested", need, false);
         }
     }
 }
@@ -678,12 +678,12 @@ fn a_line_that_is_not_utf8_is_corrupt_for_the_viewer_and_the_writer() {
 fn an_old_reader_never_repairs_newer_books() {
     let dir = test_dir("newer-torn");
     books(&dir);
-    let seq = append(&dir, &[("settings.set", json!({"key": "company.name"}))])[0];
+    let seq = append(&dir, &[("period.attested", json!({"key": "company.name"}))])[0];
     append_raw(&dir, b"{\"seq\":");
     let path = dir.join(JOURNAL_FILE);
     let before = std::fs::read(&path).unwrap();
     let need = "an event type this version doesn't know";
-    assert_newer(Store::open(&dir), seq, "settings.set", need, false);
+    assert_newer(Store::open(&dir), seq, "period.attested", need, false);
     assert_eq!(std::fs::read(&path).unwrap(), before);
     let set_aside: Vec<_> = std::fs::read_dir(&dir)
         .unwrap()

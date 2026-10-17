@@ -1,6 +1,6 @@
-# STATUS — 2026-10-17: "Served" P0 landed and live; P1 next
+# STATUS — 2026-10-17: "Served" P0 live; P1 landed, cutover next
 
-## Now: Served (plan/served.md), P0 done, P1 next
+## Now: Served (plan/served.md), P0 live, P1 landed
 
 The 2026-10-16 audit of the first company's books (62 verified findings,
 20 engine defects) and the design discussion that followed produced
@@ -29,6 +29,18 @@ Cutover on the first company's books, 2026-10-17: `books.verify` ok
 books dir, `goldens/p0-cutover-2026-10-17/`). Connect text with their
 settings: 1,396 characters.
 
+**P1 (journal-native settings and conventions): landed.** Settings,
+conventions (posting templates, approval rules, policies, close steps,
+calendar, mappings, notes), decisions, open items and approvals are
+journal events (format 2); books that keep their settings never read
+`wanderbooks.toml` or `config.json`, and `books.import_settings` moves a
+file in exactly once. Two review rounds (all findings fixed), `just
+check`, `just prove` (Kani 20/20, Lean 31 theorems, standard axioms
+only), and mutation on the whole diff (956 mutants; every survivor
+killed by a test but two equivalent: `docs/testing.md`). **Next:** the
+first company's cutover (goldens before and after, import, time zone,
+conventions from its AGENTS.md), then P2.
+
 **Before-snapshots for later phases:** the first company's reports as of
 2026-10-11 and 2026-10-16 (journal head `d1ccd2fd…`, 355 events) are
 saved in that books dir under `goldens/p0-2026-10-16/` (exported through
@@ -36,7 +48,7 @@ the MCP, no TINs), privately, by decision, never in this public repo
 (plan 5.6). P1+ must reproduce them except where the P3 change log
 adjudicates a difference (cash flow, defect 1).
 
-**Then:** P1 (journal-native settings and conventions), P2 (serve locally,
+**Then:** P2 (serve locally,
 cutover; ask the owner the three plain-English cutover questions in
 plan section 10.3 first), P3-P11 as planned (P11, added 2026-10-17: one app for Windows, Mac and
 Linux; P2 gained backup restore and the viewer's menu).

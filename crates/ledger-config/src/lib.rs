@@ -9,127 +9,14 @@
 //! unless `config.json` sets one). The fiscal year *end* is never stored: it is the day before
 //! the next start, so the two can't disagree.
 
+pub mod codec;
 pub mod receipt_policy;
+pub use ledger_core::settings::{Company, Member, PartyPolicy, decimal};
 pub use receipt_policy::ReceiptPolicy;
 
-use chrono::{Datelike, NaiveDate};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use std::path::Path;
-
-/// The company the books belong to.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Company {
-    /// Legal name, for report headers.
-    pub name: String,
-    /// Month and day the fiscal year starts. Default January 1.
-    pub fiscal_year_start: (u32, u32),
-    /// Members of a multi-member LLC; empty for other entities.
-    pub members: Vec<Member>,
-    /// "Accrual" or "Cash", for report footers. Default "Accrual".
-    pub basis: String,
-    /// The income tax return the business files, if known: from
-    /// `tax_form`, else from `tax_classification`.
-    pub tax_form: Option<ledger_core::TaxForm>,
-    /// `[books] close_into`: the equity account a period close puts net
-    /// income in (a sole proprietor's capital, say). Unset: Retained
-    /// Earnings, or members' capital accounts when there are members.
-    pub close_into: Option<String>,
-    /// `[books] close_sweep`: equity accounts (draws, dividends,
-    /// distributions) a close zeroes into `close_into`.
-    pub close_sweep: Vec<String>,
-    /// Every simple `[company]` setting (name, EIN, formation date, ...),
-    /// in file order, as written: the full profile for display.
-    pub profile: Vec<(String, String)>,
-}
-
-/// One member of a multi-member LLC.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Member {
-    /// Name, as it appears on reports.
-    pub name: String,
-    /// Share of income, e.g. 0.50.
-    pub share: Decimal,
-    /// Code of their capital account in the chart.
-    pub capital_account: String,
-    /// Code of their distributions account, if distributions are recorded
-    /// separately from capital (zeroed into capital at close).
-    pub distribution_account: Option<String>,
-    /// `files_jointly_with`: the other member this member files a joint
-    /// individual return with (spouses). Each still gets their own K-1
-    /// (a partnership reports each partner separately, IRS Instructions
-    /// for Form 1065, Schedule K-1); both K-1s go on the one Form 1040
-    /// (Schedule E, Part II). Informational: the CPA package says so.
-    pub files_jointly_with: Option<String>,
-}
-
-impl Default for Company {
-    fn default() -> Self {
-        Self {
-            name: "Unnamed company".to_string(),
-            fiscal_year_start: (1, 1),
-            members: Vec::new(),
-            basis: "Accrual".to_string(),
-            tax_form: None,
-            close_into: None,
-            close_sweep: Vec::new(),
-            profile: Vec::new(),
-        }
-    }
-}
-
-impl Company {
-    /// The members as party shares see them ([`ledger_core::PartyMember`]):
-    /// each member whose name (ignoring case and surrounding space) is a
-    /// party with the member role, and whose capital account is in the
-    /// chart. The party not archived of that name when there is one, else
-    /// the most recent archived one: archiving a member ("no longer dealt
-    /// with; history stays") never takes their history away. Members
-    /// missing either are left out, so their shares can't be derived (and
-    /// the viewer shows no capital statement for them).
-    pub fn party_members(&self, ledger: &ledger_core::Ledger) -> Vec<ledger_core::PartyMember> {
-        let is_member = |p: &&ledger_core::Party| p.roles.contains(&ledger_core::Role::Member);
-        self.members
-            .iter()
-            .filter_map(|m| {
-                let key = ledger_core::parties::name_key(&m.name);
-                let party = match ledger.party_by_name(&m.name) {
-                    Some(p) => Some(p).filter(is_member)?,
-                    None => ledger
-                        .parties()
-                        .filter(|p| p.archived && ledger_core::parties::name_key(&p.name) == key)
-                        .filter(is_member)
-                        .max_by_key(|p| p.id)?,
-                };
-                Some(ledger_core::PartyMember {
-                    party: party.id,
-                    share: m.share,
-                    capital: ledger.chart().find_by_code(&m.capital_account)?.id,
-                    distributions: m
-                        .distribution_account
-                        .as_deref()
-                        .and_then(|c| ledger.chart().find_by_code(c))
-                        .map(|a| a.id),
-                })
-            })
-            .collect()
-    }
-
-    /// The fiscal year containing `d`: `(first day, last day)`, inclusive.
-    pub fn fiscal_year_containing(&self, d: NaiveDate) -> (NaiveDate, NaiveDate) {
-        let (m, day) = self.fiscal_year_start;
-        let on = |year| NaiveDate::from_ymd_opt(year, m, day).expect("validated month-day");
-        let start = if on(d.year()) <= d {
-            on(d.year())
-        } else {
-            on(d.year() - 1)
-        };
-        let end = on(start.year() + 1)
-            .pred_opt()
-            .expect("not the minimum date");
-        (start, end)
-    }
-}
 
 /// What the server takes from `wanderbooks.toml`.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -138,6 +25,12 @@ pub struct BooksSettings {
     pub company: Company,
     /// `[books] receipt_threshold`, validated as a decimal string.
     pub receipt_threshold: Option<String>,
+    /// `[books] receipt_required_accounts`: account codes whose entries
+    /// always need a receipt (unless `config.json` sets a policy).
+    pub receipt_required_accounts: Vec<String>,
+    /// `[books] receipt_exempt_accounts`: account codes exempt from the
+    /// receipt rule (unless `config.json` sets a policy).
+    pub receipt_exempt_accounts: Vec<String>,
     /// `[books] cash_accounts`: account codes that hold cash (bank,
     /// savings, cash on hand), for cash reports and dashboards. Empty:
     /// callers decide (e.g. by account name).
@@ -160,6 +53,9 @@ pub struct BooksSettings {
     /// `[vault] key_file`: the TIN vault's key file. Unset: the vault's
     /// default (`~/.config/wanderbooks/vault.key`).
     pub vault_key_file: Option<std::path::PathBuf>,
+    /// `[company] timezone`: the company's time zone (an IANA name), what
+    /// "today" means for the books. Unset: the computer's.
+    pub timezone: Option<String>,
 }
 
 impl BooksSettings {
@@ -231,6 +127,7 @@ struct CompanyToml {
     fiscal_year_start: Option<String>,
     tax_form: Option<String>,
     tax_classification: Option<String>,
+    timezone: Option<String>,
     #[serde(default)]
     members: Vec<MemberToml>,
 }
@@ -247,6 +144,10 @@ struct MemberToml {
 #[derive(Default, Deserialize)]
 struct BooksSection {
     receipt_threshold: Option<String>,
+    #[serde(default)]
+    receipt_required_accounts: Vec<String>,
+    #[serde(default)]
+    receipt_exempt_accounts: Vec<String>,
     accounting_basis: Option<String>,
     close_into: Option<String>,
     #[serde(default)]
@@ -259,47 +160,6 @@ struct BooksSection {
     investing_accounts: Vec<String>,
     asset_tag_prefix: Option<String>,
     parties: Option<String>,
-}
-
-/// The return a federal tax classification files (docs/spec/sources/
-/// irs-entity-classification.md), read by whole words, ignoring case:
-/// "partnership" → 1065; "S corporation" (S corp, S-corp, scorp) →
-/// 1120-S; "C corporation", or "corporation", "corp", or "association"
-/// alone → 1120; "disregarded", "sole proprietor(ship)", or
-/// "single-member" → Schedule C. Anything else, or words naming two
-/// returns ("corporation or S corporation"), names none.
-fn form_for_classification(c: &str) -> Option<ledger_core::TaxForm> {
-    use ledger_core::TaxForm;
-    let lower = c.to_lowercase();
-    let words: Vec<&str> = lower
-        .split(|ch: char| !ch.is_alphanumeric())
-        .filter(|w| !w.is_empty())
-        .collect();
-    let has = |w: &str| words.contains(&w);
-    let mut found = Vec::new();
-    if has("partnership") {
-        found.push(TaxForm::Form1065);
-    }
-    for (i, w) in words.iter().enumerate() {
-        let prev = i.checked_sub(1).map(|p| words[p]);
-        let form = match *w {
-            "scorp" => Some(TaxForm::Form1120S),
-            "ccorp" | "association" => Some(TaxForm::Form1120),
-            "corp" | "corporation" if prev == Some("s") => Some(TaxForm::Form1120S),
-            "corp" | "corporation" => Some(TaxForm::Form1120),
-            _ => None,
-        };
-        found.extend(form);
-    }
-    if has("disregarded") || has("sole") || words.windows(2).any(|p| p == ["single", "member"]) {
-        found.push(TaxForm::ScheduleC);
-    }
-    found.sort();
-    found.dedup();
-    match found.as_slice() {
-        [one] => Some(*one),
-        _ => None,
-    }
 }
 
 /// Parse a share: "50%" or "0.5".
@@ -348,22 +208,6 @@ fn codes(key: &str, list: Vec<String>) -> Result<Vec<String>, String> {
         .collect()
 }
 
-/// A decimal string as the books take one: exactly `-?digits[.digits]`.
-/// The decimal parser alone also takes "1_000", "+5", ".5", and
-/// exponents ("1e3"); a setting or tool argument never means those.
-pub fn decimal(s: &str) -> Option<Decimal> {
-    let digits = s.strip_prefix('-').unwrap_or(s);
-    let (whole, frac) = match digits.split_once('.') {
-        Some((w, f)) => (w, Some(f)),
-        None => (digits, None),
-    };
-    let all_digits = |t: &str| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit());
-    if !all_digits(whole) || frac.is_some_and(|f| !all_digits(f)) {
-        return None;
-    }
-    s.parse().ok()
-}
-
 /// The receipt policy in force: `config_json`'s `receipt_policy` when the
 /// file sets one, else `[books] receipt_threshold`, else the default
 /// ($25.00); validated (crate::receipt_policy INVARIANT 4). The server and
@@ -372,27 +216,51 @@ pub fn effective_receipt_policy(
     config_json: &Path,
     settings: &BooksSettings,
 ) -> Result<ReceiptPolicy, String> {
+    let raw = if config_json.exists() {
+        Some(
+            std::fs::read_to_string(config_json)
+                .map_err(|e| format!("{}: {e}", config_json.display()))?,
+        )
+    } else {
+        None
+    };
+    effective_receipt_policy_text(raw.as_deref(), settings).map_err(|e| {
+        e.replace(
+            "bad config",
+            &format!("bad config {}", config_json.display()),
+        )
+    })
+}
+
+/// [`effective_receipt_policy`] from `config.json`'s text (`None`: no
+/// such file).
+pub fn effective_receipt_policy_text(
+    config_json: Option<&str>,
+    settings: &BooksSettings,
+) -> Result<ReceiptPolicy, String> {
     #[derive(Deserialize)]
     struct ConfigJson {
         #[serde(default)]
         receipt_policy: Option<ReceiptPolicy>,
     }
-    let from_json = if config_json.exists() {
-        let raw = std::fs::read_to_string(config_json)
-            .map_err(|e| format!("{}: {e}", config_json.display()))?;
-        serde_json::from_str::<ConfigJson>(&raw)
-            .map_err(|e| format!("bad config {}: {e}", config_json.display()))?
-            .receipt_policy
-    } else {
-        None
+    let from_json = match config_json {
+        Some(raw) => {
+            serde_json::from_str::<ConfigJson>(raw)
+                .map_err(|e| format!("bad config: {e}"))?
+                .receipt_policy
+        }
+        None => None,
     };
-    let policy = match (from_json, &settings.receipt_threshold) {
-        (Some(p), _) => p,
-        (None, Some(t)) => ReceiptPolicy {
-            require_receipts_above: t.clone(),
-            ..ReceiptPolicy::default()
+    let policy = match from_json {
+        Some(p) => p,
+        None => ReceiptPolicy {
+            require_receipts_above: settings
+                .receipt_threshold
+                .clone()
+                .unwrap_or_else(|| ledger_core::settings::DEFAULT_THRESHOLD.to_string()),
+            receipt_required_accounts: settings.receipt_required_accounts.clone(),
+            receipt_exempt_accounts: settings.receipt_exempt_accounts.clone(),
         },
-        (None, None) => ReceiptPolicy::default(),
     };
     policy.validate()?;
     Ok(policy)
@@ -521,7 +389,7 @@ pub fn parse(text: &str) -> Result<BooksSettings, String> {
             (Some(f), _) => Some(ledger_core::TaxForm::parse(f).ok_or_else(|| {
                 format!("tax_form {f:?}: expected schedule_c, 1065, 1120s, or 1120")
             })?),
-            (None, Some(c)) => Some(form_for_classification(c).ok_or_else(|| {
+            (None, Some(c)) => Some(ledger_core::settings::form_for_classification(c).ok_or_else(|| {
                 format!(
                     "tax_classification {c:?}: expected partnership, S corporation, C corporation, or disregarded entity (or set tax_form)"
                 )
@@ -578,9 +446,26 @@ pub fn parse(text: &str) -> Result<BooksSettings, String> {
             })
             .collect();
     }
+    let timezone = match raw.company.timezone {
+        Some(z) => {
+            let key = ledger_core::settings::key("company.timezone").expect("a known key");
+            let v = ledger_core::settings::check(key, &toml_json(&z))?;
+            v.as_str().map(str::to_string)
+        }
+        None => None,
+    };
     Ok(BooksSettings {
         company,
         receipt_threshold,
+        receipt_required_accounts: codes(
+            "receipt_required_accounts",
+            raw.books.receipt_required_accounts,
+        )?,
+        receipt_exempt_accounts: codes(
+            "receipt_exempt_accounts",
+            raw.books.receipt_exempt_accounts,
+        )?,
+        timezone,
         cash_accounts: codes("cash_accounts", raw.books.cash_accounts)?,
         financing_accounts: codes("financing_accounts", raw.books.financing_accounts)?,
         investing_accounts: codes("investing_accounts", raw.books.investing_accounts)?,
@@ -622,31 +507,8 @@ pub fn parse(text: &str) -> Result<BooksSettings, String> {
     })
 }
 
-/// `[books] parties`: whether entries name their counterparty
-/// (docs/parties-and-attachments.md "Counterparties"; DECISION, owner,
-/// 2026-10-15: the default suggests, books may require or turn it off).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum PartyPolicy {
-    /// Never mention counterparties.
-    Off,
-    /// A draft or preview without a party names the likely one; nothing
-    /// is refused.
-    #[default]
-    Suggest,
-    /// Posting is refused until the entry names a party or is marked as
-    /// having none.
-    Require,
-}
-
-impl PartyPolicy {
-    /// Its wire name.
-    pub fn key(self) -> &'static str {
-        match self {
-            PartyPolicy::Off => "off",
-            PartyPolicy::Suggest => "suggest",
-            PartyPolicy::Require => "require",
-        }
-    }
+fn toml_json(s: &str) -> serde_json::Value {
+    serde_json::Value::String(s.to_string())
 }
 
 /// Load `wanderbooks.toml` from a path.
@@ -658,6 +520,7 @@ pub fn load(path: &Path) -> Result<BooksSettings, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::NaiveDate;
 
     /// files_jointly_with: names another member, on both sides.
     #[test]

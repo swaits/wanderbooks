@@ -130,7 +130,7 @@ pub fn check_shares(shares: &[PartyShare], known: impl Fn(PartyId) -> bool) -> R
             && a > crate::kernel::MAX_LINE_AMOUNT
         {
             return Err(format!(
-                "party {}'s amount {a} is larger than any entry may move (at most 1000000000000000)",
+                "party {}'s amount {a} is larger than any entry may move (at most one quadrillion)",
                 s.party
             ));
         }

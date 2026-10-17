@@ -12,8 +12,8 @@
 //!         in the handbook, by section.
 //! INVARIANTS:
 //!   1. The connect text is at most CONNECT_MAX characters, and its first
-//!      paragraph is at most CONNECT_LEAD characters and names
-//!      books.handbook.
+//!      paragraph is at most CONNECT_LEAD characters and names books.start
+//!      and books.handbook.
 //!   2. The connect text and every handbook section state the receipt
 //!      rule in force (from the settings, in the books' base currency:
 //!      ReceiptPolicy::rule), never a fixed one; the connect text states
@@ -21,6 +21,9 @@
 //!   3. No connect text or handbook section names a filesystem path, a
 //!      helper command, a pull request, or where the books are; none
 //!      names the settings file, which is the one books.settings names.
+//!      Books that keep their own settings are told no local file is
+//!      theirs to edit; books that still read a settings file, that it is
+//!      the one they may edit, until it is imported.
 //!   4. The connect text's first paragraph stands alone: the entry
 //!      point, the local-files rule, decimal strings, and the entry flow.
 //!   5. The company's name is shown as one line of plain text (no
@@ -169,11 +172,11 @@ pub fn connect_text(settings: &Settings, currency: &str) -> String {
     };
     let lead = format!(
         "wanderbooks: the double-entry books of {name}. You are their bookkeeping agent. \
-         Read books.handbook (or books://handbook) first: it holds every procedure. These \
-         tools are the only way to the books; never look for them in local files. Amounts \
-         are decimal strings (\"123.45\"), never floats. Entries: books.draft_entry, \
-         books.add_line, a preview from books.post_entry without confirmed, shown to the \
-         human, then books.post_entry with confirmed: true."
+         Call books.start first each session: rules, conventions, open items. \
+         books.handbook has every procedure. These tools are the only way to the books; \
+         never look for them in local files. Amounts are decimal strings (\"123.45\"), \
+         never floats. Entries: books.draft_entry, books.add_line, books.post_entry without \
+         confirmed for a preview shown to the human, then with confirmed: true."
     );
     // Closes, depreciation and amortization post with no party: the rule
     // is for the entries the agent posts.
@@ -197,6 +200,23 @@ pub fn connect_text(settings: &Settings, currency: &str) -> String {
     // (with the hint back), then the hint and the account codes the rule
     // lists (counted, with books.settings listing them), and last the
     // words that only help.
+    // Where settings live: in the books (changed through the tools), or,
+    // for books that still read a settings file, that one file.
+    let settings_rule = |why: bool| {
+        if settings.journaled {
+            " Settings and conventions live in the books: change them only with these tools."
+                .to_string()
+        } else {
+            format!(
+                " The only local file you may edit is the settings file books.settings names{}.",
+                if why {
+                    " (until books.import_settings)"
+                } else {
+                    ""
+                }
+            )
+        }
+    };
     let rest = |why: bool, codes: usize, trace: bool, terse: bool| {
         let rule = settings.policy.rule_listing(currency, codes);
         let because = |s: &'static str| if why { s } else { "" };
@@ -209,8 +229,7 @@ pub fn connect_text(settings: &Settings, currency: &str) -> String {
              depreciation, amortization{} and closes{} need none. Invoice, bill, payment and \
              payroll tools post at once{}: attach their evidence right after. A full TIN goes \
              only into the vault{}: never repeat one. After each change, show the affected \
-             balances{}; after posting, check books.digest and offer it to the human.{} The \
-             only local file you may edit is the settings file books.settings names{}.",
+             balances{}; after posting, check books.digest and offer it to the human.{}{}",
             unless_terse(", previewed the same way"),
             because(" (their schedules are the evidence)"),
             because(" (derived from the books)"),
@@ -222,7 +241,7 @@ pub fn connect_text(settings: &Settings, currency: &str) -> String {
             } else {
                 ""
             },
-            because(" (handbook: settings-and-conventions)"),
+            settings_rule(why),
         )
     };
     let mut text = String::new();
@@ -283,7 +302,7 @@ mod tests {
     fn instructions_budget() {
         use ledger_config::PartyPolicy;
         let long = "A Very Long Legal Name ".repeat(20);
-        for s in [
+        let every = [
             settings("", Decimal::ZERO),
             settings("Example Labs LLC", Decimal::new(2500, 2)),
             settings("Tiny", Decimal::new(1, 3)),
@@ -292,7 +311,14 @@ mod tests {
             longest_rule(&long, PartyPolicy::Require),
             longest_rule(&long, PartyPolicy::Suggest),
             longest_rule(&long, PartyPolicy::Off),
-        ] {
+        ];
+        // Each as books still reading a settings file, and as books that
+        // keep their own settings.
+        let journaled = every.clone().map(|mut s| {
+            s.journaled = true;
+            s
+        });
+        for s in every.into_iter().chain(journaled) {
             let text = connect_text(&s, "USD");
             let chars = text.chars().count();
             assert!(chars <= CONNECT_MAX, "{chars} chars: {text}");
@@ -303,10 +329,12 @@ mod tests {
                 lead.chars().count()
             );
             for must in [
+                "books.start",
                 "books.handbook",
                 "never look for them in local files",
                 "decimal strings",
-                "books.post_entry with confirmed: true",
+                "books.post_entry without confirmed for a preview",
+                "then with confirmed: true",
             ] {
                 assert!(lead.contains(must), "the lead lacks {must:?}: {lead}");
             }
@@ -317,16 +345,26 @@ mod tests {
                     .any(|&n| text.contains(&s.policy.rule_listing("USD", n))),
                 "{text}"
             );
-            // What every entry must be, and the one file the agent edits.
+            // What every entry must be, and where settings live: the one
+            // file the agent may edit, or none.
             for must in [
                 "balances exactly",
                 "real account from books.chart",
-                "the settings file books.settings names",
                 "post at once",
                 "after posting, check books.digest and offer it to the human.",
             ] {
                 assert!(text.contains(must), "lacks {must:?}: {text}");
             }
+            assert_eq!(
+                text.contains("the settings file books.settings names"),
+                !s.journaled,
+                "{text}"
+            );
+            assert_eq!(
+                text.contains("Settings and conventions live in the books"),
+                s.journaled,
+                "{text}"
+            );
             // The parties rule in force (INVARIANT 2), and only it.
             let party = [
                 (
@@ -476,10 +514,22 @@ mod tests {
         for why in [
             "(their schedules are the evidence)",
             "(derived from the books)",
-            "(handbook: settings-and-conventions)",
+            "(until books.import_settings)",
             "(the parties setting requires it)",
         ] {
-            assert!(text.contains(why), "{text}");
+            assert!(text.contains(why), "{} chars: {text}", text.chars().count());
         }
+        // The same company once its settings are in the books.
+        s.journaled = true;
+        let text = connect_text(&s, "USD");
+        assert!(text.chars().count() <= CONNECT_MAX);
+        for why in [
+            "(their schedules are the evidence)",
+            "(the parties setting requires it)",
+            "Settings and conventions live in the books",
+        ] {
+            assert!(text.contains(why), "{} chars: {text}", text.chars().count());
+        }
+        assert!(!text.contains("local file you may edit"), "{text}");
     }
 }

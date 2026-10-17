@@ -24,7 +24,7 @@ use crate::journal::{JournalLine, ReadLine};
 use serde_json::{Value, json};
 
 /// The newest journal format this version reads and writes.
-pub const SUPPORTED_JOURNAL_FORMAT: u32 = 1;
+pub const SUPPORTED_JOURNAL_FORMAT: u32 = 2;
 
 /// Optional journal features this version reads (none yet).
 pub const KNOWN_FEATURES: &[&str] = &[];
@@ -53,8 +53,12 @@ pub const EVENT_TYPES: &[&str] = &[
     "bill.created",
     "bill.paid",
     "class.added",
+    "convention.retired",
+    "convention.set",
     "customer.added",
+    "decision.recorded",
     "document.filed",
+    "entry.approved",
     "entry.created",
     "entry.line_added",
     "entry.line_class_set",
@@ -70,6 +74,8 @@ pub const EVENT_TYPES: &[&str] = &[
     FORMAT_SET,
     "journal.tail_repaired",
     "line.cleared",
+    "open_item.raised",
+    "open_item.resolved",
     "party.added",
     "party.role_set",
     "party.tin_set",
@@ -90,6 +96,7 @@ pub const EVENT_TYPES: &[&str] = &[
     "role.assigned",
     "schedule.posted",
     "schedule.registered",
+    "settings.set",
     "statement.recorded",
     "statement.voided",
     "store.created",
@@ -220,6 +227,14 @@ pub(crate) fn declared(line: &JournalLine) -> Result<JournalFormat, StoreError> 
     Ok(JournalFormat { format, features })
 }
 
+/// The refusal for a line of a type this version knows that holds a
+/// value only a newer version writes: a setting key, a convention kind
+/// (`need` says which). Never "corrupt": the books are fine, this reader
+/// is old (rules.md B-27).
+pub(crate) fn newer_content(line: &JournalLine, need: String) -> StoreError {
+    newer(line, need)
+}
+
 /// The refusal for a line whose type this version doesn't know.
 pub(crate) fn unknown_type(line: &JournalLine) -> StoreError {
     newer(line, "an event type this version doesn't know".into())
@@ -347,7 +362,8 @@ mod tests {
                 "{t}: no projection arm"
             );
         }
-        let l = line("settings.set", json!({}));
+        // A type a later phase adds (plan/served.md 5.2, P8).
+        let l = line("period.attested", json!({}));
         let mut ledger = Ledger::new(Currency::USD);
         assert!(is_newer(&replay_line_into_ledger(
             &mut ledger,
@@ -366,7 +382,7 @@ mod tests {
             at1.declaration(1, &[]).unwrap(),
             json!({"format": 1, "features": []})
         );
-        for (format, features) in [(0, &[][..]), (2, &[][..]), (1, &["x"][..])] {
+        for (format, features) in [(0, &[][..]), (3, &[][..]), (1, &["x"][..])] {
             assert!(
                 matches!(
                     at1.declaration(format, features),
@@ -393,7 +409,10 @@ mod tests {
             .unwrap();
         assert_eq!(f, JournalFormat::default());
         f.admit(&line("entry.posted", json!({}))).unwrap();
-        match f.admit(&line(FORMAT_SET, json!({"format": 2, "features": []}))) {
+        f.admit(&line(FORMAT_SET, json!({"format": 2, "features": []})))
+            .unwrap();
+        assert_eq!(f.format, 2, "format 2 is this version's");
+        match f.admit(&line(FORMAT_SET, json!({"format": 3, "features": []}))) {
             Err(StoreError::NewerJournal {
                 seq,
                 event_type,
@@ -403,7 +422,7 @@ mod tests {
                 // The gate alone never vouches for the line's bytes.
                 assert!(!verified);
                 assert_eq!((seq, event_type.as_str()), (7, FORMAT_SET));
-                assert_eq!(need, "journal format 2");
+                assert_eq!(need, "journal format 3");
             }
             other => panic!("expected NewerJournal, got {other:?}"),
         }
@@ -417,7 +436,7 @@ mod tests {
             other => panic!("expected NewerJournal, got {other:?}"),
         }
         // A refused line leaves the format in force alone.
-        assert_eq!(f, JournalFormat::default());
+        assert_eq!(f.format, 2);
         for bad in [
             json!({"features": []}),
             json!({"format": 0, "features": []}),
@@ -444,9 +463,9 @@ mod tests {
     fn a_newer_format_is_newer_whatever_its_features_look_like() {
         let mut f = JournalFormat::default();
         for newer in [
-            json!({"format": 2, "features": {"actors": true}}),
-            json!({"format": 2, "features": [1, 2]}),
-            json!({"format": 2}),
+            json!({"format": 3, "features": {"actors": true}}),
+            json!({"format": 3, "features": [1, 2]}),
+            json!({"format": 3}),
             json!({"format": 4_294_967_296_u64, "features": []}),
         ] {
             assert!(

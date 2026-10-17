@@ -828,3 +828,78 @@ stops, and the books reopen after; the inputs that once panicked,
 pinned; every tool over every old book) and `server.rs`
 `periods_are_a_year_and_a_month`, `dates_are_four_digit_years_and_real_days`;
 `ledger-gui` `tests/old_books.rs`.
+
+## B-29 The books keep how they are kept
+
+**SOURCE:** DECISION (plan/served.md I-3, owner decisions of 2026-10-16:
+"the journal holds all books state"; light governance: decisions are
+recorded with who made them and when, not as paperwork); IRS Pub. 538 and
+the rules of B-1 to B-28 for what each setting means.
+
+A company's settings, its conventions (how it posts each kind of
+transaction, its policies and close steps), the decisions its owners made,
+what is open, and approvals of draft entries are facts about the books,
+kept in the journal like every other fact, each with who decided it and
+when (journal format 2: `settings.set`, `convention.set`,
+`convention.retired`, `decision.recorded`, `open_item.raised`,
+`open_item.resolved`, `entry.approved`). A settings file is only text to
+import from or export to; books that keep their own settings never read
+one.
+
+- A setting is one of the known keys, checked by its key and kept in one
+  spelling; a change is all or nothing, and the settings after it hold
+  together. Replay takes any value of the right shape (B-28).
+- No setting, convention id, convention, decision, open item or approval
+  holds a number that reads as a full TIN (nine digits standing alone,
+  bare or printed 3-2-4 or 2-7 with a dash or a space), except the
+  company's own EIN, shown masked everywhere but reports, packages and the
+  viewer, and a D-U-N-S number in its own key.
+- A record of how the books are kept changes no entry, draft, period or
+  account (proved for the model: `Step.record_changes_no_figure`; checked
+  on the engine after every record in `settings_replay_is_pure`). Settings
+  that say how the same entries are presented or later allocated (the
+  fiscal year, the cash flow roles, the members) present them by the
+  settings in force; the fiscal year can't move once a period is closed
+  under it (a changed tax year needs the IRS's consent, Form 1128).
+- Moving a settings file in reads every setting exactly as the server read
+  the file: the text must be the file the server reads, and books that
+  keep their own settings take no import that changes them.
+- A setting key or convention kind this version doesn't know is a newer
+  version's: the books are "newer", never "damaged" (B-27).
+- A posting template's lines split the amount exactly on each side, odd
+  cents by largest remainder (B-13's rule); a slot (`{expense}`) takes the
+  account each draft names.
+- Approval rules block anything only when the company enforces them
+  (`policy.approval_rules = enforce`; off by default). Then a draft a rule
+  covers posts only once its approver approved it as it stands (its
+  fingerprint: date, description, every line and class), and an operation
+  that would post such an entry at once (an invoice, a bill, a payment,
+  payroll, a remittance, a disposal) is refused: it is drafted instead.
+  Reversals, closes, depreciation and amortization follow from entries
+  already posted and are exempt. A rule names accounts that take postings,
+  and an account a rule names can't be renumbered until the rule is
+  revised.
+
+**Enforced:** `ledger_core::settings` (`check`, `Settings::check_changes`,
+`check_whole`, `shape`, `apply`), `ledger_core::conventions` (`check_new`,
+`check_decision`, `check_open_item`, `split`), `Ledger::check_settings`,
+`check_convention`, `approvals_missing`, `template_lines`; `ledger-store`
+`Store::change_settings`, `adopt_settings`, `set_convention`,
+`draft_from_template` (rehearsed whole), `record_decision`; the format gate
+(format 2 declared before the first such line); `ledger_config::codec`
+(`import`, `export`); `Store::post_entry` and `approval_gate`
+(`ApprovalRequired`, `ApprovalNeedsDraft`), `check_renumber_account`;
+`ledger-mcp` `books.import_settings` (the file the server reads, whole),
+`books.post_entry` (`approval_required`).
+**Checked:** `ledger-core` settings and conventions unit tests;
+`ledger-store` `tests/settings.rs` (`settings_replay_is_pure`, 256 cases
+per check, 2,000 by hand, with posts between records and every record
+checked to change no figure or entry; `approval_rules_off_by_default`,
+`approvals_cover_every_post`, `the_fiscal_year_stays_under_closed_periods`,
+`a_newer_key_or_kind_is_newer`;
+`books_written_under_p1_open_to_their_record`, fixture
+`old-books/p1_record`); `ledger-config` `tests/codec_props.rs`
+(`exports_round_trip`) and codec unit tests; `ledger-cli` `tests/init.rs`
+`the_toml_and_its_examples_import_and_round_trip`; `ledger-mcp`
+`tests/spec_kept.rs`; Lean `Step.record_changes_no_figure`,
+`Reachable.records`; fuzz `fuzz_settings_replay`.

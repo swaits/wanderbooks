@@ -519,6 +519,13 @@ impl Store {
         self.base_currency
     }
 
+    /// The journal's head: the last line's seq and its hash (what
+    /// `verify` reports as the head once it has checked the chain).
+    pub fn head(&self) -> (u64, String) {
+        let (seq, hash) = self.journal.head();
+        (seq, hash.to_string())
+    }
+
     /// The journal format in force: format 1 unless the books declared
     /// another with `journal.format_set`.
     pub fn journal_format(&self) -> &JournalFormat {
@@ -552,6 +559,209 @@ impl Store {
         self.format = crate::format::declared(&line)?;
         apply_line_to_sqlite(&self.conn, &line)?;
         Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // How the books are kept: settings, conventions, decisions, open
+    // items, approvals (journal format 2, crate::meta)
+    // ------------------------------------------------------------------
+
+    /// Declare journal format 2 before the first event that needs it, so
+    /// an older reader stops at the declaration (plan/served.md 5.1).
+    fn ensure_format(&mut self) -> Result<(), StoreError> {
+        if self.format.format < crate::meta::FORMAT {
+            let features = self.format.features.clone();
+            let features: Vec<&str> = features.iter().map(String::as_str).collect();
+            self.declare_journal_format(crate::meta::FORMAT, &features)?;
+        }
+        Ok(())
+    }
+
+    /// Change settings (`settings.set`): all or nothing, each value
+    /// canonical, the result whole (ledger_core::settings). Returns the
+    /// changes made; none (journaling nothing) when every change is the
+    /// value already set.
+    pub fn change_settings(
+        &mut self,
+        changes: &[ledger_core::settings::Change],
+        source: &ledger_core::settings::Source,
+    ) -> Result<Vec<ledger_core::settings::Change>, StoreError> {
+        self.journal_settings(changes, source, false)
+    }
+
+    /// [`Self::change_settings`] for books moving their settings in from a
+    /// settings file: the first `settings.set` is journaled even when it
+    /// changes nothing (a file that sets only defaults), so from then on
+    /// the books keep their own settings and no file is read.
+    pub fn adopt_settings(
+        &mut self,
+        changes: &[ledger_core::settings::Change],
+        source: &ledger_core::settings::Source,
+    ) -> Result<Vec<ledger_core::settings::Change>, StoreError> {
+        self.journal_settings(changes, source, true)
+    }
+
+    fn journal_settings(
+        &mut self,
+        changes: &[ledger_core::settings::Change],
+        source: &ledger_core::settings::Source,
+        adopt: bool,
+    ) -> Result<Vec<ledger_core::settings::Change>, StoreError> {
+        let changes = self
+            .ledger
+            .check_settings_adopting(changes, source, adopt)?;
+        if changes.is_empty() && !(adopt && !self.ledger.settings().is_journaled()) {
+            return Ok(changes);
+        }
+        self.ensure_format()?;
+        let line =
+            self.append_journal("settings.set", crate::meta::settings_set(&changes, source))?;
+        self.ledger.apply_settings(&changes, source, line.seq)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(changes)
+    }
+
+    /// Set or revise a convention (`convention.set`). Returns it as
+    /// journaled.
+    pub fn set_convention(
+        &mut self,
+        c: &ledger_core::conventions::NewConvention,
+    ) -> Result<ledger_core::conventions::NewConvention, StoreError> {
+        let c = self.ledger.check_convention(c)?;
+        self.ensure_format()?;
+        let line = self.append_journal("convention.set", crate::meta::convention_set(&c))?;
+        self.ledger.apply_convention(c.clone(), line.seq)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(c)
+    }
+
+    /// Retire a convention (`convention.retired`).
+    pub fn retire_convention(
+        &mut self,
+        id: &str,
+        reason: &str,
+        source: &ledger_core::settings::Source,
+    ) -> Result<(), StoreError> {
+        let reason = self.ledger.check_retire_convention(id, reason, source)?;
+        self.ensure_format()?;
+        let line = self.append_journal(
+            "convention.retired",
+            crate::meta::convention_retired(id, &reason, source),
+        )?;
+        self.ledger
+            .apply_retire_convention(id, reason, source.clone(), line.seq)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
+    /// Record a decision (`decision.recorded`); its evidence, if any, is
+    /// a filed attachment not withdrawn. Returns its id.
+    pub fn record_decision(
+        &mut self,
+        d: &ledger_core::conventions::NewDecision,
+    ) -> Result<u64, StoreError> {
+        let (id, d) = self.ledger.check_decision(d)?;
+        if let Some(a) = d.evidence_attachment
+            && self.attachment_state(a)?.1
+        {
+            return Err(StoreError::AttachmentWithdrawn(a));
+        }
+        self.ensure_format()?;
+        let line =
+            self.append_journal("decision.recorded", crate::meta::decision_recorded(id, &d))?;
+        self.ledger.apply_decision(id, d, line.seq)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(id)
+    }
+
+    /// Raise an open item (`open_item.raised`). Returns its id.
+    pub fn raise_open_item(
+        &mut self,
+        i: &ledger_core::conventions::NewOpenItem,
+    ) -> Result<u64, StoreError> {
+        let (id, i) = self.ledger.check_open_item(i)?;
+        self.ensure_format()?;
+        let line =
+            self.append_journal("open_item.raised", crate::meta::open_item_raised(id, &i))?;
+        self.ledger.apply_open_item(id, i, line.seq)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(id)
+    }
+
+    /// Resolve an open item (`open_item.resolved`).
+    pub fn resolve_open_item(
+        &mut self,
+        id: u64,
+        resolution: &str,
+        source: &ledger_core::settings::Source,
+    ) -> Result<(), StoreError> {
+        let text = self.ledger.check_resolve_item(id, resolution, source)?;
+        self.ensure_format()?;
+        let line = self.append_journal(
+            "open_item.resolved",
+            crate::meta::open_item_resolved(id, &text, source),
+        )?;
+        self.ledger
+            .apply_resolve_item(id, text, source.clone(), line.seq)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
+    /// Record an approval of a draft entry (`entry.approved`), as the
+    /// draft stands now.
+    pub fn approve_entry(
+        &mut self,
+        entry: EntryId,
+        approver: &str,
+        note: Option<&str>,
+        source: &ledger_core::settings::Source,
+    ) -> Result<ledger_core::conventions::Approval, StoreError> {
+        let a = self.ledger.check_approval(entry, approver, note, source)?;
+        self.ensure_format()?;
+        let line = self.append_journal("entry.approved", crate::meta::entry_approved(entry, &a))?;
+        let a = ledger_core::conventions::Approval { seq: line.seq, ..a };
+        self.ledger.apply_approval(entry, a.clone())?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(a)
+    }
+
+    /// Draft an entry from a posting template: `amount` split by the
+    /// template's shares (ledger_core::conventions INVARIANT 2), its slots
+    /// filled from `slots` (slot name → account code), dated
+    /// `date`, described as given or as the template says. All or
+    /// nothing: no half-built draft is ever journaled. Returns the draft.
+    pub fn draft_from_template(
+        &mut self,
+        template_id: &str,
+        date: chrono::NaiveDate,
+        amount: Decimal,
+        description: Option<&str>,
+        slots: &std::collections::BTreeMap<String, String>,
+    ) -> Result<EntryId, StoreError> {
+        let (default_description, lines) =
+            self.ledger.template_lines(template_id, amount, slots)?;
+        let description = description
+            .map(str::to_string)
+            .or(default_description)
+            .unwrap_or_else(|| {
+                self.ledger
+                    .conventions()
+                    .convention(template_id)
+                    .map(|c| c.title.clone())
+                    .unwrap_or_default()
+            });
+        self.rehearse(|l| {
+            let e = l.try_create_entry(date, &description)?;
+            for (account, side, amount) in &lines {
+                l.add_line(e, *account, *side, *amount)?;
+            }
+            Ok(e)
+        })?;
+        let e = self.create_entry(date, &description)?;
+        for (account, side, amount) in lines {
+            self.add_line(e, account, side, amount)?;
+        }
+        Ok(e)
     }
 
     /// Every torn journal tail set aside on open, oldest first, as
@@ -685,8 +895,75 @@ impl Store {
         Ok(())
     }
 
-    /// Validate, journal, and post a draft entry.
+    /// Validate, journal, and post a draft entry. An entry an enforced
+    /// approval rule covers posts only once its approvers approved it as
+    /// it stands (ledger_core::conventions INVARIANT 3).
     pub fn post_entry(&mut self, entry: EntryId) -> Result<(), StoreError> {
+        let missing = self.ledger.approvals_missing(entry)?;
+        if !missing.is_empty() {
+            return Err(LedgerError::ApprovalRequired {
+                entry,
+                missing: missing
+                    .iter()
+                    .map(|(rule, approver)| format!("{rule} (approver: {approver})"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            }
+            .into());
+        }
+        self.post_entry_unchecked(entry)
+    }
+
+    /// Approval rules (ledger_core::conventions INVARIANT 3): refuse an
+    /// operation that would post at once an entry an enforced rule covers
+    /// (such an entry has no draft to approve: it must be drafted and
+    /// approved instead). `last_only`: only the operation's last posted
+    /// entry is its own (a disposal's; the depreciation before it follows
+    /// from the books and is exempt). Changes nothing.
+    fn approval_gate<T>(
+        &self,
+        op: impl FnOnce(&mut Ledger) -> Result<T, LedgerError>,
+        last_only: bool,
+    ) -> Result<(), StoreError> {
+        if self.ledger.settings().approval_rules() == ledger_core::settings::ApprovalMode::Off
+            || self.ledger.conventions().approval_rules().next().is_none()
+        {
+            return Ok(());
+        }
+        let mut probe = self.ledger.clone();
+        let first = probe.next_entry_id();
+        op(&mut probe)?;
+        let posted: Vec<EntryId> = (first..probe.next_entry_id())
+            .filter(|id| {
+                probe
+                    .get_entry(*id)
+                    .is_some_and(|e| e.status() == EntryStatus::Posted)
+            })
+            .collect();
+        let own = if last_only {
+            posted.last().map(std::slice::from_ref).unwrap_or(&[])
+        } else {
+            &posted[..]
+        };
+        for &id in own {
+            let missing = probe.approvals_missing(id)?;
+            if !missing.is_empty() {
+                return Err(LedgerError::ApprovalNeedsDraft(
+                    missing
+                        .iter()
+                        .map(|(rule, approver)| format!("{rule} (approver: {approver})"))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                )
+                .into());
+            }
+        }
+        Ok(())
+    }
+
+    /// [`Self::post_entry`] for entries the store makes and posts itself
+    /// (depreciation, a disposal, whose own gate ran first).
+    fn post_entry_unchecked(&mut self, entry: EntryId) -> Result<(), StoreError> {
         self.rehearse(|l| l.post_entry(entry))?;
         let snap = self
             .ledger
@@ -1157,7 +1434,7 @@ impl Store {
             Side::Credit,
             Money::new(amount, self.base_currency),
         )?;
-        self.post_entry(entry_id)?;
+        self.post_entry_unchecked(entry_id)?;
         let dline = self.append_journal(
             "asset.depreciation_posted",
             json!({
@@ -1396,12 +1673,27 @@ impl Store {
             }
             l.dispose_asset(asset_id, date, proceeds)
         })?;
+        // An enforced approval rule covering the disposal entry (the last
+        // posted) refuses it before anything is journaled.
+        self.approval_gate(
+            |l| {
+                for (description, lines) in depreciation.iter().chain([&disposal]) {
+                    let e = l.try_create_entry(date, description)?;
+                    for (account, side, amount) in lines {
+                        l.add_line(e, *account, *side, Money::new(*amount, base))?;
+                    }
+                    l.post_entry(e)?;
+                }
+                l.dispose_asset(asset_id, date, proceeds)
+            },
+            true,
+        )?;
         if let Some((description, lines)) = &depreciation {
             let eid = self.create_entry(date, description)?;
             for (account, side, amount) in lines {
                 self.add_line(eid, *account, *side, Money::new(*amount, base))?;
             }
-            self.post_entry(eid)?;
+            self.post_entry_unchecked(eid)?;
             let dline = self.append_journal(
                 "asset.depreciation_posted",
                 json!({
@@ -1417,7 +1709,7 @@ impl Store {
         for (account, side, amount) in &disposal.1 {
             self.add_line(entry_id, *account, *side, Money::new(*amount, base))?;
         }
-        self.post_entry(entry_id)?;
+        self.post_entry_unchecked(entry_id)?;
         let line = self.append_journal(
             "asset.disposed",
             json!({
@@ -1741,6 +2033,10 @@ impl Store {
         lines: Vec<DocumentLine>,
     ) -> Result<InvoiceId, StoreError> {
         self.rehearse(|l| l.create_invoice(customer_id, date, due_date, lines.clone()))?;
+        self.approval_gate(
+            |l| l.create_invoice(customer_id, date, due_date, lines.clone()),
+            false,
+        )?;
         // Pure pre-validation mirroring Ledger::create_invoice, so the
         // journal writes below cannot be followed by a failed mutation.
         // (The auto-posted entry balances by construction and its accounts
@@ -1801,6 +2097,10 @@ impl Store {
         lines: Vec<DocumentLine>,
     ) -> Result<BillId, StoreError> {
         self.rehearse(|l| l.create_bill(vendor_id, date, due_date, lines.clone()))?;
+        self.approval_gate(
+            |l| l.create_bill(vendor_id, date, due_date, lines.clone()),
+            false,
+        )?;
         if self.ledger.get_vendor(vendor_id).is_none() {
             return Err(LedgerError::UnknownVendor(vendor_id).into());
         }
@@ -1852,6 +2152,10 @@ impl Store {
         cash_account: AccountId,
     ) -> Result<EntryId, StoreError> {
         self.rehearse(|l| l.receive_payment(invoice_id, date, amount, cash_account))?;
+        self.approval_gate(
+            |l| l.receive_payment(invoice_id, date, amount, cash_account),
+            false,
+        )?;
         // The rehearsal above is the whole check: hand-written mirrors of
         // the engine's refusals drift from it (and were never reached).
         let ar = self.ensure_control_account(&ledger_core::RECEIVABLES)?;
@@ -1888,6 +2192,7 @@ impl Store {
         cash_account: AccountId,
     ) -> Result<EntryId, StoreError> {
         self.rehearse(|l| l.pay_bill(bill_id, date, amount, cash_account))?;
+        self.approval_gate(|l| l.pay_bill(bill_id, date, amount, cash_account), false)?;
         let ap = self.ensure_control_account(&ledger_core::PAYABLES)?;
         let description = format!("Payment on bill {bill_id}");
         let (entry_id, mut journaled) =
@@ -2023,6 +2328,7 @@ impl Store {
         cash_account: AccountId,
     ) -> Result<PayrollRunId, StoreError> {
         self.rehearse(|l| l.run_payroll(date, lines.clone(), cash_account))?;
+        self.approval_gate(|l| l.run_payroll(date, lines.clone(), cash_account), false)?;
         // Pure pre-validation mirroring Ledger::run_payroll, so the journal
         // writes below cannot be followed by a failed mutation.
         self.ledger.validate_payroll(date, &lines, cash_account)?;
@@ -2101,6 +2407,7 @@ impl Store {
         cash_account: AccountId,
     ) -> Result<EntryId, StoreError> {
         self.rehearse(|l| l.remit_payroll_taxes(date, cash_account))?;
+        self.approval_gate(|l| l.remit_payroll_taxes(date, cash_account), false)?;
         // Pure pre-validation mirroring Ledger::remit_payroll_taxes.
         if self.ledger.chart().get(cash_account).is_none() {
             return Err(LedgerError::UnknownAccount(cash_account).into());
@@ -2943,7 +3250,7 @@ impl Store {
             .iter()
             .any(|b| b.abs() > ledger_core::kernel::MAX_LINE_AMOUNT)
         {
-            return bad("balances are at most 1000000000000000");
+            return bad("balances are at most one quadrillion");
         }
         if !ledger_core::calendar::in_calendar(st.period_start)
             || !ledger_core::calendar::in_calendar(st.period_end)
@@ -4538,6 +4845,82 @@ pub(crate) fn replay_line_into_ledger(
                 p.get("class_id").and_then(|v| v.as_u64()).map(|v| v as u32),
             )?;
         }
+        "settings.set" => {
+            let (changes, source) = crate::meta::settings_set_of(p)?;
+            // A key this version doesn't know: a newer one wrote it.
+            if let Some(c) = changes
+                .iter()
+                .find(|c| ledger_core::settings::key(&c.key).is_none())
+            {
+                return Err(crate::format::newer_content(
+                    line,
+                    format!("the setting {}", c.key),
+                ));
+            }
+            ledger.apply_settings(&changes, &source, line.seq)?;
+        }
+        "convention.set" => {
+            // A kind this version doesn't know: a newer one wrote it.
+            if let Some(kind) = p.get("kind").and_then(Value::as_str)
+                && ledger_core::conventions::ConventionKind::parse(kind).is_none()
+            {
+                return Err(crate::format::newer_content(
+                    line,
+                    format!("the convention kind {kind}"),
+                ));
+            }
+            let c = crate::meta::convention_set_of(p)?;
+            // A template or rule whose structure this version can't read:
+            // a newer one wrote it (never skipped: a rule must not fail
+            // open).
+            let probe = ledger_core::conventions::Convention {
+                id: c.id.clone(),
+                kind: c.kind,
+                title: String::new(),
+                body_md: String::new(),
+                structured: c.structured.clone(),
+                source: c.source.clone(),
+                seq: line.seq,
+                revision: 1,
+                retired: None,
+            };
+            let unreadable = match c.kind {
+                ledger_core::conventions::ConventionKind::PostingTemplate => {
+                    probe.template().is_none()
+                }
+                ledger_core::conventions::ConventionKind::ApprovalRule => {
+                    probe.approval_rule().is_none()
+                }
+                _ => false,
+            };
+            if unreadable {
+                return Err(crate::format::newer_content(
+                    line,
+                    format!("the structure of convention {}", c.id),
+                ));
+            }
+            ledger.apply_convention(c, line.seq)?;
+        }
+        "convention.retired" => {
+            let (id, reason, source) = crate::meta::convention_retired_of(p)?;
+            ledger.apply_retire_convention(&id, reason, source, line.seq)?;
+        }
+        "decision.recorded" => {
+            let (id, d) = crate::meta::decision_recorded_of(p)?;
+            ledger.apply_decision(id, d, line.seq)?;
+        }
+        "open_item.raised" => {
+            let (id, i) = crate::meta::open_item_raised_of(p)?;
+            ledger.apply_open_item(id, i, line.seq)?;
+        }
+        "open_item.resolved" => {
+            let (id, resolution, source) = crate::meta::open_item_resolved_of(p)?;
+            ledger.apply_resolve_item(id, resolution, source, line.seq)?;
+        }
+        "entry.approved" => {
+            let (entry, approval) = crate::meta::entry_approved_of(p, line.seq)?;
+            ledger.apply_approval(entry, approval)?;
+        }
         "journal.tail_repaired" => {}
         "journal.format_set" => {
             // No ledger state; a format this version can't read is
@@ -5322,6 +5705,109 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
                     class_id,
                     get_u64(p, "entry_id")? as i64,
                     get_u64(p, "line_index")? as i64,
+                ],
+            )?;
+        }
+        "settings.set" => {
+            let (changes, source) = crate::meta::settings_set_of(p)?;
+            let source = crate::meta::source_json(&source).to_string();
+            for c in &changes {
+                match &c.value {
+                    Some(v) => conn.execute(
+                        "INSERT INTO settings(key, value_json, seq, source_json) VALUES (?,?,?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, seq=excluded.seq, source_json=excluded.source_json",
+                        params![c.key, v.to_string(), line.seq as i64, source],
+                    )?,
+                    None => conn.execute("DELETE FROM settings WHERE key = ?", params![c.key])?,
+                };
+            }
+        }
+        "convention.set" => {
+            let c = crate::meta::convention_set_of(p)?;
+            conn.execute(
+                "INSERT INTO conventions(id, kind, title, body_md, structured_json, source_json, seq, revision) VALUES (?,?,?,?,?,?,?,1) ON CONFLICT(id) DO UPDATE SET kind=excluded.kind, title=excluded.title, body_md=excluded.body_md, structured_json=excluded.structured_json, source_json=excluded.source_json, seq=excluded.seq, revision=conventions.revision + 1",
+                params![
+                    c.id,
+                    c.kind.key(),
+                    c.title,
+                    c.body_md,
+                    c.structured.as_ref().map(Value::to_string),
+                    crate::meta::source_json(&c.source).to_string(),
+                    line.seq as i64,
+                ],
+            )?;
+        }
+        "convention.retired" => {
+            let (id, reason, source) = crate::meta::convention_retired_of(p)?;
+            conn.execute(
+                "UPDATE conventions SET retired_reason = ?, retired_source_json = ?, retired_seq = ? WHERE id = ?",
+                params![
+                    reason,
+                    crate::meta::source_json(&source).to_string(),
+                    line.seq as i64,
+                    id
+                ],
+            )?;
+        }
+        "decision.recorded" => {
+            let (id, d) = crate::meta::decision_recorded_of(p)?;
+            conn.execute(
+                "INSERT INTO decisions(id, subject, decision_md, decided_by_json, decided_on, evidence_attachment, supersedes, citation, seq) VALUES (?,?,?,?,?,?,?,?,?)",
+                params![
+                    id as i64,
+                    d.subject,
+                    d.decision_md,
+                    serde_json::to_string(&d.decided_by)?,
+                    d.decided_on.to_string(),
+                    d.evidence_attachment.map(|a| a as i64),
+                    d.supersedes.map(|a| a as i64),
+                    d.citation,
+                    line.seq as i64,
+                ],
+            )?;
+            if let Some(old) = d.supersedes {
+                conn.execute(
+                    "UPDATE decisions SET superseded_by = ? WHERE id = ?",
+                    params![id as i64, old as i64],
+                )?;
+            }
+        }
+        "open_item.raised" => {
+            let (id, i) = crate::meta::open_item_raised_of(p)?;
+            conn.execute(
+                "INSERT INTO open_items(id, title, detail_md, due, source_json, seq) VALUES (?,?,?,?,?,?)",
+                params![
+                    id as i64,
+                    i.title,
+                    i.detail_md,
+                    i.due.map(|d| d.to_string()),
+                    crate::meta::source_json(&i.source).to_string(),
+                    line.seq as i64,
+                ],
+            )?;
+        }
+        "open_item.resolved" => {
+            let (id, resolution, source) = crate::meta::open_item_resolved_of(p)?;
+            conn.execute(
+                "UPDATE open_items SET resolution = ?, resolved_source_json = ?, resolved_seq = ? WHERE id = ?",
+                params![
+                    resolution,
+                    crate::meta::source_json(&source).to_string(),
+                    line.seq as i64,
+                    id as i64
+                ],
+            )?;
+        }
+        "entry.approved" => {
+            let (entry, a) = crate::meta::entry_approved_of(p, line.seq)?;
+            conn.execute(
+                "INSERT INTO entry_approvals(seq, entry_id, approver, fingerprint, note, source_json) VALUES (?,?,?,?,?,?)",
+                params![
+                    line.seq as i64,
+                    entry as i64,
+                    a.approver,
+                    a.fingerprint,
+                    a.note,
+                    crate::meta::source_json(&a.source).to_string(),
                 ],
             )?;
         }

@@ -163,7 +163,7 @@ impl TaxBasis {
         self.check_journaled()?;
         match self.contributor_basis {
             Some(b) if b > crate::kernel::MAX_LINE_AMOUNT => {
-                Err("a basis is at most 1000000000000000".into())
+                Err("a basis is at most one quadrillion".into())
             }
             _ => Ok(()),
         }

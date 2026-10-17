@@ -1,0 +1,289 @@
+{
+  "approvals": [
+    {
+      "approver": "B",
+      "entry": 1,
+      "fingerprint": "807a5fdd769adedb",
+      "note": "ok",
+      "seq": 24,
+      "source": {
+        "citation": null,
+        "decided_by": "B",
+        "decided_on": "2026-10-17",
+        "note": null
+      }
+    }
+  ],
+  "conventions": [
+    {
+      "body_md": "Ask whether a member paid anything personally.",
+      "id": "close-ask",
+      "kind": "close_step",
+      "retired": {
+        "seq": 13,
+        "source": {
+          "citation": null,
+          "decided_by": "Tobin Harlow",
+          "decided_on": "2026-10-17",
+          "note": null
+        },
+        "text": "Folded into the checklist."
+      },
+      "revision": 1,
+      "seq": 12,
+      "source": {
+        "citation": null,
+        "decided_by": "Tobin Harlow",
+        "decided_on": "2026-10-17",
+        "note": null
+      },
+      "structured": null,
+      "title": "Ask about personal cards"
+    },
+    {
+      "body_md": "Cash in from both members, half each; one entry per member when they pay separately.",
+      "id": "joint-contribution",
+      "kind": "posting_template",
+      "retired": null,
+      "revision": 2,
+      "seq": 10,
+      "source": {
+        "citation": null,
+        "decided_by": "A",
+        "decided_on": "2026-10-17",
+        "note": null
+      },
+      "structured": {
+        "lines": [
+          {
+            "account": "1000",
+            "share": "1",
+            "side": "debit"
+          },
+          {
+            "account": "3000",
+            "share": "0.5",
+            "side": "credit"
+          },
+          {
+            "account": "3001",
+            "share": "0.5",
+            "side": "credit"
+          }
+        ]
+      },
+      "title": "Joint contribution"
+    },
+    {
+      "body_md": "Software over 500 needs B.",
+      "id": "over-500",
+      "kind": "approval_rule",
+      "retired": null,
+      "revision": 1,
+      "seq": 11,
+      "source": {
+        "citation": null,
+        "decided_by": "Tobin Harlow",
+        "decided_on": "2026-10-17",
+        "note": null
+      },
+      "structured": {
+        "accounts": [
+          "6000"
+        ],
+        "amount_over": "500",
+        "approver": "B"
+      },
+      "title": "Big spends"
+    }
+  ],
+  "decisions": [
+    {
+      "citation": "Treas. Reg. 1.263(a)-1(f)",
+      "decided_by": [
+        "Tobin Harlow",
+        "B"
+      ],
+      "decided_on": "2026-10-11",
+      "decision_md": "Expense tangible items up to 2,500.",
+      "evidence_attachment": 1,
+      "id": 1,
+      "seq": 15,
+      "subject": "Materiality",
+      "superseded_by": 2,
+      "supersedes": null
+    },
+    {
+      "citation": null,
+      "decided_by": [
+        "Tobin Harlow"
+      ],
+      "decided_on": "2026-10-16",
+      "decision_md": "Corrected: prepaid services follow the 12-month rule.",
+      "evidence_attachment": null,
+      "id": 2,
+      "seq": 16,
+      "subject": "Materiality",
+      "superseded_by": null,
+      "supersedes": 1
+    }
+  ],
+  "open_items": [
+    {
+      "detail_md": "Signed; mailing pending.",
+      "due": "2026-10-24",
+      "id": 1,
+      "resolved": null,
+      "seq": 17,
+      "source": {
+        "citation": null,
+        "decided_by": "Tobin Harlow",
+        "decided_on": "2026-10-17",
+        "note": null
+      },
+      "title": "Mail the letter"
+    },
+    {
+      "detail_md": null,
+      "due": null,
+      "id": 2,
+      "resolved": {
+        "seq": 19,
+        "source": {
+          "citation": null,
+          "decided_by": "Tobin Harlow",
+          "decided_on": "2026-10-17",
+          "note": null
+        },
+        "text": "Asked."
+      },
+      "seq": 18,
+      "source": {
+        "citation": null,
+        "decided_by": "Tobin Harlow",
+        "decided_on": "2026-10-17",
+        "note": null
+      },
+      "title": "Ask the CPA"
+    }
+  ],
+  "settings": [
+    {
+      "key": "company.name",
+      "seq": 8,
+      "source": {
+        "citation": null,
+        "decided_by": "Tobin Harlow",
+        "decided_on": "2026-10-17",
+        "note": "Imported from wanderbooks.toml."
+      },
+      "value": "Fixture Labs LLC"
+    },
+    {
+      "key": "company.tax_classification",
+      "seq": 8,
+      "source": {
+        "citation": null,
+        "decided_by": "Tobin Harlow",
+        "decided_on": "2026-10-17",
+        "note": "Imported from wanderbooks.toml."
+      },
+      "value": "partnership"
+    },
+    {
+      "key": "company.ein",
+      "seq": 8,
+      "source": {
+        "citation": null,
+        "decided_by": "Tobin Harlow",
+        "decided_on": "2026-10-17",
+        "note": "Imported from wanderbooks.toml."
+      },
+      "value": "98-7814321"
+    },
+    {
+      "key": "company.members",
+      "seq": 8,
+      "source": {
+        "citation": null,
+        "decided_by": "Tobin Harlow",
+        "decided_on": "2026-10-17",
+        "note": "Imported from wanderbooks.toml."
+      },
+      "value": [
+        {
+          "capital_account": "3000",
+          "files_jointly_with": "B",
+          "name": "A",
+          "share": "0.5"
+        },
+        {
+          "capital_account": "3001",
+          "files_jointly_with": "A",
+          "name": "B",
+          "share": "0.5"
+        }
+      ]
+    },
+    {
+      "key": "books.cash_accounts",
+      "seq": 8,
+      "source": {
+        "citation": null,
+        "decided_by": "Tobin Harlow",
+        "decided_on": "2026-10-17",
+        "note": "Imported from wanderbooks.toml."
+      },
+      "value": [
+        "1000"
+      ]
+    },
+    {
+      "key": "books.financing_accounts",
+      "seq": 8,
+      "source": {
+        "citation": null,
+        "decided_by": "Tobin Harlow",
+        "decided_on": "2026-10-17",
+        "note": "Imported from wanderbooks.toml."
+      },
+      "value": [
+        "2100"
+      ]
+    },
+    {
+      "key": "policy.evidence.threshold",
+      "seq": 8,
+      "source": {
+        "citation": null,
+        "decided_by": "Tobin Harlow",
+        "decided_on": "2026-10-17",
+        "note": "Imported from wanderbooks.toml."
+      },
+      "value": "0.00"
+    },
+    {
+      "key": "policy.parties",
+      "seq": 8,
+      "source": {
+        "citation": null,
+        "decided_by": "Tobin Harlow",
+        "decided_on": "2026-10-17",
+        "note": "Imported from wanderbooks.toml."
+      },
+      "value": "require"
+    },
+    {
+      "key": "policy.approval_rules",
+      "seq": 25,
+      "source": {
+        "citation": null,
+        "decided_by": "Tobin Harlow",
+        "decided_on": "2026-10-17",
+        "note": null
+      },
+      "value": "enforce"
+    }
+  ],
+  "settings_last_seq": 25
+}

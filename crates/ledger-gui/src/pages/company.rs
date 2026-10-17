@@ -38,6 +38,98 @@ fn kv(ui: &mut Ui, k: &str, v: &str) {
     });
 }
 
+/// Who decided a setting and when, under its value.
+fn provenance(ui: &mut Ui, by: &str, on: chrono::NaiveDate) {
+    let p = pal(ui.ctx());
+    ui.label(
+        RichText::new(format!("{by} · {}", fmt::date(on)))
+            .font(theme::regular(11.0))
+            .color(p.muted),
+    );
+}
+
+/// How the books are kept, as the owners decided: conventions, decisions,
+/// and what is open (each only when there is something to show).
+fn kept_cards(ui: &mut Ui, b: &Books) {
+    let p = pal(ui.ctx());
+    let kept = b.ledger.conventions();
+    let conventions: Vec<_> = kept.conventions().filter(|c| c.retired.is_none()).collect();
+    if !conventions.is_empty() {
+        ui.add_space(12.0);
+        widgets::titled_card(
+            ui,
+            "How the books are kept",
+            |_| {},
+            |ui| {
+                for c in &conventions {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new(&c.title).font(theme::semibold(13.0)));
+                        widgets::pill(ui, &c.kind.key().replace('_', " "), p.accent, p.accent_soft);
+                    });
+                    widgets::copyable(
+                        ui,
+                        RichText::new(c.summary()).font(theme::regular(12.5)),
+                        &c.body_md,
+                    );
+                    provenance(ui, &c.source.decided_by, c.source.decided_on);
+                    ui.add_space(6.0);
+                }
+            },
+        );
+    }
+    let decisions: Vec<_> = kept
+        .decisions()
+        .filter(|d| d.superseded_by.is_none())
+        .collect();
+    if !decisions.is_empty() {
+        ui.add_space(12.0);
+        widgets::titled_card(
+            ui,
+            "Decisions",
+            |_| {},
+            |ui| {
+                for d in decisions.iter().rev() {
+                    ui.label(RichText::new(&d.new.subject).font(theme::semibold(13.0)));
+                    widgets::copyable(
+                        ui,
+                        RichText::new(&d.new.decision_md).font(theme::regular(12.5)),
+                        &d.new.decision_md,
+                    );
+                    provenance(ui, &d.new.decided_by.join(" and "), d.new.decided_on);
+                    ui.add_space(6.0);
+                }
+            },
+        );
+    }
+    let open: Vec<_> = kept.open_items().filter(|i| i.resolved.is_none()).collect();
+    if !open.is_empty() {
+        ui.add_space(12.0);
+        widgets::titled_card(
+            ui,
+            "Open items",
+            |_| {},
+            |ui| {
+                for i in open {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new(icon::FLAG).color(p.warning));
+                        ui.label(RichText::new(&i.new.title).font(theme::regular(13.0)));
+                        if let Some(due) = i.new.due {
+                            // Late says so in words, not only in colour.
+                            let late = due < b.today;
+                            let when = if late { "overdue since" } else { "due" };
+                            ui.label(
+                                RichText::new(format!("{when} {}", fmt::date(due)))
+                                    .font(theme::regular(12.0))
+                                    .color(if late { p.warning } else { p.muted }),
+                            );
+                        }
+                    });
+                }
+            },
+        );
+    }
+}
+
 pub fn show(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
     let p = pal(ui.ctx());
     page(ui, "company", |ui| {
@@ -54,14 +146,25 @@ pub fn show(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                     "Profile",
                     |_| {},
                     |ui| {
-                        if c.profile.is_empty() {
+                        let kept = b.ledger.settings();
+                        // The currency is always known: facts are the rest.
+                        if c.profile.iter().all(|(k, _)| k == "base_currency") {
                             ui.label(
-                                RichText::new("No [company] settings in wanderbooks.toml.")
-                                    .color(p.muted),
+                                RichText::new(if kept.is_journaled() {
+                                    "No company facts set yet: the agent records them as you give them."
+                                } else {
+                                    "No company facts in the settings file yet: the agent records them as you give them."
+                                })
+                                .color(p.muted),
                             );
                         }
                         for (k, v) in &c.profile {
                             kv(ui, &fmt::label(k), v);
+                            // Who set it, and when (settings kept in the
+                            // books carry their source).
+                            if let Some(r) = kept.get(&format!("company.{k}")) {
+                                provenance(ui, &r.source.decided_by, r.source.decided_on);
+                            }
                         }
                         kv(ui, "Accounting basis", &c.basis);
                         kv(
@@ -70,8 +173,21 @@ pub fn show(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                             c.tax_form.map(fmt::tax_form).unwrap_or("not set"),
                         );
                         kv(ui, "Receipt threshold", &fmt::dollars(b.receipt_threshold));
+                        if let Some(z) = &b.settings.timezone {
+                            kv(ui, "Time zone", z);
+                        }
+                        ui.label(
+                            RichText::new(if kept.is_journaled() {
+                                "Kept in the books: the agent changes settings, with who decided and when."
+                            } else {
+                                "Read from the settings file: the agent can move it into the books."
+                            })
+                            .font(theme::regular(12.0))
+                            .color(p.muted),
+                        );
                     },
                 );
+                kept_cards(ui, b);
             }
             _ => {
                 widgets::titled_card(

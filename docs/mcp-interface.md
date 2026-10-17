@@ -23,45 +23,87 @@ layer.
 
 ## Company settings
 
-`ledger-mcp` reads the books dir's `wanderbooks.toml` (default: next to
-`--data-dir`; override with `--books-toml PATH`): `[company] name` heads
-every report, `[company] fiscal_year_start` ("MM-DD", default "01-01";
-the year's end is derived, never stored) defines fiscal-year-to-date for the
-CPA package and the balance sheet's net income line, `[[company.members]]`
-(`name`, `share` as "50%" or "0.5", `capital_account` code; shares must sum
-to 100%) drives the statement of members' equity, `[books]
-accounting_basis` ("accrual" or "cash", default accrual) labels report
-footers, and `[books] receipt_threshold` sets the receipt policy unless
-`config.json` sets `receipt_policy`. Members may name a
-`distribution_account`, and `files_jointly_with` (spouses filing one joint
-return; the CPA package's README notes their two K-1s go on one Form 1040,
-and k1-members.csv ends with a members' total, not a K-1, that ties to
-Schedule L); single-owner businesses may set `[books] close_into`
-(the equity account a close puts net income in; default Retained Earnings)
-and `close_sweep` (draw, distribution, or dividend accounts closed into it).
-The cash flow statement's account roles are `[books] cash_accounts` (what
-it reconciles to), `financing_accounts` (loans, and money the owners
-advanced, such as a "Due to owners" liability: ASC 230-10-45-14(b)), and
-`investing_accounts` (loans the company makes, investments it buys: ASC
-230-10-20); the tools and the viewer both read them, and a call may pass
-its own (docs/spec/rules.md B-14).
+The books keep their own settings (journal format 2, plan/served.md P1):
+each change is a `settings.set` line with who decided it and when, replayed
+into `ledger_core::settings::Settings` by the server and the viewer alike
+(rules.md B-29). Every key is in `ledger_core::settings::KEYS`, with what it
+takes and means: the company's facts (`company.name`, `.entity_type`,
+`.tax_classification`, `.tax_form`, `.fiscal_year_start` ("MM-01"; the
+year's end is derived, never stored), `.timezone` (what "today" means for
+the books), `.formation_state`, `.formed`, `.state_entity_number`, `.ein`
+(the one identity number a setting keeps, shown masked: "**-***5893"),
+`.irs_name_control`, `.duns`, `.address`, `.registered_agent`,
+`.partnership_representative`, `.cpa`, `.members` (name, share as "50%" or
+"0.5", capital account, optional distributions account and
+`files_jointly_with`; shares sum to exactly 1)); the books'
+(`books.accounting_basis`, `.cash_accounts`, `.financing_accounts` (loans,
+and money the owners advanced: ASC 230-10-45-14(b)), `.investing_accounts`
+(ASC 230-10-20), `.close_into` (single owner only), `.close_sweep`,
+`.asset_tag_prefix`); and policy (`policy.evidence.threshold` (receipts
+strictly above it; "0.00": every entry), `.required_accounts`,
+`.exempt_accounts`, `policy.parties` (off, suggest, require),
+`policy.approval_rules` (off, the default, or enforce)). A value is checked
+by its key and kept in one spelling (a time zone as the database spells it,
+an amount without leading zeros, a return as `schedule_c`, `1065`, `1120s`
+or `1120`); a change is all or nothing, and the settings after it must hold
+together (members and `close_into` never both, a classification that names
+one return, a fiscal year that doesn't move under a closed period). No
+setting holds nine digits that read as an SSN or EIN (bare, or printed
+3-2-4 or 2-7) except `company.ein` and `company.duns`.
 
-The server reloads `wanderbooks.toml` (and `config.json`'s receipt policy)
-whenever either changes, compared by content at the start of each request,
-so an edit takes effect on the next call with no restart. A broken edit
-keeps the last good settings in force and is reported until fixed; the
-data dir and base currency are fixed at startup (`ledger-mcp/src/settings.rs`).
+Books from before P1 hold no `settings.set` and still read the books dir's
+`wanderbooks.toml` (default: next to `--data-dir`; `--books-toml PATH`)
+and `config.json`'s `receipt_policy`, reloaded whenever either changes, as
+before. `books.import_settings` moves them in once; from then on no file
+is read, not even at start (a broken file beside the books can't stop the
+server). A vault key file is never a books setting: `--vault-key-file PATH`
+names it to the server and the viewer (it wins over a file's `[vault]
+key_file`).
 
-- `books.settings {}` → `{ books_toml, books_toml_exists, config_json_present,
-  reload_error, loads, company, fiscal_year_start, tax_form, basis,
-  receipt_rule, members, cash_accounts, financing_accounts,
-  investing_accounts, close_into, close_sweep, problems }`: the settings in
-  force and where they come from. `problems` lists settings that disagree
-  with the chart (a code not in it, or of the wrong kind), each saying what
-  to change; `books.digest` repeats them, with a failed reload, as
-  `settings_problems`. The agent edits the file when the human gives a
-  company fact, a refusal names a setting, or a problem is listed, then
-  checks `books.settings`.
+- `books.settings {}` → `{ source ("books" or "file"), timezone, today,
+  approval_rules, keys: [{ key, doc, identity, value, set_by, seq }],
+  books_toml, books_toml_exists, config_json_present, reload_error, loads,
+  company, fiscal_year_start, tax_form, basis, receipt_rule,
+  receipt_required_accounts, receipt_exempt_accounts, parties, members,
+  cash_accounts, financing_accounts, investing_accounts, close_into,
+  close_sweep, problems }`: the settings in force, every key the books know
+  with its value (null: unset, its default applies) and who set it, and
+  `problems`, settings that disagree with the chart, each saying what to
+  change (conventions naming an account no longer in the chart among
+  them); `books.digest` repeats them as `settings_problems`. Settings are
+  named by key for books that keep their own, as the file spells them for
+  books that still read one; for those, `keys` shows the file's values,
+  with no journal line.
+- `books.set_setting { changes: [{ key, value }], decided_by, decided_on?,
+  citation?, note? }` → `{ changed: [{ key, was, value }], problems }`: one
+  or more changes, together or not at all (`value` null clears a key back to
+  its default; a value already set changes nothing, idempotent;
+  destructive, since it can clear or switch off a setting). Refused while
+  the books still read a settings file (or `config.json`): import it first,
+  so no setting is lost.
+- `books.import_settings { toml_text, config_json_text?, confirmed?,
+  skip_unknown?, decided_by, decided_on?, citation?, note? }` → `{ status
+  ("preview" or "imported"), changes, notes, unknown, comments }`: exactly
+  the changes
+  that make the books' settings what the file (and `config.json`'s
+  `receipt_policy`, which wins as it does for the server) says. `notes` are
+  what isn't a books setting and where it goes (`[books] data_dir`, `[vault]
+  key_file`, `[viewer]`, `base_currency`); `unknown` are entries the books
+  don't know, not imported (confirm with `skip_unknown`); `comments` are
+  the file's comments, in order, which are not settings and are not
+  imported (record what matters in them as a decision, open item,
+  convention or a setting's note). The text must be
+  the file the server reads, whole (its import is compared with the
+  server's own reading of its files, key by key), and the server must read
+  every setting afterwards as it does now; the vault key must then come
+  from `--vault-key-file` (on the viewer too). A file never turns approval
+  rules on. Books that keep their own settings take no import that changes
+  them (an identical one is no change). Without `confirmed`, a preview that
+  records nothing. An identity value exported masked imports as
+  "unchanged".
+- `books.export_settings {}` → `{ toml_text }`: the settings as a settings
+  file, each with who decided it as a comment, the EIN masked; a copy, and
+  importing it back changes nothing (`ledger_config::codec`).
 
 The accounts invoices, bills, payroll, and closes post to are not settings:
 they are control roles in the journal (rules.md B-23).
@@ -74,6 +116,66 @@ they are control roles in the journal (rules.md B-23).
   Refuses the wrong type, a placeholder, an account already filling
   another role, and moving a balance sheet role while its account holds a
   balance. Journaled as `role.assigned`.
+
+## Tools — how the books are kept
+
+Conventions, decisions, open items and approvals live in the books too
+(`ledger_core::conventions`, rules.md B-29), each with who decided it and
+when; `books.start` lists them, and the handbook's
+settings-and-conventions section says how to use them.
+
+- `books.start { focus? }` (read-only, at most 8 KB) → `{ book: { name,
+  timezone, today, fiscal_year, base_currency, basis }, head: { seq, hash },
+  state ("needs_onboarding" or "active"), settings_source, rules: {
+  evidence, parties, approval_rules }, settings_summary: [{ key, value,
+  set_by, seq }], conventions: [{ id, kind, title, summary }], open_items:
+  [{ id, title, due }], truncated, handbook_sections, next_steps: [{ tool,
+  args?, why }] }`. The connect text names it as the first call. Lists cut
+  to fit say so in `truncated` ("conventions: 4 more (books.conventions)").
+  `focus` adds steps: `onboarding` the onboarding step, `close` the
+  company's close steps, `audit` `books.verify`. Not built yet (P5):
+  `book.id`, `book.url`, `head.last_handoff`, the `agent` input, and
+  loading it up front under tool search. Also `books://start`.
+- `books.conventions { kind?, include_retired? }` → every convention with
+  its full text, structure, revision and source (`books://conventions`).
+  `books.set_convention { id, kind, title, body_md, structured?,
+  decided_by, ... }` sets or revises one (kinds: `posting_template`,
+  structured `{ description?, lines: [{ account, side, share }] }`, each
+  side's shares summing to 1, on accounts in the chart that take postings
+  or on slots (`"{expense}"`) each draft names;
+  `approval_rule`, structured `{ approver, accounts?, amount_over? }`; and
+  `policy`, `close_step`, `calendar`, `mapping`, `note`, in words). An id is
+  a slug, revised in place (same kind), never reused once retired:
+  `books.retire_convention { id, reason, decided_by, ... }` (destructive).
+- `books.draft_from_template { template_id, date, amount, accounts?,
+  description?, party?, no_party_reason? }` → `{ entry_id, description,
+  lines }`: a draft whose lines split the amount (at most a line's) by the
+  template's shares, each side summing to it exactly, odd cents by largest
+  remainder; `accounts` names each slot's account (`{"expense": "6300"}`),
+  every slot and nothing else. A refused draft journals nothing (a disk
+  failing midway could leave a partial draft, as for any draft built line
+  by line).
+- `books.record_decision { subject, decision_md, decided_by: [..],
+  decided_on, evidence_attachment?, supersedes?, citation? }` → `{ id }`;
+  `books.decisions { include_superseded? }`. A decision supersedes at most
+  one live decision; its evidence is a document still in the books.
+- `books.raise_item { title, detail_md?, due?, decided_by, ... }` → `{ id }`,
+  `books.resolve_item { id, resolution, decided_by, ... }`,
+  `books.open_items { include_resolved? }`.
+- `books.approve_entry { entry_id, approver, note?, approved_on? }`: the
+  approver approved the draft as it stands (its fingerprint: date,
+  description, every line and class; a line added or a class changed
+  afterwards voids it). Under `policy.approval_rules = enforce`,
+  `books.post_entry`'s preview lists `approvals_missing` and a confirmed
+  post is refused with `approval_required` until each covering rule's
+  approver approved (the store refuses it too), and a tool that posts at
+  once (an invoice, a bill, a payment, payroll, a remittance, a disposal)
+  is refused when a rule covers the entry it would post: draft it instead.
+  Reversals, closes, depreciation and amortization are exempt. A rule
+  names accounts that take postings; an account a rule names can't be
+  renumbered until the rule is revised, and `books.renumber_account` lists
+  the conventions that name the old code. Under `off` (the default) rules
+  block nothing.
 
 ## Transports
 
@@ -99,9 +201,10 @@ re-read first, so a client connecting after an edit is told the new rule).
 It is short on purpose: clients cut long instructions (one cut the old
 text at 4,096 characters), so it is at most **1,400 characters**, and its
 first paragraph, at most **512**, stands alone: the entry point
-(`books.handbook`), the rule that these tools are the only way to the books
-(never local files), decimal-string amounts, and the
-draft → lines → preview → confirmed post flow. The second paragraph adds
+(`books.start` first each session, and `books.handbook` for every
+procedure), the rule that these tools are the only way to the books (never
+local files), decimal-string amounts, and the draft → lines → preview →
+confirmed post flow. The second paragraph adds
 that every entry balances and uses real accounts from `books.chart`; the
 parties rule in force (`[books] parties`: under "require" every entry
 the agent posts names its party or a no-party reason, since closes,
@@ -115,9 +218,10 @@ the books); that `books.create_invoice`, `books.create_bill`,
 `books.receive_payment`, `books.pay_bill`, `books.run_payroll` and
 `books.remit_payroll_taxes` post at once without a receipt check; TINs
 only into the vault; show the numbers, and after posting check
-`books.digest` and offer it to the human; and the
-one local file the agent may edit, the settings file `books.settings`
-names (until settings move into the journal, P1). When a long rule (many
+`books.digest` and offer it to the human; and where settings live: in the
+books, changed only through the tools, or, for books that still read a
+settings file, that file, the one local file the agent may edit until
+`books.import_settings` moves it in. When a long rule (many
 accounts, a huge threshold, a long name) would push it past 1,400
 characters, it drops the tracing hint first (the handbook's
 tracing-figures section has it), then the reasons in parentheses, then the
@@ -164,8 +268,9 @@ Tool descriptions are at most 700 characters; eight longer ones are listed
 in `tool_descriptions_fit_700_characters`, to be shortened in P5.
 
 **Annotations.** Every tool has a `title` and a `readOnlyHint`; every tool
-that changes anything also has a `destructiveHint`, true for these 25:
-`books.post_entry`, `books.reverse_entry`, `books.unlink_receipt`,
+that changes anything also has a `destructiveHint`, true for these 28:
+`books.post_entry`, `books.reverse_entry`, `books.import_settings`,
+`books.set_setting`, `books.retire_convention`, `books.unlink_receipt`,
 `books.unlink_attachment`, `books.withdraw_attachment`,
 `books.correct_asset`, `books.dispose_asset`, `books.run_depreciation`,
 `books.run_schedules`, `books.run_recurring`, `books.renumber_account`,
@@ -174,10 +279,10 @@ that changes anything also has a `destructiveHint`, true for these 25:
 `books.set_tin` (both overwrite a vault record), `books.purge_tin`,
 `books.create_invoice`, `books.create_bill`, `books.receive_payment`,
 `books.pay_bill`, `books.run_payroll`, `books.remit_payroll_taxes`; and an
-`idempotentHint` on the five that a repeat with the same arguments leaves
+`idempotentHint` on the seven that a repeat with the same arguments leaves
 the journal and the vault as they were: `books.verify`,
-`books.run_depreciation`, `books.run_schedules`, `books.run_recurring` and
-`books.set_party_roles` (a setter such as `books.update_party`,
+`books.run_depreciation`, `books.run_schedules`, `books.run_recurring`,
+`books.set_party_roles`, `books.set_setting` and `books.import_settings` (a setter such as `books.update_party`,
 `books.set_fx_rate` or `books.set_tin` journals a line, and `books.set_tin`
 seals a new vault record, every time, so none carries it;
 `idempotent_tools_change_nothing_when_repeated` calls each candidate twice
@@ -923,6 +1028,7 @@ posting.
 Hand-rolled on `ServerHandler` (rmcp 3.x has no resource macros):
 `list_resources` advertises, `read_resource` renders.
 
+- `books://start`, `books://settings`, `books://conventions`
 - `books://chart`
 - `books://reports/trial-balance`, `books://reports/balance-sheet`,
   `books://reports/profit-and-loss`

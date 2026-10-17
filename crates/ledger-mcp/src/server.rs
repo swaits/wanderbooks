@@ -332,36 +332,57 @@ fn vendor_1099_report(
 }
 
 impl BooksServer {
-    /// The wanderbooks.toml settings that name account `code`.
+    /// The settings that name account `code`, by key (or, for books
+    /// that still read a settings file, as the file spells them).
     fn config_mentions(&self, code: &str) -> Vec<String> {
         let mut out = Vec::new();
-        for (key, codes) in [
-            ("[books] cash_accounts", &self.settings().roles.cash),
+        let settings = self.settings();
+        for (key, in_file, codes) in [
             (
-                "[books] financing_accounts",
-                &self.settings().roles.financing,
+                "books.cash_accounts",
+                "[books] cash_accounts",
+                &settings.roles.cash,
             ),
             (
+                "books.financing_accounts",
+                "[books] financing_accounts",
+                &settings.roles.financing,
+            ),
+            (
+                "books.investing_accounts",
                 "[books] investing_accounts",
-                &self.settings().roles.investing,
+                &settings.roles.investing,
+            ),
+            (
+                "books.close_sweep",
+                "[books] close_sweep",
+                &settings.company.close_sweep,
+            ),
+            (
+                "policy.evidence.required_accounts",
+                "receipt_required_accounts",
+                &settings.policy.receipt_required_accounts,
+            ),
+            (
+                "policy.evidence.exempt_accounts",
+                "receipt_exempt_accounts",
+                &settings.policy.receipt_exempt_accounts,
             ),
         ] {
             if codes.iter().any(|c| c == code) {
-                out.push(key.to_string());
+                out.push(self.setting_label(key, in_file));
             }
         }
-        if self.settings().company.close_into.as_deref() == Some(code) {
-            out.push("[company] close_into".to_string());
+        if settings.company.close_into.as_deref() == Some(code) {
+            out.push(self.setting_label("books.close_into", "[books] close_into"));
         }
-        for m in &self.settings().company.members {
+        let members = self.setting_label("company.members", "[[company.members]]");
+        for m in &settings.company.members {
             if m.capital_account == code {
-                out.push(format!("[[company.members]] {} capital_account", m.name));
+                out.push(format!("{members} {} capital_account", m.name));
             }
             if m.distribution_account.as_deref() == Some(code) {
-                out.push(format!(
-                    "[[company.members]] {} distribution_account",
-                    m.name
-                ));
+                out.push(format!("{members} {} distribution_account", m.name));
             }
         }
         out
@@ -416,6 +437,56 @@ impl BooksServer {
         // A panic while holding it can't leave the settings half-written
         // (they're swapped whole), so a poisoned lock is still good.
         self.settings.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The settings in force as the books would keep them: the books' own,
+    /// or, for books that still read a settings file, that file's reading
+    /// (no source: the file is the source).
+    fn settings_as_kept(&self, store: &Store) -> ledger_core::settings::Settings {
+        let books = store.ledger().settings();
+        if books.is_journaled() {
+            return books.clone();
+        }
+        let Some((toml, json)) = self.live().file_texts() else {
+            return books.clone();
+        };
+        let empty = ledger_core::settings::Settings::default();
+        match ledger_config::codec::import(
+            toml.as_deref().unwrap_or(""),
+            json.as_deref(),
+            &empty,
+            self.currency(),
+        ) {
+            Ok(i) => {
+                let mut s = empty;
+                let file = ledger_core::settings::Source {
+                    decided_by: "the settings file".into(),
+                    decided_on: today(),
+                    citation: None,
+                    note: None,
+                };
+                match s.apply(&i.changes, &file, 0) {
+                    Ok(()) => s,
+                    Err(_) => books.clone(),
+                }
+            }
+            Err(_) => books.clone(),
+        }
+    }
+
+    /// How a message names a setting: by its key when the books keep
+    /// their own settings, else as the settings file spells it.
+    fn setting_label(&self, key: &str, in_file: &str) -> String {
+        if self.settings().journaled {
+            key.to_string()
+        } else {
+            in_file.to_string()
+        }
+    }
+
+    /// Every tool the server serves.
+    pub(crate) fn tool_router() -> rmcp::handler::server::router::tool::ToolRouter<Self> {
+        Self::core_router() + Self::kept_router()
     }
 
     /// The settings in force for this request (reloaded at its start, in
@@ -485,10 +556,10 @@ impl BooksServer {
     /// statement of members' equity.
     fn member_capitals(&self, ledger: &Ledger) -> Result<Vec<ledger_core::MemberCapital>, String> {
         if self.settings().company.members.is_empty() {
-            return Err(
-                "no members configured: add [[company.members]] (name, share, capital_account) to the settings"
-                    .to_string(),
-            );
+            return Err(format!(
+                "no members configured: set {} (name, share, capital_account for each)",
+                self.setting_label("company.members", "[[company.members]] in the settings")
+            ));
         }
         self.settings()
             .company
@@ -820,6 +891,16 @@ impl BooksServer {
         if self.store.stopped() {
             return Err(STOPPED.to_string());
         }
+        // Books that keep their own settings: take any change (crate::
+        // settings INVARIANT 1).
+        let timezone = {
+            let mut live = self.live();
+            live.sync(guard.ledger().settings(), self.store.currency.code());
+            live.current().timezone.clone()
+        };
+        // "Today" from here on is the zone in force now (a change another
+        // session made while this request waited included).
+        TIMEZONE.with(|z| *z.borrow_mut() = timezone);
         Ok(StoreGuard {
             guard,
             shared: &self.store,
@@ -921,15 +1002,59 @@ fn parse_side(s: &str) -> Result<Side, String> {
 /// what to change. A code must name an account in the chart, of the kind
 /// the setting needs (cash and investing: assets; financing: liabilities;
 /// capital, distributions, close_into, close_sweep: equity).
+/// The live conventions that name account `code` (a posting template's
+/// line, an approval rule's accounts): after a renumber, each still names
+/// the old code until revised.
+fn convention_mentions(ledger: &Ledger, code: &str) -> Vec<String> {
+    convention_codes(ledger)
+        .into_iter()
+        .filter(|(_, c)| c == code)
+        .map(|(id, _)| format!("convention {id} (revise it with books.set_convention)"))
+        .collect()
+}
+
+/// Every account code a live convention names: (convention id, code).
+fn convention_codes(ledger: &Ledger) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for c in ledger
+        .conventions()
+        .conventions()
+        .filter(|c| c.retired.is_none())
+    {
+        if let Some(t) = c.template() {
+            for l in t.lines {
+                if ledger_core::conventions::slot(&l.account).is_none() {
+                    out.push((c.id.clone(), l.account));
+                }
+            }
+        }
+        if let Some(r) = c.approval_rule() {
+            for a in r.accounts {
+                out.push((c.id.clone(), a));
+            }
+        }
+    }
+    out.dedup();
+    out
+}
+
 fn settings_problems(ledger: &Ledger, cfg: &Settings) -> Vec<String> {
     let mut out = Vec::new();
+    // Named as the books keep them, or as the settings file spells them.
+    let label =
+        |key: &'static str, in_file: &'static str| if cfg.journaled { key } else { in_file };
+    let how = if cfg.journaled {
+        " with books.set_setting"
+    } else {
+        " in the settings"
+    };
     let mut check = |setting: &str, code: &str, want: &[AccountType]| {
         match ledger.chart().find_by_code(code) {
             None => out.push(format!(
-                "{setting} names {code}, which isn't in the chart: add that account, or change {setting} in the settings"
+                "{setting} names {code}, which isn't in the chart: add that account, or change {setting}{how}"
             )),
             Some(a) if !want.contains(&a.account_type) => out.push(format!(
-                "{setting} names {code} \"{}\", a {:?} account, but needs {}: change {setting} in the settings",
+                "{setting} names {code} \"{}\", a {:?} account, but needs {}: change {setting}{how}",
                 a.name,
                 a.account_type,
                 want.iter().map(|t| format!("{t:?}")).collect::<Vec<_>>().join(" or "),
@@ -939,34 +1064,71 @@ fn settings_problems(ledger: &Ledger, cfg: &Settings) -> Vec<String> {
     };
     use AccountType::*;
     for code in &cfg.roles.cash {
-        check("[books] cash_accounts", code, &[Asset]);
+        check(
+            label("books.cash_accounts", "[books] cash_accounts"),
+            code,
+            &[Asset],
+        );
     }
     for code in &cfg.roles.financing {
-        check("[books] financing_accounts", code, &[Liability, Equity]);
+        check(
+            label("books.financing_accounts", "[books] financing_accounts"),
+            code,
+            &[Liability, Equity],
+        );
     }
     for code in &cfg.roles.investing {
-        check("[books] investing_accounts", code, &[Asset]);
+        check(
+            label("books.investing_accounts", "[books] investing_accounts"),
+            code,
+            &[Asset],
+        );
     }
     let c = &cfg.company;
     for m in &c.members {
         check(
-            &format!("[[company.members]] {} capital_account", m.name),
+            &format!(
+                "{} {} capital_account",
+                label("company.members", "[[company.members]]"),
+                m.name
+            ),
             &m.capital_account,
             &[Equity],
         );
         if let Some(d) = &m.distribution_account {
             check(
-                &format!("[[company.members]] {} distribution_account", m.name),
+                &format!(
+                    "{} {} distribution_account",
+                    label("company.members", "[[company.members]]"),
+                    m.name
+                ),
                 d,
                 &[Equity],
             );
         }
     }
     if let Some(code) = &c.close_into {
-        check("[books] close_into", code, &[Equity]);
+        check(
+            label("books.close_into", "[books] close_into"),
+            code,
+            &[Equity],
+        );
     }
     for code in &c.close_sweep {
-        check("[books] close_sweep", code, &[Equity]);
+        check(
+            label("books.close_sweep", "[books] close_sweep"),
+            code,
+            &[Equity],
+        );
+    }
+    // Conventions naming an account no longer in the chart (renumbered or
+    // never there): a template can't draft, a rule covers nothing.
+    for (id, code) in convention_codes(ledger) {
+        if ledger.chart().find_by_code(&code).is_none() {
+            out.push(format!(
+                "convention {id} names account {code}, which isn't in the chart: revise it with books.set_convention"
+            ));
+        }
     }
     out
 }
@@ -1218,6 +1380,24 @@ fn resource_list() -> Vec<Resource> {
         r
     };
     let resources = vec![
+        mk(
+            "books://start",
+            "start",
+            "Start here",
+            "The books in brief: rules in force, settings, conventions, open items, next steps (books.start).",
+        ),
+        mk(
+            "books://settings",
+            "settings",
+            "Settings",
+            "Every setting the books know, its value and who set it (books.settings).",
+        ),
+        mk(
+            "books://conventions",
+            "conventions",
+            "Conventions",
+            "How this company keeps its books: templates, rules, policies, close steps (books.conventions).",
+        ),
         mk(
             "books://chart",
             "chart",
@@ -1925,7 +2105,7 @@ fn party_required(what: &str) -> String {
     serde_json::json!({
         "code": "party_required",
         "message": format!(
-            "these books require a counterparty on every entry ([books] parties = \"require\"): {what} (add the party with books.add_party first if it's new)"
+            "these books require a counterparty on every entry (their parties setting is \"require\"): {what} (add the party with books.add_party first if it's new)"
         ),
     })
     .to_string()
@@ -2274,7 +2454,7 @@ fn cash_flow_statement(
     let cash_accounts = resolve(cash_codes, "cash")?;
     if cash_accounts.is_empty() {
         return Err(
-            "cash_accounts is required for the cash flow statement (pass it, or set [books] cash_accounts in the settings)"
+            "cash_accounts is required for the cash flow statement (pass it, or set the books' cash accounts setting: books.settings shows it)"
                 .to_string(),
         );
     }
@@ -2313,10 +2493,38 @@ fn movement_in(ledger: &Ledger, account: AccountId, from: NaiveDate, to: NaiveDa
     }
 }
 
-/// Today in the books' local time zone. Not UTC: in the evening (US
-/// time) UTC is already tomorrow, and "through today" must not include it.
+thread_local! {
+    /// The company's time zone for the request running on this thread
+    /// (set at its start from the settings in force: one version per
+    /// request), so every "today" in it agrees.
+    static TIMEZONE: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Poll `fut` with "today" in the request's zone on this thread, each
+/// time it runs: the request is driven on its own thread (run_blocking),
+/// so the zone is the request's alone. It starts as `timezone`; when the
+/// request locks the books the zone in force then replaces it (lock), and
+/// that carries over to the request's later polls.
+async fn in_timezone_async<T>(
+    timezone: Option<String>,
+    fut: impl std::future::Future<Output = T>,
+) -> T {
+    let mut fut = std::pin::pin!(fut);
+    let mut zone = timezone;
+    std::future::poll_fn(move |cx| {
+        let before = TIMEZONE.with(|z| z.replace(zone.take()));
+        let polled = fut.as_mut().poll(cx);
+        zone = TIMEZONE.with(|z| z.replace(before));
+        polled
+    })
+    .await
+}
+
+/// Today in the company's time zone (`company.timezone`, for the request
+/// running), else the computer's. Not UTC: in the evening (US time) UTC
+/// is already tomorrow, and "through today" must not include it.
 fn today() -> NaiveDate {
-    chrono::Local::now().date_naive()
+    TIMEZONE.with(|z| ledger_core::settings::today_in(z.borrow().as_deref()))
 }
 
 /// The `since` of a `books://digest` read: the query's `since=`, or, bare
@@ -2454,7 +2662,11 @@ fn lines_out(lines: &[ledger_core::StatementLine]) -> Vec<StatementLineOut> {
 // Tools
 // ---------------------------------------------------------------------------
 
-#[tool_router]
+#[path = "tools/kept.rs"]
+mod kept;
+pub use kept::SettingKeyOut;
+
+#[tool_router(router = core_router)]
 impl BooksServer {
     #[tool(
         name = "books.handbook",
@@ -2949,9 +3161,34 @@ impl BooksServer {
             no_party_reason,
             party_missing,
             party_suggestions,
+            approvals_missing: store
+                .ledger()
+                .approvals_missing(p.entry_id)
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .map(|(rule, approver)| ApprovalNeededOut { rule, approver })
+                .collect(),
         };
         if !p.confirmed.unwrap_or(false) {
             return Ok(Json(out));
+        }
+        if !out.approvals_missing.is_empty() {
+            let missing: Vec<String> = out
+                .approvals_missing
+                .iter()
+                .map(|a| format!("{} (rule {})", a.approver, a.rule))
+                .collect();
+            return Err(serde_json::json!({
+                "code": "approval_required",
+                "message": format!(
+                    "entry {} needs approval before it posts (policy.approval_rules is enforce): {}. Ask each approver; when they approve, record it with books.approve_entry, then post.",
+                    p.entry_id,
+                    missing.join("; ")
+                ),
+                "entry_id": p.entry_id,
+                "remedy_tool": "books.approve_entry",
+            })
+            .to_string());
         }
         if let Some(why) = &out.parties_error {
             return Err(serde_json::json!({
@@ -2974,8 +3211,9 @@ impl BooksServer {
             return Err(serde_json::json!({
                 "code": "party_required",
                 "message": format!(
-                    "entry {} names no counterparty, and these books require one ([books] parties = \"require\"). Tag it with books.set_entry_party (add the party with books.add_party first if it's new), or, if it truly has none, call books.set_entry_party with party null and no_party_reason.{}",
+                    "entry {} names no counterparty, and these books require one ({} = \"require\"). Tag it with books.set_entry_party (add the party with books.add_party first if it's new), or, if it truly has none, call books.set_entry_party with party null and no_party_reason.{}",
                     p.entry_id,
+                    self.setting_label("policy.parties", "[books] parties"),
                     if names.is_empty() { String::new() } else { format!(" Likely: {}.", names.join("; ")) }
                 ),
                 "entry_id": p.entry_id,
@@ -4747,7 +4985,11 @@ impl BooksServer {
             .map_err(|e| e.to_string())?;
         Ok(Json(RenumberAccountOut {
             id,
-            config_mentions: self.config_mentions(&previous_code),
+            config_mentions: self
+                .config_mentions(&previous_code)
+                .into_iter()
+                .chain(convention_mentions(store.ledger(), &previous_code))
+                .collect(),
             previous_code,
             code: p.code,
         }))
@@ -4972,15 +5214,26 @@ impl BooksServer {
     #[tool(
         name = "books.settings",
         title = "Settings in force",
-        description = "The settings in force (company, fiscal year, tax form, members, basis, receipt rule with every account it requires or exempts, cash flow roles, close target), where they come from, and problems: settings that disagree with the chart, each saying what to change. The server reloads them whenever they change, with no restart; after a change, call this to confirm it loaded (reload_error says why one didn't, and the last good settings stay in force).",
+        description = "The settings in force (company, fiscal year, tax form, members, basis, receipt rule with every account it requires or exempts, cash flow roles, close target, time zone, approval rules), every key the books know with its value and who set it, where they come from (source: \"books\", changed with books.set_setting; or \"file\", a settings file still read, reloaded on change: reload_error says why an edit didn't load), and problems: settings or conventions that disagree with the chart, each saying what to change.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn settings_tool(&self) -> Result<Json<SettingsOut>, String> {
+        // The books first: their settings sync as they lock, so the
+        // status and the settings read after are one version.
+        let store = self.lock()?;
         let status = self.live().status();
         let cfg = self.settings();
-        let store = self.lock()?;
         let c = &cfg.company;
         Ok(Json(SettingsOut {
+            source: if status.journaled { "books" } else { "file" }.to_string(),
+            timezone: cfg.timezone.clone(),
+            today: today().to_string(),
+            approval_rules: match store.ledger().settings().approval_rules() {
+                ledger_core::settings::ApprovalMode::Off => "off",
+                ledger_core::settings::ApprovalMode::Enforce => "enforce",
+            }
+            .to_string(),
+            keys: kept::keys_out(&self.settings_as_kept(&store)),
             books_toml: status.books_toml.map(|p| p.display().to_string()),
             books_toml_exists: status.books_toml_exists,
             config_json_present: status.config_json_present,
@@ -9032,6 +9285,20 @@ impl BooksServer {
             None => (uri, ""),
         };
         match path {
+            "books://start" => {
+                let Json(out) = self.start(Parameters(kept::StartParams::default())).await?;
+                serde_json::to_string_pretty(&out).map_err(|e| e.to_string())
+            }
+            "books://settings" => {
+                let Json(out) = self.settings_tool().await?;
+                serde_json::to_string_pretty(&out).map_err(|e| e.to_string())
+            }
+            "books://conventions" => {
+                let Json(out) = self
+                    .conventions(Parameters(kept::ConventionsParams::default()))
+                    .await?;
+                serde_json::to_string_pretty(&out).map_err(|e| e.to_string())
+            }
             "books://chart" => {
                 let Json(out) = self.chart().await?;
                 serde_json::to_string_pretty(&out).map_err(|e| e.to_string())
@@ -9097,12 +9364,14 @@ impl ServerHandler for BooksServer {
     ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
         // Pick up an edited settings file before the tool runs.
         self.live().refresh();
+        let timezone = self.settings().timezone.clone();
         let server = self.clone();
         let result = run_blocking(&self.store, move || {
             Box::pin(async move {
                 let tcc =
                     rmcp::handler::server::tool::ToolCallContext::new(&server, request, context);
-                Self::tool_router().call(tcc).await
+                let router = Self::tool_router();
+                in_timezone_async(timezone, router.call(tcc)).await
             })
         })
         .await;
@@ -9120,7 +9389,14 @@ impl ServerHandler for BooksServer {
     }
 
     fn get_info(&self) -> ServerConfig {
-        // A client connecting after a settings change sees the change.
+        // A client connecting after a settings change sees the change:
+        // the books' own when they keep them (never waiting for the books
+        // here; a request holding them syncs them when it locks), else the
+        // files'.
+        if let Ok(store) = self.store.store.try_lock() {
+            self.live()
+                .sync(store.ledger().settings(), self.store.currency.code());
+        }
         self.live().refresh();
         ServerConfig::new(
             ServerCapabilities::builder()
@@ -9151,11 +9427,12 @@ impl ServerHandler for BooksServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, rmcp::ErrorData> {
         self.live().refresh();
+        let timezone = self.settings().timezone.clone();
         let uri = request.uri.clone();
         let server = self.clone();
         let at = uri.clone();
         let text = run_blocking(&self.store, move || {
-            Box::pin(async move { server.resource_text(&at).await })
+            Box::pin(async move { in_timezone_async(timezone, server.resource_text(&at)).await })
         })
         .await?;
         // A refusal quotes the URI it was given: masked like a tool's.
@@ -9393,7 +9670,7 @@ mod tests {
                 ..Company::default()
             },
         );
-        assert_eq!(solo.config_mentions("3000"), ["[company] close_into"]);
+        assert_eq!(solo.config_mentions("3000"), ["[books] close_into"]);
     }
 
     /// Reports name each member with their accounts, in order.
@@ -9570,8 +9847,22 @@ mod tests {
         const D: Hints = (Some(false), Some(true), None);
         const WI: Hints = (Some(false), Some(false), Some(true));
         const DI: Hints = (Some(false), Some(true), Some(true));
-        let table: [(&str, Hints); 94] = [
+        let table: [(&str, Hints); 108] = [
             ("books.handbook", R),
+            ("books.start", R),
+            ("books.set_setting", DI),
+            ("books.import_settings", DI),
+            ("books.export_settings", R),
+            ("books.conventions", R),
+            ("books.set_convention", W),
+            ("books.retire_convention", D),
+            ("books.record_decision", W),
+            ("books.decisions", R),
+            ("books.raise_item", W),
+            ("books.resolve_item", W),
+            ("books.open_items", R),
+            ("books.draft_from_template", W),
+            ("books.approve_entry", W),
             ("books.chart", R),
             ("books.add_account", W),
             ("books.trial_balance", R),
@@ -9703,8 +9994,8 @@ mod tests {
                 "{name} has no openWorldHint false"
             );
         }
-        // docs/mcp-interface.md names the 25 destructive tools.
-        assert_eq!(table.iter().filter(|(_, h)| h.1 == Some(true)).count(), 25);
+        // docs/mcp-interface.md names the 28 destructive tools.
+        assert_eq!(table.iter().filter(|(_, h)| h.1 == Some(true)).count(), 28);
     }
 
     /// Every refusal an agent can be given whose text is fixed here, or
@@ -9800,6 +10091,66 @@ mod tests {
             ("tin_files::TIN_PRINTED", tin_files::TIN_PRINTED),
         ] {
             out.push((what.to_string(), text.to_string()));
+        }
+        // Refusals and notes built inline, where the books' own record is
+        // kept: every string literal of these sources outside their tests.
+        for (what, src) in [
+            ("tools/kept.rs", include_str!("tools/kept.rs")),
+            (
+                "ledger-config codec",
+                include_str!("../../ledger-config/src/codec.rs"),
+            ),
+            (
+                "ledger-core settings",
+                include_str!("../../ledger-core/src/settings.rs"),
+            ),
+            (
+                "ledger-core conventions",
+                include_str!("../../ledger-core/src/conventions.rs"),
+            ),
+            (
+                "ledger-core ledger",
+                include_str!("../../ledger-core/src/ledger.rs"),
+            ),
+            ("settings.rs", include_str!("settings.rs")),
+        ] {
+            let code = src.split("#[cfg(test)]").next().unwrap_or(src);
+            let literals = string_literals(code);
+            assert!(!literals.is_empty(), "{what}: no literals found");
+            out.extend(literals.into_iter().map(|l| (format!("{what} literal"), l)));
+        }
+        out
+    }
+
+    /// The text of every plain string literal ("...") in Rust source,
+    /// skipping comments (a rough scanner: enough for the lint).
+    fn string_literals(src: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for line in src.lines() {
+            let line = line.trim_start();
+            if line.starts_with("//") {
+                continue;
+            }
+            let mut chars = line.chars().peekable();
+            let mut cur: Option<String> = None;
+            while let Some(c) = chars.next() {
+                match (&mut cur, c) {
+                    (None, '"') => cur = Some(String::new()),
+                    (None, '/') if chars.peek() == Some(&'/') => break,
+                    (Some(s), '\\') => {
+                        if let Some(n) = chars.next() {
+                            s.push('\\');
+                            s.push(n);
+                        }
+                    }
+                    (Some(s), '"') => {
+                        out.push(std::mem::take(s));
+                        cur = None;
+                    }
+                    (Some(s), c) => s.push(c),
+                    (None, _) => {}
+                }
+            }
         }
         out
     }

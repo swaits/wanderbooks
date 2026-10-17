@@ -32,7 +32,9 @@ pub enum LedgerError {
 
     /// A line larger than one quadrillion, or with more than ten decimal
     /// places, is a mistake, and one that could overflow exact arithmetic.
-    #[error("journal line amount is out of range (at most 1000000000000000, ten decimal places)")]
+    #[error(
+        "journal line amount is out of range (at most one quadrillion, with ten decimal places)"
+    )]
     AmountOutOfRange,
 
     /// A date outside the calendar the books keep (`crate::calendar`):
@@ -44,7 +46,7 @@ pub enum LedgerError {
     /// payroll figure, a statement balance, a share, a basis) larger than
     /// one quadrillion or with more than ten decimal places: a mistake, and
     /// one that could overflow exact arithmetic.
-    #[error("{0} is out of range (at most 1000000000000000, ten decimal places)")]
+    #[error("{0} is out of range (at most one quadrillion, with ten decimal places)")]
     ValueOutOfRange(String),
 
     /// A figure the books derive (a sum, or a share of one) too large for
@@ -509,4 +511,36 @@ pub enum LedgerError {
     /// The referenced class does not exist.
     #[error("unknown class id {0}")]
     UnknownClass(u32),
+
+    /// A setting change the books can't honor (crate::settings): an
+    /// unknown key, a value its key refuses, or settings that wouldn't
+    /// hold together.
+    #[error("{0}")]
+    InvalidSetting(String),
+
+    /// A convention, decision, open item or approval the books can't
+    /// take (crate::conventions).
+    #[error("{0}")]
+    InvalidConvention(String),
+
+    /// Approval rules are enforced (`policy.approval_rules = enforce`) and
+    /// rules cover this entry that its approvers haven't approved as it
+    /// stands.
+    #[error(
+        "entry {entry} needs approval before it posts: {missing}; record each with books.approve_entry"
+    )]
+    ApprovalRequired {
+        /// The draft.
+        entry: u64,
+        /// Each rule and its approver, e.g. `over-500 (approver: Pat)`.
+        missing: String,
+    },
+
+    /// Approval rules are enforced, and the entry an operation would post
+    /// at once (an invoice, a bill, a payment, payroll, a disposal) is one
+    /// a rule covers: it has no draft to approve.
+    #[error(
+        "approval rules cover the entry this would post at once ({0}): draft it instead (books.draft_entry), have it approved (books.approve_entry), then post it"
+    )]
+    ApprovalNeedsDraft(String),
 }

@@ -49,12 +49,15 @@ fn default_data_dir() -> PathBuf {
 
 fn print_usage() {
     eprintln!(
-        "usage: ledger-mcp [--data-dir PATH] [--config PATH] [--books-toml PATH] [--http ADDR] [--import-root DIR]..."
+        "usage: ledger-mcp [--data-dir PATH] [--config PATH] [--books-toml PATH] [--vault-key-file PATH] [--http ADDR] [--import-root DIR]..."
     );
     eprintln!("  --data-dir  directory holding journal.jsonl (default ~/.local/share/wanderbooks)");
     eprintln!("  --config    JSON config file (default <data-dir>/config.json, optional)");
     eprintln!(
-        "  --books-toml  company settings (default <data-dir>/../wanderbooks.toml, optional)"
+        "  --books-toml  company settings, for books that don't keep their own yet (default <data-dir>/../wanderbooks.toml, optional)"
+    );
+    eprintln!(
+        "  --vault-key-file  the TIN vault's key file (default ~/.config/wanderbooks/vault.key; wins over a settings file's [vault] key_file)"
     );
     eprintln!(
         "  --http      serve over Streamable HTTP at ADDR (e.g. 127.0.0.1:8080) instead of stdio"
@@ -68,6 +71,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut data_dir = default_data_dir();
     let mut config_path: Option<PathBuf> = None;
     let mut books_toml: Option<PathBuf> = None;
+    let mut vault_key_file: Option<PathBuf> = None;
     let mut http_addr: Option<String> = None;
     let mut import_roots: Vec<PathBuf> = Vec::new();
     let mut args = std::env::args().skip(1);
@@ -82,6 +86,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--books-toml" => {
                 books_toml = Some(PathBuf::from(
                     args.next().ok_or("--books-toml needs a path")?,
+                ));
+            }
+            "--vault-key-file" => {
+                vault_key_file = Some(PathBuf::from(
+                    args.next().ok_or("--vault-key-file needs a path")?,
                 ));
             }
             "--http" => {
@@ -109,12 +118,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ImportRoots::new(import_roots)
     };
     let config_path = config_path.unwrap_or_else(|| data_dir.join("config.json"));
-    let config: Config = if config_path.exists() {
-        let raw = std::fs::read_to_string(&config_path)?;
-        serde_json::from_str(&raw)
-            .map_err(|e| format!("bad config {}: {e}", config_path.display()))?
-    } else {
-        Config::default()
+    // config.json's base currency matters only to books being created: it
+    // is read then, and never otherwise (books that keep their own
+    // settings read no file).
+    let read_config = || -> Result<Config, Box<dyn std::error::Error>> {
+        if config_path.exists() {
+            let raw = std::fs::read_to_string(&config_path)?;
+            Ok(serde_json::from_str(&raw)
+                .map_err(|e| format!("bad config {}: {e}", config_path.display()))?)
+        } else {
+            Ok(Config::default())
+        }
     };
     // Logs go to stderr: stdout is the MCP channel.
     eprintln!("ledger-mcp: data dir {}", data_dir.display());
@@ -130,9 +144,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
         config_json: config_path.clone(),
     };
-    let live = settings::Live::watching(source)?;
-    eprintln!("ledger-mcp: company {:?}", live.current().company.name);
-    let live = std::sync::Arc::new(std::sync::Mutex::new(live));
 
     let mut store = if data_dir.join(ledger_store::JOURNAL_FILE).exists() {
         match open_waiting_for_lock(&data_dir) {
@@ -146,6 +157,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(e) => return Err(e.into()),
         }
     } else {
+        let config = read_config()?;
         let code = config.base_currency.as_deref().unwrap_or("USD");
         let currency = Currency::new(code).map_err(|_| format!("bad base currency {code:?}"))?;
         eprintln!("ledger-mcp: creating new store (base currency {code})");
@@ -160,6 +172,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(why) = &report.healed {
         eprintln!("ledger-mcp: rebuilt the database from the journal ({why})");
     }
+    // Books that keep their own settings never read a settings file, not
+    // even to start (settings INVARIANT 1); others read it as before.
+    let mut live = if store.ledger().settings().is_journaled() {
+        settings::Live::journaled(source)
+    } else {
+        settings::Live::watching(source)?
+    }
+    .with_vault_key_file(vault_key_file);
+    live.sync(store.ledger().settings(), store.base_currency().code());
+    eprintln!(
+        "ledger-mcp: company {:?} (settings from {})",
+        live.current().company.name,
+        if live.is_journaled() {
+            "the books"
+        } else {
+            "the settings file"
+        }
+    );
+    let live = std::sync::Arc::new(std::sync::Mutex::new(live));
     // No import root may be `/`, the home folder, or hold the books, the
     // vault or a key (local_files.rs INVARIANT 0): a named one stops the
     // server here, a default one is dropped.

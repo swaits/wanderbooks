@@ -30,7 +30,8 @@ const TYPES: &[&str] = &[
     "line.cleared", "payroll.run", "period.closed", "period.created", "receipt.attached",
     "receipt.linked", "receipt.unlinked", "recurring.generated", "recurring.registered",
     "schedule.posted", "schedule.registered", "vendor.1099_set", "vendor.added",
-    "journal.format_set", "settings.set",
+    "journal.format_set", "settings.set", "convention.set", "convention.retired",
+    "decision.recorded", "open_item.raised", "open_item.resolved", "entry.approved",
 ];
 
 const FIELDS: &[&str] = &[
@@ -44,7 +45,9 @@ const FIELDS: &[&str] = &[
     "rate", "reason", "recurring_id", "reversal_of", "reverses", "salvage_value",
     "schedule_id", "share", "side", "size_bytes", "start", "tax_category", "tin_on_file",
     "total", "useful_life_months", "vendor_id", "type", "account_type", "rounding",
-    "members", "distributions", "sweep", "format", "features",
+    "members", "distributions", "sweep", "format", "features", "changes", "key", "value",
+    "source", "decided_by", "decided_on", "kind", "title", "body_md", "structured", "subject",
+    "decision_md", "supersedes", "resolution", "approver",
 ];
 
 /// A value replay might plausibly see: small ids, amounts as decimal

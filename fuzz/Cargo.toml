@@ -84,3 +84,10 @@ path = "fuzz_targets/fuzz_config_parse.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_settings_replay"
+path = "fuzz_targets/fuzz_settings_replay.rs"
+test = false
+doc = false
+bench = false

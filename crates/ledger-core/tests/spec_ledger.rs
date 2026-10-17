@@ -772,7 +772,7 @@ fn a_negative_amount_line_never_posts() {
     assert_eq!(b.l.posted_entries().count(), 0);
 }
 
-/// Oracle: AmountOutOfRange doc ("at most 1000000000000000, ten decimal
+/// Oracle: AmountOutOfRange doc ("at most one quadrillion, with ten decimal
 /// places"): exactly one quadrillion and exactly ten places post; one cent
 /// more, or an eleventh place, never does.
 #[test]

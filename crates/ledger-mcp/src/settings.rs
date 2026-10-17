@@ -1,24 +1,35 @@
-//! The server's settings (`wanderbooks.toml`, and the receipt policy in
-//! `books-data/config.json`), reloaded whenever their files change.
+//! The server's settings: the books' own (journaled, ledger_core::
+//! settings), or, for books that hold none yet, the settings files
+//! (`wanderbooks.toml`, and the receipt policy in `books-data/config.json`)
+//! reloaded whenever they change.
 //!
 //! ```text
-//! GOAL: an edit to wanderbooks.toml takes effect on the next tool call,
-//!       with no restart, and a broken edit never takes the server down.
-//! SOURCE: DECISION (owner, 2026-10-15): the configuration is always
-//!         auto-reloaded.
+//! GOAL: every request sees the settings in force, one version for the
+//!       whole request; books that keep their own settings never read a
+//!       file; a broken file edit never takes the server down.
+//! SOURCE: plan/served.md I-3 (the journal holds all books state; the
+//!         server never reads a settings file for books that hold their
+//!         settings), 2.1 ("dev-stdio keeps legacy_files mode until a book
+//!         is adopted"); DECISION (owner, 2026-10-15): file settings are
+//!         always auto-reloaded.
 //! INVARIANTS:
-//!   1. Every request (tool call, resource read) sees the files' contents
-//!      as of its start, one version for the whole request: a request after
-//!      an edit sees the edit (compared by content, not by timestamp, so two
-//!      edits in one second are both seen).
-//!   2. A file that fails to load leaves the last good settings in force,
+//!   1. Books whose journal holds settings (any settings.set) use those,
+//!      and from then on no file is read: sync takes them whenever the
+//!      journal's last settings.set changes.
+//!   2. Otherwise every request (tool call, resource read) sees the files'
+//!      contents as of its start: a request after an edit sees the edit
+//!      (compared by content, not by timestamp, so two edits in one second
+//!      are both seen).
+//!   3. A file that fails to load leaves the last good settings in force,
 //!      and the failure is reported (books.settings, stderr) until a later
 //!      edit loads.
-//!   3. A settings file that doesn't exist and wasn't asked for (the
+//!   4. A settings file that doesn't exist and wasn't asked for (the
 //!      default wanderbooks.toml beside the books) means the defaults; one
-//!      named with --books-toml that goes missing is a failure (2).
-//!   4. Only the settings reload: the data dir and the books' base currency
-//!      are fixed when the server starts.
+//!      named with --books-toml that goes missing is a failure (3).
+//!   5. Only the settings change while serving: the data dir, the books'
+//!      base currency, and a vault key file given on the command line are
+//!      fixed when the server starts (the key file given wins over any
+//!      file's [vault] key_file).
 //! ```
 
 use crate::policy::ReceiptPolicy;
@@ -56,6 +67,11 @@ pub struct Settings {
     /// `[books] parties`: suggest, require, or never mention each entry's
     /// counterparty.
     pub parties: ledger_config::PartyPolicy,
+    /// The company's time zone (an IANA name), if set: what "today" means.
+    pub timezone: Option<String>,
+    /// Whether these are the books' own settings (journaled) rather than a
+    /// file's.
+    pub journaled: bool,
 }
 
 impl Settings {
@@ -65,6 +81,26 @@ impl Settings {
         self.vault_key_file
             .clone()
             .unwrap_or_else(ledger_vault::default_key_file)
+    }
+
+    /// The settings the books keep (`ledger_core::settings`), as the
+    /// server uses them.
+    pub fn from_books(books: &ledger_core::settings::Settings, currency: &str) -> Self {
+        let b = ledger_config::codec::books_settings(books, currency);
+        Settings {
+            policy: ledger_config::codec::receipt_policy(books),
+            asset_tag_prefix: b.asset_tag_prefix(),
+            vault_key_file: None,
+            parties: b.parties,
+            timezone: b.timezone.clone(),
+            roles: CashRoles {
+                cash: b.cash_accounts,
+                financing: b.financing_accounts,
+                investing: b.investing_accounts,
+            },
+            company: b.company,
+            journaled: true,
+        }
     }
 
     /// The prefix for generated asset tags ("FA" when none is set).
@@ -114,6 +150,8 @@ impl Source {
             asset_tag_prefix: books.asset_tag_prefix(),
             vault_key_file: books.vault_key_file.clone(),
             parties: books.parties,
+            timezone: books.timezone.clone(),
+            journaled: false,
             policy,
             roles: CashRoles {
                 cash: books.cash_accounts,
@@ -133,6 +171,13 @@ pub struct Live {
     seen: Seen,
     error: Option<String>,
     loads: u64,
+    /// The seq of the books' last settings.set taken (INVARIANT 1).
+    journal_seq: Option<u64>,
+    /// A vault key file given on the command line (INVARIANT 5).
+    vault_key_file: Option<PathBuf>,
+    /// Whether the settings files may be read: false once the books keep
+    /// their own (INVARIANT 1).
+    read_files: bool,
 }
 
 /// What books.settings reports about the files.
@@ -150,6 +195,9 @@ pub struct Status {
     pub error: Option<String>,
     /// How many times the settings have loaded, the first included.
     pub loads: u64,
+    /// Whether the settings are the books' own (journaled): then no file
+    /// is read.
+    pub journaled: bool,
 }
 
 impl Live {
@@ -161,6 +209,9 @@ impl Live {
             seen: (None, None),
             error: None,
             loads: 1,
+            journal_seq: None,
+            vault_key_file: None,
+            read_files: false,
         }
     }
 
@@ -175,7 +226,77 @@ impl Live {
             seen,
             error: None,
             loads: 1,
+            journal_seq: None,
+            vault_key_file: None,
+            read_files: true,
         })
+    }
+
+    /// For books that keep their own settings: nothing is read from
+    /// `source` (INVARIANT 1), not even at start, so a broken settings
+    /// file beside them can't stop the server; `sync` brings the books'
+    /// settings in.
+    pub fn journaled(source: Source) -> Self {
+        Self {
+            current: Arc::new(Settings {
+                journaled: true,
+                ..Settings::default()
+            }),
+            source: Some(source),
+            seen: (None, None),
+            error: None,
+            loads: 0,
+            journal_seq: None,
+            vault_key_file: None,
+            read_files: false,
+        }
+    }
+
+    /// Use this vault key file whatever the settings say (INVARIANT 5).
+    pub fn with_vault_key_file(mut self, path: Option<PathBuf>) -> Self {
+        self.vault_key_file = path;
+        if let Some(p) = &self.vault_key_file {
+            Arc::make_mut(&mut self.current).vault_key_file = Some(p.clone());
+        }
+        self
+    }
+
+    /// Take the books' own settings when they hold any and they changed
+    /// since the last look (INVARIANT 1). The server calls this whenever
+    /// it holds the books.
+    pub fn sync(&mut self, books: &ledger_core::settings::Settings, currency: &str) {
+        if !books.is_journaled() || books.last_seq() == self.journal_seq {
+            return;
+        }
+        let mut s = Settings::from_books(books, currency);
+        s.vault_key_file = self.vault_key_file.clone();
+        self.current = Arc::new(s);
+        self.journal_seq = books.last_seq();
+        self.read_files = false;
+        self.error = None;
+        self.loads += 1;
+    }
+
+    /// The settings files' texts as the server reads them now
+    /// (`wanderbooks.toml`, `config.json`; `None` for one absent), when the
+    /// settings come from files; `None` when the books keep their own or
+    /// the settings were built in code.
+    pub fn file_texts(&self) -> Option<(Option<String>, Option<String>)> {
+        let source = self.source.as_ref().filter(|_| self.read_files)?;
+        Some((
+            std::fs::read_to_string(&source.books_toml).ok(),
+            std::fs::read_to_string(&source.config_json).ok(),
+        ))
+    }
+
+    /// The vault key file given on the command line, if any.
+    pub fn vault_key_override(&self) -> Option<PathBuf> {
+        self.vault_key_file.clone()
+    }
+
+    /// Whether the settings in force are the books' own.
+    pub fn is_journaled(&self) -> bool {
+        self.journal_seq.is_some() || (self.source.is_some() && !self.read_files)
     }
 
     /// The settings in force.
@@ -187,12 +308,20 @@ impl Live {
     /// once at the start of every request, so the whole request sees one
     /// version.
     pub fn refresh(&mut self) {
+        if !self.read_files {
+            // The books keep their own settings (or the settings were
+            // built in code): no file is read (INVARIANT 1).
+            return;
+        }
         if let Some(source) = &self.source {
             let now = source.read();
             if now != self.seen {
                 self.seen = now;
                 match source.load() {
-                    Ok(s) => {
+                    Ok(mut s) => {
+                        if let Some(p) = &self.vault_key_file {
+                            s.vault_key_file = Some(p.clone());
+                        }
                         self.current = Arc::new(s);
                         self.error = None;
                         self.loads += 1;
@@ -219,12 +348,18 @@ impl Live {
     /// Where the settings come from and whether the last change loaded.
     pub fn status(&mut self) -> Status {
         self.refresh();
+        let journaled = self.is_journaled();
         Status {
-            books_toml: self.source.as_ref().map(|s| s.books_toml.clone()),
+            books_toml: self
+                .source
+                .as_ref()
+                .filter(|_| !journaled)
+                .map(|s| s.books_toml.clone()),
             books_toml_exists: self.source.as_ref().is_some_and(|s| s.books_toml.exists()),
             config_json_present: self.source.as_ref().is_some_and(|s| s.config_json.exists()),
             error: self.error.clone(),
             loads: self.loads,
+            journaled,
         }
     }
 }
@@ -326,5 +461,68 @@ mod tests {
         live.refresh();
         let s = live.status();
         assert_eq!((s.loads, s.books_toml), (1, None));
+    }
+
+    /// Books that keep their own settings: no file is read, even a broken
+    /// one; their settings come in once per change (INVARIANT 1).
+    #[test]
+    fn journaled_books_take_their_own_settings_once_per_change() {
+        let d = dir("journaled");
+        std::fs::write(d.join("wanderbooks.toml"), "[books\n").unwrap();
+        let mut live = Live::journaled(source(&d, true));
+        assert!(live.current().journaled);
+        assert!(live.is_journaled());
+        assert!(live.file_texts().is_none());
+        let mut books = ledger_core::settings::Settings::default();
+        live.sync(&books, "USD");
+        assert_eq!(live.status().loads, 0, "books without settings");
+        let src = ledger_core::settings::Source {
+            decided_by: "Owner".into(),
+            decided_on: chrono::NaiveDate::from_ymd_opt(2026, 10, 17).unwrap(),
+            citation: None,
+            note: None,
+        };
+        let change = |name: &str| ledger_core::settings::Change {
+            key: "company.name".into(),
+            value: Some(serde_json::json!(name)),
+        };
+        books.apply(&[change("Kept Co")], &src, 7).unwrap();
+        live.sync(&books, "USD");
+        assert_eq!(live.current().company.name, "Kept Co");
+        assert_eq!(live.status().loads, 1);
+        live.sync(&books, "USD");
+        assert_eq!(live.status().loads, 1, "unchanged: not taken again");
+        books.apply(&[change("Kept Co 2")], &src, 9).unwrap();
+        live.sync(&books, "USD");
+        assert_eq!(live.current().company.name, "Kept Co 2");
+        assert_eq!(live.status().loads, 2);
+        assert!(live.current().journaled && live.is_journaled());
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// Settings built in code are the books' own once synced.
+    #[test]
+    fn fixed_settings_synced_are_journaled() {
+        let mut live = Live::fixed(Settings::default());
+        assert!(!live.is_journaled());
+        let mut books = ledger_core::settings::Settings::default();
+        let src = ledger_core::settings::Source {
+            decided_by: "Owner".into(),
+            decided_on: chrono::NaiveDate::from_ymd_opt(2026, 10, 17).unwrap(),
+            citation: None,
+            note: None,
+        };
+        books
+            .apply(
+                &[ledger_core::settings::Change {
+                    key: "company.name".into(),
+                    value: Some(serde_json::json!("Kept Co")),
+                }],
+                &src,
+                3,
+            )
+            .unwrap();
+        live.sync(&books, "USD");
+        assert!(live.is_journaled());
     }
 }

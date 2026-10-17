@@ -182,7 +182,7 @@ fn newer_books_are_refused_as_newer_not_corrupt() {
     let mut w = ledger_store::JournalWriter::open(&dir.join(ledger_store::JOURNAL_FILE)).unwrap();
     w.append(
         "journal.format_set",
-        serde_json::json!({"format": 2, "features": []}),
+        serde_json::json!({"format": 3, "features": []}),
     )
     .unwrap();
     // The next line chains onto it, so its bytes are checked (B-27).

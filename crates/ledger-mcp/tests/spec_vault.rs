@@ -122,6 +122,22 @@ impl Mcp {
             .arg(dir.join("books-data"))
             .arg("--books-toml")
             .arg(toml)
+            // A settings file naming the usual key outside the books: the
+            // command line names it too, as books that move their settings
+            // in must (a test naming another key keeps only the file's).
+            .args({
+                let key = outside(dir).join("vault.key");
+                std::fs::read_to_string(toml)
+                    .is_ok_and(|t| t.contains(&format!("key_file = \"{}\"", key.display())))
+                    .then(|| {
+                        [
+                            std::ffi::OsString::from("--vault-key-file"),
+                            key.into_os_string(),
+                        ]
+                    })
+                    .into_iter()
+                    .flatten()
+            })
             // Files handed over by path come only from here.
             .arg("--import-root")
             .arg(inbox(dir))
@@ -2019,8 +2035,19 @@ fn idempotent_tools_change_nothing_when_repeated() {
         .as_str()
         .unwrap()
         .to_string();
+    let settings_file =
+        std::fs::read_to_string(m.data.parent().unwrap().join("wanderbooks.toml")).unwrap();
     let calls: Vec<(&str, Value)> = vec![
         ("books.verify", json!({"blobs": true})),
+        (
+            "books.import_settings",
+            json!({"toml_text": settings_file, "decided_by": "Owner", "confirmed": true}),
+        ),
+        (
+            "books.set_setting",
+            json!({"changes": [{"key": "company.timezone", "value": "America/Denver"}],
+                   "decided_by": "Owner"}),
+        ),
         (
             "books.run_schedules",
             json!({"through": "2026-03-31", "confirmed": true}),

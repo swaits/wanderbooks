@@ -6,7 +6,7 @@ The 2026-10-16 audit of the first company's books (62 verified findings,
 20 engine defects) and the design discussion that followed produced
 `plan/served.md`: the books become a server that owns its data, agents
 reach them only through the MCP from anywhere, settings and conventions
-move into the journal, no scaffold. Phases P0-P10; the owner's decisions
+move into the journal, no scaffold. Phases P0-P11; the owner's decisions
 of 2026-10-16 are at the top of the plan and bind every phase. P0 turned
 up defects 21 (the CPA package's IIF ignores `as_of`) and 22
 (depreciation's final month plugs mid-month); both are for P3.
@@ -38,7 +38,8 @@ adjudicates a difference (cash flow, defect 1).
 
 **Then:** P1 (journal-native settings and conventions), P2 (serve locally,
 cutover; ask the owner the three plain-English cutover questions in
-plan section 10.3 first), P3-P10 as planned.
+plan section 10.3 first), P3-P11 as planned (P11, added 2026-10-17: one app for Windows, Mac and
+Linux; P2 gained backup restore and the viewer's menu).
 
 ---
 

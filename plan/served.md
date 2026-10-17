@@ -260,6 +260,12 @@ It writes `ops/backup.jsonl`. `books.backup {status|run}` reports it, and Needs 
 
 Email or webhook head delivery and a witness log belong to the hosted service (section 11).
 
+**Restore (owner, 2026-10-17: "these backups need to be restorable, both in existing and new installations").** A backup is complete: the journal, every blob, the vault records (sealed), and the head `{seq, hash}` at backup time. `wanderbooks books restore <backup> [--id X]` (and the viewer's "Restore…", which hands it to the server) works the same on a clean install and on an existing one:
+1. **Proven before use.** The server replays the whole chain, re-hashes every blob and checks that the head equals the one the backup records. Any mismatch refuses the restore with a plain reason; nothing is half-restored.
+2. **Never destructive.** On an existing install a restore arrives as its own book beside the current ones. Replacing a book moves the old one into `legacy/<id>-<date>/`, kept, never deleted, and only on the owner's explicit choice.
+3. **The vault comes back only with its key.** The backup carries the vault sealed; the passphrase or the printed recovery key (P7) unlocks it on any machine. Until P7 the v1 key is a separate file: a backup counts as complete only when that key is saved too, and Needs attention says so when it isn't.
+4. **Restore drills.** On a schedule (default weekly) and after each close, the archive unit restores the latest backup into a scratch folder, verifies it as in step 1, compares its reports with the live book's as of the backup head, and throws it away. A failed drill is a Needs-attention item; `books.backup status` reports the last drill.
+
 ### 3.8 Local vs self-host
 
 | | Local (T1, the default) | Self-host (T2, P9) |
@@ -751,6 +757,8 @@ Wanderland keeps working between phases.
 - `get_receipt view=link|bytes(≤256 KiB+sha)` (defect 3, transport part).
 - **Viewer, direct and read-only (3.6):** data-root discovery through `ledger-store::paths::data_root()` or `--root` from `wanderbooks gui <book>`, never a project directory or `wanderbooks.toml`; `books.show` through `ops/show.jsonl` (delete `ledger-store/src/viewer.rs`); presence through the `ops/viewer.lock` shared flock; Save-a-copy and Open-with (defect 3, viewer part). Locally there is no replica, no socket and no peer-credential check.
 - Archive unit (user-level) and module; `books.backup`; `ops/heads.jsonl`; `verify-archive`; `fetch`.
+- **Restore (3.7, D-19):** `books restore`, proven before use, never destructive, onto a new or an existing install; restore drills; the vault key's backup reported until P7.
+- **Viewer menu (D-19):** "Back up now" and "Export for CPA" (read-only, done by the viewer); "Restore…" and "New books…" handed to the server; nothing in the viewer writes a book.
 - `ledger-mcp proxy`.
 - CLI subcommands: `service`, `books create|adopt|list|export-legacy`, `connect`, `token`, `gui`, `doctor`, `verify-archive`, `fetch`, `update`. `books export-legacy <id>` (rollback only) writes a P1-format data dir outside the data root, verifies its head equals the server's, and stops the server's writes to that book.
 - **Scaffold deleted:** `JUSTFILE`, `AGENTS_MD`, `CLAUDE_SETTINGS`, `CODEX_HOOKS`, `GITIGNORE` (`ledger-cli/src/main.rs:43-521`); `install.sh` rewritten, with no sudo.
@@ -770,6 +778,8 @@ Wanderland keeps working between phases.
 - `access_log_one_record_per_call`.
 - `gui_works_under_read_only_landlock`; `gui_finds_root_without_project_dir` (started in an empty directory with no toml); `show_request_reaches_gui` (≤ 1 s); `viewer_presence_reported`.
 - `clone_verify_expect_head`; `backup_does_not_advance_head`.
+- `restore_on_clean_install` and `restore_beside_existing_books` (same head, identical goldens); `restore_refuses_damaged_backup` (a flipped byte in the journal, a missing blob, a head that doesn't match: each refused, nothing written); `restore_never_overwrites` (replace moves the old book to `legacy/`); `restore_drill_failure_is_flagged`; `restored_vault_needs_its_key`.
+- `viewer_menu_never_writes_a_book` (backup and export leave the data root byte-identical; restore and new books go through the server).
 - `http_concurrency` extended to 3 books × 6 clients while the GUI reads.
 - `upload_round_trip_byte_exact` (20 MiB).
 - GUI `read_only`: no writes under the data root, and no files under `$HOME` except eframe preferences.
@@ -782,6 +792,7 @@ Wanderland keeps working between phases.
 - A Codex post, close and reconcile raise no approval prompt beyond Codex's defaults (no `default_tools_approval_mode` in the generated config).
 - Two concurrent agents post 12 entries each with no lost writes.
 - Viewer updates within 1 s.
+- A backup of Wanderland restores on a clean machine and beside the live books, each with the same head and byte-identical goldens.
 
 ### P3: Engine correctness (defects 1, 7, 21, 8, 9, 11, 12, 13, 14, 15, 16, 17, 18, 22)
 
@@ -1033,6 +1044,24 @@ Run from clients that hold only a URL and a credential: Claude Code started in `
 - Agent context on receipts never exceeded 100K tokens.
 - Stephen's sign-off is journaled as `decision.recorded`.
 
+### P11: One app for Windows, Mac and Linux (D-19)
+
+**Scope:**
+- One installer per system: the server, the viewer and the CLI, versioned and updated together (the format gate of 5.1 then never meets mismatched parts). The server stays a separate background program: a LaunchAgent on macOS, a systemd `--user` unit on Linux (both from P2), and the per-user equivalent on Windows (a logon task, no admin rights). No step needs admin rights on any system.
+- Opening the app opens the viewer and starts the server if it isn't running.
+- Auto-update per system: download, verify the signature, replace all parts together, restart the server, reopen the viewer. A failed update rolls back to the previous version.
+- Data root in each system's usual app-data folder (Application Support, AppData, `~/.local/share`), as in 3.4.
+- Signing: Apple Developer ID signing and notarization (the company's membership); a Windows code-signing certificate; signed Linux packages.
+- Release builds and the full test suite on all three systems in CI.
+- The viewer menu of P2 (back up, export, restore, new books) is the app's whole surface beyond the viewer; there is no separate launcher.
+
+**Tests:** `install_needs_no_admin` (each system, clean machine); `update_replaces_all_parts_together`; `failed_update_rolls_back`; `unsigned_update_refused`; `server_runs_with_viewer_closed`; P2's restore tests on all three systems.
+
+**Accept:**
+- On a clean Windows, Mac and Linux machine: download, install, open, onboard and post a first entry with no terminal and no admin password.
+- An update leaves every book's head and goldens unchanged.
+- A backup made on one system restores on each of the others.
+
 ---
 
 ## 9. Risks and mitigations
@@ -1099,6 +1128,7 @@ The owner decisions of 2026-10-16 (at the top of this document) replace the form
 | D-15 | OCR for image-only receipts | (a) None in core for now: page images plus agent attestation. |
 | D-16 | CPA access to TINs | (a) To start, the owner prepares and sends a single-use human link each time. |
 | D-18 | `dev-stdio` | (a) Kept permanently for tests and demo. It refuses inside the data root and is never offered by `connect`. |
+| D-19 | One app for Windows, Mac and Linux (owner, 2026-10-17) | Planned: backup and restore in P2, the app itself in P11. One installer and auto-updater per system. The server, the viewer and the CLI ship and update together but stay separate programs inside the app: the agent needs the server while the viewer is closed, and the viewer stays read-only by being a separate program. No separate launcher, which would be a third program and a second writer. The viewer is the app's face and gains menu items: "Back up now" and "Export for CPA" (read-only; the viewer does them), "Restore…" and "New books…" (they change books, so the viewer hands them to the server), and the CPA package with TINs through the human path (P2 `/h/`, P7 vault). The books live in each system's usual app-data folder (the data root of 3.4): hidden, not locked; a little more protected on macOS. **Backups must restore**, into an existing install or a new one, proven before use and never destructive (3.7). |
 
 ### 10.2 Deferred
 
@@ -1121,7 +1151,7 @@ These are the only open owner questions. Ask them just before the move, one at a
 
 ## 11. Later: hosted service (not built in this plan)
 
-A paid, multi-tenant service in which an operator runs the books for customers. P0–P10 build none of this. It is recorded here so the design stays compatible with it.
+A paid, multi-tenant service in which an operator runs the books for customers. P0–P11 build none of this. It is recorded here so the design stays compatible with it.
 
 **Shape.**
 - Per-tenant pair. `front` (`ledger-mcp front --tenant <t>`, user ID `wb-f-<t>`) does OAuth 2.1 (3.3), passkeys, consent, the human pages and token validation; its Landlock denies `books/`, so it **never** reads tenant disk. `worker` (`ledger-mcp worker --tenant <t> --socket`, user ID `wb-t-<t>`, `DynamicUser=`) serves the MCP, uploads, downloads and the replica for its own tenant only, and learns identity only from `X-WB-Principal` on its 0660 socket. Caddy handles TLS and routing and holds no authority. No component holds authority across tenants. Both roles ship in one binary.

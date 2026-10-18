@@ -550,6 +550,45 @@ async fn text_with_a_vault_tin_or_a_printed_one_is_refused_and_a_bank_export_is_
     accepted_everywhere(&c, &b, "members-0.csv", "member,tin\nKat,830835531\n").await;
 }
 
+/// INVARIANT 3b through the tools: the company's own EIN, as its
+/// settings hold it, goes in printed 2-7 (formation papers, a business
+/// plan) by every filing tool; another EIN, or the same nine digits
+/// printed as an SSN, is still refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_company_s_own_ein_goes_in_and_no_other() {
+    let b = books("own-ein");
+    let toml = std::fs::read_to_string(&b.toml).unwrap();
+    std::fs::write(
+        &b.toml,
+        toml.replacen(
+            "name = \"Tin Co\"\n",
+            "name = \"Tin Co\"\nein = \"12-3456789\"\n",
+            1,
+        ),
+    )
+    .unwrap();
+    let (_server, url) = serve(&b);
+    let c = connect(&url).await;
+    accepted_everywhere(
+        &c,
+        &b,
+        "plan.md",
+        "# Tin Co business plan\n\nEIN 12-3456789, formed 2026-10-04.\n",
+    )
+    .await;
+    for (n, text) in [
+        "EIN 12-3456789; our vendor's is 20-5200615",
+        "as an SSN: 123-45-6789",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let path = b.out.join(format!("other-{n}.md"));
+        std::fs::write(&path, text).unwrap();
+        refused_everywhere(&c, &b, &path, &format!("other-{n}.md"), TIN_PRINTED).await;
+    }
+}
+
 /// INVARIANT 3 through the tools: UTF-16 text written without a
 /// byte-order mark (ASCII so written is valid UTF-8, each digit followed
 /// or led by a NUL) is read as the text it is, either way round: a vault

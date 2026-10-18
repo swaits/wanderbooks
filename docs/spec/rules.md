@@ -605,9 +605,13 @@ or a space (compared on the server against the decrypted vault, never
 returned or logged; a vault that can't be opened leaves (b) alone), or
 (b) a number printed as an SSN or EIN is, standing alone: 3-2-4 digits
 joined by hyphens (123-45-6789) or 2-7 joined by a hyphen (12-3456789),
-with no digit, and no hyphen or dot followed by a digit, on either side.
-Full-width digits and Unicode hyphens and spaces count as their ASCII
-kin (`tin_files.rs`). The text check is narrow on purpose (DECISION,
+with no digit, and no hyphen or dot followed by a digit, on either side,
+except the company's own EIN as its settings hold it, printed 2-7: it is
+the company's, no person's, the settings already hold it in full (B-29),
+and every company document goes into the books, its formation papers and
+plans printing it (DECISION, the owner, 2026-10-17); (a) still refuses it
+should the vault hold that number for a party. Full-width digits and
+Unicode hyphens and spaces count as their ASCII kin (`tin_files.rs`). The text check is narrow on purpose (DECISION,
 the owner, 2026-10-16): bank exports are filed for reconciliation, and
 their routing numbers, long references and dates next to amounts are
 not TINs; the broad `has_full_tin` reading stays on what the server says

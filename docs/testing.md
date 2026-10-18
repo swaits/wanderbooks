@@ -354,6 +354,17 @@ whether a character is a digit), and `approval_gate`'s fast path (`||`
 made `&&`: with rules off or none, the probe's `approvals_missing` is
 empty either way, so only the cost differs).
 
+**After the cutover (2026-10-17).** Two fixes found by the first
+company's P1 cutover, mutation-tested on their diff (27 mutants: 22
+caught, 4 unviable, 1 equivalent): the K-1 worksheet prints a share by
+its value, at least two places ("50%" and "0.5" alike print "0.50":
+`a_share_prints_the_same_however_it_was_written`, and `spec_vault`'s
+package test), and the filing scan passes the company's own EIN printed
+2-7 and nothing else (`the_company_s_own_ein_printed_as_an_ein_passes`,
+`tests/tin_files.rs` `the_company_s_own_ein_goes_in_and_no_other`).
+Equivalent: `share_text`'s `scale() < 2` made `<= 2` (padding a
+two-place share to two places changes nothing).
+
 ## Benchmarks (baseline 2026-10-13)
 
 No budget, by decision (the owner, 2026-10-13: the books do little work

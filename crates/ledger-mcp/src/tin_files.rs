@@ -33,6 +33,12 @@
 //!         3-2-4 digits joined by hyphens (123-45-6789) or 2-7 digits
 //!         joined by a hyphen (12-3456789), with no digit, and no hyphen
 //!         or dot followed by a digit, on either side.
+//!         Except the company's own EIN, as the books' settings hold it,
+//!         printed 2-7 (DECISION, owner, 2026-10-17: every company
+//!         document goes into the books, and its formation papers,
+//!         plans and letters print its EIN; the settings already hold it
+//!         in full, rules.md B-29). It is the company's, no person's: (a)
+//!         still refuses it if the vault holds it for a party.
 //!      Full-width digits and Unicode hyphens and spaces read as their
 //!      ASCII kin. Refused bytes are never stored.
 //!   4. No probing (DECISION, P0 review, 2026-10-16): (a) answers for at
@@ -86,7 +92,7 @@ pub const PROBE_BOUND: usize = 2;
 
 /// The refusal for text holding a number printed as an SSN or EIN is
 /// (INVARIANT 3b).
-pub const TIN_PRINTED: &str = "that file's text holds a number printed the way an SSN or EIN is (three, two and four digits joined by hyphens, or two and seven), which reads as a full TIN: a file with a full TIN never goes into the books. If it is no TIN (a reference number printed that way), ask the human to save the file as a PDF and file that";
+pub const TIN_PRINTED: &str = "that file's text holds a number printed the way an SSN or EIN is (three, two and four digits joined by hyphens, or two and seven), which reads as a full TIN: a file with a full TIN never goes into the books. If the number is no TIN (a reference number printed that way), file the original document as its source issued it; never convert or retype a file to get it past this check";
 
 /// Record that `bytes` carry full TINs (INVARIANT 2).
 pub fn record(vault_dir: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -135,7 +141,8 @@ fn holds_sha(vault_dir: &Path, sha: &str) -> Result<bool, String> {
 /// gives the last four digits of every TIN the books know of, from the
 /// books (INVARIANT 4), and `held`, asked for only when the text holds
 /// no more than [`PROBE_BOUND`] candidates, the vault's TINs (none when
-/// the vault can't be opened).
+/// the vault can't be opened). `own_ein` is the company's EIN, as its
+/// settings hold it: printed 2-7, it passes (b).
 pub fn refuse(
     vault_dir: &Path,
     bytes: &[u8],
@@ -143,6 +150,7 @@ pub fn refuse(
     file_name: &str,
     known_last4: impl FnOnce() -> Vec<u32>,
     held: impl FnOnce() -> Vec<ledger_vault::Tin>,
+    own_ein: Option<u32>,
 ) -> Result<(), String> {
     use zeroize::Zeroizing;
     if holds_sha(vault_dir, &ledger_store::journal::sha256_hex(bytes))? {
@@ -172,7 +180,7 @@ pub fn refuse(
     if holds_held_tin(&text, &tins) {
         return Err(TIN_HELD.to_string());
     }
-    if holds_printed_tin(&text) {
+    if holds_printed_tin(&text, own_ein) {
         return Err(TIN_PRINTED.to_string());
     }
     Ok(())
@@ -249,8 +257,9 @@ fn holds_held_tin(text: &[char], tins: &[u32]) -> bool {
 
 /// Whether `text` holds a number printed as an SSN (3-2-4 digits joined
 /// by hyphens) or an EIN (2-7 joined by a hyphen) is, standing alone: no
-/// digit beside it, and no hyphen or dot that a digit follows on (INVARIANT 3b).
-fn holds_printed_tin(text: &[char]) -> bool {
+/// digit beside it, and no hyphen or dot that a digit follows on; the
+/// company's own EIN printed 2-7 aside (INVARIANT 3b).
+fn holds_printed_tin(text: &[char], own_ein: Option<u32>) -> bool {
     let digit = |i: usize| text.get(i).is_some_and(|c| c.is_numeric());
     let joins_on = |join: usize, digit_at: usize| {
         text.get(join).is_some_and(|c| matches!(c, '-' | '.')) && digit(digit_at)
@@ -259,8 +268,10 @@ fn holds_printed_tin(text: &[char]) -> bool {
         let alone_before = at == 0 || !(digit(at - 1) || at >= 2 && joins_on(at - 1, at - 2));
         alone_before
             && [&[3, 2, 4][..], &[2, 7][..]].iter().any(|groups| {
-                digits_at(text, at, groups, &['-'])
-                    .is_some_and(|(_, end)| !(digit(end) || joins_on(end, end + 1)))
+                digits_at(text, at, groups, &['-']).is_some_and(|(value, end)| {
+                    let own = groups.len() == 2 && Some(value) == own_ein;
+                    !(own || digit(end) || joins_on(end, end + 1))
+                })
             })
     })
 }
@@ -387,11 +398,11 @@ mod tests {
     fn a_recorded_tin_file_is_refused_by_every_reader_of_the_registry() {
         let vault = dir("registry");
         let w9 = b"\x89PNG binary W-9 scan".to_vec();
-        assert!(refuse(&vault, &w9, "image/png", "w9.png", Vec::new, Vec::new).is_ok());
+        assert!(refuse(&vault, &w9, "image/png", "w9.png", Vec::new, Vec::new, None).is_ok());
         record(&vault, &w9).unwrap();
         record(&vault, &w9).unwrap();
         assert_eq!(
-            refuse(&vault, &w9, "image/png", "w9.png", Vec::new, Vec::new),
+            refuse(&vault, &w9, "image/png", "w9.png", Vec::new, Vec::new, None),
             Err(TIN_FILE.into())
         );
         let text = std::fs::read_to_string(vault.join(FILE_NAME)).unwrap();
@@ -402,7 +413,7 @@ mod tests {
 
     /// The registry's folder for a check (it never exists) and no vault.
     fn check(bytes: &[u8], mime: &str, name: &str) -> Result<(), String> {
-        refuse(&dir("check"), bytes, mime, name, Vec::new, Vec::new)
+        refuse(&dir("check"), bytes, mime, name, Vec::new, Vec::new, None)
     }
 
     /// The vault's TINs for the checks: an SSN and an EIN.
@@ -422,7 +433,7 @@ mod tests {
     /// The same, with the vault holding an SSN and an EIN the books know
     /// the last fours of.
     fn check_held(bytes: &[u8], mime: &str, name: &str) -> Result<(), String> {
-        refuse(&dir("check"), bytes, mime, name, known, vault)
+        refuse(&dir("check"), bytes, mime, name, known, vault, None)
     }
 
     /// `text` in each encoding and label a filed file can come as: UTF-8,
@@ -528,7 +539,8 @@ mod tests {
                 "application/pdf",
                 "scan.pdf",
                 || panic!("the last fours were asked for a binary file"),
-                || panic!("the vault was opened for a binary file")
+                || panic!("the vault was opened for a binary file"),
+                None,
             )
             .is_ok()
         );
@@ -612,6 +624,65 @@ Date,Description,Amount,Running Bal.,Reference
         assert!(!dir("check").exists(), "a check never creates the registry");
     }
 
+    /// INVARIANT 3b: the company's own EIN, printed 2-7, passes; printed
+    /// any other way, or any other EIN, or with no EIN in the settings, it
+    /// is refused; and (a) still refuses it when the vault holds it.
+    #[test]
+    fn the_company_s_own_ein_printed_as_an_ein_passes() {
+        const OWN: u32 = 123_456_789;
+        let own = |text: &str| {
+            refuse(
+                &dir("own-ein"),
+                text.as_bytes(),
+                "text/markdown",
+                "plan.md",
+                Vec::new,
+                Vec::new,
+                Some(OWN),
+            )
+        };
+        assert_eq!(own("# Plan\n\nEIN: 12-3456789. Formed in Utah.\n"), Ok(()));
+        assert_eq!(own("EIN 12-3456789 and 12-3456789 again"), Ok(()));
+        assert_eq!(
+            own("EIN\u{2011}12\u{2010}3456789"),
+            Ok(()),
+            "Unicode hyphens fold"
+        );
+        assert_eq!(
+            own("EIN \u{FF11}\u{FF12}-3456789"),
+            Ok(()),
+            "full-width digits fold"
+        );
+        for other in [
+            "EIN 98-7814321",
+            "ours 12-3456789, theirs 98-7814321",
+            "as an SSN: 123-45-6789",
+            "one off: 21-7516788",
+        ] {
+            assert_eq!(own(other), Err(TIN_PRINTED.into()), "{other}");
+        }
+        assert_eq!(
+            check(b"EIN: 12-3456789", "text/plain", "x.txt"),
+            Err(TIN_PRINTED.into()),
+            "no EIN in the settings: no exemption"
+        );
+        // (a) first: the vault holding that number for a party refuses it.
+        let held =
+            || vec![ledger_vault::Tin::new("12-3456789", ledger_vault::TinType::Ein).unwrap()];
+        assert_eq!(
+            refuse(
+                &dir("own-ein"),
+                b"EIN: 12-3456789",
+                "text/plain",
+                "x.txt",
+                Vec::new,
+                held,
+                Some(OWN),
+            ),
+            Err(TIN_HELD.into())
+        );
+    }
+
     /// INVARIANT 3, failing closed: a registry that is there but can't be
     /// read refuses every file, saying so.
     #[test]
@@ -625,6 +696,7 @@ Date,Description,Amount,Running Bal.,Reference
             "r.pdf",
             Vec::new,
             Vec::new,
+            None,
         )
         .expect_err("a registry that can't be read let a file in");
         assert!(why.contains("couldn't check the file"), "{why}");
@@ -674,10 +746,10 @@ Date,Description,Amount,Running Bal.,Reference
             for text in [with_tin, without] {
                 for (bytes, mime, name) in encodings(text) {
                     let refusals = [
-                        refuse(&dir("check"), &bytes, mime, name, known, vault),
-                        refuse(&dir("check"), &bytes, mime, name, known, no_vault),
+                        refuse(&dir("check"), &bytes, mime, name, known, vault, None),
+                        refuse(&dir("check"), &bytes, mime, name, known, no_vault, None),
                         // The vault locked.
-                        refuse(&dir("check"), &bytes, mime, name, known, Vec::new),
+                        refuse(&dir("check"), &bytes, mime, name, known, Vec::new, None),
                     ];
                     for r in refusals {
                         assert_eq!(r, Err(TIN_PROBE.into()), "{text:?} as {name}");
@@ -707,7 +779,8 @@ Date,Description,Amount,Running Bal.,Reference
                     "text/csv",
                     "x.csv",
                     Vec::new,
-                    vault
+                    vault,
+                    None,
                 ),
                 Err(TIN_PROBE.into()),
                 "{text:?}"
@@ -756,7 +829,8 @@ Date,Description,Amount,Running Bal.,Reference
                     "text/csv",
                     "x.csv",
                     Vec::new,
-                    vault
+                    vault,
+                    None,
                 ),
                 want,
                 "{text:?}, the books knowing no last four"

@@ -1755,6 +1755,11 @@ fn the_cpa_package_carries_the_k1_and_1099_worksheets_with_tins() {
     assert_eq!(k1[0]["tin_last4"], "4915");
     assert!(!k1[0].contains_key("tin"));
     assert_eq!(k1[0]["ending_capital"], "950.00");
+    // "50%" in the settings file prints by its value, at two places, as
+    // it would had the books kept it as "0.5".
+    assert_eq!(k1[0]["share"], "0.50");
+    assert_eq!(k1[1]["share"], "0.50");
+    assert_eq!(k1[2]["share"], "1.00", "the members' total");
     for bytes in plain.values() {
         assert!(!holds_tin(bytes, MEMBER_SSN_DIGITS) && !holds_tin(bytes, EIN_DIGITS));
     }

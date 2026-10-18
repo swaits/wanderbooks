@@ -906,6 +906,7 @@ The first company keeps working between phases.
 - Full prompt set; resource templates.
 - Result envelope (`next_steps`, `guards`, `warnings`, `head`) in `call_tool`.
 - `books.journal_history`; `books.job`.
+- **Correcting a record's source.** A convention's citation (or who decided it, or when) can't be corrected today unless its words change too: `set_convention` with only a new source is refused as "already says exactly that" (found at the the first company P1 cutover, 2026-10-17, correcting an unchecked citation). A source-only revision, journaled with its reason; the same for decisions and open items.
 - Tool descriptions ≤ 700 characters; handbook complete; URL-mode elicitation where the client declares it.
 - `docs/mcp-interface.md` rewrite (24-95, 580-648, 723-747, 909-931).
 - **Agent-eval harness** `ledger-mcp/tests/agent_evals/`: scripted, with no LLM in CI. A zero-context transcript that follows only `books.start` and `next_steps` must complete onboarding, a receipt-backed post, a draft awaiting a receipt, a reversal draft with inherited evidence, a reconciliation and a month-end close.
@@ -940,6 +941,7 @@ The first company keeps working between phases.
   - otherwise a deterministic Typst render of headers and body, with fixed PDF metadata and inline images kept;
   - `attachment.rendered` is journaled;
   - the `.eml` itself is never filed.
+- **Company records (D-20).** Categories for notices and correspondence, plans, and history beside formation, legal and the rest; the viewer's Documents page grouped by category and subject; the books dir's `company/` folder retired (the first company: its files are filed, attachments 73–80, two more after the EIN fix). With extraction, the TIN scan reads PDFs' text too: the own-EIN exemption applies there as well.
 - **Migration tools (defect 20):** `compare_reference` and `record_inventory`/`check_inventory` replace `scripts/verify-sheet.py` and `scripts/drive-manifest.py`. `eml2pdf.py` is retired.
 
 **Tests:**
@@ -1141,6 +1143,7 @@ The owner decisions of 2026-10-16 (at the top of this document) replace the form
 | D-16 | CPA access to TINs | (a) To start, the owner prepares and sends a single-use human link each time. |
 | D-18 | `dev-stdio` | (a) Kept permanently for tests and demo. It refuses inside the data root and is never offered by `connect`. |
 | D-19 | One app for Windows, Mac and Linux (owner, 2026-10-17) | Planned: backup and restore in P2, the app itself in P11. One installer and auto-updater per system. The server, the viewer and the CLI ship and update together but stay separate programs inside the app: the agent needs the server while the viewer is closed, and the viewer stays read-only by being a separate program. No separate launcher, which would be a third program and a second writer. The viewer is the app's face and gains menu items: "Back up now" and "Export for CPA" (read-only; the viewer does them), "Restore…" and "New books…" (they change books, so the viewer hands them to the server), and the CPA package with TINs through the human path (P2 `/h/`, P7 vault). The books live in each system's usual app-data folder (the data root of 3.4): hidden, not locked; a little more protected on macOS. **Backups must restore**, into an existing install or a new one, proven before use and never destructive (3.7). |
+| D-20 | Company records (owner, 2026-10-17: "It's just too damn convenient to keep it all together in one place.") | Every company document goes into the books, not only what the CPA needs: formation papers, registrations, plans, notices, drafts, history. Done for the first company 2026-10-17 with the existing categories; the filing scan passes the company's own EIN printed 2-7 (rules.md B-26). P6 adds what makes it pleasant (below). |
 
 ### 10.2 Deferred
 

@@ -763,7 +763,18 @@ impl BooksServer {
             file_name,
             || known_tin_last4(store),
             || self.vault_tins(store),
+            self.company_ein(),
         )
+    }
+
+    /// The company's own EIN, as its settings hold it, as nine digits:
+    /// printed 2-7 in a filed document, it is no person's TIN
+    /// (tin_files.rs INVARIANT 3b).
+    fn company_ein(&self) -> Option<u32> {
+        let settings = self.settings();
+        let (_, ein) = settings.company.profile.iter().find(|(k, _)| k == "ein")?;
+        let digits: String = ein.chars().filter(char::is_ascii_digit).collect();
+        (digits.len() == 9).then(|| digits.parse().ok()).flatten()
     }
 
     /// Every full TIN the vault holds for a party of the books, for the
@@ -2353,6 +2364,18 @@ fn resolve_class(store: &Store, class: &str) -> Result<u32, String> {
 /// more places (an FX-converted line) keeps them. Never "-0".
 fn money(n: Decimal) -> String {
     let mut n = if n.is_zero() { Decimal::ZERO } else { n };
+    if n.scale() < 2 {
+        n.rescale(2);
+    }
+    n.to_string()
+}
+
+/// A member's share as the K-1 worksheet prints it: at least two places,
+/// however it was written ("50%", "0.5" and "0.500" all print "0.50"; a
+/// share of a third keeps its places). The printed text depends on the
+/// share, never on its spelling.
+fn share_text(n: Decimal) -> String {
+    let mut n = n.normalize();
     if n.scale() < 2 {
         n.rescale(2);
     }
@@ -8348,7 +8371,7 @@ impl BooksServer {
                             let mut cells = vec![
                                 csv_escape(&m.name),
                                 party.map(|id| id.to_string()).unwrap_or_default(),
-                                m.share.to_string(),
+                                share_text(m.share),
                                 m.capital_account.clone(),
                             ];
                             match &vault {
@@ -8420,7 +8443,7 @@ impl BooksServer {
                             let mut cells = vec![
                                 csv_escape("Total, all members (not a K-1)"),
                                 String::new(),
-                                share.to_string(),
+                                share_text(share),
                                 String::new(),
                                 String::new(),
                                 String::new(),
@@ -9843,6 +9866,21 @@ mod tests {
         assert_eq!(m("5.8"), "5.80");
         assert_eq!(m("-207.68"), "-207.68");
         assert_eq!(m("12.3456"), "12.3456");
+    }
+
+    /// A share prints by its value, never its spelling: at least two
+    /// places, a third keeping its own.
+    #[test]
+    fn a_share_prints_the_same_however_it_was_written() {
+        let t = |s: &str| share_text(Decimal::from_str(s).unwrap());
+        for half in ["0.5", "0.50", "0.500000"] {
+            assert_eq!(t(half), "0.50", "{half}");
+        }
+        assert_eq!(t("1"), "1.00");
+        assert_eq!(t("1.0"), "1.00");
+        assert_eq!(t("0.25"), "0.25");
+        assert_eq!(t("0.3333"), "0.3333");
+        assert_eq!(t("0.125"), "0.125");
     }
 
     /// Every tool says what it is and what it does to the books (plan

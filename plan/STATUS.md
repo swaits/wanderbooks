@@ -55,10 +55,13 @@ the MCP, no TINs), privately, by decision, never in this public repo
 (plan 5.6). P1+ must reproduce them except where the P3 change log
 adjudicates a difference (cash flow, defect 1).
 
-**Then:** P2 (serve locally, started by hand in a terminal with no
-background service, D-21 (owner, 2026-10-18); cutover; ask the owner the two open plain-English cutover questions
+**Then:** P2 (one `wanderbooks` executable, D-22; the books open while
+the app, an agent session or a terminal holds them, no background
+service, D-21/D-23 (owner, 2026-10-18); cutover; ask the owner the two open plain-English cutover questions
 in plan section 10.3 first; Q-2 is answered, D-20), P3-P11 as planned (P11, added 2026-10-17: one app for Windows, Mac and
-Linux; P2 gained backup restore and the viewer's menu).
+Linux, with installers and updaters per D-24: `.dmg`, a per-user Windows
+installer, AUR, apt, dnf and AppImage; P2 gained backup restore and the
+viewer's menu).
 
 ---
 

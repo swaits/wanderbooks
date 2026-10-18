@@ -1,6 +1,6 @@
-# STATUS — 2026-10-17: "Served" P0 live; P1 landed, cutover next
+# STATUS — 2026-10-17: "Served" P0 and P1 live; P2 next
 
-## Now: Served (plan/served.md), P0 live, P1 landed
+## Now: Served (plan/served.md), P0 and P1 live
 
 The 2026-10-16 audit of the first company's books (62 verified findings,
 20 engine defects) and the design discussion that followed produced
@@ -37,9 +37,16 @@ journal events (format 2); books that keep their settings never read
 file in exactly once. Two review rounds (all findings fixed), `just
 check`, `just prove` (Kani 20/20, Lean 31 theorems, standard axioms
 only), and mutation on the whole diff (956 mutants; every survivor
-killed by a test but two equivalent: `docs/testing.md`). **Next:** the
-first company's cutover (goldens before and after, import, time zone,
-conventions from its AGENTS.md), then P2.
+killed by a test but two equivalent: `docs/testing.md`). **Live on the
+first company's books 2026-10-17:** settings imported (20; the time zone
+set after), its conventions, decisions 1-13 and open items 1-7 recorded,
+and every company document filed (D-20). The cutover found two defects,
+both fixed in `94338b7`: the K-1 worksheet printed a share read from the
+journal at the scale it was written ("0.5", not "0.50"), and the file
+guard refused documents printing the company's own EIN. On the rebuilt
+server `books.verify` ok (434 events) and the CPA package as of
+2026-10-11 and 2026-10-17 canonically byte-identical to before, and to
+the P0 goldens (record in that books dir, `goldens/p1-cutover-2026-10-17/`).
 
 **Before-snapshots for later phases:** the first company's reports as of
 2026-10-11 and 2026-10-16 (journal head `d1ccd2fd…`, 355 events) are
@@ -49,8 +56,8 @@ the MCP, no TINs), privately, by decision, never in this public repo
 adjudicates a difference (cash flow, defect 1).
 
 **Then:** P2 (serve locally,
-cutover; ask the owner the three plain-English cutover questions in
-plan section 10.3 first), P3-P11 as planned (P11, added 2026-10-17: one app for Windows, Mac and
+cutover; ask the owner the two open plain-English cutover questions
+in plan section 10.3 first; Q-2 is answered, D-20), P3-P11 as planned (P11, added 2026-10-17: one app for Windows, Mac and
 Linux; P2 gained backup restore and the viewer's menu).
 
 ---

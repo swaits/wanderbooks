@@ -379,6 +379,33 @@ in the default build and the `run_gui` arms again in the server-only
 build (`--no-default-features`), every one caught in the build where its
 code exists.
 
+## P2 slice 2: the data root (2026-10-18)
+
+`ledger_store::root` (plan 3.4, 5.5) and `wanderbooks setup`:
+`tests/root.rs` (32), the module's unit tests (4), `ledger-cli/tests/setup.rs`
+(3). Three review rounds (12 findings, then 5, then 1, all fixed).
+Mutation on the diff, the viewer left out, two jobs: the CLI, 7 of 7
+caught; `root.rs`, 47 missed on the first run, then new tests (the blob
+copier's strays, errors other than not-found, the buffer that grows
+behind `getpwuid_r`/`getgrgid_r`, the private-group rule) and a rerun:
+201 mutants, 163 caught, 23 unviable, 1 timeout (the growing buffer
+halved instead of doubled, which never ends), and 14 left, none
+reachable by a test:
+- the lookups' failure guards (`rc != 0 || null || null` with `&&`,
+  five): on every lookup that succeeds they agree, and this account's
+  own lookup always succeeds;
+- `NotFound` guards whose other errors end the same way (setup's
+  `symlink_metadata` of the chosen root, where creating fails with the
+  same error; the location note's removal, unreachable after the note
+  was checked to be a plain file; a subfolder's lookup inside a root
+  already opened);
+- `create_book`'s clean-up after `Store::create` fails in a folder it
+  just made (no test can make that fail);
+- `make_private_dirs`' `AlreadyExists` guard (two setups racing);
+- `sync_dir` (durability, not visible to a test);
+- the group's member check (`!` deleted), which agrees on every account
+  whose own group lists no members, the usual case.
+
 ## Benchmarks (baseline 2026-10-13)
 
 No budget, by decision (the owner, 2026-10-13: the books do little work

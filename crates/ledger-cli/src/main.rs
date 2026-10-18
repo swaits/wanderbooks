@@ -5,6 +5,7 @@
 //! wanderbooks new [DIR] [--codex] [--force] [--no-start]   (alias: init)
 //! wanderbooks gui [DIR | viewer flags]
 //! wanderbooks dev-stdio [server flags]
+//! wanderbooks setup [--root PATH] [--home DIR]
 //! ```
 //!
 //! `wanderbooks` is the one executable (plan D-22): `gui` is the viewer and
@@ -392,10 +393,12 @@ fn print_usage() {
     eprintln!("usage: wanderbooks new [DIR] [--codex] [--force] [--no-start]");
     eprintln!("       wanderbooks gui [DIR | --data-dir PATH ...]");
     eprintln!("       wanderbooks dev-stdio [--data-dir PATH ...]");
+    eprintln!("       wanderbooks setup [--root PATH] [--home DIR]");
     eprintln!();
     eprintln!("  new        make a books directory and start the agent in it (alias: init)");
     eprintln!("  gui        open the live, read-only view of a books directory");
     eprintln!("  dev-stdio  run the books server over stdio (`dev-stdio --help` for its flags)");
+    eprintln!("  setup      make the books' private folder (only your account can open it)");
     eprintln!("  DIR        the books directory (default: current directory)");
     eprintln!("  --force    rewrite the scaffold in an existing books directory");
     eprintln!("  --no-start don't start the agent afterwards");
@@ -795,6 +798,78 @@ fn run_gui(_args: Vec<String>) -> i32 {
     2
 }
 
+/// `wanderbooks setup [--root PATH] [--home DIR]`: make the books'
+/// private folder (plan 3.4): `--root` if given, else
+/// `$XDG_DATA_HOME/wanderbooks`, else the platform's default under the
+/// account's home (`--home`, else the system's user records). The folder's
+/// location is never printed: nothing an agent is shown names it.
+fn run_setup(args: Vec<String>) -> i32 {
+    let mut root: Option<PathBuf> = None;
+    let mut home: Option<PathBuf> = None;
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        let slot = match arg.as_str() {
+            "--root" => &mut root,
+            "--home" => &mut home,
+            "--help" | "-h" => {
+                eprintln!("usage: wanderbooks setup [--root PATH] [--home DIR]");
+                eprintln!(
+                    "  --root  where the books' private folder goes (default: your data folder)"
+                );
+                eprintln!("  --home  the account's home (default: from the system's user records)");
+                return 0;
+            }
+            other => {
+                eprintln!("unknown argument: {other}");
+                eprintln!("usage: wanderbooks setup [--root PATH] [--home DIR]");
+                return 2;
+            }
+        };
+        match args.next() {
+            Some(value) => *slot = Some(PathBuf::from(value)),
+            None => {
+                eprintln!("error: {arg} needs a path");
+                return 1;
+            }
+        }
+    }
+    let account = ledger_store::root::account_home().ok();
+    let home = match home.or_else(|| account.clone()) {
+        Some(home) => home,
+        None => {
+            eprintln!("error: {}", ledger_store::root::RootError::NoHome);
+            return 1;
+        }
+    };
+    if account.as_ref() != Some(&home) {
+        eprintln!(
+            "note: --home isn't this account's home, so this account's books server won't \
+             look there (tests and unusual setups only)"
+        );
+    }
+    let xdg = env::var_os("XDG_DATA_HOME").map(PathBuf::from);
+    match ledger_store::root::Root::setup(&home, root.as_deref(), xdg.as_deref()) {
+        Ok((_, report)) => {
+            let what = if report.created {
+                "made"
+            } else if report.tightened {
+                "already there; made private again (other users could open it)"
+            } else {
+                "already there"
+            };
+            println!("The books' private folder: {what}. Only your account can open it.");
+            if report.recorded {
+                println!("It isn't in the default place, so where it is was noted for next time.");
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
+    }
+}
+
 /// `wanderbooks dev-stdio`: the books server over stdio, in this process.
 fn run_dev_stdio(args: Vec<String>) -> i32 {
     match ledger_mcp::run("wanderbooks dev-stdio", args) {
@@ -815,6 +890,7 @@ fn main() {
     match all.next().as_deref() {
         Some("gui") => std::process::exit(run_gui(all.collect())),
         Some("dev-stdio") => std::process::exit(run_dev_stdio(all.collect())),
+        Some("setup") => std::process::exit(run_setup(all.collect())),
         _ => {}
     }
     let mut dir: Option<PathBuf> = None;
@@ -845,7 +921,7 @@ fn main() {
             }
         }
     }
-    if let Some(mode @ ("gui" | "dev-stdio")) = cmd.as_deref() {
+    if let Some(mode @ ("gui" | "dev-stdio" | "setup")) = cmd.as_deref() {
         eprintln!("`{mode}` must come first: wanderbooks {mode} [its own flags]");
         std::process::exit(2);
     }

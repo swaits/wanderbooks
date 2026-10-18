@@ -24,6 +24,7 @@ pub mod format;
 pub mod journal;
 pub mod meta;
 pub mod reconcilable;
+pub mod root;
 pub mod schema;
 pub mod snapshot;
 pub mod store;

@@ -88,6 +88,12 @@ fn lock_books(data_dir: &Path) -> Result<std::fs::File, StoreError> {
         Err(std::fs::TryLockError::Error(e)) => Err(StoreError::Io(e)),
     }
 }
+/// Take a data dir's writer lock to copy it (adoption, `root.rs`): held,
+/// no other writer can append while the copy is made.
+pub(crate) fn lock_books_for_adoption(data_dir: &Path) -> Result<std::fs::File, StoreError> {
+    lock_books(data_dir)
+}
+
 pub(crate) const BLOBS_DIR: &str = "blobs";
 
 /// One row of an entry listing.
@@ -366,8 +372,8 @@ impl Store {
             let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
             let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
             eprintln!(
-                "wanderbooks: sqlite projection {why}; quarantined to {} and rebuilding from journal",
-                quarantine.display()
+                "wanderbooks: sqlite projection {why}; quarantined to {} beside it and rebuilding from journal",
+                quarantine.file_name().unwrap_or_default().to_string_lossy()
             );
             fresh_db = true;
         }
@@ -401,9 +407,9 @@ impl Store {
             )?;
             apply_line_to_sqlite(&store.conn, &line)?;
             eprintln!(
-                "wanderbooks: the journal's last line was cut off (an append that never finished); set aside {} bytes in {}",
+                "wanderbooks: the journal's last line was cut off (an append that never finished); set aside {} bytes in {} beside it",
                 t.bytes,
-                t.saved_as.display()
+                t.saved_as.file_name().unwrap_or_default().to_string_lossy()
             );
         }
         Ok(store)
@@ -3709,8 +3715,8 @@ impl Store {
                 let keep = self.db_path.with_extension(format!("mismatch.{stamp}"));
                 std::fs::copy(&self.db_path, &keep)?;
                 eprintln!(
-                    "wanderbooks: {why}; kept the old database as {} and rebuilt from the journal",
-                    keep.display()
+                    "wanderbooks: {why}; kept the old database as {} beside it and rebuilt from the journal",
+                    keep.file_name().unwrap_or_default().to_string_lossy()
                 );
                 self.rebuild()?;
                 self.verify()?;
@@ -3727,6 +3733,16 @@ impl Store {
                 .unwrap_or_else(|| GENESIS_PREV.to_string()),
             healed,
         })
+    }
+
+    /// The SHA-256 of every stored file the books name (receipts and
+    /// documents, withdrawn ones included).
+    pub fn stored_blob_shas(&self) -> Result<Vec<String>, StoreError> {
+        let mut stmt = self.conn.prepare("SELECT sha256 FROM blobs")?;
+        let shas = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(shas.into_iter().map(|s| s.to_lowercase()).collect())
     }
 
     /// Verify every blob's bytes against its SHA-256. Returns the count

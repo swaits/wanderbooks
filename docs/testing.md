@@ -34,7 +34,7 @@ promise.
 | Mutation (roles, reload) | can the tests fail? | control roles and settings reload (2026-10-15, targeted: the role paths in `ledger-core` 30 caught of 30 viable; `ledger-store`'s journaling and replay of `role.assigned` 20 of 20; `ledger-mcp` settings, reload, roles, digest 28 of 28) | `cargo mutants -F` on those functions (see the commit) | ~15 min | with the crate's weekly run |
 | Mutation (config) | can the tests fail? | `ledger-config` (2026-10-14: 55 caught of 55 viable) | `just mutants-config` | minutes | weekly |
 | Mutation (MCP) | can the tests fail? | `ledger-mcp` (2026-10-14: from 197 caught + 5 timeouts of 328 viable (62%) to 314 caught + 2 timeouts of 331; of its 15 survivors, five then killed by targeted tests (the settings file beside the books, year earnings with an open period and with last year's partial close, year 1, a failed flush), one dead guard removed (`profit_and_loss_by_class` skipping placeholders, which never take postings), nine equivalent: `money` rescaling an amount already at two places, the lock wait's deadline instant, `year_earnings` starting the day the year starts either way, the bank import's rehearsal sides (a line's side can't make a draft refuse) and its zero-amount side (zero rows are dropped by the parser), a disposal's zero gain adding zero, and the CPA package index summing debits instead of credits (entries balance)) | `just mutants-mcp` | ~1 h | weekly |
-| Mutation (GUI) | can the tests fail? | `ledger-gui` view model and formatting (2026-10-14: 140 caught of 176 viable on the full run, then 92 of 99 on a targeted rerun of the money paths after new tests; of its 7 survivors, one then killed by a test (burn over exactly one month, confirmed by a rerun of `compute_kpis`'s 48 mutants), two dead arms removed (`parties`' bill arms: the ledger tags bill entries with their vendor, which wins), four equivalent: an entry's debits vs its credits (they balance), the three-month burn boundary (both paths give 3), burn over zero covered months (only when the first entry is after the window, which then holds no loss), and `compact`'s sign test at zero (zero prints "$0" unsigned either way)) | `just mutants-gui` | ~2 h | weekly |
+| Mutation (GUI) | can the tests fail? | `ledger-gui` view model and formatting (2026-10-14: 140 caught of 176 viable on the full run, then 92 of 99 on a targeted rerun of the money paths after new tests; of its 7 survivors, one then killed by a test (burn over exactly one month, confirmed by a rerun of `compute_kpis`'s 48 mutants), two dead arms removed (`parties`' bill arms: the ledger tags bill entries with their vendor, which wins), four equivalent: an entry's debits vs its credits (they balance), the three-month burn boundary (both paths give 3), burn over zero covered months (only when the first entry is after the window, which then holds no loss), and `compact`'s sign test at zero (zero prints "$0" unsigned either way)) | retired 2026-10-18 (owner: it crushed the machine; for the viewer, test its two musts directly: it never writes the books, `tests/read_only.rs`, and every figure it shows is the engine's, `tests/view_model.rs`) | | never |
 
 CI: `.github/workflows/check.yml` runs `just check` on every push;
 `scheduled.yml` runs proofs, the oracle, fuzzing, and mutation weekly.
@@ -364,6 +364,20 @@ package test), and the filing scan passes the company's own EIN printed
 `tests/tin_files.rs` `the_company_s_own_ein_goes_in_and_no_other`).
 Equivalent: `share_text`'s `scale() < 2` made `<= 2` (padding a
 two-place share to two places changes nothing).
+
+## P2 slice 1: one executable (2026-10-18)
+
+`wanderbooks dev-stdio` and `wanderbooks gui` run the server and the
+viewer from the one executable (plan D-22); `tests/one_executable.rs`
+drives both, and `just server-only` builds, clippies and tests the build
+without the viewer and fails if it links a window library. Mutation on
+the diff, two jobs, the viewer left out (owner, 2026-10-18): the server's
+`run` against the server's tests, 14 mutants, 12 caught or unviable, the
+exit text's then caught by a new test, and one equivalent (`<` vs `<=`
+on the ten-second lock deadline); the CLI, 24 mutants against its tests
+in the default build and the `run_gui` arms again in the server-only
+build (`--no-default-features`), every one caught in the build where its
+code exists.
 
 ## Benchmarks (baseline 2026-10-13)
 

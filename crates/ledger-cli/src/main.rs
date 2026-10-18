@@ -3,8 +3,14 @@
 //!
 //! ```text
 //! wanderbooks new [DIR] [--codex] [--force] [--no-start]   (alias: init)
-//! wanderbooks gui [DIR]
+//! wanderbooks gui [DIR | viewer flags]
+//! wanderbooks dev-stdio [server flags]
 //! ```
+//!
+//! `wanderbooks` is the one executable (plan D-22): `gui` is the viewer and
+//! `dev-stdio` the books server over stdio, run in this process. A build
+//! without the `gui` feature (the server-only build for another machine)
+//! has no viewer.
 //!
 //! `new` makes a complete books directory and starts the agent in it:
 //!
@@ -79,7 +85,7 @@ gui-fg:
 
 # Is the viewer open for these books? Prints open/closed; exits 0 only if open
 gui-status:
-    @pgrep -f -- "ledger-gui --data-dir {{justfile_directory()}}/books-data( |$)" >/dev/null && echo open || { echo closed; exit 1; }
+    @pgrep -f -- "(ledger-gui|wanderbooks gui) --data-dir {{justfile_directory()}}/books-data( |$)|wanderbooks gui {{justfile_directory()}}/?$" >/dev/null && echo open || { echo closed; exit 1; }
 
 # The agents' session-start hook: the viewer's state, handled per [viewer] open_at_start
 session-start:
@@ -384,10 +390,12 @@ const START_PROMPT: &str = "Hi! These are brand-new books. Please set them up wi
 
 fn print_usage() {
     eprintln!("usage: wanderbooks new [DIR] [--codex] [--force] [--no-start]");
-    eprintln!("       wanderbooks gui [DIR]");
+    eprintln!("       wanderbooks gui [DIR | --data-dir PATH ...]");
+    eprintln!("       wanderbooks dev-stdio [--data-dir PATH ...]");
     eprintln!();
     eprintln!("  new        make a books directory and start the agent in it (alias: init)");
     eprintln!("  gui        open the live, read-only view of a books directory");
+    eprintln!("  dev-stdio  run the books server over stdio (`dev-stdio --help` for its flags)");
     eprintln!("  DIR        the books directory (default: current directory)");
     eprintln!("  --force    rewrite the scaffold in an existing books directory");
     eprintln!("  --no-start don't start the agent afterwards");
@@ -743,24 +751,72 @@ fn new(dir: &Path, force: bool, start: bool, agent: Agent) -> Result<(), String>
     Ok(())
 }
 
-fn gui(dir: &Path) -> Result<(), String> {
-    let gui = find_binary("ledger-gui")
-        .ok_or("ledger-gui isn't installed; run `wanderbooks new` or `just update`")?;
-    let status = Command::new(gui)
-        .arg("--data-dir")
-        .arg(dir.join("books-data"))
-        .arg("--books-toml")
-        .arg(dir.join("wanderbooks.toml"))
-        .status()
-        .map_err(|e| e.to_string())?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err("ledger-gui exited with an error".into())
+/// The viewer's arguments for `wanderbooks gui ARGS`: a lone books
+/// directory (none means this one) becomes its `books-data/` and
+/// `wanderbooks.toml`, named explicitly as before the viewer moved into
+/// this executable, so a settings file made later is still followed;
+/// anything else is the viewer's own flags, passed as they are.
+#[cfg(feature = "gui")]
+fn gui_args(args: Vec<String>) -> Vec<String> {
+    match args.as_slice() {
+        [] => gui_args(vec![".".into()]),
+        [dir] if !dir.starts_with('-') => {
+            let dir = Path::new(dir);
+            vec![
+                "--data-dir".into(),
+                dir.join("books-data").display().to_string(),
+                "--books-toml".into(),
+                dir.join("wanderbooks.toml").display().to_string(),
+            ]
+        }
+        _ => args,
+    }
+}
+
+/// `wanderbooks gui`: the viewer, in this process.
+#[cfg(feature = "gui")]
+fn run_gui(args: Vec<String>) -> i32 {
+    match ledger_gui::run("wanderbooks gui", gui_args(args)) {
+        Ok(()) => 0,
+        Err(e) => match e.downcast_ref::<ledger_gui::Exit>() {
+            Some(exit) => exit.0,
+            None => {
+                eprintln!("error: {e}");
+                1
+            }
+        },
+    }
+}
+
+/// `wanderbooks gui` in a build without the viewer.
+#[cfg(not(feature = "gui"))]
+fn run_gui(_args: Vec<String>) -> i32 {
+    eprintln!("error: this wanderbooks is the server-only build: it has no viewer");
+    2
+}
+
+/// `wanderbooks dev-stdio`: the books server over stdio, in this process.
+fn run_dev_stdio(args: Vec<String>) -> i32 {
+    match ledger_mcp::run("wanderbooks dev-stdio", args) {
+        Ok(()) => 0,
+        Err(e) => match e.downcast_ref::<ledger_mcp::Exit>() {
+            Some(exit) => exit.0,
+            None => {
+                eprintln!("error: {e}");
+                1
+            }
+        },
     }
 }
 
 fn main() {
+    // The modes run in this process and take their own flags.
+    let mut all = env::args().skip(1);
+    match all.next().as_deref() {
+        Some("gui") => std::process::exit(run_gui(all.collect())),
+        Some("dev-stdio") => std::process::exit(run_dev_stdio(all.collect())),
+        _ => {}
+    }
     let mut dir: Option<PathBuf> = None;
     let mut force = false;
     let mut start = true;
@@ -789,10 +845,13 @@ fn main() {
             }
         }
     }
+    if let Some(mode @ ("gui" | "dev-stdio")) = cmd.as_deref() {
+        eprintln!("`{mode}` must come first: wanderbooks {mode} [its own flags]");
+        std::process::exit(2);
+    }
     let dir = dir.unwrap_or_else(|| PathBuf::from("."));
     let result = match cmd.as_deref() {
         Some("new") | Some("init") => new(&dir, force, start, agent),
-        Some("gui") => gui(&dir),
         _ => {
             print_usage();
             std::process::exit(2);
@@ -801,5 +860,46 @@ fn main() {
     if let Err(e) = result {
         eprintln!("error: {e}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(all(test, feature = "gui"))]
+mod gui_args_tests {
+    use super::gui_args;
+
+    fn v(args: &[&str]) -> Vec<String> {
+        args.iter().map(|a| a.to_string()).collect()
+    }
+
+    #[test]
+    fn a_lone_books_dir_names_its_data_and_settings() {
+        let dir = std::path::Path::new("some/books");
+        assert_eq!(
+            gui_args(v(&["some/books"])),
+            v(&[
+                "--data-dir",
+                &dir.join("books-data").display().to_string(),
+                "--books-toml",
+                &dir.join("wanderbooks.toml").display().to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn no_dir_means_this_one_named_explicitly() {
+        assert_eq!(gui_args(v(&[])), gui_args(v(&["."])));
+        assert_eq!(gui_args(v(&[]))[0], "--data-dir");
+    }
+
+    #[test]
+    fn flags_and_anything_else_pass_as_they_are() {
+        for args in [
+            v(&["--demo"]),
+            v(&["--data-dir", "x"]),
+            v(&["a", "b"]),
+            v(&["--help"]),
+        ] {
+            assert_eq!(gui_args(args.clone()), args);
+        }
     }
 }

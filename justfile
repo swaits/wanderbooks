@@ -15,7 +15,22 @@ check: sweep-test-tmp
     cargo clippy --workspace --all-targets -- -D warnings
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --quiet
     cargo test --workspace
+    @just server-only
     @just sweep-test-tmp
+
+# The server-only build (plan D-22, for another machine) builds, passes
+# clippy and its tests, and links no window libraries
+server-only:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo clippy -p ledger-cli --no-default-features --all-targets -- -D warnings
+    cargo test -p ledger-cli --no-default-features
+    tree=$(cargo tree -p ledger-cli --no-default-features -e normal)
+    if grep -qiE '\b(eframe|egui|winit|wgpu|glow|ledger-gui)\b' <<<"$tree"; then
+        echo "the server-only build links a window library" >&2
+        exit 1
+    fi
+    echo "server-only build: no window libraries"
 
 # Test books go in the system temp dir (often RAM). Every test's dir is
 # removed when the test ends, pass or panic (a guard dropped on unwind;
@@ -109,16 +124,12 @@ mutants-mcp: sweep-test-tmp
     MCP_CASES=16 PROPTEST_MAX_SHRINK_ITERS=0 TMPDIR={{mutants_tmp}} cargo mutants -p ledger-mcp --test-package ledger-mcp -j 4 --timeout 600 -o mutants-mcp
     @just sweep-test-tmp
 
-# Mutation testing of the viewer where it matters: the numbers it shows
-# (the view model) and how it writes them (formatting), against the tests
-# that check them (the unit tests, spec_gui, view_model, copy). Its read-only promise has
-# its own test (tests/read_only.rs, which renders every page: too slow to
-# rerun per mutant); search, history, ticks, and the attention list are
-# spec-tested, not swept.
-mutants-gui: sweep-test-tmp
-    mkdir -p {{mutants_tmp}}
-    PROPTEST_MAX_SHRINK_ITERS=0 TMPDIR={{mutants_tmp}} cargo mutants -p ledger-gui --test-package ledger-gui -j 4 --timeout 300 -o mutants-gui -f crates/ledger-gui/src/books.rs -f crates/ledger-gui/src/fmt.rs -- --lib --test spec_gui --test view_model --test copy
-    @just sweep-test-tmp
+# No mutation runs on the viewer (owner, 2026-10-18: they crushed the
+# machine, and for the GUI it's "not as critical"). Its two musts are
+# tested directly instead: it never writes the books (tests/read_only.rs)
+# and every figure it shows is the engine's (tests/view_model.rs, against
+# ledger-core on random books). Mutation recipes for other crates leave
+# crates/ledger-gui out.
 
 # Benchmarks of the core's hot paths (no budget gates them yet)
 bench:

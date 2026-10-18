@@ -6,6 +6,9 @@ license.workspace = true
 repository.workspace = true
 description = "MCP server for wanderbooks: the AI-first bookkeeping interface over ledger-store."
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "ledger-mcp"
 path = "src/main.rs"

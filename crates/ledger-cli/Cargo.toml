@@ -10,6 +10,16 @@ description = "wanderbooks CLI: one command from nothing to a working books dire
 name = "wanderbooks"
 path = "src/main.rs"
 
+[features]
+default = ["gui"]
+# The viewer. Off in the server-only build for another machine (plan
+# D-22, P9), so a headless machine carries no window libraries.
+gui = ["dep:ledger-gui"]
+
+[dependencies]
+ledger-mcp = { path = "../ledger-mcp" }
+ledger-gui = { path = "../ledger-gui", optional = true }
+
 [dev-dependencies]
 chrono = "0.4"
 ledger-config = { path = "../ledger-config" }

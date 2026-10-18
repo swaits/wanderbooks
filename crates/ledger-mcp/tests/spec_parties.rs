@@ -50,6 +50,9 @@ struct Mcp {
     next_id: u64,
     data: PathBuf,
     validators: HashMap<String, jsonschema::Validator>,
+    /// The books dir when the server owns it: removed after the server
+    /// stops (fields drop after `Drop::drop`).
+    books_dir: Option<TestDir>,
 }
 
 impl Drop for Mcp {
@@ -61,7 +64,29 @@ impl Drop for Mcp {
 
 static DIR_SEQ: AtomicU64 = AtomicU64::new(0);
 
-fn test_dir(name: &str) -> PathBuf {
+/// A test's dir, removed when the test ends, pass or panic.
+struct TestDir(PathBuf);
+
+impl std::ops::Deref for TestDir {
+    type Target = std::path::Path;
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TestDir {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn test_dir(name: &str) -> TestDir {
     let n = DIR_SEQ.fetch_add(1, Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!(
         "ledger-mcp-spec-parties-{}-{name}-{n}",
@@ -69,7 +94,7 @@ fn test_dir(name: &str) -> PathBuf {
     ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    dir
+    TestDir(dir)
 }
 
 /// `wanderbooks.toml` with a company name and extra `[books]` TOML. The
@@ -114,6 +139,7 @@ impl Mcp {
             }
         });
         let mut mcp = Self {
+            books_dir: None,
             stdin,
             rx,
             child,
@@ -339,6 +365,7 @@ fn books(name: &str) -> Mcp {
     let toml = books_toml(&dir, "Spec Co", "");
     let mut m = Mcp::start(&dir, &toml);
     m.accounts(CHART);
+    m.books_dir = Some(dir);
     m
 }
 
@@ -1161,6 +1188,7 @@ fn books_with(name: &str, extra: &str) -> Mcp {
     let toml = books_toml(&dir, "Spec Co", extra);
     let mut m = Mcp::start(&dir, &toml);
     m.accounts(CHART);
+    m.books_dir = Some(dir);
     m
 }
 
@@ -1343,6 +1371,7 @@ fn member_books(name: &str, extra: &str) -> Mcp {
     m.accounts(&[("3001", "Capital K", "equity")]);
     m.add_party("Tobin Harlow", &["member"]);
     m.add_party("Morgan Ellis", &["member"]);
+    m.books_dir = Some(dir);
     m
 }
 

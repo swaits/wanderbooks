@@ -357,11 +357,27 @@ fn nul_interleaved(bytes: &[u8]) -> bool {
 mod tests {
     use super::*;
 
-    fn dir(tag: &str) -> std::path::PathBuf {
+    /// A test's dir, removed when the test ends, pass or panic.
+    struct TestDir(std::path::PathBuf);
+
+    impl std::ops::Deref for TestDir {
+        type Target = std::path::Path;
+        fn deref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn dir(tag: &str) -> TestDir {
         let d =
             std::env::temp_dir().join(format!("ledger-mcp-tin-files-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
-        d
+        TestDir(d)
     }
 
     /// INVARIANTS 1-2: a recorded file is refused from then on, by this
@@ -382,7 +398,6 @@ mod tests {
         assert_eq!(text.lines().count(), 1);
         // Only the hash is kept.
         assert!(!text.contains("PNG"));
-        let _ = std::fs::remove_dir_all(&vault);
     }
 
     /// The registry's folder for a check (it never exists) and no vault.
@@ -614,7 +629,6 @@ Date,Description,Amount,Running Bal.,Reference
         .expect_err("a registry that can't be read let a file in");
         assert!(why.contains("couldn't check the file"), "{why}");
         assert!(record(&vault, b"bytes").is_err());
-        let _ = std::fs::remove_dir_all(&vault);
     }
 
     /// INVARIANT 4: text holding more than two TIN-shaped numbers ending

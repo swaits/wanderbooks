@@ -9472,11 +9472,25 @@ mod tests {
         Money::new(Decimal::from_str(s).unwrap(), Currency::USD)
     }
 
-    fn store(tag: &str) -> Store {
+    /// A test's books dir, removed when the test ends, pass or panic.
+    struct TestDir(std::path::PathBuf);
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn unit_dir(tag: &str) -> TestDir {
         let dir =
             std::env::temp_dir().join(format!("ledger-mcp-unit-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        Store::create(&dir, Currency::USD).unwrap()
+        TestDir(dir)
+    }
+
+    /// New books in `dir`, which outlives them.
+    fn store(dir: &TestDir) -> Store {
+        Store::create(&dir.0, Currency::USD).unwrap()
     }
 
     /// lines_settled: posted, or a draft with lines whose debits equal its
@@ -9635,7 +9649,8 @@ mod tests {
     /// close_into, and each member's capital and distributions accounts.
     #[test]
     fn config_mentions_finds_every_setting_naming_a_code() {
-        let server = BooksServer::new(store("mentions"), ReceiptPolicy::default())
+        let books = unit_dir("mentions");
+        let server = BooksServer::new(store(&books), ReceiptPolicy::default())
             .with_company(members())
             .with_cash_roles(CashRoles {
                 cash: vec!["1000".into()],
@@ -9664,20 +9679,21 @@ mod tests {
             ["[[company.members]] Ada distribution_account"]
         );
         assert!(server.config_mentions("6000").is_empty());
-        let solo = BooksServer::new(store("mentions-solo"), ReceiptPolicy::default()).with_company(
-            Company {
+        let books = unit_dir("mentions-solo");
+        let solo =
+            BooksServer::new(store(&books), ReceiptPolicy::default()).with_company(Company {
                 close_into: Some("3000".into()),
                 ..Company::default()
-            },
-        );
+            });
         assert_eq!(solo.config_mentions("3000"), ["[books] close_into"]);
     }
 
     /// Reports name each member with their accounts, in order.
     #[test]
     fn report_members_carry_names_and_accounts() {
+        let books = unit_dir("members");
         let server =
-            BooksServer::new(store("members"), ReceiptPolicy::default()).with_company(members());
+            BooksServer::new(store(&books), ReceiptPolicy::default()).with_company(members());
         let m = server.report_members();
         assert_eq!(m.len(), 2);
         assert_eq!(
@@ -9697,7 +9713,8 @@ mod tests {
     /// included, so a closed month drops out).
     #[test]
     fn year_earnings_split_closed_from_unclosed() {
-        let mut s = store("earnings");
+        let books = unit_dir("earnings");
+        let mut s = store(&books);
         let cash = s
             .add_account("1000", "Cash", AccountType::Asset, None, false)
             .unwrap();
@@ -9747,7 +9764,8 @@ mod tests {
     /// December's income is never this year's).
     #[test]
     fn year_earnings_count_only_closes_and_never_before_the_year() {
-        let mut s = store("earnings-open");
+        let books = unit_dir("earnings-open");
+        let mut s = store(&books);
         let cash = s
             .add_account("1000", "Cash", AccountType::Asset, None, false)
             .unwrap();
@@ -9783,7 +9801,8 @@ mod tests {
     /// entry the policy covers (crate::policy).
     #[test]
     fn receipts_are_kept_only_where_the_policy_needs_them() {
-        let mut s = store("unlink");
+        let books = unit_dir("unlink");
+        let mut s = store(&books);
         let cash = s
             .add_account("1000", "Cash", AccountType::Asset, None, false)
             .unwrap();
@@ -10437,7 +10456,8 @@ mod tests {
             }),
         ];
         for (how, body) in bodies {
-            let server = BooksServer::new(store("stops"), ReceiptPolicy::default());
+            let books = unit_dir("stops");
+            let server = BooksServer::new(store(&books), ReceiptPolicy::default());
             rt.block_on(async {
                 let seq: Body = |s| s.lock().map(|st| st.journal_seq());
                 assert_eq!(run(&server, seq).await.unwrap(), Ok(1), "{how}");
@@ -10459,7 +10479,8 @@ mod tests {
         }
 
         // A guard dropped by a panic on a thread of its own stops it too.
-        let server = BooksServer::new(store("stops-thread"), ReceiptPolicy::default());
+        let books = unit_dir("stops-thread");
+        let server = BooksServer::new(store(&books), ReceiptPolicy::default());
         let s = server.clone();
         let died = std::thread::spawn(move || {
             let _store = s.lock().unwrap();
@@ -10500,7 +10521,8 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let shared = SharedStore::new(store("wakes"));
+        let books = unit_dir("wakes");
+        let shared = SharedStore::new(store(&books));
         let got = rt.block_on(async {
             tokio::time::timeout(
                 std::time::Duration::from_secs(10),
@@ -10525,6 +10547,7 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        let _cleanup = TestDir(dir.clone());
         let toml = dir.join("wanderbooks.toml");
         let threshold = |t: &str| {
             std::fs::write(
@@ -10540,7 +10563,8 @@ mod tests {
             config_json: dir.join("config.json"),
         })
         .unwrap();
-        let server = BooksServer::new(store("info"), ReceiptPolicy::default())
+        let books = unit_dir("info");
+        let server = BooksServer::new(store(&books), ReceiptPolicy::default())
             .with_live_settings(Arc::new(Mutex::new(live)));
         let told = |s: &BooksServer| rmcp::ServerHandler::get_info(s).instructions.unwrap();
         let before = told(&server);

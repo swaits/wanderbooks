@@ -28,6 +28,15 @@ impl Drop for Server {
     }
 }
 
+/// A test's dir, removed when the test ends, pass or panic.
+struct TestDir(std::path::PathBuf);
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
@@ -123,6 +132,8 @@ async fn agents_posting_at_once_leave_whole_books() {
     let dir = std::env::temp_dir().join(format!("ledger-mcp-http-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
+    // Declared before the server, so dropped after it: pass or panic.
+    let _cleanup = TestDir(dir.clone());
     let toml = dir.join("wanderbooks.toml");
     std::fs::write(&toml, "[books]\nreceipt_threshold = \"0.00\"\n").unwrap();
     let data = dir.join("books-data");

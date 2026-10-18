@@ -17,22 +17,34 @@ use ledger_gui::nav::{ReportKind, Route, Section};
 use ledger_gui::palette::{crumbs, describe};
 use ledger_gui::{App, Source, data};
 
-fn demo(tag: &str) -> Source {
+/// A test's dir, removed when the test ends, pass or panic.
+struct TestDir(std::path::PathBuf);
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// The demo books, kept while the guard lives.
+fn demo(tag: &str) -> (TestDir, Source) {
     let dir = std::env::temp_dir().join(format!("ledger-gui-crumbs-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
     ledger_gui::demo::build(&dir, today).unwrap();
-    Source {
+    let source = Source {
         data_dir: dir.join("books-data"),
         books_toml: Some(dir.join("wanderbooks.toml")),
         today: Some(today),
-    }
+    };
+    (TestDir(dir), source)
 }
 
 /// INVARIANTS 1-3 on every kind of page in the demo books.
 #[test]
 fn crumbs_link_every_level_but_the_last() {
-    let b = data::load_once(&demo("unit")).unwrap();
+    let (_dir, source) = demo("unit");
+    let b = data::load_once(&source).unwrap();
     let party = b.ledger.parties().next().unwrap().id;
     let rec = b.reconciliations.first().expect("the demo reconciles");
     let entry = b.entries.first().unwrap().id;
@@ -90,7 +102,7 @@ fn crumbs_link_every_level_but_the_last() {
 /// INVARIANT 4, through the top bar.
 #[test]
 fn clicking_a_crumb_goes_there() {
-    let source = demo("click");
+    let (_dir, source) = demo("click");
     let b = data::load_once(&source).unwrap();
     let rec = b.reconciliations.first().unwrap().clone();
     let account = describe(&b, &Route::Account(rec.account_id));

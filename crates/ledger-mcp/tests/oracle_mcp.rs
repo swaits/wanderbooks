@@ -56,7 +56,31 @@ impl Drop for Mcp {
 
 static DIR_SEQ: AtomicU64 = AtomicU64::new(0);
 
-fn test_dir(name: &str) -> PathBuf {
+/// A test's dir and the folder beside it (`.inbox`),
+/// removed when the test ends, pass or panic.
+struct TestDir(PathBuf);
+
+impl std::ops::Deref for TestDir {
+    type Target = std::path::Path;
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TestDir {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+        let _ = std::fs::remove_dir_all(format!("{}.inbox", self.0.display()));
+    }
+}
+
+fn test_dir(name: &str) -> TestDir {
     let n = DIR_SEQ.fetch_add(1, Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!(
         "ledger-mcp-oracle-{}-{name}-{n}",
@@ -64,7 +88,7 @@ fn test_dir(name: &str) -> PathBuf {
     ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    dir
+    TestDir(dir)
 }
 
 /// `wanderbooks.toml` for two 50/50 members on 3000/3001, cash 1000,
@@ -2249,19 +2273,10 @@ fn receipts_and_documents_round_trip() {
 #[test]
 fn uploads_up_to_25_mib_are_accepted_and_no_more() {
     const LIMIT: usize = 25 * 1024 * 1024;
+    // Over 50 MB of books: removed however the test ends, with its inbox
+    // (the system temp dir is often RAM, and a mutation run starts this
+    // test hundreds of times).
     let dir = test_dir("limits");
-    // Over 50 MB of books: removed however the test ends (the system temp
-    // dir is often RAM, and a mutation run starts this test hundreds of
-    // times).
-    struct Cleanup(Vec<PathBuf>);
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            for d in &self.0 {
-                let _ = std::fs::remove_dir_all(d);
-            }
-        }
-    }
-    let _cleanup = Cleanup(vec![dir.clone(), inbox(&dir)]);
     let s = new_store(&dir);
     drop(s);
     let mut m = Mcp::start(&dir, "1000000.00");

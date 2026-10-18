@@ -9,10 +9,20 @@ use ledger_store::Store;
 use rust_decimal::Decimal;
 use std::time::{Duration, Instant};
 
+/// A test's dir, removed when the test ends, pass or panic.
+struct TestDir(std::path::PathBuf);
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 #[test]
 fn a_change_in_another_process_shows_up_live() {
     let dir = std::env::temp_dir().join(format!("ledger-gui-live-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
+    let _cleanup = TestDir(dir.clone());
     let data = dir.join("books-data");
     let mut store = Store::create(&data, Currency::USD).unwrap();
     let cash = store
@@ -86,5 +96,4 @@ fn a_change_in_another_process_shows_up_live() {
     assert!(shown, "the show request never reached the viewer");
     eprintln!("show request arrived in {:?}", asked.elapsed());
     let _ = std::fs::remove_file(ledger_store::viewer::command_path(&data));
-    let _ = std::fs::remove_dir_all(&dir);
 }

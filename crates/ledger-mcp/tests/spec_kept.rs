@@ -112,11 +112,33 @@ impl Mcp {
     }
 }
 
-fn test_dir(name: &str) -> std::path::PathBuf {
+/// A test's dir, removed when the test ends, pass or panic.
+struct TestDir(std::path::PathBuf);
+
+impl std::ops::Deref for TestDir {
+    type Target = std::path::Path;
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TestDir {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn test_dir(name: &str) -> TestDir {
     let dir = std::env::temp_dir().join(format!("ledger-mcp-test-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    dir
+    TestDir(dir)
 }
 
 fn init(m: &mut Mcp) -> String {

@@ -670,16 +670,16 @@ mod tests {
         let dir =
             std::env::temp_dir().join(format!("ledger-gui-attention-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
+        // Loaded books need no files: removed once loaded, pass or panic.
+        let _cleanup = crate::test_support::TempDir(dir.clone());
         let data_dir = dir.join("books-data");
         ledger_store::Store::create(&data_dir, ledger_core::Currency::USD).unwrap();
-        let b = crate::data::load_once(&crate::data::Source {
+        crate::data::load_once(&crate::data::Source {
             data_dir,
             books_toml: None,
             today: Some(today),
         })
-        .unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
-        b
+        .unwrap()
     }
 
     /// INVARIANTS 2 and 4: a dated rule past its review is one Todo item

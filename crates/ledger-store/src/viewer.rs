@@ -139,10 +139,20 @@ pub fn read(data_dir: &Path) -> Option<ViewerCommand> {
 mod tests {
     use super::*;
 
+    /// A test's dir, removed when the test ends, pass or panic.
+    struct TestDir(std::path::PathBuf);
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     #[test]
     fn requests_round_trip_and_count_up() {
         let dir = std::env::temp_dir().join(format!("wb-viewer-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
+        let _cleanup = TestDir(dir.clone());
         let a = request(&dir, ViewerTarget::Entry { entry_id: 7 }).unwrap();
         let b = request(
             &dir,

@@ -76,6 +76,13 @@ struct Places {
     sandbox: PathBuf,
 }
 
+/// The places go when the test ends, pass or panic.
+impl Drop for Places {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.base);
+    }
+}
+
 fn places(tag: &str) -> Places {
     let base =
         std::env::temp_dir().join(format!("ledger-mcp-hostile-{}-{tag}", std::process::id()));

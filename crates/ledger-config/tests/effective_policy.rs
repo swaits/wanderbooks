@@ -3,11 +3,27 @@
 
 use ledger_config::{BooksSettings, effective_receipt_policy};
 
-fn dir(tag: &str) -> std::path::PathBuf {
+/// A test's dir, removed when the test ends, pass or panic.
+struct TestDir(std::path::PathBuf);
+
+impl std::ops::Deref for TestDir {
+    type Target = std::path::Path;
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn dir(tag: &str) -> TestDir {
     let d = std::env::temp_dir().join(format!("ledger-config-policy-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    d
+    TestDir(d)
 }
 
 #[test]
@@ -37,5 +53,4 @@ fn config_json_wins_else_the_settings_file() {
         err.starts_with(&format!("bad config {}", json.display())),
         "{err}"
     );
-    std::fs::remove_dir_all(&d).unwrap();
 }

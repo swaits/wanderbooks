@@ -7,6 +7,15 @@ use ledger_gui::nav::{ReportKind, Route};
 use ledger_gui::{App, Source, data};
 use std::path::PathBuf;
 
+/// A test's dir, removed when the test ends, pass or panic.
+struct TestDir(PathBuf);
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 #[test]
 fn screenshots() {
     let Ok(out) = std::env::var("SHOT_DIR") else {
@@ -15,6 +24,8 @@ fn screenshots() {
     let fixed_today: Option<chrono::NaiveDate> = std::env::var("SHOT_TODAY")
         .ok()
         .and_then(|d| d.parse().ok());
+    // Demo books (no SHOT_BOOKS) go when the run ends, pass or panic.
+    let mut _demo = None;
     let books = match std::env::var("SHOT_BOOKS") {
         Ok(b) => PathBuf::from(b),
         Err(_) => {
@@ -23,6 +34,7 @@ fn screenshots() {
             let dir =
                 std::env::temp_dir().join(format!("ledger-gui-shots-demo-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
+            _demo = Some(TestDir(dir.clone()));
             ledger_gui::demo::build(&dir, d).unwrap();
             dir
         }

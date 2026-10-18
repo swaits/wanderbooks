@@ -52,6 +52,9 @@ struct Mcp {
     validators: HashMap<String, jsonschema::Validator>,
     /// Every response line the server wrote, with the tool it answered.
     transcript: Vec<(String, String)>,
+    /// The books dir when the server owns it: removed after the server
+    /// stops (fields drop after `Drop::drop`).
+    books_dir: Option<TestDir>,
 }
 
 impl Drop for Mcp {
@@ -63,7 +66,31 @@ impl Drop for Mcp {
 
 static DIR_SEQ: AtomicU64 = AtomicU64::new(0);
 
-fn test_dir(name: &str) -> PathBuf {
+/// A test's dir and the folder beside it (`-outside`),
+/// removed when the test ends, pass or panic.
+struct TestDir(PathBuf);
+
+impl std::ops::Deref for TestDir {
+    type Target = std::path::Path;
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TestDir {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+        let _ = std::fs::remove_dir_all(format!("{}-outside", self.0.display()));
+    }
+}
+
+fn test_dir(name: &str) -> TestDir {
     let n = DIR_SEQ.fetch_add(1, Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!(
         "ledger-mcp-spec-attachments-{}-{name}-{n}",
@@ -71,7 +98,7 @@ fn test_dir(name: &str) -> PathBuf {
     ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    dir
+    TestDir(dir)
 }
 
 /// A directory beside the books dir `dir`, outside it: the vault key,
@@ -131,6 +158,7 @@ impl Mcp {
             }
         });
         let mut mcp = Self {
+            books_dir: None,
             stdin,
             rx,
             child,
@@ -363,6 +391,7 @@ fn books_at(name: &str, threshold: &str, extra: &str) -> Mcp {
     let toml = books_toml(&dir, threshold, extra);
     let mut m = Mcp::start(&dir, &toml);
     m.accounts(CHART);
+    m.books_dir = Some(dir);
     m
 }
 

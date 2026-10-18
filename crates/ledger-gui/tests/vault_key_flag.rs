@@ -10,10 +10,20 @@ use ledger_vault::{Tin, Vault};
 
 const SSN: &str = "123-45-6789";
 
+/// A test's dir, removed when the test ends, pass or panic.
+struct TestDir(std::path::PathBuf);
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 #[test]
 fn the_key_named_on_the_command_line_wins() {
     let root = std::env::temp_dir().join(format!("ledger-gui-key-flag-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
+    let _cleanup = TestDir(root.clone());
     let books = root.join("books");
     let key = root.join("keys/vault.key");
     std::fs::create_dir_all(&books).unwrap();
@@ -52,7 +62,6 @@ fn the_key_named_on_the_command_line_wins() {
     // The settings name a key that isn't there; the command line wins.
     b.settings.vault_key_file = Some(root.join("missing/vault.key"));
     assert_eq!(b.tin_from_vault(party).unwrap(), SSN);
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]

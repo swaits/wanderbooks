@@ -67,13 +67,15 @@ fn set_read_only(root: &Path, read_only: bool) {
     walk(root, read_only);
 }
 
-/// Makes the books writable again when dropped, so a failing or
-/// interrupted run never leaves a folder no one can delete.
+/// Makes the books writable again and removes them when dropped, so a
+/// run that passes or fails never leaves a folder behind, let alone one no
+/// one can delete.
 struct Writable(PathBuf);
 impl Drop for Writable {
     fn drop(&mut self) {
         if self.0.exists() {
             set_read_only(&self.0, false);
+            let _ = std::fs::remove_dir_all(&self.0);
         }
     }
 }
@@ -105,6 +107,7 @@ fn the_viewer_never_writes_into_the_books() {
         set_read_only(&dir, false);
         std::fs::remove_dir_all(&dir).unwrap();
     }
+    let _restore = Writable(dir.clone());
     let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
     ledger_gui::demo::build(&dir, today).unwrap();
     let source = Source {
@@ -112,7 +115,6 @@ fn the_viewer_never_writes_into_the_books() {
         books_toml: Some(dir.join("wanderbooks.toml")),
         today: Some(today),
     };
-    let _restore = Writable(dir.clone());
     set_read_only(&dir, true);
     let before = tree(&dir);
 
@@ -219,5 +221,4 @@ fn the_viewer_never_writes_into_the_books() {
         "the viewer created or removed files in writable books"
     );
     assert!(before == after, "the viewer changed writable books");
-    let _ = std::fs::remove_dir_all(&dir);
 }

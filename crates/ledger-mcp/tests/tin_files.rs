@@ -68,6 +68,16 @@ struct Books {
     toml: PathBuf,
 }
 
+/// The books dir and the folders beside it go when the test ends, pass or
+/// panic.
+impl Drop for Books {
+    fn drop(&mut self) {
+        if let Some(base) = self.dir.parent() {
+            let _ = std::fs::remove_dir_all(base);
+        }
+    }
+}
+
 fn books(tag: &str) -> Books {
     let base =
         std::env::temp_dir().join(format!("ledger-mcp-tin-files-{}-{tag}", std::process::id()));

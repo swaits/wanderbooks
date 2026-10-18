@@ -12,11 +12,33 @@ use ledger_store::{DB_FILE, JOURNAL_FILE, JournalWriter, Store};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
-fn test_dir(name: &str) -> PathBuf {
+/// A test's dir, removed when the test ends, pass or panic.
+struct TestDir(PathBuf);
+
+impl std::ops::Deref for TestDir {
+    type Target = std::path::Path;
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TestDir {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn test_dir(name: &str) -> TestDir {
     let dir = std::env::temp_dir().join(format!("wb-party-tin-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    dir
+    TestDir(dir)
 }
 
 fn journal(dir: &Path) -> Vec<(String, Value)> {

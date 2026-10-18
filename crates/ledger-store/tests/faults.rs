@@ -15,11 +15,33 @@ use rust_decimal::Decimal;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn test_dir(name: &str) -> PathBuf {
+/// A test's dir, removed when the test ends, pass or panic.
+struct TestDir(PathBuf);
+
+impl std::ops::Deref for TestDir {
+    type Target = std::path::Path;
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TestDir {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn test_dir(name: &str) -> TestDir {
     let dir = std::env::temp_dir().join(format!("wanderbooks-fault-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    dir
+    TestDir(dir)
 }
 
 fn post_one(store: &mut Store, n: u32) -> Result<(), ledger_store::StoreError> {
@@ -104,7 +126,7 @@ fn full_disk_case(name: &str, drafts: u32) -> String {
             "trap '' XFSZ; ulimit -f {blocks}; exec \"$0\" --exact child_append_until_the_disk_is_full --nocapture --test-threads=1"
         ))
         .arg(&exe)
-        .env("WB_FAULT_DIR", &dir)
+        .env("WB_FAULT_DIR", dir.as_os_str())
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);

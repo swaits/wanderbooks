@@ -2169,6 +2169,15 @@ mod tests {
     }
     use super::*;
 
+    /// A test's dir, removed when the test ends, pass or panic.
+    struct TestDir(std::path::PathBuf);
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     /// The fixed asset register report's tax columns are the register's:
     /// each held asset's contributor's basis, tax basis, and built-in gain
     /// (ledger-core's Asset::tax_basis and built_in_gain), the total its
@@ -2178,6 +2187,7 @@ mod tests {
         let today = NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
         let dir = std::env::temp_dir().join(format!("ledger-gui-tax-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
+        let _cleanup = TestDir(dir.clone());
         crate::demo::build(&dir, today).unwrap();
         let b = crate::data::load_once(&crate::data::Source {
             data_dir: dir.join("books-data"),
@@ -2234,7 +2244,6 @@ mod tests {
                 .iter()
                 .any(|row| row.kind == Kind::Note && row.label.contains("fair market value"))
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Every table-backed report typesets as a PDF, in its plain, by-month,
@@ -2244,6 +2253,7 @@ mod tests {
         let today = NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
         let dir = std::env::temp_dir().join(format!("ledger-gui-pdf-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
+        let _cleanup = TestDir(dir.clone());
         crate::demo::build(&dir, today).unwrap();
         let b = crate::data::load_once(&crate::data::Source {
             data_dir: dir.join("books-data"),
@@ -2296,6 +2306,5 @@ mod tests {
                 std::fs::write(d.join(format!("{name}.pdf")), bytes).unwrap();
             }
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

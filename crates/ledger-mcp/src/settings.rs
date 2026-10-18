@@ -368,12 +368,28 @@ impl Live {
 mod tests {
     use super::*;
 
-    fn dir(tag: &str) -> PathBuf {
+    /// A test's dir, removed when the test ends, pass or panic.
+    struct TestDir(std::path::PathBuf);
+
+    impl std::ops::Deref for TestDir {
+        type Target = std::path::Path;
+        fn deref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn dir(tag: &str) -> TestDir {
         let d =
             std::env::temp_dir().join(format!("ledger-mcp-settings-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
-        d
+        TestDir(d)
     }
 
     fn source(d: &std::path::Path, required: bool) -> Source {
@@ -497,7 +513,6 @@ mod tests {
         assert_eq!(live.current().company.name, "Kept Co 2");
         assert_eq!(live.status().loads, 2);
         assert!(live.current().journaled && live.is_journaled());
-        std::fs::remove_dir_all(&d).unwrap();
     }
 
     /// Settings built in code are the books' own once synced.

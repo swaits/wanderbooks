@@ -7,11 +7,39 @@ use std::time::{Duration, Instant};
 
 const BIN: &str = env!("CARGO_BIN_EXE_ledger-mcp");
 
-fn temp(tag: &str) -> std::path::PathBuf {
+/// A test's dir, removed when the test ends, pass or panic.
+struct TestDir(std::path::PathBuf);
+
+impl std::ops::Deref for TestDir {
+    type Target = std::path::Path;
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TestDir {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::ffi::OsStr> for TestDir {
+    fn as_ref(&self) -> &std::ffi::OsStr {
+        self.0.as_os_str()
+    }
+}
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn temp(tag: &str) -> TestDir {
     let d = std::env::temp_dir().join(format!("ledger-mcp-start-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    d
+    TestDir(d)
 }
 
 /// Start the server, initialize, call one tool, and return its text
@@ -236,7 +264,8 @@ fn refuses_to_start(cmd: &mut Command) -> Option<String> {
 /// used.
 #[test]
 fn an_import_root_holding_the_books_or_the_home_folder_is_refused() {
-    let dir = temp("bad-roots").canonicalize().unwrap();
+    let tmp = temp("bad-roots");
+    let dir = tmp.canonicalize().unwrap();
     let home = dir.join("home");
     let books = home.join("work/books");
     let data = books.join("books-data");
@@ -316,7 +345,8 @@ fn an_import_root_holding_the_books_or_the_home_folder_is_refused() {
 /// is the root, and the rest of the home folder stays out of reach.
 #[test]
 fn a_download_dir_of_home_never_opens_the_home_folder() {
-    let dir = temp("xdg-home").canonicalize().unwrap();
+    let tmp = temp("xdg-home");
+    let dir = tmp.canonicalize().unwrap();
     let home = dir.join("home");
     std::fs::create_dir_all(home.join(".ssh")).unwrap();
     std::fs::write(home.join(".ssh/id_ed25519"), "PRIVATE KEY").unwrap();
@@ -358,7 +388,8 @@ fn a_download_dir_of_home_never_opens_the_home_folder() {
 /// folder, and an import says so.
 #[test]
 fn a_default_download_dir_holding_the_books_is_dropped_not_fatal() {
-    let dir = temp("xdg-books").canonicalize().unwrap();
+    let tmp = temp("xdg-books");
+    let dir = tmp.canonicalize().unwrap();
     let home = dir.join("home");
     let downloads = dir.join("downloads");
     std::fs::create_dir_all(&home).unwrap();

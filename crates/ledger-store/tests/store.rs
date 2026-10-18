@@ -13,11 +13,33 @@ fn usd(amount: u64) -> Money {
     Money::new(Decimal::from(amount), Currency::USD)
 }
 
-fn test_dir(name: &str) -> PathBuf {
+/// A test's dir, removed when the test ends, pass or panic.
+struct TestDir(PathBuf);
+
+impl std::ops::Deref for TestDir {
+    type Target = std::path::Path;
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TestDir {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn test_dir(name: &str) -> TestDir {
     let dir = std::env::temp_dir().join(format!("wanderbooks-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    dir
+    TestDir(dir)
 }
 
 fn build_books(dir: &std::path::Path) -> Store {
@@ -1619,7 +1641,7 @@ fn old_books() -> Vec<PathBuf> {
 /// A fixture's books (journal and blobs, never expected.json) in a fresh
 /// directory of its own for `test`: opening writes a database and a lock
 /// beside them.
-fn old_books_copy(fixture: &std::path::Path, test: &str) -> PathBuf {
+fn old_books_copy(fixture: &std::path::Path, test: &str) -> TestDir {
     fn copy(from: &std::path::Path, to: &std::path::Path) {
         std::fs::create_dir_all(to).unwrap();
         for e in std::fs::read_dir(from).unwrap() {

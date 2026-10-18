@@ -5,11 +5,21 @@ use ledger_gui::nav::{ReportKind, Route};
 use ledger_gui::{App, Source, data};
 use ledger_store::viewer::ViewerTarget;
 
+/// A test's dir, removed when the test ends, pass or panic.
+struct TestDir(std::path::PathBuf);
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 #[test]
 fn show_requests_navigate_the_viewer() {
     let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
     let dir = std::env::temp_dir().join(format!("ledger-gui-show-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
+    let _cleanup = TestDir(dir.clone());
     ledger_gui::demo::build(&dir, today).unwrap();
     let source = Source {
         data_dir: dir.join("books-data"),
@@ -108,5 +118,4 @@ fn show_requests_navigate_the_viewer() {
         end: None,
     });
     assert_eq!(h.state_mut().route(), &Route::Transactions);
-    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -159,6 +159,9 @@ struct Mcp {
     read_only_checked: BTreeSet<String>,
     /// Invariant 3 (amounts out) violations: `tool: path = value`.
     money_violations: Vec<String>,
+    /// The books dir when the server owns it: removed after the server
+    /// stops (fields drop after `Drop::drop`).
+    books_dir: Option<TestDir>,
 }
 
 impl Drop for Mcp {
@@ -170,14 +173,42 @@ impl Drop for Mcp {
 
 static DIR_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// A test's dir and the folders beside it (`.inbox`, `-outside`),
+/// removed when the test ends, pass or panic.
+struct TestDir(PathBuf);
+
+impl std::ops::Deref for TestDir {
+    type Target = std::path::Path;
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TestDir {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+        for beside in [".inbox", "-outside"] {
+            let p = PathBuf::from(format!("{}{beside}", self.0.display()));
+            let _ = std::fs::remove_dir_all(&p);
+            let _ = std::fs::remove_file(&p);
+        }
+    }
+}
+
 /// A fresh, empty per-test directory under the system temp dir.
-fn test_dir(name: &str) -> PathBuf {
+fn test_dir(name: &str) -> TestDir {
     let n = DIR_SEQ.fetch_add(1, Ordering::Relaxed);
     let dir =
         std::env::temp_dir().join(format!("ledger-mcp-spec-{}-{name}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    dir
+    TestDir(dir)
 }
 
 /// A directory beside the books dir `dir`, outside it (vault keys, files
@@ -262,6 +293,7 @@ impl Mcp {
             }
         });
         let mut mcp = Self {
+            books_dir: None,
             stdin,
             rx,
             child,
@@ -1247,6 +1279,7 @@ fn happy_path(name: &str) -> Mcp {
                "save_to": outside(&dir).join("cpa.zip").to_str().unwrap()}),
     );
 
+    m.books_dir = Some(dir);
     m
 }
 
@@ -1692,7 +1725,7 @@ const REFUSED_AMOUNTS: &[&str] = &[
 /// the core is expected to accept on a line.
 const ACCEPTED_AMOUNTS: &[&str] = &["5", "5.00", "123.45", "5.5", "007.50", "1000000.00"];
 
-fn amounts_server(name: &str) -> (PathBuf, Mcp, u64) {
+fn amounts_server(name: &str) -> (TestDir, Mcp, u64) {
     let dir = test_dir(name);
     let toml = books_toml(&dir, "25.00", "");
     let mut m = Mcp::start(&dir, &toml);

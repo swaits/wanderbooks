@@ -51,14 +51,31 @@ fn plan() -> impl Strategy<Value = Plan> {
         })
 }
 
-fn dir(tag: &str) -> PathBuf {
+/// A test's dir, removed when the test ends, pass or panic.
+struct TestDir(PathBuf);
+
+impl std::ops::Deref for TestDir {
+    type Target = std::path::Path;
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn dir(tag: &str) -> TestDir {
     let d = std::env::temp_dir().join(format!("ledger-gui-vm-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    d
+    TestDir(d)
 }
 
-fn build(plan: &Plan, tag: &str) -> (Source, ledger_core::Ledger) {
+/// The books, where they are (kept while the guard lives), and their ledger.
+fn build(plan: &Plan, tag: &str) -> (TestDir, Source, ledger_core::Ledger) {
     let d = dir(tag);
     let mut s = Store::create(&d.join("books-data"), Currency::USD).unwrap();
     let ids: Vec<_> = CHART
@@ -81,14 +98,12 @@ fn build(plan: &Plan, tag: &str) -> (Source, ledger_core::Ledger) {
     )
     .unwrap();
     let ledger = s.ledger().clone();
-    (
-        Source {
-            data_dir: d.join("books-data"),
-            books_toml: Some(d.join("wanderbooks.toml")),
-            today: Some(plan.today),
-        },
-        ledger,
-    )
+    let source = Source {
+        data_dir: d.join("books-data"),
+        books_toml: Some(d.join("wanderbooks.toml")),
+        today: Some(plan.today),
+    };
+    (d, source, ledger)
 }
 
 /// An account's normal-side balance at the end of `date`, from the trial
@@ -122,7 +137,7 @@ proptest! {
     /// Kpis INVARIANTS 1-7 and the period helpers, against ledger-core.
     #[test]
     fn the_overview_numbers_are_the_books_numbers(p in plan()) {
-        let (source, l) = build(&p, "kpi");
+        let (_dir, source, l) = build(&p, "kpi");
         let b = data::load_once(&source).unwrap();
         let k = &b.kpis;
         let t = p.today;
@@ -283,7 +298,6 @@ fn origins_and_parties() {
     assert_eq!(std::fs::read(path).unwrap(), b"%PDF receipt");
     assert_eq!(b.integrity.files_ok, 1);
     assert!(b.integrity.file_failures.is_empty());
-    let _ = std::fs::remove_dir_all(&d);
 }
 
 /// fmt helpers the viewer shows: percent change and tax forms.
@@ -306,7 +320,7 @@ fn percent_change_and_tax_forms() {
     assert_eq!(fmt::compact(d("-1234")), "\u{2212}$1.2k");
 }
 
-fn store_at(tag: &str) -> (PathBuf, Store) {
+fn store_at(tag: &str) -> (TestDir, Store) {
     let d = dir(tag);
     let s = Store::create(&d.join("books-data"), Currency::USD).unwrap();
     (d, s)
@@ -476,9 +490,6 @@ fn comparisons_and_burn_on_fixed_dates() {
     drop(s5);
     let b5 = data::load_once(&source(&d5, "", today)).unwrap();
     assert_eq!(b5.kpis.monthly_burn, None);
-    for x in [d, d2, d3, d4, d5] {
-        let _ = std::fs::remove_dir_all(x);
-    }
 }
 
 /// The view model's indexes: cash accounts by name when the settings name
@@ -548,7 +559,6 @@ fn indexes_cash_cards_accounts_and_fresh() {
     let integrity = ledger_gui::books::Integrity::check(&snap, &mut verified);
     let b2 = ledger_gui::books::Books::build(&snap, settings, today, Some(seq), integrity).unwrap();
     assert_eq!(b2.fresh, [e2].into_iter().collect());
-    let _ = std::fs::remove_dir_all(&d);
 }
 
 /// Integrity counts every stored file, read once: a second check with the
@@ -580,7 +590,6 @@ fn integrity_counts_files_once_verified() {
     assert_eq!((first.files_ok, first.file_failures.len()), (2, 0));
     let again = ledger_gui::books::Integrity::check(&snap, &mut verified);
     assert_eq!((again.files_ok, again.file_failures.len()), (2, 0));
-    let _ = std::fs::remove_dir_all(&d);
 }
 
 /// Origins and parties for the rest of the journal's kinds: the invoice
@@ -647,5 +656,4 @@ fn more_origins_and_parties() {
     let r = b.entry(remit).unwrap();
     assert_eq!(r.origin, "Payroll taxes");
     assert!(!r.missing_receipt, "a remittance isn't a hand-made entry");
-    let _ = std::fs::remove_dir_all(&d);
 }

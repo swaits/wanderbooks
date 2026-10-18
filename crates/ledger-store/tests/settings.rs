@@ -17,14 +17,36 @@ use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
-fn test_dir(name: &str) -> PathBuf {
+/// A test's dir, removed when the test ends, pass or panic.
+struct TestDir(PathBuf);
+
+impl std::ops::Deref for TestDir {
+    type Target = std::path::Path;
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TestDir {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn test_dir(name: &str) -> TestDir {
     let dir = std::env::temp_dir().join(format!(
         "wanderbooks-store-settings-{name}-{}",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    dir
+    TestDir(dir)
 }
 
 fn d(y: i32, m: u32, day: u32) -> NaiveDate {
@@ -48,7 +70,7 @@ fn set(k: &str, v: Value) -> Change {
 }
 
 /// Books with a small chart.
-fn books(name: &str) -> (PathBuf, Store) {
+fn books(name: &str) -> (TestDir, Store) {
     let dir = test_dir(name);
     let mut s = Store::create(&dir, Currency::USD).unwrap();
     for (code, name, t) in [

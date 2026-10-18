@@ -16,7 +16,27 @@ use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-fn books(tag: &str) -> PathBuf {
+/// A test's data dir; its books dir is removed when the test ends, pass or
+/// panic.
+struct DataDir {
+    dir: PathBuf,
+    data: PathBuf,
+}
+
+impl std::ops::Deref for DataDir {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.data
+    }
+}
+
+impl Drop for DataDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+fn books(tag: &str) -> DataDir {
     let dir = std::env::temp_dir().join(format!("ledger-gui-gate-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let data = dir.join("books-data");
@@ -24,7 +44,7 @@ fn books(tag: &str) -> PathBuf {
     store
         .add_account("1000", "Checking", AccountType::Asset, None, false)
         .unwrap();
-    data
+    DataDir { dir, data }
 }
 
 fn source(data: &Path) -> Source {

@@ -21,14 +21,36 @@ use rust_decimal::Decimal;
 use serde_json::json;
 use std::path::PathBuf;
 
-fn test_dir(name: &str) -> PathBuf {
+/// A test's dir, removed when the test ends, pass or panic.
+struct TestDir(PathBuf);
+
+impl std::ops::Deref for TestDir {
+    type Target = std::path::Path;
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TestDir {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn test_dir(name: &str) -> TestDir {
     let dir = std::env::temp_dir().join(format!(
         "wanderbooks-store-bounds-{name}-{}",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    dir
+    TestDir(dir)
 }
 
 fn d(y: i32, m: u32, day: u32) -> NaiveDate {
@@ -36,8 +58,8 @@ fn d(y: i32, m: u32, day: u32) -> NaiveDate {
 }
 
 /// The old-books fixture `name` (tests/fixtures/old-books: written by main
-/// 188c90ea), opened from a copy.
-fn open_old_books(name: &str) -> Store {
+/// 188c90ea), opened from a copy (kept while the guard lives).
+fn open_old_books(name: &str) -> (TestDir, Store) {
     let from = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/old-books")
         .join(name);
@@ -55,7 +77,8 @@ fn open_old_books(name: &str) -> Store {
             std::fs::copy(&e, to).unwrap();
         }
     }
-    Store::open(&dir).unwrap_or_else(|e| panic!("{name}: {e}"))
+    let store = Store::open(&dir).unwrap_or_else(|e| panic!("{name}: {e}"));
+    (dir, store)
 }
 
 /// Every file under `dir`.
@@ -114,7 +137,7 @@ fn a_statement_the_books_cant_hold_is_refused() {
         .unwrap();
     // A statement an earlier version recorded past both bounds opens, its
     // balances as recorded.
-    let old = open_old_books("x_statement_max");
+    let (_dir, old) = open_old_books("x_statement_max");
     let recorded = old.statements(None).unwrap();
     assert_eq!(
         recorded[0].closing_balance,
@@ -158,7 +181,7 @@ fn a_recurring_run_has_an_end() {
     assert!(s.run_recurring(last).unwrap().is_empty());
     // One run an earlier version made of more than that opens, every
     // draft as generated.
-    let old = open_old_books("x_recurring_run_1044");
+    let (_dir, old) = open_old_books("x_recurring_run_1044");
     assert_eq!(old.ledger().next_entry_id(), 1045);
     old.verify().unwrap();
 }
@@ -206,7 +229,7 @@ fn disposal_proceeds_larger_than_a_line_are_refused() {
         assert!(s.run_depreciation(id, period).is_err(), "{period}");
     }
     // Depreciation an earlier version posted for 10000-01 opens.
-    let old = open_old_books("x_depreciation_year10000");
+    let (_dir, old) = open_old_books("x_depreciation_year10000");
     assert_eq!(old.ledger().get_entry(2).unwrap().date(), d(10000, 1, 31));
 }
 

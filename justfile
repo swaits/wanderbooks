@@ -17,10 +17,12 @@ check: sweep-test-tmp
     cargo test --workspace
     @just sweep-test-tmp
 
-# Test books go in the system temp dir (often RAM). A test cleans up after
-# itself, but one killed mid-run (a mutant's timeout, ^C) can't: tens of
-# thousands piled up to 23 GB of RAM (2026-10-15). Remove this user's test
-# book dirs older than an hour, so a run in progress elsewhere keeps its own.
+# Test books go in the system temp dir (often RAM). Every test's dir is
+# removed when the test ends, pass or panic (a guard dropped on unwind;
+# until 2026-10-17 many were removed only on pass, or never: 117,000 piled
+# up). A run killed mid-test (a mutant's timeout, ^C) runs no destructor,
+# so this sweep removes this user's test book dirs older than an hour; a
+# run in progress elsewhere keeps its own.
 sweep-test-tmp:
     @find "${TMPDIR:-/tmp}" /tmp -maxdepth 1 -user "$(id -u)" -type d -mmin +60 \( -name 'wb-*' -o -name 'wanderbooks-*' -o -name 'ledger-*' \) -exec rm -rf {} + 2>/dev/null || true
 

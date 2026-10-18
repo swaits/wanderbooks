@@ -660,6 +660,21 @@ mod tests {
         allowed: HashMap<PathBuf, bool>,
     }
 
+    impl Drop for Tree {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.base);
+        }
+    }
+
+    /// A test's dir, removed when the test ends, pass or panic.
+    struct TestDir(PathBuf);
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     fn tree(tag: &str) -> Tree {
         let base = std::env::temp_dir().join(format!(
             "ledger-mcp-local-files-{}-{tag}",
@@ -813,25 +828,43 @@ mod tests {
         let _ = std::fs::remove_dir_all(b);
     }
 
-    proptest! {
-        #![proptest_config(ProptestConfig::with_cases(512))]
-        /// Any absolute path built from the tree's names, `.` and `..`, and
-        /// its symlinks is allowed exactly when it has no `.` or `..` name
-        /// and resolves to a file the oracle allows: a regular file inside
-        /// a root and outside every protected dir.
-        #[test]
-        fn import_allowed_iff_regular_file_inside_a_root_outside_the_books(
+    /// Any absolute path built from the tree's names, `.` and `..`, and
+    /// its symlinks is allowed exactly when it has no `.` or `..` name and
+    /// resolves to a file the oracle allows: a regular file inside a root
+    /// and outside every protected dir. (One tree for every case, removed
+    /// when the test ends.)
+    #[test]
+    fn import_allowed_iff_regular_file_inside_a_root_outside_the_books() {
+        let t = tree("prop");
+        let starts = [
+            "Downloads",
+            "tmp",
+            "tmp/books",
+            "tmp/books/books-data",
+            "tmp/keys",
+            "elsewhere",
+            "secret",
+        ];
+        let names = [
+            "..",
+            ".",
+            "sub",
+            "dir",
+            "receipt.pdf",
+            "scan.png",
+            "shot.png",
+            "journal.jsonl",
+            "vault.key",
+            "key-link",
+            "good-link",
+            "data-link",
+            "hard.key",
+            "fifo",
+        ];
+        proptest!(ProptestConfig::with_cases(512), |(
             start in 0usize..7,
             parts in proptest::collection::vec(0usize..14, 0..5),
-        ) {
-            use std::sync::OnceLock;
-            static TREE: OnceLock<Tree> = OnceLock::new();
-            let t = TREE.get_or_init(|| tree("prop"));
-            let starts = ["Downloads", "tmp", "tmp/books", "tmp/books/books-data", "tmp/keys", "elsewhere", "secret"];
-            let names = [
-                "..", ".", "sub", "dir", "receipt.pdf", "scan.png", "shot.png", "journal.jsonl",
-                "vault.key", "key-link", "good-link", "data-link", "hard.key", "fifo",
-            ];
+        )| {
             let mut p = t.base.join(starts[start]);
             for i in parts {
                 p.push(names[i]);
@@ -843,7 +876,7 @@ mod tests {
                 _ => false,
             };
             prop_assert_eq!(t.check(&p).is_ok(), want, "{}", p.display());
-        }
+        });
     }
 
     /// INVARIANT 2: a path that is missing, a dangling link, or outside
@@ -1030,9 +1063,8 @@ mod tests {
             .is_ok_and(|s| s.success());
         if made {
             let (tx, rx) = std::sync::mpsc::channel();
-            std::thread::spawn(move || {
-                tx.send(read_checked(&canonical, &meta, &t.protected.inodes(), 100))
-            });
+            let inodes = t.protected.inodes();
+            std::thread::spawn(move || tx.send(read_checked(&canonical, &meta, &inodes, 100)));
             let got = rx
                 .recv_timeout(std::time::Duration::from_secs(10))
                 .expect("opening a pipe blocked");
@@ -1219,6 +1251,7 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&base);
+        let _cleanup = TestDir(base.clone());
         let home = base.join("home");
         std::fs::create_dir_all(home.join(".ssh")).unwrap();
         std::fs::write(home.join(".ssh/id_ed25519"), b"PRIVATE KEY").unwrap();

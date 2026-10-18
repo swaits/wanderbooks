@@ -21,6 +21,15 @@ use ledger_gui::{App, Source, data, fmt};
 use proptest::prelude::*;
 use rust_decimal::Decimal;
 
+/// A test's dir, removed when the test ends, pass or panic.
+struct TestDir(std::path::PathBuf);
+
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 proptest! {
     /// INVARIANT 1: every display style copies back to the same value.
     #[test]
@@ -54,6 +63,7 @@ fn copied(h: &Harness<'_, App>) -> Vec<String> {
 fn clicking_a_value_copies_it() {
     let dir = std::env::temp_dir().join(format!("ledger-gui-copy-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
+    let _cleanup = TestDir(dir.clone());
     let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
     ledger_gui::demo::build(&dir, today).unwrap();
     let source = Source {
@@ -106,5 +116,4 @@ fn clicking_a_value_copies_it() {
     h.get_by_label(&format!("Entry #{id}")).click();
     h.step();
     assert_eq!(copied(&h), [format!("#{id}")]);
-    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -4,6 +4,11 @@ name: check
 on:
   push:
   pull_request:
+# A newer push to the same branch makes an older check pointless: it is
+# cancelled, so only the newest reports.
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   check:
     runs-on: ubuntu-24.04

@@ -194,6 +194,12 @@ pub fn run(
     if let Some(why) = &report.healed {
         eprintln!("ledger-mcp: rebuilt the database from the journal ({why})");
     }
+    // The viewer's side channel, made as the books open (ledger_store::ops
+    // INVARIANT 2), so a viewer already open shows its presence before
+    // the first books.show. Not the books: a failure only says so.
+    if let Err(e) = ledger_store::ops::prepare(&data_dir) {
+        eprintln!("ledger-mcp: the viewer's side channel couldn't be made ({e})");
+    }
     // Books that keep their own settings never read a settings file, not
     // even to start (settings INVARIANT 1); others read it as before.
     let mut live = if store.ledger().settings().is_journaled() {

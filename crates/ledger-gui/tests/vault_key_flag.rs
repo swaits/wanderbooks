@@ -55,7 +55,6 @@ fn the_key_named_on_the_command_line_wins() {
 
     let mut b = data::load_once(&Source {
         data_dir: books.join("books-data"),
-        books_toml: None,
         today: Some(chrono::NaiveDate::from_ymd_opt(2026, 10, 17).unwrap()),
     })
     .unwrap();

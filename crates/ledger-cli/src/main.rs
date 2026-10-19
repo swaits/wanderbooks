@@ -3,7 +3,7 @@
 //!
 //! ```text
 //! wanderbooks new [DIR] [--codex] [--force] [--no-start]   (alias: init)
-//! wanderbooks gui [DIR | viewer flags]
+//! wanderbooks gui [BOOK | viewer flags]
 //! wanderbooks dev-stdio [server flags]
 //! wanderbooks setup [--root PATH] [--home DIR]
 //! ```
@@ -75,14 +75,13 @@ gui:
     set -u
     if just gui-status &>/dev/null; then echo "The viewer is already open."; exit 0; fi
     log="{{justfile_directory()}}/books-data/gui.log"
-    nohup "@@LEDGER_GUI@@" --data-dir "{{justfile_directory()}}/books-data" \
-        --books-toml "{{justfile_directory()}}/wanderbooks.toml" >"$log" 2>&1 </dev/null &
+    nohup "@@LEDGER_GUI@@" --data-dir "{{justfile_directory()}}/books-data" >"$log" 2>&1 </dev/null &
     sleep 1
     if kill -0 $! 2>/dev/null; then echo "Viewer open (pid $!)."; else echo "The viewer didn't start:"; cat "$log"; exit 1; fi
 
 # Open the viewer in the foreground (logs in the terminal; Ctrl-C closes it)
 gui-fg:
-    "@@LEDGER_GUI@@" --data-dir "{{justfile_directory()}}/books-data" --books-toml "{{justfile_directory()}}/wanderbooks.toml"
+    "@@LEDGER_GUI@@" --data-dir "{{justfile_directory()}}/books-data"
 
 # Is the viewer open for these books? Prints open/closed; exits 0 only if open
 gui-status:
@@ -385,13 +384,16 @@ books-data/wanderbooks.lock
 exports/
 # The background viewer's log (`just gui`).
 books-data/gui.log
+# The viewer's side channel (books.show's requests, its presence): not the
+# books, never journaled.
+books-data/ops/
 "#;
 
 const START_PROMPT: &str = "Hi! These are brand-new books. Please set them up with me.";
 
 fn print_usage() {
     eprintln!("usage: wanderbooks new [DIR] [--codex] [--force] [--no-start]");
-    eprintln!("       wanderbooks gui [DIR | --data-dir PATH ...]");
+    eprintln!("       wanderbooks gui [BOOK | --root PATH --book ID | --data-dir PATH ...]");
     eprintln!("       wanderbooks dev-stdio [--data-dir PATH ...]");
     eprintln!("       wanderbooks setup [--root PATH] [--home DIR]");
     eprintln!("       wanderbooks books list | create ID | adopt DATA-DIR --id ID");
@@ -405,7 +407,7 @@ fn print_usage() {
     eprintln!("       wanderbooks serve | close | doctor");
     eprintln!();
     eprintln!("  new        make a books directory and start the agent in it (alias: init)");
-    eprintln!("  gui        open the live, read-only view of a books directory");
+    eprintln!("  gui        open the live, read-only view of the books (a book of the data root)");
     eprintln!("  dev-stdio  run the books server over stdio (`dev-stdio --help` for its flags)");
     eprintln!("  setup      make the books' private folder (only your account can open it)");
     eprintln!("  books      list, start or adopt books (`books --help`)");
@@ -772,24 +774,14 @@ fn new(dir: &Path, force: bool, start: bool, agent: Agent) -> Result<(), String>
     Ok(())
 }
 
-/// The viewer's arguments for `wanderbooks gui ARGS`: a lone books
-/// directory (none means this one) becomes its `books-data/` and
-/// `wanderbooks.toml`, named explicitly as before the viewer moved into
-/// this executable, so a settings file made later is still followed;
-/// anything else is the viewer's own flags, passed as they are.
+/// The viewer's arguments for `wanderbooks gui ARGS` (plan 3.6): a lone
+/// word names the book of the data root to show (`--book`), never a
+/// folder; nothing, the root's book; anything else is the viewer's own
+/// flags, passed as they are.
 #[cfg(feature = "gui")]
 fn gui_args(args: Vec<String>) -> Vec<String> {
     match args.as_slice() {
-        [] => gui_args(vec![".".into()]),
-        [dir] if !dir.starts_with('-') => {
-            let dir = Path::new(dir);
-            vec![
-                "--data-dir".into(),
-                dir.join("books-data").display().to_string(),
-                "--books-toml".into(),
-                dir.join("wanderbooks.toml").display().to_string(),
-            ]
-        }
+        [book] if !book.starts_with('-') => vec!["--book".into(), book.clone()],
         _ => args,
     }
 }
@@ -1131,23 +1123,10 @@ mod gui_args_tests {
     }
 
     #[test]
-    fn a_lone_books_dir_names_its_data_and_settings() {
-        let dir = std::path::Path::new("some/books");
-        assert_eq!(
-            gui_args(v(&["some/books"])),
-            v(&[
-                "--data-dir",
-                &dir.join("books-data").display().to_string(),
-                "--books-toml",
-                &dir.join("wanderbooks.toml").display().to_string(),
-            ])
-        );
-    }
-
-    #[test]
-    fn no_dir_means_this_one_named_explicitly() {
-        assert_eq!(gui_args(v(&[])), gui_args(v(&["."])));
-        assert_eq!(gui_args(v(&[]))[0], "--data-dir");
+    fn a_lone_word_names_a_book_never_a_folder() {
+        assert_eq!(gui_args(v(&["acme"])), v(&["--book", "acme"]));
+        assert_eq!(gui_args(v(&["."])), v(&["--book", "."]));
+        assert_eq!(gui_args(v(&[])), v(&[]));
     }
 
     #[test]

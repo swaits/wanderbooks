@@ -89,18 +89,16 @@ fn build(plan: &Plan, tag: &str) -> (TestDir, Source, ledger_core::Ledger) {
         s.add_line(e, ids[cr], Side::Credit, m).unwrap();
         s.post_entry(e).unwrap();
     }
-    std::fs::write(
-        d.join("wanderbooks.toml"),
-        format!(
+    journal_settings(
+        &mut s,
+        &format!(
             "[company]\nname = \"Oracle Co\"\nfiscal_year_start = \"{:02}-01\"\n[books]\ncash_accounts = [\"1000\", \"1010\"]\nreceipt_threshold = \"25.00\"\n",
             plan.fy_month
         ),
-    )
-    .unwrap();
+    );
     let ledger = s.ledger().clone();
     let source = Source {
         data_dir: d.join("books-data"),
-        books_toml: Some(d.join("wanderbooks.toml")),
         today: Some(plan.today),
     };
     (d, source, ledger)
@@ -261,15 +259,10 @@ fn origins_and_parties() {
         .attach_receipt(Some(e), "r.pdf", "application/pdf", b"%PDF receipt", None)
         .unwrap();
     let rev = s.reverse_entry(e, today, "undo").unwrap();
+    journal_settings(&mut s, "[books]\nreceipt_threshold = \"0.00\"\n");
     drop(s);
-    std::fs::write(
-        d.join("wanderbooks.toml"),
-        "[books]\nreceipt_threshold = \"0.00\"\n",
-    )
-    .unwrap();
     let source = Source {
         data_dir: d.join("books-data"),
-        books_toml: Some(d.join("wanderbooks.toml")),
         today: Some(today),
     };
     let b = data::load_once(&source).unwrap();
@@ -326,11 +319,30 @@ fn store_at(tag: &str) -> (TestDir, Store) {
     (d, s)
 }
 
+/// The settings `toml` says, journaled into `s` as the server adopts a
+/// settings file: the viewer reads settings only from the journal.
+fn journal_settings(s: &mut Store, toml: &str) {
+    let import = ledger_config::codec::import(toml, None, s.ledger().settings(), "USD").unwrap();
+    s.adopt_settings(
+        &import.changes,
+        &ledger_core::settings::Source {
+            decided_by: "the test".into(),
+            decided_on: NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+            citation: None,
+            note: None,
+        },
+    )
+    .unwrap();
+}
+
+/// The books in `d`, with the settings `toml` says journaled (none when
+/// it's empty: the defaults).
 fn source(d: &std::path::Path, toml: &str, today: NaiveDate) -> Source {
-    std::fs::write(d.join("wanderbooks.toml"), toml).unwrap();
+    if !toml.is_empty() {
+        journal_settings(&mut Store::open(&d.join("books-data")).unwrap(), toml);
+    }
     Source {
         data_dir: d.join("books-data"),
-        books_toml: Some(d.join("wanderbooks.toml")),
         today: Some(today),
     }
 }
@@ -554,7 +566,7 @@ fn indexes_cash_cards_accounts_and_fresh() {
     let e2 = post(&mut s, today, rent, checking, 999);
     drop(s);
     let snap = ledger_store::Snapshot::load(&src.data_dir).unwrap();
-    let settings = ledger_config::load(src.books_toml.as_ref().unwrap()).unwrap();
+    let settings = ledger_config::codec::books_settings(snap.ledger().settings(), "USD");
     let mut verified = std::collections::HashSet::new();
     let integrity = ledger_gui::books::Integrity::check(&snap, &mut verified);
     let b2 = ledger_gui::books::Books::build(&snap, settings, today, Some(seq), integrity).unwrap();

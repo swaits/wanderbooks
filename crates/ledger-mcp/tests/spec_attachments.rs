@@ -1305,9 +1305,14 @@ fn the_cpa_package_carries_receipts_linked_to_entries() {
         "books.export_cpa_package",
         json!({"as_of": "2026-12-31", "cash_accounts": ["1000"], "include_tins": false}),
     );
+    // The zip comes back inline over stdio, as stated (D-29).
+    let file = &pkg["file"];
+    assert!(file.get("download").is_none(), "{file}");
     let bytes = base64::engine::general_purpose::STANDARD
-        .decode(pkg["content_base64"].as_str().unwrap())
+        .decode(file["content_base64"].as_str().unwrap())
         .unwrap();
+    assert_eq!(file["size_bytes"], json!(bytes.len()), "{file}");
+    assert_eq!(file["sha256"], json!(sha(&bytes)), "{file}");
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
     let names: Vec<String> = (0..zip.len())
         .map(|i| zip.by_index(i).unwrap().name().unwrap().to_string())
@@ -1394,13 +1399,12 @@ fn show_opens_a_reconciliation() {
         .unwrap();
     let out = m.read_only("books.show", json!({"reconciliation": rid}));
     assert!(out["shown"].as_str().unwrap().contains("1000"), "{out}");
-    let run = m.data.parent().unwrap().join("run/wanderbooks");
-    let cmd: Value = std::fs::read_dir(&run)
-        .unwrap()
-        .filter_map(|e| std::fs::read(e.unwrap().path()).ok())
-        .find_map(|b| serde_json::from_slice(&b).ok())
-        .expect("a viewer request");
-    assert_eq!(cmd["target"], json!({"show": "reconciliation", "id": rid}));
+    // The request is in the books' own ops/ (ledger_store::ops).
+    let cmd = ledger_store::ops::read(&m.data).expect("a viewer request");
+    assert_eq!(
+        serde_json::to_value(&cmd.target).unwrap(),
+        json!({"show": "reconciliation", "id": rid})
+    );
     m.refuse("books.show", json!({"reconciliation": 999}));
     m.refuse(
         "books.show",

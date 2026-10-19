@@ -68,7 +68,6 @@ fn clicking_a_value_copies_it() {
     ledger_gui::demo::build(&dir, today).unwrap();
     let source = Source {
         data_dir: dir.join("books-data"),
-        books_toml: Some(dir.join("wanderbooks.toml")),
         today: Some(today),
     };
     let open = |route: Route| {
@@ -80,7 +79,7 @@ fn clicking_a_value_copies_it() {
         h
     };
 
-    // The company's EIN, as written in wanderbooks.toml.
+    // The company's EIN, as the demo journals it.
     let ein = data::load_once(&source)
         .unwrap()
         .settings

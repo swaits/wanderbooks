@@ -759,24 +759,33 @@ fn usd(d: Decimal) -> Money {
     Money::new(d, Currency::USD)
 }
 
-fn write_toml(dir: &Path, threshold: &str, cash: &[&str]) -> PathBuf {
+/// The company, a receipt threshold and the cash accounts, journaled into
+/// `store` as the server adopts a settings file: the viewer reads settings
+/// only from the journal.
+fn journal_settings(store: &mut Store, threshold: &str, cash: &[&str]) {
     let cash: Vec<String> = cash.iter().map(|c| format!("\"{c}\"")).collect();
-    let p = dir.join("wanderbooks.toml");
-    std::fs::write(
-        &p,
-        format!(
-            "[company]\nname = \"Spec Test LLC\"\n\n[books]\nreceipt_threshold = \"{threshold}\"\ncash_accounts = [{}]\n",
-            cash.join(", ")
-        ),
-    )
-    .unwrap();
-    p
+    let toml = format!(
+        "[company]\nname = \"Spec Test LLC\"\n\n[books]\nreceipt_threshold = \"{threshold}\"\ncash_accounts = [{}]\n",
+        cash.join(", ")
+    );
+    let import =
+        ledger_config::codec::import(&toml, None, store.ledger().settings(), "USD").unwrap();
+    store
+        .adopt_settings(
+            &import.changes,
+            &ledger_core::settings::Source {
+                decided_by: "the test".into(),
+                decided_on: today(),
+                citation: None,
+                note: None,
+            },
+        )
+        .unwrap();
 }
 
-fn load(dir: &Path, toml: Option<PathBuf>) -> Books {
+fn load(dir: &Path) -> Books {
     load_once(&Source {
         data_dir: dir.join("books-data"),
-        books_toml: toml,
         today: Some(today()),
     })
     .unwrap()
@@ -862,12 +871,12 @@ struct Built {
 fn build_books(plan: &BooksPlan) -> Built {
     let dir = TempDir::new("books");
     let data = dir.0.join("books-data");
-    let toml = write_toml(&dir.0, plan.threshold, CASH_CODES);
     let mut store = Store::create(&data, Currency::USD).unwrap();
     let ids: Vec<AccountId> = CHART
         .iter()
         .map(|(c, n, t)| store.add_account(c, n, *t, None, false).unwrap())
         .collect();
+    journal_settings(&mut store, plan.threshold, CASH_CODES);
     let start = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
     let mut entry_ids = vec![];
     let mut posted = vec![];
@@ -937,7 +946,7 @@ fn build_books(plan: &BooksPlan) -> Built {
         reversal = Some((orig, rev));
     }
     drop(store);
-    let books = load(&dir.0, Some(toml));
+    let books = load(&dir.0);
     Built {
         _dir: dir,
         books,
@@ -977,11 +986,8 @@ proptest! {
             );
         }
 
-        let policy = ledger_config::effective_receipt_policy(
-            &built.data.join("config.json"),
-            &b.settings,
-        )
-        .unwrap();
+        // The receipt policy is the books' own, from their journal.
+        let policy = ledger_config::codec::receipt_policy(ledger.settings());
 
         for &id in &built.entry_ids {
             let info = b.entry(id);
@@ -1082,10 +1088,10 @@ fn add_rent(s: &mut Small, i: u32, post: bool) -> EntryId {
 }
 
 fn finish(s: Small) -> (TempDir, Books) {
-    let Small { dir, store, .. } = s;
+    let Small { dir, mut store, .. } = s;
+    journal_settings(&mut store, "0.00", &["1000"]);
     drop(store);
-    let toml = write_toml(&dir.0, "0.00", &["1000"]);
-    let b = load(&dir.0, Some(toml));
+    let b = load(&dir.0);
     (dir, b)
 }
 
@@ -1116,7 +1122,7 @@ fn attention_empty_books_have_nothing() {
 
     let dir = TempDir::new("att-bare");
     drop(Store::create(&dir.0.join("books-data"), Currency::USD).unwrap());
-    let b = load(&dir.0, None);
+    let b = load(&dir.0);
     assert!(attention::find(&b).is_empty());
 }
 

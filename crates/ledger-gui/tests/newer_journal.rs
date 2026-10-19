@@ -50,7 +50,6 @@ fn books(tag: &str) -> DataDir {
 fn source(data: &Path) -> Source {
     Source {
         data_dir: data.to_path_buf(),
-        books_toml: None,
         today: NaiveDate::from_ymd_opt(2026, 10, 16),
     }
 }

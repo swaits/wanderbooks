@@ -676,7 +676,6 @@ mod tests {
         ledger_store::Store::create(&data_dir, ledger_core::Currency::USD).unwrap();
         crate::data::load_once(&crate::data::Source {
             data_dir,
-            books_toml: None,
             today: Some(today),
         })
         .unwrap()

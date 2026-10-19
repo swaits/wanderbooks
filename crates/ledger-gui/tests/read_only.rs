@@ -112,7 +112,6 @@ fn the_viewer_never_writes_into_the_books() {
     ledger_gui::demo::build(&dir, today).unwrap();
     let source = Source {
         data_dir: dir.join("books-data"),
-        books_toml: Some(dir.join("wanderbooks.toml")),
         today: Some(today),
     };
     set_read_only(&dir, true);

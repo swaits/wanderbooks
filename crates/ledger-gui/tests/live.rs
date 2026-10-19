@@ -1,6 +1,7 @@
 //! Live updates: a change written to the books (by the MCP server, in
 //! practice) reaches the GUI's view model on its own, without a restart,
-//! and the changed entry is marked fresh.
+//! and the changed entry is marked fresh; a show request reaches it, and
+//! while it runs it holds the books' viewer presence.
 
 use chrono::NaiveDate;
 use ledger_core::{AccountType, Currency, Money, Side};
@@ -32,12 +33,15 @@ fn a_change_in_another_process_shows_up_live() {
         .add_account("3000", "Capital", AccountType::Equity, None, false)
         .unwrap();
     drop(store);
+    // The server makes the books' ops/ folder when it opens them; no
+    // viewer has them open yet.
+    ledger_store::ops::prepare(&data).unwrap();
+    assert!(!ledger_store::ops::viewer_open(&data));
 
     let ctx = egui::Context::default();
     let loader = Loader::spawn(
         Source {
             data_dir: data.clone(),
-            books_toml: None,
             today: NaiveDate::from_ymd_opt(2026, 10, 12),
         },
         ctx,
@@ -47,6 +51,15 @@ fn a_change_in_another_process_shows_up_live() {
         _ => panic!("no initial load"),
     };
     assert_eq!(first.kpis.cash, Decimal::ZERO);
+    // The running viewer holds its presence there (ops INVARIANT 3).
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !ledger_store::ops::viewer_open(&data) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        ledger_store::ops::viewer_open(&data),
+        "the running viewer holds no presence"
+    );
 
     // The writer (the MCP server's store) posts an entry.
     let started = Instant::now();
@@ -77,15 +90,15 @@ fn a_change_in_another_process_shows_up_live() {
 
     // The agent asks the viewer to show the entry (books.show).
     let asked = Instant::now();
-    ledger_store::viewer::request(
+    ledger_store::ops::request(
         &data,
-        ledger_store::viewer::ViewerTarget::Entry { entry_id: e },
+        ledger_store::ops::ViewerTarget::Entry { entry_id: e },
     )
     .unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut shown = false;
     while Instant::now() < deadline {
-        if let Some(Update::Show(ledger_store::viewer::ViewerTarget::Entry { entry_id })) =
+        if let Some(Update::Show(ledger_store::ops::ViewerTarget::Entry { entry_id })) =
             loader.wait(Duration::from_millis(200))
         {
             assert_eq!(entry_id, e);
@@ -95,5 +108,55 @@ fn a_change_in_another_process_shows_up_live() {
     }
     assert!(shown, "the show request never reached the viewer");
     eprintln!("show request arrived in {:?}", asked.elapsed());
-    let _ = std::fs::remove_file(ledger_store::viewer::command_path(&data));
+
+    // The viewer closed: its presence goes with it, within a poll.
+    drop(loader);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while ledger_store::ops::viewer_open(&data) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(
+        !ledger_store::ops::viewer_open(&data),
+        "a closed viewer still holds its presence"
+    );
+}
+
+/// An older books dir that keeps no settings in its journal and has no
+/// settings file: one written while the viewer runs is followed, as its
+/// server follows it.
+#[test]
+fn a_settings_file_made_later_is_followed() {
+    let dir = std::env::temp_dir().join(format!("ledger-gui-live-toml-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _cleanup = TestDir(dir.clone());
+    let data = dir.join("books-data");
+    drop(Store::create(&data, Currency::USD).unwrap());
+    let loader = Loader::spawn(
+        Source {
+            data_dir: data.clone(),
+            today: NaiveDate::from_ymd_opt(2026, 10, 12),
+        },
+        egui::Context::default(),
+    );
+    match loader.wait(Duration::from_secs(10)) {
+        Some(Update::Books(b)) => assert_ne!(b.settings.company.name, "Made Later Co"),
+        _ => panic!("no initial load"),
+    }
+    std::fs::write(
+        dir.join("wanderbooks.toml"),
+        "[company]\nname = \"Made Later Co\"\n",
+    )
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "the new settings file was never read"
+        );
+        match loader.wait(Duration::from_millis(200)) {
+            Some(Update::Books(b)) if b.settings.company.name == "Made Later Co" => break,
+            Some(Update::Error(e)) => panic!("the settings file didn't load: {e}"),
+            _ => {}
+        }
+    }
 }

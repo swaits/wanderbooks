@@ -108,7 +108,7 @@ fn each_mode_names_itself_in_its_usage() {
     let out = wanderbooks().arg("--help").output().unwrap();
     let err = String::from_utf8_lossy(&out.stderr);
     for line in [
-        "wanderbooks gui [DIR",
+        "wanderbooks gui [BOOK",
         "wanderbooks dev-stdio",
         "dev-stdio  run the books server",
     ] {
@@ -123,7 +123,7 @@ fn the_viewer_names_itself_in_its_usage() {
     assert!(out.status.success());
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
-        text.contains("usage: wanderbooks gui [--data-dir PATH]"),
+        text.contains("usage: wanderbooks gui [--root PATH] [--book ID]"),
         "{text}"
     );
 }

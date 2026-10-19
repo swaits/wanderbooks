@@ -46,6 +46,7 @@ use ledger_core::{
     depreciation_schedule, reports,
 };
 use ledger_import::ReportMeta;
+use ledger_package::{csv_escape, form_1099_label, money, parse_date, tin_kind, vault_tin};
 use ledger_store::Store;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::{
@@ -74,6 +75,9 @@ pub struct BooksServer {
     /// The book's uploads (books served from the data root; none over
     /// stdio, where no bytes can be sent but inline).
     uploads: Option<ledger_store::uploads::Uploads>,
+    /// The files the books made for agents, waiting to be fetched (books
+    /// served from the data root; over stdio a file comes back inline).
+    exports: Option<ledger_store::exports::Exports>,
 }
 
 /// Where a book's own files live around its data dir.
@@ -224,6 +228,16 @@ impl SharedStore {
     }
 }
 
+/// The book's id, as the commands given to agents name it: its folder's
+/// name in the data root.
+fn book_name(store: &Store) -> String {
+    store
+        .data_dir()
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
 /// A filed file's name and type: those given, else the upload's own.
 fn named(
     file_name: Option<String>,
@@ -254,9 +268,6 @@ const KEY_IN_BOOKS: &str = "the TIN vault's key file is inside the books' folder
 /// Why the vault won't store into books whose version history would keep
 /// its records.
 const VAULT_IN_HISTORY: &str = "the TIN vault can't store anything here yet: the books' folder is kept under version history that doesn't leave the vault out, so its records would be kept forever. Ask the human to leave the vault folder out of that history, then try again";
-
-/// Why a file with a full TIN isn't written inside the books.
-const INSIDE_BOOKS: &str = "that path is inside the books' folder, whose files are kept forever: a file with a full TIN goes elsewhere, such as the human's documents folder";
 
 /// The store, locked for one stretch of synchronous work. Not `Send`, so
 /// the compiler refuses any tool future that would hold it across an
@@ -488,41 +499,28 @@ fn suggest_parties(store: &Store, entry: &JournalEntry) -> Result<Vec<PartySugge
     Ok(out)
 }
 
-/// Where payments to vendors come from, for the 1099 worksheet: the
-/// `[books] cash_accounts` and `financing_accounts` in the chart (codes the
-/// chart lacks are skipped; `books.settings` reports them).
-fn payment_accounts(
-    ledger: &ledger_core::Ledger,
-    roles: &crate::settings::CashRoles,
-) -> ledger_core::PaymentAccounts {
-    let ids = |codes: &[String]| {
-        codes
-            .iter()
-            .filter_map(|c| ledger.chart().find_by_code(c).map(|a| a.id))
-            .collect()
-    };
-    ledger_core::PaymentAccounts {
-        cash: ids(&roles.cash),
-        financing: ids(&roles.financing),
+/// The settings as ledger_package reads them: the company, and the
+/// `[books]` cash, financing, and investing roles.
+fn package_settings(settings: &Settings) -> ledger_package::Settings<'_> {
+    ledger_package::Settings {
+        company: &settings.company,
+        cash_accounts: &settings.roles.cash,
+        financing_accounts: &settings.roles.financing,
+        investing_accounts: &settings.roles.investing,
     }
 }
 
 /// The 1099 worksheet for `year`, the one every tool and the CPA package
-/// use: payments out of [`payment_accounts`], an entry's shares resolved
-/// with the settings' members (as [`share_context`] checks them).
+/// use (ledger_package::vendor_1099_report): payments out of the cash and
+/// financing roles, an entry's shares resolved with the settings' members
+/// (as [`share_context`] checks them).
 fn vendor_1099_report(
     ledger: &ledger_core::Ledger,
     settings: &Settings,
     year: i32,
     threshold: Option<Decimal>,
 ) -> Result<ledger_core::Vendor1099Report, ledger_core::LedgerError> {
-    ledger_core::vendor_1099_report_with_members(
-        ledger,
-        year,
-        threshold,
-        &payment_accounts(ledger, &settings.roles),
-        &settings.company.party_members(ledger),
-    )
+    ledger_package::vendor_1099_report(ledger, &package_settings(settings), year, threshold)
 }
 
 impl BooksServer {
@@ -599,12 +597,19 @@ impl BooksServer {
             layout: Arc::new(Layout::BooksDir),
             access: None,
             uploads: None,
+            exports: None,
         }
     }
 
     /// Take uploaded files from `uploads` (`books.begin_upload`).
     pub fn with_uploads(mut self, uploads: ledger_store::uploads::Uploads) -> Self {
         self.uploads = Some(uploads);
+        self
+    }
+
+    /// Hand the files the books make to agents through `exports`.
+    pub fn with_exports(mut self, exports: ledger_store::exports::Exports) -> Self {
+        self.exports = Some(exports);
         self
     }
 
@@ -721,45 +726,26 @@ impl BooksServer {
         financing: &[String],
         investing: &[String],
     ) -> Result<ledger_core::reports::CashFlowStatement, String> {
-        let or = |given: &'_ [String], default: &'_ [String]| -> Vec<String> {
-            if given.is_empty() {
-                default.to_vec()
-            } else {
-                given.to_vec()
-            }
-        };
-        cash_flow_statement(
+        ledger_package::cash_flow_for(
             ledger,
+            &package_settings(&self.settings()),
             start,
             end,
-            &or(cash, &self.settings().roles.cash),
-            &or(financing, &self.settings().roles.financing),
-            &or(investing, &self.settings().roles.investing),
+            cash,
+            financing,
+            investing,
+            today(),
         )
     }
 
     /// Header and provenance for a rendered report.
     fn report_meta(&self, store: &Store) -> ReportMeta {
-        ReportMeta {
-            company: self.settings().company.name.clone(),
-            basis: self.settings().company.basis.clone(),
-            prepared_on: today(),
-            journal_seq: store.journal_seq(),
-        }
+        ledger_package::report_meta(&self.settings().company, today(), store.journal_seq())
     }
 
     /// Members as reports name them (empty unless a multi-member LLC).
     fn report_members(&self) -> Vec<ledger_import::Member> {
-        self.settings()
-            .company
-            .members
-            .iter()
-            .map(|m| ledger_import::Member {
-                name: m.name.clone(),
-                capital_code: m.capital_account.clone(),
-                distribution_code: m.distribution_account.clone(),
-            })
-            .collect()
+        ledger_package::report_members(&self.settings().company)
     }
 
     /// Members with their capital accounts resolved in the chart, for the
@@ -771,40 +757,7 @@ impl BooksServer {
                 self.setting_label("company.members", "[[company.members]] in the settings")
             ));
         }
-        self.settings()
-            .company
-            .members
-            .iter()
-            .map(|m| {
-                let account = ledger
-                    .chart()
-                    .find_by_code(&m.capital_account)
-                    .ok_or_else(|| {
-                        format!(
-                            "member {}: unknown capital account {}",
-                            m.name, m.capital_account
-                        )
-                    })?;
-                let distribution_account = match &m.distribution_account {
-                    Some(code) => Some(
-                        ledger
-                            .chart()
-                            .find_by_code(code)
-                            .ok_or_else(|| {
-                                format!("member {}: unknown distribution account {code}", m.name)
-                            })?
-                            .id,
-                    ),
-                    None => None,
-                };
-                Ok(ledger_core::MemberCapital {
-                    name: m.name.clone(),
-                    capital_account: account.id,
-                    distribution_account,
-                    share: m.share,
-                })
-            })
-            .collect()
+        ledger_package::member_capitals(ledger, &self.settings().company.members)
     }
 
     /// Where a period close goes, from wanderbooks.toml: members' capital
@@ -858,37 +811,7 @@ impl BooksServer {
         ledger: &Ledger,
         as_of: NaiveDate,
     ) -> Result<ledger_import::YearEarnings, String> {
-        let (fy_start, _) = self.settings().company.fiscal_year_containing(as_of);
-        let net_income_ytd = ledger_core::profit_and_loss_for_period(ledger, fy_start, as_of, None)
-            .map_err(|e| e.to_string())?
-            .net_income();
-        // A close takes everything unclosed through its end, earlier years
-        // included, so this year's unclosed part is the income from the day
-        // after the last close (never before the year's start) through
-        // as_of. (Counting the closing entries dated this year instead
-        // charged this year with closing last year's income: found by
-        // year_earnings_split_closed_from_unclosed, 2026-10-14.)
-        let last_close = ledger
-            .list_periods()
-            .iter()
-            .filter(|p| p.status == PeriodStatus::Closed && p.end <= as_of)
-            .map(|p| p.end)
-            .max();
-        let from = match last_close.and_then(|e| e.succ_opt()) {
-            Some(after) if after > fy_start => after,
-            _ => fy_start,
-        };
-        let unclosed = if from <= as_of {
-            ledger_core::profit_and_loss_for_period(ledger, from, as_of, None)
-                .map_err(|e| e.to_string())?
-                .net_income()
-        } else {
-            Decimal::ZERO
-        };
-        Ok(ledger_import::YearEarnings {
-            net_income_ytd,
-            unclosed,
-        })
+        ledger_package::year_earnings(ledger, &self.settings().company, as_of)
     }
 
     /// Cash and card accounts due for reconciliation
@@ -992,13 +915,6 @@ impl BooksServer {
             .collect()
     }
 
-    /// Where a file holding full TINs may be written: a new file outside
-    /// the books (outside_books). (It can't be filed back in unnoticed:
-    /// tin_files.rs records it.)
-    fn tin_file_dest(&self, store: &Store, path: &str) -> Result<std::path::PathBuf, String> {
-        outside_books(&self.layout.books_dir(store), path)
-    }
-
     /// The signed W-9 a call gives (an upload, or inline), for the vault:
     /// a PDF, PNG, or JPEG by its own first bytes, whatever it is called.
     fn w9_file(
@@ -1070,8 +986,12 @@ impl BooksServer {
     /// INVARIANT 2), before it is written out: every session, and every
     /// later server for these books, refuses it.
     fn wrote_tins(&self, store: &Store, bytes: &[u8]) -> Result<(), String> {
-        // The record goes in the vault's folder: in the data root, made
-        // private first, as the vault itself makes it.
+        tin_files::record(&self.tin_record_dir(store)?, bytes)
+    }
+
+    /// Where records of files with TINs go: the vault's folder, in the
+    /// data root made private first, as the vault itself makes it.
+    fn tin_record_dir(&self, store: &Store) -> Result<std::path::PathBuf, String> {
         if let Layout::Root(_) = *self.layout {
             ledger_store::root::private_book_folder(
                 store.data_dir(),
@@ -1079,7 +999,7 @@ impl BooksServer {
             )
             .map_err(|e| format!("the TIN vault can't be written: {e}"))?;
         }
-        tin_files::record(&self.vault_dir(store), bytes)
+        Ok(self.vault_dir(store))
     }
 
     /// Open the TIN vault with the key file in force (`[vault] key_file`,
@@ -1208,28 +1128,6 @@ impl BooksServer {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// A date: exactly YYYY-MM-DD, a real day in the calendar the books keep
-/// (0001-01-01 through 9999-12-31, `ledger_core::calendar`). No sign, no
-/// space, no five-digit year: every date past here is one date arithmetic
-/// reaches (P0 review round 3, S1).
-fn parse_date(s: &str) -> Result<NaiveDate, String> {
-    let shaped = s.len() == 10
-        && s.bytes().enumerate().all(|(i, b)| {
-            if i == 4 || i == 7 {
-                b == b'-'
-            } else {
-                b.is_ascii_digit()
-            }
-        });
-    shaped
-        .then(|| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
-        .flatten()
-        .filter(|d| ledger_core::calendar::in_calendar(*d))
-        .ok_or_else(|| {
-            format!("bad date {s:?}: expected YYYY-MM-DD, a real day from 0001-01-01 to 9999-12-31")
-        })
-}
 
 /// A decimal string, exactly `-?digits[.digits]` (INVARIANT 3).
 fn parse_amount(s: &str) -> Result<Decimal, String> {
@@ -1970,92 +1868,6 @@ fn is_inside(dir: &std::path::Path, path: &std::path::Path) -> bool {
     resolved(path).starts_with(resolved(dir))
 }
 
-/// Where a tool may write a file holding a full TIN: a new file, in a
-/// folder that exists, outside the books dir (which git commits).
-fn outside_books(books: &std::path::Path, path: &str) -> Result<std::path::PathBuf, String> {
-    let p = std::path::PathBuf::from(path.trim());
-    if path.trim().is_empty() {
-        return Err("give a path to write to".into());
-    }
-    if is_inside(books, &p) {
-        return Err(INSIDE_BOOKS.to_string());
-    }
-    match p.parent() {
-        Some(d) if d.as_os_str().is_empty() || d.is_dir() => {}
-        _ => return Err(NO_FOLDER.to_string()),
-    }
-    if p.exists() {
-        return Err(EXISTS.to_string());
-    }
-    Ok(p)
-}
-
-/// A path to write to whose folder doesn't exist.
-const NO_FOLDER: &str = "the folder for that path doesn't exist: name a file in a folder that does";
-
-/// A path to write to that is taken.
-const EXISTS: &str = "a file is there already: name a new file";
-
-/// Where `books.export_cpa_package` writes its zip: `to` itself when it
-/// names a `.zip` file, or `file_name` in `to` when it is an existing
-/// folder. A new file, in a folder that exists; with TINs, outside the
-/// books dir (which git commits, `exports/` included).
-fn package_dest(
-    books: &std::path::Path,
-    to: &str,
-    file_name: &str,
-    tins: bool,
-) -> Result<std::path::PathBuf, String> {
-    let raw = std::path::PathBuf::from(to.trim());
-    if to.trim().is_empty() {
-        return Err("give save_to: a new .zip path or an existing folder".into());
-    }
-    let dest = if raw.is_dir() {
-        raw.join(file_name)
-    } else if raw
-        .extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case("zip"))
-    {
-        raw
-    } else {
-        return Err(format!(
-            "save_to {} is neither an existing folder nor a .zip file",
-            raw.display()
-        ));
-    };
-    if tins {
-        return outside_books(books, &dest.to_string_lossy()).map_err(|e| {
-            format!("{e} (the CPA package holds full TINs; save it outside the books)")
-        });
-    }
-    match dest.parent() {
-        Some(d) if d.as_os_str().is_empty() || d.is_dir() => {}
-        _ => return Err(NO_FOLDER.to_string()),
-    }
-    if dest.exists() {
-        return Err(EXISTS.to_string());
-    }
-    Ok(dest)
-}
-
-/// Write a new file readable by its owner only (0600 on Unix).
-fn write_private_new(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
-    use std::io::Write;
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    let mut f = opts
-        .open(path)
-        .map_err(|e| format!("couldn't create {}: {e}", path.display()))?;
-    f.write_all(bytes)
-        .and_then(|()| f.sync_all())
-        .map_err(|e| format!("couldn't write {}: {e}", path.display()))
-}
-
 /// A TIN type from a tool: ssn, ein, or itin.
 fn parse_tin_type(s: &str) -> Result<ledger_vault::TinType, String> {
     match s.trim().to_lowercase().as_str() {
@@ -2064,93 +1876,6 @@ fn parse_tin_type(s: &str) -> Result<ledger_vault::TinType, String> {
         "itin" => Ok(ledger_vault::TinType::Itin),
         _ => Err("tin_type is ssn, ein, or itin".into()),
     }
-}
-
-/// A TIN type's wire name.
-fn tin_type_key(t: ledger_vault::TinType) -> &'static str {
-    match t {
-        ledger_vault::TinType::Ssn => "ssn",
-        ledger_vault::TinType::Ein => "ein",
-        ledger_vault::TinType::Itin => "itin",
-    }
-}
-
-/// The books' name for a vault TIN's type.
-fn tin_kind(t: ledger_vault::TinType) -> ledger_core::TinType {
-    match t {
-        ledger_vault::TinType::Ssn => ledger_core::TinType::Ssn,
-        ledger_vault::TinType::Ein => ledger_core::TinType::Ein,
-        ledger_vault::TinType::Itin => ledger_core::TinType::Itin,
-    }
-}
-
-/// The full TIN the vault holds for a party, checked against what the
-/// books record of it; else why not, in words for a worksheet's note (the
-/// note never holds more than a last four).
-///
-/// ```text
-/// GOAL: a worksheet for the CPA carries a TIN only when the vault and the
-///       books agree on it, and says why when it can't.
-/// INVARIANTS:
-///   1. The party's TIN facts, when on file, have the vault TIN's type and
-///      last four, and the record's hash when they name one.
-///   2. Its W-9 facts, when on file, have the vault TIN's last four; with
-///      no TIN facts, the W-9 facts' vault record is the record's hash.
-///   3. A vault that can't be opened or read, or holds no TIN for the
-///      party, is a note, never an error (a package never fails on it).
-/// ```
-fn vault_tin(
-    ledger: &Ledger,
-    vault: &Result<ledger_vault::Vault, String>,
-    party: ledger_core::PartyId,
-) -> Result<ledger_vault::Tin, String> {
-    let vault = vault.as_ref().map_err(String::clone)?;
-    let t = vault
-        .tin(party)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| {
-            "TIN not in the vault: record it with books.set_tin (or books.set_w9 tin, from the W-9)"
-                .to_string()
-        })?;
-    let hash = vault.record_hash(party).ok().flatten();
-    let p = ledger.get_party(party);
-    let (facts, w9) = (
-        p.and_then(|p| p.tin.as_ref()),
-        p.and_then(|p| p.w9.as_ref()),
-    );
-    if facts.is_none() && w9.is_none() {
-        return Err(
-            "the vault holds a TIN but the books have no record of it: record it again with books.set_tin"
-                .into(),
-        );
-    }
-    if let Some(f) = facts {
-        if f.last4 != t.last4() || f.tin_type != tin_kind(t.kind) {
-            return Err(format!(
-                "the vault's TIN ({}, ending {}) isn't the one the books record ({}, ending {}): record the right one with books.set_tin",
-                tin_type_key(t.kind),
-                t.last4(),
-                f.tin_type.key(),
-                f.last4
-            ));
-        }
-        if f.vault_record.is_some() && f.vault_record != hash {
-            return Err("the vault record isn't the one the books recorded: record the TIN again with books.set_tin".into());
-        }
-    }
-    if let Some(f) = w9 {
-        if f.tin_last4 != t.last4() {
-            return Err(format!(
-                "the vault's TIN ends in {}, the W-9 facts say {}: check the W-9 and fix with books.set_w9",
-                t.last4(),
-                f.tin_last4
-            ));
-        }
-        if facts.is_none() && f.vault_record.is_some() && f.vault_record != hash {
-            return Err("the vault record isn't the one the books recorded: check the W-9 and record it again with books.set_w9 tin".into());
-        }
-    }
-    Ok(t)
 }
 
 /// Parse role names (`Role::key`), refusing any unknown one.
@@ -2533,10 +2258,6 @@ fn this_year() -> i32 {
     chrono::Datelike::year(&today())
 }
 
-fn form_1099_label(form: Option<ledger_core::Form1099>) -> Option<String> {
-    form.map(|f| f.label().to_string())
-}
-
 /// Resolve a class by id or name; a number that is one class's id and
 /// another's name is refused (INVARIANT 6).
 fn resolve_class(store: &Store, class: &str) -> Result<u32, String> {
@@ -2554,29 +2275,6 @@ fn resolve_class(store: &Store, class: &str) -> Result<u32, String> {
             "unknown class {class:?}: use an id or name from books.list_classes"
         )),
     }
-}
-
-/// A money amount as a decimal string with at least two places: "0.00",
-/// "207.68", "1000.00". Padding only, never rounding: an exact amount with
-/// more places (an FX-converted line) keeps them. Never "-0".
-fn money(n: Decimal) -> String {
-    let mut n = if n.is_zero() { Decimal::ZERO } else { n };
-    if n.scale() < 2 {
-        n.rescale(2);
-    }
-    n.to_string()
-}
-
-/// A member's share as the K-1 worksheet prints it: at least two places,
-/// however it was written ("50%", "0.5" and "0.500" all print "0.50"; a
-/// share of a third keeps its places). The printed text depends on the
-/// share, never on its spelling.
-fn share_text(n: Decimal) -> String {
-    let mut n = n.normalize();
-    if n.scale() < 2 {
-        n.rescale(2);
-    }
-    n.to_string()
 }
 
 /// Preview lines with resulting balances for raw (account, side, amount) lines.
@@ -2646,52 +2344,6 @@ fn preview_receipts(store: &Store, entry_id: u64) -> Result<Vec<PreviewReceipt>,
             sha256: a.blob_sha,
         })
         .collect())
-}
-
-/// Build the cash flow statement from account codes, as the exports need it:
-/// `start` defaults to the beginning of time, `end` to today, and at least
-/// one cash account is required (the statement reconciles to them).
-fn cash_flow_statement(
-    ledger: &Ledger,
-    start: Option<&str>,
-    end: Option<&str>,
-    cash_codes: &[String],
-    financing_codes: &[String],
-    investing_codes: &[String],
-) -> Result<ledger_core::reports::CashFlowStatement, String> {
-    let resolve = |codes: &[String], what: &str| -> Result<Vec<AccountId>, String> {
-        codes
-            .iter()
-            .map(|code| {
-                ledger
-                    .chart()
-                    .find_by_code(code)
-                    .map(|a| a.id)
-                    .ok_or_else(|| format!("unknown {what} account code: {code}"))
-            })
-            .collect()
-    };
-    let cash_accounts = resolve(cash_codes, "cash")?;
-    if cash_accounts.is_empty() {
-        return Err(
-            "cash_accounts is required for the cash flow statement (pass it, or set the books' cash accounts setting: books.settings shows it)"
-                .to_string(),
-        );
-    }
-    let financing_accounts = resolve(financing_codes, "financing")?;
-    let investing_accounts = resolve(investing_codes, "investing")?;
-    let (start, end) = statement_range(ledger, start, end)?;
-    ledger_core::cash_flow(
-        ledger,
-        &ledger_core::CashFlowParams {
-            start,
-            end,
-            cash_accounts,
-            financing_accounts,
-            investing_accounts,
-        },
-    )
-    .map_err(|e| e.to_string())
 }
 
 /// Net movement of one account over entries in `[from, to]`, normal side.
@@ -2779,22 +2431,7 @@ fn statement_range(
     start: Option<&str>,
     end: Option<&str>,
 ) -> Result<(NaiveDate, NaiveDate), String> {
-    let end = match end {
-        Some(s) => parse_date(s)?,
-        None => today(),
-    };
-    let start = match start {
-        Some(s) => parse_date(s)?,
-        None => ledger
-            .posted_entries()
-            .map(|e| e.date())
-            .min()
-            .map_or(end, |first| first.min(end)),
-    };
-    if end < start {
-        return Err("end is before start".to_string());
-    }
-    Ok((start, end))
+    ledger_package::statement_range(ledger, start, end, today())
 }
 
 fn schedule_out(ledger: &Ledger, s: &ledger_core::AmortizationSchedule) -> ScheduleOut {
@@ -2858,8 +2495,7 @@ fn pnl_statement(
     end: Option<&str>,
     class_id: Option<ledger_core::ClassId>,
 ) -> Result<ledger_core::ProfitAndLossStatement, String> {
-    let (start, end) = statement_range(ledger, start, end)?;
-    ledger_core::profit_and_loss_for_period(ledger, start, end, class_id).map_err(|e| e.to_string())
+    ledger_package::pnl_statement(ledger, start, end, class_id, today())
 }
 
 /// Balance sheet as of a date (default today).
@@ -2867,11 +2503,7 @@ fn bs_statement(
     ledger: &Ledger,
     as_of: Option<&str>,
 ) -> Result<ledger_core::BalanceSheetStatement, String> {
-    let as_of = match as_of {
-        Some(s) => parse_date(s)?,
-        None => today(),
-    };
-    ledger_core::balance_sheet_as_of(ledger, as_of).map_err(|e| e.to_string())
+    ledger_package::bs_statement(ledger, as_of, today())
 }
 
 fn lines_out(lines: &[ledger_core::StatementLine]) -> Vec<StatementLineOut> {
@@ -4117,7 +3749,7 @@ impl BooksServer {
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn show(&self, params: Parameters<ShowParams>) -> Result<Json<ShowOut>, String> {
-        use ledger_store::viewer::{ViewerTarget, request};
+        use ledger_store::ops::{ViewerTarget, request, viewer_open};
         let p = params.0;
         let store = self.lock()?;
         let ledger = store.ledger();
@@ -4300,11 +3932,19 @@ impl BooksServer {
             )
         };
         request(store.data_dir(), target).map_err(|e| format!("couldn't reach the viewer: {e}"))?;
+        // Whether a viewer has these books open (ledger_store::ops
+        // INVARIANT 3): it shows it now; else it will when opened soon.
+        let open = viewer_open(store.data_dir());
         Ok(Json(ShowOut {
             shown: shown.clone(),
-            note: format!(
-                "Sent to the viewer: {shown}. If it isn't open, ask the human to open the viewer (within a couple of minutes, it opens right there)."
-            ),
+            viewer_open: open,
+            note: if open {
+                format!("The viewer shows {shown}.")
+            } else {
+                format!(
+                    "No viewer has these books open: ask the human to open it (opened within a couple of minutes, it shows {shown})."
+                )
+            },
         }))
     }
 
@@ -5021,7 +4661,7 @@ impl BooksServer {
     #[tool(
         name = "books.vendor_1099",
         title = "1099 worksheet",
-        description = "1099 worksheet for a calendar year: cash paid to each vendor (credits minus debits to the [books] cash and financing accounts on entries tagged with the vendor, so card payments, which the card processor reports on 1099-K, are excluded; on an entry naming several parties, only the vendor's resolved share of that payment), which vendors are reportable (marked NEC/MISC and paid at least the threshold: $600 through 2025, $2,000 in 2026, indexed for inflation after that), which are missing a W-9, and each payee's TIN last four. include_tins: true adds each payee's full TIN from the TIN vault (or why it can't): only when the human asks for the CPA's worksheet, and never repeat those TINs anywhere else; save_csv_to also writes the worksheet as CSV to a new file outside the books dir. For a year whose threshold wanderbooks doesn't know yet it refuses rather than guess: get the figure from the IRS or the human, pass it as `threshold`, and tell the human, who can report it upstream so the rule is updated for everyone. For the CPA to confirm.",
+        description = "1099 worksheet for a calendar year: cash paid to each vendor (credits minus debits to the [books] cash and financing accounts on entries tagged with the vendor, so card payments, which the card processor reports on 1099-K, are excluded; on an entry naming several parties, only the vendor's resolved share of that payment), which vendors are reportable (marked NEC/MISC and paid at least the threshold: $600 through 2025, $2,000 in 2026, indexed for inflation after that), which are missing a W-9, and each payee's TIN last four. include_tins: true adds each payee's full TIN from the TIN vault (or why it can't), for the CPA's worksheet; csv: true also hands it over as a CSV file (run its download command to save it). For a year whose threshold wanderbooks doesn't know yet it refuses rather than guess: get the figure from the IRS or the human, pass it as `threshold`, and tell the human, who can report it upstream so the rule is updated for everyone. For the CPA to confirm.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -5035,138 +4675,61 @@ impl BooksServer {
         let p = params.0;
         let threshold = p.threshold.as_deref().map(parse_amount).transpose()?;
         let store = self.lock()?;
-        // A year past what wanderbooks knows is refused with guidance
-        // (research or ask, pass `threshold`, then update the rule).
-        let r = vendor_1099_report(store.ledger(), &self.settings(), p.year, threshold)
-            .map_err(|e| e.to_string())?;
-        let missing_w9 = r
-            .vendors
-            .iter()
-            .filter(|v| v.reportable && !v.tin_on_file)
-            .map(|v| v.name.clone())
-            .collect();
-        let untagged = store
-            .ledger()
-            .posted_entries()
-            .filter(|e| {
-                chrono::Datelike::year(&e.date()) == p.year
-                    && store.ledger().entry_vendor(e.id()).is_none()
-            })
-            .count();
-        let mut notes = vec![
-            "Only entries tagged with a vendor count (books.set_entry_vendor; books.pay_bill tags automatically).".to_string(),
-            "Corporations are generally exempt, except attorneys' fees and medical payments; royalties report at $10. Confirm with the CPA.".to_string(),
-        ];
-        if p.year > 2026 {
-            notes.push(format!(
-                "The $2,000 threshold is indexed for inflation after 2026; confirm the {} amount and pass threshold to override.",
-                p.year
-            ));
-        }
-        if untagged > 0 {
-            notes.push(format!(
-                "{untagged} posted entries in {} have no vendor tag; review any that paid contractors or rent.",
-                p.year
-            ));
-        }
-        if !r.unresolved.is_empty() {
-            notes.push(format!(
-                "Entries {} name several parties whose shares don't resolve, so each counts in full toward its vendor: fix the shares with books.set_entry_party.",
-                r.unresolved
-                    .iter()
-                    .map(|id| id.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
-        }
         let ledger = store.ledger();
         // With include_tins, the vault is opened once (never creating a
         // key: a locked vault becomes a note on each line).
         let vault = p.include_tins.then(|| self.open_vault(&store, false));
-        let mut vendors = Vec::new();
-        for v in r.vendors {
-            let party_id = ledger.party_of_vendor(v.vendor_id);
-            let tin_last4 = party_id.and_then(|id| ledger.get_party(id)).and_then(|p| {
-                p.w9.as_ref()
-                    .map(|f| f.tin_last4.clone())
-                    .or_else(|| p.tin.as_ref().map(|t| t.last4.clone()))
-            });
-            let mut line = Vendor1099LineOut {
-                vendor_id: v.vendor_id,
-                name: v.name,
-                form_1099: form_1099_label(v.form),
-                tin_on_file: v.tin_on_file,
-                paid: money(v.paid),
-                reportable: v.reportable,
-                party_id,
-                tin_last4,
-                tin: None,
-                tin_type: None,
-                tin_note: None,
-            };
-            if let Some(vault) = &vault {
-                match party_id.map(|pid| vault_tin(ledger, vault, pid)) {
-                    None => line.tin_note = Some("no party for this vendor".into()),
-                    Some(Err(why)) => line.tin_note = Some(why),
-                    Some(Ok(t)) => {
-                        line.tin = Some(t.formatted());
-                        line.tin_type = Some(tin_type_key(t.kind).to_string());
-                    }
-                }
-            }
-            vendors.push(line);
-        }
+        let tins = vault
+            .as_ref()
+            .map(|vault| move |id| vault_tin(ledger, vault, id));
+        // A year past what wanderbooks knows is refused with guidance
+        // (research or ask, pass `threshold`, then update the rule).
+        let w = ledger_package::vendor_1099_worksheet(
+            ledger,
+            &package_settings(&self.settings()),
+            p.year,
+            threshold,
+            tins.as_ref().map(|f| f as ledger_package::TinSource<'_>),
+        )?;
         let warning = p.include_tins.then(|| {
-            "This worksheet holds full TINs: for the CPA only. Don't paste it into email, chat, notes, or the books; delete any saved copy once the CPA has it."
-                .to_string()
+            "This worksheet holds full TINs, for the CPA; keep it out of the books.".to_string()
         });
-        let saved_csv = match &p.save_csv_to {
-            None => None,
-            Some(path) => {
-                let dest = if p.include_tins {
-                    self.tin_file_dest(&store, path)?
-                } else {
-                    outside_books(&self.layout.books_dir(&store), path)?
-                };
-                let mut csv =
-                    String::from("vendor_id,name,form_1099,paid,reportable,w9_on_file,tin_last4");
-                if p.include_tins {
-                    csv.push_str(",tin,tin_type,tin_note");
-                }
-                csv.push('\n');
-                for l in &vendors {
-                    let mut cells = vec![
-                        l.vendor_id.to_string(),
-                        csv_escape(&l.name),
-                        l.form_1099.clone().unwrap_or_default(),
-                        l.paid.clone(),
-                        l.reportable.to_string(),
-                        l.tin_on_file.to_string(),
-                        l.tin_last4.clone().unwrap_or_default(),
-                    ];
-                    if p.include_tins {
-                        cells.push(l.tin.clone().unwrap_or_default());
-                        cells.push(l.tin_type.clone().unwrap_or_default());
-                        cells.push(csv_escape(l.tin_note.as_deref().unwrap_or_default()));
-                    }
-                    csv.push_str(&cells.join(","));
-                    csv.push('\n');
-                }
+        let csv_file = match p.csv {
+            false => None,
+            true => {
+                let csv = ledger_package::vendor_1099_csv(&w, p.include_tins);
                 if p.include_tins {
                     self.wrote_tins(&store, csv.as_bytes())?;
                 }
-                write_private_new(&dest, csv.as_bytes())?;
-                Some(dest.display().to_string())
+                let name = ledger_package::vendor_1099_csv_name(w.year, p.include_tins);
+                Some(self.hand_over(&book_name(&store), &name, "text/csv", csv.into_bytes())?)
             }
         };
+        let vendors = w
+            .lines
+            .into_iter()
+            .map(|l| Vendor1099LineOut {
+                vendor_id: l.vendor_id,
+                name: l.name,
+                form_1099: l.form_1099,
+                tin_on_file: l.tin_on_file,
+                paid: money(l.paid),
+                reportable: l.reportable,
+                party_id: l.party_id,
+                tin_last4: l.tin_last4,
+                tin: l.tin,
+                tin_type: l.tin_type,
+                tin_note: l.tin_note,
+            })
+            .collect();
         Ok(Json(Vendor1099Out {
-            year: r.year,
-            threshold: money(r.threshold),
+            year: w.year,
+            threshold: money(w.threshold),
             vendors,
-            missing_w9,
-            notes,
+            missing_w9: w.missing_w9,
+            notes: w.notes,
             warning,
-            saved_csv,
+            csv: csv_file,
         }))
     }
 
@@ -5898,36 +5461,8 @@ impl BooksServer {
     /// the rest follow their wanderbooks type (other current asset, other
     /// current liability, equity, income, expense).
     fn export_iif(&self) -> Result<String, String> {
-        use ledger_import::{QbAccountType as Qb, iif_accounts, journal_to_iif};
         let store = self.lock()?;
-        let ledger = store.ledger();
-        let fixed: std::collections::HashSet<AccountId> = ledger
-            .registered_assets()
-            .flat_map(|a| [a.cost_account, a.accum_depr_account])
-            .collect();
-        let receivables = ledger.role_account(&ledger_core::RECEIVABLES);
-        let payables = ledger.role_account(&ledger_core::PAYABLES);
-        let accounts = iif_accounts(ledger, |a| {
-            if self.settings().roles.cash.contains(&a.code) {
-                Qb::Bank
-            } else if Some(a.id) == receivables {
-                Qb::AccountsReceivable
-            } else if Some(a.id) == payables {
-                Qb::AccountsPayable
-            } else if fixed.contains(&a.id) {
-                Qb::FixedAsset
-            } else {
-                match a.account_type {
-                    AccountType::Asset => Qb::OtherCurrentAsset,
-                    AccountType::Liability => Qb::OtherCurrentLiability,
-                    AccountType::Equity => Qb::Equity,
-                    AccountType::Revenue => Qb::Income,
-                    AccountType::Expense => Qb::Expense,
-                }
-            }
-        });
-        let entries: Vec<_> = ledger.posted_entries().collect();
-        journal_to_iif(&accounts, &entries).map_err(|e| e.to_string())
+        ledger_package::export_iif(store.ledger(), &self.settings().roles.cash)
     }
 
     // ------------------------------------------------------------------
@@ -7377,22 +6912,22 @@ impl BooksServer {
     /// ```text
     /// GOAL: hand the human (for the CPA) the signed W-9 the vault keeps,
     ///       without it passing through the books or the conversation.
-    /// SOURCE: docs/parties-and-attachments.md "The TIN vault".
+    /// SOURCE: docs/parties-and-attachments.md "The TIN vault"; D-29.
     /// INVARIANTS:
-    ///   1. The file is written only to the path given, outside the books
-    ///      dir, as a new file readable by its owner only; the output is
-    ///      the path, never the contents.
+    ///   1. The file is handed over (tools/files.rs INVARIANT 6: an export
+    ///      for the caller's token, or inline over stdio), never written
+    ///      to a path; a name kept before names were checked is made
+    ///      plain, never refused. It is recorded (tin_files.rs) first, so
+    ///      it is never filed back into the books.
     ///   2. Nothing is journaled.
     /// SCENARIOS:
-    ///   1. IF the path is inside the books dir, exists, or its folder
-    ///      doesn't: SHOULD refuse.
-    ///   2. IF the vault is locked or holds no W-9 file for the party:
+    ///   1. IF the vault is locked or holds no W-9 file for the party:
     ///      SHOULD refuse, saying which.
     /// ```
     #[tool(
         name = "books.get_w9",
         title = "Write out a W-9",
-        description = "Write a party's signed W-9 file from the TIN vault to a local path (save_to: a new file outside the books dir, since the form shows the full TIN) and return the path, never the contents. Give the human the path; never open, read, or attach the file yourself. Nothing is journaled.",
+        description = "A party's signed W-9 file from the TIN vault, for the CPA or the human: run the download command it returns to save it in a folder (books served by `wanderbooks mcp`; over stdio it comes back inline). Never file it into the books (it shows the full TIN). Nothing is journaled.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -7403,7 +6938,6 @@ impl BooksServer {
         let p = params.0;
         let store = self.lock()?;
         let id = resolve_party(&store, &p.party)?;
-        let dest = self.tin_file_dest(&store, &p.save_to)?;
         let file = self
             .open_vault(&store, false)?
             .w9(id)
@@ -7414,16 +6948,15 @@ impl BooksServer {
                 )
             })?;
         self.wrote_tins(&store, &file.bytes)?;
-        write_private_new(&dest, &file.bytes)?;
+        let handed = self.hand_over(
+            &book_name(&store),
+            &file.file_name,
+            &file.mime_type,
+            file.bytes,
+        )?;
         Ok(Json(GetW9Out {
             party_id: id,
-            path: dest.display().to_string(),
-            file_name: file.file_name,
-            size_bytes: file.bytes.len() as u64,
-            note: format!(
-                "Saved {} (readable by you only). It shows the full TIN: give it to the CPA, keep it out of the books, email, and chat, and delete it when done.",
-                dest.display()
-            ),
+            file: handed,
         }))
     }
 
@@ -8430,10 +7963,11 @@ impl BooksServer {
     /// SOURCE: docs/mcp-interface.md; B-26; DECISION (owner,
     ///         2026-10-15): "it needs to be in the damn CPA package."
     /// INVARIANTS:
-    ///   1. With include_tins (the default) the zip is only ever written to
-    ///      save_to, a new file outside the books dir (0600), and the output
-    ///      is its path, never its bytes; without save_to it is refused.
-    ///      include_tins false: last fours only, base64 unless save_to.
+    ///   1. The zip is handed over (tools/files.rs INVARIANT 6: an export
+    ///      the caller fetches, or inline over stdio), never written to a
+    ///      path; with include_tins (the default) it and each file in it
+    ///      holding a TIN are recorded (tin_files.rs), so none is filed back
+    ///      in. include_tins false: last fours only.
     ///   2. With members, k1-members.csv has one row per [[company.members]]
     ///      member: name, party, share, capital account, TIN and type, and
     ///      the K-1 worksheet's capital figures (ledger_core::k1) for the
@@ -8447,7 +7981,7 @@ impl BooksServer {
     #[tool(
         name = "books.export_cpa_package",
         title = "CPA handoff package",
-        description = "Build the CPA handoff package as a zip: the profit and loss, balance sheet, cash flow, statement of changes in members' equity (multi-member LLCs), tax summary, and trial balance, each as PDF and XLSX; the fixed asset register as PDF and XLSX when there are fixed assets; the general ledger (by account) and general journal (entry by entry) as XLSX; the journal as IIF (imports into QuickBooks Desktop); the 1099 worksheet as CSV; with members, the K-1 worksheet (k1-members.csv: per member their party, share, capital account, TIN, and beginning capital, contributions in cash and in property, share of income, distributions, and ending capital for the fiscal year to date); every receipt behind the year's entries, filed on them or linked to them (receipts/, with an index.csv tying each file to its entry) and the company's documents (documents/), unless include_receipts is false; and a README with the journal's verified hash. By default (include_tins) the K-1 and 1099 worksheets carry every member's and payee's full TIN from the TIN vault, so the package is saved, never returned: save_to (a new .zip path or an existing folder, outside the books dir) is required, and the output gives only its path; tell the human where it is and never open, attach, or copy it. A locked vault or a missing TIN doesn't stop the package: tin_gaps lists each one (collect them with books.set_tin or books.set_w9 and export again). include_tins: false builds it with last fours only, returned as base64 unless save_to is given. cash_accounts (e.g. [\"1000\"]) is required: the cash flow statement reconciles to them. as_of defaults to today; period reports cover the fiscal year to date.",
+        description = "Build the CPA handoff package as a zip: the profit and loss, balance sheet, cash flow, statement of changes in members' equity (multi-member LLCs), tax summary, and trial balance, each as PDF and XLSX; the fixed asset register as PDF and XLSX when there are fixed assets; the general ledger (by account) and general journal (entry by entry) as XLSX; the journal as IIF (imports into QuickBooks Desktop); the 1099 worksheet as CSV; with members, the K-1 worksheet (k1-members.csv: per member their party, share, capital account, TIN, and beginning capital, contributions in cash and in property, share of income, distributions, and ending capital for the fiscal year to date); every receipt behind the year's entries, filed on them or linked to them (receipts/, with an index.csv tying each file to its entry) and the company's documents (documents/), unless include_receipts is false; and a README with the journal's verified hash. By default (include_tins) the K-1 and 1099 worksheets carry every member's and payee's full TIN from the TIN vault; include_tins: false, last fours only. The zip is handed over: run its download command to save it in a folder (books served by `wanderbooks mcp`; over stdio it comes back inline). Never file it into the books. A locked vault or a missing TIN doesn't stop the package: tin_gaps lists each one (collect them with books.set_tin or books.set_w9 and export again). cash_accounts (e.g. [\"1000\"]) is required: the cash flow statement reconciles to them. as_of defaults to today; period reports cover the fiscal year to date.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -8458,538 +7992,65 @@ impl BooksServer {
         &self,
         params: Parameters<ExportCpaPackageParams>,
     ) -> Result<Json<ExportCpaPackageOut>, String> {
-        use ledger_import::{XlsxReport, report, report_to_xlsx, statement_pdf};
         let p = params.0;
         let as_of = match &p.as_of {
             Some(s) => parse_date(s)?,
             None => today(),
         };
-        // A package with full TINs is only ever a file outside the books,
-        // never tool output (INVARIANT 1).
-        if p.include_tins && p.save_to.is_none() {
-            return Err(
-                "the CPA package carries every member's and 1099 payee's full TIN (include_tins, the default), so it is saved, never returned: pass save_to, a new .zip path or an existing folder outside the books dir, then tell the human where it is. (include_tins: false builds one with last fours only, returned as base64.)"
-                    .into(),
-            );
-        }
-        let file_name = format!("cpa-package-{as_of}.zip");
         let store = self.lock()?;
-        let dest = p
-            .save_to
-            .as_deref()
-            .map(|to| {
-                package_dest(
-                    &self.layout.books_dir(&store),
-                    to,
-                    &file_name,
-                    // In the data root nothing is ever written, TINs or not.
-                    p.include_tins || matches!(*self.layout, Layout::Root(_)),
-                )
-            })
-            .transpose()?;
-        let meta = self.report_meta(&store);
-        let ledger = store.ledger();
+        let book = book_name(&store);
         // The vault, opened once and never creating a key: locked, each
         // TIN row says so and the package is built anyway (INVARIANT 3).
         let vault = p.include_tins.then(|| self.open_vault(&store, false));
-        let mut tin_gaps: Vec<String> = Vec::new();
-
-        // Fiscal year to date, per wanderbooks.toml's fiscal_year_start.
-        let (fy_start, _) = self.settings().company.fiscal_year_containing(as_of);
-        let (fy_start, as_of_s) = (fy_start.to_string(), as_of.to_string());
-        let xlsx = |r: XlsxReport<'_>| report_to_xlsx(&r, &meta).map_err(|e| e.to_string());
-        let pdf =
-            |st: &ledger_import::Statement| statement_pdf(st, &meta).map_err(|e| e.to_string());
-        let fy = NaiveDate::parse_from_str(&fy_start, "%Y-%m-%d").map_err(|e| e.to_string())?;
-        let members = self.report_members();
-
-        // The financial statements, each as PDF and XLSX.
-        let mut statements: Vec<(&str, ledger_import::Statement)> = vec![
-            (
-                "profit-and-loss",
-                report::profit_and_loss(&pnl_statement(
-                    ledger,
-                    Some(&fy_start),
-                    Some(&as_of_s),
-                    None,
-                )?),
-            ),
-            (
-                "balance-sheet",
-                report::balance_sheet(
-                    &bs_statement(ledger, Some(&as_of_s))?,
-                    self.year_earnings(ledger, as_of)?,
-                    &members,
-                ),
-            ),
-            (
-                "cash-flow",
-                report::cash_flow(
-                    &self.cash_flow_for(
-                        ledger,
-                        Some(&fy_start),
-                        Some(&as_of_s),
-                        &p.cash_accounts,
-                        &p.financing_accounts,
-                        &p.investing_accounts,
-                    )?,
-                    &members,
-                ),
-            ),
-        ];
-        let mut k1_csv: Option<(String, Vec<u8>)> = None;
-        if !self.settings().company.members.is_empty() {
-            let capitals = self.member_capitals(ledger)?;
-            let me = ledger_core::members_equity(ledger, fy, as_of, &capitals)
-                .map_err(|e| e.to_string())?;
-            statements.push(("members-equity", report::members_equity(&me)));
-            // The K-1 worksheet: each member's capital account for the
-            // year (Schedule K-1 Item L) and their TIN (INVARIANT 2).
-            let cash_codes = if p.cash_accounts.is_empty() {
-                &self.settings().roles.cash
-            } else {
-                &p.cash_accounts
-            };
-            let cash: Vec<AccountId> = cash_codes
-                .iter()
-                .filter_map(|c| ledger.chart().find_by_code(c).map(|a| a.id))
-                .collect();
-            k1_csv = Some(
-                match ledger_core::k1::k1_worksheet(ledger, fy, as_of, &capitals, &cash) {
-                    Ok(rows) => {
-                        let mut w = String::from("member,party_id,share,capital_account,");
-                        w.push_str(if p.include_tins {
-                            "tin,tin_type,tin_note,"
-                        } else {
-                            "tin_last4,tin_type,"
-                        });
-                        w.push_str("beginning_capital,contributions_cash,contributions_property,net_income,distributions,other,ending_capital\n");
-                        for (row, m) in rows.iter().zip(&self.settings().company.members) {
-                            let party = ledger_core::k1::member_party(ledger, &m.name);
-                            let facts = party
-                                .and_then(|id| ledger.get_party(id))
-                                .and_then(|p| p.tin.clone());
-                            let mut cells = vec![
-                                csv_escape(&m.name),
-                                party.map(|id| id.to_string()).unwrap_or_default(),
-                                share_text(m.share),
-                                m.capital_account.clone(),
-                            ];
-                            match &vault {
-                                Some(vault) => {
-                                    let got = match party {
-                                        None => Err(format!(
-                                            "TIN not in the vault: no party named {:?} with the member role (books.add_party with role member, or books.set_party_roles, then books.set_tin)",
-                                            m.name
-                                        )),
-                                        Some(id) => vault_tin(ledger, vault, id),
-                                    };
-                                    match got {
-                                        Ok(t) => {
-                                            cells.push(t.formatted());
-                                            cells.push(tin_type_key(t.kind).into());
-                                            cells.push(String::new());
-                                        }
-                                        Err(why) => {
-                                            tin_gaps.push(format!("member {}: {why}", m.name));
-                                            cells.push(String::new());
-                                            cells.push(
-                                                facts
-                                                    .map(|f| f.tin_type.key().to_string())
-                                                    .unwrap_or_default(),
-                                            );
-                                            cells.push(csv_escape(&why));
-                                        }
-                                    }
-                                }
-                                None => {
-                                    cells.push(
-                                        facts.as_ref().map(|f| f.last4.clone()).unwrap_or_default(),
-                                    );
-                                    cells.push(
-                                        facts
-                                            .map(|f| f.tin_type.key().to_string())
-                                            .unwrap_or_default(),
-                                    );
-                                }
-                            }
-                            for v in [
-                                row.beginning,
-                                row.contributions_cash,
-                                row.contributions_property,
-                                row.net_income,
-                                row.distributions,
-                                row.other,
-                                row.ending,
-                            ] {
-                                cells.push(money(v));
-                            }
-                            w.push_str(&cells.join(","));
-                            w.push('\n');
-                        }
-                        // The members together: ties to the 1065's Schedule L
-                        // capital and the statement of members' equity. Not
-                        // a K-1 (each member gets their own).
-                        if rows.len() > 1 {
-                            let sum = |f: fn(&ledger_core::k1::K1Row) -> Decimal| {
-                                rows.iter().map(f).sum::<Decimal>()
-                            };
-                            let share: Decimal = self
-                                .settings()
-                                .company
-                                .members
-                                .iter()
-                                .map(|m| m.share)
-                                .sum();
-                            let mut cells = vec![
-                                csv_escape("Total, all members (not a K-1)"),
-                                String::new(),
-                                share_text(share),
-                                String::new(),
-                                String::new(),
-                                String::new(),
-                            ];
-                            if p.include_tins && vault.is_some() {
-                                cells.push(String::new());
-                            }
-                            for v in [
-                                sum(|r| r.beginning),
-                                sum(|r| r.contributions_cash),
-                                sum(|r| r.contributions_property),
-                                sum(|r| r.net_income),
-                                sum(|r| r.distributions),
-                                sum(|r| r.other),
-                                sum(|r| r.ending),
-                            ] {
-                                cells.push(money(v));
-                            }
-                            w.push_str(&cells.join(","));
-                            w.push('\n');
-                        }
-                        ("k1-members.csv".into(), w.into_bytes())
-                    }
-                    Err(e) => (
-                        "k1-members-NOT-INCLUDED.txt".into(),
-                        format!("{e}\n").into_bytes(),
-                    ),
-                },
-            );
-        }
-        statements.push((
-            "tax-summary",
-            report::tax_summary(
-                &ledger_core::tax_summary(ledger, fy, as_of, self.settings().company.tax_form)
-                    .map_err(|e| e.to_string())?,
-            ),
-        ));
-        statements.push((
-            "trial-balance",
-            report::trial_balance(&reports::trial_balance_as_of(ledger, as_of), as_of),
-        ));
-        let mut files: Vec<(String, Vec<u8>)> = Vec::new();
-        for (name, st) in &statements {
-            files.push((format!("{name}.pdf"), pdf(st)?));
-            files.push((format!("{name}.xlsx"), xlsx(XlsxReport::Statement(st))?));
-        }
-        // The fixed asset register, when there are fixed assets.
-        if ledger.registered_assets().next().is_some() {
-            let r = ledger_core::fixed_asset_register(ledger, as_of).map_err(|e| e.to_string())?;
-            files.push((
-                "fixed-asset-register.pdf".into(),
-                ledger_import::asset_register_pdf(&r, &meta).map_err(|e| e.to_string())?,
-            ));
-            files.push((
-                "fixed-asset-register.xlsx".into(),
-                ledger_import::asset_register_xlsx(&r, &meta).map_err(|e| e.to_string())?,
-            ));
-        }
-        // The books behind them: by account, and entry by entry.
-        let gl = ledger_core::general_ledger(ledger, fy, as_of).map_err(|e| e.to_string())?;
-        files.push((
-            "general-ledger.xlsx".into(),
-            xlsx(XlsxReport::GeneralLedger(&gl))?,
-        ));
-        files.push((
-            "general-journal.xlsx".into(),
-            xlsx(XlsxReport::GeneralJournal(ledger, fy, as_of))?,
-        ));
-        // 1099 worksheet for the calendar year of as_of.
-        let year = chrono::Datelike::year(&as_of);
-        match vendor_1099_report(ledger, &self.settings(), year, None) {
-            Ok(r1099) => {
-                let mut w = String::from("vendor,form,w9_on_file,paid,reportable");
-                if vault.is_some() {
-                    w.push_str(",party_id,tin_last4,tin,tin_type,tin_note");
-                }
-                w.push('\n');
-                for v in &r1099.vendors {
-                    w.push_str(&format!(
-                        "\"{}\",{},{},{},{}",
-                        v.name.replace('"', "\"\""),
-                        v.form.map(|f| f.label()).unwrap_or(""),
-                        v.tin_on_file,
-                        money(v.paid),
-                        v.reportable
-                    ));
-                    // The payee's full TIN from the vault (INVARIANT 2).
-                    if let Some(vault) = &vault {
-                        let party = ledger.party_of_vendor(v.vendor_id);
-                        let last4 = party.and_then(|id| ledger.get_party(id)).and_then(|p| {
-                            p.w9.as_ref()
-                                .map(|f| f.tin_last4.clone())
-                                .or_else(|| p.tin.as_ref().map(|t| t.last4.clone()))
-                        });
-                        let got = match party {
-                            None => Err("TIN not in the vault: no party for this vendor".into()),
-                            Some(id) => vault_tin(ledger, vault, id),
-                        };
-                        let (tin, kind, note) = match got {
-                            Ok(t) => (
-                                t.formatted(),
-                                tin_type_key(t.kind).to_string(),
-                                String::new(),
-                            ),
-                            Err(why) => {
-                                if v.reportable {
-                                    tin_gaps.push(format!("1099 payee {}: {why}", v.name));
-                                }
-                                (String::new(), String::new(), why)
-                            }
-                        };
-                        w.push_str(&format!(
-                            ",{},{},{tin},{kind},{}",
-                            party.map(|id| id.to_string()).unwrap_or_default(),
-                            last4.unwrap_or_default(),
-                            csv_escape(&note)
-                        ));
-                    }
-                    w.push('\n');
-                }
-                files.push((format!("1099-worksheet-{year}.csv"), w.into_bytes()));
-            }
-            // The threshold isn't known for this year: never guess it
-            // (rules.md B-19); say so in the package instead.
-            Err(e) => files.push((
-                format!("1099-worksheet-{year}-NOT-INCLUDED.txt"),
-                format!("{e}\n").into_bytes(),
-            )),
-        }
-        // The evidence: every current file behind the year's posted
-        // entries, filed on them or linked to them (a file linked to an
-        // entry counts as its receipt), one copy per entry with a row in
-        // the index; and the company's documents, the files behind no
-        // entry.
-        let mut receipt_count = 0;
-        if p.include_receipts {
-            let clean = |s: &str| -> String {
-                s.chars()
-                    .map(|c| {
-                        if c.is_alphanumeric() || ".-_ ".contains(c) {
-                            c
-                        } else {
-                            '_'
-                        }
-                    })
-                    .collect()
-            };
-            let mut index = String::from("entry_id,date,description,amount,file,sha256\n");
-            for a in store.list_attachments(None).map_err(|e| e.to_string())? {
-                if a.withdrawn_at.is_some() {
-                    continue;
-                }
-                let mut behind: Vec<u64> = a.entry_id.into_iter().collect();
-                for sub in store.attachment_links(a.id).map_err(|e| e.to_string())? {
-                    if let ledger_store::Subject::Entry(e) = sub
-                        && !behind.contains(&e)
-                    {
-                        behind.push(e);
-                    }
-                }
-                behind.sort_unstable();
-                let bytes = store.attachment_bytes(a.id).map_err(|e| e.to_string())?;
-                if behind.is_empty() {
-                    if a.category != "receipts" {
-                        files.push((
-                            format!("documents/{}/{}", clean(&a.category), clean(&a.file_name)),
-                            bytes,
-                        ));
-                    }
-                    continue;
-                }
-                for e in behind.iter().filter_map(|&e| ledger.get_entry(e)) {
-                    if e.status() != ledger_core::EntryStatus::Posted
-                        || e.date() < fy
-                        || e.date() > as_of
-                    {
-                        continue;
-                    }
-                    let name = format!(
-                        "receipts/{}-entry-{}-{}",
-                        e.date(),
-                        e.id(),
-                        clean(&a.file_name)
-                    );
-                    let amount: Decimal = e
-                        .lines()
-                        .iter()
-                        .filter(|l| l.side == Side::Debit)
-                        .map(|l| l.amount.amount)
-                        .sum();
-                    index.push_str(&format!(
-                        "{},{},\"{}\",{},{},{}\n",
-                        e.id(),
-                        e.date(),
-                        e.description().replace('"', "\"\""),
-                        money(amount),
-                        name,
-                        a.blob_sha
-                    ));
-                    files.push((name, bytes.clone()));
-                    receipt_count += 1;
-                }
-            }
-            files.push(("receipts/index.csv".into(), index.into_bytes()));
-        }
-        if let Some(k1) = k1_csv {
-            files.push(k1);
-        }
-        let seq = store.journal_seq();
-        let vault_dir = self.vault_dir(&store);
+        let ledger = store.ledger();
+        let tins = vault
+            .as_ref()
+            .map(|vault| move |id| vault_tin(ledger, vault, id));
+        // Built from the books under the lock, written nowhere
+        // (ledger_package INVARIANT 1).
+        let package = ledger_package::build_package(
+            &*store,
+            &package_settings(&self.settings()),
+            &ledger_package::PackageRequest {
+                as_of,
+                prepared_on: today(),
+                cash_accounts: &p.cash_accounts,
+                financing_accounts: &p.financing_accounts,
+                investing_accounts: &p.investing_accounts,
+                include_receipts: p.include_receipts,
+                tins: tins.as_ref().map(|f| f as ledger_package::TinSource<'_>),
+            },
+        )?;
+        let vault_dir = if p.include_tins {
+            self.tin_record_dir(&store)?
+        } else {
+            self.vault_dir(&store)
+        };
         drop(store);
-        files.push((
-            "general-journal.iif".into(),
-            self.export_iif()?.into_bytes(),
-        ));
-        let readme = format!(
-            "{name} — books package for the CPA\n\nFiscal year to date: {fy_start} through {as_of_s}. {basis} basis.\nKept in wanderbooks: double-entry books from an append-only, hash-chained journal ({seq} events, verified).\n\nStatements (PDF and XLSX): profit and loss, balance sheet, cash flow, {members}tax summary, trial balance.\nLedgers (XLSX): general ledger by account; general journal entry by entry.\ngeneral-journal.iif: every posted entry, for import into QuickBooks Desktop.\n1099-worksheet-{year}.csv: cash paid per vendor marked for a 1099, against the year's threshold{payee_tins}.\n{k1}{receipts}{tins}\nThe tax summary maps accounts to return categories; it's a worksheet, not a filing. Questions go to the owners, who can ask their bookkeeping agent to trace any number to its entries and receipts.\n",
-            name = self.settings().company.name,
-            basis = self.settings().company.basis,
-            members = if self.settings().company.members.is_empty() {
-                ""
-            } else {
-                "members' equity, "
-            },
-            payee_tins = if p.include_tins {
-                ", with each payee's TIN"
-            } else {
-                ""
-            },
-            k1 = if self.settings().company.members.is_empty() {
-                String::new()
-            } else {
-                {
-                    let mut k = format!(
-                        "k1-members.csv: each member's capital account for the year (Schedule K-1 Item L: beginning, contributions in cash and in property, share of income, distributions, ending), with their {}; the last row totals the members (not a K-1) to tie to Schedule L and the statement of members' equity.\n",
-                        if p.include_tins {
-                            "taxpayer ID"
-                        } else {
-                            "taxpayer ID's last four"
-                        }
-                    );
-                    let members = &self.settings().company.members;
-                    for (i, m) in members.iter().enumerate() {
-                        if let Some(j) = &m.files_jointly_with
-                            && members[..i].iter().all(|o| o.name != *j)
-                        {
-                            k.push_str(&format!(
-                                "{} and {j} file a joint individual return: each receives their own Schedule K-1; both are reported on the one Form 1040 (Schedule E, Part II).\n",
-                                m.name
-                            ));
-                        }
-                    }
-                    k
-                }
-            },
-            tins = if p.include_tins {
-                let mut t = String::from(
-                    "\nThis package holds full taxpayer identification numbers: keep it out of email and shared folders, and delete copies once filed.\n",
-                );
-                if !tin_gaps.is_empty() {
-                    t.push_str("TINs not included:\n");
-                    for g in &tin_gaps {
-                        t.push_str(&format!("- {g}\n"));
-                    }
-                }
-                t
-            } else {
-                String::new()
-            },
-            receipts = if p.include_receipts {
-                format!(
-                    "receipts/: the {receipt_count} receipts behind the period's entries; index.csv ties each to its entry, date, amount, and SHA-256.\ndocuments/: the company's formation, legal, and tax documents.\n"
-                )
-            } else {
-                String::new()
-            },
-        );
-        files.insert(0, ("README.txt".into(), readme.into_bytes()));
 
-        // Zip it.
-        let mut zip_buf = Vec::new();
-        {
-            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_buf));
-            let opts = zip::write::SimpleFileOptions::default();
-            for (name, bytes) in &files {
-                zip.start_file(name.as_str(), opts)
-                    .map_err(|e| e.to_string())?;
-                use std::io::Write;
-                zip.write_all(bytes).map_err(|e| e.to_string())?;
+        if p.include_tins {
+            // The zip and each file in it that holds a TIN (the K-1 and
+            // 1099 worksheets): one given back to be filed is refused
+            // (tin_files.rs INVARIANT 1).
+            for (name, bytes) in &package.files {
+                let filed = name.starts_with("receipts/") || name.starts_with("documents/");
+                if !filed && ledger_core::parties::has_full_tin(&String::from_utf8_lossy(bytes)) {
+                    tin_files::record(&vault_dir, bytes)?;
+                }
             }
-            zip.finish().map_err(|e| e.to_string())?;
+            tin_files::record(&vault_dir, &package.zip)?;
         }
-
-        let shown = |path: &std::path::Path| path.display().to_string();
-        let (content_base64, saved_to, note) = match &dest {
-            Some(path) => {
-                if p.include_tins {
-                    // The zip and each file in it that holds a TIN (the
-                    // K-1 and 1099 worksheets): one extracted is refused
-                    // too (tin_files.rs INVARIANT 1).
-                    for (name, bytes) in &files {
-                        let filed = name.starts_with("receipts/") || name.starts_with("documents/");
-                        if !filed
-                            && ledger_core::parties::has_full_tin(&String::from_utf8_lossy(bytes))
-                        {
-                            tin_files::record(&vault_dir, bytes)?;
-                        }
-                    }
-                    tin_files::record(&vault_dir, &zip_buf)?;
-                }
-                write_private_new(path, &zip_buf)?;
-                let note = if p.include_tins {
-                    format!(
-                        "Saved the CPA package to {} (readable by you only). It holds full TINs: tell the human where it is, never open, attach, or copy it into the books, and have them delete it once the CPA has it.{}",
-                        shown(path),
-                        if tin_gaps.is_empty() {
-                            String::new()
-                        } else {
-                            format!(
-                                " {} TIN(s) are missing (tin_gaps): collect them with books.set_tin or books.set_w9 and export again.",
-                                tin_gaps.len()
-                            )
-                        }
-                    )
-                } else {
-                    format!(
-                        "Saved the CPA package to {} (last fours only).",
-                        shown(path)
-                    )
-                };
-                (None, Some(shown(path)), note)
-            }
-            None => (
-                Some(base64::Engine::encode(
-                    &base64::engine::general_purpose::STANDARD,
-                    &zip_buf,
-                )),
-                None,
-                "The package, without full TINs (include_tins false).".to_string(),
+        let tin_gaps = package.tin_gaps;
+        let note = match (p.include_tins, tin_gaps.len()) {
+            (false, _) => "The package, with last fours only.".to_string(),
+            (true, 0) => "The package, with full TINs, for the CPA.".to_string(),
+            (true, n) => format!(
+                "The package, with full TINs, for the CPA. {n} TIN(s) are missing (tin_gaps): collect them with books.set_tin or books.set_w9 and export again."
             ),
         };
+        let file = self.hand_over(&book, &package.file_name, "application/zip", package.zip)?;
         Ok(Json(ExportCpaPackageOut {
-            file_name,
-            content_base64,
-            saved_to,
+            file,
             tins_included: p.include_tins,
             tin_gaps,
             note,
@@ -9485,14 +8546,6 @@ impl BooksServer {
             money(stmt.net_change_in_cash)
         ));
         Ok(csv)
-    }
-}
-
-fn csv_escape(s: &str) -> String {
-    if s.contains([',', '"', '\n']) {
-        format!("\"{}\"", s.replace('"', "\"\""))
-    } else {
-        s.to_string()
     }
 }
 
@@ -10110,40 +9163,6 @@ mod tests {
         }
     }
 
-    /// A date is exactly YYYY-MM-DD, a real day from 0001-01-01 to
-    /// 9999-12-31 (ledger_core::calendar): no sign, no space, no fifth
-    /// year digit, no year 0 (P0 review round 3, S1).
-    #[test]
-    fn dates_are_four_digit_years_and_real_days() {
-        assert_eq!(parse_date("2026-02-28"), Ok(d(2026, 2, 28)));
-        assert_eq!(parse_date("2028-02-29"), Ok(d(2028, 2, 29)));
-        assert_eq!(parse_date("0001-01-01"), Ok(d(1, 1, 1)));
-        assert_eq!(parse_date("9999-12-31"), Ok(d(9999, 12, 31)));
-        for bad in [
-            "0000-01-01",
-            "0000-00-00",
-            "2026-02-29",
-            "2026-02-30",
-            "2026-13-01",
-            "2026-1-05",
-            "2026-01-5",
-            " 2026-01-05",
-            "2026-01-05 ",
-            "+2026-01-05",
-            "-0001-01-01",
-            "+262142-12-31",
-            "-262143-01-01",
-            "99999-12-31",
-            "2026/01/05",
-            "2026-01-05T00:00",
-            "２０２６-01-05",
-            "",
-        ] {
-            let err = parse_date(bad).expect_err(bad);
-            assert!(err.contains("0001-01-01 to 9999-12-31"), "{bad:?}: {err}");
-        }
-    }
-
     /// Settings naming a code are found: cash/financing/investing roles,
     /// close_into, and each member's capital and distributions accounts.
     #[test]
@@ -10331,32 +9350,6 @@ mod tests {
             server.ensure_receipt_not_required(&store, posted).is_err(),
             "a posted entry"
         );
-    }
-
-    #[test]
-    fn money_always_has_cents_and_never_rounds() {
-        let m = |s: &str| money(Decimal::from_str(s).unwrap());
-        assert_eq!(money(Decimal::ZERO), "0.00");
-        assert_eq!(m("-0"), "0.00");
-        assert_eq!(m("1000"), "1000.00");
-        assert_eq!(m("5.8"), "5.80");
-        assert_eq!(m("-207.68"), "-207.68");
-        assert_eq!(m("12.3456"), "12.3456");
-    }
-
-    /// A share prints by its value, never its spelling: at least two
-    /// places, a third keeping its own.
-    #[test]
-    fn a_share_prints_the_same_however_it_was_written() {
-        let t = |s: &str| share_text(Decimal::from_str(s).unwrap());
-        for half in ["0.5", "0.50", "0.500000"] {
-            assert_eq!(t(half), "0.50", "{half}");
-        }
-        assert_eq!(t("1"), "1.00");
-        assert_eq!(t("1.0"), "1.00");
-        assert_eq!(t("0.25"), "0.25");
-        assert_eq!(t("0.3333"), "0.3333");
-        assert_eq!(t("0.125"), "0.125");
     }
 
     /// Every tool says what it is and what it does to the books (plan
@@ -10618,9 +9611,6 @@ mod tests {
             ("STOPPED", STOPPED),
             ("KEY_IN_BOOKS", KEY_IN_BOOKS),
             ("VAULT_IN_HISTORY", VAULT_IN_HISTORY),
-            ("INSIDE_BOOKS", INSIDE_BOOKS),
-            ("NO_FOLDER", NO_FOLDER),
-            ("EXISTS", EXISTS),
             ("tin_files::TIN_FILE", tin_files::TIN_FILE),
             ("tin_files::TIN_HELD", tin_files::TIN_HELD),
             ("tin_files::TIN_PROBE", tin_files::TIN_PROBE),
@@ -10702,9 +9692,7 @@ mod tests {
     /// What `tool_text_lint` finds in one text beyond its fixed list: a
     /// helper command however it ends (`just` as a word before a
     /// backtick, a line break, a tab or the end), and where the books are
-    /// ("beside the books"; "books dir" except in the tools and refusals
-    /// that say a file with a TIN is saved outside it, save_to and
-    /// save_csv_to).
+    /// ("beside the books", "books dir").
     fn helper_or_location(what: &str, text: &str) -> Vec<String> {
         let lower = text.to_lowercase();
         let mut found = Vec::new();
@@ -10721,16 +9709,7 @@ mod tests {
                 "{what} says where the books are: \"beside the books\""
             ));
         }
-        let saves = [
-            "books.vendor_1099",
-            "books.get_w9",
-            "books.export_cpa_package",
-        ]
-        .iter()
-        .any(|t| what == format!("tool {t}"))
-            || lower.contains("save_to")
-            || lower.contains("save_csv_to");
-        if lower.contains("books dir") && !saves {
+        if lower.contains("books dir") {
             found.push(format!("{what} says where the books are: \"books dir\""));
         }
         found
@@ -10752,29 +9731,26 @@ mod tests {
             ("justly", 0),
             ("the file beside the books", 1),
             ("in the books dir", 1),
-            ("save_to: a path outside the books dir", 0),
+            ("a path outside the books dir", 1),
             ("the books directory", 1),
             ("bookshelf", 0),
         ] {
             assert_eq!(helper_or_location("text", text).len(), n, "{text:?}");
         }
-        assert!(helper_or_location("tool books.get_w9", "outside the books dir").is_empty());
+        assert_eq!(
+            helper_or_location("tool books.get_w9", "outside the books dir").len(),
+            1
+        );
         assert_eq!(
             helper_or_location("tool books.chart", "outside the books dir").len(),
             1
         );
     }
 
-    /// No tool takes a path on the server's computer (plan 4.7, D-28):
-    /// files come by upload or inline. The three outputs with full TINs
-    /// keep theirs until the viewer takes them over (P2 slice 6).
+    /// No tool takes a path on the server's computer (plan 4.7, D-28,
+    /// D-29): files come in by upload or inline, and go out as exports.
     #[test]
     fn no_tool_takes_a_path() {
-        const UNTIL_THE_VIEWER: &[(&str, &str)] = &[
-            ("books.export_cpa_package", "save_to"),
-            ("books.vendor_1099", "save_csv_to"),
-            ("books.get_w9", "save_to"),
-        ];
         fn names(v: &serde_json::Value, out: &mut Vec<String>) {
             match v {
                 serde_json::Value::Object(map) => {
@@ -10818,7 +9794,7 @@ mod tests {
                     || lower == "to"
                     || lower == "from"
                     || lower == "source";
-                if pathlike && !UNTIL_THE_VIEWER.contains(&(&*t.name, p.as_str())) {
+                if pathlike {
                     found.push(format!("{} {p}", t.name));
                 }
             }

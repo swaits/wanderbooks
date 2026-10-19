@@ -11,6 +11,7 @@ pub mod data;
 pub mod demo;
 pub mod export;
 pub mod fmt;
+pub mod menu;
 pub mod nav;
 pub mod pages;
 pub mod palette;
@@ -62,23 +63,41 @@ impl std::error::Error for Exit {}
 /// `wanderbooks gui`). It opens the books read-only and returns when the
 /// window closes. An unknown argument returns [`Exit`] (code 2).
 ///
-/// `ledger-gui [--data-dir PATH] [--books-toml PATH] [--vault-key-file PATH] [--today YYYY-MM-DD] [--demo]`:
-/// with no flags it looks for `books-data/` and `wanderbooks.toml` in the
-/// current directory; `--demo` builds a demo company in a temp directory
-/// and opens that.
+/// `ledger-gui [--root PATH] [--book ID] [--data-dir PATH [--books-toml PATH] [--vault-key-file PATH]] [--today YYYY-MM-DD] [--demo]`:
+/// a book of the data root (plan 3.6): `--root`, else the root `wanderbooks
+/// setup` made, never the current directory or a settings file; `--book`
+/// names one, else the root's only one (or the first, by id).
+/// `--data-dir` opens an older books dir's `books-data` instead (its
+/// settings file `--books-toml`, read while its journal keeps none, else
+/// the `wanderbooks.toml` beside it; its vault key `--vault-key-file`);
+/// `--demo` builds a demo company in a temp directory and opens that.
 pub fn run(
     prog: &str,
     args: impl IntoIterator<Item = String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let mut root: Option<PathBuf> = None;
+    let mut book: Option<String> = None;
     let mut data_dir: Option<PathBuf> = None;
-    let mut books_toml: Option<PathBuf> = None;
     let mut today = None;
     let mut demo = false;
     let mut args = args.into_iter();
+    let usage = || {
+        format!(
+            "usage: {prog} [--root PATH] [--book ID] [--data-dir PATH [--books-toml PATH] [--vault-key-file PATH]] [--today YYYY-MM-DD] [--demo]"
+        )
+    };
     while let Some(a) = args.next() {
         match a.as_str() {
+            "--root" => root = args.next().map(PathBuf::from),
+            "--book" => book = args.next(),
             "--data-dir" => data_dir = args.next().map(PathBuf::from),
-            "--books-toml" => books_toml = args.next().map(PathBuf::from),
+            // An older books dir's settings file, read only while its
+            // books keep no settings of their own (data::legacy_toml).
+            "--books-toml" => {
+                if let Some(t) = args.next() {
+                    crate::data::set_legacy_toml(PathBuf::from(t));
+                }
+            }
             "--vault-key-file" => {
                 if let Some(k) = args.next() {
                     crate::set_vault_key_file(PathBuf::from(k));
@@ -87,13 +106,12 @@ pub fn run(
             "--today" => today = args.next().and_then(|d| d.parse().ok()),
             "--demo" => demo = true,
             "-h" | "--help" => {
-                println!(
-                    "usage: {prog} [--data-dir PATH] [--books-toml PATH] [--vault-key-file PATH] [--today YYYY-MM-DD] [--demo]"
-                );
+                println!("{}", usage());
                 return Ok(());
             }
             other => {
                 eprintln!("unknown argument {other}");
+                eprintln!("{}", usage());
                 return Err(Box::new(Exit(2)));
             }
         }
@@ -108,21 +126,18 @@ pub fn run(
         }
         eprintln!("demo books: {}", dir.display());
         data_dir = Some(dir.join("books-data"));
-        books_toml = Some(dir.join("wanderbooks.toml"));
     }
-    let data_dir = data_dir.unwrap_or_else(|| PathBuf::from("books-data"));
-    let books_toml = books_toml.or_else(|| {
-        let guess = data_dir
-            .parent()
-            .unwrap_or(&data_dir)
-            .join("wanderbooks.toml");
-        guess.exists().then_some(guess)
-    });
-    let source = Source {
-        data_dir,
-        books_toml,
-        today,
+    let data_dir = match data_dir {
+        Some(d) => d,
+        None => match book_in_root(root.as_deref(), book.as_deref()) {
+            Ok(d) => d,
+            Err(why) => {
+                eprintln!("{why}");
+                return Err(Box::new(Exit(2)));
+            }
+        },
     };
+    let source = Source { data_dir, today };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("wanderbooks")
@@ -141,6 +156,34 @@ pub fn run(
         options,
         Box::new(move |cc| Ok(Box::new(App::new(cc, source)))),
     )?)
+}
+
+/// The folder of a book in the data root (plan 3.4): `root`, else the
+/// one `wanderbooks setup` made; `book`, else its only book (or the first
+/// by id). Why not, in words for the human.
+pub fn book_in_root(root: Option<&std::path::Path>, book: Option<&str>) -> Result<PathBuf, String> {
+    use ledger_store::root::{BookId, Root};
+    let root = Root::find(root).map_err(|e| {
+        format!("no books to show: {e}. `wanderbooks setup` makes a place for them.")
+    })?;
+    let books = root.list_books().map_err(|e| e.to_string())?;
+    let id = match book {
+        Some(b) => {
+            let id = BookId::parse(b).map_err(|e| e.to_string())?;
+            if !books.contains(&id) {
+                return Err(format!(
+                    "there are no books called {:?}: `wanderbooks books list` lists them",
+                    id.as_str()
+                ));
+            }
+            id
+        }
+        None => books.into_iter().next().ok_or_else(|| {
+            "there are no books yet: your agent makes them (`wanderbooks books create`)."
+                .to_string()
+        })?,
+    };
+    Ok(root.book_dir(&id))
 }
 
 #[cfg(test)]

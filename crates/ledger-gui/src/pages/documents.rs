@@ -253,6 +253,8 @@ fn detail(ui: &mut Ui, b: &Books, a: &Attachment, shell: &mut Shell<'_>) {
                 RichText::new(&a.file_name).font(theme::bold(20.0)),
                 &a.file_name,
             );
+            ui.add_space(6.0);
+            file_actions(ui, b, a);
             ui.add_space(8.0);
             egui::Grid::new(("docfacts", a.id))
                 .num_columns(2)
@@ -322,6 +324,44 @@ fn detail(ui: &mut Ui, b: &Books, a: &Attachment, shell: &mut Shell<'_>) {
                 );
             }
         });
+}
+
+/// "Save a copy" and "Open" (plan 3.6): a copy in the Downloads folder,
+/// never over a file there, opened with the system's app on "Open". The
+/// books are only read. What came of it shows under the buttons.
+fn file_actions(ui: &mut Ui, b: &Books, a: &Attachment) {
+    let p = pal(ui.ctx());
+    let said = ui.id().with(("file-said", a.id));
+    ui.horizontal(|ui| {
+        let save = ui
+            .button(format!("{} Save a copy", icon::FILE_ARROW_UP))
+            .on_hover_text("A copy in your Downloads folder");
+        let open = ui
+            .button(format!("{} Open", icon::ARROW_SQUARE_OUT))
+            .on_hover_text("A copy in your Downloads folder, opened with its app");
+        if save.clicked() || open.clicked() {
+            let result = save_copy(b, a, open.clicked());
+            ui.data_mut(|d| d.insert_temp(said, result));
+        }
+    });
+    if let Some(result) = ui.data(|d| d.get_temp::<Result<String, String>>(said)) {
+        let (text, color) = match result {
+            Ok(path) => (format!("Saved {path}"), p.muted),
+            Err(why) => (format!("Couldn't save a copy: {why}"), p.warning),
+        };
+        ui.add(egui::Label::new(RichText::new(text).size(12.0).color(color)).wrap());
+    }
+}
+
+/// A copy of `a` in the Downloads folder (opened if `open`): its path.
+fn save_copy(b: &Books, a: &Attachment, open: bool) -> Result<String, String> {
+    let bytes = b.attachment_bytes(a)?;
+    let (stem, ext) = crate::export::split_name(&a.file_name);
+    let path = crate::export::save(stem, ext, &bytes)?;
+    if open {
+        crate::export::open(&path);
+    }
+    Ok(path.display().to_string())
 }
 
 /// The icon for a subject's kind.

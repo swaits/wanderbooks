@@ -118,7 +118,6 @@ impl Build {
         drop(self.s);
         let books = data::load_once(&Source {
             data_dir,
-            books_toml: None,
             today: Some(today()),
         })
         .unwrap();
@@ -270,7 +269,6 @@ pub(crate) fn old_books(name: &str) -> (TempDir, Books) {
     std::fs::copy(from.join("journal.jsonl"), data_dir.join("journal.jsonl")).unwrap();
     let books = data::load_once(&Source {
         data_dir,
-        books_toml: None,
         today: Some(today()),
     })
     .unwrap();

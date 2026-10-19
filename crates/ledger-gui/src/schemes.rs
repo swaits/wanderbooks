@@ -968,7 +968,6 @@ mod painted {
         crate::demo::build(&dir.0, today).unwrap();
         let source = crate::data::Source {
             data_dir: dir.0.join("books-data"),
-            books_toml: Some(dir.0.join("wanderbooks.toml")),
             today: Some(today),
         };
         let entry = crate::data::load_once(&source)

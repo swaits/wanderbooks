@@ -798,20 +798,17 @@ fn init(mcp: &mut Mcp) -> Value {
 }
 
 /// Outputs that carry full TINs (books.get_w9, books.vendor_1099 with
-/// include_tins, books.export_cpa_package with TINs) are never written
-/// inside the books, and wherever they are written (a downloads folder
-/// too), each is refused by its bytes when given back to be filed: a
-/// TIN-bearing file can't be filed back in as a receipt or document and
-/// read out through books.get_receipt (S7 of the P0 review, 2026-10-16).
+/// include_tins, books.export_cpa_package with TINs) come back as files
+/// handed over (D-29: no tool takes a path), and each is refused by its
+/// bytes when given back to be filed: a TIN-bearing file can't be filed
+/// back in as a receipt or document and read out through
+/// books.get_receipt (S7 of the P0 review, 2026-10-16).
 #[test]
-fn tin_bearing_files_never_land_where_they_could_be_filed_back_in() {
+fn tin_bearing_files_are_refused_when_given_back_to_be_filed() {
     let dir = test_dir("tin-files");
     let books = dir.join("books");
-    let downloads = dir.join("downloads");
     let config = dir.join("config");
-    for d in [&downloads, &config] {
-        std::fs::create_dir_all(d).unwrap();
-    }
+    std::fs::create_dir_all(&config).unwrap();
     let w9 = b"%PDF-1.4 W-9 TIN 291-12-2846";
     let mut mcp = Mcp::spawn_env(
         &books.join("books-data"),
@@ -833,78 +830,44 @@ fn tin_bearing_files_never_land_where_they_could_be_filed_back_in() {
                "tin": "291-12-2846", "tin_type": "ssn",
                "w9_content_base64": base64_like(w9), "w9_sha256": sha(w9)}),
     );
-    // Inside the books: refused, and nothing written there.
-    let before = std::fs::read_dir(&books).unwrap().count();
-    let in_books = |name: &str| books.join(name).to_str().unwrap().to_string();
-    for (tool, args) in [
-        (
-            "books.get_w9",
-            json!({"party": "Acme", "save_to": in_books("copy.pdf")}),
-        ),
-        (
-            "books.vendor_1099",
-            json!({"year": 2026, "include_tins": true, "save_csv_to": in_books("1099.csv")}),
-        ),
-        (
-            "books.export_cpa_package",
-            json!({"cash_accounts": ["1000"], "save_to": in_books("cpa.zip")}),
-        ),
-        (
-            "books.export_cpa_package",
-            json!({"cash_accounts": ["1000"], "save_to": books.to_str().unwrap()}),
-        ),
-    ] {
-        let why = mcp.call_err(tool, args);
-        assert!(why.contains("inside the books"), "{tool}: {why}");
-    }
-    assert_eq!(
-        std::fs::read_dir(&books).unwrap().count(),
-        before,
-        "wrote into the books"
-    );
-    // Written to a downloads folder, each is refused by its bytes, by
-    // every way a file is filed.
-    let in_downloads = |name: &str| downloads.join(name).to_str().unwrap().to_string();
-    mcp.call(
-        "books.get_w9",
-        json!({"party": "Acme", "save_to": in_downloads("copy.pdf")}),
-    );
-    mcp.call(
+    // Each comes back inline over stdio.
+    let got = mcp.call("books.get_w9", json!({"party": "Acme"}));
+    let w9_back = handed(&got["file"]);
+    assert_eq!(w9_back, w9, "the W-9 file, as stored");
+    let ws = mcp.call(
         "books.vendor_1099",
-        json!({"year": 2026, "include_tins": true, "save_csv_to": in_downloads("1099.csv")}),
+        json!({"year": 2026, "include_tins": true, "csv": true}),
     );
-    mcp.call(
+    assert_eq!(ws["csv"]["file_name"], "1099-worksheet-2026-with-tins.csv");
+    let pkg = mcp.call(
         "books.export_cpa_package",
-        json!({"cash_accounts": ["1000"], "save_to": in_downloads("cpa.zip")}),
+        json!({"cash_accounts": ["1000"]}),
     );
-    let written: Vec<std::path::PathBuf> = std::fs::read_dir(&downloads)
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .collect();
-    assert_eq!(written.len(), 3, "{written:?}");
+    assert_eq!(pkg["tins_included"], true);
+    let handed_over = [w9_back, handed(&ws["csv"]), handed(&pkg["file"])];
+    // Given back, each is refused by its bytes, by every way a file is
+    // filed.
     let journal = std::fs::read(books.join("books-data").join(ledger_store::JOURNAL_FILE)).unwrap();
-    for path in &written {
-        let bytes = std::fs::read(path).unwrap();
+    for (n, bytes) in handed_over.iter().enumerate() {
         for (tool, args) in [
             (
                 "books.attach_receipt",
                 json!({"file_name": "receipt.pdf", "mime_type": "application/pdf",
-                       "content_base64": base64_like(&bytes),
-                       "sha256": sha(&bytes)}),
+                       "content_base64": base64_like(bytes),
+                       "sha256": sha(bytes)}),
             ),
             (
                 "books.file_document",
                 json!({"category": "statement", "file_name": "statement.csv",
                        "mime_type": "text/csv",
-                       "content_base64": base64_like(&bytes),
-                       "sha256": sha(&bytes)}),
+                       "content_base64": base64_like(bytes),
+                       "sha256": sha(bytes)}),
             ),
         ] {
             let why = mcp.call_err(tool, args);
             assert!(
                 why.contains("wrote with full TINs"),
-                "{tool} {}: {why}",
-                path.display()
+                "{tool} file {n}: {why}"
             );
         }
     }
@@ -913,10 +876,16 @@ fn tin_bearing_files_never_land_where_they_could_be_filed_back_in() {
         journal,
         "a refusal stored something"
     );
-    // Without TINs, the 1099 worksheet may go anywhere a file may.
+    // Without TINs, the 1099 worksheet is an ordinary file: it may be
+    // filed like any other.
+    let plain = mcp.call("books.vendor_1099", json!({"year": 2026, "csv": true}));
+    assert!(plain["warning"].is_null(), "{plain}");
+    assert_eq!(plain["csv"]["file_name"], "1099-worksheet-2026.csv");
+    let bytes = handed(&plain["csv"]);
     mcp.call(
-        "books.vendor_1099",
-        json!({"year": 2026, "save_csv_to": in_downloads("plain.csv")}),
+        "books.file_document",
+        json!({"category": "statement", "file_name": "plain.csv", "mime_type": "text/csv",
+               "content_base64": base64_like(&bytes), "sha256": sha(&bytes)}),
     );
 }
 
@@ -1185,6 +1154,21 @@ fn base64_like(bytes: &[u8]) -> String {
     out
 }
 
+/// The bytes of a file a tool handed over (a `HandedFile`): over stdio
+/// they come inline, with no download command, and match the size and
+/// SHA-256 it states.
+fn handed(file: &Value) -> Vec<u8> {
+    use base64::Engine;
+    assert!(file.get("download").is_none(), "{file}");
+    assert!(file.get("expires_at").is_none(), "{file}");
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(file["content_base64"].as_str().expect("content_base64"))
+        .unwrap();
+    assert_eq!(file["size_bytes"], json!(bytes.len()), "{file}");
+    assert_eq!(file["sha256"], json!(sha(&bytes)), "{file}");
+    bytes
+}
+
 #[test]
 fn mcp_import_export_over_stdio() {
     let dir = test_dir("import_export");
@@ -1306,7 +1290,10 @@ fn mcp_statement_pdfs_and_cpa_package_over_stdio() {
         "books.export_cpa_package",
         json!({"as_of": "2026-10-31", "cash_accounts": ["1000"], "include_tins": false}),
     );
-    let zip_bytes = b64.decode(pkg["content_base64"].as_str().unwrap()).unwrap();
+    assert_eq!(pkg["file"]["file_name"], "cpa-package-2026-10-31.zip");
+    assert_eq!(pkg["file"]["mime_type"], "application/zip");
+    assert_eq!(pkg["tins_included"], false);
+    let zip_bytes = handed(&pkg["file"]);
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes)).unwrap();
     let mut names: Vec<String> = (0..zip.len())
         .map(|i| zip.by_index(i).unwrap().name().unwrap().to_string())
@@ -1358,11 +1345,7 @@ fn mcp_statement_pdfs_and_cpa_package_over_stdio() {
         "books.export_cpa_package",
         json!({"as_of": "2026-10-31", "cash_accounts": ["1000"], "include_receipts": false, "include_tins": false}),
     );
-    let light = zip::ZipArchive::new(std::io::Cursor::new(
-        b64.decode(light["content_base64"].as_str().unwrap())
-            .unwrap(),
-    ))
-    .unwrap();
+    let light = zip::ZipArchive::new(std::io::Cursor::new(handed(&light["file"]))).unwrap();
     assert_eq!(light.len(), rest.len());
 }
 
@@ -2040,19 +2023,28 @@ fn mcp_vendor_1099_over_stdio() {
     assert_eq!(r["threshold"], "2100.00");
     let vendors = mcp.call("books.list_vendors", json!({}));
     assert_eq!(vendors["vendors"][0]["tin_on_file"], true);
-    // Show the entry in the viewer: a request outside the books.
+    // The server made the books' ops/ as they opened: a viewer open from
+    // before the first books.show is seen by it.
+    let viewer = ledger_store::ops::Presence::hold(&dir).expect("ops/ made at start");
+    // Show the entry in the viewer: a request in the books' ops/, never
+    // journaled.
     let shown = mcp.call("books.show", json!({"entry_id": id}));
     assert!(shown["shown"].as_str().unwrap().contains(&format!("#{id}")));
-    let cmd = ledger_store::viewer::read(&dir).expect("request written");
+    assert_eq!(shown["viewer_open"], true);
+    let cmd = ledger_store::ops::read(&dir).expect("request written");
     assert_eq!(
         cmd.target,
-        ledger_store::viewer::ViewerTarget::Entry { entry_id: id }
+        ledger_store::ops::ViewerTarget::Entry { entry_id: id }
     );
+    // With no viewer, the note says to open one.
+    drop(viewer);
+    let shown = mcp.call("books.show", json!({"page": "cash"}));
+    assert_eq!(shown["viewer_open"], false);
+    assert!(shown["note"].as_str().unwrap().contains("No viewer"));
     let err = mcp.call_err("books.show", json!({"entry_id": 9999}));
     assert!(err.contains("unknown entry"), "{err}");
     let err = mcp.call_err("books.show", json!({"page": "cash", "search": "x"}));
     assert!(err.contains("exactly one"), "{err}");
-    let _ = std::fs::remove_file(ledger_store::viewer::command_path(&dir));
     // The books check out end to end, receipt included.
     let v = mcp.call("books.verify", json!({}));
     assert_eq!(v["status"], "ok");

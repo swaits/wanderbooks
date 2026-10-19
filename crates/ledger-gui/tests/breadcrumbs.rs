@@ -34,7 +34,6 @@ fn demo(tag: &str) -> (TestDir, Source) {
     ledger_gui::demo::build(&dir, today).unwrap();
     let source = Source {
         data_dir: dir.join("books-data"),
-        books_toml: Some(dir.join("wanderbooks.toml")),
         today: Some(today),
     };
     (TestDir(dir), source)

@@ -107,7 +107,6 @@ fn fixture(tag: &str) -> Fixture {
     drop(s);
     let books = data::load_once(&Source {
         data_dir: data,
-        books_toml: None,
         today: Some(today()),
     })
     .unwrap();

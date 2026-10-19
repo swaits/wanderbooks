@@ -59,7 +59,6 @@ fn today() -> NaiveDate {
 fn load(dir: &Path) -> Books {
     data::load_once(&Source {
         data_dir: dir.join("books-data"),
-        books_toml: None,
         today: Some(today()),
     })
     .unwrap()
@@ -589,7 +588,7 @@ fn every_new_page_renders() {
 
 #[test]
 fn books_show_opens_a_reconciliation() {
-    use ledger_store::viewer::ViewerTarget;
+    use ledger_store::ops::ViewerTarget;
     let mut f = fixture("show");
     let (_, r) = reconcile(&mut f.store, f.checking, d(2026, 7, 1), d(2026, 7, 31));
     let books = load(&f.dir.0);

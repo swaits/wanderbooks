@@ -75,17 +75,34 @@ fn copy_books(from: &Path, to: &Path) {
     }
 }
 
-/// The settings the viewer reads beside the books: two members (the
-/// shares fixtures' parties), the cash account, a fiscal year from July.
+/// The settings the old books are viewed with: two members (the shares
+/// fixtures' parties), the cash account, a fiscal year from July.
+const SETTINGS: &str = "[company]\nname = \"Old Books Co\"\nfiscal_year_start = \"07-01\"\ntax_form = \"1065\"\n\
+     [[company.members]]\nname = \"Member A\"\nshare = \"50%\"\ncapital_account = \"3000\"\n\
+     [[company.members]]\nname = \"Member B\"\nshare = \"50%\"\ncapital_account = \"3001\"\n\
+     [books]\nreceipt_threshold = \"25.00\"\ncash_accounts = [\"1000\"]\n";
+
+/// [`SETTINGS`] journaled into the books in `dir`, as the server adopts a
+/// settings file, unless they already keep their own (P1's books): the
+/// viewer reads settings only from the journal (plan 3.6).
 fn write_settings(dir: &Path) {
-    std::fs::write(
-        dir.join("wanderbooks.toml"),
-        "[company]\nname = \"Old Books Co\"\nfiscal_year_start = \"07-01\"\ntax_form = \"1065\"\n\
-         [[company.members]]\nname = \"Member A\"\nshare = \"50%\"\ncapital_account = \"3000\"\n\
-         [[company.members]]\nname = \"Member B\"\nshare = \"50%\"\ncapital_account = \"3001\"\n\
-         [books]\nreceipt_threshold = \"25.00\"\ncash_accounts = [\"1000\"]\n",
-    )
-    .unwrap();
+    let mut store = ledger_store::Store::open(&dir.join("books-data")).unwrap();
+    if store.ledger().settings().is_journaled() {
+        return;
+    }
+    let import =
+        ledger_config::codec::import(SETTINGS, None, store.ledger().settings(), "USD").unwrap();
+    store
+        .adopt_settings(
+            &import.changes,
+            &ledger_core::settings::Source {
+                decided_by: "the test".into(),
+                decided_on: d(2026, 10, 17),
+                citation: None,
+                note: None,
+            },
+        )
+        .unwrap();
 }
 
 /// The fixtures whose index is `shard` mod `of`, one scratch books
@@ -261,7 +278,6 @@ fn every_page_renders(shard: usize, of: usize) {
         }
         let source = Source {
             data_dir: dir.0.join("books-data"),
-            books_toml: Some(dir.0.join("wanderbooks.toml")),
             today: Some(today),
         };
         let books = data::load_once(&source)
@@ -367,7 +383,6 @@ fn stage(name: &str) -> TempDir {
 fn load(dir: &TempDir) -> Books {
     data::load_once(&Source {
         data_dir: dir.0.join("books-data"),
-        books_toml: Some(dir.0.join("wanderbooks.toml")),
         today: Some(d(TODAY.0, TODAY.1, TODAY.2)),
     })
     .unwrap()
@@ -420,12 +435,12 @@ fn figures_that_cant_be_computed_are_said() {
     );
 }
 
-/// Books that keep their own settings (written under P1) show them, never
-/// the settings file beside them, which here says otherwise (another
-/// name, a July fiscal year, a $25 receipt rule): the viewer reads the
-/// settings as the server does (plan/served.md P1, Accept).
+/// Books that keep their own settings (written under P1) show them, as
+/// the server reads them (plan/served.md P1, Accept; 3.6): never the
+/// settings the other old books are viewed with (another name, a July
+/// fiscal year, a $25 receipt rule).
 #[test]
-fn books_that_keep_their_settings_never_read_the_file() {
+fn books_that_keep_their_settings_show_them() {
     let dir = stage("p1_record");
     let b = load(&dir);
     assert_eq!(b.settings.company.name, "Fixture Labs LLC");
@@ -457,4 +472,62 @@ fn books_that_keep_their_settings_never_read_the_file() {
         let e = ledger_gui::pages::journal::describe(&b, line).expect("described");
         assert_ne!(e.text, line.line_type, "{} has no sentence", line.line_type);
     }
+}
+
+/// Books that keep no settings in their journal are read as their server
+/// reads them (plan 3.6): an older books dir from its settings file; a
+/// book of the data root never from a file, so with the defaults.
+#[test]
+fn books_that_keep_no_settings_read_their_file_only_outside_a_root() {
+    let from = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../ledger-store/tests/fixtures/old-books")
+        .join("shares_big");
+    // An older books dir: its server reads wanderbooks.toml, so the viewer
+    // does too.
+    let t = temp("said-file");
+    copy_books(&from, &t.0.join("books-data"));
+    std::fs::write(t.0.join("wanderbooks.toml"), SETTINGS).unwrap();
+    let b = load(&t);
+    assert_eq!(b.settings.company.name, "Old Books Co");
+    assert!(!b.settings.company.members.is_empty());
+    // The same books in a data root: no file is read, whatever lies
+    // beside them; they show the defaults until their settings are in
+    // their journal.
+    let t = temp("said-defaults");
+    std::fs::write(t.0.join(ledger_store::root::MARKER_FILE), b"").unwrap();
+    copy_books(&from, &t.0.join("books-data"));
+    std::fs::write(t.0.join("wanderbooks.toml"), SETTINGS).unwrap();
+    let b = load(&t);
+    assert_eq!(
+        b.settings,
+        ledger_config::codec::books_settings(&ledger_core::settings::Settings::default(), "USD")
+    );
+}
+
+/// An older books dir with no settings file but a `config.json`: its
+/// receipt rule is the server's, from that file (the regression round 2
+/// of slice 6's review found).
+#[test]
+fn an_older_books_dirs_config_json_sets_its_receipt_rule() {
+    let from = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../ledger-store/tests/fixtures/old-books")
+        .join("shares_big");
+    let t = temp("said-config");
+    copy_books(&from, &t.0.join("books-data"));
+    std::fs::write(
+        t.0.join("books-data/config.json"),
+        r#"{"receipt_policy": {"require_receipts_above": "0.00"}}"#,
+    )
+    .unwrap();
+    assert_eq!(load(&t).receipt_threshold, rust_decimal::Decimal::ZERO);
+    // In a data root, no file: the books' own rule (the default).
+    let t = temp("said-config-root");
+    std::fs::write(t.0.join(ledger_store::root::MARKER_FILE), b"").unwrap();
+    copy_books(&from, &t.0.join("books-data"));
+    std::fs::write(
+        t.0.join("books-data/config.json"),
+        r#"{"receipt_policy": {"require_receipts_above": "0.00"}}"#,
+    )
+    .unwrap();
+    assert_ne!(load(&t).receipt_threshold, rust_decimal::Decimal::ZERO);
 }

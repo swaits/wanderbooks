@@ -16,7 +16,7 @@ use ledger_core::{
     Money, NewAsset, Side, depreciation_schedule, reports,
 };
 use ledger_store::Store;
-use ledger_store::viewer::{ViewerCommand, ViewerTarget};
+use ledger_store::ops::{ViewerCommand, ViewerTarget};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
@@ -235,17 +235,15 @@ impl Mcp {
         out["content"].as_str().unwrap().to_string()
     }
 
-    /// The viewer command the last `books.show` wrote.
+    /// The viewer command the last `books.show` wrote, in the books' own
+    /// `ops/` (nothing in the runtime folder).
     fn viewer_command(&self) -> ViewerCommand {
-        let dir = self.run.join("wanderbooks");
-        let files: Vec<_> = std::fs::read_dir(&dir)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|x| x == "json"))
-            .collect();
-        assert_eq!(files.len(), 1, "one viewer command file: {files:?}");
-        serde_json::from_slice(&std::fs::read(&files[0]).unwrap()).unwrap()
+        let books = self.run.parent().unwrap();
+        assert!(
+            !self.run.join("wanderbooks").exists(),
+            "nothing written in the runtime folder"
+        );
+        ledger_store::ops::read(&data_dir(books)).expect("a show request")
     }
 }
 
@@ -263,6 +261,18 @@ fn b64d(s: &str) -> Vec<u8> {
 
 fn sha256(bytes: &[u8]) -> String {
     ledger_store::journal::sha256_hex(bytes)
+}
+
+/// The bytes of a file a tool handed over (a `HandedFile`): over stdio
+/// they come inline, with no download command, and match the size and
+/// SHA-256 it states.
+fn handed(file: &Value) -> Vec<u8> {
+    assert!(file.get("download").is_none(), "{file}");
+    assert!(file.get("expires_at").is_none(), "{file}");
+    let bytes = b64d(file["content_base64"].as_str().expect("content_base64"));
+    assert_eq!(file["size_bytes"], json!(bytes.len()), "{file}");
+    assert_eq!(file["sha256"], json!(sha256(&bytes)), "{file}");
+    bytes
 }
 
 fn d(s: &str) -> chrono::NaiveDate {
@@ -2835,8 +2845,9 @@ fn cpa_package_holds_the_year_and_its_evidence() {
         "books.export_cpa_package",
         json!({"as_of": END, "cash_accounts": ["1000"], "include_tins": false}),
     );
-    assert_eq!(out["file_name"], format!("cpa-package-{END}.zip"));
-    let files = unzip(&b64d(out["content_base64"].as_str().unwrap()));
+    assert_eq!(out["file"]["file_name"], format!("cpa-package-{END}.zip"));
+    assert_eq!(out["file"]["mime_type"], "application/zip");
+    let files = unzip(&handed(&out["file"]));
     let names: Vec<&str> = files.keys().map(String::as_str).collect();
 
     let mut want = vec![
@@ -2944,7 +2955,7 @@ fn cpa_package_holds_the_year_and_its_evidence() {
         "books.export_cpa_package",
         json!({"as_of": END, "cash_accounts": ["1000"], "include_receipts": false, "include_tins": false}),
     );
-    let files = unzip(&b64d(out["content_base64"].as_str().unwrap()));
+    let files = unzip(&handed(&out["file"]));
     assert!(
         !files
             .keys()

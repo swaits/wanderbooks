@@ -252,9 +252,6 @@ fn spawn_child(dir: &Path, toml: &Path) -> Child {
                 .into_iter()
                 .flatten(),
         )
-        // books.show writes a viewer request here; keep it out of the
-        // user's real runtime dir.
-        .env("XDG_RUNTIME_DIR", &run)
         // The TIN vault's default key file is under XDG_CONFIG_HOME: never
         // the user's real one (the happy path names its own anyway).
         .env("XDG_CONFIG_HOME", outside(dir).join("config"))
@@ -334,6 +331,11 @@ impl Mcp {
             for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
                 let p = e.path();
                 let name = p.file_name().unwrap().to_string_lossy().into_owned();
+                // The viewer's side channel (books.show's requests) is not
+                // the books: never journaled (ledger_store::ops).
+                if p.is_dir() && name == ledger_store::ops::OPS_DIR {
+                    continue;
+                }
                 if p.is_dir() {
                     walk(&p, out);
                 } else if name.ends_with("-wal") || name.ends_with("-shm") {
@@ -812,11 +814,7 @@ fn happy_path(name: &str) -> Mcp {
                "tin": "79-9714321", "tin_type": "ein",
                "w9_content_base64": b64(w9_pdf), "w9_sha256": sha(w9_pdf)}),
     );
-    m.ok(
-        "books.get_w9",
-        json!({"party": "Landlord",
-               "save_to": outside(&dir).join("landlord-w9-copy.pdf").to_str().unwrap()}),
-    );
+    m.ok("books.get_w9", json!({"party": "Landlord"}));
     m.ok("books.parties", json!({"role": "landlord", "year": 2026}));
 
     // Owner contribution: draft, lines, receipt, preview, post.
@@ -1234,10 +1232,10 @@ fn happy_path(name: &str) -> Mcp {
     m.ok("books.digest", json!({"since": "2026-01-01"}));
     m.ok("books.search_entries", json!({"text": "rent", "limit": 10}));
     m.ok("books.vendor_1099", json!({"year": 2026}));
+    m.ok("books.vendor_1099", json!({"year": 2026, "csv": true}));
     m.ok(
         "books.vendor_1099",
-        json!({"year": 2026, "include_tins": true,
-               "save_csv_to": outside(&dir).join("1099.csv").to_str().unwrap()}),
+        json!({"year": 2026, "include_tins": true, "csv": true}),
     );
     m.ok(
         "books.purge_tin",
@@ -1279,8 +1277,7 @@ fn happy_path(name: &str) -> Mcp {
     );
     m.ok(
         "books.export_cpa_package",
-        json!({"as_of": "2026-12-31", "include_receipts": false,
-               "save_to": outside(&dir).join("cpa.zip").to_str().unwrap()}),
+        json!({"as_of": "2026-12-31", "include_receipts": false}),
     );
 
     m.books_dir = Some(dir);

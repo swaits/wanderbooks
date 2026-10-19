@@ -2191,7 +2191,6 @@ mod tests {
         crate::demo::build(&dir, today).unwrap();
         let b = crate::data::load_once(&crate::data::Source {
             data_dir: dir.join("books-data"),
-            books_toml: Some(dir.join("wanderbooks.toml")),
             today: Some(today),
         })
         .unwrap();
@@ -2257,7 +2256,6 @@ mod tests {
         crate::demo::build(&dir, today).unwrap();
         let b = crate::data::load_once(&crate::data::Source {
             data_dir: dir.join("books-data"),
-            books_toml: Some(dir.join("wanderbooks.toml")),
             today: Some(today),
         })
         .unwrap();

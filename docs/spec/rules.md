@@ -581,13 +581,15 @@ with `include_tins` (DECISION, the owner, 2026-10-15: for the CPA, when
 asked): a refusal that quotes its input masks any TIN in it
 (`parties::redact_full_tins`, checked by `refusals_never_echo_a_tin`),
 and a party text field refuses nine digits however they are separated
-(space, hyphen, dot, slash, underscore; `has_full_tin`). Files holding one (`books.get_w9`, `save_csv_to`, and the CPA
-package, whose K-1 and 1099 worksheets carry every member's and payee's
-TIN by default) are written only outside the books dir (DECISION, P0
-review, 2026-10-16: so none can be filed back in as a receipt and read
-out again; the server's import folders, refused then too, went with
-`books.import_local_file` in P2 slice 5), and the package comes back
-only as its path. No file holding a full TIN is filed into the books
+(space, hyphen, dot, slash, underscore; `has_full_tin`). Files holding one (`books.get_w9`, `books.vendor_1099`'s
+`csv` with `include_tins`, and the CPA package, whose K-1 and 1099
+worksheets carry every member's and payee's TIN by default) are never
+written to a path: no tool takes one (D-29, P2 slice 6). Each is handed
+over as an export the asking token fetches with `wanderbooks download`
+(kept 15 minutes), or inline over stdio. (Until slice 6 they were
+written only outside the books dir: DECISION, P0 review, 2026-10-16, so
+none could be filed back in as a receipt and read out again.) No file
+holding a full TIN is filed into the books
 (DECISION, P0 review round 2, 2026-10-16): the server keeps, beside the
 vault, the SHA-256 of every file it read or wrote with full TINs (the W-9
 `books.set_w9` reads, recorded once the call has passed every check, just

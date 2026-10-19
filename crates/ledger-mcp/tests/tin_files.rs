@@ -185,6 +185,24 @@ fn inline(bytes: &[u8]) -> (String, String) {
     )
 }
 
+/// The bytes of a file a tool handed over (a `HandedFile`): inline, as on
+/// books served from a --data-dir, matching the size and SHA-256 it
+/// states.
+fn handed(file: &Value) -> Vec<u8> {
+    use base64::Engine;
+    assert!(file.get("download").is_none(), "{file}");
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(file["content_base64"].as_str().expect("content_base64"))
+        .unwrap();
+    assert_eq!(file["size_bytes"], json!(bytes.len()), "{file}");
+    assert_eq!(
+        file["sha256"],
+        json!(ledger_store::journal::sha256_hex(&bytes)),
+        "{file}"
+    );
+    bytes
+}
+
 /// Every way the file at `path` (named `name`) could enter the books is
 /// refused with `why`, and nothing is stored: the refusals, tool by tool.
 async fn refused_everywhere(
@@ -281,28 +299,28 @@ async fn a_tin_bearing_file_is_refused_from_every_session_and_after_a_restart() 
     // A bank statement filed in the books: the package carries it, and it
     // is no TIN file (its routing numbers are not TINs).
     accepted_everywhere(&one, "statement.csv", BANK_CSV).await;
-    // What the server writes with TINs, from the first session.
+    // What the server hands over with TINs, from the first session, saved
+    // outside the books as the human would save it.
     let copy = b.out.join("w9-copy.pdf");
-    ok(
-        &one,
-        "books.get_w9",
-        json!({"party": "Acme", "save_to": copy.to_str().unwrap()}),
-    )
-    .await;
+    let got = ok(&one, "books.get_w9", json!({"party": "Acme"})).await;
+    std::fs::write(&copy, handed(&got["file"])).unwrap();
     let csv = b.out.join("1099.csv");
-    ok(
+    let got = ok(
         &one,
         "books.vendor_1099",
-        json!({"year": 2026, "include_tins": true, "save_csv_to": csv.to_str().unwrap()}),
+        json!({"year": 2026, "include_tins": true, "csv": true}),
     )
     .await;
+    std::fs::write(&csv, handed(&got["csv"])).unwrap();
     let zip = b.out.join("cpa.zip");
-    ok(
+    let got = ok(
         &one,
         "books.export_cpa_package",
-        json!({"cash_accounts": ["1000"], "save_to": zip.to_str().unwrap(), "as_of": "2026-12-31"}),
+        json!({"cash_accounts": ["1000"], "as_of": "2026-12-31"}),
     )
     .await;
+    assert_eq!(got["tins_included"], true, "{got}");
+    std::fs::write(&zip, handed(&got["file"])).unwrap();
     let k1 = b.out.join("k1-members.csv");
     {
         let mut archive = zip::ZipArchive::new(std::fs::File::open(&zip).unwrap()).unwrap();

@@ -3887,6 +3887,7 @@ dependencies = [
  "ledger-config",
  "ledger-core",
  "ledger-import",
+ "ledger-package",
  "ledger-store",
  "ledger-vault",
  "notify",
@@ -3894,6 +3895,8 @@ dependencies = [
  "rust_decimal",
  "serde",
  "serde_json",
+ "tempfile",
+ "zip 9.0.2",
 ]
 
 [[package]]
@@ -3952,6 +3955,7 @@ dependencies = [
  "ledger-config",
  "ledger-core",
  "ledger-import",
+ "ledger-package",
  "ledger-store",
  "ledger-vault",
  "libc",
@@ -3971,6 +3975,20 @@ dependencies = [
  "toml 1.1.8+spec-1.1.0",
  "tower",
  "zeroize",
+ "zip 9.0.2",
+]
+
+[[package]]
+name = "ledger-package"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "ledger-core",
+ "ledger-import",
+ "ledger-store",
+ "ledger-vault",
+ "rust_decimal",
+ "tempfile",
  "zip 9.0.2",
 ]
 

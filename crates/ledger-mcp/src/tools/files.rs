@@ -24,6 +24,10 @@
 //!      refusal leaves it for the right one.
 //!   5. Inline text longer than INLINE_MAX bytes' base64 is refused
 //!      before it is decoded.
+//!   6. A file the books make for an agent (D-29) is handed over as an
+//!      export the caller's token fetches with `wanderbooks download`
+//!      (books served from the data root), or over stdio inline; never
+//!      by a path.
 //! ```
 
 use super::*;
@@ -114,7 +118,83 @@ pub struct BeginUploadOut {
     pub existing_attachment_id: Option<u64>,
 }
 
+/// `name` made a name the checks take: control and invisible characters
+/// and separators dropped or made `_`, cut to fit; `file` if nothing is
+/// left.
+fn plain_file_name(name: &str) -> String {
+    let mut out: String = name
+        .chars()
+        .filter(|c| !ledger_store::uploads::is_hidden_char(*c))
+        .map(|c| {
+            if c.is_control() || c == '/' || c == '\\' {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    while out.len() > ledger_store::uploads::MAX_NAME_BYTES {
+        out.pop();
+    }
+    let out = out.trim().to_string();
+    if ledger_store::uploads::file_name_problem(&out).is_none() {
+        out
+    } else {
+        "file".to_string()
+    }
+}
+
 impl BooksServer {
+    /// Hand `bytes` over as `file_name` (INVARIANT 6): kept as an export
+    /// for the caller's token, or inline over stdio.
+    pub(crate) fn hand_over(
+        &self,
+        book: &str,
+        file_name: &str,
+        mime: &str,
+        bytes: Vec<u8>,
+    ) -> Result<HandedFile, String> {
+        // A name kept before names were checked (a W-9 sealed earlier) is
+        // made plain rather than refused: the file is the point.
+        let file_name = match ledger_store::uploads::file_name_problem(file_name) {
+            None => file_name.to_string(),
+            Some(_) => plain_file_name(file_name),
+        };
+        let mut out = HandedFile {
+            file_name: file_name.clone(),
+            mime_type: mime.to_string(),
+            size_bytes: bytes.len() as u64,
+            sha256: ledger_store::journal::sha256_hex(&bytes),
+            download: None,
+            expires_at: None,
+            content_base64: None,
+        };
+        let (Some(exports), Some(token)) = (&self.exports, self.caller_token()) else {
+            out.content_base64 = Some(base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                &bytes,
+            ));
+            return Ok(out);
+        };
+        let kept = exports
+            .put(
+                &token,
+                &file_name,
+                mime,
+                &bytes,
+                chrono::Utc::now().timestamp(),
+            )
+            .map_err(|e| e.to_string())?;
+        out.download = Some(format!(
+            "wanderbooks download --book {book}{} {} --to <a folder>",
+            token_flag(),
+            kept.id
+        ));
+        out.expires_at = chrono::DateTime::from_timestamp(kept.expires, 0)
+            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+        Ok(out)
+    }
+
     /// The token of the call running on this thread (its id), if any.
     fn caller_token(&self) -> Option<String> {
         CALLER.with(|c| c.borrow().as_ref().map(|(id, _)| id.clone()))
@@ -262,5 +342,39 @@ impl BooksServer {
             max_bytes: max,
             existing_attachment_id: None,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::plain_file_name;
+
+    /// A name kept before names were checked is handed over cleaned, never
+    /// refused (a W-9 sealed earlier, say).
+    #[test]
+    fn an_old_name_is_made_plain() {
+        assert_eq!(
+            plain_file_name("W9 \u{2714}\u{FE0F}.pdf"),
+            "W9 \u{2714}.pdf"
+        );
+        assert_eq!(plain_file_name("W-9\u{200E}.pdf"), "W-9.pdf");
+        assert_eq!(plain_file_name("a/b\\c\n.pdf"), "a_b_c_.pdf");
+        assert_eq!(plain_file_name("\u{200B}"), "file");
+        assert_eq!(plain_file_name(".."), "file");
+        let long = "x".repeat(400);
+        let cut = plain_file_name(&long);
+        assert!(cut.len() <= ledger_store::uploads::MAX_NAME_BYTES);
+        for n in [
+            "W9 \u{2714}\u{FE0F}.pdf",
+            "a/b\\c\n.pdf",
+            &long,
+            "\u{202E}fdp.exe",
+        ] {
+            assert_eq!(
+                ledger_store::uploads::file_name_problem(&plain_file_name(n)),
+                None,
+                "{n:?}"
+            );
+        }
     }
 }

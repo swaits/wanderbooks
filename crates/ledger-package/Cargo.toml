@@ -1,0 +1,22 @@
+[package]
+name = "ledger-package"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "wanderbooks' CPA handoff package and the reports and worksheets it shares with the server: built from the books read-only, by the server or the viewer."
+
+[dependencies]
+ledger-core = { path = "../ledger-core" }
+ledger-store = { path = "../ledger-store" }
+ledger-import = { path = "../ledger-import" }
+ledger-vault = { path = "../ledger-vault" }
+chrono = "0.4"
+rust_decimal = "1"
+zip = "9.0.1"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempfile = "3"

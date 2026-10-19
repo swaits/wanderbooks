@@ -3,7 +3,7 @@
 use egui_kittest::Harness;
 use ledger_gui::nav::{ReportKind, Route};
 use ledger_gui::{App, Source, data};
-use ledger_store::viewer::ViewerTarget;
+use ledger_store::ops::ViewerTarget;
 
 /// A test's dir, removed when the test ends, pass or panic.
 struct TestDir(std::path::PathBuf);
@@ -23,7 +23,6 @@ fn show_requests_navigate_the_viewer() {
     ledger_gui::demo::build(&dir, today).unwrap();
     let source = Source {
         data_dir: dir.join("books-data"),
-        books_toml: Some(dir.join("wanderbooks.toml")),
         today: Some(today),
     };
     let books = data::load_once(&source).unwrap();

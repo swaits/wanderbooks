@@ -73,7 +73,6 @@ fn item(title: &str, due: Option<NaiveDate>) -> NewOpenItem {
 fn company(dir: &TempDir) -> Harness<'static, App> {
     let books = data::load_once(&ledger_gui::Source {
         data_dir: dir.0.join("books-data"),
-        books_toml: None,
         today: Some(today()),
     })
     .unwrap();

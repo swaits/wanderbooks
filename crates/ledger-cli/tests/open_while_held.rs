@@ -2278,6 +2278,23 @@ fn the_commands_given_run_as_the_agents_own_token() {
     );
     assert!(out.status.success(), "{out:?}");
     assert_eq!(std::fs::read(folder.join("r (1).pdf")).unwrap(), bytes);
+    // A file the books make (an export) is saved the same way.
+    let w = a
+        .call("books.vendor_1099", json!({"year": 2026, "csv": true}))
+        .unwrap();
+    let out = run_given(
+        &home,
+        w["csv"]["download"].as_str().unwrap(),
+        " --to <a folder>",
+        &["--to".as_ref(), folder.as_os_str()],
+    );
+    assert!(out.status.success(), "{out:?}");
+    let csv = std::fs::read(folder.join("1099-worksheet-2026.csv")).unwrap();
+    assert_eq!(
+        w["csv"]["sha256"],
+        json!(ledger_store::journal::sha256_hex(&csv))
+    );
+    assert!(csv.starts_with(b"vendor_id,name,"));
     // A file whose name isn't text goes, and comes back into a folder
     // whose name isn't text.
     use std::os::unix::ffi::OsStrExt;

@@ -234,8 +234,9 @@ damn CPA package."
 
 - **Where:** `vault/` in the books dir, listed in `.gitignore`. Never in
   the hash-chained journal, the SQLite projection, git, an export other
-  than the 1099 worksheet and the CPA package (saved outside the books
-  dir), or anything the viewer draws. Nothing outside the vault holds
+  than the 1099 worksheet and the CPA package (handed to the agent as a
+  file to download, never saved in the books), or anything the viewer
+  draws. Nothing outside the vault holds
   more than the last four digits.
 - **Who:** any party, whatever its roles: every member (their K-1 needs
   it) and every 1099 payee. The books keep the party's TIN facts (type,
@@ -267,8 +268,9 @@ damn CPA package."
 - **Use:** `books.vendor_1099` with `include_tins: true` and
   `books.export_cpa_package` (its K-1 worksheet, `k1-members.csv`, and its
   1099 worksheet; `include_tins` defaults to true there) decrypt them.
-  The package is written only to `save_to`, outside the books dir, and
-  the tool returns its path; it is refused without one. The MCP server
+  The package is handed over as a file (an export the asking token
+  fetches with `wanderbooks download`, or inline over stdio); no tool
+  takes a path. The MCP server
   never returns a TIN in any other tool, log, or error. Tests check that
   no other output contains a nine-digit run.
 - **Books without a vault** (another machine, a restored backup) still
@@ -284,16 +286,16 @@ damn CPA package."
   {party, tin, tin_type}` stores any party's TIN (a member's SSN, say) the
   same way and journals `party.tin_set`; a party whose W-9 facts name
   another last four is refused (a payee's new TIN comes with its W-9).
-  `books.get_w9 {party, save_to}` writes the form to a new file outside the
-  books dir and returns only the path. `books.purge_tin {party, reason,
+  `books.get_w9 {party}` hands the form over the same way.
+  `books.purge_tin {party, reason,
   confirmed?}` previews, then deletes the records (no key needed) and
   journals the purge as `party.w9_set` with `vault_record` cleared and
   `kept_at` saying when and why, and `party.tin_set` with `vault_record`
   cleared and `purged` saying when and why. `books.vendor_1099 {include_tins: true}`
-  is the one tool output with full TINs (with a warning; `save_csv_to`
-  writes the CSV outside the books dir); `books.export_cpa_package
-  {save_to}` writes them in its zip, outside the books dir, and returns
-  only the path. A key file inside the books dir is
+  is the one tool output with full TINs (with a warning; `csv: true`
+  also hands the worksheet over as a CSV file);
+  `books.export_cpa_package` carries them in its zip, handed over the
+  same way. A key file inside the books dir is
   refused. `tests/spec_vault.rs` scans every tool response, the server's
   log, and every file in the books dir outside `vault/` for the TINs in
   any formatting.

@@ -540,10 +540,12 @@ impl Books {
         let ledger = snap.ledger().clone();
         let attachments = snap.attachments(None).map_err(|e| e.to_string())?;
         let journal = snap.journal().to_vec();
-        // The server's own rule (the books' settings when they keep them,
-        // else config.json, else wanderbooks.toml), so the viewer flags
-        // exactly what the server would refuse.
-        let policy = if ledger.settings().is_journaled() {
+        // The server's own rule, so the viewer flags exactly what the
+        // server would refuse: the books' settings; for an older books dir
+        // that keeps none, its config.json, else its settings file.
+        let policy = if ledger.settings().is_journaled()
+            || ledger_store::root::inside_a_root(snap.data_dir())
+        {
             ledger_config::codec::receipt_policy(ledger.settings())
         } else {
             ledger_config::effective_receipt_policy(
@@ -1521,14 +1523,34 @@ impl Books {
     /// INVARIANT 1: read only on demand (a click), never on load or paint.
     /// INVARIANT 2: never creates a key file; a missing key is a locked
     ///   vault ("restore it from your password manager").
-    /// INVARIANT 3: the key file in force is the server's: the one given
-    ///   on the command line (--vault-key-file), else a settings file's
-    ///   [vault] key_file, else ~/.config/wanderbooks/vault.key; one
-    ///   inside the books dir is refused, as the server refuses it.
+    /// INVARIANT 3: the vault and key are the server's: for a book in the
+    ///   data root, its own `vault/` and `keys/legacy.key`; for older
+    ///   books, `vault/` beside `books-data/` and the key file the one
+    ///   given on the command line (--vault-key-file), else the settings'
+    ///   [vault] key_file, else ~/.config/wanderbooks/vault.key, one
+    ///   inside the books dir refused, as the server refuses it.
     /// INVARIANT 4: an error never carries the digits (the vault's errors
     ///   are redacted); a party with no record is "not in the vault".
     /// ```
     pub fn tin_from_vault(&self, party: PartyId) -> Result<String, String> {
+        let vault = self.open_vault()?;
+        match vault.tin(party) {
+            Ok(Some(t)) => Ok(t.formatted()),
+            Ok(None) => Err("Not in the vault on this computer.".into()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    /// Where the vault and its key are (INVARIANT 3 of [`Self::tin_from_vault`]).
+    fn vault_place(&self) -> Result<(PathBuf, PathBuf), String> {
+        if ledger_store::root::inside_a_root(&self.data_dir) {
+            return Ok((
+                self.data_dir.join(ledger_store::root::VAULT_DIR),
+                self.data_dir
+                    .join(ledger_store::root::KEYS_DIR)
+                    .join(ledger_store::root::LEGACY_KEY_FILE),
+            ));
+        }
         let key = crate::vault_key_file()
             .or_else(|| self.settings.vault_key_file.clone())
             .unwrap_or_else(ledger_vault::default_key_file);
@@ -1539,7 +1561,22 @@ impl Books {
                 key.display()
             ));
         }
-        let vault = ledger_vault::Vault::open(&books.join("vault"), &key, false).map_err(
+        Ok((books.join("vault"), key))
+    }
+
+    /// A party's signed W-9 file from the vault, on demand (a click).
+    pub fn w9_file(&self, party: PartyId) -> Result<ledger_vault::W9File, String> {
+        self.open_vault()?
+            .w9(party)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "The vault holds no W-9 file for this party.".to_string())
+    }
+
+    /// The vault, opened read-only, never making a key (a missing one is a
+    /// locked vault).
+    pub fn open_vault(&self) -> Result<ledger_vault::Vault, String> {
+        let (dir, key) = self.vault_place()?;
+        ledger_vault::Vault::open(&dir, &key, false).map_err(
             |e| match e {
                 ledger_vault::Error::NoKey(k) => format!(
                     "The vault is locked: its key file {} is missing. Restore it from your password manager.",
@@ -1547,12 +1584,7 @@ impl Books {
                 ),
                 other => other.to_string(),
             },
-        )?;
-        match vault.tin(party) {
-            Ok(Some(t)) => Ok(t.formatted()),
-            Ok(None) => Err("Not in the vault on this computer.".into()),
-            Err(e) => Err(e.to_string()),
-        }
+        )
     }
 
     /// One entry's what-for, for one party (see [`PartyFlow`] INVARIANT
@@ -1834,6 +1866,13 @@ impl Books {
     /// Blob store path for an attachment.
     pub fn blob_root(&self) -> PathBuf {
         self.data_dir.join("blobs")
+    }
+
+    /// A stored file's bytes, read only, checked against its SHA-256.
+    pub fn attachment_bytes(&self, a: &Attachment) -> Result<Vec<u8>, String> {
+        ledger_store::BlobStore::open_read_only(&self.blob_root())
+            .get(&a.blob_sha)
+            .map_err(|e| e.to_string())
     }
 }
 

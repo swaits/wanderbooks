@@ -18,7 +18,7 @@ use ledger_gui::pages::parties::{
 };
 use ledger_gui::{App, Source, attention, data, palette};
 use ledger_store::Store;
-use ledger_store::viewer::ViewerTarget;
+use ledger_store::ops::ViewerTarget;
 use rust_decimal::Decimal;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -65,7 +65,6 @@ fn today() -> NaiveDate {
 fn load(dir: &Path) -> Books {
     data::load_once(&Source {
         data_dir: dir.join("books-data"),
-        books_toml: None,
         today: Some(today()),
     })
     .unwrap()
@@ -892,22 +891,25 @@ fn counterparty_books(
         .unwrap();
     let unnamed = post(&mut s, d(2026, 5, 1), "Mystery payment", labor, cash);
     if let Some(p) = policy {
-        std::fs::write(
-            dir.0.join("wanderbooks.toml"),
-            format!("[books]\nparties = \"{p}\"\n"),
-        )
-        .unwrap();
+        journal_settings(&mut s, &format!("[books]\nparties = \"{p}\"\n"));
     }
     (dir, s, tagged, transfer, unnamed)
 }
 
-fn load_with_toml(dir: &Path) -> Books {
-    data::load_once(&Source {
-        data_dir: dir.join("books-data"),
-        books_toml: Some(dir.join("wanderbooks.toml")),
-        today: Some(today()),
-    })
-    .unwrap()
+/// The settings `toml` says, journaled into `s` as the server adopts a
+/// settings file: the viewer reads settings only from the journal.
+fn journal_settings(s: &mut Store, toml: &str) {
+    let import = ledger_config::codec::import(toml, None, s.ledger().settings(), "USD").unwrap();
+    s.adopt_settings(
+        &import.changes,
+        &ledger_core::settings::Source {
+            decided_by: "the test".into(),
+            decided_on: today(),
+            citation: None,
+            note: None,
+        },
+    )
+    .unwrap();
 }
 
 #[test]
@@ -920,7 +922,7 @@ fn entries_without_a_counterparty_need_attention_unless_off() {
     };
     // Unset is suggest: one note naming just the unmarked entry.
     let (dir, mut s, _, transfer, unnamed) = counterparty_books("np-suggest", None);
-    let b = load_with_toml(&dir.0);
+    let b = load(&dir.0);
     let a = item(&b).expect("an item");
     assert_eq!(a.title, "1 entry names no counterparty");
     assert_eq!(a.severity, Severity::Info);
@@ -961,17 +963,14 @@ fn entries_without_a_counterparty_need_attention_unless_off() {
     // Tagging the last one clears it.
     let p = s.add_party("Mystery Co", &[Role::Contractor]).unwrap();
     s.set_entry_party(unnamed, Some(p)).unwrap();
-    assert!(item(&load_with_toml(&dir.0)).is_none());
+    assert!(item(&load(&dir.0)).is_none());
 
     // Require: a to-do.
     let (dir, _s, ..) = counterparty_books("np-require", Some("require"));
-    assert_eq!(
-        item(&load_with_toml(&dir.0)).unwrap().severity,
-        Severity::Todo
-    );
+    assert_eq!(item(&load(&dir.0)).unwrap().severity, Severity::Todo);
     // Off: never mentioned.
     let (dir, _s, ..) = counterparty_books("np-off", Some("off"));
-    assert!(item(&load_with_toml(&dir.0)).is_none());
+    assert!(item(&load(&dir.0)).is_none());
 }
 
 // ------------------------------------------------------- party shares and the capital statement
@@ -1108,7 +1107,8 @@ fn member_books(tag: &str) -> MemberBooks {
         ]),
     )
     .unwrap();
-    write_member_toml(&dir.0, "cash_accounts = [\"1000\"]\n");
+    drop(s);
+    member_settings(&dir.0, "cash_accounts = [\"1000\"]\n");
     MemberBooks {
         dir,
         tobin,
@@ -1119,17 +1119,17 @@ fn member_books(tag: &str) -> MemberBooks {
     }
 }
 
-/// The fixture's wanderbooks.toml, with `books` as its `[books]` table.
-fn write_member_toml(dir: &Path, books: &str) {
-    std::fs::write(
-        dir.join("wanderbooks.toml"),
-        format!(
+/// The fixture's settings, `books` as their `[books]` table, journaled
+/// into its books.
+fn member_settings(dir: &Path, books: &str) {
+    journal_settings(
+        &mut Store::open(&dir.join("books-data")).unwrap(),
+        &format!(
             "[books]\n{books}[company]\nname = \"Fernhill Labs LLC\"\n\
              [[company.members]]\nname = \"Tobin Harlow\"\nshare = \"50%\"\ncapital_account = \"3000\"\n\
              [[company.members]]\nname = \"Morgan Ellis\"\nshare = \"50%\"\ncapital_account = \"3001\"\n"
         ),
-    )
-    .unwrap();
+    );
 }
 
 /// Post one entry to the fixture's books after the fact.
@@ -1147,7 +1147,7 @@ fn post_more(m: &MemberBooks, date: NaiveDate, lines: &[(&str, Side, i64)]) -> E
 #[test]
 fn entries_list_every_party_with_its_resolved_share() {
     let m = member_books("shares-entries");
-    let b = load_with_toml(&m.dir.0);
+    let b = load(&m.dir.0);
     let e = b.entry(m.reimburse).unwrap();
     assert_eq!(e.party_id, None, "two parties: no sole party");
     assert_eq!(
@@ -1181,7 +1181,7 @@ fn entries_list_every_party_with_its_resolved_share() {
 #[test]
 fn a_members_money_is_their_share() {
     let m = member_books("shares-flow");
-    let b = load_with_toml(&m.dir.0);
+    let b = load(&m.dir.0);
     let span = (d(2026, 1, 1), today());
     for who in [m.tobin, m.mo] {
         let f = b.party_flow(who, span, true);
@@ -1199,7 +1199,7 @@ fn a_members_money_is_their_share() {
 #[test]
 fn a_members_page_is_their_capital_statement() {
     let m = member_books("capital");
-    let b = load_with_toml(&m.dir.0);
+    let b = load(&m.dir.0);
     let st = b
         .capital_statement(m.tobin, (d(2026, 1, 1), today()))
         .expect("a member");
@@ -1249,7 +1249,7 @@ fn a_members_page_is_their_capital_statement() {
     let mut s = Store::open(&m.dir.0.join("books-data")).unwrap();
     let other = s.add_party("Riley Chen", &[Role::Contractor]).unwrap();
     drop(s);
-    let b = load_with_toml(&m.dir.0);
+    let b = load(&m.dir.0);
     assert!(
         b.capital_statement(other, (d(2026, 1, 1), today()))
             .is_none()
@@ -1280,8 +1280,8 @@ fn the_capital_statement_is_the_k1_worksheet_row() {
         ],
     );
     for (books, fallback) in [("cash_accounts = [\"1000\"]\n", false), ("", true)] {
-        write_member_toml(&m.dir.0, books);
-        let b = load_with_toml(&m.dir.0);
+        member_settings(&m.dir.0, books);
+        let b = load(&m.dir.0);
         let chart = b.ledger.chart();
         let id = |c: &str| chart.find_by_code(c).unwrap().id;
         let members =
@@ -1368,7 +1368,7 @@ fn the_capital_statement_counts_income_not_yet_closed() {
             ("4000", Side::Credit, 10_000),
         ],
     );
-    let b = load_with_toml(&m.dir.0);
+    let b = load(&m.dir.0);
     let st = b
         .capital_statement(m.tobin, (d(2026, 1, 1), today()))
         .unwrap();
@@ -1425,18 +1425,18 @@ fn owed_to_members_reads_the_financing_accounts_first() {
         &[("6050", Side::Debit, 4_000), ("2200", Side::Credit, 4_000)],
     );
     let span = (d(2026, 1, 1), today());
-    write_member_toml(
+    member_settings(
         &m.dir.0,
         "cash_accounts = [\"1000\"]\nfinancing_accounts = [\"2200\"]\n",
     );
-    let b = load_with_toml(&m.dir.0);
+    let b = load(&m.dir.0);
     let st = b.capital_statement(m.mo, span).unwrap();
     assert_eq!(
         (st.due_to_members, st.owed_to_member),
         (cents(4_000), cents(2_000))
     );
-    write_member_toml(&m.dir.0, "cash_accounts = [\"1000\"]\n");
-    let b = load_with_toml(&m.dir.0);
+    member_settings(&m.dir.0, "cash_accounts = [\"1000\"]\n");
+    let b = load(&m.dir.0);
     let st = b.capital_statement(m.mo, span).unwrap();
     assert_eq!(
         (st.due_to_members, st.owed_to_member),
@@ -1452,8 +1452,8 @@ fn owed_to_members_reads_the_financing_accounts_first() {
 #[test]
 fn without_cash_accounts_the_capital_statement_reads_money_as_core_does() {
     let m = member_books("capital-no-cash");
-    write_member_toml(&m.dir.0, "");
-    let b = load_with_toml(&m.dir.0);
+    member_settings(&m.dir.0, "");
+    let b = load(&m.dir.0);
     let id = |c: &str| b.ledger.chart().find_by_code(c).unwrap().id;
     assert_eq!(b.money_cash_accounts, vec![id("1000"), id("1500")]);
     assert!(

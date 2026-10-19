@@ -1,5 +1,5 @@
 //! Screenshots of every screen, for eyes. Set `SHOT_BOOKS` to a books dir
-//! (containing `books-data/` and `wanderbooks.toml`) and `SHOT_DIR` to
+//! (containing `books-data/`, its settings in its journal) and `SHOT_DIR` to
 //! where the PNGs go; without them this test does nothing.
 
 use egui_kittest::Harness;
@@ -43,7 +43,6 @@ fn screenshots() {
     std::fs::create_dir_all(&out).unwrap();
     let source = Source {
         data_dir: books.join("books-data"),
-        books_toml: Some(books.join("wanderbooks.toml")),
         today: fixed_today.or_else(|| {
             std::env::var("SHOT_BOOKS")
                 .is_err()

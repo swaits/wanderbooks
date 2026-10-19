@@ -14,7 +14,7 @@ use ledger_gui::pages::assets::{MonthStatus, TaxFacts, missing_tax_notice, notic
 use ledger_gui::pages::journal::describe;
 use ledger_gui::{App, Source, attention, data, fmt, palette};
 use ledger_store::Store;
-use ledger_store::viewer::ViewerTarget;
+use ledger_store::ops::ViewerTarget;
 use proptest::prelude::*;
 use rust_decimal::Decimal;
 use std::path::{Path, PathBuf};
@@ -54,7 +54,6 @@ fn usd(cents: i64) -> Money {
 fn load(dir: &Path, today: NaiveDate) -> Books {
     data::load_once(&Source {
         data_dir: dir.join("books-data"),
-        books_toml: None,
         today: Some(today),
     })
     .unwrap()

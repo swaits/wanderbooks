@@ -3,9 +3,20 @@
 
 use std::path::{Path, PathBuf};
 
-/// Where saved files go: `$XDG_DOWNLOAD_DIR`, else `~/Downloads`, else
-/// the home directory.
+/// The folder saved files go to, when set (tests, at start).
+static DOWNLOADS: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Name the folder saved files go to (once; tests use their own).
+pub fn set_downloads_dir(dir: PathBuf) {
+    let _ = DOWNLOADS.set(dir);
+}
+
+/// Where saved files go: the folder set, else `$XDG_DOWNLOAD_DIR`, else
+/// `~/Downloads`, else the home directory.
 pub fn downloads_dir() -> PathBuf {
+    if let Some(d) = DOWNLOADS.get() {
+        return d.clone();
+    }
     if let Some(d) = std::env::var_os("XDG_DOWNLOAD_DIR").map(PathBuf::from)
         && d.is_dir()
     {
@@ -96,19 +107,37 @@ pub fn file_name(name: &str, ext: &str) -> String {
     format!("{base}.{ext}")
 }
 
-/// Write `bytes` to the downloads folder as `name.ext` (replacing a file
-/// of that name: the same report renders the same bytes) and open it with
-/// the system's viewer.
+/// Save `bytes` in the downloads folder as `name.ext`, made safe: a new
+/// file beside any of that name (`name (1).ext`), never over one, never a
+/// part of it left under the name (ledger_store::saving).
+pub fn save(name: &str, ext: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+    ledger_store::saving::save_new(
+        &downloads_dir(),
+        &file_name(name, ext),
+        &file_name("wanderbooks file", ext),
+        bytes,
+    )
+}
+
+/// [`save`], then open it with the system's viewer.
 pub fn save_and_open(name: &str, ext: &str, bytes: &[u8]) -> Result<PathBuf, String> {
-    let path = downloads_dir().join(file_name(name, ext));
-    std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+    let path = save(name, ext, bytes)?;
     open(&path);
     Ok(path)
 }
 
+/// A stored file's name split into the name and its extension, for
+/// [`save`]: "receipt.pdf" is ("receipt", "pdf"); with none, "bin".
+pub fn split_name(file_name: &str) -> (&str, &str) {
+    match file_name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() && !ext.is_empty() && ext.len() <= 16 => (stem, ext),
+        _ => (file_name, "bin"),
+    }
+}
+
 /// Open a file with whatever the desktop uses for its type. Best effort:
 /// the file is saved either way.
-fn open(path: &Path) {
+pub fn open(path: &Path) {
     #[cfg(target_os = "macos")]
     let cmd = std::process::Command::new("open").arg(path).spawn();
     #[cfg(target_os = "windows")]

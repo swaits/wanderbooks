@@ -362,15 +362,14 @@ pub struct Vendor1099Params {
     /// through 2025, $2,000 from 2026).
     pub threshold: Option<String>,
     /// True: each line carries its payee's full TIN, read from the TIN
-    /// vault (or a note saying why not). The output then holds full TINs:
-    /// for the CPA only, when the human asks for it. Default false (last
-    /// four digits only).
+    /// vault (or a note saying why not). Default false (last four digits
+    /// only).
     #[serde(default)]
     pub include_tins: bool,
-    /// Also write the worksheet as CSV to this local path (TINs included
-    /// only with include_tins). Never inside the books dir, and with TINs
-    /// an existing file is refused.
-    pub save_csv_to: Option<String>,
+    /// True: also hand the worksheet over as a CSV file (TINs included
+    /// with include_tins), to save with its download command.
+    #[serde(default)]
+    pub csv: bool,
 }
 
 /// One vendor's year.
@@ -415,11 +414,10 @@ pub struct Vendor1099Out {
     pub missing_w9: Vec<String>,
     /// Caveats for the human and CPA.
     pub notes: Vec<String>,
-    /// With include_tins: this output holds full TINs. For the CPA only;
-    /// never paste it anywhere else.
+    /// With include_tins: this output holds full TINs, for the CPA.
     pub warning: Option<String>,
-    /// The CSV written with save_csv_to, if any.
-    pub saved_csv: Option<String>,
+    /// With csv: the worksheet as a CSV file, handed over.
+    pub csv: Option<HandedFile>,
 }
 
 /// Parameters for `books.verify`.
@@ -492,6 +490,8 @@ pub struct ShowParams {
 pub struct ShowOut {
     /// What the viewer was asked to show.
     pub shown: String,
+    /// Whether a viewer has these books open now.
+    pub viewer_open: bool,
     /// Where this goes and what to tell the human.
     pub note: String,
 }
@@ -2604,28 +2604,16 @@ pub struct ExportCpaPackageParams {
     pub include_receipts: bool,
     /// Carry every member's and 1099 payee's full TIN from the TIN vault
     /// in the K-1 and 1099 worksheets (default true: the CPA needs them).
-    /// Then `save_to` is required, outside the books dir, and the package
-    /// never comes back in the output. False: last fours only, and the
-    /// zip comes back as base64 unless `save_to` is given.
+    /// False: last fours only.
     #[serde(default = "default_true")]
     pub include_tins: bool,
-    /// Where to write the package: a new `.zip` file, or an existing
-    /// folder (the zip goes in it as `cpa-package-<as_of>.zip`). Written
-    /// readable by its owner only. With TINs, never inside the books dir.
-    pub save_to: Option<String>,
 }
 
 /// Output of `books.export_cpa_package`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ExportCpaPackageOut {
-    /// File name, e.g. "cpa-package-2026-10-11.zip".
-    pub file_name: String,
-    /// The zip, base64-encoded: only when it isn't saved (`save_to`
-    /// absent, which needs include_tins false).
-    pub content_base64: Option<String>,
-    /// The path the zip was written to, when saved. Tell the human; never
-    /// open it, attach it, or copy it into the books.
-    pub saved_to: Option<String>,
+    /// The zip: run its `download` to save it.
+    pub file: HandedFile,
     /// Whether the worksheets carry full TINs from the vault.
     pub tins_included: bool,
     /// With TINs: each member or 1099 payee whose TIN the package lacks,
@@ -2822,24 +2810,39 @@ pub struct TinOut {
 pub struct GetW9Params {
     /// The party: id or name.
     pub party: String,
-    /// Where to write the W-9 file: a new local file outside the books
-    /// (the file shows the full TIN). An existing file is refused.
-    pub save_to: String,
 }
 
-/// Result of `books.get_w9`: where the file went, never its contents.
+/// A file the books made for an agent, handed over (tools/files.rs
+/// INVARIANT 6; D-29).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct HandedFile {
+    /// Its name, e.g. "cpa-package-2026-10-11.zip".
+    pub file_name: String,
+    /// Its MIME type.
+    pub mime_type: String,
+    /// Its size in bytes.
+    pub size_bytes: u64,
+    /// Its SHA-256, hex.
+    pub sha256: String,
+    /// The command that saves it in a folder you name (run it; books
+    /// served by `wanderbooks mcp`). Kept 15 minutes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub download: Option<String>,
+    /// When it lapses (UTC), with `download`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+    /// Over stdio: its bytes, base64.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_base64: Option<String>,
+}
+
+/// Result of `books.get_w9`: the W-9 file, handed over.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct GetW9Out {
     /// The party.
     pub party_id: u64,
-    /// The path written.
-    pub path: String,
-    /// The file's original name.
-    pub file_name: String,
-    /// Its size in bytes.
-    pub size_bytes: u64,
-    /// What to tell the human.
-    pub note: String,
+    /// The file: run its `download` to save it.
+    pub file: HandedFile,
 }
 
 /// Parameters for `books.purge_tin`.

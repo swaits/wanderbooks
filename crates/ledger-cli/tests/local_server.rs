@@ -703,17 +703,20 @@ async fn a_book_in_the_root_keeps_its_vault_and_key_inside_its_own_folder() {
         std::fs::read_dir(book.join("vault")).unwrap().count() > 0,
         "the TIN wasn't sealed into the book's vault"
     );
-    // A file with TINs is never written into the root.
-    let err = call(
+    // A file with TINs is handed over, never written loose in the root.
+    let w = call(
         &c,
         "books.vendor_1099",
-        json!({"year": 2026, "include_tins": true,
-               "save_csv_to": home.root().join("x.csv").display().to_string()}),
+        json!({"year": 2026, "include_tins": true, "csv": true}),
     )
     .await
-    .unwrap_err();
-    home.assert_hidden(&err);
-    assert!(!home.root().join("x.csv").exists());
+    .unwrap();
+    home.assert_hidden(&w.to_string());
+    assert!(
+        w["csv"]["download"].as_str().unwrap().contains(" ex_"),
+        "{w}"
+    );
+    assert!(w["csv"].get("content_base64").is_none(), "{w}");
     drop(c);
     assert!(server.close().success());
 }
@@ -960,32 +963,33 @@ async fn nothing_is_written_in_the_root_and_the_vault_stays_private() {
     home.create("acme", "USD");
     let c = connect(&home, "acme").await.unwrap();
     let book = home.root().join("books/acme");
-    let err = call(
+    call(
         &c,
-        "books.export_cpa_package",
-        json!({"as_of": "2026-10-18", "include_tins": false,
-               "save_to": book.display().to_string()}),
+        "books.add_account",
+        json!({"code": "1000", "name": "Cash", "account_type": "asset"}),
     )
     .await
-    .unwrap_err();
-    home.assert_hidden(&err);
+    .unwrap();
+    let got = call(
+        &c,
+        "books.export_cpa_package",
+        json!({"as_of": "2026-10-18", "include_tins": false, "cash_accounts": ["1000"]}),
+    )
+    .await
+    .unwrap();
+    home.assert_hidden(&got.to_string());
     let zips: Vec<_> = std::fs::read_dir(&book)
         .unwrap()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_name().to_string_lossy().ends_with(".zip"))
         .collect();
     assert!(zips.is_empty(), "a package was written into the root");
-    // A TIN file written outside first: the vault folder it records into
-    // is made private, and storing a TIN then works.
-    let out = tempfile::Builder::new()
-        .prefix("wb-srv-out-")
-        .tempdir()
-        .unwrap();
+    // A TIN file made first: the vault folder it records into is made
+    // private, and storing a TIN then works.
     let _ = call(
         &c,
         "books.vendor_1099",
-        json!({"year": 2026, "include_tins": true,
-               "save_csv_to": out.path().join("1099.csv").display().to_string()}),
+        json!({"year": 2026, "include_tins": true, "csv": true}),
     )
     .await;
     if book.join("vault").exists() {
@@ -2473,16 +2477,11 @@ async fn a_w9_and_a_file_holding_a_tin_go_by_upload_only_where_they_belong() {
         .await
         .unwrap_err();
     assert!(e.contains("no upload"), "{e}");
-    let out = home.dir.path().join("payee copy.pdf");
-    let got = call(
-        &c,
-        "books.get_w9",
-        json!({"party": "Payee", "save_to": out.to_str().unwrap()}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(got["file_name"], json!("payee-w9.pdf"));
-    assert_eq!(std::fs::read(&out).unwrap(), w9);
+    let got = call(&c, "books.get_w9", json!({"party": "Payee"}))
+        .await
+        .unwrap();
+    assert_eq!(got["file"]["file_name"], json!("payee-w9.pdf"));
+    assert_eq!(fetch_export(&home, &token, &got["file"]).await, w9);
     // The W-9's upload is gone; the refused file's waits to lapse.
     let left: Vec<String> = std::fs::read_dir(home.book_dir("acme").join("uploads"))
         .unwrap()
@@ -2510,9 +2509,28 @@ async fn lapsed_uploads_are_swept_while_the_server_runs() {
     let mut grant: Value = serde_json::from_slice(&std::fs::read(&json).unwrap()).unwrap();
     grant["expires"] = json!(0);
     std::fs::write(&json, grant.to_string()).unwrap();
+    // An export too (a file the books made), aged the same way.
+    let made = call(&c, "books.vendor_1099", json!({"year": 2026, "csv": true}))
+        .await
+        .unwrap();
+    assert!(made["csv"]["download"].as_str().unwrap().contains(" ex_"));
+    let exports = home.book_dir("acme").join("exports");
+    for e in std::fs::read_dir(&exports).unwrap() {
+        let p = e.unwrap().path();
+        if p.extension().is_some_and(|x| x == "json") {
+            let mut x: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+            x["expires"] = json!(0);
+            std::fs::write(&p, x.to_string()).unwrap();
+        }
+    }
     let deadline = Instant::now() + Duration::from_secs(25);
-    while std::fs::read_dir(&folder).unwrap().count() > 0 {
-        assert!(Instant::now() < deadline, "the lapsed upload wasn't swept");
+    while std::fs::read_dir(&folder).unwrap().count() > 0
+        || std::fs::read_dir(&exports).unwrap().count() > 0
+    {
+        assert!(
+            Instant::now() < deadline,
+            "a lapsed upload or export wasn't swept"
+        );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
     drop(c);
@@ -2545,5 +2563,161 @@ async fn an_mcp_request_is_at_most_a_mebibyte() {
     let at = post(max).await.unwrap();
     assert_ne!(at.status().as_u16(), 413, "{:?}", at.text().await);
     drop(http);
+    assert!(server.close().success());
+}
+
+/// Fetch the export a tool handed over in `file` (its `download`
+/// command's id) with `token`: its bytes, checked against its sha256.
+async fn fetch_export(home: &Home, token: &str, file: &Value) -> Vec<u8> {
+    let command = file["download"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{file}"));
+    let id = command
+        .split(' ')
+        .find(|w| w.starts_with("ex_"))
+        .unwrap_or_else(|| panic!("{command}"));
+    let r = mcp_http(home)
+        .get(format!("http://localhost/b/acme/x/{id}"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 200, "{:?}", r.headers());
+    let bytes = r.bytes().await.unwrap().to_vec();
+    assert_eq!(
+        file["sha256"],
+        json!(ledger_store::journal::sha256_hex(&bytes))
+    );
+    assert_eq!(file["size_bytes"], json!(bytes.len()));
+    bytes
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_file_the_books_make_is_fetched_by_its_own_token() {
+    let home = Home::new("exports");
+    let server = Server::start(&home);
+    home.create("acme", "USD");
+    let c = connect(&home, "acme").await.unwrap();
+    let token = home.token("acme");
+    call(
+        &c,
+        "books.add_party",
+        json!({"name": "Member One", "roles": ["member"]}),
+    )
+    .await
+    .unwrap();
+    call(
+        &c,
+        "books.set_tin",
+        json!({"party": "Member One", "tin": "620-37-1111", "tin_type": "ssn"}),
+    )
+    .await
+    .unwrap();
+    for (code, name, ty) in [("1000", "Cash", "asset"), ("3000", "Capital", "equity")] {
+        call(
+            &c,
+            "books.add_account",
+            json!({"code": code, "name": name, "account_type": ty}),
+        )
+        .await
+        .unwrap();
+    }
+    // The CPA package, TINs and all: handed over, never inline, never a
+    // path; the command runs as this token.
+    let got = call(
+        &c,
+        "books.export_cpa_package",
+        json!({"as_of": "2026-10-18", "cash_accounts": ["1000"]}),
+    )
+    .await
+    .unwrap();
+    home.assert_hidden(&got.to_string());
+    assert_eq!(got["tins_included"], json!(true));
+    let file = &got["file"];
+    assert_eq!(file["file_name"], json!("cpa-package-2026-10-18.zip"));
+    assert_eq!(file["mime_type"], json!("application/zip"));
+    assert!(file.get("content_base64").is_none(), "{file}");
+    let command = file["download"].as_str().unwrap();
+    assert!(
+        command.starts_with("wanderbooks download --book acme --token test ex_")
+            && command.ends_with(" --to <a folder>"),
+        "{command}"
+    );
+    assert!(file["expires_at"].as_str().unwrap().ends_with('Z'));
+    // Fetched whole, as often as needed while it's kept.
+    let zip = fetch_export(&home, &token, file).await;
+    assert!(zip.starts_with(b"PK"), "a zip");
+    assert_eq!(fetch_export(&home, &token, file).await, zip);
+    let id = command.split(' ').find(|w| w.starts_with("ex_")).unwrap();
+    let get = |bearer: Option<String>, what: String| {
+        let http = mcp_http(&home);
+        async move {
+            let mut r = http.get(format!("http://localhost/b/acme/x/{what}"));
+            if let Some(b) = bearer {
+                r = r.bearer_auth(b);
+            }
+            r.send().await.unwrap()
+        }
+    };
+    // Only its own token; a reader at that.
+    let other = home.token_with("acme", "other", &["read"]);
+    let r = get(Some(other), id.to_string()).await;
+    assert_eq!(r.status().as_u16(), 403);
+    assert_eq!(r.headers()[ledger_mcp::local::REFUSED_HEADER], "not_yours");
+    let writer = home.token_with("acme", "writer", &["write"]);
+    assert_eq!(
+        get(Some(writer), id.to_string()).await.status().as_u16(),
+        403
+    );
+    assert_eq!(get(None, id.to_string()).await.status().as_u16(), 401);
+    let r = get(
+        Some(token.clone()),
+        "ex_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+    )
+    .await;
+    assert_eq!(r.status().as_u16(), 404);
+    home.assert_hidden(&r.text().await.unwrap());
+    // A token that may make an export but not read the books fetches its
+    // own: the export is bound to it, whatever its scopes.
+    let admin = home.token_with("acme", "cpa", &["admin"]);
+    let ca = connect_with(&home, "acme", Some(admin.clone()))
+        .await
+        .unwrap();
+    let w = call(&ca, "books.vendor_1099", json!({"year": 2026, "csv": true}))
+        .await
+        .unwrap();
+    let csv = fetch_export(&home, &admin, &w["csv"]).await;
+    assert!(csv.starts_with(b"vendor_id,name,"));
+    drop(ca);
+    // Each fetch is in the access log as an export, under its id.
+    let log = call(
+        &c,
+        "books.access_log",
+        json!({"action": "export", "limit": 20}),
+    )
+    .await
+    .unwrap();
+    let records = log["records"].as_array().unwrap();
+    assert_eq!(records.len(), 7, "{log}");
+    assert!(records.iter().filter(|r| r["subject"] == json!(id)).count() >= 5);
+    // Given back to be filed, it is refused: the server made it with TINs.
+    let e = call(
+        &c,
+        "books.file_document",
+        json!({"category": "tax", "file_name": "p.zip", "mime_type": "application/zip",
+               "content_base64": b64(&zip), "sha256": ledger_store::journal::sha256_hex(&zip)}),
+    )
+    .await;
+    assert!(zip.len() <= 256 * 1024, "small enough to give inline");
+    let e = e.unwrap_err();
+    assert!(e.contains("TIN"), "{e}");
+    // Nothing loose in the book's folder: the export is in its own.
+    let loose: Vec<String> = std::fs::read_dir(home.book_dir("acme"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".zip") || n.ends_with(".csv") || n.ends_with(".pdf"))
+        .collect();
+    assert!(loose.is_empty(), "{loose:?}");
+    drop(c);
     assert!(server.close().success());
 }

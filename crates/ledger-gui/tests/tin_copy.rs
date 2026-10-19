@@ -73,7 +73,6 @@ fn fixture(tag: &str) -> Fixture {
 fn load(f: &Fixture, key: Option<&Path>) -> Books {
     let mut b = data::load_once(&Source {
         data_dir: f.books.join("books-data"),
-        books_toml: None,
         today: Some(chrono::NaiveDate::from_ymd_opt(2026, 10, 16).unwrap()),
     })
     .unwrap();

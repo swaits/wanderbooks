@@ -44,16 +44,19 @@
 //!      dropped. Tokens are made, listed and revoked only through
 //!      the admin socket.
 //!   9. A file's bytes come in only by `PUT /b/{id}/u/{upload}` and go
-//!      out only by `GET /b/{id}/a/{attachment}` (plan 4.7), each through
-//!      the same door as 8 and counted for the close like any request:
-//!      an upload only from the token that began it, a download only with
-//!      books:read. Each, refused at the door or not, is recorded in the
-//!      book's access log as `upload` or `download` with its id, and the
+//!      out only by `GET /b/{id}/a/{attachment}` (a stored file) and `GET
+//!      /b/{id}/x/{export}` (a file the books made, D-29) (plan 4.7), each
+//!      through the same door as 8 and counted for the close like any
+//!      request: an upload only from the token that began it, a download
+//!      only with books:read, an export only to the token it was made for
+//!      (whose tool passed its own scope check; no other is asked). Each,
+//!      refused at the door or not, is recorded in the book's access log
+//!      as `upload`, `download` or `export` with its id, and the
 //!      bytes (kept, or read) and their record are one task that runs to
 //!      its end if the client hangs up (a process killed in that task
 //!      excepted); bytes whose record can't be written aren't kept, and
-//!      the books stop. Lapsed uploads are swept
-//!      every SWEEP_EVERY. Nothing comes in once the books stopped.
+//!      the books stop. Lapsed uploads and exports are swept every
+//!      SWEEP_EVERY. Nothing comes in or goes out once the books stopped.
 //! ```
 
 use crate::admin::{self, Request, Response};
@@ -108,8 +111,8 @@ type Service = StreamableHttpService<BooksServer, LocalSessionManager>;
 enum Book {
     /// Open and served.
     Open {
-        /// Its MCP service.
-        service: Service,
+        /// Its MCP service (boxed: the other variant is a line of text).
+        service: Box<Service>,
         /// Its store, closed when the server closes (INVARIANT 6).
         store: Arc<SharedStore>,
         /// Its access log, where requests refused at the door are
@@ -117,6 +120,8 @@ enum Book {
         access: Arc<AccessLog>,
         /// Its files on their way in (`/b/{id}/u/{upload}`).
         uploads: ledger_store::uploads::Uploads,
+        /// The files it made for agents (`/b/{id}/x/{export}`).
+        exports: ledger_store::exports::Exports,
     },
     /// Not opened, with why (INVARIANT 3).
     Failed(String),
@@ -271,6 +276,13 @@ impl Books {
             ledger_store::uploads::Uploads::open(store.data_dir(), chrono::Utc::now().timestamp())
                 .map_err(|e| self.hide(e.to_string()))?;
         let server_uploads = uploads.clone();
+        let exports =
+            ledger_store::exports::Exports::open(store.data_dir(), chrono::Utc::now().timestamp())
+                .map_err(|e| self.hide(e.to_string()))?;
+        let server_exports = exports.clone();
+        // The viewer's side channel, made by the server (ops.rs
+        // INVARIANT 2): a viewer can show its presence from the start.
+        ledger_store::ops::prepare(store.data_dir()).map_err(|e| self.hide(e.to_string()))?;
         let live = Arc::new(Mutex::new(live));
         let store = SharedStore::new(store);
         let log = access.clone();
@@ -288,17 +300,19 @@ impl Books {
                         .with_live_settings(live.clone())
                         .with_layout(layout.clone())
                         .with_access(log.clone())
-                        .with_uploads(server_uploads.clone()),
+                        .with_uploads(server_uploads.clone())
+                        .with_exports(server_exports.clone()),
                 )
             },
             Arc::new(sessions()),
             config,
         );
         Ok(Book::Open {
-            service,
+            service: Box::new(service),
             store: shared,
             access,
             uploads,
+            exports,
         })
     }
 
@@ -1159,6 +1173,36 @@ async fn download(
     axum::extract::Path((book, attachment)): axum::extract::Path<(String, String)>,
     request: axum::extract::Request,
 ) -> axum::response::Response {
+    fetch(books, book, Wanted::Attachment(attachment), request).await
+}
+
+/// `GET /b/{book}/x/{export}`: a file the books made for an agent
+/// (exports.rs; D-29), only to the token it was made for (INVARIANT 9);
+/// recorded in the access log (action `export`).
+async fn export(
+    axum::extract::State(books): axum::extract::State<Arc<Books>>,
+    axum::extract::Path((book, id)): axum::extract::Path<(String, String)>,
+    request: axum::extract::Request,
+) -> axum::response::Response {
+    fetch(books, book, Wanted::Export(id), request).await
+}
+
+/// What a GET fetches.
+enum Wanted {
+    /// A stored receipt or document, by its id.
+    Attachment(String),
+    /// A file the books made, by its id.
+    Export(String),
+}
+
+/// A download or an export: the door, the read and its record, the
+/// headers (INVARIANT 9).
+async fn fetch(
+    books: Arc<Books>,
+    book: String,
+    wanted: Wanted,
+    request: axum::extract::Request,
+) -> axum::response::Response {
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
     // GET only (axum hands a HEAD to a GET route): a HEAD would read the
@@ -1175,58 +1219,86 @@ async fn download(
     books
         .last_arrival
         .store(books.started.elapsed().as_millis() as u64, Ordering::SeqCst);
+    let (action, subject) = match &wanted {
+        Wanted::Attachment(id) => ("download", id.clone()),
+        Wanted::Export(id) => ("export", id.clone()),
+    };
     let asked = Asked {
-        action: "download",
-        subject: attachment.clone(),
+        action,
+        subject: subject.clone(),
     };
     let (held, token) = match door(&books, &book, &asked, request.headers()).await {
         Ok(passed) => passed,
         Err(refused) => return *refused,
     };
-    let Book::Open { access, store, .. } = &held else {
+    let Book::Open {
+        access,
+        store,
+        exports,
+        ..
+    } = &held
+    else {
         unreachable!("the door lets only open books through")
     };
     // The read and its record are one blocking task, run to its end even
     // if the client hangs up, and counted until then.
-    let (access, store_for) = (access.clone(), store.clone());
+    let (access, store_for, exports) = (access.clone(), store.clone(), exports.clone());
     let task = tokio::task::spawn_blocking(move || {
         let _counted = _counted;
-        // An id as the books write it (no sign, no leading zeros), so the
-        // log holds no alias of it.
-        let id = attachment
-            .parse::<u64>()
-            .ok()
-            .filter(|n| n.to_string() == attachment);
-        let found = match (token.scopes.contains(&Scope::Read), id) {
+        use ledger_store::exports::ExportError;
+        let not_found = |code, what: &str| {
+            (
+                StatusCode::NOT_FOUND,
+                code,
+                format!("there is no such {what}"),
+            )
+        };
+        let found = if store_for.is_stopped() {
             // Stopped after an internal error: as for uploads.
-            _ if store_for.is_stopped() => Err((
+            Err((
                 StatusCode::SERVICE_UNAVAILABLE,
                 "stopped",
                 crate::server::STOPPED.to_string(),
-            )),
-            (false, _) => Err((
+            ))
+        // An export is bound to the token it was made for, whose tool
+        // passed its own scope check; a stored file needs books:read.
+        } else if matches!(wanted, Wanted::Attachment(_)) && !token.scopes.contains(&Scope::Read) {
+            Err((
                 StatusCode::FORBIDDEN,
                 "insufficient_scope",
                 format!(
                     "this agent's token can't do that: a download needs books:read, and its token ({:?}) hasn't it",
                     token.name
                 ),
-            )),
-            (true, None) => Err((
-                StatusCode::NOT_FOUND,
-                "no_such_attachment",
-                "there is no such attachment".to_string(),
-            )),
-            (true, Some(id)) => match store_for.attachment_file(id) {
-                Ok(Some(file)) => Ok(file),
-                Ok(None) => Err((
-                    StatusCode::NOT_FOUND,
-                    "no_such_attachment",
-                    "there is no such attachment".to_string(),
-                )),
-                // Stopped, or the stored file damaged: not a missing one.
-                Err(why) => Err((StatusCode::INTERNAL_SERVER_ERROR, "failed", why)),
-            },
+            ))
+        } else {
+            match &wanted {
+                Wanted::Export(id) => {
+                    match exports.get(id, &token.id, chrono::Utc::now().timestamp()) {
+                        Ok((x, bytes)) => Ok((x.file_name, x.mime, bytes)),
+                        Err(e @ ExportError::Unknown(_)) => {
+                            Err((StatusCode::NOT_FOUND, "no_such_export", e.to_string()))
+                        }
+                        Err(e @ ExportError::NotYours) => {
+                            Err((StatusCode::FORBIDDEN, "not_yours", e.to_string()))
+                        }
+                        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, "failed", e.to_string())),
+                    }
+                }
+                // An id as the books write it (no sign, no leading zeros),
+                // so the log holds no alias of it.
+                Wanted::Attachment(a) => {
+                    match a.parse::<u64>().ok().filter(|n| n.to_string() == *a) {
+                        None => Err(not_found("no_such_attachment", "attachment")),
+                        Some(id) => match store_for.attachment_file(id) {
+                            Ok(Some(file)) => Ok(file),
+                            Ok(None) => Err(not_found("no_such_attachment", "attachment")),
+                            // The stored file damaged: not a missing one.
+                            Err(why) => Err((StatusCode::INTERNAL_SERVER_ERROR, "failed", why)),
+                        },
+                    }
+                }
+            }
         };
         let record = Access {
             principal: Principal {
@@ -1236,8 +1308,8 @@ async fn download(
             },
             client: None,
             request_id: None,
-            action: "download".into(),
-            subject: attachment.clone(),
+            action: action.into(),
+            subject,
             args_digest: None,
             result: match &found {
                 Ok(_) => Outcome::Ok,
@@ -1346,7 +1418,7 @@ async fn mcp(
     let Book::Open { service, .. } = &held else {
         unreachable!("the door lets only open books through")
     };
-    let service = service.clone();
+    let service = (**service).clone();
     let principal = |t: &Token| Principal {
         id: t.id.clone(),
         kind: "agent".into(),
@@ -1690,17 +1762,22 @@ async fn serve(
             tokio::select! {
                 () = sweep_stop.cancelled() => break,
                 _ = tick.tick() => {
-                    let uploads: Vec<_> = sweeping
+                    let held: Vec<_> = sweeping
                         .held()
                         .values()
                         .filter_map(|b| match b {
-                            Book::Open { uploads, .. } => Some(uploads.clone()),
+                            Book::Open { uploads, exports, .. } => {
+                                Some((uploads.clone(), exports.clone()))
+                            }
                             Book::Failed(_) => None,
                         })
                         .collect();
                     let now = chrono::Utc::now().timestamp();
                     let _ = tokio::task::spawn_blocking(move || {
-                        uploads.iter().for_each(|u| u.sweep(now));
+                        for (u, x) in &held {
+                            u.sweep(now);
+                            x.sweep(now);
+                        }
                     })
                     .await;
                 }
@@ -1712,6 +1789,7 @@ async fn serve(
         .route("/b/{book}/mcp", axum::routing::any(mcp))
         .route("/b/{book}/u/{upload}", axum::routing::put(upload))
         .route("/b/{book}/a/{attachment}", axum::routing::get(download))
+        .route("/b/{book}/x/{export}", axum::routing::get(export))
         .fallback(not_found)
         .with_state(books.clone());
     // The HTTP side keeps answering (refusing, once closing) until the

@@ -16,6 +16,7 @@ ledger-store = { path = "../ledger-store" }
 ledger-config = { path = "../ledger-config" }
 ledger-import = { path = "../ledger-import" }
 ledger-vault = { path = "../ledger-vault" }
+ledger-package = { path = "../ledger-package" }
 eframe = { version = "0.36", default-features = false, features = ["default_fonts", "wgpu", "wayland", "x11", "persistence"] }
 egui = "0.36"
 egui_extras = { version = "0.36", features = ["image", "datepicker", "serde"] }
@@ -33,6 +34,8 @@ serde_json = "1"
 chrono = "0.4"
 egui_kittest = { version = "0.36", features = ["wgpu", "snapshot", "eframe"] }
 proptest = "1"
+tempfile = "3"
+zip = "9.0.1"
 
 [lints]
 workspace = true

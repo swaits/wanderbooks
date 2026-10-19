@@ -9,8 +9,8 @@
 //! SQLite projection, the viewer, or any tool output, except the 1099
 //! worksheet for the CPA when asked (`books.vendor_1099` with
 //! `include_tins`); and the vault holds everyone's, members included, for
-//! the CPA package, which carries them only in a zip saved outside the
-//! books dir (DECISION, owner, 2026-10-15: "In the vault, that's the
+//! the CPA package, which carries them only in the zip it hands over,
+//! never kept in the books dir (DECISION, owner, 2026-10-15: "In the vault, that's the
 //! WHOLE reason we built it. And it needs to be in the damn CPA
 //! package."). The harness is `tests/spec_parties.rs`'s, with a
 //! transcript of every response and the server's stderr kept, and the vault
@@ -444,8 +444,8 @@ const MEMBER_SSN: &str = "241-40-4915";
 const MEMBER_SSN_DIGITS: &str = "241404915";
 
 /// Every file in a zip, by name.
-fn unzip(path: &Path) -> HashMap<String, Vec<u8>> {
-    let mut z = zip::ZipArchive::new(std::fs::File::open(path).unwrap()).unwrap();
+fn unzip(bytes: &[u8]) -> HashMap<String, Vec<u8>> {
+    let mut z = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
     let mut out = HashMap::new();
     for i in 0..z.len() {
         let mut f = z.by_index(i).unwrap();
@@ -454,6 +454,61 @@ fn unzip(path: &Path) -> HashMap<String, Vec<u8>> {
         out.insert(f.name().unwrap().to_string(), bytes);
     }
     out
+}
+
+/// The bytes of a file a tool handed over (a `HandedFile`, D-29): over
+/// stdio they come inline, with no download command, and match the size
+/// and SHA-256 it states.
+fn handed(file: &Value) -> Vec<u8> {
+    use base64::Engine as _;
+    assert!(file.get("download").is_none(), "{file}");
+    assert!(file.get("expires_at").is_none(), "{file}");
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(file["content_base64"].as_str().expect("content_base64"))
+        .unwrap();
+    assert_eq!(file["size_bytes"], json!(bytes.len()), "{file}");
+    assert_eq!(file["sha256"], json!(sha(&bytes)), "{file}");
+    bytes
+}
+
+/// `v` with every file's inline bytes (`content_base64`) taken out, each
+/// pushed to `files` decoded, with its `file_name`: what a tool said, apart
+/// from the files it handed over.
+fn take_files(v: &Value, files: &mut Vec<(String, Vec<u8>)>) -> Value {
+    use base64::Engine as _;
+    match v {
+        Value::Object(o) => {
+            if let Some(b) = o.get("content_base64").and_then(Value::as_str) {
+                let name = o["file_name"].as_str().unwrap_or_default().to_string();
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(b)
+                    .unwrap_or_else(|e| panic!("{name}: {e}"));
+                files.push((name, bytes));
+            }
+            Value::Object(
+                o.iter()
+                    .filter(|(k, _)| k.as_str() != "content_base64")
+                    .map(|(k, v)| (k.clone(), take_files(v, files)))
+                    .collect(),
+            )
+        }
+        Value::Array(a) => Value::Array(a.iter().map(|v| take_files(v, files)).collect()),
+        other => other.clone(),
+    }
+}
+
+/// `v` without the bytes of the files it hands over.
+fn said(v: &Value) -> String {
+    take_files(v, &mut Vec::new()).to_string()
+}
+
+/// The paths of every file under `dir` but the vault's: what a tool
+/// wrote, compared before and after.
+fn paths_outside_vault(m: &Mcp, dir: &Path) -> std::collections::BTreeSet<PathBuf> {
+    files_under(dir)
+        .into_iter()
+        .filter(|f| !f.starts_with(m.vault()))
+        .collect()
 }
 
 /// A CSV's rows (header first) as maps from column name to cell, cells
@@ -784,56 +839,25 @@ fn the_w9_file_goes_to_the_vault_never_the_documents() {
         docs["receipts"].as_array().unwrap().is_empty(),
         "not a document: {docs}"
     );
-    // Read back to a path outside the books: the bytes, owner-only.
-    let to = m.outside().join("copy.pdf");
-    let out = m.ok(
-        "books.get_w9",
-        json!({"party": "Acme Design", "save_to": to.to_str().unwrap()}),
+    // Read back: the bytes, handed over (inline over stdio), named for
+    // their type; nothing written anywhere, and the output shows no TIN
+    // but in the file itself.
+    let (books_before, outside_before) = (
+        paths_outside_vault(&m, &m.books_dir()),
+        files_under(&m.outside()),
     );
-    assert_eq!(out["path"], json!(to.display().to_string()));
-    // Given inline, the file is named for its type.
-    assert_eq!(out["file_name"], "w9.pdf");
-    assert_eq!(std::fs::read(&to).unwrap(), src);
-    assert!(!holds_tin(out.to_string().as_bytes(), SSN_DIGITS));
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&to).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600);
-    }
-    let books = m.books_dir();
-    for save_to in [
-        to.clone(),                             // exists
-        books.join("w9.pdf"),                   // in the books dir
-        m.data.join("w9.pdf"),                  // in the data dir
-        books.join("vault/../w9.pdf"),          // in it, by a detour
-        m.outside().join("no/such/dir/w9.pdf"), // no folder
-    ] {
-        m.refuse(
-            "books.get_w9",
-            json!({"party": "Acme Design", "save_to": save_to.to_str().unwrap()}),
-        );
-    }
-    // Each refused as such, never as a failed write.
-    for (save_to, said) in [
-        (to.clone(), "a file is there already"),
-        (
-            m.outside().join("no/such/dir/w9.pdf"),
-            "the folder for that path doesn't exist",
-        ),
-    ] {
-        let why = m.refuse(
-            "books.get_w9",
-            json!({"party": "Acme Design", "save_to": save_to.to_str().unwrap()}),
-        );
-        assert!(why.contains(said), "{why}");
-    }
+    let out = m.ok("books.get_w9", json!({"party": "Acme Design"}));
+    assert_eq!(out["party_id"], json!(acme));
+    assert_eq!(out["file"]["file_name"], "w9.pdf");
+    assert_eq!(out["file"]["mime_type"], "application/pdf");
+    assert_eq!(handed(&out["file"]), src);
+    assert!(!holds_tin(said(&out).as_bytes(), SSN_DIGITS), "{out}");
+    assert_eq!(paths_outside_vault(&m, &m.books_dir()), books_before);
+    assert_eq!(files_under(&m.outside()), outside_before);
     // A party with no W-9 file in the vault.
     m.w9("Rent Co", json!({"tin": EIN, "tin_type": "ein"}));
-    m.refuse(
-        "books.get_w9",
-        json!({"party": "Rent Co", "save_to": m.outside().join("rent.pdf").to_str().unwrap()}),
-    );
+    let why = m.refuse("books.get_w9", json!({"party": "Rent Co"}));
+    assert!(why.contains("holds no W-9 file"), "{why}");
     // A W-9 file alone (the TIN typed in later) records the vault too.
     m.add_party("Solo", &["contractor"]);
     let solo = m.w9_file("000");
@@ -870,13 +894,9 @@ fn every_w9_file_type_is_taken() {
             panic!("{name} refused")
         };
         assert_eq!(p["w9"]["in_vault"], true, "{name}");
-        let to = m.outside().join(format!("copy-{n}"));
-        let out = m.ok(
-            "books.get_w9",
-            json!({"party": party, "save_to": to.to_str().unwrap()}),
-        );
-        assert_eq!(out["file_name"], *name);
-        assert_eq!(std::fs::read(&to).unwrap(), *bytes);
+        let out = m.ok("books.get_w9", json!({"party": party}));
+        assert_eq!(out["file"]["file_name"], *name);
+        assert_eq!(handed(&out["file"]), *bytes);
     }
     // Its own name, when given; given alone, a name is refused.
     m.add_party("Payee N", &["contractor"]);
@@ -888,12 +908,9 @@ fn every_w9_file_type_is_taken() {
     ) else {
         panic!("named W-9 refused")
     };
-    let to = m.outside().join("copy-named");
-    let out = m.ok(
-        "books.get_w9",
-        json!({"party": "Payee N", "save_to": to.to_str().unwrap()}),
-    );
-    assert_eq!(out["file_name"], "payee-n-w9.pdf");
+    let out = m.ok("books.get_w9", json!({"party": "Payee N"}));
+    assert_eq!(out["file"]["file_name"], "payee-n-w9.pdf");
+    assert_eq!(handed(&out["file"]), bytes);
     let why = m
         .w9(
             "Payee N",
@@ -931,10 +948,7 @@ fn a_locked_vault_says_so_and_never_guesses() {
     m.pay("Acme Design", "700.00");
     let key = std::fs::read(m.key()).unwrap();
     std::fs::remove_file(m.key()).unwrap();
-    let why = m.refuse(
-        "books.get_w9",
-        json!({"party": "Acme Design", "save_to": m.outside().join("x.pdf").to_str().unwrap()}),
-    );
+    let why = m.refuse("books.get_w9", json!({"party": "Acme Design"}));
     assert!(why.contains("locked"), "{why}");
     let v = m.read_only(
         "books.vendor_1099",
@@ -1043,33 +1057,39 @@ fn the_1099_worksheet_carries_full_tins_only_when_asked() {
         "{rent}"
     );
     assert_eq!(rent["tin_last4"], "9105");
-    // The CSV goes to a new file outside the books.
-    let csv = m.outside().join("1099-2026.csv");
+    assert_eq!(
+        full["warning"],
+        "This worksheet holds full TINs, for the CPA; keep it out of the books."
+    );
+    // No CSV unless asked.
+    assert!(plain["csv"].is_null() && full["csv"].is_null(), "{full}");
+    // Asked, the CSV is handed over: with TINs, named for them.
     let out = m.read_only(
         "books.vendor_1099",
-        json!({"year": 2026, "include_tins": true, "save_csv_to": csv.to_str().unwrap()}),
+        json!({"year": 2026, "include_tins": true, "csv": true}),
     );
-    assert_eq!(out["saved_csv"], json!(csv.display().to_string()));
-    let text = std::fs::read_to_string(&csv).unwrap();
+    assert_eq!(out["csv"]["file_name"], "1099-worksheet-2026-with-tins.csv");
+    assert_eq!(out["csv"]["mime_type"], "text/csv");
+    let text = String::from_utf8(handed(&out["csv"])).unwrap();
     assert!(text.contains(SSN), "{text}");
     assert!(text.starts_with("vendor_id,name,form_1099,paid,reportable,w9_on_file,tin_last4,tin"));
-    let without = m.outside().join("1099-plain.csv");
-    m.read_only(
-        "books.vendor_1099",
-        json!({"year": 2026, "save_csv_to": without.to_str().unwrap()}),
+    let rows = csv_rows(text.as_bytes());
+    let acme = rows.iter().find(|r| r["name"] == "Acme Design").unwrap();
+    assert_eq!(acme["tin"], SSN);
+    assert_eq!(acme["tin_type"], "ssn");
+    let rent = rows.iter().find(|r| r["name"] == "Rent Co").unwrap();
+    assert_eq!(rent["tin"], "");
+    assert!(rent["tin_note"].contains("not in the vault"), "{rent:?}");
+    // Without TINs: last fours only, and no TIN columns.
+    let out = m.read_only("books.vendor_1099", json!({"year": 2026, "csv": true}));
+    assert_eq!(out["csv"]["file_name"], "1099-worksheet-2026.csv");
+    let bytes = handed(&out["csv"]);
+    assert!(!holds_tin(&bytes, SSN_DIGITS));
+    let text = String::from_utf8(bytes).unwrap();
+    assert!(
+        text.starts_with("vendor_id,name,form_1099,paid,reportable,w9_on_file,tin_last4\n"),
+        "{text}"
     );
-    assert!(!holds_tin(&std::fs::read(&without).unwrap(), SSN_DIGITS));
-    for to in [
-        csv.clone(),
-        m.books_dir().join("1099.csv"),
-        m.data.join("1099.csv"),
-    ] {
-        m.refuse(
-            "books.vendor_1099",
-            json!({"year": 2026, "include_tins": true, "save_csv_to": to.to_str().unwrap()}),
-        );
-    }
-    assert!(!m.books_dir().join("1099.csv").exists());
 }
 
 // ------------------------------------------------- books.purge_tin
@@ -1244,22 +1264,13 @@ fn no_full_tin_leaves_the_vault_except_the_worksheet_when_asked() {
             "books.export_cpa_package",
             json!({"as_of": "2026-12-31", "cash_accounts": ["1000"], "include_tins": false}),
         ),
-        (
-            "books.export_cpa_package",
-            json!({"as_of": "2026-12-31", "cash_accounts": ["1000"],
-                   "save_to": m.outside().join("cpa.zip").to_str().unwrap()}),
-        ),
         ("books.party", json!({"party": "Mo"})),
         ("books.parties", json!({"role": "member"})),
         (
             "books.purge_tin",
             json!({"party": "Rent Co", "reason": "preview only"}),
         ),
-        (
-            "books.get_w9",
-            json!({"party": "Acme Design",
-                                "save_to": m.outside().join("for-cpa.pdf").to_str().unwrap()}),
-        ),
+        ("books.get_w9", json!({"party": "Acme Design"})),
         (
             "books.update_party",
             json!({"party": "Acme Design", "notes": "W-9 in the vault"}),
@@ -1276,33 +1287,64 @@ fn no_full_tin_leaves_the_vault_except_the_worksheet_when_asked() {
         "the worksheet, asked"
     );
     assert!(holds_tin(full.to_string().as_bytes(), EIN_DIGITS));
-    let csv = m.outside().join("w.csv");
-    m.read_only(
+    let csv = m.read_only(
         "books.vendor_1099",
-        json!({"year": 2026, "include_tins": true, "save_csv_to": csv.to_str().unwrap()}),
+        json!({"year": 2026, "include_tins": true, "csv": true}),
     );
-    // Every response but the worksheet's with include_tins.
-    let leaks: Vec<&(String, String)> = m
-        .transcript
-        .iter()
-        .filter(|(tool, resp)| {
-            let worksheet =
-                tool == "books.vendor_1099" && resp.contains("\"warning\":\"This worksheet");
-            !worksheet
-                && (holds_tin(resp.as_bytes(), SSN_DIGITS)
-                    || holds_tin(resp.as_bytes(), EIN_DIGITS)
-                    || holds_tin(resp.as_bytes(), MEMBER_SSN_DIGITS))
-        })
-        .collect();
+    let csv = handed(&csv["csv"]);
+    assert!(holds_tin(&csv, SSN_DIGITS) && holds_tin(&csv, EIN_DIGITS));
+    // The package, TINs included (the default).
+    let pkg = m.read_only(
+        "books.export_cpa_package",
+        json!({"as_of": "2026-12-31", "cash_accounts": ["1000"]}),
+    );
+    assert_eq!(pkg["tins_included"], true);
+    let pkg = unzip(&handed(&pkg["file"]));
+    let holds_any = |b: &[u8]| {
+        holds_tin(b, SSN_DIGITS) || holds_tin(b, EIN_DIGITS) || holds_tin(b, MEMBER_SSN_DIGITS)
+    };
+    // Every response but the worksheet's with include_tins, and every
+    // file handed over but those that carry TINs for the CPA by design
+    // (D-29): the W-9 file, the worksheet CSV with TINs, the package with
+    // them (a zip's files read out of it).
+    let (mut leaks, mut scanned): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
+    for (tool, resp) in &m.transcript {
+        let mut files = Vec::new();
+        let rest = take_files(&serde_json::from_str(resp).unwrap(), &mut files).to_string();
+        let worksheet =
+            tool == "books.vendor_1099" && rest.contains("\"warning\":\"This worksheet");
+        if !worksheet && holds_any(rest.as_bytes()) {
+            leaks.push(format!("{tool}: {rest}"));
+        }
+        for (name, bytes) in files {
+            let by_design = match tool.as_str() {
+                "books.get_w9" => name == "w9.pdf",
+                "books.vendor_1099" => name == "1099-worksheet-2026-with-tins.csv",
+                "books.export_cpa_package" => rest.contains("\"tins_included\":true"),
+                _ => false,
+            };
+            let inside = if name.ends_with(".zip") {
+                unzip(&bytes).into_values().any(|b| holds_any(&b))
+            } else {
+                holds_any(&bytes)
+            };
+            if inside && !by_design {
+                leaks.push(format!("{tool}: the file {name}"));
+            }
+            scanned.push(name);
+        }
+    }
     assert!(leaks.is_empty(), "full TINs in tool output: {leaks:?}");
+    // The handed-over files were scanned: two packages (without TINs,
+    // with them), the W-9 file, the worksheet CSV.
+    assert_eq!(scanned.len(), 4, "{scanned:?}");
     assert!(m.transcript.len() > 40, "the session used the books");
     // The server's log.
     let log = std::fs::read(m.outside().join("stderr.log")).unwrap();
     assert!(!holds_tin(&log, SSN_DIGITS) && !holds_tin(&log, EIN_DIGITS));
     assert!(!holds_tin(&log, MEMBER_SSN_DIGITS));
-    // The package saved outside the books carries them all: the member's
-    // in the K-1 worksheet, the payees' in the 1099 worksheet.
-    let pkg = unzip(&m.outside().join("cpa.zip"));
+    // The package carries them all: the member's in the K-1 worksheet,
+    // the payees' in the 1099 worksheet.
     assert!(holds_tin(&pkg["k1-members.csv"], MEMBER_SSN_DIGITS));
     let w1099 = &pkg["1099-worksheet-2026.csv"];
     assert!(holds_tin(w1099, SSN_DIGITS) && holds_tin(w1099, EIN_DIGITS));
@@ -1653,25 +1695,22 @@ fn k1_books(name: &str) -> Mcp {
 
 /// The package carries the K-1 worksheet (one row per member: party,
 /// share, capital account, TIN, and the hand-worked capital figures) and
-/// the 1099 worksheet with full TINs, saved outside the books only; a
-/// missing TIN is a gap, never a failure.
+/// the 1099 worksheet with full TINs, handed over and never kept in the
+/// books; a missing TIN is a gap, never a failure.
 #[test]
 fn the_cpa_package_carries_the_k1_and_1099_worksheets_with_tins() {
     let mut m = k1_books("k1");
-    let to = m.outside().join("cpa-2026.zip");
     let out = m.read_only(
         "books.export_cpa_package",
-        json!({"as_of": "2026-12-31", "cash_accounts": ["1000"],
-               "save_to": to.to_str().unwrap()}),
+        json!({"as_of": "2026-12-31", "cash_accounts": ["1000"]}),
     );
-    assert_eq!(out["saved_to"], json!(to.display().to_string()));
-    assert!(out["content_base64"].is_null(), "never the bytes: {out}");
+    assert_eq!(out["file"]["file_name"], "cpa-package-2026-12-31.zip");
+    assert_eq!(out["file"]["mime_type"], "application/zip");
     assert_eq!(out["tins_included"], true);
+    let note = out["note"].as_str().unwrap();
     assert!(
-        out["note"]
-            .as_str()
-            .unwrap()
-            .contains(&to.display().to_string())
+        note.contains("full TINs") && note.contains("1 TIN(s) are missing (tin_gaps)"),
+        "{note}"
     );
     let gaps: Vec<&str> = out["tin_gaps"]
         .as_array()
@@ -1681,15 +1720,9 @@ fn the_cpa_package_carries_the_k1_and_1099_worksheets_with_tins() {
         .collect();
     assert_eq!(gaps.len(), 1, "{gaps:?}");
     assert!(gaps[0].contains("Mo Example") && gaps[0].contains("TIN not in the vault"));
-    assert!(!holds_tin(out.to_string().as_bytes(), MEMBER_SSN_DIGITS));
-    assert!(!holds_tin(out.to_string().as_bytes(), EIN_DIGITS));
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&to).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600, "the package is the owner's only");
-    }
-    let pkg = unzip(&to);
+    assert!(!holds_tin(said(&out).as_bytes(), MEMBER_SSN_DIGITS));
+    assert!(!holds_tin(said(&out).as_bytes(), EIN_DIGITS));
+    let pkg = unzip(&handed(&out["file"]));
     let k1 = csv_rows(&pkg["k1-members.csv"]);
     assert_eq!(k1.len(), 3, "two members and their total");
     let (tobin, mo) = (&k1[0], &k1[1]);
@@ -1794,38 +1827,15 @@ fn the_cpa_package_carries_the_k1_and_1099_worksheets_with_tins() {
         assert!(!f.to_string_lossy().ends_with(".zip"), "{}", f.display());
     }
 
-    // A folder: the zip goes in it, by its name.
-    let folder = m.outside().join("for-casey");
-    std::fs::create_dir_all(&folder).unwrap();
-    let out = m.read_only(
-        "books.export_cpa_package",
-        json!({"as_of": "2026-12-31", "cash_accounts": ["1000"],
-               "save_to": folder.to_str().unwrap()}),
-    );
-    assert_eq!(
-        out["saved_to"],
-        json!(
-            folder
-                .join("cpa-package-2026-12-31.zip")
-                .display()
-                .to_string()
-        )
-    );
-
-    // Without TINs: last fours only, returned as base64.
+    // Without TINs: last fours only.
     let out = m.read_only(
         "books.export_cpa_package",
         json!({"as_of": "2026-12-31", "cash_accounts": ["1000"], "include_tins": false}),
     );
     assert_eq!(out["tins_included"], false);
-    let zip = base64::Engine::decode(
-        &base64::engine::general_purpose::STANDARD,
-        out["content_base64"].as_str().unwrap(),
-    )
-    .unwrap();
-    let plain_path = m.outside().join("plain.zip");
-    std::fs::write(&plain_path, &zip).unwrap();
-    let plain = unzip(&plain_path);
+    assert_eq!(out["note"], "The package, with last fours only.");
+    assert!(out["tin_gaps"].as_array().unwrap().is_empty(), "{out}");
+    let plain = unzip(&handed(&out["file"]));
     let k1 = csv_rows(&plain["k1-members.csv"]);
     assert_eq!(k1[0]["tin_last4"], "4915");
     assert!(!k1[0].contains_key("tin"));
@@ -1840,87 +1850,32 @@ fn the_cpa_package_carries_the_k1_and_1099_worksheets_with_tins() {
     }
 }
 
-/// With TINs the package is never returned and never lands in the books:
-/// no save_to, a path in the books dir or its exports/, an existing file,
-/// or a path that is neither a folder nor a .zip is refused.
+/// The package, with TINs or without, is handed over (inline over stdio,
+/// D-29) and never written: no file appears in the books dir outside the
+/// vault, or anywhere else.
 #[test]
-fn a_package_with_tins_goes_only_outside_the_books() {
-    let mut m = k1_books("k1-where");
-    let why = m.refuse(
-        "books.export_cpa_package",
-        json!({"as_of": "2026-12-31", "cash_accounts": ["1000"]}),
-    );
-    assert!(why.contains("save_to"), "{why}");
+fn a_package_is_handed_over_and_never_written() {
+    let mut m = k1_books("k1-handed");
     let books = m.books_dir();
-    std::fs::create_dir_all(books.join("exports")).unwrap();
-    let existing = m.outside().join("taken.zip");
-    std::fs::write(&existing, b"x").unwrap();
-    for to in [
-        books.join("cpa.zip"),
-        books.join("exports"),
-        books.join("exports/cpa.zip"),
-        m.data.join("cpa.zip"),
-        books.join("vault/../cpa.zip"),
-        existing.clone(),
-        m.outside().join("cpa.txt"),
-        m.outside().join("no/such/dir/cpa.zip"),
-    ] {
-        m.refuse(
+    let (books_before, outside_before) =
+        (paths_outside_vault(&m, &books), files_under(&m.outside()));
+    for tins in [true, false] {
+        let out = m.read_only(
             "books.export_cpa_package",
-            json!({"as_of": "2026-12-31", "cash_accounts": ["1000"],
-                   "save_to": to.to_str().unwrap()}),
+            json!({"as_of": "2026-12-31", "cash_accounts": ["1000"], "include_tins": tins}),
+        );
+        assert_eq!(out["tins_included"], tins);
+        assert_eq!(out["file"]["file_name"], "cpa-package-2026-12-31.zip");
+        let pkg = unzip(&handed(&out["file"]));
+        assert!(pkg.contains_key("README.txt"), "include_tins {tins}");
+        assert_eq!(
+            holds_tin(&pkg["k1-members.csv"], MEMBER_SSN_DIGITS),
+            tins,
+            "include_tins {tins}"
         );
     }
-    assert_eq!(std::fs::read(&existing).unwrap(), b"x");
-    assert!(
-        std::fs::read_dir(books.join("exports"))
-            .unwrap()
-            .next()
-            .is_none()
-    );
-    assert!(!books.join("cpa.zip").exists());
-}
-
-/// A package goes to a new file in a folder that exists, with or without
-/// TINs: a missing folder and a taken file are each refused as such (not
-/// as a failed write); without TINs, a new .zip path or an existing folder
-/// takes it.
-#[test]
-fn a_package_goes_only_to_a_new_file_in_a_folder_that_exists() {
-    let mut m = k1_books("k1-dest");
-    let missing = m.outside().join("no/such/dir/cpa.zip");
-    let taken = m.outside().join("taken.zip");
-    std::fs::write(&taken, b"x").unwrap();
-    for tins in [true, false] {
-        for (to, said) in [
-            (&missing, "the folder for that path doesn't exist"),
-            (&taken, "a file is there already"),
-        ] {
-            let why = m.refuse(
-                "books.export_cpa_package",
-                json!({"as_of": "2026-12-31", "cash_accounts": ["1000"],
-                       "include_tins": tins, "save_to": to.to_str().unwrap()}),
-            );
-            assert!(why.contains(said), "include_tins {tins}: {why}");
-        }
-    }
-    assert_eq!(std::fs::read(&taken).unwrap(), b"x");
-    let to = m.outside().join("plain.zip");
-    m.read_only(
-        "books.export_cpa_package",
-        json!({"as_of": "2026-12-31", "cash_accounts": ["1000"],
-               "include_tins": false, "save_to": to.to_str().unwrap()}),
-    );
-    assert!(unzip(&to).contains_key("README.txt"));
-    let folder = m.outside().join("packages");
-    std::fs::create_dir_all(&folder).unwrap();
-    m.read_only(
-        "books.export_cpa_package",
-        json!({"as_of": "2026-12-31", "cash_accounts": ["1000"],
-               "include_tins": false, "save_to": folder.to_str().unwrap()}),
-    );
-    let saved: Vec<_> = std::fs::read_dir(&folder).unwrap().collect();
-    assert_eq!(saved.len(), 1, "one package in the folder");
+    assert_eq!(paths_outside_vault(&m, &books), books_before);
+    assert_eq!(files_under(&m.outside()), outside_before);
 }
 
 /// A locked vault never fails the package: every TIN row says why, and
@@ -1929,12 +1884,11 @@ fn a_package_goes_only_to_a_new_file_in_a_folder_that_exists() {
 fn a_locked_vault_still_builds_the_package() {
     let mut m = k1_books("k1-locked");
     std::fs::remove_file(m.key()).unwrap();
-    let to = m.outside().join("cpa.zip");
     let out = m.read_only(
         "books.export_cpa_package",
-        json!({"as_of": "2026-12-31", "cash_accounts": ["1000"],
-               "save_to": to.to_str().unwrap()}),
+        json!({"as_of": "2026-12-31", "cash_accounts": ["1000"]}),
     );
+    assert_eq!(out["tins_included"], true);
     let gaps = out["tin_gaps"].as_array().unwrap();
     assert_eq!(gaps.len(), 3, "two members and Acme: {gaps:?}");
     assert!(
@@ -1942,7 +1896,7 @@ fn a_locked_vault_still_builds_the_package() {
         "{gaps:?}"
     );
     assert!(!m.key().exists(), "reading never makes a key");
-    let pkg = unzip(&to);
+    let pkg = unzip(&handed(&out["file"]));
     let k1 = csv_rows(&pkg["k1-members.csv"]);
     let members: Vec<_> = k1
         .iter()
@@ -2049,15 +2003,13 @@ fn a_k1_row_never_carries_another_partys_tin() {
         "KE Consulting LLC",
         json!({"tin": "12-3456789", "tin_type": "ein"}),
     );
-    let to = m.outside().join("cpa-lookalike.zip");
     let out = m.read_only(
         "books.export_cpa_package",
-        json!({"as_of": "2026-12-31", "cash_accounts": ["1000"],
-               "save_to": to.to_str().unwrap()}),
+        json!({"as_of": "2026-12-31", "cash_accounts": ["1000"]}),
     );
     let gaps = out["tin_gaps"].to_string();
     assert!(gaps.contains("member Mo Example"), "{gaps}");
-    let pkg = unzip(&to);
+    let pkg = unzip(&handed(&out["file"]));
     let k1 = csv_rows(&pkg["k1-members.csv"]);
     let mo = k1.iter().find(|r| r["member"] == "Mo Example").unwrap();
     assert_eq!(mo["tin"], "", "{mo:?}");
@@ -2077,13 +2029,11 @@ fn joint_filers_are_noted_in_the_package() {
     let s = m.read_only("books.settings", json!({}));
     assert_eq!(s["members"][0]["files_jointly_with"], "Mo Example");
     assert_eq!(s["members"][1]["files_jointly_with"], "Tobin Example");
-    let to = m.outside().join("joint.zip");
-    m.read_only(
+    let out = m.read_only(
         "books.export_cpa_package",
-        json!({"as_of": "2026-12-31", "cash_accounts": ["1000"],
-               "save_to": to.to_str().unwrap()}),
+        json!({"as_of": "2026-12-31", "cash_accounts": ["1000"]}),
     );
-    let pkg = unzip(&to);
+    let pkg = unzip(&handed(&out["file"]));
     let readme = String::from_utf8(pkg["README.txt"].clone()).unwrap();
     let note = "Tobin Example and Mo Example file a joint individual return: each receives their own Schedule K-1; both are reported on the one Form 1040 (Schedule E, Part II).";
     assert_eq!(readme.matches(note).count(), 1, "once per pair: {readme}");

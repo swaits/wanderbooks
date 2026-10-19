@@ -196,9 +196,10 @@ settings-and-conventions section says how to use them.
   in the data root, on a socket in the root's private `run/` folder that
   only this account can connect to. Every request carries a bearer token
   live for that book (refused 401 without one, 403 with another book's).
-  Refusals at the door, tool calls, uploads and downloads are recorded
-  in the book's access log; when a record can't be written the book
-  stops taking requests (an upload or download is then refused, 503).
+  Refusals at the door, tool calls, uploads, downloads and exports are
+  recorded in the book's access log; when a record can't be written the
+  book stops taking requests (an upload, download or export is then
+  refused, 503).
   - `/b/{book}/mcp`: the book's MCP service. A request is at most 1 MiB.
   - `PUT /b/{book}/u/{upload}`: an upload's bytes (`books.begin_upload`),
     from the token that began it; what `wanderbooks upload --book B
@@ -233,13 +234,25 @@ settings-and-conventions section says how to use them.
     (a HEAD is 405, unrecorded). Logged as
     action `download` with the attachment's id, a refusal at the door
     too.
-    `wanderbooks download --book B [--token NAME] ATTACHMENT --to DIR`
-    asks for it, checks the digest before saving, and saves it under the
+  - `GET /b/{book}/x/{export}`: a file the books made for an agent (the
+    CPA package, a 1099 worksheet, a W-9: a `HandedFile`, "Tools — the
+    TIN vault"), as `/a/` (the same door, the same headers,
+    `Repr-Digest` included, GET only), but only for the token it was made
+    for (403 `not_yours`), with no scope of its own to check (the tool
+    that made it checked its scope); 404 `no_such_export` (unknown or
+    lapsed), 503 `stopped`. An export's id is `ex_` and 32 letters
+    `a`-`p`; it is kept 15 minutes, fetched as often as wanted until
+    then, at most 16 per token, and swept like uploads. Logged as action
+    `export` with the export's id.
+  - `wanderbooks download --book B [--token NAME] ID --to DIR` takes an
+    attachment's id (a number, `/a/`) or an export's (`ex_…`, `/x/`),
+    checks the digest before saving, and saves it under the
     server's name (`filename*` first) made plain: separators and control
     characters made `_`, invisible (Unicode format) characters and
     leading dots and spaces dropped, at most 200 bytes with the extension
     kept. Beside a file of that name it is `name (1).ext`, and so on;
-    `attachment-N` if the folder takes no such name. It is written to a
+    `attachment-<id>` or `export-<id>` if the folder takes no such name.
+    It is written to a
     hidden file and hard-linked in: never a partial file under the real
     name, never over another file.
 
@@ -339,15 +352,19 @@ seals a new vault record, every time, so none carries it;
 `idempotent_tools_change_nothing_when_repeated` calls each candidate twice
 to check). Every tool's
 `openWorldHint` is false: the books are a closed world, and no tool
-reaches beyond them. `books.export_cpa_package` writes a file, so it is
-not read-only. No tool carries `requiresUserInteraction` (owner decision
+reaches beyond them. `books.export_cpa_package`, `books.vendor_1099`
+and `books.get_w9` keep a file for the agent (an export) and record the
+ones with TINs, so they are not read-only. No tool carries
+`requiresUserInteraction` (owner decision
 2026-10-16: no added prompts). `annotations_complete` pins all of this.
 The read-only hint is true in behaviour: `spec_mcp` checks, on every call,
 that a read-only tool leaves the journal, the contents of every file under
 the data dir (the database by every row of every table; SQLite's -wal and
 -shm files, which move pages and hold read marks on their own, aside),
 the vault and the settings file as they were
-(`read_only_tools_change_nothing`).
+(`read_only_tools_change_nothing`). `books.show` is read-only though it
+writes the viewer's request into the books' `ops/` folder: that folder
+is a side channel, never journaled, and moves only the view.
 
 **Failing closed.** Tool bodies run on blocking threads, one at a time on
 the store. If a request panics (an internal error), the journal may hold a
@@ -538,18 +555,23 @@ through the policy.
 
 - `books.show { entry_id | account | report | attachment_id | asset |
   party | reconciliation | search | page, start?, end? }` → `{ shown,
-  note }`. Asks the human's viewer (`ledger-gui`) to open an entry, an
-  account register or a report (for start/end dates if given), a stored
-  file, an asset, a party (by id or name, resolved as in "Tools —
-  parties"), a reconciliation (by id: its account's page, with its
-  statements and reconciliations; viewer target `{show: "reconciliation",
-  id}`), a transactions search, or a page (`parties` among them). Exactly
-  one target; entries, accounts, attachments, assets, parties, and
-  reconciliations are checked to exist. Never touches the books: the request is a small JSON file in
-  the user's runtime directory (`$XDG_RUNTIME_DIR/wanderbooks/viewer-<hash
-  of the data dir>.json`), written atomically, watched by the viewer. A
-  viewer started within two minutes of a request opens it; older requests
-  are ignored.
+  viewer_open, note }`. Asks the human's viewer (`ledger-gui`) to open an
+  entry, an account register or a report (for start/end dates if given),
+  a stored file, an asset, a party (by id or name, resolved as in "Tools
+  — parties"), a reconciliation (by id: its account's page, with its
+  statements and reconciliations; viewer target `{show:
+  "reconciliation", id}`), a transactions search, or a page (`parties`
+  among them). Exactly one target; entries, accounts, attachments,
+  assets, parties, and reconciliations are checked to exist. Never
+  journaled: the request is a line `{seq, at, target}` of the books' own
+  `ops/show.jsonl` (at most 32 lines, replaced whole, so a reader sees
+  each line whole), which the viewer reads and never writes. The server
+  makes `ops/` and `ops/viewer.lock` when it opens the books (and on a
+  request); the viewer holds a shared lock on `ops/viewer.lock`, through
+  a read-only descriptor, while it has the books open, and
+  `viewer_open` says whether one does. The note says "The viewer shows
+  …", or "No viewer has these books open: ask the human to open it
+  (opened within a couple of minutes, it shows …)".
 
 ## Tools — integrity
 
@@ -602,10 +624,10 @@ is on file and the TIN's last four; full TINs live only in the TIN vault
   is; tagging a vendor whose party isn't named, or clearing the tag while
   its party is named, is refused (drop or add the party with `parties`
   instead). An entry and its reversal always carry the same tags.
-- `books.vendor_1099 { year, threshold?, include_tins?, save_csv_to? }` →
+- `books.vendor_1099 { year, threshold?, include_tins?, csv? }` →
   `{ year, threshold, vendors: [{ vendor_id, name, form_1099?, tin_on_file,
   paid, reportable, party_id?, tin_last4?, tin?, tin_type?, tin_note? }],
-  missing_w9, notes, warning?, saved_csv? }`. For a year whose threshold
+  missing_w9, notes, warning?, csv? }`. For a year whose threshold
   wanderbooks doesn't know (after 2026 until the indexed amount is added)
   it refuses with what to do; pass `threshold` explicitly once the figure
   is confirmed. On an entry naming several parties, `paid` counts only
@@ -616,10 +638,13 @@ is on file and the TIN's last four; full TINs live only in the TIN vault
   TIN formatted as the IRS writes it (123-45-6789; 12-3456789 for an
   EIN), and `tin_type`, read from the vault, or `tin_note` saying why not
   (not in the vault, the vault locked, a record whose last four or hash
-  disagree with the books); `warning` then says the output holds full
-  TINs, for the CPA only. This is the only tool output that ever holds a
-  full TIN. `save_csv_to` also writes the worksheet as CSV (TINs only with
-  `include_tins`) to a new file outside the books dir, mode 0600.
+  disagree with the books); `warning` then says "This worksheet holds
+  full TINs, for the CPA; keep it out of the books.". This is the only
+  tool output that ever holds a full TIN. `csv: true` (default false)
+  also hands the worksheet over as a CSV file, `csv` (a `HandedFile`,
+  "Tools — the TIN vault"), named `1099-worksheet-<year>.csv`, or
+  `1099-worksheet-<year>-with-tins.csv` with `include_tins` (TINs only
+  then).
 
 ## Tools — parties
 
@@ -788,7 +813,8 @@ and the CPA package carries them.
   missing.
 - **Never out:** no tool output, error, or log holds more than a TIN's
   last four, except `books.vendor_1099 { include_tins: true }`; the CPA
-  package carries them only in its zip, written outside the books dir.
+  package carries them only in its zip, handed over as an export (or
+  inline over stdio), never written to a path.
   The tool arguments that take a TIN never echo it, even when refused.
 - **TIN facts:** any party (any role) may have `tin` facts:
   `{ tin_type: "ssn" | "ein" | "itin", last4, vault_record?, purged? }`,
@@ -822,15 +848,19 @@ and the CPA package carries them.
   and are refused when they don't (pass the new TIN, or purge). Clearing
   the facts (`clear: true`) is refused while the vault holds the party's
   TIN or form: purge first.
-- `books.get_w9 { party, save_to }` → `{ party_id, path, file_name,
-  size_bytes, note }`. Writes the party's form from the vault to
-  `save_to`: a new file (an existing one is refused), in a folder that
-  exists, outside the books dir (where it really leads, every link
-  followed), mode 0600. Returns the path, never the contents. Journals
-  nothing. The same holds for `books.vendor_1099`'s `save_csv_to` with
-  `include_tins` and `books.export_cpa_package`'s `save_to` with TINs: a
-  file with full TINs never lands inside the books. Nor does one go in
-  from elsewhere: the server keeps, beside the vault, the SHA-256 of every
+- `books.get_w9 { party }` → `{ party_id, file }`: the party's form from
+  the vault, handed over. Journals nothing.
+- **Handed files** (D-29): no tool takes a path. A file the books make
+  for an agent (`books.get_w9`'s form, `books.vendor_1099`'s `csv`,
+  `books.export_cpa_package`'s zip) comes back as a `HandedFile {
+  file_name, mime_type, size_bytes, sha256, download?, expires_at?,
+  content_base64? }`. On books served by `wanderbooks mcp` it is an
+  export, kept 15 minutes for the token that asked (at most 16 per
+  token, swept like uploads), and `download` is the command that saves
+  it in a folder the human names: `wanderbooks download --book B
+  [--token NAME] ex_… --to <a folder>` (`GET /b/{book}/x/{export}`,
+  "Transports"). Over stdio it comes back inline as `content_base64`.
+  A file with full TINs never goes into the books: the server keeps, beside the vault, the SHA-256 of every
   file it read or wrote with full TINs (the W-9 `books.set_w9` reads,
   recorded once the call has passed every check, just before the vault
   keeps it, so a refused call marks no file; each of these outputs; each
@@ -852,8 +882,7 @@ and the CPA package carries them.
   the same words whether or not one is that TIN, so the vault is compared
   against at most two candidates a filing (rules.md B-26). An altered copy
   of a binary file (a W-9 PDF re-saved or re-scanned), and a TIN the vault
-  doesn't hold written another way, are not detected: P2 slice 6 moves the
-  TIN outputs (`save_to`, `save_csv_to`) to the viewer, and P7 takes full
+  doesn't hold written another way, are not detected: P7 takes full
   TINs out of the agent's reach.
 - `books.purge_tin { party, reason, confirmed? }` → `{ status: "preview" |
   "purged", party_id, name, tin_in_vault, w9_file_in_vault, tin_last4?,
@@ -1283,8 +1312,9 @@ entries.
 ## Tools — CPA handoff
 
 - `books.export_cpa_package { as_of?, cash_accounts?, financing_accounts?,
-  investing_accounts?, include_receipts?, include_tins?, save_to? }` →
-  `{ file_name, content_base64?, saved_to?, tins_included, tin_gaps, note }`.
+  investing_accounts?, include_receipts?, include_tins? }` → `{ file,
+  tins_included, tin_gaps, note }`: the zip, `cpa-package-<as_of>.zip`,
+  handed over as `file` (a `HandedFile`, "Tools — the TIN vault").
   **Receipts** (`include_receipts`, default true): `receipts/` holds every
   current file behind each posted entry of the fiscal year to date, filed
   on it or linked to it (`books.link_attachment`; a linked file counts as
@@ -1293,16 +1323,16 @@ entries.
   entry, receipts excepted.
   **TINs** (`include_tins`, default true; DECISION, the owner, 2026-10-15):
   the K-1 worksheet and the 1099 worksheet carry every member's and
-  payee's full TIN from the vault, so the zip is written to `save_to` (a
-  new `.zip` path, or an existing folder it goes in as
-  `cpa-package-<as_of>.zip`; outside the books dir, `exports/` included;
-  mode 0600) and the output is its path, never its bytes; without
-  `save_to` it is refused. A locked vault or a missing TIN never fails the
+  payee's full TIN from the vault; the zip, and each file in it with a
+  TIN, is recorded so that, given back to be filed, it is refused. A
+  locked vault or a missing TIN never fails the
   package: the row says why ("TIN not in the vault", "the TIN vault is
   locked", a record that disagrees with the books), the README lists it,
   and `tin_gaps` names each member and each reportable payee without one.
-  `include_tins: false`: last fours only, returned as `content_base64`
-  unless `save_to` is given. **K-1 worksheet** (`k1-members.csv`, with
+  `include_tins: false`: last fours only. `note` is "The package, with
+  last fours only.", or "The package, with full TINs, for the CPA.",
+  followed, with gaps, by "N TIN(s) are missing (tin_gaps): collect them
+  with books.set_tin or books.set_w9 and export again." **K-1 worksheet** (`k1-members.csv`, with
   `[[company.members]]`): one row per member, in order: `member,
   party_id, share, capital_account, tin, tin_type, tin_note` (without
   TINs: `tin_last4, tin_type`), then `beginning_capital,

@@ -145,6 +145,8 @@ pub struct App {
     palette: crate::palette::Palette,
     updated_at: f64,
     live_label: bool,
+    /// The export menu (menu.rs).
+    menu: crate::menu::Menu,
 }
 
 impl App {
@@ -188,6 +190,7 @@ impl App {
             palette: Default::default(),
             updated_at: -1e9,
             live_label: false,
+            menu: Default::default(),
         }
     }
 
@@ -368,9 +371,9 @@ impl App {
     }
 
     /// Go where the agent asked (`books.show`).
-    pub fn show(&mut self, target: ledger_store::viewer::ViewerTarget) {
+    pub fn show(&mut self, target: ledger_store::ops::ViewerTarget) {
         use crate::nav::ReportKind;
-        use ledger_store::viewer::ViewerTarget as T;
+        use ledger_store::ops::ViewerTarget as T;
         let Some(b) = self.books.clone() else {
             return;
         };
@@ -638,6 +641,10 @@ impl App {
                     });
                 ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
                     self.scheme_menu(ui, false);
+                    if let Some(b) = &books {
+                        ui.add_space(2.0);
+                        self.menu.ui(ui, b, false);
+                    }
                     ui.add_space(6.0);
                     if let Some(b) = &books {
                         live_status(
@@ -733,6 +740,9 @@ impl App {
                     });
                 ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
                     self.scheme_menu(ui, true);
+                    if let Some(b) = &books {
+                        self.menu.ui(ui, b, true);
+                    }
                     ui.add_space(6.0);
                     if let Some(b) = &books {
                         let live = self.loader.is_some() || self.live_label;

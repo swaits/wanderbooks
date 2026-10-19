@@ -1053,6 +1053,9 @@ fn w9_card(ui: &mut Ui, b: &Books, party: &Party) {
                         h,
                     );
                     ui.end_row();
+                    k(ui, "The form");
+                    w9_save(ui, b, party.id);
+                    ui.end_row();
                 }
             });
         },
@@ -1561,6 +1564,34 @@ fn months_card(ui: &mut Ui, b: &Books, id: PartyId, span: (NaiveDate, NaiveDate)
             );
         },
     );
+}
+
+/// "Save the W-9": the signed form from the vault, a copy in the Downloads
+/// folder (D-29: the viewer hands out what the agent can), never over a
+/// file there; what came of it shows beside the button.
+fn w9_save(ui: &mut Ui, b: &Books, party: PartyId) {
+    let p = pal(ui.ctx());
+    let said = ui.id().with(("w9-said", party));
+    ui.vertical(|ui| {
+        if ui
+            .button("Save the W-9")
+            .on_hover_text("A copy of the signed form in your Downloads folder")
+            .clicked()
+        {
+            let result = b.w9_file(party).and_then(|f| {
+                let (stem, ext) = crate::export::split_name(&f.file_name);
+                crate::export::save(stem, ext, &f.bytes).map(|path| path.display().to_string())
+            });
+            ui.data_mut(|d| d.insert_temp(said, result));
+        }
+        if let Some(result) = ui.data(|d| d.get_temp::<Result<String, String>>(said)) {
+            let (text, color) = match result {
+                Ok(path) => (format!("Saved {path}"), p.muted),
+                Err(why) => (why, p.warning),
+            };
+            ui.add(egui::Label::new(RichText::new(text).size(12.0).color(color)).wrap());
+        }
+    });
 }
 
 #[cfg(test)]

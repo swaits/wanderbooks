@@ -16,7 +16,8 @@ use ledger_store::{Statement, Store, StoreError, Subject};
 use rust_decimal::Decimal;
 use std::path::Path;
 
-/// The demo's `wanderbooks.toml`.
+/// The demo's settings, written as a `wanderbooks.toml` and imported into
+/// its journal, as real books keep theirs.
 pub const BOOKS_TOML: &str = r#"[company]
 name = "Juniper Studio LLC"
 entity_type = "LLC, single-member"
@@ -149,12 +150,21 @@ fn receipt(vendor: &str, date: NaiveDate, item: &str, amount: Decimal, paid: &st
 }
 
 /// Build the demo books in `dir` (which must not already hold books): the
-/// journal and blobs under `dir/books-data`, the settings in
-/// `dir/wanderbooks.toml`.
+/// journal and blobs under `dir/books-data`, its settings in the journal.
 pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
     std::fs::create_dir_all(dir)?;
-    std::fs::write(dir.join("wanderbooks.toml"), BOOKS_TOML)?;
     let mut s = Store::create(&dir.join("books-data"), Currency::USD)?;
+    let import = ledger_config::codec::import(BOOKS_TOML, None, s.ledger().settings(), "USD")
+        .map_err(|e| StoreError::Io(std::io::Error::other(e)))?;
+    s.adopt_settings(
+        &import.changes,
+        &ledger_core::settings::Source {
+            decided_by: "the demo".into(),
+            decided_on: NaiveDate::from_ymd_opt(2025, 6, 2).expect("a date"),
+            citation: None,
+            note: None,
+        },
+    )?;
     let mut rng = Rng(0x5eed_1234);
     let start =
         NaiveDate::from_ymd_opt(today.year(), today.month(), 1).expect("valid") - Months::new(15);

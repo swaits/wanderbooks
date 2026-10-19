@@ -775,10 +775,14 @@ mod painted {
     /// The text that can be seen, and where it is, to the pixel.
     fn words(texts: &[Seen], label: &str) -> Vec<(String, i32, i32)> {
         // The scheme button names the scheme in force: that one differs.
+        // A document's thumbnail still rendering shows "…" (documents.rs,
+        // Render::Loading) until its picture comes, whenever that is: not
+        // a word of the page (its contrast is still checked). CI's slower
+        // machines caught a page drawn with a few still loading.
         let button = format!("{} {label}", egui_phosphor::regular::PALETTE);
         texts
             .iter()
-            .filter(|t| t.text != button)
+            .filter(|t| t.text != button && t.text != "…")
             .map(|t| {
                 (
                     t.text.clone(),

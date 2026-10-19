@@ -2828,6 +2828,63 @@ fn xlsx_statement_layout_and_rules() {
     assert!(w.contains_key(&1) && w.contains_key(&2), "{w:?}");
 }
 
+/// INVARIANT 5's blank cells: a missing amount on a ruled row (a subtotal
+/// under amounts, a total) is a blank cell in that row's ruled amount
+/// format; on any other row (a line, a subtotal with nothing above it)
+/// it writes no cell at all.
+#[test]
+fn xlsx_missing_amounts_are_cells_only_on_ruled_rows() {
+    let row = |kind, label: &str, amounts: Vec<Option<Decimal>>| Row {
+        kind,
+        label: label.into(),
+        amounts,
+        currency: false,
+        rule_above: false,
+    };
+    let st = report::statement(
+        "Blanks",
+        "July 2025".into(),
+        &["Book", "Tax"],
+        vec![
+            row(RowKind::Section, "Income", vec![]),
+            row(RowKind::Line, "Sales", vec![Some(cents(100)), None]),
+            row(RowKind::Line, "Fees", vec![Some(cents(-5)), None]),
+            row(
+                RowKind::Subtotal,
+                "Total income",
+                vec![Some(cents(95)), None],
+            ),
+            row(RowKind::Spacer, "", vec![]),
+            row(RowKind::Section, "Empty", vec![]),
+            row(RowKind::Subtotal, "Total empty", vec![Some(cents(0)), None]),
+            row(RowKind::Spacer, "", vec![]),
+            row(RowKind::Total, "Net", vec![Some(cents(95)), None]),
+        ],
+    );
+    let ruled: Vec<&str> = st
+        .rows
+        .iter()
+        .filter(|r| r.rule_above)
+        .map(|r| r.label.as_str())
+        .collect();
+    assert_eq!(ruled, ["Total income", "Net"]);
+    let bytes = report_to_xlsx(&XlsxReport::Statement(&st), &meta()).unwrap();
+    let cells = sheet_cells(&bytes);
+    let styles = cell_styles(&bytes);
+    for r in st.rows.iter().filter(|r| !r.amounts.is_empty()) {
+        let at = row_of(&cells, &r.label, 0).unwrap();
+        assert!(cells.contains_key(&(at, 1)), "{:?}: its amount", r.label);
+        assert!(!cells.contains_key(&(at, 2)), "{:?}: no value", r.label);
+        if r.rule_above {
+            let blank = styles.get(&(at, 2));
+            assert!(blank.is_some_and(|s| s.top_border), "{:?}", r.label);
+            assert_eq!(blank, styles.get(&(at, 1)), "{:?}: as its amount", r.label);
+        } else {
+            assert!(!styles.contains_key(&(at, 2)), "{:?}: no cell", r.label);
+        }
+    }
+}
+
 /// INVARIANT 4 on the general ledger and journal: amount headings
 /// right-aligned and the others not, accounts one empty row apart, and the
 /// footer one row below (also with nothing to show).
@@ -3217,10 +3274,55 @@ fn asset_register_xlsx_cells() {
     assert!(
         text_cell(&c, (22, 0)).starts_with("Book value is the fair market value at contribution")
     );
+    for (row, start) in [
+        (23, "1. Cost: "),
+        (24, "2. Carryover (IRC §723): "),
+        (
+            25,
+            "3. Personal-use conversion (Treas. Reg. §1.168(i)-4(b)): ",
+        ),
+        (26, "4. Built-in gain (loss): "),
+    ] {
+        assert!(text_cell(&c, (row, 0)).starts_with(start), "note {start:?}");
+    }
     let footer = c
         .values()
         .any(|v| matches!(v, Cell::Text(t) if t.contains("Journal seq 42")));
     assert!(footer, "footer present");
+}
+
+/// asset_register INVARIANTS 2 and 5 as laid out (crate::xlsx INVARIANTS
+/// 4-5): the headings over the amounts and over the life in months
+/// right-aligned and the others not, and the totals row ruled across
+/// every column after its label in the totals format, blank cells and
+/// totals alike; the asset rows above it aren't ruled.
+#[test]
+fn asset_register_xlsx_headings_and_totals_rule() {
+    let x = ledger_import::asset_register_xlsx(&asset_register_fixture(), &meta()).unwrap();
+    let c = sheet_cells(&x);
+    let styles = cell_styles(&x);
+    let right_aligned = [4, 5, 6, 7, 8, 10, 11, 12];
+    for col in 0..14 {
+        let right = styles[&(5, col)].halign.as_deref() == Some("right");
+        assert_eq!(right, right_aligned.contains(&col), "heading column {col}");
+    }
+    assert_eq!(text_cell(&c, (9, 0)), "Total, assets held");
+    assert!(!styles[&(9, 0)].top_border, "the label isn't ruled");
+    let total = &styles[&(9, 4)];
+    assert!(total.top_border, "{total:?}");
+    for col in 1..14 {
+        assert_eq!(
+            styles.get(&(9, col)),
+            Some(total),
+            "totals row column {col}"
+        );
+    }
+    for row in 6..=8 {
+        for col in 0..14 {
+            let ruled = styles.get(&(row, col)).is_some_and(|s| s.top_border);
+            assert!(!ruled, "asset row {row} column {col}");
+        }
+    }
 }
 
 /// asset_register INVARIANT 4: an empty register says so, still totals,

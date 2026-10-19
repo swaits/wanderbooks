@@ -1,4 +1,8 @@
 # Weekly, and on demand: the slow layers (docs/testing.md).
+#
+# Mutation testing is split into shards (`just mutants-* k/n`), each its
+# own job, so every job ends well inside GitHub's six hours. The viewer has
+# no mutation job (owner, 2026-10-18).
 name: scheduled
 on:
   schedule:
@@ -29,54 +33,77 @@ jobs:
       - run: just fuzz ${{ matrix.target }} 600
   mutants:
     runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
     steps:
       - uses: actions/checkout@v4
       - uses: jdx/mise-action@v2
-      - run: just mutants
-      - run: just mutants-store
+      - run: just mutants ${{ matrix.shard }}/8
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mutants
-          path: |
-            mutants.out
-            mutants-store/mutants.out
-  mutants-import:
+          name: mutants-core-${{ matrix.shard }}
+          path: mutants.out
+  mutants-store:
     runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@v4
       - uses: jdx/mise-action@v2
-      - run: just mutants-import
+      - run: just mutants-store ${{ matrix.shard }}/4
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-store-${{ matrix.shard }}
+          path: mutants-store/mutants.out
+  mutants-import:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - run: just mutants-import ${{ matrix.shard }}/2
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-import-${{ matrix.shard }}
+          path: mutants-import/mutants.out
+  mutants-config:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
       - run: just mutants-config
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mutants-import
-          path: |
-            mutants-import/mutants.out
-            mutants-config/mutants.out
+          name: mutants-config
+          path: mutants-config/mutants.out
   mutants-mcp:
     runs-on: ubuntu-24.04
     timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     steps:
       - uses: actions/checkout@v4
       - uses: jdx/mise-action@v2
-      - run: just mutants-mcp
+      - run: just mutants-mcp ${{ matrix.shard }}/16
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mutants-mcp
+          name: mutants-mcp-${{ matrix.shard }}
           path: mutants-mcp/mutants.out
-  mutants-gui:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 350
-    steps:
-      - uses: actions/checkout@v4
-      - uses: jdx/mise-action@v2
-      - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libgtk-3-dev
-      - run: just mutants-gui
-      - if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: mutants-gui
-          path: mutants-gui/mutants.out

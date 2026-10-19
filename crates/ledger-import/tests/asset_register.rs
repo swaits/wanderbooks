@@ -6,7 +6,8 @@
 use chrono::NaiveDate;
 use ledger_core::{AssetRegister, AssetRegisterRow, TaxBasisRule};
 use ledger_import::asset_register::{
-    layout, missing_line, notes, rule_cited, rule_label, typeset_asset_register,
+    layout, missing_line, notes, rule_cited, rule_label, rule_mark, template_data,
+    typeset_asset_register,
 };
 use ledger_import::report::ReportMeta;
 use ledger_import::{PdfError, asset_register_pdf};
@@ -275,6 +276,50 @@ fn rule_words() {
             "Personal-use conversion (Treas. Reg. §1.168(i)-4(b))"
         ]
     );
+}
+
+/// INVARIANT 9: the notes number the rules 1, 2, 3 (the general note
+/// first and unnumbered, the built-in gain note 4), each rule's note
+/// cites that rule, and the PDF marks each recorded line's rule with its
+/// note's number; a line with no rule recorded has no mark.
+#[test]
+fn rule_marks_match_their_notes() {
+    use TaxBasisRule::*;
+    let rules = [Cost, Carryover, PersonalUseConversion];
+    assert_eq!(rules.map(rule_mark), ["1", "2", "3"]);
+    let n = notes();
+    let marks: Vec<&str> = n.iter().map(|n| n.mark.as_str()).collect();
+    assert_eq!(marks, ["", "1", "2", "3", "4"]);
+    for rule in rules {
+        let note = n.iter().find(|n| n.mark == rule_mark(rule)).unwrap();
+        let cites = format!("{}: ", rule_cited(rule));
+        assert!(note.text.starts_with(&cites), "{rule:?}: {:?}", note.text);
+    }
+    // The template's input: each line its rule's mark, in register order.
+    let r = sample();
+    let data = template_data(&r, &meta());
+    let marks: Vec<&str> = data["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l["rule_mark"].as_str().unwrap())
+        .collect();
+    assert_eq!(marks, ["1", "2", "1", "3", ""]);
+    // The PDF: the mark right after the rule, the note under its number.
+    let t = all_text(&r, &meta());
+    for s in [
+        "(Ryzen 7 7840U, 64 GB, 4 TB) Cost 1 2,500.00",
+        "MacBook Air Carryover 2 1,299.00",
+        "Old monitor Cost 1 400.00",
+        "Sony A7 IV camera Personal-use conversion 3 1,650.00",
+        "Standing desk Not recorded 800.00",
+        "1 Cost: property the company bought",
+        "2 Carryover (IRC §723): property a member contributes",
+        "3 Personal-use conversion (Treas. Reg. §1.168(i)-4(b)): property converted",
+        "4 Built-in gain (loss):",
+    ] {
+        assert!(t.contains(s), "{s:?} missing from {t:?}");
+    }
 }
 
 /// INVARIANT 4: an empty register renders a "No fixed assets" line, its

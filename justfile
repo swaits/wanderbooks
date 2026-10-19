@@ -88,40 +88,45 @@ miri:
 # Where cargo-mutants copies and builds the tree for each mutant (several
 # GB per job): the user's cache on disk, never /tmp, which is often RAM.
 # A mutant only needs some test to fail, so proptest doesn't shrink.
+#
+# Every mutation recipe takes a shard, "k/n" (default: all of it), so CI
+# can spread a crate over parallel jobs. Test timeouts are three times the
+# run's own baseline, never under the floor given: a slower machine gets
+# longer ones instead of false timeouts.
 mutants_tmp := env_var_or_default("XDG_CACHE_HOME", env_var("HOME") + "/.cache") + "/wanderbooks/mutants"
 
 # Mutation testing of the core: do the tests catch planted bugs?
-mutants: sweep-test-tmp
+mutants shard="0/1": sweep-test-tmp
     # Core and store tests (the store's replay tests reach Ledger::replay_*);
     # the whole workspace would rebuild the viewer for every mutant.
     mkdir -p {{mutants_tmp}}
-    PROPTEST_MAX_SHRINK_ITERS=0 TMPDIR={{mutants_tmp}} cargo mutants -p ledger-core --exclude crates/ledger-core/src/proofs.rs --test-package ledger-core --test-package ledger-store -j 4 --timeout 120
+    PROPTEST_MAX_SHRINK_ITERS=0 TMPDIR={{mutants_tmp}} cargo mutants -p ledger-core --exclude crates/ledger-core/src/proofs.rs --test-package ledger-core --test-package ledger-store -j 4 --timeout-multiplier 3 --minimum-test-timeout 120 --shard {{shard}}
     @just sweep-test-tmp
 
 # Mutation testing of the store. Fewer random cases per mutant (each needs
 # a run that catches it, not the deep sweep).
-mutants-store: sweep-test-tmp
+mutants-store shard="0/1": sweep-test-tmp
     mkdir -p {{mutants_tmp}}
-    STORE_CASES=64 PROPTEST_MAX_SHRINK_ITERS=0 TMPDIR={{mutants_tmp}} cargo mutants -p ledger-store --test-package ledger-store -j 3 --timeout 300 -o mutants-store
+    STORE_CASES=64 PROPTEST_MAX_SHRINK_ITERS=0 TMPDIR={{mutants_tmp}} cargo mutants -p ledger-store --test-package ledger-store -j 3 --timeout-multiplier 3 --minimum-test-timeout 300 --shard {{shard}} -o mutants-store
     @just sweep-test-tmp
 
 # Mutation testing of the importers and report renderers.
-mutants-import: sweep-test-tmp
+mutants-import shard="0/1": sweep-test-tmp
     mkdir -p {{mutants_tmp}}
-    PROPTEST_MAX_SHRINK_ITERS=0 TMPDIR={{mutants_tmp}} cargo mutants -p ledger-import --test-package ledger-import -j 4 --timeout 300 -o mutants-import
+    PROPTEST_MAX_SHRINK_ITERS=0 TMPDIR={{mutants_tmp}} cargo mutants -p ledger-import --test-package ledger-import -j 4 --timeout-multiplier 3 --minimum-test-timeout 300 --shard {{shard}} -o mutants-import
     @just sweep-test-tmp
 
 # Mutation testing of the settings parser and the receipt policy.
-mutants-config: sweep-test-tmp
+mutants-config shard="0/1": sweep-test-tmp
     mkdir -p {{mutants_tmp}}
-    PROPTEST_MAX_SHRINK_ITERS=0 TMPDIR={{mutants_tmp}} cargo mutants -p ledger-config --test-package ledger-config -j 4 --timeout 120 -o mutants-config
+    PROPTEST_MAX_SHRINK_ITERS=0 TMPDIR={{mutants_tmp}} cargo mutants -p ledger-config --test-package ledger-config -j 4 --timeout-multiplier 3 --minimum-test-timeout 120 --shard {{shard}} -o mutants-config
     @just sweep-test-tmp
 
 # Mutation testing of the MCP server (every mutant runs the stdio suites;
 # fewer random cases each, as for the store).
-mutants-mcp: sweep-test-tmp
+mutants-mcp shard="0/1": sweep-test-tmp
     mkdir -p {{mutants_tmp}}
-    MCP_CASES=16 PROPTEST_MAX_SHRINK_ITERS=0 TMPDIR={{mutants_tmp}} cargo mutants -p ledger-mcp --test-package ledger-mcp -j 4 --timeout 600 -o mutants-mcp
+    MCP_CASES=16 PROPTEST_MAX_SHRINK_ITERS=0 TMPDIR={{mutants_tmp}} cargo mutants -p ledger-mcp --test-package ledger-mcp -j 4 --timeout-multiplier 3 --minimum-test-timeout 600 --shard {{shard}} -o mutants-mcp
     @just sweep-test-tmp
 
 # No mutation runs on the viewer (owner, 2026-10-18: they crushed the

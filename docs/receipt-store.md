@@ -89,8 +89,13 @@ before backups.
 - **Deduplicated.** Attaching the same receipt twice stores one blob and two
   attachment rows. `attach_receipt` / `file_document` return
   `deduplicated: true` when the blob already existed.
-- **Limits.** 25 MB per file by default, configurable. MIME type is accepted
-  from the client and stored; server-side sniffing is future work.
+- **Limits.** 25 MiB per file as an upload (`books.begin_upload`), 256
+  KiB given inline. The name and MIME type are the client's, checked
+  when the file is filed: a name of 1 to 255 bytes, no `/` or `\`, not
+  `.` or `..`, no control or invisible characters; a `type/subtype` of
+  visible ASCII, at most 127 bytes (`docs/mcp-interface.md`, "Tools —
+  receipts & documents"). The type is stored as given; server-side
+  sniffing is future work (only a W-9 is judged by its first bytes).
 - **Metadata** lives in SQLite (`blobs` table), not in the filesystem:
   `sha256 PK, size_bytes, mime_type, original_name, created_at`.
 

@@ -126,8 +126,7 @@ impl Mcp {
     }
 }
 
-/// A test's dir and what sits beside it (`.inbox`, `.elsewhere.txt`),
-/// removed when the test ends, pass or panic.
+/// A test's dir, removed when the test ends, pass or panic.
 struct TestDir(std::path::PathBuf);
 
 impl std::ops::Deref for TestDir {
@@ -146,11 +145,6 @@ impl AsRef<std::path::Path> for TestDir {
 impl Drop for TestDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
-        for beside in [".inbox", ".elsewhere.txt"] {
-            let p = std::path::PathBuf::from(format!("{}{beside}", self.0.display()));
-            let _ = std::fs::remove_dir_all(&p);
-            let _ = std::fs::remove_file(&p);
-        }
     }
 }
 
@@ -185,6 +179,9 @@ fn mcp_end_to_end_over_stdio() {
     let list = mcp.request("tools/list", json!({}));
     let tools = list["result"]["tools"].as_array().unwrap();
     assert_eq!(tools.len(), 108, "expected 108 tools, got {}", tools.len());
+    // Files come in as tool input: books.begin_upload, never a local path.
+    assert!(tools.iter().any(|t| t["name"] == "books.begin_upload"));
+    assert!(!tools.iter().any(|t| t["name"] == "books.import_local_file"));
     let chart = tools.iter().find(|t| t["name"] == "books.chart").unwrap();
     assert_eq!(chart["annotations"]["readOnlyHint"], true);
     assert!(
@@ -267,6 +264,7 @@ fn mcp_end_to_end_over_stdio() {
             "file_name": "rent.png",
             "mime_type": "image/png",
             "content_base64": png,
+            "sha256": sha(b"fake-png-bytes"),
         }),
     );
     assert_eq!(attached["deduplicated"], false);
@@ -461,6 +459,7 @@ fn mcp_assets_end_to_end_over_stdio() {
             "file_name": "bill-of-sale.pdf",
             "mime_type": "application/pdf",
             "content_base64": base64_like(b"fake bill of sale"),
+            "sha256": sha(b"fake bill of sale"),
         }),
     );
     let aid = bill["attachment_id"].as_u64().unwrap();
@@ -628,7 +627,8 @@ fn mcp_receipt_corrections_over_stdio() {
         let att = mcp.call(
             "books.attach_receipt",
             json!({"entry_id": id, "file_name": "receipt.eml", "mime_type": "message/rfc822",
-                   "content_base64": base64_like(receipt)}),
+                   "content_base64": base64_like(receipt),
+                   "sha256": sha(receipt)}),
         );
         let posted = mcp.call(
             "books.post_entry",
@@ -655,7 +655,8 @@ fn mcp_receipt_corrections_over_stdio() {
     let pdf = mcp.call(
         "books.attach_receipt",
         json!({"entry_id": big, "file_name": "receipt.pdf", "mime_type": "application/pdf",
-               "content_base64": base64_like(b"pdf-bytes")}),
+               "content_base64": base64_like(b"pdf-bytes"),
+               "sha256": sha(b"pdf-bytes")}),
     )["attachment_id"]
         .as_u64()
         .unwrap();
@@ -782,46 +783,6 @@ fn mcp_resources_over_stdio() {
     assert!(resp.get("error").is_some());
 }
 
-/// `--import-root` replaces the default import root (the downloads
-/// folder): a file in the named folder is filed; one beside it is not.
-#[test]
-fn import_root_flag_replaces_the_defaults() {
-    let dir = test_dir("import-root");
-    let inbox = dir.with_extension("inbox");
-    std::fs::create_dir_all(&inbox).unwrap();
-    let inside = inbox.join("receipt.txt");
-    let temp = dir.with_extension("elsewhere.txt");
-    for p in [&inside, &temp] {
-        std::fs::write(p, b"a receipt").unwrap();
-    }
-    let mut mcp = Mcp::spawn_with(
-        &dir.join("books-data"),
-        &[std::ffi::OsStr::new("--import-root"), inbox.as_os_str()],
-    );
-    mcp.request(
-        "initialize",
-        json!({
-            "protocolVersion": "2025-06-18",
-            "capabilities": {},
-            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
-        }),
-    );
-    mcp.notify("notifications/initialized");
-    let ok = mcp.call(
-        "books.import_local_file",
-        json!({"path": inside.to_str().unwrap(), "category": "receipt"}),
-    );
-    assert_eq!(ok["file_name"], "receipt.txt");
-    let why = mcp.call_err(
-        "books.import_local_file",
-        json!({"path": temp.to_str().unwrap(), "category": "receipt"}),
-    );
-    assert!(
-        why.contains("no such file in the server's import folders"),
-        "{why}"
-    );
-}
-
 /// Start a session: initialize, then initialized.
 fn init(mcp: &mut Mcp) -> Value {
     let init = mcp.request(
@@ -836,173 +797,25 @@ fn init(mcp: &mut Mcp) -> Value {
     init
 }
 
-/// Through the real tools, inside a root (local_files.rs INVARIANTS 1-3,
-/// Protected::of; S1 and S5 of the P0 review, I of round 2): the key
-/// file in force, moved into the root after the server started (a root
-/// holding the books or a key is refused at startup: startup.rs), is
-/// sealed with what its link leads to and their folders, but never the
-/// root itself; links in the root to the journal or a vault record lead
-/// outside it, and get the one refusal a missing file gets (INVARIANT 2).
-/// books.import_local_file and books.set_w9's w9_file_path agree.
-#[test]
-fn import_local_file_and_set_w9_refuse_the_key_vault_and_journal_inside_a_root() {
-    use std::os::unix::fs::symlink;
-    let dir = test_dir("sealed-in-root");
-    let root = dir.join("root");
-    let books = dir.join("books");
-    let data = books.join("books-data");
-    let tray = root.join("drop");
-    let config = dir.join("config");
-    for d in [
-        &data,
-        &tray,
-        &root.join("alias"),
-        &root.join("hidden"),
-        &config.join("wanderbooks"),
-    ] {
-        std::fs::create_dir_all(d).unwrap();
-    }
-    std::fs::write(root.join("hidden/real.key"), "ab".repeat(32)).unwrap();
-    std::fs::write(root.join("hidden/notes.pdf"), b"%PDF beside the key").unwrap();
-    std::fs::write(root.join("loose.key"), "ef".repeat(32)).unwrap();
-    symlink(root.join("hidden/real.key"), root.join("alias/vault.key")).unwrap();
-    std::fs::write(config.join("wanderbooks/vault.key"), "cd".repeat(32)).unwrap();
-    let settings = |key: &std::path::Path| {
-        std::fs::write(
-            books.join("wanderbooks.toml"),
-            format!(
-                "[company]\nname = \"Sealed Co\"\n[vault]\nkey_file = \"{}\"\n",
-                key.display()
-            ),
-        )
-        .unwrap();
-    };
-    // Started with the default key (outside the root), so it starts.
-    settings(&config.join("wanderbooks/vault.key"));
-    std::fs::write(tray.join("receipt.pdf"), b"%PDF a receipt").unwrap();
-    std::fs::write(tray.join("w9.pdf"), b"%PDF\xff W-9 scan").unwrap();
-    let root_arg = [std::ffi::OsStr::new("--import-root"), root.as_os_str()];
-    let mut mcp = Mcp::spawn_env(&data, &root_arg, &[("XDG_CONFIG_HOME", &config)]);
-    init(&mut mcp);
-    mcp.call(
-        "books.add_party",
-        json!({"name": "Acme", "roles": ["contractor"]}),
-    );
-    mcp.call(
-        "books.set_tin",
-        json!({"party": "Acme", "tin": "291-12-2846", "tin_type": "ssn"}),
-    );
-    let journal = data.join(ledger_store::JOURNAL_FILE);
-    let vault_record = books
-        .join("vault")
-        .read_dir()
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .find(|p| p.extension().is_some_and(|e| e == "bin"))
-        .unwrap();
-    for (name, to) in [
-        ("journal-link.pdf", journal.clone()),
-        ("record-link.pdf", vault_record.clone()),
-        ("default-key-link.pdf", config.join("wanderbooks/vault.key")),
-        ("dangling-link.pdf", config.join("wanderbooks/missing.key")),
-    ] {
-        symlink(&to, tray.join(name)).unwrap();
-    }
-    // The key in force moves into the root (a link, alias/vault.key ->
-    // hidden/real.key); the settings reload.
-    settings(&root.join("alias/vault.key"));
-    let refuse = |mcp: &mut Mcp, path: &std::path::Path, why: &str| {
-        let path = path.to_str().unwrap();
-        let err = mcp.call_err(
-            "books.import_local_file",
-            json!({"path": path, "category": "document"}),
-        );
-        assert!(err.contains(why), "{path}: {err}");
-        assert!(!err.contains(dir.to_str().unwrap()), "names a path: {err}");
-        let err = mcp.call_err(
-            "books.set_w9",
-            json!({"party": "Acme", "received_on": "2026-01-03", "entity_type": "Individual",
-                   "tin": "291-12-2846", "tin_type": "ssn", "w9_file_path": path}),
-        );
-        assert!(err.contains(why), "{path}: {err}");
-    };
-    for p in [
-        root.join("hidden/real.key"),
-        root.join("hidden/notes.pdf"),
-        root.join("alias/vault.key"),
-    ] {
-        refuse(&mut mcp, &p, "belongs to the books or the TIN vault");
-    }
-    for p in [
-        journal.clone(),
-        vault_record,
-        config.join("wanderbooks/vault.key"),
-        tray.join("journal-link.pdf"),
-        tray.join("record-link.pdf"),
-        tray.join("default-key-link.pdf"),
-        tray.join("dangling-link.pdf"),
-        tray.join("missing.pdf"),
-    ] {
-        refuse(
-            &mut mcp,
-            &p,
-            "no such file in the server's import folders (by default your downloads folder)",
-        );
-    }
-    // A key kept loose in the root itself seals the key, not the root.
-    settings(&root.join("loose.key"));
-    refuse(
-        &mut mcp,
-        &root.join("loose.key"),
-        "belongs to the books or the TIN vault",
-    );
-    // Ordinary files in the root are filed (with the key the vault was
-    // made with back in force).
-    mcp.call(
-        "books.import_local_file",
-        json!({"path": tray.join("receipt.pdf").to_str().unwrap(), "category": "receipt"}),
-    );
-    // A link is filed under the name and type of the file it leads to.
-    std::fs::write(tray.join("photo.png"), b"\x89PNG a photo").unwrap();
-    symlink(tray.join("photo.png"), tray.join("named-like.pdf")).unwrap();
-    let filed = mcp.call(
-        "books.import_local_file",
-        json!({"path": tray.join("named-like.pdf").to_str().unwrap(), "category": "receipt"}),
-    );
-    assert_eq!(filed["file_name"], "photo.png");
-    let back = mcp.call(
-        "books.get_receipt",
-        json!({"attachment_id": filed["attachment_id"]}),
-    );
-    assert_eq!(back["mime_type"], "image/png", "{back}");
-    settings(&config.join("wanderbooks/vault.key"));
-    mcp.call(
-        "books.set_w9",
-        json!({"party": "Acme", "received_on": "2026-01-03", "entity_type": "Individual",
-               "tin": "291-12-2846", "tin_type": "ssn",
-               "w9_file_path": tray.join("w9.pdf").to_str().unwrap()}),
-    );
-}
-
 /// Outputs that carry full TINs (books.get_w9, books.vendor_1099 with
 /// include_tins, books.export_cpa_package with TINs) are never written
-/// into an import root, and a copy of one moved into a root is refused by
-/// its bytes: a TIN-bearing file can't be filed back in as a receipt and
+/// inside the books, and wherever they are written (a downloads folder
+/// too), each is refused by its bytes when given back to be filed: a
+/// TIN-bearing file can't be filed back in as a receipt or document and
 /// read out through books.get_receipt (S7 of the P0 review, 2026-10-16).
 #[test]
 fn tin_bearing_files_never_land_where_they_could_be_filed_back_in() {
     let dir = test_dir("tin-files");
-    let root = dir.join("inbox");
-    let out = dir.join("out");
+    let books = dir.join("books");
+    let downloads = dir.join("downloads");
     let config = dir.join("config");
-    for d in [&root, &out, &config] {
+    for d in [&downloads, &config] {
         std::fs::create_dir_all(d).unwrap();
     }
-    std::fs::write(root.join("w9.pdf"), b"%PDF W-9 TIN 291-12-2846").unwrap();
-    let root_arg = [std::ffi::OsStr::new("--import-root"), root.as_os_str()];
+    let w9 = b"%PDF-1.4 W-9 TIN 291-12-2846";
     let mut mcp = Mcp::spawn_env(
-        &dir.join("books").join("books-data"),
-        &root_arg,
+        &books.join("books-data"),
+        &[],
         &[("XDG_CONFIG_HOME", &config)],
     );
     init(&mut mcp);
@@ -1018,61 +831,92 @@ fn tin_bearing_files_never_land_where_they_could_be_filed_back_in() {
         "books.set_w9",
         json!({"party": "Acme", "received_on": "2026-01-03", "entity_type": "Individual",
                "tin": "291-12-2846", "tin_type": "ssn",
-               "w9_file_path": root.join("w9.pdf").to_str().unwrap()}),
+               "w9_content_base64": base64_like(w9), "w9_sha256": sha(w9)}),
     );
-    let in_root = |name: &str| root.join(name).to_str().unwrap().to_string();
+    // Inside the books: refused, and nothing written there.
+    let before = std::fs::read_dir(&books).unwrap().count();
+    let in_books = |name: &str| books.join(name).to_str().unwrap().to_string();
     for (tool, args) in [
         (
             "books.get_w9",
-            json!({"party": "Acme", "save_to": in_root("copy.pdf")}),
+            json!({"party": "Acme", "save_to": in_books("copy.pdf")}),
         ),
         (
             "books.vendor_1099",
-            json!({"year": 2026, "include_tins": true, "save_csv_to": in_root("1099.csv")}),
+            json!({"year": 2026, "include_tins": true, "save_csv_to": in_books("1099.csv")}),
         ),
         (
             "books.export_cpa_package",
-            json!({"cash_accounts": ["1000"], "save_to": in_root("cpa.zip")}),
+            json!({"cash_accounts": ["1000"], "save_to": in_books("cpa.zip")}),
         ),
         (
             "books.export_cpa_package",
-            json!({"cash_accounts": ["1000"], "save_to": root.to_str().unwrap()}),
+            json!({"cash_accounts": ["1000"], "save_to": books.to_str().unwrap()}),
         ),
     ] {
         let why = mcp.call_err(tool, args);
-        assert!(
-            why.contains("never saved in the server's import folders"),
-            "{tool}: {why}"
-        );
+        assert!(why.contains("inside the books"), "{tool}: {why}");
     }
     assert_eq!(
-        std::fs::read_dir(&root).unwrap().count(),
-        1,
-        "wrote into the root"
+        std::fs::read_dir(&books).unwrap().count(),
+        before,
+        "wrote into the books"
     );
-    // Saved elsewhere, then moved into the root: refused by its bytes.
-    let w9 = out.join("copy.pdf");
+    // Written to a downloads folder, each is refused by its bytes, by
+    // every way a file is filed.
+    let in_downloads = |name: &str| downloads.join(name).to_str().unwrap().to_string();
     mcp.call(
         "books.get_w9",
-        json!({"party": "Acme", "save_to": w9.to_str().unwrap()}),
+        json!({"party": "Acme", "save_to": in_downloads("copy.pdf")}),
     );
-    let csv = out.join("1099.csv");
     mcp.call(
         "books.vendor_1099",
-        json!({"year": 2026, "include_tins": true, "save_csv_to": csv.to_str().unwrap()}),
+        json!({"year": 2026, "include_tins": true, "save_csv_to": in_downloads("1099.csv")}),
     );
-    for (from, name) in [(&w9, "receipt.pdf"), (&csv, "statement.csv")] {
-        std::fs::copy(from, root.join(name)).unwrap();
-        let why = mcp.call_err(
-            "books.import_local_file",
-            json!({"path": in_root(name), "category": "receipt"}),
-        );
-        assert!(why.contains("wrote with full TINs"), "{why}");
+    mcp.call(
+        "books.export_cpa_package",
+        json!({"cash_accounts": ["1000"], "save_to": in_downloads("cpa.zip")}),
+    );
+    let written: Vec<std::path::PathBuf> = std::fs::read_dir(&downloads)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(written.len(), 3, "{written:?}");
+    let journal = std::fs::read(books.join("books-data").join(ledger_store::JOURNAL_FILE)).unwrap();
+    for path in &written {
+        let bytes = std::fs::read(path).unwrap();
+        for (tool, args) in [
+            (
+                "books.attach_receipt",
+                json!({"file_name": "receipt.pdf", "mime_type": "application/pdf",
+                       "content_base64": base64_like(&bytes),
+                       "sha256": sha(&bytes)}),
+            ),
+            (
+                "books.file_document",
+                json!({"category": "statement", "file_name": "statement.csv",
+                       "mime_type": "text/csv",
+                       "content_base64": base64_like(&bytes),
+                       "sha256": sha(&bytes)}),
+            ),
+        ] {
+            let why = mcp.call_err(tool, args);
+            assert!(
+                why.contains("wrote with full TINs"),
+                "{tool} {}: {why}",
+                path.display()
+            );
+        }
     }
+    assert_eq!(
+        std::fs::read(books.join("books-data").join(ledger_store::JOURNAL_FILE)).unwrap(),
+        journal,
+        "a refusal stored something"
+    );
     // Without TINs, the 1099 worksheet may go anywhere a file may.
     mcp.call(
         "books.vendor_1099",
-        json!({"year": 2026, "save_csv_to": in_root("plain.csv")}),
+        json!({"year": 2026, "save_csv_to": in_downloads("plain.csv")}),
     );
 }
 
@@ -1317,6 +1161,11 @@ fn handbook_tool_and_resources_over_stdio() {
     assert!(resp.get("error").is_some());
 }
 
+/// The SHA-256 (hex) a file given inline comes with.
+fn sha(bytes: &[u8]) -> String {
+    ledger_store::journal::sha256_hex(bytes)
+}
+
 fn base64_like(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();
@@ -1409,7 +1258,8 @@ fn mcp_statement_pdfs_and_cpa_package_over_stdio() {
         mcp.call(
             "books.attach_receipt",
             json!({"entry_id": id, "file_name": "r.pdf", "mime_type": "application/pdf",
-                   "content_base64": base64_like(desc.as_bytes())}),
+                   "content_base64": base64_like(desc.as_bytes()),
+                   "sha256": sha(desc.as_bytes())}),
         );
         mcp.call(
             "books.post_entry",
@@ -1571,7 +1421,8 @@ fn mcp_period_statements_over_stdio() {
     mcp.call(
         "books.attach_receipt",
         json!({"entry_id": id, "file_name": "r.pdf", "mime_type": "application/pdf",
-               "content_base64": base64_like(b"r")}),
+               "content_base64": base64_like(b"r"),
+               "sha256": sha(b"r")}),
     );
     mcp.call(
         "books.post_entry",
@@ -2047,6 +1898,7 @@ fn mcp_payout_gross_up_over_stdio() {
             "file_name": "payout.pdf",
             "mime_type": "application/pdf",
             "content_base64": base64_like(b"%PDF-1.4 statement"),
+            "sha256": sha(b"%PDF-1.4 statement"),
         }),
     );
     mcp.call(
@@ -2133,6 +1985,7 @@ fn mcp_vendor_1099_over_stdio() {
             "file_name": "invoice.pdf",
             "mime_type": "application/pdf",
             "content_base64": base64_like(b"%PDF-1.4 invoice"),
+            "sha256": sha(b"%PDF-1.4 invoice"),
         }),
     );
     mcp.call(

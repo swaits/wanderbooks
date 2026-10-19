@@ -265,7 +265,8 @@ async fn post_one(c: &Client, n: u64) -> Result<u64, String> {
         c,
         "books.attach_receipt",
         json!({"entry_id": id, "file_name": format!("r{n}.txt"),
-               "mime_type": "text/plain", "content_base64": "cmVjZWlwdA=="}),
+               "mime_type": "text/plain", "content_base64": "cmVjZWlwdA==",
+               "sha256": "6f32860910ca0fb2a20c7fda143666b09dbf8db5238195c90a586fb542ff0cad"}),
     )
     .await?;
     call(
@@ -747,6 +748,42 @@ async fn raw_session(http: &reqwest::Client, book: &str) -> String {
     session
 }
 
+/// Begin an upload on `session` (books.begin_upload) and send `bytes` for
+/// it over the upload route: its id.
+async fn raw_upload(http: &reqwest::Client, session: &str, bytes: &[u8], name: &str) -> String {
+    let begin = json!({"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": {
+        "name": "books.begin_upload", "arguments": {
+            "sha256": ledger_store::journal::sha256_hex(bytes), "size": bytes.len(),
+            "mime_type": "application/pdf", "file_name": name, "purpose": "document"}}});
+    let r = http
+        .post("http://localhost/b/acme/mcp")
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
+        .header("mcp-session-id", session)
+        .header("mcp-protocol-version", "2025-06-18")
+        .body(begin.to_string())
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let id = r
+        .split("\"upload_id\":\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .unwrap_or_else(|| panic!("no upload: {r}"))
+        .to_string();
+    let put = http
+        .put(format!("http://localhost/b/acme/u/{id}"))
+        .body(bytes.to_vec())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(put.status().as_u16(), 200, "{:?}", put.text().await);
+    id
+}
+
 /// Wait for a child to exit, at most `secs`.
 fn wait_exit(child: &mut Child, secs: u64) -> Option<std::process::ExitStatus> {
     let deadline = Instant::now() + Duration::from_secs(secs);
@@ -768,14 +805,14 @@ async fn a_call_whose_client_hung_up_finishes_before_the_close() {
     home.create("acme", "USD");
     let http = mcp_http_for(&home, "acme");
     let session = raw_session(&http, "acme").await;
-    // A large document: its filing takes long enough to close mid-way.
+    // A large document, sent as an upload: its filing takes long enough to
+    // close mid-way.
     let mut bytes = b"%PDF-1.4\n".to_vec();
     bytes.extend((0..20_000_000u32).map(|i| (i % 251) as u8));
-    use base64_engine::encode;
+    let upload = raw_upload(&http, &session, &bytes, "big.pdf").await;
     let call = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
         "name": "books.file_document", "arguments": {
-            "category": "formation", "file_name": "big.pdf",
-            "mime_type": "application/pdf", "content_base64": encode(&bytes)}}});
+            "category": "formation", "upload_id": upload}}});
     let response = http
         .post("http://localhost/b/acme/mcp")
         .header("content-type", "application/json")
@@ -808,27 +845,6 @@ async fn a_call_whose_client_hung_up_finishes_before_the_close() {
     let filed = snap.attachments(None).unwrap();
     assert_eq!(filed.len(), 1, "the call was cut off");
     assert_eq!(snap.attachment_bytes(filed[0].id).unwrap(), bytes);
-}
-
-/// Base64 for the tests (standard alphabet, padded).
-mod base64_engine {
-    pub fn encode(bytes: &[u8]) -> String {
-        const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let mut out = String::with_capacity(bytes.len() * 4 / 3 + 4);
-        for c in bytes.chunks(3) {
-            let n = (u32::from(c[0]) << 16)
-                | (u32::from(*c.get(1).unwrap_or(&0)) << 8)
-                | u32::from(*c.get(2).unwrap_or(&0));
-            for (i, shift) in [18, 12, 6, 0].iter().enumerate() {
-                out.push(if i <= c.len() {
-                    T[((n >> shift) & 63) as usize] as char
-                } else {
-                    '='
-                });
-            }
-        }
-        out
-    }
 }
 
 /// Send the start of a request that never finishes.
@@ -1765,5 +1781,769 @@ async fn the_vault_and_the_approval_controls_need_their_scopes() {
     .await;
     assert!(note.is_ok(), "{note:?}");
     drop((w, p));
+    assert!(server.close().success());
+}
+
+// P2 slice 5: files in and out (ledger-mcp tools/files.rs, local.rs's
+// upload and download routes; ledger-store uploads.rs).
+
+fn b64(bytes: &[u8]) -> String {
+    base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes)
+}
+
+/// Begin an upload on `c` for `bytes`: its id.
+async fn begin(c: &Client, bytes: &[u8], name: &str, purpose: &str) -> String {
+    let r = call(
+        c,
+        "books.begin_upload",
+        json!({"sha256": ledger_store::journal::sha256_hex(bytes), "size": bytes.len(),
+               "mime_type": "application/pdf", "file_name": name, "purpose": purpose}),
+    )
+    .await
+    .unwrap();
+    r["upload_id"].as_str().unwrap().to_string()
+}
+
+/// PUT `bytes` for upload `id` with `token`: the status, the refusal
+/// code and the body.
+async fn put(home: &Home, token: &str, id: &str, bytes: &[u8]) -> (u16, Option<String>, String) {
+    let r = mcp_http(home)
+        .put(format!("http://localhost/b/acme/u/{id}"))
+        .bearer_auth(token)
+        .body(bytes.to_vec())
+        .send()
+        .await
+        .unwrap();
+    let status = r.status().as_u16();
+    let code = r
+        .headers()
+        .get(ledger_mcp::local::REFUSED_HEADER)
+        .map(|v| v.to_str().unwrap().to_string());
+    (status, code, r.text().await.unwrap())
+}
+
+/// A receipt-like PDF of `size` bytes, different for each `tag`.
+fn pdf(tag: &str, size: usize) -> Vec<u8> {
+    let mut b = format!("%PDF-1.4 {tag} ").into_bytes();
+    let mut n: u32 = 0;
+    while b.len() < size {
+        b.extend_from_slice(&n.to_le_bytes());
+        n = n.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+    }
+    b.truncate(size);
+    b
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_upload_is_filed_once_by_its_own_token_exactly_as_declared() {
+    let home = Home::new("upload");
+    let server = Server::start(&home);
+    home.create("acme", "USD");
+    let c = connect(&home, "acme").await.unwrap();
+    let token = home.token("acme");
+    let bytes = pdf("one", 300 * 1024);
+    // The command it gives runs with the agent's own path; it names no
+    // path of the server's.
+    let r = call(
+        &c,
+        "books.begin_upload",
+        json!({"sha256": ledger_store::journal::sha256_hex(&bytes), "size": bytes.len(),
+               "mime_type": "application/pdf", "file_name": "big receipt.pdf",
+               "purpose": "document"}),
+    )
+    .await
+    .unwrap();
+    home.assert_hidden(&r.to_string());
+    let id = r["upload_id"].as_str().unwrap().to_string();
+    assert_eq!(
+        r["command"],
+        json!(format!(
+            "wanderbooks upload --book acme --token test {id} -- <the file's path>"
+        ))
+    );
+    assert_eq!(r["max_bytes"], json!(25 * 1024 * 1024));
+    assert!(r["expires_at"].as_str().unwrap().ends_with('Z'));
+    // Not sent yet: nothing to file.
+    let e = call(
+        &c,
+        "books.file_document",
+        json!({"category": "other", "upload_id": id}),
+    )
+    .await
+    .unwrap_err();
+    assert!(e.contains("haven't been sent"), "{e}");
+    // Anything but the bytes declared is refused and kept nowhere.
+    let mut short = bytes.clone();
+    short.pop();
+    let mut changed = bytes.clone();
+    changed[100] ^= 1;
+    for wrong in [&short, &changed] {
+        let (status, code, _) = put(&home, &token, &id, wrong).await;
+        assert_eq!((status, code.as_deref()), (400, Some("not_as_declared")));
+    }
+    // Another token's upload takes nothing from this one.
+    let other = home.token_with("acme", "other", &["read", "write"]);
+    let (status, code, _) = put(&home, &other, &id, &bytes).await;
+    assert_eq!((status, code.as_deref()), (403, Some("not_yours")));
+    let (status, code, _) = put(&home, &token, "up_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &bytes).await;
+    assert_eq!((status, code.as_deref()), (404, Some("no_such_upload")));
+    let (status, _, body) = put(&home, &token, &id, &bytes).await;
+    assert_eq!(status, 200, "{body}");
+    let got: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(got["size"], json!(bytes.len()));
+    let (status, code, _) = put(&home, &token, &id, &bytes).await;
+    assert_eq!((status, code.as_deref()), (409, Some("already_sent")));
+    // No token: refused at the door, and recorded as an upload too; what
+    // was sent (25 MiB, more than a socket holds) is read, so the client
+    // gets the answer.
+    let r = mcp_http(&home)
+        .put(format!("http://localhost/b/acme/u/{id}"))
+        .body(vec![b'x'; 25 * 1024 * 1024])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 401);
+    // Every PUT is in the access log, refusals too, under its token.
+    let log = call(
+        &c,
+        "books.access_log",
+        json!({"action": "upload", "limit": 20}),
+    )
+    .await
+    .unwrap();
+    let seen: Vec<(String, String)> = log["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .map(|r| {
+            (
+                r["principal"]["label"].as_str().unwrap().to_string(),
+                r["result"].to_string(),
+            )
+        })
+        .collect();
+    let outcome = |s: &(String, String)| s.1.clone();
+    assert_eq!(seen.len(), 7, "{seen:?}");
+    assert!(
+        outcome(&seen[0]).contains("not_as_declared")
+            && outcome(&seen[1]).contains("not_as_declared")
+    );
+    assert_eq!(seen[2].0, "other");
+    assert!(outcome(&seen[2]).contains("not_yours"));
+    assert!(outcome(&seen[3]).contains("no_such_upload"));
+    assert_eq!(outcome(&seen[4]), "\"ok\"");
+    assert!(outcome(&seen[5]).contains("already_sent"));
+    let at_door = &log["records"][0];
+    assert_eq!(at_door["subject"], json!(id), "{at_door}");
+    assert!(
+        at_door["result"].to_string().contains("refused"),
+        "{at_door}"
+    );
+    // Only the token that began it files it.
+    let c2 = connect_with(&home, "acme", Some(other.clone()))
+        .await
+        .unwrap();
+    let e = call(
+        &c2,
+        "books.file_document",
+        json!({"category": "other", "upload_id": id}),
+    )
+    .await
+    .unwrap_err();
+    assert!(e.contains("another token"), "{e}");
+    // Filed once, under the name and type it was declared with.
+    let filed = call(
+        &c,
+        "books.file_document",
+        json!({"category": "other", "upload_id": id}),
+    )
+    .await
+    .unwrap();
+    let att = filed["attachment_id"].as_u64().unwrap();
+    assert_eq!(
+        filed["sha256"],
+        json!(ledger_store::journal::sha256_hex(&bytes))
+    );
+    let e = call(
+        &c,
+        "books.file_document",
+        json!({"category": "other", "upload_id": id}),
+    )
+    .await
+    .unwrap_err();
+    assert!(e.contains("no upload"), "{e}");
+    let meta = call(&c, "books.get_receipt", json!({"attachment_id": att}))
+        .await
+        .unwrap();
+    assert_eq!(meta["file_name"], json!("big receipt.pdf"));
+    assert_eq!(meta["mime_type"], json!("application/pdf"));
+    assert_eq!(meta["size_bytes"], json!(bytes.len()));
+    assert!(meta.get("content_base64").is_none_or(Value::is_null));
+    // Too large to come back inline: the command that saves a copy.
+    let big = call(
+        &c,
+        "books.get_receipt",
+        json!({"attachment_id": att, "view": "bytes"}),
+    )
+    .await
+    .unwrap();
+    assert!(big.get("content_base64").is_none_or(Value::is_null));
+    assert_eq!(
+        big["download"],
+        json!(format!(
+            "wanderbooks download --book acme --token test {att} --to <a folder>"
+        ))
+    );
+    // The same bytes again: the attachment that holds them, no upload.
+    let again = call(
+        &c,
+        "books.begin_upload",
+        json!({"sha256": ledger_store::journal::sha256_hex(&bytes), "size": bytes.len(),
+               "mime_type": "application/pdf", "file_name": "copy.pdf", "purpose": "receipt"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(again["existing_attachment_id"], json!(att));
+    assert!(again.get("upload_id").is_none_or(Value::is_null));
+    // Nothing is left behind in the uploads' folder.
+    let left: Vec<_> = std::fs::read_dir(home.book_dir("acme").join("uploads"))
+        .unwrap()
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+    drop((c, c2));
+    assert!(server.close().success());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_call_that_fails_leaves_its_upload_for_the_next() {
+    let home = Home::new("upload-again");
+    let server = Server::start(&home);
+    home.create("acme", "USD");
+    let c = connect(&home, "acme").await.unwrap();
+    let token = home.token("acme");
+    chart(&c).await;
+    let csv = b"Date,Description,Amount\n2026-03-02,Coffee,-4.50\n".to_vec();
+    let id = begin(&c, &csv, "bank.csv", "import").await;
+    let (status, _, body) = put(&home, &token, &id, &csv).await;
+    assert_eq!(status, 200, "{body}");
+    // Refused after the file was taken (no such account): given back.
+    let e = call(
+        &c,
+        "books.import_bank_csv",
+        json!({"upload_id": id, "bank_account_code": "1999", "default_offset_code": "6000"}),
+    )
+    .await
+    .unwrap_err();
+    assert!(e.contains("unknown bank account"), "{e}");
+    let done = call(
+        &c,
+        "books.import_bank_csv",
+        json!({"upload_id": id, "bank_account_code": "1000", "default_offset_code": "6000"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(done["count"], json!(1));
+    let e = call(
+        &c,
+        "books.import_bank_csv",
+        json!({"upload_id": id, "bank_account_code": "1000", "default_offset_code": "6000"}),
+    )
+    .await
+    .unwrap_err();
+    assert!(e.contains("no upload"), "{e}");
+    // A chart refused after it was taken is given back; filed, used up.
+    let chart = b"code,name,type,parent_code\n7000,Rent,expense,\n".to_vec();
+    let id = begin(&c, &chart, "chart.csv", "import").await;
+    assert_eq!(put(&home, &token, &id, &chart).await.0, 200);
+    let bad = b"code,name,type,parent_code\n7000,Rent,nonsense,\n".to_vec();
+    let bad_id = begin(&c, &bad, "bad.csv", "import").await;
+    assert_eq!(put(&home, &token, &bad_id, &bad).await.0, 200);
+    let e = call(&c, "books.import_chart_csv", json!({"upload_id": bad_id}))
+        .await
+        .unwrap_err();
+    assert!(e.contains("nonsense"), "{e}");
+    let e = call(&c, "books.import_chart_csv", json!({"upload_id": bad_id}))
+        .await
+        .unwrap_err();
+    assert!(e.contains("nonsense"), "given back: {e}");
+    call(&c, "books.import_chart_csv", json!({"upload_id": id}))
+        .await
+        .unwrap();
+    let e = call(&c, "books.import_chart_csv", json!({"upload_id": id}))
+        .await
+        .unwrap_err();
+    assert!(e.contains("no upload"), "{e}");
+    // A receipt attached is used up too.
+    let receipt = pdf("receipt", 900);
+    let id = begin(&c, &receipt, "r.pdf", "receipt").await;
+    assert_eq!(put(&home, &token, &id, &receipt).await.0, 200);
+    call(&c, "books.attach_receipt", json!({"upload_id": id}))
+        .await
+        .unwrap();
+    let e = call(&c, "books.attach_receipt", json!({"upload_id": id}))
+        .await
+        .unwrap_err();
+    assert!(e.contains("no upload"), "{e}");
+    // Filed only by a tool of its purpose; the wrong tool leaves it.
+    let doc = pdf("purpose", 500);
+    let id = begin(&c, &doc, "doc.pdf", "import").await;
+    let (status, _, body) = put(&home, &token, &id, &doc).await;
+    assert_eq!(status, 200, "{body}");
+    let e = call(
+        &c,
+        "books.file_document",
+        json!({"category": "other", "upload_id": id}),
+    )
+    .await
+    .unwrap_err();
+    assert!(e.contains("begun for import"), "{e}");
+    let e = call(&c, "books.import_chart_csv", json!({"upload_id": id}))
+        .await
+        .unwrap_err();
+    assert!(e.contains("isn't UTF-8"), "{e}");
+    // The import refused the bytes (not a chart) after taking them: still
+    // there for the next call, which is refused for its purpose again.
+    let e = call(&c, "books.attach_receipt", json!({"upload_id": id}))
+        .await
+        .unwrap_err();
+    assert!(e.contains("begun for import"), "{e}");
+    let e = call(
+        &c,
+        "books.begin_upload",
+        json!({"sha256": ledger_store::journal::sha256_hex(&doc), "size": doc.len(),
+               "mime_type": "application/pdf", "file_name": "x", "purpose": "anything"}),
+    )
+    .await
+    .unwrap_err();
+    assert!(e.contains("purpose is"), "{e}");
+    drop(c);
+    assert!(server.close().success());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stored_bytes_are_named_only_where_they_can_be_linked() {
+    let home = Home::new("stored");
+    let server = Server::start(&home);
+    home.create("acme", "USD");
+    let c = connect(&home, "acme").await.unwrap();
+    let csv = b"code,name,type,parent_code\n1000,Cash,asset,\n".to_vec();
+    let filed = call(
+        &c,
+        "books.file_document",
+        json!({"category": "import_source", "file_name": "chart.csv", "mime_type": "text/csv",
+               "content_base64": b64(&csv), "sha256": ledger_store::journal::sha256_hex(&csv)}),
+    )
+    .await
+    .unwrap();
+    let att = filed["attachment_id"].as_u64().unwrap();
+    let begin_for = |purpose: &'static str| {
+        let c = &c;
+        let csv = csv.clone();
+        async move {
+            call(
+                c,
+                "books.begin_upload",
+                json!({"sha256": ledger_store::journal::sha256_hex(&csv), "size": csv.len(),
+                       "mime_type": "text/csv", "file_name": "chart.csv", "purpose": purpose}),
+            )
+            .await
+            .unwrap()
+        }
+    };
+    // A document: the attachment that holds it. An import needs its bytes.
+    assert_eq!(
+        begin_for("document").await["existing_attachment_id"],
+        json!(att)
+    );
+    let import = begin_for("import").await;
+    assert!(import["upload_id"].as_str().unwrap().starts_with("up_"));
+    assert!(
+        import
+            .get("existing_attachment_id")
+            .is_none_or(Value::is_null)
+    );
+    // A withdrawn attachment can't be linked: never named.
+    call(
+        &c,
+        "books.withdraw_attachment",
+        json!({"attachment_id": att, "reason": "filed twice"}),
+    )
+    .await
+    .unwrap();
+    let again = begin_for("document").await;
+    assert!(again["upload_id"].as_str().unwrap().starts_with("up_"));
+    assert!(
+        again
+            .get("existing_attachment_id")
+            .is_none_or(Value::is_null)
+    );
+    drop(c);
+    assert!(server.close().success());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bytes_given_inline_are_small_and_carry_their_hash() {
+    let home = Home::new("inline");
+    let server = Server::start(&home);
+    home.create("acme", "USD");
+    let c = connect(&home, "acme").await.unwrap();
+    let small = pdf("small", 1000);
+    let sha = ledger_store::journal::sha256_hex(&small);
+    let file = |extra: Value| {
+        let mut args = json!({"category": "other", "file_name": "s.pdf",
+                              "mime_type": "application/pdf"});
+        args.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        args
+    };
+    for (extra, why) in [
+        (json!({"content_base64": b64(&small)}), "sha256"),
+        (
+            json!({"content_base64": b64(&small), "sha256": ledger_store::journal::sha256_hex(b"x")}),
+            "lost on the way",
+        ),
+        (
+            json!({"content_base64": "not base64!", "sha256": sha}),
+            "not valid base64",
+        ),
+        (
+            json!({"content_base64": b64(&small), "sha256": sha, "upload_id": "up_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}),
+            "not both",
+        ),
+        (json!({}), "missing"),
+    ] {
+        let e = call(&c, "books.file_document", file(extra))
+            .await
+            .unwrap_err();
+        assert!(e.contains(why), "{why}: {e}");
+    }
+    // At most 256 KiB inline (the call's own limit is 1 MiB of base64).
+    let over = pdf("over", 256 * 1024 + 1);
+    let e = call(
+        &c,
+        "books.file_document",
+        file(json!({"content_base64": b64(&over),
+                    "sha256": ledger_store::journal::sha256_hex(&over)})),
+    )
+    .await
+    .unwrap_err();
+    assert!(e.contains("upload it with books.begin_upload"), "{e}");
+    // Text longer than the most bytes' base64 is refused unread.
+    let long = "!".repeat((256 * 1024usize).div_ceil(3) * 4 + 4);
+    let e = call(
+        &c,
+        "books.file_document",
+        file(json!({"content_base64": long, "sha256": sha})),
+    )
+    .await
+    .unwrap_err();
+    assert!(e.contains("inline is at most"), "{e}");
+    // A plain name and a real type.
+    for (name, mime, why) in [
+        ("../escape.pdf", "application/pdf", "no folder"),
+        ("a\\b.pdf", "application/pdf", "no folder"),
+        ("rcpt\u{202e}fdp.exe", "application/pdf", "invisible"),
+        ("a\nb.pdf", "application/pdf", "control"),
+        (" ", "application/pdf", "name is needed"),
+        ("ok.pdf", "pdf", "MIME type"),
+        ("ok.pdf", "text/plain\r\nX-Evil: 1", "MIME type"),
+    ] {
+        let e = call(
+            &c,
+            "books.file_document",
+            json!({"category": "other", "file_name": name, "mime_type": mime,
+                   "content_base64": b64(&small), "sha256": sha}),
+        )
+        .await
+        .unwrap_err();
+        assert!(e.contains(why), "{name:?} {mime:?}: {e}");
+    }
+    let e = call(
+        &c,
+        "books.file_document",
+        file(json!({"file_name": "x".repeat(256), "content_base64": b64(&small), "sha256": sha})),
+    )
+    .await
+    .unwrap_err();
+    assert!(e.contains("at most 255 bytes"), "{e}");
+    let at = pdf("at", 256 * 1024);
+    let filed = call(
+        &c,
+        "books.file_document",
+        file(json!({"content_base64": b64(&at),
+                    "sha256": ledger_store::journal::sha256_hex(&at).to_uppercase()})),
+    )
+    .await
+    .unwrap();
+    let att = filed["attachment_id"].as_u64().unwrap();
+    let back = call(
+        &c,
+        "books.get_receipt",
+        json!({"attachment_id": att, "view": "bytes"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(back["content_base64"], json!(b64(&at)));
+    assert!(back.get("download").is_none_or(Value::is_null));
+    let e = call(
+        &c,
+        "books.get_receipt",
+        json!({"attachment_id": att, "view": "everything"}),
+    )
+    .await
+    .unwrap_err();
+    assert!(e.contains("meta") && e.contains("bytes"), "{e}");
+    drop(c);
+    assert!(server.close().success());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_download_is_the_stored_bytes_for_a_reader_and_is_recorded() {
+    let home = Home::new("download");
+    let server = Server::start(&home);
+    home.create("acme", "USD");
+    let c = connect(&home, "acme").await.unwrap();
+    let token = home.token("acme");
+    let bytes = pdf("down", 2000);
+    let filed = call(
+        &c,
+        "books.file_document",
+        json!({"category": "other", "file_name": "Résumé \"final\".pdf",
+               "mime_type": "application/pdf", "content_base64": b64(&bytes),
+               "sha256": ledger_store::journal::sha256_hex(&bytes)}),
+    )
+    .await
+    .unwrap();
+    let att = filed["attachment_id"].as_u64().unwrap();
+    let get = |bearer: Option<String>, what: String| {
+        let http = mcp_http(&home);
+        async move {
+            let mut r = http.get(format!("http://localhost/b/acme/a/{what}"));
+            if let Some(b) = bearer {
+                r = r.bearer_auth(b);
+            }
+            r.send().await.unwrap()
+        }
+    };
+    let r = get(Some(token.clone()), att.to_string()).await;
+    assert_eq!(r.status().as_u16(), 200);
+    let h = r.headers().clone();
+    assert_eq!(h["content-type"], "application/pdf");
+    assert_eq!(h["x-content-type-options"], "nosniff");
+    assert_eq!(
+        h["content-disposition"],
+        "attachment; filename=\"R_sum_ _final_.pdf\"; filename*=UTF-8''R%C3%A9sum%C3%A9%20%22final%22.pdf"
+    );
+    let digest = <sha2::Sha256 as sha2::Digest>::digest(&bytes);
+    assert_eq!(
+        h["repr-digest"],
+        format!("sha-256=:{}:", b64(&digest)).as_str()
+    );
+    assert_eq!(r.bytes().await.unwrap().to_vec(), bytes);
+    // A token without books:read gets nothing; nor does no token.
+    let writer = home.token_with("acme", "writer", &["write"]);
+    let r = get(Some(writer), att.to_string()).await;
+    assert_eq!(r.status().as_u16(), 403);
+    assert!(r.text().await.unwrap().contains("books:read"));
+    assert_eq!(get(None, att.to_string()).await.status().as_u16(), 401);
+    // GET only: a HEAD reads nothing and records nothing.
+    let head = mcp_http(&home)
+        .head(format!("http://localhost/b/acme/a/{att}"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(head.status().as_u16(), 405);
+    assert_eq!(head.headers()["allow"], "GET");
+    for missing in [
+        "999".to_string(),
+        "x".to_string(),
+        "-1".to_string(),
+        format!("+{att}"),
+        format!("0{att}"),
+    ] {
+        let r = get(Some(token.clone()), missing).await;
+        assert_eq!(r.status().as_u16(), 404);
+        home.assert_hidden(&r.text().await.unwrap());
+    }
+    // Each is in the access log, refusals too.
+    let log = call(
+        &c,
+        "books.access_log",
+        json!({"action": "download", "limit": 10}),
+    )
+    .await
+    .unwrap();
+    let outcomes: Vec<String> = log["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["result"].to_string())
+        .collect();
+    assert_eq!(outcomes.len(), 8, "{outcomes:?}");
+    // A TIN in the path is masked in the log, whole.
+    let r = get(Some(token.clone()), "123-45-6789".to_string()).await;
+    assert_eq!(r.status().as_u16(), 404);
+    let log = call(
+        &c,
+        "books.access_log",
+        json!({"action": "download", "limit": 1}),
+    )
+    .await
+    .unwrap();
+    let subject = log["records"][0]["subject"].as_str().unwrap().to_string();
+    assert!(
+        !subject.contains("6789") && !subject.contains("123-45"),
+        "{subject}"
+    );
+    assert!(
+        outcomes
+            .iter()
+            .filter(|o| o.contains("no_such_attachment"))
+            .count()
+            == 5
+    );
+    assert!(outcomes.iter().any(|o| o.contains("insufficient_scope")));
+    drop(c);
+    assert!(server.close().success());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_w9_and_a_file_holding_a_tin_go_by_upload_only_where_they_belong() {
+    let home = Home::new("w9-upload");
+    let server = Server::start(&home);
+    home.create("acme", "USD");
+    let c = connect(&home, "acme").await.unwrap();
+    let token = home.token("acme");
+    call(
+        &c,
+        "books.add_party",
+        json!({"name": "Payee", "roles": ["contractor"]}),
+    )
+    .await
+    .unwrap();
+    call(
+        &c,
+        "books.set_tin",
+        json!({"party": "Payee", "tin": "620-37-1111", "tin_type": "ssn"}),
+    )
+    .await
+    .unwrap();
+    // A file holding a TIN the vault keeps is refused, upload or not.
+    let notes = b"Payee notes: SSN 620-37-1111".to_vec();
+    let id = begin(&c, &notes, "notes.txt", "document").await;
+    assert_eq!(put(&home, &token, &id, &notes).await.0, 200);
+    let e = call(
+        &c,
+        "books.file_document",
+        json!({"category": "other", "upload_id": id, "mime_type": "text/plain"}),
+    )
+    .await
+    .unwrap_err();
+    assert!(e.contains("TIN vault"), "{e}");
+    // A W-9 goes only to the vault.
+    let w9 = b"%PDF-1.4 Form W-9 Payee 620-37-1111".to_vec();
+    let id = begin(&c, &w9, "payee-w9.pdf", "w9").await;
+    assert_eq!(put(&home, &token, &id, &w9).await.0, 200);
+    for (tool, args) in [
+        ("books.attach_receipt", json!({"upload_id": id})),
+        (
+            "books.file_document",
+            json!({"category": "tax", "upload_id": id}),
+        ),
+    ] {
+        let e = call(&c, tool, args).await.unwrap_err();
+        assert!(e.contains("begun for w9"), "{tool}: {e}");
+    }
+    let w9_args = |party: &str| {
+        json!({"party": party, "received_on": "2026-01-05",
+               "entity_type": "individual/sole proprietor", "tin_last4": "1111",
+               "w9_upload_id": id})
+    };
+    // Refused after it was taken: given back.
+    let e = call(&c, "books.set_w9", w9_args("Nobody"))
+        .await
+        .unwrap_err();
+    assert!(!e.contains("upload"), "{e}");
+    let set = call(&c, "books.set_w9", w9_args("Payee")).await.unwrap();
+    assert_eq!(set["w9"]["in_vault"], json!(true), "{set}");
+    let e = call(&c, "books.set_w9", w9_args("Payee"))
+        .await
+        .unwrap_err();
+    assert!(e.contains("no upload"), "{e}");
+    let out = home.dir.path().join("payee copy.pdf");
+    let got = call(
+        &c,
+        "books.get_w9",
+        json!({"party": "Payee", "save_to": out.to_str().unwrap()}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(got["file_name"], json!("payee-w9.pdf"));
+    assert_eq!(std::fs::read(&out).unwrap(), w9);
+    // The W-9's upload is gone; the refused file's waits to lapse.
+    let left: Vec<String> = std::fs::read_dir(home.book_dir("acme").join("uploads"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(left.iter().all(|n| !n.starts_with(&id)), "{left:?}");
+    drop(c);
+    assert!(server.close().success());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn lapsed_uploads_are_swept_while_the_server_runs() {
+    let home = Home::new("sweep");
+    let server = Server::start(&home);
+    home.create("acme", "USD");
+    let c = connect(&home, "acme").await.unwrap();
+    let token = home.token("acme");
+    let bytes = pdf("lapsing", 2000);
+    let id = begin(&c, &bytes, "w9.pdf", "w9").await;
+    assert_eq!(put(&home, &token, &id, &bytes).await.0, 200);
+    let folder = home.book_dir("acme").join("uploads");
+    // Its time runs out (the grant aged on the disk), and nothing else
+    // happens: the server sweeps it anyway.
+    let json = folder.join(format!("{id}.json"));
+    let mut grant: Value = serde_json::from_slice(&std::fs::read(&json).unwrap()).unwrap();
+    grant["expires"] = json!(0);
+    std::fs::write(&json, grant.to_string()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(25);
+    while std::fs::read_dir(&folder).unwrap().count() > 0 {
+        assert!(Instant::now() < deadline, "the lapsed upload wasn't swept");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    drop(c);
+    assert!(server.close().success());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_mcp_request_is_at_most_a_mebibyte() {
+    let home = Home::new("body");
+    let server = Server::start(&home);
+    home.create("acme", "USD");
+    let http = mcp_http_for(&home, "acme");
+    let session = raw_session(&http, "acme").await;
+    let post = |len: usize| {
+        // A call whose arguments pad it to `len` bytes exactly.
+        let head = r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"books.chart","arguments":{"pad":""#;
+        let tail = r#""}}}"#;
+        let body = format!("{head}{}{tail}", "a".repeat(len - head.len() - tail.len()));
+        assert_eq!(body.len(), len);
+        http.post("http://localhost/b/acme/mcp")
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .header("mcp-session-id", &session)
+            .header("mcp-protocol-version", "2025-06-18")
+            .body(body)
+            .send()
+    };
+    let max = ledger_mcp::local::MAX_BODY;
+    assert_eq!(post(max + 1).await.unwrap().status().as_u16(), 413);
+    let at = post(max).await.unwrap();
+    assert_ne!(at.status().as_u16(), 413, "{:?}", at.text().await);
+    drop(http);
     assert!(server.close().success());
 }

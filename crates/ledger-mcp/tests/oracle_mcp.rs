@@ -56,8 +56,7 @@ impl Drop for Mcp {
 
 static DIR_SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// A test's dir and the folder beside it (`.inbox`),
-/// removed when the test ends, pass or panic.
+/// A test's dir, removed when the test ends, pass or panic.
 struct TestDir(PathBuf);
 
 impl std::ops::Deref for TestDir {
@@ -76,7 +75,6 @@ impl AsRef<std::path::Path> for TestDir {
 impl Drop for TestDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
-        let _ = std::fs::remove_dir_all(format!("{}.inbox", self.0.display()));
     }
 }
 
@@ -109,14 +107,6 @@ fn books_toml(dir: &Path, threshold: &str) -> PathBuf {
     path
 }
 
-/// The server's import root, beside the books (never the books dir): files
-/// given to books.import_local_file.
-fn inbox(dir: &Path) -> PathBuf {
-    let inbox = dir.with_extension("inbox");
-    std::fs::create_dir_all(&inbox).unwrap();
-    inbox
-}
-
 fn data_dir(dir: &Path) -> PathBuf {
     dir.join("books-data")
 }
@@ -131,8 +121,6 @@ impl Mcp {
             .arg(data_dir(dir))
             .arg("--books-toml")
             .arg(&toml)
-            .arg("--import-root")
-            .arg(inbox(dir))
             .env("XDG_RUNTIME_DIR", &run)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -1737,7 +1725,7 @@ fn post_contribution(m: &mut Mcp) -> u64 {
     m.ok(
         "books.attach_receipt",
         json!({"entry_id": e, "file_name": "c.txt", "mime_type": "text/plain",
-               "content_base64": b64e(b"contribution")}),
+               "content_base64": b64e(b"contribution"), "sha256": sha256(b"contribution")}),
     );
     m.ok(
         "books.post_entry",
@@ -2118,11 +2106,24 @@ fn resources_read_back_as_the_matching_tools() {
         let want = m.ok(tool, args);
         assert_eq!(got, want, "{uri} reads as {tool}");
     }
+    // A receipt reads as books.get_receipt's meta view: what it is, never
+    // its bytes (those come with view bytes).
     for (id, bytes) in [(r1, &b"first receipt"[..]), (r2, &b"second receipt"[..])] {
         let got = read(&mut m, &format!("books://receipts/{id}"));
         assert_eq!(got["attachment_id"], json!(id));
-        assert_eq!(b64d(got["content_base64"].as_str().unwrap()), bytes);
+        assert!(got.get("content_base64").is_none(), "no bytes: {got}");
         assert_eq!(got["sha256"], sha256(bytes));
+        assert_eq!(got["size_bytes"], json!(bytes.len()));
+        assert_eq!(
+            got,
+            m.ok("books.get_receipt", json!({"attachment_id": id})),
+            "books://receipts/{id} reads as books.get_receipt"
+        );
+        let full = m.ok(
+            "books.get_receipt",
+            json!({"attachment_id": id, "view": "bytes"}),
+        );
+        assert_eq!(b64d(full["content_base64"].as_str().unwrap()), bytes);
     }
     let r = m.rpc("resources/read", json!({"uri": "books://nope"}));
     let err = r.get("error").unwrap_or_else(|| panic!("unknown URI: {r}"));
@@ -2136,8 +2137,8 @@ fn resources_read_back_as_the_matching_tools() {
 
 /// Receipts and documents round-trip: the bytes come back exactly (SHA-256
 /// of what was sent), with the name, MIME type, category, entry, and
-/// description given. Kills: get_receipt's lookup, import_local_file's
-/// document arm.
+/// description given; only view bytes carries the bytes. Kills:
+/// get_receipt's lookup and its views.
 #[test]
 fn receipts_and_documents_round_trip() {
     let dir = test_dir("files");
@@ -2150,48 +2151,27 @@ fn receipts_and_documents_round_trip() {
     let a = m.ok(
         "books.attach_receipt",
         json!({"entry_id": e, "file_name": "first.pdf", "mime_type": "application/pdf",
-               "content_base64": b64e(first), "description": "Receipt ID 1007; Paid from: Bluevine"}),
+               "content_base64": b64e(first), "sha256": sha256(first),
+               "description": "Receipt ID 1007; Paid from: Bluevine"}),
     );
     let b = m.ok(
         "books.file_document",
         json!({"category": "legal", "file_name": "oa.png", "mime_type": "image/png",
-               "content_base64": b64e(second), "description": "Operating agreement"}),
+               "content_base64": b64e(second), "sha256": sha256(second),
+               "description": "Operating agreement"}),
     );
-    // Local files come from outside the books, in the server's import
-    // folder (local_files.rs).
-    let inbox = inbox(&dir);
-    let local_doc = inbox.join("ein-letter.pdf");
-    std::fs::write(&local_doc, b"EIN letter bytes").unwrap();
     let c = m.ok(
-        "books.import_local_file",
-        json!({"path": local_doc.to_str().unwrap(), "category": "document",
-               "document_category": "tax", "description": "IRS CP 575"}),
+        "books.file_document",
+        json!({"category": "tax", "file_name": "ein-letter.pdf", "mime_type": "application/pdf",
+               "content_base64": b64e(b"EIN letter bytes"), "sha256": sha256(b"EIN letter bytes"),
+               "description": "IRS CP 575"}),
     );
-    assert_eq!(c["file_name"], "ein-letter.pdf");
-    let local_receipt = inbox.join("scan.png");
-    std::fs::write(&local_receipt, b"a scanned receipt").unwrap();
     let r = m.ok(
-        "books.import_local_file",
-        json!({"path": local_receipt.to_str().unwrap(), "category": "receipt",
-               "entry_id": e, "file_name": "renamed.png", "description": "scan"}),
+        "books.attach_receipt",
+        json!({"entry_id": e, "file_name": "renamed.png", "mime_type": "image/png",
+               "content_base64": b64e(b"a scanned receipt"),
+               "sha256": sha256(b"a scanned receipt"), "description": "scan"}),
     );
-    assert_eq!(r["file_name"], "renamed.png");
-    m.refuse(
-        "books.import_local_file",
-        json!({"path": local_receipt.to_str().unwrap(), "category": "photo"}),
-    );
-    // Nothing of the books is ever read back in through a path: outside
-    // the import folders, it gets the one refusal any path there gets.
-    let journal = data_dir(&dir).join(ledger_store::JOURNAL_FILE);
-    for p in [journal, dir.join("wanderbooks-1000000.00.toml")] {
-        assert!(p.exists());
-        let why = m.refuse(
-            "books.import_local_file",
-            json!({"path": p.to_str().unwrap(), "category": "document"}),
-        );
-        assert!(why.contains("import folders"), "{why}");
-        assert!(!why.contains(dir.to_str().unwrap()), "names a path: {why}");
-    }
 
     // (result, bytes, file name, MIME type, entry, description)
     type Case<'a> = (&'a Value, &'a [u8], &'a str, &'a str, Option<u64>, &'a str);
@@ -2233,13 +2213,24 @@ fn receipts_and_documents_round_trip() {
     for (out, bytes, name, mime, entry, desc) in cases {
         let id = out["attachment_id"].as_u64().unwrap();
         assert_eq!(out["sha256"], sha256(bytes), "{name}: sha256 of the bytes");
-        let got = m.ok("books.get_receipt", json!({"attachment_id": id}));
+        let meta = m.ok("books.get_receipt", json!({"attachment_id": id}));
+        assert!(
+            meta.get("content_base64").is_none(),
+            "{name}: meta, no bytes"
+        );
+        let got = m.ok(
+            "books.get_receipt",
+            json!({"attachment_id": id, "view": "bytes"}),
+        );
         assert_eq!(got["attachment_id"], json!(id));
         assert_eq!(
             b64d(got["content_base64"].as_str().unwrap()),
             bytes,
             "{name}"
         );
+        let mut without = got.clone();
+        without.as_object_mut().unwrap().remove("content_base64");
+        assert_eq!(without, meta, "{name}: view bytes is meta and the bytes");
         assert_eq!(got["sha256"], sha256(bytes));
         assert_eq!(got["file_name"], name);
         assert_eq!(got["mime_type"], mime);
@@ -2263,19 +2254,26 @@ fn receipts_and_documents_round_trip() {
     assert_eq!(cat(&b), "legal");
     assert_eq!(cat(&c), "tax");
     m.refuse("books.get_receipt", json!({"attachment_id": 999}));
+    for view in ["", "BYTES", "content", "meta "] {
+        let why = m.refuse(
+            "books.get_receipt",
+            json!({"attachment_id": a["attachment_id"], "view": view}),
+        );
+        assert!(
+            why.contains("meta (the default) or bytes"),
+            "{view:?}: {why}"
+        );
+    }
 }
 
-/// 25 MB (MiB) is the most a receipt or document may be: exactly the
-/// limit is accepted through every way in, one byte more refused (checked
-/// on the local-file path, where it costs no upload). Kills: the limit
-/// comparisons in attach_receipt, file_document, and import_local_file,
-/// and import_local_file's limit arithmetic (2 MiB must pass).
+/// 256 KiB is the most a file may be given inline (plan 2.1): exactly
+/// the limit is accepted by books.attach_receipt and books.file_document
+/// and stored whole, one byte more is refused by both, pointing at
+/// books.begin_upload, and nothing is stored. Kills: the limit comparison
+/// in take_file.
 #[test]
-fn uploads_up_to_25_mib_are_accepted_and_no_more() {
-    const LIMIT: usize = 25 * 1024 * 1024;
-    // Over 50 MB of books: removed however the test ends, with its inbox
-    // (the system temp dir is often RAM, and a mutation run starts this
-    // test hundreds of times).
+fn inline_files_up_to_256_kib_are_accepted_and_no_more() {
+    const LIMIT: usize = 256 * 1024;
     let dir = test_dir("limits");
     let s = new_store(&dir);
     drop(s);
@@ -2284,18 +2282,19 @@ fn uploads_up_to_25_mib_are_accepted_and_no_more() {
     let out = m.ok(
         "books.attach_receipt",
         json!({"file_name": "big.bin", "mime_type": "application/octet-stream",
-               "content_base64": b64e(&at)}),
+               "content_base64": b64e(&at), "sha256": sha256(&at)}),
     );
     let at_id = out["attachment_id"].as_u64().unwrap();
     let doc = vec![b'b'; LIMIT];
     let out = m.ok(
         "books.file_document",
         json!({"category": "other", "file_name": "big.bin",
-               "mime_type": "application/octet-stream", "content_base64": b64e(&doc)}),
+               "mime_type": "application/octet-stream", "content_base64": b64e(&doc),
+               "sha256": sha256(&doc)}),
     );
     let doc_id = out["attachment_id"].as_u64().unwrap();
     let listed = m.ok("books.list_receipts", json!({}));
-    for id in [at_id, doc_id] {
+    for (id, bytes) in [(at_id, &at), (doc_id, &doc)] {
         let row = listed["receipts"]
             .as_array()
             .unwrap()
@@ -2304,19 +2303,195 @@ fn uploads_up_to_25_mib_are_accepted_and_no_more() {
             .unwrap()
             .clone();
         assert_eq!(row["size_bytes"], json!(LIMIT), "stored whole");
+        // And it comes back inline, whole.
+        let got = m.ok(
+            "books.get_receipt",
+            json!({"attachment_id": id, "view": "bytes"}),
+        );
+        assert_eq!(&b64d(got["content_base64"].as_str().unwrap()), bytes);
     }
+    let journal = std::fs::read(data_dir(&dir).join(ledger_store::JOURNAL_FILE)).unwrap();
+    let over = vec![b'c'; LIMIT + 1];
+    for (tool, args) in [
+        (
+            "books.attach_receipt",
+            json!({"file_name": "over.bin", "mime_type": "application/octet-stream",
+                   "content_base64": b64e(&over), "sha256": sha256(&over)}),
+        ),
+        (
+            "books.file_document",
+            json!({"category": "other", "file_name": "over.bin",
+                   "mime_type": "application/octet-stream", "content_base64": b64e(&over),
+                   "sha256": sha256(&over)}),
+        ),
+    ] {
+        let why = m.refuse(tool, args);
+        assert!(
+            why.contains("books.begin_upload") && why.contains(&(LIMIT + 1).to_string()),
+            "{tool}: {why}"
+        );
+    }
+    assert_eq!(
+        std::fs::read(data_dir(&dir).join(ledger_store::JOURNAL_FILE)).unwrap(),
+        journal,
+        "a refusal stored something"
+    );
+}
 
-    for (n, accepted) in [(2 * 1024 * 1024, true), (LIMIT, true), (LIMIT + 1, false)] {
-        let path = inbox(&dir).join(format!("local-{n}.bin"));
-        std::fs::write(&path, vec![b'c' ^ (n % 7) as u8; n]).unwrap();
-        let args = json!({"path": path.to_str().unwrap(), "category": "receipt"});
-        if accepted {
-            m.ok("books.import_local_file", args);
-        } else {
-            m.refuse("books.import_local_file", args);
+/// The bytes a filing tool takes are inline base64 with its own SHA-256,
+/// or an upload; never both, never neither. A sha256 missing, or not the
+/// bytes' own (a byte lost on the way), or base64 that isn't, is refused
+/// (guard base64_corrupt); inline bytes need their file_name and
+/// mime_type. Over stdio there are no uploads: an upload_id is refused,
+/// and books.begin_upload answers only for bytes stored already (the
+/// attachment holding them). Every refusal stores nothing.
+#[test]
+fn inline_bytes_come_with_their_own_sha256_and_uploads_need_the_server() {
+    let dir = test_dir("inline");
+    let s = new_store(&dir);
+    drop(s);
+    let mut m = Mcp::start(&dir, "1000000.00");
+    let bytes: &[u8] = b"%PDF-1.4 a receipt";
+    let other: &[u8] = b"%PDF-1.4 a receipt!";
+    let journal = || std::fs::read(data_dir(&dir).join(ledger_store::JOURNAL_FILE)).unwrap();
+    let before = journal();
+    for (tool, base) in [
+        ("books.attach_receipt", json!({})),
+        ("books.file_document", json!({"category": "other"})),
+    ] {
+        let with = |extra: Value| {
+            let mut args = base.clone();
+            for (k, v) in json!({"file_name": "r.pdf", "mime_type": "application/pdf"})
+                .as_object()
+                .unwrap()
+                .iter()
+                .chain(extra.as_object().unwrap())
+            {
+                args[k] = v.clone();
+            }
+            args
+        };
+        for (args, said) in [
+            // Neither, both.
+            (with(json!({})), "books.begin_upload"),
+            (
+                with(json!({"upload_id": "u1", "content_base64": b64e(bytes),
+                            "sha256": sha256(bytes)})),
+                "not both",
+            ),
+            // The sha256 missing, another file's, not hex; base64 that isn't.
+            (with(json!({"content_base64": b64e(bytes)})), "sha256"),
+            (
+                with(json!({"content_base64": b64e(bytes), "sha256": sha256(other)})),
+                "base64_corrupt",
+            ),
+            (
+                with(json!({"content_base64": b64e(bytes), "sha256": "not hex"})),
+                "base64_corrupt",
+            ),
+            (
+                with(json!({"content_base64": "!!not base64", "sha256": sha256(bytes)})),
+                "base64_corrupt",
+            ),
+            // An upload, over stdio.
+            (with(json!({"upload_id": "u1"})), "takes files inline only"),
+        ] {
+            let why = m.refuse(tool, args.clone());
+            assert!(why.contains(said), "{tool} {args}: {why}");
         }
-        std::fs::remove_file(&path).unwrap();
+        // Inline bytes need their name and type.
+        for missing in ["file_name", "mime_type"] {
+            let mut args = with(json!({"content_base64": b64e(bytes), "sha256": sha256(bytes)}));
+            args.as_object_mut().unwrap().remove(missing);
+            let why = m.refuse(tool, args);
+            assert!(why.contains(missing), "{tool} without {missing}: {why}");
+        }
     }
+    // A sha256 given in capitals, or with spaces around it, is the same
+    // hash.
+    let out = m.ok(
+        "books.attach_receipt",
+        json!({"file_name": "r.pdf", "mime_type": "application/pdf",
+               "content_base64": b64e(bytes),
+               "sha256": format!(" {} ", sha256(bytes).to_ascii_uppercase())}),
+    );
+    assert_eq!(out["sha256"], sha256(bytes));
+    let id = out["attachment_id"].as_u64().unwrap();
+    assert_ne!(journal(), before);
+    // begin_upload: the bytes stored already name their attachment; new
+    // ones need the books server.
+    let up = |sha: String| {
+        json!({"sha256": sha, "size": bytes.len(), "mime_type": "application/pdf",
+               "file_name": "r.pdf", "purpose": "receipt"})
+    };
+    let got = m.ok("books.begin_upload", up(sha256(bytes)));
+    assert_eq!(got["existing_attachment_id"], json!(id), "{got}");
+    assert!(got.get("upload_id").is_none(), "{got}");
+    assert!(got.get("command").is_none(), "{got}");
+    let got = m.ok("books.begin_upload", up(sha256(bytes).to_ascii_uppercase()));
+    assert_eq!(got["existing_attachment_id"], json!(id), "{got}");
+    let stored = journal();
+    let why = m.refuse("books.begin_upload", up(sha256(other)));
+    assert!(why.contains("takes files inline only"), "{why}");
+    // The CSV imports take csv_text or an upload, never both, never
+    // neither; an upload over stdio is refused.
+    for (tool, base) in [
+        (
+            "books.import_bank_csv",
+            json!({"bank_account_code": "1000", "default_offset_code": "4000"}),
+        ),
+        ("books.import_chart_csv", json!({})),
+    ] {
+        for (extra, said) in [
+            (json!({}), "csv_text"),
+            (json!({"csv_text": "a,b\n", "upload_id": "u1"}), "not both"),
+            (json!({"upload_id": "u1"}), "takes files inline only"),
+        ] {
+            let mut args = base.clone();
+            for (k, v) in extra.as_object().unwrap() {
+                args[k] = v.clone();
+            }
+            let why = m.refuse(tool, args.clone());
+            assert!(why.contains(said), "{tool} {args}: {why}");
+        }
+    }
+    assert_eq!(journal(), stored, "a refusal stored something");
+}
+
+/// books.get_receipt's view bytes gives the bytes of a file of at most
+/// 256 KiB; a larger one (filed before, or by an upload) is refused over
+/// stdio, where there is no download, while its meta view still answers.
+#[test]
+fn get_receipt_gives_bytes_up_to_256_kib_over_stdio() {
+    const LIMIT: usize = 256 * 1024;
+    let dir = test_dir("get-bytes");
+    let mut s = new_store(&dir);
+    let at = vec![b'x'; LIMIT];
+    let over = vec![b'y'; LIMIT + 1];
+    let (at_id, _, _) = s
+        .attach_receipt(None, "at.bin", "application/octet-stream", &at, None)
+        .unwrap();
+    let (over_id, _, _) = s
+        .attach_receipt(None, "over.bin", "application/octet-stream", &over, None)
+        .unwrap();
+    drop(s);
+    let mut m = Mcp::start(&dir, "1000000.00");
+    let got = m.ok(
+        "books.get_receipt",
+        json!({"attachment_id": at_id, "view": "bytes"}),
+    );
+    assert_eq!(b64d(got["content_base64"].as_str().unwrap()), at);
+    assert!(got.get("download").is_none(), "{got}");
+    let why = m.refuse(
+        "books.get_receipt",
+        json!({"attachment_id": over_id, "view": "bytes"}),
+    );
+    assert!(why.contains(&(LIMIT + 1).to_string()), "{why}");
+    let meta = m.ok("books.get_receipt", json!({"attachment_id": over_id}));
+    assert_eq!(meta["size_bytes"], json!(LIMIT + 1));
+    assert_eq!(meta["sha256"], sha256(&over));
+    assert!(meta.get("content_base64").is_none(), "{meta}");
+    assert!(meta.get("download").is_none(), "{meta}");
 }
 
 /// Bank CSV import: money in debits the bank, money out credits it; the

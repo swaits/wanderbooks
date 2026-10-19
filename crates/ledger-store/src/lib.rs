@@ -32,6 +32,7 @@ pub mod root;
 pub mod schema;
 pub mod snapshot;
 pub mod store;
+pub mod uploads;
 pub mod viewer;
 
 pub use blob::BlobStore;

@@ -57,8 +57,9 @@ version refuses books from a newer one as newer, not corrupt (rules.md
 B-27); the MCP server fails closed after an internal error, and no input
 reaches one (dates are four-digit years, amounts at most a line's, B-28);
 local files
-are read only from the import roots, never the books, the vault or its
-key; no file with a full TIN is filed into the books (B-26); the agent is
+were read only from the import roots, never the books, the vault or its
+key (P2 slice 5 removed local paths: files now come in as uploads or
+inline bytes); no file with a full TIN is filed into the books (B-26); the agent is
 told the rules in force in a short connect text and a handbook, and no
 agent text points at the books' files, git or the repo.
 

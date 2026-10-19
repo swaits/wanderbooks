@@ -168,6 +168,10 @@ impl From<ChainError> for AuthError {
     }
 }
 
+/// A token's name when none is given (`wanderbooks token create`, the
+/// bridge, `upload`, `download`).
+pub const DEFAULT_NAME: &str = "agent";
+
 /// Check a token's name: 1 to 32 lowercase letters, digits and hyphens,
 /// starting with a letter or digit.
 pub fn check_name(name: &str) -> Result<(), AuthError> {

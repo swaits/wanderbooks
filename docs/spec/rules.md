@@ -583,10 +583,11 @@ asked): a refusal that quotes its input masks any TIN in it
 and a party text field refuses nine digits however they are separated
 (space, hyphen, dot, slash, underscore; `has_full_tin`). Files holding one (`books.get_w9`, `save_csv_to`, and the CPA
 package, whose K-1 and 1099 worksheets carry every member's and payee's
-TIN by default) are written only outside the books dir and outside the
-server's import folders (DECISION, P0 review, 2026-10-16: so none can be
-filed back in as a receipt and read out again), and the package comes
-back only as its path. No file holding a full TIN is filed into the books
+TIN by default) are written only outside the books dir (DECISION, P0
+review, 2026-10-16: so none can be filed back in as a receipt and read
+out again; the server's import folders, refused then too, went with
+`books.import_local_file` in P2 slice 5), and the package comes back
+only as its path. No file holding a full TIN is filed into the books
 (DECISION, P0 review round 2, 2026-10-16): the server keeps, beside the
 vault, the SHA-256 of every file it read or wrote with full TINs (the W-9
 `books.set_w9` reads, recorded once the call has passed every check, just
@@ -594,8 +595,8 @@ before the vault keeps it, so a refused call marks no file; each
 `books.get_w9` copy;
 a 1099 worksheet with TINs; a CPA package with TINs and each file in it
 that holds one), shared by every session and every later server for the
-books, and every way a file enters the books (`books.import_local_file`,
-`books.attach_receipt`, `books.file_document`) refuses those exact files,
+books, and every way a file enters the books (`books.attach_receipt`,
+`books.file_document`, an upload or inline) refuses those exact files,
 and refuses any text file (by its type or name, or because it decodes as
 UTF-8 or UTF-16, with a byte-order mark or, NUL-interleaved, without one)
 holding (a) a TIN the vault holds for a party of the

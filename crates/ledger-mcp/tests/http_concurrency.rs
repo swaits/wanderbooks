@@ -119,7 +119,8 @@ async fn draft(c: &Client, tag: &str, cents: u64, with_receipt: bool) -> u64 {
             c,
             "books.attach_receipt",
             json!({"entry_id": id, "file_name": format!("{tag}.pdf"),
-                   "mime_type": "application/pdf", "content_base64": b64(tag.as_bytes())}),
+                   "mime_type": "application/pdf", "content_base64": b64(tag.as_bytes()),
+                   "sha256": ledger_store::journal::sha256_hex(tag.as_bytes())}),
         )
         .await
         .unwrap();

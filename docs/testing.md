@@ -65,13 +65,10 @@ that would fail if it broke:
 | No input reaches a panic (each would stop the server for every session): every tool with arguments generated from its schema and made hostile (wrong types, u64::MAX, decimals of 30+ digits or absurd exponents, dates like 0000-00-00, 99999-12-31, +262142-12-31, 2026-02-30, periods like 999999-01, control and format characters, long strings), every resource URI generated; the inputs that once panicked, pinned; after each property the server restarts and the books reopen (a call a command accepts but replay refuses would brick them); every tool and resource over every old book (rules.md B-28) | `ledger-mcp` `tests/hostile_args.rs` `hostile_tool_arguments_never_stop_the_server` (with a floor: most calls reach a tool, some succeed), `hostile_resource_uris_never_stop_the_server`, `inputs_that_once_panicked_are_refused_or_answered`, `old_books_answer_every_tool`; `MCP_CASES` and `OLD_BOOKS_CASES` (default 3 per tool per book) set the cases |
 | Dates are in 0001-01-01 through 9999-12-31 and amounts at most a line's, for every new command; replay accepts every line an earlier version accepted (each bound has its pair: the command refuses past it, the replayed old line is accepted); a figure derived past exact arithmetic or chrono's calendar is refused, never a panic; a recurring run makes at most 1,000 drafts (rules.md B-28) | `ledger-core` `tests/spec_bounds.rs`, `calendar.rs` tests, `plans_at_the_edges_are_computed_or_refused`, `intervals_reach_chronos_last_day`, `a_vendor_part_is_scaled_exactly_or_refused`, the `share_property` cases; `ledger-store` `tests/bounds.rs`, `tests/store.rs` (the old-books tests); `server.rs` `periods_are_a_year_and_a_month`, `dates_are_four_digit_years_and_real_days` |
 | Opening the books changes nothing until every complete line passes in memory (chain, gate, first line, replay); the viewer applies the writer's first-line rule (rules.md B-27) | `format.rs` `a_bad_complete_line_before_a_torn_tail_leaves_the_journal_as_it_was`, `the_first_line_is_store_created_for_the_viewer_and_the_writer`; `fuzz_store_replay` (the first line varies) |
-| A path with a `.` or `..` name is refused as missing before anything is looked up; a root inside the books, the data dir or the vault is refused at startup (dropped as the default) | `local_files.rs` `a_dot_or_dotdot_name_never_tells_whether_folders_outside_exist`, `a_root_holding_the_books_or_the_home_folder_is_refused`; `startup.rs` `an_import_root_holding_the_books_or_the_home_folder_is_refused`, `a_default_download_dir_holding_the_books_is_dropped_not_fatal` |
 | UTF-16 text without a byte-order mark is scanned like any text; a refused `books.set_w9` marks no file; a refused resource read never echoes a TIN | `tin_files.rs` (tests) `utf16_text_without_a_byte_order_mark_is_scanned_either_way_round`, `a_refused_set_w9_never_marks_its_file`, unit test `only_nul_interleaved_bytes_read_as_utf16_without_a_mark`; `spec_vault.rs` `resource_refusals_never_echo_a_tin` |
 | idempotentHint only where a repeat with the same arguments leaves the journal and the vault as they were; every tool's hints pinned in one table | `spec_vault.rs` `idempotent_tools_change_nothing_when_repeated`; `annotations_complete` |
 | books.settings lists every receipt-required and exempt account, uncut; a fresh company is "a new company"; the lint catches `just` however it ends and where the books are | `mcp_stdio.rs` `every_receipt_account_left_out_of_the_connect_text_is_in_books_settings`; `handbook.rs` `a_fresh_company_is_a_new_company`; `tool_text_lint_catches_helpers_and_locations` |
-| A local file is read only from inside an import root, never a sealed place (data dir, vault, keys, the key folders that don't hold a root), never through a swap after the check (a component walk with `O_NOFOLLOW`, no step onto a protected inode); a missing, dangling or outside path gets one refusal | `local_files.rs` `import_local_file_refuses_key_and_journal`, the property `import_allowed_iff_regular_file_inside_a_root_outside_the_books`, `refusals_never_tell_what_is_there`, `a_file_swapped_after_the_check_is_never_read`, `a_folder_swapped_after_the_check_is_never_walked_through` (the reviewer's race, without `/proc`), `resolved_follows_every_link_a_dangling_one_too`, `sealing_a_key_never_seals_a_whole_root`; through the tools, `mcp_stdio.rs` `import_local_file_and_set_w9_refuse_the_key_vault_and_journal_inside_a_root` |
-| No import root is `/`, the home folder or holds it, or holds the books, data dir, vault or a key; the default is a real downloads folder or none | `local_files.rs` `the_default_root_is_never_the_home_folder_or_the_filesystem`, `a_root_holding_the_books_or_the_home_folder_is_refused`; `startup.rs` `an_import_root_holding_the_books_or_the_home_folder_is_refused`, `a_download_dir_of_home_never_opens_the_home_folder` |
-| A file with full TINs is never written into an import root, and never filed into the books: every file the server read or wrote with TINs (from any session, after a restart, out of a CPA package), by every filing tool | `mcp_stdio.rs` `tin_bearing_files_never_land_where_they_could_be_filed_back_in`; `tin_files.rs` (tests) `a_tin_bearing_file_is_refused_from_every_session_and_after_a_restart`; unit test `a_recorded_tin_file_is_refused_by_every_reader_of_the_registry` |
+| A file with full TINs is never written inside the books, and never filed into the books: every file the server read or wrote with TINs (from any session, after a restart, out of a CPA package), by every filing tool | `mcp_stdio.rs` `tin_bearing_files_never_land_where_they_could_be_filed_back_in`; `tin_files.rs` (tests) `a_tin_bearing_file_is_refused_from_every_session_and_after_a_restart`; unit test `a_recorded_tin_file_is_refused_by_every_reader_of_the_registry` |
 | Text filed into the books is refused when it holds a TIN the vault keeps (nine digits, 3-2-4 by hyphen, space or dot, 2-7 by hyphen or space, anywhere) or a stand-alone printed SSN or EIN (123-45-6789, 12-3456789), and only then: a bank export (routing numbers, long references, a date next to an amount) and a longer number holding an SSN shape go in; a locked vault leaves the printed shapes (rules.md B-26) | `tin_files.rs` (tests) `text_with_a_vault_tin_or_a_printed_one_is_refused_and_a_bank_export_is_not`; unit tests `text_holding_a_vault_tin_is_refused_in_every_rendering`, `a_printed_ssn_or_ein_is_refused`, `a_longer_number_holding_a_tin_shape_passes`, `an_ordinary_bank_export_passes`, `binary_bytes_are_not_scanned` |
 | Filing is no TIN oracle: text with more than two TIN-shaped numbers ending in a known TIN's last four (the books' TIN and W-9 facts, then the vault's own) is refused before the vault is opened, byte for byte alike whether one is the vault's TIN or none is, the vault open or locked, by every filing tool; one or two such numbers are compared against the vault, one number written many ways counts once, and other last fours never count (rules.md B-26) | `tin_files.rs` (tests) `text_probing_for_a_tin_is_refused_alike_by_every_filing_tool`; unit tests `text_probing_for_a_tin_is_refused_alike_whether_or_not_it_holds_it` (the vault never opened for a probe), `one_or_two_candidates_are_compared_against_the_vault` |
 | The connect text fits its budgets, its lead stands alone, it states the receipt rule enforced (exact threshold in the base currency, required and exempt accounts, reversals) and the parties rule in force, and the company name can't break it (control and format characters) | `handbook.rs` `instructions_budget`, `a_typical_company_gets_the_whole_connect_text`, `the_company_name_is_one_plain_line`; `receipt_policy.rs` `the_rule_told_is_the_rule_enforced`, `a_long_or_odd_account_list_stays_short_and_plain`; a new session is told the settings in force: `a_new_session_is_told_the_settings_in_force` |
@@ -110,19 +107,17 @@ broke, removed by simpler code, or is equivalent:
 - **Killed (MCP).** A section's title is its heading
   (`a_title_is_the_heading_text`; over stdio the handbook tool titles a
   section by its heading and "all" as the whole handbook,
-  `handbook_tool_and_resources_over_stdio`). A refused default import
-  root is dropped, never fatal (`ImportRoots::explicit`:
-  `a_default_download_dir_holding_the_books_is_dropped_not_fatal`). A
-  `.jpg` or `.jpeg` W-9 is taken (`every_w9_file_type_is_taken`). The
-  waker wakes: a request pending until another thread wakes it completes
-  (`a_request_that_waits_is_woken_and_completes`). The walk opens each
-  folder with `O_DIRECTORY | O_NOFOLLOW`: a folder swapped for a link to
-  an unprotected folder outside the roots, or for a pipe, is never walked
-  through and never blocks
-  (`a_folder_swapped_for_a_link_or_a_pipe_is_never_walked_through`). A
-  read failure names its kind, never the path
-  (`cant_read_names_the_failure_not_the_path`). `resolved` follows 40
-  links, as the kernel does, and no more
+  `handbook_tool_and_resources_over_stdio`). A `.jpg` or `.jpeg` W-9
+  was taken (`every_w9_file_type_is_taken`); P2 slice 5 judges the W-9
+  by its first bytes, not its name, so that mutant's code is gone (the
+  test now checks each type by its bytes). The waker wakes: a request pending until another thread wakes it completes
+  (`a_request_that_waits_is_woken_and_completes`). Three more were
+  killed by tests of the import roots and their walk (a refused default
+  root dropped, never fatal; a folder swapped for a link or a pipe never
+  walked through; a read failure naming its kind, never the path): P2
+  slice 5 removed `books.import_local_file` and the import roots, and
+  those tests with them. `resolved` follows 40 links, as the kernel
+  does, and no more
   (`resolved_follows_forty_links_and_no_more`). A file is saved only to
   a new file in a folder that exists, and a missing folder or a taken
   file is refused as such, never as a failed write
@@ -154,8 +149,11 @@ broke, removed by simpler code, or is equivalent:
   file's size before reading, so its read limit (`limit + 1`) was only
   reached by a file growing during the read; the read's limit is now the
   one check (the 25 MiB upload test kills `+ 1` → `* 1`). `openat` failed
-  on `fd < 0`, now on `fd == -1`, as openat(2) specifies.
-- **Equivalent (MCP, all 14 missed).** `^` for `|` in the open flags
+  on `fd < 0`, now on `fd == -1`, as openat(2) specifies. (`inspect`,
+  `read_checked`, the `openat` walk and that 25 MiB test were removed
+  with the import roots in P2 slice 5.)
+- **Equivalent (MCP, all 14 missed; the walk and its stubs were removed
+  in P2 slice 5).** `^` for `|` in the open flags
   (six: the walk's first step, each folder's two, the file's two, and
   `openat`'s `O_CLOEXEC`): `O_RDONLY` is 0 and `O_DIRECTORY`, `O_NOFOLLOW`,
   `O_NONBLOCK`, `O_CLOEXEC` are distinct bits, so `a ^ b` is `a | b`.

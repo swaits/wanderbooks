@@ -369,7 +369,7 @@ pub struct Vendor1099Params {
     pub include_tins: bool,
     /// Also write the worksheet as CSV to this local path (TINs included
     /// only with include_tins). Never inside the books dir, and with TINs
-    /// never in the server's import folders; an existing file is refused.
+    /// an existing file is refused.
     pub save_csv_to: Option<String>,
 }
 
@@ -868,8 +868,12 @@ pub struct CashFlowOut {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ImportBankCsvParams {
     /// The CSV text (QBO bank upload layout: Date,Description,Amount, or
-    /// Date,Description, money out, money in).
-    pub csv_text: String,
+    /// Date,Description, money out, money in)…
+    #[serde(default)]
+    pub csv_text: Option<String>,
+    /// …or an upload of it made with books.begin_upload (purpose import).
+    #[serde(default)]
+    pub upload_id: Option<String>,
     /// Account code for the bank account (the offset side of each entry).
     pub bank_account_code: String,
     /// Account code for the default offset (e.g. an expense account).
@@ -923,8 +927,12 @@ pub struct ImportBankCsvOut {
 /// Parameters for `books.import_chart_csv`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ImportChartCsvParams {
-    /// The CSV text: code,name,type,parent_code with a header row.
-    pub csv_text: String,
+    /// The CSV text: code,name,type,parent_code with a header row…
+    #[serde(default)]
+    pub csv_text: Option<String>,
+    /// …or an upload of it made with books.begin_upload (purpose import).
+    #[serde(default)]
+    pub upload_id: Option<String>,
 }
 
 /// Result of `books.import_chart_csv`.
@@ -934,41 +942,6 @@ pub struct ImportChartCsvOut {
     pub created: Vec<String>,
     /// Number of accounts created.
     pub count: usize,
-}
-
-/// Parameters for `books.import_local_file`.
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct ImportLocalFileParams {
-    /// Absolute path to a regular file in the server's import folders (by
-    /// default your downloads folder).
-    pub path: String,
-    /// "receipt" or "document".
-    pub category: String,
-    /// Entry id to attach to (receipts only). Omit to file unlinked.
-    #[serde(default)]
-    pub entry_id: Option<u64>,
-    /// Document category for documents: formation, legal, tax, accounting, other.
-    #[serde(default)]
-    pub document_category: Option<String>,
-    /// Override the file name (defaults to the path's file name).
-    #[serde(default)]
-    pub file_name: Option<String>,
-    /// Optional description.
-    #[serde(default)]
-    pub description: Option<String>,
-}
-
-/// Result of `books.import_local_file`.
-#[derive(Debug, Serialize, JsonSchema)]
-pub struct ImportLocalFileOut {
-    /// Attachment id.
-    pub attachment_id: u64,
-    /// SHA-256 hex of the content.
-    pub sha256: String,
-    /// True if the content was already stored (deduplicated).
-    pub deduplicated: bool,
-    /// File name used.
-    pub file_name: String,
 }
 
 /// Parameters for `books.balance_sheet`.
@@ -1270,12 +1243,23 @@ pub struct AttachReceiptParams {
     /// Entry id to attach to. Omit to file unlinked, then link later with
     /// `books.link_receipt`.
     pub entry_id: Option<u64>,
-    /// Original file name, e.g. "receipt.png".
-    pub file_name: String,
-    /// MIME type, e.g. "image/png".
-    pub mime_type: String,
-    /// File bytes, base64-encoded. Max 25 MB.
-    pub content_base64: String,
+    /// Original file name, e.g. "receipt.png" (an upload's own, if not
+    /// given).
+    #[serde(default)]
+    pub file_name: Option<String>,
+    /// MIME type, e.g. "image/png" (an upload's own, if not given).
+    #[serde(default)]
+    pub mime_type: Option<String>,
+    /// The file's bytes: an upload made with books.begin_upload (its id)…
+    #[serde(default)]
+    pub upload_id: Option<String>,
+    /// …or, for a file of at most 256 KiB, its bytes base64-encoded, with
+    /// sha256.
+    #[serde(default)]
+    pub content_base64: Option<String>,
+    /// The SHA-256 of the bytes in content_base64, hex.
+    #[serde(default)]
+    pub sha256: Option<String>,
     /// Optional description.
     pub description: Option<String>,
     /// More subjects to link it to in the same call (each journaled as its
@@ -1304,12 +1288,22 @@ pub struct FileDocumentParams {
     /// One of: formation, legal, tax, accounting, statement, contract,
     /// photo, warranty, import_source, other.
     pub category: String,
-    /// Original file name.
-    pub file_name: String,
-    /// MIME type.
-    pub mime_type: String,
-    /// File bytes, base64-encoded. Max 25 MB.
-    pub content_base64: String,
+    /// Original file name (an upload's own, if not given).
+    #[serde(default)]
+    pub file_name: Option<String>,
+    /// MIME type (an upload's own, if not given).
+    #[serde(default)]
+    pub mime_type: Option<String>,
+    /// The file's bytes: an upload made with books.begin_upload (its id)…
+    #[serde(default)]
+    pub upload_id: Option<String>,
+    /// …or, for a file of at most 256 KiB, its bytes base64-encoded, with
+    /// sha256.
+    #[serde(default)]
+    pub content_base64: Option<String>,
+    /// The SHA-256 of the bytes in content_base64, hex.
+    #[serde(default)]
+    pub sha256: Option<String>,
     /// Optional description.
     pub description: Option<String>,
     /// Subjects to link it to in the same call (each journaled as its own
@@ -1421,10 +1415,16 @@ pub struct ListReceiptsOut {
 pub struct GetReceiptParams {
     /// Attachment id.
     pub attachment_id: u64,
+    /// What to return: "meta" (default: what it is and what it's linked
+    /// to), or "bytes" (also its bytes, base64, for a file of at most
+    /// 256 KiB; a larger one comes with `wanderbooks download`).
+    #[serde(default)]
+    pub view: Option<String>,
 }
 
-/// Result of `books.get_receipt`: metadata plus base64 bytes. The bytes are
-/// hash-verified on read.
+/// Result of `books.get_receipt`: what it is and what it's linked to, and
+/// with view `bytes`, its bytes (hash-verified on read) or the command that
+/// saves a copy.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct GetReceiptOut {
     /// Attachment id.
@@ -1445,8 +1445,14 @@ pub struct GetReceiptOut {
     pub description: Option<String>,
     /// Everything it is linked to (the entry it is filed on first).
     pub links: Vec<SubjectOut>,
-    /// File bytes, base64-encoded.
-    pub content_base64: String,
+    /// Its bytes, base64-encoded: with view `bytes`, for a file of at most
+    /// 256 KiB.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_base64: Option<String>,
+    /// With view `bytes`, for a file too large to come back here: the
+    /// command that saves a copy in a folder you name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub download: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2605,8 +2611,7 @@ pub struct ExportCpaPackageParams {
     pub include_tins: bool,
     /// Where to write the package: a new `.zip` file, or an existing
     /// folder (the zip goes in it as `cpa-package-<as_of>.zip`). Written
-    /// readable by its owner only. With TINs, never inside the books dir
-    /// or the server's import folders.
+    /// readable by its owner only. With TINs, never inside the books dir.
     pub save_to: Option<String>,
 }
 
@@ -2727,11 +2732,22 @@ pub struct SetW9Params {
     pub tin: Option<SecretTin>,
     /// The TIN's type: ssn, ein, or itin. Required with tin.
     pub tin_type: Option<String>,
-    /// A local PDF, PNG, or JPEG of the signed W-9, in the server's import
-    /// folders (by default your downloads folder): stored only in the
-    /// vault (it shows the full TIN), never with the receipts and
-    /// documents. Read it back with `books.get_w9`.
-    pub w9_file_path: Option<String>,
+    /// The signed W-9 itself (a PDF, PNG, or JPEG): an upload made with
+    /// books.begin_upload. Stored only in the vault (it shows the full
+    /// TIN), never with the receipts and documents.
+    #[serde(default)]
+    pub w9_upload_id: Option<String>,
+    /// …or, for one of at most 256 KiB, its bytes base64-encoded, with
+    /// w9_sha256.
+    #[serde(default)]
+    pub w9_content_base64: Option<String>,
+    /// The SHA-256 of the bytes in w9_content_base64, hex.
+    #[serde(default)]
+    pub w9_sha256: Option<String>,
+    /// The W-9 file's name (default: the upload's, else w9.pdf, w9.png
+    /// or w9.jpg by its type).
+    #[serde(default)]
+    pub w9_file_name: Option<String>,
 }
 
 /// A full TIN as a tool takes it: text (or a JSON number) whose value is
@@ -2807,8 +2823,7 @@ pub struct GetW9Params {
     /// The party: id or name.
     pub party: String,
     /// Where to write the W-9 file: a new local file outside the books
-    /// and outside the server's import folders (the file shows the full
-    /// TIN). An existing file is refused.
+    /// (the file shows the full TIN). An existing file is refused.
     pub save_to: String,
 }
 

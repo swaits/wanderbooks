@@ -72,7 +72,7 @@ impl Drop for Mcp {
 
 static DIR_SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// A test's dir and the folders beside it (`-inbox`, `-outside`),
+/// A test's dir and the folder beside it (`-outside`),
 /// removed when the test ends, pass or panic.
 struct TestDir(PathBuf);
 
@@ -92,11 +92,7 @@ impl AsRef<std::path::Path> for TestDir {
 impl Drop for TestDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
-        for beside in ["-inbox", "-outside"] {
-            let p = PathBuf::from(format!("{}{beside}", self.0.display()));
-            let _ = std::fs::remove_dir_all(&p);
-            let _ = std::fs::remove_file(&p);
-        }
+        let _ = std::fs::remove_dir_all(format!("{}-outside", self.0.display()));
     }
 }
 
@@ -119,12 +115,15 @@ fn outside(dir: &Path) -> PathBuf {
     d
 }
 
-/// The server's import root, beside the books dir `dir`: W-9 files handed
-/// to books.set_w9 by path. Never where the server writes TINs.
-fn inbox(dir: &Path) -> PathBuf {
-    let d = PathBuf::from(format!("{}-inbox", dir.display()));
-    std::fs::create_dir_all(&d).unwrap();
-    d
+/// `bytes` as a tool takes them inline: base64.
+fn b64(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// The SHA-256 (hex) a file given inline comes with.
+fn sha(bytes: &[u8]) -> String {
+    ledger_store::journal::sha256_hex(bytes)
 }
 
 /// `wanderbooks.toml` with a company name, the receipt threshold, and
@@ -169,9 +168,6 @@ impl Mcp {
                     .into_iter()
                     .flatten()
             })
-            // Files handed over by path come only from here.
-            .arg("--import-root")
-            .arg(inbox(dir))
             .env("XDG_RUNTIME_DIR", &run)
             // Never the user's real vault key (the default key file is
             // under XDG_CONFIG_HOME); the tests name theirs anyway.
@@ -519,11 +515,9 @@ impl Mcp {
         }
         self.tool("books.set_w9", args)
     }
-    /// A W-9 file outside the books; it shows the TIN, like the real one.
-    fn w9_file(&self, name: &str, tin: &str) -> PathBuf {
-        let p = inbox(&self.books_dir()).join(name);
-        std::fs::write(&p, format!("%PDF-1.4 Form W-9 TIN {tin}")).unwrap();
-        p
+    /// A W-9 file (a PDF); it shows the TIN, like the real one.
+    fn w9_file(&self, tin: &str) -> Vec<u8> {
+        format!("%PDF-1.4 Form W-9 TIN {tin}").into_bytes()
     }
     /// Pay `vendor` `amount` from the bank in 2026, tagged.
     fn pay(&mut self, vendor: &str, amount: &str) {
@@ -626,9 +620,9 @@ fn set_w9_refusals_write_nothing_anywhere() {
     let mut m = books("refusals");
     let acme = m.party_id("Acme Design");
     m.add_party("IRS", &["tax_agency"]);
-    let missing = inbox(&m.books_dir()).join("no-such-w9.pdf");
-    let txt = inbox(&m.books_dir()).join("w9.txt");
-    std::fs::write(&txt, "W-9").unwrap();
+    let pdf = m.w9_file(SSN);
+    let txt = b"W-9";
+    let big = [b"%PDF-1.4 ".as_slice(), &vec![b' '; 256 * 1024]].concat();
     for (party, extra) in [
         ("Acme Design", json!({"tin": "57193284", "tin_type": "ssn"})), // eight digits
         (
@@ -655,14 +649,6 @@ fn set_w9_refusals_write_nothing_anywhere() {
         ), // a float
         (
             "Acme Design",
-            json!({"tin": SSN, "tin_type": "ssn", "w9_file_path": missing.to_str().unwrap()}),
-        ),
-        (
-            "Acme Design",
-            json!({"tin": SSN, "tin_type": "ssn", "w9_file_path": txt.to_str().unwrap()}),
-        ),
-        (
-            "Acme Design",
             json!({"tin": SSN, "tin_type": "ssn", "clear": true}),
         ),
         (
@@ -679,6 +665,51 @@ fn set_w9_refusals_write_nothing_anywhere() {
             "a refusal never echoes the TIN: {}",
             out.err_text()
         );
+    }
+    // The W-9 file, each refused for its own reason.
+    let long = "!".repeat((256 * 1024usize).div_ceil(3) * 4 + 4);
+    for (extra, why) in [
+        (
+            json!({"w9_content_base64": b64(txt), "w9_sha256": sha(txt)}),
+            "a PDF, PNG, or JPEG",
+        ),
+        (
+            json!({"w9_content_base64": b64(&pdf)}),
+            "comes with its sha256",
+        ),
+        (
+            json!({"w9_content_base64": b64(&pdf), "w9_sha256": sha(txt)}),
+            "lost on the way",
+        ),
+        (
+            json!({"w9_content_base64": "!!not base64", "w9_sha256": sha(&pdf)}),
+            "not valid base64",
+        ),
+        (
+            json!({"w9_content_base64": b64(&big), "w9_sha256": sha(&big)}),
+            "upload it with books.begin_upload",
+        ),
+        (
+            json!({"w9_content_base64": long, "w9_sha256": sha(&big)}),
+            "inline is at most",
+        ),
+        (json!({"w9_upload_id": "u1"}), "takes files inline only"),
+        (
+            json!({"w9_upload_id": "u1", "w9_content_base64": b64(&pdf), "w9_sha256": sha(&pdf)}),
+            "not both",
+        ),
+        (
+            json!({"w9_content_base64": b64(&pdf), "w9_sha256": sha(&pdf), "w9_file_name": "../w9.pdf"}),
+            "no folder",
+        ),
+    ] {
+        let mut args = json!({"tin": SSN, "tin_type": "ssn"});
+        for (k, v) in extra.as_object().unwrap() {
+            args[k] = v.clone();
+        }
+        let why_given = m.w9("Acme Design", args).err_text();
+        assert!(why_given.contains(why), "{extra}: {why_given}");
+        assert!(!holds_tin(why_given.as_bytes(), SSN_DIGITS), "{why_given}");
     }
     assert!(
         !m.vault().join(format!("tin-{acme}.bin")).exists(),
@@ -739,10 +770,10 @@ fn the_facts_never_disagree_with_the_vault() {
 fn the_w9_file_goes_to_the_vault_never_the_documents() {
     let mut m = books("w9-file");
     let acme = m.party_id("Acme Design");
-    let src = m.w9_file("acme-w9.pdf", SSN);
+    let src = m.w9_file(SSN);
     let Out::Ok(p) = m.w9(
         "Acme Design",
-        json!({"tin": SSN, "tin_type": "ssn", "w9_file_path": src.to_str().unwrap()}),
+        json!({"tin": SSN, "tin_type": "ssn", "w9_content_base64": b64(&src), "w9_sha256": sha(&src)}),
     ) else {
         panic!("set_w9 with a file")
     };
@@ -760,8 +791,9 @@ fn the_w9_file_goes_to_the_vault_never_the_documents() {
         json!({"party": "Acme Design", "save_to": to.to_str().unwrap()}),
     );
     assert_eq!(out["path"], json!(to.display().to_string()));
-    assert_eq!(out["file_name"], "acme-w9.pdf");
-    assert_eq!(std::fs::read(&to).unwrap(), std::fs::read(&src).unwrap());
+    // Given inline, the file is named for its type.
+    assert_eq!(out["file_name"], "w9.pdf");
+    assert_eq!(std::fs::read(&to).unwrap(), src);
     assert!(!holds_tin(out.to_string().as_bytes(), SSN_DIGITS));
     #[cfg(unix)]
     {
@@ -804,10 +836,10 @@ fn the_w9_file_goes_to_the_vault_never_the_documents() {
     );
     // A W-9 file alone (the TIN typed in later) records the vault too.
     m.add_party("Solo", &["contractor"]);
-    let solo = m.w9_file("solo.png", "000");
+    let solo = m.w9_file("000");
     let Out::Ok(p) = m.w9(
         "Solo",
-        json!({"tin_last4": "0000", "w9_file_path": solo.to_str().unwrap()}),
+        json!({"tin_last4": "0000", "w9_content_base64": b64(&solo), "w9_sha256": sha(&solo)}),
     ) else {
         panic!("a W-9 file alone")
     };
@@ -815,22 +847,25 @@ fn the_w9_file_goes_to_the_vault_never_the_documents() {
     assert_eq!(p["w9"]["kept_at"], "wanderbooks vault");
 }
 
-/// A W-9 file is a PDF, PNG or JPEG, by its extension in any case
-/// (.pdf, .png, .jpg, .jpeg): each is taken into the vault and comes back
-/// byte for byte, under its own name.
+/// A W-9 file is a PDF, PNG or JPEG, judged by its own first bytes: each
+/// is taken into the vault and comes back byte for byte, named for its
+/// type.
 #[test]
 fn every_w9_file_type_is_taken() {
     let mut m = books("w9-types");
-    for (n, name) in ["w9.pdf", "w9.png", "w9.jpg", "w9.jpeg", "W9.JPG"]
-        .iter()
-        .enumerate()
+    for (n, (bytes, name)) in [
+        (b"%PDF-1.4 Form W-9".as_slice(), "w9.pdf"),
+        (b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR W-9".as_slice(), "w9.png"),
+        (b"\xff\xd8\xff\xe0\0\x10JFIF W-9".as_slice(), "w9.jpg"),
+    ]
+    .iter()
+    .enumerate()
     {
         let party = format!("Payee {n}");
         m.add_party(&party, &["contractor"]);
-        let src = m.w9_file(name, "000");
         let Out::Ok(p) = m.w9(
             &party,
-            json!({"tin_last4": "0000", "w9_file_path": src.to_str().unwrap()}),
+            json!({"tin_last4": "0000", "w9_content_base64": b64(bytes), "w9_sha256": sha(bytes)}),
         ) else {
             panic!("{name} refused")
         };
@@ -841,17 +876,57 @@ fn every_w9_file_type_is_taken() {
             json!({"party": party, "save_to": to.to_str().unwrap()}),
         );
         assert_eq!(out["file_name"], *name);
-        assert_eq!(std::fs::read(&to).unwrap(), std::fs::read(&src).unwrap());
+        assert_eq!(std::fs::read(&to).unwrap(), *bytes);
     }
+    // Its own name, when given; given alone, a name is refused.
+    m.add_party("Payee N", &["contractor"]);
+    let bytes = b"%PDF-1.4 Form W-9 named";
+    let Out::Ok(_) = m.w9(
+        "Payee N",
+        json!({"tin_last4": "0000", "w9_content_base64": b64(bytes), "w9_sha256": sha(bytes),
+               "w9_file_name": "payee-n-w9.pdf"}),
+    ) else {
+        panic!("named W-9 refused")
+    };
+    let to = m.outside().join("copy-named");
+    let out = m.ok(
+        "books.get_w9",
+        json!({"party": "Payee N", "save_to": to.to_str().unwrap()}),
+    );
+    assert_eq!(out["file_name"], "payee-n-w9.pdf");
+    let why = m
+        .w9(
+            "Payee N",
+            json!({"tin_last4": "0000", "w9_file_name": "x.pdf"}),
+        )
+        .err_text();
+    assert!(why.contains("w9_file_name names the W-9"), "{why}");
+    // Anything else is refused, near misses too.
+    m.add_party("Payee X", &["contractor"]);
+    for bytes in [
+        b"PDF-1.4 no percent".as_slice(),
+        b"\x89PNG\r\n no".as_slice(),
+        b"\xff\xd8 short".as_slice(),
+        b"GIF89a".as_slice(),
+    ] {
+        let why = m
+            .w9(
+                "Payee X",
+                json!({"tin_last4": "0000", "w9_content_base64": b64(bytes), "w9_sha256": sha(bytes)}),
+            )
+            .err_text();
+        assert!(why.contains("PDF, PNG, or JPEG"), "{why}");
+    }
+    assert_eq!(m.party("Payee X", 2026)["party"]["w9"], Value::Null);
 }
 
 #[test]
 fn a_locked_vault_says_so_and_never_guesses() {
     let mut m = books("locked");
-    let src = m.w9_file("w9.pdf", SSN);
+    let src = m.w9_file(SSN);
     m.w9(
         "Acme Design",
-        json!({"tin": SSN, "tin_type": "ssn", "w9_file_path": src.to_str().unwrap()}),
+        json!({"tin": SSN, "tin_type": "ssn", "w9_content_base64": b64(&src), "w9_sha256": sha(&src)}),
     );
     m.pay("Acme Design", "700.00");
     let key = std::fs::read(m.key()).unwrap();
@@ -1003,10 +1078,10 @@ fn the_1099_worksheet_carries_full_tins_only_when_asked() {
 fn purge_deletes_the_vault_records_and_journals_why() {
     let mut m = books("purge");
     let acme = m.party_id("Acme Design");
-    let src = m.w9_file("w9.pdf", SSN);
+    let src = m.w9_file(SSN);
     m.w9(
         "Acme Design",
-        json!({"tin": SSN, "tin_type": "ssn", "w9_file_path": src.to_str().unwrap()}),
+        json!({"tin": SSN, "tin_type": "ssn", "w9_content_base64": b64(&src), "w9_sha256": sha(&src)}),
     );
     // Clearing while the vault holds it: refused.
     let why = m
@@ -1086,10 +1161,10 @@ fn no_full_tin_leaves_the_vault_except_the_worksheet_when_asked() {
         "no-leak",
         "[[company.members]]\nname = \"Mo\"\nshare = \"100%\"\ncapital_account = \"3000\"\n",
     );
-    let src = m.w9_file("acme-w9.pdf", SSN);
+    let src = m.w9_file(SSN);
     m.w9(
         "Acme Design",
-        json!({"tin": SSN, "tin_type": "ssn", "w9_file_path": src.to_str().unwrap()}),
+        json!({"tin": SSN, "tin_type": "ssn", "w9_content_base64": b64(&src), "w9_sha256": sha(&src)}),
     );
     m.w9("Rent Co", json!({"tin": EIN, "tin_type": "ein"}));
     m.ok("books.add_vendor", json!({"name": "Rent Co"}));

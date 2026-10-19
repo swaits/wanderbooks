@@ -20,6 +20,8 @@ ledger-import = { path = "../ledger-import" }
 ledger-config = { path = "../ledger-config" }
 ledger-vault = { path = "../ledger-vault" }
 base64 = "0.22"
+# A download's Repr-Digest (local.rs).
+sha2 = "0.10"
 mime_guess = "2"
 rust_decimal = "1"
 rmcp = { version = "3", features = ["server", "transport-io", "schemars", "transport-streamable-http-server"] }
@@ -32,7 +34,7 @@ serde_json = "1"
 chrono = "0.4"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "io-std", "sync", "net", "signal", "time"] }
-tokio-util = { version = "0.7", features = ["rt"] }
+tokio-util = { version = "0.7", features = ["rt", "io", "io-util"] }
 # A call that panics is recorded before the panic goes on (access.rs).
 futures-util = "0.3"
 zip = "9.0.1"
@@ -41,8 +43,8 @@ toml = "1"
 # from memory when dropped, as the vault's own are.
 zeroize = "1"
 
-# O_NOFOLLOW and O_NONBLOCK for books.import_local_file's open (local_files.rs
-# INVARIANT 6): std has no names for these open flags.
+# The socket's peer credentials (SO_PEERCRED, getpeereid) for local.rs's
+# same-user check: std has no call for them.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

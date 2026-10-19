@@ -1158,9 +1158,675 @@ pub fn passphrase(
     Ok(())
 }
 
+/// A request to a book over the server's socket, with the agent's token
+/// from the keyring, the books held open meanwhile: its status, the
+/// headers wanted, and its body.
+fn on_the_socket(
+    common: &Common,
+    book: &str,
+    token_name: &str,
+    request: impl FnOnce(&reqwest::Client, String) -> reqwest::RequestBuilder,
+) -> Result<(u16, reqwest::header::HeaderMap, Vec<u8>), String> {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+    let outcome = rt.block_on(async {
+        let mut opener = Opener::new(
+            common.root.as_deref(),
+            common.knobs,
+            Starter::Direct,
+            Kind::Cli,
+            None,
+        )?;
+        let lease = open(&mut opener).await.map_err(|e| match e {
+            HoldError::ClosedByOwner => {
+                "the books were closed just now (Close the books): nothing was done".to_string()
+            }
+            HoldError::Failed(why) => why,
+        })?;
+        let run_dir = opener.run_dir().to_path_buf();
+        let root = run_dir.parent().unwrap_or(&run_dir).to_path_buf();
+        let account = crate::tokens::Account::new(&root, book, token_name);
+        let keeper = crate::tokens::keeper(&run_dir, &common.knobs);
+        let token = tokio::task::spawn_blocking(move || keeper.get(&account))
+            .await
+            .map_err(|e| e.to_string())??
+            .ok_or_else(|| {
+                format!(
+                    "this computer has no token for the books {book} (named {token_name:?}): the human makes one with `wanderbooks token create --book {book}`"
+                )
+            })?;
+        let token = zeroize::Zeroizing::new(token);
+        let socket = ledger_store::root::SocketPath::new(&run_dir, ledger_mcp::local::MCP_SOCKET)
+            .map_err(|e| format!("can't reach the books server: {e}"))?;
+        let http = reqwest::Client::builder()
+            .unix_socket(socket.path())
+            .no_proxy()
+            .build()
+            .map_err(|e| e.to_string())?;
+        let response = request(&http, format!("http://localhost/b/{book}"))
+            .bearer_auth(token.as_str())
+            .send()
+            .await
+            .map_err(|e| format!("the books server didn't answer: {e}"))?;
+        let status = response.status().as_u16();
+        let headers = response.headers().clone();
+        let body = response
+            .bytes()
+            .await
+            .map_err(|e| format!("the books server's answer was cut off: {e}"))?
+            .to_vec();
+        drop(lease);
+        Ok::<_, String>((status, headers, body))
+    });
+    rt.shutdown_timeout(Duration::from_secs(1));
+    outcome
+}
+
+/// The flags `upload` and `download` share: the books, the token's name,
+/// and the words given.
+struct FileArgs {
+    common: Common,
+    book: String,
+    token: String,
+    words: Vec<std::ffi::OsString>,
+    to: Option<PathBuf>,
+}
+
+fn file_args(
+    args: impl IntoIterator<Item = std::ffi::OsString>,
+    usage: &dyn Fn(),
+) -> Result<Option<FileArgs>, Box<dyn std::error::Error>> {
+    let mut common = Common::default();
+    let mut book = None;
+    let mut token = crate::tokens::DEFAULT_NAME.to_string();
+    let mut words = Vec::new();
+    let mut to = None;
+    let mut args = args.into_iter();
+    // Flags and their values are text; a file's path, or the folder
+    // `--to` names, may be any name the system takes.
+    let text = |v: std::ffi::OsString, what: &str| {
+        v.into_string()
+            .map_err(|_| format!("{what} isn't UTF-8 text"))
+    };
+    while let Some(arg) = args.next() {
+        // After `--`, words only (a file whose name starts with `-`).
+        if arg == "--" {
+            words.extend(args.by_ref());
+            break;
+        }
+        let Some(flag) = arg.to_str().filter(|a| a.starts_with('-')) else {
+            words.push(arg);
+            continue;
+        };
+        let flag = flag.to_string();
+        let mut value = |what: &str| args.next().ok_or_else(|| format!("{flag} needs {what}"));
+        match flag.as_str() {
+            "--root" => common.root = Some(PathBuf::from(value("a folder")?)),
+            "--book" => book = Some(text(value("an id")?, "--book's id")?),
+            "--token" => token = text(value("a name")?, "--token's name")?,
+            "--to" => to = Some(PathBuf::from(value("a folder")?)),
+            "--help" | "-h" => {
+                usage();
+                return Ok(None);
+            }
+            f if f == FLAG => {
+                common.knobs = Knobs::parse(&text(value("a value")?, FLAG)?)?;
+            }
+            s => {
+                eprintln!("unknown flag: {s}");
+                usage();
+                return Err(exit(2));
+            }
+        }
+    }
+    let Some(book) = book else {
+        eprintln!("error: which books? give --book ID");
+        return Err(exit(2));
+    };
+    let book = ledger_store::root::BookId::parse(&book)
+        .map(|id| id.to_string())
+        .map_err(|e| e.to_string())?;
+    Ok(Some(FileArgs {
+        common,
+        book,
+        token,
+        words,
+        to,
+    }))
+}
+
+/// `wanderbooks upload --book ID UPLOAD FILE`: send a file's bytes for an
+/// upload begun with `books.begin_upload` (plan 4.7, D-28: the agent runs
+/// it).
+pub fn upload(
+    prog: &str,
+    args: impl IntoIterator<Item = std::ffi::OsString>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let usage = || {
+        eprintln!("usage: {prog} --book ID [--token NAME] UPLOAD [--] FILE");
+        eprintln!("  Send FILE for UPLOAD (from books.begin_upload), with the agent's token.");
+    };
+    let Some(a) = file_args(args, &usage)? else {
+        return Ok(());
+    };
+    let ([upload, file], None) = (a.words.as_slice(), &a.to) else {
+        usage();
+        return Err(exit(2));
+    };
+    let (Some(upload), file) = (
+        upload.to_str().filter(|u| ledger_store::uploads::is_id(u)),
+        std::path::Path::new(file).display(),
+    ) else {
+        eprintln!(
+            "error: that isn't an upload's id (books.begin_upload gives one: up_ and 32 letters)"
+        );
+        return Err(exit(2));
+    };
+    let path = std::path::Path::new(&a.words[1]);
+    let fail = |why: String| -> Box<dyn std::error::Error> {
+        eprintln!("error: {why}");
+        exit(1)
+    };
+    let max = ledger_store::uploads::MAX_UPLOAD;
+    match std::fs::metadata(path) {
+        Ok(m) if !m.is_file() => return Err(fail(format!("{file} isn't a file"))),
+        Ok(m) if m.len() > max => {
+            return Err(fail(format!(
+                "{file} is {} bytes; an upload is at most {max}",
+                m.len()
+            )));
+        }
+        Ok(_) => {}
+        Err(e) => return Err(fail(format!("can't read {file}: {}", e.kind()))),
+    }
+    let bytes =
+        std::fs::read(path).map_err(|e| fail(format!("can't read {file}: {}", e.kind())))?;
+    let size = bytes.len();
+    let (status, _, body) = on_the_socket(&a.common, &a.book, &a.token, |http, base| {
+        http.put(format!("{base}/u/{upload}")).body(bytes)
+    })
+    .map_err(fail)?;
+    let said = String::from_utf8_lossy(&body).to_string();
+    if status != 200 {
+        return Err(fail(said));
+    }
+    println!("Sent {size} bytes for {upload}: name it (upload_id) in the tool that files it.");
+    Ok(())
+}
+
+/// The `Content-Disposition` parameters (RFC 6266): name and value, a
+/// quoted value unquoted; a `;` or `=` inside quotes is part of the value.
+fn disposition_params(value: &str) -> Vec<(String, String)> {
+    let mut params = Vec::new();
+    let mut rest = value.split_once(';').map_or("", |(_, r)| r);
+    loop {
+        rest = rest.trim_start_matches([';', ' ', '\t']);
+        let Some((name, after)) = rest.split_once('=') else {
+            return params;
+        };
+        let name = name.trim().to_ascii_lowercase();
+        let after = after.trim_start();
+        let (v, next) = if let Some(quoted) = after.strip_prefix('"') {
+            let mut v = String::new();
+            let mut chars = quoted.char_indices();
+            let mut end = quoted.len();
+            while let Some((i, c)) = chars.next() {
+                match c {
+                    '\\' => {
+                        if let Some((_, e)) = chars.next() {
+                            v.push(e);
+                        }
+                    }
+                    '"' => {
+                        end = i + 1;
+                        break;
+                    }
+                    c => v.push(c),
+                }
+            }
+            (v, &quoted[end.min(quoted.len())..])
+        } else {
+            let end = after.find(';').unwrap_or(after.len());
+            (after[..end].trim().to_string(), &after[end..])
+        };
+        params.push((name, v));
+        rest = next;
+    }
+}
+
+/// The longest name a download is saved under, in bytes (under every
+/// file system's limit, with room for " (999)").
+const SAVED_NAME_MAX: usize = 200;
+
+/// The name a download is saved under: the server's (RFC 6266), its UTF-8
+/// `filename*` first; a plain file name, never hidden, nothing invisible
+/// in it, at most SAVED_NAME_MAX bytes (its extension kept).
+fn saved_name(headers: &reqwest::header::HeaderMap) -> Option<String> {
+    let value = headers
+        .get(reqwest::header::CONTENT_DISPOSITION)?
+        .to_str()
+        .ok()?;
+    let params = disposition_params(value);
+    let utf8 = params
+        .iter()
+        .find(|(n, _)| n == "filename*")
+        .and_then(|(_, v)| v.strip_prefix("UTF-8''"))
+        .and_then(percent_decoded);
+    let plain = || {
+        params
+            .iter()
+            .find(|(n, _)| n == "filename")
+            .map(|(_, v)| v.clone())
+    };
+    plain_name(&utf8.or_else(plain)?)
+}
+
+/// `name` made a plain, visible file name of at most SAVED_NAME_MAX
+/// bytes: folders' separators and control characters become `_`,
+/// invisible ones go, leading dots and spaces go; None if nothing's left.
+fn plain_name(name: &str) -> Option<String> {
+    let cleaned: String = name
+        .chars()
+        .filter(|c| !ledger_store::uploads::is_hidden_char(*c))
+        .map(|c| {
+            if c == '/' || c == '\\' || c.is_control() {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let cleaned = cleaned.trim().trim_start_matches(['.', ' ']).to_string();
+    if cleaned.is_empty() {
+        return None;
+    }
+    if cleaned.len() <= SAVED_NAME_MAX {
+        return Some(cleaned);
+    }
+    // Too long: the stem cut on a character boundary, the extension kept
+    // (if it is short).
+    let (stem, ext) = match cleaned.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() && e.len() <= 16 => (s, format!(".{e}")),
+        _ => (cleaned.as_str(), String::new()),
+    };
+    let mut cut = SAVED_NAME_MAX - ext.len();
+    while !stem.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    Some(format!("{}{ext}", stem[..cut].trim_end()))
+}
+
+/// `%XX`-escaped UTF-8 (RFC 8187), or None when it isn't.
+fn percent_decoded(text: &str) -> Option<String> {
+    let mut bytes = Vec::with_capacity(text.len());
+    let mut it = text.bytes();
+    while let Some(b) = it.next() {
+        if b == b'%' {
+            let hex = [it.next()?, it.next()?];
+            bytes.push(u8::from_str_radix(std::str::from_utf8(&hex).ok()?, 16).ok()?);
+        } else {
+            bytes.push(b);
+        }
+    }
+    String::from_utf8(bytes).ok()
+}
+
+/// Whether `body` is what the server stored: its SHA-256 is the one the
+/// server sent (RFC 9530 `Repr-Digest: sha-256=:BASE64:`). No digest, or
+/// one that can't be read, is no match.
+fn arrived_whole(headers: &reqwest::header::HeaderMap, body: &[u8]) -> bool {
+    let sent = headers
+        .get(ledger_mcp::local::DIGEST_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().strip_prefix("sha-256=:"))
+        .and_then(|v| v.strip_suffix(':'))
+        .and_then(|v| base64::Engine::decode(&base64::engine::general_purpose::STANDARD, v).ok());
+    sent.as_deref() == Some(&<sha2::Sha256 as sha2::Digest>::digest(body)[..])
+}
+
+/// Save `body` in `folder` as `named`, or `named (1)`, `named (2)`... the
+/// first free; `fallback` if the folder takes no such name. Written aside
+/// (a hidden file) and linked in whole, so the name never holds part of
+/// it; never over another file. The path it went to.
+fn save_new(
+    folder: &std::path::Path,
+    named: &str,
+    fallback: &str,
+    body: &[u8],
+) -> Result<PathBuf, String> {
+    use std::io::Write;
+    let fail = |what: &std::path::Path, e: std::io::Error| {
+        format!("can't write {}: {}", what.display(), e.kind())
+    };
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    let aside = folder.join(format!(".wanderbooks-{}-{nanos}.part", std::process::id()));
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&aside)
+        .map_err(|e| fail(folder, e))?;
+    if let Err(e) = f.write_all(body).and_then(|()| f.sync_all()) {
+        drop(f);
+        let _ = std::fs::remove_file(&aside);
+        return Err(fail(folder, e));
+    }
+    drop(f);
+    let candidates = |name: &str| {
+        let (stem, ext) = match name.rsplit_once('.') {
+            Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{e}")),
+            _ => (name.to_string(), String::new()),
+        };
+        let name = name.to_string();
+        (0..1000).map(move |n| {
+            if n == 0 {
+                name.clone()
+            } else {
+                format!("{stem} ({n}){ext}")
+            }
+        })
+    };
+    let mut outcome = Err(format!("{} has no free name for it", folder.display()));
+    // Why the last name tried was refused, if not for being taken: what
+    // the human is told when no name is left (a full disk, not a name).
+    let mut last: Option<std::io::Error> = None;
+    'names: for name in [named, fallback] {
+        for candidate in candidates(name) {
+            let path = folder.join(&candidate);
+            match std::fs::hard_link(&aside, &path) {
+                Ok(()) => {
+                    outcome = Ok(path);
+                    break 'names;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                // A file system with no links (FAT): written in place, never
+                // over another file, removed if it can't be finished.
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::Unsupported | std::io::ErrorKind::PermissionDenied
+                    ) =>
+                {
+                    match std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&path)
+                    {
+                        Ok(mut f) => {
+                            if let Err(e) = f.write_all(body).and_then(|()| f.sync_all()) {
+                                drop(f);
+                                let _ = std::fs::remove_file(&path);
+                                outcome = Err(fail(&path, e));
+                                last = None;
+                            } else {
+                                outcome = Ok(path);
+                            }
+                            break 'names;
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                        Err(e) => {
+                            last = Some(e);
+                            continue 'names;
+                        }
+                    }
+                }
+                // A name this folder won't take (too long, a character it
+                // refuses): the next name.
+                Err(e) => {
+                    last = Some(e);
+                    continue 'names;
+                }
+            }
+        }
+    }
+    let _ = std::fs::remove_file(&aside);
+    match (outcome, last) {
+        (Err(_), Some(e)) => Err(fail(folder, e)),
+        (outcome, _) => outcome,
+    }
+}
+
+/// `wanderbooks download --book ID ATTACHMENT --to FOLDER`: save a copy of
+/// a stored file (one too large for books.get_receipt to return).
+pub fn download(
+    prog: &str,
+    args: impl IntoIterator<Item = std::ffi::OsString>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let usage = || {
+        eprintln!("usage: {prog} --book ID [--token NAME] ATTACHMENT --to FOLDER");
+        eprintln!("  Save a copy of the stored file ATTACHMENT in FOLDER (a new file).");
+    };
+    let Some(a) = file_args(args, &usage)? else {
+        return Ok(());
+    };
+    let ([attachment], Some(to)) = (a.words.as_slice(), a.to.clone()) else {
+        usage();
+        return Err(exit(2));
+    };
+    let Some(attachment) = attachment
+        .to_str()
+        .filter(|a| a.parse::<u64>().is_ok_and(|n| n.to_string() == *a))
+    else {
+        eprintln!("error: an attachment's id is a number");
+        return Err(exit(2));
+    };
+    let fail = |why: String| -> Box<dyn std::error::Error> {
+        eprintln!("error: {why}");
+        exit(1)
+    };
+    if !to.is_dir() {
+        return Err(fail(format!("{} isn't a folder", to.display())));
+    }
+    let (status, headers, body) = on_the_socket(&a.common, &a.book, &a.token, |http, base| {
+        http.get(format!("{base}/a/{attachment}"))
+    })
+    .map_err(fail)?;
+    let path = keep(status, &headers, &body, attachment, &to).map_err(fail)?;
+    println!("Saved {} ({} bytes).", path.display(), body.len());
+    Ok(())
+}
+
+/// What `download` does with the server's answer: the server's words if it
+/// refused; nothing if the bytes aren't the stored ones; else a new file
+/// in `to` (its path).
+fn keep(
+    status: u16,
+    headers: &reqwest::header::HeaderMap,
+    body: &[u8],
+    attachment: &str,
+    to: &std::path::Path,
+) -> Result<PathBuf, String> {
+    if status != 200 {
+        return Err(String::from_utf8_lossy(body).to_string());
+    }
+    if !arrived_whole(headers, body) {
+        return Err(
+            "the file arrived damaged (its SHA-256 isn't the stored one): nothing was saved".into(),
+        );
+    }
+    let fallback = format!("attachment-{attachment}");
+    let named = saved_name(headers).unwrap_or_else(|| fallback.clone());
+    save_new(to, &named, &fallback, body)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn disposition(value: &str) -> reqwest::header::HeaderMap {
+        let mut h = reqwest::header::HeaderMap::new();
+        h.insert(
+            reqwest::header::CONTENT_DISPOSITION,
+            reqwest::header::HeaderValue::from_str(value).unwrap(),
+        );
+        h
+    }
+
+    #[test]
+    fn a_download_is_saved_under_a_plain_visible_name() {
+        let named = |v: &str| saved_name(&disposition(v));
+        // The UTF-8 name first, else the plain one.
+        assert_eq!(
+            named("attachment; filename=\"R_sum_.pdf\"; filename*=UTF-8''R%C3%A9sum%C3%A9.pdf")
+                .as_deref(),
+            Some("Résumé.pdf")
+        );
+        assert_eq!(
+            named("attachment; filename=\"a b.pdf\"").as_deref(),
+            Some("a b.pdf")
+        );
+        // A parameter inside the quoted name is the name, not a parameter.
+        assert_eq!(
+            named("attachment; filename=\"x; filename*=UTF-8''.bashrc; y\"").as_deref(),
+            Some("x; filename*=UTF-8''.bashrc; y")
+        );
+        // No folder, nothing hidden, nothing invisible.
+        for (given, saved) in [
+            (
+                "filename*=UTF-8''..%2F..%2F.ssh%2Fauthorized_keys",
+                Some("_.._.ssh_authorized_keys"),
+            ),
+            ("filename*=UTF-8''%2Fetc%2Fpasswd", Some("_etc_passwd")),
+            ("filename*=UTF-8''.bashrc", Some("bashrc")),
+            ("filename*=UTF-8''rcpt%E2%80%AEfdp.exe", Some("rcptfdp.exe")),
+            ("filename*=UTF-8''a%E2%80%8Bb.pdf", Some("ab.pdf")),
+            ("filename*=UTF-8''a%0Ab.pdf", Some("a_b.pdf")),
+            ("filename*=UTF-8''..", None),
+            ("filename*=UTF-8''%20.", None),
+            ("filename*=UTF-8''%ZZ", None),
+            ("filename=\"\"", None),
+        ] {
+            assert_eq!(
+                named(&format!("attachment; {given}")).as_deref(),
+                saved,
+                "{given}"
+            );
+        }
+        assert_eq!(saved_name(&reqwest::header::HeaderMap::new()), None);
+        // Too long: cut on a character, its extension kept.
+        let long = "收".repeat(90) + ".pdf";
+        let cut = plain_name(&long).unwrap();
+        assert!(
+            cut.len() <= SAVED_NAME_MAX && cut.ends_with("收.pdf"),
+            "{cut}"
+        );
+        assert_eq!(
+            plain_name(&"a".repeat(SAVED_NAME_MAX)).unwrap().len(),
+            SAVED_NAME_MAX
+        );
+        assert_eq!(percent_decoded("%E2%9C%93").as_deref(), Some("✓"));
+        assert_eq!(percent_decoded("%E2%9C"), None, "not UTF-8");
+        assert_eq!(percent_decoded("%4"), None);
+    }
+
+    #[test]
+    fn only_bytes_with_the_digest_sent_arrived_whole() {
+        let body = b"%PDF-1.4 stored";
+        let digest = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            <sha2::Sha256 as sha2::Digest>::digest(body),
+        );
+        let with = |v: &str| {
+            let mut h = reqwest::header::HeaderMap::new();
+            h.insert(
+                ledger_mcp::local::DIGEST_HEADER,
+                reqwest::header::HeaderValue::from_str(v).unwrap(),
+            );
+            h
+        };
+        assert!(arrived_whole(&with(&format!("sha-256=:{digest}:")), body));
+        assert!(!arrived_whole(
+            &with(&format!("sha-256=:{digest}:")),
+            b"%PDF-1.4 changed"
+        ));
+        assert!(!arrived_whole(&with(&format!("sha-512=:{digest}:")), body));
+        assert!(!arrived_whole(&with(&format!("sha-256={digest}")), body));
+        assert!(!arrived_whole(&with("sha-256=:not base64:"), body));
+        assert!(!arrived_whole(&reqwest::header::HeaderMap::new(), body));
+    }
+
+    #[test]
+    fn only_a_whole_file_the_server_gave_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = b"%PDF-1.4 stored";
+        let mut h = disposition("attachment; filename=\"r.pdf\"");
+        let digest = |b: &[u8]| {
+            format!(
+                "sha-256=:{}:",
+                base64::Engine::encode(
+                    &base64::engine::general_purpose::STANDARD,
+                    <sha2::Sha256 as sha2::Digest>::digest(b)
+                )
+            )
+        };
+        h.insert(
+            ledger_mcp::local::DIGEST_HEADER,
+            reqwest::header::HeaderValue::from_str(&digest(b"something else")).unwrap(),
+        );
+        let e = keep(200, &h, body, "7", dir.path()).unwrap_err();
+        assert!(e.contains("arrived damaged"), "{e}");
+        let e = keep(404, &h, b"there is no such attachment", "7", dir.path()).unwrap_err();
+        assert_eq!(e, "there is no such attachment");
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            0,
+            "nothing saved"
+        );
+        h.insert(
+            ledger_mcp::local::DIGEST_HEADER,
+            reqwest::header::HeaderValue::from_str(&digest(body)).unwrap(),
+        );
+        assert_eq!(
+            keep(200, &h, body, "7", dir.path()).unwrap(),
+            dir.path().join("r.pdf")
+        );
+        let bare = reqwest::header::HeaderMap::new();
+        assert!(
+            keep(200, &bare, body, "7", dir.path()).is_err(),
+            "no digest, no file"
+        );
+    }
+
+    #[test]
+    fn a_saved_copy_is_new_and_whole_beside_what_is_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        std::fs::write(d.join("r.pdf"), b"theirs").unwrap();
+        let first = save_new(d, "r.pdf", "attachment-7", b"ours").unwrap();
+        assert_eq!(first, d.join("r (1).pdf"));
+        let second = save_new(d, "r.pdf", "attachment-7", b"ours").unwrap();
+        assert_eq!(second, d.join("r (2).pdf"));
+        assert_eq!(std::fs::read(d.join("r.pdf")).unwrap(), b"theirs");
+        assert_eq!(std::fs::read(&first).unwrap(), b"ours");
+        // A name the folder won't take: the fallback.
+        let long = "x".repeat(300);
+        assert_eq!(
+            save_new(d, &long, "attachment-7", b"ours").unwrap(),
+            d.join("attachment-7")
+        );
+        // Nothing aside is left.
+        let mut names: Vec<String> = std::fs::read_dir(d)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["attachment-7", "r (1).pdf", "r (2).pdf", "r.pdf"]);
+        // A folder that can't be written: refused, nothing made.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let ro = d.join("ro");
+            std::fs::create_dir(&ro).unwrap();
+            std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o500)).unwrap();
+            if std::fs::write(ro.join("probe"), b"").is_err() {
+                assert!(save_new(&ro, "r.pdf", "attachment-7", b"ours").is_err());
+            }
+            std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+    }
 
     #[test]
     fn close_reads_the_books_state_for_what_it_is() {

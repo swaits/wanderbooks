@@ -119,7 +119,7 @@ pub const TABLE: [(&str, Needs); 109] = [
     ("books.assign_role", P),
     ("books.set_tax_category", W),
     ("books.import_chart_csv", W),
-    ("books.import_local_file", W),
+    ("books.begin_upload", W),
     ("books.export", R),
     ("books.register_asset", W),
     ("books.asset_schedule", R),

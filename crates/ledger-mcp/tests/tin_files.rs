@@ -9,8 +9,8 @@
 //! SOURCE: rules.md B-26; DECISION (P0 review round 2, 2026-10-16).
 //! INVARIANTS (oracle):
 //!   1. Every file the server read or wrote with full TINs is refused by
-//!      every way a file enters the books (books.import_local_file,
-//!      books.attach_receipt, books.file_document), from any session and
+//!      every way a file enters the books (books.attach_receipt and
+//!      books.file_document, its bytes given inline), from any session and
 //!      after the server restarts.
 //!   2. Text holding a full TIN is refused, whoever made it: one the vault
 //!      holds, in every common rendering (nine digits; 3-2-4 joined by
@@ -59,8 +59,9 @@ impl Drop for Server {
     }
 }
 
-/// The books dir, the import root, a folder outside both, and the
-/// settings (a member, so the CPA package has a K-1 worksheet).
+/// The books dir, a folder for files on their way in, a folder outside
+/// both, and the settings (a member, so the CPA package has a K-1
+/// worksheet).
 struct Books {
     dir: PathBuf,
     inbox: PathBuf,
@@ -125,8 +126,6 @@ fn serve(b: &Books) -> (Server, String) {
         .arg(b.dir.join("books-data"))
         .arg("--books-toml")
         .arg(&b.toml)
-        .arg("--import-root")
-        .arg(&b.inbox)
         .arg("--http")
         .arg(&addr)
         .env("XDG_CONFIG_HOME", base.join("config"))
@@ -177,14 +176,17 @@ async fn ok(c: &Client, tool: &str, args: Value) -> Value {
         .unwrap_or_else(|e| panic!("{tool}: {e}"))
 }
 
-fn b64(bytes: &[u8]) -> String {
+/// `bytes` as a tool takes them inline: base64, and their SHA-256 (hex).
+fn inline(bytes: &[u8]) -> (String, String) {
     use base64::Engine;
-    base64::engine::general_purpose::STANDARD.encode(bytes)
+    (
+        base64::engine::general_purpose::STANDARD.encode(bytes),
+        ledger_store::journal::sha256_hex(bytes),
+    )
 }
 
-/// Every way the file at `path` (copied into the import root as `name`)
-/// could enter the books is refused with `why`, and nothing is stored:
-/// the refusals, tool by tool.
+/// Every way the file at `path` (named `name`) could enter the books is
+/// refused with `why`, and nothing is stored: the refusals, tool by tool.
 async fn refused_everywhere(
     c: &Client,
     b: &Books,
@@ -193,23 +195,20 @@ async fn refused_everywhere(
     why: &str,
 ) -> Vec<String> {
     let bytes = std::fs::read(path).unwrap();
-    let copy = b.inbox.join(name);
-    std::fs::copy(path, &copy).unwrap();
+    let (content, sha) = inline(&bytes);
     let journal = b.dir.join("books-data").join(ledger_store::JOURNAL_FILE);
     let before = std::fs::read(&journal).unwrap();
     let mut refusals = Vec::new();
     for (tool, args) in [
         (
-            "books.import_local_file",
-            json!({"path": copy.to_str().unwrap(), "category": "document", "document_category": "tax"}),
-        ),
-        (
             "books.attach_receipt",
-            json!({"file_name": name, "mime_type": "application/octet-stream", "content_base64": b64(&bytes)}),
+            json!({"file_name": name, "mime_type": "application/octet-stream",
+                   "content_base64": content, "sha256": sha}),
         ),
         (
             "books.file_document",
-            json!({"category": "tax", "file_name": name, "mime_type": "application/pdf", "content_base64": b64(&bytes)}),
+            json!({"category": "tax", "file_name": name, "mime_type": "application/pdf",
+                   "content_base64": content, "sha256": sha}),
         ),
     ] {
         let err = call(c, tool, args).await.expect_err(tool);
@@ -221,7 +220,6 @@ async fn refused_everywhere(
         before,
         "a refusal stored something"
     );
-    std::fs::remove_file(copy).unwrap();
     refusals
 }
 
@@ -240,6 +238,7 @@ async fn a_tin_bearing_file_is_refused_from_every_session_and_after_a_restart() 
         b"%PDF-1.4\n\xff\xfe\x00 scanned W-9 \x01\x02\x03\n%%EOF\n",
     )
     .unwrap();
+    let (w9_content, w9_sha) = inline(&std::fs::read(&w9).unwrap());
     let (server, url) = serve(&b);
     let one = connect(&url).await;
     for (code, name, ty) in [
@@ -270,7 +269,7 @@ async fn a_tin_bearing_file_is_refused_from_every_session_and_after_a_restart() 
         &one,
         "books.set_w9",
         json!({"party": "Acme", "received_on": "2026-01-03", "entity_type": "Individual",
-               "tin": SSN, "tin_type": "ssn", "w9_file_path": w9.to_str().unwrap()}),
+               "tin": SSN, "tin_type": "ssn", "w9_content_base64": w9_content, "w9_sha256": w9_sha}),
     )
     .await;
     ok(
@@ -281,7 +280,7 @@ async fn a_tin_bearing_file_is_refused_from_every_session_and_after_a_restart() 
     .await;
     // A bank statement filed in the books: the package carries it, and it
     // is no TIN file (its routing numbers are not TINs).
-    accepted_everywhere(&one, &b, "statement.csv", BANK_CSV).await;
+    accepted_everywhere(&one, "statement.csv", BANK_CSV).await;
     // What the server writes with TINs, from the first session.
     let copy = b.out.join("w9-copy.pdf");
     ok(
@@ -333,12 +332,12 @@ async fn a_tin_bearing_file_is_refused_from_every_session_and_after_a_restart() 
     std::fs::write(&fresh, format!("name,ssn\nDana,{}\n", "187-05-1907")).unwrap();
     refused_everywhere(&two, &b, &fresh, "payees.csv", TIN_PRINTED).await;
     // An ordinary file still goes in, every way.
-    let fine = b.inbox.join("lunch.pdf");
-    std::fs::write(&fine, b"%PDF-1.4\n\xff lunch receipt, order 12-34\n").unwrap();
+    let (fine, fine_sha) = inline(b"%PDF-1.4\n\xff lunch receipt, order 12-34\n");
     ok(
         &two,
-        "books.import_local_file",
-        json!({"path": fine.to_str().unwrap(), "category": "receipt"}),
+        "books.attach_receipt",
+        json!({"file_name": "lunch.pdf", "mime_type": "application/pdf",
+               "content_base64": fine, "sha256": fine_sha}),
     )
     .await;
     // The books' own files the package carried are not marked: the
@@ -353,7 +352,7 @@ async fn a_tin_bearing_file_is_refused_from_every_session_and_after_a_restart() 
             "the package carries the statement"
         );
     }
-    accepted_everywhere(&two, &b, "statement-again.csv", BANK_CSV).await;
+    accepted_everywhere(&two, "statement-again.csv", BANK_CSV).await;
     drop((one, two));
     drop(server);
 
@@ -406,8 +405,9 @@ async fn a_refused_set_w9_never_marks_its_file() {
         .await;
     }
     let w9_args = |party: &str, path: &Path| {
+        let (content, sha) = inline(&std::fs::read(path).unwrap());
         json!({"party": party, "received_on": "2026-01-03", "entity_type": "Individual",
-               "tin": SSN, "tin_type": "ssn", "w9_file_path": path.to_str().unwrap()})
+               "tin": SSN, "tin_type": "ssn", "w9_content_base64": content, "w9_sha256": sha})
     };
     for (party, path, why) in [
         ("Nobody", &w9, "unknown party"),
@@ -424,51 +424,54 @@ async fn a_refused_set_w9_never_marks_its_file() {
         ("w9-scan.pdf", w9_bytes.clone()),
         ("notes.txt", std::fs::read(&notes).unwrap()),
     ] {
+        let (content, sha) = inline(&bytes);
         let out = ok(
             &c,
             "books.file_document",
             json!({"category": "other", "file_name": name, "mime_type": "application/pdf",
-                   "content_base64": b64(&bytes)}),
+                   "content_base64": content, "sha256": sha}),
         )
         .await;
         assert!(out["attachment_id"].is_u64(), "{name}: {out}");
     }
     // A set_w9 that succeeds marks it.
     ok(&c, "books.set_w9", w9_args("Acme", &w9)).await;
-    let err = call(
-        &c,
-        "books.file_document",
-        json!({"category": "other", "file_name": "again.pdf", "mime_type": "application/pdf",
-               "content_base64": b64(&w9_bytes)}),
-    )
-    .await
-    .expect_err("marked");
-    assert!(err.contains(TIN_FILE), "{err}");
+    let (content, sha) = inline(&w9_bytes);
+    for (tool, args) in [
+        (
+            "books.file_document",
+            json!({"category": "other", "file_name": "again.pdf", "mime_type": "application/pdf",
+                   "content_base64": content, "sha256": sha}),
+        ),
+        (
+            "books.attach_receipt",
+            json!({"file_name": "again.pdf", "mime_type": "application/pdf",
+                   "content_base64": content, "sha256": sha}),
+        ),
+    ] {
+        let err = call(&c, tool, args).await.expect_err("marked");
+        assert!(err.contains(TIN_FILE), "{tool}: {err}");
+    }
 }
 
 /// Every way a file enters the books takes the text `name` holding
 /// `text`, and the journal shows it.
-async fn accepted_everywhere(c: &Client, b: &Books, name: &str, text: &str) {
-    let path = b.inbox.join(name);
-    std::fs::write(&path, text).unwrap();
+async fn accepted_everywhere(c: &Client, name: &str, text: &str) {
+    let (content, sha) = inline(text.as_bytes());
     for (tool, args) in [
         (
-            "books.import_local_file",
-            json!({"path": path.to_str().unwrap(), "category": "document", "document_category": "statement"}),
-        ),
-        (
             "books.attach_receipt",
-            json!({"file_name": name, "mime_type": "text/csv", "content_base64": b64(text.as_bytes())}),
+            json!({"file_name": name, "mime_type": "text/csv", "content_base64": content, "sha256": sha}),
         ),
         (
             "books.file_document",
-            json!({"category": "import_source", "file_name": name, "mime_type": "text/csv", "content_base64": b64(text.as_bytes())}),
+            json!({"category": "import_source", "file_name": name, "mime_type": "text/csv",
+                   "content_base64": content, "sha256": sha}),
         ),
     ] {
         let out = ok(c, tool, args).await;
         assert!(out["attachment_id"].is_u64(), "{tool}: {out}");
     }
-    std::fs::remove_file(path).unwrap();
 }
 
 /// A real bank export: ABA routing numbers (nine digits), account and
@@ -526,7 +529,7 @@ async fn text_with_a_vault_tin_or_a_printed_one_is_refused_and_a_bank_export_is_
         std::fs::write(&path, format!("payee,tin\n{printed}\n")).unwrap();
         refused_everywhere(&c, &b, &path, &format!("payees-{n}.csv"), TIN_PRINTED).await;
     }
-    accepted_everywhere(&c, &b, "bank.csv", BANK_CSV).await;
+    accepted_everywhere(&c, "bank.csv", BANK_CSV).await;
     drop(c);
     drop(server);
 
@@ -542,12 +545,11 @@ async fn text_with_a_vault_tin_or_a_printed_one_is_refused_and_a_bank_export_is_
     refused_everywhere(&c, &b, &path, "members-1.csv", TIN_PRINTED).await;
     accepted_everywhere(
         &c,
-        &b,
         "bank-2.csv",
         &format!("{BANK_CSV}2026-10-06,x,1.00,1.00,1\n"),
     )
     .await;
-    accepted_everywhere(&c, &b, "members-0.csv", "member,tin\nKat,830835531\n").await;
+    accepted_everywhere(&c, "members-0.csv", "member,tin\nKat,830835531\n").await;
 }
 
 /// INVARIANT 3b through the tools: the company's own EIN, as its
@@ -571,7 +573,6 @@ async fn the_company_s_own_ein_goes_in_and_no_other() {
     let c = connect(&url).await;
     accepted_everywhere(
         &c,
-        &b,
         "plan.md",
         "# Tin Co business plan\n\nEIN 12-3456789, formed 2026-10-04.\n",
     )
@@ -697,8 +698,8 @@ async fn text_probing_for_a_tin_is_refused_alike_by_every_filing_tool() {
     };
     let open = probes(&c).await;
     refused_everywhere(&c, &b, &tin, "tin.csv", TIN_HELD).await;
-    accepted_everywhere(&c, &b, "one.csv", &std::fs::read_to_string(&one).unwrap()).await;
-    accepted_everywhere(&c, &b, "bank.csv", BANK_CSV).await;
+    accepted_everywhere(&c, "one.csv", &std::fs::read_to_string(&one).unwrap()).await;
+    accepted_everywhere(&c, "bank.csv", BANK_CSV).await;
     drop(c);
     drop(server);
 

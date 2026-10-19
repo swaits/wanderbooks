@@ -43,10 +43,20 @@
 //!      bindings a new session is refused (an initialize), never a binding
 //!      dropped. Tokens are made, listed and revoked only through
 //!      the admin socket.
+//!   9. A file's bytes come in only by `PUT /b/{id}/u/{upload}` and go
+//!      out only by `GET /b/{id}/a/{attachment}` (plan 4.7), each through
+//!      the same door as 8 and counted for the close like any request:
+//!      an upload only from the token that began it, a download only with
+//!      books:read. Each, refused at the door or not, is recorded in the
+//!      book's access log as `upload` or `download` with its id, and the
+//!      bytes (kept, or read) and their record are one task that runs to
+//!      its end if the client hangs up (a process killed in that task
+//!      excepted); bytes whose record can't be written aren't kept, and
+//!      the books stop. Lapsed uploads are swept
+//!      every SWEEP_EVERY. Nothing comes in once the books stopped.
 //! ```
 
 use crate::admin::{self, Request, Response};
-use crate::local_files::ImportRoots;
 use crate::policy::ReceiptPolicy;
 use crate::server::{BooksServer, Layout, SharedStore};
 use crate::settings::Live;
@@ -75,10 +85,9 @@ pub const SERVER_LOCK: &str = "server.lock";
 /// What the server prints on stdout when it is ready (INVARIANT 5).
 pub const READY: &str = "ready";
 
-/// How large a request may be. Receipts still ride inside tool calls as
-/// base64 until uploads have their own route (P2 slice 5, which brings
-/// this down to 1 MiB).
-pub const MAX_BODY: usize = 64 * 1024 * 1024;
+/// How large an MCP request may be (plan 3.2): files of any size come
+/// through uploads (`/b/{book}/u/{upload}`); inline, at most 256 KiB.
+pub const MAX_BODY: usize = 1024 * 1024;
 
 /// How long the admin socket waits for a request to arrive.
 const ADMIN_READ_TIMEOUT: Duration = Duration::from_secs(30);
@@ -88,6 +97,9 @@ use ledger_store::root::THE_ROOT;
 /// The header on a request refused before it could run (books that
 /// didn't open, books that don't exist): a client knows it didn't run.
 pub const REFUSED_HEADER: &str = "x-wanderbooks-refused";
+
+/// How often each book's lapsed uploads are swept.
+const SWEEP_EVERY: Duration = Duration::from_secs(10);
 
 type Service = StreamableHttpService<BooksServer, LocalSessionManager>;
 
@@ -103,6 +115,8 @@ enum Book {
         /// Its access log, where requests refused at the door are
         /// recorded too (access.rs).
         access: Arc<AccessLog>,
+        /// Its files on their way in (`/b/{id}/u/{upload}`).
+        uploads: ledger_store::uploads::Uploads,
     },
     /// Not opened, with why (INVARIANT 3).
     Failed(String),
@@ -121,7 +135,6 @@ impl Book {
 /// Every book the server holds, and what serving them needs.
 struct Books {
     root: Root,
-    import_roots: ImportRoots,
     held: RwLock<BTreeMap<String, Book>>,
     /// Ends every MCP session (INVARIANT 6, last).
     sessions: CancellationToken,
@@ -250,17 +263,14 @@ impl Books {
         let mut live = Live::own();
         live.sync(store.ledger().settings(), store.base_currency().code());
         let layout = Layout::Root(self.root.path().to_path_buf());
-        let roots = crate::server::guard_import_roots(
-            &store,
-            &live.current(),
-            &layout,
-            self.import_roots.clone(),
-        )
-        .map_err(|e| self.hide(e))?;
         let access = Arc::new(
             AccessLog::open(store.data_dir())
                 .map_err(|e| format!("its access log can't be used: {e}"))?,
         );
+        let uploads =
+            ledger_store::uploads::Uploads::open(store.data_dir(), chrono::Utc::now().timestamp())
+                .map_err(|e| self.hide(e.to_string()))?;
+        let server_uploads = uploads.clone();
         let live = Arc::new(Mutex::new(live));
         let store = SharedStore::new(store);
         let log = access.clone();
@@ -276,9 +286,9 @@ impl Books {
                 Ok(
                     BooksServer::new_shared(store.clone(), ReceiptPolicy::default())
                         .with_live_settings(live.clone())
-                        .with_import_roots(roots.clone())
                         .with_layout(layout.clone())
-                        .with_access(log.clone()),
+                        .with_access(log.clone())
+                        .with_uploads(server_uploads.clone()),
                 )
             },
             Arc::new(sessions()),
@@ -288,6 +298,7 @@ impl Books {
             service,
             store: shared,
             access,
+            uploads,
         })
     }
 
@@ -848,12 +859,29 @@ const SESSION_HEADER: &str = "mcp-session-id";
 /// live sessions).
 const MAX_SESSIONS: usize = 100_000;
 
+/// What a request asks for, as the access log names it: an MCP request
+/// (action `connect`, its method), an upload (`upload`, its id) or a
+/// download (`download`, the attachment's id).
+struct Asked {
+    action: &'static str,
+    subject: String,
+}
+
+impl Asked {
+    fn connect(method: &axum::http::Method) -> Self {
+        Self {
+            action: "connect",
+            subject: method.as_str().to_string(),
+        }
+    }
+}
+
 /// A request refused at the door: recorded in the book's access log
 /// (access.rs INVARIANT 3), then answered with `status` and `why`.
 async fn refused_at_door(
     book: &Book,
     principal: Principal,
-    method: &axum::http::Method,
+    asked: &Asked,
     code: &'static str,
     status: axum::http::StatusCode,
     why: String,
@@ -865,8 +893,9 @@ async fn refused_at_door(
             principal,
             client: None,
             request_id: None,
-            action: "connect".into(),
-            subject: method.as_str().to_string(),
+            action: asked.action.into(),
+            // Masked, then cut, by the log itself (access.rs INVARIANT 2).
+            subject: asked.subject.clone(),
             args_digest: None,
             result: Outcome::Refused(code.into()),
             head_after: None,
@@ -892,34 +921,31 @@ async fn refused_at_door(
     response
 }
 
-/// `/b/{book}/mcp`: the book's MCP service, for a request carrying a token
-/// for that book (INVARIANT 8).
-async fn mcp(
-    axum::extract::State(books): axum::extract::State<Arc<Books>>,
-    axum::extract::Path(book): axum::extract::Path<String>,
-    mut request: axum::extract::Request,
-) -> axum::response::Response {
+/// The door to `book` (INVARIANT 8): the books held open, the server not
+/// closing, and a live token for those books; else the answer refusing
+/// the request (recorded in the books' access log, where there is one).
+async fn door(
+    books: &Arc<Books>,
+    book: &str,
+    asked: &Asked,
+    headers: &axum::http::HeaderMap,
+) -> Result<(Book, Token), Box<axum::response::Response>> {
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
-    use tower::ServiceExt;
-    // Counted before the closing check, so closing never misses it.
-    let counted = (request.method() != axum::http::Method::GET).then(|| InFlight::new(&books));
-    books
-        .last_arrival
-        .store(books.started.elapsed().as_millis() as u64, Ordering::SeqCst);
     let closing = books.closing.is_cancelled();
-    let found = books.held().get(&book).cloned();
-    let (service, held) = match found {
+    let found = books.held().get(book).cloned();
+    let held = match found {
         Some(Book::Failed(why)) if !closing => {
-            return (
+            return Err((
                 StatusCode::SERVICE_UNAVAILABLE,
                 [(REFUSED_HEADER, "not-open")],
                 format!("the books {book} didn't open: {why}"),
             )
-                .into_response();
+                .into_response()
+                .into());
         }
         None if !closing => {
-            return (
+            return Err((
                 StatusCode::NOT_FOUND,
                 [(REFUSED_HEADER, "no-such-books")],
                 format!(
@@ -927,22 +953,20 @@ async fn mcp(
                     book.chars().take(64).collect::<String>()
                 ),
             )
-                .into_response();
+                .into_response()
+                .into());
         }
-        Some(b @ Book::Open { .. }) => match &b {
-            Book::Open { service, .. } => (service.clone(), b.clone()),
-            Book::Failed(_) => unreachable!(),
-        },
+        Some(b @ Book::Open { .. }) => b,
         _ => {
-            return (
+            return Err((
                 StatusCode::SERVICE_UNAVAILABLE,
                 "the books are closing: this request wasn't run",
             )
-                .into_response();
+                .into_response()
+                .into());
         }
     };
-    let method = request.method().clone();
-    let token = books.bearer(request.headers());
+    let token = books.bearer(headers);
     let principal = |t: &Token| Principal {
         id: t.id.clone(),
         kind: "agent".into(),
@@ -952,41 +976,382 @@ async fn mcp(
         let who = token
             .as_ref()
             .map_or_else(|_| Principal::unknown(), principal);
-        return refused_at_door(
+        return Err(refused_at_door(
             &held,
             who,
-            &method,
+            asked,
             crate::access::CLOSING,
             StatusCode::SERVICE_UNAVAILABLE,
             "the books are closing: this request wasn't run".into(),
         )
-        .await;
+        .await
+        .into());
     }
     let token = match token {
         Ok(t) => t,
         Err((code, why)) => {
-            return refused_at_door(
+            return Err(refused_at_door(
                 &held,
                 Principal::unknown(),
-                &method,
+                asked,
                 code,
                 StatusCode::UNAUTHORIZED,
                 why,
             )
-            .await;
+            .await
+            .into());
         }
     };
     if token.book != book {
-        return refused_at_door(
+        return Err(refused_at_door(
             &held,
             principal(&token),
-            &method,
+            asked,
             "wrong_books",
             StatusCode::FORBIDDEN,
             format!("this token is for the books {}, not {book}", token.book),
         )
-        .await;
+        .await
+        .into());
     }
+    Ok((held, token))
+}
+
+/// `PUT /b/{book}/u/{upload}`: the bytes of an upload begun with
+/// `books.begin_upload`, from the token that began it (INVARIANT 9; plan
+/// 4.7): at most the upload's limit, kept only if exactly the size and
+/// SHA-256 declared, once; recorded in the access log (action `upload`).
+async fn upload(
+    axum::extract::State(books): axum::extract::State<Arc<Books>>,
+    axum::extract::Path((book, id)): axum::extract::Path<(String, String)>,
+    request: axum::extract::Request,
+) -> axum::response::Response {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    use ledger_store::uploads::UploadError;
+    let _counted = InFlight::new(&books);
+    books
+        .last_arrival
+        .store(books.started.elapsed().as_millis() as u64, Ordering::SeqCst);
+    let asked = Asked {
+        action: "upload",
+        subject: id.clone(),
+    };
+    let (held, token) = match door(&books, &book, &asked, request.headers()).await {
+        Ok(passed) => passed,
+        Err(refused) => {
+            // What was sent is read and dropped (up to the most an upload
+            // can be: only this account reaches the socket), so the client
+            // gets the refusal, not a connection cut mid-send.
+            use futures_util::StreamExt;
+            let mut rest = request.into_body().into_data_stream();
+            let mut read = 0u64;
+            while let Some(Ok(chunk)) = rest.next().await {
+                read += chunk.len() as u64;
+                if read > ledger_store::uploads::MAX_UPLOAD {
+                    break;
+                }
+            }
+            return *refused;
+        }
+    };
+    let Book::Open {
+        access,
+        uploads,
+        store,
+        ..
+    } = &held
+    else {
+        unreachable!("the door lets only open books through")
+    };
+    // Streamed to the disk as it comes, never held whole; `receive` reads
+    // no more than the size declared and one byte. The bytes and their
+    // record are one blocking task, which runs to its end even if the
+    // client hangs up: never bytes kept without their record, and a close
+    // waits for both (the count goes with them).
+    use futures_util::TryStreamExt;
+    let stream = request
+        .into_body()
+        .into_data_stream()
+        .map_err(std::io::Error::other);
+    let mut body = tokio_util::io::SyncIoBridge::new(tokio_util::io::StreamReader::new(stream));
+    let (uploads, access, stopped) = (uploads.clone(), access.clone(), store.is_stopped());
+    let task = tokio::task::spawn_blocking(move || {
+        let _counted = _counted;
+        // The books server stopped after an internal error: nothing more
+        // comes in (SharedStore INVARIANT 2).
+        let received = if stopped {
+            Err(UploadError::Bad(crate::server::STOPPED.into()))
+        } else {
+            uploads.receive(&id, &token.id, &mut body, chrono::Utc::now().timestamp())
+        };
+        // Refused: the rest of what was sent (up to the most an upload
+        // can be) is read and dropped, so the client gets the answer, not
+        // a connection cut while it was still sending.
+        if received.is_err() {
+            use std::io::Read;
+            let rest = ledger_store::uploads::MAX_UPLOAD + 1;
+            let _ = std::io::copy(&mut (&mut body).take(rest), &mut std::io::sink());
+        }
+        let (status, outcome, text) = match &received {
+            Ok(g) => (
+                StatusCode::OK,
+                Outcome::Ok,
+                serde_json::json!({"received": g.id, "size": g.size, "sha256": g.sha256})
+                    .to_string(),
+            ),
+            Err(e) => {
+                let (status, code) = match e {
+                    _ if stopped => (StatusCode::SERVICE_UNAVAILABLE, "stopped"),
+                    UploadError::Unknown(_) => (StatusCode::NOT_FOUND, "no_such_upload"),
+                    UploadError::NotYours => (StatusCode::FORBIDDEN, "not_yours"),
+                    UploadError::AlreadySent => (StatusCode::CONFLICT, "already_sent"),
+                    UploadError::InUse => (StatusCode::CONFLICT, "in_use"),
+                    UploadError::WrongSize { .. }
+                    | UploadError::TooMuch { .. }
+                    | UploadError::WrongHash => (StatusCode::BAD_REQUEST, "not_as_declared"),
+                    _ => (StatusCode::INTERNAL_SERVER_ERROR, "failed"),
+                };
+                (status, Outcome::Refused(code.into()), e.to_string())
+            }
+        };
+        let record = Access {
+            principal: Principal {
+                id: token.id.clone(),
+                kind: "agent".into(),
+                label: token.name.clone(),
+            },
+            client: None,
+            request_id: None,
+            action: "upload".into(),
+            subject: id.clone(),
+            args_digest: None,
+            result: outcome.clone(),
+            head_after: None,
+        };
+        let recorded = access.record(&record).is_ok();
+        if !recorded && received.is_ok() {
+            // Never bytes kept without their record: sent again later.
+            uploads.discard(&id);
+        }
+        (status, outcome, text, recorded)
+    });
+    let Ok((status, outcome, text, true)) = task.await else {
+        store.stop();
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(REFUSED_HEADER, "not-recorded")],
+            crate::access::NOT_RECORDED,
+        )
+            .into_response();
+    };
+    match outcome {
+        Outcome::Refused(code) => (status, [(REFUSED_HEADER, code)], text).into_response(),
+        _ => (status, text).into_response(),
+    }
+}
+
+/// `GET /b/{book}/a/{attachment}`: a stored file's bytes, for a token
+/// with books:read (INVARIANT 9; what `wanderbooks download` asks for);
+/// recorded in the access log (action `download`).
+async fn download(
+    axum::extract::State(books): axum::extract::State<Arc<Books>>,
+    axum::extract::Path((book, attachment)): axum::extract::Path<(String, String)>,
+    request: axum::extract::Request,
+) -> axum::response::Response {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    // GET only (axum hands a HEAD to a GET route): a HEAD would read the
+    // file and record a download that sent nothing.
+    if request.method() != axum::http::Method::GET {
+        return (
+            StatusCode::METHOD_NOT_ALLOWED,
+            [(axum::http::header::ALLOW, "GET")],
+            "a download is a GET",
+        )
+            .into_response();
+    }
+    let _counted = InFlight::new(&books);
+    books
+        .last_arrival
+        .store(books.started.elapsed().as_millis() as u64, Ordering::SeqCst);
+    let asked = Asked {
+        action: "download",
+        subject: attachment.clone(),
+    };
+    let (held, token) = match door(&books, &book, &asked, request.headers()).await {
+        Ok(passed) => passed,
+        Err(refused) => return *refused,
+    };
+    let Book::Open { access, store, .. } = &held else {
+        unreachable!("the door lets only open books through")
+    };
+    // The read and its record are one blocking task, run to its end even
+    // if the client hangs up, and counted until then.
+    let (access, store_for) = (access.clone(), store.clone());
+    let task = tokio::task::spawn_blocking(move || {
+        let _counted = _counted;
+        // An id as the books write it (no sign, no leading zeros), so the
+        // log holds no alias of it.
+        let id = attachment
+            .parse::<u64>()
+            .ok()
+            .filter(|n| n.to_string() == attachment);
+        let found = match (token.scopes.contains(&Scope::Read), id) {
+            // Stopped after an internal error: as for uploads.
+            _ if store_for.is_stopped() => Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                "stopped",
+                crate::server::STOPPED.to_string(),
+            )),
+            (false, _) => Err((
+                StatusCode::FORBIDDEN,
+                "insufficient_scope",
+                format!(
+                    "this agent's token can't do that: a download needs books:read, and its token ({:?}) hasn't it",
+                    token.name
+                ),
+            )),
+            (true, None) => Err((
+                StatusCode::NOT_FOUND,
+                "no_such_attachment",
+                "there is no such attachment".to_string(),
+            )),
+            (true, Some(id)) => match store_for.attachment_file(id) {
+                Ok(Some(file)) => Ok(file),
+                Ok(None) => Err((
+                    StatusCode::NOT_FOUND,
+                    "no_such_attachment",
+                    "there is no such attachment".to_string(),
+                )),
+                // Stopped, or the stored file damaged: not a missing one.
+                Err(why) => Err((StatusCode::INTERNAL_SERVER_ERROR, "failed", why)),
+            },
+        };
+        let record = Access {
+            principal: Principal {
+                id: token.id.clone(),
+                kind: "agent".into(),
+                label: token.name.clone(),
+            },
+            client: None,
+            request_id: None,
+            action: "download".into(),
+            subject: attachment.clone(),
+            args_digest: None,
+            result: match &found {
+                Ok(_) => Outcome::Ok,
+                Err((_, code, _)) => Outcome::Refused((*code).into()),
+            },
+            head_after: None,
+        };
+        let recorded = access.record(&record).is_ok();
+        (found, recorded)
+    });
+    let Ok((found, true)) = task.await else {
+        store.stop();
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(REFUSED_HEADER, "not-recorded")],
+            crate::access::NOT_RECORDED,
+        )
+            .into_response();
+    };
+    match found {
+        Ok((name, mime, bytes)) => {
+            let digest = format!(
+                "sha-256=:{}:",
+                base64::Engine::encode(
+                    &base64::engine::general_purpose::STANDARD,
+                    <sha2::Sha256 as sha2::Digest>::digest(&bytes)
+                )
+            );
+            let mime = axum::http::HeaderValue::from_str(&mime).unwrap_or(
+                axum::http::HeaderValue::from_static("application/octet-stream"),
+            );
+            (
+                StatusCode::OK,
+                [
+                    (axum::http::header::CONTENT_TYPE, mime),
+                    (
+                        axum::http::header::CONTENT_DISPOSITION,
+                        axum::http::HeaderValue::from_str(&disposition(&name))
+                            .expect("only visible ASCII"),
+                    ),
+                    (
+                        axum::http::header::X_CONTENT_TYPE_OPTIONS,
+                        axum::http::HeaderValue::from_static("nosniff"),
+                    ),
+                    (
+                        axum::http::HeaderName::from_static(DIGEST_HEADER),
+                        axum::http::HeaderValue::from_str(&digest).expect("base64 is ASCII"),
+                    ),
+                ],
+                bytes,
+            )
+                .into_response()
+        }
+        Err((status, code, why)) => (status, [(REFUSED_HEADER, code)], why).into_response(),
+    }
+}
+
+/// The header a download's SHA-256 rides in (RFC 9530 Repr-Digest), so
+/// `wanderbooks download` keeps only what was stored.
+pub const DIGEST_HEADER: &str = "repr-digest";
+
+/// A download's Content-Disposition (RFC 6266): its name in ASCII, every
+/// other character `_`, and whole in UTF-8 as `filename*` (RFC 8187).
+fn disposition(name: &str) -> String {
+    let plain: String = name
+        .chars()
+        .map(|c| {
+            if (c.is_ascii_graphic() || c == ' ') && c != '"' && c != '\\' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let mut encoded = String::new();
+    for b in name.bytes() {
+        if b.is_ascii_alphanumeric() || b"!#$&+-.^_`|~".contains(&b) {
+            encoded.push(b as char);
+        } else {
+            encoded.push_str(&format!("%{b:02X}"));
+        }
+    }
+    format!("attachment; filename=\"{plain}\"; filename*=UTF-8''{encoded}")
+}
+
+/// `/b/{book}/mcp`: the book's MCP service, for a request carrying a token
+/// for that book (INVARIANT 8).
+async fn mcp(
+    axum::extract::State(books): axum::extract::State<Arc<Books>>,
+    axum::extract::Path(book): axum::extract::Path<String>,
+    mut request: axum::extract::Request,
+) -> axum::response::Response {
+    use axum::http::StatusCode;
+    use tower::ServiceExt;
+    // Counted before the closing check, so closing never misses it.
+    let counted = (request.method() != axum::http::Method::GET).then(|| InFlight::new(&books));
+    books
+        .last_arrival
+        .store(books.started.elapsed().as_millis() as u64, Ordering::SeqCst);
+    let method = request.method().clone();
+    let (held, token) = match door(&books, &book, &Asked::connect(&method), request.headers()).await
+    {
+        Ok(passed) => passed,
+        Err(refused) => return *refused,
+    };
+    let Book::Open { service, .. } = &held else {
+        unreachable!("the door lets only open books through")
+    };
+    let service = service.clone();
+    let principal = |t: &Token| Principal {
+        id: t.id.clone(),
+        kind: "agent".into(),
+        label: t.name.clone(),
+    };
     let session = request
         .headers()
         .get(SESSION_HEADER)
@@ -1024,7 +1389,7 @@ async fn mcp(
         return refused_at_door(
             &held,
             principal(&token),
-            &method,
+            &Asked::connect(&method),
             "too_many_sessions",
             StatusCode::SERVICE_UNAVAILABLE,
             "the books server has too many sessions open: end some, then try again".into(),
@@ -1035,7 +1400,7 @@ async fn mcp(
         return refused_at_door(
             &held,
             principal(&token),
-            &method,
+            &Asked::connect(&method),
             "session_token",
             StatusCode::FORBIDDEN,
             "this session was opened with another token".into(),
@@ -1154,7 +1519,7 @@ fn bind(run: &Path, name: &str) -> std::io::Result<tokio::net::UnixListener> {
 }
 
 fn print_usage(prog: &str) {
-    eprintln!("usage: {prog} [--root DIR] [--import-root DIR]...");
+    eprintln!("usage: {prog} [--root DIR]");
     eprintln!("  The books server for the data root: started by the host, not by hand.");
     eprintln!("  It runs until its standard input ends, or SIGTERM, SIGINT or SIGHUP.");
 }
@@ -1166,14 +1531,10 @@ pub fn run(
     args: impl IntoIterator<Item = String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut root: Option<PathBuf> = None;
-    let mut import_roots: Vec<PathBuf> = Vec::new();
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--root" => root = Some(PathBuf::from(args.next().ok_or("--root needs a folder")?)),
-            "--import-root" => import_roots.push(PathBuf::from(
-                args.next().ok_or("--import-root needs a folder")?,
-            )),
             "--help" | "-h" => {
                 print_usage(prog);
                 return Ok(());
@@ -1240,14 +1601,8 @@ pub fn run(
         std::fs::set_permissions(&lock_path, std::fs::Permissions::from_mode(0o600))
             .map_err(|e| format!("can't make the server lock private: {}", e.kind()))?;
     }
-    let import_roots = if import_roots.is_empty() {
-        ImportRoots::defaults()
-    } else {
-        ImportRoots::new(import_roots)
-    };
     let books = Arc::new(Books {
         root: root.clone(),
-        import_roots,
         held: RwLock::new(BTreeMap::new()),
         sessions: CancellationToken::new(),
         closing: CancellationToken::new(),
@@ -1326,9 +1681,37 @@ async fn serve(
     }
     let held: Vec<String> = books.held().keys().cloned().collect();
     eprintln!("wanderbooks server: ready, holding {} books", held.len());
+    // Every open book's lapsed uploads go within SWEEP_EVERY of lapsing,
+    // whatever else the server is doing (uploads.rs INVARIANT 3).
+    let (sweeping, sweep_stop) = (books.clone(), stop.clone());
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(SWEEP_EVERY);
+        loop {
+            tokio::select! {
+                () = sweep_stop.cancelled() => break,
+                _ = tick.tick() => {
+                    let uploads: Vec<_> = sweeping
+                        .held()
+                        .values()
+                        .filter_map(|b| match b {
+                            Book::Open { uploads, .. } => Some(uploads.clone()),
+                            Book::Failed(_) => None,
+                        })
+                        .collect();
+                    let now = chrono::Utc::now().timestamp();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        uploads.iter().for_each(|u| u.sweep(now));
+                    })
+                    .await;
+                }
+            }
+        }
+    });
 
     let app = axum::Router::new()
         .route("/b/{book}/mcp", axum::routing::any(mcp))
+        .route("/b/{book}/u/{upload}", axum::routing::put(upload))
+        .route("/b/{book}/a/{attachment}", axum::routing::get(download))
         .fallback(not_found)
         .with_state(books.clone());
     // The HTTP side keeps answering (refusing, once closing) until the

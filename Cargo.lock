@@ -3824,6 +3824,7 @@ checksum = "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb"
 name = "ledger-cli"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "ledger-config",
  "ledger-core",
@@ -3836,6 +3837,7 @@ dependencies = [
  "reqwest",
  "rmcp",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "tokio",
  "toml 1.1.8+spec-1.1.0",
@@ -3908,6 +3910,7 @@ dependencies = [
  "rpassword",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "tokio",
  "tokio-util",
@@ -3960,6 +3963,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",

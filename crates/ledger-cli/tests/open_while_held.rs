@@ -383,7 +383,8 @@ fn post_one(a: &mut Agent, n: u64) -> Result<u64, String> {
     a.call(
         "books.attach_receipt",
         json!({"entry_id": id, "file_name": format!("r{n}.txt"),
-               "mime_type": "text/plain", "content_base64": "cmVjZWlwdA=="}),
+               "mime_type": "text/plain", "content_base64": "cmVjZWlwdA==",
+               "sha256": "6f32860910ca0fb2a20c7fda143666b09dbf8db5238195c90a586fb542ff0cad"}),
     )?;
     a.call(
         "books.post_entry",
@@ -1354,11 +1355,10 @@ fn a_message_too_large_is_refused_and_the_session_goes_on() {
     a.initialize();
     {
         let stdin = a.run.child.stdin.as_mut().unwrap();
+        // One byte over the limit (1 MiB), its newline aside.
+        let max = ledger_mcp::local::MAX_BODY;
         stdin.write_all(b"{\"x\":\"").unwrap();
-        let chunk = vec![b'a'; 1024 * 1024];
-        for _ in 0..65 {
-            stdin.write_all(&chunk).unwrap();
-        }
+        stdin.write_all(&vec![b'a'; max + 1 - 8]).unwrap();
         stdin.write_all(b"\"}\n").unwrap();
         stdin.flush().unwrap();
     }
@@ -1427,10 +1427,11 @@ fn malformed_and_boundary_input_never_ends_the_session() {
     assert!(line.contains("-32700"), "{line}");
     let pong = a.request("ping", json!({}), 20);
     assert!(pong.get("result").is_some(), "{pong}");
-    // Exactly 64 MiB of message (a JSON string padded with spaces), then
-    // a ping: the big one is the server's to refuse, the ping answered.
+    // Exactly the limit, 1 MiB of message (a JSON string padded with
+    // spaces), then a ping: the big one is the server's to refuse, the
+    // ping answered.
     {
-        let max = 64 * 1024 * 1024;
+        let max = 1024 * 1024;
         let head = b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/x\",\"params\":{\"pad\":\"";
         let tail = b"\"}}";
         let stdin = a.run.child.stdin.as_mut().unwrap();
@@ -2049,4 +2050,282 @@ fn the_token_commands_and_the_bridge() {
     assert_eq!(code, Some(2));
     assert!(err.contains("isn't a scope"), "{err}");
     assert!(b.end().is_some());
+}
+
+/// Run `command` (as books.begin_upload or books.get_receipt gave it,
+/// with its placeholder cut off) with `more` words after it: its output.
+fn run_given(
+    home: &Home,
+    command: &str,
+    placeholder: &str,
+    more: &[&std::ffi::OsStr],
+) -> std::process::Output {
+    let words: Vec<&str> = command
+        .strip_suffix(placeholder)
+        .unwrap_or_else(|| panic!("{command}"))
+        .split(' ')
+        .collect();
+    assert_eq!(words[0], "wanderbooks", "{command}");
+    home.cmd(words[1])
+        .args(&words[2..])
+        .args(more)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn an_agent_sends_and_saves_files_with_the_commands_it_is_given() {
+    let home = Home::new("files");
+    home.create("acme");
+    let mut a = Agent::start(&home, "acme");
+    a.initialize();
+    let folder = home.dir.path().join("Downloads");
+    std::fs::create_dir(&folder).unwrap();
+    let mut bytes = b"%PDF-1.4 a big receipt ".to_vec();
+    bytes.resize(400 * 1024, b'x');
+    let file = folder.join("big receipt.pdf");
+    std::fs::write(&file, &bytes).unwrap();
+    let begin = |a: &mut Agent| {
+        a.call(
+            "books.begin_upload",
+            json!({"sha256": ledger_store::journal::sha256_hex(&bytes), "size": bytes.len(),
+                   "mime_type": "application/pdf", "file_name": "big receipt.pdf",
+                   "purpose": "receipt"}),
+        )
+        .unwrap()
+    };
+    let begun = begin(&mut a);
+    let upload = begun["upload_id"].as_str().unwrap().to_string();
+    let command = begun["command"].as_str().unwrap().to_string();
+    let quiet = |out: &std::process::Output| {
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(!text.contains(&home.root().display().to_string()), "{text}");
+        text
+    };
+    // Another file than the one declared: refused, nothing kept.
+    let other = folder.join("other.pdf");
+    std::fs::write(&other, b"%PDF-1.4 not it").unwrap();
+    let out = run_given(&home, &command, " <the file's path>", &[other.as_os_str()]);
+    assert!(!out.status.success());
+    assert!(quiet(&out).contains("not the"), "{}", quiet(&out));
+    // A file of exactly the largest size isn't refused for its size.
+    let edge = folder.join("edge.pdf");
+    std::fs::File::create(&edge)
+        .unwrap()
+        .set_len(25 * 1024 * 1024)
+        .unwrap();
+    let out = run_given(&home, &command, " <the file's path>", &[edge.as_os_str()]);
+    assert!(!out.status.success());
+    assert!(
+        quiet(&out).contains("more than the") && !quiet(&out).contains("at most"),
+        "{}",
+        quiet(&out)
+    );
+    std::fs::remove_file(&edge).unwrap();
+    // A file larger than any upload is refused before it is read.
+    let huge = folder.join("huge.pdf");
+    std::fs::File::create(&huge)
+        .unwrap()
+        .set_len(25 * 1024 * 1024 + 1)
+        .unwrap();
+    let out = run_given(&home, &command, " <the file's path>", &[huge.as_os_str()]);
+    assert!(!out.status.success());
+    assert!(quiet(&out).contains("at most"), "{}", quiet(&out));
+    // With no token kept for the name given: what the human does.
+    let out = home
+        .cmd("upload")
+        .args(["--book", "acme", "--token", "nobody", &upload])
+        .arg(&file)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        quiet(&out).contains("wanderbooks token create"),
+        "{}",
+        quiet(&out)
+    );
+    // A path that looks like a flag goes after the command's `--`.
+    let dashed = folder.join("-r.pdf");
+    std::fs::copy(&file, &dashed).unwrap();
+    let out = home
+        .cmd("upload")
+        .args(["--book", "acme", "not-an-id", "--"])
+        .arg(&dashed)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(
+        quiet(&out).contains("isn't an upload's id"),
+        "{}",
+        quiet(&out)
+    );
+    // The file itself goes (by its copy whose name starts with `-`).
+    let out = run_given(&home, &command, " <the file's path>", &[dashed.as_os_str()]);
+    assert!(out.status.success(), "{}", quiet(&out));
+    assert!(quiet(&out).contains(&format!("Sent {} bytes", bytes.len())));
+    let filed = a
+        .call(
+            "books.file_document",
+            json!({"category": "other", "upload_id": upload}),
+        )
+        .unwrap();
+    let att = filed["attachment_id"].as_u64().unwrap();
+    // Too big to come back inline: the command saves a copy, beside any
+    // file of its name, never over it.
+    let back = a
+        .call(
+            "books.get_receipt",
+            json!({"attachment_id": att, "view": "bytes"}),
+        )
+        .unwrap();
+    let download = back["download"].as_str().unwrap().to_string();
+    for n in 1..=2 {
+        let out = run_given(
+            &home,
+            &download,
+            " --to <a folder>",
+            &["--to".as_ref(), folder.as_os_str()],
+        );
+        assert!(out.status.success(), "{}", quiet(&out));
+        let saved = folder.join(format!("big receipt ({n}).pdf"));
+        assert_eq!(std::fs::read(&saved).unwrap(), bytes);
+        assert!(quiet(&out).contains(&saved.display().to_string()));
+    }
+    assert_eq!(std::fs::read(&file).unwrap(), bytes, "never overwritten");
+    let out = run_given(
+        &home,
+        &download,
+        " --to <a folder>",
+        &["--to".as_ref(), file.as_os_str()],
+    );
+    assert!(!out.status.success());
+    assert!(quiet(&out).contains("isn't a folder"));
+    let out = home
+        .cmd("download")
+        .args(["--book", "acme", "999", "--to"])
+        .arg(&folder)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    quiet(&out);
+    assert_eq!(
+        std::fs::read_dir(&folder).unwrap().count(),
+        6,
+        "nothing else saved"
+    );
+    a.end();
+}
+
+#[test]
+fn the_commands_given_run_as_the_agents_own_token() {
+    let home = Home::new("files-token");
+    home.create("acme");
+    let out = home
+        .cmd("token")
+        .args(["create", "--book", "acme", "--name", "bookkeeper"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let mut c = home.cmd("mcp");
+    c.args(["--book", "acme", "--token", "bookkeeper"]);
+    let mut a = Agent::from(c);
+    a.initialize();
+    let folder = home.dir.path().join("Downloads");
+    std::fs::create_dir(&folder).unwrap();
+    let mut bytes = b"%PDF-1.4 kept by the bookkeeper ".to_vec();
+    bytes.resize(300 * 1024, b'y');
+    let file = folder.join("r.pdf");
+    std::fs::write(&file, &bytes).unwrap();
+    let begun = a
+        .call(
+            "books.begin_upload",
+            json!({"sha256": ledger_store::journal::sha256_hex(&bytes), "size": bytes.len(),
+                   "mime_type": "application/pdf", "file_name": "r.pdf", "purpose": "receipt"}),
+        )
+        .unwrap();
+    let command = begun["command"].as_str().unwrap().to_string();
+    assert!(command.contains(" --token bookkeeper "), "{command}");
+    let out = run_given(&home, &command, " <the file's path>", &[file.as_os_str()]);
+    assert!(out.status.success(), "{out:?}");
+    let filed = a
+        .call(
+            "books.file_document",
+            json!({"category": "other", "upload_id": begun["upload_id"]}),
+        )
+        .unwrap();
+    let back = a
+        .call(
+            "books.get_receipt",
+            json!({"attachment_id": filed["attachment_id"], "view": "bytes"}),
+        )
+        .unwrap();
+    let download = back["download"].as_str().unwrap().to_string();
+    assert!(download.contains(" --token bookkeeper "), "{download}");
+    let out = run_given(
+        &home,
+        &download,
+        " --to <a folder>",
+        &["--to".as_ref(), folder.as_os_str()],
+    );
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(std::fs::read(folder.join("r (1).pdf")).unwrap(), bytes);
+    // A file whose name isn't text goes, and comes back into a folder
+    // whose name isn't text.
+    use std::os::unix::ffi::OsStrExt;
+    let odd = folder.join(std::ffi::OsStr::from_bytes(b"r\xff.pdf"));
+    let mut other = bytes.clone();
+    other[40] = b'z';
+    std::fs::write(&odd, &other).unwrap();
+    let begun = a
+        .call(
+            "books.begin_upload",
+            json!({"sha256": ledger_store::journal::sha256_hex(&other), "size": other.len(),
+                   "mime_type": "application/pdf", "file_name": "r2.pdf", "purpose": "receipt"}),
+        )
+        .unwrap();
+    let out = run_given(
+        &home,
+        begun["command"].as_str().unwrap(),
+        " <the file's path>",
+        &[odd.as_os_str()],
+    );
+    assert!(out.status.success(), "{out:?}");
+    let filed = a
+        .call(
+            "books.file_document",
+            json!({"category": "other", "upload_id": begun["upload_id"]}),
+        )
+        .unwrap();
+    let odd_folder = folder.join(std::ffi::OsStr::from_bytes(b"out\xfe"));
+    std::fs::create_dir(&odd_folder).unwrap();
+    let out = home
+        .cmd("download")
+        .args(["--book", "acme", "--token", "bookkeeper"])
+        .arg(filed["attachment_id"].to_string())
+        .arg("--to")
+        .arg(&odd_folder)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(std::fs::read(odd_folder.join("r2.pdf")).unwrap(), other);
+    // Anywhere else, a word that isn't text is refused plainly.
+    let out = home
+        .cmd("books")
+        .arg(std::ffi::OsStr::from_bytes(b"\xff"))
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("isn't UTF-8"));
+    a.end();
 }

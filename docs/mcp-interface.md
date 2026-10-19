@@ -191,6 +191,57 @@ settings-and-conventions section says how to use them.
   binding a LAN, tailnet or public interface is an explicit human
   decision, never a default. Auth, scopes and Origin validation arrive
   with the served books (`plan/served.md`, P2).
+- **Served books** (`wanderbooks server`, started by the host; an agent
+  connects with `wanderbooks mcp --book ID`, a stdio bridge): every book
+  in the data root, on a socket in the root's private `run/` folder that
+  only this account can connect to. Every request carries a bearer token
+  live for that book (refused 401 without one, 403 with another book's).
+  Refusals at the door, tool calls, uploads and downloads are recorded
+  in the book's access log; when a record can't be written the book
+  stops taking requests (an upload or download is then refused, 503).
+  - `/b/{book}/mcp`: the book's MCP service. A request is at most 1 MiB.
+  - `PUT /b/{book}/u/{upload}`: an upload's bytes (`books.begin_upload`),
+    from the token that began it; what `wanderbooks upload --book B
+    [--token NAME] UPLOAD FILE` sends. Streamed to the disk, kept only if
+    exactly the size and SHA-256 declared (so at most 25 MiB), once. The
+    receive and its access record are one blocking task: bytes are never
+    kept without their record (if it can't be written they are thrown
+    away, 503 `not-recorded`, and the books stop). 200 with `{ received,
+    size, sha256 }`; else, with nothing kept and the code in
+    `x-wanderbooks-refused`: 404 `no_such_upload` (unknown or lapsed,
+    also if it lapsed while being sent), 403 `not_yours`, 409
+    `already_sent` (its bytes came, or a call holds them), 409 `in_use`
+    (another request is sending them), 400 `not_as_declared` (short, more than declared, or
+    the wrong hash), 503 `stopped` (the books stopped after an internal
+    error), 500 `failed`. A refused request's body is read and dropped
+    (up to 25 MiB), so the client gets the answer, not a cut connection.
+    Logged as action `upload` with the upload's id, a refusal at the
+    door (no token, another book's) too. An upload's id is `up_` and 32
+    letters `a`-`p`: no digits, so the access log's TIN masking never
+    hides it.
+  - `GET /b/{book}/a/{attachment}`: a stored file's bytes, for a token
+    with `books:read` (403 `insufficient_scope` without it; 404
+    `no_such_attachment`); the read and its access record are one
+    blocking task. Sent with `Content-Type` (the stored MIME type, or
+    `application/octet-stream` if it can't be a header),
+    `Content-Disposition: attachment; filename="…"; filename*=UTF-8''…`
+    (the plain name: anything but visible ASCII and spaces, and `"` and
+    `\`, made `_`; then the whole name, RFC 8187 percent-encoded),
+    `X-Content-Type-Options: nosniff`, and `Repr-Digest:
+    sha-256=:<base64>:` (RFC 9530). A stored file that can't be read
+    whole is 500 `failed`; books that stopped, 503 `stopped`. GET only
+    (a HEAD is 405, unrecorded). Logged as
+    action `download` with the attachment's id, a refusal at the door
+    too.
+    `wanderbooks download --book B [--token NAME] ATTACHMENT --to DIR`
+    asks for it, checks the digest before saving, and saves it under the
+    server's name (`filename*` first) made plain: separators and control
+    characters made `_`, invisible (Unicode format) characters and
+    leading dots and spaces dropped, at most 200 bytes with the extension
+    kept. Beside a file of that name it is `name (1).ext`, and so on;
+    `attachment-N` if the folder takes no such name. It is written to a
+    hidden file and hard-linked in: never a partial file under the real
+    name, never over another file.
 
 ## Server instructions
 
@@ -256,7 +307,7 @@ No text the agent is given (tool JSON with its schemas, resources, connect
 text, handbook, and every refusal fixed in code: each error variant's
 template in the crates under the server, scanned from source, built error
 texts, and the server's refusal constants) names a helper command, a home
-path, the data dir or its flag, the import-root flag, a file of the books
+path, the data dir or its flag, the old import-root flag, a file of the books
 (`.jsonl`, the database, `vault.key`, `.gitignore`), git, GitHub, a pull
 request, a repo doc (`docs/`, `.md`), or tells the agent to read the
 books' files; no tool title or description, connect text or handbook
@@ -614,14 +665,17 @@ texts are at most 500 characters, no control characters.
   `party.role_set`. Removing the last 1099 role with W-9 facts on file, or
   employee with W-4 facts, is refused: clear the facts first.
 - `books.set_w9 { party, received_on, entity_type, exempt_payee_code?,
-  fatca_code?, tin_last4, kept_at, tin?, tin_type?, w9_file_path? }` or
-  `{ party, clear: true }` → the party. Journaled as `party.w9_set`. A
-  party with a vendor record also gets the record's `tin_on_file` set to
-  match (journaled as `vendor.1099_set`), so `books.vendor_1099`'s
-  `missing_w9` follows. `tin`, `tin_type`, and `w9_file_path` put the full
-  TIN and the signed form in the TIN vault (below); with them `tin_last4`
-  comes from the TIN (a given one must agree) and `kept_at` defaults to
-  `"wanderbooks vault"`.
+  fatca_code?, tin_last4, kept_at, tin?, tin_type?, w9_upload_id?,
+  w9_content_base64?, w9_sha256?, w9_file_name? }` or `{ party, clear:
+  true }` → the party. Journaled as `party.w9_set`. A party with a
+  vendor record also gets the record's `tin_on_file` set to match
+  (journaled as `vendor.1099_set`), so `books.vendor_1099`'s
+  `missing_w9` follows.
+  `tin` and `tin_type` put the full TIN in the TIN vault, and the signed
+  form (`w9_upload_id`, or `w9_content_base64` with `w9_sha256`, as in
+  "Tools — receipts & documents") goes there too (below); with them
+  `tin_last4` comes from the TIN (a given one must agree) and `kept_at`
+  defaults to `"wanderbooks vault"`.
 - `books.set_w4 { party, received_on, state, kept_at }` or `{ party, clear:
   true }` → the party. Journaled as `party.w4_set`.
 - `books.set_entry_party { entry_id, party?, parties?, no_party_reason? }`
@@ -749,56 +803,58 @@ and the CPA package carries them.
   facts name another last four is refused (a payee's new TIN comes with
   its W-9: `books.set_w9`); one whose W-9 facts agree gets their
   `vault_record` updated too (`party.w9_set`).
-- `books.set_w9 { ..., tin, tin_type, w9_file_path? }` (above): validates
-  the TIN against its type (nine digits, hyphens allowed; an ITIN starts
-  with 9 and has an IRS group in digits 4-5; an SSN or EIN doesn't start
-  with 9), checks the facts on a copy of the ledger, then writes the vault
-  and journals the facts with `vault_record`, the SHA-256 of the TIN
-  record (of the form's record when only a form is given). With a TIN it
-  also journals the party's TIN facts (`party.tin_set`, as
-  `books.set_tin`); a TIN with a new last four clears the old TIN facts
-  first (`party.tin_set` null), so the two never disagree. The form (PDF,
-  PNG, JPEG; 25 MB at most) goes to the vault only, never the attachment
-  store. `w9_file_path` is read exactly as `books.import_local_file` reads
-  a path (the import roots, the sealed places, no links followed out of
-  them), and its type is judged by the file the path really leads to.
-  Facts given later without a TIN keep the vault record when their
-  last four agree with the vault's TIN, and are refused when they don't
-  (pass the new TIN, or purge). Clearing the facts (`clear: true`) is
-  refused while the vault holds the party's TIN or form: purge first.
+- `books.set_w9 { ..., tin, tin_type, w9_upload_id? | w9_content_base64? +
+  w9_sha256?, w9_file_name? }` (above): validates the TIN against its type (nine digits,
+  hyphens allowed; an ITIN starts with 9 and has an IRS group in digits
+  4-5; an SSN or EIN doesn't start with 9), checks the facts on a copy of
+  the ledger, then writes the vault and journals the facts with
+  `vault_record`, the SHA-256 of the TIN record (of the form's record when
+  only a form is given). With a TIN it also journals the party's TIN facts
+  (`party.tin_set`, as `books.set_tin`); a TIN with a new last four clears
+  the old TIN facts first (`party.tin_set` null), so the two never
+  disagree. The form (a PDF, PNG or JPEG, judged by its own first bytes,
+  whatever it is called; an upload of purpose `w9`, at most 25 MiB, or
+  inline at most 256 KiB) goes to the vault only, never the attachment
+  store. Its file name is `w9_file_name` if given, else the upload's,
+  else `w9.pdf`, `w9.png` or `w9.jpg` by its type, checked as any filed
+  name; `w9_file_name` without a W-9 is refused. Facts given later without a TIN
+  keep the vault record when their last four agree with the vault's TIN,
+  and are refused when they don't (pass the new TIN, or purge). Clearing
+  the facts (`clear: true`) is refused while the vault holds the party's
+  TIN or form: purge first.
 - `books.get_w9 { party, save_to }` → `{ party_id, path, file_name,
-  size_bytes, note }`. Writes the party's form from the vault to `save_to`:
-  a new file (an existing one is refused), in a folder that exists,
-  outside the books dir and outside the import roots, mode 0600. Returns
-  the path, never the contents. Journals nothing. The same holds for
-  `books.vendor_1099`'s `save_csv_to` with `include_tins` and
-  `books.export_cpa_package`'s `save_to` with TINs: a file with full TINs
-  never lands where it could be filed back in. Nor does one go in from
-  elsewhere: the server keeps, beside the vault, the SHA-256 of every file
-  it read or wrote with full TINs (the W-9 `books.set_w9` reads, recorded
-  once the call has passed every check, just before the vault keeps it,
-  so a refused call marks no file; each of these outputs; each file inside a CPA package
-  that holds a TIN), shared by every session and kept across restarts,
-  and every filing tool (`books.import_local_file`, `books.attach_receipt`,
-  `books.file_document`) refuses those exact files and any text file
-  (CSV, TSV, text, JSON, IIF, XML, HTML, Markdown, by type, name or UTF-8
-  or UTF-16 decoding, UTF-16 with a byte-order mark or NUL-interleaved
-  without one) holding a full TIN, storing nothing. A text file
-  holds one when it has a TIN the vault holds, anywhere, as nine digits,
-  3-2-4 joined by hyphens, spaces or dots, or 2-7 joined by a hyphen or a
-  space (compared on the server; a vault that can't be opened leaves the
-  next test alone), or a stand-alone number printed as an SSN or EIN is
+  size_bytes, note }`. Writes the party's form from the vault to
+  `save_to`: a new file (an existing one is refused), in a folder that
+  exists, outside the books dir (where it really leads, every link
+  followed), mode 0600. Returns the path, never the contents. Journals
+  nothing. The same holds for `books.vendor_1099`'s `save_csv_to` with
+  `include_tins` and `books.export_cpa_package`'s `save_to` with TINs: a
+  file with full TINs never lands inside the books. Nor does one go in
+  from elsewhere: the server keeps, beside the vault, the SHA-256 of every
+  file it read or wrote with full TINs (the W-9 `books.set_w9` reads,
+  recorded once the call has passed every check, just before the vault
+  keeps it, so a refused call marks no file; each of these outputs; each
+  file inside a CPA package that holds a TIN), shared by every session and
+  kept across restarts, and every filing tool (`books.attach_receipt`,
+  `books.file_document`) refuses those exact files and any text file (CSV,
+  TSV, text, JSON, IIF, XML, HTML, Markdown, by type, name or UTF-8 or
+  UTF-16 decoding, UTF-16 with a byte-order mark or NUL-interleaved
+  without one) holding a full TIN, storing nothing. A text file holds one
+  when it has a TIN the vault holds, anywhere, as nine digits, 3-2-4
+  joined by hyphens, spaces or dots, or 2-7 joined by a hyphen or a space
+  (compared on the server; a vault that can't be opened leaves the next
+  test alone), or a stand-alone number printed as an SSN or EIN is
   (123-45-6789, 12-3456789; no digit, and no hyphen or dot followed by a
-  digit, beside it). Bank exports pass: routing and account numbers,
-  long references and dates next to amounts are not TINs (rules.md B-26).
-  No probing: a text with more than two TIN-shaped numbers ending in the
-  last four of a TIN the books know is refused before the vault is
-  opened, in the same words whether or not one is that TIN, so the vault
-  is compared against at most two candidates a filing (rules.md B-26).
-  An altered copy of a binary file (a W-9 PDF re-saved or re-scanned),
-  and a TIN the vault doesn't hold written another way, are not
-  detected: P2 and P7 take the path tools and full TINs out of the
-  agent's reach.
+  digit, beside it). Bank exports pass: routing and account numbers, long
+  references and dates next to amounts are not TINs (rules.md B-26). No
+  probing: a text with more than two TIN-shaped numbers ending in the last
+  four of a TIN the books know is refused before the vault is opened, in
+  the same words whether or not one is that TIN, so the vault is compared
+  against at most two candidates a filing (rules.md B-26). An altered copy
+  of a binary file (a W-9 PDF re-saved or re-scanned), and a TIN the vault
+  doesn't hold written another way, are not detected: P2 slice 6 moves the
+  TIN outputs (`save_to`, `save_csv_to`) to the viewer, and P7 takes full
+  TINs out of the agent's reach.
 - `books.purge_tin { party, reason, confirmed? }` → `{ status: "preview" |
   "purged", party_id, name, tin_in_vault, w9_file_in_vault, tin_last4?,
   journaled, note }`. Without `confirmed`, a preview that changes nothing.
@@ -841,10 +897,56 @@ the receipt policy counts it.
 
 ## Tools — receipts & documents
 
-- `books.attach_receipt { entry_id?, file_name, mime_type, content_base64,
-  description?, link_to? }` → `{ attachment_id, sha256, deduplicated, links
-  }`. `entry_id` is optional: a receipt can be filed before its entry
-  exists. `link_to` as in "Tools — attachments".
+A file comes in one of two ways, named in the tool that files it
+(`books.attach_receipt`, `books.file_document`, `books.set_w9`,
+`books.import_bank_csv`, `books.import_chart_csv`): `upload_id`, an
+upload made with `books.begin_upload` (any file up to 25 MiB; its bytes
+never pass through the agent), or `content_base64` with its `sha256`
+(at most 256 KiB decoded; longer text is refused before it is decoded).
+Never both, never neither. Inline bytes that aren't base64, or whose
+SHA-256 isn't the one given, are refused (guard `base64_corrupt`): send
+the file as an upload. Uploads exist only for books served from the
+data root (the server's socket carries the bytes); over stdio, only
+inline, and the refusal says so and to tell the human. On the socket an
+MCP request is at most 1 MiB. A file's name and type are checked when
+it is filed (every filing tool, `books.begin_upload`, and the W-9's
+name): a name of 1 to 255 bytes, with no `/` or `\`, not `.` or `..`,
+and no control or invisible (Unicode format) characters; a MIME type
+`type/subtype` (parameters allowed) of visible ASCII, at most 127 bytes.
+
+- `books.begin_upload { sha256, size, mime_type, file_name, purpose:
+  "receipt" | "document" | "import" | "w9" }` → `{ upload_id?, command?,
+  expires_at?, max_bytes, existing_attachment_id? }`. Makes a grant for
+  the calling token: one SHA-256, one size (at most 25 MiB; empty
+  refused), one purpose, lasting 15 minutes; at most 16 under way per
+  token. A tool takes only an upload of its own purpose:
+  `books.attach_receipt` and `books.file_document` take `receipt` or
+  `document`, the CSV imports `import`, `books.set_w9` `w9`; another
+  tool refuses it and leaves it for the right one. `command` is
+  `wanderbooks upload --book B <upload_id> -- <the file's path>` (with
+  `--token NAME` when the caller's token isn't the default `agent`),
+  which sends the bytes (`PUT /b/{book}/u/{upload}`, "Transports"); the
+  agent runs it, then names `upload_id` in the tool that files it.
+  Bytes that aren't the size and SHA-256 declared are refused and
+  nothing is kept. An upload's bytes are sent once, only by the token
+  that began it, and used once: the call that takes them holds them
+  (hashed again) and spends them only when they are in the books (an
+  import: once its rehearsal passed); a call refused after taking them,
+  or one that panics, gives them back, and a server stopped mid-call
+  gives them back when the books next open. Lapsed grants are refused,
+  and swept when the books open, whenever a grant is made, and every
+  10 seconds. For `receipt` or `document`, when an attachment not withdrawn
+  already holds those bytes, no grant is made: `existing_attachment_id`
+  names it (link it, `books.link_attachment`, instead of filing a copy);
+  for `import` and `w9` a grant is always made. Refusals never name a
+  path.
+- `books.attach_receipt { entry_id?, file_name?, mime_type?, upload_id? |
+  content_base64? + sha256?, description?, link_to? }` → `{ attachment_id,
+  sha256, deduplicated, links }`. `entry_id` is optional: a receipt can be
+  filed before its entry exists. `file_name` and `mime_type` default to
+  the upload's; inline they are required. The upload is taken only after
+  the entry and every `link_to` subject check out. `link_to` as in "Tools
+  — attachments".
 - `books.link_receipt { receipt_id, entry_id }` → link a previously filed
   (unlinked, not withdrawn) receipt to its entry. A receipt linked elsewhere
   must be unlinked first; one already linked to that entry
@@ -865,15 +967,23 @@ the receipt policy counts it.
   subject it is linked to, its filing entry first). Withdrawn attachments
   are omitted unless `include_withdrawn` is true. `entry_id` lists the
   files filed on the entry and linked to it.
-- `books.get_receipt { attachment_id }` → `{ metadata, description?,
-  links, content_base64 }`.
+- `books.get_receipt { attachment_id, view?: "meta" | "bytes" }` → `{
+  metadata, description?, links, content_base64?, download? }`. `meta`
+  (the default) returns no bytes. `bytes` adds `content_base64`
+  (hash-verified) for a file of at most 256 KiB; a larger one gives
+  `download`, the command `wanderbooks download --book B <id> --to <a
+  folder>` (with `--token NAME` when the caller's token isn't the
+  default `agent`; `GET /b/{book}/a/{attachment}`, "Transports"), which
+  saves a copy as a new file in that folder. Over stdio there is no
+  download: a larger file is refused.
 - `books.file_document { category: "formation" | "legal" | "tax" |
   "accounting" | "statement" | "contract" | "photo" | "warranty" |
-  "import_source" | "other", file_name, mime_type, content_base64,
-  description?, link_to? }` → `{ attachment_id, sha256, deduplicated, links
-  }`. The Drive-folder replacement (today's 01 Formation / 02 Legal / 03
-  Tax / 04 Accounting). Never a W-9: it shows the full TIN (`books.set_w9
-  w9_file_path`).
+  "import_source" | "other", file_name?, mime_type?, upload_id? |
+  content_base64? + sha256?, description?, link_to? }` → `{ attachment_id,
+  sha256, deduplicated, links }`. The bytes, name and type as in
+  `books.attach_receipt`. The Drive-folder replacement (today's 01
+  Formation / 02 Legal / 03 Tax / 04 Accounting). Never a W-9: it shows
+  the full TIN (`books.set_w9 w9_upload_id`).
 
 ## Receipt enforcement
 
@@ -977,51 +1087,19 @@ posting.
 
 ## Tools — import
 
-- `books.import_bank_csv { csv_text, bank_account_code, default_offset_code,
-  rules?, date_order?, source_attachment_id? }` → creates one draft per
-  transaction (QBO upload layout). `rules` maps description substrings to
-  account codes. `source_attachment_id` (the export as filed, category
+- `books.import_bank_csv { csv_text? | upload_id?, bank_account_code,
+  default_offset_code, rules?, date_order?, source_attachment_id? }` →
+  creates one draft per transaction (QBO upload layout). `rules` maps
+  description substrings to account codes. `source_attachment_id` (the export as filed, category
   `import_source`) is checked before any draft and linked to the bank
   account (`source_linked`; false when it was already), never to the
   drafts: a bank export is not a receipt.
-- `books.import_chart_csv { csv_text }` → creates accounts from
-  `code,name,type,parent_code` CSV. All-or-nothing.
-- `books.import_local_file { path, category: "receipt" | "document", ... }`
-  → files a file from the server's own disk, read only from the **import
-  roots**: each `--import-root DIR` given to `ledger-mcp` (repeatable), or
-  by default the downloads folder only (`$XDG_DOWNLOAD_DIR`, else
-  `~/Downloads`). No root may be `/`, the home folder or a folder holding
-  it, a folder holding the books dir, the data dir (where a symlinked one
-  really is), the vault or a vault key, or a folder inside the books dir,
-  the data dir or the vault (every file there would be refused): a named
-  root like that stops
-  the server at startup, saying why; a default one is dropped. The default
-  is used only when it is a real folder that isn't the home folder (an
-  `XDG_DOWNLOAD_DIR` of `$HOME/` falls back to `~/Downloads`, and to no
-  root when that doesn't exist; an import then says the server has no
-  import folder). The path must be absolute, with no `.` or `..` name,
-  and where it leads (every link followed) a regular file strictly inside
-  a root, with one hard link. Refusals never name a path and never probe:
-  a path that is missing, a dangling link, outside the roots, or with a
-  `.` or `..` name (refused before anything is looked up: `a/b/..`
-  resolves only when `b` is a folder) gets one refusal, "no
-  such file in the server's import folders (by default your downloads
-  folder): save it there first". Inside a root, the books' sealed places
-  (the data dir, the vault, the key file in force and the default one,
-  where each leads, `~/.config/wanderbooks`, and the key files' folders
-  unless that folder is the home folder, a root, or holds one) are refused
-  as "belongs to the books or the TIN vault"; anything else in the books
-  dir is refused with "save a copy of it in the server's import folders
-  first". The file is opened by a walk from `/`, one name at a time, each
-  folder with `openat(O_DIRECTORY | O_NOFOLLOW)` and the file with
-  `O_NOFOLLOW | O_NONBLOCK`, so a folder on the path swapped for a link
-  after the check fails the open and a pipe can't hang the server; no step
-  may land on a protected place by device and inode (one renamed into a
-  root), and the file opened must be the checked one (device, inode, one
-  link). It is filed under the name and type of the file the path leads
-  to. Files holding full TINs are refused as above
-  (`ledger-mcp/src/local_files.rs`, `tin_files.rs`). Deleted in P2
-  (uploads replace it).
+- `books.import_chart_csv { csv_text? | upload_id? }` → creates accounts
+  from `code,name,type,parent_code` CSV. All-or-nothing.
+- Each takes the CSV as `csv_text` or as an upload (`books.begin_upload`
+  purpose `import`; UTF-8), never both. The CSV itself is not filed: file
+  it with `books.file_document` (category `import_source`) for
+  `source_attachment_id`.
 
 ## Resources (read-only)
 
@@ -1036,7 +1114,8 @@ Hand-rolled on `ServerHandler` (rmcp 3.x has no resource macros):
   this month so far
 - `books://handbook` (the index) and `books://handbook/{section}` (one per
   section, Markdown)
-- `books://receipts/{id}` — receipt metadata + base64 bytes
+- `books://receipts/{id}` — receipt metadata (as `books.get_receipt`
+  view `meta`; no bytes)
 
 Resources exist so read-only clients (dashboards, the future read-only GUI,
 auditors) never need tool credentials. Tested end-to-end over stdio.

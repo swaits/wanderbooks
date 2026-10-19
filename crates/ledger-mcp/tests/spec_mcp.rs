@@ -213,14 +213,6 @@ fn test_dir(name: &str) -> TestDir {
 
 /// A directory beside the books dir `dir`, outside it (vault keys, files
 /// with TINs).
-/// The import root beside the books dir `dir`: files the tests hand the
-/// server by path (books.import_local_file, books.set_w9 w9_file_path).
-fn inbox(dir: &Path) -> PathBuf {
-    let d = dir.with_extension("inbox");
-    std::fs::create_dir_all(&d).unwrap();
-    d
-}
-
 fn outside(dir: &Path) -> PathBuf {
     let d = PathBuf::from(format!("{}-outside", dir.display()));
     std::fs::create_dir_all(&d).unwrap();
@@ -260,10 +252,6 @@ fn spawn_child(dir: &Path, toml: &Path) -> Child {
                 .into_iter()
                 .flatten(),
         )
-        // Local files come only from here (the default is the downloads
-        // folder): never the books, never where the server writes.
-        .arg("--import-root")
-        .arg(inbox(dir))
         // books.show writes a viewer request here; keep it out of the
         // user's real runtime dir.
         .env("XDG_RUNTIME_DIR", &run)
@@ -548,6 +536,7 @@ impl Mcp {
             "file_name": "receipt.txt",
             "mime_type": "text/plain",
             "content_base64": b64(bytes),
+            "sha256": sha(bytes),
         });
         if let Some(e) = entry {
             args["entry_id"] = json!(e);
@@ -658,6 +647,11 @@ fn canon(s: &str) -> String {
     } else {
         body
     }
+}
+
+/// The SHA-256 (hex) a file given inline comes with.
+fn sha(bytes: &[u8]) -> String {
+    ledger_store::journal::sha256_hex(bytes)
 }
 
 fn b64(bytes: &[u8]) -> String {
@@ -811,12 +805,12 @@ fn happy_path(name: &str) -> Mcp {
         json!({"party": "Landlord", "received_on": "2026-01-03", "entity_type": "LLC (partnership)",
                "tin_last4": "4321", "kept_at": "CPA portal"}),
     );
-    let w9_pdf = inbox(&dir).join("landlord-w9.pdf");
-    std::fs::write(&w9_pdf, b"%PDF-1.4 W-9 EIN 79-9714321").unwrap();
+    let w9_pdf = b"%PDF-1.4 W-9 EIN 79-9714321";
     m.ok(
         "books.set_w9",
         json!({"party": "Landlord", "received_on": "2026-01-03", "entity_type": "LLC (partnership)",
-               "tin": "79-9714321", "tin_type": "ein", "w9_file_path": w9_pdf.to_str().unwrap()}),
+               "tin": "79-9714321", "tin_type": "ein",
+               "w9_content_base64": b64(w9_pdf), "w9_sha256": sha(w9_pdf)}),
     );
     m.ok(
         "books.get_w9",
@@ -889,17 +883,23 @@ fn happy_path(name: &str) -> Mcp {
     m.ok("books.list_receipts", json!({"include_withdrawn": true}));
     m.ok("books.list_receipts", json!({"entry_id": e2}));
     m.ok("books.get_receipt", json!({"attachment_id": r_old}));
+    m.ok(
+        "books.get_receipt",
+        json!({"attachment_id": r_old, "view": "bytes"}),
+    );
     let doc = m.ok(
         "books.file_document",
         json!({"category": "legal", "file_name": "agreement.txt", "mime_type": "text/plain",
-               "content_base64": b64(b"operating agreement"), "description": "OA"}),
+               "content_base64": b64(b"operating agreement"),
+               "sha256": sha(b"operating agreement"), "description": "OA"}),
     )["attachment_id"]
         .as_u64()
         .unwrap();
     let filed = m.ok(
         "books.file_document",
         json!({"category": "contract", "file_name": "lease.txt", "mime_type": "text/plain",
-               "content_base64": b64(b"lease"), "link_to": [{"kind": "company"}]}),
+               "content_base64": b64(b"lease"),
+               "sha256": sha(b"lease"), "link_to": [{"kind": "company"}]}),
     )["attachment_id"]
         .as_u64()
         .unwrap();
@@ -915,13 +915,15 @@ fn happy_path(name: &str) -> Mcp {
         "books.unlink_attachment",
         json!({"attachment_id": filed, "subject": {"kind": "company"}, "reason": "a lease, not a formation document"}),
     );
-    // From outside the books, in the server's import folder.
-    let local = inbox(&dir).join("local-receipt.txt");
-    std::fs::write(&local, b"a local receipt").unwrap();
-    m.ok(
-        "books.import_local_file",
-        json!({"path": local.to_str().unwrap(), "category": "receipt"}),
+    // An upload of bytes already stored: begin_upload names the
+    // attachment that holds them (over stdio, the only upload answered).
+    let local = m.attach(None, b"a local receipt");
+    let up = m.ok(
+        "books.begin_upload",
+        json!({"sha256": sha(b"a local receipt"), "size": 15, "mime_type": "text/plain",
+               "file_name": "local-receipt.txt", "purpose": "receipt"}),
     );
+    assert_eq!(up["existing_attachment_id"], json!(local), "{up}");
 
     // Reversal: preview, then confirmed.
     let e3 = m.draft(
@@ -1071,7 +1073,8 @@ fn happy_path(name: &str) -> Mcp {
     let source = m.ok(
         "books.file_document",
         json!({"category": "import_source", "file_name": "bank.csv", "mime_type": "text/csv",
-               "content_base64": b64(csv.as_bytes())}),
+               "content_base64": b64(csv.as_bytes()),
+               "sha256": sha(csv.as_bytes())}),
     )["attachment_id"]
         .as_u64()
         .unwrap();
@@ -1092,7 +1095,8 @@ fn happy_path(name: &str) -> Mcp {
     let stmt = m.ok(
         "books.file_document",
         json!({"category": "statement", "file_name": "2026-01.pdf", "mime_type": "application/pdf",
-               "content_base64": b64(b"%PDF statement")}),
+               "content_base64": b64(b"%PDF statement"),
+               "sha256": sha(b"%PDF statement")}),
     )["attachment_id"]
         .as_u64()
         .unwrap();
@@ -1572,7 +1576,8 @@ fn run_op(m: &mut Mcp, k: &mut Known, op: &Op) {
                 let out = m.tool(
                     "books.attach_receipt",
                     json!({"entry_id": e, "file_name": "r.txt", "mime_type": "text/plain",
-                           "content_base64": b64(bytes.as_bytes())}),
+                           "content_base64": b64(bytes.as_bytes()),
+                           "sha256": sha(bytes.as_bytes())}),
                 );
                 k.attachments.extend(new_id(&out, "attachment_id"));
             }
@@ -1601,11 +1606,21 @@ fn run_op(m: &mut Mcp, k: &mut Known, op: &Op) {
             json!({"entry_id": entry.resolve(&k.entries), "date": date, "description": "undo",
                    "confirmed": opt(*confirmed)}),
         ),
-        Op::Attach { entry, content } => (
-            "books.attach_receipt",
-            json!({"entry_id": entry.map(|p| p.resolve(&k.entries)), "file_name": "r.bin",
-                   "mime_type": "application/octet-stream", "content_base64": content}),
-        ),
+        Op::Attach { entry, content } => {
+            // The bytes' own SHA-256 (content that is no base64 has none).
+            let sha256 = {
+                use base64::Engine as _;
+                base64::engine::general_purpose::STANDARD
+                    .decode(content)
+                    .map_or_else(|_| "0".repeat(64), |b| sha(&b))
+            };
+            (
+                "books.attach_receipt",
+                json!({"entry_id": entry.map(|p| p.resolve(&k.entries)), "file_name": "r.bin",
+                       "mime_type": "application/octet-stream", "content_base64": content,
+                       "sha256": sha256}),
+            )
+        }
         Op::Link { att, entry } => (
             "books.link_receipt",
             json!({"attachment_id": att.resolve(&k.attachments),

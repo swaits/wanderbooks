@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 /// The keyring service tokens are kept under (INVARIANT 1).
 pub const SERVICE: &str = "wanderbooks";
 /// A token's name when none is given.
-pub const DEFAULT_NAME: &str = "agent";
+pub const DEFAULT_NAME: &str = ledger_store::auth::DEFAULT_NAME;
 
 /// A place tokens are kept.
 pub trait Keeper: Send + Sync {

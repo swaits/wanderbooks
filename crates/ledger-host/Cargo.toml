@@ -15,6 +15,8 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "io-std", "sync", "net", "signal", "time", "process"] }
 reqwest = "0.13"
 base64 = "0.22"
+# `wanderbooks download` checks what arrived against its Repr-Digest.
+sha2 = "0.10"
 tokio-util = { version = "0.7", features = ["rt"] }
 # Agents' tokens are kept in the OS keyring (plan 3.3, 3.5): the Secret
 # Service on Linux. macOS and Windows stores come with P11.

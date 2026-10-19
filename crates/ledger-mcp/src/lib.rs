@@ -3,8 +3,7 @@
 //! [`run`] is the whole server; the `ledger-mcp` binary and `wanderbooks
 //! dev-stdio` (one executable, plan D-22) both call it.
 //!
-//! Usage: `ledger-mcp [--data-dir PATH] [--config PATH] [--books-toml PATH]
-//! [--import-root DIR]...`
+//! Usage: `ledger-mcp [--data-dir PATH] [--config PATH] [--books-toml PATH]`
 //!
 //! The data dir holds `journal.jsonl` (the source of truth), `wanderbooks.db`
 //! (the disposable SQLite projection), `blobs/` (content-addressed receipts),
@@ -12,19 +11,16 @@
 //! configured base currency. Company settings (name, fiscal year start,
 //! receipt threshold) come from the books dir's `wanderbooks.toml`, by
 //! default the one next to the data dir, and reload whenever it changes
-//! (settings.rs). `books.import_local_file` and `books.set_w9`'s
-//! `w9_file_path` read only from the import roots: each `--import-root`,
-//! or by default the downloads folder (local_files.rs); a root that is
-//! `/`, the home folder, or holds the books, the vault or a key is refused
-//! at startup.
+//! (settings.rs). Files come in only as tool input (inline, at most 256
+//! KiB): uploads need the books server's socket (`wanderbooks mcp`).
 
 pub mod access;
 pub mod admin;
 mod handbook;
 #[cfg(unix)]
 pub mod local;
-mod local_files;
 pub mod opening;
+mod paths;
 mod policy;
 pub mod scopes;
 mod server;
@@ -35,7 +31,6 @@ mod wire;
 
 use ledger_core::Currency;
 use ledger_store::Store;
-use local_files::ImportRoots;
 use policy::ReceiptPolicy;
 use rmcp::ServiceExt;
 use serde::Deserialize;
@@ -59,7 +54,7 @@ fn default_data_dir() -> PathBuf {
 
 fn print_usage(prog: &str) {
     eprintln!(
-        "usage: {prog} [--data-dir PATH] [--config PATH] [--books-toml PATH] [--vault-key-file PATH] [--http ADDR] [--import-root DIR]..."
+        "usage: {prog} [--data-dir PATH] [--config PATH] [--books-toml PATH] [--vault-key-file PATH] [--http ADDR]"
     );
     eprintln!("  --data-dir  directory holding journal.jsonl (default ~/.local/share/wanderbooks)");
     eprintln!("  --config    JSON config file (default <data-dir>/config.json, optional)");
@@ -72,13 +67,10 @@ fn print_usage(prog: &str) {
     eprintln!(
         "  --http      serve over Streamable HTTP at ADDR (e.g. 127.0.0.1:8080) instead of stdio"
     );
-    eprintln!(
-        "  --import-root  a folder books.import_local_file may read from (repeatable; default: the downloads folder)"
-    );
 }
 
 /// How [`run`] stops when it can't go on: the reason is already printed
-/// on stderr, and the number is the process's exit code (2: a bad argument or a refused import folder; 1: books from a newer wanderbooks). A
+/// on stderr, and the number is the process's exit code (2: a bad argument; 1: books from a newer wanderbooks). A
 /// library never ends the process itself, so the books it opened are
 /// closed properly on the way out; the binaries turn this into the exit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,8 +87,8 @@ impl std::error::Error for Exit {}
 /// Run the books server with `args` (the command line after the program
 /// name). `prog` names the program in the usage text: `ledger-mcp`, or
 /// `wanderbooks dev-stdio`. It returns when the client disconnects; a bad
-/// argument, books from a newer wanderbooks, or a refused import root
-/// return [`Exit`] after a plain message.
+/// argument or books from a newer wanderbooks return [`Exit`] after a
+/// plain message.
 pub fn run(
     prog: &str,
     args: impl IntoIterator<Item = String>,
@@ -106,7 +98,6 @@ pub fn run(
     let mut books_toml: Option<PathBuf> = None;
     let mut vault_key_file: Option<PathBuf> = None;
     let mut http_addr: Option<String> = None;
-    let mut import_roots: Vec<PathBuf> = Vec::new();
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -129,11 +120,6 @@ pub fn run(
             "--http" => {
                 http_addr = Some(args.next().ok_or("--http needs an address")?);
             }
-            "--import-root" => {
-                import_roots.push(PathBuf::from(
-                    args.next().ok_or("--import-root needs a folder")?,
-                ));
-            }
             "--help" | "-h" => {
                 print_usage(prog);
                 return Ok(());
@@ -153,11 +139,6 @@ pub fn run(
         );
         return Err(Box::new(Exit(2)));
     }
-    let import_roots = if import_roots.is_empty() {
-        ImportRoots::defaults()
-    } else {
-        ImportRoots::new(import_roots)
-    };
     let config_path = config_path.unwrap_or_else(|| data_dir.join("config.json"));
     // config.json's base currency matters only to books being created: it
     // is read then, and never otherwise (books that keep their own
@@ -232,36 +213,18 @@ pub fn run(
         }
     );
     let live = std::sync::Arc::new(std::sync::Mutex::new(live));
-    // No import root may be `/`, the home folder, or hold the books, the
-    // vault or a key (local_files.rs INVARIANT 0): a named one stops the
-    // server here, a default one is dropped.
-    let settings_now = live.lock().unwrap_or_else(|e| e.into_inner()).current();
-    let import_roots = match server::guard_import_roots(
-        &store,
-        &settings_now,
-        &server::Layout::BooksDir,
-        import_roots,
-    ) {
-        Ok(roots) => roots,
-        Err(why) => {
-            eprintln!("ledger-mcp: {why}");
-            return Err(Box::new(Exit(2)));
-        }
-    };
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
     if let Some(addr) = http_addr {
         eprintln!("ledger-mcp: store verified, serving Streamable HTTP on {addr}");
-        rt.block_on(serve_http(addr, store, live, import_roots))?;
+        rt.block_on(serve_http(addr, store, live))?;
         return Ok(());
     }
 
     eprintln!("ledger-mcp: store verified, serving over stdio");
-    let server = BooksServer::new(store, ReceiptPolicy::default())
-        .with_live_settings(live)
-        .with_import_roots(import_roots);
+    let server = BooksServer::new(store, ReceiptPolicy::default()).with_live_settings(live);
     rt.block_on(async {
         // The wire answers what JSON-RPC requires that rmcp drops (wire.rs).
         let (input, output, writer) = wire::spawn(tokio::io::stdin(), tokio::io::stdout());
@@ -277,7 +240,6 @@ async fn serve_http(
     addr: String,
     store: Store,
     live: std::sync::Arc<std::sync::Mutex<settings::Live>>,
-    import_roots: ImportRoots,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use rmcp::transport::streamable_http_server::{
         StreamableHttpService, session::local::LocalSessionManager,
@@ -290,8 +252,7 @@ async fn serve_http(
     let service = StreamableHttpService::new(
         move || {
             let server = server::BooksServer::new_shared(store.clone(), ReceiptPolicy::default())
-                .with_live_settings(live.clone())
-                .with_import_roots(import_roots.clone());
+                .with_live_settings(live.clone());
             Ok(server)
         },
         Arc::new(LocalSessionManager::default()),

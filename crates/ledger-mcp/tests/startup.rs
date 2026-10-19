@@ -240,187 +240,25 @@ fn newer_books_are_refused_as_newer_not_corrupt() {
     );
 }
 
-/// Start the server and report whether it refused to start (it never got
-/// as far as serving), with its standard error.
-fn refuses_to_start(cmd: &mut Command) -> Option<String> {
-    let mut child = cmd
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+/// `--import-root` is gone (files come in as tool input, P2 slice 5): a
+/// server started with it stops at once, as for any unknown argument,
+/// and never serves as if it had read from that folder.
+#[test]
+fn the_import_root_flag_is_refused_as_unknown() {
+    let dir = temp("import-root");
+    let out = Command::new(BIN)
+        .arg("--data-dir")
+        .arg(dir.join("books-data"))
+        .arg("--import-root")
+        .arg(dir.join("Downloads"))
+        .env("XDG_CONFIG_HOME", dir.join("config"))
+        .env("XDG_RUNTIME_DIR", dir.join("config"))
+        .stdin(Stdio::null())
+        .output()
         .unwrap();
-    // A server that starts waits on stdin; closing it ends the server.
-    drop(child.stdin.take());
-    let out = child.wait_with_output().unwrap();
-    let err = String::from_utf8_lossy(&out.stderr).into_owned();
-    (!err.contains("serving over stdio")).then_some(err)
-}
-
-/// local_files.rs INVARIANT 0: a named import root that is `/`, the home
-/// folder, a folder holding it, a folder holding the books, the data dir
-/// (a symlinked --data-dir placed where it really is), the vault or a key
-/// file, or a folder inside the books, the data dir or the vault, stops
-/// the server at startup, saying why; a folder holding none of them is
-/// used.
-#[test]
-fn an_import_root_holding_the_books_or_the_home_folder_is_refused() {
-    let tmp = temp("bad-roots");
-    let dir = tmp.canonicalize().unwrap();
-    let home = dir.join("home");
-    let books = home.join("work/books");
-    let data = books.join("books-data");
-    let keys = dir.join("keys");
-    for d in [&home.join("Downloads"), &books, &keys, &dir.join("config")] {
-        std::fs::create_dir_all(d).unwrap();
-    }
-    std::fs::write(
-        books.join("wanderbooks.toml"),
-        format!(
-            "[vault]\nkey_file = \"{}\"\n",
-            keys.join("vault.key").display()
-        ),
-    )
-    .unwrap();
-    let link = dir.join("data-link");
-    std::os::unix::fs::symlink(&data, &link).unwrap();
-    let start = |data: &std::path::Path, root: &std::path::Path| {
-        let mut cmd = Command::new(BIN);
-        cmd.arg("--data-dir")
-            .arg(data)
-            .arg("--import-root")
-            .arg(root)
-            .env("HOME", &home)
-            .env("XDG_CONFIG_HOME", dir.join("config"))
-            .env("XDG_RUNTIME_DIR", dir.join("config"));
-        refuses_to_start(&mut cmd)
-    };
-    for (root, why) in [
-        (std::path::PathBuf::from("/"), "whole filesystem"),
-        (home.clone(), "home folder"),
-        (dir.clone(), "home folder"),
-        (home.join("work"), "holds the books"),
-        (books.clone(), "holds the books"),
-        (data.clone(), "holds the books"),
-        (
-            keys.clone(),
-            "holds the books, the TIN vault, or a vault key",
-        ),
-        (
-            dir.join("config"),
-            "holds the books, the TIN vault, or a vault key",
-        ),
-    ] {
-        let err = start(&data, &root).unwrap_or_else(|| panic!("{} was used", root.display()));
-        assert!(
-            err.contains("can't be used") && err.contains(why),
-            "{}: {err}",
-            root.display()
-        );
-    }
-    // A folder inside the books, the data dir or the vault: every file in
-    // it would be refused, so the root is.
-    for root in [
-        books.join("company"),
-        data.join("blobs"),
-        books.join("vault/inner"),
-    ] {
-        std::fs::create_dir_all(&root).unwrap();
-        let err = start(&data, &root).unwrap_or_else(|| panic!("{} was used", root.display()));
-        assert!(
-            err.contains("can't be used") && err.contains("inside the books"),
-            "{}: {err}",
-            root.display()
-        );
-    }
-    // Through a symlinked data dir, the books are where they really are.
-    let err = start(&link, &home.join("work")).expect("a root holding the real books");
-    assert!(err.contains("holds the books"), "{err}");
-    // A folder holding none of them is used.
-    assert_eq!(start(&data, &home.join("Downloads")), None);
-}
-
-/// local_files.rs INVARIANT 0, the default: an XDG_DOWNLOAD_DIR of
-/// "$HOME/" (or "/") never makes the home folder an import root. With no
-/// real ~/Downloads there is no root, and an import says so; with one, it
-/// is the root, and the rest of the home folder stays out of reach.
-#[test]
-fn a_download_dir_of_home_never_opens_the_home_folder() {
-    let tmp = temp("xdg-home");
-    let dir = tmp.canonicalize().unwrap();
-    let home = dir.join("home");
-    std::fs::create_dir_all(home.join(".ssh")).unwrap();
-    std::fs::write(home.join(".ssh/id_ed25519"), "PRIVATE KEY").unwrap();
-    let key = home.join(".ssh/id_ed25519");
-    let import = |xdg: &str, path: &std::path::Path| {
-        one_call(
-            Command::new(BIN)
-                .arg("--data-dir")
-                .arg(dir.join("books/books-data"))
-                .env("HOME", &home)
-                .env("XDG_DOWNLOAD_DIR", xdg)
-                .env("XDG_CONFIG_HOME", dir.join("config"))
-                .env("XDG_RUNTIME_DIR", dir.join("config")),
-            "books.import_local_file",
-            serde_json::json!({"path": path.to_str().unwrap(), "category": "document"}),
-        )
-    };
-    for xdg in ["$HOME/", "$HOME", "/"] {
-        let reply = import(xdg, &key);
-        assert!(reply.contains("has no import folder"), "{xdg}: {reply}");
-    }
-    std::fs::create_dir_all(home.join("Downloads")).unwrap();
-    std::fs::write(home.join("Downloads/receipt.pdf"), "%PDF a receipt").unwrap();
-    for xdg in ["$HOME/", "/"] {
-        let reply = import(xdg, &key);
-        assert!(
-            reply.contains("no such file in the server's import folders"),
-            "{xdg}: {reply}"
-        );
-        assert!(!reply.contains("PRIVATE"), "{reply}");
-    }
-    let reply = import("$HOME/", &home.join("Downloads/receipt.pdf"));
-    assert!(reply.contains("attachment_id"), "{reply}");
-}
-
-/// local_files.rs INVARIANT 0, a refused default: a downloads folder
-/// that holds the books, or one inside them, is dropped, never fatal
-/// (only a named root stops the server): it serves, with no import
-/// folder, and an import says so.
-#[test]
-fn a_default_download_dir_holding_the_books_is_dropped_not_fatal() {
-    let tmp = temp("xdg-books");
-    let dir = tmp.canonicalize().unwrap();
-    let home = dir.join("home");
-    let downloads = dir.join("downloads");
-    std::fs::create_dir_all(&home).unwrap();
-    std::fs::create_dir_all(downloads.join("books")).unwrap();
-    std::fs::write(downloads.join("receipt.pdf"), "%PDF a receipt").unwrap();
-    let reply = one_call(
-        Command::new(BIN)
-            .arg("--data-dir")
-            .arg(downloads.join("books/books-data"))
-            .env("HOME", &home)
-            .env("XDG_DOWNLOAD_DIR", &downloads)
-            .env("XDG_CONFIG_HOME", dir.join("config"))
-            .env("XDG_RUNTIME_DIR", dir.join("config")),
-        "books.import_local_file",
-        serde_json::json!({"path": downloads.join("receipt.pdf").to_str().unwrap(), "category": "document"}),
-    );
-    assert!(reply.contains("has no import folder"), "{reply}");
-    // A downloads folder inside the books dir is dropped the same way.
-    let books = dir.join("books");
-    std::fs::create_dir_all(books.join("Downloads")).unwrap();
-    std::fs::write(books.join("Downloads/receipt.pdf"), "%PDF a receipt").unwrap();
-    let reply = one_call(
-        Command::new(BIN)
-            .arg("--data-dir")
-            .arg(books.join("books-data"))
-            .env("HOME", &home)
-            .env("XDG_DOWNLOAD_DIR", books.join("Downloads"))
-            .env("XDG_CONFIG_HOME", dir.join("config"))
-            .env("XDG_RUNTIME_DIR", dir.join("config")),
-        "books.import_local_file",
-        serde_json::json!({"path": books.join("Downloads/receipt.pdf").to_str().unwrap(), "category": "document"}),
-    );
-    assert!(reply.contains("has no import folder"), "{reply}");
+    assert_eq!(out.status.code(), Some(2));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("unknown argument: --import-root"), "{err}");
+    assert!(!err.contains("serving"), "{err}");
+    assert!(!dir.join("books-data").exists(), "opened the books");
 }

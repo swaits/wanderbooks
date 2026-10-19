@@ -400,6 +400,8 @@ fn print_usage() {
     );
     eprintln!("       wanderbooks mcp --book ID [--token NAME]");
     eprintln!("       wanderbooks passphrase");
+    eprintln!("       wanderbooks upload --book ID [--token NAME] UPLOAD [--] FILE");
+    eprintln!("       wanderbooks download --book ID [--token NAME] ATTACHMENT --to FOLDER");
     eprintln!("       wanderbooks serve | close | doctor");
     eprintln!();
     eprintln!("  new        make a books directory and start the agent in it (alias: init)");
@@ -410,6 +412,8 @@ fn print_usage() {
     eprintln!("  token      make, list or revoke an agent's token for books (`token --help`)");
     eprintln!("  mcp        connect an agent to books, over stdio (what `claude mcp add` runs)");
     eprintln!("  passphrase set or change the owner passphrase (typed at a terminal)");
+    eprintln!("  upload     send a file for an upload an agent began (books.begin_upload)");
+    eprintln!("  download   save a copy of a stored file (one too large to come back inline)");
     eprintln!("  serve      hold the books open until Ctrl-C");
     eprintln!("  close      close the books now: everything holding them lets go");
     eprintln!("  doctor     whether the books are open, what holds them, what went wrong");
@@ -994,6 +998,34 @@ fn run_local(mode: &str, args: Vec<String>) -> i32 {
     }
 }
 
+/// `upload` and `download`: the agent's file commands, whose words may
+/// be paths that aren't text.
+#[cfg(unix)]
+fn run_files(mode: &str, args: Vec<std::ffi::OsString>) -> i32 {
+    let prog = format!("wanderbooks {mode}");
+    let result = match mode {
+        "upload" => ledger_host::commands::upload(&prog, args),
+        _ => ledger_host::commands::download(&prog, args),
+    };
+    match result {
+        Ok(()) => 0,
+        Err(e) => match e.downcast_ref::<ledger_host::Exit>() {
+            Some(exit) => exit.0,
+            None => {
+                eprintln!("error: {e}");
+                1
+            }
+        },
+    }
+}
+
+/// The file commands, where local sockets aren't built yet.
+#[cfg(not(unix))]
+fn run_files(_mode: &str, _args: Vec<std::ffi::OsString>) -> i32 {
+    eprintln!("error: opening the books this way comes to this system with P11");
+    2
+}
+
 /// The modes that hold the books, where local sockets aren't built yet.
 #[cfg(not(unix))]
 fn run_local(_mode: &str, _args: Vec<String>) -> i32 {
@@ -1009,8 +1041,23 @@ fn run_server(_args: Vec<String>) -> i32 {
 }
 
 fn main() {
+    // A file's path may be any name the system takes: the file commands
+    // get the words as given. Everything else is text.
+    let given: Vec<std::ffi::OsString> = env::args_os().skip(1).collect();
+    if let Some(mode @ ("upload" | "download")) = given.first().and_then(|m| m.to_str()) {
+        let mode = mode.to_string();
+        std::process::exit(run_files(&mode, given[1..].to_vec()));
+    }
+    let Ok(words) = given
+        .into_iter()
+        .map(std::ffi::OsString::into_string)
+        .collect::<Result<Vec<String>, _>>()
+    else {
+        eprintln!("error: an argument isn't UTF-8 text");
+        std::process::exit(2);
+    };
     // The modes run in this process and take their own flags.
-    let mut all = env::args().skip(1);
+    let mut all = words.clone().into_iter();
     match all.next().as_deref() {
         Some("gui") => std::process::exit(run_gui(all.collect())),
         Some("dev-stdio") => std::process::exit(run_dev_stdio(all.collect())),
@@ -1030,7 +1077,7 @@ fn main() {
     let mut start = true;
     let mut agent = Agent::Claude;
     let mut cmd: Option<String> = None;
-    for arg in env::args().skip(1) {
+    for arg in words {
         match arg.as_str() {
             "--help" | "-h" => {
                 print_usage();
@@ -1055,7 +1102,7 @@ fn main() {
     }
     if let Some(
         mode @ ("gui" | "dev-stdio" | "setup" | "server" | "host" | "helper" | "mcp" | "serve"
-        | "close" | "books" | "doctor" | "token" | "passphrase"),
+        | "close" | "books" | "doctor" | "token" | "passphrase" | "upload" | "download"),
     ) = cmd.as_deref()
     {
         eprintln!("`{mode}` must come first: wanderbooks {mode} [its own flags]");

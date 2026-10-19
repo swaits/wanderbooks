@@ -371,6 +371,11 @@ fn b64(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
+/// The SHA-256 (hex) a file given inline comes with.
+fn sha(bytes: &[u8]) -> String {
+    ledger_store::journal::sha256_hex(bytes)
+}
+
 const CHART: &[(&str, &str, &str)] = &[
     ("1000", "Bank", "asset"),
     ("1300", "Prepaid Expenses", "asset"),
@@ -406,7 +411,7 @@ impl Mcp {
         self.ok(
             "books.file_document",
             json!({"category": category, "file_name": format!("{category}.pdf"),
-                   "mime_type": "application/pdf", "content_base64": b64(bytes),
+                   "mime_type": "application/pdf", "content_base64": b64(bytes), "sha256": sha(bytes),
                    "link_to": link_to}),
         )["attachment_id"]
             .as_u64()
@@ -416,7 +421,7 @@ impl Mcp {
     /// Attach a receipt (to `entry`, or unlinked); its id.
     fn receipt(&mut self, entry: Option<u64>, bytes: &[u8]) -> u64 {
         let mut args = json!({"file_name": "r.pdf", "mime_type": "application/pdf",
-                              "content_base64": b64(bytes)});
+                              "content_base64": b64(bytes), "sha256": sha(bytes)});
         if let Some(e) = entry {
             args["entry_id"] = json!(e);
         }
@@ -787,25 +792,25 @@ fn filing_links_in_the_same_call_all_or_nothing() {
         m.refuse(
             "books.attach_receipt",
             json!({"entry_id": e, "file_name": "r.pdf", "mime_type": "application/pdf",
-                   "content_base64": b64(b"r"), "link_to": link_to}),
+                   "content_base64": b64(b"r"), "sha256": sha(b"r"), "link_to": link_to}),
         );
     }
     m.refuse(
         "books.file_document",
         json!({"category": "contract", "file_name": "c.pdf", "mime_type": "application/pdf",
-               "content_base64": b64(b"c"), "link_to": [{"kind": "asset", "id": "NOPE"}]}),
+               "content_base64": b64(b"c"), "sha256": sha(b"c"), "link_to": [{"kind": "asset", "id": "NOPE"}]}),
     );
     // An unknown entry_id is refused before anything is filed.
     m.refuse(
         "books.attach_receipt",
         json!({"entry_id": 999, "file_name": "r.pdf", "mime_type": "application/pdf",
-               "content_base64": b64(b"r"), "link_to": [{"kind": "company"}]}),
+               "content_base64": b64(b"r"), "sha256": sha(b"r"), "link_to": [{"kind": "company"}]}),
     );
     assert_eq!(count(&mut m), n, "nothing filed");
     let out = m.ok(
         "books.attach_receipt",
         json!({"entry_id": e, "file_name": "r.pdf", "mime_type": "application/pdf",
-               "content_base64": b64(b"r"),
+               "content_base64": b64(b"r"), "sha256": sha(b"r"),
                "link_to": [{"kind": "entry", "id": other}, {"kind": "party", "id": "acme design"}]}),
     );
     assert_eq!(
@@ -819,7 +824,7 @@ fn filing_links_in_the_same_call_all_or_nothing() {
     let doc = m.ok(
         "books.file_document",
         json!({"category": "formation", "file_name": "cert.pdf", "mime_type": "application/pdf",
-               "content_base64": b64(b"certificate"), "link_to": [{"kind": "company"}]}),
+               "content_base64": b64(b"certificate"), "sha256": sha(b"certificate"), "link_to": [{"kind": "company"}]}),
     );
     assert_eq!(kinds(&doc), ["company"]);
     assert_eq!(m.count("document.filed"), 1);
@@ -849,7 +854,7 @@ fn documents_file_under_the_attachment_kinds() {
     m.refuse(
         "books.file_document",
         json!({"category": "receipt-ish", "file_name": "x", "mime_type": "text/plain",
-               "content_base64": b64(b"x")}),
+               "content_base64": b64(b"x"), "sha256": sha(b"x")}),
     );
 }
 

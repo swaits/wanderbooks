@@ -275,8 +275,9 @@ damn CPA package."
   open and verify; the 1099 worksheet and the CPA package then say which
   TINs are missing (`tin_gaps`), and the package is still built.
 - **Tools** (built; `docs/mcp-interface.md` "Tools — the TIN vault"):
-  `books.set_w9` takes `tin` + `tin_type` and `w9_file_path` (the form
-  goes to the vault, never the attachment store) and journals the last
+  `books.set_w9` takes `tin` + `tin_type` and the signed form as
+  `w9_upload_id` (`books.begin_upload`) or `w9_content_base64` with
+  `w9_sha256` (the form goes to the vault, never the attachment store) and journals the last
   four with `vault_record`; facts that disagree with the vault's TIN are
   refused, and clearing facts with a vault record needs a purge first.
   With a TIN it also records the party's TIN facts. `books.set_tin

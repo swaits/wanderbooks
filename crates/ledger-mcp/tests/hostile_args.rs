@@ -67,8 +67,9 @@ impl Drop for Mcp {
     }
 }
 
-/// The places one run uses: the books, the vault key, the import root, the
-/// folder the server runs in (where a relative path lands).
+/// The places one run uses: the books, the vault key, a folder of files on
+/// their way in (as a downloads folder), the folder the server runs in
+/// (where a relative path lands).
 struct Places {
     base: PathBuf,
     books: PathBuf,
@@ -130,8 +131,6 @@ impl Mcp {
             .arg(p.books.join("books-data"))
             .arg("--books-toml")
             .arg(p.books.join("wanderbooks.toml"))
-            .arg("--import-root")
-            .arg(&p.inbox)
             .current_dir(&p.sandbox)
             .env("HOME", p.base.join("home"))
             .env("XDG_CONFIG_HOME", p.base.join("config"))
@@ -256,7 +255,8 @@ fn fixture(m: &mut Mcp, p: &Places) {
     m.ok(
         "books.attach_receipt",
         json!({"file_name": "r.pdf", "mime_type": "application/pdf",
-               "content_base64": "JVBERi0xLjQgYSByZWNlaXB0"}),
+               "content_base64": "JVBERi0xLjQgYSByZWNlaXB0",
+               "sha256": ledger_store::journal::sha256_hex(b"%PDF-1.4 a receipt")}),
     );
     for (date, dr, cr, amount) in [
         ("2026-01-02", "1000", "3000", "5000.00"),
@@ -279,7 +279,8 @@ fn fixture(m: &mut Mcp, p: &Places) {
         m.ok(
             "books.attach_receipt",
             json!({"entry_id": id, "file_name": "r.pdf", "mime_type": "application/pdf",
-                   "content_base64": b64(pdf.as_bytes())}),
+                   "content_base64": b64(pdf.as_bytes()),
+                   "sha256": ledger_store::journal::sha256_hex(pdf.as_bytes())}),
         );
         m.ok(
             "books.post_entry",
@@ -321,7 +322,8 @@ fn fixture(m: &mut Mcp, p: &Places) {
     m.ok(
         "books.file_document",
         json!({"category": "statement", "file_name": "s.pdf", "mime_type": "application/pdf",
-               "content_base64": "JVBERi0xLjQgYSBzdGF0ZW1lbnQ="}),
+               "content_base64": "JVBERi0xLjQgYSBzdGF0ZW1lbnQ=",
+               "sha256": ledger_store::journal::sha256_hex(b"%PDF-1.4 a statement")}),
     );
     let _ = p;
 }
@@ -500,8 +502,8 @@ fn hostile_numbers() -> Vec<Value> {
     ]
 }
 
-/// Paths a tool may be given: inside the sandbox, the import root, the
-/// books, relative ones, odd ones. Never anywhere a real file lives.
+/// Paths a tool may be given: inside the sandbox, the inbox, the books,
+/// relative ones, odd ones. Never anywhere a real file lives.
 fn hostile_paths(p: &Places) -> Vec<String> {
     let s = |p: &Path| p.to_str().unwrap().to_string();
     vec![
@@ -618,17 +620,20 @@ fn string_for(name: &str, node: &Value, p: &Places) -> BoxedStrategy<Value> {
             .boxed();
     }
     if n.contains("base64") {
-        likely.extend(
-            [
-                "JVBERi0xLjQ=",
-                "",
-                "!!!not base64",
-                "AAAA",
-                "NTcxLTkzLTI4NDY=",
-                "RGF0ZSxBbW91bnQKMjAyNi0wMS0wMSwxCg==",
-            ]
-            .map(String::from),
-        );
+        likely.extend(INLINE_FILES.map(String::from));
+    }
+    // A file's SHA-256: of one of the files above (so some calls carry a
+    // matching pair and go on past the check), or not.
+    if n.contains("sha256") {
+        use base64::Engine;
+        likely.extend(INLINE_FILES.iter().filter_map(|f| {
+            base64::engine::general_purpose::STANDARD
+                .decode(f)
+                .ok()
+                .map(|b| ledger_store::journal::sha256_hex(&b))
+        }));
+        likely.push("0".repeat(64));
+        likely.push("not hex".into());
     }
     let pick = |pred: fn(&str) -> bool| -> Vec<String> {
         hostile_strings().into_iter().filter(|s| pred(s)).collect()
@@ -693,6 +698,16 @@ fn string_for(name: &str, node: &Value, p: &Places) -> BoxedStrategy<Value> {
     ]
     .boxed()
 }
+
+/// Files given inline (base64), hostile and not.
+const INLINE_FILES: [&str; 6] = [
+    "JVBERi0xLjQ=",
+    "",
+    "!!!not base64",
+    "AAAA",
+    "NTcxLTkzLTI4NDY=",
+    "RGF0ZSxBbW91bnQKMjAyNi0wMS0wMSwxCg==",
+];
 
 /// An object's value: each property present or not (required ones mostly
 /// present), and now and then a field no schema names.
@@ -1144,7 +1159,8 @@ fn inputs_that_once_panicked_are_refused_or_answered() {
         &mut m,
         "books.attach_receipt",
         json!({"entry_id": id, "file_name": "h.pdf", "mime_type": "application/pdf",
-               "content_base64": "JVBERi0xLjQgaHVnZQ=="}),
+               "content_base64": "JVBERi0xLjQgaHVnZQ==",
+               "sha256": ledger_store::journal::sha256_hex(b"%PDF-1.4 huge")}),
     );
     pinned(
         &mut m,

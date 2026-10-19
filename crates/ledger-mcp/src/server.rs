@@ -32,7 +32,7 @@
 //! ```
 
 use crate::handbook;
-use crate::local_files::{ImportRoots, Places, Protected, resolved};
+use crate::paths::resolved;
 use crate::policy::ReceiptPolicy;
 use crate::settings::{Live, Settings};
 use crate::tin_files;
@@ -57,9 +57,6 @@ use rmcp::{ServerHandler, tool, tool_handler, tool_router};
 use rust_decimal::Decimal;
 use std::sync::{Arc, Mutex};
 
-/// Max receipt/document upload: 25 MB.
-const MAX_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
-
 /// The server. One store, one receipt policy, shared across tool calls.
 /// `Store` is `!Sync`, so access is serialized through a mutex; the server
 /// is single-writer by construction. Tool bodies (synchronous disk and
@@ -69,12 +66,14 @@ const MAX_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
 pub struct BooksServer {
     store: Arc<SharedStore>,
     settings: Arc<Mutex<Live>>,
-    import_roots: Arc<ImportRoots>,
     layout: Arc<Layout>,
     /// The book's access log, for books served from the data root: every
     /// call is then checked against its caller's token and recorded
     /// (access.rs). None for a books dir served over stdio.
     access: Option<Arc<ledger_store::access::AccessLog>>,
+    /// The book's uploads (books served from the data root; none over
+    /// stdio, where no bytes can be sent but inline).
+    uploads: Option<ledger_store::uploads::Uploads>,
 }
 
 /// Where a book's own files live around its data dir.
@@ -157,6 +156,31 @@ pub struct SharedStore {
 }
 
 impl SharedStore {
+    /// An attachment's name, type and bytes (hash-verified), for a
+    /// download: blocking (the store's lock, then the file).
+    /// None when there is no such attachment.
+    pub fn attachment_file(&self, id: u64) -> Result<Option<(String, String, Vec<u8>)>, String> {
+        if self.stopped() {
+            return Err(STOPPED.to_string());
+        }
+        let store = self.store.blocking_lock();
+        let Some(meta) = store
+            .list_attachments(None)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|a| a.id == id)
+        else {
+            return Ok(None);
+        };
+        let bytes = store.attachment_bytes(id).map_err(|e| e.to_string())?;
+        Ok(Some((meta.file_name, meta.mime_type, bytes)))
+    }
+
+    /// Whether it stopped taking requests (INVARIANT 2).
+    pub fn is_stopped(&self) -> bool {
+        self.stopped()
+    }
+
     /// Share an open store.
     pub fn new(store: Store) -> Arc<Self> {
         Arc::new(Self {
@@ -200,12 +224,29 @@ impl SharedStore {
     }
 }
 
-/// Why a file with full TINs isn't written into an import root.
-const TIN_FILE_IN_ROOT: &str = "a file with full TINs is never saved in the server's import folders (by default your downloads folder), where it could be filed back into the books: save it elsewhere, such as your documents folder";
+/// A filed file's name and type: those given, else the upload's own.
+fn named(
+    file_name: Option<String>,
+    mime_type: Option<String>,
+    file: &files::TakenFile,
+) -> Result<(String, String), String> {
+    let name = file_name
+        .or_else(|| file.file_name.clone())
+        .ok_or("file_name is needed")?;
+    let mime = mime_type
+        .or_else(|| file.mime.clone())
+        .ok_or("mime_type is needed")?;
+    if let Some(why) = ledger_store::uploads::file_name_problem(&name)
+        .or_else(|| ledger_store::uploads::mime_problem(&mime))
+    {
+        return Err(why);
+    }
+    Ok((name, mime))
+}
 
 /// What every request gets after an internal error (SharedStore
 /// INVARIANT 2).
-const STOPPED: &str = "the books server stopped taking requests after an internal error, to protect the books: ask the human to restart the books server (the books are checked again when it starts)";
+pub(crate) const STOPPED: &str = "the books server stopped taking requests after an internal error, to protect the books: ask the human to restart the books server (the books are checked again when it starts)";
 
 /// Why the vault won't open with a key file inside the books.
 const KEY_IN_BOOKS: &str = "the TIN vault's key file is inside the books' folder, beside the records it unlocks: ask the human to move it out of the books and set [vault] key_file in the settings";
@@ -555,10 +596,16 @@ impl BooksServer {
                 policy,
                 ..Settings::default()
             }))),
-            import_roots: Arc::new(ImportRoots::defaults()),
             layout: Arc::new(Layout::BooksDir),
             access: None,
+            uploads: None,
         }
+    }
+
+    /// Take uploaded files from `uploads` (`books.begin_upload`).
+    pub fn with_uploads(mut self, uploads: ledger_store::uploads::Uploads) -> Self {
+        self.uploads = Some(uploads);
+        self
     }
 
     /// Check every call against its caller's token, and record it in
@@ -572,12 +619,6 @@ impl BooksServer {
     /// in a books dir.
     pub fn with_layout(mut self, layout: Layout) -> Self {
         self.layout = Arc::new(layout);
-        self
-    }
-
-    /// The folders `books.import_local_file` may read from (local_files.rs).
-    pub fn with_import_roots(mut self, roots: ImportRoots) -> Self {
-        self.import_roots = Arc::new(roots);
         self
     }
 
@@ -655,7 +696,7 @@ impl BooksServer {
 
     /// Every tool the server serves.
     pub(crate) fn tool_router() -> rmcp::handler::server::router::tool::ToolRouter<Self> {
-        Self::core_router() + Self::kept_router() + Self::access_router()
+        Self::core_router() + Self::kept_router() + Self::access_router() + Self::files_router()
     }
 
     /// The settings in force for this request (reloaded at its start, in
@@ -902,20 +943,8 @@ impl BooksServer {
         self.layout.vault_dir(store)
     }
 
-    /// What is never read through a path, even inside an import root
-    /// (local_files.rs INVARIANT 3; Protected::of): the data dir, the
-    /// vault, the key file in force and the default one (a key left there
-    /// from before still unlocks the vault), and the folders it seals; and
-    /// the rest of the books dir.
-    fn protected(&self, store: &Store) -> Protected {
-        Protected::of(
-            &places(store, &self.settings(), &self.layout),
-            &self.import_roots.usable(),
-        )
-    }
-
     /// Refuse bytes on their way into the books (books.attach_receipt,
-    /// books.file_document, books.import_local_file) if they carry a full
+    /// books.file_document, books.set_w9's file) if they carry a full
     /// TIN: a file the server read or wrote with TINs, or text holding one
     /// the vault holds or one printed as an SSN or EIN is (tin_files.rs
     /// INVARIANT 3), or text probing for one (INVARIANT 4).
@@ -963,62 +992,78 @@ impl BooksServer {
             .collect()
     }
 
-    /// Read a file an agent names (books.import_local_file, books.set_w9
-    /// w9_file_path) through the import roots' lockdown (local_files.rs),
-    /// with its canonical path.
-    fn read_local(&self, path: &str) -> Result<(std::path::PathBuf, Vec<u8>), String> {
-        let protected = {
-            let store = self.lock()?;
-            self.protected(&store)
-        };
-        self.import_roots
-            .read(path.trim(), &protected, MAX_UPLOAD_BYTES)
-    }
-
     /// Where a file holding full TINs may be written: a new file outside
-    /// the books (outside_books) and outside every import root, so it can
-    /// never be filed back in as a receipt and read out again.
+    /// the books (outside_books). (It can't be filed back in unnoticed:
+    /// tin_files.rs records it.)
     fn tin_file_dest(&self, store: &Store, path: &str) -> Result<std::path::PathBuf, String> {
-        let dest = outside_books(&self.layout.books_dir(store), path)?;
-        self.outside_import_roots(&dest)?;
-        Ok(dest)
+        outside_books(&self.layout.books_dir(store), path)
     }
 
-    fn outside_import_roots(&self, dest: &std::path::Path) -> Result<(), String> {
-        if self.import_roots.contains(dest) {
-            return Err(TIN_FILE_IN_ROOT.to_string());
-        }
-        Ok(())
-    }
-
-    /// Read a W-9 file (PDF, PNG, or JPEG, 25 MB at most) for the vault,
-    /// through the import roots' lockdown like any local file: the type
-    /// is judged by where the path really leads (a link named w9.pdf to
-    /// another file is that file).
-    fn read_w9_file(&self, path: &str) -> Result<ledger_vault::W9File, String> {
-        let (canonical, bytes) = self.read_local(path)?;
+    /// The signed W-9 a call gives (an upload, or inline), for the vault:
+    /// a PDF, PNG, or JPEG by its own first bytes, whatever it is called.
+    fn w9_file(
+        &self,
+        p: &SetW9Params,
+    ) -> Result<(ledger_vault::W9File, Option<ledger_store::uploads::Claim>), String> {
+        let file = self.take_file(files::Given {
+            upload_id: p.w9_upload_id.as_deref(),
+            content_base64: p.w9_content_base64.as_deref(),
+            sha256: p.w9_sha256.as_deref(),
+            purposes: files::W9,
+        })?;
         // Not recorded here: set_w9 records it once the call can only
         // succeed, just before the vault write (tin_files.rs INVARIANT 1),
         // so a refused call never marks an ordinary file.
-        let mime_type = match canonical
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(str::to_lowercase)
-            .as_deref()
-        {
-            Some("pdf") => "application/pdf",
-            Some("png") => "image/png",
-            Some("jpg" | "jpeg") => "image/jpeg",
-            _ => return Err("w9_file_path is a PDF, PNG, or JPEG (.pdf, .png, .jpg)".into()),
+        let (mime_type, ext) = if file.bytes.starts_with(b"%PDF-") {
+            ("application/pdf", "pdf")
+        } else if file.bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+            ("image/png", "png")
+        } else if file.bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+            ("image/jpeg", "jpg")
+        } else {
+            return Err("the W-9 is a PDF, PNG, or JPEG".into());
         };
-        Ok(ledger_vault::W9File {
-            file_name: canonical
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "w9".into()),
-            mime_type: mime_type.to_string(),
-            bytes,
-        })
+        let file_name = p
+            .w9_file_name
+            .clone()
+            .or(file.file_name)
+            .unwrap_or_else(|| format!("w9.{ext}"));
+        if let Some(why) = ledger_store::uploads::file_name_problem(&file_name) {
+            return Err(why);
+        }
+        Ok((
+            ledger_vault::W9File {
+                file_name,
+                mime_type: mime_type.to_string(),
+                bytes: file.bytes,
+            },
+            file.claim,
+        ))
+    }
+
+    /// A CSV's text, given inline or as an upload (books.begin_upload),
+    /// and the upload's hold.
+    fn csv_given(
+        &self,
+        text: Option<&str>,
+        upload_id: Option<&str>,
+    ) -> Result<(String, Option<ledger_store::uploads::Claim>), String> {
+        match (text, upload_id) {
+            (Some(_), Some(_)) => Err("give csv_text or upload_id, not both".into()),
+            (Some(t), None) => Ok((t.to_string(), None)),
+            (None, Some(id)) => {
+                let file = self.take_file(files::Given {
+                    upload_id: Some(id),
+                    content_base64: None,
+                    sha256: None,
+                    purposes: files::IMPORTED,
+                })?;
+                let text = String::from_utf8(file.bytes)
+                    .map_err(|_| "the CSV isn't UTF-8 text".to_string())?;
+                Ok((text, file.claim))
+            }
+            (None, None) => Err("give the CSV: csv_text, or an upload_id".into()),
+        }
     }
 
     /// Record a file read or written with full TINs (tin_files.rs
@@ -1920,56 +1965,6 @@ fn known_tin_last4(store: &Store) -> Vec<u32> {
         .collect()
 }
 
-/// Where these books keep what an import must never read
-/// (local_files.rs): the data dir, the books dir, the vault, the key file
-/// in force and the default one, and the home folder.
-fn places(store: &Store, settings: &Settings, layout: &Layout) -> Places {
-    Places {
-        data_dir: store.data_dir().to_path_buf(),
-        books_dir: layout.books_dir(store),
-        vault_dir: layout.vault_dir(store),
-        key_files: vec![
-            layout.key_file(store, settings),
-            settings.key_file(),
-            ledger_vault::default_key_file(),
-        ],
-        // In the data root the home comes from the account's record, as
-        // the root's own does; never only from the environment.
-        home: match layout {
-            Layout::Root(_) => ledger_store::root::account_home().ok(),
-            Layout::BooksDir => None,
-        }
-        .or_else(|| std::env::var_os("HOME").map(std::path::PathBuf::from)),
-    }
-}
-
-/// The import roots a server for these books may use (local_files.rs
-/// INVARIANT 0): a named root that is `/`, the home folder or holds it,
-/// or holds the books, the vault or a key, is refused (the server doesn't
-/// start); a default one is dropped, leaving none. The text is for the
-/// human starting the server, on its standard error.
-pub fn guard_import_roots(
-    store: &Store,
-    settings: &Settings,
-    layout: &Layout,
-    roots: ImportRoots,
-) -> Result<ImportRoots, String> {
-    let places = places(store, settings, layout);
-    let explicit = roots.explicit();
-    let (roots, refused) = roots.guard(places.home.as_deref(), &places.keep_out());
-    if let Some((root, why)) = refused.first() {
-        let msg = format!(
-            "import folder {} can't be used: {why}. Name a folder that holds none of them, such as your downloads folder",
-            root.display()
-        );
-        if explicit {
-            return Err(msg);
-        }
-        eprintln!("ledger-mcp: {msg}; books.import_local_file has no folder to read from");
-    }
-    Ok(roots)
-}
-
 /// Whether `path` is `dir` or inside it.
 fn is_inside(dir: &std::path::Path, path: &std::path::Path) -> bool {
     resolved(path).starts_with(resolved(dir))
@@ -2719,6 +2714,10 @@ fn movement_in(ledger: &Ledger, account: AccountId, from: NaiveDate, to: NaiveDa
 }
 
 thread_local! {
+    /// The token of the request running on this thread (books served from
+    /// the data root), its id and name, for what is bound to it (its
+    /// uploads) and the commands it is given.
+    static CALLER: std::cell::RefCell<Option<(String, String)>> = const { std::cell::RefCell::new(None) };
     /// The journal's head after the last write made by the request
     /// running on this thread (StoreGuard's drop), for its access record.
     static WROTE: std::cell::RefCell<Option<(u64, String)>> = const { std::cell::RefCell::new(None) };
@@ -2892,6 +2891,8 @@ fn lines_out(lines: &[ledger_core::StatementLine]) -> Vec<StatementLineOut> {
 
 #[path = "tools/access.rs"]
 mod access_tools;
+#[path = "tools/files.rs"]
+mod files;
 #[path = "tools/kept.rs"]
 mod kept;
 pub use kept::SettingKeyOut;
@@ -3548,7 +3549,7 @@ impl BooksServer {
     #[tool(
         name = "books.attach_receipt",
         title = "Attach a receipt",
-        description = "Attach a receipt (base64 file bytes) to an entry, or file it unlinked and link later with books.link_receipt. Files are content-addressed and deduplicated. link_to links it to more subjects in the same call (another entry it also supports, an asset, a party, ...: see books.link_attachment); every subject is checked first, so one bad subject files nothing. A file holding a full TIN is refused: one the server read or wrote with TINs, or text with a TIN the vault keeps or an SSN or EIN printed 3-2-4 or 2-7 with hyphens.",
+        description = "Attach a receipt to an entry, or file it unlinked and link later with books.link_receipt. The bytes: upload_id (books.begin_upload), or content_base64 with its sha256 for a file of at most 256 KiB. Files are content-addressed and deduplicated. link_to links it to more subjects in the same call (another entry it also supports, an asset, a party, ...: see books.link_attachment); every subject is checked first, so one bad subject files nothing. A file holding a full TIN is refused: one the server read or wrote with TINs, or text with a TIN the vault keeps or an SSN or EIN printed 3-2-4 or 2-7 with hyphens.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -3560,17 +3561,6 @@ impl BooksServer {
         params: Parameters<AttachReceiptParams>,
     ) -> Result<Json<AttachReceiptOut>, String> {
         let p = params.0;
-        let bytes = base64::Engine::decode(
-            &base64::engine::general_purpose::STANDARD,
-            &p.content_base64,
-        )
-        .map_err(|_| "content_base64 is not valid base64".to_string())?;
-        if bytes.len() > MAX_UPLOAD_BYTES {
-            return Err(format!(
-                "file is {} bytes; the limit is {MAX_UPLOAD_BYTES}",
-                bytes.len()
-            ));
-        }
         let mut store = self.lock()?;
         if let Some(e) = p.entry_id
             && store.ledger().get_entry(e).is_none()
@@ -3578,16 +3568,26 @@ impl BooksServer {
             return Err(format!("unknown entry {e}"));
         }
         let link_to = check_link_to(&store, p.entry_id, &p.link_to)?;
-        self.refuse_tin_file(&store, &bytes, &p.mime_type, &p.file_name)?;
+        // Taken once everything else is known good.
+        let file = self.take_file(files::Given {
+            upload_id: p.upload_id.as_deref(),
+            content_base64: p.content_base64.as_deref(),
+            sha256: p.sha256.as_deref(),
+            purposes: files::FILED,
+        })?;
+        let (file_name, mime_type) = named(p.file_name, p.mime_type, &file)?;
+        let (bytes, claim) = (file.bytes, file.claim);
+        self.refuse_tin_file(&store, &bytes, &mime_type, &file_name)?;
         let (attachment_id, sha256, deduplicated) = store
             .attach_receipt(
                 p.entry_id,
-                &p.file_name,
-                &p.mime_type,
+                &file_name,
+                &mime_type,
                 &bytes,
                 p.description.as_deref(),
             )
             .map_err(|e| e.to_string())?;
+        files::filed(claim);
         for sub in link_to {
             store
                 .link_attachment(attachment_id, sub)
@@ -3604,7 +3604,7 @@ impl BooksServer {
     #[tool(
         name = "books.file_document",
         title = "File a document",
-        description = "File a document into the content-addressed store: category formation, legal, tax, accounting, statement (a bank or card statement: then books.record_statement), contract, photo, warranty, import_source (a bank export), or other. link_to links it to subjects in the same call (an account, an asset, a party, the company, ...: see books.link_attachment); every subject is checked first, so one bad subject files nothing. Never file a W-9 here (it shows the full TIN): books.set_w9 w9_file_path puts it in the vault. A file holding a full TIN is refused: one the server read or wrote with TINs, or text with a TIN the vault keeps or an SSN or EIN printed 3-2-4 or 2-7 with hyphens.",
+        description = "File a document: category formation, legal, tax, accounting, statement (a bank or card statement: then books.record_statement), contract, photo, warranty, import_source (a bank export), or other. link_to links it to subjects in the same call (an account, an asset, a party, the company: see books.link_attachment), all checked first. The bytes: upload_id (books.begin_upload), or content_base64 with its sha256 (at most 256 KiB). Never a W-9 (books.set_w9 w9_upload_id puts it in the vault). A file holding a full TIN is refused: one the server read or wrote with TINs, or text with a TIN the vault keeps or an SSN or EIN printed 3-2-4 or 2-7 with hyphens.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -3626,29 +3626,27 @@ impl BooksServer {
                 ));
             }
         }
-        let bytes = base64::Engine::decode(
-            &base64::engine::general_purpose::STANDARD,
-            &p.content_base64,
-        )
-        .map_err(|_| "content_base64 is not valid base64".to_string())?;
-        if bytes.len() > MAX_UPLOAD_BYTES {
-            return Err(format!(
-                "file is {} bytes; the limit is {MAX_UPLOAD_BYTES}",
-                bytes.len()
-            ));
-        }
         let mut store = self.lock()?;
         let link_to = check_link_to(&store, None, &p.link_to)?;
-        self.refuse_tin_file(&store, &bytes, &p.mime_type, &p.file_name)?;
+        let file = self.take_file(files::Given {
+            upload_id: p.upload_id.as_deref(),
+            content_base64: p.content_base64.as_deref(),
+            sha256: p.sha256.as_deref(),
+            purposes: files::FILED,
+        })?;
+        let (file_name, mime_type) = named(p.file_name, p.mime_type, &file)?;
+        let (bytes, claim) = (file.bytes, file.claim);
+        self.refuse_tin_file(&store, &bytes, &mime_type, &file_name)?;
         let (attachment_id, sha256, deduplicated) = store
             .file_document(
                 &p.category,
-                &p.file_name,
-                &p.mime_type,
+                &file_name,
+                &mime_type,
                 &bytes,
                 p.description.as_deref(),
             )
             .map_err(|e| e.to_string())?;
+        files::filed(claim);
         for sub in link_to {
             store
                 .link_attachment(attachment_id, sub)
@@ -3924,7 +3922,7 @@ impl BooksServer {
     #[tool(
         name = "books.get_receipt",
         title = "Get a receipt",
-        description = "Fetch a receipt or document's metadata (with everything it is linked to) and base64 bytes. Bytes are hash-verified on read.",
+        description = "A receipt or document: what it is and everything it is linked to. view bytes adds its bytes, base64 and hash-verified, for a file of at most 256 KiB; a larger one gives the command (wanderbooks download) that saves a copy in a folder you name (books served by `wanderbooks mcp`; elsewhere a larger file doesn't come back).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn get_receipt(
@@ -3932,12 +3930,54 @@ impl BooksServer {
         params: Parameters<GetReceiptParams>,
     ) -> Result<Json<GetReceiptOut>, String> {
         let p = params.0;
+        let bytes_wanted = match p.view.as_deref().unwrap_or("meta") {
+            "meta" => false,
+            "bytes" => true,
+            other => {
+                return Err(format!(
+                    "view {:?}: meta (the default) or bytes",
+                    other.chars().take(20).collect::<String>()
+                ));
+            }
+        };
         let store = self.lock()?;
         let meta = find_attachment(&store, p.attachment_id)?;
-        let bytes = store
-            .attachment_bytes(p.attachment_id)
-            .map_err(|e| e.to_string())?;
+        let book = store
+            .data_dir()
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let fits = meta.size_bytes as usize <= files::INLINE_MAX;
+        let content_base64 = if bytes_wanted && fits {
+            let bytes = store
+                .attachment_bytes(p.attachment_id)
+                .map_err(|e| e.to_string())?;
+            Some(base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                &bytes,
+            ))
+        } else {
+            None
+        };
+        // Too large to come back here: the command that saves a copy (books
+        // served from the data root; over stdio there is none).
+        let download = (bytes_wanted && !fits && self.uploads.is_some()).then(|| {
+            format!(
+                "wanderbooks download --book {book}{} {} --to <a folder>",
+                files::token_flag(),
+                meta.id
+            )
+        });
+        if bytes_wanted && !fits && download.is_none() {
+            return Err(format!(
+                "attachment {} is {} bytes; at most {} come back on this connection (a larger file needs these books served by `wanderbooks mcp`)",
+                meta.id,
+                meta.size_bytes,
+                files::INLINE_MAX
+            ));
+        }
         Ok(Json(GetReceiptOut {
+            download,
             links: links_out(&store, meta.id)?,
             description: meta.description.clone(),
             attachment_id: meta.id,
@@ -3947,10 +3987,7 @@ impl BooksServer {
             file_name: meta.file_name,
             mime_type: meta.mime_type,
             size_bytes: meta.size_bytes,
-            content_base64: base64::Engine::encode(
-                &base64::engine::general_purpose::STANDARD,
-                &bytes,
-            ),
+            content_base64,
         }))
     }
 
@@ -4413,7 +4450,7 @@ impl BooksServer {
     #[tool(
         name = "books.import_bank_csv",
         title = "Import a bank CSV as drafts",
-        description = "Import a QuickBooks-style bank/credit-card CSV: 3 columns Date,Description,Amount (payments negative), or 4 columns Date,Description, money out, money in (Intuit heads them Credit,Debit). Slash dates must settle month-first or day-first from the file itself or from date_order (\"month_first\" for mm/dd, \"day_first\" for dd/mm); ask the human when the tool says the dates read either way. Creates one DRAFT entry per transaction, all or none: bank account on one side, categorized offset on the other (the longest matching rule pattern, else default_offset_code). Review with books.digest, then post. File the export first (books.file_document category import_source) and pass source_attachment_id: it is linked to the bank account, so the import traces to its source (never to the drafts: a bank export is not a receipt).",
+        description = "Import a QuickBooks-style bank/credit-card CSV: 3 columns Date,Description,Amount (payments negative), or 4 columns Date,Description, money out, money in (Intuit heads them Credit,Debit). Slash dates must settle month-first or day-first from the file itself or from date_order (\"month_first\" for mm/dd, \"day_first\" for dd/mm); ask the human when the tool says the dates read either way. Creates one DRAFT entry per transaction, all or none: bank account on one side, categorized offset on the other (the longest matching rule pattern, else default_offset_code). Give the CSV as csv_text, or upload it (books.begin_upload purpose import) and give upload_id. Review with books.digest, then post. File the export too (books.file_document category import_source) and pass source_attachment_id: it is linked to the bank account, so the import traces to its source (never to the drafts: a bank export is not a receipt).",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -4435,8 +4472,8 @@ impl BooksServer {
                 ));
             }
         };
-        let txns =
-            ledger_import::parse_bank_csv_with(&p.csv_text, order).map_err(|e| e.to_string())?;
+        let (csv, claim) = self.csv_given(p.csv_text.as_deref(), p.upload_id.as_deref())?;
+        let txns = ledger_import::parse_bank_csv_with(&csv, order).map_err(|e| e.to_string())?;
         let mut store = self.lock()?;
         let bank = store
             .ledger()
@@ -4507,6 +4544,8 @@ impl BooksServer {
                 .map_err(|e| format!("{} {}: {e}", txn.date, txn.description));
             e?;
         }
+        // Rehearsed whole: the upload is used up as the writing begins.
+        files::filed(claim);
         let mut imported = Vec::new();
         for txn in txns {
             let (offset_id, offset_code) = offset_for(&txn.description);
@@ -5578,7 +5617,7 @@ impl BooksServer {
     #[tool(
         name = "books.import_chart_csv",
         title = "Import a chart of accounts",
-        description = "Import a chart of accounts from CSV (header: code,name,type,parent_code). Types: asset, liability, equity, revenue, expense. Parents must come before children. Fails on the first bad row; nothing is half-imported.",
+        description = "Import a chart of accounts from CSV (header: code,name,type,parent_code): csv_text, or upload_id (books.begin_upload purpose import). Types: asset, liability, equity, revenue, expense. Parents must come before children. Fails on the first bad row; nothing is half-imported.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -5590,7 +5629,8 @@ impl BooksServer {
         params: Parameters<ImportChartCsvParams>,
     ) -> Result<Json<ImportChartCsvOut>, String> {
         let p = params.0;
-        let rows = ledger_import::parse_chart_csv(&p.csv_text).map_err(|e| e.to_string())?;
+        let (csv, claim) = self.csv_given(p.csv_text.as_deref(), p.upload_id.as_deref())?;
+        let rows = ledger_import::parse_chart_csv(&csv).map_err(|e| e.to_string())?;
         let mut store = self.lock()?;
         let parse_type = |t: &str| match t {
             "asset" => Ok(AccountType::Asset),
@@ -5633,6 +5673,8 @@ impl BooksServer {
                     .map_err(|e| format!("{}: {e}", row.code))?;
             }
         }
+        // Rehearsed whole: the upload is used up as the writing begins.
+        files::filed(claim);
         let mut created = Vec::new();
         for row in rows {
             let account_type = match row.account_type.as_str() {
@@ -5666,71 +5708,6 @@ impl BooksServer {
         }
         let count = created.len();
         Ok(Json(ImportChartCsvOut { created, count }))
-    }
-
-    #[tool(
-        name = "books.import_local_file",
-        title = "File a local file",
-        description = "File a receipt or document from a file on this computer: an absolute path to a regular file in the server's import folders (by default your downloads folder; save it there first). Files of the books themselves are never read. A file the server read or wrote with full TINs (a W-9, a 1099 worksheet, a CPA package or a file from one), and text holding a TIN the vault keeps or a number printed as an SSN or EIN is (digits 3-2-4 or 2-7 joined by hyphens), are refused: they never go into the books.",
-        annotations(
-            read_only_hint = false,
-            destructive_hint = false,
-            open_world_hint = false
-        )
-    )]
-    async fn import_local_file(
-        &self,
-        params: Parameters<ImportLocalFileParams>,
-    ) -> Result<Json<ImportLocalFileOut>, String> {
-        let p = params.0;
-        // The name and type are those of the file read, where the path
-        // really leads (a link named receipt.pdf to a CSV is a CSV).
-        let (canonical, bytes) = self.read_local(&p.path)?;
-        let file_name = p.file_name.unwrap_or_else(|| {
-            canonical
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("file")
-                .to_string()
-        });
-        let mime_type = mime_guess::from_path(&canonical)
-            .first_or_octet_stream()
-            .to_string();
-        let mut store = self.lock()?;
-        // A file the server read or wrote with full TINs, or text holding
-        // one (the vault's, or one printed as an SSN or EIN is), never goes
-        // into the books (tin_files.rs).
-        self.refuse_tin_file(&store, &bytes, &mime_type, &file_name)?;
-        let (attachment_id, sha256, deduplicated) = match p.category.as_str() {
-            "receipt" => store
-                .attach_receipt(
-                    p.entry_id,
-                    &file_name,
-                    &mime_type,
-                    &bytes,
-                    p.description.as_deref(),
-                )
-                .map_err(|e| e.to_string())?,
-            "document" => {
-                let cat = p.document_category.as_deref().unwrap_or("other");
-                store
-                    .file_document(
-                        cat,
-                        &file_name,
-                        &mime_type,
-                        &bytes,
-                        p.description.as_deref(),
-                    )
-                    .map_err(|e| e.to_string())?
-            }
-            _ => return Err("category must be \"receipt\" or \"document\"".to_string()),
-        };
-        Ok(Json(ImportLocalFileOut {
-            attachment_id,
-            sha256,
-            deduplicated,
-            file_name,
-        }))
     }
 
     #[tool(
@@ -7097,7 +7074,7 @@ impl BooksServer {
     #[tool(
         name = "books.set_w9",
         title = "Record W-9 facts",
-        description = "Record what a contractor's or landlord's W-9 says, or clear it (clear: true alone): the date received (received_on), line 3 entity type, line 4 exempt payee and FATCA codes, the TIN's last four digits, and where the form is kept. Give the full TIN as tin with tin_type (ssn, ein, itin) and it goes only to the encrypted TIN vault (its key kept outside the books, created on first use): the books keep its last four (tin_last4 is then optional, and refused if it disagrees) and a hash of the vault record, in the W-9 facts and the party's TIN facts alike (party.tin_set, as books.set_tin), and kept_at defaults to \"wanderbooks vault\". The CPA package carries the full TIN to the CPA. Give w9_file_path (a local PDF, PNG, or JPEG of the signed form) and the form goes to the vault too, never to the receipts and documents; read it back with books.get_w9. Never put a TIN in any other field, note, description, or file: the engine refuses any nine-digit number, and no tool output echoes one. The party needs a 1099 role (contractor or landlord: books.set_party_roles). Record it before paying them. A party with a vendor record also gets its W-9 marked on file there (books.vendor_1099 missing_w9). Clearing W-9 facts whose TIN is in the vault needs books.purge_tin first. Journaled as party.w9_set. Returns the party (the TIN's last four only).",
+        description = "Record what a contractor's or landlord's W-9 says, or clear it (clear: true alone): the date received (received_on), line 3 entity type, line 4 exempt payee and FATCA codes, the TIN's last four digits, and where the form is kept. Give the full TIN as tin with tin_type (ssn, ein, itin) and it goes only to the encrypted TIN vault (its key kept outside the books, created on first use): the books keep its last four (tin_last4 is then optional, and refused if it disagrees) and a hash of the vault record, in the W-9 facts and the party's TIN facts alike (party.tin_set, as books.set_tin), and kept_at defaults to \"wanderbooks vault\". The CPA package carries the full TIN to the CPA. Give the signed form (a PDF, PNG, or JPEG) as w9_upload_id (books.begin_upload), or w9_content_base64 with w9_sha256 when at most 256 KiB, and it goes to the vault too, never to the receipts and documents; read it back with books.get_w9. Never put a TIN in any other field, note, description, or file: the engine refuses any nine-digit number, and no tool output echoes one. The party needs a 1099 role (contractor or landlord: books.set_party_roles). Record it before paying them. A party with a vendor record also gets its W-9 marked on file there (books.vendor_1099 missing_w9). Clearing W-9 facts whose TIN is in the vault needs books.purge_tin first. Journaled as party.w9_set. Returns the party (the TIN's last four only).",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -7106,7 +7083,14 @@ impl BooksServer {
     )]
     async fn set_w9(&self, params: Parameters<SetW9Params>) -> Result<Json<PartyOut>, String> {
         let p = params.0;
-        let vault_input = p.tin.is_some() || p.tin_type.is_some() || p.w9_file_path.is_some();
+        let w9_given = p.w9_upload_id.is_some() || p.w9_content_base64.is_some();
+        if p.w9_file_name.is_some() && !w9_given {
+            return Err(
+                "w9_file_name names the W-9 given with it (w9_upload_id or w9_content_base64)"
+                    .into(),
+            );
+        }
+        let vault_input = p.tin.is_some() || p.tin_type.is_some() || w9_given;
         let tin = match (&p.tin, &p.tin_type) {
             (Some(t), Some(k)) => Some(
                 ledger_vault::Tin::new(t.0.trim(), parse_tin_type(k)?)
@@ -7159,11 +7143,12 @@ impl BooksServer {
                 vault_record: None,
             })
         };
-        let w9_file = p
-            .w9_file_path
-            .as_deref()
-            .map(|path| self.read_w9_file(path))
-            .transpose()?;
+        let (w9_file, mut w9_claim) = if w9_given {
+            let (file, claim) = self.w9_file(&p)?;
+            (Some(file), claim)
+        } else {
+            (None, None)
+        };
         let mut store = self.lock()?;
         let id = resolve_party(&store, &p.party)?;
         let existing = store.ledger().get_party(id).and_then(|p| p.w9.clone());
@@ -7245,6 +7230,8 @@ impl BooksServer {
                         Some(w) => Some(vault.put_w9(id, w).map_err(|e| e.to_string())?),
                         None => None,
                     };
+                    // The W-9 is in the vault: its upload is used up.
+                    files::filed(w9_claim.take());
                     match tin_hash {
                         Some(h) => Some(h),
                         None if held_tin => vault.record_hash(id).map_err(|e| e.to_string())?,
@@ -7423,7 +7410,7 @@ impl BooksServer {
             .map_err(|e| e.to_string())?
             .ok_or_else(|| {
                 format!(
-                    "the TIN vault holds no W-9 file for party {id}: store one with books.set_w9 w9_file_path"
+                    "the TIN vault holds no W-9 file for party {id}: store one with books.set_w9 w9_upload_id"
                 )
             })?;
         self.wrote_tins(&store, &file.bytes)?;
@@ -8500,11 +8487,6 @@ impl BooksServer {
                 )
             })
             .transpose()?;
-        if p.include_tins
-            && let Some(d) = &dest
-        {
-            self.outside_import_roots(d)?;
-        }
         let meta = self.report_meta(&store);
         let ledger = store.ledger();
         // The vault, opened once and never creating a key: locked, each
@@ -9588,7 +9570,10 @@ impl BooksServer {
                     .parse()
                     .map_err(|_| format!("bad receipt resource URI: {uri}"))?;
                 let Json(out) = self
-                    .get_receipt(Parameters(GetReceiptParams { attachment_id: id }))
+                    .get_receipt(Parameters(GetReceiptParams {
+                        attachment_id: id,
+                        view: None,
+                    }))
                     .await?;
                 serde_json::to_string_pretty(&out).map_err(|e| e.to_string())
             }
@@ -9703,6 +9688,11 @@ impl ServerHandler for BooksServer {
         let result = run_blocking(&self.store, move || {
             Box::pin(async move {
                 WROTE.with(|w| w.borrow_mut().take());
+                let caller = running_call.as_ref().and_then(|c| {
+                    c.caller()
+                        .map(|c| (c.token.id.clone(), c.token.name.clone()))
+                });
+                CALLER.with(|c| *c.borrow_mut() = caller);
                 // Counted as running by now (run_blocking): hashed here.
                 let digest = running_call
                     .as_ref()
@@ -10073,11 +10063,16 @@ mod tests {
         }
     }
 
-    /// "Max 25 MB" (books.attach_receipt): 25 MiB exactly.
+    /// An upload's limit, 25 MiB exactly; inline, 256 KiB (plan 2.1, 4.7).
     #[test]
-    fn the_upload_limit_is_25_mib() {
-        assert_eq!(MAX_UPLOAD_BYTES, 25 * 1024 * 1024);
-        assert_eq!(MAX_UPLOAD_BYTES, 26_214_400);
+    fn the_file_limits_are_the_plans() {
+        assert_eq!(ledger_store::uploads::MAX_UPLOAD, 26_214_400);
+        assert_eq!(files::INLINE_MAX, 262_144);
+        // Plan 4.7: an upload lasts 15 minutes; 16 under way per token.
+        assert_eq!(ledger_store::uploads::UPLOAD_TTL, 900);
+        assert_eq!(ledger_store::uploads::MAX_LIVE, 16);
+        assert_eq!(ledger_store::uploads::MAX_NAME_BYTES, 255);
+        assert_eq!(crate::local::MAX_BODY, 1024 * 1024);
     }
 
     /// A period is "YYYY-MM": a year of the calendar the books keep
@@ -10450,7 +10445,7 @@ mod tests {
             ("books.assign_role", D),
             ("books.set_tax_category", W),
             ("books.import_chart_csv", W),
-            ("books.import_local_file", W),
+            ("books.begin_upload", W),
             ("books.export", R),
             ("books.register_asset", W),
             ("books.asset_schedule", R),
@@ -10577,6 +10572,10 @@ mod tests {
                 "ledger-import xlsx",
                 include_str!("../../ledger-import/src/xlsx.rs"),
             ),
+            (
+                "ledger-store uploads",
+                include_str!("../../ledger-store/src/uploads.rs"),
+            ),
         ] {
             let mut rest = src;
             let mut n = 0;
@@ -10588,6 +10587,18 @@ mod tests {
                 n += 1;
             }
             assert!(n > 0, "{krate}: no error templates found");
+        }
+        // The files tool's refusals (and description): its sentences.
+        for line in include_str!("tools/files.rs").lines() {
+            let line = line.trim_start();
+            if line.starts_with("//") {
+                continue;
+            }
+            for (i, text) in line.split('"').enumerate() {
+                if i % 2 == 1 && text.len() > 30 && text.contains(' ') {
+                    out.push(("tools/files.rs text".into(), text.to_string()));
+                }
+            }
         }
         let newer = |verified| ledger_store::StoreError::NewerJournal {
             seq: 7,
@@ -10605,25 +10616,11 @@ mod tests {
         ));
         for (what, text) in [
             ("STOPPED", STOPPED),
-            ("TIN_FILE_IN_ROOT", TIN_FILE_IN_ROOT),
             ("KEY_IN_BOOKS", KEY_IN_BOOKS),
             ("VAULT_IN_HISTORY", VAULT_IN_HISTORY),
             ("INSIDE_BOOKS", INSIDE_BOOKS),
             ("NO_FOLDER", NO_FOLDER),
             ("EXISTS", EXISTS),
-            ("local_files::CHANGED", crate::local_files::CHANGED),
-            (
-                "local_files::NO_SUCH_FILE",
-                crate::local_files::NO_SUCH_FILE,
-            ),
-            ("local_files::NO_ROOTS", crate::local_files::NO_ROOTS),
-            ("local_files::SEALED", crate::local_files::SEALED),
-            (
-                "local_files::IN_THE_BOOKS",
-                crate::local_files::IN_THE_BOOKS,
-            ),
-            ("local_files::HARD_LINKED", crate::local_files::HARD_LINKED),
-            ("local_files::NOT_REGULAR", crate::local_files::NOT_REGULAR),
             ("tin_files::TIN_FILE", tin_files::TIN_FILE),
             ("tin_files::TIN_HELD", tin_files::TIN_HELD),
             ("tin_files::TIN_PROBE", tin_files::TIN_PROBE),
@@ -10768,6 +10765,69 @@ mod tests {
         );
     }
 
+    /// No tool takes a path on the server's computer (plan 4.7, D-28):
+    /// files come by upload or inline. The three outputs with full TINs
+    /// keep theirs until the viewer takes them over (P2 slice 6).
+    #[test]
+    fn no_tool_takes_a_path() {
+        const UNTIL_THE_VIEWER: &[(&str, &str)] = &[
+            ("books.export_cpa_package", "save_to"),
+            ("books.vendor_1099", "save_csv_to"),
+            ("books.get_w9", "save_to"),
+        ];
+        fn names(v: &serde_json::Value, out: &mut Vec<String>) {
+            match v {
+                serde_json::Value::Object(map) => {
+                    if let Some(serde_json::Value::Object(props)) = map.get("properties") {
+                        out.extend(props.keys().cloned());
+                    }
+                    map.values().for_each(|v| names(v, out));
+                }
+                serde_json::Value::Array(items) => items.iter().for_each(|v| names(v, out)),
+                _ => {}
+            }
+        }
+        let mut found = Vec::new();
+        for t in BooksServer::tool_router().list_all() {
+            let mut props = Vec::new();
+            names(
+                &serde_json::Value::Object((*t.input_schema).clone()),
+                &mut props,
+            );
+            for p in props {
+                let lower = p.to_ascii_lowercase();
+                // Names that hold a place to read or write: whole words,
+                // so `link_to`, `*_file_name`, `tin_on_file` and `date_to`
+                // pass.
+                let words: Vec<&str> = lower.split('_').collect();
+                let pathlike = lower.starts_with("save")
+                    || lower.contains("path")
+                    || [
+                        "dir",
+                        "folder",
+                        "root",
+                        "dest",
+                        "destination",
+                        "output",
+                        "location",
+                        "local",
+                    ]
+                    .iter()
+                    .any(|w| words.contains(w))
+                    || (words.last() == Some(&"file") && !lower.ends_with("on_file"))
+                    || lower == "to"
+                    || lower == "from"
+                    || lower == "source";
+                if pathlike && !UNTIL_THE_VIEWER.contains(&(&*t.name, p.as_str())) {
+                    found.push(format!("{} {p}", t.name));
+                }
+            }
+        }
+        found.sort();
+        found.dedup();
+        assert!(found.is_empty(), "path-like parameters: {found:?}");
+    }
+
     #[test]
     fn tool_text_lint() {
         const NEVER: &[&str] = &[
@@ -10793,6 +10853,13 @@ mod tests {
             "read the file",
             "open the file",
             "cat ",
+            // Gone in P2 slice 5: files come by upload or inline.
+            "import_local_file",
+            "w9_file_path",
+            "import folder",
+            "import root",
+            "put_url",
+            "human_url",
             "fl-0001",
         ];
         // Whole words only: "digit" and "committee" are fine.
@@ -10830,6 +10897,45 @@ mod tests {
                 ));
             }
         }
+        // Every tool the text names is one there is.
+        let tools: std::collections::HashSet<String> = BooksServer::tool_router()
+            .list_all()
+            .into_iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        let mut unknown: Vec<String> = Vec::new();
+        // (Settings keys, `books.cash_accounts`, are named like tools.)
+        for (what, text) in texts
+            .iter()
+            .filter(|(w, _)| !w.contains("settings literal"))
+        {
+            for (i, _) in text.match_indices("books.") {
+                let name: String = text[i..]
+                    .chars()
+                    .take_while(|c| {
+                        c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '_' || *c == '.'
+                    })
+                    .collect();
+                let name = name.trim_end_matches('.');
+                // "the books." ends a sentence.
+                if name == "books" {
+                    continue;
+                }
+                let before = text[..i].chars().next_back();
+                if before.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '/') {
+                    continue;
+                }
+                if !tools.contains(name) {
+                    unknown.push(format!("{what}: {name}"));
+                }
+            }
+        }
+        unknown.sort();
+        unknown.dedup();
+        assert!(
+            unknown.is_empty(),
+            "text names tools there aren't: {unknown:?}"
+        );
         let words = |text: &str| {
             text.split(|c: char| !c.is_alphanumeric() && c != '_')
                 .map(str::to_string)

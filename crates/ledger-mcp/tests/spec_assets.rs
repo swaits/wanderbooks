@@ -360,7 +360,9 @@ impl Mcp {
         self.ok(
             "books.file_document",
             json!({"category": "legal", "file_name": "bill-of-sale.txt", "mime_type": "text/plain",
-                   "content_base64": b64(b"bill of sale"), "description": "Bill of sale"}),
+                   "content_base64": b64(b"bill of sale"),
+                   "sha256": ledger_store::journal::sha256_hex(b"bill of sale"),
+                   "description": "Bill of sale"}),
         )["attachment_id"]
             .as_u64()
             .unwrap()

@@ -238,7 +238,8 @@ was weakened. What it added is checked by tests and properties (listed in
 never called corrupt, damage always is; the envelope and its hash are
 frozen across formats, rules.md B-27), the server failing closed after a
 panic, the import roots' lockdown (a property over generated paths, and a
-component walk that refuses a folder swapped for a link), files with full
+component walk that refuses a folder swapped for a link; removed with the
+import roots in P2 slice 5), files with full
 TINs kept out of the books (B-26), and the agent text lint. Out of scope
 for proof today: the format gate and the walk are I/O, and the model in
 `verify/lean` stops at the ledger.

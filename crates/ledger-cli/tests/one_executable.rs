@@ -35,16 +35,10 @@ fn dev_stdio_is_the_books_server() {
         .tempdir()
         .unwrap();
     let data = dir.path().join("books").join("books-data");
-    // An import root may not be inside the books dir (the data dir's
-    // parent), so it is a sibling of it.
-    let inbox = dir.path().join("inbox");
-    std::fs::create_dir(&inbox).unwrap();
     let mut child = wanderbooks()
         .arg("dev-stdio")
         .arg("--data-dir")
         .arg(&data)
-        .arg("--import-root")
-        .arg(&inbox)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

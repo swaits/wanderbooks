@@ -18,11 +18,15 @@
 //! `last_applied_seq`. There is exactly one writer: `Store` is `!Sync` by
 //! construction (it owns a `rusqlite::Connection`).
 
+pub mod access;
+pub mod auth;
 pub mod blob;
+pub mod chain;
 pub mod error;
 pub mod format;
 pub mod journal;
 pub mod meta;
+pub mod passphrase;
 pub mod reconcilable;
 pub mod root;
 pub mod schema;

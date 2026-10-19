@@ -1,5 +1,6 @@
-//! The admin socket's messages (`run/admin.sock`, plan 3.1, 3.9): how the
-//! command line asks the books server to list, create and adopt books.
+//! The admin socket's messages (`run/admin.sock`, plan 3.1, 3.3, 3.9): how
+//! the command line asks the books server to list, create and adopt books,
+//! and to make, list and revoke agents' tokens.
 //!
 //! ```text
 //! GOAL: the command line makes and adopts books without ever touching
@@ -21,6 +22,9 @@
 //!   5. Nothing in a settings file is dropped silently: entries the books
 //!      don't know are refused unless `skip_unknown`, and its notes and
 //!      comments are in the preview.
+//!   6. A token's text is in exactly one answer, TokenCreated, to the
+//!      request that made it; nothing else carries it (auth.rs
+//!      INVARIANT 1).
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -93,6 +97,69 @@ pub enum Request {
         #[serde(default)]
         skip_unknown: bool,
     },
+    /// Make a token for an agent (plan 3.3).
+    TokenCreate {
+        /// The books it opens.
+        book: String,
+        /// Its name, unique among the books' tokens ("agent").
+        name: String,
+        /// What it may do: books:read, books:write, books:post,
+        /// books:admin.
+        scopes: Vec<String>,
+        /// End a token of the same name in the same step.
+        #[serde(default)]
+        replace: bool,
+    },
+    /// The live tokens.
+    TokenList,
+    /// End a token.
+    TokenRevoke {
+        /// Its books.
+        book: String,
+        /// Its name.
+        name: String,
+        /// Only if it is still this one (a token just made, taken back).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+    },
+}
+
+/// A token's text in an answer: Debug never shows it (INVARIANT 6).
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct TokenText(pub String);
+
+impl std::fmt::Debug for TokenText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TokenText(…)")
+    }
+}
+
+/// A token, as listed (never its text).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TokenInfo {
+    /// Its id.
+    pub id: String,
+    /// The books it opens.
+    pub book: String,
+    /// Its name.
+    pub name: String,
+    /// What it may do.
+    pub scopes: Vec<String>,
+    /// When it was made (UTC).
+    pub created: String,
+}
+
+impl From<&ledger_store::auth::Token> for TokenInfo {
+    fn from(t: &ledger_store::auth::Token) -> Self {
+        Self {
+            id: t.id.clone(),
+            book: t.book.clone(),
+            name: t.name.clone(),
+            scopes: t.scopes.iter().map(|s| s.as_str().to_string()).collect(),
+            created: t.created.clone(),
+        }
+    }
 }
 
 /// One book, as listed.
@@ -188,6 +255,17 @@ pub enum Response {
     Preview(AdoptPreview),
     /// Books adopted and open.
     Adopted(Adopted),
+    /// A token made: its text, shown this once (INVARIANT 6).
+    TokenCreated {
+        /// The token.
+        token: TokenInfo,
+        /// Its text.
+        text: TokenText,
+    },
+    /// The live tokens.
+    Tokens(Vec<TokenInfo>),
+    /// A token ended.
+    TokenRevoked(TokenInfo),
     /// Refused, with why (no path in the data root: INVARIANT 3).
     Refused(String),
 }
@@ -227,15 +305,20 @@ pub fn call_within(
     use std::io::{BufRead, Write};
     let not_sent = |why: String| CallError::NotSent(why);
     // A list changes nothing: its only question is whether it answered.
-    let reads_only = matches!(request, Request::List);
-    let unknown = move |why: String| {
-        if reads_only {
-            CallError::Unknown(why)
-        } else {
-            CallError::Unknown(format!(
-                "{why}, so it may or may not have been done: `wanderbooks books list` shows the books there are"
-            ))
+    let look = match request {
+        Request::List | Request::TokenList => None,
+        Request::Create { .. } | Request::Adopt { .. } => {
+            Some("`wanderbooks books list` shows the books there are")
         }
+        Request::TokenCreate { .. } | Request::TokenRevoke { .. } => {
+            Some("`wanderbooks token list` shows the tokens there are")
+        }
+    };
+    let unknown = move |why: String| match look {
+        None => CallError::Unknown(why),
+        Some(look) => CallError::Unknown(format!(
+            "{why}, so it may or may not have been done: {look}"
+        )),
     };
     let quiet = |e: std::io::Error| match e.kind() {
         std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => {
@@ -361,9 +444,78 @@ mod tests {
                 problem: None,
             },
             Response::Refused("no".into()),
+            Response::TokenCreated {
+                token: TokenInfo {
+                    id: "tok_1".into(),
+                    book: "acme".into(),
+                    name: "agent".into(),
+                    scopes: vec!["books:read".into()],
+                    created: "2026-10-19T00:00:00.000Z".into(),
+                },
+                text: TokenText("wb_00".into()),
+            },
+            Response::Tokens(vec![]),
         ] {
             let text = serde_json::to_string(&r).unwrap();
             assert_eq!(serde_json::from_str::<Response>(&text).unwrap(), r);
         }
+    }
+
+    #[test]
+    fn token_requests_read_as_written() {
+        let r: Envelope = serde_json::from_value(json!({"proto": 1, "op": "token_create",
+            "book": "acme", "name": "agent", "scopes": ["books:read"]}))
+        .unwrap();
+        assert_eq!(
+            r.request,
+            Request::TokenCreate {
+                book: "acme".into(),
+                name: "agent".into(),
+                scopes: vec!["books:read".into()],
+                replace: false,
+            }
+        );
+        let shown = format!(
+            "{:?}",
+            Response::TokenCreated {
+                token: TokenInfo {
+                    id: "tok_1".into(),
+                    book: "acme".into(),
+                    name: "agent".into(),
+                    scopes: vec![],
+                    created: String::new(),
+                },
+                text: TokenText("wb_secret".into()),
+            }
+        );
+        assert!(!shown.contains("wb_secret"), "{shown}");
+        let r: Envelope = serde_json::from_value(json!({"proto": 1, "op": "token_list"})).unwrap();
+        assert_eq!(r.request, Request::TokenList);
+        assert!(
+            serde_json::from_value::<Envelope>(
+                json!({"proto": 1, "op": "token_revoke", "book": "acme"})
+            )
+            .is_err(),
+            "a revoke names the token"
+        );
+    }
+
+    #[test]
+    fn a_listed_token_carries_no_text_or_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut p = ledger_store::auth::Principals::open(dir.path()).unwrap();
+        let book = ledger_store::root::BookId::parse("acme").unwrap();
+        let (t, secret) = p
+            .create(
+                &book,
+                "agent",
+                [ledger_store::auth::Scope::Read].into(),
+                false,
+            )
+            .unwrap();
+        let text = serde_json::to_string(&Response::Tokens(vec![TokenInfo::from(&t)])).unwrap();
+        assert!(!text.contains(&secret.expose()[3..]));
+        assert!(!text.contains(&t.sha256));
+        assert!(text.contains("books:read"));
     }
 }

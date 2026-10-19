@@ -22,6 +22,8 @@ type Client = RunningService<RoleClient, ClientConfig>;
 /// A home with a data root made by `wanderbooks setup`.
 struct Home {
     dir: tempfile::TempDir,
+    /// A token for each book, made on first use (all scopes).
+    tokens: std::sync::Mutex<std::collections::HashMap<String, String>>,
 }
 
 impl Home {
@@ -37,7 +39,32 @@ impl Home {
             .output()
             .unwrap();
         assert!(out.status.success(), "{out:?}");
-        Self { dir }
+        Self {
+            dir,
+            tokens: Default::default(),
+        }
+    }
+
+    /// The token tests use for `book`, made through the admin socket the
+    /// first time.
+    fn token(&self, book: &str) -> String {
+        let mut tokens = self.tokens.lock().unwrap();
+        if let Some(t) = tokens.get(book) {
+            return t.clone();
+        }
+        let text = match self.admin(Request::TokenCreate {
+            book: book.into(),
+            name: "test".into(),
+            scopes: ["read", "write", "post", "admin"]
+                .map(String::from)
+                .to_vec(),
+            replace: true,
+        }) {
+            Response::TokenCreated { text, .. } => text.0,
+            other => panic!("{other:?}"),
+        };
+        tokens.insert(book.to_string(), text.clone());
+        text
     }
 
     fn root(&self) -> PathBuf {
@@ -130,22 +157,45 @@ impl Drop for Server {
 
 /// An HTTP client for the server's MCP socket.
 fn mcp_http(home: &Home) -> reqwest::Client {
+    mcp_http_builder(home).build().unwrap()
+}
+
+fn mcp_http_builder(home: &Home) -> reqwest::ClientBuilder {
     // The short path is good in this process only, while it lives: kept.
     let short = ledger_store::root::SocketPath::new(&home.run(), "mcp.sock").unwrap();
     let path = short.path().to_path_buf();
     std::mem::forget(short);
-    reqwest::Client::builder()
-        .unix_socket(path)
+    reqwest::Client::builder().unix_socket(path)
+}
+
+/// An HTTP client for the server's MCP socket that sends `book`'s token
+/// on every request.
+fn mcp_http_for(home: &Home, book: &str) -> reqwest::Client {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        reqwest::header::AUTHORIZATION,
+        format!("Bearer {}", home.token(book)).parse().unwrap(),
+    );
+    mcp_http_builder(home)
+        .default_headers(headers)
         .build()
         .unwrap()
 }
 
 async fn connect(home: &Home, book: &str) -> Result<Client, String> {
+    let token = home.token(book);
+    connect_with(home, book, Some(token)).await
+}
+
+/// [`connect`], with this token (or none).
+async fn connect_with(home: &Home, book: &str, token: Option<String>) -> Result<Client, String> {
     let http = mcp_http(home);
-    let transport = StreamableHttpClientTransport::with_client(
-        http,
-        StreamableHttpClientTransportConfig::with_uri(format!("http://localhost/b/{book}/mcp")),
-    );
+    let mut config =
+        StreamableHttpClientTransportConfig::with_uri(format!("http://localhost/b/{book}/mcp"));
+    if let Some(token) = token {
+        config = config.auth_header(token);
+    }
+    let transport = StreamableHttpClientTransport::with_client(http, config);
     ClientConfig::default()
         .serve(transport)
         .await
@@ -266,7 +316,9 @@ async fn every_book_is_served_on_its_own_route() {
     home.assert_hidden(&start.to_string());
     assert!(start.to_string().contains("EUR"), "{start}");
     // A route for no books says so, and names no folder.
-    let err = connect(&home, "nobody").await.unwrap_err();
+    let err = connect_with(&home, "nobody", Some(home.token("acme")))
+        .await
+        .unwrap_err();
     home.assert_hidden(&err);
     drop((acme, beta));
     assert!(server.close().success());
@@ -714,7 +766,7 @@ async fn a_call_whose_client_hung_up_finishes_before_the_close() {
     let home = Home::new("hangup");
     let mut server = Server::start(&home);
     home.create("acme", "USD");
-    let http = mcp_http(&home);
+    let http = mcp_http_for(&home, "acme");
     let session = raw_session(&http, "acme").await;
     // A large document: its filing takes long enough to close mid-way.
     let mut bytes = b"%PDF-1.4\n".to_vec();
@@ -1061,5 +1113,657 @@ fn adoption_checks_the_vault_key_and_the_settings_file() {
     let book = home.root().join("books/acme");
     assert_eq!(mode(&book.join("keys/legacy.key")), 0o600);
     assert!(book.join("vault/tin-1.bin").is_file());
+    assert!(server.close().success());
+}
+
+// P2 slice 4: tokens, scopes and the access log (local.rs INVARIANT 8,
+// ledger-mcp access.rs, scopes.rs; ledger-store auth.rs, access.rs).
+
+impl Home {
+    /// A token for `book` named `name` with `scopes`, made (or remade).
+    fn token_with(&self, book: &str, name: &str, scopes: &[&str]) -> String {
+        match self.admin(Request::TokenCreate {
+            book: book.into(),
+            name: name.into(),
+            scopes: scopes.iter().map(|s| s.to_string()).collect(),
+            replace: true,
+        }) {
+            Response::TokenCreated { text, .. } => text.0,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn book_dir(&self, book: &str) -> PathBuf {
+        self.root().join("books").join(book)
+    }
+}
+
+/// A raw initialize on `book`'s route with `bearer` (if any): its status,
+/// its refusal header, its session id and its body.
+async fn raw_initialize(
+    home: &Home,
+    book: &str,
+    bearer: Option<&str>,
+) -> (u16, Option<String>, Option<String>, String) {
+    let mut r = mcp_http(home)
+        .post(format!("http://localhost/b/{book}/mcp"))
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
+        .body(
+            json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+                "protocolVersion": "2025-06-18", "capabilities": {},
+                "clientInfo": {"name": "raw", "version": "0"}}})
+            .to_string(),
+        );
+    if let Some(b) = bearer {
+        r = r.bearer_auth(b);
+    }
+    let r = r.send().await.unwrap();
+    let header = |name: &str| {
+        r.headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    };
+    let refused = header("x-wanderbooks-refused");
+    let session = header("mcp-session-id");
+    let status = r.status().as_u16();
+    if status == 401 {
+        assert_eq!(
+            header("www-authenticate").as_deref(),
+            Some("Bearer realm=\"wanderbooks\"")
+        );
+    }
+    (status, refused, session, r.text().await.unwrap())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_token_opens_only_its_own_books_until_revoked() {
+    let home = Home::new("tokens");
+    let server = Server::start(&home);
+    home.create("acme", "USD");
+    home.create("beta", "USD");
+    // None, or one that isn't a token: 401, recorded, nothing named.
+    for bearer in [None, Some("wb_nonsense"), Some("")] {
+        let (status, refused, session, body) = raw_initialize(&home, "acme", bearer).await;
+        assert_eq!(status, 401, "{bearer:?}: {body}");
+        assert_eq!(refused.as_deref(), Some("unauthorized"));
+        assert!(session.is_none());
+        assert!(body.contains("token"), "{body}");
+        home.assert_hidden(&body);
+    }
+    // Another book's token: 403.
+    let beta = home.token("beta");
+    let (status, refused, _, body) = raw_initialize(&home, "acme", Some(&beta)).await;
+    assert_eq!(status, 403, "{body}");
+    assert_eq!(refused.as_deref(), Some("wrong_books"));
+    assert!(body.contains("beta"), "{body}");
+    // Its own: in.
+    let acme = connect(&home, "acme").await.unwrap();
+    chart(&acme).await;
+    // Revoked: the very next call is refused, on the same session.
+    match home.admin(Request::TokenRevoke {
+        book: "acme".into(),
+        name: "test".into(),
+        id: None,
+    }) {
+        Response::TokenRevoked(t) => assert_eq!(t.name, "test"),
+        other => panic!("{other:?}"),
+    }
+    assert!(call(&acme, "books.chart", json!({})).await.is_err());
+    let (status, ..) = raw_initialize(&home, "acme", Some(&home.token("acme"))).await;
+    assert_eq!(status, 401, "the remembered token was revoked");
+    // The tokens listed carry no text.
+    match home.admin(Request::TokenList) {
+        Response::Tokens(tokens) => {
+            assert_eq!(tokens.len(), 1);
+            assert_eq!(tokens[0].book, "beta");
+            let text = serde_json::to_string(&tokens).unwrap();
+            assert!(!text.contains(&beta[3..]));
+        }
+        other => panic!("{other:?}"),
+    }
+    // Every refusal at the door is in acme's access log.
+    let (records, _) = ledger_store::access::read(&home.book_dir("acme")).unwrap();
+    let refused: Vec<&str> = records
+        .iter()
+        .filter_map(|r| match &r.access.result {
+            ledger_store::access::Outcome::Refused(code) => Some(code.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        refused,
+        [
+            "unauthorized",
+            "unauthorized",
+            "unauthorized",
+            "wrong_books",
+            "unauthorized",
+            "unauthorized"
+        ],
+        "{records:?}"
+    );
+    drop(acme);
+    assert!(server.close().success());
+}
+
+/// The tool names a client is offered.
+async fn offered(c: &Client) -> Vec<String> {
+    c.list_all_tools()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|t| t.name.to_string())
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_token_does_only_what_its_scopes_allow() {
+    let home = Home::new("scopes");
+    let server = Server::start(&home);
+    home.create("acme", "USD");
+    let full = connect(&home, "acme").await.unwrap();
+    chart(&full).await;
+    let entry = call(
+        &full,
+        "books.draft_entry",
+        json!({"date": "2026-03-01", "description": "lunch"}),
+    )
+    .await
+    .unwrap()["entry_id"]
+        .as_u64()
+        .unwrap();
+    for (account, side) in [("6000", "debit"), ("1000", "credit")] {
+        call(
+            &full,
+            "books.add_line",
+            json!({"entry_id": entry, "account": account, "side": side, "amount": "5.00"}),
+        )
+        .await
+        .unwrap();
+    }
+    let head = || ledger_store::Snapshot::load(&home.book_dir("acme")).unwrap();
+    let before = head().head_hash().to_string();
+    // Read only.
+    let read = home.token_with("acme", "reader", &["read"]);
+    let reader = connect_with(&home, "acme", Some(read)).await.unwrap();
+    let tools = offered(&reader).await;
+    assert!(tools.contains(&"books.chart".to_string()));
+    for hidden in ["books.add_line", "books.post_entry", "books.access_log"] {
+        assert!(!tools.contains(&hidden.to_string()), "{hidden} offered");
+    }
+    assert!(call(&reader, "books.chart", json!({})).await.is_ok());
+    let err = call(
+        &reader,
+        "books.add_account",
+        json!({"code": "1100", "name": "Bank", "account_type": "asset"}),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("needs books:write"), "{err}");
+    assert!(err.contains("reader"), "{err}");
+    // Write: a preview, never the post.
+    let write = home.token_with("acme", "writer", &["read", "write"]);
+    let writer = connect_with(&home, "acme", Some(write)).await.unwrap();
+    let tools = offered(&writer).await;
+    assert!(
+        tools.contains(&"books.post_entry".to_string()),
+        "it may preview"
+    );
+    assert!(!tools.contains(&"books.create_invoice".to_string()));
+    let preview = call(&writer, "books.post_entry", json!({"entry_id": entry})).await;
+    if let Err(e) = &preview {
+        assert!(
+            !e.contains("needs books"),
+            "a preview is refused by scope: {e}"
+        );
+    }
+    let err = call(
+        &writer,
+        "books.post_entry",
+        json!({"entry_id": entry, "confirmed": true}),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("needs books:post"), "{err}");
+    assert_eq!(head().head_hash(), before, "nothing posted");
+    // No admin: no access log.
+    let poster = home.token_with("acme", "poster", &["read", "write", "post"]);
+    let poster = connect_with(&home, "acme", Some(poster)).await.unwrap();
+    let err = call(&poster, "books.access_log", json!({}))
+        .await
+        .unwrap_err();
+    assert!(err.contains("needs books:admin"), "{err}");
+    // A token without books:read reads no resource.
+    let blind = home.token_with("acme", "blind", &["post"]);
+    let blind = connect_with(&home, "acme", Some(blind)).await.unwrap();
+    assert!(
+        blind
+            .read_resource(rmcp::model::ReadResourceRequestParams::new(
+                "wanderbooks://handbook"
+            ))
+            .await
+            .is_err()
+    );
+    assert!(offered(&blind).await.iter().all(|t| t != "books.chart"));
+    drop((full, reader, writer, poster, blind));
+    assert!(server.close().success());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_call_is_recorded_once_refusals_included() {
+    let home = Home::new("accesslog");
+    let server = Server::start(&home);
+    home.create("acme", "USD");
+    let admin_text = home.token("acme");
+    let full = connect(&home, "acme").await.unwrap();
+    chart(&full).await; // 3 ok
+    let id = post_one(&full, 7).await; // draft, 2 lines, post: ok or an error
+    let _ = id;
+    // A call that errs (bad arguments) and one refused by scope.
+    assert!(
+        call(&full, "books.get_entry", json!({"entry_id": 999_999}))
+            .await
+            .is_err()
+    );
+    let reader = home.token_with("acme", "reader", &["read"]);
+    let reader = connect_with(&home, "acme", Some(reader)).await.unwrap();
+    let marker = "a-distinctive-argument-1234";
+    assert!(
+        call(
+            &reader,
+            "books.add_account",
+            json!({"code": "1100", "name": marker, "account_type": "asset"})
+        )
+        .await
+        .is_err()
+    );
+    // A request with no token at all.
+    assert_eq!(raw_initialize(&home, "acme", None).await.0, 401);
+    // Read through the tool (admin): newest first, all of them.
+    let log = call(&full, "books.access_log", json!({"limit": 500}))
+        .await
+        .unwrap();
+    let records = log["records"].as_array().unwrap();
+    assert_eq!(log["total"].as_u64().unwrap() as usize, records.len());
+    assert_eq!(log["more"], false);
+    assert_eq!(log["head"]["seq"].as_u64().unwrap() as usize, records.len());
+    let seqs: Vec<u64> = records.iter().map(|r| r["seq"].as_u64().unwrap()).collect();
+    let mut sorted = seqs.clone();
+    sorted.sort_unstable_by(|a, b| b.cmp(a));
+    assert_eq!(seqs, sorted, "newest first");
+    let tools: Vec<&Value> = records.iter().filter(|r| r["action"] == "tool").collect();
+    // Every tool call made so far, one record each: 3 accounts, the
+    // posting (draft, two lines, post: up to four), the failed lookup,
+    // the refusal.
+    let by = |subject: &str| tools.iter().filter(|r| r["subject"] == subject).count();
+    assert_eq!(by("books.add_account"), 4);
+    assert_eq!(by("books.get_entry"), 1);
+    assert_eq!(by("books.draft_entry"), 1);
+    assert_eq!(by("books.add_line"), 2);
+    assert_eq!(by("books.post_entry"), 1);
+    assert_eq!(by("books.access_log"), 0, "recorded once answered");
+    let refused: Vec<&&Value> = tools
+        .iter()
+        .filter(|r| r["result"]["refused"] == "insufficient_scope")
+        .collect();
+    assert_eq!(refused.len(), 1);
+    assert_eq!(refused[0]["principal"]["label"], "reader");
+    assert!(
+        refused[0]["args_digest"]
+            .as_str()
+            .is_some_and(|d| d.len() == 64)
+    );
+    let errored = tools.iter().filter(|r| r["result"] == "error").count();
+    assert!(errored >= 1);
+    // Writes carry the head after them; reads don't.
+    let added = tools
+        .iter()
+        .find(|r| r["subject"] == "books.add_account" && r["result"] == "ok")
+        .unwrap();
+    assert!(added["head_after"]["seq"].as_u64().unwrap() >= 1);
+    assert!(refused[0].get("head_after").is_none());
+    // Each write's head is its own: oldest first, the heads climb, and
+    // the last is the journal's head now; a call that wrote nothing has
+    // none (review of slice 4, round 2).
+    let mut heads: Vec<(u64, String)> = Vec::new();
+    for r in records.iter().rev() {
+        let wrote = r.get("head_after").is_some();
+        let reads = ["books.get_entry", "books.access_log", "books.chart"]
+            .contains(&r["subject"].as_str().unwrap_or_default());
+        if reads || r["action"] != "tool" || r["result"] != "ok" {
+            assert!(!wrote, "{r}");
+        }
+        if wrote {
+            heads.push((
+                r["head_after"]["seq"].as_u64().unwrap(),
+                r["head_after"]["hash"].as_str().unwrap().to_string(),
+            ));
+        }
+    }
+    assert!(heads.windows(2).all(|w| w[0].0 < w[1].0), "{heads:?}");
+    let snap = ledger_store::Snapshot::load(&home.book_dir("acme")).unwrap();
+    assert_eq!(heads.last().unwrap().1, snap.head_hash());
+    assert_eq!(added["client"]["name"], "rmcp");
+    let door: Vec<&Value> = records
+        .iter()
+        .filter(|r| r["action"] == "connect")
+        .collect();
+    assert_eq!(door.len(), 1);
+    assert_eq!(door[0]["result"]["refused"], "unauthorized");
+    assert_eq!(door[0]["principal"]["kind"], "unknown");
+    // The access_log call itself is the next record.
+    let next = call(&full, "books.access_log", json!({"limit": 1}))
+        .await
+        .unwrap();
+    assert_eq!(next["records"][0]["subject"], "books.access_log");
+    assert_eq!(next["more"], true);
+    // Filters and paging.
+    let mine = call(&full, "books.access_log", json!({"token": "reader"}))
+        .await
+        .unwrap();
+    assert!(
+        mine["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["principal"]["label"] == "reader")
+    );
+    let only_refused = call(&full, "books.access_log", json!({"outcome": "refused"}))
+        .await
+        .unwrap();
+    assert_eq!(only_refused["records"].as_array().unwrap().len(), 2);
+    let top = seqs[0];
+    let older = call(
+        &full,
+        "books.access_log",
+        json!({"before": top, "limit": 2}),
+    )
+    .await
+    .unwrap();
+    assert!(
+        older["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["seq"].as_u64().unwrap() < top)
+    );
+    for bad in [
+        json!({"limit": 0}),
+        json!({"limit": 501}),
+        json!({"outcome": "maybe"}),
+    ] {
+        assert!(call(&full, "books.access_log", bad).await.is_err());
+    }
+    // On disk: a chain that verifies, holding no token and no argument.
+    let (on_disk, head) = ledger_store::access::read(&home.book_dir("acme")).unwrap();
+    assert_eq!(head.seq as usize, on_disk.len());
+    let text = std::fs::read_to_string(home.book_dir("acme").join("access.jsonl")).unwrap();
+    assert!(
+        !text.contains(&admin_text[3..]),
+        "a token's text was logged"
+    );
+    assert!(!text.contains(marker), "an argument was logged");
+    assert_eq!(mode(&home.book_dir("acme").join("access.jsonl")), 0o600);
+    drop((full, reader));
+    assert!(server.close().success());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_session_is_used_only_with_the_token_that_opened_it() {
+    let home = Home::new("sessions");
+    let server = Server::start(&home);
+    home.create("acme", "USD");
+    let first = home.token("acme");
+    let second = home.token_with("acme", "other", &["read", "write", "post", "admin"]);
+    let (status, _, session, _) = raw_initialize(&home, "acme", Some(&first)).await;
+    assert_eq!(status, 200);
+    let session = session.unwrap();
+    let list = |bearer: String| {
+        let session = session.clone();
+        let http = mcp_http(&home);
+        async move {
+            http.post("http://localhost/b/acme/mcp")
+                .header("content-type", "application/json")
+                .header("accept", "application/json, text/event-stream")
+                .header("mcp-session-id", session)
+                .header("mcp-protocol-version", "2025-06-18")
+                .bearer_auth(bearer)
+                .body(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}).to_string())
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+    let r = list(second).await;
+    assert_eq!(r.status().as_u16(), 403);
+    assert_eq!(r.headers()["x-wanderbooks-refused"], "session_token");
+    let r = list(first).await;
+    assert_eq!(r.status().as_u16(), 200, "{:?}", r.text().await);
+    assert!(server.close().success());
+}
+
+#[test]
+fn a_damaged_access_log_keeps_its_books_closed() {
+    let home = Home::new("damagedlog");
+    let server = Server::start(&home);
+    home.create("acme", "USD");
+    home.create("beta", "USD");
+    assert!(server.close().success());
+    std::fs::write(home.book_dir("acme").join("access.jsonl"), "not a record\n").unwrap();
+    let server = Server::start(&home);
+    match home.admin(Request::List) {
+        Response::Books(books) => {
+            let acme = books.iter().find(|b| b.id == "acme").unwrap();
+            assert!(!acme.open);
+            let why = acme.problem.as_deref().unwrap();
+            assert!(why.contains("access log"), "{why}");
+            home.assert_hidden(why);
+            assert!(books.iter().find(|b| b.id == "beta").unwrap().open);
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(server.close().success());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn damaged_token_records_refuse_every_agent_but_not_the_list() {
+    let home = Home::new("damagedauth");
+    let server = Server::start(&home);
+    home.create("acme", "USD");
+    let token = home.token("acme");
+    assert!(server.close().success());
+    let path = home.root().join("auth/principals.jsonl");
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, text.replace("books:admin", "books:read")).unwrap();
+    let server = Server::start(&home);
+    assert!(matches!(home.admin(Request::List), Response::Books(_)));
+    let (status, _, _, body) = raw_initialize(&home, "acme", Some(&token)).await;
+    assert_eq!(status, 401);
+    assert!(body.contains("record of agent tokens"), "{body}");
+    home.assert_hidden(&body);
+    match home.admin(Request::TokenList) {
+        Response::Refused(why) => assert!(why.contains("record of agent tokens"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(server.close().success());
+}
+
+/// Review of slice 4, finding 1: the access log gives no TIN away, not
+/// in its text and not through its digest of the arguments (one with the
+/// TIN masked, so no guess at it can be checked).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_access_log_gives_no_tin_away() {
+    let home = Home::new("tincanary");
+    let server = Server::start(&home);
+    home.create("acme", "USD");
+    let full = connect(&home, "acme").await.unwrap();
+    call(
+        &full,
+        "books.add_party",
+        json!({"name": "Pat Example", "roles": ["contractor"]}),
+    )
+    .await
+    .unwrap();
+    let tin = "123-45-6789";
+    let args = json!({"party": "Pat Example", "tin": tin, "tin_type": "ssn"});
+    // Sealed or not (the vault may refuse in a fresh root), the call is
+    // recorded; and once more by a token that may not, refused.
+    let _ = call(&full, "books.set_tin", args.clone()).await;
+    let reader = home.token_with("acme", "reader", &["read"]);
+    let reader = connect_with(&home, "acme", Some(reader)).await.unwrap();
+    assert!(call(&reader, "books.set_tin", args.clone()).await.is_err());
+    let text = std::fs::read_to_string(home.book_dir("acme").join("access.jsonl")).unwrap();
+    assert!(!text.contains(tin) && !text.contains("123456789"), "{text}");
+    let other = json!({"party": "Pat Example", "tin": "987-81-4321", "tin_type": "ssn"});
+    let want = ledger_store::access::digest(other.as_object().map(|_| &other).unwrap());
+    let (records, _) = ledger_store::access::read(&home.book_dir("acme")).unwrap();
+    let set: Vec<_> = records
+        .iter()
+        .filter(|r| r.access.subject == "books.set_tin")
+        .collect();
+    assert_eq!(set.len(), 2, "{records:?}");
+    for r in set {
+        assert_eq!(
+            r.access.args_digest.as_deref(),
+            Some(want.as_str()),
+            "{r:?}"
+        );
+    }
+    drop((full, reader));
+    assert!(server.close().success());
+}
+
+/// Review of slice 4, finding 6: a session id the server never opened is
+/// bound to nothing (no flood of made-up ids binds or unbinds anything),
+/// and an ended session is forgotten.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn only_sessions_the_server_opened_are_bound() {
+    let home = Home::new("sessbind");
+    let server = Server::start(&home);
+    home.create("acme", "USD");
+    let first = home.token("acme");
+    let second = home.token_with("acme", "other", &["read", "write", "post", "admin"]);
+    let (_, _, session, _) = raw_initialize(&home, "acme", Some(&first)).await;
+    let session = session.unwrap();
+    let request = |bearer: String, sid: String, method: reqwest::Method| {
+        let http = mcp_http(&home);
+        async move {
+            http.request(method, "http://localhost/b/acme/mcp")
+                .header("content-type", "application/json")
+                .header("accept", "application/json, text/event-stream")
+                .header("mcp-session-id", sid)
+                .header("mcp-protocol-version", "2025-06-18")
+                .bearer_auth(bearer)
+                .body(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}).to_string())
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .as_u16()
+        }
+    };
+    // Made-up ids: not this server's sessions, so not found, and bound to
+    // nothing.
+    for n in 0..50 {
+        let made_up = format!("not-a-session-{n}");
+        assert_eq!(
+            request(second.clone(), made_up, reqwest::Method::POST).await,
+            404
+        );
+    }
+    // The real one is still bound to the token that opened it.
+    assert_eq!(
+        request(second.clone(), session.clone(), reqwest::Method::POST).await,
+        403
+    );
+    assert_eq!(
+        request(first.clone(), session.clone(), reqwest::Method::POST).await,
+        200
+    );
+    // Ended: forgotten (the next use of its id is simply not found).
+    let ended = request(first.clone(), session.clone(), reqwest::Method::DELETE).await;
+    assert!((200..300).contains(&ended), "{ended}");
+    assert_eq!(
+        request(second.clone(), session, reqwest::Method::POST).await,
+        404
+    );
+    // "bearer" in any case.
+    let (status, ..) = raw_initialize(&home, "acme", None).await;
+    assert_eq!(status, 401);
+    let r = mcp_http(&home)
+        .post("http://localhost/b/acme/mcp")
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
+        .header("authorization", format!("bEaReR {first}"))
+        .body(
+            json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+                "protocolVersion": "2025-06-18", "capabilities": {},
+                "clientInfo": {"name": "raw", "version": "0"}}})
+            .to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 200);
+    assert!(server.close().success());
+}
+
+/// Review of slice 4, findings 2 to 4: no token below books:admin gets a
+/// full TIN out, and none below books:post changes the vault or the
+/// approval controls.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_vault_and_the_approval_controls_need_their_scopes() {
+    let home = Home::new("vaultscope");
+    let server = Server::start(&home);
+    home.create("acme", "USD");
+    let writer = home.token_with("acme", "writer", &["read", "write", "post"]);
+    let w = connect_with(&home, "acme", Some(writer)).await.unwrap();
+    for (tool, args) in [
+        (
+            "books.vendor_1099",
+            json!({"year": 2026, "include_tins": true}),
+        ),
+        ("books.export_cpa_package", json!({"as_of": "2026-12-31"})),
+        ("books.get_w9", json!({"party": "x"})),
+    ] {
+        let err = call(&w, tool, args).await.unwrap_err();
+        assert!(err.contains("needs books:admin"), "{tool}: {err}");
+    }
+    let plain = home.token_with("acme", "plain", &["read", "write"]);
+    let p = connect_with(&home, "acme", Some(plain)).await.unwrap();
+    for (tool, args) in [
+        (
+            "books.set_tin",
+            json!({"party": "x", "tin": "123-45-6789", "tin_type": "ssn"}),
+        ),
+        (
+            "books.retire_convention",
+            json!({"id": "x", "decided_by": "Pat"}),
+        ),
+        (
+            "books.approve_entry",
+            json!({"entry_id": 1, "approver": "Pat"}),
+        ),
+        (
+            "books.set_convention",
+            json!({"id": "x", "kind": "approval_rule", "title": "x", "body_md": "x",
+                   "decided_by": "Pat", "structured": {"approver": "Pat"}}),
+        ),
+    ] {
+        let err = call(&p, tool, args).await.unwrap_err();
+        assert!(err.contains("needs books:post"), "{tool}: {err}");
+    }
+    // Another kind of convention is a write.
+    let note = call(
+        &p,
+        "books.set_convention",
+        json!({"id": "a-note", "kind": "note", "title": "A note", "body_md": "Hello.",
+               "decided_by": "Pat"}),
+    )
+    .await;
+    assert!(note.is_ok(), "{note:?}");
+    drop((w, p));
     assert!(server.close().success());
 }

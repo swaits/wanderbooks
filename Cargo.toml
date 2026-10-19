@@ -11,3 +11,11 @@ repository = "https://git.swaits.com/swaits/wanderbooks"
 missing_docs = "warn"
 # `cargo kani` sets cfg(kani) for the proof harnesses.
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
+
+# Argon2id at the plan's 64 MiB, three passes, takes seconds unoptimized:
+# its crates are built optimized in debug and test builds too.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3

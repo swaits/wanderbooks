@@ -18,6 +18,7 @@
 //! `/`, the home folder, or holds the books, the vault or a key is refused
 //! at startup.
 
+pub mod access;
 pub mod admin;
 mod handbook;
 #[cfg(unix)]
@@ -25,6 +26,7 @@ pub mod local;
 mod local_files;
 pub mod opening;
 mod policy;
+pub mod scopes;
 mod server;
 mod settings;
 mod tin_files;

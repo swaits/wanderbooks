@@ -16,9 +16,19 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "io
 reqwest = "0.13"
 base64 = "0.22"
 tokio-util = { version = "0.7", features = ["rt"] }
+# Agents' tokens are kept in the OS keyring (plan 3.3, 3.5): the Secret
+# Service on Linux. macOS and Windows stores come with P11.
+keyring-core = "1"
+# The owner passphrase is typed at the terminal, unechoed.
+rpassword = "7"
+# Token texts and passphrases are wiped from memory when dropped.
+zeroize = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus-secret-service-keyring-store = { version = "1", features = ["rt-async-io-crypto-rust"] }
 
 [dev-dependencies]
 tempfile = "3"

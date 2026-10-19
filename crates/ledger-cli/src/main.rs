@@ -395,7 +395,11 @@ fn print_usage() {
     eprintln!("       wanderbooks dev-stdio [--data-dir PATH ...]");
     eprintln!("       wanderbooks setup [--root PATH] [--home DIR]");
     eprintln!("       wanderbooks books list | create ID | adopt DATA-DIR --id ID");
-    eprintln!("       wanderbooks mcp --book ID");
+    eprintln!(
+        "       wanderbooks token create --book ID | list | revoke --book ID | print --book ID"
+    );
+    eprintln!("       wanderbooks mcp --book ID [--token NAME]");
+    eprintln!("       wanderbooks passphrase");
     eprintln!("       wanderbooks serve | close | doctor");
     eprintln!();
     eprintln!("  new        make a books directory and start the agent in it (alias: init)");
@@ -403,7 +407,9 @@ fn print_usage() {
     eprintln!("  dev-stdio  run the books server over stdio (`dev-stdio --help` for its flags)");
     eprintln!("  setup      make the books' private folder (only your account can open it)");
     eprintln!("  books      list, start or adopt books (`books --help`)");
+    eprintln!("  token      make, list or revoke an agent's token for books (`token --help`)");
     eprintln!("  mcp        connect an agent to books, over stdio (what `claude mcp add` runs)");
+    eprintln!("  passphrase set or change the owner passphrase (typed at a terminal)");
     eprintln!("  serve      hold the books open until Ctrl-C");
     eprintln!("  close      close the books now: everything holding them lets go");
     eprintln!("  doctor     whether the books are open, what holds them, what went wrong");
@@ -864,7 +870,7 @@ fn run_setup(args: Vec<String>) -> i32 {
         None
     };
     match ledger_store::root::Root::setup(&home, root.as_deref(), xdg.as_deref()) {
-        Ok((_, report)) => {
+        Ok((found, report)) => {
             let what = if report.created {
                 "made"
             } else if report.tightened {
@@ -876,13 +882,58 @@ fn run_setup(args: Vec<String>) -> i32 {
             if report.recorded {
                 println!("It isn't in the default place, so where it is was noted for next time.");
             }
-            0
+            owner_passphrase(&found)
         }
         Err(e) => {
             eprintln!("error: {e}");
             1
         }
     }
+}
+
+/// After setup: the owner passphrase, asked for at a terminal if none is
+/// set yet; elsewhere (a script, an agent) only said how to set it.
+#[cfg(unix)]
+fn owner_passphrase(root: &ledger_store::root::Root) -> i32 {
+    let auth = match root.auth_dir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    match ledger_store::passphrase::is_set(&auth) {
+        Ok(true) => return 0,
+        Ok(false) => {}
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    }
+    if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        println!("No owner passphrase yet: set one in a terminal with `wanderbooks passphrase`.");
+        return 0;
+    }
+    println!(
+        "Now the owner passphrase: what the books ask you for before anything only you may do."
+    );
+    match ledger_host::commands::set_passphrase_at_terminal(&auth) {
+        Ok(()) => {
+            println!("The owner passphrase is set.");
+            0
+        }
+        Err(why) => {
+            eprintln!(
+                "error: {why}. The folder is made; set the passphrase with `wanderbooks passphrase`."
+            );
+            1
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn owner_passphrase(_root: &ledger_store::root::Root) -> i32 {
+    0
 }
 
 /// `wanderbooks dev-stdio`: the books server over stdio, in this process.
@@ -927,6 +978,8 @@ fn run_local(mode: &str, args: Vec<String>) -> i32 {
         "serve" => ledger_host::commands::serve(&prog, args),
         "close" => ledger_host::commands::close(&prog, args),
         "doctor" => ledger_host::commands::doctor(&prog, args),
+        "token" => ledger_host::commands::token(&prog, args),
+        "passphrase" => ledger_host::commands::passphrase(&prog, args),
         _ => ledger_host::commands::books(&prog, args),
     };
     match result {
@@ -963,7 +1016,10 @@ fn main() {
         Some("dev-stdio") => std::process::exit(run_dev_stdio(all.collect())),
         Some("setup") => std::process::exit(run_setup(all.collect())),
         Some("server") => std::process::exit(run_server(all.collect())),
-        Some(mode @ ("host" | "helper" | "mcp" | "serve" | "close" | "books" | "doctor")) => {
+        Some(
+            mode @ ("host" | "helper" | "mcp" | "serve" | "close" | "books" | "doctor" | "token"
+            | "passphrase"),
+        ) => {
             let mode = mode.to_string();
             std::process::exit(run_local(&mode, all.collect()))
         }
@@ -999,7 +1055,7 @@ fn main() {
     }
     if let Some(
         mode @ ("gui" | "dev-stdio" | "setup" | "server" | "host" | "helper" | "mcp" | "serve"
-        | "close" | "books" | "doctor"),
+        | "close" | "books" | "doctor" | "token" | "passphrase"),
     ) = cmd.as_deref()
     {
         eprintln!("`{mode}` must come first: wanderbooks {mode} [its own flags]");

@@ -17,8 +17,10 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-/// Short timings for tests (the defaults are the plan's).
-const KNOBS: &str = "close_after=2500,backoff=50,exe_poll=100,init_wait=5000,queue_wait=30000";
+/// Short timings for tests (the defaults are the plan's), and agents'
+/// tokens kept in files in the test root, not this computer's keyring.
+const KNOBS: &str =
+    "close_after=2500,backoff=50,exe_poll=100,init_wait=5000,queue_wait=30000,file_keyring=1";
 
 /// A home with a data root, and the program the tests run (possibly a
 /// copy, for restarts).
@@ -91,8 +93,16 @@ impl Home {
         c.output().unwrap()
     }
 
+    /// New books, and the agents' token the bridges use for them.
     fn create(&self, id: &str) {
         let out = self.books(&["create", id]);
+        assert!(out.status.success(), "{out:?}");
+        let out = self
+            .cmd("token")
+            .args(["create", "--book", id])
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
         assert!(out.status.success(), "{out:?}");
     }
 
@@ -569,7 +579,7 @@ fn the_bridge_answers_initialize_itself_during_a_slow_start() {
         "--book",
         "acme",
         "--test-knobs",
-        "close_after=1500,backoff=50,server_delay=3000,init_wait=300,queue_wait=30000",
+        "close_after=1500,backoff=50,server_delay=3000,init_wait=300,queue_wait=30000,file_keyring=1",
     ]);
     let mut a = Agent::from(c);
     let started = Instant::now();
@@ -638,7 +648,7 @@ fn the_bridge_gives_up_on_books_that_never_open() {
         "--book",
         "acme",
         "--test-knobs",
-        "close_after=800,backoff=50,server_delay=20000,init_wait=200,queue_wait=1000",
+        "close_after=800,backoff=50,server_delay=20000,init_wait=200,queue_wait=1000,file_keyring=1",
     ]);
     let mut a = Agent::from(c);
     a.initialize();
@@ -1247,7 +1257,7 @@ fn a_call_cancelled_at_once_is_never_made() {
         "--book",
         "acme",
         "--test-knobs",
-        "close_after=1500,backoff=50,server_delay=1500,init_wait=200,queue_wait=30000",
+        "close_after=1500,backoff=50,server_delay=1500,init_wait=200,queue_wait=30000,file_keyring=1",
     ]);
     let mut a = Agent::from(c);
     a.initialize();
@@ -1317,7 +1327,7 @@ fn a_signalled_bridge_goes_at_once() {
         "--book",
         "acme",
         "--test-knobs",
-        "close_after=1500,backoff=50,server_delay=20000,init_wait=200,queue_wait=30000",
+        "close_after=1500,backoff=50,server_delay=20000,init_wait=200,queue_wait=30000,file_keyring=1",
     ]);
     let mut a = Agent::from(c);
     a.initialize();
@@ -1755,7 +1765,7 @@ fn books_made_mid_session_and_bad_requests() {
         "--book",
         "acme",
         "--test-knobs",
-        "close_after=2500,backoff=50,server_delay=2000,init_wait=200,queue_wait=30000",
+        "close_after=2500,backoff=50,server_delay=2000,init_wait=200,queue_wait=30000,file_keyring=1",
     ]);
     let mut d = Agent::from(c);
     d.initialize();
@@ -1938,4 +1948,105 @@ fn a_bridge_started_without_stderr_keeps_its_descriptors_apart() {
     let fd2 = std::fs::read_link(format!("/proc/{pid}/fd/2")).unwrap();
     assert_eq!(fd2, Path::new("/dev/null"));
     assert!(a.end().is_some_and(|s| s.success()));
+}
+
+/// P2 slice 4: `wanderbooks token` keeps the token where the bridge finds
+/// it (commands.rs INVARIANT 4, bridge.rs INVARIANT 11): made, used,
+/// limited by its scopes, listed without its text, revoked at once.
+#[test]
+fn the_token_commands_and_the_bridge() {
+    let home = Home::new("tokencmd");
+    let out = home.books(&["create", "acme"]);
+    assert!(out.status.success(), "{out:?}");
+    let token = |args: &[&str]| {
+        let out = home
+            .cmd("token")
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).to_string(),
+            String::from_utf8_lossy(&out.stderr).to_string(),
+        )
+    };
+    // A session begun before any token: told how to make one.
+    let mut a = Agent::start(&home, "acme");
+    a.initialize();
+    let err = a.call("books.start", json!({})).unwrap_err();
+    assert!(err.contains("wanderbooks token create"), "{err}");
+    // A read-only token, made: the same session uses it from now on.
+    let (code, made, _) = token(&["create", "--book", "acme", "--scopes", "read"]);
+    assert_eq!(code, Some(0), "{made}");
+    assert!(made.contains("kept in this computer's keyring"), "{made}");
+    assert!(
+        made.contains("books:read") && !made.contains("wb_"),
+        "{made}"
+    );
+    assert!(!made.contains(&home.root().display().to_string()));
+    assert!(a.call("books.start", json!({})).is_ok());
+    let err = a
+        .call(
+            "books.add_account",
+            json!({"code": "1000", "name": "Cash", "account_type": "asset"}),
+        )
+        .unwrap_err();
+    assert!(err.contains("needs books:write"), "{err}");
+    // A name taken; replaced on request, and the running session takes
+    // the new token at its next call (the old one refused at the door, the
+    // keyring read again: review of slice 4).
+    let (code, _, err) = token(&["create", "--book", "acme"]);
+    assert_eq!(code, Some(1));
+    assert!(err.contains("already have a token"), "{err}");
+    let (code, _, _) = token(&["create", "--book", "acme", "--replace"]);
+    assert_eq!(code, Some(0));
+    a.call(
+        "books.add_account",
+        json!({"code": "1000", "name": "Cash", "account_type": "asset"}),
+    )
+    .unwrap();
+    assert!(a.end().is_some());
+    let mut b = Agent::start(&home, "acme");
+    b.initialize();
+    for (code, name, ty) in [
+        ("3000", "Capital", "equity"),
+        ("6000", "Supplies", "expense"),
+    ] {
+        b.call(
+            "books.add_account",
+            json!({"code": code, "name": name, "account_type": ty}),
+        )
+        .unwrap();
+    }
+    // Listed without its text; printed only by `print`.
+    let (_, listed, _) = token(&["list"]);
+    assert!(
+        listed.contains("acme  agent  books:read,books:write,books:post,books:admin"),
+        "{listed}"
+    );
+    assert!(!listed.contains("wb_"));
+    let (code, printed, _) = token(&["print", "--book", "acme"]);
+    assert_eq!(code, Some(0));
+    assert!(
+        printed.trim().starts_with("wb_") && printed.trim().len() == 67,
+        "{printed}"
+    );
+    // Revoked: the next call is refused, and the keyring forgets it.
+    let (code, said, _) = token(&["revoke", "--book", "acme"]);
+    assert_eq!(code, Some(0), "{said}");
+    assert!(b.call("books.chart", json!({})).is_err());
+    let (code, _, err) = token(&["print", "--book", "acme"]);
+    assert_eq!(code, Some(1));
+    assert!(err.contains("keeps no token"), "{err}");
+    let (_, listed, _) = token(&["list"]);
+    assert!(listed.contains("No tokens yet"), "{listed}");
+    // Asked of books there aren't, or with a scope there isn't.
+    let (code, _, err) = token(&["create", "--book", "nobody"]);
+    assert_eq!(code, Some(1));
+    assert!(err.contains("no books called"), "{err}");
+    let (code, _, err) = token(&["create", "--book", "acme", "--scopes", "read,everything"]);
+    assert_eq!(code, Some(2));
+    assert!(err.contains("isn't a scope"), "{err}");
+    assert!(b.end().is_some());
 }

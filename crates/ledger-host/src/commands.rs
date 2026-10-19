@@ -1,5 +1,5 @@
-//! The owner's commands: `wanderbooks serve`, `close` and `books` (plan
-//! 3.9, 5.5).
+//! The owner's commands: `wanderbooks serve`, `close`, `books` and
+//! `token` (plan 3.3, 3.9, 5.5).
 //!
 //! ```text
 //! GOAL: from a terminal the owner holds the books open, closes them, and
@@ -17,6 +17,10 @@
 //!   3. Adoption is previewed first and goes ahead only on a yes at the
 //!      terminal, or --yes; a vault beside the books must be named (or
 //!      --no-vault given): it is never silently left behind.
+//!   4. A token made is kept in the keyring before anything is said of it,
+//!      and its text is printed only by `token print`; one that can't be
+//!      kept is revoked again. A token revoked is forgotten by the keyring
+//!      too.
 //! ```
 
 use crate::knobs::{FLAG, Knobs};
@@ -104,6 +108,12 @@ async fn open(opener: &mut Opener) -> Result<Lease, HoldError> {
 
 /// Ask the server's admin socket, holding the books open meanwhile.
 fn with_server(common: &Common, request: Request) -> Result<Response, String> {
+    with_server_in(common, request).map(|(answer, _)| answer)
+}
+
+/// [`with_server`], with the root's `run/` folder too (where the
+/// keyring's test stand-in lives).
+fn with_server_in(common: &Common, request: Request) -> Result<(Response, PathBuf), String> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -122,16 +132,17 @@ fn with_server(common: &Common, request: Request) -> Result<Response, String> {
             }
             HoldError::Failed(why) => why,
         })?;
-        let socket = opener.run_dir().join(ledger_mcp::local::ADMIN_SOCKET);
+        let run_dir = opener.run_dir().to_path_buf();
+        let socket = run_dir.join(ledger_mcp::local::ADMIN_SOCKET);
         // A list is quick; a create or an adoption takes what it takes.
-        let wait = matches!(request, Request::List).then_some(LIST_WAIT);
+        let wait = matches!(request, Request::List | Request::TokenList).then_some(LIST_WAIT);
         let answer =
             tokio::task::spawn_blocking(move || admin::call_within(&socket, request, wait))
                 .await
                 .map_err(|e| e.to_string())?
                 .map_err(|e| e.to_string());
         drop(lease);
-        answer
+        answer.map(|a| (a, run_dir))
     });
     // Past its deadline, the command ends: nothing pending holds it.
     rt.shutdown_timeout(Duration::from_secs(1));
@@ -773,6 +784,17 @@ pub fn doctor(
     };
     println!("The books' private folder: there, and only your account can open it.");
     println!("Isolation: same_user (advisory): hidden from agents, not locked against them.");
+    match root
+        .auth_dir()
+        .map_err(|e| e.to_string())
+        .and_then(|a| ledger_store::passphrase::is_set(&a).map_err(|e| e.to_string()))
+    {
+        Ok(true) => println!("The owner passphrase: set."),
+        Ok(false) => println!(
+            "The owner passphrase: not set yet: set it in a terminal with `wanderbooks passphrase`."
+        ),
+        Err(why) => println!("The owner passphrase: {why}"),
+    }
     let run = root.run_dir().map_err(|e| e.to_string())?;
     match crate::opener::ask_once_within(&run, Ask::Leases, DOCTOR_WAIT) {
         Ok(None) => println!("{}", no_host(crate::opener::server_lock_held(&run))),
@@ -792,6 +814,20 @@ pub fn doctor(
                             None => println!("  {}  open", b.id),
                             Some(why) => println!("  {}  didn't open: {why}", b.id),
                         }
+                    }
+                    // Agents' tokens: how many each book has.
+                    match admin::call_within(&socket, Request::TokenList, Some(DOCTOR_WAIT)) {
+                        Ok(admin::Response::Tokens(tokens)) if tokens.is_empty() => println!(
+                            "Agents' tokens: none yet (`wanderbooks token create --book ID`)."
+                        ),
+                        Ok(admin::Response::Tokens(tokens)) => {
+                            println!("Agents' tokens:");
+                            for t in tokens {
+                                println!("  {}  {}  {}", t.book, t.name, t.scopes.join(","));
+                            }
+                        }
+                        Ok(admin::Response::Refused(why)) => println!("Agents' tokens: {why}"),
+                        Ok(_) | Err(_) => {}
                     }
                 }
             } else {
@@ -825,6 +861,300 @@ pub fn doctor(
             }
         }
     }
+    Ok(())
+}
+
+fn token_usage(prog: &str) {
+    eprintln!("usage: {prog} create --book ID [--name NAME] [--scopes LIST] [--replace]");
+    eprintln!("       {prog} list");
+    eprintln!("       {prog} revoke --book ID [--name NAME]");
+    eprintln!("       {prog} print --book ID [--name NAME]");
+    eprintln!("  create  make an agent's token for the books ID and keep it in this");
+    eprintln!("          computer's keyring, where `wanderbooks mcp --book ID` finds it");
+    eprintln!("          (NAME: agent unless given; LIST: read,write,post,admin unless");
+    eprintln!("          given; --replace ends a token of the same name)");
+    eprintln!("  list    the tokens there are (never their text)");
+    eprintln!("  revoke  end a token, at once, and forget it here");
+    eprintln!("  print   the token's text, for a client that sends it itself");
+}
+
+/// `wanderbooks token create|list|revoke|print`.
+pub fn token(
+    prog: &str,
+    args: impl IntoIterator<Item = String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use ledger_store::auth::Scope;
+    let mut common = Common::default();
+    let mut words: Vec<String> = Vec::new();
+    let mut book: Option<String> = None;
+    let mut name = crate::tokens::DEFAULT_NAME.to_string();
+    let mut scopes: Vec<String> = Scope::ALL.iter().map(|s| s.as_str().to_string()).collect();
+    let mut replace = false;
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        if common.take(&arg, &mut args)? {
+            continue;
+        }
+        let mut value = |what: &str| args.next().ok_or_else(|| format!("{arg} needs {what}"));
+        match arg.as_str() {
+            "--book" => book = Some(value("an id")?),
+            "--name" => name = value("a name")?,
+            "--scopes" => {
+                let list = value("a list such as read,write")?;
+                let mut out = Vec::new();
+                for part in list.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+                    match Scope::parse(part) {
+                        Some(s) => out.push(s.as_str().to_string()),
+                        None => {
+                            eprintln!(
+                                "error: {part:?} isn't a scope: use read, write, post or admin"
+                            );
+                            return Err(exit(2));
+                        }
+                    }
+                }
+                scopes = out;
+            }
+            "--replace" => replace = true,
+            "--help" | "-h" => {
+                token_usage(prog);
+                return Ok(());
+            }
+            s if s.starts_with('-') => {
+                eprintln!("unknown flag: {s}");
+                token_usage(prog);
+                return Err(exit(2));
+            }
+            _ => words.push(arg),
+        }
+    }
+    let fail = |why: String| -> Box<dyn std::error::Error> {
+        eprintln!("error: {why}");
+        exit(1)
+    };
+    let need_book = || -> Result<String, Box<dyn std::error::Error>> {
+        let Some(book) = book.clone() else {
+            eprintln!("error: which books? give --book ID");
+            return Err(exit(2));
+        };
+        ledger_store::root::BookId::parse(&book)
+            .map(|id| id.to_string())
+            .map_err(|e| fail(e.to_string()))
+    };
+    let words: Vec<&str> = words.iter().map(String::as_str).collect();
+    match words.as_slice() {
+        ["create"] => {
+            let book = need_book()?;
+            let request = Request::TokenCreate {
+                book: book.clone(),
+                name: name.clone(),
+                scopes,
+                replace,
+            };
+            let (answer, run_dir) = with_server_in(&common, request).map_err(fail)?;
+            let (info, text) = match answer {
+                Response::TokenCreated { token, text } => (token, zeroize::Zeroizing::new(text.0)),
+                Response::Refused(why) => return Err(fail(why)),
+                other => return Err(fail(format!("the books server answered oddly: {other:?}"))),
+            };
+            // INVARIANT 4: kept first, or taken back.
+            let root = run_dir.parent().unwrap_or(&run_dir).to_path_buf();
+            let account = crate::tokens::Account::new(&root, &book, &name);
+            let kept = crate::tokens::keeper(&run_dir, &common.knobs).set(&account, &text);
+            drop(text);
+            if let Err(why) = kept {
+                let undone = with_server(
+                    &common,
+                    Request::TokenRevoke {
+                        book: book.clone(),
+                        name: name.clone(),
+                        // This one only: another may have replaced it.
+                        id: Some(info.id.clone()),
+                    },
+                );
+                let after = match undone {
+                    Ok(Response::TokenRevoked(_)) => "so it was revoked again",
+                    _ => "and revoking it again failed too: `wanderbooks token revoke` ends it",
+                };
+                let replaced = if replace {
+                    " The token it replaced had already ended."
+                } else {
+                    ""
+                };
+                return Err(fail(format!(
+                    "the token was made, but this computer's keyring couldn't keep it ({why}), {after}.{replaced}"
+                )));
+            }
+            println!(
+                "Made the token {:?} for the books {} ({}), kept in this computer's keyring.",
+                info.name,
+                info.book,
+                info.scopes.join(", ")
+            );
+            println!(
+                "An agent reaches the books with `wanderbooks mcp --book {}{}`.",
+                info.book,
+                if info.name == crate::tokens::DEFAULT_NAME {
+                    String::new()
+                } else {
+                    format!(" --token {}", info.name)
+                }
+            );
+            Ok(())
+        }
+        ["list"] => match with_server(&common, Request::TokenList).map_err(fail)? {
+            Response::Tokens(tokens) if tokens.is_empty() => {
+                println!("No tokens yet: `wanderbooks token create --book ID` makes one.");
+                Ok(())
+            }
+            Response::Tokens(tokens) => {
+                for t in tokens {
+                    println!(
+                        "{}  {}  {}  made {}",
+                        t.book,
+                        t.name,
+                        t.scopes.join(","),
+                        t.created
+                    );
+                }
+                Ok(())
+            }
+            Response::Refused(why) => Err(fail(why)),
+            other => Err(fail(format!("the books server answered oddly: {other:?}"))),
+        },
+        ["revoke"] => {
+            let book = need_book()?;
+            let request = Request::TokenRevoke {
+                book: book.clone(),
+                name: name.clone(),
+                id: None,
+            };
+            let (answer, run_dir) = with_server_in(&common, request).map_err(fail)?;
+            match answer {
+                Response::TokenRevoked(t) => {
+                    let root = run_dir.parent().unwrap_or(&run_dir).to_path_buf();
+                    let account = crate::tokens::Account::new(&root, &book, &name);
+                    let forgot = crate::tokens::keeper(&run_dir, &common.knobs).delete(&account);
+                    println!("Revoked the token {:?} for the books {}.", t.name, t.book);
+                    if let Err(why) = forgot {
+                        eprintln!(
+                            "warning: this computer's keyring still holds its text ({why}); it opens nothing now"
+                        );
+                    }
+                    Ok(())
+                }
+                Response::Refused(why) => Err(fail(why)),
+                other => Err(fail(format!("the books server answered oddly: {other:?}"))),
+            }
+        }
+        ["print"] => {
+            let book = need_book()?;
+            let opener = Opener::new(
+                common.root.as_deref(),
+                common.knobs,
+                Starter::Direct,
+                Kind::Cli,
+                None,
+            )
+            .map_err(|e| fail(e.to_string()))?;
+            let run_dir = opener.run_dir().to_path_buf();
+            let root = run_dir.parent().unwrap_or(&run_dir).to_path_buf();
+            let account = crate::tokens::Account::new(&root, &book, &name);
+            match crate::tokens::keeper(&run_dir, &common.knobs).get(&account) {
+                Ok(Some(text)) => {
+                    println!("{text}");
+                    Ok(())
+                }
+                Ok(None) => Err(fail(format!(
+                    "this computer keeps no token {name:?} for the books {book}: `wanderbooks token create --book {book}` makes one"
+                ))),
+                Err(why) => Err(fail(why)),
+            }
+        }
+        _ => {
+            token_usage(prog);
+            Err(exit(2))
+        }
+    }
+}
+
+/// Whether a person can type a passphrase here: standard input is a
+/// terminal, and the terminal itself can be opened (it is read from).
+fn can_type_a_passphrase() -> bool {
+    at_a_terminal() && std::fs::File::open("/dev/tty").is_ok()
+}
+
+/// Ask for the owner passphrase at the terminal and set it in `auth_dir`
+/// (ledger_store::passphrase): the one in force first, if there is one,
+/// then the new one twice. Nothing typed is echoed or repeated.
+pub fn set_passphrase_at_terminal(auth_dir: &Path) -> Result<(), String> {
+    use ledger_store::passphrase;
+    if !can_type_a_passphrase() {
+        return Err(
+            "the owner passphrase is typed by a person, at a terminal: run `wanderbooks passphrase` in one"
+                .into(),
+        );
+    }
+    // What is typed is wiped from memory when done with.
+    let ask = |prompt: &str| {
+        rpassword::prompt_password(prompt)
+            .map(zeroize::Zeroizing::new)
+            .map_err(|e| format!("nothing was read ({})", e.kind()))
+    };
+    let current = if passphrase::is_set(auth_dir).map_err(|e| e.to_string())? {
+        let c = ask("The owner passphrase in force: ")?;
+        if !passphrase::verify(auth_dir, &c).map_err(|e| e.to_string())? {
+            return Err(passphrase::PassError::Wrong.to_string());
+        }
+        Some(c)
+    } else {
+        None
+    };
+    let new = ask(&format!(
+        "A new owner passphrase ({} characters or more): ",
+        passphrase::MIN_CHARS
+    ))?;
+    passphrase::check_length(&new).map_err(|e| e.to_string())?;
+    if *ask("The same again: ")? != *new {
+        return Err("the two didn't match: nothing was changed".into());
+    }
+    passphrase::set(auth_dir, &new, current.as_ref().map(|c| c.as_str())).map_err(|e| e.to_string())
+}
+
+/// `wanderbooks passphrase`: set or change the owner passphrase.
+pub fn passphrase(
+    prog: &str,
+    args: impl IntoIterator<Item = String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut common = Common::default();
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        if common.take(&arg, &mut args)? {
+            continue;
+        }
+        match arg.as_str() {
+            "--help" | "-h" => {
+                eprintln!("usage: {prog}");
+                eprintln!("  Set the owner passphrase, or change it (the one in force is asked");
+                eprintln!("  first). It is what the books ask a person for before anything only");
+                eprintln!("  the owner may do. Typed at a terminal, never shown.");
+                return Ok(());
+            }
+            other => {
+                eprintln!("unknown argument: {other}");
+                return Err(exit(2));
+            }
+        }
+    }
+    let fail = |why: String| -> Box<dyn std::error::Error> {
+        eprintln!("error: {why}");
+        exit(1)
+    };
+    let root =
+        ledger_store::root::Root::find(common.root.as_deref()).map_err(|e| fail(e.to_string()))?;
+    let auth = root.auth_dir().map_err(|e| fail(e.to_string()))?;
+    set_passphrase_at_terminal(&auth).map_err(fail)?;
+    println!("The owner passphrase is set.");
     Ok(())
 }
 

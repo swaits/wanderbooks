@@ -6,7 +6,8 @@
 //!       data root to this account alone, over sockets in the root's
 //!       private `run/` folder, and lets go of every book cleanly.
 //! SOURCE: plan/served.md 3.1 (the server's sockets; the admin socket
-//!         creates and adopts books and can't read them), 3.4 (data
+//!         creates and adopts books, mints tokens, and can't read books),
+//!         3.3 (bearer tokens, scopes), 3.4 (data
 //!         layout, run/books.lock), 3.9 (local channels, peer checks,
 //!         closing: "no new requests, the one in progress finishes, every
 //!         writer lock is released"), D-21 and D-23 (no service: the host
@@ -31,6 +32,17 @@
 //!      ones included), then the sessions end, the sockets are removed,
 //!      and the process exits 0, releasing every lock.
 //!   7. Nothing this process sends a client names the data root.
+//!   8. An MCP request reaches a book only with a bearer token that is
+//!      live for that book (auth/principals.jsonl; refused 401 without
+//!      one, 403 with another book's), and a session only with the token
+//!      that opened it (403). A request refused at the door is recorded
+//!      in that book's access log; the token rides with the request to
+//!      the book's tools, which check its scopes (access.rs). A session is
+//!      bound to its token when opened, and forgotten when it ends, is
+//!      found gone, or its token is revoked or replaced; past MAX_SESSIONS
+//!      bindings a new session is refused (an initialize), never a binding
+//!      dropped. Tokens are made, listed and revoked only through
+//!      the admin socket.
 //! ```
 
 use crate::admin::{self, Request, Response};
@@ -39,6 +51,8 @@ use crate::policy::ReceiptPolicy;
 use crate::server::{BooksServer, Layout, SharedStore};
 use crate::settings::Live;
 use ledger_store::Store;
+use ledger_store::access::{Access, AccessLog, Outcome, Principal};
+use ledger_store::auth::{Principals, Scope, Token};
 use ledger_store::root::{BookId, Root, RootError};
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
@@ -86,6 +100,9 @@ enum Book {
         service: Service,
         /// Its store, closed when the server closes (INVARIANT 6).
         store: Arc<SharedStore>,
+        /// Its access log, where requests refused at the door are
+        /// recorded too (access.rs).
+        access: Arc<AccessLog>,
     },
     /// Not opened, with why (INVARIANT 3).
     Failed(String),
@@ -119,6 +136,12 @@ struct Books {
     started: std::time::Instant,
     /// Woken when one finishes.
     finished: tokio::sync::Notify,
+    /// The agents' tokens (auth/principals.jsonl), or why they can't be
+    /// read: then every MCP request is refused (INVARIANT 8).
+    principals: RwLock<Result<Principals, String>>,
+    /// Which token opened each MCP session: a session is used only with
+    /// the token that opened it (INVARIANT 8).
+    session_tokens: Mutex<BTreeMap<String, String>>,
 }
 
 impl Books {
@@ -131,6 +154,71 @@ impl Books {
             text = text.replace(&p.display().to_string(), THE_ROOT);
         }
         text
+    }
+
+    /// Change or read the principals; a log that failed to write is read
+    /// again before anything else is done with it (chain.rs INVARIANT 2).
+    fn with_principals(
+        &self,
+        f: impl FnOnce(&mut Principals) -> Result<Response, ledger_store::auth::AuthError>,
+    ) -> Response {
+        let mut guard = self.principals.write().unwrap_or_else(|e| e.into_inner());
+        let p = match guard.as_mut() {
+            Ok(p) => p,
+            Err(why) => return Response::Refused(why.clone()),
+        };
+        match f(p) {
+            Ok(r) => r,
+            Err(e) => {
+                if matches!(e, ledger_store::auth::AuthError::Log(_)) {
+                    *guard = self.load_principals();
+                }
+                Response::Refused(self.hide(e.to_string()))
+            }
+        }
+    }
+
+    /// Forget the sessions a token opened (it was revoked or replaced:
+    /// they can't be used again, and won't be ended by it).
+    fn forget_sessions_of(&self, token_id: &str) {
+        self.session_tokens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|_, owner| owner != token_id);
+    }
+
+    /// Read the principals from the root's `auth/`.
+    fn load_principals(&self) -> Result<Principals, String> {
+        let dir = self.root.auth_dir().map_err(|e| e.to_string())?;
+        Principals::open(&dir).map_err(|e| self.hide(e.to_string()))
+    }
+
+    /// The live token whose text a request carries as its bearer, or why
+    /// it is refused (INVARIANT 8): the code for the access log and the
+    /// words for the client.
+    fn bearer(&self, headers: &axum::http::HeaderMap) -> Result<Token, (&'static str, String)> {
+        // The scheme's name in any case (RFC 9110 11.1).
+        let presented = headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split_once(' '))
+            .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
+            .map(|(_, token)| token.trim());
+        let Some(presented) = presented else {
+            return Err((
+                crate::access::UNAUTHORIZED,
+                "these books need a token: the human makes one with `wanderbooks token create`"
+                    .into(),
+            ));
+        };
+        let guard = self.principals.read().unwrap_or_else(|e| e.into_inner());
+        match guard.as_ref() {
+            Err(why) => Err((crate::access::UNAUTHORIZED, why.clone())),
+            Ok(p) => p.check(presented).cloned().ok_or((
+                crate::access::UNAUTHORIZED,
+                "that token isn't one these books know, or it was revoked".into(),
+            )),
+        }
     }
 
     /// Open the book `id` from disk: served, or failed with why.
@@ -169,8 +257,13 @@ impl Books {
             self.import_roots.clone(),
         )
         .map_err(|e| self.hide(e))?;
+        let access = Arc::new(
+            AccessLog::open(store.data_dir())
+                .map_err(|e| format!("its access log can't be used: {e}"))?,
+        );
         let live = Arc::new(Mutex::new(live));
         let store = SharedStore::new(store);
+        let log = access.clone();
         let shared = store.clone();
         let config = StreamableHttpServerConfig::default()
             .with_json_response(true)
@@ -184,7 +277,8 @@ impl Books {
                     BooksServer::new_shared(store.clone(), ReceiptPolicy::default())
                         .with_live_settings(live.clone())
                         .with_import_roots(roots.clone())
-                        .with_layout(layout.clone()),
+                        .with_layout(layout.clone())
+                        .with_access(log.clone()),
                 )
             },
             Arc::new(sessions()),
@@ -193,6 +287,7 @@ impl Books {
         Ok(Book::Open {
             service,
             store: shared,
+            access,
         })
     }
 
@@ -235,6 +330,73 @@ impl Books {
                     })
                     .collect(),
             ),
+            Request::TokenCreate {
+                book,
+                name,
+                scopes,
+                replace,
+            } => {
+                let book = match BookId::parse(&book) {
+                    Ok(id) => id,
+                    Err(e) => return refused(e),
+                };
+                if !self.held().contains_key(book.as_str()) {
+                    return Response::Refused(format!(
+                        "there are no books called {book}: `wanderbooks books list` lists them"
+                    ));
+                }
+                let mut wanted = std::collections::BTreeSet::new();
+                for s in &scopes {
+                    match Scope::parse(s) {
+                        Some(scope) => {
+                            wanted.insert(scope);
+                        }
+                        None => {
+                            return Response::Refused(format!(
+                                "{:?} isn't a scope: use books:read, books:write, books:post or books:admin",
+                                s.chars().take(64).collect::<String>()
+                            ));
+                        }
+                    }
+                }
+                let mut replaced: Option<String> = None;
+                let answer = self.with_principals(|p| {
+                    replaced = p
+                        .tokens()
+                        .iter()
+                        .find(|t| t.book == book.as_str() && t.name == name)
+                        .map(|t| t.id.clone())
+                        .filter(|_| replace);
+                    p.create(&book, &name, wanted, replace)
+                        .map(|(token, text)| Response::TokenCreated {
+                            token: admin::TokenInfo::from(&token),
+                            text: admin::TokenText(text.expose().to_string()),
+                        })
+                });
+                if let (Response::TokenCreated { .. }, Some(old)) = (&answer, &replaced) {
+                    self.forget_sessions_of(old);
+                }
+                answer
+            }
+            Request::TokenList => self.with_principals(|p| {
+                Ok(Response::Tokens(
+                    p.tokens().iter().map(admin::TokenInfo::from).collect(),
+                ))
+            }),
+            Request::TokenRevoke { book, name, id } => {
+                let book = match BookId::parse(&book) {
+                    Ok(id) => id,
+                    Err(e) => return refused(e),
+                };
+                let answer = self.with_principals(|p| {
+                    p.revoke_if(&book, &name, id.as_deref())
+                        .map(|t| Response::TokenRevoked(admin::TokenInfo::from(&t)))
+                });
+                if let Response::TokenRevoked(t) = &answer {
+                    self.forget_sessions_of(&t.id);
+                }
+                answer
+            }
             Request::Create { id, currency } => {
                 let id = match BookId::parse(&id) {
                     Ok(id) => id,
@@ -677,12 +839,67 @@ impl Drop for InFlight {
     }
 }
 
-/// `/b/{book}/mcp`: the book's MCP service.
+/// The MCP session header.
+const SESSION_HEADER: &str = "mcp-session-id";
+
+/// The most sessions open at once (each bound to its token): past it a
+/// new session is refused until one ends, never a binding forgotten
+/// (INVARIANT 8; review of slice 4: clearing them let a flood unbind
+/// live sessions).
+const MAX_SESSIONS: usize = 100_000;
+
+/// A request refused at the door: recorded in the book's access log
+/// (access.rs INVARIANT 3), then answered with `status` and `why`.
+async fn refused_at_door(
+    book: &Book,
+    principal: Principal,
+    method: &axum::http::Method,
+    code: &'static str,
+    status: axum::http::StatusCode,
+    why: String,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if let Book::Open { access, store, .. } = book {
+        let access = access.clone();
+        let record = Access {
+            principal,
+            client: None,
+            request_id: None,
+            action: "connect".into(),
+            subject: method.as_str().to_string(),
+            args_digest: None,
+            result: Outcome::Refused(code.into()),
+            head_after: None,
+        };
+        let written = tokio::task::spawn_blocking(move || access.record(&record)).await;
+        if !matches!(written, Ok(Ok(_))) {
+            store.stop();
+            return (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                [(REFUSED_HEADER, "not-recorded")],
+                crate::access::NOT_RECORDED,
+            )
+                .into_response();
+        }
+    }
+    let mut response = (status, [(REFUSED_HEADER, code)], why).into_response();
+    if status == axum::http::StatusCode::UNAUTHORIZED {
+        response.headers_mut().insert(
+            axum::http::header::WWW_AUTHENTICATE,
+            axum::http::HeaderValue::from_static("Bearer realm=\"wanderbooks\""),
+        );
+    }
+    response
+}
+
+/// `/b/{book}/mcp`: the book's MCP service, for a request carrying a token
+/// for that book (INVARIANT 8).
 async fn mcp(
     axum::extract::State(books): axum::extract::State<Arc<Books>>,
     axum::extract::Path(book): axum::extract::Path<String>,
-    request: axum::extract::Request,
+    mut request: axum::extract::Request,
 ) -> axum::response::Response {
+    use axum::http::StatusCode;
     use axum::response::IntoResponse;
     use tower::ServiceExt;
     // Counted before the closing check, so closing never misses it.
@@ -690,41 +907,179 @@ async fn mcp(
     books
         .last_arrival
         .store(books.started.elapsed().as_millis() as u64, Ordering::SeqCst);
-    if books.closing.is_cancelled() {
-        return (
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            "the books are closing: this request wasn't run",
-        )
-            .into_response();
-    }
+    let closing = books.closing.is_cancelled();
     let found = books.held().get(&book).cloned();
-    match found {
-        Some(Book::Open { service, .. }) => match service.oneshot(request).await {
-            Ok(response) => response.map(|body| {
-                use http_body_util::BodyExt;
-                axum::body::Body::new(body.map_frame(move |frame| {
-                    let _held = &counted;
-                    frame
-                }))
-            }),
-            Err(never) => match never {},
+    let (service, held) = match found {
+        Some(Book::Failed(why)) if !closing => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                [(REFUSED_HEADER, "not-open")],
+                format!("the books {book} didn't open: {why}"),
+            )
+                .into_response();
+        }
+        None if !closing => {
+            return (
+                StatusCode::NOT_FOUND,
+                [(REFUSED_HEADER, "no-such-books")],
+                format!(
+                    "there are no books called {:?}: `wanderbooks books list` lists them",
+                    book.chars().take(64).collect::<String>()
+                ),
+            )
+                .into_response();
+        }
+        Some(b @ Book::Open { .. }) => match &b {
+            Book::Open { service, .. } => (service.clone(), b.clone()),
+            Book::Failed(_) => unreachable!(),
         },
-        Some(Book::Failed(why)) => (
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            [(REFUSED_HEADER, "not-open")],
-            format!("the books {book} didn't open: {why}"),
+        _ => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "the books are closing: this request wasn't run",
+            )
+                .into_response();
+        }
+    };
+    let method = request.method().clone();
+    let token = books.bearer(request.headers());
+    let principal = |t: &Token| Principal {
+        id: t.id.clone(),
+        kind: "agent".into(),
+        label: t.name.clone(),
+    };
+    if closing {
+        let who = token
+            .as_ref()
+            .map_or_else(|_| Principal::unknown(), principal);
+        return refused_at_door(
+            &held,
+            who,
+            &method,
+            crate::access::CLOSING,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the books are closing: this request wasn't run".into(),
         )
-            .into_response(),
-        None => (
-            axum::http::StatusCode::NOT_FOUND,
-            [(REFUSED_HEADER, "no-such-books")],
-            format!(
-                "there are no books called {:?}: `wanderbooks books list` lists them",
-                book.chars().take(64).collect::<String>()
-            ),
-        )
-            .into_response(),
+        .await;
     }
+    let token = match token {
+        Ok(t) => t,
+        Err((code, why)) => {
+            return refused_at_door(
+                &held,
+                Principal::unknown(),
+                &method,
+                code,
+                StatusCode::UNAUTHORIZED,
+                why,
+            )
+            .await;
+        }
+    };
+    if token.book != book {
+        return refused_at_door(
+            &held,
+            principal(&token),
+            &method,
+            "wrong_books",
+            StatusCode::FORBIDDEN,
+            format!("this token is for the books {}, not {book}", token.book),
+        )
+        .await;
+    }
+    let session = request
+        .headers()
+        .get(SESSION_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    // A session is bound when it is opened (below): one bound to another
+    // token is refused; one never bound isn't one this server opened, and
+    // is left to the MCP service, which doesn't know it either (and says
+    // so, which a client takes as "open a new one").
+    let (elsewhere, full) = {
+        let bound = books
+            .session_tokens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let elsewhere = session
+            .as_ref()
+            .and_then(|sid| bound.get(sid))
+            .is_some_and(|owner| *owner != token.id);
+        (elsewhere, session.is_none() && bound.len() >= MAX_SESSIONS)
+    };
+    // The cap is on opening sessions: a request opens one only if it is an
+    // initialize (a 2026-07-28 call without a session opens none).
+    let full = full && {
+        let (parts, body) = request.into_parts();
+        let bytes = axum::body::to_bytes(body, MAX_BODY)
+            .await
+            .unwrap_or_default();
+        let opens = serde_json::from_slice::<serde_json::Value>(&bytes)
+            .ok()
+            .is_some_and(|m| m.get("method").and_then(|v| v.as_str()) == Some("initialize"));
+        request = axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes));
+        opens
+    };
+    if full {
+        return refused_at_door(
+            &held,
+            principal(&token),
+            &method,
+            "too_many_sessions",
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the books server has too many sessions open: end some, then try again".into(),
+        )
+        .await;
+    }
+    if elsewhere {
+        return refused_at_door(
+            &held,
+            principal(&token),
+            &method,
+            "session_token",
+            StatusCode::FORBIDDEN,
+            "this session was opened with another token".into(),
+        )
+        .await;
+    }
+    let token_id = token.id.clone();
+    request
+        .extensions_mut()
+        .insert(crate::access::Caller { token });
+    let response = match service.oneshot(request).await {
+        Ok(response) => response,
+        Err(never) => match never {},
+    };
+    // A session the answer opened is bound to the token that opened it;
+    // one ended, or found gone, is forgotten.
+    {
+        let mut bound = books
+            .session_tokens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if session.is_none()
+            && let Some(sid) = response
+                .headers()
+                .get(SESSION_HEADER)
+                .and_then(|v| v.to_str().ok())
+        {
+            bound.insert(sid.to_string(), token_id);
+        }
+        let ended = method == axum::http::Method::DELETE && response.status().is_success();
+        let gone = response.status() == StatusCode::NOT_FOUND;
+        if (ended || gone)
+            && let Some(sid) = &session
+        {
+            bound.remove(sid);
+        }
+    }
+    response.map(|body| {
+        use http_body_util::BodyExt;
+        axum::body::Body::new(body.map_frame(move |frame| {
+            let _held = &counted;
+            frame
+        }))
+    })
 }
 
 /// Anything but `/b/{book}/mcp`.
@@ -900,7 +1255,16 @@ pub fn run(
         finished: tokio::sync::Notify::new(),
         last_arrival: std::sync::atomic::AtomicU64::new(0),
         started: std::time::Instant::now(),
+        principals: RwLock::new(Err(String::new())),
+        session_tokens: Mutex::new(BTreeMap::new()),
     });
+    {
+        let loaded = books.load_principals();
+        if let Err(why) = &loaded {
+            eprintln!("wanderbooks server: agents' tokens can't be read: {why}");
+        }
+        *books.principals.write().unwrap_or_else(|e| e.into_inner()) = loaded;
+    }
     // INVARIANT 3: every book tried before ready.
     for id in root.list_books().map_err(|e| e.to_string())? {
         let book = books.open(&id);

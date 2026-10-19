@@ -71,6 +71,10 @@ pub struct BooksServer {
     settings: Arc<Mutex<Live>>,
     import_roots: Arc<ImportRoots>,
     layout: Arc<Layout>,
+    /// The book's access log, for books served from the data root: every
+    /// call is then checked against its caller's token and recorded
+    /// (access.rs). None for a books dir served over stdio.
+    access: Option<Arc<ledger_store::access::AccessLog>>,
 }
 
 /// Where a book's own files live around its data dir.
@@ -188,7 +192,9 @@ impl SharedStore {
         self.stopped.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    fn stop(&self) {
+    /// Stop taking requests (INVARIANT 1): after an internal error, or an
+    /// access record that couldn't be written (access.rs INVARIANT 3).
+    pub(crate) fn stop(&self) {
         self.stopped
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
@@ -219,6 +225,8 @@ const INSIDE_BOOKS: &str = "that path is inside the books' folder, whose files a
 pub struct StoreGuard<'a> {
     guard: tokio::sync::MutexGuard<'a, Store>,
     shared: &'a SharedStore,
+    /// The journal's head when the lock was taken.
+    before: (u64, String),
     _not_send: std::marker::PhantomData<*const ()>,
 }
 
@@ -226,6 +234,12 @@ impl Drop for StoreGuard<'_> {
     fn drop(&mut self) {
         if std::thread::panicking() {
             self.shared.stop();
+        }
+        // A write while it was held: the head after it, for the call's
+        // access record (taken under the same lock, so it is this call's).
+        let after = self.guard.head();
+        if after != self.before {
+            WROTE.with(|w| *w.borrow_mut() = Some(after));
         }
     }
 }
@@ -256,7 +270,7 @@ where
     F: FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>> + Send + 'static,
 {
     if shared.stopped() {
-        return Err(rmcp::ErrorData::internal_error(STOPPED, None));
+        return Err(not_run_stopped());
     }
     // SharedStore INVARIANT 3: counted before the closing check, so a
     // close never misses it; the count rides in the blocking task, which
@@ -317,6 +331,21 @@ impl Drop for Running {
 /// closing: it didn't run, so a client may send it again once they are
 /// open (the agents' bridge does).
 pub const NOT_RUN_CLOSING_CODE: i32 = -32050;
+
+/// The error code of a request not run because the server had stopped
+/// (SharedStore INVARIANT 2), told apart from one that ran and failed.
+pub const NOT_RUN_STOPPED_CODE: i32 = -32051;
+
+fn not_run_stopped() -> rmcp::ErrorData {
+    rmcp::ErrorData::new(rmcp::model::ErrorCode(NOT_RUN_STOPPED_CODE), STOPPED, None)
+}
+
+/// A tool's answer that is a refusal in words.
+fn tool_error(text: String) -> rmcp::model::CallToolResponse {
+    rmcp::model::CallToolResponse::Complete(rmcp::model::CallToolResult::error(vec![
+        rmcp::model::ContentBlock::text(text),
+    ]))
+}
 
 /// What a request refused while closing is told.
 pub const NOT_RUN_CLOSING: &str = "the books are closing: this call wasn't run";
@@ -528,7 +557,15 @@ impl BooksServer {
             }))),
             import_roots: Arc::new(ImportRoots::defaults()),
             layout: Arc::new(Layout::BooksDir),
+            access: None,
         }
+    }
+
+    /// Check every call against its caller's token, and record it in
+    /// `log` (access.rs).
+    pub fn with_access(mut self, log: Arc<ledger_store::access::AccessLog>) -> Self {
+        self.access = Some(log);
+        self
     }
 
     /// Serve a book kept in the data root (`Layout::Root`) rather than
@@ -618,7 +655,7 @@ impl BooksServer {
 
     /// Every tool the server serves.
     pub(crate) fn tool_router() -> rmcp::handler::server::router::tool::ToolRouter<Self> {
-        Self::core_router() + Self::kept_router()
+        Self::core_router() + Self::kept_router() + Self::access_router()
     }
 
     /// The settings in force for this request (reloaded at its start, in
@@ -1064,9 +1101,11 @@ impl BooksServer {
         // "Today" from here on is the zone in force now (a change another
         // session made while this request waited included).
         TIMEZONE.with(|z| *z.borrow_mut() = timezone);
+        let before = guard.head();
         Ok(StoreGuard {
             guard,
             shared: &self.store,
+            before,
             _not_send: std::marker::PhantomData,
         })
     }
@@ -2680,6 +2719,9 @@ fn movement_in(ledger: &Ledger, account: AccountId, from: NaiveDate, to: NaiveDa
 }
 
 thread_local! {
+    /// The journal's head after the last write made by the request
+    /// running on this thread (StoreGuard's drop), for its access record.
+    static WROTE: std::cell::RefCell<Option<(u64, String)>> = const { std::cell::RefCell::new(None) };
     /// The company's time zone for the request running on this thread
     /// (set at its start from the settings in force: one version per
     /// request), so every "today" in it agrees.
@@ -2848,6 +2890,8 @@ fn lines_out(lines: &[ledger_core::StatementLine]) -> Vec<StatementLineOut> {
 // Tools
 // ---------------------------------------------------------------------------
 
+#[path = "tools/access.rs"]
+mod access_tools;
 #[path = "tools/kept.rs"]
 mod kept;
 pub use kept::SettingKeyOut;
@@ -9560,38 +9604,204 @@ impl ServerHandler for BooksServer {
         request: rmcp::model::CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
+        use crate::access::{self, Call};
+        use ledger_store::access::Outcome;
+        let mut call = self
+            .access
+            .as_ref()
+            .map(|log| Call::new(log, &context, "tool", &request.name));
+        let outcome_of = |out: &Result<rmcp::model::CallToolResponse, rmcp::ErrorData>| match out {
+            Ok(rmcp::model::CallToolResponse::Complete(r)) if r.is_error != Some(true) => {
+                Outcome::Ok
+            }
+            _ => Outcome::Error,
+        };
+        // A refused call's record carries its arguments' digest too,
+        // worked out off the async threads.
+        let refused_digest = |args: Option<serde_json::Map<String, serde_json::Value>>| async move {
+            tokio::task::spawn_blocking(move || Call::digest_of(args.as_ref()))
+                .await
+                .ok()
+                .flatten()
+        };
         // Closing: refused as a protocol error, so a client knows it
         // didn't run (SharedStore INVARIANT 3).
         if self.store.closing() {
-            return Err(not_run_closing());
+            if let Some(c) = &mut call {
+                c.digested(refused_digest(request.arguments.clone()).await);
+            }
+            return self
+                .refuse(call.as_ref(), access::CLOSING, Err(not_run_closing()))
+                .await;
+        }
+        if self.store.stopped() {
+            if let Some(c) = &mut call {
+                c.digested(refused_digest(request.arguments.clone()).await);
+            }
+            return self
+                .refuse(
+                    call.as_ref(),
+                    access::STOPPED,
+                    Ok(tool_error(STOPPED.to_string())),
+                )
+                .await;
+        }
+        let needs = crate::scopes::needs(&request.name, request.arguments.as_ref());
+        // access.rs INVARIANTS 1, 2.
+        if let Some(call) = &mut call {
+            let refusal = match (call.caller(), needs) {
+                (None, _) => Some((
+                    access::UNAUTHORIZED,
+                    "this call came without a token for these books".to_string(),
+                )),
+                // A tool no table names isn't run (fail closed).
+                (Some(_), None) => Some((
+                    "unknown_tool",
+                    format!(
+                        "there is no tool {:?}",
+                        request.name.chars().take(64).collect::<String>()
+                    ),
+                )),
+                (Some(caller), Some(scope)) if !caller.may(scope) => Some((
+                    access::INSUFFICIENT_SCOPE,
+                    format!(
+                        "this agent's token can't do that: {} needs {scope}, and its token ({:?}) has {}. Only the human can give a token more (`wanderbooks token create`).",
+                        request.name,
+                        caller.token.name,
+                        caller
+                            .token
+                            .scopes
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                )),
+                _ => None,
+            };
+            if let Some((code, text)) = refusal {
+                call.digested(refused_digest(request.arguments.clone()).await);
+                return self.refuse(Some(call), code, Ok(tool_error(text))).await;
+            }
         }
         // Pick up an edited settings file before the tool runs.
         self.live().refresh();
         let timezone = self.settings().timezone.clone();
         let server = self.clone();
+        // The journal's head once a call that may change the books has
+        // run, for its record.
+        // The call's record is written on its own blocking thread, before
+        // it counts as done: a close waits for the record too (access.rs
+        // INVARIANT 3).
+        let running_call = call.clone();
+        // Kept for the record of a call the server stopped before running.
+        let request_args = if call.is_some() {
+            request.arguments.clone()
+        } else {
+            None
+        };
         let result = run_blocking(&self.store, move || {
             Box::pin(async move {
+                WROTE.with(|w| w.borrow_mut().take());
+                // Counted as running by now (run_blocking): hashed here.
+                let digest = running_call
+                    .as_ref()
+                    .and_then(|_| Call::digest_of(request.arguments.as_ref()));
                 let tcc =
                     rmcp::handler::server::tool::ToolCallContext::new(&server, request, context);
                 let router = Self::tool_router();
-                in_timezone_async(timezone, router.call(tcc)).await
+                use futures_util::FutureExt;
+                let out =
+                    std::panic::AssertUnwindSafe(in_timezone_async(timezone, router.call(tcc)))
+                        .catch_unwind()
+                        .await;
+                // The head after this call's own last write, if it wrote,
+                // whatever it answered.
+                let wrote = WROTE
+                    .with(|w| w.borrow_mut().take())
+                    .map(|(seq, hash)| ledger_store::chain::Head { seq, hash });
+                let out = match out {
+                    Ok(out) => out,
+                    Err(panic) => {
+                        // It ran and failed part way: recorded as an error
+                        // with what it wrote, while still counted as
+                        // running; then the panic goes on and stops the
+                        // server (SharedStore INVARIANT 1).
+                        if let Some(mut c) = running_call {
+                            c.digested(digest);
+                            let _ = c.record_blocking(Outcome::Error, wrote);
+                        }
+                        std::panic::resume_unwind(panic)
+                    }
+                };
+                let recorded = running_call.map(|mut c| {
+                    c.digested(digest);
+                    c.record_blocking(outcome_of(&out), wrote)
+                });
+                (out, recorded)
             })
         })
         .await;
-        // A failed run (the server stopped, or this request panicked) is a
-        // plain refusal, redacted like every other.
-        let result = match result {
-            Ok(out) => out,
+        match result {
+            Ok((out, None)) => redact_refusal(out),
+            Ok((out, Some(Ok(())))) => redact_refusal(out),
+            Ok((_, Some(Err(())))) => {
+                // access.rs INVARIANT 3.
+                self.store.stop();
+                Ok(tool_error(crate::access::RAN_NOT_RECORDED.to_string()))
+            }
             // Not run because the books are closing: a protocol error, so
-            // the client knows (SharedStore INVARIANT 3).
-            Err(e) if e.code.0 == NOT_RUN_CLOSING_CODE => return Err(e),
-            Err(e) => Ok(rmcp::model::CallToolResponse::Complete(
-                rmcp::model::CallToolResult::error(vec![rmcp::model::ContentBlock::text(
-                    e.message.to_string(),
-                )]),
-            )),
-        };
-        redact_refusal(result)
+            // the client knows (SharedStore INVARIANT 3). (Its arguments
+            // went with the request: no digest.)
+            Err(e) if e.code.0 == NOT_RUN_CLOSING_CODE => {
+                self.refuse(call.as_ref(), access::CLOSING, Err(e)).await
+            }
+            // Not run: the server had stopped by the time it would have.
+            Err(e) if e.code.0 == NOT_RUN_STOPPED_CODE => {
+                if let Some(c) = &mut call {
+                    c.digested(refused_digest(request_args.clone()).await);
+                }
+                self.refuse(
+                    call.as_ref(),
+                    access::STOPPED,
+                    Ok(tool_error(STOPPED.to_string())),
+                )
+                .await
+            }
+            // It panicked part way (recorded as it went): a plain refusal,
+            // redacted like every other.
+            Err(e) => redact_refusal(Ok(tool_error(e.message.to_string()))),
+        }
+    }
+
+    async fn list_tools(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::ListToolsResult, rmcp::ErrorData> {
+        let mut tools = Self::tool_router().list_all();
+        // A token is shown what it can call (scopes.rs); the list then
+        // differs by caller, so it may be cached only for this one.
+        if self.access.is_some() {
+            let scopes = crate::access::caller(&context)
+                .map(|c| c.token.scopes)
+                .unwrap_or_default();
+            tools.retain(|t| crate::scopes::shown(&t.name, &scopes));
+        } else {
+            // Books served over stdio keep no access log: not offered.
+            tools.retain(|t| t.name != "books.access_log");
+        }
+        let hints = context
+            .protocol_version()
+            .is_some_and(|v| v >= rmcp::model::ProtocolVersion::V_2026_07_28);
+        Ok(rmcp::model::ListToolsResult {
+            result_type: Some(rmcp::model::ResultType::COMPLETE),
+            tools,
+            meta: None,
+            next_cursor: None,
+            ttl_ms: hints.then_some(0),
+            cache_scope: hints.then_some(rmcp::model::CacheScope::Private),
+        })
     }
 
     fn get_info(&self) -> ServerConfig {
@@ -9625,8 +9835,101 @@ impl ServerHandler for BooksServer {
     async fn read_resource(
         &self,
         request: ReadResourceRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, rmcp::ErrorData> {
+        use crate::access::{self, Call};
+        use ledger_store::access::Outcome;
+        // Reading a resource is reading the books: books:read, recorded
+        // (access.rs).
+        let call = self
+            .access
+            .as_ref()
+            .map(|log| Call::new(log, &context, "resource", &request.uri));
+        let result = self.resource(request, call.as_ref()).await;
+        if let Some(call) = &call {
+            let outcome = match &result {
+                Ok(_) => Outcome::Ok,
+                Err(e) if e.code.0 == NOT_RUN_CLOSING_CODE => {
+                    Outcome::Refused(access::CLOSING.into())
+                }
+                Err(e) if e.message == access::INSUFFICIENT_SCOPE => {
+                    Outcome::Refused(access::INSUFFICIENT_SCOPE.into())
+                }
+                Err(e) if e.message == access::UNAUTHORIZED => {
+                    Outcome::Refused(access::UNAUTHORIZED.into())
+                }
+                Err(_) => Outcome::Error,
+            };
+            if call.record(outcome, None).await.is_err() {
+                self.store.stop();
+                // Not run stays so; the words say why.
+                return Err(match result {
+                    Err(e) if e.code.0 == NOT_RUN_CLOSING_CODE => rmcp::ErrorData::new(
+                        e.code,
+                        format!("{}; {}", e.message, access::NOT_RECORDED),
+                        None,
+                    ),
+                    _ => rmcp::ErrorData::internal_error(access::NOT_RECORDED, None),
+                });
+            }
+        }
+        result
+    }
+}
+
+impl BooksServer {
+    /// Record a call refused unrun, then give its answer (access.rs
+    /// INVARIANT 3).
+    async fn refuse(
+        &self,
+        call: Option<&crate::access::Call>,
+        code: &str,
+        answer: Result<rmcp::model::CallToolResponse, rmcp::ErrorData>,
+    ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
+        if let Some(call) = call
+            && call
+                .record(ledger_store::access::Outcome::Refused(code.into()), None)
+                .await
+                .is_err()
+        {
+            self.store.stop();
+            // A call refused as not run stays so (the bridge sends it
+            // again when the books are back); the words say why.
+            return match answer {
+                Err(e) if e.code.0 == NOT_RUN_CLOSING_CODE => Err(rmcp::ErrorData::new(
+                    e.code,
+                    format!("{}; {}", e.message, crate::access::NOT_RECORDED),
+                    None,
+                )),
+                _ => Ok(tool_error(crate::access::NOT_RECORDED.to_string())),
+            };
+        }
+        answer
+    }
+
+    /// A resource's contents, once its caller may read the books.
+    async fn resource(
+        &self,
+        request: ReadResourceRequestParams,
+        call: Option<&crate::access::Call>,
+    ) -> Result<ReadResourceResponse, rmcp::ErrorData> {
+        if let Some(call) = call {
+            match call.caller() {
+                None => {
+                    return Err(rmcp::ErrorData::invalid_request(
+                        crate::access::UNAUTHORIZED,
+                        None,
+                    ));
+                }
+                Some(c) if !c.may(ledger_store::auth::Scope::Read) => {
+                    return Err(rmcp::ErrorData::invalid_request(
+                        crate::access::INSUFFICIENT_SCOPE,
+                        None,
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
         self.live().refresh();
         let timezone = self.settings().timezone.clone();
         let uri = request.uri.clone();
@@ -10082,7 +10385,7 @@ mod tests {
         const D: Hints = (Some(false), Some(true), None);
         const WI: Hints = (Some(false), Some(false), Some(true));
         const DI: Hints = (Some(false), Some(true), Some(true));
-        let table: [(&str, Hints); 108] = [
+        let table: [(&str, Hints); 109] = [
             ("books.handbook", R),
             ("books.start", R),
             ("books.set_setting", DI),
@@ -10191,6 +10494,7 @@ mod tests {
             ("books.list_classes", R),
             ("books.profit_and_loss_by_class", R),
             ("books.export_cpa_package", W),
+            ("books.access_log", R),
         ];
         let tools = BooksServer::tool_router().list_all();
         assert_eq!(tools.len(), table.len());

@@ -39,6 +39,13 @@
 //!      are not passed on, in initialize or in a request's own metadata.
 //!  10. Ended by its stdin or by a signal, the bridge ends its upstream
 //!      session.
+//!  11. Every request upstream carries its token, read from the keyring
+//!      (tokens.rs) before each new session and each request until it is
+//!      found, and again when the door refuses it (the call then sent once
+//!      more if another was found), so a token made or replaced
+//!      mid-session is used from the next call; without one, calls are
+//!      answered with the server's refusal, which says how the human makes
+//!      one. The token is never written to the agent or to stderr.
 //! ```
 
 use crate::knobs::{FLAG, Knobs};
@@ -61,6 +68,9 @@ const OWN_ID: &str = "wanderbooks-bridge-";
 const SERVER_ERROR: i64 = -32000;
 /// What the server says when it is closing and didn't run a request.
 const CLOSING: &str = "the books are closing";
+/// The refusal code the server's door gives a request it didn't run
+/// because the books are closing.
+const REFUSED_CLOSING: &str = "closing";
 /// What rmcp says, as the whole body, for an unknown session.
 const NO_SESSION: &str = "Not Found: Session not found";
 
@@ -124,6 +134,12 @@ enum NotRun {
 
 struct Bridge {
     book: String,
+    /// The name of the token it uses (tokens.rs).
+    token_name: String,
+    /// The token's text, once read from the keyring (INVARIANT 11).
+    token: Mutex<Option<String>>,
+    /// Where it is kept: its account, and the root's `run/`.
+    keyring: std::sync::OnceLock<(crate::tokens::Account, PathBuf)>,
     http: reqwest::Client,
     knobs: Knobs,
     to_agent: mpsc::UnboundedSender<Value>,
@@ -309,6 +325,69 @@ impl Bridge {
         format!("http://localhost/b/{}/mcp", self.book)
     }
 
+    /// Read the token from the keyring if it isn't known yet (INVARIANT
+    /// 11): a token made after the session began is found on the next
+    /// try. A keyring that fails is said on stderr; the server's refusal
+    /// then tells the agent what to do.
+    async fn find_token(&self) {
+        if self
+            .token
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_none()
+        {
+            self.read_token().await;
+        }
+    }
+
+    /// Read the token from the keyring, keeping it if found: whether a
+    /// token other than the one held was found (one made since, or one
+    /// that replaced it).
+    async fn read_token(&self) -> bool {
+        let Some((account, run_dir)) = self.keyring.get().cloned() else {
+            return false;
+        };
+        let keeper = crate::tokens::keeper(&run_dir, &self.knobs);
+        let read = tokio::time::timeout(
+            self.knobs.queue_wait,
+            tokio::task::spawn_blocking(move || keeper.get(&account)),
+        )
+        .await;
+        match read {
+            Ok(Ok(Ok(Some(token)))) => {
+                let mut held = self.token.lock().unwrap_or_else(|e| e.into_inner());
+                let new = held.as_deref() != Some(token.as_str());
+                *held = Some(token);
+                new
+            }
+            Ok(Ok(Ok(None))) => false,
+            Ok(Ok(Err(why))) => {
+                eprintln!("wanderbooks mcp: the token for these books couldn't be read: {why}");
+                false
+            }
+            Ok(Err(_)) | Err(_) => {
+                eprintln!(
+                    "wanderbooks mcp: the keyring didn't give the token for these books in time: is it locked?"
+                );
+                false
+            }
+        }
+    }
+
+    /// A request upstream, carrying the token (INVARIANT 11).
+    fn upstream(&self, method: reqwest::Method) -> reqwest::RequestBuilder {
+        let req = self.http.request(method, self.url());
+        match self
+            .token
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_deref()
+        {
+            Some(token) => req.bearer_auth(token),
+            None => req,
+        }
+    }
+
     fn own_id(&self) -> Value {
         let n = self
             .next_id
@@ -322,9 +401,28 @@ impl Bridge {
 
     /// Send one message upstream on `up`'s session.
     async fn send(&self, message: &Value, up: &Upstream) -> Sent {
+        // A client of the 2026-07-28 era opens no session: its token is
+        // looked for here (INVARIANT 11).
+        self.find_token().await;
+        let (sent, unauthorized) = self.send_once(message, up).await;
+        // Refused at the door for its token (not run): one made or
+        // replaced since is read from the keyring (INVARIANT 11). A
+        // session belongs to the token that opened it, so with a session
+        // the call waits for a new one (opened with the new token); with
+        // none it is sent once more at once.
+        if unauthorized && self.read_token().await {
+            if up.session.is_some() {
+                return Sent::NotRun(NotRun::NoSession);
+            }
+            return self.send_once(message, up).await.0;
+        }
+        sent
+    }
+
+    /// [`Bridge::send`], once: and whether the door refused its token.
+    async fn send_once(&self, message: &Value, up: &Upstream) -> (Sent, bool) {
         let mut req = self
-            .http
-            .post(self.url())
+            .upstream(reqwest::Method::POST)
             .header("content-type", "application/json")
             .header("accept", "application/json, text/event-stream")
             .body(serde_json::to_vec(message).unwrap_or_default());
@@ -336,15 +434,30 @@ impl Bridge {
         }
         let response = match req.send().await {
             Ok(r) => r,
-            Err(e) if e.is_connect() => return Sent::NotRun(NotRun::Unreachable),
-            Err(_) => return Sent::MaybeRan,
+            Err(e) if e.is_connect() => return (Sent::NotRun(NotRun::Unreachable), false),
+            Err(_) => return (Sent::MaybeRan, false),
         };
         let status = response.status();
+        let unauthorized = status == reqwest::StatusCode::UNAUTHORIZED;
         // Refused before it could run (books that didn't open, or none
         // so named): the server's words, for the agent (INVARIANT 4).
+        let sent = self.read_answer(response).await;
+        (sent, unauthorized)
+    }
+
+    /// What an answer from upstream says.
+    async fn read_answer(&self, response: reqwest::Response) -> Sent {
+        let status = response.status();
         let refused = response
             .headers()
-            .contains_key(ledger_mcp::local::REFUSED_HEADER);
+            .get(ledger_mcp::local::REFUSED_HEADER)
+            .map(|v| v.as_bytes().to_vec());
+        // Refused at the door because the books are closing: not run, so
+        // sent again once they're open (INVARIANT 4).
+        if refused.as_deref() == Some(REFUSED_CLOSING.as_bytes()) {
+            return Sent::NotRun(NotRun::Closing);
+        }
+        let refused = refused.is_some();
         let is_stream = response
             .headers()
             .get("content-type")
@@ -406,16 +519,21 @@ impl Bridge {
         params: &Value,
         epoch: u64,
     ) -> Result<Upstream, Option<String>> {
+        self.find_token().await;
         let request = json!({"jsonrpc": "2.0", "id": self.own_id(), "method": "initialize", "params": params});
-        let response = self
-            .http
-            .post(self.url())
-            .header("content-type", "application/json")
-            .header("accept", "application/json, text/event-stream")
-            .body(request.to_string())
-            .send()
-            .await
-            .map_err(|_| None)?;
+        let post = || {
+            self.upstream(reqwest::Method::POST)
+                .header("content-type", "application/json")
+                .header("accept", "application/json, text/event-stream")
+                .body(request.to_string())
+                .send()
+        };
+        let mut response = post().await.map_err(|_| None)?;
+        // Refused for its token: once more with one made or replaced
+        // since (INVARIANT 11).
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED && self.read_token().await {
+            response = post().await.map_err(|_| None)?;
+        }
         let session = response
             .headers()
             .get("mcp-session-id")
@@ -719,6 +837,12 @@ impl Bridge {
     /// Keep the lease, and a session whenever the server is ready
     /// (INVARIANTS 1, 2, 5, 6).
     async fn keep(self: Arc<Self>, mut opener: Opener) {
+        // INVARIANT 11: where its token is kept; it is read before each
+        // new session until one is found.
+        let run_dir = opener.run_dir().to_path_buf();
+        let root = run_dir.parent().unwrap_or(&run_dir).to_path_buf();
+        let account = crate::tokens::Account::new(&root, &self.book, &self.token_name);
+        let _ = self.keyring.set((account, run_dir));
         let mut epoch = 0u64;
         loop {
             let mut lease = match opener.hold().await {
@@ -857,8 +981,7 @@ impl Bridge {
         {
             let _ = tokio::time::timeout(
                 Duration::from_secs(2),
-                self.http
-                    .delete(self.url())
+                self.upstream(reqwest::Method::DELETE)
                     .header("mcp-session-id", session)
                     .send(),
             )
@@ -1076,9 +1199,11 @@ async fn skip_line<R: tokio::io::AsyncBufRead + Unpin>(input: &mut R) -> bool {
 
 fn usage(prog: &str) {
     // (`--root DIR` too, for tests: the bridge never needs a folder.)
-    eprintln!("usage: {prog} --book ID");
+    eprintln!("usage: {prog} --book ID [--token NAME]");
     eprintln!("  Connects an agent (over stdio) to the books called ID, opening them if");
-    eprintln!("  they are closed and holding them open for the session.");
+    eprintln!("  they are closed and holding them open for the session. It uses the");
+    eprintln!("  token NAME (default: agent) that `wanderbooks token create` kept in");
+    eprintln!("  this computer's keyring.");
 }
 
 /// `wanderbooks mcp --book ID`.
@@ -1087,12 +1212,14 @@ pub fn run(
     args: impl IntoIterator<Item = String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut book: Option<String> = None;
+    let mut token_name = crate::tokens::DEFAULT_NAME.to_string();
     let mut root: Option<PathBuf> = None;
     let mut knobs = Knobs::default();
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--book" => book = Some(args.next().ok_or("--book needs an id")?),
+            "--token" => token_name = args.next().ok_or("--token needs a name")?,
             "--root" => root = Some(PathBuf::from(args.next().ok_or("--root needs a folder")?)),
             FLAG => knobs = Knobs::parse(&args.next().ok_or("--test-knobs needs a value")?)?,
             "--help" | "-h" => {
@@ -1143,6 +1270,9 @@ pub fn run(
         let (link, _) = watch::channel(Link::Opening);
         let bridge = Arc::new(Bridge {
             book,
+            token_name,
+            token: Mutex::new(None),
+            keyring: std::sync::OnceLock::new(),
             http,
             knobs,
             to_agent,
@@ -1485,6 +1615,10 @@ mod against_a_server {
         let (link, _) = watch::channel(Link::Opening);
         let bridge = Arc::new(Bridge {
             book: "acme".into(),
+            // A token the fake server doesn't check; no keyring is read.
+            token_name: crate::tokens::DEFAULT_NAME.into(),
+            token: Mutex::new(Some("wb_test".into())),
+            keyring: std::sync::OnceLock::new(),
             http,
             knobs,
             to_agent,

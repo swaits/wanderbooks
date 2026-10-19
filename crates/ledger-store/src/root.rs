@@ -56,6 +56,8 @@ pub const MARKER_FILE: &str = ".wanderbooks-root";
 pub const BOOKS_DIR: &str = "books";
 /// The sockets and runtime state (plan 3.9).
 pub const RUN_DIR: &str = "run";
+/// Who may reach the books: principals and the owner passphrase.
+pub const AUTH_DIR: &str = "auth";
 /// Old copies moved aside at adoption, never deleted (plan 5.5).
 pub const LEGACY_DIR: &str = "legacy";
 /// A book's TIN vault folder, in its own folder.
@@ -511,6 +513,14 @@ impl Root {
     /// The root's path.
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// The root's `auth/` folder (its principals and the owner passphrase),
+    /// made 0700 if missing and refused if it isn't private.
+    pub fn auth_dir(&self) -> Result<PathBuf, RootError> {
+        self.private_subdir(AUTH_DIR, false)
+            .map(|(dir, _)| dir)
+            .map_err(|e| self.hide(e))
     }
 
     /// The root's `run/` folder (its sockets and locks), made 0700 if

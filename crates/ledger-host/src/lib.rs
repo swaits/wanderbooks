@@ -7,7 +7,8 @@
 //! ends. Each part is a mode of the one `wanderbooks` executable:
 //! [`host::run`] (`wanderbooks host`), [`helper::run`] (`wanderbooks
 //! helper`), [`bridge::run`] (`wanderbooks mcp`), and the commands in
-//! [`commands`] (`serve`, `close`, `books`).
+//! [`commands`] (`serve`, `close`, `books`, `token`). Agents' tokens are
+//! kept in the OS keyring ([`tokens`]).
 
 #[cfg(unix)]
 pub mod bridge;
@@ -23,6 +24,7 @@ pub mod lease;
 pub mod opener;
 #[cfg(unix)]
 mod start;
+pub mod tokens;
 
 /// How a mode stops when it can't go on: the reason is already printed,
 /// and the number is the process's exit code.

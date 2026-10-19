@@ -394,11 +394,19 @@ fn print_usage() {
     eprintln!("       wanderbooks gui [DIR | --data-dir PATH ...]");
     eprintln!("       wanderbooks dev-stdio [--data-dir PATH ...]");
     eprintln!("       wanderbooks setup [--root PATH] [--home DIR]");
+    eprintln!("       wanderbooks books list | create ID | adopt DATA-DIR --id ID");
+    eprintln!("       wanderbooks mcp --book ID");
+    eprintln!("       wanderbooks serve | close | doctor");
     eprintln!();
     eprintln!("  new        make a books directory and start the agent in it (alias: init)");
     eprintln!("  gui        open the live, read-only view of a books directory");
     eprintln!("  dev-stdio  run the books server over stdio (`dev-stdio --help` for its flags)");
     eprintln!("  setup      make the books' private folder (only your account can open it)");
+    eprintln!("  books      list, start or adopt books (`books --help`)");
+    eprintln!("  mcp        connect an agent to books, over stdio (what `claude mcp add` runs)");
+    eprintln!("  serve      hold the books open until Ctrl-C");
+    eprintln!("  close      close the books now: everything holding them lets go");
+    eprintln!("  doctor     whether the books are open, what holds them, what went wrong");
     eprintln!("  DIR        the books directory (default: current directory)");
     eprintln!("  --force    rewrite the scaffold in an existing books directory");
     eprintln!("  --no-start don't start the agent afterwards");
@@ -847,7 +855,14 @@ fn run_setup(args: Vec<String>) -> i32 {
              look there (tests and unusual setups only)"
         );
     }
-    let xdg = env::var_os("XDG_DATA_HOME").map(PathBuf::from);
+    // XDG_DATA_HOME is this account's, for this account's home: with
+    // another home given (tests), it is never read, so it can't aim at
+    // this account's real books.
+    let xdg = if account.as_ref() == Some(&home) {
+        env::var_os("XDG_DATA_HOME").map(PathBuf::from)
+    } else {
+        None
+    };
     match ledger_store::root::Root::setup(&home, root.as_deref(), xdg.as_deref()) {
         Ok((_, report)) => {
             let what = if report.created {
@@ -884,6 +899,62 @@ fn run_dev_stdio(args: Vec<String>) -> i32 {
     }
 }
 
+/// `wanderbooks server`: the books server for the data root, on its
+/// local sockets (plan 3.9). The host starts it.
+#[cfg(unix)]
+fn run_server(args: Vec<String>) -> i32 {
+    match ledger_mcp::local::run("wanderbooks server", args) {
+        Ok(()) => 0,
+        Err(e) => match e.downcast_ref::<ledger_mcp::Exit>() {
+            Some(exit) => exit.0,
+            None => {
+                eprintln!("error: {e}");
+                1
+            }
+        },
+    }
+}
+
+/// The modes that open and hold the books (plan 3.9): the host, the
+/// helper, the agents' bridge, and the owner's commands.
+#[cfg(unix)]
+fn run_local(mode: &str, args: Vec<String>) -> i32 {
+    let prog = format!("wanderbooks {mode}");
+    let result = match mode {
+        "host" => ledger_host::host::run(&prog, args),
+        "helper" => ledger_host::helper::run(&prog, args),
+        "mcp" => ledger_host::bridge::run(&prog, args),
+        "serve" => ledger_host::commands::serve(&prog, args),
+        "close" => ledger_host::commands::close(&prog, args),
+        "doctor" => ledger_host::commands::doctor(&prog, args),
+        _ => ledger_host::commands::books(&prog, args),
+    };
+    match result {
+        Ok(()) => 0,
+        Err(e) => match e.downcast_ref::<ledger_host::Exit>() {
+            Some(exit) => exit.0,
+            None => {
+                eprintln!("error: {e}");
+                1
+            }
+        },
+    }
+}
+
+/// The modes that hold the books, where local sockets aren't built yet.
+#[cfg(not(unix))]
+fn run_local(_mode: &str, _args: Vec<String>) -> i32 {
+    eprintln!("error: opening the books this way comes to this system with P11");
+    2
+}
+
+/// `wanderbooks server` where local sockets aren't built yet.
+#[cfg(not(unix))]
+fn run_server(_args: Vec<String>) -> i32 {
+    eprintln!("error: the books server's local sockets come to this system with P11");
+    2
+}
+
 fn main() {
     // The modes run in this process and take their own flags.
     let mut all = env::args().skip(1);
@@ -891,6 +962,11 @@ fn main() {
         Some("gui") => std::process::exit(run_gui(all.collect())),
         Some("dev-stdio") => std::process::exit(run_dev_stdio(all.collect())),
         Some("setup") => std::process::exit(run_setup(all.collect())),
+        Some("server") => std::process::exit(run_server(all.collect())),
+        Some(mode @ ("host" | "helper" | "mcp" | "serve" | "close" | "books" | "doctor")) => {
+            let mode = mode.to_string();
+            std::process::exit(run_local(&mode, all.collect()))
+        }
         _ => {}
     }
     let mut dir: Option<PathBuf> = None;
@@ -921,7 +997,11 @@ fn main() {
             }
         }
     }
-    if let Some(mode @ ("gui" | "dev-stdio" | "setup")) = cmd.as_deref() {
+    if let Some(
+        mode @ ("gui" | "dev-stdio" | "setup" | "server" | "host" | "helper" | "mcp" | "serve"
+        | "close" | "books" | "doctor"),
+    ) = cmd.as_deref()
+    {
         eprintln!("`{mode}` must come first: wanderbooks {mode} [its own flags]");
         std::process::exit(2);
     }

@@ -1,0 +1,369 @@
+//! The admin socket's messages (`run/admin.sock`, plan 3.1, 3.9): how the
+//! command line asks the books server to list, create and adopt books.
+//!
+//! ```text
+//! GOAL: the command line makes and adopts books without ever touching
+//!       the data root itself: the server, its sole writer, does it.
+//! SOURCE: plan/served.md 3.1 (the CLI "talks to run/admin.sock ... it can
+//!         create or adopt books"), 5.5 (adoption), 3.9 (protocol versions
+//!         N and N-1).
+//! INVARIANTS:
+//!   1. One request per connection, one JSON line each way, at most
+//!      MAX_LINE bytes; anything else is refused with a plain reason.
+//!   2. A request carries its protocol version; the server accepts this
+//!      version and the one before, and refuses others with a message
+//!      that says to restart.
+//!   3. No answer names the data root or a path in it, nor echoes a path
+//!      the caller gave (which could be the root under another name).
+//!   4. Adopting is two steps: without `confirmed` the answer is a
+//!      preview, and nothing is written; `confirmed: true` adopts, and
+//!      only books still at the head the preview read (`expect_head`).
+//!   5. Nothing in a settings file is dropped silently: entries the books
+//!      don't know are refused unless `skip_unknown`, and its notes and
+//!      comments are in the preview.
+//! ```
+
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+/// This protocol's version (INVARIANT 2).
+pub const PROTO: u32 = 1;
+
+/// The oldest version this side still accepts (INVARIANT 2: this one and
+/// the one before; there is none before the first).
+pub const OLDEST: u32 = 1;
+
+/// Whether a request of protocol version `proto` is accepted.
+pub fn accepts(proto: u32) -> bool {
+    (OLDEST..=PROTO).contains(&proto)
+}
+
+/// The longest line either side sends, its newline not counted
+/// (INVARIANT 1): settings texts ride in an adopt request.
+pub const MAX_LINE: usize = 4 * 1024 * 1024;
+
+/// A request, with its protocol version.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Envelope {
+    /// The sender's protocol version.
+    pub proto: u32,
+    /// What is asked.
+    #[serde(flatten)]
+    pub request: Request,
+}
+
+/// What the command line can ask.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Request {
+    /// The books the server holds.
+    List,
+    /// Start new, empty books.
+    Create {
+        /// The new books' id.
+        id: String,
+        /// Their base currency (ISO 4217), fixed for good.
+        currency: String,
+    },
+    /// Adopt existing books (plan 5.5).
+    Adopt {
+        /// The new books' id.
+        id: String,
+        /// The data dir to adopt (`journal.jsonl`, `blobs/`).
+        source: PathBuf,
+        /// The settings file's text, for books that keep no settings.
+        #[serde(default)]
+        settings_toml: Option<String>,
+        /// `config.json`'s text, for its receipt policy.
+        #[serde(default)]
+        config_json: Option<String>,
+        /// The source's TIN vault folder.
+        #[serde(default)]
+        vault_dir: Option<PathBuf>,
+        /// The v1 vault key file.
+        #[serde(default)]
+        vault_key: Option<PathBuf>,
+        /// Adopt (true), or only preview what would be moved in.
+        #[serde(default)]
+        confirmed: bool,
+        /// The head the preview read: adopted only if still so.
+        #[serde(default)]
+        expect_head: Option<(u64, String)>,
+        /// Leave out settings-file entries the books don't know.
+        #[serde(default)]
+        skip_unknown: bool,
+    },
+}
+
+/// One book, as listed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BookStatus {
+    /// Its id.
+    pub id: String,
+    /// Whether it is open and served.
+    pub open: bool,
+    /// Why it couldn't be opened, if it couldn't.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
+}
+
+/// A setting an adoption would move in.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SettingChange {
+    /// Its key.
+    pub key: String,
+    /// Its value, as JSON (`None`: the setting is cleared).
+    pub value: Option<serde_json::Value>,
+}
+
+/// What an unconfirmed adoption would do (INVARIANT 4).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdoptPreview {
+    /// The source's last event, `(seq, hash)`, as read now.
+    pub source_head: (u64, String),
+    /// The source already keeps its own settings: none would be moved in.
+    pub keeps_settings: bool,
+    /// The settings that would be moved in.
+    pub settings: Vec<SettingChange>,
+    /// What the settings file says that isn't a books setting.
+    pub notes: Vec<String>,
+    /// Entries in it the books don't know (not moved in).
+    pub unknown: Vec<String>,
+    /// The settings file's comments, in order (they aren't settings: keep
+    /// what matters as a convention or a decision).
+    pub comments: Vec<String>,
+    /// The vault's records, each checked to open with the key given.
+    pub vault_records: usize,
+}
+
+/// What an adoption did.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Adopted {
+    /// The new books' id.
+    pub id: String,
+    /// The source's head, verified before copying.
+    pub source_head: (u64, String),
+    /// The adopted books' head.
+    pub head: (u64, String),
+    /// Stored files copied.
+    pub blob_files: u64,
+    /// Stored files the books name, re-hashed through the store.
+    pub blobs_verified: u64,
+    /// Stored files copied that the books don't name.
+    pub unnamed_blobs: u64,
+    /// Files left behind among the stored ones (unfinished writes, hidden
+    /// files).
+    pub skipped_files: u64,
+    /// Vault records copied.
+    pub vault_files: u64,
+    /// Whether the v1 key was copied.
+    pub key_copied: bool,
+    /// Settings moved in.
+    pub settings_imported: usize,
+    /// Settings were given, but the books keep their own.
+    pub settings_ignored: bool,
+    /// The source had no lock file, so one was made beside its journal.
+    pub source_lock_created: bool,
+    /// Why the adopted books didn't open, if they didn't (they are kept;
+    /// closing the books and opening them again tries again).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
+}
+
+/// The server's answer.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum Response {
+    /// The books held.
+    Books(Vec<BookStatus>),
+    /// New books made.
+    Created {
+        /// Their id.
+        id: String,
+        /// Why they didn't open, if they didn't (they are kept).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        problem: Option<String>,
+    },
+    /// What an adoption would do.
+    Preview(AdoptPreview),
+    /// Books adopted and open.
+    Adopted(Adopted),
+    /// Refused, with why (no path in the data root: INVARIANT 3).
+    Refused(String),
+}
+
+/// Why an admin call has no answer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CallError {
+    /// The request never reached the server: nothing was done.
+    NotSent(String),
+    /// It was sent, and no answer came: it may or may not have been done.
+    Unknown(String),
+}
+
+impl std::fmt::Display for CallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CallError::NotSent(why) | CallError::Unknown(why) => f.write_str(why),
+        }
+    }
+}
+
+/// Ask the server on `socket` (the root's `run/admin.sock`), waiting as
+/// long as it takes (a create or an adoption).
+#[cfg(unix)]
+pub fn call(socket: &std::path::Path, request: Request) -> Result<Response, CallError> {
+    call_within(socket, request, None)
+}
+
+/// [`call`], waiting at most `wait` for the answer (a quick look, such
+/// as `doctor`'s).
+#[cfg(unix)]
+pub fn call_within(
+    socket: &std::path::Path,
+    request: Request,
+    wait: Option<std::time::Duration>,
+) -> Result<Response, CallError> {
+    use std::io::{BufRead, Write};
+    let not_sent = |why: String| CallError::NotSent(why);
+    // A list changes nothing: its only question is whether it answered.
+    let reads_only = matches!(request, Request::List);
+    let unknown = move |why: String| {
+        if reads_only {
+            CallError::Unknown(why)
+        } else {
+            CallError::Unknown(format!(
+                "{why}, so it may or may not have been done: `wanderbooks books list` shows the books there are"
+            ))
+        }
+    };
+    let quiet = |e: std::io::Error| match e.kind() {
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => {
+            "the books server isn't answering".to_string()
+        }
+        kind => format!("the books server didn't answer ({kind})"),
+    };
+    let (dir, name) = (
+        socket.parent().unwrap_or(std::path::Path::new(".")),
+        socket
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default(),
+    );
+    let short = ledger_store::root::SocketPath::new(dir, name)
+        .map_err(|e| not_sent(format!("can't reach the books server: {e}")))?;
+    let stream =
+        std::os::unix::net::UnixStream::connect(short.path()).map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused => {
+                not_sent("the books server isn't running".to_string())
+            }
+            _ => not_sent(format!("can't reach the books server: {}", e.kind())),
+        })?;
+    crate::local::check_peer_std(&stream).map_err(not_sent)?;
+    stream
+        .set_read_timeout(wait)
+        .map_err(|e| not_sent(e.to_string()))?;
+    let mut line = serde_json::to_string(&Envelope {
+        proto: PROTO,
+        request,
+    })
+    .map_err(|e| not_sent(e.to_string()))?;
+    line.push('\n');
+    // A write cut part way may still have reached the server whole.
+    (&stream).write_all(line.as_bytes()).map_err(|e| {
+        unknown(format!(
+            "the books server stopped taking the request ({})",
+            e.kind()
+        ))
+    })?;
+    let mut answer = String::new();
+    std::io::BufReader::new(std::io::Read::take(&stream, MAX_LINE as u64 + 1))
+        .read_line(&mut answer)
+        .map_err(|e| unknown(quiet(e)))?;
+    if answer.is_empty() {
+        return Err(unknown("the books server stopped before answering".into()));
+    }
+    serde_json::from_str(answer.trim_end())
+        .map_err(|e| unknown(format!("the books server's answer isn't understood ({e})")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn requests_are_one_flat_object_with_their_version() {
+        let line = serde_json::to_value(Envelope {
+            proto: PROTO,
+            request: Request::Create {
+                id: "acme".into(),
+                currency: "USD".into(),
+            },
+        })
+        .unwrap();
+        assert_eq!(
+            line,
+            json!({"proto": 1, "op": "create", "id": "acme", "currency": "USD"})
+        );
+        let back: Envelope = serde_json::from_value(line).unwrap();
+        assert_eq!(back.proto, 1);
+        let list: Envelope = serde_json::from_value(json!({"proto": 1, "op": "list"})).unwrap();
+        assert_eq!(list.request, Request::List);
+    }
+
+    #[test]
+    fn an_adopt_request_is_a_preview_unless_confirmed() {
+        let r: Envelope = serde_json::from_value(
+            json!({"proto": 1, "op": "adopt", "id": "acme", "source": "/x/books-data"}),
+        )
+        .unwrap();
+        match r.request {
+            Request::Adopt {
+                confirmed,
+                settings_toml,
+                vault_dir,
+                expect_head,
+                skip_unknown,
+                ..
+            } => {
+                assert!(!confirmed && !skip_unknown);
+                assert!(settings_toml.is_none() && vault_dir.is_none() && expect_head.is_none());
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_operations_and_fields_are_refused() {
+        for bad in [
+            json!({"proto": 1, "op": "delete", "id": "acme"}),
+            json!({"proto": 1, "op": "create", "id": "acme", "currency": "USD", "path": "/x"}),
+            json!({"proto": 1}),
+        ] {
+            assert!(
+                serde_json::from_value::<Envelope>(bad.clone()).is_err(),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn answers_round_trip() {
+        for r in [
+            Response::Books(vec![BookStatus {
+                id: "acme".into(),
+                open: false,
+                problem: Some("damaged".into()),
+            }]),
+            Response::Created {
+                id: "acme".into(),
+                problem: None,
+            },
+            Response::Refused("no".into()),
+        ] {
+            let text = serde_json::to_string(&r).unwrap();
+            assert_eq!(serde_json::from_str::<Response>(&text).unwrap(), r);
+        }
+    }
+}

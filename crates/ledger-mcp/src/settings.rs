@@ -30,6 +30,9 @@
 //!      base currency, and a vault key file given on the command line are
 //!      fixed when the server starts (the key file given wins over any
 //!      file's [vault] key_file).
+//!   6. A book in the data root (plan 3.4) has no settings file at all:
+//!      its settings are its own, the defaults until the first is set,
+//!      and no file is ever read for it.
 //! ```
 
 use crate::policy::ReceiptPolicy;
@@ -178,6 +181,9 @@ pub struct Live {
     /// Whether the settings files may be read: false once the books keep
     /// their own (INVARIANT 1).
     read_files: bool,
+    /// A book in the data root: its settings are only ever its own
+    /// (INVARIANT 6).
+    own: bool,
 }
 
 /// What books.settings reports about the files.
@@ -212,6 +218,26 @@ impl Live {
             journal_seq: None,
             vault_key_file: None,
             read_files: false,
+            own: false,
+        }
+    }
+
+    /// For a book in the data root (INVARIANT 6): no settings file, now
+    /// or later; `sync` brings the books' settings in once they hold any.
+    pub fn own() -> Self {
+        Self {
+            current: Arc::new(Settings {
+                journaled: true,
+                ..Settings::default()
+            }),
+            source: None,
+            seen: (None, None),
+            error: None,
+            loads: 0,
+            journal_seq: None,
+            vault_key_file: None,
+            read_files: false,
+            own: true,
         }
     }
 
@@ -229,6 +255,7 @@ impl Live {
             journal_seq: None,
             vault_key_file: None,
             read_files: true,
+            own: false,
         })
     }
 
@@ -249,6 +276,7 @@ impl Live {
             journal_seq: None,
             vault_key_file: None,
             read_files: false,
+            own: false,
         }
     }
 
@@ -296,7 +324,7 @@ impl Live {
 
     /// Whether the settings in force are the books' own.
     pub fn is_journaled(&self) -> bool {
-        self.journal_seq.is_some() || (self.source.is_some() && !self.read_files)
+        self.own || self.journal_seq.is_some() || (self.source.is_some() && !self.read_files)
     }
 
     /// The settings in force.

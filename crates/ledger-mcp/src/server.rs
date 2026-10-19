@@ -50,7 +50,7 @@ use ledger_store::Store;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::{
     Implementation, ListResourcesResult, ReadResourceRequestParams, ReadResourceResponse,
-    ReadResourceResult, Resource, ResourceContents, ServerCapabilities, ServerConfig,
+    ReadResourceResult, Resource, ResourceContents, ServerConfig,
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ServerHandler, tool, tool_handler, tool_router};
@@ -70,6 +70,53 @@ pub struct BooksServer {
     store: Arc<SharedStore>,
     settings: Arc<Mutex<Live>>,
     import_roots: Arc<ImportRoots>,
+    layout: Arc<Layout>,
+}
+
+/// Where a book's own files live around its data dir.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Layout {
+    /// A books dir, as before P2: the data dir is `books-data/` in a
+    /// project folder (the books dir), which holds `vault/`, the settings
+    /// file and perhaps git; the vault's key lives outside it.
+    BooksDir,
+    /// A book in the data root (plan 3.4): the data dir is `books/<id>/`,
+    /// holding its own `vault/` and its v1 key in `keys/legacy.key`. The
+    /// root (the path given) plays the books dir's part: nothing in it is
+    /// ever read or written through a path a tool names.
+    Root(std::path::PathBuf),
+}
+
+impl Layout {
+    /// What a tool never reads or writes through a path: the books dir,
+    /// or the whole data root.
+    fn books_dir(&self, store: &Store) -> std::path::PathBuf {
+        match self {
+            Layout::BooksDir => books_dir(store),
+            Layout::Root(root) => root.clone(),
+        }
+    }
+
+    /// The TIN vault's folder.
+    fn vault_dir(&self, store: &Store) -> std::path::PathBuf {
+        match self {
+            Layout::BooksDir => books_dir(store).join("vault"),
+            Layout::Root(_) => store.data_dir().join("vault"),
+        }
+    }
+
+    /// The vault's key file: in the data root always the book's own
+    /// `keys/legacy.key`, whatever a setting says; in a books dir the one
+    /// in force (`[vault] key_file`, else the default outside the books).
+    fn key_file(&self, store: &Store, settings: &Settings) -> std::path::PathBuf {
+        match self {
+            Layout::BooksDir => settings.key_file(),
+            Layout::Root(_) => store
+                .data_dir()
+                .join(ledger_store::root::KEYS_DIR)
+                .join(ledger_store::root::LEGACY_KEY_FILE),
+        }
+    }
 }
 
 /// The one store every session shares, and whether it may still be used.
@@ -86,10 +133,20 @@ pub struct BooksServer {
 ///      store), `stopped` is set and never cleared in this process.
 ///   2. While `stopped`, every request is refused with STOPPED, before
 ///      it touches the store; a restart re-verifies the journal.
+///   3. Once `close` begins, no request starts running (each is refused
+///      with NOT_RUN_CLOSING, untouched), and `close` returns only when
+///      every request that did start has finished its blocking work,
+///      whether or not anyone still waits for its answer.
 /// ```
 pub struct SharedStore {
     store: tokio::sync::Mutex<Store>,
     stopped: std::sync::atomic::AtomicBool,
+    /// Closing: no new request runs (INVARIANT 3).
+    closing: std::sync::atomic::AtomicBool,
+    /// Requests running (from before their blocking task to its end).
+    running: std::sync::atomic::AtomicUsize,
+    /// Woken whenever one ends.
+    ended: tokio::sync::Notify,
     /// The books' base currency, fixed at their creation: read without
     /// the lock (the connect text names it).
     currency: Currency,
@@ -102,7 +159,29 @@ impl SharedStore {
             currency: store.base_currency(),
             store: tokio::sync::Mutex::new(store),
             stopped: std::sync::atomic::AtomicBool::new(false),
+            closing: std::sync::atomic::AtomicBool::new(false),
+            running: std::sync::atomic::AtomicUsize::new(0),
+            ended: tokio::sync::Notify::new(),
         })
+    }
+
+    /// Stop new requests from running (INVARIANT 3), and wait until every
+    /// one already running has ended: its blocking task finished, even if
+    /// its client hung up.
+    pub async fn close(&self) {
+        self.closing
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        loop {
+            let ended = self.ended.notified();
+            if self.running.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                return;
+            }
+            ended.await;
+        }
+    }
+
+    fn closing(&self) -> bool {
+        self.closing.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     fn stopped(&self) -> bool {
@@ -179,7 +258,15 @@ where
     if shared.stopped() {
         return Err(rmcp::ErrorData::internal_error(STOPPED, None));
     }
+    // SharedStore INVARIANT 3: counted before the closing check, so a
+    // close never misses it; the count rides in the blocking task, which
+    // runs to its end even when this future is dropped.
+    let running = Running::new(shared);
+    if shared.closing() {
+        return Err(not_run_closing());
+    }
     let joined = tokio::task::spawn_blocking(move || {
+        let _running = running;
         struct Unpark(std::thread::Thread);
         impl std::task::Wake for Unpark {
             fn wake(self: Arc<Self>) {
@@ -203,6 +290,43 @@ where
         }
         rmcp::ErrorData::internal_error(STOPPED, None)
     })
+}
+
+/// A request running, counted in its store (SharedStore INVARIANT 3).
+struct Running(Arc<SharedStore>);
+
+impl Running {
+    fn new(shared: &Arc<SharedStore>) -> Self {
+        shared
+            .running
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self(shared.clone())
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        self.0
+            .running
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        self.0.ended.notify_waiters();
+    }
+}
+
+/// The JSON-RPC error code of a request refused because the books are
+/// closing: it didn't run, so a client may send it again once they are
+/// open (the agents' bridge does).
+pub const NOT_RUN_CLOSING_CODE: i32 = -32050;
+
+/// What a request refused while closing is told.
+pub const NOT_RUN_CLOSING: &str = "the books are closing: this call wasn't run";
+
+fn not_run_closing() -> rmcp::ErrorData {
+    rmcp::ErrorData::new(
+        rmcp::model::ErrorCode(NOT_RUN_CLOSING_CODE),
+        NOT_RUN_CLOSING,
+        None,
+    )
 }
 
 #[cfg(test)]
@@ -403,7 +527,15 @@ impl BooksServer {
                 ..Settings::default()
             }))),
             import_roots: Arc::new(ImportRoots::defaults()),
+            layout: Arc::new(Layout::BooksDir),
         }
+    }
+
+    /// Serve a book kept in the data root (`Layout::Root`) rather than
+    /// in a books dir.
+    pub fn with_layout(mut self, layout: Layout) -> Self {
+        self.layout = Arc::new(layout);
+        self
     }
 
     /// The folders `books.import_local_file` may read from (local_files.rs).
@@ -727,9 +859,10 @@ impl BooksServer {
         Ok(out)
     }
 
-    /// The TIN vault's directory: `vault/` in the books dir (git-ignored).
-    fn vault_dir(store: &Store) -> std::path::PathBuf {
-        books_dir(store).join("vault")
+    /// The TIN vault's directory: `vault/` in the books dir (git-ignored),
+    /// or in the book's own folder in the data root.
+    fn vault_dir(&self, store: &Store) -> std::path::PathBuf {
+        self.layout.vault_dir(store)
     }
 
     /// What is never read through a path, even inside an import root
@@ -739,7 +872,7 @@ impl BooksServer {
     /// the rest of the books dir.
     fn protected(&self, store: &Store) -> Protected {
         Protected::of(
-            &places(store, &self.settings()),
+            &places(store, &self.settings(), &self.layout),
             &self.import_roots.usable(),
         )
     }
@@ -757,7 +890,7 @@ impl BooksServer {
         file_name: &str,
     ) -> Result<(), String> {
         tin_files::refuse(
-            &Self::vault_dir(store),
+            &self.vault_dir(store),
             bytes,
             mime_type,
             file_name,
@@ -809,7 +942,7 @@ impl BooksServer {
     /// the books (outside_books) and outside every import root, so it can
     /// never be filed back in as a receipt and read out again.
     fn tin_file_dest(&self, store: &Store, path: &str) -> Result<std::path::PathBuf, String> {
-        let dest = outside_books(store, path)?;
+        let dest = outside_books(&self.layout.books_dir(store), path)?;
         self.outside_import_roots(&dest)?;
         Ok(dest)
     }
@@ -854,8 +987,17 @@ impl BooksServer {
     /// Record a file read or written with full TINs (tin_files.rs
     /// INVARIANT 2), before it is written out: every session, and every
     /// later server for these books, refuses it.
-    fn wrote_tins(store: &Store, bytes: &[u8]) -> Result<(), String> {
-        tin_files::record(&Self::vault_dir(store), bytes)
+    fn wrote_tins(&self, store: &Store, bytes: &[u8]) -> Result<(), String> {
+        // The record goes in the vault's folder: in the data root, made
+        // private first, as the vault itself makes it.
+        if let Layout::Root(_) = *self.layout {
+            ledger_store::root::private_book_folder(
+                store.data_dir(),
+                ledger_store::root::VAULT_DIR,
+            )
+            .map_err(|e| format!("the TIN vault can't be written: {e}"))?;
+        }
+        tin_files::record(&self.vault_dir(store), bytes)
     }
 
     /// Open the TIN vault with the key file in force (`[vault] key_file`,
@@ -865,13 +1007,23 @@ impl BooksServer {
     /// records it unlocks. Storing into books kept in git is refused
     /// unless their `.gitignore` lists `vault/`.
     fn open_vault(&self, store: &Store, create: bool) -> Result<ledger_vault::Vault, String> {
-        let key = self.settings().key_file();
-        if is_inside(&books_dir(store), &key) {
+        let key = self.layout.key_file(store, &self.settings());
+        // In the data root the key is the book's own `keys/legacy.key`;
+        // its folder and the vault's are made private when a TIN is first
+        // stored.
+        if let Layout::Root(_) = *self.layout {
+            if create {
+                for folder in [ledger_store::root::KEYS_DIR, "vault"] {
+                    ledger_store::root::private_book_folder(store.data_dir(), folder)
+                        .map_err(|e| format!("the TIN vault can't store anything yet: {e}"))?;
+                }
+            }
+        } else if is_inside(&books_dir(store), &key) {
             return Err(KEY_IN_BOOKS.to_string());
         }
         // Writing: a git repository must ignore the vault, or its records
         // would be committed (and could never be purged).
-        let books = books_dir(store);
+        let books = self.layout.books_dir(store);
         if create && books.join(".git").exists() {
             let ignored = std::fs::read_to_string(books.join(".gitignore"))
                 .unwrap_or_default()
@@ -882,7 +1034,7 @@ impl BooksServer {
             }
         }
         // No message names the key file or the books' folders.
-        ledger_vault::Vault::open(&Self::vault_dir(store), &key, create).map_err(|e| match e {
+        ledger_vault::Vault::open(&self.vault_dir(store), &key, create).map_err(|e| match e {
             ledger_vault::Error::NoKey(_) => "the TIN vault is locked: its key file is missing (restore it from the human's password manager, or set [vault] key_file in the settings)".to_string(),
             ledger_vault::Error::BadKey(_) => "the TIN vault's key file is not a vault key (64 hex digits): restore it from the human's password manager".to_string(),
             ledger_vault::Error::Io(e) => format!("the TIN vault can't be read: {}", e.kind()),
@@ -1732,13 +1884,23 @@ fn known_tin_last4(store: &Store) -> Vec<u32> {
 /// Where these books keep what an import must never read
 /// (local_files.rs): the data dir, the books dir, the vault, the key file
 /// in force and the default one, and the home folder.
-fn places(store: &Store, settings: &Settings) -> Places {
+fn places(store: &Store, settings: &Settings, layout: &Layout) -> Places {
     Places {
         data_dir: store.data_dir().to_path_buf(),
-        books_dir: books_dir(store),
-        vault_dir: BooksServer::vault_dir(store),
-        key_files: vec![settings.key_file(), ledger_vault::default_key_file()],
-        home: std::env::var_os("HOME").map(std::path::PathBuf::from),
+        books_dir: layout.books_dir(store),
+        vault_dir: layout.vault_dir(store),
+        key_files: vec![
+            layout.key_file(store, settings),
+            settings.key_file(),
+            ledger_vault::default_key_file(),
+        ],
+        // In the data root the home comes from the account's record, as
+        // the root's own does; never only from the environment.
+        home: match layout {
+            Layout::Root(_) => ledger_store::root::account_home().ok(),
+            Layout::BooksDir => None,
+        }
+        .or_else(|| std::env::var_os("HOME").map(std::path::PathBuf::from)),
     }
 }
 
@@ -1750,9 +1912,10 @@ fn places(store: &Store, settings: &Settings) -> Places {
 pub fn guard_import_roots(
     store: &Store,
     settings: &Settings,
+    layout: &Layout,
     roots: ImportRoots,
 ) -> Result<ImportRoots, String> {
-    let places = places(store, settings);
+    let places = places(store, settings, layout);
     let explicit = roots.explicit();
     let (roots, refused) = roots.guard(places.home.as_deref(), &places.keep_out());
     if let Some((root, why)) = refused.first() {
@@ -1775,12 +1938,12 @@ fn is_inside(dir: &std::path::Path, path: &std::path::Path) -> bool {
 
 /// Where a tool may write a file holding a full TIN: a new file, in a
 /// folder that exists, outside the books dir (which git commits).
-fn outside_books(store: &Store, path: &str) -> Result<std::path::PathBuf, String> {
+fn outside_books(books: &std::path::Path, path: &str) -> Result<std::path::PathBuf, String> {
     let p = std::path::PathBuf::from(path.trim());
     if path.trim().is_empty() {
         return Err("give a path to write to".into());
     }
-    if is_inside(&books_dir(store), &p) {
+    if is_inside(books, &p) {
         return Err(INSIDE_BOOKS.to_string());
     }
     match p.parent() {
@@ -1804,7 +1967,7 @@ const EXISTS: &str = "a file is there already: name a new file";
 /// folder. A new file, in a folder that exists; with TINs, outside the
 /// books dir (which git commits, `exports/` included).
 fn package_dest(
-    store: &Store,
+    books: &std::path::Path,
     to: &str,
     file_name: &str,
     tins: bool,
@@ -1827,7 +1990,7 @@ fn package_dest(
         ));
     };
     if tins {
-        return outside_books(store, &dest.to_string_lossy()).map_err(|e| {
+        return outside_books(books, &dest.to_string_lossy()).map_err(|e| {
             format!("{e} (the CPA package holds full TINs; save it outside the books)")
         });
     }
@@ -4880,7 +5043,7 @@ impl BooksServer {
                 let dest = if p.include_tins {
                     self.tin_file_dest(&store, path)?
                 } else {
-                    outside_books(&store, path)?
+                    outside_books(&self.layout.books_dir(&store), path)?
                 };
                 let mut csv =
                     String::from("vendor_id,name,form_1099,paid,reportable,w9_on_file,tin_last4");
@@ -4907,7 +5070,7 @@ impl BooksServer {
                     csv.push('\n');
                 }
                 if p.include_tins {
-                    Self::wrote_tins(&store, csv.as_bytes())?;
+                    self.wrote_tins(&store, csv.as_bytes())?;
                 }
                 write_private_new(&dest, csv.as_bytes())?;
                 Some(dest.display().to_string())
@@ -6967,7 +7130,7 @@ impl BooksServer {
             .as_ref()
             .is_some_and(|t| party_tin.as_ref().is_some_and(|pt| pt.last4 != t.last4()));
         let mut tin_facts: Option<ledger_core::TinFacts> = None;
-        let vault_dir = Self::vault_dir(&store);
+        let vault_dir = self.vault_dir(&store);
         let (held_tin, held_w9) =
             ledger_vault::records_held(&vault_dir, id).map_err(|e| e.to_string())?;
         let facts = match facts {
@@ -7028,7 +7191,7 @@ impl BooksServer {
                     // never filed into the books (tin_files.rs INVARIANT
                     // 1). Only now: every check has passed.
                     if let Some(w) = &w9_file {
-                        Self::wrote_tins(&store, &w.bytes)?;
+                        self.wrote_tins(&store, &w.bytes)?;
                     }
                     let tin_hash = match &tin {
                         Some(t) => Some(vault.put_tin(id, t).map_err(|e| e.to_string())?),
@@ -7044,10 +7207,14 @@ impl BooksServer {
                         None => w9_hash,
                     }
                 } else if held_tin {
-                    ledger_vault::Vault::open(&vault_dir, &self.settings().key_file(), false)
-                        .ok()
-                        .and_then(|v| v.record_hash(id).ok().flatten())
-                        .or_else(|| existing.as_ref().and_then(|e| e.vault_record.clone()))
+                    ledger_vault::Vault::open(
+                        &vault_dir,
+                        &self.layout.key_file(&store, &self.settings()),
+                        false,
+                    )
+                    .ok()
+                    .and_then(|v| v.record_hash(id).ok().flatten())
+                    .or_else(|| existing.as_ref().and_then(|e| e.vault_record.clone()))
                 } else if held_w9 {
                     existing.as_ref().and_then(|e| e.vault_record.clone())
                 } else {
@@ -7215,7 +7382,7 @@ impl BooksServer {
                     "the TIN vault holds no W-9 file for party {id}: store one with books.set_w9 w9_file_path"
                 )
             })?;
-        Self::wrote_tins(&store, &file.bytes)?;
+        self.wrote_tins(&store, &file.bytes)?;
         write_private_new(&dest, &file.bytes)?;
         Ok(Json(GetW9Out {
             party_id: id,
@@ -7270,7 +7437,7 @@ impl BooksServer {
         let mut store = self.lock()?;
         let id = resolve_party(&store, &p.party)?;
         let party = store.ledger().get_party(id).expect("resolved").clone();
-        let vault_dir = Self::vault_dir(&store);
+        let vault_dir = self.vault_dir(&store);
         let (held_tin, held_w9) =
             ledger_vault::records_held(&vault_dir, id).map_err(|e| e.to_string())?;
         let recorded = party.w9.as_ref().is_some_and(|f| f.vault_record.is_some())
@@ -8279,7 +8446,15 @@ impl BooksServer {
         let dest = p
             .save_to
             .as_deref()
-            .map(|to| package_dest(&store, to, &file_name, p.include_tins))
+            .map(|to| {
+                package_dest(
+                    &self.layout.books_dir(&store),
+                    to,
+                    &file_name,
+                    // In the data root nothing is ever written, TINs or not.
+                    p.include_tins || matches!(*self.layout, Layout::Root(_)),
+                )
+            })
             .transpose()?;
         if p.include_tins
             && let Some(d) = &dest
@@ -8653,7 +8828,7 @@ impl BooksServer {
             files.push(k1);
         }
         let seq = store.journal_seq();
-        let vault_dir = Self::vault_dir(&store);
+        let vault_dir = self.vault_dir(&store);
         drop(store);
         files.push((
             "general-journal.iif".into(),
@@ -9385,6 +9560,11 @@ impl ServerHandler for BooksServer {
         request: rmcp::model::CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
+        // Closing: refused as a protocol error, so a client knows it
+        // didn't run (SharedStore INVARIANT 3).
+        if self.store.closing() {
+            return Err(not_run_closing());
+        }
         // Pick up an edited settings file before the tool runs.
         self.live().refresh();
         let timezone = self.settings().timezone.clone();
@@ -9402,6 +9582,9 @@ impl ServerHandler for BooksServer {
         // plain refusal, redacted like every other.
         let result = match result {
             Ok(out) => out,
+            // Not run because the books are closing: a protocol error, so
+            // the client knows (SharedStore INVARIANT 3).
+            Err(e) if e.code.0 == NOT_RUN_CLOSING_CODE => return Err(e),
             Err(e) => Ok(rmcp::model::CallToolResponse::Complete(
                 rmcp::model::CallToolResult::error(vec![rmcp::model::ContentBlock::text(
                     e.message.to_string(),
@@ -9421,19 +9604,14 @@ impl ServerHandler for BooksServer {
                 .sync(store.ledger().settings(), self.store.currency.code());
         }
         self.live().refresh();
-        ServerConfig::new(
-            ServerCapabilities::builder()
-                .enable_tools()
-                .enable_resources()
-                .build(),
-        )
-        // The rules in brief, with the policy these books actually use;
-        // the rest is in the handbook.
-        .with_instructions(handbook::connect_text(&self.settings(), self.currency()))
-        .with_server_info(Implementation::new(
-            "wanderbooks",
-            env!("CARGO_PKG_VERSION"),
-        ))
+        ServerConfig::new(crate::opening::capabilities())
+            // The rules in brief, with the policy these books actually use;
+            // the rest is in the handbook.
+            .with_instructions(handbook::connect_text(&self.settings(), self.currency()))
+            .with_server_info(Implementation::new(
+                "wanderbooks",
+                env!("CARGO_PKG_VERSION"),
+            ))
     }
 
     async fn list_resources(

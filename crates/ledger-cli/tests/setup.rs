@@ -69,16 +69,20 @@ fn setup_makes_the_private_folder_and_never_names_it() {
 }
 
 #[test]
-fn a_root_elsewhere_is_noted_and_xdg_is_honoured() {
+fn a_root_elsewhere_is_noted_for_next_time() {
+    // (XDG_DATA_HOME is honoured only for this account's own home, which
+    // a test never touches: Root::setup's tests cover it.)
     let home = tempfile::Builder::new()
-        .prefix("wb-setup-xdg-")
+        .prefix("wb-setup-else-")
         .tempdir()
         .unwrap();
-    let xdg = home.path().join("xdg");
+    let elsewhere = home.path().join("elsewhere").join("wanderbooks");
     let out = wanderbooks()
         .args(["setup", "--home"])
         .arg(home.path())
-        .env("XDG_DATA_HOME", &xdg)
+        .arg("--root")
+        .arg(&elsewhere)
+        .env_remove("XDG_DATA_HOME")
         .output()
         .unwrap();
     assert!(out.status.success(), "{out:?}");
@@ -86,13 +90,10 @@ fn a_root_elsewhere_is_noted_and_xdg_is_honoured() {
         String::from_utf8_lossy(&out.stdout).contains("noted for next time"),
         "{out:?}"
     );
-    assert_eq!(mode(&xdg.join("wanderbooks")), 0o700);
+    assert_eq!(mode(&elsewhere), 0o700);
     let noted =
         std::fs::read_to_string(home.path().join(".local/share/wanderbooks.location")).unwrap();
-    assert_eq!(
-        noted.trim_end(),
-        xdg.join("wanderbooks").display().to_string()
-    );
+    assert_eq!(noted.trim_end(), elsewhere.display().to_string());
 }
 
 #[test]
@@ -121,4 +122,33 @@ fn setup_refuses_what_it_does_not_know_and_unsafe_folders() {
     // A mode comes first.
     let out = wanderbooks().args(["--force", "setup"]).output().unwrap();
     assert_eq!(out.status.code(), Some(2));
+}
+
+/// With another home given (tests), this account's XDG_DATA_HOME is never
+/// read: setup can't be aimed at this account's real books by it.
+#[test]
+fn another_home_ignores_this_accounts_data_home() {
+    let home = tempfile::Builder::new()
+        .prefix("wb-setup-xdg-")
+        .tempdir()
+        .unwrap();
+    let elsewhere = home.path().join("elsewhere");
+    std::fs::create_dir(&elsewhere).unwrap();
+    let out = wanderbooks()
+        .args(["setup", "--home"])
+        .arg(home.path())
+        .env("XDG_DATA_HOME", &elsewhere)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert!(
+        home.path()
+            .join(".local/share/wanderbooks/.wanderbooks-root")
+            .is_file()
+    );
+    assert_eq!(
+        std::fs::read_dir(&elsewhere).unwrap().count(),
+        0,
+        "XDG_DATA_HOME was used"
+    );
 }

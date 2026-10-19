@@ -103,6 +103,14 @@ fn each_mode_names_itself_in_its_usage() {
         "{err}"
     );
 
+    let out = wanderbooks().args(["server", "--help"]).output().unwrap();
+    assert!(out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("usage: wanderbooks server [--root DIR]"),
+        "{err}"
+    );
+
     let out = wanderbooks().arg("--help").output().unwrap();
     let err = String::from_utf8_lossy(&out.stderr);
     for line in [
@@ -129,9 +137,9 @@ fn the_viewer_names_itself_in_its_usage() {
 #[test]
 fn a_mode_refuses_what_it_does_not_know() {
     let modes: &[&str] = if cfg!(feature = "gui") {
-        &["dev-stdio", "gui"]
+        &["dev-stdio", "gui", "server"]
     } else {
-        &["dev-stdio"]
+        &["dev-stdio", "server"]
     };
     for &mode in modes {
         let out = wanderbooks()
@@ -150,7 +158,7 @@ fn a_mode_refuses_what_it_does_not_know() {
 
 #[test]
 fn a_mode_comes_first() {
-    for mode in ["gui", "dev-stdio"] {
+    for mode in ["gui", "dev-stdio", "server"] {
         let out = wanderbooks().args(["--codex", mode]).output().unwrap();
         assert_eq!(out.status.code(), Some(2), "{mode}: {out:?}");
         let err = String::from_utf8_lossy(&out.stderr);
@@ -216,5 +224,67 @@ fn the_server_only_build_has_no_viewer() {
     assert!(
         err.contains("the server-only build: it has no viewer"),
         "{err}"
+    );
+}
+
+/// Books in the data root are the books server's alone (plan 3.1): the
+/// test server refuses them, and the books server needs a root.
+#[cfg(unix)]
+#[test]
+fn dev_stdio_refuses_books_in_the_private_folder() {
+    let home = tempfile::Builder::new()
+        .prefix("wb-one-root-")
+        .tempdir()
+        .unwrap();
+    let out = wanderbooks()
+        .args(["setup", "--home"])
+        .arg(home.path())
+        .env_remove("XDG_DATA_HOME")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let root = home.path().join(".local/share/wanderbooks");
+    for inside in [
+        root.join("books/acme"),
+        root.clone(),
+        root.join("books/a/b"),
+    ] {
+        let out = wanderbooks()
+            .args(["dev-stdio", "--data-dir"])
+            .arg(&inside)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "{inside:?}: {out:?}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains("only the books server opens"), "{err}");
+        assert!(!inside.join("journal.jsonl").exists(), "{inside:?}");
+    }
+    assert!(!root.join("books/acme").exists());
+    // A relative path, from inside the root.
+    let out = wanderbooks()
+        .args(["dev-stdio", "--data-dir", "acme"])
+        .current_dir(root.join("books"))
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(!root.join("books/acme").exists());
+
+    // No root yet: the books server says to run setup.
+    let empty = tempfile::Builder::new()
+        .prefix("wb-one-noroot-")
+        .tempdir()
+        .unwrap();
+    let out = wanderbooks()
+        .args(["server", "--root"])
+        .arg(empty.path().join("none"))
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("run `wanderbooks setup` first"),
+        "{out:?}"
     );
 }

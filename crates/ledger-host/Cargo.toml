@@ -1,0 +1,27 @@
+[package]
+name = "ledger-host"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "wanderbooks: the books open while something holds them (the host, its leases, the helper and the agents' bridge)."
+
+[dependencies]
+ledger-core = { path = "../ledger-core" }
+ledger-mcp = { path = "../ledger-mcp" }
+ledger-store = { path = "../ledger-store" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "io-std", "sync", "net", "signal", "time", "process"] }
+reqwest = "0.13"
+base64 = "0.22"
+tokio-util = { version = "0.7", features = ["rt"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

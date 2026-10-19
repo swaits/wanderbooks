@@ -18,8 +18,12 @@
 //! `/`, the home folder, or holds the books, the vault or a key is refused
 //! at startup.
 
+pub mod admin;
 mod handbook;
+#[cfg(unix)]
+pub mod local;
 mod local_files;
+pub mod opening;
 mod policy;
 mod server;
 mod settings;
@@ -34,6 +38,7 @@ use policy::ReceiptPolicy;
 use rmcp::ServiceExt;
 use serde::Deserialize;
 use server::BooksServer;
+pub use server::{NOT_RUN_CLOSING, NOT_RUN_CLOSING_CODE};
 use std::path::PathBuf;
 
 /// Server configuration, JSON. All fields optional.
@@ -138,6 +143,14 @@ pub fn run(
             }
         }
     }
+    // Books in the data root are the books server's alone (plan 3.1):
+    // a second writer beside it is refused before anything is opened.
+    if ledger_store::root::inside_a_root(&data_dir) {
+        eprintln!(
+            "ledger-mcp: those books are in the books' private folder, which only the books server opens: connect to them with `wanderbooks mcp --book <id>`"
+        );
+        return Err(Box::new(Exit(2)));
+    }
     let import_roots = if import_roots.is_empty() {
         ImportRoots::defaults()
     } else {
@@ -221,7 +234,12 @@ pub fn run(
     // vault or a key (local_files.rs INVARIANT 0): a named one stops the
     // server here, a default one is dropped.
     let settings_now = live.lock().unwrap_or_else(|e| e.into_inner()).current();
-    let import_roots = match server::guard_import_roots(&store, &settings_now, import_roots) {
+    let import_roots = match server::guard_import_roots(
+        &store,
+        &settings_now,
+        &server::Layout::BooksDir,
+        import_roots,
+    ) {
         Ok(roots) => roots,
         Err(why) => {
             eprintln!("ledger-mcp: {why}");

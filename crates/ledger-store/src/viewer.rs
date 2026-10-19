@@ -112,7 +112,7 @@ pub fn command_path(data_dir: &Path) -> PathBuf {
 pub fn request(data_dir: &Path, target: ViewerTarget) -> std::io::Result<ViewerCommand> {
     let path = command_path(data_dir);
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
+        private_folder(dir)?;
     }
     let seq = read(data_dir).map_or(1, |c| c.seq + 1);
     let cmd = ViewerCommand {
@@ -127,6 +127,42 @@ pub fn request(data_dir: &Path, target: ViewerTarget) -> std::io::Result<ViewerC
     )?;
     std::fs::rename(&tmp, &path)?;
     Ok(cmd)
+}
+
+/// The folder the requests go in: made private (0700) if missing, made
+/// private again if ours; refused if it is a link or another account's
+/// (in a shared temp folder anyone could have planted one, to have a
+/// request written through it).
+fn private_folder(dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        if let Some(parent) = dir.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        match std::fs::symlink_metadata(dir) {
+            Ok(meta) => {
+                // SAFETY: geteuid has no preconditions and can't fail.
+                let me = unsafe { libc::geteuid() };
+                if !meta.is_dir() || meta.uid() != me {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "the viewer's request folder isn't this account's own",
+                    ));
+                }
+                // Private again, whatever it was.
+                std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::create_dir(dir)?;
+                std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+            }
+            Err(e) => return Err(e),
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    std::fs::create_dir_all(dir)
 }
 
 /// The latest request for `data_dir`, if any.
@@ -170,6 +206,26 @@ mod tests {
         );
         // Same books, same file; other books, another.
         assert_eq!(command_path(&dir), command_path(&dir.join(".")));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let base = std::env::temp_dir().join(format!("wb-viewer-priv-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&base);
+            std::fs::create_dir_all(&base).unwrap();
+            // Made private; made private again.
+            let folder = base.join("wanderbooks");
+            private_folder(&folder).unwrap();
+            let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&folder), 0o700);
+            std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
+            private_folder(&folder).unwrap();
+            assert_eq!(mode(&folder), 0o700);
+            // A link planted in its place is refused.
+            let link = base.join("planted");
+            std::os::unix::fs::symlink(&base, &link).unwrap();
+            assert!(private_folder(&link).is_err());
+            let _ = std::fs::remove_dir_all(&base);
+        }
         assert_ne!(command_path(&dir), command_path(&std::env::temp_dir()));
         let _ = std::fs::remove_file(command_path(&dir));
     }

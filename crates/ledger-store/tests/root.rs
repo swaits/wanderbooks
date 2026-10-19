@@ -316,6 +316,8 @@ fn adopted_books_are_the_same_books_and_the_source_is_untouched() {
                 settings: None,
                 vault_dir: Some(vault.clone()),
                 vault_key: Some(key.clone()),
+                // As a preview read it: the same head, so it goes ahead.
+                expect_head: Some(source_head.clone()),
             },
         )
         .unwrap();
@@ -724,8 +726,16 @@ fn adoption_leaves_a_read_only_source_as_it_was() {
     drop(source_books(old.path(), true));
     let before = snapshot_files(old.path());
     chmod_tree(old.path(), 0o500, 0o400);
+    // Writable again however the test ends, so its folder can go.
+    struct Writable<'a>(&'a Path);
+    impl Drop for Writable<'_> {
+        fn drop(&mut self) {
+            chmod_tree(self.0, 0o700, 0o600);
+        }
+    }
+    let writable = Writable(old.path());
     let report = root.adopt(old.path(), &id("acme"), &AdoptOptions::default());
-    chmod_tree(old.path(), 0o700, 0o600);
+    drop(writable);
     let report = report.unwrap();
     assert!(!report.source_lock_created);
     assert_eq!(snapshot_files(old.path()), before, "the lock file included");
@@ -1098,4 +1108,179 @@ fn errors_other_than_not_found_are_never_taken_for_it() {
     ));
     std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o600)).unwrap();
     assert!(root.list_books().unwrap().is_empty());
+}
+
+#[test]
+fn an_adoption_preview_reads_the_source_and_writes_nothing() {
+    let home = tmp("preview");
+    let (root, _) = Root::setup(home.path(), None, None).unwrap();
+    let old = tmp("preview-src");
+    let s = source_books(old.path(), false);
+    let head = s.head();
+    drop(s);
+    // No lock file beside the journal: the preview must not make one.
+    let _ = std::fs::remove_file(old.path().join("wanderbooks.lock"));
+    let before = snapshot_files(old.path());
+    let found = root.adopt_preview(old.path()).unwrap();
+    assert_eq!(found.head, head);
+    assert_eq!(found.currency, Currency::USD);
+    assert!(!found.keeps_settings);
+    assert_eq!(
+        snapshot_files(old.path()),
+        before,
+        "the preview wrote to the source"
+    );
+    assert!(root.list_books().unwrap().is_empty());
+    // Books that keep their own settings say so.
+    let kept = tmp("preview-kept");
+    drop(source_books(kept.path(), true));
+    assert!(root.adopt_preview(kept.path()).unwrap().keeps_settings);
+    // The preview refuses what adoption refuses, naming no root.
+    let book = root
+        .create_book(&BookId::parse("acme").unwrap(), Currency::USD)
+        .unwrap();
+    drop(book);
+    let root_text = root.path().display().to_string();
+    for bad in [
+        root.book_dir(&BookId::parse("acme").unwrap()),
+        root.path().to_path_buf(),
+        home.path().join("missing"),
+        home.path().to_path_buf(),
+    ] {
+        let e = root.adopt_preview(&bad).unwrap_err();
+        assert!(matches!(e, RootError::Adopt(_)), "{bad:?}: {e:?}");
+        assert!(!e.to_string().contains(&root_text), "{e}");
+    }
+    // A cut-off last line is refused, as adoption refuses it.
+    let cut = tmp("preview-cut");
+    drop(source_books(cut.path(), false));
+    let journal = cut.path().join(JOURNAL_FILE);
+    let mut raw = std::fs::read(&journal).unwrap();
+    raw.pop();
+    std::fs::write(&journal, raw).unwrap();
+    assert!(
+        matches!(root.adopt_preview(cut.path()), Err(RootError::Adopt(why)) if why.contains("cut off"))
+    );
+}
+
+#[test]
+fn a_book_folder_is_made_private_and_a_shared_one_refused() {
+    let home = tmp("bookfolder");
+    let (root, _) = Root::setup(home.path(), None, None).unwrap();
+    drop(
+        root.create_book(&BookId::parse("acme").unwrap(), Currency::USD)
+            .unwrap(),
+    );
+    let book = root.book_dir(&BookId::parse("acme").unwrap());
+    let keys = ledger_store::root::private_book_folder(&book, "keys").unwrap();
+    assert_eq!(keys, book.join("keys"));
+    assert_eq!(mode(&keys), 0o700);
+    // Again: already there, fine.
+    assert_eq!(
+        ledger_store::root::private_book_folder(&book, "keys").unwrap(),
+        keys
+    );
+    // Ours, but others could enter it: made private again.
+    std::fs::set_permissions(&keys, std::fs::Permissions::from_mode(0o755)).unwrap();
+    ledger_store::root::private_book_folder(&book, "keys").unwrap();
+    assert_eq!(mode(&keys), 0o700);
+    std::os::unix::fs::symlink(home.path(), book.join("vault")).unwrap();
+    assert!(ledger_store::root::private_book_folder(&book, "vault").is_err());
+}
+
+#[test]
+fn the_run_folder_is_private() {
+    let home = tmp("run");
+    let (root, _) = Root::setup(home.path(), None, None).unwrap();
+    let run = root.run_dir().unwrap();
+    assert_eq!(run, root.path().join("run"));
+    assert_eq!(mode(&run), 0o700);
+    std::fs::remove_dir(&run).unwrap();
+    assert_eq!(mode(&root.run_dir().unwrap()), 0o700, "remade private");
+    std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(matches!(root.run_dir(), Err(RootError::Unsafe(_))));
+}
+
+#[test]
+fn inside_a_root_is_known_by_its_marker() {
+    let home = tmp("inside");
+    let (root, _) = Root::setup(home.path(), None, None).unwrap();
+    use ledger_store::root::inside_a_root;
+    assert!(inside_a_root(root.path()));
+    assert!(inside_a_root(&root.path().join("books/acme")));
+    assert!(inside_a_root(&root.path().join("books/not/yet/made")));
+    assert!(!inside_a_root(home.path()));
+    // A path relative to where the process runs is taken from there.
+    let here = std::env::current_dir().unwrap();
+    let up = "../".repeat(here.components().count() - 1);
+    let relative = PathBuf::from(format!(
+        "{up}{}",
+        root.path()
+            .join("books/acme")
+            .display()
+            .to_string()
+            .trim_start_matches('/')
+    ));
+    assert!(relative.is_relative());
+    assert!(inside_a_root(&relative));
+    let outside = PathBuf::from(format!(
+        "{up}{}",
+        home.path().display().to_string().trim_start_matches('/')
+    ));
+    assert!(!inside_a_root(&outside));
+    assert!(!inside_a_root(&home.path().join("elsewhere")));
+    // Through a link, too: it is where the path leads that counts.
+    let link = home.path().join("link");
+    std::os::unix::fs::symlink(root.path().join("books"), &link).unwrap();
+    assert!(inside_a_root(&link));
+    assert!(!root.path().join(MARKER_FILE).is_dir());
+}
+
+#[test]
+fn books_that_changed_since_the_preview_are_not_adopted() {
+    let home = tmp("expect");
+    let (root, _) = Root::setup(home.path(), None, None).unwrap();
+    let old = tmp("expect-src");
+    drop(source_books(old.path(), true));
+    let previewed = root.adopt_preview(old.path()).unwrap().head;
+    // The old server writes one more event after the preview.
+    let mut s = Store::open(old.path()).unwrap();
+    s.add_account("6100", "Rent", AccountType::Expense, None, false)
+        .unwrap();
+    let now = s.head();
+    // While it holds them, a preview is refused as adoption would be.
+    assert!(matches!(
+        root.adopt_preview(old.path()),
+        Err(RootError::Store(_, StoreError::Locked(_)))
+    ));
+    drop(s);
+    let before = snapshot_files(old.path());
+    let e = root
+        .adopt(
+            old.path(),
+            &id("acme"),
+            &AdoptOptions {
+                expect_head: Some(previewed),
+                ..AdoptOptions::default()
+            },
+        )
+        .unwrap_err();
+    assert!(
+        matches!(&e, RootError::Adopt(why) if why.contains("changed since the preview")),
+        "{e:?}"
+    );
+    assert!(root.list_books().unwrap().is_empty());
+    assert_eq!(snapshot_files(old.path()), before);
+    // Previewed again, it goes ahead.
+    let report = root
+        .adopt(
+            old.path(),
+            &id("acme"),
+            &AdoptOptions {
+                expect_head: Some(now.clone()),
+                ..AdoptOptions::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(report.source_head, now);
 }

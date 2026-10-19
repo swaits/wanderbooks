@@ -1166,7 +1166,9 @@ impl BooksServer {
     async fn export_settings(&self) -> Result<Json<ExportSettingsOut>, String> {
         let store = self.lock()?;
         let s = store.ledger().settings();
-        if !s.is_journaled() {
+        // Books in the data root read no file: theirs are the defaults
+        // until the first is set.
+        if !s.is_journaled() && !self.live().status().journaled {
             return Err(
                 "these books still read their settings file, which is the copy: move it in with books.import_settings first"
                     .into(),

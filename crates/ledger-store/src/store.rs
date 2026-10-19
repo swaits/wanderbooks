@@ -6235,7 +6235,7 @@ fn row_to_attachment(r: &rusqlite::Row) -> rusqlite::Result<Attachment> {
 
 /// The base currency of a journal: its first line's, which must be a
 /// sound `store.created` ([`created_currency`]).
-fn journal_currency(lines: &[JournalLine]) -> Result<Currency, StoreError> {
+pub(crate) fn journal_currency(lines: &[JournalLine]) -> Result<Currency, StoreError> {
     let first = lines
         .first()
         .ok_or_else(|| StoreError::JournalCorrupt("journal has no store.created line".into()))?;

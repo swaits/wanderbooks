@@ -1,0 +1,1941 @@
+//! The books open while something holds them (plan 3.9, D-21, D-23): the
+//! host, its leases, the helper, the agents' bridge, and `serve`, `close`
+//! and `books`. Oracles: the INVARIANTS of ledger-host's host.rs,
+//! opener.rs, start.rs, bridge.rs and lease.rs, and the P2 tests the plan
+//! names, each covered here under a name of its own (books_close_with_last_holder, openers_share_one_server,
+//! bridge_opens_closed_books, bridge_survives_server_restart,
+//! close_now_ends_every_lease, host_starts_clean, host_respawns,
+//! respawn_backs_off, lease_socket_accepts_only_owner_intents,
+//! restart_is_not_close, children_match_host_version,
+//! bridge_initializes_during_cold_start, no_local_agent_tcp).
+#![cfg(target_os = "linux")]
+
+use serde_json::{Value, json};
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
+/// Short timings for tests (the defaults are the plan's).
+const KNOBS: &str = "close_after=2500,backoff=50,exe_poll=100,init_wait=5000,queue_wait=30000";
+
+/// A home with a data root, and the program the tests run (possibly a
+/// copy, for restarts).
+struct Home {
+    dir: tempfile::TempDir,
+    exe: PathBuf,
+}
+
+impl Home {
+    fn new(tag: &str) -> Self {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("wb-held-{tag}-"))
+            .tempdir()
+            .unwrap();
+        let out = Command::new(env!("CARGO_BIN_EXE_wanderbooks"))
+            .args(["setup", "--home"])
+            .arg(dir.path())
+            .env_remove("XDG_DATA_HOME")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        Self {
+            dir,
+            exe: PathBuf::from(env!("CARGO_BIN_EXE_wanderbooks")),
+        }
+    }
+
+    /// Run the program from a copy in the home, so a test can replace it.
+    fn with_copy(mut self) -> Self {
+        let bin = self.dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let copy = bin.join("wanderbooks");
+        std::fs::copy(env!("CARGO_BIN_EXE_wanderbooks"), &copy).unwrap();
+        self.exe = copy;
+        self
+    }
+
+    /// Replace the program with a new file (as a package upgrade does).
+    fn replace_program(&self) {
+        let next = self.exe.with_extension("new");
+        std::fs::copy(env!("CARGO_BIN_EXE_wanderbooks"), &next).unwrap();
+        std::fs::rename(&next, &self.exe).unwrap();
+    }
+
+    fn root(&self) -> PathBuf {
+        self.dir.path().join(".local/share/wanderbooks")
+    }
+
+    fn run_dir(&self) -> PathBuf {
+        self.root().join("run")
+    }
+
+    /// The program, with the root, the test knobs, and the test home's
+    /// environment alone.
+    fn cmd(&self, mode: &str) -> Command {
+        let mut c = Command::new(&self.exe);
+        c.arg(mode)
+            .arg("--root")
+            .arg(self.root())
+            .args(["--test-knobs", KNOBS])
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", self.dir.path());
+        c
+    }
+
+    fn books(&self, args: &[&str]) -> std::process::Output {
+        let mut c = self.cmd("books");
+        c.args(args).stdin(Stdio::null());
+        c.output().unwrap()
+    }
+
+    fn create(&self, id: &str) {
+        let out = self.books(&["create", id]);
+        assert!(out.status.success(), "{out:?}");
+    }
+
+    /// The pids running `mode` for this root.
+    fn pids(&self, mode: &str) -> Vec<u32> {
+        let root = self.root().display().to_string();
+        let mut out = Vec::new();
+        for entry in std::fs::read_dir("/proc").unwrap().flatten() {
+            let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+                continue;
+            };
+            let Ok(raw) = std::fs::read(entry.path().join("cmdline")) else {
+                continue;
+            };
+            let args: Vec<String> = raw
+                .split(|b| *b == 0)
+                .map(|a| String::from_utf8_lossy(a).into_owned())
+                .collect();
+            if args.get(1).map(String::as_str) == Some(mode) && args.contains(&root) {
+                // A zombie has an empty cmdline; this one is running.
+                out.push(pid);
+            }
+        }
+        out
+    }
+
+    /// The host. Across a restart the old one hands over to the new for a
+    /// moment; any longer, two hosts is a failure.
+    fn host(&self) -> Option<u32> {
+        wait_for(5, || self.pids("host").len() <= 1);
+        let pids = self.pids("host");
+        assert!(pids.len() <= 1, "more than one host: {pids:?}");
+        pids.first().copied()
+    }
+
+    /// Wait until there is no host (the books closed), at most `secs`.
+    fn wait_closed(&self, secs: u64) -> bool {
+        wait_for(secs, || {
+            self.host().is_none() && self.pids("server").is_empty()
+        })
+    }
+
+    /// One line to the lease socket, the answer.
+    fn lease_line(&self, line: &str) -> String {
+        use std::io::Read;
+        let short = ledger_store::root::SocketPath::new(&self.run_dir(), "lease.sock").unwrap();
+        let mut s = std::os::unix::net::UnixStream::connect(short.path()).unwrap();
+        s.write_all(line.as_bytes()).unwrap();
+        s.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut out = String::new();
+        s.read_to_string(&mut out).unwrap();
+        out
+    }
+}
+
+impl Drop for Home {
+    fn drop(&mut self) {
+        // Leave nothing running: close the books, then make sure.
+        let _ = self
+            .cmd("close")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        // Holders first (one dying could start a host), then the rest,
+        // again until nothing of this root is left.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let mut found = false;
+            for mode in ["serve", "mcp", "helper", "host", "server"] {
+                for pid in self.pids(mode) {
+                    found = true;
+                    // SAFETY: a process of this test's own root.
+                    unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+                }
+            }
+            if !found || Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+}
+
+fn wait_for(secs: u64, mut done: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    while Instant::now() < deadline {
+        if done() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    done()
+}
+
+/// A child whose stdout lines arrive on a channel.
+struct Running {
+    child: Child,
+    lines: mpsc::Receiver<String>,
+}
+
+impl Running {
+    fn start(mut c: Command) -> Self {
+        let mut child = c
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let (tx, lines) = mpsc::channel();
+        let out = child.stdout.take().unwrap();
+        std::thread::spawn(move || {
+            for line in BufReader::new(out).lines() {
+                let Ok(line) = line else { break };
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        Self { child, lines }
+    }
+
+    /// Wait for a line containing `text`.
+    fn expect(&self, text: &str, secs: u64) -> String {
+        let deadline = Instant::now() + Duration::from_secs(secs);
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.lines.recv_timeout(left) {
+                Ok(line) if line.contains(text) => return line,
+                Ok(_) => {}
+                Err(_) => panic!("no line with {text:?} in {secs} s"),
+            }
+        }
+    }
+
+    fn wait(&mut self, secs: u64) -> Option<std::process::ExitStatus> {
+        let deadline = Instant::now() + Duration::from_secs(secs);
+        while Instant::now() < deadline {
+            if let Some(s) = self.child.try_wait().unwrap() {
+                return Some(s);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        None
+    }
+
+    fn signal(&self, sig: i32) {
+        // SAFETY: our own child.
+        unsafe { libc::kill(self.child.id() as i32, sig) };
+    }
+
+    fn stderr(&mut self) -> String {
+        use std::io::Read;
+        let mut s = String::new();
+        if let Some(mut e) = self.child.stderr.take() {
+            let _ = e.read_to_string(&mut s);
+        }
+        s
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// An agent: the bridge over stdio, spoken to as an MCP client.
+struct Agent {
+    run: Running,
+    next: u64,
+    /// Notifications received.
+    notes: Vec<Value>,
+}
+
+impl Agent {
+    fn start(home: &Home, book: &str) -> Self {
+        let mut c = home.cmd("mcp");
+        c.args(["--book", book]);
+        Self::from(c)
+    }
+
+    fn from(c: Command) -> Self {
+        Self {
+            run: Running::start(c),
+            next: 1,
+            notes: Vec::new(),
+        }
+    }
+
+    fn send(&mut self, message: Value) {
+        let stdin = self.run.child.stdin.as_mut().unwrap();
+        writeln!(stdin, "{message}").unwrap();
+        stdin.flush().unwrap();
+    }
+
+    /// Send a request and wait for its answer.
+    fn request(&mut self, method: &str, params: Value, secs: u64) -> Value {
+        let id = self.next;
+        self.next += 1;
+        self.send(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}));
+        let deadline = Instant::now() + Duration::from_secs(secs);
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let line = self
+                .run
+                .lines
+                .recv_timeout(left)
+                .unwrap_or_else(|_| panic!("no answer to {method} in {secs} s"));
+            let v: Value = serde_json::from_str(&line).unwrap();
+            if v.get("id") == Some(&json!(id)) {
+                return v;
+            }
+            self.notes.push(v);
+        }
+    }
+
+    fn initialize(&mut self) -> Value {
+        let r = self.request(
+            "initialize",
+            json!({"protocolVersion": "2025-06-18", "capabilities": {},
+                   "clientInfo": {"name": "test", "version": "0"}}),
+            20,
+        );
+        self.send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
+        r
+    }
+
+    /// Call a tool: Ok(its structured result) or Err(the error's text).
+    fn call(&mut self, tool: &str, args: Value) -> Result<Value, String> {
+        let r = self.request("tools/call", json!({"name": tool, "arguments": args}), 60);
+        if let Some(e) = r.get("error") {
+            return Err(e["message"].as_str().unwrap_or_default().to_string());
+        }
+        let result = &r["result"];
+        if result["isError"] == true {
+            return Err(result["content"][0]["text"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string());
+        }
+        Ok(result["structuredContent"].clone())
+    }
+
+    /// End the session as an agent does: close stdin.
+    fn end(mut self) -> Option<std::process::ExitStatus> {
+        drop(self.run.child.stdin.take());
+        self.run.wait(30)
+    }
+}
+
+fn chart(a: &mut Agent) {
+    for (code, name, ty) in [
+        ("1000", "Cash", "asset"),
+        ("3000", "Capital", "equity"),
+        ("6000", "Supplies", "expense"),
+    ] {
+        a.call(
+            "books.add_account",
+            json!({"code": code, "name": name, "account_type": ty}),
+        )
+        .unwrap();
+    }
+}
+
+fn post_one(a: &mut Agent, n: u64) -> Result<u64, String> {
+    let e = a.call(
+        "books.draft_entry",
+        json!({"date": "2026-03-01", "description": format!("entry {n}")}),
+    )?;
+    let id = e["entry_id"].as_u64().unwrap();
+    for (account, side) in [("6000", "debit"), ("1000", "credit")] {
+        a.call(
+            "books.add_line",
+            json!({"entry_id": id, "account": account, "side": side, "amount": "1.00"}),
+        )?;
+    }
+    a.call(
+        "books.attach_receipt",
+        json!({"entry_id": id, "file_name": format!("r{n}.txt"),
+               "mime_type": "text/plain", "content_base64": "cmVjZWlwdA=="}),
+    )?;
+    a.call(
+        "books.post_entry",
+        json!({"entry_id": id, "confirmed": true, "no_party_reason": "test"}),
+    )?;
+    Ok(id)
+}
+
+fn serve(home: &Home) -> Running {
+    let r = Running::start(home.cmd("serve"));
+    // The first time, it says how to let go.
+    r.expect("The books are open. Press Ctrl-C", 30);
+    r
+}
+
+#[test]
+fn a_command_opens_the_books_and_they_close_after_the_last_holder() {
+    let home = Home::new("last");
+    assert!(home.host().is_none());
+    home.create("acme");
+    // The command let go; the books stay open for the close delay, then
+    // close.
+    assert!(home.host().is_some(), "closed at once");
+    assert!(home.wait_closed(10), "never closed");
+    for sock in ["lease.sock", "mcp.sock", "admin.sock"] {
+        assert!(!home.run_dir().join(sock).exists(), "{sock} left behind");
+    }
+    // A lease arriving within the delay cancels the close.
+    home.create("beta");
+    std::thread::sleep(Duration::from_millis(200));
+    let host = home.host().unwrap();
+    home.create("gamma");
+    std::thread::sleep(Duration::from_millis(1000));
+    assert_eq!(
+        home.host(),
+        Some(host),
+        "closed though a lease came in time"
+    );
+    assert!(home.wait_closed(10));
+    // An agent session killed outright: closed after the delay, too.
+    let mut a = Agent::start(&home, "acme");
+    a.initialize();
+    a.call("books.start", json!({})).unwrap();
+    a.run.child.kill().unwrap();
+    a.run.child.wait().unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(home.host().is_some(), "closed before the delay");
+    assert!(home.wait_closed(10), "never closed after the bridge died");
+    // A holder that is killed: closed after the delay, not before.
+    let mut held = serve(&home);
+    let leases = home.lease_line("{\"proto\":1,\"leases\":null}\n");
+    assert!(leases.contains("\"serve\""), "{leases}");
+    assert!(leases.contains(&held.child.id().to_string()), "{leases}");
+    held.child.kill().unwrap();
+    held.child.wait().unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(home.host().is_some(), "closed before the delay");
+    assert!(home.wait_closed(10), "never closed after the holder died");
+    // Ctrl-C at the terminal: serve lets go, and the books close.
+    let mut held = serve(&home);
+    held.signal(libc::SIGINT);
+    assert!(held.wait(10).is_some_and(|s| s.success()));
+    assert!(home.wait_closed(10));
+    // The books verify after every close.
+    let mut store = ledger_store::Store::open(&home.root().join("books/acme")).unwrap();
+    store.verify_and_heal().unwrap();
+}
+
+#[test]
+fn openers_share_one_host_and_one_server() {
+    let home = Home::new("share");
+    home.create("acme");
+    assert!(home.wait_closed(10));
+    // All at once, from closed.
+    let mut holders = vec![
+        Running::start(home.cmd("serve")),
+        Running::start({
+            let mut c = home.cmd("mcp");
+            c.args(["--book", "acme"]);
+            c
+        }),
+        Running::start({
+            let mut c = home.cmd("mcp");
+            c.args(["--book", "acme"]);
+            c
+        }),
+    ];
+    let list = std::thread::spawn({
+        let mut c = home.cmd("books");
+        c.arg("list").stdin(Stdio::null());
+        move || c.output().unwrap()
+    });
+    holders[0].expect("The books are open", 30);
+    let out = list.join().unwrap();
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("acme  open"),
+        "{out:?}"
+    );
+    assert!(wait_for(10, || home.pids("host").len() == 1));
+    assert_eq!(home.pids("host").len(), 1, "one host");
+    assert_eq!(home.pids("server").len(), 1, "one server");
+    // Both bridges hold (each takes its lease as it starts).
+    assert!(
+        wait_for(30, || home
+            .lease_line("{\"proto\":1,\"leases\":null}\n")
+            .matches("\"bridge\"")
+            .count()
+            == 2),
+        "the bridges' leases"
+    );
+    holders.clear();
+    assert!(home.wait_closed(15));
+}
+
+#[test]
+fn the_bridge_opens_closed_books_and_holds_them_for_the_session() {
+    let home = Home::new("bridge");
+    home.create("acme");
+    assert!(home.wait_closed(10));
+    let mut a = Agent::start(&home, "acme");
+    let init = a.initialize();
+    // Ready in time: the server's own answer, its connect text.
+    let result = &init["result"];
+    assert_eq!(result["serverInfo"]["name"], "wanderbooks");
+    assert_eq!(result["capabilities"]["tools"]["listChanged"], true);
+    let text = result["instructions"].as_str().unwrap();
+    assert!(
+        !text.contains("opening now"),
+        "the bridge's stand-in: {text}"
+    );
+    assert!(!text.contains(&home.root().display().to_string()));
+    chart(&mut a);
+    post_one(&mut a, 1).unwrap();
+    let tools = a.request("tools/list", json!({}), 20);
+    assert!(tools["result"]["tools"].as_array().unwrap().len() > 10);
+    // A tool error and a protocol error come through as they are.
+    assert!(a.call("books.get_entry", json!({"entry_id": 999})).is_err());
+    let unknown = a.request("no/such/method", json!({}), 20);
+    assert!(unknown.get("error").is_some(), "{unknown}");
+    // Held while the session lasts, even past the close delay.
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(home.host().is_some());
+    // The bridge never uses TCP (no_local_agent_tcp), and TCP is off.
+    let bridge = a.run.child.id();
+    let server = home.pids("server")[0];
+    for pid in [bridge, server] {
+        assert!(tcp_sockets(pid).is_empty(), "pid {pid} has TCP sockets");
+    }
+    assert!(a.end().is_some_and(|s| s.success()));
+    assert!(home.wait_closed(10));
+    // Unknown books: a plain error, no folder named.
+    let mut a = Agent::start(&home, "nobody");
+    a.initialize();
+    let err = a.call("books.start", json!({})).unwrap_err();
+    assert!(err.contains("no books called"), "{err}");
+    assert!(!err.contains(&home.root().display().to_string()));
+}
+
+/// The TCP sockets a process holds (by inode, against /proc/net/tcp*).
+fn tcp_sockets(pid: u32) -> Vec<String> {
+    let mut tcp = String::new();
+    for f in ["/proc/net/tcp", "/proc/net/tcp6"] {
+        tcp.push_str(&std::fs::read_to_string(f).unwrap_or_default());
+    }
+    let inodes: Vec<&str> = tcp
+        .lines()
+        .skip(1)
+        .filter_map(|l| l.split_whitespace().nth(9))
+        .collect();
+    let mut found = Vec::new();
+    if let Ok(fds) = std::fs::read_dir(format!("/proc/{pid}/fd")) {
+        for fd in fds.flatten() {
+            if let Ok(target) = std::fs::read_link(fd.path()) {
+                let t = target.to_string_lossy().into_owned();
+                if let Some(inode) = t.strip_prefix("socket:[").and_then(|r| r.strip_suffix(']'))
+                    && inodes.contains(&inode)
+                {
+                    found.push(t);
+                }
+            }
+        }
+    }
+    found
+}
+
+#[test]
+fn the_bridge_answers_initialize_itself_during_a_slow_start() {
+    let home = Home::new("cold");
+    home.create("acme");
+    assert!(home.wait_closed(10));
+    let mut c = home.cmd("mcp");
+    c.args([
+        "--book",
+        "acme",
+        "--test-knobs",
+        "close_after=1500,backoff=50,server_delay=3000,init_wait=300,queue_wait=30000",
+    ]);
+    let mut a = Agent::from(c);
+    let started = Instant::now();
+    let init = a.initialize();
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    let text = init["result"]["instructions"].as_str().unwrap();
+    assert!(text.contains("books.start"), "{text}");
+    assert!(text.contains("opening now"), "{text}");
+    assert_eq!(init["result"]["protocolVersion"], "2025-06-18");
+    // The first call waits for the books, then runs.
+    // A ping is answered at once, not after the books open.
+    let asked = Instant::now();
+    let pong = a.request("ping", json!({}), 10);
+    assert!(pong.get("result").is_some(), "{pong}");
+    assert!(
+        asked.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        asked.elapsed()
+    );
+    // A call cancelled while it waits for the books is never made.
+    let id = a.next;
+    a.next += 1;
+    a.send(
+        json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {
+        "name": "books.add_account",
+        "arguments": {"code": "1000", "name": "Cash", "account_type": "asset"}}}),
+    );
+    std::thread::sleep(Duration::from_millis(200));
+    a.send(
+        json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
+        "params": {"requestId": id, "reason": "changed my mind"}}),
+    );
+    // A batch is refused, each request in it answered.
+    a.send(json!([
+        {"jsonrpc": "2.0", "id": "b1", "method": "ping"},
+        {"jsonrpc": "2.0", "method": "notifications/progress", "params": {}},
+    ]));
+    let line = a.run.lines.recv_timeout(Duration::from_secs(10)).unwrap();
+    let batch: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(batch[0]["id"], "b1", "{batch}");
+    assert_eq!(batch[0]["error"]["code"], -32600);
+    // The first call waits for the books, then runs.
+    let start = a.call("books.start", json!({})).unwrap();
+    assert!(start.is_object());
+    assert!(started.elapsed() >= Duration::from_secs(3));
+    let chart = a.call("books.chart", json!({})).unwrap();
+    assert_eq!(chart["accounts"], json!([]), "the cancelled call was made");
+    assert!(
+        !a.notes.iter().any(|n| n.get("id") == Some(&json!(id))),
+        "the cancelled call was answered: {:?}",
+        a.notes
+    );
+}
+
+#[test]
+fn the_bridge_gives_up_on_books_that_never_open() {
+    let home = Home::new("never");
+    home.create("acme");
+    assert!(home.wait_closed(10));
+    let mut c = home.cmd("mcp");
+    c.args([
+        "--book",
+        "acme",
+        "--test-knobs",
+        "close_after=800,backoff=50,server_delay=20000,init_wait=200,queue_wait=1000",
+    ]);
+    let mut a = Agent::from(c);
+    a.initialize();
+    let err = a.call("books.start", json!({})).unwrap_err();
+    assert!(err.contains("wanderbooks doctor"), "{err}");
+    // A ping is answered even so.
+    let pong = a.request("ping", json!({}), 10);
+    assert!(pong.get("result").is_some(), "{pong}");
+}
+
+#[test]
+fn closing_the_books_ends_every_lease_and_the_bridge_stays_closed() {
+    let home = Home::new("closenow");
+    home.create("acme");
+    let mut held = serve(&home);
+    let mut a = Agent::start(&home, "acme");
+    a.initialize();
+    a.call("books.start", json!({})).unwrap();
+    let out = home.cmd("close").output().unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("The books are closed."),
+        "{out:?}"
+    );
+    held.expect("The books were closed", 10);
+    assert!(held.wait(10).is_some_and(|s| s.success()));
+    assert!(home.wait_closed(10));
+    // The agent's session carries on, told the owner closed them; it
+    // never opens them again.
+    let err = a.call("books.start", json!({})).unwrap_err();
+    assert!(err.contains("owner closed the books"), "{err}");
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(home.host().is_none(), "the bridge reopened the books");
+    // Closing closed books says so.
+    let out = home.cmd("close").output().unwrap();
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("already closed"),
+        "{out:?}"
+    );
+}
+
+/// The host half of books_close_cleanly: the owner closes the books, or
+/// the host is signalled, during a burst of posts through a bridge.
+#[test]
+fn closing_during_a_burst_of_posts_through_the_bridge_loses_nothing() {
+    for how in ["close", "term", "hup"] {
+        let home = Home::new(&format!("burst-{how}"));
+        home.create("acme");
+        let mut a = Agent::start(&home, "acme");
+        a.initialize();
+        chart(&mut a);
+        let poster = std::thread::spawn(move || {
+            let mut posted = Vec::new();
+            let mut why = String::new();
+            for k in 0.. {
+                match post_one(&mut a, k) {
+                    Ok(id) => posted.push(id),
+                    Err(e) => {
+                        why = e;
+                        break;
+                    }
+                }
+            }
+            (posted, why)
+        });
+        std::thread::sleep(Duration::from_millis(1500));
+        match how {
+            "close" => assert!(home.cmd("close").output().unwrap().status.success()),
+            _ => {
+                let host = home.host().unwrap() as i32;
+                let sig = if how == "term" {
+                    libc::SIGTERM
+                } else {
+                    libc::SIGHUP
+                };
+                // SAFETY: this test's own host.
+                unsafe { libc::kill(host, sig) };
+            }
+        }
+        let (mut posted, why) = poster.join().unwrap();
+        assert!(!posted.is_empty(), "{how}: nothing posted");
+        // Told the owner closed them: never "closing, not run", which the
+        // bridge sends again, and never "may have run".
+        assert!(why.contains("closed the books"), "{how}: stopped by {why}");
+        assert!(
+            !why.contains("may or may not"),
+            "{how}: a call was cut off: {why}"
+        );
+        assert!(home.wait_closed(15), "{how}");
+        let mut store = ledger_store::Store::open(&home.root().join("books/acme")).unwrap();
+        store.verify_and_heal().unwrap();
+        let mut in_books: Vec<u64> = store.ledger().posted_entries().map(|e| e.id()).collect();
+        in_books.sort_unstable();
+        posted.sort_unstable();
+        assert_eq!(
+            in_books, posted,
+            "{how}: a post lost, or made without its answer"
+        );
+    }
+}
+
+#[test]
+fn the_host_starts_clean_from_a_hostile_bridge() {
+    let home = Home::new("clean");
+    home.create("acme");
+    assert!(home.wait_closed(10));
+    // A pipe the bridge inherits; the host must not.
+    let (read_end, write_end) = std::io::pipe().unwrap();
+    use std::os::fd::AsRawFd;
+    let leaked = write_end.as_raw_fd();
+    let mut c = home.cmd("mcp");
+    c.args(["--book", "acme"])
+        .env("XDG_DATA_HOME", "/tmp/wb-evil-data")
+        .env("LD_PRELOAD", "/nonexistent/wb-evil.so")
+        .env("WB_EVIL", "1")
+        .env("XDG_RUNTIME_DIR", "/tmp")
+        .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/tmp/evil-bus");
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: dup2 into the child before exec, keeping the pipe open
+        // across it (no close-on-exec) as descriptor 9.
+        unsafe {
+            c.pre_exec(move || {
+                if libc::dup2(leaked, 9) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    let mut a = Agent::from(c);
+    a.initialize();
+    a.call("books.start", json!({})).unwrap();
+    let host = home.host().expect("a host");
+    let environ = std::fs::read(format!("/proc/{host}/environ")).unwrap();
+    let vars: Vec<String> = environ
+        .split(|b| *b == 0)
+        .filter(|v| !v.is_empty())
+        .map(|v| String::from_utf8_lossy(v).into_owned())
+        .collect();
+    for v in &vars {
+        let name = v.split('=').next().unwrap();
+        assert!(
+            [
+                "PATH",
+                "HOME",
+                "XDG_RUNTIME_DIR",
+                "DBUS_SESSION_BUS_ADDRESS",
+                // Set by systemd itself for the host's scope, not passed on.
+                "INVOCATION_ID",
+                "SYSTEMD_EXEC_PID",
+            ]
+            .contains(&name),
+            "the host inherited {v}"
+        );
+    }
+    assert!(!vars.iter().any(|v| v.contains("evil")), "{vars:?}");
+    let home_var = vars.iter().find(|v| v.starts_with("HOME=")).unwrap();
+    assert_eq!(
+        home_var,
+        &format!(
+            "HOME={}",
+            ledger_store::root::account_home().unwrap().display()
+        ),
+        "HOME from the account's record"
+    );
+    // No inherited descriptor: nothing points at the pipe.
+    let pipe = std::fs::read_link(format!("/proc/self/fd/{}", read_end.as_raw_fd())).unwrap();
+    for fd in std::fs::read_dir(format!("/proc/{host}/fd"))
+        .unwrap()
+        .flatten()
+    {
+        let target = std::fs::read_link(fd.path()).unwrap_or_default();
+        assert_ne!(target, pipe, "the host holds the inherited pipe");
+    }
+    // Its own session, its own umask, and not confined.
+    let status = std::fs::read_to_string(format!("/proc/{host}/status")).unwrap();
+    assert!(status.contains("Umask:\t0077"), "{status}");
+    assert!(status.contains("Seccomp:\t0"));
+    let session = |pid: u32| {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+        let after = stat.rsplit_once(") ").unwrap().1.to_string();
+        after.split_whitespace().nth(3).unwrap().to_string()
+    };
+    assert_ne!(session(host), session(a.run.child.id()));
+    assert_eq!(
+        session(host),
+        host.to_string(),
+        "the host leads its session"
+    );
+    // The server is started from the host's own program, by /proc/self/exe.
+    let server = home.pids("server")[0];
+    assert_eq!(
+        std::fs::metadata(format!("/proc/{server}/exe"))
+            .unwrap()
+            .len(),
+        std::fs::metadata(format!("/proc/{host}/exe"))
+            .unwrap()
+            .len()
+    );
+    drop(write_end);
+}
+
+#[test]
+fn a_killed_host_is_replaced_by_its_holders() {
+    let home = Home::new("respawn");
+    home.create("acme");
+    let mut held = serve(&home);
+    let first = home.host().unwrap();
+    // SAFETY: this test's own host.
+    unsafe { libc::kill(first as i32, libc::SIGKILL) };
+    held.expect("opening the books again", 10);
+    held.expect("The books are open again", 30);
+    let second = home.host().unwrap();
+    assert_ne!(first, second);
+    let out = home.books(&["list"]);
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("acme  open"),
+        "{out:?}"
+    );
+    held.signal(libc::SIGTERM);
+    assert!(held.wait(10).is_some_and(|s| s.success()));
+    assert!(home.wait_closed(10));
+}
+
+#[test]
+fn holders_back_off_and_give_up_on_a_host_that_keeps_failing() {
+    let home = Home::new("backoff");
+    // The server can't bind its socket: every start fails.
+    std::fs::create_dir(home.run_dir().join("mcp.sock")).unwrap();
+    let started = Instant::now();
+    let mut held = Running::start(home.cmd("serve"));
+    let status = held.wait(60).expect("never gave up");
+    assert_eq!(status.code(), Some(1));
+    let err = held.stderr();
+    assert!(
+        err.contains("keeps failing") && err.contains("wanderbooks doctor"),
+        "{err}"
+    );
+    // 50 + 100 + 200 + 400 + 800 ms of waiting at least.
+    assert!(
+        started.elapsed() >= Duration::from_millis(1550),
+        "{:?}",
+        started.elapsed()
+    );
+    let log = std::fs::read_to_string(home.run_dir().join("host.log")).unwrap();
+    // One start and five tries; a busy machine may add a start (a host
+    // slow to take its lock counts as one that died), never fewer.
+    let starts = log.matches("the books server stopped").count();
+    assert!(starts >= 6, "one start and five tries: {log}");
+    std::fs::remove_dir(home.run_dir().join("mcp.sock")).unwrap();
+}
+
+#[test]
+fn the_lease_socket_takes_only_the_owners_intents() {
+    let home = Home::new("intents");
+    home.create("acme");
+    let _held = serve(&home);
+    for (line, want) in [
+        ("hello\n", "not understood"),
+        ("{\"proto\":1,\"intent\":\"delete\"}\n", "not understood"),
+        (
+            "{\"proto\":1,\"intent\":{\"restore\":{\"path\":\"/etc\"}}}\n",
+            "not understood",
+        ),
+        ("{\"proto\":1,\"exec\":\"sh\"}\n", "not understood"),
+        ("{\"proto\":9,\"leases\":null}\n", "another version"),
+        (
+            "{\"proto\":1,\"intent\":{\"consent_format_upgrade\":{\"book\":\"acme\"}}}\n",
+            "passphrase",
+        ),
+        (
+            "{\"proto\":1,\"intent\":{\"restore\":{\"staged\":\"s1\",\"replace\":\"acme\"}}}\n",
+            "passphrase",
+        ),
+        (
+            "{\"proto\":1,\"intent\":{\"back_up_now\":{\"book\":\"acme\"}}}\n",
+            "isn't built yet",
+        ),
+        (
+            "{\"proto\":1,\"intent\":{\"restore\":{\"staged\":\"s1\"}}}\n",
+            "isn't built yet",
+        ),
+        (
+            "{\"proto\":1,\"intent\":{\"new_books\":{\"id\":\"beta\",\"currency\":\"USD\"}}}\n",
+            "new books beta made",
+        ),
+        (
+            "{\"proto\":1,\"intent\":{\"new_books\":{\"id\":\"beta\",\"currency\":\"USD\"}}}\n",
+            "already books called",
+        ),
+    ] {
+        let answer = home.lease_line(line);
+        assert!(answer.contains(want), "{line:?}: {answer}");
+        assert!(
+            !answer.contains(&home.root().display().to_string()),
+            "{answer}"
+        );
+    }
+    let out = home.books(&["list"]);
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("beta  open"),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn a_restart_is_not_a_close() {
+    let home = Home::new("restart").with_copy();
+    home.create("acme");
+    let held = serve(&home);
+    let other = serve(&home);
+    let mut a = Agent::start(&home, "acme");
+    a.initialize();
+    chart(&mut a);
+    let tools_before = a.request("tools/list", json!({}), 20);
+    let host = home.host().unwrap();
+    let server = home.pids("server")[0];
+    // The server runs the host's program: the same file.
+    let exe = |pid: u32| std::fs::read_link(format!("/proc/{pid}/exe")).unwrap();
+    assert_eq!(exe(server), exe(host));
+    home.replace_program();
+    // Writes made all through the restart are each answered, and each
+    // answered one is in the books, once: those that meet the restart
+    // wait for the new server.
+    let deadline = Instant::now() + Duration::from_secs(40);
+    let (mut restarting, mut reopened, mut during) = (false, false, 0);
+    let mut written = Vec::new();
+    let mut k = 0u32;
+    while !reopened {
+        assert!(Instant::now() < deadline, "the restart never finished");
+        // Sent while the restart is known to be under way, or (a restart
+        // quicker than the lines that tell of it) sent before the books
+        // reopened and answered only after waiting for the new server.
+        let mid_restart = restarting && !reopened;
+        let code = format!("{}", 5000 + k);
+        k += 1;
+        let sent = Instant::now();
+        let r = a.call(
+            "books.add_account",
+            json!({"code": code, "name": format!("R{code}"), "account_type": "expense"}),
+        );
+        assert!(r.is_ok(), "a write across the restart: {r:?}");
+        written.push(code);
+        if mid_restart || sent.elapsed() > Duration::from_millis(300) {
+            during += 1;
+        }
+        while let Ok(line) = held.lines.try_recv() {
+            restarting |= line.contains("restarting");
+            reopened |= line.contains("open again");
+        }
+    }
+    assert!(
+        restarting && during > 0,
+        "no write was sent during the restart"
+    );
+    let chart = a.call("books.chart", json!({})).unwrap();
+    let mut in_books: Vec<String> = chart["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|acc| acc["code"].as_str().map(str::to_string))
+        .filter(|c| c.starts_with('5'))
+        .collect();
+    in_books.sort();
+    written.sort();
+    assert_eq!(
+        in_books, written,
+        "a write lost, or made twice, across the restart"
+    );
+    other.expect("The books are open again", 30);
+    // The holders waited for the new host: none started one of its own.
+    let log = std::fs::read_to_string(home.run_dir().join("host.log")).unwrap();
+    assert!(!log.contains("another host has these books open"), "{log}");
+    let new_host = home.host().unwrap();
+    assert_ne!(new_host, host);
+    let new_server = home.pids("server")[0];
+    assert_eq!(
+        exe(new_server),
+        exe(new_host),
+        "children match the host's version"
+    );
+    assert!(!exe(new_host).to_string_lossy().contains("(deleted)"));
+    // The agent carries on with no reconnect, and its tools didn't
+    // change, so it is told nothing.
+    post_one(&mut a, 7).unwrap();
+    let tools_after = a.request("tools/list", json!({}), 20);
+    assert_eq!(tools_before["result"], tools_after["result"]);
+    assert!(
+        !a.notes
+            .iter()
+            .any(|n| n["method"] == "notifications/tools/list_changed"),
+        "{:?}",
+        a.notes
+    );
+    assert!(a.call("books.get_entry", json!({"entry_id": 1})).is_ok());
+}
+
+#[test]
+fn books_commands_hold_the_books_while_they_run() {
+    let home = Home::new("cmds");
+    let out = home.books(&["list"]);
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("No books yet"),
+        "{out:?}"
+    );
+    home.create("acme");
+    let out = home.books(&["create", "acme"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("already books called"),
+        "{out:?}"
+    );
+    let out = home.books(&["create", "euro", "--currency", "EUR"]);
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("(EUR)"),
+        "{out:?}"
+    );
+    // Adopting: previewed, and not done without a yes.
+    let old = tempfile::Builder::new()
+        .prefix("wb-held-old-")
+        .tempdir()
+        .unwrap();
+    let data = old.path().join("books-data");
+    drop(ledger_store::Store::create(&data, ledger_core::Currency::USD).unwrap());
+    std::fs::write(
+        old.path().join("wanderbooks.toml"),
+        "[company]\nname = \"Old Co\"\n",
+    )
+    .unwrap();
+    let toml = old.path().join("wanderbooks.toml");
+    let args = |extra: &[&str]| {
+        let mut v = vec![
+            "adopt",
+            data.to_str().unwrap(),
+            "--id",
+            "old",
+            "--toml",
+            toml.to_str().unwrap(),
+        ];
+        v.extend_from_slice(extra);
+        v.into_iter().map(String::from).collect::<Vec<_>>()
+    };
+    let run = |a: Vec<String>| {
+        let a: Vec<&str> = a.iter().map(String::as_str).collect();
+        home.books(&a)
+    };
+    let out = run(args(&[]));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("company.name = \"Old Co\""), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("confirm at a terminal"),
+        "{out:?}"
+    );
+    assert_eq!(out.status.code(), Some(1));
+    // A vault beside the books must be named.
+    std::fs::create_dir(old.path().join("vault")).unwrap();
+    let out = run(args(&["--yes"]));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("--no-vault"),
+        "{out:?}"
+    );
+    let out = run(args(&["--yes", "--no-vault"]));
+    assert!(out.status.success(), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("Adopted as \"old\""),
+        "{out:?}"
+    );
+    let out = home.books(&["list"]);
+    let text = String::from_utf8_lossy(&out.stdout);
+    for id in ["acme", "euro", "old"] {
+        assert!(text.contains(&format!("{id}  open")), "{text}");
+    }
+    // Nothing printed names the books' private folder.
+    let root = home.root().display().to_string();
+    for o in [
+        &out,
+        &run(args(&["--yes", "--no-vault"])),
+        &home.books(&["create", "acme"]),
+    ] {
+        for text in [&o.stdout, &o.stderr] {
+            assert!(!String::from_utf8_lossy(text).contains(&root), "{o:?}");
+        }
+    }
+}
+
+/// Under a systemd app scope (as uwsm sets up), closing the app that
+/// started the host leaves the host for the other holders. Run only where
+/// a systemd user manager is there to make scopes.
+#[test]
+fn the_host_outlives_the_app_scope_that_started_it() {
+    let uid = unsafe { libc::geteuid() };
+    let cgroup = std::fs::read_to_string("/proc/self/cgroup").unwrap_or_default();
+    if !cgroup.contains(&format!("/user@{uid}.service/"))
+        || !Path::new("/usr/bin/systemd-run").exists()
+    {
+        eprintln!("skipped: no systemd user manager here");
+        return;
+    }
+    let home = Home::new("scope");
+    home.create("acme");
+    assert!(home.wait_closed(10));
+    let unit = format!("wb-test-{}", std::process::id());
+    // `serve` in its own app scope, as an app launched from a desktop.
+    let mut c = Command::new("/usr/bin/systemd-run");
+    c.args([
+        "--user",
+        "--scope",
+        "--quiet",
+        "--collect",
+        &format!("--unit={unit}.scope"),
+    ])
+    .arg(&home.exe)
+    .arg("serve")
+    .arg("--root")
+    .arg(home.root())
+    .args(["--test-knobs", KNOBS])
+    .env("HOME", home.dir.path());
+    let held = Running::start(c);
+    held.expect("The books are open", 30);
+    let host = home.host().unwrap();
+    // The app's scope stops: everything in it is killed.
+    let out = Command::new("systemctl")
+        .args(["--user", "stop", &format!("{unit}.scope")])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    std::thread::sleep(Duration::from_millis(300));
+    // The host wasn't in it: it lives on, then closes as nothing holds it.
+    let alive = std::fs::metadata(format!("/proc/{host}")).is_ok();
+    assert!(alive, "the host died with the app's scope");
+    assert!(home.wait_closed(10));
+}
+
+/// Plan 3.2: both protocol eras are served. A 2026-07-28 client has no
+/// initialize; each request carries its version and client in `_meta`.
+#[test]
+fn the_bridge_serves_a_client_without_initialize() {
+    let home = Home::new("stateless");
+    home.create("acme");
+    let mut a = Agent::start(&home, "acme");
+    let meta = json!({
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientCapabilities": {},
+        "io.modelcontextprotocol/clientInfo": {"name": "test", "version": "0"},
+    });
+    let found = a.request("server/discover", json!({"_meta": meta}), 30);
+    assert_eq!(
+        found["result"]["capabilities"]["tools"],
+        json!({}),
+        "{found}"
+    );
+    let chart = a.request(
+        "tools/call",
+        json!({"name": "books.chart", "arguments": {}, "_meta": meta}),
+        30,
+    );
+    assert_eq!(
+        chart["result"]["structuredContent"]["base_currency"], "USD",
+        "{chart}"
+    );
+}
+
+/// Review round 3, finding 1: the server dying under a bridge (with a call
+/// going out) doesn't wedge it: it holds again, a new host starts, and
+/// the agent's next calls are answered.
+#[test]
+fn the_bridge_recovers_when_the_server_dies_under_it() {
+    let home = Home::new("dies");
+    home.create("acme");
+    let mut a = Agent::start(&home, "acme");
+    a.initialize();
+    a.call("books.start", json!({})).unwrap();
+    let server = home.pids("server")[0];
+    // SAFETY: this test's own server.
+    unsafe { libc::kill(server as i32, libc::SIGKILL) };
+    // A call at once: refused unrun (or answered "may have run"), then
+    // the next ones work again on a new host and server.
+    let _ = a.call("books.start", json!({}));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let r = a.call("books.chart", json!({}));
+        if r.is_ok() {
+            break;
+        }
+        if Instant::now() > deadline {
+            let log = std::fs::read_to_string(home.run_dir().join("host.log")).unwrap_or_default();
+            let _ = a.run.child.kill();
+            let err = a.run.stderr();
+            panic!("the bridge never recovered: {r:?}\nhost.log:\n{log}\nbridge:\n{err}");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(home.pids("server").iter().all(|p| *p != server));
+}
+
+/// Review round 3, finding 2: a cancel that follows its call at once is
+/// still in time while the call waits for the books.
+#[test]
+fn a_call_cancelled_at_once_is_never_made() {
+    let home = Home::new("cancel");
+    home.create("acme");
+    assert!(home.wait_closed(10));
+    let mut c = home.cmd("mcp");
+    c.args([
+        "--book",
+        "acme",
+        "--test-knobs",
+        "close_after=1500,backoff=50,server_delay=1500,init_wait=200,queue_wait=30000",
+    ]);
+    let mut a = Agent::from(c);
+    a.initialize();
+    let mut ids = Vec::new();
+    for k in 0..20u64 {
+        let id = a.next;
+        a.next += 1;
+        ids.push(id);
+        // The call and its cancel in one write.
+        let stdin = a.run.child.stdin.as_mut().unwrap();
+        writeln!(
+            stdin,
+            "{}\n{}",
+            json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {
+                "name": "books.add_account",
+                "arguments": {"code": format!("{}", 1000 + k), "name": format!("A{k}"),
+                              "account_type": "asset"}}}),
+            json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
+                   "params": {"requestId": id}})
+        )
+        .unwrap();
+        stdin.flush().unwrap();
+    }
+    let chart = a.call("books.chart", json!({})).unwrap();
+    assert_eq!(chart["accounts"], json!([]), "a cancelled call was made");
+    assert!(
+        !a.notes.iter().any(|n| n
+            .get("id")
+            .is_some_and(|i| ids.contains(&i.as_u64().unwrap_or(0)))),
+        "a cancelled call was answered: {:?}",
+        a.notes
+    );
+}
+
+#[test]
+fn doctor_says_whether_the_books_are_open_and_what_holds_them() {
+    let home = Home::new("doctor");
+    home.create("acme");
+    assert!(home.wait_closed(10));
+    let text = |o: std::process::Output| String::from_utf8_lossy(&o.stdout).into_owned();
+    let closed = text(home.cmd("doctor").output().unwrap());
+    assert!(closed.contains("The books are closed."), "{closed}");
+    assert!(closed.contains("same_user (advisory)"), "{closed}");
+    let _held = serve(&home);
+    let open = text(home.cmd("doctor").output().unwrap());
+    assert!(open.contains("The books are open."), "{open}");
+    assert!(open.contains("acme  open"), "{open}");
+    assert!(
+        open.contains("Held by:") && open.contains("wanderbooks serve"),
+        "{open}"
+    );
+    assert!(open.contains("The host, last said:"), "{open}");
+    for t in [&closed, &open] {
+        assert!(!t.contains(&home.root().display().to_string()), "{t}");
+    }
+}
+
+/// Review round 4, finding 2: a bridge stopped by a signal goes at once,
+/// even with a call waiting for the books (never sent).
+#[test]
+fn a_signalled_bridge_goes_at_once() {
+    let home = Home::new("sigbridge");
+    home.create("acme");
+    assert!(home.wait_closed(10));
+    let mut c = home.cmd("mcp");
+    c.args([
+        "--book",
+        "acme",
+        "--test-knobs",
+        "close_after=1500,backoff=50,server_delay=20000,init_wait=200,queue_wait=30000",
+    ]);
+    let mut a = Agent::from(c);
+    a.initialize();
+    a.send(json!({"jsonrpc": "2.0", "id": 99, "method": "tools/call",
+        "params": {"name": "books.start", "arguments": {}}}));
+    std::thread::sleep(Duration::from_millis(300));
+    let stopped = Instant::now();
+    a.run.signal(libc::SIGTERM);
+    assert!(a.run.wait(10).is_some(), "the bridge lingered");
+    assert!(
+        stopped.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        stopped.elapsed()
+    );
+}
+
+/// Review round 4, finding 10: a message too large is refused and the
+/// session goes on.
+#[test]
+fn a_message_too_large_is_refused_and_the_session_goes_on() {
+    let home = Home::new("toolarge");
+    home.create("acme");
+    let mut a = Agent::start(&home, "acme");
+    a.initialize();
+    {
+        let stdin = a.run.child.stdin.as_mut().unwrap();
+        stdin.write_all(b"{\"x\":\"").unwrap();
+        let chunk = vec![b'a'; 1024 * 1024];
+        for _ in 0..65 {
+            stdin.write_all(&chunk).unwrap();
+        }
+        stdin.write_all(b"\"}\n").unwrap();
+        stdin.flush().unwrap();
+    }
+    let line = a.run.lines.recv_timeout(Duration::from_secs(30)).unwrap();
+    assert!(line.contains("too large"), "{line}");
+    let pong = a.request("ping", json!({}), 20);
+    assert!(pong.get("result").is_some(), "{pong}");
+    assert!(a.call("books.start", json!({})).is_ok());
+}
+
+/// Review round 4, finding 1: where systemd-run can't make its scope (no
+/// user bus reachable, as in a container), the host starts directly.
+#[test]
+fn the_host_starts_without_a_scope_when_systemd_run_fails() {
+    // SAFETY: geteuid has no preconditions.
+    let uid = unsafe { libc::geteuid() };
+    let cgroup = std::fs::read_to_string("/proc/self/cgroup").unwrap_or_default();
+    let in_scope = cgroup.lines().any(|l| {
+        l.starts_with("0::")
+            && l.contains(&format!("/user@{uid}.service/"))
+            && l.ends_with(".scope")
+    });
+    if !in_scope || !Path::new("/usr/bin/systemd-run").exists() {
+        eprintln!("skipped: not in a systemd app scope");
+        return;
+    }
+    let home = Home::new("noscope");
+    // A private runtime folder with no bus in it.
+    let runtime = home.dir.path().join("rt");
+    std::fs::create_dir(&runtime).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let started = Instant::now();
+    let out = home
+        .cmd("books")
+        .args(["create", "acme"])
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+/// Review round 5, findings 2 and 3: a malformed byte is answered and the
+/// session goes on; a message exactly at the limit is taken, and the next
+/// one is not lost.
+#[test]
+fn malformed_and_boundary_input_never_ends_the_session() {
+    let home = Home::new("bytes");
+    home.create("acme");
+    let mut a = Agent::start(&home, "acme");
+    a.initialize();
+    {
+        let stdin = a.run.child.stdin.as_mut().unwrap();
+        stdin
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":\"\xff\",\"method\":\"ping\"}\n")
+            .unwrap();
+        stdin.flush().unwrap();
+    }
+    let line = a.run.lines.recv_timeout(Duration::from_secs(20)).unwrap();
+    assert!(line.contains("-32700"), "{line}");
+    let pong = a.request("ping", json!({}), 20);
+    assert!(pong.get("result").is_some(), "{pong}");
+    // Exactly 64 MiB of message (a JSON string padded with spaces), then
+    // a ping: the big one is the server's to refuse, the ping answered.
+    {
+        let max = 64 * 1024 * 1024;
+        let head = b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/x\",\"params\":{\"pad\":\"";
+        let tail = b"\"}}";
+        let stdin = a.run.child.stdin.as_mut().unwrap();
+        stdin.write_all(head).unwrap();
+        let mut left = max - head.len() - tail.len();
+        let chunk = vec![b' '; 1024 * 1024];
+        while left > 0 {
+            let n = left.min(chunk.len());
+            stdin.write_all(&chunk[..n]).unwrap();
+            left -= n;
+        }
+        stdin.write_all(tail).unwrap();
+        stdin.write_all(b"\n").unwrap();
+        stdin.flush().unwrap();
+    }
+    let pong = a.request("ping", json!({}), 60);
+    assert!(pong.get("result").is_some(), "{pong}");
+    assert!(
+        !a.notes.iter().any(|n| n.to_string().contains("too large")),
+        "a message at the limit was refused: {:?}",
+        a.notes
+    );
+}
+
+/// Review round 5, finding 4: `doctor` doesn't hang on a server that
+/// doesn't answer, and still shows the logs.
+#[test]
+fn doctor_doesnt_hang_on_a_frozen_server() {
+    let home = Home::new("frozen");
+    home.create("acme");
+    let _held = serve(&home);
+    let server = home.pids("server")[0] as i32;
+    // SAFETY: this test's own server.
+    unsafe { libc::kill(server, libc::SIGSTOP) };
+    let started = Instant::now();
+    let out = home.cmd("doctor").output().unwrap();
+    // SAFETY: as above.
+    unsafe { libc::kill(server, libc::SIGCONT) };
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        started.elapsed() < Duration::from_secs(15),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(text.contains("doesn't answer"), "{text}");
+    assert!(text.contains("The host, last said:"), "{text}");
+}
+
+/// Review round 5, finding 1: an app started with a scrubbed environment
+/// (no XDG_RUNTIME_DIR, as Codex starts its tools) doesn't take the host
+/// down with it when it stops.
+#[test]
+fn a_scrubbed_app_scope_doesnt_take_the_host_with_it() {
+    // SAFETY: geteuid has no preconditions.
+    let uid = unsafe { libc::geteuid() };
+    let cgroup = std::fs::read_to_string("/proc/self/cgroup").unwrap_or_default();
+    if !cgroup.contains(&format!("/user@{uid}.service/"))
+        || !Path::new("/usr/bin/systemd-run").exists()
+    {
+        eprintln!("skipped: no systemd user manager here");
+        return;
+    }
+    let home = Home::new("scrubbed");
+    home.create("acme");
+    assert!(home.wait_closed(10));
+    let unit = format!("wb-scrub-{}", std::process::id());
+    let mut c = Command::new("/usr/bin/systemd-run");
+    c.args([
+        "--user",
+        "--scope",
+        "--quiet",
+        "--collect",
+        &format!("--unit={unit}.scope"),
+    ])
+    .arg("/usr/bin/env")
+    .arg("-i")
+    .arg("PATH=/usr/bin:/bin")
+    .arg(format!("HOME={}", home.dir.path().display()))
+    .arg(&home.exe)
+    .arg("serve")
+    .arg("--root")
+    .arg(home.root())
+    .args(["--test-knobs", KNOBS]);
+    let held = Running::start(c);
+    held.expect("The books are open", 30);
+    let host = home.host().unwrap();
+    let host_cgroup = std::fs::read_to_string(format!("/proc/{host}/cgroup")).unwrap();
+    assert!(
+        !host_cgroup.contains(&unit),
+        "the host is in the app's scope: {host_cgroup}"
+    );
+    let out = Command::new("systemctl")
+        .args(["--user", "stop", &format!("{unit}.scope")])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        std::fs::metadata(format!("/proc/{host}")).is_ok(),
+        "the host died with the app"
+    );
+    assert!(home.wait_closed(10));
+}
+
+/// Review round 6, finding 1: a command ends at its deadline even while a
+/// restart holds the update lock.
+#[test]
+fn a_command_ends_at_its_deadline_during_a_restart() {
+    let home = Home::new("deadline");
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(home.run_dir().join("update.lock"))
+        .unwrap();
+    lock.lock().unwrap();
+    let started = Instant::now();
+    let out = home
+        .cmd("books")
+        .args(["list", "--test-knobs", "open_wait=1000,close_after=2500"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("didn't open in time"),
+        "{out:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(6),
+        "{:?}",
+        started.elapsed()
+    );
+    drop(lock);
+}
+
+/// Review round 6, finding 2: `doctor` doesn't wait long on a frozen host.
+#[test]
+fn doctor_doesnt_hang_on_a_frozen_host() {
+    let home = Home::new("frozenhost");
+    home.create("acme");
+    let _held = serve(&home);
+    let host = home.host().unwrap() as i32;
+    // SAFETY: this test's own host.
+    unsafe { libc::kill(host, libc::SIGSTOP) };
+    let started = Instant::now();
+    let out = home.cmd("doctor").output().unwrap();
+    // SAFETY: as above.
+    unsafe { libc::kill(host, libc::SIGCONT) };
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        started.elapsed() < Duration::from_secs(15),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(text.contains("isn't answering"), "{text}");
+}
+
+/// Review round 6, finding 3: Ctrl-C reaches `serve` while it waits to
+/// try again.
+#[test]
+fn serve_hears_ctrl_c_while_it_waits_to_try_again() {
+    let home = Home::new("ctrlc");
+    std::fs::create_dir(home.run_dir().join("mcp.sock")).unwrap();
+    let mut held = Running::start({
+        let mut c = home.cmd("serve");
+        c.args(["--test-knobs", "close_after=2500,backoff=20000"]);
+        c
+    });
+    // The first start fails at once; serve then waits 20 s to try again.
+    held.expect("Opening the books", 30);
+    assert!(wait_for(10, || std::fs::read_to_string(
+        home.run_dir().join("host.log")
+    )
+    .is_ok_and(|l| l.contains("the books server stopped"))));
+    std::thread::sleep(Duration::from_millis(500));
+    let asked = Instant::now();
+    held.signal(libc::SIGINT);
+    let status = held.wait(10).expect("serve didn't hear Ctrl-C");
+    assert!(status.success(), "{status:?}");
+    assert!(
+        asked.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        asked.elapsed()
+    );
+    std::fs::remove_dir(home.run_dir().join("mcp.sock")).unwrap();
+}
+
+/// Review round 6, finding 4: every malformed message is answered.
+#[test]
+fn every_malformed_message_is_answered() {
+    let home = Home::new("malformed");
+    home.create("acme");
+    let mut a = Agent::start(&home, "acme");
+    a.initialize();
+    for (line, id) in [
+        (r#"{"jsonrpc":"2.0","id":5,"method":7}"#, json!(5)),
+        ("42", Value::Null),
+        (r#"{"jsonrpc":"2.0","id":6}"#, json!(6)),
+        (
+            r#"{"jsonrpc":"2.0","id":{"a":1},"method":"ping"}"#,
+            Value::Null,
+        ),
+        ("[]", Value::Null),
+    ] {
+        let stdin = a.run.child.stdin.as_mut().unwrap();
+        writeln!(stdin, "{line}").unwrap();
+        stdin.flush().unwrap();
+        let answer = a.run.lines.recv_timeout(Duration::from_secs(20)).unwrap();
+        let v: Value = serde_json::from_str(&answer).unwrap();
+        assert_eq!(v["error"]["code"], -32600, "{line}: {answer}");
+        assert_eq!(v["id"], id, "{line}: {answer}");
+    }
+    // And the session goes on.
+    assert!(a.call("books.start", json!({})).is_ok());
+}
+
+/// Review round 7, finding 1: a call to books that didn't open is
+/// refused with why (it never ran), even for a client that skips
+/// initialize; and a duplicate in-flight id is refused.
+#[test]
+fn books_that_didnt_open_refuse_plainly() {
+    let home = Home::new("damaged");
+    home.create("acme");
+    assert!(home.wait_closed(10));
+    // A damaged last line: the books won't open.
+    use std::io::Write as _;
+    let mut j = std::fs::OpenOptions::new()
+        .append(true)
+        .open(home.root().join("books/acme/journal.jsonl"))
+        .unwrap();
+    writeln!(j, "{{\"not\": \"a journal line\"}}").unwrap();
+    drop(j);
+    let mut a = Agent::start(&home, "acme");
+    let meta = json!({
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientCapabilities": {},
+        "io.modelcontextprotocol/clientInfo": {"name": "test", "version": "0"},
+    });
+    let r = a.request(
+        "tools/call",
+        json!({"name": "books.chart", "arguments": {}, "_meta": meta}),
+        60,
+    );
+    let why = r["error"]["message"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(why.contains("didn't open"), "{r}");
+    assert!(!why.contains("may or may not"), "{r}");
+    assert!(!why.contains(&home.root().display().to_string()), "{r}");
+}
+
+/// Review round 7, findings 2 and 3: `close` and `books list` don't hang
+/// on a frozen host or server.
+#[test]
+fn close_and_list_dont_hang_on_frozen_processes() {
+    let home = Home::new("frozen2");
+    home.create("acme");
+    let _held = serve(&home);
+    let server = home.pids("server")[0] as i32;
+    let host = home.host().unwrap() as i32;
+    // SAFETY: this test's own server and host.
+    unsafe { libc::kill(server, libc::SIGSTOP) };
+    let started = Instant::now();
+    let out = home.books(&["list"]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(
+        started.elapsed() < Duration::from_secs(45),
+        "{:?}",
+        started.elapsed()
+    );
+    // SAFETY: as above.
+    unsafe {
+        libc::kill(server, libc::SIGCONT);
+        libc::kill(host, libc::SIGSTOP);
+    }
+    let started = Instant::now();
+    let out = home.cmd("close").output().unwrap();
+    // SAFETY: as above.
+    unsafe { libc::kill(host, libc::SIGCONT) };
+    assert!(
+        started.elapsed() < Duration::from_secs(15),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("isn't answering"),
+        "{out:?}"
+    );
+}
+
+/// Review round 8, findings 1, 2 and 7: books made after the agent's
+/// session began are reached on the first call after; an initialize the
+/// server won't take fails plainly, not as books that never open; and a
+/// request id still in flight is refused.
+#[test]
+fn books_made_mid_session_and_bad_requests() {
+    let home = Home::new("midsession");
+    home.create("acme");
+    let mut a = Agent::start(&home, "beta");
+    a.initialize();
+    let err = a.call("books.start", json!({})).unwrap_err();
+    assert!(err.contains("no books called"), "{err}");
+    home.create("beta");
+    assert!(
+        a.call("books.start", json!({})).is_ok(),
+        "the first call after books create"
+    );
+    // An initialize without clientInfo: the server's own refusal, fast.
+    let mut b = Agent::start(&home, "acme");
+    let started = Instant::now();
+    let _ = b.request(
+        "initialize",
+        json!({"protocolVersion": "2025-06-18", "capabilities": {}}),
+        20,
+    );
+    b.send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
+    let err = b.call("books.start", json!({})).unwrap_err();
+    assert!(!err.contains("didn't open within"), "{err}");
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "{:?}",
+        started.elapsed()
+    );
+    // Two requests with one id while the books open: the second refused.
+    let home2 = Home::new("dupid");
+    home2.create("acme");
+    assert!(home2.wait_closed(10));
+    let mut c = home2.cmd("mcp");
+    c.args([
+        "--book",
+        "acme",
+        "--test-knobs",
+        "close_after=2500,backoff=50,server_delay=2000,init_wait=200,queue_wait=30000",
+    ]);
+    let mut d = Agent::from(c);
+    d.initialize();
+    let call = json!({"jsonrpc": "2.0", "id": "same", "method": "tools/call",
+        "params": {"name": "books.start", "arguments": {}}});
+    d.send(call.clone());
+    d.send(call);
+    let first = d.run.lines.recv_timeout(Duration::from_secs(20)).unwrap();
+    let v: Value = serde_json::from_str(&first).unwrap();
+    assert_eq!(v["id"], "same", "{first}");
+    assert_eq!(v["error"]["code"], -32600, "{first}");
+    let second = d.run.lines.recv_timeout(Duration::from_secs(30)).unwrap();
+    let v: Value = serde_json::from_str(&second).unwrap();
+    assert!(
+        v.get("result").is_some(),
+        "the first one is still answered: {second}"
+    );
+}
+
+/// `wanderbooks books`: its flags taken for what they are, its usage on
+/// request, and adoption's choices honoured (slice 3 mutation testing).
+#[test]
+fn the_books_command_takes_its_flags_and_asks_before_adopting() {
+    let home = Home::new("flags");
+    home.create("acme");
+    let out = home.books(&["--help"]);
+    assert_eq!(out.status.code(), Some(0));
+    let usage = String::from_utf8_lossy(&out.stderr);
+    assert!(usage.contains("adopt DATA-DIR --id ID"), "{usage}");
+    let out = home.books(&["-h"]);
+    assert_eq!(out.status.code(), Some(0));
+    let out = home.books(&["list", "--bogus"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("unknown flag: --bogus"));
+    // Old books to adopt: one setting the books don't know.
+    let old = tempfile::Builder::new()
+        .prefix("wb-held-flags-")
+        .tempdir()
+        .unwrap();
+    let data = old.path().join("books-data");
+    drop(ledger_store::Store::create(&data, ledger_core::Currency::USD).unwrap());
+    let toml = old.path().join("wanderbooks.toml");
+    std::fs::write(&toml, "[company]\nname = \"Old Co\"\nmystery = \"what\"\n").unwrap();
+    let json = old.path().join("config.json");
+    std::fs::write(&json, "{}").unwrap();
+    let vault = old.path().join("elsewhere");
+    std::fs::create_dir(&vault).unwrap();
+    let key = old.path().join("vault.key");
+    std::fs::write(&key, "not used").unwrap();
+    let adopt = |extra: &[&str]| {
+        let mut a = vec![
+            "adopt",
+            data.to_str().unwrap(),
+            "--id",
+            "old",
+            "--toml",
+            toml.to_str().unwrap(),
+        ];
+        a.extend_from_slice(extra);
+        home.books(&a)
+    };
+    let err = |o: &std::process::Output| String::from_utf8_lossy(&o.stderr).to_string();
+    // A vault and its key come together, and never with --no-vault.
+    let v = vault.to_str().unwrap();
+    let k = key.to_str().unwrap();
+    for (extra, want) in [
+        (vec!["--vault", v], "give the vault's key too"),
+        (vec!["--vault-key", k], "give the vault's folder too"),
+        (vec!["--no-vault", "--vault", v], "can't both be given"),
+        (vec!["--no-vault", "--vault-key", k], "can't both be given"),
+    ] {
+        let out = adopt(&extra);
+        assert_eq!(out.status.code(), Some(1), "{extra:?}: {out:?}");
+        assert!(err(&out).contains(want), "{extra:?}: {}", err(&out));
+    }
+    // An entry the books don't know: refused unless left behind.
+    let out = adopt(&[
+        "--yes",
+        "--no-vault",
+        "--config-json",
+        json.to_str().unwrap(),
+    ]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(err(&out).contains("--skip-unknown"), "{}", err(&out));
+    // At a terminal: asked, and only a yes adopts.
+    let at_terminal = |answer: &str| {
+        use std::io::Write;
+        let mut args: Vec<String> = vec![
+            home.exe.display().to_string(),
+            "books".into(),
+            "--root".into(),
+            home.root().display().to_string(),
+            "--test-knobs".into(),
+            KNOBS.into(),
+        ];
+        for a in [
+            "adopt",
+            data.to_str().unwrap(),
+            "--id",
+            "old",
+            "--toml",
+            toml.to_str().unwrap(),
+            "--no-vault",
+            "--skip-unknown",
+            "--config-json",
+            json.to_str().unwrap(),
+        ] {
+            args.push(a.to_string());
+        }
+        let mut child = Command::new("script")
+            .args(["-qefc", &args.join(" "), "/dev/null"])
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", home.dir.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        std::thread::sleep(Duration::from_millis(1500));
+        let _ = writeln!(stdin, "{answer}");
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while child.try_wait().unwrap().is_none() {
+            assert!(Instant::now() < deadline, "the adoption never ended");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        drop(stdin);
+        let out = child.wait_with_output().unwrap();
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    let shown = at_terminal("n");
+    assert!(shown.contains("Adopt them? [y/N]"), "{shown}");
+    assert!(shown.contains("Not adopted."), "{shown}");
+    let listed = String::from_utf8_lossy(&home.books(&["list"]).stdout).to_string();
+    assert!(!listed.contains("old"), "{listed}");
+    let shown = at_terminal("y");
+    assert!(shown.contains("Adopted as \"old\""), "{shown}");
+    assert!(shown.contains("1 settings moved in."), "{shown}");
+    let head = shown
+        .lines()
+        .find(|l| l.starts_with("Head: event"))
+        .unwrap_or_else(|| panic!("{shown}"));
+    assert!(
+        head.trim_end().ends_with(").") && head.contains(" ("),
+        "{head}"
+    );
+    let hash = head
+        .split('(')
+        .nth(1)
+        .unwrap()
+        .trim_end_matches([')', '.', '\r']);
+    assert_eq!(hash.len(), 12, "{head}");
+    assert!(hash.chars().all(|c| c.is_ascii_hexdigit()), "{head}");
+}
+
+/// A program that starts the bridge with its stderr closed (some launchers
+/// do) still gets a working bridge, its descriptor 2 on /dev/null: Rust's
+/// runtime opens it before main, so the helper's socket can't take its
+/// number and be sent the error messages (asked in slice 3's mutation
+/// testing: the helper's descriptor 3 then is never its own pair's end).
+#[test]
+fn a_bridge_started_without_stderr_keeps_its_descriptors_apart() {
+    use std::os::unix::process::CommandExt;
+    let home = Home::new("nostderr");
+    home.create("acme");
+    let mut c = home.cmd("mcp");
+    c.args(["--book", "acme"]);
+    // SAFETY: close is async-signal-safe.
+    unsafe {
+        c.pre_exec(|| {
+            libc::close(2);
+            Ok(())
+        });
+    }
+    let mut a = Agent::from(c);
+    a.initialize();
+    assert!(a.call("books.start", json!({})).is_ok());
+    let pid = a.run.child.id();
+    let fd2 = std::fs::read_link(format!("/proc/{pid}/fd/2")).unwrap();
+    assert_eq!(fd2, Path::new("/dev/null"));
+    assert!(a.end().is_some_and(|s| s.success()));
+}

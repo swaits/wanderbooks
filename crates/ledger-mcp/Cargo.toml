@@ -24,13 +24,15 @@ mime_guess = "2"
 rust_decimal = "1"
 rmcp = { version = "3", features = ["server", "transport-io", "schemars", "transport-streamable-http-server"] }
 axum = "0.8"
+http-body-util = "0.1"
 tower = "0.5"
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = "0.4"
 thiserror = "2"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "io-std", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "io-std", "sync", "net", "signal", "time"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 zip = "9.0.1"
 toml = "1"
 # The vault's TINs, decoded for the filing scan (tin_files.rs), are wiped

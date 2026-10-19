@@ -58,13 +58,19 @@ pub const BOOKS_DIR: &str = "books";
 pub const RUN_DIR: &str = "run";
 /// Old copies moved aside at adoption, never deleted (plan 5.5).
 pub const LEGACY_DIR: &str = "legacy";
+/// A book's TIN vault folder, in its own folder.
+pub const VAULT_DIR: &str = "vault";
+/// A book's key folder, in its own folder.
+pub const KEYS_DIR: &str = "keys";
+/// The v1 vault key, in a book's `keys/` (P2 to P7).
+pub const LEGACY_KEY_FILE: &str = "legacy.key";
 /// Held while books are created or adopted, so only one is made at a time.
 const BOOKS_LOCK: &str = "books.lock";
 /// Staging folders under `books/` start so; none is a valid book id.
 const STAGING_PREFIX: &str = ".adopt-";
 
 /// How the root is named in messages (INVARIANT 6).
-const THE_ROOT: &str = "the books' private folder";
+pub const THE_ROOT: &str = "the books' private folder";
 
 /// Why a root or book operation was refused. No message names the root or
 /// a path inside it (INVARIANT 6).
@@ -242,6 +248,91 @@ pub fn platform_data_dir(home: &Path) -> PathBuf {
 /// The default root under `home`.
 pub fn default_root(home: &Path) -> PathBuf {
     platform_data_dir(home).join(ROOT_NAME)
+}
+
+/// Whether `path` is a data root or inside one (any folder above it, or
+/// it, holds the marker `setup` leaves). Books there belong to the books
+/// server alone (plan 3.1: `dev-stdio` refuses them).
+pub fn inside_a_root(path: &Path) -> bool {
+    // From here (a path that is already absolute stays as it is).
+    let path = std::env::current_dir()
+        .map(|here| here.join(path))
+        .unwrap_or_else(|_| path.to_path_buf());
+    // Where the deepest folder that exists really is: a folder not made
+    // yet holds no marker, and a link counts as where it leads.
+    let Some(existing) = path.ancestors().find(|dir| dir.exists()) else {
+        return false;
+    };
+    let real = std::fs::canonicalize(existing).unwrap_or_else(|_| existing.to_path_buf());
+    real.ancestors().any(|dir| dir.join(MARKER_FILE).is_file())
+}
+
+/// A folder directly in a book's own folder (`keys/`, `vault/`): made
+/// 0700 if missing, made 0700 again if it is ours but others could enter
+/// it; refused if it is a symlink or belongs to another user. The error
+/// names no path (INVARIANT 6).
+pub fn private_book_folder(book_dir: &Path, name: &str) -> Result<PathBuf, RootError> {
+    let dir = book_dir.join(name);
+    match std::fs::symlink_metadata(&dir) {
+        Ok(meta) => {
+            let open = check_private_dir(&meta, true, "a folder inside the books")?;
+            tighten_if(&dir, open)?;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            make_private_dir(&dir)?;
+            sync_dir(book_dir)?;
+        }
+        Err(e) => return Err(e.into()),
+    }
+    Ok(dir)
+}
+
+/// The longest socket path used as it is: a Unix socket's address holds
+/// 104 bytes on macOS and 108 on Linux, the terminating zero included.
+const SOCKET_PATH_MAX: usize = 100;
+
+/// The path to a socket named `name` in `dir`, short enough for the
+/// system: the path itself when it fits; else, on Linux, the same place
+/// reached through `/proc/self/fd` and a handle on `dir` kept open while
+/// this lives (it is good only in this process). Elsewhere a path too
+/// long is refused, saying so plainly (no path named).
+#[derive(Debug)]
+pub struct SocketPath {
+    path: PathBuf,
+    _dir: Option<std::fs::File>,
+}
+
+impl SocketPath {
+    /// The socket `name` in `dir`.
+    pub fn new(dir: &Path, name: &str) -> std::io::Result<Self> {
+        let full = dir.join(name);
+        if full.as_os_str().len() <= SOCKET_PATH_MAX {
+            return Ok(Self {
+                path: full,
+                _dir: None,
+            });
+        }
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::fd::AsRawFd;
+            let handle = std::fs::File::open(dir)?;
+            let path = PathBuf::from(format!("/proc/self/fd/{}/{name}", handle.as_raw_fd()));
+            Ok(Self {
+                path,
+                _dir: Some(handle),
+            })
+        }
+        #[cfg(not(target_os = "linux"))]
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "the books' private folder's path is too long for its sockets: choose a shorter place with `wanderbooks setup --root`",
+        ))
+    }
+
+    /// The path to bind or connect to.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
 }
 
 /// The data root.
@@ -422,6 +513,14 @@ impl Root {
         &self.path
     }
 
+    /// The root's `run/` folder (its sockets and locks), made 0700 if
+    /// missing and refused if it isn't private.
+    pub fn run_dir(&self) -> Result<PathBuf, RootError> {
+        self.private_subdir(RUN_DIR, false)
+            .map(|(dir, _)| dir)
+            .map_err(|e| self.hide(e))
+    }
+
     /// The folder a book lives in.
     pub fn book_dir(&self, id: &BookId) -> PathBuf {
         self.path.join(BOOKS_DIR).join(id.as_str())
@@ -562,22 +661,7 @@ impl Root {
         if std::fs::symlink_metadata(&dest).is_ok() {
             return Err(RootError::Exists(id.to_string()));
         }
-        let source = std::fs::canonicalize(source).map_err(|e| {
-            RootError::Adopt(format!("can't read the books at {}: {e}", source.display()))
-        })?;
-        let root = std::fs::canonicalize(&self.path)?;
-        if source.starts_with(&root) || root.starts_with(&source) {
-            return Err(RootError::Adopt(format!(
-                "those books are inside {THE_ROOT} (or hold it): adopt books from outside it"
-            )));
-        }
-        let journal_path = source.join(JOURNAL_FILE);
-        if !journal_path.is_file() {
-            return Err(RootError::Adopt(format!(
-                "there are no books at {}: it has no {JOURNAL_FILE}",
-                source.display()
-            )));
-        }
+        let source = self.adoptable(source)?;
         for (what, path) in [
             ("vault folder", &options.vault_dir),
             ("vault key", &options.vault_key),
@@ -586,8 +670,7 @@ impl Root {
                 && !path.exists()
             {
                 return Err(RootError::Adopt(format!(
-                    "the {what} given, {}, isn't there: nothing was adopted",
-                    path.display()
+                    "the {what} given isn't there: nothing was adopted"
                 )));
             }
         }
@@ -595,16 +678,17 @@ impl Root {
         // writes it while it is copied.
         let (_source_lock, source_lock_created) = lock_source(&source)?;
         // Step 2: verify the chain and record the head.
-        let raw = std::fs::read(&journal_path)?;
-        if raw.last() != Some(&b'\n') {
-            return Err(RootError::Adopt(
-                "the source's last journal line is cut off: open the books once with the server \
-                 that wrote them (it repairs a cut-off line), then adopt them"
-                    .into(),
-            ));
-        }
-        let (lines, _format) = crate::journal::verify_journal_and_format(&raw)?;
+        let (raw, lines) = read_source_journal(&source)?;
         let head = head_of(&lines);
+        if let Some(expected) = &options.expect_head
+            && *expected != head
+        {
+            return Err(RootError::Adopt(format!(
+                "those books changed since the preview (they are now at event {}): nothing was \
+                 adopted; preview them again",
+                head.0
+            )));
+        }
         let keeps_settings = lines.iter().any(|l| l.line_type == "settings.set");
         if !keeps_settings && options.settings.is_none() {
             return Err(RootError::Adopt(
@@ -634,14 +718,14 @@ impl Root {
             let copied = copy_blobs(&source.join(blob_dir), &staging.join(blob_dir))?;
             // Step 5: the vault's records and the v1 key.
             let vault_files = match &options.vault_dir {
-                Some(dir) => copy_flat_private(dir, &staging.join("vault"))?,
+                Some(dir) => copy_flat_private(dir, &staging.join(VAULT_DIR))?,
                 None => 0,
             };
             let key_copied = match &options.vault_key {
                 Some(key) => {
-                    let keys = staging.join("keys");
+                    let keys = staging.join(KEYS_DIR);
                     make_private_dir(&keys)?;
-                    write_private_file(&keys.join("legacy.key"), &std::fs::read(key)?)?;
+                    write_private_file(&keys.join(LEGACY_KEY_FILE), &std::fs::read(key)?)?;
                     sync_dir(&keys)?;
                     true
                 }
@@ -708,6 +792,79 @@ impl Root {
     }
 }
 
+impl Root {
+    /// The source of an adoption, made absolute: books outside the root
+    /// (and not holding it) with a journal.
+    fn adoptable(&self, source: &Path) -> Result<PathBuf, RootError> {
+        let source = std::fs::canonicalize(source)
+            .map_err(|e| RootError::Adopt(format!("can't read the books given: {}", e.kind())))?;
+        let root = std::fs::canonicalize(&self.path)?;
+        if source.starts_with(&root) || root.starts_with(&source) {
+            return Err(RootError::Adopt(format!(
+                "those books are inside {THE_ROOT} (or hold it): adopt books from outside it"
+            )));
+        }
+        if !source.join(JOURNAL_FILE).is_file() {
+            return Err(RootError::Adopt(format!(
+                "there are no books there: it has no {JOURNAL_FILE}"
+            )));
+        }
+        Ok(source)
+    }
+
+    /// What adopting `source` would start from: its head, its base
+    /// currency, and whether it keeps its own settings, read under the
+    /// checks [`Self::adopt`] makes, writing nothing (not even a lock
+    /// file). The adoption itself reads it all again under the lock.
+    pub fn adopt_preview(&self, source: &Path) -> Result<SourcePreview, RootError> {
+        (|| {
+            let source = self.adoptable(source)?;
+            // Held for writing now: adoption would be refused, so is this.
+            if let Ok(lock) = std::fs::File::open(source.join(crate::store::LOCK_FILE))
+                && let Err(std::fs::TryLockError::WouldBlock) = lock.try_lock_shared()
+            {
+                return Err(RootError::from(StoreError::Locked(
+                    "another wanderbooks process has those books open for writing (an agent \
+                     session, or its MCP server); close it first"
+                        .into(),
+                )));
+            }
+            let (_, lines) = read_source_journal(&source)?;
+            Ok(SourcePreview {
+                head: head_of(&lines),
+                currency: crate::store::journal_currency(&lines)?,
+                keeps_settings: lines.iter().any(|l| l.line_type == "settings.set"),
+            })
+        })()
+        .map_err(|e| self.hide(e))
+    }
+}
+
+/// The source's journal, whole and verified: its bytes and lines.
+fn read_source_journal(source: &Path) -> Result<(Vec<u8>, Vec<crate::JournalLine>), RootError> {
+    let raw = std::fs::read(source.join(JOURNAL_FILE))?;
+    if raw.last() != Some(&b'\n') {
+        return Err(RootError::Adopt(
+            "the source's last journal line is cut off: open the books once with the server \
+             that wrote them (it repairs a cut-off line), then adopt them"
+                .into(),
+        ));
+    }
+    let (lines, _format) = crate::journal::verify_journal_and_format(&raw)?;
+    Ok((raw, lines))
+}
+
+/// What [`Root::adopt_preview`] found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourcePreview {
+    /// The source's head, `(seq, hash)`.
+    pub head: (u64, String),
+    /// Its base currency.
+    pub currency: Currency,
+    /// Whether it keeps its own settings.
+    pub keeps_settings: bool,
+}
+
 /// Options for [`Root::adopt`].
 #[derive(Clone, Debug, Default)]
 pub struct AdoptOptions {
@@ -725,6 +882,9 @@ pub struct AdoptOptions {
     /// The v1 vault key file: copied to the book's `keys/legacy.key`.
     /// Given, it must exist.
     pub vault_key: Option<PathBuf>,
+    /// The head the source must have, `(seq, hash)`, as a preview read
+    /// it: if the books changed since, nothing is adopted.
+    pub expect_head: Option<(u64, String)>,
 }
 
 /// What [`Root::adopt`] did.
@@ -779,11 +939,11 @@ fn lock_source(source: &Path) -> Result<(std::fs::File, bool), RootError> {
         match file.try_lock() {
             Ok(()) => {}
             Err(std::fs::TryLockError::WouldBlock) => {
-                return Err(RootError::from(StoreError::Locked(format!(
-                    "another wanderbooks process has the books in {} open for writing (an agent \
-                     session, or its MCP server); close it first",
-                    source.display()
-                ))));
+                return Err(RootError::from(StoreError::Locked(
+                    "another wanderbooks process has those books open for writing (an agent \
+                     session, or its MCP server); close it first"
+                        .into(),
+                )));
             }
             Err(std::fs::TryLockError::Error(e)) => return Err(e.into()),
         }

@@ -5,10 +5,9 @@ use crate::data::{Loader, Source, Update};
 use crate::nav::{Nav, Route, Section};
 use crate::pages;
 use crate::receipts::Receipts;
+use crate::schemes::{self, Filter, Scheme};
 use crate::theme::{self, pal};
-use egui::{
-    Align, Color32, CornerRadius, Frame, Key, Layout, Margin, RichText, Sense, Stroke, Ui, vec2,
-};
+use egui::{Align, CornerRadius, Frame, Key, Layout, Margin, RichText, Sense, Stroke, Ui, vec2};
 use egui_phosphor::regular as icon;
 use std::sync::Arc;
 
@@ -42,13 +41,96 @@ impl Shell<'_> {
     }
 }
 
+/// The height of a family's row in the color scheme menu, for laying the
+/// families out in columns.
+const FAMILY_ROW: f32 = 34.0;
+
+/// The width of a variant's row in a family's flyout: room for its colors
+/// and the longest name.
+const SCHEME_ROW_WIDTH: f32 = 200.0;
+
+/// Where the viewer keeps its color scheme ("Family/Variant").
+const SCHEME_KEY: &str = "scheme";
+/// Where it keeps its scheme menu's filter.
+const FILTER_KEY: &str = "scheme_filter";
+
+/// One variant in the color scheme menu: a strip of its colors and its
+/// name, the whole row one button, selected when it is the one in force.
+fn scheme_row(ui: &mut Ui, scheme: &Scheme, current: bool) -> egui::Response {
+    let p = pal(ui.ctx());
+    let (rect, response) = ui.allocate_exact_size(vec2(SCHEME_ROW_WIDTH, 28.0), Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::SelectableLabel,
+            true,
+            current,
+            scheme.name,
+        )
+    });
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        let fill = if current {
+            Some(p.selected)
+        } else if response.hovered() {
+            Some(p.hover)
+        } else {
+            None
+        };
+        if let Some(fill) = fill {
+            painter.rect_filled(rect, CornerRadius::same(6), fill);
+        }
+        let strip = egui::Rect::from_min_size(
+            egui::pos2(rect.left() + 8.0, rect.center().y - 7.0),
+            vec2(50.0, 14.0),
+        );
+        let w = strip.width() / 5.0;
+        for (i, c) in scheme.swatch().into_iter().enumerate() {
+            let r = egui::Rect::from_min_size(
+                strip.min + vec2(w * i as f32, 0.0),
+                vec2(w, strip.height()),
+            );
+            painter.rect_filled(r, 0.0, c);
+        }
+        painter.rect_stroke(
+            strip,
+            3.0,
+            Stroke::new(1.0, p.border),
+            egui::StrokeKind::Outside,
+        );
+        painter.text(
+            egui::pos2(strip.right() + 10.0, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            scheme.name,
+            theme::regular(14.0),
+            p.text,
+        );
+    }
+    response
+}
+
+/// The scheme and menu filter kept from last time (`get` reads the
+/// viewer's preferences): the scheme kept; before schemes, the light or
+/// dark choice kept as "dark"; else the viewer's own for the system's
+/// mode (schemes INVARIANT 4).
+fn restored(get: impl Fn(&str) -> Option<String>, system_dark: bool) -> (&'static Scheme, Filter) {
+    let dark = get("dark").map_or(system_dark, |v| v == "true");
+    let scheme = get(SCHEME_KEY).map_or_else(|| schemes::own(dark), |k| Scheme::from_key(&k, dark));
+    let filter = get(FILTER_KEY)
+        .and_then(|f| Filter::from_name(&f))
+        .unwrap_or_default();
+    (scheme, filter)
+}
+
 pub struct App {
     loader: Option<Loader>,
     books: Option<Arc<Books>>,
     error: Option<String>,
     nav: Nav,
     receipts: Receipts,
-    dark: bool,
+    /// The color scheme in force (schemes.rs).
+    scheme: &'static Scheme,
+    /// Which schemes its menu shows.
+    filter: Filter,
     state: PageState,
     palette: crate::palette::Palette,
     updated_at: f64,
@@ -58,27 +140,29 @@ pub struct App {
 impl App {
     /// The live app over a books directory.
     pub fn new(cc: &eframe::CreationContext<'_>, source: Source) -> Self {
-        let dark = cc
-            .storage
-            .and_then(|s| s.get_string("dark"))
-            .map(|v| v == "true")
-            .unwrap_or(cc.egui_ctx.global_style().visuals.dark_mode);
-        let mut app = Self::bare(&cc.egui_ctx, dark);
+        // The scheme kept from last time; before schemes, a light/dark
+        // choice; else the system's mode (schemes INVARIANT 4).
+        let (scheme, filter) = restored(
+            |key| cc.storage.and_then(|s| s.get_string(key)),
+            cc.egui_ctx.global_style().visuals.dark_mode,
+        );
+        let mut app = Self::bare(&cc.egui_ctx, scheme);
+        app.filter = filter;
         app.loader = Some(Loader::spawn(source, cc.egui_ctx.clone()));
         app
     }
 
     /// An app showing fixed books (tests and screenshots).
     pub fn with_books(ctx: &egui::Context, books: Books, dark: bool, start: Route) -> Self {
-        let mut app = Self::bare(ctx, dark);
+        let mut app = Self::bare(ctx, schemes::own(dark));
         app.books = Some(Arc::new(books));
         app.nav = Nav::new(start);
         app
     }
 
-    fn bare(ctx: &egui::Context, dark: bool) -> Self {
+    fn bare(ctx: &egui::Context, scheme: &'static Scheme) -> Self {
         theme::install_fonts(ctx);
-        theme::apply(ctx, dark);
+        theme::apply_scheme(ctx, scheme);
         egui_extras::install_image_loaders(ctx);
         Self {
             loader: None,
@@ -86,7 +170,8 @@ impl App {
             error: None,
             nav: Nav::new(Route::Overview),
             receipts: Receipts::new(ctx),
-            dark,
+            scheme,
+            filter: Filter::default(),
             state: PageState::default(),
             palette: Default::default(),
             updated_at: -1e9,
@@ -97,6 +182,115 @@ impl App {
     /// Navigate (tests).
     pub fn goto(&mut self, r: Route) {
         self.nav.go(r);
+    }
+
+    /// Wear the color scheme kept as `key` ("Family/Variant"; tests).
+    pub fn set_scheme(&mut self, ctx: &egui::Context, key: &str) {
+        self.choose(ctx, Scheme::from_key(key, self.scheme.dark));
+    }
+
+    /// The color scheme in force, as kept ("Family/Variant").
+    pub fn scheme_key(&self) -> String {
+        self.scheme.key()
+    }
+
+    fn choose(&mut self, ctx: &egui::Context, scheme: &'static Scheme) {
+        self.scheme = scheme;
+        theme::apply_scheme(ctx, scheme);
+    }
+
+    /// The color scheme button and its menu: a filter (all, light, dark),
+    /// then each family with a flyout of its variants. `compact`: the
+    /// narrow rail's icon alone.
+    fn scheme_menu(&mut self, ui: &mut Ui, compact: bool) {
+        let p = pal(ui.ctx());
+        let text = if compact {
+            RichText::new(icon::PALETTE).size(16.0).color(p.muted)
+        } else {
+            RichText::new(format!("{} {}", icon::PALETTE, self.scheme.label()))
+                .font(theme::regular(12.5))
+                .color(p.muted)
+        };
+        let mut button = egui::Button::new(text).frame(false);
+        if compact {
+            button = button.min_size(vec2(32.0, 32.0));
+        }
+        // Open while the filter changes; closed when a scheme is chosen.
+        let config = egui::containers::menu::MenuConfig::new()
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+        let mut chosen = None;
+        let (response, _) = egui::containers::menu::MenuButton::from_button(button)
+            .config(config)
+            .ui(ui, |ui| {
+                ui.set_min_width(200.0);
+                ui.horizontal(|ui| {
+                    for f in [Filter::All, Filter::Light, Filter::Dark] {
+                        ui.selectable_value(&mut self.filter, f, f.name());
+                    }
+                });
+                ui.separator();
+                // Every family on screen at once, in as many columns as
+                // the window's height needs: nothing hides below a scroll.
+                let families = schemes::families(self.filter);
+                let rows = (((ui.ctx().content_rect().height() - 160.0) / FAMILY_ROW).floor()
+                    as usize)
+                    .clamp(6, families.len().max(6));
+                let font = theme::regular(14.0);
+                let check = ui
+                    .painter()
+                    .layout_no_wrap(icon::CHECK.into(), font.clone(), p.accent)
+                    .size()
+                    .x;
+                ui.horizontal_top(|ui| {
+                    for column in families.chunks(rows) {
+                        // Each family's button as wide as its column, its
+                        // flyout opening beside the column.
+                        ui.allocate_ui_with_layout(
+                            vec2(170.0, 0.0),
+                            Layout::top_down_justified(Align::LEFT),
+                            |ui| {
+                                ui.set_width(170.0);
+                                for (family, variants) in column {
+                                    let here = *family == self.scheme.family
+                                        && self.filter.shows(self.scheme);
+                                    // Only the family in force is checked; the
+                                    // others are indented by the check's width,
+                                    // so names line up and a screen reader hears
+                                    // the check only where it is.
+                                    let mut label = egui::text::LayoutJob::default();
+                                    if here {
+                                        label.append(
+                                            icon::CHECK,
+                                            0.0,
+                                            egui::TextFormat::simple(font.clone(), p.accent),
+                                        );
+                                    }
+                                    let indent = if here { 8.0 } else { check + 8.0 };
+                                    label.append(
+                                        family,
+                                        indent,
+                                        egui::TextFormat::simple(font.clone(), p.text),
+                                    );
+                                    ui.menu_button(label, |ui| {
+                                        for v in variants {
+                                            if scheme_row(ui, v, std::ptr::eq(*v, self.scheme))
+                                                .clicked()
+                                            {
+                                                chosen = Some(*v);
+                                                ui.close();
+                                            }
+                                        }
+                                    });
+                                }
+                            },
+                        );
+                    }
+                });
+            });
+        response.on_hover_text(format!("Color scheme: {}", self.scheme.label()));
+        if let Some(v) = chosen {
+            self.choose(ui.ctx(), v);
+        }
     }
 
     /// Block until every receipt on screen has rendered (screenshots).
@@ -283,7 +477,7 @@ impl App {
                         egui::Align2::CENTER_CENTER,
                         initial,
                         theme::bold(15.0),
-                        Color32::WHITE,
+                        schemes::on(p.accent),
                     );
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 0.0;
@@ -374,25 +568,7 @@ impl App {
                         }
                     });
                 ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
-                    let label = if self.dark {
-                        format!("{} Light mode", icon::SUN)
-                    } else {
-                        format!("{} Dark mode", icon::MOON)
-                    };
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                RichText::new(label)
-                                    .font(theme::regular(12.5))
-                                    .color(p.muted),
-                            )
-                            .frame(false),
-                        )
-                        .clicked()
-                    {
-                        self.dark = !self.dark;
-                        theme::apply(ui.ctx(), self.dark);
-                    }
+                    self.scheme_menu(ui, false);
                     ui.add_space(6.0);
                     if let Some(b) = &books {
                         live_status(
@@ -433,7 +609,7 @@ impl App {
                     egui::Align2::CENTER_CENTER,
                     name.chars().next().unwrap_or('W'),
                     theme::bold(15.0),
-                    Color32::WHITE,
+                    schemes::on(p.accent),
                 );
                 ui.interact(r, ui.id().with("logo"), Sense::hover())
                     .on_hover_text(format!("{name} · Books"));
@@ -487,23 +663,7 @@ impl App {
                         }
                     });
                 ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
-                    let (glyph, tip) = if self.dark {
-                        (icon::SUN, "Light mode")
-                    } else {
-                        (icon::MOON, "Dark mode")
-                    };
-                    if ui
-                        .add(
-                            egui::Button::new(RichText::new(glyph).size(16.0).color(p.muted))
-                                .frame(false)
-                                .min_size(vec2(32.0, 32.0)),
-                        )
-                        .on_hover_text(tip)
-                        .clicked()
-                    {
-                        self.dark = !self.dark;
-                        theme::apply(ui.ctx(), self.dark);
-                    }
+                    self.scheme_menu(ui, true);
                     ui.add_space(6.0);
                     if let Some(b) = &books {
                         let live = self.loader.is_some() || self.live_label;
@@ -831,6 +991,68 @@ impl eframe::App for App {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        storage.set_string("dark", self.dark.to_string());
+        storage.set_string(SCHEME_KEY, self.scheme.key());
+        storage.set_string(FILTER_KEY, self.filter.name().to_string());
+        storage.set_string("dark", self.scheme.dark.to_string());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn kept(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let map: HashMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        move |k| map.get(k).cloned()
+    }
+
+    #[test]
+    fn the_kept_scheme_and_filter_come_back() {
+        let (s, f) = restored(
+            kept(&[
+                ("scheme", "Ayu/Mirage"),
+                ("scheme_filter", "Dark"),
+                ("dark", "false"),
+            ]),
+            false,
+        );
+        assert_eq!(s.key(), "Ayu/Mirage", "the scheme wins over the old choice");
+        assert_eq!(f, Filter::Dark);
+    }
+
+    #[test]
+    fn before_schemes_the_light_or_dark_choice_is_kept() {
+        let (s, f) = restored(kept(&[("dark", "true")]), false);
+        assert!(std::ptr::eq(s, schemes::own(true)));
+        assert_eq!(f, Filter::All);
+        let (s, _) = restored(kept(&[("dark", "false")]), true);
+        assert!(std::ptr::eq(s, schemes::own(false)));
+    }
+
+    #[test]
+    fn with_nothing_kept_the_systems_mode_decides() {
+        for dark in [false, true] {
+            let (s, f) = restored(kept(&[]), dark);
+            assert!(std::ptr::eq(s, schemes::own(dark)));
+            assert_eq!(f, Filter::All);
+        }
+    }
+
+    #[test]
+    fn a_lost_scheme_or_filter_falls_back() {
+        let (s, f) = restored(
+            kept(&[
+                ("scheme", "Gone/Away"),
+                ("scheme_filter", "Sepia"),
+                ("dark", "true"),
+            ]),
+            false,
+        );
+        assert!(std::ptr::eq(s, schemes::own(true)));
+        assert_eq!(f, Filter::All);
     }
 }

@@ -14,7 +14,9 @@ pub mod fmt;
 pub mod nav;
 pub mod pages;
 pub mod palette;
+mod prefs;
 mod receipts;
+mod schemes;
 #[cfg(test)]
 mod test_support;
 mod theme;
@@ -129,6 +131,9 @@ pub fn run(
             // Small on purpose: tiling window managers hand out small slots
             // regardless, and every screen lays itself out to fit.
             .with_min_inner_size([360.0, 400.0]),
+        // The platform's place for app settings, never the books' folder
+        // (prefs.rs).
+        persistence_path: prefs::prepare(),
         ..Default::default()
     };
     Ok(eframe::run_native(

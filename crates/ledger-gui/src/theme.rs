@@ -1,5 +1,5 @@
-//! Look and feel: one palette per mode, Inter with tabular figures, and
-//! the spacing the whole app shares.
+//! Look and feel: the palette of the color scheme in force (schemes.rs),
+//! Inter with tabular figures, and the spacing the whole app shares.
 
 use egui::{
     Color32, Context, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Margin, Stroke,
@@ -90,13 +90,16 @@ pub const DARK: Palette = Palette {
     ],
 };
 
-/// The palette for the current mode.
-pub fn pal(ctx: &Context) -> &'static Palette {
-    if ctx.global_style().visuals.dark_mode {
-        &DARK
-    } else {
-        &LIGHT
-    }
+/// Where the palette in force is kept, in the context's memory.
+fn palette_id() -> egui::Id {
+    egui::Id::new("wanderbooks-palette")
+}
+
+/// The palette in force: the scheme's that `apply` set, else the
+/// viewer's own for the current mode.
+pub fn pal(ctx: &Context) -> Palette {
+    ctx.data(|d| d.get_temp::<Palette>(palette_id()))
+        .unwrap_or_else(|| crate::schemes::own(ctx.global_style().visuals.dark_mode).palette())
 }
 
 pub const SEMIBOLD: &str = "semibold";
@@ -166,9 +169,18 @@ pub fn install_fonts(ctx: &Context) {
     ctx.set_fonts(fonts);
 }
 
-/// Apply the app's style for light or dark mode.
+/// Apply the viewer's own style for light or dark mode (tests).
+#[cfg(test)]
 pub fn apply(ctx: &Context, dark: bool) {
-    let p = if dark { &DARK } else { &LIGHT };
+    apply_scheme(ctx, crate::schemes::own(dark));
+}
+
+/// Apply a color scheme: its palette, everywhere.
+pub fn apply_scheme(ctx: &Context, scheme: &crate::schemes::Scheme) {
+    let dark = scheme.dark;
+    let palette = scheme.palette();
+    ctx.data_mut(|d| d.insert_temp(palette_id(), palette));
+    let p = &palette;
     let mut visuals = if dark {
         Visuals::dark()
     } else {
@@ -179,6 +191,9 @@ pub fn apply(ctx: &Context, dark: bool) {
     visuals.extreme_bg_color = p.surface;
     visuals.faint_bg_color = p.hover;
     visuals.override_text_color = Some(p.text);
+    // egui's weak text (placeholders, hints) is the text at 60% alpha
+    // unless set: the palette's secondary text, which is kept readable.
+    visuals.weak_text_color = Some(p.muted);
     visuals.hyperlink_color = p.accent;
     visuals.selection.bg_fill = p.selected;
     visuals.selection.stroke = Stroke::new(1.0, p.accent);
@@ -207,7 +222,21 @@ pub fn apply(ctx: &Context, dark: bool) {
     visuals.widgets.active.bg_fill = p.selected;
     visuals.widgets.active.weak_bg_fill = p.selected;
     visuals.widgets.active.fg_stroke = Stroke::new(1.0, p.text);
-    ctx.set_visuals(visuals);
+    visuals.widgets.open.bg_fill = p.hover;
+    visuals.widgets.open.weak_bg_fill = p.hover;
+    visuals.widgets.open.bg_stroke = Stroke::new(1.0, p.border);
+    visuals.widgets.open.fg_stroke = Stroke::new(1.0, p.text);
+    // egui keeps a light and a dark style and paints with the one its
+    // theme picks, which follows the system unless told: both get the
+    // scheme's visuals, and the theme is pinned to the scheme's mode, so
+    // a system that turns light or dark later changes nothing (review of
+    // the color schemes, 2026-10-19: figures went unreadable).
+    ctx.set_theme(if dark {
+        egui::Theme::Dark
+    } else {
+        egui::Theme::Light
+    });
+    ctx.all_styles_mut(|style| style.visuals = visuals.clone());
     ctx.all_styles_mut(|style| {
         style.text_styles = [
             (TextStyle::Heading, semibold(20.0)),

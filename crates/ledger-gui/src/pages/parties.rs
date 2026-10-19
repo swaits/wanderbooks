@@ -530,7 +530,7 @@ pub fn show_list(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                     };
                     let (out_t, out_c) = money(flow.paid, p.text);
                     let (in_t, in_c) = money(flow.received, p.positive);
-                    let (net_t, net_c) = paid_cell(flow.net(), p);
+                    let (net_t, net_c) = paid_cell(flow.net(), &p);
                     let resp = row(
                         ui,
                         w,

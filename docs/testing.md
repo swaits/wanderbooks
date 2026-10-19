@@ -406,6 +406,57 @@ reachable by a test:
 - the group's member check (`!` deleted), which agrees on every account
   whose own group lists no members, the usual case.
 
+## Viewer color schemes (2026-10-19)
+
+`ledger-gui/src/schemes.rs` (docs/color-schemes.md). No mutation run (the
+viewer's rule); its two musts are tested directly instead:
+- `schemes::painted::every_scheme_paints_the_same_words_and_figures_readably`
+  draws thirteen pages (an entry, the company, assets, documents, overview,
+  cash, profit, transactions, the P&L, the balance sheet, accounts,
+  parties, the journal) in all 80 schemes, a thread a page, and reads what
+  was painted where it can be seen: every run of text, report rows
+  included, is the same and in the same place in every scheme, and each is
+  at 4.5:1 or better against what was painted under it by then (the fills
+  in paint order, cut to their clips, translucent ones laid over what was
+  below; every section of a text, its own color or the fallback). It found
+  egui's placeholder text (its weak text, 60% alpha of the text) at 2.8:1.
+  Not painted by it: hover, selection and new-entry rows, tooltips and
+  the menu, whose grounds the palette tests check by arithmetic.
+- `the_system_turning_light_or_dark_changes_nothing`: starting as eframe
+  does (following the system), a scheme chosen and the system then
+  flipped leaves every painted color as it was. It fails on the first
+  version, which set only the current theme's style.
+- The palette tests check every scheme: every text color at 4.5:1 on
+  every ground (soft fills included), text over secondary over faint each
+  at least 1.2 times the contrast of the next on its worst ground, chart
+  series at 3:1 on cards and the hover tint, the charts' three series shown
+  together and gains, losses and text each ΔE 20 or more apart, the
+  logo's initial readable on the accent, light or dark as its background
+  is, and the filter showing exactly its mode; the menu test chooses,
+  filters and keeps a scheme, and its accessible labels check only the
+  family in force and select the variant in force; `app::tests` restores
+  the scheme (and the old light/dark choice) from the preferences.
+
+The first version's review (2026-10-19) found figures turning unreadable
+when the system's theme flipped, Ayu and the families after it out of
+reach in a short window, Income and Net the same color in twelve schemes,
+pills, faint figures and the logo initial below 4.5:1, a new-entry tint
+that bleached reds and greens, and a "same figures" test that compared
+only accessibility labels (no report rows); all fixed, with the tests
+above. Round 2 found secondary and faint text made alike by lifting each
+alone (identical in Wanderbooks Light), the painted test picking a text's
+ground without paint order or clips, and every family's accessible label
+carrying the hidden check; fixed, with the tests above. The owner, trying
+it (2026-10-19): Ayu out of reach (the family list scrolled inside the
+menu, its scroll bar hidden), the families not alphabetical, and a click on
+a variant's colors doing nothing. Now the families are alphabetical, in
+columns with no scrolling, and a variant's whole row is its button;
+`every_family_is_on_screen_in_order_and_a_whole_row_chooses` checks all
+three in a tall window and a short one. Earlier: the viewer's own light palette's green below 4.5:1 on the
+sidebar (4.35:1), and a first fix (moving colors toward the text color)
+that turned Everforest's red and green into the same grey; colors keep
+their hue and change only lightness.
+
 ## Benchmarks (baseline 2026-10-13)
 
 No budget, by decision (the owner, 2026-10-13: the books do little work

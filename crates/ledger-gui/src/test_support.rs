@@ -193,7 +193,7 @@ pub(crate) fn render(
     books: Books,
     route: Route,
     set: impl FnOnce(&mut PageState),
-) -> (Vec<Painted>, &'static crate::theme::Palette) {
+) -> (Vec<Painted>, crate::theme::Palette) {
     let (texts, _, p) = render_all(books, route, set);
     (texts, p)
 }
@@ -206,7 +206,7 @@ pub(crate) fn render_all(
 ) -> (
     Vec<Painted>,
     Vec<(egui::Rect, Color32)>,
-    &'static crate::theme::Palette,
+    crate::theme::Palette,
 ) {
     let mut h = Harness::builder()
         .with_size(egui::vec2(1400.0, 2400.0))

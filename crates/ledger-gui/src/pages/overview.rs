@@ -97,10 +97,10 @@ fn change(
     prev: Decimal,
     up_is_good: bool,
     what: &str,
+    p: &theme::Palette,
 ) -> Option<(String, egui::Color32)> {
     let pct = fmt::pct_change(prev, now)?;
     let good = (pct >= 0.0) == up_is_good;
-    let p = &theme::LIGHT;
     let arrow = if pct >= 0.0 { "▲" } else { "▼" };
     Some((
         format!("{arrow} {:.0}% vs {what}", pct.abs()),
@@ -153,8 +153,7 @@ fn kpis(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
             Kpi {
                 label: "Cash on hand",
                 value: fmt::dollars(k.cash),
-                sub: change(k.cash, k.cash_30d_ago, true, "30 days ago")
-                    .map(|(t, c)| (t, color_for(c, p))),
+                sub: change(k.cash, k.cash_30d_ago, true, "30 days ago", &p),
                 spark: Some(&cash_spark),
                 how: "The balance of every cash account (bank, savings, cash on hand) at the end of today.",
             },
@@ -179,8 +178,8 @@ fn kpis(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                     k.expenses_prev_month,
                     false,
                     "same days last month",
-                )
-                .map(|(t, c)| (t, color_for(c, p))),
+                    &p,
+                ),
                 spark: None,
                 how: "Expenses dated this month (accrual basis: when incurred, not when paid).",
             },
@@ -195,8 +194,8 @@ fn kpis(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                     k.revenue_prev_month,
                     true,
                     "same days last month",
-                )
-                .map(|(t, c)| (t, color_for(c, p))),
+                    &p,
+                ),
                 spark: None,
                 how: "Revenue dated this month.",
             },
@@ -239,18 +238,6 @@ fn kpis(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
             shell.go(route.clone());
         }
     });
-}
-
-/// `change` picks from the light palette; map to the current one.
-fn color_for(c: egui::Color32, p: &theme::Palette) -> egui::Color32 {
-    let l = &theme::LIGHT;
-    if c == l.positive {
-        p.positive
-    } else if c == l.negative {
-        p.negative
-    } else {
-        p.muted
-    }
 }
 
 /// "Needs attention", full width: a summary of how many problems, to-dos,

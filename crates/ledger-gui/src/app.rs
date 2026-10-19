@@ -45,6 +45,10 @@ impl Shell<'_> {
 /// families out in columns.
 const FAMILY_ROW: f32 = 34.0;
 
+/// How long the pointer rests on a scheme's row (or off every row) before
+/// that scheme (or the one in force) is worn, seconds.
+const PREVIEW_AFTER: f64 = 0.05;
+
 /// The width of a variant's row in a family's flyout: room for its colors
 /// and the longest name.
 const SCHEME_ROW_WIDTH: f32 = 200.0;
@@ -129,6 +133,12 @@ pub struct App {
     receipts: Receipts,
     /// The color scheme in force (schemes.rs).
     scheme: &'static Scheme,
+    /// The scheme being worn: the one in force, or one previewed while
+    /// its row in the menu is hovered.
+    shown: &'static Scheme,
+    /// The scheme the pointer asks for, and since when: worn once it has
+    /// asked for PREVIEW_AFTER.
+    wanted: Option<(&'static Scheme, f64)>,
     /// Which schemes its menu shows.
     filter: Filter,
     state: PageState,
@@ -171,6 +181,8 @@ impl App {
             nav: Nav::new(Route::Overview),
             receipts: Receipts::new(ctx),
             scheme,
+            shown: scheme,
+            wanted: None,
             filter: Filter::default(),
             state: PageState::default(),
             palette: Default::default(),
@@ -194,9 +206,61 @@ impl App {
         self.scheme.key()
     }
 
+    /// The scheme being worn ("Family/Variant"): a previewed one while
+    /// its row is hovered (tests).
+    pub fn shown_scheme_key(&self) -> String {
+        self.shown.key()
+    }
+
     fn choose(&mut self, ctx: &egui::Context, scheme: &'static Scheme) {
         self.scheme = scheme;
+        self.wear(ctx, scheme);
+    }
+
+    /// Wear `scheme`, in force or previewed.
+    fn wear(&mut self, ctx: &egui::Context, scheme: &'static Scheme) {
+        self.shown = scheme;
+        self.wanted = None;
         theme::apply_scheme(ctx, scheme);
+    }
+
+    /// The preview (owner, 2026-10-19: "when we hover over a scheme for
+    /// some time switch to it live; when we switch out of it go to either
+    /// the new thing we're hovering or back to the current one"). While
+    /// the menu is open, the scheme whose row is hovered, else the one in
+    /// force, is worn once the pointer has asked for it PREVIEW_AFTER
+    /// without change; the menu closed, the one in force is worn at once.
+    /// A preview is never kept: only a click chooses.
+    fn preview(&mut self, ctx: &egui::Context, open: bool, hovered: Option<&'static Scheme>) {
+        let want = match (open, hovered) {
+            (true, Some(s)) => s,
+            _ => self.scheme,
+        };
+        if std::ptr::eq(want, self.shown) {
+            self.wanted = None;
+            return;
+        }
+        if !open {
+            self.wear(ctx, want);
+            return;
+        }
+        let now = ctx.input(|i| i.time);
+        match self.wanted {
+            Some((s, since)) if std::ptr::eq(s, want) => {
+                let waited = now - since;
+                if waited >= PREVIEW_AFTER {
+                    self.wear(ctx, want);
+                } else {
+                    ctx.request_repaint_after(std::time::Duration::from_secs_f64(
+                        PREVIEW_AFTER - waited,
+                    ));
+                }
+            }
+            _ => {
+                self.wanted = Some((want, now));
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(PREVIEW_AFTER));
+            }
+        }
     }
 
     /// The color scheme button and its menu: a filter (all, light, dark),
@@ -219,7 +283,8 @@ impl App {
         let config = egui::containers::menu::MenuConfig::new()
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
         let mut chosen = None;
-        let (response, _) = egui::containers::menu::MenuButton::from_button(button)
+        let mut hovered = None;
+        let (response, open) = egui::containers::menu::MenuButton::from_button(button)
             .config(config)
             .ui(ui, |ui| {
                 ui.set_min_width(200.0);
@@ -273,9 +338,12 @@ impl App {
                                     );
                                     ui.menu_button(label, |ui| {
                                         for v in variants {
-                                            if scheme_row(ui, v, std::ptr::eq(*v, self.scheme))
-                                                .clicked()
-                                            {
+                                            let row =
+                                                scheme_row(ui, v, std::ptr::eq(*v, self.scheme));
+                                            if row.hovered() {
+                                                hovered = Some(*v);
+                                            }
+                                            if row.clicked() {
                                                 chosen = Some(*v);
                                                 ui.close();
                                             }
@@ -288,8 +356,9 @@ impl App {
                 });
             });
         response.on_hover_text(format!("Color scheme: {}", self.scheme.label()));
-        if let Some(v) = chosen {
-            self.choose(ui.ctx(), v);
+        match chosen {
+            Some(v) => self.choose(ui.ctx(), v),
+            None => self.preview(ui.ctx(), open.is_some(), hovered),
         }
     }
 

@@ -452,7 +452,11 @@ menu, its scroll bar hidden), the families not alphabetical, and a click on
 a variant's colors doing nothing. Now the families are alphabetical, in
 columns with no scrolling, and a variant's whole row is its button;
 `every_family_is_on_screen_in_order_and_a_whole_row_chooses` checks all
-three in a tall window and a short one. Earlier: the viewer's own light palette's green below 4.5:1 on the
+three in a tall window and a short one. The live preview (owner, the same
+day) is checked by `a_hovered_scheme_is_shown_live_and_only_a_click_keeps_it`
+with frames 10 ms apart: not worn before 50 ms, worn after, the next row's
+scheme on moving, the one in force off the rows and at once on closing,
+nothing kept until a click. Earlier: the viewer's own light palette's green below 4.5:1 on the
 sidebar (4.35:1), and a first fix (moving colors toward the text color)
 that turned Everforest's red and green into the same grey; colors keep
 their hue and change only lightness.

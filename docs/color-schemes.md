@@ -7,7 +7,11 @@ and the viewer's own two). The menu's filter narrows the list to light or
 dark schemes. Families are listed alphabetically, each one's variants too,
 in as many columns as the window's height needs, so every family is on
 screen at once; a variant's whole row (its colors and its name) chooses
-it.
+it. Resting the pointer on a variant's row for 50 ms wears it live, to
+sample schemes without choosing; off the rows, the next one hovered or the
+scheme in force is worn again, and closing the menu without a click puts
+back the one in force. Only a click chooses, and only a chosen scheme is
+kept.
 The choice is a viewer preference, kept with eframe's other preferences;
 nothing is written to the books, and no figure or word changes with the
 scheme (`schemes.rs`, `painted`).

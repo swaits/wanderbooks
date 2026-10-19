@@ -204,6 +204,87 @@ fn every_family_is_on_screen_in_order_and_a_whole_row_chooses() {
     }
 }
 
+/// Owner, 2026-10-19: a scheme hovered in the menu for a moment is worn
+/// live; off its row, the next one hovered, or the one in force, is worn
+/// again; nothing is chosen until a click.
+#[test]
+fn a_hovered_scheme_is_shown_live_and_only_a_click_keeps_it() {
+    let (_dir, source) = demo("schemes-preview");
+    let books = data::load_once(&source).unwrap();
+    // Frames 10 ms apart, to see the 50 ms wait.
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1440.0, 920.0))
+        .with_step_dt(0.01)
+        .build_eframe(|cc| App::with_books(&cc.egui_ctx, books, false, Route::Overview));
+    h.run_steps(3);
+    let page = |h: &Harness<'_, App>| h.ctx.global_style().visuals.panel_fill;
+    let light = page(&h);
+    h.get_by_label_contains("Wanderbooks Light").click();
+    h.run_steps(3);
+    family_row(&h, "Ayu").hover();
+    h.run_steps(3);
+    // A variant's row (the filter has a "Dark" too: the flyout's is last).
+    let rest_on = |h: &mut Harness<'_, App>, name: &str| {
+        let r = h.query_all_by_label(name).last().unwrap().rect();
+        h.hover_at(egui::pos2(r.left() + 20.0, r.center().y));
+    };
+    rest_on(&mut h, "Mirage");
+    h.run_steps(2);
+    assert_eq!(
+        h.state().shown_scheme_key(),
+        "Wanderbooks/Light",
+        "not before 50 ms"
+    );
+    h.run_steps(8);
+    assert_eq!(h.state().shown_scheme_key(), "Ayu/Mirage");
+    assert_eq!(
+        h.state().scheme_key(),
+        "Wanderbooks/Light",
+        "only shown, not chosen"
+    );
+    let mirage = page(&h);
+    assert_ne!(mirage, light);
+    // On to the next one hovered.
+    rest_on(&mut h, "Dark");
+    h.run_steps(10);
+    assert_eq!(h.state().shown_scheme_key(), "Ayu/Dark");
+    // Off every row: back to the one in force.
+    let filter = h.query_all_by_label("All").next().unwrap().rect();
+    h.hover_at(filter.center());
+    h.run_steps(10);
+    assert_eq!(h.state().shown_scheme_key(), "Wanderbooks/Light");
+    assert_eq!(page(&h), light);
+    // Closed while one is shown: the one in force, at once; nothing kept.
+    family_row(&h, "Ayu").hover();
+    h.run_steps(3);
+    rest_on(&mut h, "Mirage");
+    h.run_steps(10);
+    assert_eq!(h.state().shown_scheme_key(), "Ayu/Mirage");
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert_eq!(h.state().shown_scheme_key(), "Wanderbooks/Light");
+    assert_eq!(h.state().scheme_key(), "Wanderbooks/Light");
+    assert_eq!(page(&h), light);
+    let mut prefs = Prefs::default();
+    eframe::App::save(h.state_mut(), &mut prefs);
+    assert_eq!(
+        prefs.0["scheme"], "Wanderbooks/Light",
+        "a preview is never kept"
+    );
+    // A click keeps it.
+    h.get_by_label_contains("Wanderbooks Light").click();
+    h.run_steps(3);
+    family_row(&h, "Ayu").hover();
+    h.run_steps(3);
+    rest_on(&mut h, "Mirage");
+    h.run_steps(10);
+    h.get_by_label("Mirage").click();
+    h.run_steps(3);
+    assert_eq!(h.state().scheme_key(), "Ayu/Mirage");
+    assert_eq!(h.state().shown_scheme_key(), "Ayu/Mirage");
+    assert_eq!(page(&h), mirage);
+}
+
 /// Pictures of the menu and of a few schemes, for a person to look at
 /// (`SHOT_DIR=… cargo test -p ledger-gui --test schemes -- --ignored`).
 #[test]

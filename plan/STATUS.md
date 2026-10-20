@@ -1,6 +1,6 @@
-# STATUS — 2026-10-20: "Served" P0 and P1 live; P2 built, cutover next
+# STATUS — 2026-10-20: "Served" P0, P1 and P2 live; P3 next
 
-## Now: Served (plan/served.md), P0 and P1 live, P2 built
+## Now: Served (plan/served.md), P0, P1 and P2 live
 
 The 2026-10-16 audit of the first company's books (62 verified findings,
 20 engine defects) and the design discussion that followed produced
@@ -73,14 +73,29 @@ fixed: the admin answer's four-MiB line, and the CPA package's file
 naming (a twin's number in another folder; a name of dots climbing out of
 its folder). `docs/testing.md` lists what P12 must cover.
 
-**Next:** slice 9, the cutover of the first company's books (plan 7, P2
-cutover; ask the owner Q-3 and the backup addresses first, one at a time),
-then P3-P12 as planned (P3's design under way: one brief per defect group,
-each attacked by a reviewer). P11: one app for Windows, Mac and Linux
-(D-24). P12: max testing again (D-33). P13: bookspec (D-34), a formal,
-sourced accounting specification first, then its own formal validation
-and a conformance harness for any engine; P3's regression tests are its
-first examples.
+**P2 live on the first company's books, 2026-10-20 (slice 9).** Asked one
+at a time: the old copies move aside (Q-3), backups go to a new private
+repository on the owner's git server and to his Syncthing folder (Q-1,
+D-30). Adopted as "fernhill" at event 466, 66 stored files and the TIN
+vault checked; `books.verify` ok on the new server with the same head; the
+CPA package as of 2026-10-11, 2026-10-17 and 2026-10-20 canonically
+byte-identical before and after (record in that books dir,
+`goldens/p2-cutover-2026-10-20/`); both backups whole by a restore
+preview. The cutover added `wanderbooks books put-aside` (three review
+rounds of data safety), which moved the old copies whole into the private
+folder's `legacy/`. Agents connect with `wanderbooks connect`, the viewer is
+`wanderbooks gui fernhill`, and the books dir is a books home holding no
+books data. The before-check found defect 21 again (the IIF ignores
+`as_of`).
+
+**Next:** P3 (engine correctness; designed: one brief per defect group,
+each attacked by a reviewer, kept outside this public repo since they cite
+the first company's figures; the owner's questions come one at a time as
+each is built), then P4-P13 as planned. P11: one app for Windows, Mac and
+Linux (D-24). P12: max testing again (D-33). P13: bookspec (D-34), a
+formal, sourced accounting specification first, then its own formal
+validation and a conformance harness for any engine; P3's regression
+tests are its first examples.
 
 ---
 

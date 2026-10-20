@@ -2,8 +2,10 @@
 
 set shell := ["bash", "-cu"]
 
-# The Netlify CLI, fetched on demand.
-netlify := "npx --yes netlify-cli@27"
+# The Netlify CLI, fetched on demand. Its packages' native build scripts
+# (sharp, unix-dgram) fail on this machine and deploying needs neither, so
+# they are skipped.
+netlify := "npm_config_ignore_scripts=true npx --yes netlify-cli@27"
 
 # List recipes
 default:

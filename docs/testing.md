@@ -534,6 +534,24 @@ the keyring lost and saying when an agent refuses, the two lease
 intents), `one_executable.rs` (the scaffold gone, and saying so),
 `spec_kept.rs` (`isolation` is `same_user (advisory)`). Two review rounds.
 
+**Slice 9, the cutover's put-aside.** `wanderbooks books put-aside ID
+DATA-DIR [--vault DIR --vault-key FILE] [PATH...]` (root INVARIANT 8)
+moves the old copies of adopted books whole into numbered folders of
+their own in `legacy/`, a list of where each came from written first.
+`ledger-store/tests/root.rs` (seven: a preview moves nothing; every byte
+moved and the list written; refused while the books lack its journal, a
+stored file, a vault record or the key, or when its head moved since the
+preview; refused while held open, for a link, a path named twice, inside
+the root or missing, and for a vault or key given as a plain path;
+what adoption left behind and records the books sealed anew go aside
+too; a registry rewritten is refused; a move cut short puts back what it
+moved), `ledger-cli/tests/open_while_held.rs` (from the command line).
+Three review rounds of data safety alone (12 findings, then 5, then 3
+minor; all fixed but one: a vault record the old journal never named, a
+crash between sealing and journaling, would be listed as the books'
+newer copy; nothing is lost, the old vault going aside whole; hardening
+for P7).
+
 **Tests that mutation found, before the pause.** Pass 1 on slices 3 to 6
 (each crate's own tests, the viewer left out): `ledger-store` 385 mutants
 (44 missed), `ledger-package` 137 (38), `ledger-mcp` 497 (247),

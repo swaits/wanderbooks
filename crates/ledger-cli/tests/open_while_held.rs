@@ -28,6 +28,30 @@ struct Home {
     exe: PathBuf,
 }
 
+/// Wait until a program just copied can be run. A child another test
+/// thread forked while the copy was being written holds the copy open for
+/// writing until it starts its own program, and running the copy before
+/// then fails with "text file busy".
+fn runnable(program: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match Command::new(program)
+            .arg("--help")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+        {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                assert!(Instant::now() < deadline, "the copy stayed busy");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => panic!("the copy can't be run: {e}"),
+            Ok(_) => return,
+        }
+    }
+}
+
 impl Home {
     fn new(tag: &str) -> Self {
         let dir = tempfile::Builder::new()
@@ -53,6 +77,7 @@ impl Home {
         std::fs::create_dir(&bin).unwrap();
         let copy = bin.join("wanderbooks");
         std::fs::copy(env!("CARGO_BIN_EXE_wanderbooks"), &copy).unwrap();
+        runnable(&copy);
         self.exe = copy;
         self
     }
@@ -61,6 +86,7 @@ impl Home {
     fn replace_program(&self) {
         let next = self.exe.with_extension("new");
         std::fs::copy(env!("CARGO_BIN_EXE_wanderbooks"), &next).unwrap();
+        runnable(&next);
         std::fs::rename(&next, &self.exe).unwrap();
     }
 
@@ -1914,6 +1940,70 @@ fn the_books_command_takes_its_flags_and_asks_before_adopting() {
     assert!(hash.chars().all(|c| c.is_ascii_hexdigit()), "{head}");
 }
 
+#[test]
+fn adopted_books_old_copies_are_put_aside_from_the_command_line() {
+    let home = Home::new("aside");
+    let old = tempfile::Builder::new()
+        .prefix("wb-held-aside-")
+        .tempdir()
+        .unwrap();
+    let data = old.path().join("books-data");
+    drop(ledger_store::Store::create(&data, ledger_core::Currency::USD).unwrap());
+    let toml = old.path().join("wanderbooks.toml");
+    std::fs::write(&toml, "[company]\nname = \"Old Co\"\n").unwrap();
+    let (d, t) = (data.to_str().unwrap(), toml.to_str().unwrap());
+    let out = home.books(&[
+        "adopt",
+        d,
+        "--id",
+        "old",
+        "--toml",
+        t,
+        "--no-vault",
+        "--yes",
+    ]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let err = |o: &std::process::Output| String::from_utf8_lossy(&o.stderr).to_string();
+    let said = |o: &std::process::Output| String::from_utf8_lossy(&o.stdout).to_string();
+    // Not at a terminal and no --yes: what would go aside, and nothing moved.
+    let out = home.books(&["put-aside", "old", d, t]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(err(&out).contains("not put aside"), "{}", err(&out));
+    assert!(
+        said(&out).contains("These go aside, each whole"),
+        "{}",
+        said(&out)
+    );
+    assert!(said(&out).contains("byte for byte"), "{}", said(&out));
+    assert!(said(&out).contains("Nothing is deleted"), "{}", said(&out));
+    assert!(data.is_dir() && toml.is_file());
+    // A vault comes with its key; books of no such name hold nothing.
+    let out = home.books(&["put-aside", "old", d, "--vault", t, "--yes"]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(err(&out).contains("together"), "{}", err(&out));
+    let out = home.books(&["put-aside", "nobody", d, "--yes"]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(data.is_dir());
+    // With --yes: moved, whole, into the legacy folder; the books go on.
+    let out = home.books(&["put-aside", "old", d, t, "--yes"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(said(&out).contains("Put aside: 2 paths"), "{}", said(&out));
+    assert!(!data.exists() && !toml.exists());
+    let legacy: Vec<_> = std::fs::read_dir(home.root().join("legacy"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(legacy.len(), 1, "{legacy:?}");
+    assert!(legacy[0].join("1/books-data/journal.jsonl").is_file());
+    assert!(legacy[0].join("put-aside.txt").is_file());
+    assert_eq!(
+        std::fs::read_to_string(legacy[0].join("2/wanderbooks.toml")).unwrap(),
+        "[company]\nname = \"Old Co\"\n"
+    );
+    let listed = said(&home.books(&["list"]));
+    assert!(listed.contains("old"), "{listed}");
+}
+
 /// A program that starts the bridge with its stderr closed (some launchers
 /// do) still gets a working bridge, its descriptor 2 on /dev/null: Rust's
 /// runtime opens it before main, so no socket the bridge opens can take
@@ -2494,7 +2584,10 @@ fn an_agent_is_connected_and_reaches_the_books_by_what_it_was_given() {
     let out = connect("claude", &bin);
     assert!(out.status.success(), "{out:?}");
     let said = String::from_utf8_lossy(&out.stdout);
-    assert!(said.contains("Made the books beta' agent token"), "{said}");
+    assert!(
+        said.contains("Made the agent token of the books beta,"),
+        "{said}"
+    );
     assert!(
         said.contains("Claude Code reaches the books beta"),
         "{said}"
@@ -2525,7 +2618,7 @@ fn an_agent_is_connected_and_reaches_the_books_by_what_it_was_given() {
     let out = connect("claude", &bin);
     assert!(out.status.success(), "{out:?}");
     assert!(
-        !String::from_utf8_lossy(&out.stdout).contains("Made the books"),
+        !String::from_utf8_lossy(&out.stdout).contains("Made the agent token"),
         "{out:?}"
     );
     // Codex: its own list, no scope.
@@ -2677,7 +2770,7 @@ fn connect_makes_anew_a_token_the_keyring_lost_and_says_when_an_agent_refuses() 
     let out = connect(&bin);
     assert!(out.status.success(), "{out:?}");
     assert!(
-        String::from_utf8_lossy(&out.stdout).contains("Made the books acme' agent token"),
+        String::from_utf8_lossy(&out.stdout).contains("Made the agent token of the books acme,"),
         "{out:?}"
     );
     // The agent's own command refuses: said, with what it said.

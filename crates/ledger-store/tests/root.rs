@@ -6,7 +6,7 @@ use chrono::NaiveDate;
 use ledger_core::settings::{Change, Source};
 use ledger_core::{AccountType, Currency, Money, Side};
 use ledger_store::root::{
-    AdoptOptions, BookId, LOCATION_FILE, MARKER_FILE, Root, RootError, default_root,
+    AdoptOptions, BookId, LOCATION_FILE, MARKER_FILE, OldCopies, Root, RootError, default_root,
     platform_data_dir,
 };
 use ledger_store::{JOURNAL_FILE, JournalLine, Snapshot, Store, StoreError};
@@ -1347,4 +1347,337 @@ fn a_restore_never_moves_books_something_holds() {
         .filter(|n| n.starts_with('.'))
         .collect();
     assert!(left.is_empty(), "{left:?}");
+}
+
+/// Old books beside their vault, key, settings file and git history, as an
+/// old books dir kept them, adopted into a new root as "acme" (with their
+/// vault and key unless `vault` is false): the home, the root, and the old
+/// dir.
+fn adopted_old_dir(tag: &str, vault: bool) -> (tempfile::TempDir, Root, tempfile::TempDir) {
+    let home = tmp(tag);
+    let (root, _) = Root::setup(home.path(), None, None).unwrap();
+    let old = tmp(&format!("{tag}-old"));
+    let data = old.path().join("books-data");
+    let head = source_books(&data, true).head();
+    std::fs::create_dir(old.path().join("vault")).unwrap();
+    std::fs::write(old.path().join("vault/tin-7.bin"), b"sealed record").unwrap();
+    std::fs::write(
+        old.path().join("vault.key"),
+        b"0123456789abcdef0123456789abcdef",
+    )
+    .unwrap();
+    std::fs::write(old.path().join("wanderbooks.toml"), b"[viewer]\n").unwrap();
+    std::fs::create_dir_all(old.path().join(".git/objects")).unwrap();
+    std::fs::write(old.path().join(".git/objects/ab"), b"history").unwrap();
+    let (vault_dir, vault_key) = (old.path().join("vault"), old.path().join("vault.key"));
+    root.adopt(
+        &data,
+        &id("acme"),
+        &AdoptOptions {
+            settings: None,
+            vault_dir: vault.then_some(vault_dir),
+            vault_key: vault.then_some(vault_key),
+            expect_head: Some(head),
+        },
+    )
+    .unwrap();
+    (home, root, old)
+}
+
+/// The paths of an old dir from [`adopted_old_dir`] beside its data folder.
+struct OldPaths {
+    data: PathBuf,
+    vault: PathBuf,
+    key: PathBuf,
+    also: Vec<PathBuf>,
+}
+
+fn old_paths(old: &Path) -> OldPaths {
+    OldPaths {
+        data: old.join("books-data"),
+        vault: old.join("vault"),
+        key: old.join("vault.key"),
+        also: vec![old.join("wanderbooks.toml"), old.join(".git")],
+    }
+}
+
+fn copies<'a>(p: &'a OldPaths, expect_head: Option<&'a (u64, String)>) -> OldCopies<'a> {
+    OldCopies {
+        source: &p.data,
+        vault_dir: Some(&p.vault),
+        vault_key: Some(&p.key),
+        also: &p.also,
+        expect_head,
+    }
+}
+
+#[test]
+fn old_copies_go_aside_whole_once_the_books_hold_them() {
+    let (_home, root, old) = adopted_old_dir("aside", true);
+    let p = old_paths(old.path());
+    let before = snapshot_files(old.path());
+    let book_before = snapshot_files(&root.book_dir(&id("acme")));
+
+    // A preview: what would move and where, what was checked, and nothing
+    // moved or written.
+    let preview = root
+        .put_aside(&id("acme"), &copies(&p, None), false)
+        .unwrap();
+    assert!(!preview.moved);
+    assert!(preview.name.starts_with("acme-old-"), "{}", preview.name);
+    assert_eq!(preview.items.len(), 5);
+    assert_eq!(
+        (preview.blob_files, preview.vault_files, preview.key_checked),
+        (2, 1, true)
+    );
+    assert_eq!(snapshot_files(old.path()), before);
+    assert!(!root.path().join("legacy").join(&preview.name).exists());
+
+    let done = root
+        .put_aside(&id("acme"), &copies(&p, Some(&preview.head)), true)
+        .unwrap();
+    assert!(done.moved);
+    assert_eq!(done.head, preview.head);
+    // Gone from the old folder; every byte of it in a private folder of its
+    // own in legacy/, each path in the numbered folder of its own.
+    assert_eq!(std::fs::read_dir(old.path()).unwrap().count(), 0);
+    let into = root.path().join("legacy").join(&done.name);
+    assert_eq!(mode(&into), 0o700);
+    let order = [
+        "books-data",
+        "vault",
+        "vault.key",
+        "wanderbooks.toml",
+        ".git",
+    ];
+    let moved: Vec<(PathBuf, Vec<u8>)> = snapshot_files(&into)
+        .into_iter()
+        .filter(|(f, _)| f.file_name().unwrap() != "put-aside.txt")
+        .map(|(f, b)| {
+            let rel = f.strip_prefix(&into).unwrap();
+            let mut parts = rel.components();
+            let k: usize = parts
+                .next()
+                .unwrap()
+                .as_os_str()
+                .to_str()
+                .unwrap()
+                .parse()
+                .unwrap();
+            let rest = parts.as_path();
+            assert!(rest.starts_with(order[k - 1]), "{}", rel.display());
+            (old.path().join(rest), b)
+        })
+        .collect();
+    let mut moved = moved;
+    moved.sort();
+    assert_eq!(moved, before);
+    // Where each came from, written down, and the move said finished.
+    let list = std::fs::read_to_string(into.join("put-aside.txt")).unwrap();
+    assert_eq!(mode(&into.join("put-aside.txt")), 0o600);
+    for (k, item) in done.items.iter().enumerate() {
+        assert!(
+            list.contains(&format!("{}  {}\n", k + 1, item.display())),
+            "{list}"
+        );
+    }
+    assert!(list.contains("Finished"), "{list}");
+    // The adopted books are untouched.
+    assert_eq!(snapshot_files(&root.book_dir(&id("acme"))), book_before);
+    Store::open(&root.book_dir(&id("acme")))
+        .unwrap()
+        .verify()
+        .unwrap();
+    // Nothing is left to put aside a second time.
+    assert!(matches!(
+        refused(root.put_aside(&id("acme"), &copies(&p, None), true)),
+        RootError::Adopt(_)
+    ));
+}
+
+#[test]
+fn old_copies_stay_unless_the_books_hold_everything_they_do() {
+    let empty_legacy = |root: &Root| {
+        assert_eq!(
+            std::fs::read_dir(root.path().join("legacy"))
+                .unwrap()
+                .count(),
+            0
+        );
+    };
+    // Written after the adoption: the books no longer hold its journal.
+    let (_home, root, old) = adopted_old_dir("aside-newer", true);
+    let p = old_paths(old.path());
+    {
+        let mut s = Store::open(&p.data).unwrap();
+        s.add_account("6100", "Postage", AccountType::Expense, None, false)
+            .unwrap();
+    }
+    let before = snapshot_files(old.path());
+    for confirm in [false, true] {
+        let e = refused(root.put_aside(&id("acme"), &copies(&p, None), confirm));
+        assert!(e.to_string().contains("its journal through event"), "{e}");
+        // Nor do books of another name.
+        let e = refused(root.put_aside(&id("other"), &copies(&p, None), confirm));
+        assert!(e.to_string().contains("no books called"), "{e}");
+    }
+    assert_eq!(snapshot_files(old.path()), before);
+    empty_legacy(&root);
+
+    // Adopted without the vault: the vault and its key aren't the books'.
+    let (_home, root, old) = adopted_old_dir("aside-novault", false);
+    let p = old_paths(old.path());
+    let e = refused(root.put_aside(&id("acme"), &copies(&p, None), true));
+    assert!(e.to_string().contains("the vault record tin-7.bin"), "{e}");
+    let key_only = OldCopies {
+        vault_dir: None,
+        ..copies(&p, None)
+    };
+    let e = refused(root.put_aside(&id("acme"), &key_only, true));
+    assert!(e.to_string().contains("the vault's key"), "{e}");
+    // A stored file the books never got.
+    let (_home, root, old) = adopted_old_dir("aside-blob", true);
+    let p = old_paths(old.path());
+    let blobs = p.data.join("blobs");
+    std::fs::write(blobs.join("stray.bin"), b"a file the books never named").unwrap();
+    let e = refused(root.put_aside(&id("acme"), &copies(&p, None), true));
+    assert!(e.to_string().contains("the stored file stray.bin"), "{e}");
+    empty_legacy(&root);
+    // The old copy moved on since the preview.
+    let (_home, root, old) = adopted_old_dir("aside-head", true);
+    let p = old_paths(old.path());
+    let stale = (1, "0".repeat(64));
+    let e = refused(root.put_aside(&id("acme"), &copies(&p, Some(&stale)), true));
+    assert!(
+        e.to_string().contains("changed since it was looked at"),
+        "{e}"
+    );
+    empty_legacy(&root);
+}
+
+#[test]
+fn old_copies_held_open_linked_named_twice_inside_the_root_or_missing_stay() {
+    let (_home, root, old) = adopted_old_dir("aside-refused", true);
+    let p = old_paths(old.path());
+    let before = snapshot_files(old.path());
+    {
+        // Held open for writing.
+        let _held = Store::open(&p.data).unwrap();
+        for confirm in [false, true] {
+            let e = refused(root.put_aside(&id("acme"), &copies(&p, None), confirm));
+            assert!(
+                matches!(e, RootError::Store(_, StoreError::Locked(_))),
+                "{e}"
+            );
+        }
+    }
+    let link = old.path().join("link-to-git");
+    std::os::unix::fs::symlink(old.path().join(".git"), &link).unwrap();
+    let inside_data = vec![p.data.join(JOURNAL_FILE)];
+    let twice = vec![p.also[0].clone(), p.also[0].clone()];
+    let in_root = vec![root.path().join("books")];
+    let missing = vec![old.path().join("no-such-thing")];
+    let linked = vec![link.clone()];
+    for bad in [inside_data, twice, in_root, missing, linked] {
+        for confirm in [false, true] {
+            let c = OldCopies {
+                also: &bad,
+                ..copies(&p, None)
+            };
+            let e = refused(root.put_aside(&id("acme"), &c, confirm));
+            assert!(matches!(e, RootError::Adopt(_)), "{bad:?}: {e}");
+            // No error names the root.
+            assert!(
+                !e.to_string().contains(&*root.path().to_string_lossy()),
+                "{e}"
+            );
+        }
+    }
+    std::fs::remove_file(&link).unwrap();
+    assert_eq!(snapshot_files(old.path()), before);
+}
+
+#[test]
+fn a_put_aside_cut_short_puts_back_what_it_moved() {
+    let (_home, root, old) = adopted_old_dir("aside-cut", true);
+    let mut p = old_paths(old.path());
+    // The last path's folder lets nothing out: the others have moved by
+    // then, and go back.
+    let shut = old.path().join("shut");
+    std::fs::create_dir(&shut).unwrap();
+    std::fs::write(shut.join("notes.txt"), b"notes").unwrap();
+    p.also.push(shut.join("notes.txt"));
+    std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let before = snapshot_files(old.path());
+    let e = refused(root.put_aside(&id("acme"), &copies(&p, None), true));
+    std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(e.to_string().contains("nothing was put aside"), "{e}");
+    assert_eq!(snapshot_files(old.path()), before);
+    let legacy = root.path().join("legacy");
+    assert_eq!(std::fs::read_dir(&legacy).unwrap().count(), 0);
+}
+
+#[test]
+fn what_adoption_left_behind_and_what_the_books_sealed_anew_still_go_aside() {
+    let (_home, root, old) = adopted_old_dir("aside-left", true);
+    let p = old_paths(old.path());
+    // Never part of the books, so adoption left them: a hidden file and an
+    // unfinished write.
+    let blobs = p.data.join("blobs");
+    let shard = std::fs::read_dir(&blobs)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|d| d.is_dir())
+        .unwrap();
+    std::fs::write(blobs.join(".DS_Store"), b"finder").unwrap();
+    std::fs::write(shard.join(format!("{}.tmp", "a".repeat(64))), b"half").unwrap();
+    // The books sealed a record anew since, and grew the registry of files
+    // with full TINs.
+    let vault = root.book_dir(&id("acme")).join("vault");
+    std::fs::write(vault.join("tin-7.bin"), b"sealed anew").unwrap();
+    std::fs::write(p.vault.join("tin-files.sha256"), b"aa\n").unwrap();
+    std::fs::write(vault.join("tin-files.sha256"), b"aa\nbb\n").unwrap();
+    let preview = root
+        .put_aside(&id("acme"), &copies(&p, None), false)
+        .unwrap();
+    assert_eq!(preview.left_behind.len(), 2, "{:?}", preview.left_behind);
+    assert_eq!(preview.vault_changed, vec![PathBuf::from("tin-7.bin")]);
+    assert_eq!(preview.vault_files, 2);
+    let done = root
+        .put_aside(&id("acme"), &copies(&p, Some(&preview.head)), true)
+        .unwrap();
+    let into = root.path().join("legacy").join(&done.name);
+    assert!(into.join("1/books-data/blobs/.DS_Store").is_file());
+    assert_eq!(
+        std::fs::read(into.join("2/vault/tin-7.bin")).unwrap(),
+        b"sealed record"
+    );
+}
+
+#[test]
+fn a_registry_rewritten_or_a_vault_given_unchecked_is_refused() {
+    let (_home, root, old) = adopted_old_dir("aside-registry", true);
+    let p = old_paths(old.path());
+    let vault = root.book_dir(&id("acme")).join("vault");
+    std::fs::write(p.vault.join("tin-files.sha256"), b"aa\n").unwrap();
+    std::fs::write(vault.join("tin-files.sha256"), b"zz\n").unwrap();
+    let e = refused(root.put_aside(&id("acme"), &copies(&p, None), true));
+    assert!(e.to_string().contains("tin-files.sha256"), "{e}");
+    // The vault or its key among the other paths: never moved unchecked.
+    for plain in [p.vault.clone(), p.key.clone()] {
+        let also = vec![plain];
+        let c = OldCopies {
+            source: &p.data,
+            vault_dir: None,
+            vault_key: None,
+            also: &also,
+            expect_head: None,
+        };
+        let e = refused(root.put_aside(&id("acme"), &c, false));
+        assert!(
+            e.to_string().contains("--vault DIR --vault-key FILE"),
+            "{e}"
+        );
+    }
+    assert!(p.vault.is_dir() && p.key.is_file());
 }

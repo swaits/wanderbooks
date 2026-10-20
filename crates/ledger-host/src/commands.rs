@@ -398,6 +398,9 @@ fn books_usage(prog: &str) {
     );
     eprintln!("       {prog} restore BACKUP [--id ID] [--replace] [--yes]");
     eprintln!("       {prog} back-up ID [--new-disk]");
+    eprintln!(
+        "       {prog} put-aside ID DATA-DIR [--vault DIR --vault-key FILE] [PATH...] [--yes]"
+    );
     eprintln!("  list    the books, and whether each is open");
     eprintln!("  create  start new, empty books (base currency USD unless given)");
     eprintln!("  adopt   copy existing books in, verified; the original is left as it was");
@@ -406,6 +409,9 @@ fn books_usage(prog: &str) {
     );
     eprintln!(
         "  restore bring back a backup (a git repository's address, or BOOK.git in the backup folder), proven whole first: as new books, or replacing books (kept in legacy/)"
+    );
+    eprintln!(
+        "  put-aside move the old copies of adopted books (their data folder, their vault and its key, and other paths given: settings file, git history) whole into the legacy folder, once the books hold everything they do, byte for byte; nothing is deleted"
     );
 }
 
@@ -488,6 +494,17 @@ pub fn books(
             );
         }
         ["restore", source] => return restore(&common, source, id, replace, yes),
+        ["put-aside", book, source, also @ ..] => {
+            let also: Vec<PathBuf> = also.iter().map(PathBuf::from).collect();
+            let old = ledger_store::root::OldCopies {
+                source: Path::new(source),
+                vault_dir: vault.as_deref(),
+                vault_key: vault_key.as_deref(),
+                also: &also,
+                expect_head: None,
+            };
+            return put_aside(&common, book, old, yes);
+        }
         ["back-up", book] => {
             return match back_up_now(&common, book, new_disk) {
                 Ok(lines) => {
@@ -805,7 +822,7 @@ pub fn connect_agent(common: &Common, agent: &str, book: &str) -> Result<Vec<Str
             .collect();
         make_token(common, &book, crate::tokens::DEFAULT_NAME, scopes, true)?;
         lines.push(format!(
-            "Made the books {book}' agent token, kept in this computer's keyring."
+            "Made the agent token of the books {book}, kept in this computer's keyring."
         ));
     }
     // The agent's own list: the books' entry made anew.
@@ -1333,6 +1350,103 @@ fn adopt(
         }
         Ok(Response::Refused(why)) | Err(why) => fail(format!("{shown}: {why}")),
         Ok(other) => fail(format!("the books server answered oddly: {other:?}")),
+    }
+}
+
+/// `wanderbooks books put-aside` (INVARIANT 8 of the root): what goes
+/// aside and what was checked, asked for (or --yes), then moved, only if
+/// the old copy is still as the preview read it.
+fn put_aside(
+    common: &Common,
+    book: &str,
+    old: ledger_store::root::OldCopies<'_>,
+    yes: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let fail = |why: String| -> Result<(), Box<dyn std::error::Error>> {
+        eprintln!("error: {why}");
+        Err(exit(1))
+    };
+    if old.vault_dir.is_some() != old.vault_key.is_some() {
+        return fail(
+            "give the vault's folder and its key together, with --vault DIR --vault-key FILE"
+                .into(),
+        );
+    }
+    let root = match ledger_store::root::Root::find(common.root.as_deref()) {
+        Ok(root) => root,
+        Err(e) => return fail(e.to_string()),
+    };
+    let id = match ledger_store::root::BookId::parse(book) {
+        Ok(id) => id,
+        Err(e) => return fail(e.to_string()),
+    };
+    let preview = match root.put_aside(&id, &old, false) {
+        Ok(p) => p,
+        Err(e) => return fail(e.to_string()),
+    };
+    let mut held = format!(
+        "its journal through event {} ({}) and its {} stored files",
+        preview.head.0,
+        short_hash(&preview.head.1),
+        preview.blob_files
+    );
+    if preview.key_checked {
+        held.push_str(&format!(
+            ", its {} vault records and the vault's key",
+            preview.vault_files
+        ));
+    }
+    let alike = if preview.vault_changed.is_empty() {
+        "byte for byte"
+    } else {
+        "byte for byte, or newer"
+    };
+    println!("The books \"{id}\" hold everything the old copy does, {alike}: {held}.");
+    println!(
+        "These go aside, each whole in a numbered folder of its own, into the legacy folder as {}:",
+        preview.name
+    );
+    for (k, item) in preview.items.iter().enumerate() {
+        println!("  {}  {}", k + 1, item.display());
+    }
+    if !preview.vault_changed.is_empty() {
+        println!(
+            "The books have sealed these vault records anew since (theirs is newer; the old ones go aside too):"
+        );
+        for rel in &preview.vault_changed {
+            println!("  {}", rel.display());
+        }
+    }
+    if !preview.left_behind.is_empty() {
+        println!(
+            "These files beside the stored files were never part of the books (left behind by adoption; they go aside too):"
+        );
+        for rel in &preview.left_behind {
+            println!("  {}", rel.display());
+        }
+    }
+    println!("Nothing is deleted; a list of where each came from is kept with them.");
+    if !confirmed("Put them aside?", yes).map_err(|why| {
+        eprintln!("error: not put aside: {why}");
+        exit(1)
+    })? {
+        println!("Nothing was put aside.");
+        return Ok(());
+    }
+    let old = ledger_store::root::OldCopies {
+        expect_head: Some(&preview.head),
+        ..old
+    };
+    match root.put_aside(&id, &old, true) {
+        Ok(done) => {
+            println!(
+                "Put aside: {} paths, in the legacy folder as {}.",
+                done.items.len(),
+                done.name
+            );
+            Ok(())
+        }
+        Err(e) => fail(e.to_string()),
     }
 }
 

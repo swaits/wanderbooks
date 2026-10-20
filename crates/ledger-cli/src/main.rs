@@ -16,7 +16,7 @@ fn print_usage() {
     eprintln!("usage: wanderbooks setup [--root PATH] [--home DIR]");
     eprintln!("       wanderbooks gui [BOOK | --root PATH --book ID | --data-dir PATH ...]");
     eprintln!(
-        "       wanderbooks books list | create ID | adopt DATA-DIR --id ID | restore BACKUP | back-up ID"
+        "       wanderbooks books list | create ID | adopt DATA-DIR --id ID | restore BACKUP | back-up ID | put-aside ID DATA-DIR [PATH...]"
     );
     eprintln!("       wanderbooks connect claude|codex --book ID");
     eprintln!(

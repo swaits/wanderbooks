@@ -36,6 +36,14 @@
 //!      is (INVARIANT 5), and its head must be the one the preview read;
 //!      it never overwrites: books it replaces are moved whole into
 //!      `legacy/`, only when asked, and only while nothing holds them.
+//!   8. Putting old copies aside (after an adoption) deletes nothing: each
+//!      path is moved whole into a numbered folder of its own in `legacy/`,
+//!      a list of where each came from written there first; only when the
+//!      adopted books hold everything the old copy holds, byte for byte
+//!      (journal, stored files, vault records, key); only while no
+//!      wanderbooks process holds it open for writing; only on the root's
+//!      own disk; and a move cut short puts back what it moved, never over
+//!      anything.
 //! ```
 
 use crate::error::StoreError;
@@ -1127,6 +1135,475 @@ impl Root {
         })()
         .map_err(|e| self.hide(e))
     }
+
+    /// Put the old copies of the books `id` aside (INVARIANT 8): the
+    /// data folder they were adopted from, their TIN vault and its key,
+    /// and other paths that hold them too (their settings file, the git
+    /// history around them, old exports), each moved whole into a numbered
+    /// folder of its own in one folder of `legacy/`, nothing deleted, with
+    /// a list of where each came from written there first. Refused unless
+    /// the books `id` hold everything the old copy does, byte for byte: its
+    /// journal (its head is in theirs), every stored file, every vault
+    /// record and the vault's key; while a wanderbooks process holds the
+    /// old copy open for writing; when its head isn't the one a preview
+    /// read (`expect_head`); for a path that isn't there, is a link, is
+    /// inside the root or holds it, or is inside another one given; and
+    /// for a path on another disk than the root (moving it there would be
+    /// a copy). Without `confirm` it moves and writes nothing: what would
+    /// move, and where. A move cut short puts back what it moved, never
+    /// over anything.
+    pub fn put_aside(
+        &self,
+        id: &BookId,
+        old: &OldCopies<'_>,
+        confirm: bool,
+    ) -> Result<PutAside, RootError> {
+        (|| {
+            let root = std::fs::canonicalize(&self.path)?;
+            let book = self.book_dir(id);
+            if !book.join(JOURNAL_FILE).is_file() {
+                return Err(RootError::Adopt(format!(
+                    "there are no books called {:?}",
+                    id.as_str()
+                )));
+            }
+            let given: Vec<&Path> = std::iter::once(old.source)
+                .chain(old.vault_dir)
+                .chain(old.vault_key)
+                .chain(old.also.iter().map(PathBuf::as_path))
+                .collect();
+            let mut items = Vec::new();
+            for given in given {
+                let given = std::path::absolute(given)?;
+                let shown = given
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| given.display().to_string());
+                let (Some(parent), Some(name)) = (given.parent(), given.file_name()) else {
+                    return Err(RootError::Adopt(format!("{shown} can't be put aside")));
+                };
+                let path = std::fs::canonicalize(parent)
+                    .map_err(|e| RootError::Adopt(format!("{shown}: {}", e.kind())))?
+                    .join(name);
+                let meta = std::fs::symlink_metadata(&path)
+                    .map_err(|e| RootError::Adopt(format!("{shown}: {}", e.kind())))?;
+                // A link would go aside as a link, its data left where it
+                // is: name what it points to instead.
+                if meta.file_type().is_symlink() {
+                    return Err(RootError::Adopt(format!(
+                        "{shown} is a link: name what it points to"
+                    )));
+                }
+                // Named by its last part only: a path into the root never
+                // shows where the root is (INVARIANT 6).
+                if path.starts_with(&root) || root.starts_with(&path) {
+                    return Err(RootError::Adopt(format!(
+                        "{shown} is inside {THE_ROOT} (or holds it): only what is outside it is \
+                         put aside"
+                    )));
+                }
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::MetadataExt;
+                    if meta.dev() != std::fs::metadata(&root)?.dev() {
+                        return Err(RootError::Adopt(format!(
+                            "{} is on another disk than {THE_ROOT}: moving it there would be a \
+                             copy, so nothing is put aside",
+                            path.display()
+                        )));
+                    }
+                }
+                // A vault or its key among the other paths would go aside
+                // unchecked: each comes by its own name, and is checked.
+                let k = items.len();
+                let checked = (k == 1 && old.vault_dir.is_some())
+                    || (k == 1 + usize::from(old.vault_dir.is_some()) && old.vault_key.is_some());
+                let beside_vault = items
+                    .first()
+                    .and_then(|s: &PathBuf| s.parent())
+                    .is_some_and(|dir| path == dir.join(VAULT_DIR));
+                if k > 0 && !checked && (beside_vault || name == "vault.key") {
+                    return Err(RootError::Adopt(format!(
+                        "{shown} looks like the TIN vault or its key: give it with --vault DIR \
+                         --vault-key FILE, so it is checked against the books before it goes"
+                    )));
+                }
+                items.push(path);
+            }
+            for (i, a) in items.iter().enumerate() {
+                for (j, b) in items.iter().enumerate() {
+                    if i != j && a.starts_with(b) {
+                        return Err(RootError::Adopt(format!(
+                            "{} is {} or inside it: name each only once",
+                            a.display(),
+                            b.display()
+                        )));
+                    }
+                }
+            }
+            let source = &items[0];
+            if !source.join(JOURNAL_FILE).is_file() {
+                return Err(RootError::Adopt(format!(
+                    "there are no books at {}: it has no {JOURNAL_FILE}",
+                    source.display()
+                )));
+            }
+            // Held for writing: nothing is moved from under it. A preview
+            // only looks; the move holds the lock to the end.
+            let _lock = if confirm {
+                Some(lock_source(source)?.0)
+            } else {
+                if let Ok(lock) = std::fs::File::open(source.join(crate::store::LOCK_FILE))
+                    && let Err(std::fs::TryLockError::WouldBlock) = lock.try_lock_shared()
+                {
+                    return Err(RootError::from(StoreError::Locked(
+                        "another wanderbooks process has those books open for writing (an \
+                         agent session, or its MCP server); close it first"
+                            .into(),
+                    )));
+                }
+                None
+            };
+            let (_, lines) = read_source_journal(source)?;
+            let head = head_of(&lines);
+            if let Some(expected) = old.expect_head
+                && *expected != head
+            {
+                return Err(RootError::Adopt(format!(
+                    "the old copy changed since it was looked at (now through event {}): look \
+                     again",
+                    head.0
+                )));
+            }
+            let lacks = |what: String| {
+                RootError::Adopt(format!(
+                    "the books {:?} don't hold everything the old copy does ({what}): adopt \
+                     it first, or name the books that hold it",
+                    id.as_str()
+                ))
+            };
+            if !journal_holds(&book, &head)? {
+                return Err(lacks(format!("its journal through event {}", head.0)));
+            }
+            let (blob_files, left_behind) = blobs_held(
+                &source.join(crate::store::BLOBS_DIR),
+                &book.join(crate::store::BLOBS_DIR),
+            )?
+            .map_err(|rel| lacks(format!("the stored file {}", rel.display())))?;
+            let (vault_files, vault_changed) = match old.vault_dir {
+                Some(_) => vault_held(&items[1], &book.join(VAULT_DIR))?.map_err(|rel| {
+                    lacks(format!(
+                        "the vault record {} (never adopted, or purged since)",
+                        rel.display()
+                    ))
+                })?,
+                None => (0, Vec::new()),
+            };
+            if old.vault_key.is_some() {
+                let key = &items[1 + usize::from(old.vault_dir.is_some())];
+                let theirs = std::fs::read(book.join(KEYS_DIR).join(LEGACY_KEY_FILE)).ok();
+                if theirs.as_deref() != Some(&std::fs::read(key)?[..]) {
+                    return Err(lacks("the vault's key".into()));
+                }
+            }
+            let legacy = root.join(LEGACY_DIR);
+            let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+            let mut name = format!("{id}-old-{stamp}");
+            let mut n = 1;
+            while std::fs::symlink_metadata(legacy.join(&name)).is_ok() {
+                n += 1;
+                name = format!("{id}-old-{stamp}-{n}");
+            }
+            let report = PutAside {
+                head,
+                items: items.clone(),
+                blob_files,
+                left_behind,
+                vault_files,
+                vault_changed,
+                key_checked: old.vault_key.is_some(),
+                name: name.clone(),
+                moved: false,
+            };
+            if !confirm {
+                return Ok(report);
+            }
+            self.private_subdir(LEGACY_DIR, false)?;
+            let into = legacy.join(&name);
+            make_private_dir(&into)?;
+            // Where each came from, written down before anything moves, so
+            // a move cut short by a crash can be finished by hand.
+            let mut list = format!(
+                "wanderbooks put-aside: the old copies of the books \"{id}\", which hold \
+                 everything they did (through event {}, {}).\nStarted {}.\n",
+                report.head.0,
+                report.head.1,
+                chrono::Utc::now().to_rfc3339()
+            );
+            for (k, item) in items.iter().enumerate() {
+                list.push_str(&format!("{}  {}\n", k + 1, item.display()));
+            }
+            let listed = write_private_file(&into.join(PUT_ASIDE_LIST), list.as_bytes())
+                .and_then(|()| sync_dir(&into))
+                .and_then(|()| sync_dir(&legacy));
+            if let Err(e) = listed {
+                // Nothing has moved: no list of moves that never happened.
+                let _ = std::fs::remove_file(into.join(PUT_ASIDE_LIST));
+                let _ = std::fs::remove_dir(&into);
+                return Err(RootError::Adopt(format!(
+                    "the list of where each came from couldn't be written ({e}): nothing was \
+                     put aside"
+                )));
+            }
+            // Each in a numbered folder of its own: no two can meet, and a
+            // git history never sits beside a vault it was kept apart from.
+            let mut moved: Vec<(&PathBuf, PathBuf)> = Vec::new();
+            for (k, item) in items.iter().enumerate() {
+                let own = into.join((k + 1).to_string());
+                let dest = own.join(item.file_name().unwrap_or_default());
+                let done = make_private_dir(&own)
+                    .map_err(|e| std::io::Error::other(e.to_string()))
+                    .and_then(|()| rename_new(item, &dest));
+                if let Err(e) = done {
+                    // Back where they were, the last moved first, never
+                    // over anything that came since.
+                    let mut stuck = Vec::new();
+                    for (from, at) in moved.iter().rev() {
+                        if rename_new(at, from).is_err() {
+                            stuck.push(from.display().to_string());
+                        }
+                    }
+                    if stuck.is_empty() {
+                        // The list goes only once every numbered folder is
+                        // gone, empty: else it stays to say what is where.
+                        let emptied = (1..=items.len()).all(|k| {
+                            match std::fs::remove_dir(into.join(k.to_string())) {
+                                Ok(()) => true,
+                                Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+                            }
+                        });
+                        if emptied {
+                            let _ = std::fs::remove_file(into.join(PUT_ASIDE_LIST));
+                            let _ = std::fs::remove_dir(&into);
+                        }
+                        return Err(RootError::Adopt(format!(
+                            "{} couldn't be moved ({}): nothing was put aside",
+                            item.display(),
+                            e.kind()
+                        )));
+                    }
+                    return Err(RootError::Adopt(format!(
+                        "{} couldn't be moved ({}), and {} couldn't be put back: they are in \
+                         the legacy folder as {name}, whole, with its {PUT_ASIDE_LIST} saying \
+                         where each came from",
+                        item.display(),
+                        e.kind(),
+                        stuck.join(", ")
+                    )));
+                }
+                moved.push((item, dest));
+            }
+            // Every path has moved: the list saying so is a courtesy, and
+            // its failing (a full disk) doesn't undo or deny the move.
+            let _ = (|| -> std::io::Result<()> {
+                use std::io::Write;
+                let mut list = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(into.join(PUT_ASIDE_LIST))?;
+                writeln!(
+                    list,
+                    "Finished {}: each path above is in the folder of its number.",
+                    chrono::Utc::now().to_rfc3339()
+                )?;
+                list.sync_all()
+            })();
+            let _ = sync_dir(&into);
+            let _ = sync_dir(&legacy);
+            for item in &items {
+                if let Some(parent) = item.parent() {
+                    let _ = sync_dir(parent);
+                }
+            }
+            Ok(PutAside {
+                moved: true,
+                ..report
+            })
+        })()
+        .map_err(|e| self.hide(e))
+    }
+}
+
+/// The list [`Root::put_aside`] leaves in the folder it fills: where each
+/// numbered folder's path came from.
+pub const PUT_ASIDE_LIST: &str = "put-aside.txt";
+
+/// Rename `from` to `to`, never over something already at `to`.
+fn rename_new(from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let f = std::ffi::CString::new(from.as_os_str().as_bytes())?;
+        let t = std::ffi::CString::new(to.as_os_str().as_bytes())?;
+        // SAFETY: two NUL-terminated paths that live past the call.
+        let rc = unsafe {
+            libc::renameat2(
+                libc::AT_FDCWD,
+                f.as_ptr(),
+                libc::AT_FDCWD,
+                t.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        if rc == 0 {
+            return Ok(());
+        }
+        let e = std::io::Error::last_os_error();
+        // A file system that can't refuse to replace: looked at, then moved.
+        if e.raw_os_error() != Some(libc::EINVAL) {
+            return Err(e);
+        }
+    }
+    if std::fs::symlink_metadata(to).is_ok() {
+        return Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists));
+    }
+    std::fs::rename(from, to)
+}
+
+/// Whether the stored files under `old` (a books' `blobs/`) are all in
+/// `new` at the same place with the same bytes: Ok((count, left behind))
+/// if so, the left behind being what adoption leaves (hidden files, and
+/// unfinished `<sha>.tmp` writes: never part of the books), else Ok(Err(the
+/// first that isn't)). A folder that isn't there holds nothing.
+fn blobs_held(old: &Path, new: &Path) -> Result<Result<(usize, Vec<PathBuf>), PathBuf>, RootError> {
+    let is_hex = |s: &str, n: usize| s.len() == n && s.bytes().all(|b| b.is_ascii_hexdigit());
+    let mut count = 0;
+    let mut left = Vec::new();
+    let mut stack = vec![PathBuf::new()];
+    while let Some(rel) = stack.pop() {
+        let entries = match std::fs::read_dir(old.join(&rel)) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && rel.as_os_str().is_empty() => {
+                return Ok(Ok((0, left)));
+            }
+            Err(e) => return Err(e.into()),
+        };
+        for entry in entries {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let rel = rel.join(&name);
+            let kind = entry.file_type()?;
+            if kind.is_dir() {
+                stack.push(rel);
+            } else if kind.is_file()
+                && (name.starts_with('.')
+                    || name.strip_suffix(".tmp").is_some_and(|sha| is_hex(sha, 64)))
+            {
+                left.push(rel);
+            } else if std::fs::read(new.join(&rel)).ok() == Some(std::fs::read(old.join(&rel))?) {
+                count += 1;
+            } else {
+                return Ok(Err(rel));
+            }
+        }
+    }
+    left.sort();
+    Ok(Ok((count, left)))
+}
+
+/// Whether the TIN vault `old` is held by the books' vault `new`: every
+/// record there (a record the books sealed anew since is theirs, newer,
+/// and listed), and the registry of files with full TINs only grown since.
+/// Ok((count, changed)) if so, else Ok(Err(the first that isn't)).
+fn vault_held(old: &Path, new: &Path) -> Result<Result<(usize, Vec<PathBuf>), PathBuf>, RootError> {
+    let mut count = 0;
+    let mut changed = Vec::new();
+    let mut names: Vec<_> = std::fs::read_dir(old)?
+        .map(|e| e.map(|e| e.file_name()))
+        .collect::<Result<_, _>>()?;
+    names.sort();
+    for name in names {
+        let rel = PathBuf::from(&name);
+        if !std::fs::symlink_metadata(old.join(&name))?.is_file() {
+            return Ok(Err(rel));
+        }
+        let mine = std::fs::read(old.join(&name))?;
+        let Ok(theirs) = std::fs::read(new.join(&name)) else {
+            return Ok(Err(rel));
+        };
+        if name == TIN_REGISTRY_FILE {
+            if !theirs.starts_with(&mine) {
+                return Ok(Err(rel));
+            }
+        } else if theirs != mine {
+            changed.push(rel);
+        }
+        count += 1;
+    }
+    Ok(Ok((count, changed)))
+}
+
+/// The vault's append-only list of files known to hold full TINs (kept by
+/// the books server; ledger-mcp `tin_files`).
+const TIN_REGISTRY_FILE: &str = "tin-files.sha256";
+
+/// Whether the journal of the books in `book` holds the event `head`
+/// names, `(seq, hash)`: its line of that seq hashes to that. Only whole
+/// lines are read, so a line still being written is no matter.
+fn journal_holds(book: &Path, head: &(u64, String)) -> Result<bool, RootError> {
+    if head.0 == 0 {
+        return Ok(true);
+    }
+    let raw = std::fs::read(book.join(JOURNAL_FILE))?;
+    let Some(end) = raw.iter().rposition(|&b| b == b'\n') else {
+        return Ok(false);
+    };
+    let (lines, _format) = crate::journal::verify_journal_and_format(&raw[..=end])?;
+    Ok(lines
+        .iter()
+        .find(|l| l.seq == head.0)
+        .is_some_and(|l| head_of(std::slice::from_ref(l)) == *head))
+}
+
+/// The old copies of books, for [`Root::put_aside`].
+#[derive(Clone, Copy, Debug)]
+pub struct OldCopies<'a> {
+    /// The data folder they were adopted from.
+    pub source: &'a Path,
+    /// Their TIN vault: each record must be the books' own, byte for byte.
+    pub vault_dir: Option<&'a Path>,
+    /// The vault's key: it must be the books' legacy key, byte for byte.
+    pub vault_key: Option<&'a Path>,
+    /// Other paths that hold them (settings file, git history, exports),
+    /// put aside as they are.
+    pub also: &'a [PathBuf],
+    /// The head a preview read: if it moved since, nothing is put aside.
+    pub expect_head: Option<&'a (u64, String)>,
+}
+
+/// What [`Root::put_aside`] would move, or moved.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PutAside {
+    /// The old copy's head, `(seq, hash)`: the books hold it too.
+    pub head: (u64, String),
+    /// The paths that go aside, in order: the data folder, the vault, its
+    /// key, then the others. Each goes into the folder of its number.
+    pub items: Vec<PathBuf>,
+    /// The old copy's stored files, each found in the books, byte for byte.
+    pub blob_files: usize,
+    /// Files in its stored files' folder that were never part of the books
+    /// (hidden files, unfinished writes): left behind by adoption, going
+    /// aside with the rest.
+    pub left_behind: Vec<PathBuf>,
+    /// The vault's records, each found in the books.
+    pub vault_files: usize,
+    /// Records the books have sealed anew since (theirs is newer).
+    pub vault_changed: Vec<PathBuf>,
+    /// Whether the vault's key was found to be the books' own.
+    pub key_checked: bool,
+    /// The folder of their own in `legacy/` they go to.
+    pub name: String,
+    /// Whether they were moved (false: a preview, nothing moved).
+    pub moved: bool,
 }
 
 /// The source's journal, whole and verified: its bytes and lines.

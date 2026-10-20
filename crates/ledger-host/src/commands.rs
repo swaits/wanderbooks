@@ -1,10 +1,14 @@
-//! The owner's commands: `wanderbooks serve`, `close`, `books` and
-//! `token` (plan 3.3, 3.9, 5.5).
+//! The owner's commands: `wanderbooks serve`, `close`, `books` (list,
+//! create, adopt, restore, back-up), `token`, `connect`, `doctor` and
+//! `passphrase` (plan 3.3, 3.7, 3.9, 5.5), and the same work for the
+//! viewer's Books menu (`new_books`, `back_up_now`, `plan_restore`,
+//! `carry_out_restore`, `connect_agent`, `close_books`, `hold_for_viewer`).
 //!
 //! ```text
-//! GOAL: from a terminal the owner holds the books open, closes them, and
-//!       makes, lists and adopts books, without ever naming or touching
-//!       the books' private folder.
+//! GOAL: from a terminal, or the viewer's menu, the owner holds the books
+//!       open, closes them, makes, adopts, backs up and restores books and
+//!       connects agents, without ever naming or touching the books'
+//!       private folder.
 //! SOURCE: plan/served.md 3.9 (a terminal running `wanderbooks serve`, and
 //!         any command that needs the server, holds a lease; "Close the
 //!         books" ends every lease), 3.1 (the CLI talks to admin.sock and
@@ -20,12 +24,16 @@
 //!   4. A token made is kept in the keyring before anything is said of it,
 //!      and its text is printed only by `token print`; one that can't be
 //!      kept is revoked again. A token revoked is forgotten by the keyring
-//!      too.
+//!      too. `connect` makes the books' agent token only when the keyring
+//!      has none, replacing the server's (no one could be using it: the
+//!      bridge reads its token from this keyring).
+//!   5. The viewer's hold lets go only when the owner closes the books;
+//!      books that stop, or won't open, are tried again.
 //! ```
 
 use crate::knobs::{FLAG, Knobs};
 use crate::lease::{Ask, HostMsg, Intent, Kind, Reason};
-use crate::opener::{HoldError, Lease, Opener, Starter};
+use crate::opener::{HoldError, Lease, Opener};
 use ledger_mcp::admin::{self, Request, Response};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -38,10 +46,13 @@ const LIST_WAIT: Duration = Duration::from_secs(30);
 const CLOSE_WAIT: Duration = Duration::from_secs(120);
 
 /// Common flags: `--root DIR` and the test knobs.
-#[derive(Default)]
-struct Common {
-    root: Option<PathBuf>,
-    knobs: Knobs,
+#[derive(Default, Clone)]
+pub struct Common {
+    /// The data root named (`--root`), else the one this account's host
+    /// finds.
+    pub root: Option<PathBuf>,
+    /// The test knobs.
+    pub knobs: Knobs,
 }
 
 impl Common {
@@ -119,13 +130,7 @@ fn with_server_in(common: &Common, request: Request) -> Result<(Response, PathBu
         .build()
         .map_err(|e| e.to_string())?;
     let outcome = rt.block_on(async {
-        let mut opener = Opener::new(
-            common.root.as_deref(),
-            common.knobs,
-            Starter::Direct,
-            Kind::Cli,
-            None,
-        )?;
+        let mut opener = Opener::new(common.root.as_deref(), common.knobs, Kind::Cli, None)?;
         let lease = open(&mut opener).await.map_err(|e| match e {
             HoldError::ClosedByOwner => {
                 "the books were closed just now (Close the books): nothing was done".to_string()
@@ -219,7 +224,6 @@ pub fn serve(
         let mut opener = Opener::new(
             common.root.as_deref(),
             common.knobs,
-            Starter::Direct,
             Kind::Serve,
             None,
         )?;
@@ -393,9 +397,13 @@ fn books_usage(prog: &str) {
         "       {prog} adopt DATA-DIR --id ID [--toml FILE] [--config-json FILE] [--vault DIR --vault-key FILE | --no-vault] [--skip-unknown] [--yes]"
     );
     eprintln!("       {prog} restore BACKUP [--id ID] [--replace] [--yes]");
+    eprintln!("       {prog} back-up ID [--new-disk]");
     eprintln!("  list    the books, and whether each is open");
     eprintln!("  create  start new, empty books (base currency USD unless given)");
     eprintln!("  adopt   copy existing books in, verified; the original is left as it was");
+    eprintln!(
+        "  back-up back the books up now to every backup their settings name (--new-disk: the backup folder's disk is new)"
+    );
     eprintln!(
         "  restore bring back a backup (a git repository's address, or BOOK.git in the backup folder), proven whole first: as new books, or replacing books (kept in legacy/)"
     );
@@ -418,6 +426,7 @@ pub fn books(
     let mut skip_unknown = false;
     let mut yes = false;
     let mut replace = false;
+    let mut new_disk = false;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         if common.take(&arg, &mut args)? {
@@ -434,6 +443,7 @@ pub fn books(
             "--no-vault" => no_vault = true,
             "--skip-unknown" => skip_unknown = true,
             "--replace" => replace = true,
+            "--new-disk" => new_disk = true,
             "--yes" => yes = true,
             "--help" | "-h" => {
                 books_usage(prog);
@@ -478,6 +488,20 @@ pub fn books(
             );
         }
         ["restore", source] => return restore(&common, source, id, replace, yes),
+        ["back-up", book] => {
+            return match back_up_now(&common, book, new_disk) {
+                Ok(lines) => {
+                    for line in lines {
+                        println!("{line}");
+                    }
+                    Ok(())
+                }
+                Err(why) => {
+                    eprintln!("error: {why}");
+                    Err(exit(1))
+                }
+            };
+        }
         _ => {
             books_usage(prog);
             return Err(exit(2));
@@ -519,6 +543,386 @@ pub fn books(
             Err(exit(1))
         }
     }
+}
+
+/// Back the books `book` up now (the server does it): what came of it, a
+/// line each; Err when it couldn't be done, or a target didn't take it.
+pub fn back_up_now(common: &Common, book: &str, new_disk: bool) -> Result<Vec<String>, String> {
+    match with_server(
+        common,
+        Request::BackUpNow {
+            id: book.to_string(),
+            new_disk,
+        },
+    )? {
+        Response::BackedUp { head_seq, targets } => {
+            let lines = backed_up_lines(head_seq, &targets);
+            if targets.is_empty() || targets.iter().any(|t| t.problem.is_some()) {
+                Err(lines.join("\n"))
+            } else {
+                Ok(lines)
+            }
+        }
+        Response::Refused(why) => Err(why),
+        other => Err(format!("the books server answered oddly: {other:?}")),
+    }
+}
+
+/// "New books…": new, empty books `id` in `currency` (the server makes
+/// them).
+pub fn new_books(common: &Common, id: &str, currency: &str) -> Result<String, String> {
+    match with_server(
+        common,
+        Request::Create {
+            id: id.trim().to_string(),
+            currency: currency.trim().to_string(),
+        },
+    )? {
+        Response::Created { id, problem: None } => {
+            Ok(format!("Made new books \"{id}\" ({}).", currency.trim()))
+        }
+        Response::Created {
+            id,
+            problem: Some(why),
+        } => Err(format!(
+            "new books \"{id}\" were made but didn't open: {why}. Closing the books and opening them again tries again."
+        )),
+        Response::Refused(why) => Err(why),
+        other => Err(format!("the books server answered oddly: {other:?}")),
+    }
+}
+
+/// "Close the books": everything holding them lets go (the lease
+/// socket's close intent). What came of it.
+pub fn close_books(common: &Common) -> Result<String, String> {
+    let found =
+        ledger_store::root::Root::find(common.root.as_deref()).map_err(|e| e.to_string())?;
+    let run = found.run_dir().map_err(|e| e.to_string())?;
+    match crate::opener::ask_once_within(&run, Ask::Intent(Intent::Close), HOST_WAIT)? {
+        None => Ok("The books are closed.".into()),
+        Some(HostMsg::Done { detail }) => Ok(detail
+            .map(|d| {
+                let mut c = d.chars();
+                c.next()
+                    .map(|first| format!("{}{}.", first.to_uppercase(), c.as_str()))
+                    .unwrap_or_default()
+            })
+            .filter(|d| !d.is_empty())
+            .unwrap_or_else(|| "The books are closing.".into())),
+        Some(HostMsg::Refused(why)) => Err(why),
+        Some(HostMsg::Uncertain(why)) => Err(why),
+        Some(other) => Err(format!("the books' host answered oddly: {other:?}")),
+    }
+}
+
+/// The longest an agent's own command may take to add the books.
+const CONNECT_WAIT: Duration = Duration::from_secs(60);
+
+/// How long the viewer's hold waits before trying again after books that
+/// wouldn't open.
+const VIEWER_RETRY: Duration = Duration::from_secs(30);
+
+/// Hold the books `book` open while the viewer runs (a lease of kind
+/// app), on a thread of its own: the window never waits for it. It lets
+/// go only when the owner closes the books (and when the viewer ends,
+/// with the process); books that stop, or won't open, are tried again.
+pub fn hold_for_viewer(common: &Common, book: Option<String>) -> std::thread::JoinHandle<()> {
+    let common = common.clone();
+    std::thread::spawn(move || {
+        let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        else {
+            return;
+        };
+        rt.block_on(async {
+            let Ok(mut opener) = Opener::new(common.root.as_deref(), common.knobs, Kind::App, book)
+            else {
+                return;
+            };
+            loop {
+                // The same opener each time round (it knows it held the
+                // books, so it never reopens books the owner closed); its
+                // failures counted afresh.
+                opener.forget_failures();
+                loop {
+                    let mut lease = match open(&mut opener).await {
+                        Ok(lease) => lease,
+                        Err(HoldError::ClosedByOwner) => return,
+                        Err(HoldError::Failed(_)) => break,
+                    };
+                    match lease.next().await {
+                        Some(HostMsg::Ending {
+                            reason: Reason::ClosedByOwner,
+                            ..
+                        }) => return,
+                        Some(HostMsg::Ending {
+                            reason: Reason::Restarting | Reason::Closing,
+                            ..
+                        }) => {}
+                        _ => {
+                            if opener.failed().await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+                tokio::time::sleep(VIEWER_RETRY).await;
+            }
+        });
+    })
+}
+
+/// What a backup made now came to, a line each.
+pub fn backed_up_lines(head_seq: u64, targets: &[admin::BackedUpTarget]) -> Vec<String> {
+    if targets.is_empty() {
+        return vec![
+            "No backups are set up: ask your agent to set the private repository and the backup folder.".into(),
+        ];
+    }
+    targets
+        .iter()
+        .map(|t| match (&t.problem, t.through_seq) {
+            (None, Some(seq)) if seq == head_seq => {
+                format!("Backed up to {} (through event {seq}).", t.at)
+            }
+            (None, Some(seq)) => format!("Backed up to {} through event {seq}.", t.at),
+            (None, None) => format!("Not yet backed up to {}.", t.at),
+            (Some(why), _) => format!("Not backed up to {}: {why}", t.at),
+        })
+        .collect()
+}
+
+/// `wanderbooks connect claude|codex --book ID`: an agent of the owner's
+/// reaches the books.
+pub fn connect(
+    prog: &str,
+    args: impl IntoIterator<Item = String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut common = Common::default();
+    let mut book: Option<String> = None;
+    let mut words: Vec<String> = Vec::new();
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        if common.take(&arg, &mut args)? {
+            continue;
+        }
+        match arg.as_str() {
+            "--book" => book = Some(args.next().ok_or("--book needs an id")?),
+            "--help" | "-h" => {
+                eprintln!("usage: {prog} claude|codex --book ID");
+                eprintln!(
+                    "  Lets Claude Code or Codex reach the books: keeps their token in this computer's keyring and adds the books to the agent's own list."
+                );
+                return Ok(());
+            }
+            s if s.starts_with('-') => {
+                eprintln!("unknown flag: {s}");
+                eprintln!("usage: {prog} claude|codex --book ID");
+                return Err(exit(2));
+            }
+            _ => words.push(arg),
+        }
+    }
+    let (Some(agent), Some(book), 1) = (words.first(), book, words.len()) else {
+        eprintln!("usage: {prog} claude|codex --book ID");
+        return Err(exit(2));
+    };
+    match connect_agent(&common, agent, &book) {
+        Ok(lines) => {
+            for line in lines {
+                println!("{line}");
+            }
+            Ok(())
+        }
+        Err(why) => {
+            eprintln!("error: {why}");
+            Err(exit(1))
+        }
+    }
+}
+
+/// Let the agent `agent` ("claude" or "codex") reach the books `book`:
+/// their token kept in the keyring (made if none is), and `wanderbooks
+/// mcp --book <book>` added to the agent's own list as
+/// `wanderbooks-<book>`. What was done, a line each.
+pub fn connect_agent(common: &Common, agent: &str, book: &str) -> Result<Vec<String>, String> {
+    let (cli, label) = match agent {
+        "claude" => ("claude", "Claude Code"),
+        "codex" => ("codex", "Codex"),
+        other => return Err(format!("{other:?}: connect claude or codex")),
+    };
+    let book = ledger_store::root::BookId::parse(book)
+        .map_err(|e| e.to_string())?
+        .to_string();
+    // The PATH first; then where the agents' installers put them (a
+    // viewer started from the desktop has a short PATH).
+    // ($HOME: a test's own home is never the account's.)
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|h| h.is_absolute());
+    let usual = [
+        ".local/bin",
+        ".npm-global/bin",
+        ".bun/bin",
+        ".cargo/bin",
+        ".volta/bin",
+    ]
+    .into_iter()
+    .filter_map(|d| home.as_ref().map(|h| h.join(d)))
+    .chain(
+        ["/usr/local/bin", "/opt/homebrew/bin"]
+            .into_iter()
+            .map(PathBuf::from),
+    );
+    let program = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+        .unwrap_or_default()
+        .into_iter()
+        .chain(usual)
+        .filter(|d| d.is_absolute())
+        .map(|d| d.join(cli))
+        .find(|p| {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        })
+        .ok_or_else(|| {
+            format!("{label} isn't installed here (no `{cli}` on the PATH, nor where its installer puts it)")
+        })?;
+    let mut lines = Vec::new();
+    // The token: kept in the keyring, or made now.
+    let found =
+        ledger_store::root::Root::find(common.root.as_deref()).map_err(|e| e.to_string())?;
+    let run = found.run_dir().map_err(|e| e.to_string())?;
+    let account = crate::tokens::Account::new(found.path(), &book, crate::tokens::DEFAULT_NAME);
+    if crate::tokens::keeper(&run, &common.knobs)
+        .get(&account)?
+        .is_none()
+    {
+        let scopes = ledger_store::auth::Scope::ALL
+            .iter()
+            .map(|s| s.as_str().to_string())
+            .collect();
+        make_token(common, &book, crate::tokens::DEFAULT_NAME, scopes, true)?;
+        lines.push(format!(
+            "Made the books {book}' agent token, kept in this computer's keyring."
+        ));
+    }
+    // The agent's own list: the books' entry made anew.
+    let exe = crate::start::this_executable()?;
+    let name = format!("wanderbooks-{book}");
+    let mut serve: Vec<std::ffi::OsString> = vec![
+        exe.into_os_string(),
+        "mcp".into(),
+        "--book".into(),
+        book.clone().into(),
+    ];
+    if common.root.is_some() {
+        serve.push("--root".into());
+        serve.push(found.path().as_os_str().to_os_string());
+    }
+    serve.extend(common.knobs.args().into_iter().map(Into::into));
+    let scope: &[&str] = if agent == "claude" {
+        &["--scope", "user"]
+    } else {
+        &[]
+    };
+    // Each call within a minute: an agent's command that hangs is said,
+    // never waited on for good.
+    let run_cli = |args: Vec<std::ffi::OsString>| -> Result<std::process::Output, String> {
+        let mut child = std::process::Command::new(&program)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("{label} couldn't be run: {}", e.kind()))?;
+        let deadline = std::time::Instant::now() + CONNECT_WAIT;
+        loop {
+            if child.try_wait().map_err(|e| e.to_string())?.is_some() {
+                return child.wait_with_output().map_err(|e| e.to_string());
+            }
+            if std::time::Instant::now() > deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("{label} didn't answer in time: nothing was added"));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    let mut remove: Vec<std::ffi::OsString> = vec!["mcp".into(), "remove".into()];
+    remove.extend(scope.iter().map(Into::into));
+    remove.push(name.clone().into());
+    let _ = run_cli(remove);
+    let mut add: Vec<std::ffi::OsString> = vec!["mcp".into(), "add".into()];
+    add.extend(scope.iter().map(Into::into));
+    add.push(name.clone().into());
+    add.push("--".into());
+    add.extend(serve);
+    let out = run_cli(add)?;
+    if !out.status.success() {
+        let said: String = String::from_utf8_lossy(&out.stderr)
+            .trim()
+            .chars()
+            .take(300)
+            .collect();
+        return Err(format!("{label} didn't add the books: {said}"));
+    }
+    lines.push(format!(
+        "{label} reaches the books {book} as \"{name}\" (restart {label} to see it)."
+    ));
+    Ok(lines)
+}
+
+/// Make the token `name` for `book` (the server does) and keep it in this
+/// computer's keyring (INVARIANT 4: kept first, or taken back).
+fn make_token(
+    common: &Common,
+    book: &str,
+    name: &str,
+    scopes: Vec<String>,
+    replace: bool,
+) -> Result<admin::TokenInfo, String> {
+    let request = Request::TokenCreate {
+        book: book.to_string(),
+        name: name.to_string(),
+        scopes,
+        replace,
+    };
+    let (answer, run_dir) = with_server_in(common, request)?;
+    let (info, text) = match answer {
+        Response::TokenCreated { token, text } => (token, zeroize::Zeroizing::new(text.0)),
+        Response::Refused(why) => return Err(why),
+        other => return Err(format!("the books server answered oddly: {other:?}")),
+    };
+    let root = run_dir.parent().unwrap_or(&run_dir).to_path_buf();
+    let account = crate::tokens::Account::new(&root, book, name);
+    let kept = crate::tokens::keeper(&run_dir, &common.knobs).set(&account, &text);
+    drop(text);
+    if let Err(why) = kept {
+        let undone = with_server(
+            common,
+            Request::TokenRevoke {
+                book: book.to_string(),
+                name: name.to_string(),
+                // This one only: another may have replaced it.
+                id: Some(info.id.clone()),
+            },
+        );
+        let after = match undone {
+            Ok(Response::TokenRevoked(_)) => "so it was revoked again",
+            _ => "and revoking it again failed too: `wanderbooks token revoke` ends it",
+        };
+        let replaced = if replace {
+            " The token it replaced had already ended."
+        } else {
+            ""
+        };
+        return Err(format!(
+            "the token was made, but this computer's keyring couldn't keep it ({why}), {after}.{replaced}"
+        ));
+    }
+    Ok(info)
 }
 
 /// The id a backup is restored as when none is given: its repository's
@@ -564,6 +968,61 @@ fn restore(
         eprintln!("error: {why}");
         Err(exit(1))
     };
+    let plan = match plan_restore(common, source, id, replace, true) {
+        Ok(plan) => plan,
+        Err(why) => return fail(why),
+    };
+    for line in &plan.lines {
+        println!("{line}");
+    }
+    match confirmed("Restore it?", yes) {
+        Ok(true) => {}
+        Ok(false) => {
+            println!("Not restored.");
+            return Ok(());
+        }
+        Err(why) => return fail(format!("not restored: {why}")),
+    }
+    match carry_out_restore(common, &plan) {
+        Ok(lines) => {
+            for line in lines {
+                println!("{line}");
+            }
+            Ok(())
+        }
+        Err(why) => fail(why),
+    }
+}
+
+/// A restore previewed: the backup proven, the id it comes back as, and
+/// what it would do, a line each (INVARIANT 3: shown before it is done).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RestorePlan {
+    /// The backup, as the server is told it (a folder by its full path).
+    pub source: String,
+    /// The books' id it comes back as.
+    pub id: String,
+    /// Whether it replaces the books of that id (kept in legacy/).
+    pub replace: bool,
+    /// The backup's head, proven: the restore is of this backup only.
+    pub head: (u64, String),
+    /// The id of the books it holds, if it says.
+    pub origin: Option<String>,
+    /// What it would do, a line each.
+    pub lines: Vec<String>,
+}
+
+/// Preview restoring the backup at `source` (`flags`: name the command
+/// line's flags in the advice): the id it comes back as is `id`, else the
+/// id of the books the backup holds, else the repository's name; refused
+/// over books that exist unless `replace`, and replacing none.
+pub fn plan_restore(
+    common: &Common,
+    source: &str,
+    id: Option<String>,
+    replace: bool,
+    flags: bool,
+) -> Result<RestorePlan, String> {
     // A folder is named to the server by its full path (the server's
     // working folder isn't this one); anything else is an address.
     let source = match Path::new(source) {
@@ -571,11 +1030,10 @@ fn restore(
             .unwrap_or_else(|_| p.to_path_buf())
             .display()
             .to_string(),
-        _ => source.to_string(),
+        _ => source.trim().to_string(),
     };
     // One preview (under the id given, or any: it only reports), then the
-    // id: given, or else the id of the books the backup holds, or else the
-    // repository's name.
+    // id.
     let probe = id
         .clone()
         .or_else(|| restore_id(&source))
@@ -589,10 +1047,17 @@ fn restore(
             confirmed: false,
             expect_head: None,
         },
-    ) {
-        Ok(Response::RestorePreview(p)) => p,
-        Ok(Response::Refused(why)) | Err(why) => return fail(format!("{source}: {why}")),
-        Ok(other) => return fail(format!("the books server answered oddly: {other:?}")),
+    )? {
+        Response::RestorePreview(p) => p,
+        Response::Refused(why) => return Err(format!("{source}: {why}")),
+        other => return Err(format!("the books server answered oddly: {other:?}")),
+    };
+    let flag = |text: &str| {
+        if flags {
+            format!(" ({text})")
+        } else {
+            String::new()
+        }
     };
     let Some(id) = id
         .or_else(|| {
@@ -603,87 +1068,98 @@ fn restore(
         })
         .or_else(|| restore_id(&source))
     else {
-        eprintln!("error: name the restored books with --id ID");
-        return Err(exit(2));
+        return Err(format!("name the restored books{}", flag("--id ID")));
     };
-    let exists = match with_server(common, Request::List) {
-        Ok(Response::Books(books)) => books.iter().any(|b| b.id == id),
-        Ok(Response::Refused(why)) | Err(why) => return fail(why),
-        Ok(other) => return fail(format!("the books server answered oddly: {other:?}")),
+    let exists = match with_server(common, Request::List)? {
+        Response::Books(books) => books.iter().any(|b| b.id == id),
+        Response::Refused(why) => return Err(why),
+        other => return Err(format!("the books server answered oddly: {other:?}")),
     };
     if exists && !replace {
-        return fail(format!(
-            "there are already books called \"{id}\": restore them under another id (--id), or replace them (--replace; they are kept in legacy/)"
+        return Err(format!(
+            "there are already books called \"{id}\": restore them under another id{}, or replace them{}",
+            flag("--id"),
+            flag("--replace; they are kept in legacy/")
         ));
     }
     if !exists && replace {
-        return fail(format!(
+        return Err(format!(
             "there are no books called \"{id}\" to replace: nothing was restored"
         ));
     }
-    let request = |expect_head: Option<(u64, String)>| Request::Restore {
-        id: id.clone(),
-        source: source.clone(),
-        replace,
-        confirmed: expect_head.is_some(),
-        expect_head,
-    };
-    println!(
+    let mut lines = vec![format!(
         "The backup at {source} is whole: through event {} ({}), {} stored files re-hashed, {} TIN vault records.",
         preview.head.0,
         short_hash(&preview.head.1),
         preview.blobs,
         preview.vault_files
-    );
+    )];
     if let Some(origin) = &preview.origin {
-        println!("It is a backup of the books \"{origin}\".");
+        lines.push(format!("It is a backup of the books \"{origin}\"."));
     }
-    if replace {
-        println!(
+    lines.push(if replace {
+        format!(
             "It replaces the books \"{id}\": they are closed and kept whole in the legacy folder, not deleted."
-        );
+        )
     } else {
-        println!("It comes back as new books \"{id}\", beside any others.");
-    }
+        format!("It comes back as new books \"{id}\", beside any others.")
+    });
     match preview.origin.as_deref() {
         Some(o) if o == id => {}
-        Some(o) => println!(
-            "Under a name other than its books' (\"{o}\"), they won't back up to the private repository those books back up to (that would stop theirs): if these are those books, restore them as \"{o}\" (--id {o}); else name a repository of their own."
-        ),
-        None => println!(
+        Some(o) => lines.push(format!(
+            "Under a name other than its books' (\"{o}\"), they won't back up to the private repository those books back up to (that would stop theirs): if these are those books, restore them as \"{o}\"{}; else name a repository of their own.",
+            flag(&format!("--id {o}"))
+        )),
+        None => lines.push(
             "It doesn't say whose books it holds: they won't back up to the private repository their settings name until one of their own is named."
+                .into(),
         ),
     }
-    match confirmed("Restore it?", yes) {
-        Ok(true) => {}
-        Ok(false) => {
-            println!("Not restored.");
-            return Ok(());
-        }
-        Err(why) => return fail(format!("not restored: {why}")),
-    }
-    match with_server(common, request(Some(preview.head.clone()))) {
-        Ok(Response::Restored(r)) => {
-            println!(
+    Ok(RestorePlan {
+        source,
+        id,
+        replace,
+        head: preview.head,
+        origin: preview.origin,
+        lines,
+    })
+}
+
+/// Restore as `plan` previewed it (only that backup, at that head): what
+/// was done, a line each.
+pub fn carry_out_restore(common: &Common, plan: &RestorePlan) -> Result<Vec<String>, String> {
+    let request = Request::Restore {
+        id: plan.id.clone(),
+        source: plan.source.clone(),
+        replace: plan.replace,
+        confirmed: true,
+        expect_head: Some(plan.head.clone()),
+    };
+    match with_server(common, request)? {
+        Response::Restored(r) => {
+            let mut lines = vec![format!(
                 "Restored as \"{}\": through event {} ({}), {} stored files checked, {} TIN vault records.",
                 r.id,
                 r.head.0,
                 short_hash(&r.head.1),
                 r.blobs_verified,
                 r.vault_files
-            );
+            )];
             if let Some(kept) = &r.replaced {
-                println!("The books it replaced are kept in the legacy folder as {kept}.");
-            }
-            if let Some(why) = r.problem {
-                return fail(format!(
-                    "the restored books didn't open: {why}. Closing the books and opening them again tries again."
+                lines.push(format!(
+                    "The books it replaced are kept in the legacy folder as {kept}."
                 ));
             }
-            Ok(())
+            if let Some(why) = r.problem {
+                return Err(format!(
+                    "{}\nThe restored books didn't open: {why}. Closing the books and opening them again tries again.",
+                    lines.join("\n")
+                ));
+            }
+            Ok(lines)
         }
-        Ok(Response::Refused(why)) | Err(why) => fail(format!("{source}: {why}")),
-        Ok(other) => fail(format!("the books server answered oddly: {other:?}")),
+        Response::Refused(why) => Err(format!("{}: {why}", plan.source)),
+        other => Err(format!("the books server answered oddly: {other:?}")),
     }
 }
 
@@ -1118,46 +1594,7 @@ pub fn token(
     match words.as_slice() {
         ["create"] => {
             let book = need_book()?;
-            let request = Request::TokenCreate {
-                book: book.clone(),
-                name: name.clone(),
-                scopes,
-                replace,
-            };
-            let (answer, run_dir) = with_server_in(&common, request).map_err(fail)?;
-            let (info, text) = match answer {
-                Response::TokenCreated { token, text } => (token, zeroize::Zeroizing::new(text.0)),
-                Response::Refused(why) => return Err(fail(why)),
-                other => return Err(fail(format!("the books server answered oddly: {other:?}"))),
-            };
-            // INVARIANT 4: kept first, or taken back.
-            let root = run_dir.parent().unwrap_or(&run_dir).to_path_buf();
-            let account = crate::tokens::Account::new(&root, &book, &name);
-            let kept = crate::tokens::keeper(&run_dir, &common.knobs).set(&account, &text);
-            drop(text);
-            if let Err(why) = kept {
-                let undone = with_server(
-                    &common,
-                    Request::TokenRevoke {
-                        book: book.clone(),
-                        name: name.clone(),
-                        // This one only: another may have replaced it.
-                        id: Some(info.id.clone()),
-                    },
-                );
-                let after = match undone {
-                    Ok(Response::TokenRevoked(_)) => "so it was revoked again",
-                    _ => "and revoking it again failed too: `wanderbooks token revoke` ends it",
-                };
-                let replaced = if replace {
-                    " The token it replaced had already ended."
-                } else {
-                    ""
-                };
-                return Err(fail(format!(
-                    "the token was made, but this computer's keyring couldn't keep it ({why}), {after}.{replaced}"
-                )));
-            }
+            let info = make_token(&common, &book, &name, scopes, replace).map_err(fail)?;
             println!(
                 "Made the token {:?} for the books {} ({}), kept in this computer's keyring.",
                 info.name,
@@ -1222,14 +1659,8 @@ pub fn token(
         }
         ["print"] => {
             let book = need_book()?;
-            let opener = Opener::new(
-                common.root.as_deref(),
-                common.knobs,
-                Starter::Direct,
-                Kind::Cli,
-                None,
-            )
-            .map_err(|e| fail(e.to_string()))?;
+            let opener = Opener::new(common.root.as_deref(), common.knobs, Kind::Cli, None)
+                .map_err(|e| fail(e.to_string()))?;
             let run_dir = opener.run_dir().to_path_buf();
             let root = run_dir.parent().unwrap_or(&run_dir).to_path_buf();
             let account = crate::tokens::Account::new(&root, &book, &name);
@@ -1348,7 +1779,6 @@ fn on_the_socket(
         let mut opener = Opener::new(
             common.root.as_deref(),
             common.knobs,
-            Starter::Direct,
             Kind::Cli,
             None,
         )?;

@@ -3825,8 +3825,6 @@ name = "ledger-cli"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
- "chrono",
- "ledger-config",
  "ledger-core",
  "ledger-gui",
  "ledger-host",
@@ -3840,7 +3838,6 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "tokio",
- "toml 1.1.8+spec-1.1.0",
 ]
 
 [[package]]

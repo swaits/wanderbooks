@@ -116,6 +116,15 @@ pub enum Request {
         #[serde(default)]
         expect_head: Option<(u64, String)>,
     },
+    /// Back books up now (plan 3.7): to every target their settings name.
+    BackUpNow {
+        /// The books.
+        id: String,
+        /// The backup folder's disk is new: begin these books' backup
+        /// there again.
+        #[serde(default)]
+        new_disk: bool,
+    },
     /// Make a token for an agent (plan 3.3).
     TokenCreate {
         /// The books it opens.
@@ -294,6 +303,21 @@ pub struct Restored {
     pub problem: Option<String>,
 }
 
+/// How one backup target took a backup now.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackedUpTarget {
+    /// "repository" or "folder".
+    pub target: String,
+    /// Where (no path in the data root).
+    pub at: String,
+    /// The journal seq it holds now, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub through_seq: Option<u64>,
+    /// Why it holds no backup of the latest, if it doesn't.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
+}
+
 /// The server's answer.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
@@ -316,6 +340,14 @@ pub enum Response {
     RestorePreview(RestorePreview),
     /// A backup restored, and open.
     Restored(Restored),
+    /// Books backed up now: their head, and each target's outcome (none
+    /// named: none set up).
+    BackedUp {
+        /// The books' head seq.
+        head_seq: u64,
+        /// Each target.
+        targets: Vec<BackedUpTarget>,
+    },
     /// A token made: its text, shown this once (INVARIANT 6).
     TokenCreated {
         /// The token.
@@ -370,6 +402,9 @@ pub fn call_within(
         Request::List | Request::TokenList => None,
         Request::Create { .. } | Request::Adopt { .. } | Request::Restore { .. } => {
             Some("`wanderbooks books list` shows the books there are")
+        }
+        Request::BackUpNow { .. } => {
+            Some("`wanderbooks books back-up` again backs up whatever it didn't")
         }
         Request::TokenCreate { .. } | Request::TokenRevoke { .. } => {
             Some("`wanderbooks token list` shows the tokens there are")

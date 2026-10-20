@@ -1,7 +1,8 @@
 //! Company settings from the books dir's `wanderbooks.toml`.
 //!
-//! `wanderbooks init` writes that file next to `books-data/`; onboarding
-//! fills in `[company]`. The server reads the company name (report headers),
+//! An older books dir keeps that file next to `books-data/` until
+//! `books.import_settings` moves it into the journal (books of the data
+//! root never read one). The server reads the company name (report headers),
 //! the fiscal year start (fiscal-year-to-date reports), the members of a
 //! multi-member LLC (`[[company.members]]`: name, share, capital account —
 //! for the statement of members' equity), `[books] accounting_basis`

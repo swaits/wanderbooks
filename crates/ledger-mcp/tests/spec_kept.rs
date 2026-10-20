@@ -517,6 +517,8 @@ fn start_fits_in_8_kb() {
     let cut = start["truncated"].to_string();
     assert!(cut.contains("books.conventions"), "{cut}");
     assert!(start["conventions"].as_array().unwrap().len() >= 10);
+    // isolation_label_is_advisory (plan P2, D-32).
+    assert_eq!(start["isolation"], "same_user (advisory)");
 }
 
 /// Review of P1 (2026-10-17): the text imported is the file the server

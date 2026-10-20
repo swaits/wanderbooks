@@ -237,6 +237,10 @@ pub struct StartOut {
     pub handbook_sections: Vec<SectionOut>,
     /// What to do next, in order.
     pub next_steps: Vec<NextStepOut>,
+    /// How the books are kept from agents: "same_user (advisory)", hidden
+    /// from them in the human's own account, not locked against them
+    /// (plan D-32): reach them only through these tools.
+    pub isolation: String,
 }
 
 /// One setting change.
@@ -894,6 +898,7 @@ impl BooksServer {
                 })
                 .collect(),
             next_steps,
+            isolation: "same_user (advisory)".to_string(),
         };
         // Fit (INVARIANT 4): whole lists if they fit; else summaries go,
         // then the lists shorten from the end, each saying how many more.

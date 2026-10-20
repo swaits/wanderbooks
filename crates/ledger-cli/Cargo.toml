@@ -4,7 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "wanderbooks CLI: one command from nothing to a working books directory."
+description = "wanderbooks: the one executable (viewer, books server, host, agents' bridge, owner's commands)."
 
 [[bin]]
 name = "wanderbooks"
@@ -24,17 +24,14 @@ ledger-gui = { path = "../ledger-gui", optional = true }
 
 [dev-dependencies]
 base64 = "0.22"
-chrono = "0.4"
 libc = "0.2"
 reqwest = "0.13"
 rmcp = { version = "3", features = ["client", "transport-streamable-http-client-reqwest"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
-ledger-config = { path = "../ledger-config" }
 ledger-core = { path = "../ledger-core" }
 ledger-vault = { path = "../ledger-vault" }
 serde_json = "1"
 sha2 = "0.10"
-toml = "1"
 tempfile = "3"
 
 [lints]

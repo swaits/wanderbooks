@@ -13,6 +13,7 @@ pub mod export;
 pub mod fmt;
 pub mod menu;
 pub mod nav;
+pub mod owner;
 pub mod pages;
 pub mod palette;
 mod prefs;

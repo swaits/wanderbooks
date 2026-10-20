@@ -153,10 +153,10 @@ footer { padding: 72px 0 48px; color: var(--faint); font-size: 14px; display: fl
     </div>
     <div class="install">
       <span class="prompt">$</span>
-      <code id="cmd">curl -fsSL https://wanderbooks.ai/install.sh | sh -s -- ~/Books/YourCompany</code>
+      <code id="cmd">curl -fsSL https://wanderbooks.ai/install.sh | sh -s -- yourcompany</code>
       <button class="copy" id="copy">Copy</button>
     </div>
-    <p class="note">One line installs everything, makes your books, and starts your bookkeeper in Claude Code. Using Codex? Add <code class="inline">--codex</code> to the end. Linux and macOS; Windows via WSL2.</p>
+    <p class="note">One line installs everything, starts your books (a short name: lowercase letters, digits and hyphens), and connects Claude Code to them; then start Claude Code and say hello. Using Codex? Run <code class="inline">wanderbooks connect codex --book yourcompany</code> after. Linux and macOS; Windows via WSL2.</p>
   </div>
 
   <div class="shot hero-shot"><img src="assets/overview.png" alt="The wanderbooks viewer's overview: cash, what you owe, spending, revenue, runway, a cash chart, and what needs attention" width="1440" height="920"></div>
@@ -289,13 +289,13 @@ footer { padding: 72px 0 48px; color: var(--faint); font-size: 14px; display: fl
 
   <section id="install">
     <h2>Install</h2>
-    <p class="sub">The one line at the top does everything: installs Rust if you don't have it, builds wanderbooks, makes your books folder with the bookkeeper wired in, and starts a session to set up your company.</p>
+    <p class="sub">The one line at the top does everything: installs Rust if you don't have it, builds wanderbooks, makes a private folder for your books, starts them, and connects Claude Code. Nothing needs administrator rights, and nothing keeps running in the background once you're done.</p>
     <div class="grid">
       <div class="card"><h3>Linux</h3><p>Needs a C compiler and git (<code class="inline">build-essential</code> on Debian and Ubuntu). The installer tells you if anything's missing.</p></div>
       <div class="card"><h3>macOS</h3><p>Needs Apple's command line tools: <code class="inline">xcode-select --install</code>.</p></div>
       <div class="card"><h3>Windows</h3><p>Run it inside WSL2 (<code class="inline">wsl --install</code>, then Ubuntu). On Windows 11 the viewer opens as a normal window. Native Windows is on the way.</p></div>
     </div>
-    <p class="note" style="margin-top:24px">Already installed? <code class="inline">wanderbooks new ~/Books/AnotherCompany</code>. In a books folder, <code class="inline">just agent</code> (or <code class="inline">just codex</code>) starts your bookkeeper and <code class="inline">just gui</code> opens the viewer.</p>
+    <p class="note" style="margin-top:24px">Already installed? <code class="inline">wanderbooks books create another</code>, then <code class="inline">wanderbooks connect claude --book another</code>. <code class="inline">wanderbooks gui</code> opens the viewer; its Books menu backs up, restores, starts new books and closes them.</p>
   </section>
 
   <section id="faq">
@@ -304,7 +304,7 @@ footer { padding: 72px 0 48px; color: var(--faint); font-size: 14px; display: fl
     <details><summary>Wait, what's an MCP server?</summary><p>MCP is the standard way AI tools like Claude Code and Codex plug into other software. wanderbooks is an accounting engine that speaks it: your AI calls its tools to draft entries, attach receipts, and run reports, and the engine enforces the accounting rules. The one-line installer sets it up; you never have to touch it.</p></details>
     <details><summary>Do I need to be technical?</summary><p>You need to paste one command into a terminal, once. After that you talk to your bookkeeper in plain English, in Claude Code or Codex, and look at your books in the viewer whenever you like.</p></details>
     <details><summary>How does it find my receipts?</summary><p>Give your AI access to your email (in Claude, an email connector like Gmail's or the Claude browser extension with your mail open) and ask. It searches for the vendor and amount, files one clean PDF per receipt, and attaches it to the entry. It asks before downloading anything, and it never types passwords or account numbers.</p></details>
-    <details><summary>Where's my data, and what does the AI see?</summary><p>Your books are files on your computer: a journal, your receipts, and a settings file, in a git repository you control. Nothing is uploaded to wanderbooks; there is no wanderbooks server. What your bookkeeper reads to help you goes to your AI provider (Anthropic or OpenAI), like any other conversation with it.</p></details>
+    <details><summary>Where's my data, and what does the AI see?</summary><p>Your books are files in a private folder on your computer: a journal and your receipts. They back themselves up to a private git repository and a folder you choose. Nothing is uploaded to wanderbooks; there is no wanderbooks server. What your bookkeeper reads to help you goes to your AI provider (Anthropic or OpenAI), like any other conversation with it.</p></details>
     <details><summary>What if the AI gets something wrong?</summary><p>Every posting is previewed before it happens. If something slips through, it's corrected the way accountants do it, with a reversing entry, so the mistake and the fix are both on the record. The engine itself refuses anything that doesn't balance, anything without a required receipt, and anything in a closed period.</p></details>
     <details><summary>Is this real accounting, or a spreadsheet with an AI on top?</summary><p>Real double-entry accounting, with the rules enforced in code: exact decimal money, balanced entries, immutable posting, closes, depreciation, accrual or cash basis. Its statements are tested against hand-computed numbers, golden files, and property tests.</p></details>
     <details><summary>Can I bring my history from QuickBooks or a spreadsheet?</summary><p>Yes. Export your chart of accounts, journal, and reports, and ask your bookkeeper to move you over. It rebuilds the history and compares every statement against the old system, to the cent, before calling it done. Keep the old system read-only until you've closed a month in wanderbooks.</p></details>
@@ -320,7 +320,7 @@ footer { padding: 72px 0 48px; color: var(--faint); font-size: 14px; display: fl
 (function () {
   var cmd = document.getElementById("cmd");
   if (location.protocol === "https:" && location.hostname !== "wanderbooks.ai") {
-    cmd.textContent = "curl -fsSL " + location.origin + "/install.sh | sh -s -- ~/Books/YourCompany";
+    cmd.textContent = "curl -fsSL " + location.origin + "/install.sh | sh -s -- yourcompany";
   }
   document.getElementById("copy").addEventListener("click", function () {
     var b = this;

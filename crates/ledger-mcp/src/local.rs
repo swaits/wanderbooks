@@ -490,6 +490,41 @@ impl Books {
                 confirmed,
                 expect_head,
             } => self.restore(id, source, replace, confirmed, expect_head),
+            Request::BackUpNow { id, new_disk } => {
+                let id = match BookId::parse(&id) {
+                    Ok(id) => id,
+                    Err(e) => return refused(e),
+                };
+                let backups = match self.held().get(id.as_str()) {
+                    Some(Book::Open { backups, .. }) => backups.clone(),
+                    Some(Book::Failed(why)) => {
+                        return Response::Refused(format!("those books didn't open: {why}"));
+                    }
+                    None => {
+                        return Response::Refused(format!(
+                            "there are no books called {:?}",
+                            id.as_str()
+                        ));
+                    }
+                };
+                let rt = tokio::runtime::Handle::current();
+                match rt.block_on(backups.run_with("asked", new_disk)) {
+                    Ok(status) => Response::BackedUp {
+                        head_seq: status.head_seq,
+                        targets: status
+                            .targets
+                            .into_iter()
+                            .map(|t| admin::BackedUpTarget {
+                                target: t.target,
+                                at: t.at,
+                                through_seq: t.through_seq,
+                                problem: t.last_error,
+                            })
+                            .collect(),
+                    },
+                    Err(why) => Response::Refused(self.hide(why)),
+                }
+            }
             Request::Adopt {
                 id,
                 source,

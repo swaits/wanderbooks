@@ -130,7 +130,9 @@ settings-and-conventions section says how to use them.
   evidence, parties, approval_rules }, settings_summary: [{ key, value,
   set_by, seq }], conventions: [{ id, kind, title, summary }], open_items:
   [{ id, title, due }], truncated, handbook_sections, next_steps: [{ tool,
-  args?, why }] }`. The connect text names it as the first call. Lists cut
+  args?, why }], isolation }`. The connect text names it as the first call.
+  `isolation` is `same_user (advisory)` (D-32): the books are hidden from
+  agents in the owner's own account, not locked against them. Lists cut
   to fit say so in `truncated` ("conventions: 4 more (books.conventions)").
   `focus` adds steps: `onboarding` the onboarding step, `close` the
   company's close steps, `audit` `books.verify`. Not built yet (P5):

@@ -906,7 +906,6 @@ checked to change no figure or entry; `approval_rules_off_by_default`,
 `a_newer_key_or_kind_is_newer`;
 `books_written_under_p1_open_to_their_record`, fixture
 `old-books/p1_record`); `ledger-config` `tests/codec_props.rs`
-(`exports_round_trip`) and codec unit tests; `ledger-cli` `tests/init.rs`
-`the_toml_and_its_examples_import_and_round_trip`; `ledger-mcp`
+(`exports_round_trip`) and codec unit tests; `ledger-mcp`
 `tests/spec_kept.rs`; Lean `Step.record_changes_no_figure`,
 `Reachable.records`; fuzz `fuzz_settings_replay`.

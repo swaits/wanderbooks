@@ -12,7 +12,8 @@
 //! INVARIANTS:
 //!   1. Before each try the holder waits while a restart holds
 //!      run/update.lock.
-//!   2. No host answering: it starts one (its Starter) and keeps trying;
+//!   2. No host answering: it starts one (cleanly, start.rs) and keeps
+//!      trying;
 //!      a host that is closing or restarting turns it away and it tries
 //!      again until a host takes the lease.
 //!   3. A start that brings no lease within START_WAIT (or whose host
@@ -87,20 +88,11 @@ impl From<&str> for HoldError {
     }
 }
 
-/// How a holder starts a host when none answers.
-pub enum Starter {
-    /// Start it itself (a holder that isn't confined).
-    Direct,
-    /// Ask its helper to (a confined holder).
-    Helper(std::sync::Arc<crate::helper::Client>),
-}
-
 /// Takes leases for one holder.
 pub struct Opener {
     root: Option<PathBuf>,
     run: PathBuf,
     knobs: Knobs,
-    starter: Starter,
     kind: Kind,
     book: Option<String>,
     failures: u32,
@@ -140,7 +132,6 @@ impl Opener {
     pub fn new(
         root: Option<&Path>,
         knobs: Knobs,
-        starter: Starter,
         kind: Kind,
         book: Option<String>,
     ) -> Result<Self, String> {
@@ -150,7 +141,6 @@ impl Opener {
             root: root.map(|_| found.path().to_path_buf()),
             run,
             knobs,
-            starter,
             kind,
             book,
             failures: 0,
@@ -192,6 +182,12 @@ impl Opener {
         Ok(())
     }
 
+    /// Start counting failures over (a holder that waited a while after
+    /// giving up tries again); what it has held is kept (INVARIANT 5).
+    pub fn forget_failures(&mut self) {
+        self.failures = 0;
+    }
+
     /// Take a lease, starting a host if none answers (INVARIANTS 1-4).
     pub async fn hold(&mut self) -> Result<Lease, HoldError> {
         let mut started: Option<Instant> = None;
@@ -230,8 +226,8 @@ impl Opener {
                     // for it rather than start another.
                     let held = host_lock_held(&self.run);
                     match started {
-                        // A start that fails (a spawn error, the helper
-                        // gone) is a failure like any other (INVARIANT 3).
+                        // A start that fails (a spawn error) is a
+                        // failure like any other (INVARIANT 3).
                         None if !held => match self.start().await {
                             Ok(()) => started = Some(Instant::now()),
                             Err(_) => self.failed().await?,
@@ -256,25 +252,13 @@ impl Opener {
         }
     }
 
-    /// Start a host, through this holder's starter.
+    /// Start a host, cleanly (start.rs).
     async fn start(&self) -> Result<(), String> {
-        match &self.starter {
-            Starter::Direct => {
-                let root = self.root.clone();
-                let knobs = self.knobs;
-                tokio::task::spawn_blocking(move || {
-                    crate::start::start_host(root.as_deref(), &knobs)
-                })
-                .await
-                .map_err(|e| e.to_string())?
-            }
-            Starter::Helper(helper) => {
-                let helper = helper.clone();
-                tokio::task::spawn_blocking(move || helper.start_host())
-                    .await
-                    .map_err(|e| e.to_string())?
-            }
-        }
+        let root = self.root.clone();
+        let knobs = self.knobs;
+        tokio::task::spawn_blocking(move || crate::start::start_host(root.as_deref(), &knobs))
+            .await
+            .map_err(|e| e.to_string())?
     }
 
     /// Say hello on a connection and read the host's first word.
@@ -468,7 +452,6 @@ mod tests {
                 backoff: Duration::from_millis(1),
                 ..Knobs::default()
             },
-            starter: Starter::Direct,
             kind: Kind::Cli,
             book: None,
             failures: 0,

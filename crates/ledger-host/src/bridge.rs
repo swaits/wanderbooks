@@ -50,7 +50,7 @@
 
 use crate::knobs::{FLAG, Knobs};
 use crate::lease::{HostMsg, Kind, Reason};
-use crate::opener::{Opener, Starter};
+use crate::opener::Opener;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -1241,15 +1241,7 @@ pub fn run(
     let book = ledger_store::root::BookId::parse(&book)
         .map_err(|e| e.to_string())?
         .to_string();
-    // The helper first, before any thread (helper.rs INVARIANT 4).
-    let helper = Arc::new(crate::helper::Client::spawn(root.as_deref(), &knobs)?);
-    let opener = Opener::new(
-        root.as_deref(),
-        knobs,
-        Starter::Helper(helper.clone()),
-        Kind::Bridge,
-        Some(book.clone()),
-    )?;
+    let opener = Opener::new(root.as_deref(), knobs, Kind::Bridge, Some(book.clone()))?;
     // Kept for the whole session: the client reaches the socket by it.
     let socket =
         ledger_store::root::SocketPath::new(opener.run_dir(), ledger_mcp::local::MCP_SOCKET)
@@ -1337,7 +1329,6 @@ pub fn run(
         Ok::<(), String>(())
     });
     rt.shutdown_timeout(Duration::from_secs(1));
-    drop(helper);
     result.map_err(Into::into)
 }
 

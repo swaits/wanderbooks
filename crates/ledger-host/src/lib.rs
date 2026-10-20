@@ -5,17 +5,16 @@
 //! the **host**, which starts the books server and holds it open while
 //! any lease on its socket lasts, and closes it 10 s after the last one
 //! ends. Each part is a mode of the one `wanderbooks` executable:
-//! [`host::run`] (`wanderbooks host`), [`helper::run`] (`wanderbooks
-//! helper`), [`bridge::run`] (`wanderbooks mcp`), and the commands in
-//! [`commands`] (`serve`, `close`, `books`, `token`). Agents' tokens are
-//! kept in the OS keyring ([`tokens`]).
+//! [`host::run`] (`wanderbooks host`), [`bridge::run`] (`wanderbooks
+//! mcp`), and the owner's commands in [`commands`] (`serve`, `close`,
+//! `books`, `token`, `connect`, `doctor`, `passphrase`, and what the
+//! viewer's Books menu does). Agents' tokens are kept in the OS keyring
+//! ([`tokens`]).
 
 #[cfg(unix)]
 pub mod bridge;
 #[cfg(unix)]
 pub mod commands;
-#[cfg(unix)]
-pub mod helper;
 #[cfg(unix)]
 pub mod host;
 pub mod knobs;

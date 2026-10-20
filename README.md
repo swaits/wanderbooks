@@ -72,15 +72,17 @@ cargo run -p ledger-mcp -- --data-dir /tmp/books   # MCP server over stdio
 cargo run -p ledger-gui -- --demo                   # the viewer, on a demo company
 ```
 New books, one command (installs Rust and wanderbooks if needed, makes the
-books dir with the MCP server registered for it, and starts the agent):
+books' private folder, starts books called `acme` and lets Claude Code reach
+them; nothing needs sudo):
 
 ```bash
-curl -fsSL https://wanderbooks.ai/install.sh | sh -s -- ~/Books/Acme
+curl -fsSL https://wanderbooks.ai/install.sh | sh -s -- acme
 ```
 
-Already installed: `wanderbooks new ~/Books/Acme` (add `--codex` to keep the
-books with Codex instead of Claude Code). In a books dir, `just`
-lists the shortcuts (`just gui`, `just agent`, `just backup`).
+Already installed, three commands: `wanderbooks setup`, `wanderbooks books
+create acme`, `wanderbooks connect claude --book acme` (or `connect codex`).
+Then talk to the agent; `wanderbooks gui acme` shows the books, and its
+Books menu backs them up, restores, starts new books and closes them.
 
 ## Developing
 
@@ -100,7 +102,9 @@ crates/ledger-store/   # journal + SQLite projection + blob store
 crates/ledger-mcp/     # MCP server: 108 tools, resources, handbook, receipt policy
 crates/ledger-import/  # QBO CSV import, IIF/XLSX export
 crates/ledger-config/  # wanderbooks.toml company settings
-crates/ledger-cli/     # `wanderbooks new`: one-command books dir + agent
+crates/ledger-cli/     # `wanderbooks`: the one executable (every mode)
+crates/ledger-host/    # the host, the agents' bridge, the owner's commands
+crates/ledger-package/ # The CPA package and the 1099 worksheet (server and viewer)
 crates/ledger-gui/     # the viewer: read-only, live (egui)
 docs/                  # requirements, architecture, oracle, parity, glossary
 plan/                  # STATUS.md, roadmap.md

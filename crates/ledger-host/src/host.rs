@@ -539,16 +539,6 @@ impl Host {
                                 Phase::Closing(reason) => HostMsg::Ending { reason, detail: None },
                             });
                         }
-                        Event::Intent(Intent::NewBooks { id, currency }, answer)
-                            if self.ready && self.phase == Phase::Open =>
-                        {
-                            // The server does it; the loop goes on meanwhile.
-                            let socket = self.run.join(ledger_mcp::local::ADMIN_SOCKET);
-                            tokio::spawn(async move {
-                                let msg = new_books(socket, id, currency).await;
-                                let _ = answer.send(msg);
-                            });
-                        }
                         Event::Intent(Intent::Close, answer) if self.phase != Phase::Open => {
                             // INVARIANT 11; closing anyway: already so.
                             let _ = answer.send(match self.phase {
@@ -701,27 +691,6 @@ impl Host {
                 },
                 Some(Reason::ClosedByOwner),
             ),
-            Intent::NewBooks { .. } if self.phase == Phase::Open => (
-                HostMsg::Refused("the books are still opening: try again in a moment".into()),
-                None,
-            ),
-            Intent::NewBooks { .. } => (
-                HostMsg::Refused("the books are closing: nothing was done".into()),
-                None,
-            ),
-            Intent::BackUpNow { .. } => (
-                HostMsg::Refused(
-                    "the books back themselves up; to back up now, ask your agent (books.back_up_now)"
-                        .into(),
-                ),
-                None,
-            ),
-            Intent::Restore { .. } => (
-                HostMsg::Refused(
-                    "restore from a terminal for now: `wanderbooks books restore BACKUP`".into(),
-                ),
-                None,
-            ),
             Intent::ConsentFormatUpgrade { .. } => (
                 HostMsg::Refused("no books are waiting for a format upgrade".into()),
                 None,
@@ -765,30 +734,6 @@ impl Host {
         connections.close();
         let _ = tokio::time::timeout(Duration::from_secs(2), connections.wait()).await;
         Ok(ending)
-    }
-}
-
-/// "New books…": the server makes them, through its admin socket.
-async fn new_books(socket: PathBuf, id: String, currency: String) -> HostMsg {
-    use ledger_mcp::admin::{Request, Response};
-    let answer = tokio::task::spawn_blocking(move || {
-        ledger_mcp::admin::call(&socket, Request::Create { id, currency })
-    })
-    .await;
-    match answer {
-        Ok(Ok(Response::Created { id, problem: None })) => HostMsg::Done {
-            detail: Some(format!("new books {id} made")),
-        },
-        Ok(Ok(Response::Created {
-            id,
-            problem: Some(why),
-        })) => HostMsg::Refused(format!("new books {id} were made but didn't open: {why}")),
-        Ok(Ok(Response::Refused(why))) => HostMsg::Refused(why),
-        Ok(Ok(_)) => HostMsg::Refused("the books server answered oddly".into()),
-        Ok(Err(ledger_mcp::admin::CallError::NotSent(why))) => HostMsg::Refused(why),
-        // Sent, and no answer: never reported as not done.
-        Ok(Err(ledger_mcp::admin::CallError::Unknown(why))) => HostMsg::Uncertain(why),
-        Err(_) => HostMsg::Refused("the host hit an internal error".into()),
     }
 }
 

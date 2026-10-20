@@ -170,7 +170,7 @@ impl Drop for Home {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             let mut found = false;
-            for mode in ["serve", "mcp", "helper", "host", "server"] {
+            for mode in ["serve", "mcp", "host", "server"] {
                 for pid in self.pids(mode) {
                     found = true;
                     // SAFETY: a process of this test's own root.
@@ -922,19 +922,15 @@ fn the_lease_socket_takes_only_the_owners_intents() {
         ),
         (
             "{\"proto\":1,\"intent\":{\"back_up_now\":{\"book\":\"acme\"}}}\n",
-            "books.back_up_now",
+            "not understood",
         ),
         (
-            "{\"proto\":1,\"intent\":{\"restore\":{\"source\":\"/x\",\"id\":\"acme\",\"replace\":true}}}\n",
-            "wanderbooks books restore",
-        ),
-        (
-            "{\"proto\":1,\"intent\":{\"new_books\":{\"id\":\"beta\",\"currency\":\"USD\"}}}\n",
-            "new books beta made",
+            "{\"proto\":1,\"intent\":{\"restore\":{\"source\":\"/x\",\"id\":\"acme\"}}}\n",
+            "not understood",
         ),
         (
             "{\"proto\":1,\"intent\":{\"new_books\":{\"id\":\"beta\",\"currency\":\"USD\"}}}\n",
-            "already books called",
+            "not understood",
         ),
     ] {
         let answer = home.lease_line(line);
@@ -946,7 +942,7 @@ fn the_lease_socket_takes_only_the_owners_intents() {
     }
     let out = home.books(&["list"]);
     assert!(
-        String::from_utf8_lossy(&out.stdout).contains("beta  open"),
+        !String::from_utf8_lossy(&out.stdout).contains("beta"),
         "{out:?}"
     );
 }
@@ -1920,9 +1916,8 @@ fn the_books_command_takes_its_flags_and_asks_before_adopting() {
 
 /// A program that starts the bridge with its stderr closed (some launchers
 /// do) still gets a working bridge, its descriptor 2 on /dev/null: Rust's
-/// runtime opens it before main, so the helper's socket can't take its
-/// number and be sent the error messages (asked in slice 3's mutation
-/// testing: the helper's descriptor 3 then is never its own pair's end).
+/// runtime opens it before main, so no socket the bridge opens can take
+/// its number and be sent the error messages.
 #[test]
 fn a_bridge_started_without_stderr_keeps_its_descriptors_apart() {
     use std::os::unix::process::CommandExt;
@@ -2463,4 +2458,243 @@ fn a_backup_is_restored_from_the_command_line() {
     let start = fresh.call("books.start", json!({})).unwrap();
     assert_eq!(start["head"]["seq"].as_u64(), Some(head), "{start}");
     fresh.end();
+}
+
+/// A stand-in for an agent's own command line (`claude`, `codex`): it
+/// notes each call's arguments, a line each.
+fn fake_agent(home: &Home, name: &str) -> (PathBuf, PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = home.dir.path().join("agent-bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let log = home.dir.path().join(format!("{name}.log"));
+    let script = bin.join(name);
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n", log.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    (bin, log)
+}
+
+#[test]
+fn an_agent_is_connected_and_reaches_the_books_by_what_it_was_given() {
+    let home = Home::new("connect");
+    let out = home.books(&["create", "beta"]);
+    assert!(out.status.success(), "{out:?}");
+    let (bin, log) = fake_agent(&home, "claude");
+    let connect = |agent: &str, path: &Path| {
+        home.cmd("connect")
+            .args([agent, "--book", "beta"])
+            .env("PATH", format!("{}:/usr/bin:/bin", path.display()))
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    };
+    let out = connect("claude", &bin);
+    assert!(out.status.success(), "{out:?}");
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(said.contains("Made the books beta' agent token"), "{said}");
+    assert!(
+        said.contains("Claude Code reaches the books beta"),
+        "{said}"
+    );
+    let calls = std::fs::read_to_string(&log).unwrap();
+    let lines: Vec<&str> = calls.lines().collect();
+    assert_eq!(lines[0], "mcp remove --scope user wanderbooks-beta");
+    let add = lines[1];
+    assert!(
+        add.starts_with("mcp add --scope user wanderbooks-beta -- "),
+        "{add}"
+    );
+    assert!(add.contains(" mcp --book beta --root "), "{add}");
+    assert!(!said.contains("wb_"), "a token's text was shown");
+    // The command it was given reaches the books (with the token kept).
+    let given: Vec<&str> = add.split(" -- ").nth(1).unwrap().split(' ').collect();
+    let mut c = Command::new(given[0]);
+    c.args(&given[1..])
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", home.dir.path());
+    let mut agent = Agent::from(c);
+    agent.initialize();
+    let start = agent.call("books.start", json!({})).unwrap();
+    assert!(start["head"]["seq"].as_u64().is_some(), "{start}");
+    agent.end();
+    // Again: the token kept is used, not made anew.
+    let out = connect("claude", &bin);
+    assert!(out.status.success(), "{out:?}");
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("Made the books"),
+        "{out:?}"
+    );
+    // Codex: its own list, no scope.
+    let (bin, log) = fake_agent(&home, "codex");
+    let out = connect("codex", &bin);
+    assert!(out.status.success(), "{out:?}");
+    let calls = std::fs::read_to_string(&log).unwrap();
+    assert!(
+        calls
+            .lines()
+            .nth(1)
+            .unwrap()
+            .starts_with("mcp add wanderbooks-beta -- "),
+        "{calls}"
+    );
+    // An agent that isn't installed: said. (Never where a real one could
+    // be found and run: skipped on a machine with one installed system-wide.)
+    if ["/usr/local/bin/claude", "/opt/homebrew/bin/claude"]
+        .iter()
+        .any(|p| Path::new(p).exists())
+    {
+        return;
+    }
+    let empty = home.dir.path().join("empty-bin");
+    std::fs::create_dir_all(&empty).unwrap();
+    let out = home
+        .cmd("connect")
+        .args(["claude", "--book", "beta"])
+        .env("PATH", empty.display().to_string())
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("isn't installed"),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn books_are_backed_up_now_from_the_command_line() {
+    let home = Home::new("back-up");
+    home.create("acme");
+    // None set up: said, and failing.
+    let out = home.books(&["back-up", "acme"]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("No backups are set up"),
+        "{out:?}"
+    );
+    let disk = home.dir.path().join("disk");
+    std::fs::create_dir(&disk).unwrap();
+    let mut a = Agent::start(&home, "acme");
+    a.initialize();
+    a.call(
+        "books.set_setting",
+        json!({"changes": [{"key": "backup.folder", "value": disk.display().to_string()}],
+               "decided_by": "Test Owner"}),
+    )
+    .unwrap();
+    let out = home.books(&["back-up", "acme"]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("Backed up to the backup folder"),
+        "{out:?}"
+    );
+    assert!(disk.join("acme.git").join("HEAD").is_file());
+    // A folder gone since: said, and --new-disk begins it again.
+    std::fs::rename(disk.join("acme.git"), home.dir.path().join("away.git")).unwrap();
+    let out = home.books(&["back-up", "acme"]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("holds no backup"),
+        "{out:?}"
+    );
+    let out = home.books(&["back-up", "acme", "--new-disk"]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(disk.join("acme.git").join("HEAD").is_file());
+    a.end();
+}
+
+/// The viewer's owner (ledger-cli's `ViewerOwner`, over these ledger-host
+/// functions): its hold is a lease of kind app; new books are made by the
+/// server; "Close the books" ends every lease, the viewer's hold with it.
+/// (A `serve` holds the books first: run in this test's process, a hold
+/// that had to start the host would start this test's own program.)
+#[test]
+fn the_viewers_hold_new_books_and_close_the_books() {
+    use ledger_host::commands::{Common, close_books, hold_for_viewer, new_books};
+    let home = Home::new("viewer-owner");
+    home.create("acme");
+    let serving = serve(&home);
+    let common = Common {
+        root: Some(home.root()),
+        knobs: ledger_host::knobs::Knobs::parse(KNOBS).unwrap(),
+    };
+    let hold = hold_for_viewer(&common, Some("acme".into()));
+    assert!(
+        wait_for(20, || home
+            .lease_line("{\"proto\":1,\"leases\":null}\n")
+            .contains("\"app\"")),
+        "the viewer's lease never showed"
+    );
+    assert_eq!(
+        new_books(&common, "beta", "USD").unwrap(),
+        "Made new books \"beta\" (USD)."
+    );
+    assert!(
+        new_books(&common, "beta", "USD")
+            .unwrap_err()
+            .contains("already books called")
+    );
+    let out = home.books(&["list"]);
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("beta  open"),
+        "{out:?}"
+    );
+    let said = close_books(&common).unwrap();
+    assert!(said.starts_with("The books are closing"), "{said}");
+    // The viewer's hold lets go, for good (closed by the owner).
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(hold.join().is_ok());
+    });
+    assert_eq!(rx.recv_timeout(Duration::from_secs(30)), Ok(true));
+    serving.expect("closed", 30);
+    assert!(home.wait_closed(30));
+    // Closed: said so.
+    assert_eq!(close_books(&common).unwrap(), "The books are closed.");
+}
+
+#[test]
+fn connect_makes_anew_a_token_the_keyring_lost_and_says_when_an_agent_refuses() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = Home::new("connect-lost");
+    home.create("acme");
+    // The server keeps the books' agent token; this computer's keyring
+    // lost it.
+    std::fs::remove_dir_all(home.run_dir().join("test-keyring")).unwrap();
+    let (bin, _log) = fake_agent(&home, "claude");
+    let connect = |path: &Path| {
+        home.cmd("connect")
+            .args(["claude", "--book", "acme"])
+            .env("PATH", format!("{}:/usr/bin:/bin", path.display()))
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    };
+    let out = connect(&bin);
+    assert!(out.status.success(), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("Made the books acme' agent token"),
+        "{out:?}"
+    );
+    // The agent's own command refuses: said, with what it said.
+    let refusing = home.dir.path().join("refusing-bin");
+    std::fs::create_dir_all(&refusing).unwrap();
+    let script = refusing.join("claude");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\n[ \"$2\" = add ] && { echo 'no room at the inn' >&2; exit 1; }\nexit 0\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let out = connect(&refusing);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("Claude Code didn't add the books: no room at the inn"),
+        "{err}"
+    );
 }

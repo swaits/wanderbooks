@@ -4,7 +4,10 @@
 //! GOAL: holders hold the books open, and the owner's few requests reach
 //!       the server, through one socket that accepts nothing else.
 //! SOURCE: plan/served.md 3.9 ("Who holds them", "Three local channels":
-//!         leases record their kind and PID; exactly five owner intents;
+//!         leases record their kind and PID; the owner intents (as built,
+//!         D-32: two; the viewer, unconfined, backs up, restores and makes
+//!         books through the server's admin socket as the command line
+//!         does);
 //!         consent carries the owner passphrase (a replacing restore no
 //!         longer does: D-31, the books it replaces are kept in legacy/);
 //!         "Closing": the host says why on each lease; protocol versions N
@@ -13,9 +16,8 @@
 //!   1. A connection's first line is one Ask; a Hold keeps the
 //!      connection (the lease lasts until it closes), anything else is
 //!      answered once and the connection closed.
-//!   2. Exactly five intents exist: close, back_up_now, new_books,
-//!      restore (a backup's address or folder, as `books restore` takes
-//!      it) and consent_format_upgrade; any other request is refused.
+//!   2. Exactly two intents exist: close and consent_format_upgrade; any
+//!      other request is refused.
 //!   3. consent_format_upgrade carries the owner passphrase; without one
 //!      it is refused before anything is done.
 //!   4. Before the host ends a lease it sends the reason; a lease that
@@ -102,36 +104,12 @@ pub enum Ask {
     Intent(Intent),
 }
 
-/// The owner's intents: exactly these five (INVARIANT 2).
+/// The owner's intents: exactly these two (INVARIANT 2).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Intent {
     /// Close the books now: every lease ends.
     Close,
-    /// Back a book up now.
-    BackUpNow {
-        /// Which.
-        book: String,
-    },
-    /// Start new books.
-    NewBooks {
-        /// Their id.
-        id: String,
-        /// Their base currency.
-        currency: String,
-    },
-    /// Restore a backup, as its own book or replacing one (kept in
-    /// legacy/).
-    Restore {
-        /// The backup: a repository's address, or its folder (`<book>.git`
-        /// in the backup folder).
-        source: String,
-        /// The books' id.
-        id: String,
-        /// Replace the books of that id.
-        #[serde(default)]
-        replace: bool,
-    },
     /// Let the server upgrade a book's journal format.
     ConsentFormatUpgrade {
         /// Which.
@@ -277,12 +255,9 @@ mod tests {
     }
 
     #[test]
-    fn exactly_five_intents_are_understood() {
+    fn exactly_two_intents_are_understood() {
         for intent in [
             json!("close"),
-            json!({"back_up_now": {"book": "acme"}}),
-            json!({"new_books": {"id": "acme", "currency": "USD"}}),
-            json!({"restore": {"source": "/backups/acme.git", "id": "acme"}}),
             json!({"consent_format_upgrade": {"book": "acme", "passphrase": "x"}}),
         ] {
             let h = parse(json!({"proto": 1, "intent": intent})).unwrap();
@@ -291,8 +266,9 @@ mod tests {
         for bad in [
             json!({"proto": 1, "intent": "delete"}),
             json!({"proto": 1, "intent": {"restore": {"path": "/x"}}}),
-            json!({"proto": 1, "intent": {"restore": {"source": "/x", "id": "a", "path": "/x"}}}),
-            json!({"proto": 1, "intent": {"restore": {"staged": "s1"}}}),
+            json!({"proto": 1, "intent": {"restore": {"source": "/x", "id": "a"}}}),
+            json!({"proto": 1, "intent": {"back_up_now": {"book": "acme"}}}),
+            json!({"proto": 1, "intent": {"new_books": {"id": "acme", "currency": "USD"}}}),
             json!({"proto": 1, "intent": {"run": {"command": "sh"}}}),
             json!({"proto": 1, "exec": "sh"}),
             json!({"proto": 1}),
@@ -325,22 +301,7 @@ mod tests {
         assert!(consent(None).check_passphrase().is_err());
         assert!(consent(Some("")).check_passphrase().is_err());
         assert!(consent(Some("pw")).check_passphrase().is_ok());
-        for other in [
-            // D-31: replacing keeps the old books in legacy/; no passphrase.
-            Intent::Restore {
-                source: "/backups/acme.git".into(),
-                id: "acme".into(),
-                replace: true,
-            },
-            Intent::Close,
-            Intent::BackUpNow { book: "a".into() },
-            Intent::NewBooks {
-                id: "a".into(),
-                currency: "USD".into(),
-            },
-        ] {
-            assert!(other.check_passphrase().is_ok());
-        }
+        assert!(Intent::Close.check_passphrase().is_ok());
     }
 
     #[test]

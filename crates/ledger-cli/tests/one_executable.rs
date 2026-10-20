@@ -151,6 +151,20 @@ fn a_mode_refuses_what_it_does_not_know() {
 }
 
 #[test]
+fn the_books_folder_scaffold_is_gone_and_says_so() {
+    for gone in ["new", "init"] {
+        let out = wanderbooks().args([gone, "acme"]).output().unwrap();
+        assert_eq!(out.status.code(), Some(2), "{gone}: {out:?}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains(&format!("`wanderbooks {gone}` is gone")),
+            "{err}"
+        );
+        assert!(err.contains("wanderbooks books create ID"), "{err}");
+    }
+}
+
+#[test]
 fn a_mode_comes_first() {
     for mode in ["gui", "dev-stdio", "server"] {
         let out = wanderbooks().args(["--codex", mode]).output().unwrap();

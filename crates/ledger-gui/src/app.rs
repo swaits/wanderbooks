@@ -147,6 +147,8 @@ pub struct App {
     live_label: bool,
     /// The export menu (menu.rs).
     menu: crate::menu::Menu,
+    /// The owner's Books menu (owner.rs).
+    owner_menu: crate::owner::OwnerMenu,
 }
 
 impl App {
@@ -191,6 +193,7 @@ impl App {
             updated_at: -1e9,
             live_label: false,
             menu: Default::default(),
+            owner_menu: Default::default(),
         }
     }
 
@@ -644,6 +647,7 @@ impl App {
                     if let Some(b) = &books {
                         ui.add_space(2.0);
                         self.menu.ui(ui, b, false);
+                        self.owner_menu.ui(ui, b, false);
                     }
                     ui.add_space(6.0);
                     if let Some(b) = &books {
@@ -742,6 +746,7 @@ impl App {
                     self.scheme_menu(ui, true);
                     if let Some(b) = &books {
                         self.menu.ui(ui, b, true);
+                        self.owner_menu.ui(ui, b, true);
                     }
                     ui.add_space(6.0);
                     if let Some(b) = &books {

@@ -19,8 +19,7 @@ use std::time::{Duration, Instant};
 
 /// Short timings for tests (the defaults are the plan's), and agents'
 /// tokens kept in files in the test root, not this computer's keyring.
-const KNOBS: &str =
-    "close_after=2500,backoff=50,exe_poll=100,init_wait=5000,queue_wait=30000,file_keyring=1";
+const KNOBS: &str = "close_after=2500,backoff=50,exe_poll=100,init_wait=5000,queue_wait=30000,file_keyring=1,backup_quiet=300";
 
 /// A home with a data root, and the program the tests run (possibly a
 /// copy, for restarts).
@@ -922,16 +921,12 @@ fn the_lease_socket_takes_only_the_owners_intents() {
             "passphrase",
         ),
         (
-            "{\"proto\":1,\"intent\":{\"restore\":{\"staged\":\"s1\",\"replace\":\"acme\"}}}\n",
-            "passphrase",
-        ),
-        (
             "{\"proto\":1,\"intent\":{\"back_up_now\":{\"book\":\"acme\"}}}\n",
-            "isn't built yet",
+            "books.back_up_now",
         ),
         (
-            "{\"proto\":1,\"intent\":{\"restore\":{\"staged\":\"s1\"}}}\n",
-            "isn't built yet",
+            "{\"proto\":1,\"intent\":{\"restore\":{\"source\":\"/x\",\"id\":\"acme\",\"replace\":true}}}\n",
+            "wanderbooks books restore",
         ),
         (
             "{\"proto\":1,\"intent\":{\"new_books\":{\"id\":\"beta\",\"currency\":\"USD\"}}}\n",
@@ -2345,4 +2340,127 @@ fn the_commands_given_run_as_the_agents_own_token() {
     assert_eq!(out.status.code(), Some(2), "{out:?}");
     assert!(String::from_utf8_lossy(&out.stderr).contains("isn't UTF-8"));
     a.end();
+}
+
+#[test]
+fn a_backup_is_restored_from_the_command_line() {
+    let home = Home::new("restore");
+    home.create("acme");
+    let disk = home.dir.path().join("disk");
+    std::fs::create_dir(&disk).unwrap();
+    let mut a = Agent::start(&home, "acme");
+    a.initialize();
+    chart(&mut a);
+    post_one(&mut a, 1).unwrap();
+    a.call(
+        "books.set_setting",
+        json!({"changes": [{"key": "backup.folder", "value": disk.display().to_string()}],
+               "decided_by": "Test Owner"}),
+    )
+    .unwrap();
+    // Backed up by the server alone, soon after (the host passed on its
+    // quiet).
+    let mut s = Value::Null;
+    assert!(
+        wait_for(30, || {
+            s = a.call("books.backup", json!({})).unwrap();
+            s["targets"][0]["through_seq"] == s["head_seq"]
+        }),
+        "never backed up: {s}"
+    );
+    assert_eq!(s["targets"][0]["last_error"], Value::Null, "{s}");
+    let head = s["head_seq"].as_u64().unwrap();
+    let backup = disk.join("acme.git");
+    let backup = backup.to_str().unwrap();
+    // Previewed, and not done without a yes.
+    let out = home.books(&["restore", backup, "--id", "copy"]);
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(said.contains(&format!("through event {head}")), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("confirm at a terminal"),
+        "{out:?}"
+    );
+    assert_eq!(out.status.code(), Some(1));
+    // Under its own name, over books that exist: refused.
+    let out = home.books(&["restore", backup, "--yes"]);
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("already books called"),
+        "{out:?}"
+    );
+    // A repository named otherwise: restored as the books it holds, by
+    // default (here: over those, refused), said.
+    let renamed = home.dir.path().join("disk").join("fernhill-backup.git");
+    let out = Command::new("git")
+        .args(["clone", "-q", "--bare"])
+        .arg(backup)
+        .arg(&renamed)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let out = home.books(&["restore", renamed.to_str().unwrap(), "--yes"]);
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("already books called \"acme\""),
+        "{out:?}"
+    );
+    let out = home.books(&["restore", renamed.to_str().unwrap(), "--id", "other"]);
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        said.contains("It is a backup of the books \"acme\""),
+        "{out:?}"
+    );
+    assert!(said.contains("--id acme"), "{out:?}");
+    // A repository whose name is no id: still restored as its books.
+    let odd = home.dir.path().join("disk").join("Fernhill_Backup.git");
+    std::fs::rename(&renamed, &odd).unwrap();
+    let out = home.books(&["restore", odd.to_str().unwrap(), "--yes"]);
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("already books called \"acme\""),
+        "{out:?}"
+    );
+    std::fs::rename(&odd, &renamed).unwrap();
+    // Beside them.
+    let out = home.books(&["restore", backup, "--id", "copy", "--yes"]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("Restored as \"copy\""),
+        "{out:?}"
+    );
+    // Replacing them, the old kept: from the repository named otherwise,
+    // given no id (the books it holds are replaced).
+    post_one(&mut a, 2).unwrap();
+    let out = home.books(&["restore", renamed.to_str().unwrap(), "--replace", "--yes"]);
+    assert!(out.status.success(), "{out:?}");
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        said.contains("kept in the legacy folder as acme-"),
+        "{out:?}"
+    );
+    // The head it restored (post 2 may have been backed up by then).
+    let restored: u64 = said
+        .split("Restored as \"acme\": through event ")
+        .nth(1)
+        .and_then(|rest| rest.split(' ').next())
+        .and_then(|n| n.parse().ok())
+        .expect("the restored head is said");
+    assert!(restored >= head, "{said}");
+    let head = restored;
+    assert!(!said.contains(&home.root().display().to_string()), "{said}");
+    let out = home.books(&["list"]);
+    let listed = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        listed.contains("acme  open") && listed.contains("copy  open"),
+        "{out:?}"
+    );
+    // The session of before never reaches the books replaced: refused, or
+    // (its bridge opening a new session) the restored books.
+    if let Ok(start) = a.call("books.start", json!({})) {
+        assert_eq!(start["head"]["seq"].as_u64(), Some(head), "{start}");
+    }
+    a.end();
+    // A new session sees the restored books, at the backup's head.
+    let mut fresh = Agent::start(&home, "acme");
+    fresh.initialize();
+    let start = fresh.call("books.start", json!({})).unwrap();
+    assert_eq!(start["head"]["seq"].as_u64(), Some(head), "{start}");
+    fresh.end();
 }

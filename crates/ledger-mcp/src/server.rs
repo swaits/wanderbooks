@@ -78,6 +78,9 @@ pub struct BooksServer {
     /// The files the books made for agents, waiting to be fetched (books
     /// served from the data root; over stdio a file comes back inline).
     exports: Option<ledger_store::exports::Exports>,
+    /// The books' backups (books served from the data root; none over
+    /// stdio).
+    backups: Option<Arc<crate::backup::Backups>>,
 }
 
 /// Where a book's own files live around its data dir.
@@ -146,7 +149,8 @@ impl Layout {
 ///      whether or not anyone still waits for its answer.
 /// ```
 pub struct SharedStore {
-    store: tokio::sync::Mutex<Store>,
+    /// None once let go (`let_go`): its books were replaced by a restore.
+    store: tokio::sync::Mutex<Option<Store>>,
     stopped: std::sync::atomic::AtomicBool,
     /// Closing: no new request runs (INVARIANT 3).
     closing: std::sync::atomic::AtomicBool,
@@ -160,6 +164,25 @@ pub struct SharedStore {
 }
 
 impl SharedStore {
+    /// Run `f` on the store under its lock, for a backup (backup.rs):
+    /// blocking. It reads only, and runs even while the books close (a
+    /// last backup), never after the server stopped.
+    pub fn with_store<R>(&self, f: impl FnOnce(&Store) -> R) -> Result<R, String> {
+        if self.stopped() {
+            return Err(STOPPED.to_string());
+        }
+        let store = self.store.blocking_lock();
+        let store = store.as_ref().ok_or(STOPPED)?;
+        Ok(f(store))
+    }
+
+    /// Run `f` on the store if no one holds it now (books just opened):
+    /// never waits, so never blocks a runtime's thread.
+    pub fn try_with_store<R>(&self, f: impl FnOnce(&Store) -> R) -> Option<R> {
+        let store = self.store.try_lock().ok()?;
+        store.as_ref().map(f)
+    }
+
     /// An attachment's name, type and bytes (hash-verified), for a
     /// download: blocking (the store's lock, then the file).
     /// None when there is no such attachment.
@@ -168,6 +191,7 @@ impl SharedStore {
             return Err(STOPPED.to_string());
         }
         let store = self.store.blocking_lock();
+        let store = store.as_ref().ok_or(STOPPED)?;
         let Some(meta) = store
             .list_attachments(None)
             .map_err(|e| e.to_string())?
@@ -189,7 +213,7 @@ impl SharedStore {
     pub fn new(store: Store) -> Arc<Self> {
         Arc::new(Self {
             currency: store.base_currency(),
-            store: tokio::sync::Mutex::new(store),
+            store: tokio::sync::Mutex::new(Some(store)),
             stopped: std::sync::atomic::AtomicBool::new(false),
             closing: std::sync::atomic::AtomicBool::new(false),
             running: std::sync::atomic::AtomicUsize::new(0),
@@ -218,6 +242,15 @@ impl SharedStore {
 
     fn stopped(&self) -> bool {
         self.stopped.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Let go of the books for good (a restore replaces them): close as
+    /// [`Self::close`], stop, and drop the store, so its writer lock is
+    /// released while sessions still hold this.
+    pub async fn let_go(&self) {
+        self.close().await;
+        self.stop();
+        self.store.lock().await.take();
     }
 
     /// Stop taking requests (INVARIANT 1): after an internal error, or an
@@ -275,7 +308,8 @@ const VAULT_IN_HISTORY: &str = "the TIN vault can't store anything here yet: the
 /// task is suspended. Dropped by a panic, it stops the server
 /// (SharedStore INVARIANT 1).
 pub struct StoreGuard<'a> {
-    guard: tokio::sync::MutexGuard<'a, Store>,
+    /// Holds a store (checked when it was taken).
+    guard: tokio::sync::MutexGuard<'a, Option<Store>>,
     shared: &'a SharedStore,
     /// The journal's head when the lock was taken.
     before: (u64, String),
@@ -289,7 +323,10 @@ impl Drop for StoreGuard<'_> {
         }
         // A write while it was held: the head after it, for the call's
         // access record (taken under the same lock, so it is this call's).
-        let after = self.guard.head();
+        let Some(store) = self.guard.as_ref() else {
+            return;
+        };
+        let after = store.head();
         if after != self.before {
             WROTE.with(|w| *w.borrow_mut() = Some(after));
         }
@@ -299,13 +336,13 @@ impl Drop for StoreGuard<'_> {
 impl std::ops::Deref for StoreGuard<'_> {
     type Target = Store;
     fn deref(&self) -> &Store {
-        &self.guard
+        self.guard.as_ref().expect("a guard holds a store")
     }
 }
 
 impl std::ops::DerefMut for StoreGuard<'_> {
     fn deref_mut(&mut self) -> &mut Store {
-        &mut self.guard
+        self.guard.as_mut().expect("a guard holds a store")
     }
 }
 
@@ -598,6 +635,7 @@ impl BooksServer {
             access: None,
             uploads: None,
             exports: None,
+            backups: None,
         }
     }
 
@@ -610,6 +648,12 @@ impl BooksServer {
     /// Hand the files the books make to agents through `exports`.
     pub fn with_exports(mut self, exports: ledger_store::exports::Exports) -> Self {
         self.exports = Some(exports);
+        self
+    }
+
+    /// Back the books up through `backups` (backup.rs).
+    pub fn with_backups(mut self, backups: Arc<crate::backup::Backups>) -> Self {
+        self.backups = Some(backups);
         self
     }
 
@@ -701,7 +745,11 @@ impl BooksServer {
 
     /// Every tool the server serves.
     pub(crate) fn tool_router() -> rmcp::handler::server::router::tool::ToolRouter<Self> {
-        Self::core_router() + Self::kept_router() + Self::access_router() + Self::files_router()
+        Self::core_router()
+            + Self::kept_router()
+            + Self::access_router()
+            + Self::files_router()
+            + Self::backup_router()
     }
 
     /// The settings in force for this request (reloaded at its start, in
@@ -1052,21 +1100,25 @@ impl BooksServer {
             return Err(STOPPED.to_string());
         }
         let guard = self.store.store.blocking_lock();
-        // A request that panicked while this one waited stopped it.
+        // A request that panicked while this one waited stopped it; books
+        // let go hold no store.
         if self.store.stopped() {
             return Err(STOPPED.to_string());
         }
+        let Some(store) = guard.as_ref() else {
+            return Err(STOPPED.to_string());
+        };
         // Books that keep their own settings: take any change (crate::
         // settings INVARIANT 1).
         let timezone = {
             let mut live = self.live();
-            live.sync(guard.ledger().settings(), self.store.currency.code());
+            live.sync(store.ledger().settings(), self.store.currency.code());
             live.current().timezone.clone()
         };
         // "Today" from here on is the zone in force now (a change another
         // session made while this request waited included).
         TIMEZONE.with(|z| *z.borrow_mut() = timezone);
-        let before = guard.head();
+        let before = store.head();
         Ok(StoreGuard {
             guard,
             shared: &self.store,
@@ -2523,6 +2575,8 @@ fn lines_out(lines: &[ledger_core::StatementLine]) -> Vec<StatementLineOut> {
 
 #[path = "tools/access.rs"]
 mod access_tools;
+#[path = "tools/backup.rs"]
+mod backup_tools;
 #[path = "tools/files.rs"]
 mod files;
 #[path = "tools/kept.rs"]
@@ -6982,7 +7036,7 @@ impl BooksServer {
     #[tool(
         name = "books.purge_tin",
         title = "Purge a TIN from the vault",
-        description = "Delete a party's full TIN and W-9 file from the TIN vault (after the retention period, at the payee's request, or to replace a wrong one), with the reason. Without confirmed=true it previews what the vault holds and changes nothing. Confirmed, the records are deleted for good and the books journal it: the party's TIN facts (party.tin_set: purged says when and why) and W-9 facts (party.w9_set: kept_at says so) keep the last four and drop the vault record. Works without the vault key. The next CPA package then lacks that TIN (and says so).",
+        description = "Delete a party's full TIN and W-9 file from the TIN vault (after the retention period, at the payee's request, or to replace a wrong one), with the reason. Without confirmed=true it previews what the vault holds and changes nothing. Confirmed, the records are deleted from the vault (backups made before keep their copies) and the books journal it: the party's TIN facts (party.tin_set: purged says when and why) and W-9 facts (party.w9_set: kept_at says so) keep the last four and drop the vault record. Works without the vault key. The next CPA package then lacks that TIN (and says so).",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -7048,7 +7102,7 @@ impl BooksServer {
                 .or_else(|| party.tin.as_ref().map(|t| t.last4.clone())),
             journaled: false,
             note: format!(
-                "Confirming deletes {} for good{}. Make sure the CPA has what they need first.",
+                "Confirming deletes {}{}; backups made before keep their copies. Make sure the CPA has what they need first.",
                 match (held_tin, held_w9) {
                     (true, true) => "the TIN and the W-9 file",
                     (true, false) => "the TIN",
@@ -8831,8 +8885,11 @@ impl ServerHandler for BooksServer {
                 .unwrap_or_default();
             tools.retain(|t| crate::scopes::shown(&t.name, &scopes));
         } else {
-            // Books served over stdio keep no access log: not offered.
-            tools.retain(|t| t.name != "books.access_log");
+            // Books served over stdio keep no access log and aren't backed
+            // up here: not offered.
+            tools.retain(|t| {
+                !["books.access_log", "books.backup", "books.back_up_now"].contains(&&*t.name)
+            });
         }
         let hints = context
             .protocol_version()
@@ -8852,7 +8909,9 @@ impl ServerHandler for BooksServer {
         // the books' own when they keep them (never waiting for the books
         // here; a request holding them syncs them when it locks), else the
         // files'.
-        if let Ok(store) = self.store.store.try_lock() {
+        if let Ok(store) = self.store.store.try_lock()
+            && let Some(store) = store.as_ref()
+        {
             self.live()
                 .sync(store.ledger().settings(), self.store.currency.code());
         }
@@ -9373,7 +9432,7 @@ mod tests {
         const D: Hints = (Some(false), Some(true), None);
         const WI: Hints = (Some(false), Some(false), Some(true));
         const DI: Hints = (Some(false), Some(true), Some(true));
-        let table: [(&str, Hints); 109] = [
+        let table: [(&str, Hints); 111] = [
             ("books.handbook", R),
             ("books.start", R),
             ("books.set_setting", DI),
@@ -9483,6 +9542,8 @@ mod tests {
             ("books.profit_and_loss_by_class", R),
             ("books.export_cpa_package", W),
             ("books.access_log", R),
+            ("books.backup", R),
+            ("books.back_up_now", WI),
         ];
         let tools = BooksServer::tool_router().list_all();
         assert_eq!(tools.len(), table.len());
@@ -9514,11 +9575,12 @@ mod tests {
             for word in ["requiresuserinteraction", "requires_user_interaction"] {
                 assert!(!json.contains(word), "{name} asks for user interaction");
             }
-            // The books are a closed world: no tool reaches beyond them.
+            // The books are a closed world: no tool reaches beyond them,
+            // but the one that pushes a backup to the owner's targets.
             assert_eq!(
                 a.open_world_hint,
-                Some(false),
-                "{name} has no openWorldHint false"
+                Some(*name == "books.back_up_now"),
+                "{name}: openWorldHint"
             );
         }
         // docs/mcp-interface.md names the 28 destructive tools.
@@ -9581,15 +9643,24 @@ mod tests {
             }
             assert!(n > 0, "{krate}: no error templates found");
         }
-        // The files tool's refusals (and description): its sentences.
-        for line in include_str!("tools/files.rs").lines() {
-            let line = line.trim_start();
-            if line.starts_with("//") {
-                continue;
-            }
-            for (i, text) in line.split('"').enumerate() {
-                if i % 2 == 1 && text.len() > 30 && text.contains(' ') {
-                    out.push(("tools/files.rs text".into(), text.to_string()));
+        // The files and backup tools' refusals (and descriptions), and the
+        // backups' own words: their sentences. (What git itself says of a
+        // failed backup reaches the human as git said it: not ours.)
+        for (name, src) in [
+            ("tools/files.rs", include_str!("tools/files.rs")),
+            ("tools/backup.rs", include_str!("tools/backup.rs")),
+            ("backup.rs", include_str!("backup.rs")),
+        ] {
+            let src = src.split("#[cfg(test)]").next().unwrap_or(src);
+            for line in src.lines() {
+                let line = line.trim_start();
+                if line.starts_with("//") {
+                    continue;
+                }
+                for (i, text) in line.split('"').enumerate() {
+                    if i % 2 == 1 && text.len() > 30 && text.contains(' ') {
+                        out.push((format!("{name} text"), text.to_string()));
+                    }
                 }
             }
         }

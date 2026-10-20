@@ -1,6 +1,6 @@
 //! The admin socket's messages (`run/admin.sock`, plan 3.1, 3.3, 3.9): how
-//! the command line asks the books server to list, create and adopt books,
-//! and to make, list and revoke agents' tokens.
+//! the command line asks the books server to list, create, adopt and
+//! restore books, and to make, list and revoke agents' tokens.
 //!
 //! ```text
 //! GOAL: the command line makes and adopts books without ever touching
@@ -16,9 +16,10 @@
 //!      that says to restart.
 //!   3. No answer names the data root or a path in it, nor echoes a path
 //!      the caller gave (which could be the root under another name).
-//!   4. Adopting is two steps: without `confirmed` the answer is a
-//!      preview, and nothing is written; `confirmed: true` adopts, and
-//!      only books still at the head the preview read (`expect_head`).
+//!   4. Adopting and restoring are two steps: without `confirmed` the
+//!      answer is a preview, and nothing is written; `confirmed: true`
+//!      adopts (restores), and only books (a backup) still at the head the
+//!      preview read (`expect_head`).
 //!   5. Nothing in a settings file is dropped silently: entries the books
 //!      don't know are refused unless `skip_unknown`, and its notes and
 //!      comments are in the preview.
@@ -96,6 +97,24 @@ pub enum Request {
         /// Leave out settings-file entries the books don't know.
         #[serde(default)]
         skip_unknown: bool,
+    },
+    /// Restore a backup (plan 3.7): as new books, or replacing books
+    /// (which are moved into `legacy/`, kept).
+    Restore {
+        /// The books' id.
+        id: String,
+        /// The backup: a git repository's address, or its folder
+        /// (`<book>.git` in the backup folder).
+        source: String,
+        /// Replace the books called `id`.
+        #[serde(default)]
+        replace: bool,
+        /// Restore (true), or only preview it.
+        #[serde(default)]
+        confirmed: bool,
+        /// The head the preview read: restored only if still so.
+        #[serde(default)]
+        expect_head: Option<(u64, String)>,
     },
     /// Make a token for an agent (plan 3.3).
     TokenCreate {
@@ -237,6 +256,44 @@ pub struct Adopted {
     pub problem: Option<String>,
 }
 
+/// What a restore would bring in.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RestorePreview {
+    /// The backup's head, proven.
+    pub head: (u64, String),
+    /// Stored files in it, each re-hashed.
+    pub blobs: u64,
+    /// TIN vault records in it.
+    pub vault_files: u64,
+    /// Whether books of that id exist now.
+    pub exists: bool,
+    /// The id of the books it holds, as they were backed up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+}
+
+/// What a restore did.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Restored {
+    /// The books' id.
+    pub id: String,
+    /// Their head: the backup's.
+    pub head: (u64, String),
+    /// Stored files the books name, re-hashed through the store.
+    pub blobs_verified: u64,
+    /// TIN vault records restored.
+    pub vault_files: u64,
+    /// The `legacy/` folder the replaced books were moved to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaced: Option<String>,
+    /// The id of the books it held, as they were backed up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    /// Why the restored books didn't open, if they didn't (they are kept).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
+}
+
 /// The server's answer.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
@@ -255,6 +312,10 @@ pub enum Response {
     Preview(AdoptPreview),
     /// Books adopted and open.
     Adopted(Adopted),
+    /// What a restore would bring in.
+    RestorePreview(RestorePreview),
+    /// A backup restored, and open.
+    Restored(Restored),
     /// A token made: its text, shown this once (INVARIANT 6).
     TokenCreated {
         /// The token.
@@ -307,7 +368,7 @@ pub fn call_within(
     // A list changes nothing: its only question is whether it answered.
     let look = match request {
         Request::List | Request::TokenList => None,
-        Request::Create { .. } | Request::Adopt { .. } => {
+        Request::Create { .. } | Request::Adopt { .. } | Request::Restore { .. } => {
             Some("`wanderbooks books list` shows the books there are")
         }
         Request::TokenCreate { .. } | Request::TokenRevoke { .. } => {
@@ -418,6 +479,24 @@ mod tests {
     }
 
     #[test]
+    fn a_restore_request_is_a_preview_unless_confirmed() {
+        let r: Envelope = serde_json::from_value(
+            json!({"proto": 1, "op": "restore", "id": "acme", "source": "/backups/acme.git"}),
+        )
+        .unwrap();
+        assert_eq!(
+            r.request,
+            Request::Restore {
+                id: "acme".into(),
+                source: "/backups/acme.git".into(),
+                replace: false,
+                confirmed: false,
+                expect_head: None,
+            }
+        );
+    }
+
+    #[test]
     fn unknown_operations_and_fields_are_refused() {
         for bad in [
             json!({"proto": 1, "op": "delete", "id": "acme"}),
@@ -455,6 +534,22 @@ mod tests {
                 text: TokenText("wb_00".into()),
             },
             Response::Tokens(vec![]),
+            Response::RestorePreview(RestorePreview {
+                head: (3, "ab".into()),
+                blobs: 2,
+                vault_files: 1,
+                exists: true,
+                origin: Some("acme".into()),
+            }),
+            Response::Restored(Restored {
+                id: "acme".into(),
+                head: (3, "ab".into()),
+                blobs_verified: 2,
+                vault_files: 1,
+                replaced: Some("acme-20261019-120000".into()),
+                origin: Some("acme".into()),
+                problem: None,
+            }),
         ] {
             let text = serde_json::to_string(&r).unwrap();
             assert_eq!(serde_json::from_str::<Response>(&text).unwrap(), r);

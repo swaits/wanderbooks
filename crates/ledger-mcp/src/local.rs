@@ -75,7 +75,7 @@ use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
@@ -103,6 +103,18 @@ pub const REFUSED_HEADER: &str = "x-wanderbooks-refused";
 
 /// How often each book's lapsed uploads are swept.
 const SWEEP_EVERY: Duration = Duration::from_secs(10);
+/// How long the books stay unwritten before they are backed up.
+const BACKUP_QUIET: Duration = Duration::from_secs(30);
+/// How often the books are looked at for a backup due.
+const BACKUP_LOOK: Duration = Duration::from_secs(2);
+/// How often each book is looked at for a drill due.
+const DRILL_LOOK: Duration = Duration::from_secs(3600);
+/// How long after books are first seen open their first drill is looked
+/// for (a drill that fell due while they were closed): long enough that a
+/// backup on opening comes first.
+const DRILL_FIRST: Duration = Duration::from_secs(60);
+/// The most the last backup at a close may take.
+const BACKUP_AT_CLOSE: Duration = Duration::from_secs(60);
 
 type Service = StreamableHttpService<BooksServer, LocalSessionManager>;
 
@@ -122,6 +134,8 @@ enum Book {
         uploads: ledger_store::uploads::Uploads,
         /// The files it made for agents (`/b/{id}/x/{export}`).
         exports: ledger_store::exports::Exports,
+        /// Its backups (backup.rs).
+        backups: Arc<crate::backup::Backups>,
     },
     /// Not opened, with why (INVARIANT 3).
     Failed(String),
@@ -160,6 +174,14 @@ struct Books {
     /// Which token opened each MCP session: a session is used only with
     /// the token that opened it (INVARIANT 8).
     session_tokens: Mutex<BTreeMap<String, String>>,
+    /// How long the books stay unwritten before a backup is made
+    /// (`--backup-quiet`, for tests; else BACKUP_QUIET).
+    backup_quiet: Duration,
+    /// How long after books are first seen open a drill is first looked
+    /// for (`--drill-first`, for tests; else DRILL_FIRST).
+    drill_first: Duration,
+    /// Held through a restore: one at a time.
+    restoring: Mutex<()>,
 }
 
 impl Books {
@@ -284,7 +306,17 @@ impl Books {
         // INVARIANT 2): a viewer can show its presence from the start.
         ledger_store::ops::prepare(store.data_dir()).map_err(|e| self.hide(e.to_string()))?;
         let live = Arc::new(Mutex::new(live));
+        let book_dir = store.data_dir().to_path_buf();
+        let book_id = book_dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let store = SharedStore::new(store);
+        let backups = Arc::new(
+            crate::backup::Backups::open(&book_id, &book_dir, store.clone())
+                .map_err(|e| self.hide(e))?,
+        );
+        let server_backups = backups.clone();
         let log = access.clone();
         let shared = store.clone();
         let config = StreamableHttpServerConfig::default()
@@ -301,7 +333,8 @@ impl Books {
                         .with_layout(layout.clone())
                         .with_access(log.clone())
                         .with_uploads(server_uploads.clone())
-                        .with_exports(server_exports.clone()),
+                        .with_exports(server_exports.clone())
+                        .with_backups(server_backups.clone()),
                 )
             },
             Arc::new(sessions()),
@@ -313,6 +346,7 @@ impl Books {
             access,
             uploads,
             exports,
+            backups,
         })
     }
 
@@ -449,6 +483,13 @@ impl Books {
                     Err(e) => refused(e),
                 }
             }
+            Request::Restore {
+                id,
+                source,
+                replace,
+                confirmed,
+                expect_head,
+            } => self.restore(id, source, replace, confirmed, expect_head),
             Request::Adopt {
                 id,
                 source,
@@ -584,6 +625,119 @@ impl Books {
                     }
                     Err(e) => refused(e),
                 }
+            }
+        }
+    }
+}
+
+impl Books {
+    /// Restore a backup (admin INVARIANT 4; ledger_store::root INVARIANT
+    /// 7): a preview, or the books restored and opened. Books it replaces
+    /// are let go first, and opened again if the restore fails.
+    fn restore(
+        &self,
+        id: String,
+        source: String,
+        replace: bool,
+        confirmed: bool,
+        expect_head: Option<(u64, String)>,
+    ) -> Response {
+        // admin INVARIANT 3: never the root, nor the address given.
+        let said = |text: String| {
+            let text = if source.chars().count() > 1 {
+                text.replace(&source, "the backup given")
+            } else {
+                text
+            };
+            Response::Refused(self.hide(text))
+        };
+        let id = match BookId::parse(&id) {
+            Ok(id) => id,
+            Err(e) => return said(e.to_string()),
+        };
+        let _one = self.restoring.lock().unwrap_or_else(|e| e.into_inner());
+        let git = match ledger_store::backup::Git::find() {
+            Ok(git) => git,
+            Err(e) => return said(e.to_string()),
+        };
+        // A preview only reports (whether books of that id exist among
+        // what it says): the restore itself is refused over books, or
+        // replacing none.
+        if !confirmed {
+            return match self.root.restore_preview(&git, &source, &id) {
+                Ok(p) => Response::RestorePreview(admin::RestorePreview {
+                    head: p.head,
+                    blobs: p.blobs,
+                    vault_files: p.vault_files,
+                    exists: p.exists,
+                    origin: p.origin,
+                }),
+                Err(e) => said(e.to_string()),
+            };
+        }
+        let Some(expect_head) = expect_head else {
+            return said("a restore is confirmed against the preview's head: preview first".into());
+        };
+        let held = self.held().contains_key(id.as_str());
+        if replace && !held {
+            return said(format!(
+                "there are no books called {:?} to replace: nothing was restored",
+                id.as_str()
+            ));
+        }
+        if !replace && held {
+            return said(format!(
+                "there are already books called {:?}: restore them under another id (--id), or replace them (--replace; they are kept in legacy/)",
+                id.as_str()
+            ));
+        }
+        // The books replaced are let go (their writer lock released),
+        // their backups idle until the restore is done: none of theirs
+        // reaches a target after the backup is read.
+        let old = if replace {
+            self.held
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(id.as_str())
+        } else {
+            None
+        };
+        let old_backups = match &old {
+            Some(Book::Open { backups, .. }) => Some(backups.clone()),
+            _ => None,
+        };
+        let rt = tokio::runtime::Handle::current();
+        // Its requests end first (a books.back_up_now among them waits for
+        // a run of the loop's), then its last run.
+        if let Some(Book::Open { store, .. }) = &old {
+            rt.block_on(store.let_go());
+        }
+        let _paused = old_backups.as_ref().map(|b| rt.block_on(b.pause()));
+        match self.root.restore(&git, &source, &id, &expect_head, replace) {
+            Ok(r) => {
+                // Restored: kept whether or not it opens; its backups told
+                // whose books these were (backup.rs INVARIANTS 6, 7).
+                let book = self.open(&id);
+                let problem = book.problem();
+                self.hold(&id, book);
+                Response::Restored(admin::Restored {
+                    id: r.id.to_string(),
+                    head: r.head,
+                    blobs_verified: r.blobs_verified,
+                    vault_files: r.vault_files,
+                    replaced: r.replaced,
+                    origin: r.origin,
+                    problem,
+                })
+            }
+            Err(e) => {
+                // The books it would have replaced, let go above, open
+                // again (only this restore runs, so nothing else holds them).
+                if replace && !self.held().contains_key(id.as_str()) {
+                    let book = self.open(&id);
+                    self.hold(&id, book);
+                }
+                said(e.to_string())
             }
         }
     }
@@ -1603,10 +1757,28 @@ pub fn run(
     args: impl IntoIterator<Item = String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut root: Option<PathBuf> = None;
+    let mut backup_quiet = BACKUP_QUIET;
+    let mut drill_first = DRILL_FIRST;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--root" => root = Some(PathBuf::from(args.next().ok_or("--root needs a folder")?)),
+            // How long the books stay unwritten before a backup (tests).
+            "--backup-quiet" => {
+                let ms: u64 = args
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("--backup-quiet needs milliseconds")?;
+                backup_quiet = Duration::from_millis(ms);
+            }
+            // How soon after books open a drill is first looked for (tests).
+            "--drill-first" => {
+                let ms: u64 = args
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("--drill-first needs milliseconds")?;
+                drill_first = Duration::from_millis(ms);
+            }
             "--help" | "-h" => {
                 print_usage(prog);
                 return Ok(());
@@ -1684,6 +1856,9 @@ pub fn run(
         started: std::time::Instant::now(),
         principals: RwLock::new(Err(String::new())),
         session_tokens: Mutex::new(BTreeMap::new()),
+        backup_quiet,
+        drill_first,
+        restoring: Mutex::new(()),
     });
     {
         let loaded = books.load_principals();
@@ -1753,6 +1928,10 @@ async fn serve(
     }
     let held: Vec<String> = books.held().keys().cloned().collect();
     eprintln!("wanderbooks server: ready, holding {} books", held.len());
+    // Every open book is backed up when it opens, once its writing has
+    // stopped for a while, and again after a failed run (backup.rs).
+    let (backing, backup_stop) = (books.clone(), stop.clone());
+    let backup_loop = tokio::spawn(async move { keep_backed_up(backing, backup_stop).await });
     // Every open book's lapsed uploads go within SWEEP_EVERY of lapsing,
     // whatever else the server is doing (uploads.rs INVARIANT 3).
     let (sweeping, sweep_stop) = (books.clone(), stop.clone());
@@ -1822,6 +2001,22 @@ async fn serve(
     // never let go of mid-write (SharedStore INVARIANT 3).
     for store in books.stores() {
         store.close().await;
+    }
+    // A last backup of what was written since the last one, for a while
+    // at most: the books are closing, nothing more is written. The loop
+    // stops at its next step (`stop`); a run of its still under way
+    // finishes first (each book runs one at a time).
+    drop(backup_loop);
+    let held: Vec<Arc<crate::backup::Backups>> = books
+        .held()
+        .values()
+        .filter_map(|b| match b {
+            Book::Open { backups, .. } => Some(backups.clone()),
+            Book::Failed(_) => None,
+        })
+        .collect();
+    for b in held {
+        let _ = tokio::time::timeout(BACKUP_AT_CLOSE, b.run("close")).await;
     }
     // Answers on their way out are sent, for a while: a client sending
     // a request it never finishes doesn't hold the books open.
@@ -1916,9 +2111,287 @@ fn watch_for_close(stops: &Stops) -> std::io::Result<()> {
     Ok(())
 }
 
+/// What the backup loop knows of one open book.
+struct Seen {
+    /// Its backups, by identity: books restored over others are new.
+    backups: Arc<crate::backup::Backups>,
+    watch: Watch,
+}
+
+/// One open book's backups, as the loop has watched them.
+#[derive(Debug, Clone, Copy)]
+struct Watch {
+    /// Its head's seq when last looked at, and when that changed.
+    seq: u64,
+    moved_at: Instant,
+    /// The seq last committed and offered to the targets.
+    backed: Option<u64>,
+    /// When the last run's commit failed, if it did: nothing runs again
+    /// for RETRY_AFTER.
+    failed_at: Option<Instant>,
+    /// When the last run left a target failing, if it did: it is tried
+    /// again RETRY_AFTER on, written to or not.
+    target_failed_at: Option<Instant>,
+    /// When a drill is next looked for.
+    drill_next: Instant,
+}
+
+impl Watch {
+    /// Books first seen open now, at `seq`: a drill is first looked for
+    /// `drill_first` from now.
+    fn new(seq: u64, now: Instant, drill_first: Duration) -> Self {
+        Watch {
+            seq,
+            moved_at: now,
+            backed: None,
+            failed_at: None,
+            target_failed_at: None,
+            drill_next: now + drill_first,
+        }
+    }
+
+    /// A run through `seq` came to `outcome` at `now`: None when its
+    /// commit failed, else whether every target holds it.
+    fn ran(&mut self, seq: u64, outcome: Option<bool>, now: Instant) {
+        match outcome {
+            None => self.failed_at = Some(now),
+            Some(all) => {
+                self.backed = Some(seq);
+                self.failed_at = None;
+                self.target_failed_at = (!all).then_some(now);
+            }
+        }
+    }
+}
+
+/// Why a backup is due now, if one is: the books just seen open; or
+/// written and quiet for `quiet` since (not yet backed up); or a target
+/// left failing RETRY_AFTER ago. Nothing within RETRY_AFTER of a failed
+/// commit.
+fn backup_due(
+    seen: Option<&Watch>,
+    seq: u64,
+    now: Instant,
+    quiet: Duration,
+) -> Option<&'static str> {
+    let Some(s) = seen else {
+        return Some("open");
+    };
+    let after =
+        |t: Option<Instant>| t.is_some_and(|f| now.duration_since(f) >= crate::backup::RETRY_AFTER);
+    if s.failed_at.is_some() && !after(s.failed_at) {
+        return None;
+    }
+    let quiet_now = if s.seq == seq {
+        now.duration_since(s.moved_at) >= quiet
+    } else {
+        quiet.is_zero()
+    };
+    if s.backed != Some(seq) && quiet_now {
+        return Some("write");
+    }
+    after(s.target_failed_at).then_some("retry")
+}
+
+/// Whether a run's every target holds the books: a target paused for
+/// these books (restored as a copy of others) is no failure to try again.
+fn every_target_held(status: &crate::backup::Status) -> bool {
+    status
+        .targets
+        .iter()
+        .all(|t| t.paused || t.last_error.is_none())
+}
+
+/// Whether to look for a drill due now (then again DRILL_LOOK on).
+fn drill_look_due(seen: &Watch, now: Instant) -> bool {
+    now >= seen.drill_next
+}
+
+/// Back every open book up (backup.rs) whenever [`backup_due`] says, and
+/// drill its backups when a drill is due (looked for every DRILL_LOOK).
+/// Until `stop`.
+async fn keep_backed_up(books: Arc<Books>, stop: CancellationToken) {
+    let mut seen: BTreeMap<String, Seen> = BTreeMap::new();
+    let mut tick = tokio::time::interval(BACKUP_LOOK);
+    loop {
+        tokio::select! {
+            () = stop.cancelled() => return,
+            _ = tick.tick() => {}
+        }
+        let open: Vec<(String, Arc<crate::backup::Backups>)> = books
+            .held()
+            .iter()
+            .filter_map(|(id, b)| match b {
+                Book::Open { backups, .. } => Some((id.clone(), backups.clone())),
+                Book::Failed(_) => None,
+            })
+            .collect();
+        seen.retain(|id, _| open.iter().any(|(o, _)| o == id));
+        for (id, backups) in open {
+            if stop.is_cancelled() {
+                return;
+            }
+            let Some((seq, _)) = backups.head().await else {
+                continue;
+            };
+            let now = Instant::now();
+            // Books restored over others are seen anew.
+            if seen
+                .get(&id)
+                .is_some_and(|s| !Arc::ptr_eq(&s.backups, &backups))
+            {
+                seen.remove(&id);
+            }
+            let due = backup_due(
+                seen.get(&id).map(|s| &s.watch),
+                seq,
+                now,
+                books.backup_quiet,
+            );
+            let s = &mut seen
+                .entry(id)
+                .or_insert(Seen {
+                    backups: backups.clone(),
+                    watch: Watch::new(seq, now, books.drill_first),
+                })
+                .watch;
+            if s.seq != seq {
+                s.seq = seq;
+                s.moved_at = now;
+            }
+            if let Some(why) = due {
+                let outcome = backups
+                    .run(why)
+                    .await
+                    .ok()
+                    .map(|status| every_target_held(&status));
+                s.ran(seq, outcome, now);
+            }
+            if stop.is_cancelled() {
+                return;
+            }
+            // Drills (backup.rs INVARIANT 5).
+            if drill_look_due(s, now) {
+                s.drill_next = now + DRILL_LOOK;
+                if backups.drill_due().await {
+                    backups.drill().await;
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_backup_is_due_on_open_then_once_quiet_after_a_write() {
+        let t0 = Instant::now();
+        let quiet = Duration::from_secs(30);
+        let s = |seq, moved: u64, backed, failed: Option<u64>| Watch {
+            seq,
+            moved_at: t0 + Duration::from_secs(moved),
+            backed,
+            failed_at: failed.map(|f| t0 + Duration::from_secs(f)),
+            target_failed_at: None,
+            drill_next: t0,
+        };
+        let at = |secs: u64| t0 + Duration::from_secs(secs);
+        // First seen: at once.
+        assert_eq!(backup_due(None, 5, t0, quiet), Some("open"));
+        // Backed up through the head: nothing.
+        assert_eq!(
+            backup_due(Some(&s(5, 0, Some(5), None)), 5, at(100), quiet),
+            None
+        );
+        // Written: not until it has been quiet `quiet`.
+        assert_eq!(
+            backup_due(Some(&s(5, 0, Some(5), None)), 6, at(1), quiet),
+            None
+        );
+        assert_eq!(
+            backup_due(Some(&s(6, 10, Some(5), None)), 6, at(39), quiet),
+            None
+        );
+        assert_eq!(
+            backup_due(Some(&s(6, 10, Some(5), None)), 6, at(40), quiet),
+            Some("write")
+        );
+        // No quiet asked for: at once.
+        assert_eq!(
+            backup_due(Some(&s(5, 0, Some(5), None)), 6, at(1), Duration::ZERO),
+            Some("write")
+        );
+        // A failure waits RETRY_AFTER.
+        let retry = crate::backup::RETRY_AFTER.as_secs();
+        let failed = s(6, 10, Some(5), Some(50));
+        assert_eq!(
+            backup_due(Some(&failed), 6, at(50 + retry - 1), quiet),
+            None
+        );
+        assert_eq!(
+            backup_due(Some(&failed), 6, at(50 + retry), quiet),
+            Some("write")
+        );
+        // A drill is first looked for `drill_first` after the books are
+        // seen open, never at once.
+        let first = Duration::from_secs(60);
+        let w = Watch::new(1, t0, first);
+        assert!(!drill_look_due(&w, t0));
+        assert!(!drill_look_due(&w, t0 + first - Duration::from_millis(1)));
+        assert!(drill_look_due(&w, t0 + first));
+        assert_eq!((w.backed, w.failed_at, w.seq), (None, None, 1));
+        // A run's outcome: its commit failed (nothing again for a
+        // while), or made and some target failing (tried again later,
+        // while writes still go to the others), or all well.
+        let mut w = Watch::new(1, t0, first);
+        w.ran(4, None, at(5));
+        assert_eq!(
+            (w.backed, w.failed_at, w.target_failed_at),
+            (None, Some(at(5)), None)
+        );
+        w.ran(4, Some(false), at(9));
+        assert_eq!(
+            (w.backed, w.failed_at, w.target_failed_at),
+            (Some(4), None, Some(at(9)))
+        );
+        w.seq = 5;
+        w.moved_at = at(10);
+        assert_eq!(backup_due(Some(&w), 5, at(10 + 30), quiet), Some("write"));
+        w.backed = Some(5);
+        assert_eq!(backup_due(Some(&w), 5, at(9 + retry - 1), quiet), None);
+        assert_eq!(backup_due(Some(&w), 5, at(9 + retry), quiet), Some("retry"));
+        // A paused target is no failure; another's error is.
+        let target = |paused: bool, error: Option<&str>| crate::backup::TargetStatus {
+            target: "repository".into(),
+            at: "x".into(),
+            last_ok_at: None,
+            through_seq: None,
+            stale: false,
+            last_error: error.map(str::to_string),
+            last_drill_at: None,
+            drill_error: None,
+            paused,
+        };
+        let status = |targets| crate::backup::Status {
+            head_seq: 5,
+            targets,
+            note: None,
+        };
+        assert!(every_target_held(&status(vec![
+            target(true, Some("paused")),
+            target(false, None)
+        ])));
+        assert!(!every_target_held(&status(vec![
+            target(false, Some("no")),
+            target(false, None)
+        ])));
+        assert!(every_target_held(&status(vec![])));
+        w.ran(5, Some(true), at(9 + retry));
+        assert_eq!((w.failed_at, w.target_failed_at), (None, None));
+        assert_eq!(backup_due(Some(&w), 5, at(9 + retry * 3), quiet), None);
+    }
 
     #[test]
     fn a_socket_pair_is_this_account_at_both_ends() {

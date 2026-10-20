@@ -122,6 +122,12 @@ pub enum Kind {
     NameControl,
     /// An asset tag prefix: one to eight letters or digits.
     TagPrefix,
+    /// A repository's address, as git takes it: one line, never one that
+    /// reads as an option.
+    Repository,
+    /// A folder named from the root of its disk: one line, an absolute
+    /// path.
+    Folder,
 }
 
 /// One setting the books know.
@@ -359,6 +365,20 @@ pub static KEYS: &[Key] = &[
         kind: Kind::Choice(APPROVAL_MODE),
         sensitivity: Sensitivity::Public,
         doc: "off: approval_rule conventions are recorded but never block a post. enforce: an entry a rule covers posts only once its approver approves it (books.approve_entry). Unset: off.",
+    },
+    Key {
+        name: "backup.git_remote",
+        toml: ("backup", "git_remote"),
+        kind: Kind::Repository,
+        sensitivity: Sensitivity::Public,
+        doc: "A private repository the books back themselves up to (plan D-30): its address as its host shows it for cloning, over ssh or https (such as https://host/owner/books), or a path on this computer. Unset: none.",
+    },
+    Key {
+        name: "backup.folder",
+        toml: ("backup", "folder"),
+        kind: Kind::Folder,
+        sensitivity: Sensitivity::Public,
+        doc: "A folder the books back themselves up to as well (D-30): an absolute path, an external disk or a synced folder; the backup is a repository in it named for the book. Unset: none.",
     },
 ];
 
@@ -873,6 +893,37 @@ pub fn check(key: &Key, v: &Value) -> Result<Value, String> {
             }
             Ok(json!(s))
         }
+        Kind::Repository => {
+            let s = line_text(name, want_str(name, v)?, MAX_TEXT)?;
+            if s.starts_with('-') {
+                return Err(format!(
+                    "{name} {s:?}: a repository's address never starts with -"
+                ));
+            }
+            // A path on this computer is named from the root of its disk:
+            // the server's working folder is no place to name one from.
+            let networked = match s.split_once("://") {
+                Some((scheme, _)) => scheme != "file",
+                None => s
+                    .split_once(':')
+                    .is_some_and(|(host, _)| !host.contains('/')),
+            };
+            if !networked && !s.starts_with("file://") && !std::path::Path::new(&s).is_absolute() {
+                return Err(format!(
+                    "{name} {s:?}: a repository on this computer is named from the root of its disk (such as /srv/books)"
+                ));
+            }
+            Ok(json!(s))
+        }
+        Kind::Folder => {
+            let s = line_text(name, want_str(name, v)?, MAX_TEXT)?;
+            if !std::path::Path::new(&s).is_absolute() {
+                return Err(format!(
+                    "{name} {s:?}: name the folder from the root of its disk (such as /media/backup)"
+                ));
+            }
+            Ok(json!(s))
+        }
     }
 }
 
@@ -1243,6 +1294,16 @@ impl Settings {
         }
     }
 
+    /// `backup.git_remote`, if set.
+    pub fn backup_git_remote(&self) -> Option<&str> {
+        self.str("backup.git_remote")
+    }
+
+    /// `backup.folder`, if set.
+    pub fn backup_folder(&self) -> Option<&str> {
+        self.str("backup.folder")
+    }
+
     /// `company.timezone`, if set.
     pub fn timezone(&self) -> Option<&str> {
         self.str("company.timezone")
@@ -1422,6 +1483,44 @@ pub fn display(key: &Key, v: &Value, full: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn where_backups_go_is_checked() {
+        let remote = key("backup.git_remote").unwrap();
+        let folder = key("backup.folder").unwrap();
+        for ok in [
+            "git@host:owner/books.git",
+            "https://host/owner/books",
+            "/srv/books.git",
+        ] {
+            assert_eq!(check(remote, &json!(ok)).unwrap(), json!(ok), "{ok}");
+        }
+        assert_eq!(
+            check(remote, &json!("  ssh://h/b  ")).unwrap(),
+            json!("ssh://h/b")
+        );
+        for bad in [
+            "--upload-pack=x",
+            "-",
+            "",
+            "a\nb",
+            "acme.git",
+            "backups/acme.git",
+            "~/x.git",
+            "./x",
+        ] {
+            assert!(check(remote, &json!(bad)).is_err(), "{bad}");
+        }
+        assert!(check(remote, &json!("file:///srv/b.git")).is_ok());
+        #[cfg(unix)]
+        assert_eq!(
+            check(folder, &json!("/media/backup")).unwrap(),
+            json!("/media/backup")
+        );
+        for bad in ["backup", "./backup", "~/backup", "-x", ""] {
+            assert!(check(folder, &json!(bad)).is_err(), "{bad}");
+        }
+    }
 
     fn src() -> Source {
         Source {

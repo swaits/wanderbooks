@@ -352,7 +352,8 @@ seals a new vault record, every time, so none carries it;
 `idempotent_tools_change_nothing_when_repeated` calls each candidate twice
 to check). Every tool's
 `openWorldHint` is false: the books are a closed world, and no tool
-reaches beyond them. `books.export_cpa_package`, `books.vendor_1099`
+reaches beyond them, but `books.back_up_now`, which pushes the books to
+the owner's backups (true). `books.export_cpa_package`, `books.vendor_1099`
 and `books.get_w9` keep a file for the agent (an export) and record the
 ones with TINs, so they are not read-only. No tool carries
 `requiresUserInteraction` (owner decision
@@ -583,6 +584,79 @@ through the policy.
   `wanderbooks.mismatch.<time>`). With `blobs` (default true), re-hashes
   every stored file. The server runs the same check, and heals the same
   way, every time it starts.
+
+## Tools — backups
+
+Books served from the data root back themselves up (plan 3.7, D-30,
+D-31): each keeps `archive.git`, a bare repository whose commits are its
+journal, stored files, vault, keys and access log as they were (one
+commit per backup, made under the store's lock, its message
+`seq N head H` and, below, `book <id>`), pushed fast-forward only to the targets the settings
+name: `backup.git_remote` (the owner's private repository) and
+`backup.folder` (a repository `<book>.git` in a folder on another disk).
+Not encrypted: the destinations keep it private. Backups run a little
+after the books are last written (`--backup-quiet`, 30 s), when they
+open, before they close, and on request; a failed one is retried after
+15 minutes. Each target is drilled weekly: cloned, its chain replayed,
+every stored file re-hashed, every TIN record the books name there with
+its key, its head the one its commit records, its journal a byte prefix
+of the live one (a failed drill is tried again at the server's next
+hourly look, once 15 minutes have passed). A backup's tree is checked
+before any of it is written out: plain files under the backed-up paths
+only, never a link or a submodule. git runs with no hooks (in a
+repository on this computer it pushes to as well), no ignore or
+attributes rules of anyone's (a `.gitattributes` in a book's folder
+refuses the backup) and no command-running transports; a repository on
+this computer is used only if plain (a bare repository at that very
+path, no settings of its own but where a copy came from, nothing sending
+git elsewhere, no link where it or its parts are), and a backup folder that took backups and is gone is
+reported as a disk not connected, never made again (restored books count
+the backups of the books they were). Books restored beside the books they
+were (under another id) don't push to those books' repository, which
+would stop theirs: `books.backup` says it is paused for them until
+another is named. A damaged backup record is set aside and begun again;
+it never keeps the books shut. One book's drill holds the others'
+backups until it ends (a backup at close waits at most a minute for
+it). A target
+whose push failed is left out of the backups after writes for 15
+minutes, then tried again, written to or not; the other targets don't
+wait for it. Every
+commit, push and drill is a record in the book's `ops/backup.jsonl` (a
+chain log; a backup never moves the books' head), each target's records
+keyed by the target itself. Setting `backup.*` (books.set_setting, or
+books.import_settings with a `[backup]` table) needs books:admin, as
+backing up does: a backup is the whole book, its vault and key included.
+Over stdio neither tool is offered.
+
+- `books.backup {}` (books:read) → `{ head_seq, targets: [{ target:
+  "repository" | "folder", at, last_ok_at, through_seq, stale,
+  last_error, last_drill_at, drill_error, paused }], note }`. `paused`:
+  not backed up there, these books being restored as a copy of others
+  (its `last_error` says so). `stale`: the target
+  lacks the head, and the first try to back up what it lacks (since its
+  last good backup, or ever) is more than a day old. `last_error`: its
+  last push's, or a later failed commit's. `note`
+  says what to set when no target is. `books.start` adds a next step when
+  none is set up, or one is stale, failing, paused or failed its drill.
+- `books.back_up_now { new_disk? }` (books:admin) → the same, after
+  backing up to every target now. `new_disk`: the backup folder's disk is
+  new, so a folder that took these books' backups and holds none now is
+  begun again (otherwise it is a disk not connected). The one tool whose
+  `openWorldHint` is true. A target paused for books restored as a copy
+  of others shows `paused` (and is no failure to retry).
+
+Restoring is the owner's, from a terminal: `wanderbooks books restore
+BACKUP [--id ID] [--replace] [--yes]` (the admin socket's `restore`,
+previewed then confirmed against the previewed head; without `--id`, the
+books keep the id of the books the backup holds, which the preview names,
+else the repository's name; under another id they are a copy, and don't
+push to those books' repository). The backup is
+cloned into the root, proven whole as a drill proves it (but for the
+live-journal check: there may be no live books), and built as an
+adoption builds; it arrives as new books, or replaces books (`--replace`,
+which are let go and moved whole into `legacy/<id>-<time>/`). The
+restored books keep the backup's history, so their next backups carry
+on from it.
 
 ## Tools — payouts
 

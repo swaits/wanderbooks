@@ -5,7 +5,8 @@
 //!       the server, through one socket that accepts nothing else.
 //! SOURCE: plan/served.md 3.9 ("Who holds them", "Three local channels":
 //!         leases record their kind and PID; exactly five owner intents;
-//!         consent and a replacing restore carry the owner passphrase;
+//!         consent carries the owner passphrase (a replacing restore no
+//!         longer does: D-31, the books it replaces are kept in legacy/);
 //!         "Closing": the host says why on each lease; protocol versions N
 //!         and N-1).
 //! INVARIANTS:
@@ -13,11 +14,10 @@
 //!      connection (the lease lasts until it closes), anything else is
 //!      answered once and the connection closed.
 //!   2. Exactly five intents exist: close, back_up_now, new_books,
-//!      restore (a staged backup's id, never a path) and
-//!      consent_format_upgrade; any other request is refused.
-//!   3. consent_format_upgrade, and a restore that replaces a book, carry
-//!      the owner passphrase; without one they are refused before
-//!      anything is done.
+//!      restore (a backup's address or folder, as `books restore` takes
+//!      it) and consent_format_upgrade; any other request is refused.
+//!   3. consent_format_upgrade carries the owner passphrase; without one
+//!      it is refused before anything is done.
 //!   4. Before the host ends a lease it sends the reason; a lease that
 //!      ends with no reason means the host is gone.
 //!   5. Each side accepts its own protocol version and the one before.
@@ -120,16 +120,17 @@ pub enum Intent {
         /// Their base currency.
         currency: String,
     },
-    /// Restore a staged backup, as its own book or replacing one.
+    /// Restore a backup, as its own book or replacing one (kept in
+    /// legacy/).
     Restore {
-        /// The staged backup's id (never a path).
-        staged: String,
-        /// The book it replaces, if it replaces one.
+        /// The backup: a repository's address, or its folder (`<book>.git`
+        /// in the backup folder).
+        source: String,
+        /// The books' id.
+        id: String,
+        /// Replace the books of that id.
         #[serde(default)]
-        replace: Option<String>,
-        /// The owner passphrase: needed to replace (INVARIANT 3).
-        #[serde(default)]
-        passphrase: Option<String>,
+        replace: bool,
     },
     /// Let the server upgrade a book's journal format.
     ConsentFormatUpgrade {
@@ -150,13 +151,6 @@ impl Intent {
             Intent::ConsentFormatUpgrade { passphrase, .. } if missing(passphrase) => Err(
                 "consenting to a format upgrade needs the owner passphrase, typed in the app"
                     .into(),
-            ),
-            Intent::Restore {
-                replace: Some(_),
-                passphrase,
-                ..
-            } if missing(passphrase) => Err(
-                "a restore that replaces books needs the owner passphrase, typed in the app".into(),
             ),
             _ => Ok(()),
         }
@@ -288,7 +282,7 @@ mod tests {
             json!("close"),
             json!({"back_up_now": {"book": "acme"}}),
             json!({"new_books": {"id": "acme", "currency": "USD"}}),
-            json!({"restore": {"staged": "s1"}}),
+            json!({"restore": {"source": "/backups/acme.git", "id": "acme"}}),
             json!({"consent_format_upgrade": {"book": "acme", "passphrase": "x"}}),
         ] {
             let h = parse(json!({"proto": 1, "intent": intent})).unwrap();
@@ -297,7 +291,8 @@ mod tests {
         for bad in [
             json!({"proto": 1, "intent": "delete"}),
             json!({"proto": 1, "intent": {"restore": {"path": "/x"}}}),
-            json!({"proto": 1, "intent": {"restore": {"staged": "s1", "path": "/x"}}}),
+            json!({"proto": 1, "intent": {"restore": {"source": "/x", "id": "a", "path": "/x"}}}),
+            json!({"proto": 1, "intent": {"restore": {"staged": "s1"}}}),
             json!({"proto": 1, "intent": {"run": {"command": "sh"}}}),
             json!({"proto": 1, "exec": "sh"}),
             json!({"proto": 1}),
@@ -322,7 +317,7 @@ mod tests {
     }
 
     #[test]
-    fn consent_and_a_replacing_restore_need_the_passphrase() {
+    fn only_consent_needs_the_passphrase() {
         let consent = |p: Option<&str>| Intent::ConsentFormatUpgrade {
             book: "acme".into(),
             passphrase: p.map(str::to_string),
@@ -330,16 +325,13 @@ mod tests {
         assert!(consent(None).check_passphrase().is_err());
         assert!(consent(Some("")).check_passphrase().is_err());
         assert!(consent(Some("pw")).check_passphrase().is_ok());
-        let restore = |replace: Option<&str>, p: Option<&str>| Intent::Restore {
-            staged: "s1".into(),
-            replace: replace.map(str::to_string),
-            passphrase: p.map(str::to_string),
-        };
-        assert!(restore(None, None).check_passphrase().is_ok());
-        assert!(restore(Some("acme"), None).check_passphrase().is_err());
-        assert!(restore(Some("acme"), Some("")).check_passphrase().is_err());
-        assert!(restore(Some("acme"), Some("pw")).check_passphrase().is_ok());
         for other in [
+            // D-31: replacing keeps the old books in legacy/; no passphrase.
+            Intent::Restore {
+                source: "/backups/acme.git".into(),
+                id: "acme".into(),
+                replace: true,
+            },
             Intent::Close,
             Intent::BackUpNow { book: "a".into() },
             Intent::NewBooks {

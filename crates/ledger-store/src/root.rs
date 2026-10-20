@@ -32,6 +32,10 @@
 //!      disk, and its head equal to the source's.
 //!   6. No error names the root or a path inside it: nothing an agent is
 //!      shown names the books' folder.
+//!   7. Restoring a backup (plan 3.7) is proven before use, as an adoption
+//!      is (INVARIANT 5), and its head must be the one the preview read;
+//!      it never overwrites: books it replaces are moved whole into
+//!      `legacy/`, only when asked, and only while nothing holds them.
 //! ```
 
 use crate::error::StoreError;
@@ -70,6 +74,12 @@ pub const LEGACY_KEY_FILE: &str = "legacy.key";
 const BOOKS_LOCK: &str = "books.lock";
 /// Staging folders under `books/` start so; none is a valid book id.
 const STAGING_PREFIX: &str = ".adopt-";
+/// A backup being restored, in `books/` (never a book: ids don't start
+/// with a dot).
+const RESTORE_PREFIX: &str = ".restore-";
+/// Left in a restored book's `ops/`: the id of the books its backup held
+/// (empty when it named none), for the server to note when it opens them.
+pub const RESTORED_FROM: &str = "restored-from";
 
 /// How the root is named in messages (INVARIANT 6).
 pub const THE_ROOT: &str = "the books' private folder";
@@ -802,7 +812,276 @@ impl Root {
     }
 }
 
+/// What restoring a backup would bring in ([`Root::restore_preview`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RestorePreview {
+    /// The backup's head, `(seq, hash)`, proven.
+    pub head: (u64, String),
+    /// Stored files in it, each re-hashed.
+    pub blobs: u64,
+    /// Vault records in it.
+    pub vault_files: u64,
+    /// Whether books of the id asked for exist now.
+    pub exists: bool,
+    /// The id of the books it holds, as they were backed up.
+    pub origin: Option<String>,
+}
+
+/// What [`Root::restore`] did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RestoreReport {
+    /// The restored book's id.
+    pub id: BookId,
+    /// Its head, `(seq, hash)`: the backup's.
+    pub head: (u64, String),
+    /// Stored files the books name, re-hashed through the store.
+    pub blobs_verified: u64,
+    /// Vault records restored.
+    pub vault_files: u64,
+    /// The `legacy/` folder the books it replaced were moved to.
+    pub replaced: Option<String>,
+    /// The id of the books it held, as they were backed up.
+    pub origin: Option<String>,
+}
+
 impl Root {
+    /// Clone the backup at `source` (a git repository's address, or its
+    /// folder: `<book>.git` in a backup folder) into a scratch folder in `books/` and prove it
+    /// whole (backup.rs INVARIANT 3); the caller holds the books lock and
+    /// removes the folder.
+    fn fetch_backup(
+        &self,
+        git: &crate::backup::Git,
+        source: &str,
+        books: &Path,
+        id: &BookId,
+    ) -> Result<(PathBuf, crate::backup::Verified), RootError> {
+        // Anything left from one that never finished goes first: none is
+        // in progress (each holds the books lock).
+        for entry in std::fs::read_dir(books)? {
+            let entry = entry?;
+            if entry
+                .file_name()
+                .to_str()
+                .is_some_and(|n| n.starts_with(RESTORE_PREFIX))
+            {
+                std::fs::remove_dir_all(entry.path())?;
+            }
+        }
+        let scratch = books.join(format!("{RESTORE_PREFIX}{id}-{}", std::process::id()));
+        match crate::backup::verify(git, source, &scratch) {
+            Ok(v) => Ok((scratch, v)),
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&scratch);
+                Err(RootError::Adopt(format!(
+                    "that backup can't be restored: {e}"
+                )))
+            }
+        }
+    }
+
+    /// What restoring the backup at `source` as books `id` would bring in,
+    /// proven as [`Self::restore`] proves it, adding nothing to the root.
+    pub fn restore_preview(
+        &self,
+        git: &crate::backup::Git,
+        source: &str,
+        id: &BookId,
+    ) -> Result<RestorePreview, RootError> {
+        (|| {
+            let _lock = self.books_lock()?;
+            let (books, _) = self.private_subdir(BOOKS_DIR, false)?;
+            let (scratch, v) = self.fetch_backup(git, source, &books, id)?;
+            let vault = scratch.join(VAULT_DIR);
+            let vault_files = if vault.is_dir() {
+                std::fs::read_dir(&vault)
+                    .map(|d| d.count() as u64)
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            let _ = std::fs::remove_dir_all(&scratch);
+            Ok(RestorePreview {
+                head: v.head,
+                blobs: v.blobs,
+                vault_files,
+                exists: std::fs::symlink_metadata(books.join(id.as_str())).is_ok(),
+                origin: v.book,
+            })
+        })()
+        .map_err(|e| self.hide(e))
+    }
+
+    /// Restore the backup at `source` as books `id` (INVARIANT 7): proven
+    /// whole, its head `expect_head` (as the preview read it), built as an
+    /// adoption builds (every stored file re-hashed, opened, verified,
+    /// synced) with its backup history (so its next backups carry on from
+    /// it), and only then renamed into place. Books `id` that exist are
+    /// refused, unless `replace`: then they are moved into `legacy/`
+    /// first, kept whole; refused while anything holds them open.
+    pub fn restore(
+        &self,
+        git: &crate::backup::Git,
+        source: &str,
+        id: &BookId,
+        expect_head: &(u64, String),
+        replace: bool,
+    ) -> Result<RestoreReport, RootError> {
+        self.restore_inner(git, source, id, expect_head, replace)
+            .map_err(|e| match e {
+                // The copy's checks are the adoption's: said as a restore.
+                RootError::Adopt(text) => {
+                    RootError::Adopt(text.replace("nothing was adopted", "nothing was restored"))
+                }
+                other => other,
+            })
+            .map_err(|e| self.hide(e))
+    }
+
+    fn restore_inner(
+        &self,
+        git: &crate::backup::Git,
+        source: &str,
+        id: &BookId,
+        expect_head: &(u64, String),
+        replace: bool,
+    ) -> Result<RestoreReport, RootError> {
+        let _lock = self.books_lock()?;
+        let (books, _) = self.private_subdir(BOOKS_DIR, false)?;
+        let dest = books.join(id.as_str());
+        let exists = std::fs::symlink_metadata(&dest).is_ok();
+        if exists && !replace {
+            return Err(RootError::Exists(id.to_string()));
+        }
+        if !exists && replace {
+            return Err(RootError::Adopt(format!(
+                "there are no books called {:?} to replace: nothing was restored",
+                id.as_str()
+            )));
+        }
+        // Books being replaced are moved only while nothing holds them.
+        let _held = if exists {
+            Some(lock_source(&dest).map_err(|_| {
+                RootError::Adopt(format!(
+                    "the books called {:?} are open: close them first; nothing was restored",
+                    id.as_str()
+                ))
+            })?)
+        } else {
+            None
+        };
+        let (scratch, v) = self.fetch_backup(git, source, &books, id)?;
+        let staging = books.join(format!("{RESTORE_PREFIX}{id}-{}-book", std::process::id()));
+        let built = (|| -> Result<RestoreReport, RootError> {
+            if v.head != *expect_head {
+                return Err(RootError::Adopt(format!(
+                    "that backup isn't the one previewed (it is now at event {}): nothing was restored; preview it again",
+                    v.head.0
+                )));
+            }
+            let (raw, lines) = read_source_journal(&scratch)?;
+            if head_of(&lines) != v.head {
+                return Err(RootError::Adopt(
+                    "the backup's journal changed while it was read: nothing was restored".into(),
+                ));
+            }
+            make_private_dir(&staging)?;
+            write_private_file(&staging.join(JOURNAL_FILE), &raw)?;
+            let blob_dir = crate::store::BLOBS_DIR;
+            let copied = copy_blobs(&scratch.join(blob_dir), &staging.join(blob_dir))?;
+            let vault_files = if scratch.join(VAULT_DIR).is_dir() {
+                copy_flat_private(&scratch.join(VAULT_DIR), &staging.join(VAULT_DIR))?
+            } else {
+                0
+            };
+            if scratch.join(KEYS_DIR).is_dir() {
+                copy_flat_private(&scratch.join(KEYS_DIR), &staging.join(KEYS_DIR))?;
+            }
+            let access = scratch.join(crate::access::ACCESS_FILE);
+            if access.is_file() {
+                write_private_file(
+                    &staging.join(crate::access::ACCESS_FILE),
+                    &std::fs::read(&access)?,
+                )?;
+            }
+            // Its backup history: the next backup carries on from it.
+            std::fs::rename(
+                scratch.join(".git"),
+                staging.join(crate::backup::ARCHIVE_DIR),
+            )?;
+            // Whose books they were, placed with them.
+            crate::ops::prepare(&staging)?;
+            write_private_file(
+                &crate::ops::ops_dir(&staging).join(RESTORED_FROM),
+                v.book.as_deref().unwrap_or("").as_bytes(),
+            )?;
+            let mut store = Store::open(&staging)?;
+            if store.head() != v.head {
+                return Err(RootError::Adopt(format!(
+                    "the copy's head {:?} isn't the backup's {:?}: nothing was restored",
+                    store.head(),
+                    v.head
+                )));
+            }
+            let named: BTreeSet<String> = store.stored_blob_shas()?.into_iter().collect();
+            if !named.is_subset(&copied.shas) {
+                return Err(RootError::Adopt(
+                    "the backup lacks stored files its books name: nothing was restored".into(),
+                ));
+            }
+            store.verify_and_heal()?;
+            let blobs_verified = store.verify_blobs()?;
+            let head = store.head();
+            drop(store);
+            sync_dir(&staging)?;
+            Ok(RestoreReport {
+                id: id.clone(),
+                head,
+                blobs_verified,
+                vault_files,
+                replaced: None,
+                origin: v.book.clone(),
+            })
+        })();
+        let _ = std::fs::remove_dir_all(&scratch);
+        let placed = built.and_then(|mut report| {
+            if exists {
+                let (legacy, _) = self.private_subdir(LEGACY_DIR, false)?;
+                let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+                let mut name = format!("{id}-{stamp}");
+                let mut n = 1;
+                while std::fs::symlink_metadata(legacy.join(&name)).is_ok() {
+                    n += 1;
+                    name = format!("{id}-{stamp}-{n}");
+                }
+                std::fs::rename(&dest, legacy.join(&name))?;
+                if let Err(e) = std::fs::rename(&staging, &dest) {
+                    // The books it would replace go back where they were.
+                    if std::fs::rename(legacy.join(&name), &dest).is_err() {
+                        return Err(RootError::Adopt(format!(
+                            "the backup couldn't be put in place ({}), and the books it would \
+                             replace are in the legacy folder as {name}: nothing was restored",
+                            e.kind()
+                        )));
+                    }
+                    return Err(e.into());
+                }
+                // In place: a folder that won't sync now is said no more
+                // than any later write's would be.
+                let _ = sync_dir(&legacy);
+                report.replaced = Some(name);
+            } else {
+                std::fs::rename(&staging, &dest)?;
+            }
+            let _ = sync_dir(&books);
+            Ok(report)
+        });
+        if placed.is_err() {
+            let _ = std::fs::remove_dir_all(&staging);
+        }
+        placed
+    }
+
     /// The source of an adoption, made absolute: books outside the root
     /// (and not holding it) with a journal.
     fn adoptable(&self, source: &Path) -> Result<PathBuf, RootError> {

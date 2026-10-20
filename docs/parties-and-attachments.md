@@ -273,7 +273,8 @@ damn CPA package."
   takes a path. The MCP server
   never returns a TIN in any other tool, log, or error. Tests check that
   no other output contains a nine-digit run.
-- **Books without a vault** (another machine, a restored backup) still
+- **Books without a vault** (another machine, books adopted without
+  theirs; a restored backup brings its vault and key, D-31) still
   open and verify; the 1099 worksheet and the CPA package then say which
   TINs are missing (`tin_gaps`), and the package is still built.
 - **Tools** (built; `docs/mcp-interface.md` "Tools — the TIN vault"):

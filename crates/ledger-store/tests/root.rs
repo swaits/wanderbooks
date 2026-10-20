@@ -1284,3 +1284,67 @@ fn books_that_changed_since_the_preview_are_not_adopted() {
         .unwrap();
     assert_eq!(report.source_head, now);
 }
+
+/// A backup of `store`'s books (in `dir`) in a folder target under
+/// `home`: its address.
+fn backed_up(home: &Path, dir: &Path, store: &Store) -> Option<String> {
+    use ledger_store::backup::{self, Git, Target};
+    let git = Git::find().ok()?;
+    backup::commit(&git, dir, "acme", store.head()).unwrap();
+    let folder = home.join("disk");
+    std::fs::create_dir_all(&folder).unwrap();
+    let target = Target::Folder(folder);
+    backup::push(&git, dir, "acme", &target, true).unwrap();
+    Some(target.source("acme"))
+}
+
+#[test]
+fn a_restore_never_moves_books_something_holds() {
+    use ledger_store::backup::Git;
+    let home = tmp("restore-held");
+    let (root, _) = Root::setup(home.path(), None, None).unwrap();
+    let acme = id("acme");
+    let held = root.create_book(&acme, Currency::USD).unwrap();
+    let dir = root.book_dir(&acme);
+    let source = backed_up(home.path(), &dir, &held).expect("git is installed");
+    let git = Git::find().unwrap();
+    let preview = root.restore_preview(&git, &source, &acme).unwrap();
+    assert!(preview.exists);
+    // Open (its writer lock held): refused, nothing moved.
+    let e = root
+        .restore(&git, &source, &acme, &preview.head, true)
+        .unwrap_err();
+    assert!(e.to_string().contains("are open"), "{e}");
+    assert!(dir.join(JOURNAL_FILE).is_file());
+    assert!(
+        !root.path().join("legacy").exists()
+            || std::fs::read_dir(root.path().join("legacy"))
+                .unwrap()
+                .count()
+                == 0
+    );
+    // Not over books without --replace; nothing to replace that isn't.
+    let e = root
+        .restore(&git, &source, &acme, &preview.head, false)
+        .unwrap_err();
+    assert!(matches!(e, RootError::Exists(_)), "{e}");
+    let e = root
+        .restore(&git, &source, &id("nobody"), &preview.head, true)
+        .unwrap_err();
+    assert!(e.to_string().contains("no books called"), "{e}");
+    // Let go: replaced, the old kept whole.
+    drop(held);
+    let r = root
+        .restore(&git, &source, &acme, &preview.head, true)
+        .unwrap();
+    let kept = root.path().join("legacy").join(r.replaced.unwrap());
+    assert!(kept.join(JOURNAL_FILE).is_file());
+    assert_eq!(r.head, preview.head);
+    // Nothing of the restore is left behind in books/.
+    let left: Vec<_> = std::fs::read_dir(root.path().join("books"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with('.'))
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+}

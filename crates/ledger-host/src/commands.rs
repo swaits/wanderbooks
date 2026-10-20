@@ -14,9 +14,9 @@
 //!   1. A command that needs the server holds a lease while it runs, and
 //!      lets go when it ends.
 //!   2. Nothing printed names the data root.
-//!   3. Adoption is previewed first and goes ahead only on a yes at the
-//!      terminal, or --yes; a vault beside the books must be named (or
-//!      --no-vault given): it is never silently left behind.
+//!   3. Adoption and restoring are previewed first and go ahead only on a
+//!      yes at the terminal, or --yes; a vault beside the books must be
+//!      named (or --no-vault given): it is never silently left behind.
 //!   4. A token made is kept in the keyring before anything is said of it,
 //!      and its text is printed only by `token print`; one that can't be
 //!      kept is revoked again. A token revoked is forgotten by the keyring
@@ -392,12 +392,16 @@ fn books_usage(prog: &str) {
     eprintln!(
         "       {prog} adopt DATA-DIR --id ID [--toml FILE] [--config-json FILE] [--vault DIR --vault-key FILE | --no-vault] [--skip-unknown] [--yes]"
     );
+    eprintln!("       {prog} restore BACKUP [--id ID] [--replace] [--yes]");
     eprintln!("  list    the books, and whether each is open");
     eprintln!("  create  start new, empty books (base currency USD unless given)");
     eprintln!("  adopt   copy existing books in, verified; the original is left as it was");
+    eprintln!(
+        "  restore bring back a backup (a git repository's address, or BOOK.git in the backup folder), proven whole first: as new books, or replacing books (kept in legacy/)"
+    );
 }
 
-/// `wanderbooks books list|create|adopt`.
+/// `wanderbooks books list|create|adopt|restore`.
 pub fn books(
     prog: &str,
     args: impl IntoIterator<Item = String>,
@@ -413,6 +417,7 @@ pub fn books(
     let mut no_vault = false;
     let mut skip_unknown = false;
     let mut yes = false;
+    let mut replace = false;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         if common.take(&arg, &mut args)? {
@@ -428,6 +433,7 @@ pub fn books(
             "--vault-key" => vault_key = Some(PathBuf::from(value("a file")?)),
             "--no-vault" => no_vault = true,
             "--skip-unknown" => skip_unknown = true,
+            "--replace" => replace = true,
             "--yes" => yes = true,
             "--help" | "-h" => {
                 books_usage(prog);
@@ -471,6 +477,7 @@ pub fn books(
                 yes,
             );
         }
+        ["restore", source] => return restore(&common, source, id, replace, yes),
         _ => {
             books_usage(prog);
             return Err(exit(2));
@@ -511,6 +518,172 @@ pub fn books(
             eprintln!("error: the books server answered oddly: {other:?}");
             Err(exit(1))
         }
+    }
+}
+
+/// The id a backup is restored as when none is given: its repository's
+/// name (`acme.git` → `acme`).
+fn restore_id(source: &str) -> Option<String> {
+    let last = source
+        .trim_end_matches('/')
+        .rsplit(['/', ':'])
+        .next()?
+        .trim_end_matches(".git");
+    ledger_store::root::BookId::parse(last)
+        .ok()
+        .map(|id| id.to_string())
+}
+
+/// Ask at the terminal (or take --yes): whether to go ahead.
+fn confirmed(question: &str, yes: bool) -> Result<bool, String> {
+    if yes {
+        return Ok(true);
+    }
+    if !at_a_terminal() {
+        return Err("confirm at a terminal, or run again with --yes".into());
+    }
+    print!("{question} [y/N] ");
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    let mut answer = String::new();
+    std::io::stdin()
+        .read_line(&mut answer)
+        .map_err(|e| e.to_string())?;
+    Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "Yes"))
+}
+
+/// `wanderbooks books restore` (INVARIANT 3).
+fn restore(
+    common: &Common,
+    source: &str,
+    id: Option<String>,
+    replace: bool,
+    yes: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let fail = |why: String| -> Result<(), Box<dyn std::error::Error>> {
+        eprintln!("error: {why}");
+        Err(exit(1))
+    };
+    // A folder is named to the server by its full path (the server's
+    // working folder isn't this one); anything else is an address.
+    let source = match Path::new(source) {
+        p if p.exists() => std::path::absolute(p)
+            .unwrap_or_else(|_| p.to_path_buf())
+            .display()
+            .to_string(),
+        _ => source.to_string(),
+    };
+    // One preview (under the id given, or any: it only reports), then the
+    // id: given, or else the id of the books the backup holds, or else the
+    // repository's name.
+    let probe = id
+        .clone()
+        .or_else(|| restore_id(&source))
+        .unwrap_or_else(|| "restored".to_string());
+    let preview = match with_server(
+        common,
+        Request::Restore {
+            id: probe,
+            source: source.clone(),
+            replace,
+            confirmed: false,
+            expect_head: None,
+        },
+    ) {
+        Ok(Response::RestorePreview(p)) => p,
+        Ok(Response::Refused(why)) | Err(why) => return fail(format!("{source}: {why}")),
+        Ok(other) => return fail(format!("the books server answered oddly: {other:?}")),
+    };
+    let Some(id) = id
+        .or_else(|| {
+            preview
+                .origin
+                .clone()
+                .filter(|o| ledger_store::root::BookId::parse(o).is_ok())
+        })
+        .or_else(|| restore_id(&source))
+    else {
+        eprintln!("error: name the restored books with --id ID");
+        return Err(exit(2));
+    };
+    let exists = match with_server(common, Request::List) {
+        Ok(Response::Books(books)) => books.iter().any(|b| b.id == id),
+        Ok(Response::Refused(why)) | Err(why) => return fail(why),
+        Ok(other) => return fail(format!("the books server answered oddly: {other:?}")),
+    };
+    if exists && !replace {
+        return fail(format!(
+            "there are already books called \"{id}\": restore them under another id (--id), or replace them (--replace; they are kept in legacy/)"
+        ));
+    }
+    if !exists && replace {
+        return fail(format!(
+            "there are no books called \"{id}\" to replace: nothing was restored"
+        ));
+    }
+    let request = |expect_head: Option<(u64, String)>| Request::Restore {
+        id: id.clone(),
+        source: source.clone(),
+        replace,
+        confirmed: expect_head.is_some(),
+        expect_head,
+    };
+    println!(
+        "The backup at {source} is whole: through event {} ({}), {} stored files re-hashed, {} TIN vault records.",
+        preview.head.0,
+        short_hash(&preview.head.1),
+        preview.blobs,
+        preview.vault_files
+    );
+    if let Some(origin) = &preview.origin {
+        println!("It is a backup of the books \"{origin}\".");
+    }
+    if replace {
+        println!(
+            "It replaces the books \"{id}\": they are closed and kept whole in the legacy folder, not deleted."
+        );
+    } else {
+        println!("It comes back as new books \"{id}\", beside any others.");
+    }
+    match preview.origin.as_deref() {
+        Some(o) if o == id => {}
+        Some(o) => println!(
+            "Under a name other than its books' (\"{o}\"), they won't back up to the private repository those books back up to (that would stop theirs): if these are those books, restore them as \"{o}\" (--id {o}); else name a repository of their own."
+        ),
+        None => println!(
+            "It doesn't say whose books it holds: they won't back up to the private repository their settings name until one of their own is named."
+        ),
+    }
+    match confirmed("Restore it?", yes) {
+        Ok(true) => {}
+        Ok(false) => {
+            println!("Not restored.");
+            return Ok(());
+        }
+        Err(why) => return fail(format!("not restored: {why}")),
+    }
+    match with_server(common, request(Some(preview.head.clone()))) {
+        Ok(Response::Restored(r)) => {
+            println!(
+                "Restored as \"{}\": through event {} ({}), {} stored files checked, {} TIN vault records.",
+                r.id,
+                r.head.0,
+                short_hash(&r.head.1),
+                r.blobs_verified,
+                r.vault_files
+            );
+            if let Some(kept) = &r.replaced {
+                println!("The books it replaced are kept in the legacy folder as {kept}.");
+            }
+            if let Some(why) = r.problem {
+                return fail(format!(
+                    "the restored books didn't open: {why}. Closing the books and opening them again tries again."
+                ));
+            }
+            Ok(())
+        }
+        Ok(Response::Refused(why)) | Err(why) => fail(format!("{source}: {why}")),
+        Ok(other) => fail(format!("the books server answered oddly: {other:?}")),
     }
 }
 
@@ -1740,6 +1913,23 @@ mod tests {
             settings_ignored: false,
             source_lock_created: false,
             problem: None,
+        }
+    }
+
+    #[test]
+    fn a_backup_is_restored_under_its_repository_name() {
+        for (source, want) in [
+            ("/media/disk/backups/acme.git", Some("acme")),
+            ("/media/disk/backups/acme.git/", Some("acme")),
+            ("git@host:owner/acme-books.git", Some("acme-books")),
+            ("ssh://host/owner/acme", Some("acme")),
+            ("https://host/owner/acme.git", Some("acme")),
+            ("acme.git", Some("acme")),
+            ("/media/disk/Backups/Acme.git", None),
+            ("/", None),
+            ("", None),
+        ] {
+            assert_eq!(restore_id(source).as_deref(), want, "{source}");
         }
     }
 

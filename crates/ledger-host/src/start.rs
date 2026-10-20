@@ -9,8 +9,11 @@
 //!   1. The host's environment is a fixed list: PATH (fixed), HOME (from
 //!      the account's record, never the opener's), and XDG_RUNTIME_DIR
 //!      and DBUS_SESSION_BUS_ADDRESS only when they point at this
-//!      account's own private runtime folder. Nothing else passes (a
-//!      scope's own identifiers, such as INVOCATION_ID, are systemd's).
+//!      account's own private runtime folder, and SSH_AUTH_SOCK only when
+//!      it names a socket this account owns (the owner's ssh agent, so the
+//!      server's backups reach a private git repository, D-30). Nothing
+//!      else passes (a scope's own identifiers, such as INVOCATION_ID, are
+//!      systemd's).
 //!   2. Its standard input and output are null, its errors go to
 //!      run/host.log (0600); it starts a new session with umask 077. Every
 //!      other descriptor is closed (std opens them close-on-exec, and the
@@ -112,8 +115,20 @@ fn session_bus(runtime: &Path) -> Option<String> {
     }
 }
 
-/// The host's environment (INVARIANT 1).
-fn host_env(home: &Path) -> Vec<(String, std::ffi::OsString)> {
+/// The ssh agent's socket named in `named`, if it is a socket this
+/// account owns at an absolute path (INVARIANT 1).
+fn own_agent(named: Option<&std::ffi::OsStr>) -> Option<std::ffi::OsString> {
+    use std::os::unix::fs::FileTypeExt;
+    let path = Path::new(named?);
+    (path.is_absolute()
+        && std::fs::symlink_metadata(path)
+            .is_ok_and(|m| m.file_type().is_socket() && m.uid() == own_uid()))
+    .then(|| path.as_os_str().to_os_string())
+}
+
+/// The host's environment (INVARIANT 1), given the opener's
+/// `SSH_AUTH_SOCK`.
+fn host_env(home: &Path, ssh_agent: Option<&std::ffi::OsStr>) -> Vec<(String, std::ffi::OsString)> {
     let mut env = vec![
         ("PATH".to_string(), PATH.into()),
         ("HOME".to_string(), home.as_os_str().to_os_string()),
@@ -123,6 +138,9 @@ fn host_env(home: &Path) -> Vec<(String, std::ffi::OsString)> {
             env.push(("DBUS_SESSION_BUS_ADDRESS".into(), bus.into()));
         }
         env.push(("XDG_RUNTIME_DIR".into(), runtime.into_os_string()));
+    }
+    if let Some(agent) = own_agent(ssh_agent) {
+        env.push(("SSH_AUTH_SOCK".into(), agent));
     }
     env
 }
@@ -199,7 +217,10 @@ pub fn start_host(root: Option<&Path>, knobs: &Knobs) -> Result<(), String> {
         };
         c.args(&args)
             .env_clear()
-            .envs(host_env(&home))
+            .envs(host_env(
+                &home,
+                std::env::var_os("SSH_AUTH_SOCK").as_deref(),
+            ))
             .current_dir("/")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -357,17 +378,70 @@ mod tests {
 
     #[test]
     fn the_host_environment_carries_nothing_else() {
-        let env = host_env(Path::new("/home/someone"));
+        let env = host_env(Path::new("/home/someone"), None);
         let names: Vec<&str> = env.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(&names[..2], ["PATH", "HOME"]);
         for n in &names[2..] {
             assert!(
-                ["XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"].contains(n),
+                [
+                    "XDG_RUNTIME_DIR",
+                    "DBUS_SESSION_BUS_ADDRESS",
+                    "SSH_AUTH_SOCK"
+                ]
+                .contains(n),
                 "{n}"
             );
         }
         assert_eq!(env[0].1, PATH);
         assert_eq!(env[1].1, "/home/someone");
+    }
+
+    #[test]
+    fn only_an_own_ssh_agent_socket_passes() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("agent.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        assert_eq!(
+            own_agent(Some(sock.as_os_str())),
+            Some(sock.clone().into_os_string())
+        );
+        // It reaches the host's environment, once.
+        let env = host_env(Path::new("/home/someone"), Some(sock.as_os_str()));
+        let agents: Vec<_> = env.iter().filter(|(n, _)| n == "SSH_AUTH_SOCK").collect();
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].1, sock.as_os_str());
+        // A link to it is not it (whoever made the link chose where it
+        // points).
+        let link = dir.path().join("link.sock");
+        std::os::unix::fs::symlink(&sock, &link).unwrap();
+        assert_eq!(own_agent(Some(link.as_os_str())), None);
+        let env = host_env(Path::new("/home/someone"), Some(link.as_os_str()));
+        assert!(env.iter().all(|(n, _)| n != "SSH_AUTH_SOCK"));
+        // Named relative to here: not taken, even where it leads to one.
+        let here = std::env::current_dir().unwrap();
+        let up = here.components().count() - 1;
+        let relative: std::path::PathBuf = std::iter::repeat_n("..", up)
+            .collect::<std::path::PathBuf>()
+            .join(sock.strip_prefix("/").unwrap());
+        assert!(relative.exists() && relative.is_relative(), "{relative:?}");
+        assert_eq!(own_agent(Some(relative.as_os_str())), None);
+        // Another account's socket (the system's bus, owned by root, where
+        // there is one): not ours.
+        let system = Path::new("/run/dbus/system_bus_socket");
+        if system.exists() && own_uid() != 0 {
+            assert_eq!(own_agent(Some(system.as_os_str())), None);
+        }
+        let file = dir.path().join("plain");
+        std::fs::write(&file, "x").unwrap();
+        for bad in [
+            file.as_os_str(),
+            "agent.sock".as_ref(),
+            "/nonexistent/agent.sock".as_ref(),
+            "".as_ref(),
+        ] {
+            assert_eq!(own_agent(Some(bad)), None, "{bad:?}");
+        }
+        assert_eq!(own_agent(None), None);
     }
 
     #[test]

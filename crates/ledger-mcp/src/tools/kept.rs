@@ -803,6 +803,24 @@ impl BooksServer {
                 "An open item is due within 30 days, or overdue: raise it with the human.",
             ));
         }
+        // The books' backups (backup.rs): none set up, or one behind or
+        // failing.
+        if let Some(b) = &self.backups {
+            let st = b.standing(store);
+            if st.note.is_some() {
+                next_steps.push(step(
+                    "books.backup",
+                    None,
+                    "No backups are set up: ask the human for a private repository and a folder on another disk, then set backup.git_remote and backup.folder (books.set_setting).",
+                ));
+            } else if st.needs_attention() {
+                next_steps.push(step(
+                    "books.backup",
+                    None,
+                    "A backup is behind or failing: books.backup says which and why; tell the human.",
+                ));
+            }
+        }
         match focus {
             "close" => next_steps.push(step(
                 "books.conventions",

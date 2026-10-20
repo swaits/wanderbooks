@@ -27,10 +27,13 @@ easily backupable, journable":
   bytes to `journal.jsonl.torn.<time>`, truncates to the last newline, and
   journals a `journal.tail_repaired` line; `books.digest` reports it.
   Damage before the last newline is corruption and refuses to open: that
-  is for a human, never repaired automatically. Better: the journal is
-  git-friendly, so an optional `wanderbooks backup` that commits it to a
-  private git repo gives versioned, distributed, deduplicated backup with
-  full history.
+  is for a human, never repaired automatically. The server does better
+  (plan 3.7): it commits the journal, the blobs, the vault, its key and
+  the access log to each book's own git repository (the blobs staged
+  ahead, the commit under the store's lock) and pushes it to the
+  owner's private repository and backup folder, versioned and
+  deduplicated, with full history (docs/mcp-interface.md, "Tools —
+  backups").
 - **Journable.** It literally is a journal: `{seq, ts, type, payload, prev}`.
   Greppable, diffable, replayable. The audit trail isn't a feature bolted
   on — it's the storage format.
@@ -76,8 +79,9 @@ is correct: the journal records what happened, including abandoned work.
 `wanderbooks verify` (a `ledger-store` API, later a CLI subcommand):
 re-read the journal, recompute the hash chain, replay every line into a fresh
 in-memory `Ledger`, and compare its reports against the SQLite projection's.
-Any mismatch is a loud failure. Run it on startup (cheap at this scale) and
-before backups.
+Any mismatch is a loud failure. Run it on startup (cheap at this scale);
+a backup is then proven where it lands, by a drill (docs/mcp-interface.md,
+"Tools — backups").
 
 ## Blob store
 

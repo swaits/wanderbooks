@@ -23,6 +23,11 @@
 //!      with include_tins, export_cpa_package, get_w9) need books:admin,
 //!      and sealing one into the vault (set_tin, set_w9, which can replace
 //!      the one there) needs books:post (review of slice 4).
+//!   6. Where the books' backups go is books:admin's, as backing up is
+//!      (a backup is the whole book, its vault and key included):
+//!      setting a `backup.*` key, or importing settings that hold one,
+//!      needs books:admin; other settings books:post as before (review of
+//!      slice 7).
 //! ```
 
 use ledger_store::auth::Scope;
@@ -38,9 +43,17 @@ pub enum Needs {
     /// books:post for an approval rule (the control that gates posting),
     /// books:write for any other convention (INVARIANT 4).
     PostForApprovalRules,
+    /// books:admin for a change to a `backup.*` setting, books:post for
+    /// any other (INVARIANT 6).
+    AdminForBackupSettings,
+    /// As PostWhenConfirmed, and books:admin when the settings imported
+    /// hold a `[backup]` table (INVARIANT 6).
+    ImportSettings,
 }
 
-use Needs::{Always, PostForApprovalRules, PostWhenConfirmed};
+use Needs::{
+    AdminForBackupSettings, Always, ImportSettings, PostForApprovalRules, PostWhenConfirmed,
+};
 const R: Needs = Always(Scope::Read);
 const W: Needs = Always(Scope::Write);
 const P: Needs = Always(Scope::Post);
@@ -49,12 +62,12 @@ const C: Needs = PostWhenConfirmed;
 const K: Needs = PostForApprovalRules;
 
 /// Every tool and what it needs (INVARIANT 1).
-pub const TABLE: [(&str, Needs); 109] = [
+pub const TABLE: [(&str, Needs); 111] = [
     ("books.handbook", R),
     ("books.start", R),
     // Settings are committed at once: the settings commit of the plan.
-    ("books.set_setting", P),
-    ("books.import_settings", C),
+    ("books.set_setting", AdminForBackupSettings),
+    ("books.import_settings", ImportSettings),
     ("books.export_settings", R),
     ("books.conventions", R),
     ("books.set_convention", K),
@@ -166,6 +179,8 @@ pub const TABLE: [(&str, Needs); 109] = [
     ("books.profit_and_loss_by_class", R),
     ("books.export_cpa_package", A),
     ("books.access_log", A),
+    ("books.backup", R),
+    ("books.back_up_now", A),
 ];
 
 /// What `tool` needs, given its arguments; None for a tool this server
@@ -178,11 +193,38 @@ pub fn needs(
     Some(match needs {
         Always(scope) => *scope,
         PostWhenConfirmed => {
-            let confirmed = args
-                .and_then(|a| a.get("confirmed"))
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false);
-            if confirmed { Scope::Post } else { Scope::Write }
+            if confirmed(args) {
+                Scope::Post
+            } else {
+                Scope::Write
+            }
+        }
+        AdminForBackupSettings => {
+            let backup = args
+                .and_then(|a| a.get("changes"))
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|changes| {
+                    changes.iter().any(|c| {
+                        c.get("key")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|k| k.trim().to_ascii_lowercase().starts_with("backup."))
+                    })
+                });
+            if backup { Scope::Admin } else { Scope::Post }
+        }
+        ImportSettings => {
+            let backup = args
+                .and_then(|a| a.get("toml_text"))
+                .and_then(serde_json::Value::as_str)
+                .and_then(|t| t.parse::<toml::Table>().ok())
+                .is_some_and(|t| t.contains_key("backup"));
+            if backup {
+                Scope::Admin
+            } else if confirmed(args) {
+                Scope::Post
+            } else {
+                Scope::Write
+            }
         }
         PostForApprovalRules => {
             let kind = args
@@ -197,14 +239,23 @@ pub fn needs(
     })
 }
 
+fn confirmed(args: Option<&serde_json::Map<String, serde_json::Value>>) -> bool {
+    args.and_then(|a| a.get("confirmed"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
 /// Whether a token with `scopes` may list `tool` (it can call it in some
 /// form: a tool that posts when confirmed shows to a books:write token,
 /// which may preview).
 pub fn shown(tool: &str, scopes: &std::collections::BTreeSet<Scope>) -> bool {
     match TABLE.iter().find(|(name, _)| *name == tool) {
         Some((_, Always(scope))) => scopes.contains(scope),
-        Some((_, PostWhenConfirmed | PostForApprovalRules)) => {
+        Some((_, PostWhenConfirmed | PostForApprovalRules | ImportSettings)) => {
             scopes.contains(&Scope::Write) || scopes.contains(&Scope::Post)
+        }
+        Some((_, AdminForBackupSettings)) => {
+            scopes.contains(&Scope::Post) || scopes.contains(&Scope::Admin)
         }
         None => false,
     }
@@ -254,6 +305,56 @@ mod tests {
     }
 
     #[test]
+    fn where_backups_go_is_admins() {
+        let args = |v: serde_json::Value| v.as_object().cloned();
+        let set = |keys: &[&str]| {
+            let changes: Vec<_> = keys
+                .iter()
+                .map(|k| json!({"key": k, "value": "x"}))
+                .collect();
+            needs(
+                "books.set_setting",
+                args(json!({"changes": changes})).as_ref(),
+            )
+        };
+        assert_eq!(set(&["company.name"]), Some(Scope::Post));
+        assert_eq!(set(&["backup.folder"]), Some(Scope::Admin));
+        assert_eq!(
+            set(&["company.name", "backup.git_remote"]),
+            Some(Scope::Admin)
+        );
+        assert_eq!(set(&[" Backup.Folder"]), Some(Scope::Admin));
+        assert_eq!(needs("books.set_setting", None), Some(Scope::Post));
+        let import = |text: &str, confirmed: bool| {
+            needs(
+                "books.import_settings",
+                args(json!({"toml_text": text, "confirmed": confirmed})).as_ref(),
+            )
+        };
+        assert_eq!(
+            import("[company]\nname = \"A\"\n", false),
+            Some(Scope::Write)
+        );
+        assert_eq!(import("[company]\nname = \"A\"\n", true), Some(Scope::Post));
+        assert_eq!(
+            import("[backup]\nfolder = \"/x\"\n", false),
+            Some(Scope::Admin)
+        );
+        assert_eq!(
+            import("[backup]\nfolder = \"/x\"\n", true),
+            Some(Scope::Admin)
+        );
+        // Shown to whoever can set some setting.
+        let post: std::collections::BTreeSet<Scope> = [Scope::Post].into();
+        let write: std::collections::BTreeSet<Scope> = [Scope::Write].into();
+        let admin: std::collections::BTreeSet<Scope> = [Scope::Admin].into();
+        assert!(shown("books.set_setting", &post));
+        assert!(shown("books.set_setting", &admin));
+        assert!(!shown("books.set_setting", &write));
+        assert!(shown("books.import_settings", &write));
+    }
+
+    #[test]
     fn a_tool_that_takes_confirmed_posts_only_when_confirmed() {
         // Exactly the tools whose arguments have `confirmed`.
         for tool in BooksServer::tool_router().list_all() {
@@ -263,7 +364,7 @@ mod tests {
                 .and_then(|p| p.as_object())
                 .is_some_and(|p| p.contains_key("confirmed"));
             let (_, needs) = TABLE.iter().find(|(n, _)| *n == tool.name).unwrap();
-            assert_eq!(takes, *needs == C, "{}", tool.name);
+            assert_eq!(takes, matches!(*needs, C | ImportSettings), "{}", tool.name);
             let takes_kind = tool
                 .input_schema
                 .get("properties")

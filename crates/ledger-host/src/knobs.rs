@@ -30,6 +30,12 @@ pub struct Knobs {
     /// Keep agents' tokens in files in the root's `run/`, not the OS
     /// keyring (tests: tokens.rs INVARIANT 3). `file_keyring=1`.
     pub file_keyring: bool,
+    /// How long the books stay unwritten before the server backs them up
+    /// (plan 3.7: 30 s), passed to the server as `--backup-quiet`.
+    pub backup_quiet: Duration,
+    /// How long after books open the server first looks for a drill due
+    /// (60 s), passed to the server as `--drill-first`.
+    pub drill_first: Duration,
 }
 
 impl Default for Knobs {
@@ -43,6 +49,8 @@ impl Default for Knobs {
             queue_wait: Duration::from_secs(60),
             open_wait: Duration::from_secs(120),
             file_keyring: false,
+            backup_quiet: Duration::from_secs(30),
+            drill_first: Duration::from_secs(60),
         }
     }
 }
@@ -78,6 +86,8 @@ impl Knobs {
                 "init_wait" => k.init_wait = d,
                 "queue_wait" => k.queue_wait = d,
                 "open_wait" => k.open_wait = d,
+                "backup_quiet" => k.backup_quiet = d,
+                "drill_first" => k.drill_first = d,
                 other => return Err(format!("{FLAG}: there is no knob {other:?}")),
             }
         }
@@ -97,6 +107,8 @@ impl Knobs {
             ("init_wait", self.init_wait, d.init_wait),
             ("queue_wait", self.queue_wait, d.queue_wait),
             ("open_wait", self.open_wait, d.open_wait),
+            ("backup_quiet", self.backup_quiet, d.backup_quiet),
+            ("drill_first", self.drill_first, d.drill_first),
         ] {
             if now != default {
                 parts.push(format!("{name}={}", now.as_millis()));
@@ -131,6 +143,8 @@ mod tests {
         assert_eq!(k.exe_poll, Duration::from_secs(5));
         assert_eq!(k.server_delay, Duration::ZERO);
         assert_eq!(k.open_wait, Duration::from_secs(120));
+        assert_eq!(k.backup_quiet, Duration::from_secs(30));
+        assert_eq!(k.drill_first, Duration::from_secs(60));
         assert_eq!(k.to_arg(), None);
         assert!(k.args().is_empty());
         assert_eq!(Knobs::parse("").unwrap(), k);
@@ -139,7 +153,7 @@ mod tests {
     #[test]
     fn knobs_pass_on_exactly() {
         let k = Knobs::parse(
-            "close_after=500,backoff=20,server_delay=3000,init_wait=100,queue_wait=900,exe_poll=50,open_wait=70",
+            "close_after=500,backoff=20,server_delay=3000,init_wait=100,queue_wait=900,exe_poll=50,open_wait=70,backup_quiet=40,drill_first=50",
         )
         .unwrap();
         assert_eq!(k.close_after, Duration::from_millis(500));
@@ -149,6 +163,8 @@ mod tests {
         assert_eq!(k.queue_wait, Duration::from_millis(900));
         assert_eq!(k.exe_poll, Duration::from_millis(50));
         assert_eq!(k.open_wait, Duration::from_millis(70));
+        assert_eq!(k.backup_quiet, Duration::from_millis(40));
+        assert_eq!(k.drill_first, Duration::from_millis(50));
         let args = k.args();
         assert_eq!(args[0], FLAG);
         assert_eq!(Knobs::parse(&args[1]).unwrap(), k);

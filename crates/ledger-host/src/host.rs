@@ -657,6 +657,15 @@ impl Host {
         if self.explicit_root {
             command.arg("--root").arg(self.root.path());
         }
+        let d = Knobs::default();
+        for (flag, now, default) in [
+            ("--backup-quiet", self.knobs.backup_quiet, d.backup_quiet),
+            ("--drill-first", self.knobs.drill_first, d.drill_first),
+        ] {
+            if now != default {
+                command.arg(flag).arg(now.as_millis().to_string());
+            }
+        }
         let mut child = command
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -701,11 +710,16 @@ impl Host {
                 None,
             ),
             Intent::BackUpNow { .. } => (
-                HostMsg::Refused("backing up isn't built yet (it comes later in P2)".into()),
+                HostMsg::Refused(
+                    "the books back themselves up; to back up now, ask your agent (books.back_up_now)"
+                        .into(),
+                ),
                 None,
             ),
             Intent::Restore { .. } => (
-                HostMsg::Refused("restoring isn't built yet (it comes later in P2)".into()),
+                HostMsg::Refused(
+                    "restore from a terminal for now: `wanderbooks books restore BACKUP`".into(),
+                ),
                 None,
             ),
             Intent::ConsentFormatUpgrade { .. } => (

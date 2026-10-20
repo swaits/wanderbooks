@@ -162,7 +162,9 @@ fn answer(ask: HelperAsk, root: Option<&Path>, knobs: &Knobs) -> Answer {
         HelperAsk::OpenWith { .. } => {
             Answer::Refused("opening documents comes with the viewer's menu".into())
         }
-        HelperAsk::StageBackup => Answer::Refused("restoring isn't built yet".into()),
+        HelperAsk::StageBackup => Answer::Refused(
+            "restore from a terminal for now: `wanderbooks books restore BACKUP`".into(),
+        ),
         HelperAsk::StartUpdater => Answer::Refused("updates come with the installers".into()),
     }
 }

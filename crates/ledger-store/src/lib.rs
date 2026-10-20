@@ -20,6 +20,7 @@
 
 pub mod access;
 pub mod auth;
+pub mod backup;
 pub mod blob;
 pub mod chain;
 pub mod error;

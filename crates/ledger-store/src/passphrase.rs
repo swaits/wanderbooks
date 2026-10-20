@@ -288,6 +288,72 @@ mod tests {
         assert!(verify(dir.path(), FIRST).unwrap());
     }
 
+    /// A record of `FIRST` hashed with the plan's parameters but this salt
+    /// and output length, as a hand could write it.
+    fn record_with(dir: &Path, salt: &[u8], out: usize) {
+        let hasher = Argon2::new(
+            Algorithm::Argon2id,
+            Version::V0x13,
+            Params::new(M_COST, T_COST, P_COST, Some(out)).unwrap(),
+        );
+        let owner = Owner {
+            argon2id: hasher
+                .hash_password_with_salt(FIRST.as_bytes(), salt)
+                .unwrap()
+                .to_string(),
+            set: "2026-10-19T00:00:00Z".into(),
+        };
+        std::fs::write(dir.join(OWNER_FILE), serde_json::to_string(&owner).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_salt_shorter_than_sixteen_bytes_or_an_output_not_thirty_two_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        // The plan's own: a salt of 16 bytes or more, an output of 32.
+        for salt in [16, 17, 32, 48] {
+            record_with(dir.path(), &vec![7u8; salt], 32);
+            assert_eq!(verify(dir.path(), FIRST), Ok(true), "a {salt}-byte salt");
+        }
+        // Each right but for the salt's length, or the output's.
+        for (salt, out) in [(8, 32), (15, 32), (16, 16), (16, 64)] {
+            record_with(dir.path(), &vec![7u8; salt], out);
+            assert!(
+                matches!(verify(dir.path(), FIRST), Err(PassError::Record(_))),
+                "a {salt}-byte salt, a {out}-byte output"
+            );
+        }
+    }
+
+    #[test]
+    fn a_record_the_disk_wont_read_is_never_taken_for_none() {
+        // A folder where the record should be: no passphrase can be set
+        // as if none were, and the refusal is the disk's own.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(OWNER_FILE)).unwrap();
+        assert!(matches!(is_set(dir.path()), Err(PassError::Io(_))));
+        assert!(matches!(verify(dir.path(), FIRST), Err(PassError::Io(_))));
+        assert!(matches!(
+            set(dir.path(), FIRST, None),
+            Err(PassError::Io(_))
+        ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_leftover_that_cant_be_cleared_stops_a_change_saying_why() {
+        // A folder (with something in it) left where the record is written
+        // aside: removing it fails, and that failure is what is reported.
+        let dir = tempfile::tempdir().unwrap();
+        let aside = dir.path().join(".owner.json.new");
+        std::fs::create_dir(&aside).unwrap();
+        std::fs::write(aside.join("x"), "x").unwrap();
+        assert_eq!(
+            set(dir.path(), FIRST, None),
+            Err(PassError::Io(std::io::ErrorKind::IsADirectory))
+        );
+        assert!(!is_set(dir.path()).unwrap());
+    }
+
     #[test]
     fn errors_name_no_path_and_repeat_no_passphrase() {
         for e in [

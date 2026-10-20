@@ -462,6 +462,13 @@ pub fn call_within(
     if answer.is_empty() {
         return Err(unknown("the books server stopped before answering".into()));
     }
+    // INVARIANT 1: an answer is one line of at most MAX_LINE bytes; a
+    // longer one, or one cut off, is refused, even if what came parses.
+    if !answer.ends_with('\n') {
+        return Err(unknown(
+            "the books server's answer is too long, or cut off".into(),
+        ));
+    }
     serde_json::from_str(answer.trim_end())
         .map_err(|e| unknown(format!("the books server's answer isn't understood ({e})")))
 }
@@ -619,6 +626,8 @@ mod tests {
             }
         );
         assert!(!shown.contains("wb_secret"), "{shown}");
+        // The text is there, and hidden: never shown as nothing.
+        assert!(shown.contains("text: TokenText(…)"), "{shown}");
         let r: Envelope = serde_json::from_value(json!({"proto": 1, "op": "token_list"})).unwrap();
         assert_eq!(r.request, Request::TokenList);
         assert!(
@@ -647,5 +656,101 @@ mod tests {
         assert!(!text.contains(&secret.expose()[3..]));
         assert!(!text.contains(&t.sha256));
         assert!(text.contains("books:read"));
+    }
+
+    /// Why an admin call has no answer is what the command line shows.
+    #[test]
+    fn a_call_error_says_why() {
+        assert_eq!(
+            CallError::NotSent("the books server isn't running".into()).to_string(),
+            "the books server isn't running"
+        );
+        assert_eq!(
+            CallError::Unknown("no answer came".into()).to_string(),
+            "no answer came"
+        );
+    }
+
+    /// A fake books server on the socket `name` in `dir`: it takes one
+    /// request and answers `answer`, byte for byte.
+    #[cfg(unix)]
+    fn answering(
+        dir: &std::path::Path,
+        name: &str,
+        answer: Vec<u8>,
+    ) -> (std::path::PathBuf, std::thread::JoinHandle<()>) {
+        let socket = dir.join(name);
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let server = std::thread::spawn(move || {
+            use std::io::{BufRead, Write};
+            let (stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            std::io::BufReader::new(&stream)
+                .read_line(&mut request)
+                .unwrap();
+            // A client that stops reading part way breaks the pipe: fine.
+            let _ = (&stream).write_all(&answer);
+        });
+        (socket, server)
+    }
+
+    /// A refusal padded with spaces to `len` bytes, then its newline.
+    fn padded(len: usize) -> Vec<u8> {
+        let mut answer = br#"{"refused":"no"}"#.to_vec();
+        answer.resize(len, b' ');
+        answer.push(b'\n');
+        answer
+    }
+
+    /// INVARIANT 1, the command line's side: an answer of 4 MiB, its
+    /// newline not counted, is taken whole (settings texts ride in them);
+    /// a byte more is refused, as is an answer cut off before its
+    /// newline, even when what came parses.
+    #[cfg(unix)]
+    #[test]
+    fn an_answer_is_one_line_of_at_most_four_mib() {
+        let four_mib = 4 * 1024 * 1024;
+        let dir = tempfile::tempdir().unwrap();
+        let (socket, server) = answering(dir.path(), "whole.sock", padded(four_mib));
+        assert_eq!(
+            call(&socket, Request::List),
+            Ok(Response::Refused("no".into()))
+        );
+        server.join().unwrap();
+        let too_long_or_cut = Err(CallError::Unknown(
+            "the books server's answer is too long, or cut off".into(),
+        ));
+        let (socket, server) = answering(dir.path(), "long.sock", padded(four_mib + 1));
+        assert_eq!(call(&socket, Request::List), too_long_or_cut);
+        server.join().unwrap();
+        let (socket, server) = answering(dir.path(), "cut.sock", br#"{"refused":"no"}"#.into());
+        assert_eq!(call(&socket, Request::List), too_long_or_cut);
+        server.join().unwrap();
+    }
+
+    /// No server on the socket: the request never left, and the command
+    /// line says the server isn't running, whether there is no socket or
+    /// one a stopped server left behind.
+    #[cfg(unix)]
+    #[test]
+    fn no_server_means_nothing_was_sent() {
+        let dir = tempfile::tempdir().unwrap();
+        let not_running = Err(CallError::NotSent("the books server isn't running".into()));
+        assert_eq!(
+            call(&dir.path().join("admin.sock"), Request::List),
+            not_running
+        );
+        let stale = dir.path().join("stale.sock");
+        drop(std::os::unix::net::UnixListener::bind(&stale).unwrap());
+        assert_eq!(
+            call(
+                &stale,
+                Request::Create {
+                    id: "acme".into(),
+                    currency: "USD".into(),
+                }
+            ),
+            not_running
+        );
     }
 }

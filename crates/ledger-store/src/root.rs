@@ -1711,4 +1711,29 @@ mod unit {
         let (_, login) = unix_account().unwrap();
         assert!(!login.is_empty());
     }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_folder_the_disk_wont_look_up_is_never_made_over() {
+        // The disk can't say what is under the name (an I/O error, where
+        // making the folder would go through): refused with the disk's
+        // own error, and no folder made over whatever is there.
+        let dir = tempfile::tempdir().unwrap();
+        let book = dir.path();
+        let Some(got) = crate::refuse::refusing(crate::refuse::LOOKUPS, libc::EIO, || {
+            private_book_folder(book, "keys")
+        }) else {
+            eprintln!("skipped: no seccomp here");
+            return;
+        };
+        let Err(RootError::Io(why, e)) = got else {
+            panic!("refused as an I/O error: {got:?}")
+        };
+        assert_eq!(e.raw_os_error(), Some(libc::EIO));
+        assert!(!why.contains(&book.display().to_string()), "{why}");
+        assert!(!book.join("keys").exists());
+        // Looked up as it should be: made, private.
+        let keys = private_book_folder(book, "keys").unwrap();
+        assert_eq!(keys, book.join("keys"));
+    }
 }

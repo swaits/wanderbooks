@@ -461,6 +461,122 @@ sidebar (4.35:1), and a first fix (moving colors toward the text color)
 that turned Everforest's red and green into the same grey; colors keep
 their hue and change only lightness.
 
+## P2 slices 3 to 8 (2026-10-19 to 2026-10-20)
+
+From slice 3 on, mutation testing waits for P12 (D-33, owner 2026-10-20:
+"put a pause on all the mutation testing … For now I want to focus on
+the building"). Each slice was reviewed until a round came back clean and
+passes `just check`; what P12 must still cover is listed at the end.
+
+**Slice 3, opening and closing the books.** The books server on local
+sockets (`ledger-mcp` `local.rs`, `admin.rs`, `opening.rs`), the host, its
+leases and the agents' bridge (`ledger-host`). `ledger-cli/tests/
+local_server.rs` (the server and its admin socket), `open_while_held.rs`
+(the plan's named P2 tests under names of their own: last-holder close,
+one host and server, the bridge opening closed books, cold start, restart
+with writes across it, close during bursts of posts, SIGTERM and SIGHUP,
+a clean host from a hostile bridge, respawn and backoff, no TCP, the app
+scope, cancel, malformed input, a frozen host and server, books made
+mid-session), `setup.rs`, `one_executable.rs`; unit tests in `ledger-host`,
+`admin.rs`, `local.rs`, `opening.rs`; `ledger-store/tests/root.rs`
+(adoption). Eight review rounds (13, 22, 9, 4, 4, 10, 3, 3 findings; the
+last three found the core clean). The burst tests compare the posts in the
+books with the posts answered.
+
+**Slice 4, access.** Tokens, the door, scopes, the access log and the
+owner passphrase (`ledger-store` `auth.rs`, `access.rs`, `chain.rs`,
+`passphrase.rs`; `ledger-mcp` `scopes.rs`, `access.rs`): their unit tests,
+`local_server.rs` (401/403, a session bound to its token, every call
+recorded once with refusals, a damaged token log refusing every agent),
+`open_while_held.rs` (the bridge picking up a token made mid-session),
+`setup.rs` (the passphrase prompts, at a real terminal).
+
+**Slice 5, files in and out.** Uploads by hash and size, exports handed
+over by the server (`ledger-store` `uploads.rs`, `exports.rs`; `ledger-mcp`
+`tools/files.rs`; `wanderbooks upload`/`download`): unit tests (expiry,
+the grant replaced or lapsed while bytes arrive, a second send refused),
+`local_server.rs`, `one_executable.rs`, `tin_files.rs` and the MCP specs
+the import roots' removal changed. Four review rounds.
+
+**Slice 6, the viewer.** Finding the books in the data root, settings from
+the journal, presence through `ops/`, Save a copy and Open, the Export
+menu, one builder for the CPA package (`ledger-package`): the viewer's
+suites (`exports.rs`, `read_only.rs`, `show.rs`, `kept.rs`, `live.rs` and
+the rest), `ledger-package/tests/package.rs`, `ledger-store` `saving.rs`
+and `ops.rs`.
+
+**Slice 7, backups and restore.** `ledger_store::backup`, `Root::restore`,
+`ledger-mcp` `backup.rs` and `tools/backup.rs`, the loop in `local.rs`:
+`ledger-cli/tests/backups.rs` (17: both targets after a write, the quiet
+before a backup, close and catching up at the next open, admin only and
+the head unmoved, a target that moved on, a failing target waiting while
+the others carry on, a damaged record, restore beside and on a clean
+install, of the previewed backup only, with its vault and key, refusing
+damage, never overwriting, a failed replace, a restored copy leaving its
+original's repository alone, a backup folder never made again, drills on
+open and a failed drill flagged), `open_while_held.rs` (`books restore`
+and its default id), `backup.rs`'s unit tests (20, among them links and
+strangers refused before checkout, target and archive hooks never run, the
+owner's hostile git configuration never spoiling a backup, repositories
+with settings of their own or something beside them refused, fake gits
+for the time limit and the process group), `tests/root.rs` (never moving
+books something holds). Five review rounds (about 25, 15, 10, 7 and 3
+findings, all fixed) and a sixth that only attacked the repository guard
+(one low finding, fixed). The backup suite passed every run three at a
+time.
+
+**Slice 8, the viewer's menu, setup, no confinement (D-32).**
+`ledger-gui/tests/owner_menu.rs` (each item through a fake owner, the
+restore checked first, nothing of the books written, busy states;
+screenshots looked at), `open_while_held.rs` (`books back-up`, the viewer
+holding new books and closing the books, `connect` making anew a token
+the keyring lost and saying when an agent refuses, the two lease
+intents), `one_executable.rs` (the scaffold gone, and saying so),
+`spec_kept.rs` (`isolation` is `same_user (advisory)`). Two review rounds.
+
+**Tests that mutation found, before the pause.** Pass 1 on slices 3 to 6
+(each crate's own tests, the viewer left out): `ledger-store` 385 mutants
+(44 missed), `ledger-package` 137 (38), `ledger-mcp` 497 (247),
+`ledger-host` 666 (275), `ledger-cli` 47 (11). Pass 2 (the survivors again
+with the end-to-end tests) left 38, 13, 90 and 11 in the first four; the
+`ledger-host` pass was stopped. Then:
+- `ledger-cli`'s 11 are all in the `#[cfg(not(unix))]` stubs
+  (`owner_passphrase`, `run_files`, `run_local`, `run_server`): not
+  compiled on Linux, so equivalent here;
+- `ledger-mcp` (`access.rs`, `admin.rs`, `settings.rs`, `tools/files.rs`,
+  `tools/kept.rs`): all 14 killed (each access record's request id, the
+  admin socket's four-MiB line, `TokenText`'s and `CallError`'s text, no
+  server meaning nothing sent, a book's own settings before it holds any,
+  the caller's token in a printed command, a long name cut to 255 bytes,
+  a settings file moving into the books). **One real bug:** the command
+  line took an admin answer longer than four MiB, or cut off before its
+  newline, whenever the bytes that came still parsed; it is refused now
+  (`an_answer_is_one_line_of_at_most_four_mib`);
+- `ledger-package`: tests for a dotfile's twin, receipts on the year's
+  first and last days, a vendor's payments from the settings' accounts
+  alone, the index's amount as written (`package.rs:482`'s debit side is
+  not equivalent: amounts keep the scale they were written with), the
+  TIN source's three cases. **Two real bugs**, found reading the naming:
+  a twin's number went on the last dot of the whole path, so in a folder
+  with a dot ("a.b") the second "notes" landed in another folder; and a
+  name of dots alone ("..") could climb out of its folder when the zip is
+  unpacked. Both fixed
+  (`a_twins_number_goes_on_its_own_name_and_no_name_climbs_out_of_its_folder`);
+- `ledger-store`: a private log stays 0700 (`chain.rs:204`'s two mutants
+  are not equivalent); the two `flock` flag mutants in `ops.rs` (`|` for
+  `^` on disjoint bits) are equivalent. The other 34 were triaged, not yet
+  tested (masking keys one by one, a null TIN, token replacement across
+  books, the chain's messages, export and upload expiry boundaries, the
+  short-salt record, the dotfile and no-hard-link paths of `save_new`).
+
+**For P12:** the whole diff from `168494b` (main before slice 3) to the
+tip; `ledger-store`'s 34 triaged survivors; `ledger-mcp`'s `local.rs` (45)
+and `server.rs` (31) survivors; `ledger-host`'s pass 2; slices 7 and 8 from
+scratch (`ledger-store` `backup.rs` and `root.rs`, `ledger-core`
+`settings.rs`, `ledger-mcp` `backup.rs`, `tools/backup.rs`, `local.rs`,
+`admin.rs`, `ledger-host` `commands.rs`, `ledger-cli`). The survivor lists
+are kept with the run's output, outside the repository.
+
 ## Benchmarks (baseline 2026-10-13)
 
 No budget, by decision (the owner, 2026-10-13: the books do little work

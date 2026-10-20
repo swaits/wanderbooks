@@ -951,9 +951,10 @@ The first company keeps working between phases.
 
 **Tests and accept:**
 - A named regression test per defect, built from its 2026-10-16 reproduction (anonymized fixture).
+- Each of those regression tests is also written as a bookspec example (P13, D-34) as it is built: the rule it shows, its source, the setup, the events and the exact expected results. They are the spec's first examples.
 - Goldens recomputed by hand.
 - GnuCash differential re-adjudicated.
-- 0 unexplained mutation survivors in `ledger-core` and `ledger-import`.
+- 0 unexplained mutation survivors in `ledger-core` and `ledger-import` (run in P12, D-33).
 - The the first company change log is adjudicated.
 
 ### P4: Drafts, reversal as draft, the evidence gate, digest (defects 2, 5, 6)
@@ -1060,7 +1061,7 @@ The first company keeps working between phases.
 - `unwrap_only_in_human_handler`; `vault_pubkey_swap_detected_by_verify`; `reseal_preserves_last4_and_kind`; `cpa_package_with_tins_human_only`.
 - Lost passphrase is recoverable with the recovery key.
 - GUI `tin_copy`; `gui_unlock_zeroizes` (no plaintext TIN or private key left in the GUI's memory after the copy).
-- Mutation testing on `ledger-vault`.
+- Mutation testing on `ledger-vault` (in P12, D-33).
 
 **Accept:**
 - The the first company K-1 member worksheet and 1099 worksheet with TINs, produced through the human link, match the P0-era output byte for byte apart from timestamps.
@@ -1176,6 +1177,62 @@ Run from clients that hold only a URL and a credential: Claude Code started in `
 - An update, on each system, leaves every book's head and goldens unchanged, and an agent session open across it carries on.
 - A backup made on one system restores on each of the others.
 
+### P12: Max testing, again (D-33)
+
+The whole max-testing pass of 2026-10-14 (`docs/testing.md`), run again over everything built since, on the owner's desktop once it is set up (the laptop stays usable: owner, 2026-10-20). Building comes first; this phase holds the testing every phase from P2 slice 3 on deferred to it.
+
+**Scope:**
+- **Mutation testing** of every crate but the viewer (no mutation runs on the GUI, owner 2026-10-14; its two musts are tested instead) over the whole diff from `main` as P2 slice 3 found it (`168494b`) to the tip: every survivor killed by a test or documented as equivalent in `docs/testing.md`, one section per phase. Each crate's own tests first, then the survivors again with the end-to-end `ledger-cli` tests (`--iterate`).
+- **Carried in from P2:** slices 3–6 had pass 1 on every crate and pass 2 on all but `ledger-host`; its survivors were partly triaged (`ledger-cli`'s 11 are `#[cfg(not(unix))]` stubs, equivalent on Linux; one area of `ledger-mcp` killed, which found and fixed the admin reply-length bug). Slices 7 and 8 had none. The triage notes go in `docs/testing.md`.
+- **Fuzzing:** every `cargo-fuzz` target, the old and the new (5.x), each for a set time without a crash; any crash becomes a regression test.
+- **Property tests** at their full case counts (`STORE_CASES` and the rest at the documented maximum), and the GnuCash differential re-run.
+- **Proofs:** `just prove` (Kani with no vacuous covers, Lean with standard axioms only), every harness and theorem added since.
+- **Where:** the desktop, or GitHub Actions' scheduled workflow (`.github/workflows/scheduled.yml`, already sharded to fit its six-hour jobs), or both.
+- **Load:** the runs never take every core (owner, 2026-10-20): cargo-mutants with an explicit `--jobserver-tasks`, one mutation run at a time, leaked test daemons reaped.
+
+**Accept:** 0 unexplained mutation survivors workspace-wide (the viewer aside); every fuzz target clean for its set time; `just prove` and `just check` green; `docs/testing.md` records each crate's counts and every equivalent mutant with its reason.
+
+### P13: bookspec, a formal accounting specification (D-34)
+
+**bookspec is a specification first.** A normative, formally written statement of how books are kept, every rule sourced to its authority, independent of any engine. Built on it, second and third: its own formal validation, and a conformance harness that any accounting engine implementing its interface can be tested with. Owner, 2026-10-20: "a FORMALLY written accounting spec … properly sourced with actual references, it's thorough, it might even have its OWN formal validation. It includes symbolic specs as well as concrete examples. It's useful for ANY accounting engine testing", and "bookspec is a SPEC first, and then it can also include formal methods/validation/proofs as well as a test harness that could be run against an accounting engine that conforms to the interface."
+
+**What it grows from:** `docs/spec/rules.md` (every rule with its AUTHORITY / CONVENTION / DECISION status and source), the vendored sources in `docs/spec/sources/`, the Lean theorems in `verify/lean/` (entries, ledger, statements, closing, apportionment), the goldens, and P3's named regression tests, written as bookspec examples from the start (P3).
+
+**1. The specification.** A document in numbered sections and stable rule identifiers (an identifier never changes meaning; the spec is versioned):
+- **Definitions and the model:** accounts (types, normal sides), money (exact decimal, currency, scale), entries and lines, periods and the fiscal year, basis (cash, accrual), parties and instruments, assets; the statements and reports defined over them.
+- **Rules, each with:**
+  - its **statement** in normative language (MUST, MUST NOT, MAY);
+  - its **source**, pinned exactly (an IRC section, a Treasury Regulation, IRS form instructions or a publication with its revision year, a FASB ASC topic-subtopic-section-paragraph) and its **status**: AUTHORITY (a source states it), CONVENTION (common practice, best reference given), or CHOICE (the authorities allow options: direct or indirect cash flow, FIFO or average cost, an apportionment rule; the spec names the options and an engine declares its own);
+  - its **symbolic form**: the rule as a formula over the model, with variables and their constraints (A > 0, 0 ≤ r ≤ 1) and the result as an expression;
+  - its **concrete examples**: worked cases (setup: the chart and settings, rounding mode and scale included; events in order; the exact expected results to the cent, or a refusal with its reason), with the edges that matter (odd cents and rounding, reversals, mid-period dates, the first and last day of a period, zero amounts, disposals, closed periods, multiple currencies);
+  - its **applicability**: cash or accrual, book or tax, jurisdiction, and for every tax rule the tax years it holds for (thresholds and tables change by year).
+- **Three kinds of rule:** laws that hold for all books (debits equal credits, A = L + E, the trial balance balances, net income articulates to equity, the cash-flow sections sum to the change in cash); sourced rules with definite answers (the de minimis safe harbor, the 12-month rule, MACRS tables and conventions, 1099 thresholds by year, 704(c) built-in gain, 723 carryover basis); and choices, parameters rather than one right answer.
+- **Coverage, written incrementally in order of need:** double entry and the account model; journals, reversals and corrections; trial balance, balance sheet and income statement; accrual and cash basis; cash flows, direct and indirect (ASC 230); periods, closes and the equity roll-forward; partnerships (capital accounts, allocations, 704(b) and 704(c), 723, K-1 figures); fixed assets and depreciation, book and tax (Pub. 946, MACRS); prepaids, amortization and capitalization (Treas. Reg. 1.263(a)-1(f), -4(f)); receivables, payables and aging; revenue (ASC 606) and deferred revenue; 1099 reporting; then payroll, sales tax, inventory and multiple currencies (ASC 830), each large on its own; rounding and apportionment throughout. Interchange formats (IIF, CSV) are an appendix, marked as formats, not accounting.
+
+**2. Formal validation of the spec.**
+- The model and every symbolic rule in Lean 4: the model is inhabited, the rules are consistent with each other (no two demand different results on the same books), and the laws are theorems (standard axioms only, no `sorry`).
+- Every concrete example is derived from its symbolic rule by the spec's own checker (Rust, exact decimal money): an example whose written expectation disagrees with its derivation fails the spec's build. No expected value rests on one engine's output (the GnuCash-is-not-the-authority lesson, applied to every engine, wanderbooks included).
+- Every citation resolves to a vendored or linked source, and no rule lacks one.
+
+**3. The conformance harness.**
+- **Rust throughout** (owner, 2026-10-20: "We are rust people"): the checker, the generator and the harness are Rust crates in bookspec's own Cargo workspace; no JavaScript anywhere.
+- **The interface** an engine implements is a Rust trait (`Engine`): load a setup, apply events, answer queries (balances, report lines) or refuse with a reason, and declare its choices and the parts of the spec it claims. An engine not written in Rust is reached through an adapter that implements the trait (over its API, its files or its command line).
+- **The cases** are the spec's examples plus cases generated from the symbolic rules (variables drawn within their constraints, expectations computed from the expressions, as `proptest` strategies), written as TOML files the Rust checker validates against their schema.
+- **The runner** reports per rule: pass, fail, or not claimed. A disagreement between engines is a lead, settled from the sources.
+- **Engines:** wanderbooks first (its engine crates directly, and end to end through its MCP); GnuCash through the oracle (`docs/oracle.md`), hledger and Beancount feasible, QuickBooks through its API perhaps.
+
+**Sources: United States first, canonical only** (owner, 2026-10-20: "the source should come from that national … association thing that we used earlier in this project. Or any other reputable, canonical source of accounting rules and practices and procedures"). The first edition is US GAAP and US federal tax; other jurisdictions and IFRS are later editions. Every rule cites the highest source that settles it, in this order:
+- **Accounting: the FASB Accounting Standards Codification** (the Financial Accounting Standards Board, read at asc.fasb.org as `docs/spec/sources/fasb-asc.md` was in this project). By its own terms the Codification is the single source of authoritative nongovernmental US GAAP (ASC 105-10-05-1), so an accounting rule's source is an ASC topic-subtopic-section-paragraph.
+- **Tax: the law and the IRS.** The Internal Revenue Code, Treasury Regulations, then IRS revenue rulings and procedures, notices, form instructions and publications (with their revision year).
+- **Where the Codification leaves a question open,** the nonauthoritative sources ASC 105-10-05-3 itself names, in its order: practices widely recognized and prevalent, FASB Concepts Statements (the conceptual framework), AICPA Issues Papers, IFRS, pronouncements of professional associations and regulators, the AICPA's Technical Practice Aids, and accounting textbooks, handbooks and articles (the list is checked against the paragraph when the spec is written). The Big Four firms' published guides (Deloitte's DART roadmaps among them) may help with reading a paragraph, but never stand as a rule's source. A rule resting only on these is marked CONVENTION.
+- **Never a source:** what one engine does (wanderbooks and GnuCash included), what one accountant says, or an unsourced website.
+
+**Copyright.** Rules and facts aren't copyrightable; their expression is. The Codification is copyrighted by the Financial Accounting Foundation, so bookspec states each rule in its own words with the paragraph cited, and quotes no more than the Foundation permits. IFRS text is treated likewise. IRS and Treasury text is public domain and may be quoted. Textbooks are used only under a compatible license (no NonCommercial or ShareAlike text). Public: the spec under CC BY 4.0, the checker and harness under MIT OR Apache-2.0.
+
+**Where it lives:** its own public repository (`bookspec`), separately versioned, which wanderbooks consumes: `docs/spec/rules.md` points each rule at its bookspec identifier, the engine's `SOURCE:` blocks cite bookspec, and the harness runs against wanderbooks in `just check` for the parts it claims.
+
+**Accept:** the spec's build green (Lean as above; every example matching its derivation; every citation resolved); wanderbooks passes every case for the parts it claims, with each unclaimed part listed; a second engine (GnuCash, through the oracle) runs through the harness, its differences settled from the sources.
+
 ---
 
 ## 9. Risks and mitigations
@@ -1257,6 +1314,8 @@ The owner decisions of 2026-10-16 (at the top of this document) replace the form
 | D-30 | Q-1 answered: where the backups go (owner, 2026-10-19, asked "Where should the books' automatic backups go?" with a private git repo, a folder or other disk, or both: chose "Both") | **Two targets.** The archive pushes to a private git repository the owner names and also copies to a folder the owner names (an external disk or a synced folder); both hold the archive (not encrypted since D-31). The repository's address and the folder are asked for when backups are first set up (slice 7, or at the cutover for the first company), and kept as the book's backup settings. |
 | D-31 | Backups are not encrypted (owner, 2026-10-19, asked where to keep the backup's recovery key: "Why encrypt them? How about we let the backup system handle the security???? You're over complicating everything.") | **A backup is the book as it is, in git.** No age encryption, no archive key, no recovery key: the archive is a plain git repository of the book's journal, receipts, vault (as the vault keeps it) and keys, one commit per backup, pushed to the owner's private git repository and to a git repository in the owner's folder (D-30). The destinations are trusted to keep it private. This replaces 3.7's and 3.4's age encryption on push and 3.5's archive key. |
 | D-32 | No self-confinement (owner, 2026-10-20, asked how much of the planned Landlock/seccomp sandboxing of the server and the viewer, with the viewer's helper process, to build now that the server runs git for its backups: chose "None") | **No Landlock, no seccomp, no helper process for confinement.** The viewer stays read-only by design and by test (it never writes the books; its menu hands work to the server, through its admin socket as the command line does); agents still reach the books only through the MCP. Isolation is reported everywhere as `same_user (advisory)`. This replaces the self-confinement of P2's scope, 3.9's confined modes and their helper, and the archive-vs-Landlock decision row. |
+| D-33 | Mutation testing waits for P12 (owner, 2026-10-20: "Let's just put a pause on all the mutation testing. Let's add a P12 that runs the whole \"max test\" workflow again. By then maybe I'll have my (much beefier) desktop PC setup and we can run all that shit over there. For now I want to focus on the building.") | **Each phase from P2 slice 3 on is built, reviewed until clean and passes `just check` and `just prove`, without its mutation run.** P12 runs the whole max-testing pass (mutation, fuzzing, full property runs, proofs) over everything since P1, on the desktop. Each phase records in `docs/testing.md` what P12 must cover. |
+| D-34 | bookspec (owner, 2026-10-20: "Let's add a P13 which is a bookspec project. This is a FORMALLY written accounting spec … properly sourced with actual references, it's thorough, it might even have its OWN formal validation. It includes symbolic specs as well as concrete examples. It's useful for ANY accounting engine testing." Then: "bookspec is a SPEC first, and then it can also include formal methods/validation/proofs as well as a test harness that could be run against an accounting engine that conforms to the interface.") | **P13 writes bookspec**, its own public project: first the specification (every rule stated normatively, sourced, with a symbolic form and concrete examples), then its formal validation (Lean model, consistency, the laws as theorems, every example derived), then a conformance harness for any engine implementing its interface. wanderbooks is the first engine tested; `docs/spec/rules.md` and the Lean theorems seed it; P3's regression tests are its first examples. |
 
 ### 10.2 Deferred
 
@@ -1293,7 +1352,7 @@ The cutover's check adds: the project folder holds none of the above, and `wande
 
 ## 11. Later: hosted service (not built in this plan)
 
-A paid, multi-tenant service in which an operator runs the books for customers. P0–P11 build none of this. It is recorded here so the design stays compatible with it.
+A paid, multi-tenant service in which an operator runs the books for customers. P0–P12 build none of this. It is recorded here so the design stays compatible with it.
 
 **Shape.**
 - Per-tenant pair. `front` (`ledger-mcp front --tenant <t>`, user ID `wb-f-<t>`) does OAuth 2.1 (3.3), passkeys, consent, the human pages and token validation; its Landlock denies `books/`, so it **never** reads tenant disk. `worker` (`ledger-mcp worker --tenant <t> --socket`, user ID `wb-t-<t>`, `DynamicUser=`) serves the MCP, uploads, downloads and the replica for its own tenant only, and learns identity only from `X-WB-Principal` on its 0660 socket. Caddy handles TLS and routing and holds no authority. No component holds authority across tenants. Both roles ship in one binary.

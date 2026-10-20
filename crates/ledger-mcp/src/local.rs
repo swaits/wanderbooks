@@ -2452,4 +2452,528 @@ mod tests {
         assert!(peer_uid(&file).is_err());
         assert!(!peer_is_us(&file));
     }
+
+    /// A socket with no other end: the system answers for it (Linux: no
+    /// process, no user), and that answer names neither this process nor
+    /// this account; the client's check refuses it.
+    #[test]
+    fn a_socket_with_no_other_end_names_no_process_and_isnt_us() {
+        use std::os::fd::FromRawFd;
+        // SAFETY: socket(2) has no preconditions; the descriptor is checked
+        // and then owned by the stream alone.
+        let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
+        assert!(fd >= 0);
+        // SAFETY: a fresh descriptor of a Unix stream socket, owned by none.
+        let lone = unsafe { std::os::unix::net::UnixStream::from_raw_fd(fd) };
+        assert_eq!(peer_pid(&lone), None);
+        assert!(!peer_is_us(&lone));
+        assert_eq!(
+            check_peer_std(&lone).unwrap_err(),
+            "the books server's socket belongs to another account: not used"
+        );
+    }
+
+    /// A session ends only after a day without a message (SESSION_IDLE),
+    /// never rmcp's few minutes: a call longer than that keeps its answer.
+    #[test]
+    fn a_session_ends_only_after_a_day_without_a_message() {
+        assert_eq!(
+            sessions().session_config.keep_alive,
+            Some(Duration::from_secs(86_400))
+        );
+    }
+
+    /// Settings moved in at adoption are dated in the time zone the file
+    /// sets (company.timezone), not by any other entry's text. The two
+    /// zones are 26 hours apart, so their dates always differ.
+    #[test]
+    fn settings_moved_in_are_dated_in_the_files_own_time_zone() {
+        let change = |key: &str, value: &str| ledger_core::settings::Change {
+            key: key.into(),
+            value: Some(serde_json::json!(value)),
+        };
+        let changes = [
+            change("company.name", "Etc/GMT+12"),
+            change("company.timezone", "Pacific/Kiritimati"),
+        ];
+        let source = moved_in_at_adoption(&changes);
+        assert_eq!(
+            source.decided_on,
+            ledger_core::settings::today_in(Some("Pacific/Kiritimati"))
+        );
+        assert_ne!(
+            source.decided_on,
+            ledger_core::settings::today_in(Some("Etc/GMT+12"))
+        );
+        assert_eq!(source.decided_by, "the settings file");
+    }
+
+    /// A server's books in a fresh root under `home`, as `run` holds them,
+    /// without its sockets: each test drives the handlers itself.
+    fn books_in(home: &Path) -> Arc<Books> {
+        let (root, _) = Root::setup(home, Some(&home.join("root")), None).unwrap();
+        let books = Arc::new(Books {
+            root,
+            held: RwLock::new(BTreeMap::new()),
+            sessions: CancellationToken::new(),
+            closing: CancellationToken::new(),
+            in_flight: AtomicUsize::new(0),
+            finished: tokio::sync::Notify::new(),
+            last_arrival: std::sync::atomic::AtomicU64::new(0),
+            started: Instant::now(),
+            principals: RwLock::new(Err(String::new())),
+            session_tokens: Mutex::new(BTreeMap::new()),
+            backup_quiet: BACKUP_QUIET,
+            drill_first: DRILL_FIRST,
+            restoring: Mutex::new(()),
+        });
+        let loaded = books.load_principals();
+        *books.principals.write().unwrap() = loaded;
+        books
+    }
+
+    /// Make the books `id` through the admin request.
+    fn create(books: &Books, id: &str) {
+        match books.admin(Request::Create {
+            id: id.into(),
+            currency: "USD".into(),
+        }) {
+            Response::Created { problem: None, .. } => {}
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// A token for `book` named `name` with every scope (made, or made
+    /// again): its id and its text.
+    fn token(books: &Books, book: &str, name: &str) -> (String, String) {
+        match books.admin(Request::TokenCreate {
+            book: book.into(),
+            name: name.into(),
+            scopes: ["read", "write", "post", "admin"]
+                .map(String::from)
+                .to_vec(),
+            replace: true,
+        }) {
+            Response::TokenCreated { token, text } => (token.id, text.0),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// The sessions bound, by id.
+    fn bound(books: &Books) -> Vec<String> {
+        books
+            .session_tokens
+            .lock()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    /// The status, the refusal code and the text of an answer.
+    async fn answer(r: axum::response::Response) -> (u16, Option<String>, String) {
+        let code = r
+            .headers()
+            .get(REFUSED_HEADER)
+            .map(|v| v.to_str().unwrap().to_string());
+        let status = r.status().as_u16();
+        let body = axum::body::to_bytes(r.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, code, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    /// A PUT of `body` for upload `id` of the books `acme`.
+    fn put(id: &str, bearer: Option<&str>, body: axum::body::Body) -> axum::extract::Request {
+        let mut r = axum::http::Request::builder()
+            .method("PUT")
+            .uri(format!("http://localhost/b/acme/u/{id}"));
+        if let Some(b) = bearer {
+            r = r.header("authorization", format!("Bearer {b}"));
+        }
+        r.body(body).unwrap()
+    }
+
+    /// Send a PUT to the upload route as the router would.
+    async fn send_upload(
+        books: &Arc<Books>,
+        id: &str,
+        bearer: Option<&str>,
+        body: axum::body::Body,
+    ) -> axum::response::Response {
+        upload(
+            axum::extract::State(books.clone()),
+            axum::extract::Path(("acme".to_string(), id.to_string())),
+            put(id, bearer, body),
+        )
+        .await
+    }
+
+    /// A request body that arrives as the test sends it, one chunk at a
+    /// time (the sender's `reserve` returns once the last chunk was taken).
+    fn fed() -> (tokio::sync::mpsc::Sender<Vec<u8>>, axum::body::Body) {
+        let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
+        let stream = futures_util::stream::unfold(rx, |mut rx| async move {
+            rx.recv()
+                .await
+                .map(|b| (Ok::<_, std::io::Error>(axum::body::Bytes::from(b)), rx))
+        });
+        (tx, axum::body::Body::from_stream(stream))
+    }
+
+    /// The upload's grant, for `token_id`, of `bytes`.
+    fn grant(books: &Books, token_id: &str, bytes: &[u8]) -> ledger_store::uploads::Grant {
+        let held = books.held();
+        let Some(Book::Open { uploads, .. }) = held.get("acme") else {
+            panic!("acme isn't open");
+        };
+        uploads
+            .grant(
+                token_id,
+                &ledger_store::journal::sha256_hex(bytes),
+                bytes.len() as u64,
+                "application/pdf",
+                "upload.pdf",
+                "document",
+                chrono::Utc::now().timestamp(),
+            )
+            .unwrap()
+    }
+
+    /// The last access record of `acme`: its action and its outcome.
+    fn last_access(books: &Books) -> (String, Outcome) {
+        let dir = books.root.book_dir(&BookId::parse("acme").unwrap());
+        let (records, _) = ledger_store::access::read(&dir).unwrap();
+        let last = records.last().unwrap();
+        (last.access.action.clone(), last.access.result.clone())
+    }
+
+    #[test]
+    fn a_book_that_didnt_open_says_why_and_one_open_says_nothing() {
+        let why = "its access log can't be used".to_string();
+        assert_eq!(Book::Failed(why.clone()).problem(), Some(why));
+        let home = tempfile::tempdir().unwrap();
+        let books = books_in(home.path());
+        create(&books, "acme");
+        assert_eq!(books.held()["acme"].problem(), None);
+    }
+
+    /// INVARIANT 6: once closing, every request is refused as closing,
+    /// even one for books that didn't open or don't exist (until then
+    /// told so), so a client knows the server is going, not that its
+    /// books are gone.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn once_closing_every_request_is_refused_as_closing() {
+        let home = tempfile::tempdir().unwrap();
+        let books = books_in(home.path());
+        create(&books, "acme");
+        books.hold(
+            &BookId::parse("broken").unwrap(),
+            Book::Failed("its access log can't be used".into()),
+        );
+        let asked = Asked::connect(&axum::http::Method::POST);
+        let headers = axum::http::HeaderMap::new();
+        let refused = |books: Arc<Books>, book: &'static str| {
+            let (asked, headers) = (&asked, &headers);
+            async move {
+                match door(&books, book, asked, headers).await {
+                    Ok(_) => panic!("{book}: let through"),
+                    Err(r) => answer(*r).await,
+                }
+            }
+        };
+        let (status, code, text) = refused(books.clone(), "broken").await;
+        assert_eq!((status, code.as_deref()), (503, Some("not-open")), "{text}");
+        let (status, code, text) = refused(books.clone(), "nobody").await;
+        assert_eq!(
+            (status, code.as_deref()),
+            (404, Some("no-such-books")),
+            "{text}"
+        );
+        books.closing.cancel();
+        for book in ["broken", "nobody"] {
+            let (status, code, text) = refused(books.clone(), book).await;
+            assert_eq!((status, code), (503, None), "{book}: {text}");
+            assert_eq!(text, "the books are closing: this request wasn't run");
+        }
+        let (status, code, text) = refused(books.clone(), "acme").await;
+        assert_eq!(
+            (status, code.as_deref()),
+            (503, Some(crate::access::CLOSING))
+        );
+        assert_eq!(text, "the books are closing: this request wasn't run");
+    }
+
+    /// INVARIANT 9: nothing comes in once the books stopped (SharedStore
+    /// INVARIANT 2): an upload is refused as stopped, and recorded so.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_upload_to_books_that_stopped_is_refused_as_stopped() {
+        let home = tempfile::tempdir().unwrap();
+        let books = books_in(home.path());
+        create(&books, "acme");
+        let (id, text) = token(&books, "acme", "agent");
+        let bytes = b"%PDF-1.4 stopped".to_vec();
+        let g = grant(&books, &id, &bytes);
+        match books.held().get("acme") {
+            Some(Book::Open { store, .. }) => store.stop(),
+            _ => panic!("acme isn't open"),
+        }
+        let r = send_upload(&books, &g.id, Some(&text), bytes.into()).await;
+        let (status, code, said) = answer(r).await;
+        assert_eq!((status, code.as_deref()), (503, Some("stopped")), "{said}");
+        assert!(said.contains("stopped taking requests"), "{said}");
+        assert_eq!(
+            last_access(&books),
+            ("upload".to_string(), Outcome::Refused("stopped".into()))
+        );
+    }
+
+    /// INVARIANT 9: an upload is received from one request at a time;
+    /// a second sent while the first is still arriving is refused as in
+    /// use, and the first is kept.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_upload_still_arriving_is_refused_to_a_second_sender() {
+        let home = tempfile::tempdir().unwrap();
+        let books = books_in(home.path());
+        create(&books, "acme");
+        let (id, text) = token(&books, "acme", "agent");
+        let bytes: Vec<u8> = b"%PDF-1.4 "
+            .iter()
+            .copied()
+            .chain((0..2_000_000u32).map(|i| (i % 251) as u8))
+            .collect();
+        let g = grant(&books, &id, &bytes);
+        let (tx, body) = fed();
+        let first = tokio::spawn({
+            let (books, id, text) = (books.clone(), g.id.clone(), text.clone());
+            async move { send_upload(&books, &id, Some(&text), body).await }
+        });
+        tx.send(bytes[..1_000_000].to_vec()).await.unwrap();
+        // Arriving: its part is on the disk.
+        let part = books
+            .root
+            .book_dir(&BookId::parse("acme").unwrap())
+            .join(ledger_store::uploads::UPLOADS_DIR)
+            .join(format!("{}.part", g.id));
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !part.exists() {
+            assert!(Instant::now() < deadline, "the first upload never began");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let second = send_upload(&books, &g.id, Some(&text), bytes.clone().into()).await;
+        let (status, code, said) = answer(second).await;
+        assert_eq!((status, code.as_deref()), (409, Some("in_use")), "{said}");
+        assert_eq!(
+            last_access(&books),
+            ("upload".to_string(), Outcome::Refused("in_use".into()))
+        );
+        tx.send(bytes[1_000_000..].to_vec()).await.unwrap();
+        drop(tx);
+        let (status, _, said) = answer(first.await.unwrap()).await;
+        assert_eq!(status, 200, "{said}");
+    }
+
+    /// INVARIANT 9: a refused upload's bytes are read and dropped up to
+    /// the most an upload can be, so a client sending no more than that
+    /// is never cut off mid-send, and no further, so one that never stops
+    /// sending is still answered: refused at the door (no token) and past
+    /// it (no such upload) alike.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_refused_upload_is_read_up_to_the_most_an_upload_can_be() {
+        let home = tempfile::tempdir().unwrap();
+        let books = books_in(home.path());
+        create(&books, "acme");
+        let (_, text) = token(&books, "acme", "agent");
+        let max = ledger_store::uploads::MAX_UPLOAD as usize;
+        let mib = 1024 * 1024;
+        assert_eq!(max % mib, 0);
+        for (bearer, status, code) in [
+            (None, 401, crate::access::UNAUTHORIZED),
+            (Some(text.clone()), 404, "no_such_upload"),
+        ] {
+            let (tx, body) = fed();
+            let answered = tokio::spawn({
+                let books = books.clone();
+                async move {
+                    let id = "up_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+                    send_upload(&books, id, bearer.as_deref(), body).await
+                }
+            });
+            for _ in 0..max / mib {
+                tx.send(vec![b'x'; mib]).await.unwrap();
+            }
+            // Every byte up to the most taken, and a moment to act on it:
+            // still reading.
+            let more = tx.reserve().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            assert!(
+                !answered.is_finished(),
+                "{status}: answered before the most an upload can be was read"
+            );
+            // One byte past it: answered, though the body never ends.
+            more.send(vec![b'x']);
+            let r = tokio::time::timeout(Duration::from_secs(60), answered)
+                .await
+                .unwrap_or_else(|_| panic!("{status}: never answered"))
+                .unwrap();
+            let (got, refused, said) = answer(r).await;
+            assert_eq!((got, refused.as_deref()), (status, Some(code)), "{said}");
+            drop(tx);
+        }
+    }
+
+    /// INVARIANT 8: a token revoked or replaced lets go of the sessions it
+    /// opened, and only those: not another book's token of its name, nor
+    /// its own book's token of another name.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_replaced_or_revoked_token_lets_go_of_its_own_sessions_alone() {
+        let home = tempfile::tempdir().unwrap();
+        let books = books_in(home.path());
+        create(&books, "acme");
+        create(&books, "beta");
+        // Oldest first: another book's token of the same name, then one of
+        // the same book with another name, then the one replaced.
+        let (beta, _) = token(&books, "beta", "agent");
+        let (other, _) = token(&books, "acme", "other");
+        let (agent, _) = token(&books, "acme", "agent");
+        {
+            let mut bound = books.session_tokens.lock().unwrap();
+            for (sid, owner) in [("s-beta", &beta), ("s-other", &other), ("s-agent", &agent)] {
+                bound.insert(sid.into(), owner.clone());
+            }
+        }
+        token(&books, "acme", "agent");
+        assert_eq!(bound(&books), ["s-beta", "s-other"]);
+        match books.admin(Request::TokenRevoke {
+            book: "beta".into(),
+            name: "agent".into(),
+            id: None,
+        }) {
+            Response::TokenRevoked(t) => assert_eq!(t.id, beta),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(bound(&books), ["s-other"]);
+    }
+
+    /// An MCP request to `acme` with `bearer`, on `session` if given.
+    fn mcp_request(
+        method: axum::http::Method,
+        bearer: &str,
+        session: Option<&str>,
+        body: serde_json::Value,
+    ) -> axum::extract::Request {
+        let mut r = axum::http::Request::builder()
+            .method(method)
+            .uri("http://localhost/b/acme/mcp")
+            .header("host", "localhost")
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .header("authorization", format!("Bearer {bearer}"));
+        if let Some(sid) = session {
+            r = r
+                .header(SESSION_HEADER, sid)
+                .header("mcp-protocol-version", "2025-06-18");
+        }
+        r.body(axum::body::Body::from(body.to_string())).unwrap()
+    }
+
+    async fn send_mcp(
+        books: &Arc<Books>,
+        request: axum::extract::Request,
+    ) -> axum::response::Response {
+        mcp(
+            axum::extract::State(books.clone()),
+            axum::extract::Path("acme".to_string()),
+            request,
+        )
+        .await
+    }
+
+    fn initialize() -> serde_json::Value {
+        serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2025-06-18", "capabilities": {},
+            "clientInfo": {"name": "test", "version": "0"}}})
+    }
+
+    /// INVARIANT 8: a session stays bound to the token that opened it
+    /// through every request it serves, and is forgotten when it ends.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_session_stays_bound_to_its_token_until_it_ends() {
+        use axum::http::Method;
+        let home = tempfile::tempdir().unwrap();
+        let books = books_in(home.path());
+        create(&books, "acme");
+        let (agent_id, agent) = token(&books, "acme", "agent");
+        let (_, other) = token(&books, "acme", "other");
+        let r = send_mcp(
+            &books,
+            mcp_request(Method::POST, &agent, None, initialize()),
+        )
+        .await;
+        let sid = r.headers()[SESSION_HEADER].to_str().unwrap().to_string();
+        let (status, _, said) = answer(r).await;
+        assert_eq!(status, 200, "{said}");
+        let initialized =
+            serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
+        let list = serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"});
+        for body in [initialized, list.clone()] {
+            let r = send_mcp(&books, mcp_request(Method::POST, &agent, Some(&sid), body)).await;
+            let (status, _, said) = answer(r).await;
+            assert!((200..300).contains(&status), "{status}: {said}");
+            assert_eq!(
+                books.session_tokens.lock().unwrap().get(&sid),
+                Some(&agent_id)
+            );
+        }
+        let r = send_mcp(&books, mcp_request(Method::POST, &other, Some(&sid), list)).await;
+        let (status, code, _) = answer(r).await;
+        assert_eq!((status, code.as_deref()), (403, Some("session_token")));
+        // Ended: forgotten.
+        let r = send_mcp(
+            &books,
+            mcp_request(Method::DELETE, &agent, Some(&sid), serde_json::json!({})),
+        )
+        .await;
+        let (status, _, said) = answer(r).await;
+        assert!((200..300).contains(&status), "{status}: {said}");
+        assert!(bound(&books).is_empty());
+    }
+
+    /// INVARIANT 8: past MAX_SESSIONS bindings only a request that opens
+    /// a session (an initialize) is refused; any other still reaches the
+    /// MCP service.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn past_the_most_sessions_only_opening_another_is_refused() {
+        use axum::http::Method;
+        let home = tempfile::tempdir().unwrap();
+        let books = books_in(home.path());
+        create(&books, "acme");
+        let (agent_id, agent) = token(&books, "acme", "agent");
+        {
+            let mut bound = books.session_tokens.lock().unwrap();
+            for n in 0..MAX_SESSIONS {
+                bound.insert(format!("s-{n}"), agent_id.clone());
+            }
+        }
+        let r = send_mcp(
+            &books,
+            mcp_request(Method::POST, &agent, None, initialize()),
+        )
+        .await;
+        let (status, code, said) = answer(r).await;
+        assert_eq!(
+            (status, code.as_deref()),
+            (503, Some("too_many_sessions")),
+            "{said}"
+        );
+        let list = serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"});
+        let r = send_mcp(&books, mcp_request(Method::POST, &agent, None, list)).await;
+        let (status, code, said) = answer(r).await;
+        assert_ne!(
+            code.as_deref(),
+            Some("too_many_sessions"),
+            "{status}: {said}"
+        );
+        assert_eq!(bound(&books).len(), MAX_SESSIONS);
+    }
 }

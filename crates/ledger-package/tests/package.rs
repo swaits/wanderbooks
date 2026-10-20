@@ -797,3 +797,194 @@ fn a_single_members_readme_promises_no_totals_row() {
     let p = build_package(&b.store, &settings(&two, &cash), &request(false, None)).unwrap();
     assert!(text(&p, "README.txt").contains("the last row totals"));
 }
+
+#[test]
+fn a_dotfiles_twin_keeps_its_whole_name_and_its_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut s, _) = plain_books(dir.path());
+    // A name that is all extension (".env"): its twin is ".env (2)", never
+    // " (2).env", a name made of nothing but a number.
+    for bytes in [b"one".as_slice(), b"two".as_slice()] {
+        s.file_document("legal", ".env", "text/plain", bytes, None)
+            .unwrap();
+    }
+    let company = company(false);
+    let cash = cash();
+    let p = build_package(&s, &settings(&company, &cash), &request(true, None)).unwrap();
+    let docs: Vec<&str> = names(&p)
+        .into_iter()
+        .filter(|n| n.starts_with("documents/"))
+        .collect();
+    assert_eq!(docs, ["documents/legal/.env", "documents/legal/.env (2)"]);
+    assert_eq!(text(&p, "documents/legal/.env"), "one");
+    assert_eq!(text(&p, "documents/legal/.env (2)"), "two");
+    assert_zip_is_the_files(&p);
+}
+
+#[test]
+fn a_twins_number_goes_on_its_own_name_and_no_name_climbs_out_of_its_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut s, _) = plain_books(dir.path());
+    // A dot in the folder is not the file's extension: the second "notes"
+    // in "a.b" is "a.b/notes (2)", never "a (2).b/notes" in another
+    // folder. And a name of dots alone would climb out of its folder when
+    // the zip is unpacked: it becomes underscores.
+    for bytes in [b"one".as_slice(), b"two".as_slice()] {
+        s.file_document("a.b", "notes", "text/plain", bytes, None)
+            .unwrap();
+    }
+    s.file_document("..", "..", "text/plain", b"three", None)
+        .unwrap();
+    s.file_document("legal", ".", "text/plain", b"four", None)
+        .unwrap();
+    let company = company(false);
+    let cash = cash();
+    let p = build_package(&s, &settings(&company, &cash), &request(true, None)).unwrap();
+    let docs: Vec<&str> = names(&p)
+        .into_iter()
+        .filter(|n| n.starts_with("documents/"))
+        .collect();
+    assert_eq!(
+        docs,
+        [
+            "documents/a.b/notes",
+            "documents/a.b/notes (2)",
+            "documents/__/__",
+            "documents/legal/_"
+        ]
+    );
+    assert_eq!(text(&p, "documents/a.b/notes (2)"), "two");
+    assert_eq!(text(&p, "documents/__/__"), "three");
+    assert!(
+        names(&p).iter().all(|n| n
+            .split('/')
+            .all(|seg| seg != ".." && seg != "." && !seg.is_empty())),
+        "{:?}",
+        names(&p)
+    );
+    assert_zip_is_the_files(&p);
+}
+
+#[test]
+fn the_years_first_and_last_days_receipts_are_in_and_the_days_beyond_are_not() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut s, _) = plain_books(dir.path());
+    // The fiscal year is 2026 (the default start, January 1) and as_of is
+    // its last day: the receipts on both edges go in, the ones a day
+    // outside stay out.
+    let mut on = Vec::new();
+    for date in ["2025-12-31", "2026-01-01", "2026-12-31", "2027-01-01"] {
+        let e = post(
+            &mut s,
+            date,
+            "Rent",
+            &[
+                ("6000", Side::Debit, "100.00"),
+                ("1000", Side::Credit, "100.00"),
+            ],
+        );
+        s.attach_receipt(Some(e), "r.pdf", "application/pdf", date.as_bytes(), None)
+            .unwrap();
+        on.push((date, e));
+    }
+    let company = company(false);
+    let cash = cash();
+    let p = build_package(&s, &settings(&company, &cash), &request(true, None)).unwrap();
+    let receipts: Vec<&str> = names(&p)
+        .into_iter()
+        .filter(|n| n.starts_with("receipts/") && *n != "receipts/index.csv")
+        .collect();
+    let first = format!("receipts/2026-01-01-entry-{}-r.pdf", on[1].1);
+    let last = format!("receipts/2026-12-31-entry-{}-r.pdf", on[2].1);
+    assert_eq!(receipts, [first.as_str(), last.as_str()]);
+    assert_eq!(p.receipt_count, 2);
+    assert_eq!(text(&p, &first), "2026-01-01");
+    assert_eq!(text(&p, &last), "2026-12-31");
+    assert_eq!(text(&p, "receipts/index.csv").lines().count(), 3);
+}
+
+/// Contract labor paid three ways: from checking (cash), from a prepaid
+/// asset that isn't cash, and by a member's advance (financing).
+#[test]
+fn payments_to_a_vendor_come_from_the_settings_accounts_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut s, _) = plain_books(dir.path());
+    for (code, name, ty) in [
+        ("1300", "Prepaid expenses", AccountType::Asset),
+        ("2100", "Member advances", AccountType::Liability),
+        ("6100", "Contract labor", AccountType::Expense),
+    ] {
+        s.add_account(code, name, ty, None, false).unwrap();
+    }
+    let vendor = s.add_vendor("Acme Design").unwrap();
+    s.set_vendor_1099(vendor, Some(Form1099::Nec), true)
+        .unwrap();
+    for (from, amount) in [("1000", "1000.00"), ("1300", "400.00"), ("2100", "700.00")] {
+        let e = s.create_entry(d("2026-05-01"), "Acme design work").unwrap();
+        s.add_line(e, id_of(&s, "6100"), Side::Debit, usd(amount))
+            .unwrap();
+        s.add_line(e, id_of(&s, from), Side::Credit, usd(amount))
+            .unwrap();
+        s.set_entry_vendor(e, Some(vendor)).unwrap();
+        s.post_entry(e).unwrap();
+    }
+    let company = company(false);
+    // A code the chart lacks is skipped.
+    let cash = vec!["1000".to_string(), "1999".to_string()];
+    let financing = vec!["2100".to_string()];
+    let st = Settings {
+        company: &company,
+        cash_accounts: &cash,
+        financing_accounts: &financing,
+        investing_accounts: &[],
+    };
+    let ledger = s.ledger();
+    assert_eq!(
+        ledger_package::payment_accounts(ledger, &st),
+        ledger_core::PaymentAccounts {
+            cash: vec![id_of(&s, "1000")],
+            financing: vec![id_of(&s, "2100")],
+        }
+    );
+    // Checking and the advance count; the prepaid asset doesn't.
+    let w = vendor_1099_worksheet(ledger, &st, 2026, None, None).unwrap();
+    assert_eq!(w.lines.len(), 1);
+    assert_eq!(w.lines[0].vendor_id, vendor);
+    assert_eq!(w.lines[0].paid, Decimal::from(1700));
+}
+
+#[test]
+fn a_receipts_index_amount_is_the_entrys_debit_total_as_written() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut s, _) = plain_books(dir.path());
+    // A tool takes "100.000" as written (it is whole cents): the two sides
+    // are equal in value but not in spelling. The index prints the debit
+    // side's total, padded to cents, never the credit side's "100.000".
+    let e = post(
+        &mut s,
+        "2026-06-01",
+        "Rent, June",
+        &[
+            ("6000", Side::Debit, "60"),
+            ("6000", Side::Debit, "40.0"),
+            ("1000", Side::Credit, "100.000"),
+        ],
+    );
+    s.attach_receipt(Some(e), "june.pdf", "application/pdf", b"%PDF june", None)
+        .unwrap();
+    let company = company(false);
+    let cash = cash();
+    let p = build_package(&s, &settings(&company, &cash), &request(true, None)).unwrap();
+    let index = text(&p, "receipts/index.csv");
+    let row = index
+        .lines()
+        .find(|l| l.starts_with(&format!("{e},")))
+        .unwrap();
+    let fields: Vec<&str> = row.split(',').collect();
+    assert_eq!(
+        fields[..4],
+        [e.to_string().as_str(), "2026-06-01", "\"Rent", " June\""]
+    );
+    assert_eq!(fields[4], "100.00", "{row}");
+    assert_eq!(fields[5], format!("receipts/2026-06-01-entry-{e}-june.pdf"));
+}

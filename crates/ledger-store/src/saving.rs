@@ -125,6 +125,170 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_hidden_name_keeps_its_dot_when_numbered() {
+        // `.env` is a stem, not an extension: `.env (1)`, never ` (1).env`.
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        assert_eq!(
+            save_new(d, ".env", "attachment-7", b"a").unwrap(),
+            d.join(".env")
+        );
+        assert_eq!(
+            save_new(d, ".env", "attachment-7", b"b").unwrap(),
+            d.join(".env (1)")
+        );
+        assert_eq!(
+            save_new(d, "r.tar.gz", "attachment-7", b"c").unwrap(),
+            d.join("r.tar.gz")
+        );
+        assert_eq!(
+            save_new(d, "r.tar.gz", "attachment-7", b"d").unwrap(),
+            d.join("r.tar (1).gz")
+        );
+    }
+
+    #[test]
+    fn when_no_name_is_taken_the_folders_own_refusal_is_said() {
+        // Both names too long for the folder: its refusal, not "no free
+        // name", and nothing left behind.
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let e = save_new(d, &"x".repeat(300), &"y".repeat(300), b"ours").unwrap_err();
+        assert!(!e.contains("no free name"), "{e}");
+        assert!(
+            e.ends_with(&std::io::ErrorKind::InvalidFilename.to_string()),
+            "{e}"
+        );
+        assert_eq!(std::fs::read_dir(d).unwrap().count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn when_a_folder_refuses_the_copy_written_in_place_its_refusal_is_said() {
+        // Both names in a folder that can't be written: the link is
+        // refused (permission denied, so the copy is tried in place), and
+        // so is the file in place. That refusal is said, not "no free
+        // name", and the next name is never tried for it.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let ro = d.join("ro");
+        std::fs::create_dir(&ro).unwrap();
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o500)).unwrap();
+        // (Skipped where nothing is refused, as for root.)
+        if std::fs::write(ro.join("probe"), b"").is_err() {
+            let e = save_new(d, "ro/r.pdf", "ro/attachment-7", b"ours").unwrap_err();
+            assert!(!e.contains("no free name"), "{e}");
+            assert!(
+                e.ends_with(&std::io::ErrorKind::PermissionDenied.to_string()),
+                "{e}"
+            );
+            // A name of its own that the folder takes: that one.
+            assert_eq!(
+                save_new(d, "ro/r.pdf", "attachment-7", b"ours").unwrap(),
+                d.join("attachment-7")
+            );
+        }
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_name_refused_for_another_reason_than_links_moves_on_never_written_in_place() {
+        // A name reaching onto another file system: the link is refused
+        // (it crosses devices), and the copy is never written there in
+        // place as if the folder took no links; the fallback is used.
+        use std::os::unix::fs::MetadataExt;
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let Ok(other) = tempfile::tempdir_in("/dev/shm") else {
+            return;
+        };
+        let dev = |p: &std::path::Path| std::fs::metadata(p).unwrap().dev();
+        if dev(d) == dev(other.path()) {
+            return;
+        }
+        std::os::unix::fs::symlink(other.path(), d.join("elsewhere")).unwrap();
+        assert_eq!(
+            save_new(d, "elsewhere/r.pdf", "attachment-7", b"ours").unwrap(),
+            d.join("attachment-7")
+        );
+        assert_eq!(std::fs::read_dir(other.path()).unwrap().count(), 0);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_folder_without_links_gets_the_copy_written_in_place_never_over_a_file() {
+        // Links refused as FAT refuses them (not supported, or not
+        // permitted), and before the folder looks at the name: a name
+        // already taken is then found only when the copy is written in
+        // place, and the next name is tried, never the fallback, never
+        // over the file.
+        for errno in [libc::EOPNOTSUPP, libc::EPERM] {
+            let dir = tempfile::tempdir().unwrap();
+            let d = dir.path();
+            std::fs::write(d.join("theirs.pdf"), b"theirs").unwrap();
+            let Some(saved) = crate::refuse::refusing(crate::refuse::LINKS, errno, || {
+                [
+                    save_new(d, "r.pdf", "attachment-7", b"ours"),
+                    save_new(d, "r.pdf", "attachment-7", b"again"),
+                    save_new(d, "theirs.pdf", "attachment-7", b"mine"),
+                ]
+            }) else {
+                eprintln!("skipped: no seccomp here");
+                return;
+            };
+            assert_eq!(
+                saved,
+                [
+                    Ok(d.join("r.pdf")),
+                    Ok(d.join("r (1).pdf")),
+                    Ok(d.join("theirs (1).pdf")),
+                ],
+                "errno {errno}"
+            );
+            assert_eq!(std::fs::read(d.join("r.pdf")).unwrap(), b"ours");
+            assert_eq!(std::fs::read(d.join("r (1).pdf")).unwrap(), b"again");
+            assert_eq!(std::fs::read(d.join("theirs.pdf")).unwrap(), b"theirs");
+            assert_eq!(std::fs::read(d.join("theirs (1).pdf")).unwrap(), b"mine");
+            // Nothing aside is left.
+            let mut names: Vec<String> = std::fs::read_dir(d)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            assert_eq!(
+                names,
+                ["r (1).pdf", "r.pdf", "theirs (1).pdf", "theirs.pdf"],
+                "errno {errno}"
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_link_refused_for_any_other_reason_is_never_written_in_place() {
+        // Every link refused as crossing devices: no copy is written in
+        // place as if the folder took no links; the folder's refusal is
+        // said, and nothing is left behind.
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let Some(saved) = crate::refuse::refusing(crate::refuse::LINKS, libc::EXDEV, || {
+            save_new(d, "r.pdf", "attachment-7", b"ours")
+        }) else {
+            eprintln!("skipped: no seccomp here");
+            return;
+        };
+        let e = saved.unwrap_err();
+        assert!(!e.contains("no free name"), "{e}");
+        assert!(
+            e.ends_with(&std::io::ErrorKind::CrossesDevices.to_string()),
+            "{e}"
+        );
+        assert_eq!(std::fs::read_dir(d).unwrap().count(), 0);
+    }
+
+    #[test]
     fn a_saved_copy_is_new_and_whole_beside_what_is_there() {
         let dir = tempfile::tempdir().unwrap();
         let d = dir.path();

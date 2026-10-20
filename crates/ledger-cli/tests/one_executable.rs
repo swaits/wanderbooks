@@ -296,3 +296,143 @@ fn dev_stdio_refuses_books_in_the_private_folder() {
         "{out:?}"
     );
 }
+
+/// `upload` and `download` say how they ended in their exit code, as
+/// every mode does: 0 for their usage on request, 2 for a slip in how
+/// they were called, 1 for what went wrong doing it. A file's path may be
+/// a name that isn't text: it reaches the command as given.
+#[cfg(unix)]
+#[test]
+fn the_file_commands_end_with_the_code_that_says_how() {
+    use std::os::unix::ffi::OsStrExt;
+    let home = tempfile::Builder::new()
+        .prefix("wb-one-files-")
+        .tempdir()
+        .unwrap();
+    let root = home.path().join("wanderbooks");
+    let run = |args: &[&std::ffi::OsStr]| {
+        wanderbooks()
+            .args(args)
+            .env_remove("XDG_DATA_HOME")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    };
+    let os = |s: &'static str| std::ffi::OsStr::new(s);
+    for (mode, usage) in [
+        ("upload", "usage: wanderbooks upload --book ID"),
+        ("download", "usage: wanderbooks download --book ID"),
+    ] {
+        // Its usage on request.
+        let out = run(&[os(mode), os("--help")]);
+        assert_eq!(out.status.code(), Some(0), "{mode}: {out:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains(usage),
+            "{out:?}"
+        );
+        // Called wrong: no file, or no books named.
+        let out = run(&[
+            os(mode),
+            os("--root"),
+            root.as_os_str(),
+            os("--book"),
+            os("acme"),
+        ]);
+        assert_eq!(out.status.code(), Some(2), "{mode}: {out:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains(usage),
+            "{out:?}"
+        );
+        let out = run(&[os(mode), os("--root"), root.as_os_str(), os("1")]);
+        assert_eq!(out.status.code(), Some(2), "{mode}: {out:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("which books? give --book ID"),
+            "{out:?}"
+        );
+    }
+    // A file that isn't there, named by a path that isn't text: what went
+    // wrong, said, and nothing sent.
+    let missing = home
+        .path()
+        .join(std::ffi::OsStr::from_bytes(b"receipt-\xff.pdf"));
+    let out = run(&[
+        os("upload"),
+        os("--root"),
+        root.as_os_str(),
+        os("--book"),
+        os("acme"),
+        os("up_abcdefghijklmnopabcdefghijklmnop"),
+        missing.as_os_str(),
+    ]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("error: can't read"),
+        "{out:?}"
+    );
+    // A folder to save in that isn't there: the same.
+    let out = run(&[
+        os("download"),
+        os("--root"),
+        root.as_os_str(),
+        os("--book"),
+        os("acme"),
+        os("7"),
+        os("--to"),
+        home.path().join("no-such-folder").as_os_str(),
+    ]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("isn't a folder"),
+        "{out:?}"
+    );
+    assert!(!root.exists(), "the books were reached for");
+}
+
+/// Where local sockets aren't built yet (P11, Windows): the modes that
+/// hold the books say so and end with 2, never a success; setup makes
+/// the folder and ends with 0, asking for no passphrase (nothing there
+/// asks for one yet).
+#[cfg(not(unix))]
+#[test]
+fn without_local_sockets_the_modes_that_hold_the_books_say_so() {
+    for mode in [
+        "server",
+        "host",
+        "mcp",
+        "serve",
+        "close",
+        "books",
+        "doctor",
+        "token",
+        "connect",
+        "passphrase",
+        "upload",
+        "download",
+    ] {
+        let out = wanderbooks()
+            .arg(mode)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "{mode}: {out:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("to this system with P11"),
+            "{mode}: {out:?}"
+        );
+    }
+    let home = tempfile::Builder::new()
+        .prefix("wb-one-nosock-")
+        .tempdir()
+        .unwrap();
+    let out = wanderbooks()
+        .args(["setup", "--home"])
+        .arg(home.path())
+        .env_remove("XDG_DATA_HOME")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("The books' private folder: made"), "{text}");
+    assert!(!text.contains("passphrase"), "{text}");
+}

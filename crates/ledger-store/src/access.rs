@@ -405,6 +405,61 @@ mod tests {
     }
 
     #[test]
+    fn a_value_under_a_key_naming_a_tin_is_masked_whatever_it_looks_like() {
+        // Even a value that doesn't look like a TIN (a last four, a typo):
+        // the key says what it is.
+        for key in [
+            "tin",
+            "TIN",
+            "payee_tin",
+            "Member_TIN",
+            "ssn",
+            "ein",
+            "itin",
+        ] {
+            assert_eq!(
+                digest(&serde_json::json!({ key: "6789" })),
+                digest(&serde_json::json!({ key: "1234" })),
+                "{key}"
+            );
+            assert_eq!(
+                digest(&serde_json::json!({ key: {"last4": 6789} })),
+                digest(&serde_json::json!({ key: ["anything"] })),
+                "{key}"
+            );
+            // A TIN not given isn't one: null stays null.
+            assert_ne!(
+                digest(&serde_json::json!({ key: null })),
+                digest(&serde_json::json!({ key: "6789" })),
+                "{key}"
+            );
+        }
+        // Only those keys: one that merely holds the letters counts.
+        assert_ne!(
+            digest(&serde_json::json!({"tint": "6789"})),
+            digest(&serde_json::json!({"tint": "1234"}))
+        );
+    }
+
+    #[test]
+    fn a_files_bytes_are_hashed_as_they_are_even_where_they_spell_digits() {
+        // Base64 can hold a run of nine digits; it is still a file's bytes,
+        // not a TIN, and two files differing there differ.
+        for key in FILE_BYTES {
+            assert_ne!(
+                digest(&serde_json::json!({ key: "QUJD123456789QUJD" })),
+                digest(&serde_json::json!({ key: "QUJD987814321QUJD" })),
+                "{key}"
+            );
+        }
+        // The same text anywhere else is masked.
+        assert_eq!(
+            digest(&serde_json::json!({"memo": "QUJD123456789QUJD"})),
+            digest(&serde_json::json!({"memo": "QUJD987814321QUJD"}))
+        );
+    }
+
+    #[test]
     fn a_tin_at_the_cut_is_masked_whole() {
         // The TIN straddles the 64-character limit.
         let text = format!("{}123-45-6789", "x".repeat(58));

@@ -221,6 +221,13 @@ fn a_settings_file_moves_into_the_books() {
         json!({"changes": [{"key": "company.cpa", "value": "Casey"}], "decided_by": "A"}),
     );
     assert!(refused.contains("books.import_settings"), "{refused}");
+    // Nor is there an export yet: the file is the copy.
+    let refused = m.call_err("books.export_settings", json!({}));
+    assert!(
+        refused.contains("still read their settings file")
+            && refused.contains("books.import_settings"),
+        "{refused}"
+    );
     // The preview records nothing.
     let head = |m: &mut Mcp| m.call("books.start", json!({}))["head"]["seq"].clone();
     let before = head(&mut m);

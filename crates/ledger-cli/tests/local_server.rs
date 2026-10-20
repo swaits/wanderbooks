@@ -1466,6 +1466,21 @@ async fn every_call_is_recorded_once_refusals_included() {
     let snap = ledger_store::Snapshot::load(&home.book_dir("acme")).unwrap();
     assert_eq!(heads.last().unwrap().1, snap.head_hash());
     assert_eq!(added["client"]["name"], "rmcp");
+    // Each record carries its request's own id, as the client numbered
+    // it: one connection's calls, oldest first, climb, none twice.
+    let ids: Vec<u64> = tools
+        .iter()
+        .rev()
+        .filter(|r| r["principal"]["label"] != "reader")
+        .map(|r| {
+            r["request_id"]
+                .as_str()
+                .and_then(|id| id.parse().ok())
+                .unwrap_or_else(|| panic!("{r}"))
+        })
+        .collect();
+    assert!(ids.len() >= 8, "{ids:?}");
+    assert!(ids.windows(2).all(|w| w[0] < w[1]), "{ids:?}");
     let door: Vec<&Value> = records
         .iter()
         .filter(|r| r["action"] == "connect")
@@ -2720,4 +2735,410 @@ async fn a_file_the_books_make_is_fetched_by_its_own_token() {
     assert!(loose.is_empty(), "{loose:?}");
     drop(c);
     assert!(server.close().success());
+}
+
+// Mutation survivors of local.rs (P2): the close, the waits, the admin
+// line, adoption's settings and vault, and the peer check.
+
+/// INVARIANT 6: once closing, every request is refused as closing, a
+/// route for no books included (never a connection cut it couldn't tell
+/// from a call that ran), and the door stays open refusing while they
+/// keep coming (LINGER_MAX, 3 s, after the work is done); then the
+/// sockets go. Anything but a books route is simply not found.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn while_closing_the_door_stays_open_refusing_as_requests_come() {
+    let home = Home::new("linger");
+    let mut server = Server::start(&home);
+    home.create("acme", "USD");
+    let http = mcp_http(&home);
+    let r = http
+        .get("http://localhost/b/acme/nothing")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 404);
+    assert_eq!(r.text().await.unwrap(), "not found");
+    drop(server.child.stdin.take());
+    let (mut first, mut last) = (None, None);
+    let started = Instant::now();
+    loop {
+        assert!(started.elapsed() < Duration::from_secs(60), "never shut");
+        let Ok(r) = http
+            .post("http://localhost/b/nobody/mcp")
+            .header("content-type", "application/json")
+            .body("{}")
+            .send()
+            .await
+        else {
+            break;
+        };
+        let status = r.status().as_u16();
+        let text = r.text().await.unwrap_or_default();
+        if text.contains("closing") {
+            assert_eq!(status, 503, "{text}");
+            first.get_or_insert_with(Instant::now);
+            last = Some(Instant::now());
+        } else {
+            // Not found, until closing; never again after.
+            assert!(first.is_none(), "after closing: {status} {text}");
+            assert_eq!(status, 404, "{text}");
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let first = first.expect("never refused as closing");
+    let open = last.unwrap() - first;
+    assert!(open >= Duration::from_millis(2500), "{open:?}");
+    let status = tokio::task::spawn_blocking(move || wait_exit(&mut server.child, 30))
+        .await
+        .unwrap();
+    assert!(status.is_some_and(|s| s.success()), "{status:?}");
+}
+
+/// INVARIANT 6: standard input that can't be read (an error, not a read
+/// interrupted) counts as its end, the host gone: the server closes.
+#[test]
+fn a_server_whose_input_cant_be_read_closes() {
+    let home = Home::new("badstdin");
+    let server = Server::start(&home);
+    home.create("acme", "USD");
+    assert!(server.close().success());
+    // A folder as its input: every read of it fails (EISDIR).
+    let mut child = Command::new(env!("CARGO_BIN_EXE_wanderbooks"))
+        .args(["server", "--root"])
+        .arg(home.root())
+        .env_clear()
+        .env("HOME", home.dir.path())
+        .stdin(std::fs::File::open(home.dir.path()).unwrap())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let status = wait_exit(&mut child, 30);
+    if status.is_none() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    assert!(status.is_some_and(|s| s.success()), "{status:?}");
+    let mut store = ledger_store::Store::open(&home.book_dir("acme")).unwrap();
+    store.verify_and_heal().unwrap();
+}
+
+/// Lines a child writes on stderr, as they come.
+fn stderr_lines(child: &mut Child) -> std::sync::mpsc::Receiver<String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let err = child.stderr.take().unwrap();
+    std::thread::spawn(move || {
+        for line in BufReader::new(err).lines() {
+            let Ok(line) = line else { break };
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    rx
+}
+
+/// INVARIANT 1: a server waiting for another to finish says so, once,
+/// however long it waits.
+#[test]
+fn a_server_waiting_for_another_says_so_once() {
+    let home = Home::new("saywait");
+    let first = Server::start(&home);
+    let mut second = Command::new(env!("CARGO_BIN_EXE_wanderbooks"))
+        .args(["server", "--root"])
+        .arg(home.root())
+        .env_clear()
+        .env("HOME", home.dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let lines = stderr_lines(&mut second);
+    let waiting = "another books server has these books open; waiting for it to finish";
+    let said = lines.recv_timeout(Duration::from_secs(30));
+    if !said.as_ref().is_ok_and(|l| l.contains(waiting)) {
+        let _ = second.kill();
+        let _ = second.wait();
+        panic!("it never said it was waiting: {said:?}");
+    }
+    // Many more tries at the lock (one each 100 ms), said nothing more.
+    std::thread::sleep(Duration::from_millis(1000));
+    drop(second.stdin.take());
+    assert!(wait_exit(&mut second, 20).is_some_and(|s| s.success()));
+    let rest: Vec<String> = lines.iter().collect();
+    assert!(!rest.iter().any(|l| l.contains(waiting)), "{rest:?}");
+    assert!(first.close().success());
+}
+
+/// admin INVARIANT 1: a request is one line of at most MAX_LINE bytes
+/// before its newline: one that long is answered, a byte more is refused
+/// as too long.
+#[test]
+fn an_admin_request_may_be_as_long_as_a_line_may_be() {
+    let home = Home::new("adminline");
+    let server = Server::start(&home);
+    let sock = home.run().join("admin.sock");
+    let request = "{\"proto\":1,\"op\":\"list\"}";
+    let padded = |len: usize| format!("{request}{}\n", " ".repeat(len - request.len()));
+    let answer = raw_admin(&sock, &padded(admin::MAX_LINE));
+    let answered: Response = serde_json::from_str(answer.trim_end())
+        .unwrap_or_else(|e| panic!("{e}: {}", &answer[..answer.len().min(200)]));
+    assert_eq!(answered, Response::Books(vec![]));
+    // A byte more and no newline yet: all of it read, refused.
+    let longer = padded(admin::MAX_LINE + 1);
+    let answer = raw_admin(&sock, longer.trim_end_matches('\n'));
+    assert!(answer.contains("too long"), "{answer}");
+    assert!(server.close().success());
+}
+
+/// Old books that keep settings of their own (a `settings.set` in their
+/// journal), in `dir`.
+fn old_books_keeping_settings(dir: &Path) -> PathBuf {
+    let data = old_books(dir);
+    let mut store = ledger_store::Store::open(&data).unwrap();
+    store
+        .change_settings(
+            &[ledger_core::settings::Change {
+                key: "company.name".into(),
+                value: Some(json!("Kept LLC")),
+            }],
+            &ledger_core::settings::Source {
+                decided_by: "the owner".into(),
+                decided_on: ledger_core::settings::today_in(None),
+                citation: None,
+                note: None,
+            },
+        )
+        .unwrap();
+    data
+}
+
+/// Adoption (admin INVARIANTS 4, 5): books that keep no settings need
+/// their file, even for a preview; a file naming the very key given is
+/// taken; every vault record, TINs and W-9s, is opened and counted; and a
+/// file given for books that keep their own is reported unused, never
+/// when none was given.
+#[test]
+fn adoption_takes_the_settings_and_the_vault_as_they_are() {
+    let home = Home::new("adoptsv");
+    let server = Server::start(&home);
+    let old = tempfile::Builder::new()
+        .prefix("wb-srv-oldsv-")
+        .tempdir()
+        .unwrap();
+    let (data, vault, key) = old_books_with_vault(old.path());
+    ledger_vault::Vault::open(&vault, &key, false)
+        .unwrap()
+        .put_w9(
+            1,
+            &ledger_vault::W9File {
+                file_name: "w9.pdf".into(),
+                mime_type: "application/pdf".into(),
+                bytes: b"%PDF-1.4 w9".to_vec(),
+            },
+        )
+        .unwrap();
+    let vaulted = Adopt {
+        vault: Some((vault.clone(), key.clone())),
+        ..Adopt::new("acme", &data)
+    };
+    match home.admin(vaulted.clone().request()) {
+        Response::Refused(why) => {
+            assert!(why.contains("keep no settings of their own"), "{why}");
+        }
+        other => panic!("{other:?}"),
+    }
+    let toml = format!(
+        "[company]\nname = \"Acme\"\n[vault]\nkey_file = \"{}\"\n",
+        key.display()
+    );
+    let named = Adopt {
+        settings_toml: Some(toml),
+        ..vaulted
+    };
+    match home.admin(named.request()) {
+        Response::Preview(p) => assert_eq!(p.vault_records, 2, "{p:?}"),
+        other => panic!("{other:?}"),
+    }
+    let toml = "[company]\nname = \"Acme\"\n".to_string();
+    for (id, given, ignored) in [("beta", Some(toml), true), ("gamma", None, false)] {
+        let dir = tempfile::Builder::new()
+            .prefix("wb-srv-kept-")
+            .tempdir()
+            .unwrap();
+        let plan = Adopt {
+            settings_toml: given,
+            ..Adopt::new(id, &old_books_keeping_settings(dir.path()))
+        };
+        let head = match home.admin(plan.clone().request()) {
+            Response::Preview(p) => {
+                assert!(p.keeps_settings);
+                p.source_head
+            }
+            other => panic!("{id}: {other:?}"),
+        };
+        match home.admin(plan.at(&head).request()) {
+            Response::Adopted(a) => {
+                assert_eq!(
+                    (a.settings_ignored, a.settings_imported),
+                    (ignored, 0),
+                    "{id}"
+                );
+            }
+            other => panic!("{id}: {other:?}"),
+        }
+    }
+    assert!(server.close().success());
+}
+
+/// INVARIANT 2: a connection from another account is dropped before a
+/// byte is read, even with the sockets' permissions loosened (as a slip
+/// might). The other account is made in a user namespace, as a user ID
+/// of this account's /etc/subuid range; where that can't be made (no
+/// `unshare --map-auto` or python3 here), the test says so and skips.
+#[test]
+fn a_connection_from_another_account_is_dropped_unread() {
+    let home = Home::new("otheruid");
+    let server = Server::start(&home);
+    std::fs::set_permissions(home.run(), std::fs::Permissions::from_mode(0o711)).unwrap();
+    for sock in ["mcp.sock", "admin.sock"] {
+        std::fs::set_permissions(
+            home.run().join(sock),
+            std::fs::Permissions::from_mode(0o666),
+        )
+        .unwrap();
+    }
+    // Connect (from the run folder), send, read to the end: what came.
+    let script = "import socket, sys\n\
+                  s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n\
+                  s.connect(sys.argv[1])\n\
+                  print('connected', flush=True)\n\
+                  got = b''\n\
+                  try:\n    \
+                      s.sendall(sys.argv[2].encode())\n    \
+                      while True:\n        \
+                          b = s.recv(65536)\n        \
+                          if not b:\n            \
+                              break\n        \
+                          got += b\n\
+                  except OSError:\n    \
+                      pass\n\
+                  print('answer:' + got.decode(errors='replace'))\n";
+    let ask = |other: bool, sock: &str, request: &str| -> Option<String> {
+        let mut cmd = if other {
+            let mut c = Command::new("unshare");
+            c.args([
+                "--user",
+                "--map-auto",
+                "--setuid",
+                "0",
+                "--setgid",
+                "0",
+                "--",
+                "python3",
+            ]);
+            c
+        } else {
+            Command::new("python3")
+        };
+        let out = cmd
+            .args(["-I", "-c", script, sock, request])
+            .current_dir(home.run())
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        text.contains("connected\n").then_some(text)
+    };
+    let http = "GET /nothing HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+    let list = "{\"proto\":1,\"op\":\"list\"}\n";
+    // This account: answered, on both sockets.
+    let Some(ours) = ask(false, "mcp.sock", http) else {
+        eprintln!("SKIPPED a_connection_from_another_account_is_dropped_unread: no python3");
+        return;
+    };
+    assert!(ours.contains("404"), "{ours}");
+    assert!(ask(false, "admin.sock", list).is_some_and(|a| a.contains("books")));
+    // Another account: connected, and dropped unanswered.
+    for (sock, request) in [("mcp.sock", http), ("admin.sock", list)] {
+        let Some(theirs) = ask(true, sock, request) else {
+            eprintln!(
+                "SKIPPED a_connection_from_another_account_is_dropped_unread: no other account can be made here (unshare --map-auto)"
+            );
+            return;
+        };
+        assert!(theirs.ends_with("answer:\n"), "{sock}: {theirs}");
+    }
+    // And this account is still served.
+    assert!(ask(false, "admin.sock", list).is_some_and(|a| a.contains("books")));
+    assert!(server.close().success());
+}
+
+/// Out of descriptors, the server says so and waits a moment before
+/// accepting again (never spinning), and serves again once some are free.
+#[test]
+fn a_server_out_of_descriptors_waits_then_serves_again() {
+    use std::os::unix::process::CommandExt;
+    let home = Home::new("nofile");
+    let mut server = Command::new(env!("CARGO_BIN_EXE_wanderbooks"));
+    server
+        .args(["server", "--root"])
+        .arg(home.root())
+        .env_clear()
+        .env("HOME", home.dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // SAFETY: setrlimit is async-signal-safe; nothing else runs here.
+    unsafe {
+        server.pre_exec(|| {
+            let limit = libc::rlimit {
+                rlim_cur: 40,
+                rlim_max: 40,
+            };
+            if libc::setrlimit(libc::RLIMIT_NOFILE, &limit) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = server.spawn().unwrap();
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    assert_eq!(line, "ready\n");
+    let lines = stderr_lines(&mut child);
+    let short = ledger_store::root::SocketPath::new(&home.run(), "mcp.sock").unwrap();
+    let held: Vec<_> = (0..80)
+        .map(|_| std::os::unix::net::UnixStream::connect(short.path()).unwrap())
+        .collect();
+    let said = std::iter::from_fn(|| lines.recv_timeout(Duration::from_secs(30)).ok())
+        .find(|l| l.contains("accept failed"));
+    if said.is_none() {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("out of descriptors, it never said so");
+    }
+    drop(held);
+    // Served again once descriptors are free (the admin socket too).
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Ok(Response::Books(b)) = admin::call(&home.run().join("admin.sock"), Request::List) {
+            assert!(b.is_empty());
+            break;
+        }
+        assert!(Instant::now() < deadline, "never served again");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    drop(child.stdin.take());
+    let status = wait_exit(&mut child, 30);
+    if status.is_none() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    assert!(status.is_some_and(|s| s.success()), "{status:?}");
 }

@@ -410,8 +410,12 @@ pub fn build_package<B: PackageBooks + ?Sized>(
     let mut used: std::collections::HashSet<String> =
         files.iter().map(|(n, _)| n.to_lowercase()).collect();
     let mut unique = |name: String| -> String {
-        let (stem, ext) = match name.rsplit_once('.') {
-            Some((s, e)) if !s.ends_with('/') && !s.is_empty() => (s.to_string(), format!(".{e}")),
+        // The extension is the last segment's own: a folder with a dot
+        // ("a.b/notes") keeps its name, and a name that is all extension
+        // (".env") has none.
+        let cut = name.rfind('/').map_or(0, |i| i + 1);
+        let (stem, ext) = match name[cut..].rfind('.') {
+            Some(i) if i > 0 => (name[..cut + i].to_string(), name[cut + i..].to_string()),
             _ => (name.clone(), String::new()),
         };
         let mut n = 1;
@@ -424,7 +428,8 @@ pub fn build_package<B: PackageBooks + ?Sized>(
     };
     if req.include_receipts {
         let clean = |s: &str| -> String {
-            s.chars()
+            let c: String = s
+                .chars()
                 .map(|c| {
                     if c.is_alphanumeric() || ".-_ ".contains(c) {
                         c
@@ -432,7 +437,14 @@ pub fn build_package<B: PackageBooks + ?Sized>(
                         '_'
                     }
                 })
-                .collect()
+                .collect();
+            // A name of dots alone ("", ".", "..") would name no file, or
+            // climb out of its folder when the zip is unpacked.
+            if c.chars().all(|c| c == '.') {
+                "_".repeat(c.len().max(1))
+            } else {
+                c
+            }
         };
         let mut index = String::from("entry_id,date,description,amount,file,sha256\n");
         for a in books.all_attachments().map_err(|e| e.to_string())? {

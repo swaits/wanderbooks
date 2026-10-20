@@ -257,6 +257,85 @@ mod tests {
     const NOW: i64 = 1_800_000_000;
 
     #[test]
+    fn an_export_is_kept_fifteen_minutes() {
+        // What its refusal tells the human: kept 15 minutes, then gone.
+        let dir = tempfile::tempdir().unwrap();
+        let x = Exports::open(dir.path(), NOW).unwrap();
+        let e = x.put("t", "a.csv", "text/csv", b"x", NOW).unwrap();
+        assert_eq!(e.expires, NOW + 15 * 60);
+        assert!(x.get(&e.id, "t", NOW + 15 * 60 - 1).is_ok());
+        let lapsed = x.get(&e.id, "t", NOW + 15 * 60).unwrap_err();
+        assert!(lapsed.to_string().contains("kept 15 minutes"), "{lapsed}");
+    }
+
+    #[test]
+    fn an_id_is_ex_and_thirty_two_letters_a_to_p_and_nothing_else() {
+        assert!(is_id(&format!("ex_{}", "a".repeat(32))));
+        assert!(is_id(&format!("ex_{}", "p".repeat(32))));
+        for bad in [
+            String::new(),
+            "ex_".into(),
+            format!("ex_{}", "a".repeat(31)),
+            format!("ex_{}", "a".repeat(33)),
+            format!("up_{}", "a".repeat(32)),
+            format!("exx{}", "a".repeat(32)),
+            format!("ex_{}", "q".repeat(32)),
+            format!("ex_{}0", "a".repeat(31)),
+            format!("ex_{}.", "a".repeat(31)),
+        ] {
+            assert!(!is_id(&bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_fetch_never_reaches_past_the_exports_folder() {
+        // A whole export kept beside the books, not among their exports:
+        // no id names it.
+        let dir = tempfile::tempdir().unwrap();
+        let x = Exports::open(dir.path(), NOW).unwrap();
+        let bytes = b"not an export".to_vec();
+        for id in ["../outside", &format!("up_{}", "a".repeat(32))] {
+            let at = dir.path().join(EXPORTS_DIR).join(id);
+            let record = Export {
+                id: id.into(),
+                token: "t".into(),
+                file_name: "a.csv".into(),
+                mime: "text/csv".into(),
+                size: bytes.len() as u64,
+                sha256: sha256_hex(&bytes),
+                expires: NOW + EXPORT_TTL,
+            };
+            std::fs::write(
+                at.with_extension("json"),
+                serde_json::to_vec(&record).unwrap(),
+            )
+            .unwrap();
+            std::fs::write(at.with_extension("bin"), &bytes).unwrap();
+            assert!(
+                matches!(x.get(id, "t", NOW).unwrap_err(), ExportError::Unknown(_)),
+                "{id}"
+            );
+        }
+        // And a refusal quotes no more than 40 characters of what it got.
+        let long = format!("../{}", "x".repeat(100));
+        let ExportError::Unknown(quoted) = x.get(&long, "t", NOW).unwrap_err() else {
+            panic!("an unknown export")
+        };
+        assert_eq!(quoted.chars().count(), 40);
+    }
+
+    #[test]
+    fn an_export_counts_against_its_token_until_the_moment_it_lapses() {
+        let dir = tempfile::tempdir().unwrap();
+        let x = Exports::open(dir.path(), NOW).unwrap();
+        let e = x.put("t", "a.csv", "text/csv", b"x", NOW).unwrap();
+        assert_eq!(x.live_for("t", e.expires - 1), 1);
+        // Lapsed at its expiry, as a fetch then finds (not yet swept).
+        assert_eq!(x.live_for("t", e.expires), 0);
+        assert_eq!(x.live_for("u", NOW), 0);
+    }
+
+    #[test]
     fn an_export_is_fetched_by_its_token_until_it_lapses() {
         let dir = tempfile::tempdir().unwrap();
         let x = Exports::open(dir.path(), NOW).unwrap();

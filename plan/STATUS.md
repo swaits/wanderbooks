@@ -1,20 +1,22 @@
-# STATUS — 2026-10-17: "Served" P0 and P1 live; P2 next
+# STATUS — 2026-10-20: "Served" P0 and P1 live; P2 built, cutover next
 
-## Now: Served (plan/served.md), P0 and P1 live
+## Now: Served (plan/served.md), P0 and P1 live, P2 built
 
 The 2026-10-16 audit of the first company's books (62 verified findings,
 20 engine defects) and the design discussion that followed produced
 `plan/served.md`: the books become a server that owns its data, agents
 reach them only through the MCP from anywhere, settings and conventions
-move into the journal, no scaffold. Phases P0-P11; the owner's decisions
+move into the journal, no scaffold. Phases P0-P13; the owner's decisions
 of 2026-10-16 are at the top of the plan and bind every phase. P0 turned
 up defects 21 (the CPA package's IIF ignores `as_of`) and 22
 (depreciation's final month plugs mid-month); both are for P3.
 
 The owner's bar (2026-10-17): this is bookkeeping software and it has to
 be perfect. Full verification every phase (review rounds until clean,
-`just check`, `just prove`, `cargo mutants --in-diff`, goldens);
-economize only on waste.
+`just check`, `just prove`, goldens); economize only on waste. Mutation
+testing waits for P12 from P2 slice 3 on (D-33, owner 2026-10-20: focus
+on building; P12 reruns the whole max-testing pass, on the owner's desktop
+or CI).
 
 **P0 (guard rails): done.** On `main` at `391634a`, pushed (origin +
 GitHub): pins, transports doc, tools-only template; the store's format
@@ -55,13 +57,30 @@ the MCP, no TINs), privately, by decision, never in this public repo
 (plan 5.6). P1+ must reproduce them except where the P3 change log
 adjudicates a difference (cash flow, defect 1).
 
-**Then:** P2 (one `wanderbooks` executable, D-22; the books open while
-the app, an agent session or a terminal holds them, no background
-service, D-21/D-23 (owner, 2026-10-18); cutover; ask the owner the two open plain-English cutover questions
-in plan section 10.3 first; Q-2 is answered, D-20), P3-P11 as planned (P11, added 2026-10-17: one app for Windows, Mac and
-Linux, with installers and updaters per D-24: `.dmg`, a per-user Windows
-installer, AUR, apt, dnf and AppImage; P2 gained backup restore and the
-viewer's menu).
+**P2 (one executable, open while held, the cutover): built, slices 1-8.**
+Slices 1-2 on `main` earlier. Slices 3-8 (2026-10-19 to 2026-10-20),
+each reviewed until a round came back clean: 3, opening and closing the
+books (the server on local sockets, the host and its leases, the agents'
+bridge; no background service, D-21/D-23); 4, access (tokens in the
+keyring, the door, scopes, the access log, the owner passphrase); 5, files
+in and out through the server (uploads, exports); 6, the viewer on the data
+root and one CPA-package builder (`ledger-package`); 7, backups and restore
+(D-30, D-31: plain git to a remote and a folder, drills,
+`wanderbooks books restore`); 8, the viewer's Books menu, `connect`,
+`books back-up`, no confinement (D-32), the scaffold deleted. Then the
+tests mutation had found before the pause (D-33), with three real bugs
+fixed: the admin answer's four-MiB line, and the CPA package's file
+naming (a twin's number in another folder; a name of dots climbing out of
+its folder). `docs/testing.md` lists what P12 must cover.
+
+**Next:** slice 9, the cutover of the first company's books (plan 7, P2
+cutover; ask the owner Q-3 and the backup addresses first, one at a time),
+then P3-P12 as planned (P3's design under way: one brief per defect group,
+each attacked by a reviewer). P11: one app for Windows, Mac and Linux
+(D-24). P12: max testing again (D-33). P13: bookspec (D-34), a formal,
+sourced accounting specification first, then its own formal validation
+and a conformance harness for any engine; P3's regression tests are its
+first examples.
 
 ---
 

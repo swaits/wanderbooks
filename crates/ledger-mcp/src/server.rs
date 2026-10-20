@@ -10274,4 +10274,459 @@ mod tests {
         );
         assert_eq!(digest_since("", d(2027, 1, 9)), "2027-01-01");
     }
+
+    // Calls through the access door (access.rs), driven straight into the
+    // handler with a context the HTTP door would have left: its Caller,
+    // or none.
+
+    /// A peer to make request contexts with: a client and a server over
+    /// an in-memory pipe, kept alive while it is.
+    struct Session {
+        peer: rmcp::service::Peer<RoleServer>,
+        _server: rmcp::service::RunningService<RoleServer, BooksServer>,
+        _client: rmcp::service::RunningService<rmcp::service::RoleClient, ()>,
+        _books: TestDir,
+    }
+
+    async fn session(tag: &str) -> Session {
+        use rmcp::ServiceExt;
+        let books = unit_dir(&format!("{tag}-peer"));
+        let server = BooksServer::new(store(&books), ReceiptPolicy::default());
+        let (a, b) = tokio::io::duplex(1 << 16);
+        let served = tokio::spawn(async move { server.serve(a).await });
+        let client = ().serve(b).await.unwrap();
+        let server = served.await.unwrap().unwrap();
+        Session {
+            peer: server.peer().clone(),
+            _server: server,
+            _client: client,
+            _books: books,
+        }
+    }
+
+    /// A request's context: from a token with `scopes` (the door's
+    /// Caller), or with none.
+    fn context(
+        peer: &rmcp::service::Peer<RoleServer>,
+        scopes: Option<&[ledger_store::auth::Scope]>,
+    ) -> RequestContext<RoleServer> {
+        let mut cx = RequestContext::new(rmcp::model::NumberOrString::Number(7), peer.clone());
+        if let Some(scopes) = scopes {
+            let token = ledger_store::auth::Token {
+                id: "tok_0123456789ab".into(),
+                book: "acme".into(),
+                name: "test".into(),
+                scopes: scopes.iter().copied().collect(),
+                created: "2026-10-20T00:00:00Z".into(),
+                sha256: String::new(),
+            };
+            let (mut parts, ()) = axum::http::Request::new(()).into_parts();
+            parts.extensions.insert(crate::access::Caller { token });
+            cx.extensions.insert(parts);
+        }
+        cx
+    }
+
+    const ALL: &[ledger_store::auth::Scope] = &[
+        ledger_store::auth::Scope::Read,
+        ledger_store::auth::Scope::Write,
+        ledger_store::auth::Scope::Post,
+        ledger_store::auth::Scope::Admin,
+    ];
+
+    /// Books served from the data root: calls are checked against their
+    /// caller's token and recorded in the access log beside them.
+    fn logged(tag: &str) -> (BooksServer, TestDir) {
+        let books = unit_dir(tag);
+        let store = store(&books);
+        let log = ledger_store::access::AccessLog::open(&books.0).unwrap();
+        let server = BooksServer::new(store, ReceiptPolicy::default()).with_access(Arc::new(log));
+        (server, books)
+    }
+
+    /// Books whose access log can't be written: its file is a FIFO no one
+    /// reads, so every record fails (as on a full disk).
+    fn unwritable(tag: &str) -> (BooksServer, TestDir) {
+        let books = unit_dir(tag);
+        let store = store(&books);
+        let fifo = books.0.join(ledger_store::access::ACCESS_FILE);
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let path = fifo.clone();
+        let other_end = std::thread::spawn(move || {
+            // The log reads the file whole as it opens (empty: a writer
+            // that goes at once), then opens it to append (a reader that
+            // goes at once): nothing reads what is written after.
+            drop(std::fs::OpenOptions::new().write(true).open(&path).unwrap());
+            drop(std::fs::File::open(&path).unwrap());
+        });
+        let log = ledger_store::access::AccessLog::open(&books.0).unwrap();
+        other_end.join().unwrap();
+        let server = BooksServer::new(store, ReceiptPolicy::default()).with_access(Arc::new(log));
+        (server, books)
+    }
+
+    /// The access log's records: (subject, outcome, whether it carries
+    /// the arguments' digest).
+    fn records(books: &TestDir) -> Vec<(String, ledger_store::access::Outcome, bool)> {
+        ledger_store::access::read(&books.0)
+            .unwrap()
+            .0
+            .into_iter()
+            .map(|r| {
+                (
+                    r.access.subject,
+                    r.access.result,
+                    r.access.args_digest.is_some(),
+                )
+            })
+            .collect()
+    }
+
+    fn refused(code: &str) -> ledger_store::access::Outcome {
+        ledger_store::access::Outcome::Refused(code.into())
+    }
+
+    fn tool_call(name: &str, args: serde_json::Value) -> rmcp::model::CallToolRequestParams {
+        rmcp::model::CallToolRequestParams::new(name.to_string())
+            .with_arguments(args.as_object().cloned().unwrap_or_default())
+    }
+
+    /// A tool's answer: Ok((is it a refusal, its text)), or the protocol
+    /// error.
+    fn answer(
+        out: Result<rmcp::model::CallToolResponse, rmcp::ErrorData>,
+    ) -> Result<(bool, String), rmcp::ErrorData> {
+        match out? {
+            rmcp::model::CallToolResponse::Complete(r) => Ok((
+                r.is_error == Some(true),
+                r.content
+                    .iter()
+                    .find_map(|c| c.as_text().map(|t| t.text.clone()))
+                    .unwrap_or_default(),
+            )),
+            other => panic!("not a complete answer: {other:?}"),
+        }
+    }
+
+    fn rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    /// access.rs INVARIANTS 1-3: a call that reaches the books without a
+    /// Caller, or names a tool no table knows, is refused unrun (fail
+    /// closed), told why in words, and recorded so.
+    #[test]
+    fn a_call_without_a_caller_or_to_no_tool_is_refused_unrun_and_recorded() {
+        rt().block_on(async {
+            let s = session("door").await;
+            let (server, books) = logged("door");
+            let add = || {
+                tool_call(
+                    "books.add_account",
+                    serde_json::json!({"code": "1000", "name": "Cash", "account_type": "asset"}),
+                )
+            };
+            let (refusal, text) =
+                answer(server.call_tool(add(), context(&s.peer, None)).await).unwrap();
+            assert!(refusal, "{text}");
+            assert!(text.contains("without a token"), "{text}");
+            let unknown = tool_call("books.no_such_tool", serde_json::json!({}));
+            let (refusal, text) =
+                answer(server.call_tool(unknown, context(&s.peer, Some(ALL))).await).unwrap();
+            assert!(refusal, "{text}");
+            assert!(text.contains("there is no tool"), "{text}");
+            // Neither ran: the account isn't there.
+            let chart = tool_call("books.chart", serde_json::json!({}));
+            let (refusal, text) =
+                answer(server.call_tool(chart, context(&s.peer, Some(ALL))).await).unwrap();
+            assert!(!refusal, "{text}");
+            assert!(!text.contains("Cash"), "{text}");
+            assert_eq!(
+                records(&books),
+                vec![
+                    ("books.add_account".into(), refused("unauthorized"), true),
+                    ("books.no_such_tool".into(), refused("unknown_tool"), true),
+                    (
+                        "books.chart".into(),
+                        ledger_store::access::Outcome::Ok,
+                        true
+                    ),
+                ]
+            );
+        });
+    }
+
+    /// SharedStore INVARIANT 3: once the books are closing a call or a
+    /// read isn't run, and says so with the not-run code (a JSON-RPC
+    /// server error, which the agents' bridge sends again once the books
+    /// are back); each is recorded as refused.
+    #[test]
+    fn a_call_while_the_books_close_is_refused_as_not_run() {
+        rt().block_on(async {
+            let s = session("closing").await;
+            let (server, books) = logged("closing");
+            server.store.close().await;
+            let chart = tool_call("books.chart", serde_json::json!({}));
+            let e = server
+                .call_tool(chart, context(&s.peer, Some(ALL)))
+                .await
+                .unwrap_err();
+            assert_eq!(e.code.0, NOT_RUN_CLOSING_CODE);
+            assert_eq!(e.message, NOT_RUN_CLOSING);
+            // JSON-RPC 2.0 5.1: -32000 to -32099 is for the server's own
+            // errors.
+            assert!((-32099..=-32000).contains(&NOT_RUN_CLOSING_CODE));
+            assert!((-32099..=-32000).contains(&NOT_RUN_STOPPED_CODE));
+            let read = ReadResourceRequestParams::new("books://chart");
+            let e = server
+                .read_resource(read, context(&s.peer, Some(ALL)))
+                .await
+                .unwrap_err();
+            assert_eq!(e.code.0, NOT_RUN_CLOSING_CODE);
+            assert_eq!(
+                records(&books),
+                vec![
+                    ("books.chart".into(), refused("closing"), true),
+                    ("books://chart".into(), refused("closing"), false),
+                ]
+            );
+        });
+    }
+
+    /// Reading a resource is reading the books (access.rs): only a token
+    /// with books:read reads one, and every read is recorded with what
+    /// came of it.
+    #[test]
+    fn a_resource_is_read_only_with_books_read_and_each_read_is_recorded() {
+        use ledger_store::access::Outcome;
+        rt().block_on(async {
+            let s = session("resources").await;
+            let (server, books) = logged("resources");
+            let read = |uri: &str| ReadResourceRequestParams::new(uri);
+            assert!(
+                server
+                    .read_resource(read("books://chart"), context(&s.peer, Some(ALL)))
+                    .await
+                    .is_ok()
+            );
+            let writer = [ledger_store::auth::Scope::Write];
+            let e = server
+                .read_resource(read("books://chart"), context(&s.peer, Some(&writer[..])))
+                .await
+                .unwrap_err();
+            assert_eq!(e.message, crate::access::INSUFFICIENT_SCOPE);
+            let e = server
+                .read_resource(read("books://chart"), context(&s.peer, None))
+                .await
+                .unwrap_err();
+            assert_eq!(e.message, crate::access::UNAUTHORIZED);
+            // One that ran and failed is an error, not a refusal.
+            assert!(
+                server
+                    .read_resource(read("books://nope"), context(&s.peer, Some(ALL)))
+                    .await
+                    .is_err()
+            );
+            let outcomes: Vec<_> = records(&books).into_iter().map(|r| r.1).collect();
+            assert_eq!(
+                outcomes,
+                vec![
+                    Outcome::Ok,
+                    refused("insufficient_scope"),
+                    refused("unauthorized"),
+                    Outcome::Error,
+                ]
+            );
+        });
+    }
+
+    /// SharedStore INVARIANTS 2-3 at the last moment: a call that passed
+    /// the checks, then found the books closing (or the server stopped)
+    /// as it went to run, isn't run either, and is answered and recorded
+    /// as one refused at the start would be. The settings are held so
+    /// the call waits between its checks and its run.
+    #[test]
+    fn a_call_the_books_close_or_stop_under_is_refused_as_not_run() {
+        let rt = rt();
+        for (how, stops) in [("closes", false), ("stops", true)] {
+            let (server, books) = logged(&format!("late-{how}"));
+            // The settings, held on a thread of their own until released.
+            let (locked, is_locked) = std::sync::mpsc::channel();
+            let (release, released) = std::sync::mpsc::channel::<()>();
+            let settings = server.settings.clone();
+            let holder = std::thread::spawn(move || {
+                let _held = settings.lock().unwrap();
+                locked.send(()).unwrap();
+                let _ = released.recv();
+            });
+            is_locked.recv().unwrap();
+            let answered = rt.block_on(async {
+                let s = session(&format!("late-{how}")).await;
+                let (started, began) = tokio::sync::oneshot::channel();
+                let calling = server.clone();
+                let cx = context(&s.peer, Some(ALL));
+                let call = tokio::spawn(async move {
+                    let _ = started.send(());
+                    let chart = tool_call("books.chart", serde_json::json!({}));
+                    calling.call_tool(chart, cx).await
+                });
+                began.await.unwrap();
+                // Past its checks (no I/O between): waiting for the settings.
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                if stops {
+                    server.store.stop();
+                } else {
+                    server
+                        .store
+                        .closing
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+                release.send(()).unwrap();
+                call.await.unwrap()
+            });
+            holder.join().unwrap();
+            if stops {
+                assert_eq!(answer(answered).unwrap(), (true, STOPPED.to_string()));
+                // Refused after its arguments were taken: their digest too.
+                assert_eq!(
+                    records(&books),
+                    vec![("books.chart".into(), refused("stopped"), true)]
+                );
+            } else {
+                let e = answered.unwrap_err();
+                assert_eq!(e.code.0, NOT_RUN_CLOSING_CODE, "{e:?}");
+                // Its arguments went with the request: no digest.
+                assert_eq!(
+                    records(&books),
+                    vec![("books.chart".into(), refused("closing"), false)]
+                );
+            }
+        }
+    }
+
+    /// access.rs INVARIANT 3: a record that can't be written stops the
+    /// books, and the answer says so; a call or read refused as not run
+    /// (closing) keeps its not-run code, so the bridge still sends it
+    /// again; anything else is an error in words.
+    #[test]
+    fn an_access_record_that_cant_be_written_stops_the_books_and_says_so() {
+        rt().block_on(async {
+            let s = session("unrecorded").await;
+            // A call refused as the books close.
+            let (server, _books) = unwritable("unrecorded-call");
+            server.store.close().await;
+            let chart = tool_call("books.chart", serde_json::json!({}));
+            let e = server
+                .call_tool(chart, context(&s.peer, Some(ALL)))
+                .await
+                .unwrap_err();
+            assert_eq!(e.code.0, NOT_RUN_CLOSING_CODE);
+            assert!(e.message.contains(crate::access::NOT_RECORDED), "{e:?}");
+            assert!(server.store.stopped());
+            // Any other answer refused unrun becomes the words alone.
+            let (server, _books) = unwritable("unrecorded-refusal");
+            let call = crate::access::Call::new(
+                server.access.as_ref().unwrap(),
+                &context(&s.peer, Some(ALL)),
+                "tool",
+                "books.chart",
+            );
+            let out = server
+                .refuse(
+                    Some(&call),
+                    crate::access::STOPPED,
+                    Err(rmcp::ErrorData::internal_error("not run", None)),
+                )
+                .await;
+            assert_eq!(
+                answer(out).unwrap(),
+                (true, crate::access::NOT_RECORDED.to_string())
+            );
+            assert!(server.store.stopped());
+            // A read refused as the books close.
+            let (server, _books) = unwritable("unrecorded-closing-read");
+            server.store.close().await;
+            let e = server
+                .read_resource(
+                    ReadResourceRequestParams::new("books://chart"),
+                    context(&s.peer, Some(ALL)),
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(e.code.0, NOT_RUN_CLOSING_CODE);
+            assert!(e.message.contains(crate::access::NOT_RECORDED), "{e:?}");
+            assert!(server.store.stopped());
+            // A read that ran and failed.
+            let (server, _books) = unwritable("unrecorded-read");
+            let e = server
+                .read_resource(
+                    ReadResourceRequestParams::new("books://nope"),
+                    context(&s.peer, Some(ALL)),
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(e.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
+            assert_eq!(e.message, crate::access::NOT_RECORDED);
+            assert!(server.store.stopped());
+        });
+    }
+
+    /// A request whose blocking work the runtime never ran (it was
+    /// shutting down) is answered as not run, in the words a stopped
+    /// server uses, and stops nothing: only a request that panicked
+    /// stops the books (run_blocking).
+    #[test]
+    fn a_request_the_runtime_never_ran_is_answered_not_run_and_stops_nothing() {
+        let dead = rt();
+        let handle = dead.handle().clone();
+        drop(dead);
+        rt().block_on(async {
+            let s = session("never-ran").await;
+            let (server, _books) = logged("never-ran");
+            let chart = tool_call("books.chart", serde_json::json!({}));
+            let mut call = std::pin::pin!(server.call_tool(chart, context(&s.peer, Some(ALL))));
+            // Its blocking work goes to the runtime that shut down.
+            let out = std::future::poll_fn(|cx| {
+                let _in = handle.enter();
+                call.as_mut().poll(cx)
+            })
+            .await;
+            assert_eq!(answer(out).unwrap(), (true, STOPPED.to_string()));
+            assert!(!server.store.stopped());
+        });
+    }
+
+    /// A tool list differs by caller (scopes.rs): a client on 2026-07-28
+    /// or later is told to cache it for this caller alone, and not to keep
+    /// it; an older one, which knows neither hint, is told neither.
+    #[test]
+    fn a_tool_list_is_cached_only_for_its_caller() {
+        rt().block_on(async {
+            let s = session("hints").await;
+            let books = unit_dir("hints");
+            let server = BooksServer::new(store(&books), ReceiptPolicy::default());
+            for (version, hinted) in [
+                (rmcp::model::ProtocolVersion::V_2026_07_28, true),
+                (rmcp::model::ProtocolVersion::V_2025_11_25, false),
+            ] {
+                let mut cx = context(&s.peer, None);
+                cx.meta.set_protocol_version(version.clone());
+                let list = server.list_tools(None, cx).await.unwrap();
+                assert!(!list.tools.is_empty());
+                assert_eq!(list.ttl_ms, hinted.then_some(0), "{version:?}");
+                assert_eq!(
+                    list.cache_scope,
+                    hinted.then_some(rmcp::model::CacheScope::Private),
+                    "{version:?}"
+                );
+            }
+        });
+    }
 }

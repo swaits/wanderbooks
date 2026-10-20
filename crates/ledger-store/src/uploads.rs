@@ -908,6 +908,135 @@ mod tests {
     }
 
     #[test]
+    fn bytes_that_finish_after_anothers_were_kept_or_held_are_not_kept() {
+        // A send is under way when the books are opened again (its `.part`
+        // dropped as a stopped server's half send) and another send of the
+        // same bytes finishes first: those are kept, or held by a call that
+        // took them. The first send, finishing, finds that and keeps
+        // nothing.
+        for hold in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let u = Uploads::open(dir.path(), NOW).unwrap();
+            let bytes = b"%PDF-1.4 twice".to_vec();
+            let g = grant_for(&u, "tok_a", &bytes);
+            let held = std::cell::RefCell::new(None);
+            let mut body = Forgetting {
+                bytes: &bytes,
+                then: Some(Box::new(|| {
+                    let again = Uploads::open(dir.path(), NOW).unwrap();
+                    again.receive(&g.id, "tok_a", &mut &bytes[..], NOW).unwrap();
+                    if hold {
+                        *held.borrow_mut() = Some(again.take(&g.id, "tok_a", NOW).unwrap());
+                    }
+                })),
+            };
+            assert_eq!(
+                u.receive(&g.id, "tok_a", &mut body, NOW).unwrap_err(),
+                UploadError::AlreadySent,
+                "held: {hold}"
+            );
+            drop(body);
+            // The other send's bytes are what the grant has.
+            let r = held
+                .into_inner()
+                .unwrap_or_else(|| u.take(&g.id, "tok_a", NOW).unwrap());
+            assert_eq!(r.bytes, bytes);
+            assert!(
+                !dir.path()
+                    .join(UPLOADS_DIR)
+                    .join(format!("{}.part", g.id))
+                    .exists()
+            );
+        }
+    }
+
+    #[test]
+    fn a_grant_lasts_fifteen_minutes() {
+        // Plan 4.7: "valid 15 minutes".
+        let dir = tempfile::tempdir().unwrap();
+        let u = Uploads::open(dir.path(), NOW).unwrap();
+        let bytes = b"%PDF-1.4 in time".to_vec();
+        let g = grant_for(&u, "tok_a", &bytes);
+        assert_eq!(g.expires, NOW + 15 * 60);
+        u.receive(&g.id, "tok_a", &mut &bytes[..], NOW + 15 * 60 - 1)
+            .unwrap();
+        assert!(matches!(
+            u.take(&g.id, "tok_a", NOW + 15 * 60).unwrap_err(),
+            UploadError::Unknown(_)
+        ));
+    }
+
+    #[test]
+    fn a_grant_counts_against_its_token_until_the_moment_it_lapses() {
+        let dir = tempfile::tempdir().unwrap();
+        let u = Uploads::open(dir.path(), NOW).unwrap();
+        let g = grant_for(&u, "tok_a", b"x");
+        assert_eq!(u.live_for("tok_a", g.expires - 1), 1);
+        // Lapsed at its expiry, as a send then finds (not yet swept).
+        assert_eq!(u.live_for("tok_a", g.expires), 0);
+        assert_eq!(u.live_for("tok_b", NOW), 0);
+    }
+
+    /// A body that must never be read.
+    struct Unread;
+
+    impl std::io::Read for Unread {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            panic!("bytes already sent are never read again");
+        }
+    }
+
+    #[test]
+    fn bytes_sent_or_held_are_refused_before_anything_more_is_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let u = Uploads::open(dir.path(), NOW).unwrap();
+        let bytes = b"%PDF-1.4 once".to_vec();
+        let g = grant_for(&u, "tok_a", &bytes);
+        u.receive(&g.id, "tok_a", &mut &bytes[..], NOW).unwrap();
+        // Kept: refused at once, whatever comes.
+        assert_eq!(
+            u.receive(&g.id, "tok_a", &mut Unread, NOW).unwrap_err(),
+            UploadError::AlreadySent
+        );
+        // Held by a call: the same.
+        let held = u.take(&g.id, "tok_a", NOW).unwrap();
+        assert_eq!(
+            u.receive(&g.id, "tok_a", &mut Unread, NOW).unwrap_err(),
+            UploadError::AlreadySent
+        );
+        assert!(
+            !dir.path()
+                .join(UPLOADS_DIR)
+                .join(format!("{}.part", g.id))
+                .exists()
+        );
+        drop(held);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_send_the_disk_refuses_says_so_not_that_another_is_under_way() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let u = Uploads::open(dir.path(), NOW).unwrap();
+        let bytes = b"%PDF-1.4 refused".to_vec();
+        let g = grant_for(&u, "tok_a", &bytes);
+        let folder = dir.path().join(UPLOADS_DIR);
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o500)).unwrap();
+        // (Skipped where nothing is refused, as for root.)
+        if std::fs::write(folder.join("probe"), b"").is_err() {
+            assert_eq!(
+                u.receive(&g.id, "tok_a", &mut &bytes[..], NOW).unwrap_err(),
+                UploadError::Io(std::io::ErrorKind::PermissionDenied)
+            );
+        }
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // The grant still stands.
+        let _ = std::fs::remove_file(folder.join("probe"));
+        u.receive(&g.id, "tok_a", &mut &bytes[..], NOW).unwrap();
+    }
+
+    #[test]
     fn a_name_is_plain_and_visible() {
         for ok in ["r.pdf", "Résumé 2026 (final).pdf", "收据.png", "a"] {
             assert_eq!(file_name_problem(ok), None, "{ok}");

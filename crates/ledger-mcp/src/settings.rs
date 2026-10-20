@@ -568,4 +568,19 @@ mod tests {
         live.sync(&books, "USD");
         assert!(live.is_journaled());
     }
+
+    /// Books in the data root keep their own settings from the start
+    /// (INVARIANT 6): before they hold any, the settings in force say so
+    /// too, so no message sends anyone to a settings file; none is read.
+    #[test]
+    fn books_in_the_data_root_keep_their_own_settings_before_they_hold_any() {
+        let mut live = Live::own();
+        assert!(live.current().journaled);
+        assert!(live.is_journaled());
+        assert!(live.file_texts().is_none());
+        live.sync(&ledger_core::settings::Settings::default(), "USD");
+        assert!(live.current().journaled);
+        let s = live.status();
+        assert!(s.journaled && s.books_toml.is_none(), "{s:?}");
+    }
 }

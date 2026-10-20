@@ -31,6 +31,8 @@ pub mod meta;
 pub mod ops;
 pub mod passphrase;
 pub mod reconcilable;
+#[cfg(test)]
+mod refuse;
 pub mod root;
 pub mod saving;
 pub mod schema;

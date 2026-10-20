@@ -580,6 +580,40 @@ mod tests {
     }
 
     #[test]
+    fn a_replacement_names_the_live_token_of_its_own_book_and_name() {
+        let replacing = |old: &str, book: &str, name: &str| {
+            let mut r = created("tok_2", name);
+            r["book"] = book.into();
+            r["replaces"] = old.into();
+            r
+        };
+        // The right one: it takes the old one's place.
+        let p = open_with(&[created("tok_1", "a"), replacing("tok_1", "acme", "a")]).unwrap();
+        let live: Vec<&str> = p.tokens().iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(live, ["tok_2"]);
+        // Any one of id, book or name wrong: a log that contradicts itself.
+        for wrong in [
+            replacing("tok_9", "acme", "a"),
+            replacing("tok_1", "other", "a"),
+            replacing("tok_1", "acme", "b"),
+        ] {
+            let e = open_with(&[created("tok_1", "a"), wrong.clone()]).unwrap_err();
+            assert!(matches!(e, AuthError::Inconsistent(2, _)), "{wrong}: {e}");
+        }
+    }
+
+    #[test]
+    fn a_revocation_ends_the_token_it_names_and_no_other() {
+        let revoked = |id: &str| serde_json::json!({"event": "token.revoked", "id": id});
+        for (gone, left) in [("tok_1", "tok_2"), ("tok_2", "tok_1")] {
+            let p =
+                open_with(&[created("tok_1", "a"), created("tok_2", "b"), revoked(gone)]).unwrap();
+            let live: Vec<&str> = p.tokens().iter().map(|t| t.id.as_str()).collect();
+            assert_eq!(live, [left], "{gone} revoked");
+        }
+    }
+
+    #[test]
     fn a_changed_record_is_found() {
         let dir = tempfile::tempdir().unwrap();
         let mut p = Principals::open(dir.path()).unwrap();

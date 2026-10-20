@@ -442,6 +442,64 @@ mod tests {
     }
 
     #[test]
+    fn a_log_the_disk_wont_read_is_refused_not_taken_for_empty() {
+        // A folder where the log should be: reading it fails, and an empty
+        // log is never made of that.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log.jsonl");
+        std::fs::create_dir(&path).unwrap();
+        assert!(matches!(read(&path, G), Err(ChainError::Io(_))));
+        assert!(matches!(ChainLog::open(&path, G), Err(ChainError::Io(_))));
+    }
+
+    #[test]
+    fn a_log_shows_its_head_but_never_its_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = three(dir.path());
+        let (log, _) = ChainLog::open(&path, G).unwrap();
+        let shown = format!("{log:?}");
+        assert!(shown.starts_with("ChainLog"), "{shown}");
+        assert!(shown.contains("seq: 3"), "{shown}");
+        assert!(shown.contains(&log.head().hash), "{shown}");
+        assert!(shown.contains("broken: false"), "{shown}");
+        assert!(
+            !shown.contains(&dir.path().display().to_string()),
+            "{shown}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_a_new_log_syncs_its_folder_and_only_others_bits_are_taken_away() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = three(dir.path());
+        // The owner's own bits are the owner's: a log 0700 stays 0700.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        drop(ChainLog::open(&path, G).unwrap());
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+        // A folder that can be entered but not listed: a log already in it
+        // opens (its folder's entry for it was synced when it was made);
+        // a new one can't be made there, as its entry can't be synced.
+        let shut = dir.path().join("shut");
+        std::fs::create_dir(&shut).unwrap();
+        let (mut log, _) = ChainLog::open(&shut.join("old.jsonl"), G).unwrap();
+        log.append(fields(1)).unwrap();
+        drop(log);
+        std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o300)).unwrap();
+        if File::open(&shut).is_err() {
+            let (_, records) = ChainLog::open(&shut.join("old.jsonl"), G).unwrap();
+            assert_eq!(records.len(), 1);
+            assert_eq!(
+                ChainLog::open(&shut.join("new.jsonl"), G).unwrap_err(),
+                ChainError::Io(std::io::ErrorKind::PermissionDenied)
+            );
+        }
+        std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    #[test]
     fn an_unfinished_last_line_is_cut_away_on_open() {
         let dir = tempfile::tempdir().unwrap();
         let path = three(dir.path());
@@ -484,6 +542,23 @@ mod tests {
         ] {
             assert!(!e.to_string().contains('/'), "{e}");
         }
+        // Each says what went wrong, and where in the log.
+        assert_eq!(
+            ChainError::Damaged {
+                line: 3,
+                why: "its number is out of order".into(),
+            }
+            .to_string(),
+            "record 3 is damaged: its number is out of order"
+        );
+        assert_eq!(
+            ChainError::Io(std::io::ErrorKind::PermissionDenied).to_string(),
+            "the disk refused: permission denied"
+        );
+        assert_eq!(
+            ChainError::Broken.to_string(),
+            "an earlier record couldn't be written"
+        );
     }
 
     #[cfg(target_os = "linux")]

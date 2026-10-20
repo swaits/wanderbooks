@@ -347,7 +347,7 @@ impl BooksServer {
 
 #[cfg(test)]
 mod tests {
-    use super::plain_file_name;
+    use super::{CALLER, plain_file_name, token_flag};
 
     /// A name kept before names were checked is handed over cleaned, never
     /// refused (a W-9 sealed earlier, say).
@@ -364,6 +364,10 @@ mod tests {
         let long = "x".repeat(400);
         let cut = plain_file_name(&long);
         assert!(cut.len() <= ledger_store::uploads::MAX_NAME_BYTES);
+        // Cut to fit, not dropped: as much of the name as the checks take,
+        // and a name that fits already kept whole.
+        assert_eq!(cut, "x".repeat(255));
+        assert_eq!(plain_file_name(&"y".repeat(255)), "y".repeat(255));
         for n in [
             "W9 \u{2714}\u{FE0F}.pdf",
             "a/b\\c\n.pdf",
@@ -376,5 +380,22 @@ mod tests {
                 "{n:?}"
             );
         }
+    }
+
+    /// A command given to the agent names its token only when it isn't
+    /// the one the commands use by default ("agent"): the command runs as
+    /// the caller, never as another token.
+    #[test]
+    fn a_command_names_the_callers_token_unless_it_is_the_default() {
+        let flag_for = |caller: Option<(&str, &str)>| {
+            CALLER.with(|c| {
+                *c.borrow_mut() = caller.map(|(id, name)| (id.to_string(), name.to_string()))
+            });
+            token_flag()
+        };
+        assert_eq!(flag_for(None), "");
+        assert_eq!(flag_for(Some(("tok_1", "agent"))), "");
+        assert_eq!(flag_for(Some(("tok_2", "reader"))), " --token reader");
+        assert_eq!(flag_for(None), "");
     }
 }

@@ -15,18 +15,20 @@
 //!      XLSX, for the fiscal year containing as_of, through as_of; the
 //!      fixed asset register when an asset was bought by as_of; the
 //!      general ledger and journal (XLSX); the journal through as_of as
-//!      IIF; the 1099 worksheet for as_of's calendar year through as_of
-//!      (or why it can't be made); with members, the K-1 worksheet; a
-//!      README first.
+//!      IIF; the 1099 worksheet for as_of's calendar year through as_of,
+//!      books.vendor_1099's for the package's cash and financing accounts
+//!      (INVARIANT 7), or why it can't be made; with members, the K-1
+//!      worksheet; a README first.
 //!   2. With members, k1-members.csv has one row per member: name, party,
 //!      share, capital account, TIN and type (or last four without a TIN
 //!      source), and the K-1 worksheet's capital figures (ledger_core::k1)
 //!      for the fiscal year to date; the members' total row with more than
-//!      one. The 1099 worksheet adds each payee's party, last four, TIN,
-//!      and type with a TIN source.
+//!      one. The 1099 worksheet is books.vendor_1099's CSV
+//!      (crate::vendor_1099_csv), each payee's TIN and type added with a
+//!      TIN source.
 //!   3. A TIN the source can't give never fails the package: the row says
 //!      why, and so do the README and tin_gaps (members, and 1099 payees
-//!      that are reportable).
+//!      a 1099 is or may be due for).
 //!   4. With include_receipts: every current file behind the year's
 //!      posted entries, filed on them or linked to them, once per entry,
 //!      each with a row in receipts/index.csv; and the company's
@@ -62,7 +64,7 @@ use crate::reports::{
 };
 use crate::text::{csv_escape, money, share_text};
 use crate::tins::{TinSource, tin_type_key};
-use crate::vendor_1099::vendor_1099_report;
+use crate::vendor_1099::{vendor_1099_csv, vendor_1099_csv_name, vendor_1099_worksheet};
 
 /// What the package is built for.
 #[derive(Clone, Copy)]
@@ -95,8 +97,8 @@ pub struct Package {
     pub files: Vec<(String, Vec<u8>)>,
     /// The zip.
     pub zip: Vec<u8>,
-    /// With a TIN source: each member or reportable 1099 payee whose TIN
-    /// the package lacks, and why (INVARIANT 3).
+    /// With a TIN source: each member, or 1099 payee a 1099 is or may be
+    /// due for, whose TIN the package lacks, and why (INVARIANT 3).
     pub tin_gaps: Vec<String>,
     /// The receipts in receipts/ (one per entry they are behind).
     pub receipt_count: usize,
@@ -138,16 +140,8 @@ pub fn build_package<B: PackageBooks + ?Sized>(
     let pdf = |st: &ledger_import::Statement| statement_pdf(st, &meta).map_err(|e| e.to_string());
     let members = report_members(company);
     // One list of each per package (INVARIANT 7).
-    let cash_codes = if req.cash_accounts.is_empty() {
-        settings.cash_accounts
-    } else {
-        req.cash_accounts
-    };
-    let financing_codes = if req.financing_accounts.is_empty() {
-        settings.financing_accounts
-    } else {
-        req.financing_accounts
-    };
+    let payments = settings.with_accounts(req.cash_accounts, req.financing_accounts);
+    let (cash_codes, financing_codes) = (payments.cash_accounts, payments.financing_accounts);
 
     // The financial statements, each as PDF and XLSX.
     let mut statements: Vec<(&str, ledger_import::Statement)> = vec![
@@ -373,68 +367,29 @@ pub fn build_package<B: PackageBooks + ?Sized>(
     ));
     // 1099 worksheet for the calendar year of as_of, through as_of
     // (INVARIANT 6): the payments from January 1, out of the package's
-    // cash and financing accounts (INVARIANT 7).
+    // cash and financing accounts (INVARIANT 7), the same worksheet and
+    // CSV books.vendor_1099 and the viewer hand over for those accounts
+    // and that day (one builder, one figure).
     let year = chrono::Datelike::year(&as_of);
     let mut worksheet_1099 = false;
-    let payments = Settings {
-        cash_accounts: cash_codes,
-        financing_accounts: financing_codes,
-        ..*settings
-    };
-    match vendor_1099_report(ledger, &payments, year, Some(as_of), None) {
-        Ok(r1099) => {
-            let mut w = String::from("vendor,form,w9_on_file,paid,reportable");
-            if tins.is_some() {
-                w.push_str(",party_id,tin_last4,tin,tin_type,tin_note");
-            }
-            w.push('\n');
-            for v in &r1099.vendors {
-                w.push_str(&format!(
-                    "\"{}\",{},{},{},{}",
-                    v.name.replace('"', "\"\""),
-                    v.form.map(|f| f.label()).unwrap_or(""),
-                    v.tin_on_file,
-                    money(v.paid),
-                    v.reportable
-                ));
-                // The payee's full TIN from the source (INVARIANT 2).
-                if let Some(tins) = tins {
-                    let party = ledger.party_of_vendor(v.vendor_id);
-                    let last4 = party
-                        .and_then(|id| ledger.get_party(id))
-                        .and_then(|p| p.tin_last4())
-                        .map(str::to_string);
-                    let got = match party {
-                        None => Err("TIN not in the vault: no party for this vendor".into()),
-                        Some(id) => tins(id),
-                    };
-                    let (tin, kind, note) = match got {
-                        Ok(t) => (
-                            t.formatted(),
-                            tin_type_key(t.kind).to_string(),
-                            String::new(),
-                        ),
-                        Err(why) => {
-                            if v.reportable {
-                                tin_gaps.push(format!("1099 payee {}: {why}", v.name));
-                            }
-                            (String::new(), String::new(), why)
-                        }
-                    };
-                    w.push_str(&format!(
-                        ",{},{},{tin},{kind},{}",
-                        party.map(|id| id.to_string()).unwrap_or_default(),
-                        last4.unwrap_or_default(),
-                        csv_escape(&note)
-                    ));
+    match vendor_1099_worksheet(ledger, &payments, year, None, Some(as_of), tins) {
+        Ok(w) => {
+            // A payee a 1099 is or may be due for, whose TIN the package
+            // lacks (INVARIANT 3).
+            for l in w.lines.iter().filter(|l| l.may_file()) {
+                if let Some(why) = &l.tin_note {
+                    tin_gaps.push(format!("1099 payee {}: {why}", l.name));
                 }
-                w.push('\n');
             }
-            files.push((format!("1099-worksheet-{year}.csv"), w.into_bytes()));
+            files.push((
+                vendor_1099_csv_name(year, false),
+                vendor_1099_csv(&w, tins.is_some()).into_bytes(),
+            ));
             worksheet_1099 = true;
         }
-        // The threshold isn't known for this year: never guess it
-        // (rules.md B-19); say so in the package instead.
+        // The worksheet can't be made (the year's threshold isn't known,
+        // or the package names no cash accounts): never guess (rules.md
+        // B-19); say so in the package instead.
         Err(e) => files.push((
             format!("1099-worksheet-{year}-NOT-INCLUDED.txt"),
             format!("{e}\n").into_bytes(),
@@ -611,7 +566,7 @@ pub fn build_package<B: PackageBooks + ?Sized>(
         },
         worksheet = if worksheet_1099 {
             format!(
-                "1099-worksheet-{year}.csv: cash paid per vendor marked for a 1099{}, against the year's threshold{}.\n",
+                "1099-worksheet-{year}.csv: each vendor paid in {year}{} or decided for a 1099: what counts toward its 1099 against the year's threshold, what was paid by card or payment network (reported by the processor on Form 1099-K, Treas. Reg. §1.6041-1(a)(1)(iv)), what can't be classified until its payment method is recorded, and its 1099 decision with the reason, who made it, and when it took effect{}.\n",
                 if year_end {
                     String::new()
                 } else {

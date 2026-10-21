@@ -103,9 +103,9 @@ the side gives the direction.
 - `cash_accounts`, `financing_accounts`, `investing_accounts` (in
   `[setup]`): arrays of account codes, the statement of cash flows'
   account roles (ASC 230-10-45-10 to 45-15). The cash and financing
-  accounts are also what a payee is paid from, for `vendor_1099_paid` (a
-  payment card is neither: its charges go on Form 1099-K; rules.md B-19);
-  with the cards, what party money is, for
+  accounts are also what a payee is paid from, for `vendor_1099_paid` and
+  `vendor_1099` (a payment card is neither: its charges go on Form
+  1099-K; rules.md B-19); with the cards, what party money is, for
   `party_part` and `party_totals` (B-35 item 5: no `cash_accounts`, every
   asset account but receivables); the cash accounts are what the K-1
   worksheet reads as money (`k1`) and an IIF file's bank accounts (B-34).
@@ -138,6 +138,20 @@ the side gives the direction.
   return from the beginning, `form` `"1099-NEC"` or `"1099-MISC"`; each
   name once. A payee in `setup.parties` with the `vendor` role is that
   party's vendor record; any other is a vendor record of its own.
+- `[[setup.status_changes]]` `{ payee, effective, decision, reason_kind?,
+  reason? }`: a payee's 1099 decision from `effective` (`YYYY-MM-DD`) on
+  (rules.md B-19, D-40: an LLC's corporate election, say): `decision`
+  `"1099-NEC"`, `"1099-MISC"`, `"undetermined"` or `"not_reportable"`,
+  the last with `reason_kind` (`corporation`, `tax_exempt`,
+  `united_states`, `state`, `foreign_government`, `foreign_person`,
+  `merchandise`, `employee`, `other`) and the facts in words (`reason`).
+  Each payment takes the decision in force on its date.
+- `[[setup.instruments]]` `{ label, kind, account, last4?, owner? }`: a
+  payment method (B-19): `kind` `bank`, `business_card`, `member_card`,
+  `member_cash_or_check` or `platform`; `account` the code it pays
+  through; `owner` a party's name (informational). A business card's
+  liability is a card account (B-35 item 5): while none is recorded, a
+  liability whose name says "card", not "gift card", is.
 - `payee` on an event: the payee (by name, one of `setup.payees`) the
   entry paid. Not on a reversal, which takes its original's, nor on a
   close.
@@ -148,7 +162,9 @@ the side gives the direction.
   capital lines or income shares for several: B-35). An entry naming a
   party with a vendor record is tagged with that payee too; with
   `payee` as well, the payee's party is one of the parties.
-  Not on a reversal, which takes its original's.
+- `instrument` on an event: the payment method (a `setup.instruments`
+  label) the entry was paid with. Neither `parties` nor `instrument` on a
+  reversal, which takes its original's.
 - `close = { start, to, rounding? }` as an event: closes the period from
   `start` through the event's `date` (rules.md B-11, B-13), `to`
   `"members"` (split by share, in the order listed) or
@@ -174,14 +190,22 @@ the side gives the direction.
   the changes made after it), not after the last event and every change
   (1 to the number of events; not on a format query).
 
+Party totals and the 1099 worksheet answer different questions (B-35
+item 9): a member paying a contractor through the members' financing
+account is, in party totals, paid to the contractor (money, the
+members' financing being money) and nothing to the member until the
+company reimburses them; on the 1099 worksheet it is the company's
+payment, counted toward the contractor's 1099 unless it was made by card
+(B-19), and undetermined until its payment method is recorded.
+
 ### Queries and their values
 
 A query over a period takes `from` and `to`; a query as of a day takes
 `as_of`; the other is refused. A date left out is resolved by the one
 rule (rules.md B-30) on `setup.today`: an omitted `to` is today, an
 omitted `from` the first day of the fiscal year that holds `to`, an
-omitted `as_of` today (`vendor_1099_paid`, `party_totals` and the
-format queries give theirs). A query no crate
+omitted `as_of` today (`vendor_1099_paid`, `vendor_1099`,
+`party_totals` and the format queries give theirs). A query no crate
 answers is refused, never skipped.
 
 | query | dates | values | checked by |
@@ -194,6 +218,7 @@ answers is refused, never skipped.
 | `members_equity` | `from`, `to` | the statement of changes in members' equity (rules.md B-13): `"<member>.beginning"`, `.contributions`, `.net_income`, `.distributions`, `.other`, `.ending`; the example names the figures it shows | `ledger-core` `tests/bookspec.rs` |
 | `k1` | `from`, `to` | the K-1 worksheet (B-13; Schedule K-1 Item L): `"<member>.beginning"`, `.contributions_cash`, `.contributions_property`, `.net_income`, `.distributions`, `.other`, `.ending`; the example names the figures it shows (`cash_accounts` required) | `ledger-core` `tests/bookspec.rs` |
 | `vendor_1099_paid` | `from` (January 1 of `to`'s year), `to` | each payee's payments that count toward its 1099, by name: out of the cash and financing accounts (`cash_accounts` required), a card's or payment network's left out (B-19), every payee listed | `ledger-core` `tests/bookspec.rs` |
+| `vendor_1099` | `payee`; `from` (January 1 of `to`'s year), `to` | one payee's line of the 1099 worksheet (B-19): `status` (`reportable`, `under_threshold`, `not_reportable` or `undetermined`), `threshold`, `paid` (counts toward its 1099), `excluded_card` (a card's or payment network's: Form 1099-K), `undetermined` (through a financing account, its payment method not recorded), `not_reportable` (paid while decided not reportable), every one given | `ledger-core` `tests/bookspec.rs` |
 | `party_part` | `entry = N`, `party`, no dates | entry N's part for the party (B-35): `resolved`, signed as a line on the party's own account would be (paid or given positive, received negative), the entry's `direction` (`paid`, `received` or `neither`), and what of it moved as money (`cash`) and as property (`in_kind`), every one given | `ledger-core` `tests/bookspec.rs` |
 | `party_totals` | `party`, `basis` (`cash` or `all`), `from`, `to` | what was `paid` to the party and `received` from it over the period (B-35 item 4: basis `cash` money, `all` money and property in kind; each entry on its first original's side), both given | `ledger-core` `tests/bookspec.rs` |
 | `party_tin_last4` | `party`, no dates | `tin_last4`: the party's TIN facts' last four, else its W-9's, `""` for none (B-26) | `ledger-core` `tests/bookspec.rs` |
@@ -208,8 +233,8 @@ answers is refused, never skipped.
 A figure query is a table (`[expect.values]`, or `values = { ... }`); a
 format query, and `uncategorized_accounts`, an array (`values = [ ...
 ]`). `period`, `day` and `calendar_year` give dates and a year,
-`account_names` names, `party_part`'s `direction` and
-`party_tin_last4` words, not figures.
+`account_names` names, `party_part`'s `direction`, `vendor_1099`'s
+`status` and `party_tin_last4` words, not figures.
 
 A command is tried on a copy of the books, as the books' own command
 does it, and changes nothing checked after it. It shows no values: it is

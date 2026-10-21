@@ -542,8 +542,10 @@ every tool over every book in ledger-store's `tests/fixtures/old-books`.
   and card accounts due for reconciliation (`{ code, name,
   reconciled_through?, due_through, next_step }`): the cash accounts
   (`[books] cash_accounts`, else asset accounts named for cash: cash,
-  bank, checking, savings, money market), the card accounts (liabilities
-  named "card", before their first statement), and every other liability
+  bank, checking, savings, money market), the card accounts (the
+  business-card payment methods' liabilities, else liabilities named
+  "card", not "gift", before their first statement:
+  `ledger_core::parties::card_accounts`), and every other liability
   with a recorded statement, that have posted activity through the end of
   last month but no reconciliation (not voided) through it. The viewer's
   Needs attention uses the same rule (`ledger_store::reconcilable`).
@@ -778,23 +780,95 @@ on from it.
 
 ## Tools — 1099 tracking
 
-Payments are counted as cash: credits minus debits to asset accounts on
-entries tagged with the vendor. Card payments move no asset (the card
-processor's 1099-K covers them), so they drop out; reversals of tagged
-entries carry the tag and net out. Thresholds: $600 for payments through
-2025, $2,000 from 2026 (indexed for inflation after 2026); always
-overridable, always for the CPA to confirm. The books keep whether a W-9
-is on file and the TIN's last four; full TINs live only in the TIN vault
-("Tools — the TIN vault").
+What counts toward a vendor's 1099 is what left the books' cash accounts
+(`books.cash_accounts`) and financing accounts (`books.financing_accounts`)
+on entries tagged with the vendor, classified by how each payment was made
+(rules.md B-19; plan P3, defects 12, 18 and 23; D-40):
+
+- out of a cash account with no payment method recorded: counts
+  (presumed check, ACH or transfer; tag a debit-card payment with the
+  card);
+- by card or payment network (a method of that kind, or a company card's
+  account): excluded, the processor's Form 1099-K, whoever's card it was
+  (Treas. Reg. §1.6041-1(a)(1)(iv));
+- through a financing account (a member paid), or the account of a
+  member's or a platform's method, with no method recorded:
+  undetermined, until it is (their card: excluded; their own cash or
+  check: counts, the company being the payor, §1.6041-1(e)(1)).
+
+Money moved between the company's own sources (the card bill, a member
+reimbursed, a loan paid down) pays no one; money received from a vendor
+for anything but a refund of what was paid (a sale, its payment of an
+invoice, a disposal, a loan) isn't netted and is listed.
+Books with no cash accounts named are refused. Thresholds: $600 for
+payments through 2025, $2,000 from 2026 (Pub. L. 119-21 §70433; indexed
+for inflation after 2026); always overridable, always for the CPA to
+confirm. The books keep whether a W-9 is on file and the TIN's last four;
+full TINs live only in the TIN vault ("Tools — the TIN vault").
+
+Each vendor has a 1099 decision: `nec`, `misc`, `not_reportable` with a
+reason kind (`corporation`, `tax_exempt`, `united_states`, `state`,
+`foreign_government`, `foreign_person`, `merchandise`, `employee`, `other`)
+and the facts in words, or `undetermined` (also what a vendor nobody
+decided on reads as). Each is recorded with who decided and when, and the
+date it takes effect, or none (from the beginning: the vendor's status
+all along, and every decision written before decisions were kept). Each
+payment takes the decision in force on its date (its reversal chain's
+first entry's).
 
 - `books.list_vendors {}` → `{ vendors: [{ id, name, form_1099?,
-  tin_on_file, party_id }] }`.
-- `books.set_vendor_1099 { vendor, form_1099: "nec" | "misc" | "none",
-  tin_on_file? }` → the vendor. `vendor` is an id or a name.
+  decision_1099, decisions_1099, tin_on_file, party_id }] }`.
+  `decision_1099` is the decision in force today, `{ value, reason_kind?,
+  reason?, authority?, effective?, decided_by?, decided_on?, citation?,
+  note? }` (`authority`: the rule that exempts the reason kind; no
+  `decided_by`: nobody decided); `decisions_1099` every recorded
+  decision, in date order; `form_1099` "1099-NEC" or "1099-MISC" when
+  today's decision files one.
+- `books.set_vendor_1099 { vendor, form_1099?, reason_kind?, reason?,
+  effective?, tin_on_file?, decided_by?, decided_on?, citation?, note? }`
+  → the vendor, with `changed` ("set", "removed", "unchanged") and
+  `warnings`. `vendor` is an id or a name. With `form_1099` (`nec`,
+  `misc`, `not_reportable`, `undetermined`), `decided_by` is required
+  (`decided_on` defaults to today); `not_reportable` takes `reason_kind`
+  and `reason` (`other` a `citation` too), no other value takes them.
+  "none" is refused, saying what to say instead; paid by card is never a
+  reason. `effective` (YYYY-MM-DD) only when the payee's status changed:
+  an LLC's corporate election from its Form 8832 date; a payee that
+  incorporates is a new vendor. A dated decision with nothing decided
+  before it is refused; one the same as the decision before its date
+  takes out any decision recorded for that date ("removed"); recorded
+  again exactly so, nothing is journaled ("unchanged"). Without
+  `form_1099`, `tin_on_file` alone marks the W-9, keeping the decision and
+  who made it; `tin_on_file` omitted keeps the flag. `warnings` names each
+  year (and its entries) whose payments the change reaches in a closed
+  period or after that year's 1099s were due (January 31 of the next
+  year): tell the human, a filed 1099 may need correcting. Journaled as
+  `vendor.1099_set` (a W-9 flag alone as `vendor.w9_flag_set`), after a
+  `journal.format_set` declaring the `vendor_1099_decisions` feature once.
+- `books.add_instrument { kind, label, last4?, owner_party?, account }` →
+  `{ id, kind, card_or_network, label, last4?, owner_party?, account_id,
+  account, warnings }`. `kind`: `bank` (the company's checks, ACH, wires,
+  bill-pay), `business_card` (a company card the payee charged),
+  `member_card` (a member's personal card the payee charged),
+  `member_cash_or_check` (a member's own cash, check, ACH, Zelle, or a
+  friends-and-family transfer), `platform` (paid to the payee as a seller
+  through PayPal or Venmo goods and services; never ACH, bill-pay, Zelle or
+  friends-and-family). `account` (id or code) is what it pays through: the
+  bank account, the card's liability, Due to Members for a member's own
+  card or cash; an asset or liability, not a header, not payables or
+  receivables. `label` is unique (ignoring case); `last4` exactly four
+  digits. Journaled as `instrument.added` (feature `payment_instruments`).
+- `books.instruments {}` → `{ instruments: [...] }`, by id. Read-only.
+- `books.set_entry_instrument { entry_id, instrument? }` → the entry (as
+  `books.get_entry`), with `changed` and `warnings` (as above). An id or
+  label; omit to clear. Metadata only: drafts and posted entries alike;
+  the entry and its reversals are tagged together. Journaled as
+  `entry.instrument_set`.
 - `books.set_entry_vendor { entry_id, vendor? }` → the entry (as
-  `books.get_entry`, which now shows `vendor`). Omitting `vendor` clears
-  the tag. Metadata only: posted entries may be tagged. `books.draft_entry`
-  takes `vendor` too; bills and their payments are tagged automatically.
+  `books.get_entry`, which shows `vendor`, and `instrument` and
+  `instrument_id`). Omitting `vendor` clears the tag. Metadata only:
+  posted entries may be tagged. `books.draft_entry` takes `vendor` and
+  `instrument` too; bills and their payments are tagged automatically.
   `books.set_entry_party` tags the vendor too when the party has a vendor
   record, so tagging by party counts for 1099s the same way. On an entry
   naming several parties the parties are `books.set_entry_party`'s:
@@ -802,27 +876,60 @@ is on file and the TIN's last four; full TINs live only in the TIN vault
   is; tagging a vendor whose party isn't named, or clearing the tag while
   its party is named, is refused (drop or add the party with `parties`
   instead). An entry and its reversal always carry the same tags.
-- `books.vendor_1099 { year, threshold?, include_tins?, csv? }` →
-  `{ year, threshold, vendors: [{ vendor_id, name, form_1099?, tin_on_file,
-  paid, reportable, party_id?, tin_last4?, tin?, tin_type?, tin_note? }],
-  missing_w9, notes, warning?, csv? }`. For a year whose threshold
+- `books.vendor_1099 { year, threshold?, include_tins?, csv?,
+  cash_accounts?, financing_accounts?, through? }` →
+  `{ year, threshold, vendors: [{ vendor_id, name, form_1099?,
+  decision_1099, decisions_in_year, tin_on_file, paid, excluded_card,
+  undetermined, not_reportable, status, decision_needed, reportable,
+  party_id?, tin_last4?, tin?, tin_type?, tin_note? }], missing_w9,
+  excluded_card_payments, undetermined_payments, other_receipts,
+  untagged_entries, unresolved, notes, warning?, csv? }`. `paid` is what
+  counts toward the 1099; `excluded_card` what a card or network paid;
+  `undetermined` what waits on its payment method; `not_reportable` what
+  was paid while the vendor was decided not reportable. `status`:
+  `reportable` (file one: what counts reaches the threshold however the
+  unknowns settle), `under_threshold`, `not_reportable`, or
+  `undetermined` (a decision or a method is needed first;
+  `decision_needed` says which); `reportable` is `status = reportable`.
+  Each payment list is `[{ entry_id, date, vendor_id, vendor, amount,
+  instrument? }]`. `missing_w9` names the vendors a 1099 is or may be
+  ("(may be reportable)") due for without a W-9. The notes are quiet:
+  untagged entries are one count (those that paid money out for
+  something) with the tool to tag them. For a year whose threshold
   wanderbooks doesn't know (after 2026 until the indexed amount is added)
-  it refuses with what to do; pass `threshold` explicitly once the figure
-  is confirmed. On an entry naming several parties, `paid` counts only
-  the vendor's resolved share of the payment (rules.md B-19); an entry
-  whose shares don't resolve counts in full and `notes` names it.
-  `tin_last4` comes from the party's W-9 facts. With
-  `include_tins: true` (default false) each line carries `tin`, the full
-  TIN formatted as the IRS writes it (123-45-6789; 12-3456789 for an
-  EIN), and `tin_type`, read from the vault, or `tin_note` saying why not
-  (not in the vault, the vault locked, a record whose last four or hash
-  disagree with the books); `warning` then says "This worksheet holds
-  full TINs, for the CPA; keep it out of the books.". This is the only
-  tool output that ever holds a full TIN. `csv: true` (default false)
-  also hands the worksheet over as a CSV file, `csv` (a `HandedFile`,
-  "Tools — the TIN vault"), named `1099-worksheet-<year>.csv`, or
-  `1099-worksheet-<year>-with-tins.csv` with `include_tins` (TINs only
-  then).
+  it refuses with what to do; pass `threshold` explicitly once the
+  figure is confirmed. Payments are counted out of `cash_accounts` and
+  `financing_accounts` (account codes; each defaults to the `[books]`
+  setting, the CPA package's rule: `ledger_package::Settings::with_accounts`;
+  a code the chart lacks is refused), from January 1 of `year` through
+  `through` when given (`YYYY-MM-DD`, a day of `year`: the worksheet as of
+  a day, rules.md B-33), else the whole year. On an entry naming several
+  parties, the buckets count only the vendor's resolved share of the
+  payment, split across them to the cent (rules.md B-19); an entry whose
+  shares don't resolve counts in full and `notes` names it. `tin_last4`
+  is the party's TIN facts' last four, else its W-9 facts'
+  (`Party::tin_last4`). With `include_tins: true` (default false) each
+  line carries `tin`, the full TIN formatted as the IRS writes it (123-45-6789;
+  12-3456789 for an EIN), and `tin_type`, read from the vault, or
+  `tin_note` saying why not (not in the vault, the vault locked, a record
+  whose last four or hash disagree with the books); `warning` then says
+  "This worksheet holds full TINs, for the CPA; keep it out of the
+  books.". This is the only tool output that ever holds a full TIN.
+  `csv: true` (default false) also hands the worksheet over as a CSV file,
+  `csv` (a `HandedFile`, "Tools — the TIN vault"), named
+  `1099-worksheet-<year>.csv`, or `1099-worksheet-<year>-with-tins.csv`
+  with `include_tins` (TINs only then): `vendor_id, name, decision_1099,
+  form_1099, reason_kind, reason, decided_by, decided_on, effective,
+  decisions_in_year, paid, excluded_card, undetermined, not_reportable,
+  status, reportable, w9_on_file, tin_last4` (and `tin, tin_type,
+  tin_note`). The CPA package carries the same CSV: one list of cash
+  accounts and one of financing accounts per package, the request's, else
+  the settings', for every file in it (R18), the 1099 worksheet through
+  the package's `as_of`; so `books.vendor_1099` given the package's
+  `cash_accounts`, `financing_accounts` and `through` = `as_of` (and its
+  `include_tins`) hands over the package's `1099-worksheet-<year>.csv`
+  byte for byte (the tool names one with TINs `-with-tins`; checked by `ledger-mcp` `oracle_mcp.rs`
+  `cpa_package_holds_the_year_and_its_evidence`).
 
 ## Tools — parties
 
@@ -875,8 +982,8 @@ texts are at most 500 characters, no control characters.
   w9_content_base64?, w9_sha256?, w9_file_name? }` or `{ party, clear:
   true }` → the party. Journaled as `party.w9_set`. A party with a
   vendor record also gets the record's `tin_on_file` set to match
-  (journaled as `vendor.1099_set`), so `books.vendor_1099`'s
-  `missing_w9` follows.
+  (journaled as `vendor.w9_flag_set`, its 1099 decision and who made it
+  kept), so `books.vendor_1099`'s `missing_w9` follows.
   `tin` and `tin_type` put the full TIN in the TIN vault, and the signed
   form (`w9_upload_id`, or `w9_content_base64` with `w9_sha256`, as in
   "Tools — receipts & documents") goes there too (below); with them
@@ -992,8 +1099,11 @@ rules.md B-35):
   posted entries dated in the year count.
 - *Money accounts* (B-35 item 5, P3 defect 24): the `[books]
   cash_accounts` (every asset account but receivables when none are set),
-  the cards (liability accounts whose names say "card", not "gift card":
-  the rule the reconciliation reminders read), and the `[books]
+  the cards (the business-card payment methods' liability accounts,
+  `books.instruments`; while the books record none, the liability
+  accounts whose names say "card", not "gift card"; never a member's
+  card or a platform's account: the one rule the reconciliation reminders
+  and the viewer read), and the `[books]
   financing_accounts` (what the members advanced, loans). Any other
   liability (an accrued expense, deferred revenue, gift cards sold,
   distributions payable) is a promise, counted when it is settled, never
@@ -1022,9 +1132,11 @@ rules.md B-35):
 - `invoiced` / `billed`: its invoices' and bills' totals dated in the year.
   `owed` / `receivable`: its open bills' and invoices' balances now (every
   year).
-- `amount_1099` (vendor parties only): what `books.vendor_1099` counts as
-  paid to its vendor record in the year (asset accounts only, so card
-  payments drop out); `form_1099` is the record's mark.
+- `amount_1099` (vendor parties only): what `books.vendor_1099` counts
+  toward its vendor record's 1099 in the year (its `paid`: card and
+  network payments excluded, member payments with no method recorded
+  undetermined; absent when the worksheet can't be made); `form_1099` and
+  `decision_1099` are the record's decision in force today.
 - `gross_pay` / `net_pay`: payroll lines naming it, in the year.
 
 ## Tools — the TIN vault
@@ -1400,7 +1512,8 @@ posting.
   matches accounts by name (tell a CPA who imported an earlier IIF), says
   when sub-accounts' full names change with it, when the new name moves
   the account into or out of the cash accounts (`books.cash_accounts`
-  unset: picked by name) or the card accounts (named "card"), and lists
+  unset: picked by name) or the card accounts (named "card", while no
+  business-card payment method is recorded), and lists
   conventions whose text names the old name.
 - `books.set_tax_category { account, category?, deductible_percent? }`:
   map a revenue or expense account to a category (null clears),
@@ -1711,10 +1824,13 @@ entries.
   member role, as the viewer's capital statement finds it; with none, the
   member's TIN is a gap.
   **1099 worksheet** (`1099-worksheet-<year>.csv`, `as_of`'s calendar
-  year): the payments from January 1 through `as_of` (the year to date;
-  the whole year for a December 31 package; DECISION D-36), and the
-  README says which. With TINs it adds `party_id, tin_last4, tin,
-  tin_type, tin_note`. A zip with the full set, each
+  year) is `books.vendor_1099`'s CSV (above) for the package's cash and
+  financing accounts: the payments from January 1 through `as_of` (the
+  year to date; the whole year for a December 31 package; DECISION D-36),
+  and the README says which. `books.vendor_1099` given the same
+  `cash_accounts`, `financing_accounts` and `through` hands over the
+  identical file. With TINs it adds `tin, tin_type, tin_note`. A zip with
+  the full set, each
   statement as PDF and XLSX: `profit-and-loss`, `balance-sheet`,
   `cash-flow` (the direct method, as `books.export` prints it: operating
   by class, investing and financing by kind with each member named, and

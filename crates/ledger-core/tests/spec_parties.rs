@@ -1689,7 +1689,7 @@ mod shares {
         members: Vec<PartyMember>,
     }
 
-    /// Bluevine 1000, Due to Shareholders 2100, capital 3000 and 3001,
+    /// Quillmere 1000, Due to Shareholders 2100, capital 3000 and 3001,
     /// equipment 1500, an expense 6050; members Tobin and Morgan at
     /// 50/50; a party Acme (no records).
     fn books() -> Books {

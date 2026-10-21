@@ -33,6 +33,7 @@ const TYPES: &[&str] = &[
     "schedule.posted", "schedule.registered", "vendor.1099_set", "vendor.added",
     "journal.format_set", "settings.set", "convention.set", "convention.retired",
     "decision.recorded", "open_item.raised", "open_item.resolved", "entry.approved",
+    "vendor.w9_flag_set", "instrument.added", "entry.instrument_set",
 ];
 
 const FIELDS: &[&str] = &[
@@ -48,13 +49,14 @@ const FIELDS: &[&str] = &[
     "total", "useful_life_months", "vendor_id", "type", "account_type", "rounding",
     "members", "distributions", "sweep", "format", "features", "changes", "key", "value",
     "source", "decided_by", "decided_on", "kind", "title", "body_md", "structured", "subject",
-    "decision_md", "supersedes", "resolution", "approver", "previous",
+    "decision_md", "supersedes", "resolution", "approver", "previous", "form_1099",
+    "reason_kind", "effective", "instrument_id", "label", "last4", "owner_party_id",
 ];
 
 /// A value replay might plausibly see: small ids, amounts as decimal
 /// strings, dates, sides, currencies, account types, nested objects.
 fn value(u: &mut Unstructured, depth: u32) -> arbitrary::Result<Value> {
-    Ok(match u.int_in_range(0..=11)? {
+    Ok(match u.int_in_range(0..=12)? {
         0 => json!(u.int_in_range(0u64..=6)?),
         1 => json!(format!("{}.{:02}", u.int_in_range(0u32..=5000)?, u.int_in_range(0u32..=99)?)),
         2 => json!(format!("2026-{:02}-{:02}", u.int_in_range(1u32..=12)?, u.int_in_range(1u32..=28)?)),
@@ -69,6 +71,8 @@ fn value(u: &mut Unstructured, depth: u32) -> arbitrary::Result<Value> {
             Value::Array((0..n).map(|_| object(u, depth + 1)).collect::<arbitrary::Result<_>>()?)
         }
         10 if depth < 2 => object(u, depth + 1)?,
+        // 1099 decisions and payment methods (plan P3).
+        11 => json!(*u.choose(&["nec", "misc", "not_reportable", "corporation", "business_card", "member_card", "0042"])?),
         _ => json!(String::arbitrary(u)?),
     })
 }

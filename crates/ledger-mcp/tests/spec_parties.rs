@@ -761,7 +761,7 @@ fn set_entry_party_tags_the_vendor_so_vendor_1099_counts_it() {
     m.ok("books.add_vendor", json!({"name": "Landlord LLC"}));
     m.ok(
         "books.set_vendor_1099",
-        json!({"vendor": "Landlord LLC", "form_1099": "misc"}),
+        json!({"vendor": "Landlord LLC", "form_1099": "misc", "decided_by": "Test Owner"}),
     );
     let rent = m.post(
         "2026-02-01",
@@ -862,7 +862,7 @@ fn party_totals_match_a_hand_computed_year() {
         .unwrap();
     m.ok(
         "books.set_vendor_1099",
-        json!({"vendor": "Acme Design", "form_1099": "nec"}),
+        json!({"vendor": "Acme Design", "form_1099": "nec", "decided_by": "Test Owner"}),
     );
     let acme = json!({"party": "Acme Design"});
     // Last year: not in 2026.
@@ -1122,7 +1122,7 @@ fn parties_lists_by_id_and_filters_by_role() {
     let mut m = books("list");
     let a = m.add_party("Acme Design", &["contractor"]);
     let i = m.add_party("IRS", &["tax_agency"]);
-    let b = m.add_party("Bluevine", &["financial_institution"]);
+    let b = m.add_party("Quillmere", &["financial_institution"]);
     let u = m.add_party("Utah Division of Corporations", &["government_agency"]);
     let all = m.read_only("books.parties", json!({}));
     assert!(all["year"].is_i64(), "defaults to this year");
@@ -1284,7 +1284,7 @@ fn require_refuses_until_tagged_or_marked_none() {
         m.read_only("books.settings", json!({}))["parties"],
         "require"
     );
-    let bank = m.add_party("Bluevine", &["financial_institution"]);
+    let bank = m.add_party("Quillmere", &["financial_institution"]);
     let id = m.draft(
         "2026-03-01",
         json!({}),
@@ -1323,18 +1323,18 @@ fn require_refuses_until_tagged_or_marked_none() {
     // Both at once is refused.
     let e = m.refuse(
         "books.draft_entry",
-        json!({"date": "2026-03-03", "description": "x", "party": "Bluevine", "no_party_reason": "none"}),
+        json!({"date": "2026-03-03", "description": "x", "party": "Quillmere", "no_party_reason": "none"}),
     );
     assert!(e.contains("no_party_reason"), "{e}");
     let e = m.refuse(
         "books.set_entry_party",
-        json!({"entry_id": t, "party": "Bluevine", "no_party_reason": "none"}),
+        json!({"entry_id": t, "party": "Quillmere", "no_party_reason": "none"}),
     );
     assert!(e.contains("not both"), "{e}");
     // Tagging later clears the mark; marking again needs no party.
     m.ok(
         "books.set_entry_party",
-        json!({"entry_id": t, "party": "Bluevine"}),
+        json!({"entry_id": t, "party": "Quillmere"}),
     );
     m.ok(
         "books.set_entry_party",

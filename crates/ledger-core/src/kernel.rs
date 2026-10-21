@@ -25,6 +25,9 @@
 //! * a trial balance puts each movement in exactly one column, so its
 //!   columns differ by the net of all movements (B-6);
 //! * a closing line zeroes the account it closes (B-11);
+//! * a payment to a vendor splits, line by line, into what counts toward
+//!   its 1099, what a card or payment network paid, and what is unknown,
+//!   and money moved between the company's own sources nets out (B-19);
 //! * an allocation's parts sum to the whole, to the last unit, by largest
 //!   remainder (B-13);
 //! * a cumulative allocation hands out exactly the new amount, and leaves
@@ -271,6 +274,162 @@ pub fn closing_line<T: Amount>(movement: T) -> Option<(Side, T)> {
 /// zeroing a movement of `c` are the same line.
 pub fn credit_line<T: Amount>(credit: T) -> Option<(Side, T)> {
     closing_line(credit)
+}
+
+// ---------------------------------------------------------------------------
+// 1099 payments: where each payment line goes (rules.md B-19)
+// ---------------------------------------------------------------------------
+
+/// A line's role in a payment to a vendor, from its account.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PayRole {
+    /// One of the books' cash accounts: bank, cash on hand.
+    Cash,
+    /// One of the books' financing liabilities (what members or lenders
+    /// paid on the company's behalf), or an account a member's card or
+    /// cash, or a payment platform, pays through: how a payment through
+    /// it was made, only the entry's method says.
+    Financing,
+    /// The account of a company card (a business card's liability).
+    CardAccount,
+    /// None of these (an expense, payables, prepaid): not a payment line.
+    Other,
+}
+
+/// What an entry's payment-method tag says about one of its lines.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tag {
+    /// The entry has no payment method recorded.
+    None,
+    /// The method pays through this line's account and is a card or a
+    /// payment network.
+    ThisCard,
+    /// The method pays through this line's account and is neither (the
+    /// company's bank, a member's own cash or check).
+    ThisOther,
+    /// The method pays through another account: it doesn't describe this
+    /// line.
+    Elsewhere,
+}
+
+/// Where a payment line's amount goes on the 1099 worksheet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Bucket {
+    /// Counts toward the payee's 1099.
+    Counts,
+    /// Paid by card or payment network: Form 1099-K's, never 1099-NEC or
+    /// 1099-MISC's.
+    Card,
+    /// Can't be classified until the payment method is recorded.
+    Undetermined,
+}
+
+impl Bucket {
+    /// Every bucket, in [`split_payment`]'s order.
+    pub const ALL: [Bucket; 3] = [Bucket::Counts, Bucket::Card, Bucket::Undetermined];
+
+    /// Its place in [`split_payment`]'s array.
+    pub const fn index(self) -> usize {
+        match self {
+            Bucket::Counts => 0,
+            Bucket::Card => 1,
+            Bucket::Undetermined => 2,
+        }
+    }
+}
+
+/// The bucket a payment line goes in, from its role and the entry's tag.
+///
+/// ```text
+/// GOAL: every payment line to a vendor counts toward its 1099, is a card
+///       or payment-network payment (Form 1099-K), or is unknown; never
+///       guessed.
+/// SOURCE: docs/spec/rules.md B-19 (Treas. Reg. §1.6041-1(a)(1)(iv): a
+///         transaction reportable under §6050W is not reported under
+///         §6041; §1.6041-1(e)(1): a member writing a check at the
+///         company's direction doesn't make the member the payor;
+///         sources/irs-1099-payment-method.md); DECISION D-40 (owner,
+///         2026-10-20: a bank payment with no method recorded counts).
+/// INVARIANTS (first match wins):
+///   1. The tag names this line's account: Card for a card or network,
+///      else Counts.
+///   2. Otherwise the role decides: Cash counts (presumed check, ACH or
+///      transfer, D-40); Financing is Undetermined (a member's card or
+///      their check, unknown until tagged); CardAccount is Card; Other is
+///      no payment line (None).
+/// ```
+pub fn payment_bucket(role: PayRole, tag: Tag) -> Option<Bucket> {
+    match (tag, role) {
+        (Tag::ThisCard, _) => Some(Bucket::Card),
+        (Tag::ThisOther, _) => Some(Bucket::Counts),
+        (Tag::None | Tag::Elsewhere, PayRole::Cash) => Some(Bucket::Counts),
+        (Tag::None | Tag::Elsewhere, PayRole::Financing) => Some(Bucket::Undetermined),
+        (Tag::None | Tag::Elsewhere, PayRole::CardAccount) => Some(Bucket::Card),
+        (Tag::None | Tag::Elsewhere, PayRole::Other) => None,
+    }
+}
+
+/// What an entry paid, per bucket: credits minus debits of the lines in
+/// each (a line in no bucket is not a payment line). `None` on overflow.
+pub fn split_payment<T: Amount>(lines: &[(Option<Bucket>, Side, T)]) -> Option<[T; 3]> {
+    let mut out = [T::ZERO; 3];
+    for &(bucket, side, amount) in lines {
+        if let Some(b) = bucket {
+            let i = b.index();
+            out[i] = match side {
+                Side::Credit => out[i].checked_add(amount)?,
+                Side::Debit => out[i].checked_sub(amount)?,
+            };
+        }
+    }
+    Some(out)
+}
+
+/// Net one entry's buckets ([`split_payment`]): money moved between the
+/// company's own payment sources pays no one.
+///
+/// ```text
+/// GOAL: a card bill paid from the bank, a member reimbursed, or a loan
+///       paid down never counts toward a vendor's 1099.
+/// SOURCE: docs/spec/rules.md B-19 (26 U.S.C. §6041(a): payments made to
+///         the payee; P3 review R1, 2026-10-20).
+/// INVARIANTS:
+///   1. The buckets' sum P is kept exactly.
+///   2. No bucket ends opposite in sign to P.
+///   3. Buckets all of one sign (zeros aside) come back unchanged.
+/// SCENARIOS:
+///   1. IF the signs differ and P = 0 (Dr 2050 / Cr 1000, the card bill):
+///      SHOULD be [0, 0, 0].
+///   2. IF the signs differ and exactly one bucket has P's sign: SHOULD
+///      give it P and the others 0.
+///   3. IF two buckets have P's sign: SHOULD put P in Undetermined
+///      BECAUSE which source the other side offsets is unknown (split
+///      the entry).
+/// ```
+pub fn net_buckets<T: Amount>(b: [T; 3]) -> Option<[T; 3]> {
+    let positive = b.iter().any(|&x| x > T::ZERO);
+    let negative = b.iter().any(|&x| x < T::ZERO);
+    if !(positive && negative) {
+        return Some(b);
+    }
+    let p = b[0].checked_add(b[1])?.checked_add(b[2])?;
+    let mut out = [T::ZERO; 3];
+    if p == T::ZERO {
+        return Some(out);
+    }
+    let mut taker = Bucket::Undetermined.index();
+    let mut takers = 0;
+    for (i, &x) in b.iter().enumerate() {
+        if x != T::ZERO && (x > T::ZERO) == (p > T::ZERO) {
+            taker = i;
+            takers += 1;
+        }
+    }
+    if takers != 1 {
+        taker = Bucket::Undetermined.index();
+    }
+    out[taker] = p;
+    Some(out)
 }
 
 /// Make rounded parts sum to the whole: the last part becomes `whole`

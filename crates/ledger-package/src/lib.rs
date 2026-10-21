@@ -41,6 +41,7 @@ pub use reports::{
 pub use text::{csv_escape, money, parse_date, share_text};
 pub use tins::{TinSource, tin_kind, tin_type_key, vault_tin};
 pub use vendor_1099::{
-    Vendor1099Worksheet, Vendor1099WorksheetLine, form_1099_label, payment_accounts,
-    vendor_1099_csv, vendor_1099_csv_name, vendor_1099_report, vendor_1099_worksheet,
+    VENDOR_1099_CSV_HEADER, Vendor1099Worksheet, Vendor1099WorksheetLine, form_1099_label,
+    payment_accounts, vendor_1099_csv, vendor_1099_csv_name, vendor_1099_report,
+    vendor_1099_worksheet,
 };

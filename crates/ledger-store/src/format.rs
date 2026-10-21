@@ -36,14 +36,17 @@ pub const SUPPORTED_JOURNAL_FORMAT: u32 = 2;
 /// older version can't read: a new event type (which it would refuse as
 /// unknown), or a field or value on an event type it knows (which it
 /// would misread silently). A writer declares the feature
-/// (`journal.format_set`) before its first such line, so the older
-/// version stops there instead (rules.md B-27). Books that never use one
-/// stay readable by versions before it.
+/// (`journal.format_set`) before its first such line
+/// ([`crate::Store`]'s `ensure_feature`), so the older version stops
+/// there instead (rules.md B-27). Books that never use one stay readable
+/// by versions before it.
 pub const KNOWN_FEATURES: &[&str] = &[
     MEMBERS_CUMULATIVE,
     FEATURE_ACCOUNT_RENAMED,
     FEATURE_REQUIRE_TAX_CATEGORY,
     PARTY_CREDITORS,
+    PAYMENT_INSTRUMENTS,
+    VENDOR_1099_DECISIONS,
 ];
 
 /// Feature: `period.closed` closes to members with `"rounding":
@@ -74,6 +77,16 @@ pub(crate) fn setting_feature(key: &str) -> Option<&'static str> {
 /// The feature `party.creditor_set` lines need: a party named the
 /// creditor of a liability (rules.md B-35, P3 defect 24).
 pub const PARTY_CREDITORS: &str = "party_creditors";
+
+/// Payment methods (`instrument.added`) and the entries tagged with one
+/// (`entry.instrument_set`): plan P3, defect 12.
+pub const PAYMENT_INSTRUMENTS: &str = "payment_instruments";
+
+/// 1099 decisions kept as decisions (`vendor.1099_set` with
+/// `not_reportable`, its reason, the date it takes effect and who decided:
+/// plan P3, defects 18 and 23, D-40) and W-9 flags kept apart from them
+/// (`vendor.w9_flag_set`).
+pub const VENDOR_1099_DECISIONS: &str = "vendor_1099_decisions";
 
 /// The line type that declares the journal format.
 pub const FORMAT_SET: &str = "journal.format_set";
@@ -107,6 +120,7 @@ pub const EVENT_TYPES: &[&str] = &[
     "document.filed",
     "entry.approved",
     "entry.created",
+    "entry.instrument_set",
     "entry.line_added",
     "entry.line_class_set",
     "entry.no_party",
@@ -118,6 +132,7 @@ pub const EVENT_TYPES: &[&str] = &[
     "fx.rate_set",
     "invoice.created",
     "invoice.payment_received",
+    "instrument.added",
     FORMAT_SET,
     "journal.tail_repaired",
     "line.cleared",
@@ -150,6 +165,7 @@ pub const EVENT_TYPES: &[&str] = &[
     "store.created",
     "vendor.1099_set",
     "vendor.added",
+    "vendor.w9_flag_set",
 ];
 
 /// The journal format in force: the last `journal.format_set` read, or

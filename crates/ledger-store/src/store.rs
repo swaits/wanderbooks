@@ -587,16 +587,25 @@ impl Store {
     /// first line that needs it: a new event type, or a field or value on
     /// a known event type that an older version would otherwise misread
     /// silently. Declared with the format in force (at least format 2,
-    /// crate::meta::FORMAT) and every feature already in force; nothing is
+    /// crate::meta::FORMAT) and every feature already in force, so an
+    /// older reader stops at the declaration (rules.md B-27); nothing is
     /// journaled when it is already declared. Books that never use the
     /// feature stay readable by older versions.
+    ///
+    /// Each command here that writes a feature's line declares it first.
+    /// A caller that journals several commands as one (a tool drafting an
+    /// entry and tagging it) calls this before the first of them, once
+    /// every check has passed: a declaration never lands after another
+    /// line of the same command (where a refusal to upgrade the format
+    /// would leave the command half done), and a refused command leaves
+    /// none.
     ///
     /// ```text
     /// GOAL: an older wanderbooks stops at the declaration (NewerJournal)
     ///       instead of misreading, or failing on, a line it can't read.
     /// SOURCE: rules.md B-27; plan/served.md 5.1 (format gate).
     /// ```
-    fn ensure_feature(&mut self, feature: &str) -> Result<(), StoreError> {
+    pub fn ensure_feature(&mut self, feature: &str) -> Result<(), StoreError> {
         self.ensure_features(&[feature])
     }
 
@@ -3079,25 +3088,149 @@ impl Store {
         Ok(())
     }
 
-    /// Set which 1099 a vendor gets (or none) and whether its W-9 is on
-    /// file. Journaled as `vendor.1099_set`.
+    /// Record a vendor's 1099 decision, from the date it takes effect (or
+    /// from the beginning), with who decided; and its W-9 flag when given
+    /// (`None` keeps it). Journaled as `vendor.1099_set` under the
+    /// `vendor_1099_decisions` feature. Returns what it did to the
+    /// vendor's decisions.
+    ///
+    /// ```text
+    /// GOAL: the decision ("no 1099" included) is kept as a decision, with
+    ///       who made it and when (plan defects 18, 23; D-40).
+    /// SOURCE: ledger_core::form1099 (plan_decision, check_new_decision);
+    ///         P3 review R8.
+    /// SCENARIOS:
+    ///   1. IF the decision has no source: SHOULD refuse
+    ///      BECAUSE every new decision names who made it.
+    ///   2. IF the core refuses it: SHOULD refuse, journaling nothing.
+    ///   3. IF it changes no decision: SHOULD journal nothing but a
+    ///      changed W-9 flag (Store::set_vendor_w9_flag).
+    ///   4. Otherwise: SHOULD declare the feature once, then journal it.
+    /// ```
     pub fn set_vendor_1099(
         &mut self,
         vendor: VendorId,
-        form: Option<ledger_core::Form1099>,
-        tin_on_file: bool,
-    ) -> Result<(), StoreError> {
-        self.rehearse(|l| l.set_vendor_1099(vendor, form, tin_on_file))?;
-        self.ledger
+        decision: &ledger_core::Dated1099,
+        tin_on_file: Option<bool>,
+    ) -> Result<ledger_core::form1099::Applied, StoreError> {
+        if decision.source.is_none() {
+            return Err(LedgerError::Invalid1099(
+                "a 1099 decision names who made it (decided_by)".into(),
+            )
+            .into());
+        }
+        let applied = self.ledger.check_vendor_1099(vendor, decision)?;
+        let current = self
+            .ledger
             .get_vendor(vendor)
-            .ok_or(LedgerError::UnknownVendor(vendor))?;
+            .ok_or(LedgerError::UnknownVendor(vendor))?
+            .tin_on_file;
+        let flag = tin_on_file.unwrap_or(current);
+        if applied == ledger_core::form1099::Applied::Unchanged {
+            self.set_vendor_w9_flag(vendor, flag)?;
+            return Ok(applied);
+        }
+        self.ensure_feature(crate::format::VENDOR_1099_DECISIONS)?;
         let line = self.append_journal(
             "vendor.1099_set",
-            json!({ "vendor_id": vendor, "form_1099": form, "tin_on_file": tin_on_file }),
+            crate::form1099::decision_set(vendor, decision, flag),
         )?;
-        self.ledger.set_vendor_1099(vendor, form, tin_on_file)?;
+        let got = self
+            .ledger
+            .set_vendor_1099(vendor, decision.clone(), flag)?;
+        debug_assert_eq!(got, applied, "check and record diverged");
         apply_line_to_sqlite(&self.conn, &line)?;
-        Ok(())
+        Ok(applied)
+    }
+
+    /// Mark whether a vendor's W-9 is on file, keeping its 1099 decisions
+    /// and who made them (P3 review R8). Journaled as
+    /// `vendor.w9_flag_set` under the `vendor_1099_decisions` feature;
+    /// nothing when the flag is already so. Returns whether it changed.
+    pub fn set_vendor_w9_flag(
+        &mut self,
+        vendor: VendorId,
+        on_file: bool,
+    ) -> Result<bool, StoreError> {
+        let v = self
+            .ledger
+            .get_vendor(vendor)
+            .ok_or(LedgerError::UnknownVendor(vendor))?;
+        if v.tin_on_file == on_file {
+            return Ok(false);
+        }
+        self.ensure_feature(crate::format::VENDOR_1099_DECISIONS)?;
+        let line = self.append_journal(
+            "vendor.w9_flag_set",
+            crate::form1099::w9_flag_set(vendor, on_file),
+        )?;
+        self.ledger.set_vendor_w9_flag(vendor, on_file)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(true)
+    }
+
+    /// Add a payment method (ledger_core::instruments), journaled as
+    /// `instrument.added` under the `payment_instruments` feature. Returns
+    /// its id.
+    pub fn add_instrument(
+        &mut self,
+        kind: ledger_core::InstrumentKind,
+        label: &str,
+        last4: Option<&str>,
+        owner_party: Option<ledger_core::PartyId>,
+        account: AccountId,
+    ) -> Result<ledger_core::InstrumentId, StoreError> {
+        let label = self
+            .ledger
+            .check_add_instrument(label, last4, owner_party, account)?;
+        let id = self.ledger.next_instrument_id();
+        let instrument = ledger_core::Instrument {
+            id,
+            kind,
+            label,
+            last4: last4.map(str::to_string),
+            owner_party,
+            account,
+        };
+        self.ensure_feature(crate::format::PAYMENT_INSTRUMENTS)?;
+        let line = self.append_journal(
+            "instrument.added",
+            crate::form1099::instrument_added(&instrument),
+        )?;
+        let live =
+            self.ledger
+                .add_instrument(kind, &instrument.label, last4, owner_party, account)?;
+        debug_assert_eq!(live, id, "id allocator diverged from journal");
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(live)
+    }
+
+    /// Tag an entry (and its reversal chain) with the payment method it
+    /// was paid with, or clear it. Journaled as `entry.instrument_set`
+    /// under the `payment_instruments` feature; nothing when every entry
+    /// of the chain already says so. Returns whether it changed.
+    pub fn set_entry_instrument(
+        &mut self,
+        entry: EntryId,
+        instrument: Option<ledger_core::InstrumentId>,
+    ) -> Result<bool, StoreError> {
+        self.rehearse(|l| l.set_entry_instrument(entry, instrument))?;
+        if self
+            .ledger
+            .reversal_chain(entry)
+            .into_iter()
+            .all(|e| self.ledger.entry_instrument(e) == instrument)
+        {
+            return Ok(false);
+        }
+        self.ensure_feature(crate::format::PAYMENT_INSTRUMENTS)?;
+        let line = self.append_journal(
+            "entry.instrument_set",
+            crate::form1099::entry_instrument_set(entry, instrument),
+        )?;
+        self.ledger.set_entry_instrument(entry, instrument)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(true)
     }
 
     /// Tag an entry with the vendor it paid, or clear the tag. Journaled as
@@ -4743,19 +4876,32 @@ pub(crate) fn replay_line_into_ledger(
             }
         }
         "vendor.1099_set" => {
-            let form = match p.get("form_1099").and_then(|v| v.as_str()) {
-                Some(s) => Some(ledger_core::Form1099::parse(s).ok_or_else(|| {
-                    StoreError::JournalCorrupt("vendor.1099_set form_1099".into())
-                })?),
-                None => None,
-            };
-            ledger.set_vendor_1099(
-                get_u64(p, "vendor_id")?,
-                form,
-                p.get("tin_on_file")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false),
+            let (vendor, decision, tin_on_file) = crate::form1099::decision_of(line)?;
+            ledger.replay_vendor_1099(vendor, decision, tin_on_file)?;
+        }
+        "vendor.w9_flag_set" => {
+            let (vendor, on_file) = crate::form1099::w9_flag_of(p)?;
+            ledger.set_vendor_w9_flag(vendor, on_file)?;
+        }
+        "instrument.added" => {
+            let i = crate::form1099::instrument_of(line)?;
+            let got = ledger.add_instrument(
+                i.kind,
+                &i.label,
+                i.last4.as_deref(),
+                i.owner_party,
+                i.account,
             )?;
+            if got != i.id {
+                return Err(StoreError::ReplayMismatch(format!(
+                    "payment method id: journal says {}, replay got {got}",
+                    i.id
+                )));
+            }
+        }
+        "entry.instrument_set" => {
+            let (entry, instrument) = crate::form1099::entry_instrument_of(p)?;
+            ledger.set_entry_instrument(entry, instrument)?;
         }
         "entry.vendor_set" => {
             ledger.set_entry_vendor(
@@ -5488,6 +5634,12 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
                  SELECT ?, vendor_id FROM entry_vendors WHERE entry_id = ?",
                 params![get_u64(p, "id")? as i64, get_u64(p, "reverses")? as i64],
             )?;
+            // And the way it was paid.
+            conn.execute(
+                "INSERT OR REPLACE INTO entry_instruments(entry_id, instrument_id) \
+                 SELECT ?, instrument_id FROM entry_instruments WHERE entry_id = ?",
+                params![get_u64(p, "id")? as i64, get_u64(p, "reverses")? as i64],
+            )?;
             conn.execute(
                 "INSERT INTO entries(id, date, description, status, reversal_of) VALUES (?,?,?,'posted',?)",
                 params![
@@ -5698,16 +5850,80 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
             )?;
         }
         "vendor.1099_set" => {
+            let (vendor, d, tin_on_file) = crate::form1099::decision_of(line)?;
+            let key = match &d.decision {
+                ledger_core::Decision1099::Undetermined => None,
+                other => Some(other.key()),
+            };
+            // A decision from the beginning is the vendor's form, as every
+            // line written before decisions were dated was.
+            if d.effective.is_none() {
+                conn.execute(
+                    "UPDATE vendors SET form_1099 = ? WHERE id = ?",
+                    params![key, vendor as i64],
+                )?;
+            }
             conn.execute(
-                "UPDATE vendors SET form_1099 = ?, tin_on_file = ? WHERE id = ?",
+                "UPDATE vendors SET tin_on_file = ? WHERE id = ?",
+                params![tin_on_file, vendor as i64],
+            )?;
+            if let Some(s) = &d.source {
+                let (kind, reason) = match &d.decision {
+                    ledger_core::Decision1099::NotReportable { kind, reason } => {
+                        (Some(kind.key()), Some(reason.as_str()))
+                    }
+                    _ => (None, None),
+                };
+                conn.execute(
+                    "INSERT INTO vendor_1099_decisions(seq, vendor_id, effective, form_1099, reason_kind, reason, source_json) VALUES (?,?,?,?,?,?,?)",
+                    params![
+                        line.seq as i64,
+                        vendor as i64,
+                        d.effective.map(|e| e.to_string()),
+                        key,
+                        kind,
+                        reason,
+                        crate::meta::source_json(s).to_string(),
+                    ],
+                )?;
+            }
+        }
+        "vendor.w9_flag_set" => {
+            let (vendor, on_file) = crate::form1099::w9_flag_of(p)?;
+            conn.execute(
+                "UPDATE vendors SET tin_on_file = ? WHERE id = ?",
+                params![on_file, vendor as i64],
+            )?;
+        }
+        "instrument.added" => {
+            let i = crate::form1099::instrument_of(line)?;
+            conn.execute(
+                "INSERT INTO instruments(id, kind, label, last4, owner_party, account_id) VALUES (?,?,?,?,?,?)",
                 params![
-                    p.get("form_1099").and_then(|v| v.as_str()),
-                    p.get("tin_on_file")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false),
-                    get_u64(p, "vendor_id")? as i64,
+                    i.id as i64,
+                    i.kind.key(),
+                    i.label,
+                    i.last4,
+                    i.owner_party.map(|p| p as i64),
+                    i.account as i64,
                 ],
             )?;
+        }
+        "entry.instrument_set" => {
+            let (entry, instrument) = crate::form1099::entry_instrument_of(p)?;
+            // The whole reversal chain, as the ledger tags it.
+            for e in sqlite_reversal_chain(conn, entry as i64)? {
+                match instrument {
+                    Some(i) => conn.execute(
+                        "INSERT OR REPLACE INTO entry_instruments(entry_id, instrument_id) VALUES (?, ?)",
+                        params![e, i as i64],
+                    )?,
+                    None => conn.execute(
+                        "DELETE FROM entry_instruments WHERE entry_id = ?",
+                        params![e],
+                    )?,
+                };
+            }
         }
         "entry.vendor_set" => match p.get("vendor_id").and_then(|v| v.as_u64()) {
             Some(v) => {
@@ -6106,6 +6322,46 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
         params![line.seq.to_string()],
     )?;
     Ok(())
+}
+
+/// An entry's reversal chain in the projection, as
+/// `Ledger::reversal_chain` walks it: up to the original, then down
+/// through each posted reversal. A draft (not projected) is its own chain.
+fn sqlite_reversal_chain(conn: &Connection, entry: i64) -> Result<Vec<i64>, StoreError> {
+    let up = |e: i64| -> Result<Option<i64>, StoreError> {
+        Ok(conn
+            .query_row(
+                "SELECT reversal_of FROM entries WHERE id = ?",
+                params![e],
+                |r| r.get::<_, Option<i64>>(0),
+            )
+            .optional()?
+            .flatten())
+    };
+    let mut top = entry;
+    while let Some(o) = up(top)? {
+        if o == entry {
+            break;
+        }
+        top = o;
+    }
+    let mut chain = vec![top];
+    let mut cur = top;
+    while let Some(r) = conn
+        .query_row(
+            "SELECT id FROM entries WHERE reversal_of = ? ORDER BY id LIMIT 1",
+            params![cur],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()?
+    {
+        if chain.contains(&r) {
+            break;
+        }
+        chain.push(r);
+        cur = r;
+    }
+    Ok(chain)
 }
 
 /// What [`Store::verify_and_heal`] found.

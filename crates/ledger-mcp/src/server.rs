@@ -557,7 +557,7 @@ fn vendor_1099_report(
     year: i32,
     threshold: Option<Decimal>,
 ) -> Result<ledger_core::Vendor1099Report, ledger_core::LedgerError> {
-    ledger_package::vendor_1099_report(ledger, &package_settings(settings), year, None, threshold)
+    ledger_package::vendor_1099_report(ledger, &package_settings(settings), year, threshold, None)
 }
 
 impl BooksServer {
@@ -750,6 +750,7 @@ impl BooksServer {
             + Self::access_router()
             + Self::files_router()
             + Self::backup_router()
+            + Self::instruments_router()
     }
 
     /// The settings in force for this request (reloaded at its start, in
@@ -915,8 +916,10 @@ impl BooksServer {
     /// Cash and card accounts due for reconciliation
     /// (ledger_store::reconcilable, the viewer's Needs-attention rule):
     /// the cash accounts (`[books] cash_accounts`, else assets named for
-    /// cash), the card accounts (liabilities named "card", before their
-    /// first statement), and every other liability with a recorded
+    /// cash), the card accounts (ledger_core::parties::card_accounts: the
+    /// business-card payment methods' liabilities, else liabilities named
+    /// "card", not "gift", before their first statement), and every other
+    /// liability with a recorded
     /// statement, with posted activity through the end of last month, not
     /// reconciled through it.
     ///
@@ -2729,6 +2732,8 @@ mod access_tools;
 mod backup_tools;
 #[path = "tools/files.rs"]
 mod files;
+#[path = "tools/instruments.rs"]
+mod instruments;
 #[path = "tools/kept.rs"]
 mod kept;
 pub use kept::SettingKeyOut;
@@ -3025,6 +3030,11 @@ impl BooksServer {
             .as_deref()
             .map(|v| resolve_vendor(&store, v))
             .transpose()?;
+        let instrument = p
+            .instrument
+            .as_deref()
+            .map(|r| instruments::resolve_instrument(&store, r))
+            .transpose()?;
         let party = p
             .party
             .as_deref()
@@ -3064,6 +3074,10 @@ impl BooksServer {
                 ));
             }
         }
+        // A payment method exists only under the payment_instruments
+        // feature (books.add_instrument declared it), so tagging the draft
+        // with one below declares nothing after the draft's first line
+        // (B-27).
         let id = store
             .create_entry(date, &p.description)
             .map_err(|e| e.to_string())?;
@@ -3081,6 +3095,11 @@ impl BooksServer {
                 .map_err(|e| e.to_string())?;
         } else if let Some(r) = no_party {
             store.set_entry_no_party(id, r).map_err(|e| e.to_string())?;
+        }
+        if instrument.is_some() {
+            store
+                .set_entry_instrument(id, instrument)
+                .map_err(|e| e.to_string())?;
         }
         Ok(Json(DraftEntryOut {
             entry_id: id,
@@ -3901,6 +3920,12 @@ impl BooksServer {
                 .entry_vendor(p.entry_id)
                 .and_then(|v| store.ledger().get_vendor(v))
                 .map(|v| v.name.clone()),
+            instrument: store
+                .ledger()
+                .entry_instrument(p.entry_id)
+                .and_then(|i| store.ledger().get_instrument(i))
+                .map(|i| i.label.clone()),
+            instrument_id: store.ledger().entry_instrument(p.entry_id),
             party_id: store.ledger().entry_party(p.entry_id),
             party: store
                 .ledger()
@@ -4869,7 +4894,7 @@ impl BooksServer {
     #[tool(
         name = "books.list_vendors",
         title = "List vendors",
-        description = "Vendors, with which 1099 each gets, whether its W-9 is on file, and the party each belongs to (books.party).",
+        description = "Vendors, each with its 1099 decision in force today (nec, misc, not_reportable with its reason, or undetermined; who decided and when) and every dated decision, whether its W-9 is on file, and the party it belongs to (books.party). undetermined with no decided_by: nobody has decided yet (books.set_vendor_1099).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn list_vendors(&self) -> Result<Json<ListVendorsOut>, String> {
@@ -4879,51 +4904,59 @@ impl BooksServer {
                 .ledger()
                 .list_vendors()
                 .into_iter()
-                .map(|v| VendorOut {
-                    id: v.id,
-                    name: v.name.clone(),
-                    form_1099: form_1099_label(v.form_1099),
-                    tin_on_file: v.tin_on_file,
-                    party_id: store.ledger().party_of_vendor(v.id),
-                })
+                .map(|v| instruments::vendor_out(&store, v))
                 .collect(),
         }))
     }
 
     #[tool(
         name = "books.set_vendor_1099",
-        title = "Set a vendor's 1099 status",
-        description = "Mark which information return a vendor gets: \"nec\" (1099-NEC: contractors, freelancers, attorneys), \"misc\" (1099-MISC: rent, royalties, prizes), or \"none\" (corporations generally, merchants, anyone paid only by card). Record whether a W-9 is on file; never store the TIN itself. Ask the human when unsure; the CPA confirms.",
+        title = "Record a vendor's 1099 decision",
+        description = "Record whether a vendor gets a 1099, with who decided (decided_by): nec (1099-NEC: contractors, attorneys), misc (1099-MISC: rent, royalties), not_reportable with reason_kind (corporation, tax_exempt, united_states, state, foreign_government, foreign_person, merchandise, employee, other with a citation) and reason in words, or undetermined. A corporation paid for legal or medical services stays nec/misc. Paid by card is never a reason (cards are excluded per payment). effective: only when the payee's status changed (an LLC's corporate election, from its date); a payee that incorporates is a new vendor. tin_on_file: a W-9 is on file (alone, it keeps the decision). Ask the human; CPA confirms.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
+            idempotent_hint = true,
             open_world_hint = false
         )
     )]
     async fn set_vendor_1099(
         &self,
         params: Parameters<SetVendor1099Params>,
-    ) -> Result<Json<VendorOut>, String> {
+    ) -> Result<Json<SetVendor1099Out>, String> {
         let p = params.0;
         let mut store = self.lock()?;
         let id = resolve_vendor(&store, &p.vendor)?;
-        let form = match p.form_1099.trim().to_lowercase().as_str() {
-            "none" | "" => None,
-            other => Some(
-                ledger_core::Form1099::parse(other)
-                    .ok_or_else(|| format!("form_1099 {other:?}: expected nec, misc, or none"))?,
-            ),
+        let decision = instruments::decision_in(&p)?;
+        let (changed, warnings) = match decision {
+            None => {
+                let flag = p.tin_on_file.expect("decision_in: one of the two");
+                store
+                    .set_vendor_w9_flag(id, flag)
+                    .map_err(|e| e.to_string())?;
+                (ledger_core::form1099::Applied::Unchanged, Vec::new())
+            }
+            Some(d) => {
+                let reached = ledger_core::form1099::decision_changes(store.ledger(), id, &d)
+                    .map_err(|e| e.to_string())?;
+                let applied = store
+                    .set_vendor_1099(id, &d, p.tin_on_file)
+                    .map_err(|e| e.to_string())?;
+                let name = &store.ledger().get_vendor(id).expect("resolved").name;
+                let warnings = instruments::filed_year_warnings(
+                    store.ledger(),
+                    &format!("{name}'s 1099 decision"),
+                    &reached,
+                    today(),
+                );
+                (applied, warnings)
+            }
         };
-        store
-            .set_vendor_1099(id, form, p.tin_on_file)
-            .map_err(|e| e.to_string())?;
         let v = store.ledger().get_vendor(id).expect("exists");
-        Ok(Json(VendorOut {
-            id,
-            name: v.name.clone(),
-            form_1099: form_1099_label(v.form_1099),
-            tin_on_file: v.tin_on_file,
-            party_id: store.ledger().party_of_vendor(id),
+        Ok(Json(SetVendor1099Out {
+            vendor: instruments::vendor_out(&store, v),
+            changed: instruments::applied_key(changed).to_string(),
+            warnings,
         }))
     }
 
@@ -4962,7 +4995,7 @@ impl BooksServer {
     #[tool(
         name = "books.vendor_1099",
         title = "1099 worksheet",
-        description = "1099 worksheet for a calendar year: cash paid to each vendor (credits minus debits to the [books] cash and financing accounts on entries tagged with the vendor, so card payments, which the card processor reports on 1099-K, are excluded; on an entry naming several parties, only the vendor's resolved share of that payment), which vendors are reportable (marked NEC/MISC and paid at least the threshold: $600 through 2025, $2,000 in 2026, indexed for inflation after that), which are missing a W-9, and each payee's TIN last four. include_tins: true adds each payee's full TIN from the TIN vault (or why it can't), for the CPA's worksheet; csv: true also hands it over as a CSV file (run its download command to save it). For a year whose threshold wanderbooks doesn't know yet it refuses rather than guess: get the figure from the IRS or the human, pass it as `threshold`, and tell the human, who can report it upstream so the rule is updated for everyone. For the CPA to confirm.",
+        description = "The 1099 worksheet for a calendar year. Per vendor: what counts toward its 1099 (paid out of the cash accounts, or through a financing account with the method recorded, while not decided not_reportable; an entry with several parties counts only the vendor's share), what was paid by card or payment network (excluded: Form 1099-K's), what is undetermined (a member paid, method not recorded: books.set_entry_instrument), its 1099 decision, and its status (reportable at the threshold: $600 through 2025, $2,000 in 2026, indexed after; under_threshold; not_reportable; undetermined). Lists those payments, W-9s missing, each payee's TIN last four. include_tins adds full TINs from the vault; csv hands it over. cash_accounts and financing_accounts default to the settings' (as books.export_cpa_package's do); through stops the year at a day: given a package's accounts and its as_of, the CSV is the package's 1099 worksheet. A year whose threshold isn't known is refused: pass threshold from the IRS. For the CPA to confirm.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -4975,21 +5008,44 @@ impl BooksServer {
     ) -> Result<Json<Vendor1099Out>, String> {
         let p = params.0;
         let threshold = p.threshold.as_deref().map(parse_amount).transpose()?;
+        let through = p.through.as_deref().map(parse_date).transpose()?;
+        if let Some(t) = through
+            && chrono::Datelike::year(&t) != p.year
+        {
+            return Err(format!(
+                "through ({t}) is a day of {}: the worksheet counts payments made in {} from January 1 through it",
+                p.year, p.year
+            ));
+        }
         let store = self.lock()?;
         let ledger = store.ledger();
+        for code in p.cash_accounts.iter().chain(&p.financing_accounts) {
+            if ledger.chart().find_by_code(code).is_none() {
+                return Err(format!(
+                    "no account {code} in the chart (books.chart lists them)"
+                ));
+            }
+        }
         // With include_tins, the vault is opened once (never creating a
         // key: a locked vault becomes a note on each line).
         let vault = p.include_tins.then(|| self.open_vault(&store, false));
         let tins = vault
             .as_ref()
             .map(|vault| move |id| vault_tin(ledger, vault, id));
+        // The accounts given, else the settings': the CPA package's rule
+        // (ledger_package::Settings::with_accounts), so its 1099 worksheet
+        // is this one for the same accounts and `through` its as_of.
+        let settings = self.settings();
+        let accounts =
+            package_settings(&settings).with_accounts(&p.cash_accounts, &p.financing_accounts);
         // A year past what wanderbooks knows is refused with guidance
         // (research or ask, pass `threshold`, then update the rule).
         let w = ledger_package::vendor_1099_worksheet(
             ledger,
-            &package_settings(&self.settings()),
+            &accounts,
             p.year,
             threshold,
+            through,
             tins.as_ref().map(|f| f as ledger_package::TinSource<'_>),
         )?;
         let warning = p.include_tins.then(|| {
@@ -5006,6 +5062,27 @@ impl BooksServer {
                 Some(self.hand_over(&book_name(&store), &name, "text/csv", csv.into_bytes())?)
             }
         };
+        let payments = |list: &[ledger_core::Payment1099]| -> Vec<Payment1099Out> {
+            list.iter()
+                .map(|p| Payment1099Out {
+                    entry_id: p.entry_id,
+                    date: p.date.to_string(),
+                    vendor_id: p.vendor_id,
+                    vendor: ledger
+                        .get_vendor(p.vendor_id)
+                        .map(|v| v.name.clone())
+                        .unwrap_or_default(),
+                    amount: money(p.amount),
+                    instrument: p
+                        .instrument
+                        .and_then(|i| ledger.get_instrument(i))
+                        .map(|i| i.label.clone()),
+                })
+                .collect()
+        };
+        let excluded_card_payments = payments(&w.excluded_card_payments);
+        let undetermined_payments = payments(&w.undetermined_payments);
+        let other_receipts = payments(&w.other_receipts);
         let vendors = w
             .lines
             .into_iter()
@@ -5013,8 +5090,23 @@ impl BooksServer {
                 vendor_id: l.vendor_id,
                 name: l.name,
                 form_1099: l.form_1099,
+                decision_1099: instruments::decision_out(Some(&ledger_core::Dated1099 {
+                    effective: l.effective,
+                    decision: l.decision.clone(),
+                    source: l.decided.clone(),
+                })),
+                decisions_in_year: l
+                    .decisions
+                    .iter()
+                    .map(|d| instruments::decision_out(Some(d)))
+                    .collect(),
                 tin_on_file: l.tin_on_file,
                 paid: money(l.paid),
+                excluded_card: money(l.excluded_card),
+                undetermined: money(l.undetermined),
+                not_reportable: money(l.not_reportable),
+                status: l.status.key().to_string(),
+                decision_needed: l.decision_needed,
                 reportable: l.reportable,
                 party_id: l.party_id,
                 tin_last4: l.tin_last4,
@@ -5028,6 +5120,11 @@ impl BooksServer {
             threshold: money(w.threshold),
             vendors,
             missing_w9: w.missing_w9,
+            excluded_card_payments,
+            undetermined_payments,
+            other_receipts,
+            untagged_entries: w.untagged_payments,
+            unresolved: w.unresolved,
             notes: w.notes,
             warning,
             csv: csv_file,
@@ -7005,6 +7102,15 @@ impl BooksServer {
                 .set_party_creditor(id, *a, *on)
                 .map_err(|e| e.to_string())?;
         }
+        // The creditor lines' journal feature, declared before this
+        // command's first line, never between its lines (rules.md B-27: a
+        // refused format upgrade must not leave the name changed and the
+        // creditors not).
+        if !creditor.is_empty() {
+            store
+                .ensure_feature(ledger_store::format::PARTY_CREDITORS)
+                .map_err(|e| e.to_string())?;
+        }
         for f in fields {
             store.update_party(id, f).map_err(|e| e.to_string())?;
         }
@@ -7299,6 +7405,19 @@ impl BooksServer {
             }
         };
         let on_file = facts.is_some();
+        // The vendor record's W-9 flag follows (below): its feature is
+        // declared before this command's first line, never after it
+        // (B-27: a refusal to upgrade the format must not leave the W-9
+        // recorded and the flag not).
+        let vendor = store.ledger().get_party(id).and_then(|p| p.vendor);
+        if vendor
+            .and_then(|v| store.ledger().get_vendor(v))
+            .is_some_and(|v| v.tin_on_file != on_file)
+        {
+            store
+                .ensure_feature(ledger_store::format::VENDOR_1099_DECISIONS)
+                .map_err(|e| e.to_string())?;
+        }
         if replace_tin {
             store.set_party_tin(id, None).map_err(|e| e.to_string())?;
         }
@@ -7308,18 +7427,11 @@ impl BooksServer {
                 .set_party_tin(id, tin_facts)
                 .map_err(|e| e.to_string())?;
         }
-        // Keep the vendor record's W-9 flag (the 1099 worksheet's) in step.
-        let vendor = store
-            .ledger()
-            .get_party(id)
-            .and_then(|p| p.vendor)
-            .and_then(|v| store.ledger().get_vendor(v))
-            .map(|v| (v.id, v.form_1099, v.tin_on_file));
-        if let Some((v, form, tin_on_file)) = vendor
-            && tin_on_file != on_file
-        {
+        // Keep the vendor record's W-9 flag (the 1099 worksheet's) in
+        // step, its 1099 decision and who made it kept (P3 review R8).
+        if let Some(v) = vendor {
             store
-                .set_vendor_1099(v, form, on_file)
+                .set_vendor_w9_flag(v, on_file)
                 .map_err(|e| e.to_string())?;
         }
         let party = store.ledger().get_party(id).expect("resolved");
@@ -7722,20 +7834,22 @@ impl BooksServer {
         entries.sort_by(|a, b| b.date.cmp(&a.date).then(b.entry_id.cmp(&a.entry_id)));
         let invoices = party_invoices(ledger, party);
         let bills = party_bills(ledger, party);
-        let amount_1099 = match party.vendor {
-            Some(v) => {
-                let r = vendor_1099_report(ledger, &self.settings(), year, Some(Decimal::ZERO))
-                    .map_err(|e| e.to_string())?;
-                Some(money(
-                    r.vendors
-                        .iter()
-                        .find(|l| l.vendor_id == v)
-                        .map(|l| l.paid)
-                        .unwrap_or_default(),
-                ))
-            }
-            None => None,
-        };
+        // The worksheet's figure; none when it can't be made (no cash
+        // accounts named), never a failed answer.
+        let amount_1099 = party.vendor.and_then(|v| {
+            let r = vendor_1099_report(ledger, &self.settings(), year, Some(Decimal::ZERO)).ok()?;
+            Some(money(
+                r.vendors
+                    .iter()
+                    .find(|l| l.vendor_id == v)
+                    .map(|l| l.paid)
+                    .unwrap_or_default(),
+            ))
+        });
+        let decided_now = party
+            .vendor
+            .and_then(|v| ledger.get_vendor(v))
+            .map(|v| v.decision_on(today()).cloned().unwrap_or_default());
         // Documents and runs are restored as journaled (rules.md B-28): a
         // total past exact arithmetic refuses the answer, never a panic.
         let mut payroll = Vec::new();
@@ -7780,10 +7894,8 @@ impl BooksServer {
                 "what is receivable",
             )?),
             amount_1099,
-            form_1099: party
-                .vendor
-                .and_then(|v| ledger.get_vendor(v))
-                .and_then(|v| form_1099_label(v.form_1099)),
+            form_1099: form_1099_label(decided_now.as_ref().and_then(|d| d.form())),
+            decision_1099: decided_now.as_ref().map(|d| d.key().to_string()),
             gross_pay: money(gross),
             net_pay: money(net),
         };
@@ -10063,7 +10175,7 @@ mod tests {
         const D: Hints = (Some(false), Some(true), None);
         const WI: Hints = (Some(false), Some(false), Some(true));
         const DI: Hints = (Some(false), Some(true), Some(true));
-        let table: [(&str, Hints); 112] = [
+        let table: [(&str, Hints); 115] = [
             ("books.handbook", R),
             ("books.start", R),
             ("books.set_setting", DI),
@@ -10113,9 +10225,12 @@ mod tests {
             ("books.run_recurring", DI),
             ("books.record_payout", W),
             ("books.list_vendors", R),
-            ("books.set_vendor_1099", W),
+            ("books.set_vendor_1099", WI),
             ("books.set_entry_vendor", W),
             ("books.vendor_1099", W),
+            ("books.add_instrument", W),
+            ("books.instruments", R),
+            ("books.set_entry_instrument", WI),
             ("books.chart_template", R),
             ("books.tax_categories", R),
             ("books.renumber_account", D),

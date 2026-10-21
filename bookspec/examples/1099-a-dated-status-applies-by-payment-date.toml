@@ -1,0 +1,94 @@
+id = "1099-a-dated-status-applies-by-payment-date"
+title = "A payee's 1099 status applies to each payment as of the payment's date"
+rule = """
+Whether a payee is exempt (a corporation) is judged as of each payment: the
+payer may treat a payee as a corporation when the condition is met before
+the payment is made. An LLC that elects to be taxed as a corporation keeps
+its EIN and becomes a corporation on the election's effective date (the
+date its Form 8832 specifies). Payments before that date count toward its
+1099-NEC; payments from it on are payments to a corporation, for which no
+return is required. (A payee that incorporates is a new legal person: a new
+payee, with its own W-9.)
+"""
+status = "AUTHORITY"
+sources = [
+  "Treas. Reg. §1.6041-3(p)(1) (docs/spec/sources/irs-1099-payment-method.md)",
+  "Treas. Reg. §1.6049-4(c)(1)(ii)(A) (\"before a payment is made\")",
+  "Treas. Reg. §301.7701-2(b)(2), §301.7701-3(c)(1)(iii)",
+  "DECISION D-40 (wanderbooks owner, 2026-10-20): dated statuses",
+]
+tags = ["1099", "dated-status", "corporation", "election"]
+
+[setup]
+currency = "USD"
+fiscal_year_start = "01-01"
+basis = "cash"
+rounding = "half-away-from-zero"
+cash_accounts = ["1000"]
+
+[[setup.accounts]]
+code = "1000"
+name = "Bank"
+type = "asset"
+
+[[setup.accounts]]
+code = "6000"
+name = "Contract Labor"
+type = "expense"
+
+[[setup.payees]]
+name = "Harbor Design LLC"
+form = "1099-NEC"
+
+[[setup.status_changes]]
+payee = "Harbor Design LLC"
+effective = "2026-07-01"
+decision = "not_reportable"
+reason_kind = "corporation"
+reason = "elected to be taxed as a corporation (Form 8832), effective July 1"
+
+[[events]]
+date = "2026-03-01"
+description = "Design work"
+payee = "Harbor Design LLC"
+lines = [
+  { account = "6000", side = "debit", amount = "1500.00" },
+  { account = "1000", side = "credit", amount = "1500.00" },
+]
+
+[[events]]
+date = "2026-06-30"
+description = "Design work, the day before the election"
+payee = "Harbor Design LLC"
+lines = [
+  { account = "6000", side = "debit", amount = "1000.00" },
+  { account = "1000", side = "credit", amount = "1000.00" },
+]
+
+[[events]]
+date = "2026-07-01"
+description = "Design work, the election's day"
+payee = "Harbor Design LLC"
+lines = [
+  { account = "6000", side = "debit", amount = "800.00" },
+  { account = "1000", side = "credit", amount = "800.00" },
+]
+
+[[events]]
+date = "2026-09-15"
+description = "Design work"
+payee = "Harbor Design LLC"
+lines = [
+  { account = "6000", side = "debit", amount = "1200.00" },
+  { account = "1000", side = "credit", amount = "1200.00" },
+]
+
+# By hand: before July 1, 1,500.00 + 1,000.00 = 2,500.00 counts (at least
+# 2,000.00: reportable); from July 1 on, 800.00 + 1,200.00 = 2,000.00 paid
+# to a corporation, not reportable.
+[[expect]]
+query = "vendor_1099"
+payee = "Harbor Design LLC"
+from = "2026-01-01"
+to = "2026-12-31"
+values = { status = "reportable", threshold = "2000.00", paid = "2500.00", excluded_card = "0.00", undetermined = "0.00", not_reportable = "2000.00" }

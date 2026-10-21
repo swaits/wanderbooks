@@ -1,7 +1,7 @@
-# P3 defect 24 and the card rule (found in review, 2026-10-21): the
-# company's cards are the liabilities whose names say "card", so a gift
-# card the company sold (deferred revenue) read as money: received when
-# sold and again when redeemed. Regression
+# P3 defect 24 and the card rule (found in review, 2026-10-21): with no
+# business card recorded, the company's cards are the liabilities whose
+# names say "card", so a gift card the company sold (deferred revenue)
+# read as money: received when sold and again when redeemed. Regression
 # test: ledger-core tests/spec_party_totals.rs
 # defect24_a_gift_card_sold_is_received_once.
 # The shape: bookspec/README.md.
@@ -9,10 +9,12 @@
 id = "p3-party-gift-card-is-a-promise"
 title = "A gift card the company sold is a promise, not a card it pays with"
 rule = """
-The company's cards are liability accounts whose names say "card", but not
-"gift card": gift cards the company sold are revenue it owes its customers
-in service (deferred revenue), a promise. Selling one is money received
-from the buyer; redeeming it moves no money and counts nothing.
+The company's cards are the business cards its books record as payment
+methods; while they record none, the liability accounts whose names say
+"card", but not "gift card": gift cards the company sold are revenue it
+owes its customers in service (deferred revenue), a promise. Selling one
+is money received from the buyer; redeeming it moves no money and counts
+nothing.
 """
 status = "CONVENTION"
 sources = [

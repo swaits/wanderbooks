@@ -884,6 +884,72 @@ fn defect24_a_gift_card_sold_is_received_once() {
     assert_eq!(b.totals(c, Basis::All), (Decimal::ZERO, d("100.00")));
 }
 
+/// B-35 item 5 and `parties::card_accounts` INVARIANTS 1-4: one rule for
+/// what a card is. Before any business card is recorded, the liabilities
+/// whose names say "card" but not "gift" (2050 Business Card; never 2410
+/// Gift Card Liability), less a member's card's account; once one is
+/// recorded, exactly the business cards' liabilities, whatever their
+/// names, and a debit card on the bank (an asset) is none. A member's
+/// card or a platform is never the company's card, and a card read as a
+/// card is money: a charge to it is paid.
+#[test]
+fn a_card_is_a_recorded_business_card_else_a_liability_named_card() {
+    use ledger_core::InstrumentKind as K;
+    let mut b = books();
+    let cards = |b: &Books| ledger_core::parties::card_accounts(&b.l);
+    assert_eq!(cards(&b), vec![b.card]);
+    // A member's own card, on a liability named for it: not the
+    // company's, before or after a business card is recorded.
+    let personal =
+        b.l.add_account("2060", "Tobin's Card", AccountType::Liability, None, false)
+            .unwrap();
+    assert_eq!(cards(&b), vec![b.card, personal]);
+    b.l.add_instrument(K::MemberCard, "Tobin's card", None, Some(b.tobin), personal)
+        .unwrap();
+    assert_eq!(
+        cards(&b),
+        vec![b.card],
+        "a member's card is not a card account"
+    );
+    // A platform's balance is no card either.
+    b.l.add_instrument(K::Platform, "Payment platform", None, None, b.prepaid)
+        .unwrap();
+    assert_eq!(cards(&b), vec![b.card]);
+    // A business card on the bank (a debit card, an asset): no card
+    // account, so the name rule still holds.
+    b.l.add_instrument(K::BusinessCard, "Debit card", None, None, b.cash)
+        .unwrap();
+    assert_eq!(cards(&b), vec![b.card]);
+    // A business card recorded on a liability not named "card": now
+    // exactly the recorded cards' liabilities; 2050, named "card" but not
+    // recorded, no longer is.
+    let visa =
+        b.l.add_account("2070", "Harbor Visa", AccountType::Liability, None, false)
+            .unwrap();
+    b.l.add_instrument(K::BusinessCard, "Harbor Visa", None, None, visa)
+        .unwrap();
+    assert_eq!(cards(&b), vec![visa]);
+    assert_eq!(
+        b.l.card_accounts().into_iter().collect::<Vec<_>>(),
+        vec![visa]
+    );
+    // Money follows the rule: a charge to the recorded card is paid; one
+    // to 2050, a liability like any other now, is a promise.
+    let v = b.vendor;
+    let on_visa = b.post(
+        date(4, 1),
+        &[(b.hosting, Dr, "30.00"), (visa, Cr, "30.00")],
+        &[whole(v)],
+    );
+    let on_2050 = b.post(
+        date(4, 2),
+        &[(b.hosting, Dr, "20.00"), (b.card, Cr, "20.00")],
+        &[whole(v)],
+    );
+    assert_eq!(b.resolved(on_visa).0.direction, Direction::Paid);
+    assert_eq!(b.resolved(on_2050).0.direction, Direction::Neither);
+}
+
 /// B-35 item 3, case 3: E is the movement of equity other than retained
 /// earnings, so a members' entry reads as the statement of members' equity
 /// reads it. Retained earnings given up for equipment moves no member's

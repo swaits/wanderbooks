@@ -1,6 +1,7 @@
 //! What the books need: drafts left unposted, missing receipts, schedules
 //! and recurring entries due, open past periods, uncategorized tax lines,
-//! 1099 vendors without a W-9, overdue bills and invoices, money owed to
+//! 1099 vendors without a W-9 or without a 1099 decision, payments whose
+//! method the 1099 worksheet needs, overdue bills and invoices, money owed to
 //! owners, fixed asset depreciation not posted, assets without a tag or a
 //! tax basis, contractors and landlords paid without W-9 facts, bank and
 //! card accounts not reconciled through last month, and legal
@@ -12,7 +13,7 @@ use crate::books::{Attention, Books, Severity};
 use crate::fmt;
 use crate::nav::Route;
 use chrono::Datelike;
-use ledger_core::{AccountType, EntryStatus, PeriodStatus, vendor_1099_report};
+use ledger_core::{AccountType, EntryStatus, PeriodStatus};
 use rust_decimal::Decimal;
 
 /// A figure the books can't compute (rules.md B-28: books an earlier
@@ -38,7 +39,9 @@ fn cant_compute(what: String, why: &ledger_core::LedgerError, target: Option<Rou
 ///       prompt that gets the agent to fix it; never change the books.
 /// SOURCE: DECISION (owner: the viewer is read-only; its "Needs
 ///         attention" list offers prompts, AGENTS.md); the conditions
-///         below; docs/spec/sources/irs-1099-thresholds.md (W-9s).
+///         below; docs/spec/sources/irs-1099-thresholds.md (W-9s);
+///         DECISION D-40 (owner, 2026-10-20: ask only about vendors paid
+///         in a way that could need a 1099).
 /// INVARIANTS:
 ///   1. Pure: reads `b`, writes nothing.
 ///   2. One item per: draft entry (Todo); posted entry missing a receipt
@@ -48,8 +51,21 @@ fn cant_compute(what: String, why: &ledger_core::LedgerError, target: Option<Rou
 ///      category, with activity or not (ledger_core::tax::
 ///      uncategorized_accounts: one item; Info, Todo under
 ///      policy.require_tax_category = refuse); legal rule known only
-///      through a past year (Todo); 1099
-///      vendor without a W-9 (Problem); overdue bills, and overdue
+///      through a past year (Todo); for
+///      this calendar year, and last year in January, from
+///      Books::vendor_1099 (the server's books.vendor_1099): a vendor a
+///      1099 is due for (reportable) without a W-9 (Problem); a vendor
+///      paid that year in a way that could count toward a 1099 while its
+///      1099 decision was undetermined (Vendor1099Line::decision_needed:
+///      Problem when its status is undetermined, else Todo, its prompt
+///      naming books.set_vendor_1099); the year's payments whose method
+///      decides whether they count (Vendor1099Report::
+///      undetermined_payments, none for a vendor decided not reportable),
+///      one Todo counting reversal chains, its prompt naming
+///      books.instruments, books.add_instrument and
+///      books.set_entry_instrument; a year whose worksheet can't be made
+///      for want of named cash accounts while vendors were paid in it
+///      (Todo); overdue bills, and overdue
 ///      invoices (Problem, one each, with the total); money owed to
 ///      owners (Info, per account with a balance); the database differing
 ///      from the journal or unreadable, and damaged or missing stored
@@ -305,9 +321,93 @@ pub fn find(b: &Books) -> Vec<Attention> {
     for year in years {
         // A year whose threshold isn't known is flagged by the stale-rule
         // item above; never guess it here.
-        let Ok(r) = vendor_1099_report(&b.ledger, year, None) else {
-            continue;
+        let r = match b.vendor_1099(year) {
+            Ok(r) => r,
+            Err(ledger_core::LedgerError::Invalid1099(why))
+                if b.ledger.posted_entries().any(|e| {
+                    e.date().year() == year && b.ledger.entry_vendor(e.id()).is_some()
+                }) =>
+            {
+                out.push(Attention {
+                    severity: Severity::Todo,
+                    title: format!("The {year} 1099 worksheet can't be made"),
+                    detail: format!("{why}."),
+                    target: Some(Route::Reports(crate::nav::ReportKind::Vendor1099)),
+                    prompt: format!(
+                        "In wanderbooks, the {year} 1099 worksheet can't be made: {why}. Ask me which accounts hold the company's cash, then set them with books.set_setting."
+                    ),
+                });
+                continue;
+            }
+            Err(_) => continue,
         };
+        let in_year = if year == today.year() {
+            String::new()
+        } else {
+            format!(" for {year}")
+        };
+        for v in r.vendors.iter().filter(|v| v.decision_needed) {
+            let party = b.ledger.party_of_vendor(v.vendor_id);
+            let unknown = if v.undetermined > Decimal::ZERO {
+                format!(
+                    " and {} more whose payment method isn't recorded",
+                    fmt::dollars(v.undetermined)
+                )
+            } else {
+                String::new()
+            };
+            out.push(Attention {
+                severity: if v.status == ledger_core::Status1099::Undetermined {
+                    Severity::Problem
+                } else {
+                    Severity::Todo
+                },
+                title: format!("Decide whether {} gets a 1099{in_year}", v.name),
+                detail: format!(
+                    "Paid {} by check, ACH, transfer or cash{unknown} in {year}, with no 1099 decision.",
+                    fmt::dollars(v.paid)
+                ),
+                target: Some(party.map_or(Route::Company, Route::Party)),
+                prompt: format!(
+                    "In wanderbooks, {} was paid {}{unknown} in {year} and has no 1099 decision. Ask me whether it gets a 1099-NEC, a 1099-MISC, or none and why (a corporation, the United States or a state, a payee selling only merchandise, ...); then record it with books.set_vendor_1099, with who decided and when.",
+                    v.name,
+                    fmt::dollars(v.paid)
+                ),
+            });
+        }
+        // Payments whose method decides whether they count, a payment
+        // and its reversals counted once.
+        let mut chains: Vec<ledger_core::EntryId> = r
+            .undetermined_payments
+            .iter()
+            .map(|p| b.ledger.reversal_chain(p.entry_id)[0])
+            .collect();
+        chains.sort_unstable();
+        chains.dedup();
+        if !chains.is_empty() {
+            let n = chains.len();
+            let ids = chains
+                .iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let (payments, entries) = if n == 1 {
+                ("payment has", "entry")
+            } else {
+                ("payments have", "entries")
+            };
+            out.push(Attention {
+                severity: Severity::Todo,
+                title: format!("{n} {payments} no payment method{in_year}"),
+                detail: format!(
+                    "Paid for the company through a financing account in {year} ({entries} {ids}): a member's card doesn't count toward a 1099, their cash or check does, so the 1099 worksheet can't tell until each is recorded."
+                ),
+                target: Some(Route::Reports(crate::nav::ReportKind::Vendor1099)),
+                prompt: format!(
+                    "In wanderbooks, {entries} {ids} paid a vendor in {year} through a financing account with no payment method recorded, so the 1099 worksheet can't tell whether they count. Ask me how each was paid (whose card, or cash, check or a transfer); add any method not yet in books.instruments with books.add_instrument, then tag each entry with books.set_entry_instrument."
+                ),
+            });
+        }
         for v in r.vendors.iter().filter(|v| v.reportable && !v.tin_on_file) {
             if year == today.year() {
                 asked_w9.insert(v.vendor_id);
@@ -323,7 +423,7 @@ pub fn find(b: &Books) -> Vec<Attention> {
                 ),
                 target: Some(party.map_or(Route::Company, Route::Party)),
                 prompt: format!(
-                    "Remind me to request a W-9 from {}; once I have it, mark it on file in wanderbooks with books.set_vendor_1099.",
+                    "Remind me to request a W-9 from {}; once I have it, record what it says in wanderbooks with books.set_w9 (that marks it on file and keeps the 1099 decision).",
                     v.name
                 ),
             });

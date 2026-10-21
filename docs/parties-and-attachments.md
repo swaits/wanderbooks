@@ -395,7 +395,9 @@ by default; `statement_attachment` + `confirmed: true` records it),
 reconciliation`; `books.digest` `unreconciled_accounts` and the
 viewer's Needs attention, one rule (`ledger_store::reconcilable`): the
 cash accounts (`[books] cash_accounts`, else assets named for cash), the
-card accounts (liabilities named "card", before their first statement),
+card accounts (`ledger_core::parties::card_accounts`: the business-card
+payment methods' liabilities, else the liabilities named "card", not
+"gift", before their first statement),
 and other liabilities with statements, not reconciled through last
 month's end). The statement of a reconciliation not voided can't be
 unlinked from it.

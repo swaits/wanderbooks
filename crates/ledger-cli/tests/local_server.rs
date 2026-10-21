@@ -202,6 +202,25 @@ async fn connect_with(home: &Home, book: &str, token: Option<String>) -> Result<
         .map_err(|e| e.to_string())
 }
 
+/// Name cash 1000 the books' cash account (adding it if the chart lacks
+/// it): the 1099 worksheet counts payments out of the books' cash
+/// accounts and is refused without them.
+async fn name_cash(c: &Client) {
+    let _ = call(
+        c,
+        "books.add_account",
+        json!({"code": "1000", "name": "Cash", "account_type": "asset"}),
+    )
+    .await;
+    call(
+        c,
+        "books.set_setting",
+        json!({"changes": [{"key": "books.cash_accounts", "value": ["1000"]}], "decided_by": "Test Owner"}),
+    )
+    .await
+    .unwrap();
+}
+
 /// Call a tool: Ok(structured result) or Err(the error text).
 async fn call(c: &Client, tool: &str, args: Value) -> Result<Value, String> {
     let args = args.as_object().cloned().unwrap_or_default();
@@ -704,6 +723,7 @@ async fn a_book_in_the_root_keeps_its_vault_and_key_inside_its_own_folder() {
         "the TIN wasn't sealed into the book's vault"
     );
     // A file with TINs is handed over, never written loose in the root.
+    name_cash(&c).await;
     let w = call(
         &c,
         "books.vendor_1099",
@@ -2525,6 +2545,7 @@ async fn lapsed_uploads_are_swept_while_the_server_runs() {
     grant["expires"] = json!(0);
     std::fs::write(&json, grant.to_string()).unwrap();
     // An export too (a file the books made), aged the same way.
+    name_cash(&c).await;
     let made = call(&c, "books.vendor_1099", json!({"year": 2026, "csv": true}))
         .await
         .unwrap();
@@ -2637,6 +2658,7 @@ async fn a_file_the_books_make_is_fetched_by_its_own_token() {
         .await
         .unwrap();
     }
+    name_cash(&c).await;
     // The CPA package, TINs and all: handed over, never inline, never a
     // path; the command runs as this token.
     let got = call(

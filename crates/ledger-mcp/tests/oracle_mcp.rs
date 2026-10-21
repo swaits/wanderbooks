@@ -485,9 +485,9 @@ fn rich_books(s: &mut Store) -> Rich {
     let coach = s.add_class("Coach").unwrap();
     let landlord = s.add_vendor("Landlord").unwrap();
     let contractor = s.add_vendor("Contractor").unwrap();
-    s.set_vendor_1099(landlord, Some(Form1099::Misc), true)
+    s.set_vendor_1099(landlord, &decided(Form1099::Misc), Some(true))
         .unwrap();
-    s.set_vendor_1099(contractor, Some(Form1099::Nec), false)
+    s.set_vendor_1099(contractor, &decided(Form1099::Nec), Some(false))
         .unwrap();
     s.set_account_tax(id_of(s, "6000"), Some("rent_property"), None)
         .unwrap();
@@ -625,6 +625,52 @@ fn rich_books(s: &mut Store) -> Rich {
 
 const START: &str = "2025-01-01";
 const END: &str = "2025-06-30";
+
+/// A 1099 decision from the beginning, decided by the owner.
+fn decided(form: Form1099) -> ledger_core::Dated1099 {
+    ledger_core::Dated1099::from_beginning(
+        ledger_core::Decision1099::Files(form),
+        Some(ledger_core::settings::Source {
+            decided_by: "Oracle Owner".into(),
+            decided_on: d("2025-01-01"),
+            citation: None,
+            note: None,
+        }),
+    )
+}
+
+/// The 1099 report the server makes for these books: payments out of
+/// cash 1000 and financing 2100 (books_toml), no member parties (the
+/// rich books name none, so no shares resolve against members).
+fn core_1099(
+    ledger: &Ledger,
+    year: i32,
+    threshold: Option<Decimal>,
+) -> ledger_core::Vendor1099Report {
+    core_1099_through(ledger, year, threshold, None)
+}
+
+/// [`core_1099`], payments dated after `through` left out.
+fn core_1099_through(
+    ledger: &Ledger,
+    year: i32,
+    threshold: Option<Decimal>,
+    through: Option<chrono::NaiveDate>,
+) -> ledger_core::Vendor1099Report {
+    let id = |code: &str| ledger.chart().find_by_code(code).unwrap().id;
+    ledger_core::vendor_1099_report(
+        ledger,
+        year,
+        threshold,
+        &ledger_core::PaymentAccounts {
+            cash: vec![id("1000")],
+            financing: vec![id("2100")],
+        },
+        &[],
+        through,
+    )
+    .unwrap()
+}
 
 // ------------------------------------------------- statements: csv + json
 
@@ -1748,10 +1794,13 @@ fn pnl_by_class_excludes_closing_entries() {
 
 // ------------------------------------------------- 1099
 
-/// The worksheet equals `vendor_1099_report`; `missing_w9` is the
-/// reportable vendors without a W-9; the untagged-entries note counts the
-/// year's posted entries with no vendor; the indexing note appears only
-/// after 2026. Kills: vendor_1099's year/tag filter and both note guards.
+/// The worksheet equals `vendor_1099_report` (for the server's cash and
+/// financing accounts); `missing_w9` is the vendors a 1099 is or may be
+/// due for without a W-9; the untagged-entries note counts the year's
+/// untagged entries that paid money out for something (the report's
+/// untagged_payments, listed as untagged_entries); the indexing note
+/// appears only after 2026. Kills: vendor_1099's year/tag filter and both
+/// note guards.
 #[test]
 fn vendor_1099_equals_the_core_report_and_counts_untagged_entries() {
     let dir = test_dir("1099");
@@ -1769,11 +1818,9 @@ fn vendor_1099_equals_the_core_report_and_counts_untagged_entries() {
     let ledger = s.ledger().clone();
     drop(s);
     let untagged = |year: i32| {
-        ledger
-            .posted_entries()
-            .filter(|e| chrono::Datelike::year(&e.date()) == year)
-            .filter(|e| ledger.entry_vendor(e.id()).is_none())
-            .count()
+        core_1099(&ledger, year, Some(Decimal::ZERO))
+            .untagged_payments
+            .len()
     };
     assert!(untagged(2025) > 0 && untagged(2025) != untagged(2024));
     let mut m = Mcp::start(&dir, "1000000.00");
@@ -1784,8 +1831,9 @@ fn vendor_1099_equals_the_core_report_and_counts_untagged_entries() {
             args["threshold"] = json!(t);
         }
         let out = m.ok("books.vendor_1099", args);
-        let want = ledger_core::vendor_1099_report(&ledger, year, threshold.map(dec)).unwrap();
+        let want = core_1099(&ledger, year, threshold.map(dec));
         assert_eq!(out["year"], json!(want.year));
+        assert_eq!(out["untagged_entries"], json!(want.untagged_payments));
         assert_eq!(jamt(&out["threshold"]), want.threshold);
         let vendors = out["vendors"].as_array().unwrap();
         assert_eq!(vendors.len(), want.vendors.len(), "{year} vendors");
@@ -1793,14 +1841,29 @@ fn vendor_1099_equals_the_core_report_and_counts_untagged_entries() {
             assert_eq!(g["vendor_id"], json!(w.vendor_id));
             assert_eq!(g["name"], w.name.as_str());
             assert_eq!(jamt(&g["paid"]), w.paid, "{year} {}", w.name);
+            assert_eq!(jamt(&g["excluded_card"]), w.excluded_card);
+            assert_eq!(jamt(&g["undetermined"]), w.undetermined);
+            assert_eq!(jamt(&g["not_reportable"]), w.not_reportable);
+            assert_eq!(g["status"], w.status.key());
+            assert_eq!(g["decision_1099"]["value"], w.decision.key());
             assert_eq!(g["reportable"], json!(w.reportable));
             assert_eq!(g["tin_on_file"], json!(w.tin_on_file));
         }
         let missing: Vec<String> = want
             .vendors
             .iter()
-            .filter(|v| v.reportable && !v.tin_on_file)
-            .map(|v| v.name.clone())
+            .filter(|v| !v.tin_on_file)
+            .filter_map(|v| {
+                if v.reportable {
+                    Some(v.name.clone())
+                } else if v.status == ledger_core::Status1099::Undetermined
+                    && v.decisions.iter().any(|d| d.decision.form().is_some())
+                {
+                    Some(format!("{} (may be reportable)", v.name))
+                } else {
+                    None
+                }
+            })
             .collect();
         assert_eq!(out["missing_w9"], json!(missing), "{year} missing W-9s");
 
@@ -2757,7 +2820,7 @@ fn receipts_and_documents_round_trip() {
         "books.attach_receipt",
         json!({"entry_id": e, "file_name": "first.pdf", "mime_type": "application/pdf",
                "content_base64": b64e(first), "sha256": sha256(first),
-               "description": "Receipt ID 1007; Paid from: Bluevine"}),
+               "description": "Receipt ID 1007; Paid from: Quillmere"}),
     );
     let b = m.ok(
         "books.file_document",
@@ -2787,7 +2850,7 @@ fn receipts_and_documents_round_trip() {
             "first.pdf",
             "application/pdf",
             Some(e),
-            "Receipt ID 1007; Paid from: Bluevine",
+            "Receipt ID 1007; Paid from: Quillmere",
         ),
         (
             &b,
@@ -3560,31 +3623,88 @@ fn cpa_package_holds_the_year_and_its_evidence() {
     // 1099 worksheet.
     let w = csv_rows(
         std::str::from_utf8(&files["1099-worksheet-2025.csv"]).unwrap(),
-        &["vendor", "form", "w9_on_file", "paid", "reportable"],
+        &[
+            "vendor_id",
+            "name",
+            "decision_1099",
+            "form_1099",
+            "reason_kind",
+            "reason",
+            "decided_by",
+            "decided_on",
+            "effective",
+            "decisions_in_year",
+            "paid",
+            "excluded_card",
+            "undetermined",
+            "not_reportable",
+            "status",
+            "reportable",
+            "w9_on_file",
+            "tin_last4",
+        ],
     );
-    let want = ledger_core::vendor_1099_report_with_members(
-        &ledger,
-        2025,
-        Some(d(END)),
-        None,
-        &ledger_core::PaymentAccounts::default(),
-        &[],
-    )
-    .unwrap();
+    // Through as_of (rules.md B-33), out of the package's cash account
+    // and the settings' financing account (one list each per package).
+    let want = core_1099_through(&ledger, 2025, None, Some(d(END)));
     assert_eq!(w.len(), want.vendors.len());
-    let contractor = w.iter().find(|row| row[0] == "Contractor").unwrap();
+    let contractor = w.iter().find(|row| row[1] == "Contractor").unwrap();
     assert_eq!(
-        amt(&contractor[3]),
+        amt(&contractor[10]),
         dec("900.00"),
         "the payment after as_of is left out"
     );
     for (row, v) in w.iter().zip(&want.vendors) {
-        assert_eq!(row[0], v.name);
-        assert_eq!(row[1], v.form.map(|f| f.label()).unwrap_or(""));
-        assert_eq!(row[2], v.tin_on_file.to_string());
-        assert_eq!(amt(&row[3]), v.paid);
-        assert_eq!(row[4], v.reportable.to_string());
+        assert_eq!(row[0], v.vendor_id.to_string());
+        assert_eq!(row[1], v.name);
+        assert_eq!(row[2], v.decision.key());
+        assert_eq!(row[3], v.form().map(|f| f.label()).unwrap_or(""));
+        assert_eq!(
+            row[6],
+            v.decided.as_ref().map_or("", |s| s.decided_by.as_str())
+        );
+        assert_eq!(amt(&row[10]), v.paid);
+        assert_eq!(amt(&row[11]), v.excluded_card);
+        assert_eq!(amt(&row[12]), v.undetermined);
+        assert_eq!(amt(&row[13]), v.not_reportable);
+        assert_eq!(row[14], v.status.key());
+        assert_eq!(row[15], v.reportable.to_string());
+        assert_eq!(row[16], v.tin_on_file.to_string());
     }
+    // The package's 1099 worksheet is books.vendor_1099's CSV for the
+    // package's accounts and its as_of, byte for byte (ledger_package
+    // INVARIANT 7, docs/mcp-interface.md): the tool given the same cash
+    // account (the financing account the settings', as the package's)
+    // and through as_of hands over the same file; without through, the
+    // payment after as_of counts, and the files differ.
+    let mut tool_csv = |args: Value| {
+        let out = m.ok("books.vendor_1099", args);
+        handed(&out["csv"])
+    };
+    let same =
+        tool_csv(json!({"year": 2025, "csv": true, "cash_accounts": ["1000"], "through": END}));
+    assert_eq!(same, files["1099-worksheet-2025.csv"]);
+    let named = tool_csv(json!({
+        "year": 2025, "csv": true, "cash_accounts": ["1000"],
+        "financing_accounts": ["2100"], "through": END
+    }));
+    assert_eq!(
+        named, files["1099-worksheet-2025.csv"],
+        "the settings' financing, named"
+    );
+    let whole_year = tool_csv(json!({"year": 2025, "csv": true, "cash_accounts": ["1000"]}));
+    assert_ne!(whole_year, files["1099-worksheet-2025.csv"]);
+    // A through outside the year, or an account the chart lacks: refused.
+    let why = m.refuse(
+        "books.vendor_1099",
+        json!({"year": 2025, "through": "2026-01-01"}),
+    );
+    assert!(why.contains("is a day of 2025"), "{why}");
+    let why = m.refuse(
+        "books.vendor_1099",
+        json!({"year": 2025, "cash_accounts": ["1999"]}),
+    );
+    assert!(why.contains("no account 1999"), "{why}");
 
     // Without receipts: no evidence at all.
     let out = m.ok(

@@ -427,7 +427,7 @@ fn books_with(name: &str, extra: &str) -> Mcp {
     m.ok("books.add_vendor", json!({"name": "Acme Design"}));
     m.ok(
         "books.set_vendor_1099",
-        json!({"vendor": "Acme Design", "form_1099": "nec"}),
+        json!({"vendor": "Acme Design", "form_1099": "nec", "decided_by": "Test Owner"}),
     );
     m.add_party("Rent Co", &["landlord"]);
     m.books_dir = Some(dir);
@@ -1019,7 +1019,7 @@ fn the_1099_worksheet_carries_full_tins_only_when_asked() {
     m.ok("books.add_vendor", json!({"name": "Rent Co"}));
     m.ok(
         "books.set_vendor_1099",
-        json!({"vendor": "Rent Co", "form_1099": "misc"}),
+        json!({"vendor": "Rent Co", "form_1099": "misc", "decided_by": "Test Owner"}),
     );
     m.w9(
         "Rent Co",
@@ -1072,7 +1072,9 @@ fn the_1099_worksheet_carries_full_tins_only_when_asked() {
     assert_eq!(out["csv"]["mime_type"], "text/csv");
     let text = String::from_utf8(handed(&out["csv"])).unwrap();
     assert!(text.contains(SSN), "{text}");
-    assert!(text.starts_with("vendor_id,name,form_1099,paid,reportable,w9_on_file,tin_last4,tin"));
+    assert!(text.starts_with(
+        "vendor_id,name,decision_1099,form_1099,reason_kind,reason,decided_by,decided_on,effective,decisions_in_year,paid,excluded_card,undetermined,not_reportable,status,reportable,w9_on_file,tin_last4,tin,tin_type,tin_note\n"
+    ));
     let rows = csv_rows(text.as_bytes());
     let acme = rows.iter().find(|r| r["name"] == "Acme Design").unwrap();
     assert_eq!(acme["tin"], SSN);
@@ -1087,7 +1089,7 @@ fn the_1099_worksheet_carries_full_tins_only_when_asked() {
     assert!(!holds_tin(&bytes, SSN_DIGITS));
     let text = String::from_utf8(bytes).unwrap();
     assert!(
-        text.starts_with("vendor_id,name,form_1099,paid,reportable,w9_on_file,tin_last4\n"),
+        text.starts_with("vendor_id,name,decision_1099,form_1099,reason_kind,reason,decided_by,decided_on,effective,decisions_in_year,paid,excluded_card,undetermined,not_reportable,status,reportable,w9_on_file,tin_last4\n"),
         "{text}"
     );
 }
@@ -1190,7 +1192,7 @@ fn no_full_tin_leaves_the_vault_except_the_worksheet_when_asked() {
     m.ok("books.add_vendor", json!({"name": "Rent Co"}));
     m.ok(
         "books.set_vendor_1099",
-        json!({"vendor": "Rent Co", "form_1099": "misc"}),
+        json!({"vendor": "Rent Co", "form_1099": "misc", "decided_by": "Test Owner"}),
     );
     m.pay("Acme Design", "2500.00");
     m.pay("Rent Co", "3000.00");
@@ -1802,7 +1804,7 @@ fn the_cpa_package_carries_the_k1_and_1099_worksheets_with_tins() {
     }
     // The 1099 worksheet: the payee's full TIN.
     let w = csv_rows(&pkg["1099-worksheet-2026.csv"]);
-    let acme = w.iter().find(|r| r["vendor"] == "Acme Design").unwrap();
+    let acme = w.iter().find(|r| r["name"] == "Acme Design").unwrap();
     assert_eq!(acme["tin"], EIN);
     assert_eq!(acme["tin_type"], "ein");
     assert_eq!(acme["tin_last4"], "9105");
@@ -2100,6 +2102,10 @@ fn idempotent_tools_change_nothing_when_repeated() {
         .to_string();
     let settings_file =
         std::fs::read_to_string(m.data.parent().unwrap().join("wanderbooks.toml")).unwrap();
+    m.ok(
+        "books.add_instrument",
+        json!({"kind": "member_card", "label": "Riley's Visa", "account": "1000"}),
+    );
     let calls: Vec<(&str, Value)> = vec![
         ("books.verify", json!({"blobs": true})),
         (
@@ -2118,11 +2124,15 @@ fn idempotent_tools_change_nothing_when_repeated() {
         ("books.run_recurring", json!({"through": "2026-03-15"})),
         (
             "books.set_vendor_1099",
-            json!({"vendor": "Acme Design", "form_1099": "misc"}),
+            json!({"vendor": "Acme Design", "form_1099": "misc", "decided_by": "Test Owner"}),
         ),
         (
             "books.set_entry_vendor",
             json!({"entry_id": entry, "vendor": "Acme Design"}),
+        ),
+        (
+            "books.set_entry_instrument",
+            json!({"entry_id": entry, "instrument": "Riley's Visa"}),
         ),
         (
             "books.label_asset",

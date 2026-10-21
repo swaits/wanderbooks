@@ -26,6 +26,7 @@ pub mod classes;
 pub mod conventions;
 pub mod error;
 pub mod form1099;
+pub mod instruments;
 pub mod journal;
 pub mod k1;
 pub mod kernel;
@@ -63,9 +64,10 @@ pub use cashflow::{
 pub use classes::{Class, ClassId};
 pub use error::LedgerError;
 pub use form1099::{
-    Form1099, PaymentAccounts, Vendor1099Line, Vendor1099Report, vendor_1099_report,
-    vendor_1099_report_with, vendor_1099_report_with_members,
+    Dated1099, Decision1099, ExemptReason, Form1099, Payment1099, PaymentAccounts, Status1099,
+    Vendor1099Line, Vendor1099Report, vendor_1099_report,
 };
+pub use instruments::{Instrument, InstrumentId, InstrumentKind};
 pub use journal::{EntryId, EntryStatus, JournalEntry, JournalLine};
 pub use kernel::{EntryFlows, Flow};
 pub use ledger::{

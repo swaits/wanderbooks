@@ -442,6 +442,131 @@ fn closing_entry_balances() {
     kani::cover!(len == NOMINAL + 2, "three accounts closed to two members");
 }
 
+// ---------------------------------------------------------------------------
+// 1099 payments (rules.md B-19)
+// ---------------------------------------------------------------------------
+
+fn any_role() -> kernel::PayRole {
+    let r: u8 = kani::any();
+    kani::assume(r < 4);
+    match r {
+        0 => kernel::PayRole::Cash,
+        1 => kernel::PayRole::Financing,
+        2 => kernel::PayRole::CardAccount,
+        _ => kernel::PayRole::Other,
+    }
+}
+
+fn any_tag() -> kernel::Tag {
+    let t: u8 = kani::any();
+    kani::assume(t < 4);
+    match t {
+        0 => kernel::Tag::None,
+        1 => kernel::Tag::ThisCard,
+        2 => kernel::Tag::ThisOther,
+        _ => kernel::Tag::Elsewhere,
+    }
+}
+
+/// `kernel::payment_bucket` is the B-19 table, all 16 cases: a tag naming
+/// the line's account decides (card or network: Card; otherwise Counts);
+/// else the role does, and with no tag naming its account a financing line
+/// never counts and a card account's line is always Card.
+#[kani::proof]
+fn payment_bucket_is_the_table() {
+    use kernel::{Bucket, PayRole, Tag};
+    let (role, tag) = (any_role(), any_tag());
+    let got = kernel::payment_bucket(role, tag);
+    let want = match tag {
+        Tag::ThisCard => Some(Bucket::Card),
+        Tag::ThisOther => Some(Bucket::Counts),
+        Tag::None | Tag::Elsewhere => match role {
+            PayRole::Cash => Some(Bucket::Counts),
+            PayRole::Financing => Some(Bucket::Undetermined),
+            PayRole::CardAccount => Some(Bucket::Card),
+            PayRole::Other => None,
+        },
+    };
+    assert_eq!(got, want);
+    if matches!(tag, Tag::None | Tag::Elsewhere) {
+        assert!(role != PayRole::Financing || got != Some(Bucket::Counts));
+        assert!(role != PayRole::CardAccount || got == Some(Bucket::Card));
+    }
+}
+
+/// `kernel::split_payment` never fails on journal-line amounts, and each
+/// bucket is the exact credits-minus-debits of its lines: the buckets
+/// together are the whole payment, so nothing is lost or counted twice.
+#[kani::proof]
+#[kani::unwind(6)]
+fn payment_split_is_exact() {
+    let n = any_len();
+    let lines: [(Option<kernel::Bucket>, Side, i64); N] = core::array::from_fn(|_| {
+        let b: u8 = kani::any();
+        kani::assume(b < 4);
+        let bucket = match b {
+            0 => Some(kernel::Bucket::Counts),
+            1 => Some(kernel::Bucket::Card),
+            2 => Some(kernel::Bucket::Undetermined),
+            _ => None,
+        };
+        (bucket, any_side(), any_amount())
+    });
+    let got = kernel::split_payment(&lines[..n]).expect("never fails in range");
+    for b in kernel::Bucket::ALL {
+        let mut want = 0i64;
+        for &(lb, side, amount) in &lines[..n] {
+            if lb == Some(b) {
+                want -= wide(side, amount);
+            }
+        }
+        assert_eq!(got[b.index()], want);
+    }
+    kani::cover!(n == N, "four lines");
+}
+
+/// `kernel::net_buckets` keeps the payment's total, never leaves a bucket
+/// opposite the total, and leaves buckets of one sign alone (money moved
+/// between the company's own sources pays no one: P3 review R1); with
+/// mixed signs the whole net goes to the one bucket of its sign, or to
+/// Undetermined when two share it (its SCENARIOS 1-3).
+#[kani::proof]
+fn net_buckets_keeps_the_total() {
+    let b: [i64; 3] = core::array::from_fn(|_| any_amount());
+    let p = b[0] + b[1] + b[2];
+    let out = kernel::net_buckets(b).expect("never fails in range");
+    assert_eq!(out[0] + out[1] + out[2], p);
+    for x in out {
+        assert!(x == 0 || (x > 0) == (p > 0));
+    }
+    let one_sign = b.iter().all(|&x| x >= 0) || b.iter().all(|&x| x <= 0);
+    if one_sign {
+        assert_eq!(out, b);
+    } else {
+        // Mixed signs: the whole net lands in one bucket, the one with its
+        // sign when there is exactly one, else Undetermined.
+        let with_sign: [bool; 3] = core::array::from_fn(|i| b[i] != 0 && (b[i] > 0) == (p > 0));
+        let takers = with_sign.iter().filter(|&&s| s).count();
+        let mut taker = kernel::Bucket::Undetermined.index();
+        if takers == 1 {
+            for (i, &s) in with_sign.iter().enumerate() {
+                if s {
+                    taker = i;
+                }
+            }
+        }
+        for (i, &x) in out.iter().enumerate() {
+            assert_eq!(x, if i == taker { p } else { 0 });
+        }
+    }
+    kani::cover!(b[0] > 0 && b[2] < 0 && p > 0, "a payment net of a refund");
+    kani::cover!(
+        b[0] > 0 && b[1] > 0 && b[2] < 0 && p > 0,
+        "two buckets share the net's sign"
+    );
+    kani::cover!(!one_sign && p == 0, "money moved between own sources");
+}
+
 /// An allocation's parts sum to the whole exactly, whatever the rounding
 /// of the others, and only the last part changes.
 #[kani::proof]

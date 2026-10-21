@@ -751,21 +751,27 @@ pub fn show_party(ui: &mut Ui, b: &Books, id: PartyId, shell: &mut Shell<'_>) {
             b.party_1099(id, tax_year)
         };
         if let Some((l, threshold)) = &form {
-            let sub = match l.form {
-                Some(_) if l.reportable => (
+            let sub = match l.status {
+                ledger_core::Status1099::Reportable => (
                     format!("Reportable · threshold {}", fmt::dollars(*threshold)),
                     p.warning,
                 ),
-                Some(_) => (
+                ledger_core::Status1099::UnderThreshold => (
                     format!("Under the {} threshold", fmt::dollars(*threshold)),
                     p.muted,
                 ),
-                None => ("Not marked for a 1099".into(), p.muted),
+                ledger_core::Status1099::NotReportable => ("Not reportable".into(), p.muted),
+                ledger_core::Status1099::Undetermined if l.decision_needed => {
+                    ("Needs a 1099 decision".into(), p.warning)
+                }
+                ledger_core::Status1099::Undetermined => {
+                    ("Undetermined: how was it paid?".into(), p.warning)
+                }
             };
             tiles.push((
                 format!("1099 amount, {tax_year}"),
                 Some(l.paid),
-                "Cash paid in the calendar year, from the 1099 worksheet (ledger-core): posted entries tagged with its vendor record, net of refunds and reversals. Card payments aren't counted (the card issuer reports them).".into(),
+                "What counts toward its 1099 in the calendar year, from the 1099 worksheet (the server's books.vendor_1099): posted entries tagged with its vendor record, paid by check, ACH, transfer or cash, net of refunds and reversals. Card and payment-network payments aren't counted (the processor reports them on Form 1099-K); what a member paid with no payment method recorded is undetermined until it is.".into(),
                 Some(sub),
             ));
         }
@@ -1176,8 +1182,15 @@ fn records_card(ui: &mut Ui, b: &Books, party: &Party, info: &PartyInfo, go: &mu
                     k(ui, "Vendor");
                     ui.horizontal_wrapped(|ui| {
                         ui.label(format!("{} · vendor {}", v.name, v.id));
-                        if let Some(f) = v.form_1099 {
-                            widgets::pill(ui, f.label(), p.accent, p.accent_soft);
+                        match v.decision_on(b.today) {
+                            Some(ledger_core::Decision1099::Files(f)) => {
+                                widgets::pill(ui, f.label(), p.accent, p.accent_soft);
+                            }
+                            Some(ledger_core::Decision1099::NotReportable { .. }) => {
+                                widgets::pill(ui, "No 1099", p.muted, p.hover);
+                            }
+                            // Undecided: nothing (Needs attention asks).
+                            _ => {}
                         }
                     });
                     ui.end_row();

@@ -631,21 +631,36 @@ pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
             let vendor = p.get("vendor_id").and_then(|v| v.as_u64());
             let name = vendor
                 .and_then(|v| b.ledger.get_vendor(v))
-                .map(|v| v.name.clone());
-            let form = p
-                .get("form_1099")
-                .and_then(|v| v.as_str())
-                .and_then(ledger_core::Form1099::parse)
-                .map(|f| f.label());
-            let w9 = p.get("tin_on_file").and_then(|v| v.as_bool());
-            let text = match (name, form, w9) {
-                (Some(n), Some(f), Some(w)) => format!(
-                    "1099 details of {n}: {f}, W-9 {}",
-                    if w { "on file" } else { "not on file" }
-                ),
-                (Some(n), None, Some(_)) => format!("{n} no longer gets a 1099"),
-                (Some(n), _, None) => format!("Updated the 1099 details of {n}"),
-                (None, ..) => "Updated a vendor's 1099 details".into(),
+                .map_or_else(|| "a vendor".to_string(), |v| v.name.clone());
+            let w9 = |w: bool| if w { "on file" } else { "not on file" };
+            let text = match ledger_store::form1099::decision_of(line) {
+                // Recorded with who decided (plan defects 18, 23; D-40).
+                Ok((_, d, _)) if d.source.is_some() => {
+                    let s = d.source.as_ref().expect("checked");
+                    let what = match &d.decision {
+                        ledger_core::Decision1099::Undetermined => "undetermined".to_string(),
+                        other => crate::pages::reports::decision_text(other),
+                    };
+                    let from = d
+                        .effective
+                        .map(|e| format!(" from {}", fmt::date(e)))
+                        .unwrap_or_default();
+                    format!(
+                        "1099 decision for {name}{from}: {what} (by {}, {})",
+                        s.decided_by,
+                        fmt::date(s.decided_on)
+                    )
+                }
+                // Written before decisions were kept: a form, or none
+                // (which can't say whether anyone decided: plan 5.5).
+                Ok((_, d, flag)) => match d.decision.form() {
+                    Some(f) => format!("1099 details of {name}: {}, W-9 {}", f.label(), w9(flag)),
+                    None => format!(
+                        "1099 details of {name}: no form recorded (undetermined), W-9 {}",
+                        w9(flag)
+                    ),
+                },
+                Err(_) => format!("Updated the 1099 details of {name}"),
             };
             ev(
                 icon::IDENTIFICATION_CARD,
@@ -656,6 +671,47 @@ pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
                         .map_or(Route::Company, Route::Party),
                 ),
             )
+        }
+        "vendor.w9_flag_set" => {
+            let vendor = p.get("vendor_id").and_then(|v| v.as_u64());
+            let name = vendor
+                .and_then(|v| b.ledger.get_vendor(v))
+                .map_or_else(|| "a vendor".to_string(), |v| v.name.clone());
+            let text = match p.get("tin_on_file").and_then(|v| v.as_bool()) {
+                Some(true) => format!("W-9 of {name} marked on file"),
+                Some(false) => format!("W-9 of {name} marked not on file"),
+                None => format!("Updated the W-9 of {name}"),
+            };
+            ev(
+                icon::IDENTIFICATION_CARD,
+                text,
+                Some(
+                    vendor
+                        .and_then(|v| b.ledger.party_of_vendor(v))
+                        .map_or(Route::Company, Route::Party),
+                ),
+            )
+        }
+        "instrument.added" => {
+            let text = match ledger_store::form1099::instrument_of(line) {
+                Ok(i) => format!("Added payment method {} ({})", i.label, i.kind.label()),
+                Err(_) => "Added a payment method".to_string(),
+            };
+            ev(icon::CREDIT_CARD, text, None)
+        }
+        "entry.instrument_set" => {
+            let e = entry_id.unwrap_or(0);
+            let instrument = p.get("instrument_id").and_then(|v| v.as_u64());
+            Some(Event {
+                icon: icon::CREDIT_CARD,
+                text: match instrument.and_then(|i| b.ledger.get_instrument(i)) {
+                    Some(i) => format!("Payment method of #{e}: {}", i.label),
+                    None if instrument.is_none() => format!("Cleared the payment method of #{e}"),
+                    None => format!("Tagged #{e} with a payment method"),
+                },
+                route: entry_id.map(Route::Entry),
+                also: None,
+            })
         }
         "entry.vendor_set" => {
             let vendor = p.get("vendor_id").and_then(|v| v.as_u64());

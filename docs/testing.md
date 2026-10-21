@@ -1286,6 +1286,88 @@ cash, in_kind) and `update_party`'s creditor_of diff; the viewer's
 `Party::tin_last4`'s `or_else` order swapped (TIN facts and W-9 facts
 never disagree, parties INVARIANT 2a, enforced on replay).
 
+## P3: 1099s (defects 23, 12 and 18; 2026-10-20)
+
+The 1099 decision kept as a decision (nec, misc, not_reportable with its
+reason kind and words, undetermined), with who decided and the date it
+takes effect (D-40); payment methods and the tag on each payment; one
+report for the server, the package and the viewer (rules.md B-19). No
+mutation run (D-33); the list P12 must cover is at the end.
+
+| Law (rules.md B-19) | Tests |
+|---|---|
+| Undecided is not "not reportable" (defect 18) | `undecided_is_not_not_reportable` |
+| "No 1099" is a decision with who and when; "none" refused (defect 23) | `a_vendor_marked_no_1099_is_not_undecided`, `the_cutovers_reasons_are_recorded_as_given`, `set_vendor_1099_says_what_a_decision_needs` (`ledger-mcp` `spec_1099.rs`) |
+| A member's card is excluded, their check counts, unknown is undetermined (defect 12) | `a_members_personal_card_payment_is_not_a_1099_payment`, `payments_come_from_cash_and_financing_only` |
+| Card-account payments are listed, not dropped | `card_account_payments_are_listed_not_dropped` |
+| A bank payment counts unless tagged with a card (D-40) | `a_debit_card_payment_from_the_bank_is_excluded_when_tagged` |
+| A tag describes one account (review R2) | `a_tag_naming_another_account_is_undetermined` |
+| Money between the company's own sources pays no one (R1) | `paying_down_a_financing_liability_pays_no_vendor`, `paying_the_card_bill_pays_no_vendor` |
+| Unknowns never settle the status (R3) | `a_negative_unknown_keeps_a_reportable_vendor_undetermined` |
+| Money from a vendor for anything but a refund doesn't lower its 1099: a sale, its invoice paid, a disposal, a loan (R6) | `a_sale_to_a_contractor_does_not_lower_its_1099`, `money_from_a_vendor_that_is_no_refund_does_not_lower_its_1099`, unit `the_other_receipts_note_says_what_each_entry_did` (`ledger-package`) |
+| Cash accounts named, dollars (R5, R16) | `the_report_needs_the_cash_accounts_and_dollars` |
+| A shared payment splits across buckets to the cent (R12) | `a_shared_payment_splits_across_buckets_to_the_cent`, unit `a_vendor_share_splits_across_buckets_to_the_cent` |
+| Dated decisions (D-40) | `a_status_change_mid_year_applies_by_payment_date`, `an_incorporation_on_december_30_is_a_new_vendor`, `an_llc_electing_corporate_taxation_keeps_its_vendor`, `a_dated_decision_records_a_change`, `a_decision_change_names_the_payments_it_reaches`, `an_undated_old_decision_is_in_force_from_the_beginning`, `two_status_changes_in_a_year_and_a_reversal_across_them`, unit `dated_decisions_take_effect_on_their_dates` |
+| A change for a closed or due year warns (D-40, R15) | `a_change_reaching_a_filed_year_warns` (`spec_1099.rs`) |
+| The bucket table, all 16 cases; splitting and netting exact | `payment_bucket_is_the_table_in_all_16_cases`, `buckets_net_money_moved_between_the_companys_sources`, Kani `payment_bucket_is_the_table`, `payment_split_is_exact`, `net_buckets_keeps_the_total`, bridge `payment_buckets_agree` |
+| Properties | `no_instruments_no_financing_is_the_old_report` (the regression: with cash named and no methods or financing, the old figure exactly), `buckets_partition_each_payment`, `a_reversal_nets_every_bucket_to_zero`, `the_worksheet_ties_to_the_ledger` (paid + excluded + undetermined + not reportable + receipts for something else = every payment line in the year, dated decisions, sales and receipts included; the payment lists sum to their columns) |
+| Payment methods: refusals, the reversal chain | `a_payment_method_is_refused_unless_sound`, `a_payment_method_tags_the_whole_reversal_chain`, unit tests in `instruments.rs` |
+| W-9 flag kept apart from the decision (brief 1.5, R8) | `set_vendor_1099_keeps_the_w9_flag_when_omitted`, `set_w9_keeps_the_1099_decision_and_its_source`, `set_w9_declares_the_w9_flags_feature_before_its_first_line` (`spec_1099.rs`), `marking_a_w9_keeps_who_decided_the_1099` (`ledger-store` `tests/form1099.rs`) |
+| Journal: features declared once before their first line; replay and projection exact; refusals and no-ops journal nothing; newer values newer; old books as they always meant | `ledger-store` `tests/form1099.rs` (`each_feature_is_declared_once_before_its_first_line`, `decisions_and_methods_replay_and_project`, `refusals_and_no_ops_journal_nothing`, `an_unknown_1099_value_is_newer_not_corrupt`, `books_written_before_decisions_read_as_they_always_meant`), unit tests in `ledger-store` `form1099.rs`, the op model (`refused_commands_never_reach_the_journal` with `SetVendor1099`, `SetW9Flag`, `AddInstrument`, `SetEntryInstrument`; an accepted command journals or changes nothing), `books_an_earlier_version_wrote_open_to_its_figures` (fixture `p2_vendor_1099`) |
+| Records change no entry (verification 13a) | `decision_and_method_records_change_no_entry` |
+| The quieter untagged note (R7) | `the_untagged_note_counts_only_money_out` (`ledger-package`) |
+| One builder: the package CSV is the worksheet CSV for the package's accounts; README wording | `ledger-package` `tests/package.rs` (the zip's CSV equals `vendor_1099_csv` for the request's accounts, else the settings', through as_of: `payments_to_a_vendor_come_from_the_packages_accounts`, `one_list_of_cash_accounts_per_package`, `the_1099_worksheet_stops_at_as_of`; the README line pinned); over the MCP, the package's CSV is `books.vendor_1099`'s for the same `cash_accounts`, `financing_accounts` and `through` (`ledger-mcp` `oracle_mcp.rs` `cpa_package_holds_the_year_and_its_evidence`) |
+| The viewer counts as the server does (brief 1.4) | `the_viewer_counts_the_1099_as_the_server_does` (`ledger-gui` `tests/parties.rs`) |
+| End to end, restarting between steps | `payment_methods_round_trip_and_classify_payments` (`spec_1099.rs`), `mcp_vendor_1099_over_stdio`, `spec_mcp.rs` (every tool exercised and schema-checked, `books.instruments` read-only) |
+| bookspec | `bookspec/examples/1099-*.toml` |
+
+**For P12 (mutation targets, none run):** `ledger-core` `form1099.rs`
+(`plan_decision`, `apply_decision`, `check_new_decision`'s decided-before
+test, `in_force`/`in_force_before` (`<` against `<=`), `vendor_1099_report`'s
+status branches (each `>=`, `<`, `max(.,0)`, `min(.,0)`), the listing
+filter, the not-reportable and undetermined routing, the R6 test
+(`< 0`, credit side, `refund_accounts` per account type), `Roles::new`
+(which methods' accounts are financing, which a card's), `split_share` (the floor corrections,
+the sign), `vendor_part`, the unresolved fallback, `decisions_during`,
+`untagged_payments` (`> 0`, each skip, each debit kind), `decision_changes`);
+`kernel.rs` (`payment_bucket`, `split_payment`, `net_buckets`);
+`instruments.rs` and `Ledger::check_add_instrument` (each refusal),
+`set_entry_instrument` (the chain), the reversal step's copy,
+`set_vendor_w9_flag`; `ledger-store` `form1099.rs` (each decode check,
+`newer_content`), `store.rs` (`ensure_feature`, `set_vendor_1099`'s
+unchanged path, `set_vendor_w9_flag`, `add_instrument`,
+`set_entry_instrument`'s no-op, the replay and projection arms,
+`sqlite_reversal_chain`); `ledger-mcp` `tools/instruments.rs`
+(`decision_in`'s refusals, `filed_year_warnings`' closed and due tests,
+`resolve_instrument`, `add_instrument`'s warnings), `server.rs`'s
+`set_vendor_1099` (the W-9-only path) and `set_w9` (the feature declared
+first, only when the flag changes); `ledger-package` `vendor_1099.rs` (the CSV columns, every note's
+guard, `may_file`, `missing_w9`'s suffix) and `package.rs` (tin_gaps, the
+README line). The viewer has no mutation job (its musts are tested).
+
+## P3: parties and 1099s landed together (2026-10-21)
+
+The two pieces above, stacked on the IIF, cash flow and rename pieces, and
+reconciled where they meet. Built under D-33 (no mutation run); what P12
+must cover is at the end.
+
+| What | Where | Oracle |
+|---|---|---|
+| One rule for what a card is: the recorded business cards' liabilities, else (none recorded) liabilities named "card", not "gift"; never a member's card, a member's check or a platform; a debit card on the bank is none; money follows it | `ledger-core` `tests/spec_party_totals.rs` `a_card_is_a_recorded_business_card_else_a_liability_named_card` | B-35 item 5, `parties::card_accounts` INVARIANTS 1-4 |
+| Party totals and the 1099 worksheet never contradict: paid less received is the worksheet's paid + excluded_card + undetermined + not_reportable plus its other receipts, for a vendor named alone, whatever the methods, refunds and reversals | property `party_totals_are_the_1099s_buckets` (`ledger-core` `tests/form1099.rs`; `PROPTEST_CASES`, default 256; 2,000 run clean; dropping a bucket from the sum fails at once) | B-35 item 9, by hand |
+| The same, one year by hand: a member's check, a member's card, a member's payment of unknown method, a company card charge and a company check to one contractor, then the member reimbursed | `bookspec/examples/1099-and-party-totals-for-a-members-payment.toml` | B-35 item 9; Treas. Reg. §1.6041-1(e)(1), (a)(1)(iv) |
+| The CPA package's 1099 worksheet is `books.vendor_1099`'s CSV for the package's accounts (the request's, else the settings', R18) through its as_of, byte for byte; without `through` the files differ; a `through` outside the year and an unknown account are refused | `ledger-mcp` `oracle_mcp.rs` `cpa_package_holds_the_year_and_its_evidence`; `ledger-package` `tests/package.rs` `payments_to_a_vendor_come_from_the_packages_accounts`, `one_list_of_cash_accounts_per_package`, `the_1099_worksheet_stops_at_as_of` | B-33; mcp-interface.md |
+| A feature is declared before a command's first line: `books.update_party` with a field and the first creditor journals the declaration, then the field, then the creditor | `ledger-mcp` `tests/spec_party_totals.rs` `update_party_declares_the_creditor_feature_before_its_first_line` | B-27 |
+| One bookspec loader for every example, the parties' and the 1099s' with them: `setup.parties`, `setup.members` (`distributions_account`), `setup.payees` (a party's vendor record), `setup.status_changes`, `setup.instruments`, events' `parties` and `instrument`, and the queries `vendor_1099`, `k1`, `party_part`, `party_totals`, `party_tin_last4`; refused: a party or payment method not in the setup, a reversal naming parties, party totals without a basis, a 1099 line leaving a figure out, a wrong direction or status | `ledger-core` `tests/bookspec.rs` (`every_bookspec_example_holds`, `a_party_not_in_the_setup_is_refused`, `a_party_parts_direction_is_checked`, `a_reversal_naming_parties_is_refused`, `party_totals_without_a_basis_are_refused`, `a_vendor_1099_line_leaving_a_figure_out_is_refused`, `a_vendor_1099_status_is_checked`, `a_payment_method_not_in_the_setup_is_refused`) | bookspec/README.md |
+
+**For P12 (mutation targets, none run, D-33):** `parties::card_accounts`
+(the recorded-cards branch, the gift and the other-instruments
+exclusions); `ledger_package::Settings::with_accounts` (each list's
+fallback); the server's `vendor_1099` (`through`'s year check, the
+unknown-code check, the accounts passed) and `update_party`'s feature
+declaration; the bookspec loader's party, payee, decision and payment
+method setup.
+
 ## Benchmarks (baseline 2026-10-13)
 
 No budget, by decision (the owner, 2026-10-13: the books do little work

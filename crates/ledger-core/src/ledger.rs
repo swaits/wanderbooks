@@ -255,6 +255,11 @@ pub struct Ledger {
     next_recurring_id: RecurringId,
     /// Who each entry paid or was billed by, for 1099 reporting.
     entry_vendors: HashMap<EntryId, VendorId>,
+    /// The payment methods ([`crate::instruments`]), by id.
+    instruments: std::collections::BTreeMap<crate::InstrumentId, crate::Instrument>,
+    next_instrument_id: crate::InstrumentId,
+    /// The payment method each entry was paid with, for 1099 reporting.
+    entry_instruments: HashMap<EntryId, crate::InstrumentId>,
     /// Each invoice's payments (entry, amount), for aging as of a date.
     invoice_payments: HashMap<InvoiceId, Vec<(EntryId, Decimal)>>,
     /// Each bill's payments (entry, amount), for aging as of a date.
@@ -313,6 +318,9 @@ impl Ledger {
             recurring: std::collections::BTreeMap::new(),
             next_recurring_id: 1,
             entry_vendors: HashMap::new(),
+            instruments: std::collections::BTreeMap::new(),
+            next_instrument_id: 1,
+            entry_instruments: HashMap::new(),
             invoice_payments: HashMap::new(),
             bill_payments: HashMap::new(),
             roles: std::collections::BTreeMap::new(),
@@ -630,6 +638,15 @@ impl Ledger {
                 self.next_recurring_id == other.next_recurring_id,
             ),
             ("entry_vendors", self.entry_vendors == other.entry_vendors),
+            ("instruments", self.instruments == other.instruments),
+            (
+                "next_instrument_id",
+                self.next_instrument_id == other.next_instrument_id,
+            ),
+            (
+                "entry_instruments",
+                self.entry_instruments == other.entry_instruments,
+            ),
             (
                 "invoice_payments",
                 self.invoice_payments == other.invoice_payments,
@@ -1664,6 +1681,10 @@ impl Ledger {
         // A reversed payment un-pays the vendor: carry the tags.
         if let Some(v) = self.entry_vendor(entry) {
             self.entry_vendors.insert(id, v);
+        }
+        // Paid the same way: its 1099 buckets net to zero too.
+        if let Some(i) = self.entry_instrument(entry) {
+            self.entry_instruments.insert(id, i);
         }
         // Every party and share: the reversal undoes each one's part.
         if let Some(p) = self.entry_parties.get(&entry).cloned() {
@@ -3030,7 +3051,7 @@ impl Ledger {
             Vendor {
                 id,
                 name: name.to_string(),
-                form_1099: None,
+                decisions_1099: Vec::new(),
                 tin_on_file: false,
             },
         );
@@ -3062,20 +3083,248 @@ impl Ledger {
         self.vendors.get(&id)
     }
 
-    /// Set which information return a vendor gets (or none), and whether
-    /// their W-9 is on file.
+    /// Check a 1099 decision for a vendor before it is recorded
+    /// ([`crate::form1099::check_new_decision`]): the vendor exists, the
+    /// decision, its source and its date are sound, and a dated decision
+    /// records a change. Returns what recording it would do.
+    pub fn check_vendor_1099(
+        &self,
+        id: VendorId,
+        new: &crate::form1099::Dated1099,
+    ) -> Result<crate::form1099::Applied, LedgerError> {
+        let v = self
+            .vendors
+            .get(&id)
+            .ok_or(LedgerError::UnknownVendor(id))?;
+        crate::form1099::check_new_decision(&v.decisions_1099, new)
+            .map_err(LedgerError::Invalid1099)
+    }
+
+    /// Record a vendor's 1099 decision from the date it takes effect (or
+    /// from the beginning), with who decided, and whether its W-9 is on
+    /// file, checked ([`Self::check_vendor_1099`]).
+    ///
+    /// ```text
+    /// GOAL: "no 1099" is a decision kept with its reason and who made it,
+    ///       never the same as "never decided" (plan defects 18, 23), and
+    ///       each payment takes the decision in force on its date (D-40).
+    /// SOURCE: docs/spec/rules.md B-19; crate::form1099::plan_decision.
+    /// SCENARIOS:
+    ///   1. IF the vendor is unknown, or the decision fails its checks:
+    ///      SHOULD refuse, changing nothing.
+    ///   2. Otherwise SHOULD record it (crate::form1099::apply_decision)
+    ///      and set the W-9 flag, returning what it did.
+    /// ```
     pub fn set_vendor_1099(
         &mut self,
         id: VendorId,
-        form: Option<crate::form1099::Form1099>,
+        new: crate::form1099::Dated1099,
         tin_on_file: bool,
-    ) -> Result<(), LedgerError> {
+    ) -> Result<crate::form1099::Applied, LedgerError> {
+        self.check_vendor_1099(id, &new)?;
+        self.replay_vendor_1099(id, new, tin_on_file)
+    }
+
+    /// [`Self::set_vendor_1099`] as journaled: the vendor must exist, and
+    /// the decision is recorded as the line says, without the checks a
+    /// new decision passes (rules.md B-28). A line written before
+    /// decisions were kept replays as a decision from the beginning with
+    /// no source (a null as undetermined: plan 5.5).
+    pub fn replay_vendor_1099(
+        &mut self,
+        id: VendorId,
+        new: crate::form1099::Dated1099,
+        tin_on_file: bool,
+    ) -> Result<crate::form1099::Applied, LedgerError> {
         let v = self
             .vendors
             .get_mut(&id)
             .ok_or(LedgerError::UnknownVendor(id))?;
-        v.form_1099 = form;
+        let applied = crate::form1099::apply_decision(&mut v.decisions_1099, new);
         v.tin_on_file = tin_on_file;
+        Ok(applied)
+    }
+
+    /// Mark whether a vendor's W-9 is on file, keeping its 1099 decisions
+    /// and who made them (P3 review R8). Returns whether it changed.
+    pub fn set_vendor_w9_flag(&mut self, id: VendorId, on_file: bool) -> Result<bool, LedgerError> {
+        let v = self
+            .vendors
+            .get_mut(&id)
+            .ok_or(LedgerError::UnknownVendor(id))?;
+        let changed = v.tin_on_file != on_file;
+        v.tin_on_file = on_file;
+        Ok(changed)
+    }
+
+    // ------------------------------------------------------------------
+    // Payment methods (crate::instruments)
+    // ------------------------------------------------------------------
+
+    /// The id the next payment method gets.
+    pub fn next_instrument_id(&self) -> crate::InstrumentId {
+        self.next_instrument_id
+    }
+
+    /// Check a new payment method (crate::instruments INVARIANTS 1-4).
+    /// Returns its label, trimmed.
+    pub fn check_add_instrument(
+        &self,
+        label: &str,
+        last4: Option<&str>,
+        owner_party: Option<crate::PartyId>,
+        account: AccountId,
+    ) -> Result<String, LedgerError> {
+        let label =
+            crate::instruments::check_label(label).map_err(LedgerError::InvalidInstrument)?;
+        let key = crate::instruments::label_key(&label);
+        if let Some(i) = self
+            .instruments
+            .values()
+            .find(|i| crate::instruments::label_key(&i.label) == key)
+        {
+            return Err(LedgerError::InvalidInstrument(format!(
+                "payment method {} is already named {:?}: give this one another name",
+                i.id, i.label
+            )));
+        }
+        if let Some(l) = last4 {
+            crate::instruments::check_last4(l).map_err(LedgerError::InvalidInstrument)?;
+        }
+        if let Some(p) = owner_party
+            && !self.parties.contains_key(&p)
+        {
+            return Err(LedgerError::UnknownParty(p));
+        }
+        let a = self
+            .chart
+            .get(account)
+            .ok_or(LedgerError::UnknownAccount(account))?;
+        if a.placeholder {
+            return Err(LedgerError::PlaceholderAccount(a.code.clone()));
+        }
+        if !matches!(a.account_type, AccountType::Asset | AccountType::Liability) {
+            return Err(LedgerError::InvalidInstrument(format!(
+                "account {} {:?} is {:?}: a payment method pays through an asset (a bank account) or a liability (a card, or what's owed to the members)",
+                a.code, a.name, a.account_type
+            )));
+        }
+        let control = [&crate::PAYABLES, &crate::RECEIVABLES]
+            .into_iter()
+            .find(|c| self.role_account(c) == Some(account));
+        if let Some(c) = control {
+            return Err(LedgerError::InvalidInstrument(format!(
+                "account {} is the {} control account, which no payment is made from: name the bank, card, or members' account the money left",
+                a.code, c.role
+            )));
+        }
+        Ok(label)
+    }
+
+    /// Add a payment method ([`Self::check_add_instrument`]). Returns its
+    /// id.
+    pub fn add_instrument(
+        &mut self,
+        kind: crate::InstrumentKind,
+        label: &str,
+        last4: Option<&str>,
+        owner_party: Option<crate::PartyId>,
+        account: AccountId,
+    ) -> Result<crate::InstrumentId, LedgerError> {
+        let label = self.check_add_instrument(label, last4, owner_party, account)?;
+        let id = self.next_instrument_id;
+        self.next_instrument_id += 1;
+        self.instruments.insert(
+            id,
+            crate::Instrument {
+                id,
+                kind,
+                label,
+                last4: last4.map(str::to_string),
+                owner_party,
+                account,
+            },
+        );
+        Ok(id)
+    }
+
+    /// Every payment method, in id order.
+    pub fn instruments(&self) -> impl Iterator<Item = &crate::Instrument> + '_ {
+        self.instruments.values()
+    }
+
+    /// One payment method.
+    pub fn get_instrument(&self, id: crate::InstrumentId) -> Option<&crate::Instrument> {
+        self.instruments.get(&id)
+    }
+
+    /// The liability accounts that are company cards: the account of each
+    /// business-card payment method that is a liability (a credit card's
+    /// balance; a debit card draws on an asset and isn't one). A member's
+    /// card pays through the members' financing account, and a platform
+    /// through its own balance: neither is a card account. For whatever
+    /// needs to tell a card from other liabilities (party money, the cash
+    /// flow's sections), from what the books record rather than an
+    /// account's name.
+    pub fn card_accounts(&self) -> std::collections::BTreeSet<AccountId> {
+        self.instruments
+            .values()
+            .filter(|i| i.kind == crate::InstrumentKind::BusinessCard)
+            .filter(|i| {
+                self.chart
+                    .get(i.account)
+                    .is_some_and(|a| a.account_type == AccountType::Liability)
+            })
+            .map(|i| i.account)
+            .collect()
+    }
+
+    /// The payment method with this label (ignoring case and surrounding
+    /// space).
+    pub fn instrument_by_label(&self, label: &str) -> Option<&crate::Instrument> {
+        let key = crate::instruments::label_key(label);
+        self.instruments
+            .values()
+            .find(|i| crate::instruments::label_key(&i.label) == key)
+    }
+
+    /// The payment method an entry is tagged with.
+    pub fn entry_instrument(&self, entry: EntryId) -> Option<crate::InstrumentId> {
+        self.entry_instruments.get(&entry).copied()
+    }
+
+    /// Tag an entry (draft or posted) with the payment method it was paid
+    /// with, or clear the tag.
+    ///
+    /// ```text
+    /// GOAL: the 1099 worksheet knows how each payment was made.
+    /// SOURCE: docs/spec/rules.md B-19; crate::instruments.
+    /// SCENARIOS:
+    ///   1. IF the entry or the payment method is unknown: SHOULD refuse.
+    ///   2. Tagging MUST change no amount (it's metadata, allowed on posted
+    ///      entries, like the vendor tag).
+    ///   3. The entry's reversal chain carries the same tag, so a payment
+    ///      and its reversal always sit in the same bucket and net to zero.
+    /// ```
+    pub fn set_entry_instrument(
+        &mut self,
+        entry: EntryId,
+        instrument: Option<crate::InstrumentId>,
+    ) -> Result<(), LedgerError> {
+        if !self.entries.contains_key(&entry) {
+            return Err(LedgerError::UnknownEntry(entry));
+        }
+        if let Some(i) = instrument
+            && !self.instruments.contains_key(&i)
+        {
+            return Err(LedgerError::UnknownInstrument(i));
+        }
+        for e in self.reversal_chain(entry) {
+            match instrument {
+                Some(i) => self.entry_instruments.insert(e, i),
+                None => self.entry_instruments.remove(&e),
+            };
+        }
         Ok(())
     }
 

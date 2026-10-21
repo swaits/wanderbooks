@@ -639,6 +639,27 @@ fn defect24_creditor_of_round_trips_and_a_card_fee_is_not_a_payment() {
     assert_eq!(m.ok("books.verify", json!({}))["status"], "ok");
 }
 
+/// rules.md B-27: `books.update_party` declares the `party_creditors`
+/// feature before the first line it writes, never between them: a name
+/// change with the first creditor is journaled as the declaration, then
+/// the name, then the creditor (a refused format upgrade then leaves
+/// nothing half done).
+#[test]
+fn update_party_declares_the_creditor_feature_before_its_first_line() {
+    let mut m = books("feature-first");
+    let start = m.journal_types().len();
+    let p = m.ok(
+        "books.update_party",
+        json!({"party": "Harbor Bank", "notes": "the card's issuer", "creditor_of": ["2050"]}),
+    );
+    assert_eq!(p["creditor_of"], json!(["2050"]));
+    assert_eq!(
+        m.journal_types()[start..].to_vec(),
+        ["journal.format_set", "party.updated", "party.creditor_set"],
+    );
+    assert_eq!(m.ok("books.verify", json!({}))["status"], "ok");
+}
+
 /// What `books.post_entry` previews is what it posts: each party's
 /// `resolved`, `direction`, `cash` and `in_kind` in the preview are
 /// `books.get_entry`'s once confirmed (a derived split is then journaled as

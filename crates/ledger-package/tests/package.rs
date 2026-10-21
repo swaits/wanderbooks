@@ -83,8 +83,7 @@ fn books(dir: &Path) -> Books {
     .unwrap();
     let vendor = s.add_vendor("Acme, \"Design\"").unwrap();
     let acme = s.ledger().party_of_vendor(vendor).unwrap();
-    s.set_vendor_1099(vendor, Some(Form1099::Nec), true)
-        .unwrap();
+    s.set_vendor_1099(vendor, &nec(), Some(true)).unwrap();
     s.set_party_tin(
         acme,
         Some(TinFacts {
@@ -203,6 +202,26 @@ fn company(members: bool) -> Company {
         },
         ..Company::default()
     }
+}
+
+/// A 1099-NEC decision from the beginning, decided by a member.
+fn nec() -> ledger_core::Dated1099 {
+    ledger_core::Dated1099::from_beginning(
+        ledger_core::Decision1099::Files(Form1099::Nec),
+        Some(ledger_core::settings::Source {
+            decided_by: "Tobin Example".into(),
+            decided_on: d("2026-01-02"),
+            citation: None,
+            note: None,
+        }),
+    )
+}
+
+/// The worksheet CSV's row for Acme in `books`, without TINs.
+fn acme_row(vendor: u64) -> String {
+    format!(
+        "{vendor},\"Acme, \"\"Design\"\"\",nec,1099-NEC,,,Tobin Example,2026-01-02,,nec,2500.00,0.00,0.00,0.00,reportable,true,true,9105"
+    )
 }
 
 fn cash() -> Vec<String> {
@@ -353,9 +372,28 @@ fn a_single_member_package_holds_the_documented_files_in_order() {
             sale = b.sale,
         )
     );
+    // The package's 1099 worksheet is books.vendor_1099's CSV, byte for
+    // byte (one builder: P3 brief 5).
+    let w = vendor_1099_worksheet(
+        b.store.ledger(),
+        &settings(&company, &cash),
+        2026,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
     assert_eq!(
         text(&p, "1099-worksheet-2026.csv"),
-        "vendor,form,w9_on_file,paid,reportable\n\"Acme, \"\"Design\"\"\",1099-NEC,true,2500.00,true\n"
+        vendor_1099_csv(&w, false)
+    );
+    assert_eq!(
+        text(&p, "1099-worksheet-2026.csv"),
+        format!(
+            "{}\n{}\n",
+            ledger_package::VENDOR_1099_CSV_HEADER,
+            acme_row(b.vendor)
+        )
     );
     let readme = text(&p, "README.txt");
     assert!(readme.starts_with("Example Labs LLC — books package for the CPA\n\nFiscal year to date: 2026-01-01 through 2026-12-31. Cash basis.\n"), "{readme}");
@@ -364,6 +402,12 @@ fn a_single_member_package_holds_the_documented_files_in_order() {
         "{readme}"
     );
     assert!(readme.contains("receipts/: the 2 receipts behind the period's entries"));
+    // Defect 12's wording: what the worksheet holds, every vendor paid in
+    // the year (decided for a 1099 or not), not "marked for a 1099".
+    assert!(
+        readme.contains("1099-worksheet-2026.csv: each vendor paid in 2026 or decided for a 1099: what counts toward its 1099 against the year's threshold, what was paid by card or payment network (reported by the processor on Form 1099-K, Treas. Reg. §1.6041-1(a)(1)(iv)), what can't be classified until its payment method is recorded, and its 1099 decision with the reason, who made it, and when it took effect.\n"),
+        "{readme}"
+    );
     assert!(readme.contains("cash flow, tax summary, trial balance."));
     assert!(!readme.contains("k1-members.csv") && !readme.contains("full taxpayer"));
     assert!(!names(&p).contains(&"k1-members.csv"));
@@ -487,9 +531,9 @@ fn members_get_the_k1_worksheet_with_full_tins_only_from_a_source() {
     assert_eq!(
         text(&with, "1099-worksheet-2026.csv"),
         format!(
-            "vendor,form,w9_on_file,paid,reportable,party_id,tin_last4,tin,tin_type,tin_note\n\
-             \"Acme, \"\"Design\"\"\",1099-NEC,true,2500.00,true,{},9105,{EIN},ein,\n",
-            b.acme
+            "{},tin,tin_type,tin_note\n{},{EIN},ein,\n",
+            ledger_package::VENDOR_1099_CSV_HEADER,
+            acme_row(b.vendor)
         )
     );
     assert!(!text(&without, "1099-worksheet-2026.csv").contains(EIN));
@@ -585,7 +629,7 @@ fn the_1099_worksheet_carries_tins_only_from_a_source() {
     let cash = cash();
     let s = settings(&company, &cash);
     let ledger = b.store.ledger();
-    let plain = vendor_1099_worksheet(ledger, &s, 2026, None, None).unwrap();
+    let plain = vendor_1099_worksheet(ledger, &s, 2026, None, None, None).unwrap();
     assert_eq!(plain.year, 2026);
     assert_eq!(plain.threshold, Decimal::from(2000));
     assert!(!plain.tins_included);
@@ -598,44 +642,49 @@ fn the_1099_worksheet_carries_tins_only_from_a_source() {
     assert_eq!(l.tin_last4.as_deref(), Some("9105"));
     assert_eq!((&l.tin, &l.tin_type, &l.tin_note), (&None, &None, &None));
     assert!(plain.missing_w9.is_empty());
-    // Five posted entries in 2026, one tagged.
+    // Of 2026's untagged entries only the rent paid money out for
+    // something: the contributions and the sale brought money in (P3
+    // review R7, the quieter note).
+    assert_eq!(plain.untagged_payments, vec![b.rent]);
     assert_eq!(
         plain.notes,
         [
-            "Only entries tagged with a vendor count (books.set_entry_vendor; books.pay_bill tags automatically).",
-            "Corporations are generally exempt, except attorneys' fees and medical payments; royalties report at $10. Confirm with the CPA.",
-            "3 posted entries in 2026 have no vendor tag; review any that paid contractors or rent.",
+            "Only entries tagged with a vendor count (books.set_entry_vendor; books.pay_bill tags automatically).".to_string(),
+            "Each vendor's 1099 decision says why when none is due (a corporation, the United States or a state: Treas. Reg. §1.6041-3); payments to a corporation for legal or medical services stay reportable, and royalties report at $10. Confirm with the CPA.".to_string(),
+            format!("1 posted entry in 2026 paid money out with no vendor tag (entry {}); tag any that paid a contractor or landlord with books.set_entry_vendor.", b.rent),
         ]
     );
     assert_eq!(
         vendor_1099_csv(&plain, false),
         format!(
-            "vendor_id,name,form_1099,paid,reportable,w9_on_file,tin_last4\n{},\"Acme, \"\"Design\"\"\",1099-NEC,2500.00,true,true,9105\n",
-            b.vendor
+            "{}\n{}\n",
+            ledger_package::VENDOR_1099_CSV_HEADER,
+            acme_row(b.vendor)
         )
     );
     let source = tin_source(&b);
-    let full = vendor_1099_worksheet(ledger, &s, 2026, None, Some(&source)).unwrap();
+    let full = vendor_1099_worksheet(ledger, &s, 2026, None, None, Some(&source)).unwrap();
     assert!(full.tins_included);
     assert_eq!(full.lines[0].tin.as_deref(), Some(EIN));
     assert_eq!(full.lines[0].tin_type.as_deref(), Some("ein"));
     assert_eq!(
         vendor_1099_csv(&full, true),
         format!(
-            "vendor_id,name,form_1099,paid,reportable,w9_on_file,tin_last4,tin,tin_type,tin_note\n{},\"Acme, \"\"Design\"\"\",1099-NEC,2500.00,true,true,9105,{EIN},ein,\n",
-            b.vendor
+            "{},tin,tin_type,tin_note\n{},{EIN},ein,\n",
+            ledger_package::VENDOR_1099_CSV_HEADER,
+            acme_row(b.vendor)
         )
     );
     // A source without the payee's TIN: the note says why.
     let none = |_: PartyId| -> Result<ledger_vault::Tin, String> {
         Err("the TIN vault is locked, \"for now\"".into())
     };
-    let locked = vendor_1099_worksheet(ledger, &s, 2026, None, Some(&none)).unwrap();
+    let locked = vendor_1099_worksheet(ledger, &s, 2026, None, None, Some(&none)).unwrap();
     assert_eq!(
         vendor_1099_csv(&locked, true).lines().nth(1).unwrap(),
         format!(
-            "{},\"Acme, \"\"Design\"\"\",1099-NEC,2500.00,true,true,9105,,,\"the TIN vault is locked, \"\"for now\"\"\"",
-            b.vendor
+            "{},,,\"the TIN vault is locked, \"\"for now\"\"\"",
+            acme_row(b.vendor)
         )
     );
     assert_eq!(vendor_1099_csv_name(2026, false), "1099-worksheet-2026.csv");
@@ -645,9 +694,10 @@ fn the_1099_worksheet_carries_tins_only_from_a_source() {
     );
     // A year whose threshold isn't known is refused, never guessed; given
     // one, it is used.
-    let far = vendor_1099_worksheet(ledger, &s, 2031, None, None);
+    let far = vendor_1099_worksheet(ledger, &s, 2031, None, None, None);
     assert!(far.is_err(), "{far:?}");
-    let given = vendor_1099_worksheet(ledger, &s, 2031, Some(Decimal::from(2100)), None).unwrap();
+    let given =
+        vendor_1099_worksheet(ledger, &s, 2031, Some(Decimal::from(2100)), None, None).unwrap();
     assert_eq!(given.threshold, Decimal::from(2100));
     assert!(
         given
@@ -918,9 +968,13 @@ fn the_years_first_and_last_days_receipts_are_in_and_the_days_beyond_are_not() {
 }
 
 /// Contract labor paid three ways: from checking (cash), from a prepaid
-/// asset that isn't cash, and by a member's advance (financing).
+/// asset that isn't cash, and by a member's advance (financing). The
+/// worksheet counts payments out of the accounts it is given; the CPA
+/// package gives it its own (the request's, else the settings': one list
+/// of each per package, P3 review R18), so the package's 1099 worksheet
+/// is books.vendor_1099's for those accounts, byte for byte.
 #[test]
-fn payments_to_a_vendor_come_from_the_settings_accounts_alone() {
+fn payments_to_a_vendor_come_from_the_packages_accounts() {
     let dir = tempfile::tempdir().unwrap();
     let (mut s, _) = plain_books(dir.path());
     for (code, name, ty) in [
@@ -931,8 +985,7 @@ fn payments_to_a_vendor_come_from_the_settings_accounts_alone() {
         s.add_account(code, name, ty, None, false).unwrap();
     }
     let vendor = s.add_vendor("Acme Design").unwrap();
-    s.set_vendor_1099(vendor, Some(Form1099::Nec), true)
-        .unwrap();
+    s.set_vendor_1099(vendor, &nec(), Some(true)).unwrap();
     for (from, amount) in [("1000", "1000.00"), ("1300", "400.00"), ("2100", "700.00")] {
         let e = s.create_entry(d("2026-05-01"), "Acme design work").unwrap();
         s.add_line(e, id_of(&s, "6100"), Side::Debit, usd(amount))
@@ -960,11 +1013,49 @@ fn payments_to_a_vendor_come_from_the_settings_accounts_alone() {
             financing: vec![id_of(&s, "2100")],
         }
     );
-    // Checking and the advance count; the prepaid asset doesn't.
-    let w = vendor_1099_worksheet(ledger, &st, 2026, None, None).unwrap();
+    // Checking counts; the member's advance is undetermined until how
+    // they paid is recorded (their card wouldn't count, their check
+    // would); the prepaid asset is no payment source.
+    let w = vendor_1099_worksheet(ledger, &st, 2026, None, None, None).unwrap();
     assert_eq!(w.lines.len(), 1);
     assert_eq!(w.lines[0].vendor_id, vendor);
-    assert_eq!(w.lines[0].paid, Decimal::from(1700));
+    assert_eq!(w.lines[0].paid, Decimal::from(1000));
+    assert_eq!(w.lines[0].undetermined, Decimal::from(700));
+    assert_eq!(w.lines[0].status, ledger_core::Status1099::UnderThreshold);
+    assert_eq!(w.undetermined_payments.len(), 1);
+    // A package naming no accounts carries this worksheet, byte for byte
+    // (its settings name checking alone: the cash flow refuses a code the
+    // chart lacks).
+    let checking = vec!["1000".to_string()];
+    let st = Settings {
+        cash_accounts: &checking,
+        ..st
+    };
+    let plain = build_package(&s, &st, &request(false, None)).unwrap();
+    assert_eq!(
+        text(&plain, "1099-worksheet-2026.csv"),
+        vendor_1099_csv(&w, false)
+    );
+    // One naming the prepaid asset as cash carries the worksheet for its
+    // accounts (the 400.00 out of the prepaid asset counts, and the
+    // settings' financing stays), the one books.vendor_1099 gives for
+    // them through the package's as_of; the cash flow, the K-1 and the
+    // IIF read the same list.
+    let wider = vec!["1000".to_string(), "1300".to_string()];
+    let req = PackageRequest {
+        cash_accounts: &wider,
+        ..request(false, None)
+    };
+    let p = build_package(&s, &st, &req).unwrap();
+    let theirs = st.with_accounts(&wider, &[]);
+    assert_eq!(theirs.financing_accounts, financing.as_slice());
+    let w = vendor_1099_worksheet(ledger, &theirs, 2026, None, Some(req.as_of), None).unwrap();
+    assert_eq!(w.lines[0].paid, Decimal::from(1400));
+    assert_eq!(w.lines[0].undetermined, Decimal::from(700));
+    assert_eq!(
+        text(&p, "1099-worksheet-2026.csv"),
+        vendor_1099_csv(&w, false)
+    );
 }
 
 #[test]
@@ -1380,8 +1471,7 @@ fn the_1099_worksheet_stops_at_as_of() {
     s.add_account("6100", "Contract labor", AccountType::Expense, None, false)
         .unwrap();
     let vendor = s.add_vendor("Contractor Example").unwrap();
-    s.set_vendor_1099(vendor, Some(Form1099::Nec), false)
-        .unwrap();
+    s.set_vendor_1099(vendor, &nec(), Some(false)).unwrap();
     for (date, amount) in [("2026-06-30", "1500.00"), ("2026-07-01", "1000.00")] {
         let e = s.create_entry(d(date), "Contract work").unwrap();
         s.add_line(e, id_of(&s, "6100"), Side::Debit, usd(amount))
@@ -1400,25 +1490,52 @@ fn the_1099_worksheet_stops_at_as_of() {
         };
         build_package(&s, &settings(&company, &cash), &req).unwrap()
     };
+    // The worksheet the tools make through a day (books.vendor_1099's
+    // `through`), as CSV.
+    let through = |day: Option<&str>| {
+        let w = vendor_1099_worksheet(
+            s.ledger(),
+            &settings(&company, &cash),
+            2026,
+            None,
+            day.map(d),
+            None,
+        )
+        .unwrap();
+        vendor_1099_csv(&w, false)
+    };
+    let row = |csv: &str| csv.lines().nth(1).unwrap().to_string();
     let mid = at("2026-06-30");
-    assert_eq!(
-        text(&mid, "1099-worksheet-2026.csv"),
-        "vendor,form,w9_on_file,paid,reportable\n\"Contractor Example\",1099-NEC,false,1500.00,false\n"
+    let mid_csv = text(&mid, "1099-worksheet-2026.csv");
+    assert_eq!(mid_csv, through(Some("2026-06-30")));
+    // paid 1,500.00, under the $2,000 threshold: not yet reportable.
+    assert!(
+        row(mid_csv).ends_with(",1500.00,0.00,0.00,0.00,under_threshold,false,false,"),
+        "{mid_csv}"
     );
     assert!(text(&mid, "README.txt").contains(
-        "\n1099-worksheet-2026.csv: cash paid per vendor marked for a 1099 from January 1 through 2026-06-30, against the year's threshold.\n"
+        "\n1099-worksheet-2026.csv: each vendor paid in 2026 from January 1 through 2026-06-30 or decided for a 1099: what counts toward its 1099 against the year's threshold, "
     ));
     let year_end = at("2026-12-31");
-    assert_eq!(
-        text(&year_end, "1099-worksheet-2026.csv"),
-        "vendor,form,w9_on_file,paid,reportable\n\"Contractor Example\",1099-NEC,false,2500.00,true\n"
+    let year_csv = text(&year_end, "1099-worksheet-2026.csv");
+    assert_eq!(year_csv, through(None));
+    assert!(
+        row(year_csv).ends_with(",2500.00,0.00,0.00,0.00,reportable,true,false,"),
+        "{year_csv}"
     );
     assert!(text(&year_end, "README.txt").contains(
-        "\n1099-worksheet-2026.csv: cash paid per vendor marked for a 1099, against the year's threshold.\n"
+        "\n1099-worksheet-2026.csv: each vendor paid in 2026 or decided for a 1099: what counts toward its 1099 against the year's threshold, "
     ));
     // The worksheet the tools make for the whole year is unchanged.
-    let w =
-        vendor_1099_worksheet(s.ledger(), &settings(&company, &cash), 2026, None, None).unwrap();
+    let w = vendor_1099_worksheet(
+        s.ledger(),
+        &settings(&company, &cash),
+        2026,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
     assert_eq!(w.lines[0].paid, Decimal::from(2500));
 }
 
@@ -1526,8 +1643,7 @@ fn one_list_of_cash_accounts_per_package() {
         ],
     );
     let vendor = s.add_vendor("Contractor Example").unwrap();
-    s.set_vendor_1099(vendor, Some(Form1099::Nec), false)
-        .unwrap();
+    s.set_vendor_1099(vendor, &nec(), Some(false)).unwrap();
     let e = s.create_entry(d("2026-05-01"), "Contract work").unwrap();
     s.add_line(e, id_of(&s, "6100"), Side::Debit, usd("2100.00"))
         .unwrap();
@@ -1551,8 +1667,29 @@ fn one_list_of_cash_accounts_per_package() {
     };
     assert_eq!(savings(&given), "ACCNT\tSavings\tBANK\t1010");
     assert_eq!(savings(&plain), "ACCNT\tSavings\tOCASSET\t1010");
-    assert!(text(&given, "1099-worksheet-2026.csv").contains(",2100.00,true\n"));
-    assert!(text(&plain, "1099-worksheet-2026.csv").contains(",0.00,false\n"));
+    assert!(
+        text(&given, "1099-worksheet-2026.csv")
+            .contains(",2100.00,0.00,0.00,0.00,reportable,true,false,\n")
+    );
+    assert!(
+        text(&plain, "1099-worksheet-2026.csv")
+            .contains(",0.00,0.00,0.00,0.00,under_threshold,false,false,\n")
+    );
+    // Each is books.vendor_1099's CSV for the same accounts.
+    let tool = |codes: &[String]| {
+        let w = vendor_1099_worksheet(
+            s.ledger(),
+            &settings(&company, codes),
+            2026,
+            None,
+            Some(d("2026-12-31")),
+            None,
+        )
+        .unwrap();
+        vendor_1099_csv(&w, false)
+    };
+    assert_eq!(text(&given, "1099-worksheet-2026.csv"), tool(&both));
+    assert_eq!(text(&plain, "1099-worksheet-2026.csv"), tool(&cash));
 }
 
 /// Plan D-36 (P3, defect 7): general-journal.iif is plain ASCII, and

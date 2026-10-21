@@ -11,8 +11,8 @@ use crate::theme::{self, pal};
 use crate::widgets;
 use egui::{CornerRadius, RichText, Sense, Ui, vec2};
 use egui_phosphor::regular as icon;
+use ledger_core::PeriodStatus;
 use ledger_core::assets::{accumulated_depreciation, book_value};
-use ledger_core::{PeriodStatus, vendor_1099_report};
 use rust_decimal::Decimal;
 
 fn kv(ui: &mut Ui, k: &str, v: &str) {
@@ -597,7 +597,7 @@ fn parties(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
         }
     };
     let year = chrono::Datelike::year(&b.today);
-    let r1099 = vendor_1099_report(&b.ledger, year, None).ok();
+    let r1099 = b.vendor_1099(year).ok();
     columns(ui, 980.0, &[1.0, 1.0], |i, ui| match i {
         0 => {
             widgets::titled_card(
@@ -618,13 +618,21 @@ fn parties(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                             .unwrap_or_default();
                         ui.horizontal_wrapped(|ui| {
                             name(ui, &v.name, b.ledger.party_of_vendor(v.id));
-                            if let Some(f) = v.form_1099 {
-                                widgets::pill(ui, f.label(), p.accent, p.accent_soft);
-                                if v.tin_on_file {
-                                    widgets::pill(ui, "W-9", p.positive, p.positive_soft);
-                                } else {
-                                    widgets::pill(ui, "no W-9", p.negative, p.negative_soft);
+                            match v.decision_on(b.today) {
+                                Some(ledger_core::Decision1099::Files(f)) => {
+                                    widgets::pill(ui, f.label(), p.accent, p.accent_soft);
+                                    if v.tin_on_file {
+                                        widgets::pill(ui, "W-9", p.positive, p.positive_soft);
+                                    } else {
+                                        widgets::pill(ui, "no W-9", p.negative, p.negative_soft);
+                                    }
                                 }
+                                Some(ledger_core::Decision1099::NotReportable { .. }) => {
+                                    widgets::pill(ui, "No 1099", p.muted, p.hover);
+                                }
+                                // Undecided: nothing to show (the 1099
+                                // worksheet and Needs attention ask).
+                                _ => {}
                             }
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),

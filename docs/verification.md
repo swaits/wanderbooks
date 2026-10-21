@@ -161,13 +161,18 @@ sequence of commands, of any length**:
     closed.
     - Lean `Step.frozen`, `Steps.frozen`
 14a. **How the books are kept changes no entry**: in the model, a record
-    (a setting, convention, decision, open item or approval) leaves the
+    (a setting, convention, decision, open item or approval; a vendor's
+    1099 decision or W-9 flag, a payment method, an entry's payment-method
+    tag) leaves the
     chart, every posted entry, every draft and every period exactly as they
     were, and any number of them keeps a reachable state reachable. The
     model's `record` step touches only the records by definition, so the
     proof says the model is sound, not the engine; the engine's side is
     checked by `settings_replay_is_pure`, which snapshots every figure and
-    entry around each record (rules.md B-29). Settings that change how the
+    entry around each record (rules.md B-29), and for the 1099 records by
+    `decision_and_method_records_change_no_entry` (ledger-store
+    `tests/form1099.rs`; they change the 1099 worksheet by design, never
+    an entry). Settings that change how the
     same entries are presented (the fiscal year, cash flow roles, members)
     are outside this law by design. A rename (`rename_account`, P3,
     rules.md B-31) is a record too: the model's chart is `(code, type)`
@@ -181,7 +186,8 @@ sequence of commands, of any length**:
     and model agree on every rename's refusal and nothing else moves.
     - Lean `Step.record_changes_no_figure`, `Reachable.records` (no
       axioms at all) · property `settings_replay_is_pure` ·
-      `prop_rename_changes_no_figure` · model `Cmd::Rename`
+      `prop_rename_changes_no_figure` · model `Cmd::Rename` · test
+      `decision_and_method_records_change_no_entry`
 
 ### Closing
 
@@ -281,6 +287,24 @@ their numbers are assigned when P3 lands:
       shown satisfiable), `reverseTarget_involutive`,
       `sumOver_movement_reversal` · property
       `a_reversal_is_the_exact_opposite`
+
+### 1099 payments
+
+21. **A payment to a vendor is split, never lost or counted twice**:
+    each payment line goes in the bucket rules.md B-19's table names (its
+    16 cases: with no payment method naming its account, a financing line
+    never counts and a card account's line is always a card's); the
+    buckets are each exactly the credits minus debits of their lines; and
+    netting money moved between the company's own sources keeps the
+    total, leaves no bucket opposite it, and leaves buckets of one sign
+    alone.
+    - Kani `payment_bucket_is_the_table`, `payment_split_is_exact`,
+      `net_buckets_keeps_the_total` · bridge `payment_buckets_agree` ·
+      test `payment_bucket_is_the_table_in_all_16_cases` · properties
+      `buckets_partition_each_payment`,
+      `no_instruments_no_financing_is_the_old_report`,
+      `a_reversal_nets_every_bucket_to_zero` (ledger-core
+      `tests/form1099.rs`)
 
 ## What the proofs found
 

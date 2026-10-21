@@ -156,18 +156,19 @@ impl AssetTrail {
 ///   4a. Each of 3 and 4 is None when it can't be summed exactly (a
 ///      document is restored as an earlier version journaled it, of any
 ///      size: rules.md B-28), never a wrong number.
-///   5. form_1099: its vendor record's line in
-///      vendor_1099_report_with(ledger, year, None, cash and financing
-///      accounts), when it has a vendor
-///      record in that report and the report knows the year's threshold
-///      (threshold_1099 is then that threshold).
+///   5. form_1099: its vendor record's line in Books::vendor_1099(year)
+///      (the server's books.vendor_1099), when it has a vendor record in
+///      that report and the report can be made (the year's threshold is
+///      known, the cash accounts are named; threshold_1099 is then that
+///      threshold).
 ///   6. payroll_runs: the runs with a line whose employee is the party,
 ///      or (older runs, no party on the line) whose employee_name is the
 ///      party's name ignoring case and surrounding space.
 ///   7. events: indexes into Books::journal of party.* events with its
 ///      id, entry.party_set or entry.parties_set naming it, and its
 ///      records' vendor.added,
-///      customer.added, vendor.1099_set, and entry.vendor_set events.
+///      customer.added, vendor.1099_set, vendor.w9_flag_set, and
+///      entry.vendor_set events.
 /// ```
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PartyInfo {
@@ -1020,12 +1021,45 @@ impl Books {
     }
 
     /// Whether a party files a 1099: it has a 1099 role (contractor,
-    /// landlord), or its vendor record is marked for a 1099.
+    /// landlord), or its vendor record has been decided for one (from any
+    /// date: its W-9 matters for those payments).
     pub fn files_1099(&self, p: &Party) -> bool {
         p.roles.iter().any(|r| r.gets_1099())
             || p.vendor
                 .and_then(|v| self.ledger.get_vendor(v))
-                .is_some_and(|v| v.form_1099.is_some())
+                .is_some_and(|v| v.decisions_1099.iter().any(|d| d.decision.form().is_some()))
+    }
+
+    /// The 1099 report for calendar `year`, the server's
+    /// (ledger_package::vendor_1099_report, books.vendor_1099 with no
+    /// accounts named): payments out of the settings' cash and financing
+    /// accounts, classified by
+    /// payment method, shares resolved with the members. Every 1099
+    /// figure the viewer shows comes from here.
+    pub fn vendor_1099(&self, year: i32) -> Result<ledger_core::Vendor1099Report, LedgerError> {
+        let settings = ledger_package::Settings {
+            company: &self.settings.company,
+            cash_accounts: &self.settings.cash_accounts,
+            financing_accounts: &self.settings.financing_accounts,
+            investing_accounts: &self.settings.investing_accounts,
+        };
+        ledger_package::vendor_1099_report(&self.ledger, &settings, year, None, None)
+    }
+
+    /// The 1099 worksheet for calendar `year` without TINs: the server's
+    /// books.vendor_1099 (its lines are Books::vendor_1099's, with its
+    /// notes).
+    pub fn vendor_1099_worksheet(
+        &self,
+        year: i32,
+    ) -> Result<ledger_package::Vendor1099Worksheet, String> {
+        let settings = ledger_package::Settings {
+            company: &self.settings.company,
+            cash_accounts: &self.settings.cash_accounts,
+            financing_accounts: &self.settings.financing_accounts,
+            investing_accounts: &self.settings.investing_accounts,
+        };
+        ledger_package::vendor_1099_worksheet(&self.ledger, &settings, year, None, None, None)
     }
 
     /// Every party's [`PartyInfo`].
@@ -1089,11 +1123,7 @@ impl Books {
                 }
             }
         }
-        let sources = ledger_core::PaymentAccounts {
-            cash: self.cash_accounts.clone(),
-            financing: self.financing_accounts.clone(),
-        };
-        if let Ok(r) = ledger_core::vendor_1099_report_with(l, year, None, &sources) {
+        if let Ok(r) = self.vendor_1099(year) {
             for v in &r.vendors {
                 if let Some(info) = l.party_of_vendor(v.vendor_id).and_then(|p| out.get_mut(&p)) {
                     info.form_1099 = Some(v.clone());
@@ -1143,7 +1173,7 @@ impl Books {
                     }
                     "vendor.added" => u(p, "id").and_then(|v| l.party_of_vendor(v)),
                     "customer.added" => u(p, "id").and_then(|c| l.party_of_customer(c)),
-                    "vendor.1099_set" | "entry.vendor_set" => {
+                    "vendor.1099_set" | "vendor.w9_flag_set" | "entry.vendor_set" => {
                         u(p, "vendor_id").and_then(|v| l.party_of_vendor(v))
                     }
                     _ => None,
@@ -1894,27 +1924,13 @@ impl Books {
     }
 
     /// A party's 1099 worksheet line for a calendar year and that year's
-    /// threshold: ledger-core's vendor_1099_report_with_members line for
-    /// its vendor record, with Books::money_cash_accounts, the financing
-    /// accounts and the members (the server's books.vendor_1099 and
-    /// books.party amount_1099); None without a vendor record in the
-    /// report, or when the year's threshold isn't known.
+    /// threshold: its vendor record's line in Books::vendor_1099 (the
+    /// server's books.vendor_1099); None without a vendor record in the
+    /// report, or when the report can't be made (the year's threshold
+    /// isn't known, or no cash accounts are named).
     pub fn party_1099(&self, party: PartyId, year: i32) -> Option<(Vendor1099Line, Decimal)> {
-        let l = &self.ledger;
-        let vendor = l.get_party(party)?.vendor?;
-        let sources = ledger_core::PaymentAccounts {
-            cash: self.money_cash_accounts.clone(),
-            financing: self.financing_accounts.clone(),
-        };
-        let r = ledger_core::vendor_1099_report_with_members(
-            l,
-            year,
-            None,
-            None,
-            &sources,
-            &self.members,
-        )
-        .ok()?;
+        let vendor = self.ledger.get_party(party)?.vendor?;
+        let r = self.vendor_1099(year).ok()?;
         let line = r.vendors.iter().find(|v| v.vendor_id == vendor)?.clone();
         Some((line, r.threshold))
     }

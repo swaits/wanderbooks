@@ -56,7 +56,13 @@ fn books() -> Books {
         .add_account("1900", "Other Assets", AccountType::Asset, None, true)
         .unwrap();
     let cash = l
-        .add_account("1000", "Bluevine Checking", AccountType::Asset, None, false)
+        .add_account(
+            "1000",
+            "Quillmere Checking",
+            AccountType::Asset,
+            None,
+            false,
+        )
         .unwrap();
     let card = l
         .add_account(

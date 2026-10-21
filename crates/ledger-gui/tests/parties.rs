@@ -7,8 +7,8 @@ use chrono::NaiveDate;
 use egui_kittest::Harness;
 use ledger_core::arap::DocumentLine;
 use ledger_core::{
-    AccountType, Currency, EntryId, Form1099, Money, PartyField, PartyId, PayrollLine, Role, Side,
-    TinFacts, TinType, W4Facts, W9Facts,
+    AccountType, Currency, Dated1099, Decision1099, EntryId, Form1099, Money, PartyField, PartyId,
+    PayrollLine, Role, Side, TinFacts, TinType, W4Facts, W9Facts, vendor_1099_report,
 };
 use ledger_gui::books::Books;
 use ledger_gui::nav::{Route, Section};
@@ -146,6 +146,22 @@ fn fixture(tag: &str) -> Fixture {
     let labor = s
         .add_account("6050", "Contract Labor", AccountType::Expense, None, false)
         .unwrap();
+    // The books' cash account, which the 1099 worksheet counts payments
+    // out of (P3 review R5: never every asset).
+    let source = ledger_core::settings::Source {
+        decided_by: "test".into(),
+        decided_on: d(2025, 1, 1),
+        citation: None,
+        note: None,
+    };
+    s.change_settings(
+        &[ledger_core::settings::Change {
+            key: "books.cash_accounts".into(),
+            value: Some(serde_json::json!(["1000"])),
+        }],
+        &source,
+    )
+    .unwrap();
     let e = s.create_entry(d(2025, 1, 1), "Owner contribution").unwrap();
     s.add_line(e, cash, Side::Debit, usd(10_000_000)).unwrap();
     s.add_line(e, capital, Side::Credit, usd(10_000_000))
@@ -160,8 +176,12 @@ fn fixture(tag: &str) -> Fixture {
     };
 
     let sam_vendor = s.add_vendor("Sam Okafor").unwrap();
-    s.set_vendor_1099(sam_vendor, Some(Form1099::Nec), false)
-        .unwrap();
+    s.set_vendor_1099(
+        sam_vendor,
+        &Dated1099::from_beginning(Decision1099::Files(Form1099::Nec), Some(source.clone())),
+        Some(false),
+    )
+    .unwrap();
     let sam = s.ledger().party_of_vendor(sam_vendor).unwrap();
     s.set_party_role(sam, Role::Contractor, true).unwrap();
     let riley = s.add_party("Riley Chen", &[Role::Contractor]).unwrap();
@@ -259,8 +279,12 @@ fn fixture(tag: &str) -> Fixture {
     s.set_entry_party(e, Some(old)).unwrap();
     s.update_party(old, PartyField::Archived(true)).unwrap();
     // What the members advanced is money (rules.md B-35 item 5): Due to
-    // Shareholders is a financing account.
-    journal_settings(&mut s, "[books]\nfinancing_accounts = [\"2100\"]\n");
+    // Shareholders is a financing account; the cash account stays the
+    // books' (the settings file names both).
+    journal_settings(
+        &mut s,
+        "[books]\ncash_accounts = [\"1000\"]\nfinancing_accounts = [\"2100\"]\n",
+    );
     drop(s);
     let oracle = Store::open(&data).unwrap().ledger().clone();
     Fixture {
@@ -301,17 +325,19 @@ fn each_partys_totals_are_the_books_numbers() {
     assert_eq!(sam.open_bills, Some(cents(30_000)));
     assert_eq!(sam.bills, vec![1]);
     // The 1099 amount is ledger-core's worksheet line, exactly, over the
-    // viewer's payment accounts (every asset account, no cash accounts
-    // being set; the financing account).
+    // viewer's payment accounts: the books' cash account and the
+    // financing account.
     let owed = o.chart().find_by_code("2100").unwrap().id;
-    let r = ledger_core::vendor_1099_report_with(
+    let r = vendor_1099_report(
         o,
         2026,
         None,
         &ledger_core::PaymentAccounts {
-            cash: vec![],
+            cash: vec![o.chart().find_by_code("1000").unwrap().id],
             financing: vec![owed],
         },
+        &[],
+        None,
     )
     .unwrap();
     let line = r
@@ -321,9 +347,18 @@ fn each_partys_totals_are_the_books_numbers() {
         .unwrap();
     assert_eq!(sam.form_1099.as_ref(), Some(line));
     assert_eq!(sam.threshold_1099, Some(r.threshold));
-    // (Cash and what the owner paid for the company: the card isn't in
-    // it.)
-    assert_eq!(line.paid, cents(180_000));
+    // Cash counts (1,000 + the bill's 500); what the owner paid for the
+    // company through the financing account waits on how they paid
+    // (rules.md B-19); the card's charge is no payment out of cash.
+    assert_eq!(line.paid, cents(150_000));
+    assert_eq!(line.undetermined, cents(30_000));
+    // Party totals count all of it as paid to Sam (B-35 item 9): the
+    // 1099's buckets, and the card's 200 (no business card is recorded,
+    // so the worksheet lists it nowhere).
+    assert_eq!(
+        sam.paid_ytd,
+        line.paid + line.undetermined + line.excluded_card + cents(20_000)
+    );
     // Every entry tagged, drafts included, newest first.
     assert!(sam.entries.contains(&f.bill_entry));
     assert!(sam.entries.contains(&f.reversal));
@@ -614,10 +649,13 @@ fn journal_text_for_a_creditor() {
         )),
         "{texts:#?}"
     );
+    // Declared with the feature already in force (the fixture's 1099
+    // decisions'), sorted.
     assert!(
         texts
             .iter()
-            .any(|(t, _)| t == "Journal format 2 declared, with party_creditors"),
+            .any(|(t, _)| t
+                == "Journal format 2 declared, with party_creditors, vendor_1099_decisions"),
         "{texts:#?}"
     );
     let mut h = Harness::builder()
@@ -890,8 +928,12 @@ fn party_money_by_period_and_what_for() {
     // The 1099 amount follows the period's calendar year.
     let (line, _) = b.party_1099(f.sam, 2025).unwrap();
     assert_eq!(line.paid, cents(50_000));
+    // 2026: the cash 1,000 and the bill's 500 paid count; the owner's
+    // 300 through the financing account waits on how it was paid
+    // (rules.md B-19); the card's 200 is no payment out of cash.
     let (line, _) = b.party_1099(f.sam, 2026).unwrap();
-    assert_eq!(line.paid, cents(180_000));
+    assert_eq!(line.paid, cents(150_000));
+    assert_eq!(line.undetermined, cents(30_000));
 }
 
 #[test]
@@ -1064,7 +1106,7 @@ fn member_books(tag: &str) -> MemberBooks {
     let dir = TempDir::new(tag);
     let mut s = Store::create(&dir.0.join("books-data"), Currency::USD).unwrap();
     let acct = |s: &mut Store, c: &str, n: &str, t| s.add_account(c, n, t, None, false).unwrap();
-    let bank = acct(&mut s, "1000", "Bluevine", AccountType::Asset);
+    let bank = acct(&mut s, "1000", "Quillmere", AccountType::Asset);
     let equip = acct(&mut s, "1500", "Equipment", AccountType::Asset);
     let due = acct(
         &mut s,
@@ -1694,7 +1736,7 @@ fn owed_to_members_reads_the_financing_accounts_first() {
 /// core does (every asset account but receivables: Books::
 /// money_cash_accounts), so the laptop on 1500 reads as cash: Tobin's 2026
 /// contributions are $600.00 cash, none property. The Cash page keeps its
-/// name-based guess ("Bluevine" names no cash word: no cash accounts).
+/// name-based guess ("Quillmere" names no cash word: no cash accounts).
 #[test]
 fn without_cash_accounts_the_capital_statement_reads_money_as_core_does() {
     let m = member_books("capital-no-cash");
@@ -1795,5 +1837,224 @@ fn party_money_is_the_servers_without_cash_accounts_and_after_today() {
     assert_eq!(
         b.party_span(PartyPeriod::AllTime),
         (d(2026, 1, 1), d(2026, 11, 20))
+    );
+}
+
+/// P3 brief 1.4: the viewer computed the 1099 four ways (every asset with
+/// no financing on its 1099 page, its Needs attention and its company
+/// page; cash and financing without members on a party). Now every 1099
+/// figure it shows is the server's (`ledger_package::vendor_1099_report`
+/// for the books' own settings), checked here against ledger-core's
+/// report for the same accounts. By hand: Harbor Design LLC (1099-NEC, no
+/// W-9) paid 2,600.00 from the bank and 2,500.00 by a member through Due
+/// to Members (2100, financing) with no payment method recorded: counts
+/// 2,600.00 (reportable), undetermined 2,500.00. Cedar Studio, never
+/// decided, paid 300.00 from the bank.
+#[test]
+fn the_viewer_counts_the_1099_as_the_server_does() {
+    let dir = TempDir::new("viewer-1099");
+    let data = dir.0.join("books-data");
+    let mut s = Store::create(&data, Currency::USD).unwrap();
+    let cash = s
+        .add_account("1000", "Checking", AccountType::Asset, None, false)
+        .unwrap();
+    let due = s
+        .add_account(
+            "2100",
+            "Due to Members",
+            AccountType::Liability,
+            None,
+            false,
+        )
+        .unwrap();
+    let labor = s
+        .add_account("6050", "Contract Labor", AccountType::Expense, None, false)
+        .unwrap();
+    let source = ledger_core::settings::Source {
+        decided_by: "test".into(),
+        decided_on: d(2026, 1, 1),
+        citation: None,
+        note: None,
+    };
+    s.change_settings(
+        &[
+            ledger_core::settings::Change {
+                key: "books.cash_accounts".into(),
+                value: Some(serde_json::json!(["1000"])),
+            },
+            ledger_core::settings::Change {
+                key: "books.financing_accounts".into(),
+                value: Some(serde_json::json!(["2100"])),
+            },
+        ],
+        &source,
+    )
+    .unwrap();
+    let harbor = s.add_vendor("Harbor Design LLC").unwrap();
+    s.set_vendor_1099(
+        harbor,
+        &Dated1099::from_beginning(Decision1099::Files(Form1099::Nec), Some(source.clone())),
+        Some(false),
+    )
+    .unwrap();
+    let cedar = s.add_vendor("Cedar Studio").unwrap();
+    let pay = |s: &mut Store, date, vendor, cr, c| {
+        let e = s.create_entry(date, "work").unwrap();
+        s.add_line(e, labor, Side::Debit, usd(c)).unwrap();
+        s.add_line(e, cr, Side::Credit, usd(c)).unwrap();
+        s.post_entry(e).unwrap();
+        s.set_entry_vendor(e, Some(vendor)).unwrap();
+        e
+    };
+    pay(&mut s, d(2026, 3, 1), harbor, cash, 260_000);
+    let member_paid = pay(&mut s, d(2026, 4, 1), harbor, due, 250_000);
+    pay(&mut s, d(2026, 5, 1), cedar, cash, 30_000);
+    drop(s);
+    let b = load(&dir.0);
+    let oracle = Store::open(&data).unwrap().ledger().clone();
+    let want = vendor_1099_report(
+        &oracle,
+        2026,
+        None,
+        &ledger_core::PaymentAccounts {
+            cash: vec![cash],
+            financing: vec![due],
+        },
+        &[],
+        None,
+    )
+    .unwrap();
+    assert_eq!(b.vendor_1099(2026).unwrap(), want);
+    let h = want.vendors.iter().find(|v| v.vendor_id == harbor).unwrap();
+    assert_eq!((h.paid, h.undetermined), (cents(260_000), cents(250_000)));
+    assert!(h.reportable);
+    // Its party: the same line, in the party's info and its 1099 tile.
+    let party = b.ledger.party_of_vendor(harbor).unwrap();
+    assert_eq!(b.party(party).unwrap().form_1099.as_ref(), Some(h));
+    assert_eq!(b.party_1099(party, 2026), Some((h.clone(), want.threshold)));
+    // The worksheet page's rows are the same lines.
+    let w = b.vendor_1099_worksheet(2026).unwrap();
+    let rows: Vec<(u64, Decimal, Decimal)> = w
+        .lines
+        .iter()
+        .map(|l| (l.vendor_id, l.paid, l.undetermined))
+        .collect();
+    let lines: Vec<(u64, Decimal, Decimal)> = want
+        .vendors
+        .iter()
+        .map(|l| (l.vendor_id, l.paid, l.undetermined))
+        .collect();
+    assert_eq!(rows, lines);
+    // Needs attention: the W-9 (2,600.00 counts, over 2,000), Cedar's
+    // decision (paid by check, under the threshold: a Todo), and the
+    // member's payment with no method.
+    let items = attention::find(&b);
+    let item = |prefix: &str| items.iter().find(|i| i.title.starts_with(prefix));
+    let w9 = item("Harbor Design LLC needs a W-9").expect("the W-9 item");
+    assert!(w9.detail.contains("$2,600.00"), "{}", w9.detail);
+    assert!(w9.prompt.contains("books.set_w9"), "{}", w9.prompt);
+    let decide = item("Decide whether Cedar Studio gets a 1099").expect("Cedar's decision");
+    assert_eq!(decide.severity, ledger_gui::books::Severity::Todo);
+    assert!(decide.prompt.contains("books.set_vendor_1099"));
+    assert!(item("Decide whether Harbor").is_none(), "Harbor is decided");
+    let method = item("1 payment has no payment method").expect("the method item");
+    assert!(
+        method.detail.contains(&member_paid.to_string()),
+        "{}",
+        method.detail
+    );
+    for tool in [
+        "books.instruments",
+        "books.add_instrument",
+        "books.set_entry_instrument",
+    ] {
+        assert!(method.prompt.contains(tool), "{tool}: {}", method.prompt);
+    }
+}
+
+/// The journal page says what each 1099 record did (P3 brief 5): a
+/// decision with who made it and from when, the W-9 flag on its own, a
+/// payment method added, an entry's method set and cleared; and an old
+/// line with no form says "undetermined", never "no longer gets a 1099".
+#[test]
+fn the_journal_says_what_each_1099_record_did() {
+    let dir = TempDir::new("journal-1099");
+    let data = dir.0.join("books-data");
+    let mut s = Store::create(&data, Currency::USD).unwrap();
+    let cash = s
+        .add_account("1000", "Checking", AccountType::Asset, None, false)
+        .unwrap();
+    let card = s
+        .add_account("2050", "Harbor Visa", AccountType::Liability, None, false)
+        .unwrap();
+    let harbor = s.add_vendor("Harbor Design LLC").unwrap();
+    let source = ledger_core::settings::Source {
+        decided_by: "Riley Chen".into(),
+        decided_on: d(2026, 10, 16),
+        citation: None,
+        note: None,
+    };
+    s.set_vendor_1099(
+        harbor,
+        &Dated1099::from_beginning(Decision1099::Files(Form1099::Nec), Some(source.clone())),
+        None,
+    )
+    .unwrap();
+    s.set_vendor_1099(
+        harbor,
+        &Dated1099 {
+            effective: Some(d(2026, 12, 30)),
+            decision: Decision1099::not_reportable(
+                ledger_core::ExemptReason::Corporation,
+                "elected to be taxed as a corporation",
+            )
+            .unwrap(),
+            source: Some(source),
+        },
+        None,
+    )
+    .unwrap();
+    s.set_vendor_w9_flag(harbor, true).unwrap();
+    let visa = s
+        .add_instrument(
+            ledger_core::InstrumentKind::BusinessCard,
+            "Harbor Visa",
+            None,
+            None,
+            card,
+        )
+        .unwrap();
+    let e = s.create_entry(d(2026, 3, 1), "work").unwrap();
+    s.add_line(e, card, Side::Credit, usd(10_000)).unwrap();
+    s.add_line(e, cash, Side::Debit, usd(10_000)).unwrap();
+    s.set_entry_instrument(e, Some(visa)).unwrap();
+    s.set_entry_instrument(e, None).unwrap();
+    drop(s);
+    let b = load(&dir.0);
+    let texts: Vec<String> = b
+        .journal
+        .iter()
+        .filter(|l| {
+            matches!(
+                l.line_type.as_str(),
+                "vendor.1099_set"
+                    | "vendor.w9_flag_set"
+                    | "instrument.added"
+                    | "entry.instrument_set"
+            )
+        })
+        .filter_map(|l| describe(&b, l))
+        .map(|e| e.text)
+        .collect();
+    assert_eq!(
+        texts,
+        [
+            "1099 decision for Harbor Design LLC: 1099-NEC (by Riley Chen, Oct 16, 2026)".to_string(),
+            "1099 decision for Harbor Design LLC from Dec 30, 2026: Not reportable: a corporation (elected to be taxed as a corporation) (by Riley Chen, Oct 16, 2026)".to_string(),
+            "W-9 of Harbor Design LLC marked on file".to_string(),
+            "Added payment method Harbor Visa (a company card)".to_string(),
+            format!("Payment method of #{e}: Harbor Visa"),
+            format!("Cleared the payment method of #{e}"),
+        ]
     );
 }

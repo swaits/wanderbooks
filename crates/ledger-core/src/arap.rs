@@ -42,14 +42,33 @@ pub struct Vendor {
     pub id: VendorId,
     /// Display name.
     pub name: String,
-    /// The information return this vendor gets, if any (see
-    /// [`crate::form1099`]).
+    /// Its 1099 decisions, each from the date it takes effect, in date
+    /// order (one from the beginning first); none when nobody has decided
+    /// (see [`crate::form1099`], D-40).
     #[serde(default)]
-    pub form_1099: Option<crate::form1099::Form1099>,
+    pub decisions_1099: Vec<crate::form1099::Dated1099>,
     /// A W-9 (taxpayer identification number) is on file. The number
     /// itself is never stored here.
     #[serde(default)]
     pub tin_on_file: bool,
+}
+
+impl Vendor {
+    /// The 1099 decision in force on `date`, if any was recorded by then.
+    pub fn decision_on(&self, date: NaiveDate) -> Option<&crate::form1099::Decision1099> {
+        crate::form1099::in_force(&self.decisions_1099, date).map(|d| &d.decision)
+    }
+
+    /// The latest 1099 decision recorded (the one in force from the last
+    /// effective date on), if any.
+    pub fn latest_1099(&self) -> Option<&crate::form1099::Dated1099> {
+        self.decisions_1099.last()
+    }
+
+    /// The return its latest decision files, if it files one.
+    pub fn form_1099(&self) -> Option<crate::form1099::Form1099> {
+        self.latest_1099().and_then(|d| d.decision.form())
+    }
 }
 
 /// Payment status of an invoice or bill.

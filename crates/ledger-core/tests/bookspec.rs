@@ -5,15 +5,16 @@
 //! Each example is a setup, events and expected values worked by hand from
 //! its cited source (`bookspec/README.md` gives the shape). Every example
 //! must load, whatever it asks or whichever appendix it is in: its shape,
-//! its accounts, fixed assets, parties, members and payees, every event
-//! (an entry, a reversal, a close or a bill, posting entry #N as event N,
-//! with the parties and payee it is tagged with) and every change that
+//! its accounts, fixed assets, parties, members, payees, payees' dated
+//! 1099 decisions and payment methods, every event (an entry, a reversal,
+//! a close or a bill, posting entry #N as event N, with the parties,
+//! payee and payment method it is tagged with) and every change that
 //! posts no entry (a rename, a policy). The queries the core answers
 //! (`cash_flow`, `trial_balance`, `profit_and_loss`, `vendor_1099_paid`,
-//! `entry`, `balances`, `members_equity`, `k1`, `party_part`,
-//! `party_totals`, `party_tin_last4`, `period`, `day`, `calendar_year`,
-//! `account_names`, `uncategorized_accounts`) are then checked value by
-//! value, and the commands it tries
+//! `vendor_1099`, `entry`, `balances`, `members_equity`, `k1`,
+//! `party_part`, `party_totals`, `party_tin_last4`, `period`, `day`,
+//! `calendar_year`, `account_names`, `uncategorized_accounts`) are then
+//! checked value by value, and the commands it tries
 //! (`rename_account`, `add_account`, `set_tax_category`) accepted or
 //! refused on a copy of the books, each after the event it names (`after`)
 //! or the last; the formats appendix's (`iif_lines`, `iif_changes`) are
@@ -27,13 +28,14 @@ use std::path::{Path, PathBuf};
 use chrono::NaiveDate;
 use ledger_core::calendar::{PeriodDefaults, period_defaults};
 use ledger_core::parties::{Basis, MoneyAccounts};
-use ledger_core::settings::Company;
+use ledger_core::settings::{Company, Source};
 use ledger_core::{
-    AccountType, CashFlowParams, CashFlowSection, CashFlowStatement, CloseTo, Currency,
-    DocumentLine, EntryId, Form1099, Ledger, LedgerError, MemberCapital, MemberClose, Money,
-    NewAsset, PartyId, PartyMember, PartyShare, PaymentAccounts, ReconcilingKind, Role, Share,
-    Side, TinFacts, TinType, VendorId, W9Facts, cash_flow, members_equity,
-    profit_and_loss_for_period, trial_balance_as_of, vendor_1099_report_with_members,
+    AccountType, CashFlowParams, CashFlowSection, CashFlowStatement, CloseTo, Currency, Dated1099,
+    Decision1099, DocumentLine, EntryId, ExemptReason, Form1099, InstrumentId, InstrumentKind,
+    Ledger, LedgerError, MemberCapital, MemberClose, Money, NewAsset, PartyId, PartyMember,
+    PartyShare, PaymentAccounts, ReconcilingKind, Role, Share, Side, TinFacts, TinType, VendorId,
+    W9Facts, cash_flow, members_equity, profit_and_loss_for_period, trial_balance_as_of,
+    vendor_1099_report,
 };
 use rust_decimal::Decimal;
 use serde::Deserialize;
@@ -83,6 +85,12 @@ struct Setup {
     members: Vec<MemberSpec>,
     #[serde(default)]
     payees: Vec<PayeeSpec>,
+    /// A payee's 1099 decision from a date on (rules.md B-19, D-40).
+    #[serde(default)]
+    status_changes: Vec<StatusChangeSpec>,
+    /// The ways the company (or a member, for it) pays (rules.md B-19).
+    #[serde(default)]
+    instruments: Vec<InstrumentSpec>,
     /// The day the books are asked on, in the company's time zone: what
     /// an omitted date means (rules.md B-30). A query that omits a date
     /// needs it.
@@ -181,6 +189,38 @@ struct PartySpec {
     tin_purged: bool,
 }
 
+/// A payee's 1099 decision from `effective` on (rules.md B-19, D-40).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StatusChangeSpec {
+    payee: String,
+    effective: String,
+    /// `"1099-NEC"`, `"1099-MISC"`, `"not_reportable"` (with `reason_kind`
+    /// and `reason`) or `"undetermined"`.
+    decision: String,
+    #[serde(default)]
+    reason_kind: Option<String>,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+/// A payment method (rules.md B-19).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InstrumentSpec {
+    label: String,
+    /// `bank`, `business_card`, `member_card`, `member_cash_or_check` or
+    /// `platform`.
+    kind: String,
+    /// The account it pays through, by code.
+    account: String,
+    #[serde(default)]
+    last4: Option<String>,
+    /// The party it belongs to, by name (informational).
+    #[serde(default)]
+    owner: Option<String>,
+}
+
 /// A party named on an entry, with its share: an `amount`, a `percent`,
 /// or neither (derived from the entry: rules.md B-35).
 #[derive(Deserialize)]
@@ -214,6 +254,9 @@ struct Event {
     /// shares.
     #[serde(default)]
     parties: Vec<ShareSpec>,
+    /// The payment method (an `setup.instruments` label) it was paid with.
+    #[serde(default)]
+    instrument: Option<String>,
 }
 
 /// A bill from `vendor` for `amount`, dated and due on the event's date:
@@ -287,6 +330,8 @@ struct Expect {
     party: Option<String>,
     /// `party_totals`' basis: `"cash"` or `"all"` (rules.md B-35 item 4).
     basis: Option<String>,
+    /// The payee a `vendor_1099` query asks about (in `setup.payees`).
+    payee: Option<String>,
     /// The books after event N, not after the last.
     after: Option<usize>,
     /// The account a `rename_account` or `set_tax_category` command
@@ -482,6 +527,42 @@ struct Books<'a> {
     payees: BTreeMap<String, VendorId>,
     /// The vendors bills came from, by name (a payee's record if one).
     vendors: BTreeMap<String, VendorId>,
+    /// The payment methods, by label.
+    instruments: BTreeMap<String, InstrumentId>,
+}
+
+/// Who an example's decisions and records are made by.
+fn bookspec_source(id: &str) -> Source {
+    Source {
+        decided_by: "bookspec".into(),
+        decided_on: date("2026-01-01", id),
+        citation: None,
+        note: None,
+    }
+}
+
+/// A payee's 1099 decision in an example's words (bookspec/README.md).
+fn decision(ex: &str, what: &str, kind: Option<&str>, reason: Option<&str>) -> Decision1099 {
+    match what {
+        "not_reportable" => {
+            let kind = kind.and_then(ExemptReason::parse).unwrap_or_else(|| {
+                panic!("{ex}: not_reportable needs a reason_kind, got {kind:?}")
+            });
+            let reason = reason.unwrap_or_else(|| panic!("{ex}: not_reportable needs a reason"));
+            Decision1099::not_reportable(kind, reason).unwrap_or_else(|e| panic!("{ex}: {e}"))
+        }
+        "undetermined" | "1099-NEC" | "1099-MISC" => {
+            assert!(
+                kind.is_none() && reason.is_none(),
+                "{ex}: only not_reportable takes reason_kind and reason"
+            );
+            match Form1099::parse(what) {
+                Some(f) if what.starts_with("1099-") => Decision1099::Files(f),
+                _ => Decision1099::Undetermined,
+            }
+        }
+        other => panic!("{ex}: decision {other:?}"),
+    }
 }
 
 /// The example's directory (`setup.parties`), by name: each party with
@@ -569,7 +650,8 @@ fn add_parties(ex: &Example, l: &mut Ledger) -> BTreeMap<String, PartyId> {
 
 impl<'a> Books<'a> {
     /// The books an example sets up, before any event: its shape checked,
-    /// its accounts, fixed assets, parties, members and payees.
+    /// its accounts, fixed assets, parties, members, payees, their dated
+    /// decisions, and payment methods.
     fn new(ex: &'a Example) -> Self {
         let s = &ex.setup;
         let currency = Currency::new(&s.currency).unwrap();
@@ -684,6 +766,7 @@ impl<'a> Books<'a> {
                 })
             })
             .collect();
+        let source = bookspec_source(&ex.id);
         let mut payees = BTreeMap::new();
         for p in &s.payees {
             let form = Form1099::parse(&p.form)
@@ -697,13 +780,55 @@ impl<'a> Books<'a> {
                     .add_vendor(&p.name)
                     .unwrap_or_else(|e| panic!("{}: payee {}: {e}", ex.id, p.name)),
             };
-            l.set_vendor_1099(v, Some(form), false)
+            let dated = Dated1099::from_beginning(Decision1099::Files(form), Some(source.clone()));
+            l.set_vendor_1099(v, dated, false)
                 .unwrap_or_else(|e| panic!("{}: payee {}: {e}", ex.id, p.name));
             assert!(
                 payees.insert(p.name.clone(), v).is_none(),
                 "{}: payee {} twice",
                 ex.id,
                 p.name
+            );
+        }
+        for c in &s.status_changes {
+            let what = format!("{} status change of {}", ex.id, c.payee);
+            let &v = payees
+                .get(&c.payee)
+                .unwrap_or_else(|| panic!("{what}: payee not in setup"));
+            let dated = Dated1099 {
+                effective: Some(date(&c.effective, &what)),
+                decision: decision(
+                    &what,
+                    &c.decision,
+                    c.reason_kind.as_deref(),
+                    c.reason.as_deref(),
+                ),
+                source: Some(source.clone()),
+            };
+            l.set_vendor_1099(v, dated, false)
+                .unwrap_or_else(|e| panic!("{what}: {e}"));
+        }
+        let mut instruments = BTreeMap::new();
+        for i in &s.instruments {
+            let what = format!("{} instrument {}", ex.id, i.label);
+            let kind = InstrumentKind::parse(&i.kind)
+                .unwrap_or_else(|| panic!("{what}: kind {:?}", i.kind));
+            let account = l
+                .chart()
+                .find_by_code(&i.account)
+                .unwrap_or_else(|| panic!("{what}: no account {}", i.account))
+                .id;
+            let owner = i.owner.as_ref().map(|o| {
+                *parties
+                    .get(o)
+                    .unwrap_or_else(|| panic!("{what}: owner {o:?} not in setup.parties"))
+            });
+            let id = l
+                .add_instrument(kind, &i.label, i.last4.as_deref(), owner, account)
+                .unwrap_or_else(|e| panic!("{what}: {e}"));
+            assert!(
+                instruments.insert(i.label.clone(), id).is_none(),
+                "{what}: twice"
             );
         }
         Books {
@@ -715,6 +840,7 @@ impl<'a> Books<'a> {
             parties,
             vendors: payees.clone(),
             payees,
+            instruments,
         }
     }
 
@@ -735,8 +861,8 @@ impl<'a> Books<'a> {
             "{ex} event {n}: a reversal takes its original's payee, a bill names its vendor, and a close has none"
         );
         assert!(
-            e.parties.is_empty() || e.reverses.is_none(),
-            "{ex} event {n}: a reversal takes its original's parties"
+            (e.parties.is_empty() && e.instrument.is_none()) || e.reverses.is_none(),
+            "{ex} event {n}: a reversal takes its original's parties and payment method"
         );
         let posted = match (&e.close, e.reverses, e.lines.is_empty()) {
             (None, None, true) if e.bill.is_some() => {
@@ -881,6 +1007,15 @@ impl<'a> Books<'a> {
                 .unwrap_or_else(|| panic!("{ex} event {n}: payee {p:?} not in setup"));
             self.l
                 .set_entry_vendor(n, Some(v))
+                .unwrap_or_else(|err| panic!("{ex} event {n}: {err}"));
+        }
+        if let Some(label) = &e.instrument {
+            let i = *self
+                .instruments
+                .get(label)
+                .unwrap_or_else(|| panic!("{ex} event {n}: payment method {label:?} not in setup"));
+            self.l
+                .set_entry_instrument(n, Some(i))
                 .unwrap_or_else(|err| panic!("{ex} event {n}: {err}"));
         }
     }
@@ -1173,10 +1308,10 @@ fn check_profit_and_loss(ex: &Example, l: &Ledger, x: &Expect) {
     }
 }
 
-/// The 1099 report a `vendor_1099_paid` expectation asks for: the
-/// calendar year of `to`, from January 1 through `to`, out of the cash
-/// and financing accounts, an entry's shares resolved with the members
-/// who are parties (rules.md B-19, B-33).
+/// The 1099 report a `vendor_1099_paid` or `vendor_1099` expectation
+/// asks for: the calendar year of `to`, from January 1 through `to`, out
+/// of the cash and financing accounts, an entry's shares resolved with
+/// the members who are parties (rules.md B-19, B-33).
 fn report_1099(b: &Books<'_>, x: &Expect) -> (NaiveDate, NaiveDate, ledger_core::Vendor1099Report) {
     let (ex, l) = (b.ex, &b.l);
     // A calendar-year count, never the fiscal default (rules.md B-30):
@@ -1205,7 +1340,7 @@ fn report_1099(b: &Books<'_>, x: &Expect) -> (NaiveDate, NaiveDate, ledger_core:
         cash: codes(l, &ex.setup.cash_accounts, &ex.id),
         financing: codes(l, &ex.setup.financing_accounts, &ex.id),
     };
-    let r = vendor_1099_report_with_members(l, year, Some(to), None, &sources, &b.party_members)
+    let r = vendor_1099_report(l, year, None, &sources, &b.party_members, Some(to))
         .unwrap_or_else(|e| panic!("{}: {e}", ex.id));
     (from, to, r)
 }
@@ -1226,6 +1361,55 @@ fn check_vendor_1099_paid(b: &Books<'_>, x: &Expect) {
             .map(|v| v.paid)
             .sum();
         assert_eq!(got, want, "{} 1099 paid [{from} .. {to}]: {name}", ex.id);
+    }
+}
+
+/// Check one `vendor_1099` expectation: one payee's line of the 1099
+/// worksheet ([`report_1099`]): `status` (`reportable`,
+/// `under_threshold`, `not_reportable`, `undetermined`), the `threshold`
+/// applied, and what was `paid` (counts toward its 1099),
+/// `excluded_card` (a card or payment network's, Form 1099-K),
+/// `undetermined` (its payment method not recorded) and `not_reportable`
+/// (paid while decided not reportable); every one given (rules.md B-19).
+fn check_vendor_1099(b: &Books<'_>, x: &Expect) {
+    let ex = b.ex;
+    let name = x
+        .payee
+        .as_deref()
+        .unwrap_or_else(|| panic!("{}: vendor_1099 names its payee", ex.id));
+    let v = *b
+        .payees
+        .get(name)
+        .unwrap_or_else(|| panic!("{}: payee {name:?} not in setup", ex.id));
+    let (from, to, r) = report_1099(b, x);
+    let line = r
+        .vendors
+        .iter()
+        .find(|l| l.vendor_id == v)
+        .unwrap_or_else(|| panic!("{}: the 1099 worksheet has no line for {name}", ex.id));
+    let keys = [
+        "status",
+        "threshold",
+        "paid",
+        "excluded_card",
+        "undetermined",
+        "not_reportable",
+    ];
+    exactly(ex, x, &keys.iter().map(|k| k.to_string()).collect());
+    let what = |k: &str| format!("{} 1099 [{from} .. {to}] {name}: {k}", ex.id);
+    for (key, want) in x.figures(&ex.id) {
+        if key == "status" {
+            assert_eq!(line.status.key(), want, "{}", what(key));
+            continue;
+        }
+        let got = match key.as_str() {
+            "threshold" => r.threshold,
+            "paid" => line.paid,
+            "excluded_card" => line.excluded_card,
+            "undetermined" => line.undetermined,
+            _ => line.not_reportable,
+        };
+        assert_eq!(got, exact(want, &what(key)), "{}", what(key));
     }
 }
 
@@ -1772,6 +1956,7 @@ fn check(b: &Books<'_>, x: &Expect) -> Option<&'static str> {
         &["party_part", "party_totals", "party_tin_last4"],
     );
     only(x.basis.is_some(), "basis", &["party_totals"]);
+    only(x.payee.is_some(), "payee", &["vendor_1099"]);
     only(
         x.code.is_some(),
         "code",
@@ -1817,6 +2002,7 @@ fn check(b: &Books<'_>, x: &Expect) -> Option<&'static str> {
         "trial_balance" => check_trial_balance(ex, l, x),
         "profit_and_loss" => check_profit_and_loss(ex, l, x),
         "vendor_1099_paid" => check_vendor_1099_paid(b, x),
+        "vendor_1099" => check_vendor_1099(b, x),
         "entry" => check_entry(ex, l, x),
         "balances" => check_balances(ex, l, x),
         "members_equity" => check_members_equity(ex, l, &b.members, x),
@@ -1909,19 +2095,20 @@ fn every_bookspec_example_holds() {
     }
     // Each query the examples use ran: the cash flow's six examples at
     // least, the as-of and 1099 examples', the members closes', the
-    // formats appendix's, and P3's default period, rename, tax category
-    // and parties examples'.
+    // formats appendix's, and P3's default period, rename, tax category,
+    // parties and 1099 examples'.
     for (q, at_least) in [
         ("cash_flow", 6),
         ("trial_balance", 2),
         ("profit_and_loss", 2),
-        ("vendor_1099_paid", 3),
+        ("vendor_1099_paid", 4),
+        ("vendor_1099", 10),
         ("entry", 8),
         ("balances", 4),
         ("members_equity", 10),
         ("k1", 2),
-        ("party_part", 27),
-        ("party_totals", 21),
+        ("party_part", 28),
+        ("party_totals", 23),
         ("party_tin_last4", 5),
         ("iif_lines", 1),
         ("iif_changes", 1),
@@ -2295,5 +2482,38 @@ fn a_reversal_naming_parties_is_refused() {
 fn party_totals_without_a_basis_are_refused() {
     run_edited("p3-party-signs-and-reversals.toml", |t| {
         t.replacen("basis = \"all\"\n", "", 1)
+    });
+}
+
+/// A `vendor_1099` line lists every figure it covers: one left out is
+/// refused.
+#[test]
+#[should_panic(expected = "lists exactly what it covers")]
+fn a_vendor_1099_line_leaving_a_figure_out_is_refused() {
+    run_edited("1099-card-payments-are-excluded.toml", |t| {
+        t.replacen(", not_reportable = \"0.00\" }", " }", 1)
+    });
+}
+
+/// A `vendor_1099` line's status is checked: card payments that would
+/// reach the threshold leave the payee under it.
+#[test]
+#[should_panic(expected = "Harbor Design LLC: status")]
+fn a_vendor_1099_status_is_checked() {
+    run_edited("1099-card-payments-are-excluded.toml", |t| {
+        t.replacen("status = \"under_threshold\"", "status = \"reportable\"", 1)
+    });
+}
+
+/// A payment method an event names must be in the setup.
+#[test]
+#[should_panic(expected = "payment method \"Harbor debit\" not in setup")]
+fn a_payment_method_not_in_the_setup_is_refused() {
+    run_edited("1099-card-payments-are-excluded.toml", |t| {
+        t.replacen(
+            "instrument = \"Harbor debit card\"",
+            "instrument = \"Harbor debit\"",
+            1,
+        )
     });
 }

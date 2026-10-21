@@ -18,7 +18,7 @@ use ledger_core::reports::{
     balance_sheet_as_of, general_ledger, members_equity, profit_and_loss_for_period,
     trial_balance_as_of,
 };
-use ledger_core::{AccountId, AccountType, MemberCapital, tax_summary, vendor_1099_report};
+use ledger_core::{AccountId, AccountType, MemberCapital, tax_summary};
 use rust_decimal::Decimal;
 use std::collections::BTreeMap;
 
@@ -2193,51 +2193,94 @@ fn gl(ui: &mut Ui, b: &Books, s: NaiveDate, e: NaiveDate, shell: &mut Shell<'_>)
     }
 }
 
+/// A 1099 decision in the viewer's words: "1099-NEC", "Not reportable: a
+/// corporation (by name)", "Undecided".
+pub fn decision_text(d: &ledger_core::Decision1099) -> String {
+    match d {
+        ledger_core::Decision1099::Undetermined => "Undecided".into(),
+        ledger_core::Decision1099::Files(f) => f.label().into(),
+        ledger_core::Decision1099::NotReportable { kind, reason } => {
+            format!("Not reportable: {} ({reason})", kind.label())
+        }
+    }
+}
+
+/// A worksheet line's 1099 decisions in words, each change with its date.
+fn decisions_text(l: &ledger_package::Vendor1099WorksheetLine) -> String {
+    if l.decisions.is_empty() {
+        return decision_text(&ledger_core::Decision1099::Undetermined);
+    }
+    l.decisions
+        .iter()
+        .enumerate()
+        .map(|(i, d)| match d.effective {
+            Some(e) if i > 0 => format!("from {}: {}", fmt::date(e), decision_text(&d.decision)),
+            _ => decision_text(&d.decision),
+        })
+        .collect::<Vec<_>>()
+        .join(" → ")
+}
+
 fn vendor_1099(ui: &mut Ui, b: &Books, year: i32, shell: &mut Shell<'_>) {
     let p = pal(ui.ctx());
-    let r = match vendor_1099_report(&b.ledger, year, None) {
-        Ok(r) => r,
+    let w = match b.vendor_1099_worksheet(year) {
+        Ok(w) => w,
         Err(e) => {
-            // Never guess a threshold (rules.md B-19): say why there's no
-            // worksheet, in the engine's words.
-            ui.label(RichText::new(e.to_string()).color(p.muted));
+            // Never guess a threshold or the cash accounts (rules.md
+            // B-19): say why there's no worksheet, in the engine's words.
+            ui.label(RichText::new(e).color(p.muted));
             return;
         }
     };
     ui.label(
         RichText::new(format!(
-            "Calendar {year}. Threshold {} ($600 through 2025; $2,000 from 2026, indexed after). Counts cash paid on entries tagged with the vendor; card payments are reported by the card processor (1099-K) and drop out.",
-            fmt::dollars(r.threshold)
+            "Calendar {year}. Threshold {} ($600 through 2025; $2,000 from 2026, indexed after). Counts what each vendor was paid by check, ACH, transfer or cash on entries tagged with it, under the 1099 decision in force on each payment's date. Card and payment-network payments are reported by the processor on Form 1099-K and don't count; what a member paid with no payment method recorded is undetermined until it is.",
+            fmt::dollars(w.threshold)
         ))
         .color(p.muted),
     );
     ui.add_space(10.0);
-    let mut t = Table::new(vec!["Paid".into()]);
-    for v in &r.vendors {
-        let form = v.form.map(|f| f.label()).unwrap_or("No 1099");
+    let mut t = Table::new(vec![
+        "Counts".into(),
+        "Card or network".into(),
+        "Undetermined".into(),
+    ]);
+    for v in &w.lines {
         let w9 = if v.tin_on_file {
             "W-9 on file"
         } else {
             "no W-9"
         };
-        let status = if v.reportable {
-            if v.tin_on_file {
-                "File a 1099"
-            } else {
-                "File a 1099 · get a W-9 first"
+        let status = match v.status {
+            ledger_core::Status1099::Reportable if v.tin_on_file => "File a 1099",
+            ledger_core::Status1099::Reportable => "File a 1099 · get a W-9 first",
+            ledger_core::Status1099::UnderThreshold => "Under the threshold",
+            ledger_core::Status1099::NotReportable => "No 1099",
+            ledger_core::Status1099::Undetermined if v.decision_needed => {
+                "Decide whether it gets a 1099"
             }
-        } else {
-            "Not reportable"
+            ledger_core::Status1099::Undetermined => "Record how it was paid",
         };
+        let mut detail = format!("{} · {w9} · {status}", decisions_text(v));
+        if !v.not_reportable.is_zero() {
+            detail.push_str(&format!(
+                " · {} paid while not reportable",
+                fmt::dollars(v.not_reportable)
+            ));
+        }
         t.rows.push(Row {
             kind: Kind::Line,
             label: v.name.clone(),
-            detail: format!("{form} · {w9} · {status}"),
-            cells: vec![Cell::of(v.paid)],
+            detail,
+            cells: vec![
+                Cell::of(v.paid),
+                Cell::of(v.excluded_card),
+                Cell::of(v.undetermined),
+            ],
         });
     }
-    if r.vendors.is_empty() {
-        t.note("No vendors marked for a 1099 and none paid this year.");
+    if w.lines.is_empty() {
+        t.note("No vendors decided for a 1099 and none paid this year.");
     }
     let pdf = PdfInfo::new(
         b,
@@ -2245,6 +2288,13 @@ fn vendor_1099(ui: &mut Ui, b: &Books, year: i32, shell: &mut Shell<'_>) {
         &format!("Calendar year {year}"),
     );
     render(ui, &t, &pdf, shell);
+    // The worksheet's notes, as books.vendor_1099 gives them, whole (a
+    // table note is one clipped line).
+    ui.add_space(10.0);
+    for n in &w.notes {
+        ui.add(egui::Label::new(RichText::new(n).font(theme::regular(12.0)).color(p.muted)).wrap());
+        ui.add_space(4.0);
+    }
 }
 
 #[cfg(test)]

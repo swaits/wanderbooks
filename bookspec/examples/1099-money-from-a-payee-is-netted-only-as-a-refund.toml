@@ -1,0 +1,108 @@
+id = "1099-money-from-a-payee-is-netted-only-as-a-refund"
+title = "Money received from a payee lowers its 1099 only when it refunds what was paid"
+rule = """
+A 1099 reports the payments the payer made to the payee in the calendar
+year. Money the payee gives back of a payment (a refund crediting the
+expense, or a deposit returned) reduces what was paid. Money received from
+the payee for anything else (its payment of the payer's invoice, a sale to
+it, an asset disposed of to it, a loan from it) is not a refund of a
+payment and is not netted against the payments; it is listed beside them.
+"""
+status = "CONVENTION"
+sources = [
+  "26 U.S.C. §6041(a) (payments made in the course of the trade or business: docs/spec/sources/irs-1099-thresholds.md)",
+  "wanderbooks P3 review R6 (2026-10-20): a sale to a payee doesn't lower its 1099",
+]
+tags = ["1099", "netting", "refund"]
+
+[setup]
+currency = "USD"
+fiscal_year_start = "01-01"
+basis = "cash"
+rounding = "half-away-from-zero"
+cash_accounts = ["1000"]
+
+[[setup.accounts]]
+code = "1000"
+name = "Bank"
+type = "asset"
+
+[[setup.accounts]]
+code = "1200"
+name = "Accounts Receivable"
+type = "asset"
+
+[[setup.accounts]]
+code = "1400"
+name = "Deposits"
+type = "asset"
+
+[[setup.accounts]]
+code = "2600"
+name = "Loan payable"
+type = "liability"
+
+[[setup.accounts]]
+code = "6000"
+name = "Contract Labor"
+type = "expense"
+
+[[setup.payees]]
+name = "Dana Studio"
+form = "1099-NEC"
+
+[[events]]
+date = "2026-02-01"
+description = "Design work"
+payee = "Dana Studio"
+lines = [
+  { account = "6000", side = "debit", amount = "3000.00" },
+  { account = "1000", side = "credit", amount = "3000.00" },
+]
+
+[[events]]
+date = "2026-03-01"
+description = "Dana Studio pays the company's invoice"
+payee = "Dana Studio"
+lines = [
+  { account = "1000", side = "debit", amount = "450.00" },
+  { account = "1200", side = "credit", amount = "450.00" },
+]
+
+[[events]]
+date = "2026-04-01"
+description = "Dana Studio lends the company money"
+payee = "Dana Studio"
+lines = [
+  { account = "1000", side = "debit", amount = "1000.00" },
+  { account = "2600", side = "credit", amount = "1000.00" },
+]
+
+[[events]]
+date = "2026-05-01"
+description = "Deposit for the next project"
+payee = "Dana Studio"
+lines = [
+  { account = "1400", side = "debit", amount = "500.00" },
+  { account = "1000", side = "credit", amount = "500.00" },
+]
+
+[[events]]
+date = "2026-06-01"
+description = "Deposit returned: the project was cancelled"
+payee = "Dana Studio"
+lines = [
+  { account = "1000", side = "debit", amount = "500.00" },
+  { account = "1400", side = "credit", amount = "500.00" },
+]
+
+# By hand: paid 3,000.00 + 500.00 (the deposit, paid when made) − 500.00
+# (its return, a refund) = 3,000.00: reportable. The invoice payment
+# (450.00) and the loan (1,000.00) are listed, not netted (netting them
+# would leave 1,550.00, under the threshold).
+[[expect]]
+query = "vendor_1099"
+payee = "Dana Studio"
+from = "2026-01-01"
+to = "2026-12-31"
+values = { status = "reportable", threshold = "2000.00", paid = "3000.00", excluded_card = "0.00", undetermined = "0.00", not_reportable = "0.00" }

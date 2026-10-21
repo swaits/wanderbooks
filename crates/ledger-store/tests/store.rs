@@ -764,7 +764,7 @@ fn run_recurring_skips_occurrences_in_a_closed_period() {
 #[test]
 fn vendor_1099_tags_replay_and_project() {
     use ledger_core::arap::DocumentLine;
-    use ledger_core::{Form1099, vendor_1099_report};
+    use ledger_core::{Dated1099, Decision1099, Form1099, PaymentAccounts, vendor_1099_report};
     let dir = test_dir("form1099");
     let mut store = Store::create(&dir, Currency::USD).unwrap();
     let cash = store
@@ -774,10 +774,36 @@ fn vendor_1099_tags_replay_and_project() {
         .add_account("6000", "Contract Labor", AccountType::Expense, None, false)
         .unwrap();
     let dana = store.add_vendor("Dana").unwrap();
-    store
-        .set_vendor_1099(dana, Some(Form1099::Nec), true)
-        .unwrap();
     let d = |m, day| NaiveDate::from_ymd_opt(2026, m, day).unwrap();
+    store
+        .set_vendor_1099(
+            dana,
+            &Dated1099::from_beginning(
+                Decision1099::Files(Form1099::Nec),
+                Some(ledger_core::settings::Source {
+                    decided_by: "Riley Chen".into(),
+                    decided_on: d(1, 5),
+                    citation: None,
+                    note: None,
+                }),
+            ),
+            Some(true),
+        )
+        .unwrap();
+    let report = |l: &ledger_core::Ledger| {
+        vendor_1099_report(
+            l,
+            2026,
+            None,
+            &PaymentAccounts {
+                cash: vec![cash],
+                financing: vec![],
+            },
+            &[],
+            None,
+        )
+        .unwrap()
+    };
     let bill = store
         .create_bill(
             dana,
@@ -803,7 +829,7 @@ fn vendor_1099_tags_replay_and_project() {
     store.post_entry(dup).unwrap();
     store.set_entry_vendor(dup, Some(dana)).unwrap();
     store.reverse_entry(dup, d(6, 3), "duplicate").unwrap();
-    let before = vendor_1099_report(store.ledger(), 2026, None).unwrap();
+    let before = report(store.ledger());
     assert_eq!(before.vendors[0].paid, Decimal::from(2200));
     assert!(before.vendors[0].reportable);
     drop(store);
@@ -814,10 +840,7 @@ fn vendor_1099_tags_replay_and_project() {
             std::fs::remove_file(dir.join(ledger_store::DB_FILE)).unwrap();
         }
         let store = Store::open(&dir).unwrap();
-        assert_eq!(
-            vendor_1099_report(store.ledger(), 2026, None).unwrap(),
-            before
-        );
+        assert_eq!(report(store.ledger()), before);
         let conn = rusqlite::Connection::open(dir.join(ledger_store::DB_FILE)).unwrap();
         let tagged: i64 = conn
             .query_row(
@@ -832,6 +855,16 @@ fn vendor_1099_tags_replay_and_project() {
             .query_row("SELECT form_1099 FROM vendors", [], |r| r.get(0))
             .unwrap();
         assert_eq!(form, "nec");
+        // The decision, with who made it, line by line.
+        let (decided, by): (String, String) = conn
+            .query_row(
+                "SELECT form_1099, source_json FROM vendor_1099_decisions",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(decided, "nec");
+        assert!(by.contains("Riley Chen"), "{by}");
     }
 }
 
@@ -972,7 +1005,14 @@ mod refusals {
         AddClass(u8),
         SetLineClass(u64, usize, Option<u32>),
         SetEntryVendor(u64, Option<u64>),
-        SetVendor1099(u64, bool),
+        /// A 1099 decision (0 undetermined, 1 nec, 2 a corporation, 3 a
+        /// blank reason, 4 no source), dated or not, with a W-9 flag or
+        /// none.
+        SetVendor1099(u64, u8, Option<u32>, Option<bool>),
+        SetW9Flag(u64, bool),
+        /// A payment method: kind, label, account.
+        AddInstrument(u8, u8, u64),
+        SetEntryInstrument(u64, Option<u64>),
         SetAccountTax(u64, u8),
         Renumber(u64, u8),
         // P3 (defects 8, 15): renames, accounts added with a category,
@@ -1051,7 +1091,16 @@ mod refusals {
             (id.clone(), 0usize..4, prop::option::of(0u32..4))
                 .prop_map(|(e, i, c)| Op::SetLineClass(e, i, c)),
             (id.clone(), prop::option::of(0u64..4)).prop_map(|(e, v)| Op::SetEntryVendor(e, v)),
-            (0u64..4, any::<bool>()).prop_map(|(v, t)| Op::SetVendor1099(v, t)),
+            (
+                0u64..4,
+                0u8..5,
+                prop::option::of(0u32..120),
+                prop::option::of(any::<bool>())
+            )
+                .prop_map(|(v, k, d, t)| Op::SetVendor1099(v, k, d, t)),
+            (0u64..4, any::<bool>()).prop_map(|(v, t)| Op::SetW9Flag(v, t)),
+            (0u8..6, 0u8..3, 0u64..12).prop_map(|(k, l, a)| Op::AddInstrument(k, l, a)),
+            (id.clone(), prop::option::of(0u64..4)).prop_map(|(e, i)| Op::SetEntryInstrument(e, i)),
             (0u64..10, 0u8..4).prop_map(|(a, k)| Op::SetAccountTax(a, k)),
             (0u64..10, 0u8..9).prop_map(|(a, c)| Op::Renumber(a, c)),
             (0u64..12, 0u8..8).prop_map(|(a, n)| Op::Rename(a, n)),
@@ -1222,7 +1271,51 @@ mod refusals {
             Op::AddClass(n) => store.add_class(["A", "B", ""][n as usize]).map(drop),
             Op::SetLineClass(e, i, c) => store.set_line_class(e, i, c),
             Op::SetEntryVendor(e, v) => store.set_entry_vendor(e, v),
-            Op::SetVendor1099(v, t) => store.set_vendor_1099(v, Some(Form1099::Nec), t),
+            Op::SetVendor1099(v, k, d, t) => {
+                let decision = match k {
+                    0 => ledger_core::Decision1099::Undetermined,
+                    1 => ledger_core::Decision1099::Files(Form1099::Nec),
+                    2 => ledger_core::Decision1099::not_reportable(
+                        ledger_core::ExemptReason::Corporation,
+                        "a corporation by name",
+                    )
+                    .unwrap(),
+                    _ => ledger_core::Decision1099::NotReportable {
+                        kind: ledger_core::ExemptReason::Other,
+                        reason: " ".into(),
+                    },
+                };
+                let source = (k != 4).then(|| ledger_core::settings::Source {
+                    decided_by: "Riley Chen".into(),
+                    decided_on: day(0),
+                    citation: None,
+                    note: None,
+                });
+                let dated = ledger_core::Dated1099 {
+                    effective: d.map(day),
+                    decision,
+                    source,
+                };
+                store.set_vendor_1099(v, &dated, t).map(drop)
+            }
+            Op::SetW9Flag(v, t) => store.set_vendor_w9_flag(v, t).map(drop),
+            Op::AddInstrument(k, l, a) => store
+                .add_instrument(
+                    [
+                        ledger_core::InstrumentKind::Bank,
+                        ledger_core::InstrumentKind::BusinessCard,
+                        ledger_core::InstrumentKind::MemberCard,
+                        ledger_core::InstrumentKind::MemberCashOrCheck,
+                        ledger_core::InstrumentKind::Platform,
+                        ledger_core::InstrumentKind::Bank,
+                    ][k as usize],
+                    ["Harbor Bank", "Riley's Visa", ""][l as usize],
+                    (k == 5).then_some("12345"),
+                    None,
+                    a,
+                )
+                .map(drop),
+            Op::SetEntryInstrument(e, i) => store.set_entry_instrument(e, i).map(drop),
             Op::SetAccountTax(a, k) => store.set_account_tax(a, TAX[k as usize], None),
             // The chart's codes, control codes (payroll's 6100 and 2110,
             // revenue, receivables), a blank, and fresh ones.
@@ -1512,6 +1605,7 @@ mod refusals {
         let journal = dir.join(ledger_store::JOURNAL_FILE);
         for op in ops {
             check_invariants(&store)?;
+            let ledger_before = store.ledger().clone();
             let mut before = std::fs::read_to_string(&journal).unwrap();
             let result = apply(&mut store, op, &mut || {
                 before = std::fs::read_to_string(&journal).unwrap();
@@ -1524,21 +1618,34 @@ mod refusals {
                     Err(e) => eprintln!("REFUSED {kind} {e}"),
                 }
             }
-            // The converse law: an accepted command is on the record. Only
-            // a batch run may find nothing to do, and a setting changed to
-            // the value it has changes nothing.
-            if result.is_ok()
-                && !matches!(
-                    op,
-                    Op::RunDepreciation(..) | Op::RunRecurring(..) | Op::SetTaxPolicy(..)
-                )
-            {
+            // The converse law: an accepted command is on the record, or
+            // changed nothing at all (a batch run with nothing due; a
+            // setting changed to the value it has; a 1099 decision, W-9
+            // flag or payment method already so).
+            if result.is_ok() {
                 let after = std::fs::read_to_string(&journal).unwrap();
-                prop_assert!(
-                    after.len() > before.len(),
-                    "accepted {:?} but journaled nothing",
-                    op
-                );
+                if after.len() == before.len() {
+                    let parts = ledger_before.differs_from(store.ledger());
+                    prop_assert!(
+                        parts.is_empty(),
+                        "accepted {:?}, journaled nothing, but changed {:?}",
+                        op,
+                        parts
+                    );
+                    prop_assert!(
+                        matches!(
+                            op,
+                            Op::RunDepreciation(..)
+                                | Op::RunRecurring(..)
+                                | Op::SetTaxPolicy(..)
+                                | Op::SetVendor1099(..)
+                                | Op::SetW9Flag(..)
+                                | Op::SetEntryInstrument(..)
+                        ),
+                        "accepted {:?} but journaled nothing",
+                        op
+                    );
+                }
             }
             if let Err(e) = result {
                 let after = std::fs::read_to_string(&journal).unwrap();
@@ -1929,15 +2036,8 @@ fn every_figure_of(l: &ledger_core::Ledger) -> (usize, usize) {
             financing: vec![],
         };
         tally(
-            ledger_core::form1099::vendor_1099_report_with_members(
-                l,
-                year,
-                None,
-                None,
-                &sources,
-                &[],
-            )
-            .map(|_| ()),
+            ledger_core::form1099::vendor_1099_report(l, year, None, &sources, &[], None)
+                .map(|_| ()),
         );
     }
     let money = ledger_core::parties::money_accounts(l, &cash, &[]);

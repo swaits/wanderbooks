@@ -2358,7 +2358,17 @@ fn the_commands_given_run_as_the_agents_own_token() {
     );
     assert!(out.status.success(), "{out:?}");
     assert_eq!(std::fs::read(folder.join("r (1).pdf")).unwrap(), bytes);
-    // A file the books make (an export) is saved the same way.
+    // A file the books make (an export) is saved the same way. The 1099
+    // worksheet counts payments out of the books' cash accounts.
+    let _ = a.call(
+        "books.add_account",
+        json!({"code": "1000", "name": "Cash", "account_type": "asset"}),
+    );
+    a.call(
+        "books.set_setting",
+        json!({"changes": [{"key": "books.cash_accounts", "value": ["1000"]}], "decided_by": "Test Owner"}),
+    )
+    .unwrap();
     let w = a
         .call("books.vendor_1099", json!({"year": 2026, "csv": true}))
         .unwrap();

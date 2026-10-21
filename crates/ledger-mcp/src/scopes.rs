@@ -62,7 +62,7 @@ const C: Needs = PostWhenConfirmed;
 const K: Needs = PostForApprovalRules;
 
 /// Every tool and what it needs (INVARIANT 1).
-pub const TABLE: [(&str, Needs); 112] = [
+pub const TABLE: [(&str, Needs); 115] = [
     ("books.handbook", R),
     ("books.start", R),
     // Settings are committed at once: the settings commit of the plan.
@@ -116,6 +116,9 @@ pub const TABLE: [(&str, Needs); 112] = [
     ("books.list_vendors", R),
     ("books.set_vendor_1099", W),
     ("books.set_entry_vendor", W),
+    ("books.add_instrument", W),
+    ("books.instruments", R),
+    ("books.set_entry_instrument", W),
     // Until P7 these can put full TINs out (with include_tins, or a W-9
     // itself): only an admin token, never a plain one (plan 3.3, "no
     // scope unwraps the vault", holds for every other scope).

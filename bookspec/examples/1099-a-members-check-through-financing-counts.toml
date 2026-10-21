@@ -1,0 +1,99 @@
+id = "1099-a-members-check-through-financing-counts"
+title = "A member's own check for the company counts toward the payee's 1099; their card doesn't; unknown stays unknown"
+rule = """
+The payer is the person who makes the payment in the course of its trade or
+business. A person paying on another's behalf is the payer only if it
+performs management or oversight functions or has a significant economic
+interest; writing checks at another's direction is neither. A member who
+pays a company bill from their own funds at the company's direction, the
+company bearing the cost through its liability to the member, leaves the
+company the payer: the member's check counts toward the payee's 1099. The
+member's personal card is a payment card: excluded (Form 1099-K). A
+member's payment whose method isn't recorded is undetermined, never
+guessed; the payee is reportable only if what certainly counts reaches the
+threshold.
+"""
+status = "AUTHORITY"
+sources = [
+  "Treas. Reg. §1.6041-1(a)(1)(i), (e)(1) (docs/spec/sources/irs-1099-payment-method.md)",
+  "Treas. Reg. §1.6041-1(a)(1)(iv)",
+  "26 U.S.C. §6041(a), as amended by Pub. L. 119-21 §70433 (docs/spec/sources/irs-1099-thresholds.md)",
+]
+tags = ["1099", "financing", "member-paid", "instruments"]
+
+[setup]
+currency = "USD"
+fiscal_year_start = "01-01"
+basis = "cash"
+rounding = "half-away-from-zero"
+cash_accounts = ["1000"]
+financing_accounts = ["2100"]
+
+[[setup.accounts]]
+code = "1000"
+name = "Bank"
+type = "asset"
+
+[[setup.accounts]]
+code = "2100"
+name = "Due to Members"
+type = "liability"
+
+[[setup.accounts]]
+code = "6000"
+name = "Contract Labor"
+type = "expense"
+
+[[setup.instruments]]
+label = "Riley's checks"
+kind = "member_cash_or_check"
+account = "2100"
+
+[[setup.instruments]]
+label = "Riley's Visa"
+kind = "member_card"
+account = "2100"
+
+[[setup.payees]]
+name = "Dana Studio"
+form = "1099-NEC"
+
+[[events]]
+date = "2026-05-01"
+description = "Logo, paid by a member's personal check"
+payee = "Dana Studio"
+instrument = "Riley's checks"
+lines = [
+  { account = "6000", side = "debit", amount = "2500.00" },
+  { account = "2100", side = "credit", amount = "2500.00" },
+]
+
+[[events]]
+date = "2026-06-01"
+description = "Icons, charged to a member's personal card"
+payee = "Dana Studio"
+instrument = "Riley's Visa"
+lines = [
+  { account = "6000", side = "debit", amount = "800.00" },
+  { account = "2100", side = "credit", amount = "800.00" },
+]
+
+[[events]]
+date = "2026-07-01"
+description = "Revisions, paid by a member (how not recorded)"
+payee = "Dana Studio"
+lines = [
+  { account = "6000", side = "debit", amount = "300.00" },
+  { account = "2100", side = "credit", amount = "300.00" },
+]
+
+# By hand: counts 2,500.00 (the member's check); excluded 800.00 (their
+# card); undetermined 300.00. What certainly counts, 2,500.00, is at least
+# 2,000.00 however the 300.00 turns out: reportable, on 2,500.00 (or
+# 2,800.00 once the 300.00 is known to be a check).
+[[expect]]
+query = "vendor_1099"
+payee = "Dana Studio"
+from = "2026-01-01"
+to = "2026-12-31"
+values = { status = "reportable", threshold = "2000.00", paid = "2500.00", excluded_card = "800.00", undetermined = "300.00", not_reportable = "0.00" }

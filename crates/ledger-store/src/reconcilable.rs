@@ -13,7 +13,10 @@
 //!   cash accounts: `[books] cash_accounts`, resolved; when none are set,
 //!     the asset accounts (not placeholders) whose names say they hold
 //!     cash ("cash", "bank", "checking", "savings", "money market").
-//!   card accounts: liability accounts whose names contain "card".
+//!   card accounts: `ledger_core::parties::card_accounts`: the
+//!     liabilities of the business-card payment methods the books record,
+//!     else (none recorded) the liabilities whose names say "card" but
+//!     not "gift"; never a member's card or a platform's account.
 //! INVARIANTS:
 //!   1. reconcilable_accounts: the cash accounts, then the card accounts,
 //!      then every other liability with a recorded statement, each once.
@@ -55,9 +58,10 @@ pub fn cash_accounts(ledger: &Ledger, configured: &[String]) -> Vec<AccountId> {
         .collect()
 }
 
-/// The card accounts: liabilities whose names contain "card"
-/// (`ledger_core::parties::card_accounts`, the same rule party money
-/// reads, so the two never disagree on what a card is).
+/// The card accounts (`ledger_core::parties::card_accounts`: the
+/// business-card payment methods' liabilities, else the liabilities named
+/// "card", not "gift"), the same rule party money and the viewer read, so
+/// none disagrees on what a card is.
 pub fn card_accounts(ledger: &Ledger) -> Vec<AccountId> {
     ledger_core::parties::card_accounts(ledger)
 }

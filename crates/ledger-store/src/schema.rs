@@ -5,7 +5,7 @@
 //! is the current version.
 
 /// Current schema version.
-pub const SCHEMA_VERSION: u32 = 12;
+pub const SCHEMA_VERSION: u32 = 13;
 
 /// Migrations, in order. `MIGRATIONS[i]` migrates from version `i` to `i+1`.
 pub const MIGRATIONS: &[&str] = &[
@@ -322,6 +322,39 @@ CREATE TABLE IF NOT EXISTS entry_approvals(
   fingerprint TEXT NOT NULL,
   note TEXT NULL,
   source_json TEXT NOT NULL
+);
+"#,
+    r#"
+-- v13: 1099 decisions and payment methods (plan P3, defects 12, 18 and
+-- 23; D-40). Each 1099 decision recorded with who decided (journal
+-- feature vendor_1099_decisions), line by line: the date it takes effect
+-- (NULL: from the beginning), nec, misc, not_reportable or NULL
+-- (undetermined), and for not_reportable its kind and reason. A decision
+-- from the beginning also sets vendors.form_1099, as every decision
+-- written before these did. Payment methods (feature payment_instruments)
+-- and the method each entry was paid with. Rows only come from lines
+-- written under the features, so books written before them project the
+-- same as before.
+CREATE TABLE IF NOT EXISTS vendor_1099_decisions(
+  seq INTEGER PRIMARY KEY,
+  vendor_id INTEGER NOT NULL,
+  effective TEXT NULL,
+  form_1099 TEXT NULL,
+  reason_kind TEXT NULL,
+  reason TEXT NULL,
+  source_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS instruments(
+  id INTEGER PRIMARY KEY,
+  kind TEXT NOT NULL,
+  label TEXT NOT NULL,
+  last4 TEXT NULL,
+  owner_party INTEGER NULL,
+  account_id INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS entry_instruments(
+  entry_id INTEGER PRIMARY KEY,
+  instrument_id INTEGER NOT NULL
 );
 "#,
 ];

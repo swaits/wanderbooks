@@ -123,6 +123,27 @@ proptest! {
         prop_assert_eq!(ri, kernel::reversal(&to_dec(&lines)));
     }
 
+    /// The 1099 kernel (rules.md B-19): a payment split into its buckets,
+    /// and netted, the same at both types.
+    #[test]
+    fn payment_buckets_agree(lines in arb_lines()) {
+        let bucket = |k: u8| match k {
+            0 => Some(kernel::Bucket::Counts),
+            1 => Some(kernel::Bucket::Card),
+            2 => Some(kernel::Bucket::Undetermined),
+            _ => None,
+        };
+        let i: Vec<_> = lines.iter().map(|&(k, s, a)| (bucket(k), s, a)).collect();
+        let d: Vec<_> = lines.iter().map(|&(k, s, a)| (bucket(k), s, dec(a))).collect();
+        let si = kernel::split_payment(&i).unwrap();
+        let sd = kernel::split_payment(&d).unwrap();
+        prop_assert_eq!(si.map(dec), sd);
+        prop_assert_eq!(
+            kernel::net_buckets(si).map(|b| b.map(dec)),
+            kernel::net_buckets(sd)
+        );
+    }
+
     #[test]
     fn balances_agree(t in arb_type(), m in arb_cents()) {
         prop_assert_eq!(kernel::normal_balance(t, m).map(dec), kernel::normal_balance(t, dec(m)));

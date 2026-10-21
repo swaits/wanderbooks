@@ -693,15 +693,42 @@ impl MoneyAccounts {
     }
 }
 
-/// The company's cards: the liability accounts whose names say "card"
-/// (ignoring case), but not "gift card" (gift cards the company sold are
-/// deferred revenue it owes its customers, a promise, not a card it pays
-/// with), the rule the monthly reconciliation reminders read
-/// (`ledger_store::reconcilable`), so the two never disagree on what a
-/// card is. CONVENTION until payment instruments name the card accounts
-/// (plan/served.md P3 defect 12).
+/// The company's cards: the one rule for what a card is, which party
+/// money, the monthly reconciliation reminders
+/// (`ledger_store::reconcilable`) and the viewer all read, so none
+/// disagrees on it.
+///
+/// ```text
+/// GOAL: a card is known from what the books record, and a promise (a
+///       gift card sold) or a member's own card is never the company's.
+/// SOURCE: rules.md B-35 item 5 (DECISION, owner, 2026-10-20: money is
+///         cash, cards, the members' financing and loans), B-19 (payment
+///         methods, plan P3 defect 12).
+/// INVARIANTS:
+///   1. When the books record a business-card payment method: exactly
+///      the liability accounts of those methods
+///      (crate::Ledger::card_accounts), whatever the accounts are named.
+///   2. Else (books from before payment methods, or that never record
+///      one; CONVENTION): the liability accounts whose names say "card"
+///      (ignoring case) but not "gift" (gift cards the company sold are
+///      deferred revenue it owes its customers, a promise, not a card it
+///      pays with).
+///   3. Never the account of a member's card, a member's cash or check,
+///      or a payment platform: a member's card pays through the members'
+///      financing account, a platform through its own balance.
+///   4. In chart order (ascending account id), each once.
+/// ```
 pub fn card_accounts(ledger: &crate::Ledger) -> Vec<crate::AccountId> {
-    ledger
+    let recorded = ledger.card_accounts();
+    if !recorded.is_empty() {
+        return recorded.into_iter().collect();
+    }
+    let not_cards: std::collections::BTreeSet<crate::AccountId> = ledger
+        .instruments()
+        .filter(|i| i.kind != crate::InstrumentKind::BusinessCard)
+        .map(|i| i.account)
+        .collect();
+    let mut cards: Vec<crate::AccountId> = ledger
         .chart()
         .all()
         .filter(|a| {
@@ -709,9 +736,13 @@ pub fn card_accounts(ledger: &crate::Ledger) -> Vec<crate::AccountId> {
             a.account_type == crate::AccountType::Liability
                 && name.contains("card")
                 && !name.contains("gift")
+                && !not_cards.contains(&a.id)
         })
         .map(|a| a.id)
-        .collect()
+        .collect();
+    cards.sort_unstable();
+    cards.dedup();
+    cards
 }
 
 /// The [`MoneyAccounts`] of `ledger`: `cash` the books' cash accounts
@@ -1042,7 +1073,7 @@ pub fn activity(
 ///   6. A card charge counts as paid (the company paid them, by card); a
 ///      bill doesn't until it is paid; a member's property contribution is
 ///      received in kind. Not the 1099 amount: that is
-///      form1099::vendor_1099_report_with.
+///      form1099::vendor_1099_report.
 /// ```
 pub fn activity_with(
     ledger: &crate::Ledger,

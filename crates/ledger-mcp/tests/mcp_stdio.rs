@@ -178,7 +178,7 @@ fn mcp_end_to_end_over_stdio() {
     // Tool listing: the narrow tools; chart is read-only.
     let list = mcp.request("tools/list", json!({}));
     let tools = list["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 109, "expected 109 tools, got {}", tools.len());
+    assert_eq!(tools.len(), 112, "expected 112 tools, got {}", tools.len());
     // Files come in as tool input: books.begin_upload, never a local path.
     assert!(tools.iter().any(|t| t["name"] == "books.begin_upload"));
     assert!(!tools.iter().any(|t| t["name"] == "books.import_local_file"));
@@ -820,6 +820,11 @@ fn tin_bearing_files_are_refused_when_given_back_to_be_filed() {
         "books.add_account",
         json!({"code": "1000", "name": "Cash", "account_type": "asset"}),
     );
+    // The 1099 worksheet counts payments out of the books' cash accounts.
+    mcp.call(
+        "books.set_setting",
+        json!({"changes": [{"key": "books.cash_accounts", "value": ["1000"]}], "decided_by": "Test Owner"}),
+    );
     mcp.call(
         "books.add_party",
         json!({"name": "Acme", "roles": ["contractor"]}),
@@ -1298,6 +1303,13 @@ fn mcp_statement_pdfs_and_cpa_package_over_stdio() {
         json!({"as_of": "2026-10-31", "include_tins": false}),
     );
     assert!(err.contains("cash_accounts"), "{err}");
+    // The package's 1099 worksheet is books.vendor_1099's for the
+    // package's accounts: the request's, else the settings' (here both
+    // name checking).
+    mcp.call(
+        "books.set_setting",
+        json!({"changes": [{"key": "books.cash_accounts", "value": ["1000"]}], "decided_by": "Test Owner"}),
+    );
     let pkg = mcp.call(
         "books.export_cpa_package",
         json!({"as_of": "2026-10-31", "cash_accounts": ["1000"], "include_tins": false}),
@@ -2191,17 +2203,26 @@ fn mcp_vendor_1099_over_stdio() {
             json!({"code": code, "name": name, "account_type": typ}),
         );
     }
+    // The worksheet counts payments out of the books' cash accounts.
+    mcp.call(
+        "books.set_setting",
+        json!({"changes": [{"key": "books.cash_accounts", "value": ["1000"]}], "decided_by": "Test Owner"}),
+    );
     mcp.call("books.add_vendor", json!({"name": "Dana Designs"}));
     let v = mcp.call(
         "books.set_vendor_1099",
-        json!({"vendor": "dana designs", "form_1099": "nec"}),
+        json!({"vendor": "dana designs", "form_1099": "nec", "decided_by": "Test Owner"}),
     );
     assert_eq!(v["form_1099"], "1099-NEC");
+    assert_eq!(v["decision_1099"]["decided_by"], "Test Owner");
     let err = mcp.call_err(
         "books.set_vendor_1099",
-        json!({"vendor": "Dana Designs", "form_1099": "k"}),
+        json!({"vendor": "Dana Designs", "form_1099": "k", "decided_by": "Test Owner"}),
     );
-    assert!(err.contains("nec, misc, or none"), "{err}");
+    assert!(
+        err.contains("expected nec, misc, not_reportable, or undetermined"),
+        "{err}"
+    );
 
     // A 2,500.00 check to Dana, tagged at draft time.
     let e = mcp.call(
@@ -2243,10 +2264,10 @@ fn mcp_vendor_1099_over_stdio() {
         json!({"year": 2026, "threshold": "3000"}),
     );
     assert_eq!(high["vendors"][0]["reportable"], false);
-    // W-9 arrives.
+    // W-9 arrives: the flag alone, the decision kept.
     mcp.call(
         "books.set_vendor_1099",
-        json!({"vendor": "Dana Designs", "form_1099": "nec", "tin_on_file": true}),
+        json!({"vendor": "Dana Designs", "tin_on_file": true}),
     );
     drop(mcp);
 

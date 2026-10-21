@@ -522,6 +522,19 @@ pub enum LedgerError {
     #[error("unknown vendor id {0}")]
     UnknownVendor(u64),
 
+    /// A 1099 decision, or the 1099 report, was refused: the message says
+    /// why and what to do.
+    #[error("{0}")]
+    Invalid1099(String),
+
+    /// The payment method named does not exist.
+    #[error("unknown payment method (instrument) id {0}")]
+    UnknownInstrument(u64),
+
+    /// A payment method (instrument) was refused: the message says why.
+    #[error("{0}")]
+    InvalidInstrument(String),
+
     /// The referenced invoice does not exist.
     #[error("unknown invoice id {0}")]
     UnknownInvoice(u64),

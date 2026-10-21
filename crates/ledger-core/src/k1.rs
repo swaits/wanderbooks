@@ -577,7 +577,7 @@ mod tests {
         let mut l = Ledger::new(Currency::USD);
         let mut add =
             |code: &str, name: &str, t| l.add_account(code, name, t, None, false).unwrap();
-        let cash = add("1000", "Bluevine", AccountType::Asset);
+        let cash = add("1000", "Quillmere", AccountType::Asset);
         let prepaid = add("1300", "Prepaid Expenses", AccountType::Asset);
         let equip = add("1500", "Equipment", AccountType::Asset);
         let a = add("3000", "Capital A", AccountType::Equity);

@@ -48,6 +48,29 @@ pub struct Settings<'a> {
     pub investing_accounts: &'a [String],
 }
 
+impl<'a> Settings<'a> {
+    /// These settings with the cash and financing accounts a request
+    /// names: each list the request's when it gives one, else these
+    /// settings'. The one rule the CPA package (one list of each per
+    /// package, for every file in it: crate::package INVARIANT 7) and
+    /// `books.vendor_1099` read, so the package's 1099 worksheet is the
+    /// tool's for the same accounts.
+    pub fn with_accounts(
+        &self,
+        cash_accounts: &'a [String],
+        financing_accounts: &'a [String],
+    ) -> Settings<'a> {
+        let or = |given: &'a [String], kept: &'a [String]| {
+            if given.is_empty() { kept } else { given }
+        };
+        Settings {
+            cash_accounts: or(cash_accounts, self.cash_accounts),
+            financing_accounts: or(financing_accounts, self.financing_accounts),
+            ..*self
+        }
+    }
+}
+
 /// Resolve a statement's date range (INVARIANT 1): the dates as given,
 /// each omitted one the books' default for `company` on `today`
 /// (rules.md B-30).

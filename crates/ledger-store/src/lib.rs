@@ -25,6 +25,7 @@ pub mod blob;
 pub mod chain;
 pub mod error;
 pub mod exports;
+pub mod form1099;
 pub mod format;
 pub mod journal;
 pub mod meta;

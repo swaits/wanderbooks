@@ -201,6 +201,7 @@ impl Job {
                     &settings,
                     year,
                     None,
+                    None,
                     Some(&tin),
                 )?;
                 let csv = ledger_package::vendor_1099_csv(&w, true);
@@ -210,10 +211,10 @@ impl Job {
                 let gaps = w
                     .lines
                     .iter()
-                    .filter(|l| l.reportable && l.tin.is_none())
+                    .filter(|l| l.may_file() && l.tin.is_none())
                     .count();
                 let note = (gaps > 0).then(|| {
-                    format!("{gaps} reportable payee(s) have no TIN in it: ask your agent to collect them.")
+                    format!("{gaps} payee(s) a 1099 is or may be due for have no TIN in it: ask your agent to collect them.")
                 });
                 Ok((path, note))
             }

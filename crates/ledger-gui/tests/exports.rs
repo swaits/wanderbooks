@@ -67,6 +67,19 @@ struct RootBook {
     document: u64,
 }
 
+/// A 1099-NEC decision from the beginning, decided by the test.
+fn nec() -> ledger_core::Dated1099 {
+    ledger_core::Dated1099::from_beginning(
+        ledger_core::Decision1099::Files(ledger_core::Form1099::Nec),
+        Some(ledger_core::settings::Source {
+            decided_by: "test".into(),
+            decided_on: today(),
+            citation: None,
+            note: None,
+        }),
+    )
+}
+
 fn root_book() -> RootBook {
     let root = tempfile::Builder::new()
         .prefix("wb-gui-root-")
@@ -391,8 +404,7 @@ fn the_menus_1099_worksheet_carries_a_payees_full_tin() {
         let mut s = Store::open(&f.book).unwrap();
         // A contractor marked for a 1099-NEC, paid past 2026's threshold.
         let vendor = s.add_vendor("Pat Payee").unwrap();
-        s.set_vendor_1099(vendor, Some(ledger_core::Form1099::Nec), true)
-            .unwrap();
+        s.set_vendor_1099(vendor, &nec(), Some(true)).unwrap();
         let party = s.ledger().party_of_vendor(vendor).unwrap();
         let key = f
             .book
@@ -479,8 +491,7 @@ fn the_menus_worksheet_says_which_payees_lack_a_tin() {
     {
         let mut s = Store::open(&f.book).unwrap();
         let vendor = s.add_vendor("Pat Payee").unwrap();
-        s.set_vendor_1099(vendor, Some(ledger_core::Form1099::Nec), true)
-            .unwrap();
+        s.set_vendor_1099(vendor, &nec(), Some(true)).unwrap();
         let e = s.create_entry(today(), "Design work").unwrap();
         for (code, side) in [("6100", Side::Debit), ("1000", Side::Credit)] {
             let id = s.ledger().chart().find_by_code(code).unwrap().id;
@@ -492,5 +503,8 @@ fn the_menus_worksheet_says_which_payees_lack_a_tin() {
     let b = load(&f.book);
     let (_, note) = Job::Worksheet(2026).run(&b).unwrap();
     let note = note.expect("the missing TIN is noted");
-    assert!(note.starts_with("1 reportable payee(s)"), "{note}");
+    assert!(
+        note.starts_with("1 payee(s) a 1099 is or may be due for have no TIN"),
+        "{note}"
+    );
 }

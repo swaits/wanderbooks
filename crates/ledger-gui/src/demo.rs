@@ -9,8 +9,8 @@
 
 use chrono::{Datelike, Days, Months, NaiveDate};
 use ledger_core::{
-    AccountType, CloseTo, Currency, Form1099, Frequency, Money, NewAsset, NewRecurring,
-    NewSchedule, ScheduleKind, Side, arap::DocumentLine,
+    AccountType, CloseTo, Currency, Dated1099, Decision1099, Form1099, Frequency, InstrumentKind,
+    Money, NewAsset, NewRecurring, NewSchedule, ScheduleKind, Side, arap::DocumentLine,
 };
 use ledger_store::{Statement, Store, StoreError, Subject};
 use rust_decimal::Decimal;
@@ -245,12 +245,33 @@ pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
     let client_class = s.add_class("Client work")?;
     let template_class = s.add_class("Templates")?;
 
+    // Each vendor's 1099 decision, as the owner made it when they were
+    // first paid; the card is a payment method, so what was charged to it
+    // shows on the 1099 worksheet as excluded (Form 1099-K's).
+    let decided = |form| {
+        Dated1099::from_beginning(
+            Decision1099::Files(form),
+            Some(ledger_core::settings::Source {
+                decided_by: "Alex Rivera".into(),
+                decided_on: start,
+                citation: None,
+                note: None,
+            }),
+        )
+    };
     let sam = s.add_vendor("Sam Okafor")?;
-    s.set_vendor_1099(sam, Some(Form1099::Nec), true)?;
+    s.set_vendor_1099(sam, &decided(Form1099::Nec), Some(true))?;
     let riley = s.add_vendor("Riley Chen")?;
-    s.set_vendor_1099(riley, Some(Form1099::Nec), false)?;
+    s.set_vendor_1099(riley, &decided(Form1099::Nec), Some(false))?;
     let landlord = s.add_vendor("Everett Lofts LLC")?;
-    s.set_vendor_1099(landlord, Some(Form1099::Misc), true)?;
+    s.set_vendor_1099(landlord, &decided(Form1099::Misc), Some(true))?;
+    s.add_instrument(
+        InstrumentKind::BusinessCard,
+        "Business credit card",
+        Some("4242"),
+        None,
+        card,
+    )?;
     let customers: Vec<u64> = [
         "Fern & Field Coffee",
         "Bramble Outdoor Co.",

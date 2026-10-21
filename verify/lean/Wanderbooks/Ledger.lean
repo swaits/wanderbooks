@@ -131,8 +131,10 @@ inductive Step : Ledger → Ledger → Prop
       Step L { L with posted := L.posted ++ closingFor L p ts id, periods := closeIn p L.periods }
   /-- `apply_settings`, `apply_convention`, `apply_decision`,
   `apply_open_item`, `apply_approval` and their retirements and
-  resolutions: a record of how the books are kept, and nothing else.
-  `rename_account` too: a name is outside the chart the model keeps. -/
+  resolutions, and the 1099 records `set_vendor_1099`,
+  `set_vendor_w9_flag`, `add_instrument` and `set_entry_instrument`: a
+  record of how the books are kept, and nothing else. `rename_account`
+  too: a name is outside the chart the model keeps. -/
   | record (L : Ledger) (r : Nat) : Step L { L with records := r :: L.records }
 
 /-- States reachable from empty books. -/

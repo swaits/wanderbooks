@@ -737,26 +737,131 @@ invoice or bill (a real prepayment is a deposit): DECISIONS (the owner,
 `aging_as_of_a_date_sees_only_what_existed_then`,
 `a_payment_never_predates_its_document`.
 
-## B-19 1099 reporting thresholds
+## B-19 1099 reporting thresholds, payment methods, and decisions
 
-**Status:** AUTHORITY (`sources/irs-1099-thresholds.md`)
+**Status:** AUTHORITY (`sources/irs-1099-thresholds.md`,
+`sources/irs-1099-payment-method.md`), with the DECISIONs named below.
 
 $600 through 2025; $2,000 for payments made after Dec. 31, 2025 (26 U.S.C.
-§6041(a), §6041A(a)(2), as amended by Pub. L. 119-21 §70433); for calendar
-years after 2026, indexed to inflation and rounded to the nearest $100
-(§6041(h)). Card payments are reported on Form 1099-K, not 1099-NEC/MISC.
-Attorneys' gross proceeds stay at $600 (not modeled).
+§6041(a), §6041A(a)(2), as amended by Pub. L. 119-21 §70433; §70433(f):
+"shall apply with respect to payments made after December 31, 2025"); for
+calendar years after 2026, indexed to inflation and rounded to the nearest
+$100 (§6041(h)). §70433 sets the one amount for Form 1099-NEC
+(§6041A(a)(2), §70433(c)) and the §6041(a) payments on 1099-MISC alike.
+Gross proceeds paid to an attorney (a payment in connection with legal
+services that §6041 doesn't cover, a settlement paid to a claimant's
+attorney, say: attorneys' fees for the company's own legal work are
+§6041's, on Form 1099-NEC) stay at $600 (Treas. Reg. §1.6045-5(a)(1),
+(c)(4)), and royalties report at $10 (§6050N(a)); neither is modeled, and
+the worksheet says so.
 
-What counts as paid: payments made in the calendar year (§6041(a)), so a
-prepayment counts when made. A worksheet as of a day (the CPA package's,
-B-33) counts the year's payments from January 1 through that day. The
-engine counts credits minus debits to the payment sources on a vendor's
-tagged entries: `[books] cash_accounts` and `financing_accounts` (a
-member or lender paying on the company's behalf; the company is still the
-payer). A card charge leaves neither (1099-K); a
-bill is not paid until it is (`form1099::vendor_1099_report_with`,
-checked by `payments_come_from_cash_and_financing_only`). A W-9 is on
-file by the vendor's flag or its party's W-9 facts.
+**Who pays.** The payor is the person engaged in a trade or business who
+makes the payment in its course (Treas. Reg. §1.6041-1(a)(1)(i)). A person
+paying on behalf of another is the payor only if it performs management
+or oversight functions in connection with the payment or has a
+significant economic interest in it; "mere administrative or ministerial
+functions such as writing checks at another's direction" are neither
+(§1.6041-1(e)(1)). A member who pays a company bill from their own funds
+at the company's direction, the company bearing the cost through Due to
+Members, does only that: the company stays the payor, so a member's own
+cash, check or transfer through a financing account counts.
+
+**What is paid by card or network.** A transaction reportable under both
+§6041 and §6050W "[is] reported under section 6050W and not section
+6041", and for that test the third-party-network de minimis is
+disregarded (§1.6041-1(a)(1)(iv); the 1099-MISC/NEC instructions, "Form
+1099-K"). A payment card is "any card, including any stored-value card"
+(§1.6050W-1(b)(3)); the IRS names credit, debit and stored-value cards
+("Understanding your Form 1099-K"). The exclusion follows the instrument,
+whoever's card it was: a member's personal card is excluded too. A payment
+card transaction is one in which the card "is accepted as payment"
+(§1.6050W-1(b)(1)) by the payee: a card that only funded a transfer the
+payee didn't take as a card payment is not one (a member's
+friends-and-family transfer is their cash). Automated clearing houses
+"do not qualify as TPSOs" (Instructions for Form 1099-K): ACH, bill-pay
+and Zelle are bank payments, not network payments.
+
+**The rule (`form1099::vendor_1099_report`, `kernel::payment_bucket`).**
+Payment methods are recorded once (`instrument.added`: bank,
+business_card, member_card, member_cash_or_check, platform, each with the
+account it pays through) and entries tagged with the one they were paid
+with (`entry.instrument_set`, the reversal chain together). Each line of
+a vendor-tagged posted entry has a role from its account: cash
+(`books.cash_accounts`), financing (`books.financing_accounts`, and the
+account of a member_card, member_cash_or_check or platform method: only
+the entry's method says how a payment through it was made), a company
+card's account (a business_card method's), or other. First match wins:
+
+| The line | Bucket |
+|---|---|
+| the entry's method pays through this line's account, card or network | card (excluded) |
+| the entry's method pays through this line's account, bank or a member's own cash or check | counts |
+| a cash account (no method, or one naming another account) | counts: presumed check, ACH or transfer (DECISION D-40, owner, 2026-10-20); tag a debit-card payment with the card |
+| a financing account, or a member's or platform method's account (no method, or one naming another account) | undetermined until the method is recorded |
+| a company card's account (a business_card method's) | card (excluded) |
+| anything else (an expense, payables, prepaid) | no payment line |
+
+Each entry's buckets are netted (`kernel::net_buckets`, P3 review R1):
+money moved between the company's own sources pays no one, so the card
+bill (Dr card / Cr bank), a member reimbursed (Dr Due to Members / Cr
+bank) and a loan's principal net to zero; when the signs differ, the net
+goes to the one bucket with its sign, else to undetermined. A bill is not
+paid until it is; a prepayment counts when made (payments made in the
+calendar year, §6041(a)); a worksheet as of a day (the CPA package's,
+B-33) counts the year's payments from January 1 through that day; a
+refund and a reversal net. Money received from a vendor for something else (the entry nets money
+in and credits, beside its payment lines, anything a refund of what was
+paid doesn't: revenue, receivables, a registered asset's cost account,
+equity, or a liability other than payables; a sale, a customer's payment,
+a disposal, a loan) is left out and listed, with its reversals (P3 review
+R6); a refund credits only an expense, payables, or an asset no money is
+paid out of and no one owes (prepaid, a deposit).
+Books with no cash accounts named are refused (never "every asset", P3
+review R5), as are books in another currency without a threshold given.
+With cash accounts named and no methods or financing accounts, what counts
+is exactly the old figure (credits minus debits to cash), but for money
+received for something else.
+
+**The decision.** Each vendor's 1099 decision is nec, misc,
+not_reportable with a reason kind and the facts in words, or undetermined;
+"not reportable" is never "undetermined" (plan defects 18, 23). No return
+is required for payments of bills for merchandise, telephone, freight,
+storage and similar (§1.6041-3(c)), or to a corporation (§1.6041-3(p)(1),
+except attorneys' fees and medical and health care; a payor may treat a
+payee as a corporation by its name "Incorporated, Inc., Corporation,
+Corp., P.C., (but not Company or Co.)", a W-9 or a corporate resolution:
+§1.6049-4(c)(1)(ii)(A)), a tax-exempt organization ((p)(2)), the United
+States ((p)(3)), a State or its political subdivision ((p)(4)), a foreign
+government ((p)(5)) or a documented foreign payee (§1.6041-4(a)(1)); an
+employee's wages go on Form W-2 (§1.6041-2(a)(1)). Paid by card is never a
+vendor's reason: it is a property of each payment. Every new decision
+names who made it and when (`settings::Source`).
+
+**Dated decisions** (DECISION D-40, owner, 2026-10-20: "legally this has
+to be 2 dated statuses"). Each decision takes effect on a date (a W-9's,
+or a tax election's: Form 8832's effective date, §301.7701-3(c)(1)(iii)),
+or from the beginning; each payment takes the decision in force on its
+reversal chain's first entry's date. An LLC electing corporate taxation
+keeps its EIN and its vendor record and changes on the election's date; a
+payee that incorporates is a new legal person, a new vendor with its own
+W-9. A decision written before decisions were kept (no date, no source)
+is in force from the beginning, and an old null reads undetermined (plan
+5.5). A dated decision with nothing decided before it is refused (it would
+leave every earlier payment undetermined); one the same as the decision
+before its date takes out any decision recorded for that date. A change
+reaching payments in a closed period, or in a year whose 1099s were due
+(January 31 of the next year), warns in `books.set_vendor_1099` and
+`books.set_entry_instrument`.
+
+**Status** (per vendor and year; T the threshold, F the payments made
+while decided for a 1099, U those while undetermined, lo/hi each with
+every reversal chain's unknown settled low or high, P3 review R3):
+nothing in F or U is not_reportable when something was paid while not
+reportable or the year-end decision is, else under_threshold; anything in
+U is undetermined when hi(F) + max(hi(U), 0) ≥ T (a decision is needed),
+else under_threshold; otherwise reportable when lo(F) ≥ T, under_threshold
+when hi(F) < T, else undetermined. `reportable` is `status = reportable`.
+A W-9 is on file by the vendor's flag or its party's W-9 facts.
 
 An entry naming several parties (a payment shared between a contractor
 and a member; `ledger_core::shares`) counts only the vendor's share
@@ -769,10 +874,13 @@ the same target the MCP server checks shares against, then scaled to the
 negates both the payment and the target): the share unchanged when the
 payment equals the target (the usual case, an expense paid from cash or
 by a member), else payment × share ÷ target, rounded to the nearest cent,
-half away from zero (so a part charged to a card scales out, 1099-K). A
-percent split's leftover cent goes to the party named first (shares
-INVARIANT 8). A reversal carries the shares and subtracts the same part,
-and re-apportioning either one re-apportions the other
+half away from zero (so a part on a card no method names scales out). The
+vendor's part is split across the entry's netted buckets in proportion,
+each rounded down to the cent and the cents short handed out by largest
+remainder (`kernel::apportion`, P3 review R12), so they sum to it
+exactly. A percent split's leftover cent goes to the party named first
+(shares INVARIANT 8). A reversal carries the shares and subtracts the
+same part, and re-apportioning either one re-apportions the other
 (`Ledger::set_entry_parties` INVARIANT 5), so the pair nets to zero. The
 vendor tag follows the parties: on an entry naming several,
 `set_entry_vendor` never replaces their shares (refused unless the
@@ -784,22 +892,66 @@ named beside another vendor (`add_vendor`), checked by
 `a_named_party_gaining_a_vendor_record_keeps_one_vendor_per_entry`.
 Shares that don't resolve count the whole payment toward the vendor (the
 conservative answer) and the entry is listed (`Vendor1099Report::
-unresolved`; a `books.vendor_1099` note). An entry naming one party
-counts as before (`form1099::vendor_1099_report_with_members`, checked
-by `a_shared_payment_counts_the_vendors_share`,
-`a_percent_split_gives_the_leftover_cent_to_the_first`,
-`a_reversed_shared_payment_nets_to_zero`,
-`a_shared_payment_partly_on_a_card_scales_to_the_payment`,
-`unresolved_shares_count_in_full_and_are_listed`). DECISION (the owner,
+unresolved`; a `books.vendor_1099` note). DECISION (the owner,
 2026-10-15: shares).
+
+**The quieter note.** Untagged posted entries are named only when they
+paid money out (netted counts plus undetermined above zero) for something
+(a debit to an expense, to payables, or to an asset no money is paid out
+of and no one owes), leaving out payroll runs, entries marked as having
+no counterparty, entries naming only parties with no 1099 role, and
+entries reversed in the year (P3 review R7): one count, the entries when
+ten or fewer, and the tool to tag them.
+
+**Cards and party totals.** The worksheet's card accounts are the
+business-card methods' accounts only. Party money's cards are the same
+once one is recorded (B-35 item 5: `parties::card_accounts`), and, while
+none is, the liabilities named "card"; a charge to such a card leaves no
+cash or financing account, so the worksheet counts it for no one either
+way, and lists it as a card's only once the card is recorded. The
+worksheet is never a party's totals: B-35 item 9 says how the two relate
+(a member paying a payee through the members' financing is paid to the
+payee in party totals, and the company's payment here), and they never
+contradict.
 
 **Enforced:** `form1099::default_threshold`, a dated rule
 (`ledger_core::rules::THRESHOLD_1099`, known through 2026, review from
 2026-11-01). For a later year the engine refuses with `RuleNotKnown`
 rather than guess; the MCP digest and the viewer's "Needs attention" list
-flag the rule once it is due (DECISION, the owner, 2026-10-13). **Checked:**
+flag the rule once it is due (DECISION, the owner, 2026-10-13). The
+bucket table is `kernel::payment_bucket` (Kani `payment_bucket_is_the_table`,
+`payment_split_is_exact`, `net_buckets_keeps_the_total`). **Checked:**
 `an_unknown_year_threshold_is_never_guessed`,
-`dated_rules_go_stale_on_their_review_date`, MCP stdio test.
+`dated_rules_go_stale_on_their_review_date`,
+`the_report_needs_the_cash_accounts_and_dollars`,
+`payments_come_from_cash_and_financing_only`,
+`undecided_is_not_not_reportable`,
+`a_members_personal_card_payment_is_not_a_1099_payment`,
+`card_account_payments_are_listed_not_dropped`,
+`a_debit_card_payment_from_the_bank_is_excluded_when_tagged`,
+`a_tag_naming_another_account_is_undetermined`,
+`paying_down_a_financing_liability_pays_no_vendor`,
+`paying_the_card_bill_pays_no_vendor`,
+`a_negative_unknown_keeps_a_reportable_vendor_undetermined`,
+`a_sale_to_a_contractor_does_not_lower_its_1099`,
+`money_from_a_vendor_that_is_no_refund_does_not_lower_its_1099`,
+`a_status_change_mid_year_applies_by_payment_date`,
+`two_status_changes_in_a_year_and_a_reversal_across_them`,
+`an_incorporation_on_december_30_is_a_new_vendor`,
+`an_llc_electing_corporate_taxation_keeps_its_vendor`,
+`a_dated_decision_records_a_change`,
+`a_decision_change_names_the_payments_it_reaches`,
+`an_undated_old_decision_is_in_force_from_the_beginning`,
+`payment_bucket_is_the_table_in_all_16_cases`,
+`a_shared_payment_splits_across_buckets_to_the_cent`, the properties
+`no_instruments_no_financing_is_the_old_report`,
+`buckets_partition_each_payment`, `a_reversal_nets_every_bucket_to_zero`,
+`the_worksheet_ties_to_the_ledger`, `party_totals_are_the_1099s_buckets`
+(ledger-core `tests/form1099.rs`);
+`the_untagged_note_counts_only_money_out`,
+`the_other_receipts_note_says_what_each_entry_did` (ledger-package); the
+MCP stdio tests; bookspec
+`bookspec/examples/1099-*.toml`.
 
 ## B-20 Every transaction has supporting documents; records are kept
 
@@ -1096,13 +1248,23 @@ writer declares it once, in the `journal.format_set` just before the
 first line that needs it, with the format in force (at least 2) and the
 features already in force (`Store::ensure_feature`): an earlier reader
 stops at the declaration, and books that never use the feature stay
-readable by it. P3's: `members_cumulative` (B-13: a members close counted
-from its count's first close, `"rounding": "cumulative_since"`),
-`account_renamed` (before the first `account.renamed`, B-31),
-`require_tax_category` (before the first `settings.set` naming
-`policy.require_tax_category`, B-32) and `party_creditors` (before the
-first `party.creditor_set`, B-35). A later piece asks the owner's
-go-ahead before the first such declaration (plan D-39).
+readable by it. A tool journaling several commands as one declares the
+feature before the first of them, never between them (a refused format
+upgrade would leave the tool's work half done): `books.set_w9` declares
+`vendor_1099_decisions` before the W-9 when the vendor's W-9 flag follows
+it. P3's: `members_cumulative` (B-13: a members close counted from its
+count's first close, `"rounding": "cumulative_since"`), `account_renamed`
+(before the first `account.renamed`, B-31), `require_tax_category`
+(before the first `settings.set` naming `policy.require_tax_category`,
+B-32), `party_creditors` (`party.creditor_set`: defect 24, B-35),
+`payment_instruments` (`instrument.added`, `entry.instrument_set`:
+defect 12, B-19) and `vendor_1099_decisions` (`vendor.1099_set` with who
+decided, a `not_reportable` decision, its reason or the date it takes
+effect, and `vendor.w9_flag_set`: defects 18 and 23, D-40, B-19). A value
+in a line of a known type that only a newer version writes (a 1099
+decision or reason kind, a payment method's kind) is newer, never
+corrupt. A later piece asks the owner's go-ahead before the first such
+declaration (plan D-39).
 
 **Enforced:** `ledger_store::format` (`JournalFormat::admit`, `declared`,
 `gate`, `settle`, `declaration`), `journal::ENVELOPE_KEYS`,
@@ -1403,8 +1565,10 @@ Existing charts are untouched: the rules are the commands', never replay's
 
 A rename can still change what the books pick by name (no amount): with
 `books.cash_accounts` unset, the cash accounts are the asset accounts
-whose names say they hold cash, and the card accounts are the
-liabilities named "card" (`ledger_store::reconcilable`); the result says
+whose names say they hold cash, and, while the books record no
+business-card payment method, the card accounts are the liabilities
+named "card" but not "gift" (`ledger_core::parties::card_accounts`, B-35
+item 5); the result says
 when the new name moves the account into or out of either. It also lists
 conventions whose text names the old name. QuickBooks matches accounts
 by name, so a CPA who imported an earlier IIF is told.
@@ -1513,13 +1677,19 @@ is the year to date, and a vendor not yet at the threshold is not yet
 reportable; a December 31 package counts the whole year, as before. The
 chart of accounts and documents/ are as they stand when the package is
 made. One list of cash accounts and one of financing accounts serve the
-whole package (the request's, else the settings'): the cash flow, the
-K-1 worksheet, the IIF's bank accounts and the 1099 payments read the
-same.
+whole package (the request's, else the settings':
+`ledger_package::Settings::with_accounts`): the cash flow, the K-1
+worksheet, the IIF's bank accounts and the 1099 payments read the same.
+So the package's 1099 worksheet is `books.vendor_1099`'s CSV for the
+same `cash_accounts`, `financing_accounts` and `through` = as_of, byte
+for byte; the tool, given no accounts, uses the settings', as a package
+given none does.
 
 **Enforced:** `ledger_package::build_package` (INVARIANTS 1, 6, 7),
-`ledger_package::export_iif`, `ledger_package::vendor_1099_report` and
-`ledger_core::vendor_1099_report_with_members` (`through`).
+`ledger_package::Settings::with_accounts`, `ledger_package::export_iif`,
+`ledger_package::vendor_1099_worksheet` and `ledger_core::vendor_1099_report`
+(`through`), `books.vendor_1099` (`cash_accounts`, `financing_accounts`,
+`through`).
 **Checked:** `ledger-package` `tests/package.rs`
 (`every_file_in_an_as_of_package_stops_at_as_of`: books the same through
 as_of, with and without activity after it (a 1099 payment with its
@@ -1529,9 +1699,11 @@ byte for byte, every file and which files there are, with and without a
 fixed asset register, mid-year and at year end; `as_of_package_iif_stops_at_as_of`,
 `the_iif_through_as_of_at_its_edges`,
 `the_1099_worksheet_stops_at_as_of`,
-`one_list_of_cash_accounts_per_package`; the property
+`one_list_of_cash_accounts_per_package`,
+`payments_to_a_vendor_come_from_the_packages_accounts`; the property
 `iif_ties_to_the_trial_balance_as_of`, 2,000 cases); `ledger-mcp`
-`oracle_mcp.rs` (`cpa_package_holds_the_year_and_its_evidence`); the
+`oracle_mcp.rs` (`cpa_package_holds_the_year_and_its_evidence`: the
+package's CSV is the tool's for the same accounts and `through`); the
 bookspec examples `bookspec/examples/as-of-package-stops-at-as-of.toml`
 and `bookspec/examples/1099-worksheet-through-as-of.toml` (`ledger-core`
 `tests/bookspec.rs`).
@@ -1761,16 +1933,21 @@ not the books' accounting method (`books.accounting_basis`).
    `member_totals_are_the_members_equity_statement` checks every span).
 5. **Money** (P3 defect 24): the cash accounts (`[books] cash_accounts`;
    every asset account but receivables when none are set), the cards
-   (liability accounts whose names say "card" but not "gift card", the
-   rule the reconciliation reminders read, until payment instruments name
-   them), and `[books] financing_accounts` (what the members advanced,
-   loans). Every other liability (payables, the payroll withholdings, an
+   (`parties::card_accounts`, the one rule the reconciliation reminders
+   and the viewer read too: the liability accounts of the business-card
+   payment methods the books record, B-19; while they record none, the
+   liability accounts whose names say "card" but not "gift card"; never
+   the account of a member's card, a member's cash or check, or a
+   payment platform, which pay through the members' financing account or
+   their own balance), and `[books] financing_accounts` (what the members
+   advanced, loans). Every other liability (payables, the payroll withholdings, an
    accrued expense, deferred revenue, gift cards the company sold) is a
    promise: counted when it is settled, never also when it is booked
    (before P3 an accrual through any liability but payables and payroll
-   counted twice). So a card account whose name doesn't say "card" is
-   not money until it is listed in `financing_accounts` or an instrument
-   names it, and with `financing_accounts` unset what the members
+   counted twice). So, before any business card is recorded, a card
+   account whose name doesn't say "card" is not money until it is listed
+   in `financing_accounts` or a business-card method names it, and with
+   `financing_accounts` unset what the members
    advanced is not money either: a purchase through either then counts
    for no one until it is paid off (the handbook tells the agent to list
    them).
@@ -1819,6 +1996,38 @@ not the books' accounting method (`books.accounting_basis`).
    through the company's cash accounts, cards and financing (and, on a
    member's contribution, the K-1's cash), not the statement's ASC 230
    cash.
+9. **How party totals relate to the 1099 worksheet** (B-19; P3 defects
+   12, 18, 23; D-40). They answer different questions, and neither is
+   read for the other (`books.party` gives both, labelled). Party totals
+   report what moved with each party, whoever handled the money; the
+   1099 worksheet reports what the company, as the payor, paid a payee
+   toward its information return. A member paying a contractor for the
+   company through the members' financing account, the entry tagged
+   with the contractor: in party totals it is paid to the contractor on
+   that date, in money (the members' financing is money, item 5), and
+   nothing moves with the member until the company pays them back, which
+   is paid to the member. On the 1099 worksheet it is the company's
+   payment to the contractor (Treas. Reg. §1.6041-1(e)(1): the member only
+   writes the check at the company's direction): it counts toward the
+   contractor's 1099 when it was the member's own cash, check or
+   transfer, is excluded when it was a card, the member's own included
+   (§1.6041-1(a)(1)(iv): Form 1099-K), and is undetermined until its
+   payment method is recorded; the reimbursement pays no payee (money
+   between the company's own sources). A company card's charge is paid
+   in party totals and excluded on the 1099 alike. So the figures never
+   contradict: over a calendar year, for a payee every entry of which
+   names it alone, in books whose cash accounts are named, whose company
+   cards are recorded as business-card payment methods, and that pay only
+   out of cash accounts, cards and financing accounts, its party totals'
+   paid less received (basis cash) is exactly its 1099 worksheet's
+   `paid` + `excluded_card` + `undetermined` + `not_reportable`, less what
+   the worksheet lists as money received from it for something else
+   (a refund is netted on the worksheet and received in party totals).
+   The bookspec example `1099-and-party-totals-for-a-members-payment`
+   checks a year of it, and the property
+   `party_totals_are_the_1099s_buckets` checks it over random books. A
+   bill counts in neither until it is paid, and a payee's dated decision
+   changes only the 1099 worksheet.
 
 **Enforced:** `kernel::party_target`, `kernel::reverse_target`,
 `shares::{target, split, resolve}`, `parties::{flow, money_accounts,

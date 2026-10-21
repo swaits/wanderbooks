@@ -367,12 +367,45 @@ pub struct VendorOut {
     pub id: u64,
     /// Name.
     pub name: String,
-    /// "1099-NEC", "1099-MISC", or absent.
+    /// "1099-NEC" or "1099-MISC" when its 1099 decision in force today
+    /// files one; absent otherwise.
     pub form_1099: Option<String>,
+    /// Its 1099 decision in force today. value "undetermined" with no
+    /// decided_by: nobody has decided.
+    pub decision_1099: Decision1099Out,
+    /// Every 1099 decision recorded, in date order (the one from the
+    /// beginning first): more than one when its status changed on a date.
+    pub decisions_1099: Vec<Decision1099Out>,
     /// W-9 on file.
     pub tin_on_file: bool,
     /// The party the vendor record belongs to.
     pub party_id: Option<u64>,
+}
+
+/// A vendor's 1099 decision.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct Decision1099Out {
+    /// "nec", "misc", "not_reportable" or "undetermined".
+    pub value: String,
+    /// With not_reportable: the kind of payee (corporation, tax_exempt,
+    /// united_states, state, foreign_government, foreign_person,
+    /// merchandise, employee, other).
+    pub reason_kind: Option<String>,
+    /// With not_reportable: the facts, in words.
+    pub reason: Option<String>,
+    /// With not_reportable: the rule that exempts that kind of payee.
+    pub authority: Option<String>,
+    /// The day it takes effect, YYYY-MM-DD; absent: from the beginning.
+    pub effective: Option<String>,
+    /// Who decided; absent for a vendor nobody decided, or a decision
+    /// recorded before decisions were kept.
+    pub decided_by: Option<String>,
+    /// When they decided, YYYY-MM-DD.
+    pub decided_on: Option<String>,
+    /// What it rests on, if anything.
+    pub citation: Option<String>,
+    /// Anything kept with it.
+    pub note: Option<String>,
 }
 
 /// Result of `books.list_vendors`.
@@ -387,12 +420,54 @@ pub struct ListVendorsOut {
 pub struct SetVendor1099Params {
     /// Vendor id or name.
     pub vendor: String,
-    /// "nec" (contractors, attorneys), "misc" (rent, royalties, other), or
-    /// "none" (corporations, most merchants).
-    pub form_1099: String,
-    /// A W-9 is on file (the TIN itself is never stored).
-    #[serde(default)]
-    pub tin_on_file: bool,
+    /// The decision: "nec" (1099-NEC: contractors, freelancers,
+    /// attorneys), "misc" (1099-MISC: rent, royalties, prizes),
+    /// "not_reportable" (with reason_kind and reason), or "undetermined".
+    /// Omit to change only tin_on_file.
+    pub form_1099: Option<String>,
+    /// With not_reportable: the kind of payee no 1099 is required for:
+    /// corporation, tax_exempt, united_states, state, foreign_government,
+    /// foreign_person, merchandise (sells only merchandise), employee, or
+    /// other (give a citation). Never corporation for a payee paid for
+    /// legal services or for medical and health care (a law firm or a
+    /// medical practice, often a "P.C."): those payments stay reportable
+    /// even to a corporation (Treas. Reg. §1.6041-3(p)(1)).
+    pub reason_kind: Option<String>,
+    /// With not_reportable: the facts, in words ("a corporation by name",
+    /// "Delaware public benefit corporation, from the public record").
+    pub reason: Option<String>,
+    /// The day the decision takes effect, YYYY-MM-DD: only when the
+    /// payee's status changed (an LLC's corporate election takes effect
+    /// on its Form 8832 date; a new W-9 showing a new classification, on
+    /// the form's date). Omit for its status from the beginning.
+    pub effective: Option<String>,
+    /// A W-9 is on file (the TIN itself is never stored). Omit to keep it
+    /// as it is.
+    pub tin_on_file: Option<bool>,
+    /// Who decided (a person's name): required with form_1099.
+    pub decided_by: Option<String>,
+    /// When they decided, YYYY-MM-DD. Default: today.
+    pub decided_on: Option<String>,
+    /// The rule or document it rests on ("Treas. Reg. §1.6041-3(p)(1)", a
+    /// W-9 dated 2026-03-02).
+    pub citation: Option<String>,
+    /// Anything else worth keeping with it.
+    pub note: Option<String>,
+}
+
+/// Result of `books.set_vendor_1099`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SetVendor1099Out {
+    /// The vendor as it stands now.
+    #[serde(flatten)]
+    pub vendor: VendorOut,
+    /// What the decision did: "set", "removed" (a dated decision taken
+    /// out: the one before it applies again), or "unchanged" (already so;
+    /// nothing journaled but a changed W-9 flag).
+    pub changed: String,
+    /// Payments the change reaches in a closed period, or in a year whose
+    /// 1099s were due: tell the human (a filed 1099 may need correcting).
+    pub warnings: Vec<String>,
 }
 
 /// Parameters for `books.set_entry_vendor`.
@@ -421,6 +496,20 @@ pub struct Vendor1099Params {
     /// with include_tins), to save with its download command.
     #[serde(default)]
     pub csv: bool,
+    /// The cash account codes payments are counted out of, e.g.
+    /// `["1000"]`. Defaults to `[books] cash_accounts`, as the CPA
+    /// package's do: one or the other is required.
+    #[serde(default)]
+    pub cash_accounts: Vec<String>,
+    /// The financing liability codes (what the members advanced, loans)
+    /// payments are counted out of. Defaults to `[books]
+    /// financing_accounts`, as the CPA package's do.
+    #[serde(default)]
+    pub financing_accounts: Vec<String>,
+    /// Count only the payments dated on or before this day of `year`
+    /// (YYYY-MM-DD): the worksheet as of a day, the one a CPA package as
+    /// of that day carries. Default: the whole year.
+    pub through: Option<String>,
 }
 
 /// One vendor's year.
@@ -430,13 +519,37 @@ pub struct Vendor1099LineOut {
     pub vendor_id: u64,
     /// Name.
     pub name: String,
-    /// "1099-NEC", "1099-MISC", or absent.
+    /// "1099-NEC" or "1099-MISC" when its decision at the year's end files
+    /// one; absent otherwise.
     pub form_1099: Option<String>,
+    /// Its 1099 decision at the year's end.
+    pub decision_1099: Decision1099Out,
+    /// Every decision in force during the year, in date order (more than
+    /// one when its status changed in the year; none when never decided).
+    pub decisions_in_year: Vec<Decision1099Out>,
     /// W-9 on file.
     pub tin_on_file: bool,
-    /// Cash paid in the year, decimal string.
+    /// What counts toward its 1099, decimal string: paid by check, ACH,
+    /// transfer or cash (net of refunds and reversals) while it wasn't
+    /// decided not reportable.
     pub paid: String,
-    /// Marked for a 1099 and paid at least the threshold.
+    /// Paid by card or payment network: reported by the processor on Form
+    /// 1099-K, never on the company's 1099, decimal string.
+    pub excluded_card: String,
+    /// Paid through a financing account (or a member's or a payment
+    /// platform's) with no payment method recorded: counts or not once it
+    /// is (books.set_entry_instrument), decimal string.
+    pub undetermined: String,
+    /// Paid while it was decided not reportable, decimal string.
+    pub not_reportable: String,
+    /// "reportable" (file a 1099), "under_threshold", "not_reportable"
+    /// (its decision says why), or "undetermined" (a decision or a payment
+    /// method is needed first).
+    pub status: String,
+    /// Some of its payments that could count were made while its decision
+    /// was undetermined: ask the human and record one.
+    pub decision_needed: bool,
+    /// File a 1099: status reportable.
     pub reportable: bool,
     /// The vendor's party.
     pub party_id: Option<u64>,
@@ -452,6 +565,23 @@ pub struct Vendor1099LineOut {
     pub tin_note: Option<String>,
 }
 
+/// One payment on the 1099 worksheet's lists.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct Payment1099Out {
+    /// The entry.
+    pub entry_id: u64,
+    /// Its date, YYYY-MM-DD.
+    pub date: String,
+    /// The vendor it paid.
+    pub vendor_id: u64,
+    /// The vendor's name.
+    pub vendor: String,
+    /// The vendor's part the list is about, decimal string.
+    pub amount: String,
+    /// The payment method it is tagged with (label), if any.
+    pub instrument: Option<String>,
+}
+
 /// Result of `books.vendor_1099`.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct Vendor1099Out {
@@ -459,10 +589,26 @@ pub struct Vendor1099Out {
     pub year: i32,
     /// Threshold applied, decimal string.
     pub threshold: String,
-    /// Vendors marked for a 1099 or paid in the year.
+    /// Vendors decided for a 1099 during the year, or with any payment in
+    /// it.
     pub vendors: Vec<Vendor1099LineOut>,
-    /// Reportable vendors without a W-9 on file: request one.
+    /// Vendors a 1099 is or may be due for without a W-9 on file
+    /// ("(may be reportable)" after the undetermined): request one.
     pub missing_w9: Vec<String>,
+    /// Payments by card or payment network, excluded (Form 1099-K's).
+    pub excluded_card_payments: Vec<Payment1099Out>,
+    /// Payments with no payment method recorded where it decides whether
+    /// they count: record each with books.set_entry_instrument.
+    pub undetermined_payments: Vec<Payment1099Out>,
+    /// Money received from a vendor for something else (a sale, its
+    /// payment of an invoice, a disposal, a loan), not netted against its
+    /// payments, with the reversals of each.
+    pub other_receipts: Vec<Payment1099Out>,
+    /// Posted entries in the year that paid money out with no vendor tag.
+    pub untagged_entries: Vec<u64>,
+    /// Entries naming several parties whose shares don't resolve (each
+    /// counted in full toward its vendor).
+    pub unresolved: Vec<u64>,
     /// Caveats for the human and CPA.
     pub notes: Vec<String>,
     /// With include_tins: this output holds full TINs, for the CPA.
@@ -1208,6 +1354,9 @@ pub struct DraftEntryParams {
     pub description: String,
     /// The vendor this entry pays (id or name), for 1099 tracking.
     pub vendor: Option<String>,
+    /// How it was paid: a payment method's id or label (books.instruments),
+    /// for 1099 tracking.
+    pub instrument: Option<String>,
     /// The party this entry is with (id or name; see `books.parties`). A
     /// party with a vendor record also tags the entry's vendor; given with
     /// `vendor`, both must name the same vendor.
@@ -1749,6 +1898,10 @@ pub struct GetEntryOut {
     pub receipts: Vec<PreviewReceipt>,
     /// The vendor the entry is tagged with, for 1099 tracking.
     pub vendor: Option<String>,
+    /// The payment method it is tagged with (label), for 1099 tracking.
+    pub instrument: Option<String>,
+    /// That payment method's id.
+    pub instrument_id: Option<u64>,
     /// The id of the party the entry is tagged with (its counterparty),
     /// when it names exactly one.
     pub party_id: Option<u64>,
@@ -3449,8 +3602,10 @@ pub struct ListPartiesOut {
 /// books' accounting method.)
 ///
 /// Money is what left or reached the `[books] cash_accounts` (every asset
-/// account but receivables when none are set), the cards (liabilities
-/// whose names say "card", not "gift card"), and the `[books]
+/// account but receivables when none are set), the cards (the
+/// business-card payment methods' liabilities, `books.instruments`; while
+/// none is recorded, liabilities whose names say "card", not "gift
+/// card"), and the `[books]
 /// financing_accounts` (what the members
 /// advanced, loans): a card charge or a member paying for the company is
 /// paid to the payee then; cash that pays one of these down is paid to
@@ -3506,13 +3661,19 @@ pub struct PartyTotalsOut {
     /// Still owed by it now: its open invoices' balances (every year),
     /// decimal string.
     pub receivable: String,
-    /// For a party with a vendor record: the cash `books.vendor_1099`
-    /// counts as paid to that vendor in the year (asset accounts only, so
-    /// card payments drop out), decimal string. Absent otherwise.
+    /// For a party with a vendor record: what `books.vendor_1099` counts
+    /// toward that vendor's 1099 in the year (out of the cash and
+    /// financing accounts; card and payment-network payments excluded,
+    /// payments with no method recorded on a financing account left
+    /// undetermined), decimal string. Absent otherwise, or when the
+    /// worksheet can't be made (no cash accounts named).
     pub amount_1099: Option<String>,
-    /// The information return its vendor record gets ("1099-NEC",
-    /// "1099-MISC"), if any.
+    /// The information return its vendor record's decision in force today
+    /// files ("1099-NEC", "1099-MISC"), if any.
     pub form_1099: Option<String>,
+    /// Its vendor record's 1099 decision in force today ("nec", "misc",
+    /// "not_reportable", "undetermined"). Absent without a vendor record.
+    pub decision_1099: Option<String>,
     /// Gross pay on payroll lines naming it, decimal string.
     pub gross_pay: String,
     /// Net pay on payroll lines naming it, decimal string.

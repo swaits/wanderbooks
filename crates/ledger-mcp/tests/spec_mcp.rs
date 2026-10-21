@@ -783,9 +783,15 @@ fn happy_path(name: &str) -> Mcp {
         .unwrap();
     m.ok(
         "books.set_vendor_1099",
-        json!({"vendor": "Landlord", "form_1099": "misc", "tin_on_file": true}),
+        json!({"vendor": "Landlord", "form_1099": "misc", "tin_on_file": true, "decided_by": "Test Owner"}),
     );
     m.ok("books.list_vendors", json!({}));
+    // Payment methods (plan P3, defect 12).
+    m.ok(
+        "books.add_instrument",
+        json!({"kind": "business_card", "label": "Harbor Visa", "last4": "0042", "account": "1000"}),
+    );
+    m.ok("books.instruments", json!({}));
     m.ok(
         "books.add_party",
         json!({"name": "Pat", "roles": ["employee"]}),
@@ -872,6 +878,12 @@ fn happy_path(name: &str) -> Mcp {
         "books.set_entry_party",
         json!({"entry_id": e2, "party": "Landlord"}),
     );
+    // Paid with the debit card, then the tag cleared.
+    m.ok(
+        "books.set_entry_instrument",
+        json!({"entry_id": e2, "instrument": "Harbor Visa"}),
+    );
+    m.ok("books.set_entry_instrument", json!({"entry_id": e2}));
     // Replace the receipt: attach new, unlink old, retire it.
     m.attach(Some(e2), b"rent receipt v2");
     m.ok(
@@ -2154,7 +2166,7 @@ fn inv6_ambiguous_vendor_reference_refused() {
     let amb = acme.to_string();
     m.refuse(
         "books.set_vendor_1099",
-        json!({"vendor": amb, "form_1099": "nec", "tin_on_file": false}),
+        json!({"vendor": amb, "form_1099": "nec", "tin_on_file": false, "decided_by": "Test Owner"}),
     );
     m.refuse(
         "books.draft_entry",
@@ -2169,7 +2181,7 @@ fn inv6_ambiguous_vendor_reference_refused() {
     // that name).
     m.ok(
         "books.set_vendor_1099",
-        json!({"vendor": "Acme", "form_1099": "nec", "tin_on_file": false}),
+        json!({"vendor": "Acme", "form_1099": "nec", "tin_on_file": false, "decided_by": "Test Owner"}),
     );
     let out = m.ok(
         "books.set_entry_vendor",

@@ -5,25 +5,31 @@
 //! Each example is a setup, events and expected values worked by hand from
 //! its cited source (`bookspec/README.md` gives the shape). Every example
 //! must load, whatever it asks or whichever appendix it is in: its shape,
-//! its accounts, fixed assets, members and payees, and every event, an
-//! entry, a reversal or a close, posting entry #N as event N. The queries
-//! the core answers (`cash_flow`, `trial_balance`, `profit_and_loss`,
-//! `vendor_1099_paid`, `entry`, `balances`, `members_equity`) are then
-//! checked value by value, each after the event it names (`after`) or the
-//! last; the formats appendix's (`iif_lines`, `iif_changes`) are checked by
-//! ledger-package (`the_bookspec_iif_example_matches_the_engine`), and a
-//! query no crate answers is refused. A key the shape doesn't have is
-//! refused too, never ignored.
+//! its accounts, fixed assets, members and payees, every event (an entry,
+//! a reversal, a close or a bill, posting entry #N as event N) and every
+//! change that posts no entry (a rename, a policy). The queries the core
+//! answers (`cash_flow`, `trial_balance`, `profit_and_loss`,
+//! `vendor_1099_paid`, `entry`, `balances`, `members_equity`, `period`,
+//! `day`, `calendar_year`, `account_names`, `uncategorized_accounts`) are
+//! then checked value by value, and the commands it tries
+//! (`rename_account`, `add_account`, `set_tax_category`) accepted or
+//! refused on a copy of the books, each after the event it names (`after`)
+//! or the last; the formats appendix's (`iif_lines`, `iif_changes`) are
+//! checked by ledger-package (`the_bookspec_iif_example_matches_the_engine`),
+//! and a query no crate answers is refused. A key the shape doesn't have
+//! is refused too, never ignored.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use chrono::NaiveDate;
+use ledger_core::calendar::{PeriodDefaults, period_defaults};
+use ledger_core::settings::Company;
 use ledger_core::{
-    AccountType, CashFlowParams, CashFlowSection, CashFlowStatement, CloseTo, Currency, EntryId,
-    Form1099, Ledger, MemberCapital, MemberClose, Money, NewAsset, PaymentAccounts,
-    ReconcilingKind, Side, VendorId, cash_flow, members_equity, profit_and_loss_for_period,
-    trial_balance_as_of, vendor_1099_report_with_members,
+    AccountType, CashFlowParams, CashFlowSection, CashFlowStatement, CloseTo, Currency,
+    DocumentLine, EntryId, Form1099, Ledger, LedgerError, MemberCapital, MemberClose, Money,
+    NewAsset, PaymentAccounts, ReconcilingKind, Side, VendorId, cash_flow, members_equity,
+    profit_and_loss_for_period, trial_balance_as_of, vendor_1099_report_with_members,
 };
 use rust_decimal::Decimal;
 use serde::Deserialize;
@@ -43,6 +49,9 @@ struct Example {
     appendix: Option<String>,
     setup: Setup,
     events: Vec<Event>,
+    /// Changes that post no entry, each made after the event it names.
+    #[serde(default)]
+    changes: Vec<ChangeSpec>,
     expect: Vec<Expect>,
 }
 
@@ -66,6 +75,11 @@ struct Setup {
     members: Vec<MemberSpec>,
     #[serde(default)]
     payees: Vec<PayeeSpec>,
+    /// The day the books are asked on, in the company's time zone: what
+    /// an omitted date means (rules.md B-30). A query that omits a date
+    /// needs it.
+    #[serde(default)]
+    today: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -78,6 +92,25 @@ struct AccountSpec {
     /// The parent account's code, declared before it.
     #[serde(default)]
     parent: Option<String>,
+    /// A header account: it groups others and takes no postings.
+    #[serde(default)]
+    header: bool,
+    /// Its tax category, a key of the catalog (rules.md B-32).
+    #[serde(default)]
+    tax_category: Option<String>,
+}
+
+impl AccountSpec {
+    fn account_type(&self, id: &str) -> AccountType {
+        match self.kind.as_str() {
+            "asset" => AccountType::Asset,
+            "liability" => AccountType::Liability,
+            "equity" => AccountType::Equity,
+            "revenue" => AccountType::Revenue,
+            "expense" => AccountType::Expense,
+            other => panic!("{id}: account type {other:?}"),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -108,8 +141,8 @@ struct PayeeSpec {
     form: String,
 }
 
-/// One event: an entry (`lines`), a reversal (`reverses`) or a close
-/// (`close`), exactly one of them.
+/// One event: an entry (`lines`), a reversal (`reverses`), a close
+/// (`close`) or a bill (`bill`), exactly one of them.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Event {
@@ -120,9 +153,46 @@ struct Event {
     reverses: Option<usize>,
     #[serde(default)]
     close: Option<CloseSpec>,
+    #[serde(default)]
+    bill: Option<BillSpec>,
     /// The payee (in `setup.payees`) the entry paid.
     #[serde(default)]
     payee: Option<String>,
+}
+
+/// A bill from `vendor` for `amount`, dated and due on the event's date:
+/// Dr General Expenses (6999), Cr Accounts Payable (2000), each created
+/// with its fixed name when first needed, as the engine creates a control
+/// role's account (rules.md B-32).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BillSpec {
+    vendor: String,
+    amount: String,
+}
+
+/// A change to the books that posts no entry, made right after event
+/// `after` (counting from 1) once the expectations asked after that event
+/// are checked: a rename (`rename`) or the tax-category policy
+/// (`require_tax_category`), exactly one of them.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChangeSpec {
+    after: usize,
+    #[serde(default)]
+    rename: Option<RenameSpec>,
+    /// `policy.require_tax_category`: "warn" (the books' default) or
+    /// "refuse" (rules.md B-32).
+    #[serde(default)]
+    require_tax_category: Option<String>,
+}
+
+/// Rename the account `code` to `name` (rules.md B-31).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RenameSpec {
+    code: String,
+    name: String,
 }
 
 #[derive(Deserialize)]
@@ -158,7 +228,24 @@ struct Expect {
     entry: Option<EntryId>,
     /// The books after event N, not after the last.
     after: Option<usize>,
-    values: Values,
+    /// The account a `rename_account` or `set_tax_category` command
+    /// names, by code.
+    code: Option<String>,
+    /// The new name a `rename_account` command gives.
+    name: Option<String>,
+    /// The category a `set_tax_category` command sets (absent: it clears
+    /// the account's).
+    category: Option<String>,
+    /// The account an `add_account` command adds.
+    account: Option<AccountSpec>,
+    /// A command the engine accepts: `true` (never `false`: a command is
+    /// accepted or `refused`).
+    accepted: Option<bool>,
+    /// A command, or a `period`, the engine refuses: why, in the words
+    /// of [`refusal`].
+    refused: Option<String>,
+    #[serde(default)]
+    values: Option<Values>,
 }
 
 /// What a query expects: figures by key (every figure an exact decimal
@@ -182,51 +269,118 @@ impl Values {
 }
 
 impl Expect {
+    /// The values a query expects; panics when it gives none.
+    fn values(&self, id: &str) -> &Values {
+        self.values
+            .as_ref()
+            .unwrap_or_else(|| panic!("{id}: {} expects values", self.query))
+    }
+
     /// The figures a figure query expects; panics on lines or rows.
     fn figures(&self, id: &str) -> &BTreeMap<String, String> {
-        match &self.values {
+        match self.values(id) {
             Values::Figures(f) => f,
             _ => panic!("{id}: {} expects figures (a table)", self.query),
         }
     }
 
-    /// The period `[from, to]` a period query covers; panics on `as_of`.
-    fn period(&self, id: &str) -> (NaiveDate, NaiveDate) {
+    /// The period `[from, to]` a period query covers, each date omitted
+    /// resolved by the one rule (rules.md B-30) on `setup.today`; panics
+    /// on `as_of`, on an omitted date without `setup.today`, and on a
+    /// period the rule refuses.
+    fn period(&self, ex: &Example) -> (NaiveDate, NaiveDate) {
+        self.resolved_period(ex)
+            .unwrap_or_else(|e| panic!("{}: {}: {e}", ex.id, self.query))
+    }
+
+    /// [`Self::period`], or the rule's refusal.
+    fn resolved_period(&self, ex: &Example) -> Result<(NaiveDate, NaiveDate), LedgerError> {
+        let id = &ex.id;
         assert!(
             self.as_of.is_none(),
             "{id}: {} covers a period (from, to), not as_of",
             self.query
         );
-        let from = date(
-            self.from
-                .as_deref()
-                .unwrap_or_else(|| panic!("{id}: {} needs from", self.query)),
-            id,
-        );
-        let to = date(
-            self.to
-                .as_deref()
-                .unwrap_or_else(|| panic!("{id}: {} needs to", self.query)),
-            id,
-        );
-        assert!(from <= to, "{id}: {} from {from} after to {to}", self.query);
-        (from, to)
+        let from = self.from.as_deref().map(|s| date(s, id));
+        let to = self.to.as_deref().map(|s| date(s, id));
+        // A `period` query asks the rule itself, both dates given or not.
+        if let (Some(from), Some(to)) = (from, to)
+            && self.query != "period"
+        {
+            assert!(from <= to, "{id}: {} from {from} after to {to}", self.query);
+            return Ok((from, to));
+        }
+        defaults(ex, &self.query).statement(from, to)
     }
 
-    /// The day an as-of query is made as of; panics on `from` or `to`.
-    fn day(&self, id: &str) -> NaiveDate {
+    /// The day an as-of query is made as of (omitted: `setup.today`,
+    /// rules.md B-30); panics on `from` or `to`.
+    fn day(&self, ex: &Example) -> NaiveDate {
+        let id = &ex.id;
         assert!(
             self.from.is_none() && self.to.is_none(),
             "{id}: {} is as of a day (as_of), not a period",
             self.query
         );
-        date(
-            self.as_of
-                .as_deref()
-                .unwrap_or_else(|| panic!("{id}: {} needs as_of", self.query)),
-            id,
-        )
+        match self.as_of.as_deref() {
+            Some(s) => date(s, id),
+            None => defaults(ex, &self.query).as_of(None),
+        }
     }
+}
+
+/// What an omitted date means for `ex` (rules.md B-30): its fiscal year
+/// on `setup.today`, which `query` needs.
+fn defaults(ex: &Example, query: &str) -> PeriodDefaults {
+    let today = ex.setup.today.as_deref().unwrap_or_else(|| {
+        panic!(
+            "{}: {query} omits a date: setup.today says what it means (rules.md B-30)",
+            ex.id
+        )
+    });
+    let company = Company {
+        fiscal_year_start: fiscal_year_start(ex),
+        ..Company::default()
+    };
+    period_defaults(&company, date(today, &format!("{} today", ex.id)))
+}
+
+/// `setup.fiscal_year_start`, MM-DD, as (month, day).
+fn fiscal_year_start(ex: &Example) -> (u32, u32) {
+    let s = &ex.setup.fiscal_year_start;
+    let (m, d) = s
+        .split_once('-')
+        .unwrap_or_else(|| panic!("{}: fiscal_year_start {s:?}", ex.id));
+    let md = (
+        m.parse()
+            .unwrap_or_else(|_| panic!("{}: fiscal_year_start {s:?}", ex.id)),
+        d.parse()
+            .unwrap_or_else(|_| panic!("{}: fiscal_year_start {s:?}", ex.id)),
+    );
+    assert!(
+        NaiveDate::from_ymd_opt(2001, md.0, md.1).is_some(),
+        "{}: fiscal_year_start {s:?}",
+        ex.id
+    );
+    md
+}
+
+/// A refusal in the examples' words (bookspec/README.md), engine-neutral:
+/// what was refused, never the engine's message.
+fn refusal(e: &LedgerError) -> String {
+    match e {
+        LedgerError::InvalidDateRange { .. } => "end_before_start",
+        LedgerError::StartAfterToday { .. } => "start_after_today",
+        LedgerError::EmptyAccountName => "blank",
+        LedgerError::AccountNameUnchanged { .. } => "unchanged",
+        LedgerError::DuplicateAccountName { .. } => "sibling_has_it",
+        LedgerError::AccountNameHoldsTin => "holds_a_tin",
+        LedgerError::InvalidAccountName(_) => "not_one_line",
+        LedgerError::DuplicateAccountCode(_) => "code_taken",
+        LedgerError::TaxCategoryRequired { .. } => "tax_category_required",
+        other => return format!("another refusal: {other}"),
+    }
+    .to_string()
 }
 
 fn examples_dir() -> PathBuf {
@@ -260,6 +414,8 @@ struct Books<'a> {
     members: Vec<MemberCapital>,
     /// The payees' vendor records, by name.
     payees: BTreeMap<String, VendorId>,
+    /// The vendors bills came from, by name (a payee's record if one).
+    vendors: BTreeMap<String, VendorId>,
 }
 
 impl<'a> Books<'a> {
@@ -281,15 +437,10 @@ impl<'a> Books<'a> {
             ex.id,
             s.basis
         );
-        let (m, d) = s
-            .fiscal_year_start
-            .split_once('-')
-            .unwrap_or_else(|| panic!("{}: fiscal_year_start {:?}", ex.id, s.fiscal_year_start));
-        assert!(
-            NaiveDate::from_ymd_opt(2001, m.parse().unwrap(), d.parse().unwrap()).is_some(),
-            "{}: fiscal_year_start",
-            ex.id
-        );
+        fiscal_year_start(ex);
+        if let Some(today) = &s.today {
+            date(today, &format!("{} today", ex.id));
+        }
         assert!(
             matches!(
                 s.rounding.as_str(),
@@ -318,18 +469,15 @@ impl<'a> Books<'a> {
                 .id
         };
         for a in &s.accounts {
-            let t = match a.kind.as_str() {
-                "asset" => AccountType::Asset,
-                "liability" => AccountType::Liability,
-                "equity" => AccountType::Equity,
-                "revenue" => AccountType::Revenue,
-                "expense" => AccountType::Expense,
-                other => panic!("{}: account type {other:?}", ex.id),
-            };
             // A parent is declared before its subaccounts.
             let parent = a.parent.as_deref().map(|p| id(&l, p));
-            l.add_account(&a.code, &a.name, t, parent, false)
+            let account = l
+                .add_account(&a.code, &a.name, a.account_type(&ex.id), parent, a.header)
                 .unwrap_or_else(|e| panic!("{}: account {}: {e}", ex.id, a.code));
+            if let Some(c) = &a.tax_category {
+                l.set_account_tax(account, Some(c), None)
+                    .unwrap_or_else(|e| panic!("{}: account {}: {e}", ex.id, a.code));
+            }
         }
         let first = ex
             .events
@@ -392,6 +540,7 @@ impl<'a> Books<'a> {
             l,
             currency,
             members,
+            vendors: payees.clone(),
             payees,
         }
     }
@@ -409,10 +558,45 @@ impl<'a> Books<'a> {
         let ex = &self.ex.id;
         let when = date(&e.date, &format!("{ex} event {n}"));
         assert!(
-            e.payee.is_none() || (e.reverses.is_none() && e.close.is_none()),
-            "{ex} event {n}: a reversal takes its original's payee, and a close has none"
+            e.payee.is_none() || (e.reverses.is_none() && e.close.is_none() && e.bill.is_none()),
+            "{ex} event {n}: a reversal takes its original's payee, a bill names its vendor, and a close has none"
         );
         let posted = match (&e.close, e.reverses, e.lines.is_empty()) {
+            (None, None, true) if e.bill.is_some() => {
+                let b = e.bill.as_ref().unwrap();
+                let amount = exact(&b.amount, ex);
+                assert!(
+                    amount > Decimal::ZERO,
+                    "{ex} event {n}: amounts are positive"
+                );
+                let vendor = match self.vendors.get(&b.vendor) {
+                    Some(&v) => v,
+                    None => {
+                        let v = self
+                            .l
+                            .add_vendor(&b.vendor)
+                            .unwrap_or_else(|err| panic!("{ex} event {n}: {err}"));
+                        self.vendors.insert(b.vendor.clone(), v);
+                        v
+                    }
+                };
+                let bill = self
+                    .l
+                    .create_bill(
+                        vendor,
+                        when,
+                        when,
+                        vec![DocumentLine {
+                            description: e.description.clone(),
+                            amount,
+                        }],
+                    )
+                    .unwrap_or_else(|err| panic!("{ex} event {n}: {err}"));
+                self.l.get_bill(bill).expect("the bill just made").entry_id
+            }
+            (_, _, _) if e.bill.is_some() => {
+                panic!("{ex} event {n}: an event is one of lines, reverses, close or bill")
+            }
             (Some(c), None, true) => {
                 let p = self
                     .l
@@ -487,7 +671,7 @@ impl<'a> Books<'a> {
                     .unwrap_or_else(|err| panic!("{ex} event {n}: {err}"));
                 entry
             }
-            _ => panic!("{ex} event {n}: an event is one of lines, reverses or close"),
+            _ => panic!("{ex} event {n}: an event is one of lines, reverses, close or bill"),
         };
         assert_eq!(posted, n, "{ex}: event {n} must be entry #{n}");
         if let Some(p) = &e.payee {
@@ -502,12 +686,60 @@ impl<'a> Books<'a> {
     }
 }
 
-/// The books an example sets up, with every event applied and nothing
-/// checked.
+impl Books<'_> {
+    /// Make a change that posts no entry (after event `after`).
+    fn change(&mut self, c: &ChangeSpec) {
+        let ex = &self.ex.id;
+        let after = c.after;
+        match (&c.rename, &c.require_tax_category) {
+            (Some(r), None) => {
+                let account = self.id(&r.code);
+                self.l
+                    .rename_account(account, &r.name)
+                    .unwrap_or_else(|e| panic!("{ex} change after {after}: {e}"));
+            }
+            (None, Some(policy)) => {
+                assert!(
+                    matches!(policy.as_str(), "warn" | "refuse"),
+                    "{ex} change after {after}: require_tax_category {policy:?}"
+                );
+                use ledger_core::settings::{Change, Source};
+                let source = Source {
+                    decided_by: "bookspec".into(),
+                    decided_on: date("2026-01-01", ex),
+                    citation: None,
+                    note: None,
+                };
+                let changes = self
+                    .l
+                    .check_settings(
+                        &[Change {
+                            key: "policy.require_tax_category".into(),
+                            value: Some(serde_json::json!(policy)),
+                        }],
+                        &source,
+                    )
+                    .unwrap_or_else(|e| panic!("{ex} change after {after}: {e}"));
+                self.l
+                    .apply_settings(&changes, &source, 1)
+                    .unwrap_or_else(|e| panic!("{ex} change after {after}: {e}"));
+            }
+            _ => panic!(
+                "{ex} change after {after}: a change is one of rename or require_tax_category"
+            ),
+        }
+    }
+}
+
+/// The books an example sets up, with every event and change applied and
+/// nothing checked.
 fn load(ex: &Example) -> Books<'_> {
     let mut b = Books::new(ex);
     for (i, e) in ex.events.iter().enumerate() {
         b.apply(i as EntryId + 1, e);
+        for c in ex.changes.iter().filter(|c| c.after == i + 1) {
+            b.change(c);
+        }
     }
     b
 }
@@ -605,7 +837,7 @@ fn reconciliation_key(l: &ledger_core::ReconcilingLine) -> String {
 
 /// Check one `cash_flow` expectation, every value it gives.
 fn check_cash_flow(ex: &Example, l: &Ledger, members: &[MemberCapital], x: &Expect) {
-    let (start, end) = x.period(&ex.id);
+    let (start, end) = x.period(ex);
     let values = x.figures(&ex.id);
     let params = CashFlowParams {
         start,
@@ -687,7 +919,7 @@ fn exactly(ex: &Example, x: &Expect, keys: &BTreeSet<String>) {
 /// the day, debits less credits (a credit balance negative), every
 /// account listed (rules.md B-6, B-33).
 fn check_trial_balance(ex: &Example, l: &Ledger, x: &Expect) {
-    let as_of = x.day(&ex.id);
+    let as_of = x.day(ex);
     let tb = trial_balance_as_of(l, as_of);
     assert!(tb.balanced(), "{}: the trial balance balances", ex.id);
     let keys = ex.setup.accounts.iter().map(|a| a.code.clone()).collect();
@@ -709,7 +941,7 @@ fn check_trial_balance(ex: &Example, l: &Ledger, x: &Expect) {
 /// left out, and `net_income`, revenue less expenses; every revenue and
 /// expense account listed (rules.md B-14, B-33).
 fn check_profit_and_loss(ex: &Example, l: &Ledger, x: &Expect) {
-    let (start, end) = x.period(&ex.id);
+    let (start, end) = x.period(ex);
     let pl = profit_and_loss_for_period(l, start, end, None)
         .unwrap_or_else(|e| panic!("{}: {e}", ex.id));
     let mut keys: BTreeSet<String> = ex
@@ -750,7 +982,14 @@ fn check_vendor_1099_paid(
     payees: &BTreeMap<String, VendorId>,
     x: &Expect,
 ) {
-    let (from, to) = x.period(&ex.id);
+    // A calendar-year count, never the fiscal default (rules.md B-30):
+    // both dates given.
+    assert!(
+        x.from.is_some() && x.to.is_some(),
+        "{}: vendor_1099_paid gives from and to",
+        ex.id
+    );
+    let (from, to) = x.period(ex);
     let year = chrono::Datelike::year(&to);
     assert_eq!(
         Some(from),
@@ -805,14 +1044,16 @@ fn check_format_shape(ex: &Example, x: &Expect) {
         ex.id,
         x.query
     );
-    x.day(&ex.id);
+    // ledger-package reads the as_of itself: given, never defaulted.
+    assert!(x.as_of.is_some(), "{}: {} gives as_of", ex.id, x.query);
+    x.day(ex);
     assert!(
         x.after.is_none(),
         "{}: {}: a format query is of the books after every event",
         ex.id,
         x.query
     );
-    match (x.query.as_str(), &x.values) {
+    match (x.query.as_str(), x.values(&ex.id)) {
         ("iif_lines", Values::Lines(_)) => {}
         ("iif_changes", Values::Rows(rows)) => {
             for r in rows {
@@ -859,7 +1100,7 @@ fn check_entry(ex: &Example, l: &Ledger, x: &Expect) {
 /// of the day on its normal side (so a member's capital after a loss is
 /// negative); the accounts named are the example's choice.
 fn check_balances(ex: &Example, l: &Ledger, x: &Expect) {
-    let as_of = x.day(&ex.id);
+    let as_of = x.day(ex);
     let tb = trial_balance_as_of(l, as_of);
     for (code, want) in x.figures(&ex.id) {
         let want = exact(want, &format!("{} {code}", ex.id));
@@ -886,7 +1127,7 @@ fn check_balances(ex: &Example, l: &Ledger, x: &Expect) {
 /// and `ending`; the figures named are the example's choice (rules.md
 /// B-13).
 fn check_members_equity(ex: &Example, l: &Ledger, members: &[MemberCapital], x: &Expect) {
-    let (from, to) = x.period(&ex.id);
+    let (from, to) = x.period(ex);
     assert!(
         !members.is_empty() && members.iter().all(|m| m.share > Decimal::ZERO),
         "{}: members_equity needs the members and their shares",
@@ -919,24 +1160,262 @@ fn check_members_equity(ex: &Example, l: &Ledger, members: &[MemberCapital], x: 
     }
 }
 
+/// The commands an example may try: each on a copy of the books, so it
+/// changes nothing that is checked after it.
+const COMMANDS: [&str; 3] = ["rename_account", "add_account", "set_tax_category"];
+
+/// The account `code` names, for a command.
+fn command_account(ex: &Example, l: &Ledger, x: &Expect) -> ledger_core::AccountId {
+    let code = x
+        .code
+        .as_deref()
+        .unwrap_or_else(|| panic!("{}: {} names its account (code)", ex.id, x.query));
+    l.chart()
+        .find_by_code(code)
+        .unwrap_or_else(|| panic!("{}: no account {code}", ex.id))
+        .id
+}
+
+/// Every balance, by code: what a change that moves no amount leaves as
+/// it was.
+fn every_balance(l: &Ledger) -> Vec<(String, Decimal, Decimal)> {
+    trial_balance_as_of(l, ledger_core::calendar::LAST_DAY)
+        .lines
+        .into_iter()
+        .map(|t| (t.code, t.debit, t.credit))
+        .collect()
+}
+
+/// Try one command on a copy of the books, as the books' own command does
+/// it (the engine's checks, then the policy's: rules.md B-31, B-32), and
+/// check it is accepted or refused for the reason given.
+fn check_command(ex: &Example, l: &Ledger, x: &Expect) {
+    let mut copy = l.clone();
+    let result: Result<(), LedgerError> = match x.query.as_str() {
+        "rename_account" => {
+            let account = command_account(ex, l, x);
+            let name = x
+                .name
+                .as_deref()
+                .unwrap_or_else(|| panic!("{}: rename_account gives the name", ex.id));
+            copy.rename_account(account, name).inspect(|()| {
+                // A rename changes the label, nothing else (rules.md B-31).
+                assert_eq!(
+                    copy.chart().get(account).unwrap().name,
+                    name.trim(),
+                    "{}: rename_account keeps the name trimmed",
+                    ex.id
+                );
+                assert_eq!(
+                    every_balance(&copy),
+                    every_balance(l),
+                    "{}: a rename moves no amount",
+                    ex.id
+                );
+            })
+        }
+        "add_account" => {
+            let a = x
+                .account
+                .as_ref()
+                .unwrap_or_else(|| panic!("{}: add_account gives the account", ex.id));
+            let kind = a.account_type(&ex.id);
+            let parent = a.parent.as_deref().map(|p| {
+                l.chart()
+                    .find_by_code(p)
+                    .unwrap_or_else(|| panic!("{}: no account {p}", ex.id))
+                    .id
+            });
+            copy.add_account(&a.code, &a.name, kind, parent, a.header)
+                .and_then(|id| match &a.tax_category {
+                    Some(c) => copy.set_account_tax(id, Some(c), None),
+                    None => Ok(()),
+                })
+                .and_then(|()| {
+                    l.check_tax_category_required(
+                        &a.code,
+                        &a.name,
+                        kind,
+                        a.header,
+                        a.tax_category.as_deref(),
+                    )
+                })
+        }
+        "set_tax_category" => {
+            let account = command_account(ex, l, x);
+            let category = x.category.as_deref();
+            copy.set_account_tax(account, category, None)
+                .and_then(|()| l.check_tax_category_kept(account, category))
+        }
+        q => unreachable!("{q} is no command"),
+    };
+    match (result, &x.refused) {
+        (Ok(()), None) => {}
+        (Err(e), Some(want)) => {
+            assert_eq!(refusal(&e), *want, "{}: {} refused ({e})", ex.id, x.query)
+        }
+        (Err(e), None) => panic!("{}: {} refused ({e}), expected accepted", ex.id, x.query),
+        (Ok(()), Some(want)) => panic!("{}: {} accepted, expected refused: {want}", ex.id, x.query),
+    }
+}
+
+/// Check one `period` expectation: the period a period report asked with
+/// these dates covers, by the one rule (rules.md B-30), as `from` and
+/// `to`; or the rule's refusal.
+fn check_period(ex: &Example, x: &Expect) {
+    match (x.resolved_period(ex), &x.refused) {
+        (Ok((from, to)), None) => {
+            exactly(ex, x, &["from".to_string(), "to".to_string()].into());
+            let f = x.figures(&ex.id);
+            assert_eq!(from, date(&f["from"], &ex.id), "{}: period from", ex.id);
+            assert_eq!(to, date(&f["to"], &ex.id), "{}: period to", ex.id);
+        }
+        (Err(e), Some(want)) => assert_eq!(refusal(&e), *want, "{}: period refused ({e})", ex.id),
+        (Err(e), None) => panic!("{}: period refused ({e})", ex.id),
+        (Ok((from, to)), Some(want)) => {
+            panic!("{}: period {from} .. {to}, expected refused: {want}", ex.id)
+        }
+    }
+}
+
+/// Check one `day` expectation: the day a report as of a day is made as
+/// of (rules.md B-30), as `as_of`.
+fn check_day(ex: &Example, x: &Expect) {
+    exactly(ex, x, &["as_of".to_string()].into());
+    let want = date(&x.figures(&ex.id)["as_of"], &ex.id);
+    assert_eq!(x.day(ex), want, "{}: day", ex.id);
+}
+
+/// Check one `calendar_year` expectation: the year a calendar-year count
+/// (1099s, party totals) asked without one counts (rules.md B-30).
+fn check_calendar_year(ex: &Example, x: &Expect) {
+    assert!(
+        x.from.is_none() && x.to.is_none() && x.as_of.is_none(),
+        "{}: calendar_year takes no dates",
+        ex.id
+    );
+    exactly(ex, x, &["year".to_string()].into());
+    let want: i32 = x.figures(&ex.id)["year"]
+        .parse()
+        .unwrap_or_else(|e| panic!("{}: calendar_year year: {e}", ex.id));
+    assert_eq!(
+        defaults(ex, &x.query).calendar_year(),
+        want,
+        "{}: calendar_year",
+        ex.id
+    );
+}
+
+/// Check one `account_names` expectation: each account's name, by code,
+/// as the chart holds it and every report prints it (the trial balance
+/// and the profit and loss, over every date: past periods too, rules.md
+/// B-31); every account listed.
+fn check_account_names(ex: &Example, l: &Ledger, x: &Expect) {
+    assert!(
+        x.from.is_none() && x.to.is_none() && x.as_of.is_none(),
+        "{}: account_names takes no dates",
+        ex.id
+    );
+    let keys = l.chart().all().map(|a| a.code.clone()).collect();
+    exactly(ex, x, &keys);
+    let (first, last) = (
+        ledger_core::calendar::FIRST_DAY,
+        ledger_core::calendar::LAST_DAY,
+    );
+    let tb = trial_balance_as_of(l, last);
+    let pl = profit_and_loss_for_period(l, first, last, None)
+        .unwrap_or_else(|e| panic!("{}: {e}", ex.id));
+    for (code, want) in x.figures(&ex.id) {
+        let a = l.chart().find_by_code(code).unwrap();
+        assert_eq!(&a.name, want, "{}: account {code}'s name", ex.id);
+        let printed = tb.lines.iter().map(|t| (&t.code, &t.name)).chain(
+            pl.revenue
+                .iter()
+                .chain(&pl.expenses)
+                .map(|s| (&s.code, &s.name)),
+        );
+        for (c, name) in printed.filter(|(c, _)| *c == code) {
+            assert_eq!(name, want, "{}: a report prints {c} as {name:?}", ex.id);
+        }
+    }
+}
+
+/// Check one `uncategorized_accounts` expectation: every account that
+/// maps to a line of the return and has no tax category, with activity or
+/// not, as `"<code> <name>"`, by code (rules.md B-32).
+fn check_uncategorized_accounts(ex: &Example, l: &Ledger, x: &Expect) {
+    assert!(
+        x.from.is_none() && x.to.is_none() && x.as_of.is_none(),
+        "{}: uncategorized_accounts takes no dates",
+        ex.id
+    );
+    let Values::Lines(want) = x.values(&ex.id) else {
+        panic!("{}: uncategorized_accounts expects a list", ex.id)
+    };
+    let got: Vec<String> = ledger_core::tax::uncategorized_accounts(l)
+        .into_iter()
+        .map(|a| format!("{} {}", a.code, a.name))
+        .collect();
+    assert_eq!(&got, want, "{}: uncategorized_accounts", ex.id);
+}
+
 /// Check one expectation against the books as they stand: a query the
 /// core answers, value by value; a format query's shape, its values left
 /// to the test [`FORMAT_QUERIES`] names (returned); a query no crate
 /// answers is refused.
 fn check(b: &Books<'_>, x: &Expect) -> Option<&'static str> {
     let (ex, l) = (b.ex, &b.l);
-    assert!(
-        !x.values.is_empty(),
-        "{}: {} expects nothing",
-        ex.id,
-        x.query
+    let q = x.query.as_str();
+    let only = |given: bool, key: &str, queries: &[&str]| {
+        assert!(
+            !given || queries.contains(&q),
+            "{}: {q}: {key} is for {} only",
+            ex.id,
+            queries.join(" and ")
+        );
+    };
+    only(x.entry.is_some(), "entry", &["entry"]);
+    only(
+        x.code.is_some(),
+        "code",
+        &["rename_account", "set_tax_category"],
     );
+    only(x.name.is_some(), "name", &["rename_account"]);
+    only(x.category.is_some(), "category", &["set_tax_category"]);
+    only(x.account.is_some(), "account", &["add_account"]);
+    only(x.accepted.is_some(), "accepted", &COMMANDS);
+    only(
+        x.refused.is_some(),
+        "refused",
+        &[
+            "rename_account",
+            "add_account",
+            "set_tax_category",
+            "period",
+        ],
+    );
+    if COMMANDS.contains(&q) {
+        // A command is accepted or refused, and shows no values.
+        assert!(
+            x.values.is_none() && (x.accepted == Some(true)) != x.refused.is_some(),
+            "{}: {q} is a command: accepted = true, or refused, and no values",
+            ex.id
+        );
+        check_command(ex, l, x);
+        return None;
+    }
+    // Anything else shows its values; a period may be refused instead.
     assert!(
-        x.entry.is_none() || x.query == "entry",
-        "{}: only an entry query names an entry",
+        x.refused.is_some() != x.values.as_ref().is_some_and(|v| !v.is_empty()),
+        "{}: {q} expects values (a period: values or refused)",
         ex.id
     );
-    match x.query.as_str() {
+    match q {
+        "period" => check_period(ex, x),
+        "day" => check_day(ex, x),
+        "calendar_year" => check_calendar_year(ex, x),
+        "account_names" => check_account_names(ex, l, x),
+        "uncategorized_accounts" => check_uncategorized_accounts(ex, l, x),
         "cash_flow" => check_cash_flow(ex, l, &b.members, x),
         "trial_balance" => check_trial_balance(ex, l, x),
         "profit_and_loss" => check_profit_and_loss(ex, l, x),
@@ -957,16 +1436,20 @@ fn check(b: &Books<'_>, x: &Expect) -> Option<&'static str> {
 }
 
 /// Load an example and check every expectation: each one with `after = N`
-/// on the books after event N, the rest after the last. Gives each query
-/// checked, with the test of another crate that checks its values, if
-/// any.
+/// on the books after event N (before the changes made after it), the
+/// rest after the last event and every change. Gives each query checked,
+/// with the test of another crate that checks its values, if any.
 fn run(ex: &Example) -> Vec<(String, Option<&'static str>)> {
-    for x in &ex.expect {
+    let afters = ex
+        .expect
+        .iter()
+        .map(|x| x.after)
+        .chain(ex.changes.iter().map(|c| Some(c.after)));
+    for after in afters {
         assert!(
-            x.after.is_none_or(|n| n >= 1 && n <= ex.events.len()),
-            "{}: after = {:?}: events count from 1, to {}",
+            after.is_none_or(|n| n >= 1 && n <= ex.events.len()),
+            "{}: after = {after:?}: events count from 1, to {}",
             ex.id,
-            x.after,
             ex.events.len()
         );
     }
@@ -976,6 +1459,9 @@ fn run(ex: &Example) -> Vec<(String, Option<&'static str>)> {
         b.apply(i as EntryId + 1, e);
         for x in ex.expect.iter().filter(|x| x.after == Some(i + 1)) {
             out.push((x.query.clone(), check(&b, x)));
+        }
+        for c in ex.changes.iter().filter(|c| c.after == i + 1) {
+            b.change(c);
         }
     }
     for x in ex.expect.iter().filter(|x| x.after.is_none()) {
@@ -1021,8 +1507,9 @@ fn every_bookspec_example_holds() {
         }
     }
     // Each query the examples use ran: the cash flow's six examples at
-    // least, the as-of and 1099 examples', the members closes' and the
-    // formats appendix's.
+    // least, the as-of and 1099 examples', the members closes', the
+    // formats appendix's, and P3's default period, rename and tax
+    // category examples'.
     for (q, at_least) in [
         ("cash_flow", 6),
         ("trial_balance", 2),
@@ -1033,6 +1520,14 @@ fn every_bookspec_example_holds() {
         ("members_equity", 5),
         ("iif_lines", 1),
         ("iif_changes", 1),
+        ("period", 6),
+        ("day", 1),
+        ("calendar_year", 1),
+        ("account_names", 2),
+        ("uncategorized_accounts", 2),
+        ("rename_account", 5),
+        ("add_account", 4),
+        ("set_tax_category", 2),
     ] {
         let n = checked.get(q).copied().unwrap_or(0);
         assert!(n >= at_least, "{q} ran {n} times, fewer than {at_least}");
@@ -1255,6 +1750,94 @@ fn a_members_close_declared_with_another_rounding_is_refused() {
         t.replacen(
             "rounding = \"largest-remainder\"",
             "rounding = \"half-even\"",
+            1,
+        )
+    });
+}
+
+/// A period's dates are the rule's (rules.md B-30): an example saying the
+/// fiscal year to date starts on January 1 under a July fiscal year fails.
+#[test]
+#[should_panic(expected = "period from")]
+fn a_period_other_than_the_rules_is_refused() {
+    run_edited("default-period-fiscal-year-to-date.toml", |t| {
+        t.replacen(
+            "values = { from = \"2026-07-01\", to = \"2026-10-20\" }",
+            "values = { from = \"2026-01-01\", to = \"2026-10-20\" }",
+            1,
+        )
+    });
+}
+
+/// A refusal is checked for its reason: a start after today is not "the
+/// end before the start".
+#[test]
+#[should_panic(expected = "period refused")]
+fn a_refusal_for_another_reason_is_refused() {
+    run_edited("default-period-fiscal-year-to-date.toml", |t| {
+        t.replacen(
+            "refused = \"start_after_today\"",
+            "refused = \"end_before_start\"",
+            1,
+        )
+    });
+}
+
+/// A query that omits a date needs `setup.today`: without it, nothing
+/// says what the omitted date means.
+#[test]
+#[should_panic(expected = "setup.today says what it means")]
+fn an_omitted_date_without_today_is_refused() {
+    run_edited("default-period-fiscal-year-to-date.toml", |t| {
+        t.replacen("today = \"2026-10-20\"\n", "", 1)
+    });
+}
+
+/// `account_names` lists every account: one left out is refused.
+#[test]
+#[should_panic(expected = "lists exactly what it covers")]
+fn account_names_leaving_an_account_out_is_refused() {
+    run_edited("rename-changes-no-amount.toml", |t| {
+        t.replacen(", \"6160\" = \"Hosting\" }", " }", 1)
+    });
+}
+
+/// A change is made after the event it names, once that event's
+/// expectations are checked: asked after the rename, the old name fails.
+#[test]
+#[should_panic(expected = "account 6150's name")]
+fn a_change_is_made_after_its_events_expectations() {
+    run_edited("rename-changes-no-amount.toml", |t| {
+        t.replacen(
+            "\"6150\" = \"Software subscriptions\", \"6160\" = \"Hosting\" }",
+            "\"6150\" = \"Software\", \"6160\" = \"Hosting\" }",
+            1,
+        )
+    });
+}
+
+/// A command is tried under the policy in force when it is asked: without
+/// the change to refuse, the account without a category is accepted.
+#[test]
+#[should_panic(expected = "accepted, expected refused: tax_category_required")]
+fn a_command_runs_under_the_policy_in_force() {
+    run_edited("tax-category-required.toml", |t| {
+        t.replacen(
+            "[[changes]]\nafter = 1\nrequire_tax_category = \"refuse\"\n",
+            "",
+            1,
+        )
+    });
+}
+
+/// A command is accepted or refused, never both, and shows no values.
+#[test]
+#[should_panic(expected = "is a command")]
+fn a_command_with_values_is_refused() {
+    run_edited("tax-category-required.toml", |t| {
+        t.replacen(
+            "category = \"other_deductions\"\naccepted = true\n",
+            "category = \"other_deductions\"\naccepted = true\nvalues = { x = \"1\" }\n",
             1,
         )
     });

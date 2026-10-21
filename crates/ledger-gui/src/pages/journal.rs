@@ -368,6 +368,20 @@ pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
                 .and_then(|v| v.as_u64())
                 .map(Route::Account),
         ),
+        // Its code and both names as journaled: a later rename or
+        // renumber never rewrites what this line said.
+        "account.renamed" => ev(
+            icon::TAG,
+            format!(
+                "Renamed {} from \u{201c}{}\u{201d} to \u{201c}{}\u{201d}",
+                s(p, "code"),
+                s(p, "previous"),
+                s(p, "name")
+            ),
+            p.get("account_id")
+                .and_then(|v| v.as_u64())
+                .map(Route::Account),
+        ),
         "role.assigned" => {
             let role = s(p, "role");
             let control = ledger_core::control_account(role);
@@ -792,11 +806,27 @@ pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
             format!("Cut-off journal line set aside ({} bytes)", p["bytes"]),
             None,
         ),
-        "journal.format_set" => ev(
-            icon::FILE_TEXT,
-            format!("Journal format {} declared", p["format"]),
-            None,
-        ),
+        "journal.format_set" => {
+            // The features in force with it (P3: account_renamed,
+            // require_tax_category): what an earlier version can't read.
+            let features: Vec<&str> = p["features"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|f| f.as_str()).collect())
+                .unwrap_or_default();
+            ev(
+                icon::FILE_TEXT,
+                if features.is_empty() {
+                    format!("Journal format {} declared", p["format"])
+                } else {
+                    format!(
+                        "Journal format {} declared, with {}",
+                        p["format"],
+                        features.join(", ")
+                    )
+                },
+                None,
+            )
+        }
         "recurring.generated" => ev(
             icon::REPEAT,
             "Recurring draft created".into(),

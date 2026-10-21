@@ -1,0 +1,163 @@
+# A report asked for without dates covers this fiscal year so far.
+#
+# wanderbooks: P3 defect 16 (the report tools, books.show and the viewer
+# each read omitted dates their own way); rules.md B-30; regression tests
+# `prop_period_defaults_resolve` (ledger-core tests/properties.rs),
+# `one_default_period_everywhere_defect_16` (ledger-mcp
+# tests/mcp_stdio.rs), `show_sends_the_dates_it_names_defect_16` and
+# `show_refuses_start_after_end_defect_15` (ledger-mcp tests/oracle_mcp.rs).
+#
+# Expected values (bookspec/README.md): `period` gives the dates a period
+# report asked with these dates covers, `day` the day a report as of a day
+# is made as of, `calendar_year` the year a calendar-year count counts,
+# each by the one rule on `today`; a query that omits a date resolves it
+# by the same rule. The amounts fall one to a fiscal year (July to June),
+# so each period's figures show which period it was.
+
+id = "default-period-fiscal-year-to-date"
+title = "A report asked for without dates covers this fiscal year so far"
+rule = "A period report whose end is omitted MUST end today, in the company's time zone, and one whose start is omitted MUST start on the first day of the fiscal year that holds its end; a start after the end, given or derived, MUST be refused, never swapped. A report as of a day whose day is omitted MUST be as of today, and a count by calendar year whose year is omitted MUST count this calendar year."
+status = "CHOICE"
+sources = [
+  "IRS Publication 538 (Rev. January 2022), Tax year: \"A tax year is an annual accounting period for keeping records and reporting income and expenses.\" (the period: AUTHORITY; docs/spec/sources/irs-periods-and-methods.md)",
+  "26 U.S.C. §6041(a), \"in any calendar year\"; §6041A(a)(2), \"during such calendar year\" (the calendar-year counts: AUTHORITY; docs/spec/sources/irs-1099-thresholds.md)",
+  "DECISION, the owner, 2026-10-20 (wanderbooks plan/served.md P3, \"Settled in design\"): the fiscal year to date as the default, everywhere; no authority says what omitted dates mean (wanderbooks docs/spec/rules.md B-30)",
+]
+tags = ["periods", "reports", "defaults", "fiscal-year"]
+
+[setup]
+currency = "USD"
+fiscal_year_start = "07-01"
+basis = "accrual"
+rounding = "half-even"
+today = "2026-10-20"
+
+[[setup.accounts]]
+code = "1000"
+name = "Cash"
+type = "asset"
+
+[[setup.accounts]]
+code = "3000"
+name = "Capital"
+type = "equity"
+
+[[setup.accounts]]
+code = "4000"
+name = "Sales"
+type = "revenue"
+
+[[setup.accounts]]
+code = "6000"
+name = "Software"
+type = "expense"
+
+# Entry 1: in the fiscal year July 2024 to June 2025.
+[[events]]
+date = "2025-03-15"
+description = "Capital contributed"
+lines = [
+  { account = "1000", side = "debit", amount = "500.00" },
+  { account = "3000", side = "credit", amount = "500.00" },
+]
+
+# Entries 2 and 3: in the fiscal year July 2025 to June 2026.
+[[events]]
+date = "2025-09-10"
+description = "Sale"
+lines = [
+  { account = "1000", side = "debit", amount = "120.00" },
+  { account = "4000", side = "credit", amount = "120.00" },
+]
+
+[[events]]
+date = "2026-02-01"
+description = "Software"
+lines = [
+  { account = "6000", side = "debit", amount = "20.00" },
+  { account = "1000", side = "credit", amount = "20.00" },
+]
+
+# Entry 4: in the fiscal year that holds today, July 2026 to June 2027.
+[[events]]
+date = "2026-08-03"
+description = "Sale"
+lines = [
+  { account = "1000", side = "debit", amount = "7.00" },
+  { account = "4000", side = "credit", amount = "7.00" },
+]
+
+# Both dates omitted: the fiscal year that holds today, through today.
+[[expect]]
+query = "period"
+values = { from = "2026-07-01", to = "2026-10-20" }
+
+[[expect]]
+query = "profit_and_loss"
+values = { "4000" = "7.00", "6000" = "0.00", net_income = "7.00" }
+
+# Only an end: the fiscal year that holds the end, through it (never the
+# first entry's day, never the fiscal year of today).
+[[expect]]
+query = "period"
+to = "2026-03-31"
+values = { from = "2025-07-01", to = "2026-03-31" }
+
+[[expect]]
+query = "profit_and_loss"
+to = "2026-03-31"
+values = { "4000" = "120.00", "6000" = "20.00", net_income = "100.00" }
+
+# Only a start: through today.
+[[expect]]
+query = "period"
+from = "2025-01-01"
+values = { from = "2025-01-01", to = "2026-10-20" }
+
+[[expect]]
+query = "profit_and_loss"
+from = "2025-01-01"
+values = { "4000" = "127.00", "6000" = "20.00", net_income = "107.00" }
+
+# A one-day period is a period.
+[[expect]]
+query = "period"
+from = "2025-09-10"
+to = "2025-09-10"
+values = { from = "2025-09-10", to = "2025-09-10" }
+
+# A start after the end is refused, never swapped.
+[[expect]]
+query = "period"
+from = "2026-12-31"
+to = "2026-01-01"
+refused = "end_before_start"
+
+# Only a start, after today: the end an omitted end means is today, so the
+# period would end before it starts. Refused, never swapped.
+[[expect]]
+query = "period"
+from = "2027-01-01"
+refused = "start_after_today"
+
+# A report as of a day: today.
+[[expect]]
+query = "day"
+values = { as_of = "2026-10-20" }
+
+[[expect]]
+query = "trial_balance"
+values = { "1000" = "607.00", "3000" = "-500.00", "4000" = "-127.00", "6000" = "20.00" }
+
+# A count by calendar year: this calendar year, not the fiscal one.
+[[expect]]
+query = "calendar_year"
+values = { year = "2026" }
+
+# The calendar's first fiscal year: a July year holding a day early in
+# year 1 began in year 0, outside the calendar; it starts on the
+# calendar's first day.
+[[expect]]
+query = "period"
+to = "0001-03-01"
+values = { from = "0001-01-01", to = "0001-03-01" }

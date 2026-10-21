@@ -763,6 +763,56 @@ impl BooksServer {
         self.store.currency.code()
     }
 
+    /// What omitted dates mean today, for these books (rules.md B-30): the
+    /// one resolver every report tool, `books.show` and the viewer use.
+    fn periods(&self) -> ledger_core::calendar::PeriodDefaults {
+        ledger_core::calendar::period_defaults(&self.settings().company, today())
+    }
+
+    /// A period report's range: the dates as given, each omitted one the
+    /// default (rules.md B-30); a start after the end, given or derived,
+    /// is refused.
+    fn statement_range(
+        &self,
+        start: Option<&str>,
+        end: Option<&str>,
+    ) -> Result<(NaiveDate, NaiveDate), String> {
+        ledger_package::statement_range(&self.settings().company, start, end, today())
+    }
+
+    /// A point-in-time report's day: as given, else today (rules.md B-30).
+    fn as_of(&self, as_of: Option<&str>) -> Result<NaiveDate, String> {
+        ledger_package::as_of_date(&self.settings().company, as_of, today())
+    }
+
+    /// Profit and loss for a range (see [`Self::statement_range`]),
+    /// optionally one class.
+    fn pnl_statement(
+        &self,
+        ledger: &Ledger,
+        start: Option<&str>,
+        end: Option<&str>,
+        class_id: Option<ledger_core::ClassId>,
+    ) -> Result<ledger_core::ProfitAndLossStatement, String> {
+        ledger_package::pnl_statement(
+            ledger,
+            &self.settings().company,
+            start,
+            end,
+            class_id,
+            today(),
+        )
+    }
+
+    /// Balance sheet as of a day (see [`Self::as_of`]).
+    fn bs_statement(
+        &self,
+        ledger: &Ledger,
+        as_of: Option<&str>,
+    ) -> Result<ledger_core::BalanceSheetStatement, String> {
+        ledger_package::bs_statement(ledger, &self.settings().company, as_of, today())
+    }
+
     /// The cash flow statement from account codes, each list defaulting to
     /// the `[books]` roles when the call passes none.
     fn cash_flow_for(
@@ -1625,19 +1675,19 @@ fn resource_list() -> Vec<Resource> {
             "books://reports/trial-balance",
             "trial-balance",
             "Trial balance",
-            "Current trial balance, debits equal credits.",
+            "The trial balance as of today (debits equal credits): books.trial_balance with its as_of omitted.",
         ),
         mk(
             "books://reports/balance-sheet",
             "balance-sheet",
             "Balance sheet",
-            "Assets, liabilities, equity.",
+            "Assets, liabilities, equity, as of today: books.balance_sheet with its as_of omitted.",
         ),
         mk(
             "books://reports/profit-and-loss",
             "profit-and-loss",
             "Profit and loss",
-            "Revenue, expenses, net income.",
+            "Revenue, expenses, net income for the fiscal year to date (company.fiscal_year_start through today): books.profit_and_loss with its dates omitted.",
         ),
         mk(
             "books://digest",
@@ -2325,11 +2375,6 @@ fn party_bills<'a>(ledger: &'a Ledger, party: &ledger_core::Party) -> Vec<&'a le
         .collect()
 }
 
-/// This calendar year.
-fn this_year() -> i32 {
-    chrono::Datelike::year(&today())
-}
-
 /// Resolve a class by id or name; a number that is one class's id and
 /// another's name is refused (INVARIANT 6).
 fn resolve_class(store: &Store, class: &str) -> Result<u32, String> {
@@ -2495,15 +2540,89 @@ fn digest_since(query: &str, today: NaiveDate) -> String {
         })
 }
 
-/// Resolve a statement's date range: `end` defaults to today and `start` to
-/// the first posted entry (where "from the beginning" really begins, so no
-/// statement says "0001-01-01"), or to `end` for empty books.
-fn statement_range(
-    ledger: &Ledger,
-    start: Option<&str>,
-    end: Option<&str>,
-) -> Result<(NaiveDate, NaiveDate), String> {
-    ledger_package::statement_range(ledger, start, end, today())
+/// A tool description that ends with the one sentence for its kind of
+/// dates (rules.md B-30), so no tool says other than the resolver does.
+fn described(what: &str, kind: ledger_core::calendar::PeriodKind) -> String {
+    format!("{what} {}", kind.describe())
+}
+
+/// The warning for a revenue or expense account created without a tax
+/// category (rules.md B-32).
+fn uncategorized_warning(code: &str, name: &str) -> String {
+    format!(
+        "{} {} has no tax category: the tax summary will list it as uncategorized. Propose one from books.tax_categories and set it with books.set_tax_category once the human agrees.",
+        code.trim(),
+        name.trim()
+    )
+}
+
+/// The warnings for the revenue and expense accounts an operation created
+/// (control accounts: Revenue, General Expenses, payroll's expenses)
+/// without a tax category: every account from `first_new` on.
+fn created_uncategorized(ledger: &Ledger, first_new: ledger_core::AccountId) -> Vec<String> {
+    let mut new: Vec<&ledger_core::Account> = ledger
+        .chart()
+        .all()
+        .filter(|a| a.id >= first_new && a.tax_category.is_none())
+        .filter(|a| ledger_core::tax::needs_category(a.account_type, a.placeholder))
+        .collect();
+    new.sort_by_key(|a| a.id);
+    new.into_iter()
+        .map(|a| uncategorized_warning(&a.code, &a.name))
+        .collect()
+}
+
+/// How the viewer reads a report's dates (ledger-gui pages/reports.rs):
+/// over a period, as of its end, or for its end's calendar year.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ShownDates {
+    /// From start through end.
+    Period,
+    /// As of end.
+    AsOf,
+    /// For end's calendar year.
+    Year,
+}
+
+/// How the viewer reads `report`'s dates with these options, or why it
+/// would ignore one of them (`books.show` refuses what its target
+/// ignores). Splits are the P&L's, the balance sheet's and the cash
+/// flow's; comparisons theirs and the tax summary's, in one total column;
+/// a balance sheet in one total column is as of its end, unless compared
+/// with the period before (which starts the day before start).
+fn show_report_dates(
+    report: &str,
+    columns: Option<&str>,
+    compare: Option<&str>,
+) -> Result<ShownDates, String> {
+    let split = columns.is_some_and(|c| c != "total");
+    if columns.is_some() && !matches!(report, "profit_and_loss" | "balance_sheet" | "cash_flow") {
+        return Err(format!(
+            "columns is for profit_and_loss, balance_sheet and cash_flow, not {report}"
+        ));
+    }
+    if compare.is_some() {
+        if !matches!(
+            report,
+            "profit_and_loss" | "balance_sheet" | "cash_flow" | "tax_summary"
+        ) {
+            return Err(format!(
+                "compare is for profit_and_loss, balance_sheet, cash_flow and tax_summary, not {report}"
+            ));
+        }
+        if split {
+            return Err(
+                "compare is for a report in one total column: a report split into columns shows no comparison"
+                    .into(),
+            );
+        }
+    }
+    Ok(match report {
+        "trial_balance" | "ar_aging" | "ap_aging" | "fixed_asset_register" => ShownDates::AsOf,
+        "vendor_1099" => ShownDates::Year,
+        "balance_sheet" if !split && compare != Some("prior_period") => ShownDates::AsOf,
+        _ => ShownDates::Period,
+    })
 }
 
 fn schedule_out(ledger: &Ledger, s: &ledger_core::AmortizationSchedule) -> ScheduleOut {
@@ -2558,24 +2677,6 @@ fn recurring_out(r: &ledger_core::RecurringEntry) -> RecurringOut {
         end: r.end.map(|e| e.to_string()),
         generated: r.generated.iter().map(|d| d.to_string()).collect(),
     }
-}
-
-/// Profit and loss for a range (see [`statement_range`]), optionally one class.
-fn pnl_statement(
-    ledger: &Ledger,
-    start: Option<&str>,
-    end: Option<&str>,
-    class_id: Option<ledger_core::ClassId>,
-) -> Result<ledger_core::ProfitAndLossStatement, String> {
-    ledger_package::pnl_statement(ledger, start, end, class_id, today())
-}
-
-/// Balance sheet as of a date (default today).
-fn bs_statement(
-    ledger: &Ledger,
-    as_of: Option<&str>,
-) -> Result<ledger_core::BalanceSheetStatement, String> {
-    ledger_package::bs_statement(ledger, as_of, today())
 }
 
 fn lines_out(lines: &[ledger_core::StatementLine]) -> Vec<StatementLineOut> {
@@ -2697,7 +2798,7 @@ impl BooksServer {
     #[tool(
         name = "books.add_account",
         title = "Add an account",
-        description = "Add an account to the chart. Codes must be unique; check books.chart first.",
+        description = "Add an account to the chart. Codes must be unique; check books.chart first. Give a revenue or expense account its tax_category (books.tax_categories): without one the result warns, or, under policy.require_tax_category = refuse, the account is refused. A name another account under the same parent has (ignoring capitals), one holding nine digits in a row, or more than one line of 200 characters, is refused.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -2709,23 +2810,50 @@ impl BooksServer {
         params: Parameters<AddAccountParams>,
     ) -> Result<Json<AddAccountOut>, String> {
         let p = params.0;
+        let account_type = parse_account_type(&p.account_type)?;
+        let placeholder = p.placeholder.unwrap_or(false);
+        let pct = match &p.deductible_percent {
+            Some(s) => Some(parse_amount(s)?),
+            None => None,
+        };
+        let category = p.tax_category.as_deref();
+        if pct.is_some() && category.is_none() {
+            return Err("deductible_percent needs a tax_category".into());
+        }
+        if let Some(cat) = category {
+            ledger_core::tax::check_category(cat, account_type, self.settings().company.tax_form)
+                .map_err(|e| e.to_string())?;
+        }
         let mut store = self.lock()?;
         let id = store
-            .add_account(
+            .add_account_with_tax(
                 &p.code,
                 &p.name,
-                parse_account_type(&p.account_type)?,
+                account_type,
                 p.parent,
-                p.placeholder.unwrap_or(false),
+                placeholder,
+                category.map(|c| (c, pct)),
             )
             .map_err(|e| e.to_string())?;
-        Ok(Json(AddAccountOut { account_id: id }))
+        let warnings =
+            if category.is_none() && ledger_core::tax::needs_category(account_type, placeholder) {
+                vec![uncategorized_warning(&p.code, &p.name)]
+            } else {
+                Vec::new()
+            };
+        Ok(Json(AddAccountOut {
+            account_id: id,
+            warnings,
+        }))
     }
 
     #[tool(
         name = "books.trial_balance",
         title = "Trial balance",
-        description = "The trial balance as of a date (default today): every account with a non-zero balance, debit and credit columns and totals. Debits must equal credits.",
+        description = described(
+            "The trial balance as of a date: every account with a non-zero balance, debit and credit columns and totals. Debits must equal credits.",
+            ledger_core::calendar::PeriodKind::AsOf
+        ),
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn trial_balance(
@@ -2733,10 +2861,7 @@ impl BooksServer {
         params: Parameters<TrialBalanceParams>,
     ) -> Result<Json<TrialBalanceOut>, String> {
         let store = self.lock()?;
-        let as_of = match &params.0.as_of {
-            Some(s) => parse_date(s)?,
-            None => today(),
-        };
+        let as_of = self.as_of(params.0.as_of.as_deref())?;
         let tb = reports::trial_balance_as_of(store.ledger(), as_of);
         Ok(Json(TrialBalanceOut {
             as_of: as_of.to_string(),
@@ -2759,7 +2884,10 @@ impl BooksServer {
     #[tool(
         name = "books.profit_and_loss",
         title = "Profit and loss",
-        description = "Profit and loss for a period: revenue, expenses, net income. Dates are YYYY-MM-DD; omit for all time. Pass class (name or id) to filter to one division.",
+        description = described(
+            "Profit and loss for a period: revenue, expenses, net income. Pass class (name or id) to filter to one division.",
+            ledger_core::calendar::PeriodKind::Statement
+        ),
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn profit_and_loss(
@@ -2772,7 +2900,7 @@ impl BooksServer {
             Some(c) => Some(resolve_class(&store, c)?),
             None => None,
         };
-        let pl = pnl_statement(
+        let pl = self.pnl_statement(
             store.ledger(),
             p.start.as_deref(),
             p.end.as_deref(),
@@ -2792,7 +2920,10 @@ impl BooksServer {
     #[tool(
         name = "books.balance_sheet",
         title = "Balance sheet",
-        description = "The balance sheet as of a date: assets, liabilities, equity (including current earnings). Omit as_of for today.",
+        description = described(
+            "The balance sheet as of a date: assets, liabilities, equity (including current earnings).",
+            ledger_core::calendar::PeriodKind::AsOf
+        ),
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn balance_sheet(
@@ -2801,7 +2932,7 @@ impl BooksServer {
     ) -> Result<Json<BalanceSheetOut>, String> {
         let p = params.0;
         let store = self.lock()?;
-        let bs = bs_statement(store.ledger(), p.as_of.as_deref())?;
+        let bs = self.bs_statement(store.ledger(), p.as_of.as_deref())?;
         Ok(Json(BalanceSheetOut {
             as_of: bs.as_of.to_string(),
             assets: money(bs.total_assets),
@@ -2818,7 +2949,10 @@ impl BooksServer {
     #[tool(
         name = "books.cash_flow",
         title = "Cash flow statement",
-        description = "Statement of cash flows for a period, direct method (ASC 230): each entry that moved cash, by section and kind (operating by ASC 230-10-45-25 class; investing and financing by kind, such as each member's contributions), gross; an entry and its reversal in the same period drop out together. What a member or lender paid for the company is borrowed and spent on its date (on_behalf). Also noncash investing and financing activities (property contributed, debt converted), net income reconciled to operating cash, warnings, and reconciles: the sections sum to the change in the cash accounts. Account roles default to the books' settings.",
+        description = described(
+            "Cash flows, direct method (ASC 230): each entry that moved cash, gross, by section and kind (operating by ASC 230-10-45-25 class; investing and financing by kind, such as a member's contributions); an entry and its reversal in one period drop out. What a member or lender paid for the company is borrowed and spent that day (on_behalf). Also noncash activities, net income reconciled to operating cash, and warnings. Sections sum to the change in cash. Roles default to the settings.",
+            ledger_core::calendar::PeriodKind::Statement
+        ),
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn cash_flow(
@@ -3829,8 +3963,34 @@ impl BooksServer {
                     .into(),
             );
         }
-        for d in [&p.start, &p.end].into_iter().flatten() {
-            parse_date(d)?;
+        let start = p.start.as_deref().map(parse_date).transpose()?;
+        let end = p.end.as_deref().map(parse_date).transpose()?;
+        // Options only an account or a report takes are refused anywhere
+        // else (the viewer would ignore them, and the agent believe it
+        // showed what it didn't).
+        let dated = p.account.is_some() || p.report.is_some();
+        let options: Vec<&str> = [
+            ("start", p.start.is_some()),
+            ("end", p.end.is_some()),
+            ("columns", p.columns.is_some()),
+            ("compare", p.compare.is_some()),
+        ]
+        .into_iter()
+        .filter(|(_, given)| *given)
+        .map(|(name, _)| name)
+        .collect();
+        if !dated && !options.is_empty() {
+            return Err(format!(
+                "{} {} for an account or a report; this target takes none",
+                options.join(" and "),
+                if options.len() == 1 { "is" } else { "are" }
+            ));
+        }
+        if p.account.is_some() && (p.columns.is_some() || p.compare.is_some()) {
+            return Err(
+                "columns and compare are for a report; an account's register takes only start and end"
+                    .into(),
+            );
         }
         const REPORTS: [&str; 11] = [
             "profit_and_loss",
@@ -3907,13 +4067,19 @@ impl BooksServer {
                 .chart()
                 .find_by_code(&code)
                 .ok_or_else(|| format!("unknown account {code}"))?;
+            // The dates resolved (rules.md B-30), sent as resolved, so what
+            // the agent is told and what the viewer shows can't differ.
+            let (s, e) = self
+                .periods()
+                .statement(start, end)
+                .map_err(|e| e.to_string())?;
             (
                 ViewerTarget::Account {
                     code: code.clone(),
-                    start: p.start.clone(),
-                    end: p.end.clone(),
+                    start: Some(s.to_string()),
+                    end: Some(e.to_string()),
                 },
-                format!("the register of {} {}", a.code, a.name),
+                format!("the register of {} {}, {s} to {e}", a.code, a.name),
             )
         } else if let Some(report) = p.report {
             if !REPORTS.contains(&report.as_str()) {
@@ -3936,10 +4102,55 @@ impl BooksServer {
                     "compare {c:?}: expected prior_period or prior_year"
                 ));
             }
-            let mut what = format!("the {} report", report.replace('_', " "));
-            if let (Some(s), Some(e)) = (&p.start, &p.end) {
-                what.push_str(&format!(", {s} to {e}"));
+            let dates = show_report_dates(&report, p.columns.as_deref(), p.compare.as_deref())?;
+            if p.start.is_some() {
+                match dates {
+                    ShownDates::Period => {}
+                    ShownDates::AsOf => {
+                        return Err(format!(
+                            "{report}{} is as of a day: pass end (the day), not start",
+                            if report == "balance_sheet" {
+                                " in one total column"
+                            } else {
+                                ""
+                            }
+                        ));
+                    }
+                    ShownDates::Year => {
+                        return Err(format!(
+                            "{report} is for a calendar year: pass end (a day in that year), not start"
+                        ));
+                    }
+                }
             }
+            let (s, e) = self
+                .periods()
+                .statement(start, end)
+                .map_err(|e| e.to_string())?;
+            // A split past the viewer's columns is shown as one total (the
+            // viewer says so): a split it would ignore.
+            let per = match p.columns.as_deref() {
+                Some("month") => Some(1),
+                Some("quarter") => Some(3),
+                Some("year") => Some(12),
+                _ => None,
+            };
+            if let Some(per) = per {
+                let n = ledger_store::ops::report_columns(s, e, per);
+                let max = ledger_store::ops::MAX_REPORT_COLUMNS;
+                if n > max {
+                    return Err(format!(
+                        "columns {} from {s} to {e} is {n} columns, and the viewer splits a report into at most {max} (past that it shows the total): pass a shorter range or a longer split",
+                        p.columns.as_deref().unwrap_or_default()
+                    ));
+                }
+            }
+            let mut what = format!("the {} report", report.replace('_', " "));
+            what.push_str(&match dates {
+                ShownDates::Period => format!(", {s} to {e}"),
+                ShownDates::AsOf => format!(", as of {e}"),
+                ShownDates::Year => format!(", for {}", chrono::Datelike::year(&e)),
+            });
             if let Some(c) = p.columns.as_deref().filter(|c| *c != "total") {
                 what.push_str(&format!(", by {c}"));
             }
@@ -3949,8 +4160,8 @@ impl BooksServer {
             (
                 ViewerTarget::Report {
                     report: report.clone(),
-                    start: p.start.clone(),
-                    end: p.end.clone(),
+                    start: Some(s.to_string()),
+                    end: Some(e.to_string()),
                     columns: p.columns.clone(),
                     compare: p.compare.clone(),
                 },
@@ -4051,7 +4262,7 @@ impl BooksServer {
     #[tool(
         name = "books.digest",
         title = "Activity digest",
-        description = "What changed since a date: entries posted, per-account movement, and receipt coverage; plus what needs doing: rules due for review, settings problems, and cash and card accounts not reconciled through the end of last month (unreconciled_accounts). Built for human review.",
+        description = "What changed since a date: entries posted, per-account movement, and receipt coverage; plus what needs doing: rules due for review, settings problems, cash and card accounts not reconciled through the end of last month (unreconciled_accounts), and revenue and expense accounts with no tax category (uncategorized_accounts). Built for human review.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn digest(&self, params: Parameters<DigestParams>) -> Result<Json<DigestOut>, String> {
@@ -4121,8 +4332,13 @@ impl BooksServer {
             })
             .collect();
         let unreconciled_accounts = self.unreconciled_accounts(&store, today)?;
+        let uncategorized_accounts = ledger_core::tax::uncategorized_accounts(ledger)
+            .into_iter()
+            .map(|a| format!("{} {}", a.code, a.name))
+            .collect();
         Ok(Json(DigestOut {
             unreconciled_accounts,
+            uncategorized_accounts,
             since: since.to_string(),
             entries,
             totals_by_account: totals,
@@ -4884,6 +5100,111 @@ impl BooksServer {
     }
 
     #[tool(
+        name = "books.rename_account",
+        title = "Rename an account",
+        description = "Give an account a new name. Only the name changes: its id, code, type, tax category and every entry posted to it stay, so no entry, balance or statement amount changes; every report, past periods included, prints the new name, and the journal keeps the old one. Refuses a blank name, the name it has, a name another account under the same parent has (ignoring capitals), one holding nine digits in a row, or more than one line of 200 characters. QuickBooks matches accounts by name: if the CPA imported an earlier IIF, tell them. Never rename the human's accounts on your own: only when they ask.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn rename_account(
+        &self,
+        params: Parameters<RenameAccountParams>,
+    ) -> Result<Json<RenameAccountOut>, String> {
+        use ledger_store::reconcilable;
+        let p = params.0;
+        let mut store = self.lock()?;
+        let id = resolve_account(&store, &p.account)?;
+        let reason = p.reason.as_deref().map(str::trim).filter(|r| !r.is_empty());
+        // The sets the books pick by name, before and after (rules.md
+        // B-31: a rename moves no amount, but it can move an account into
+        // or out of one of these).
+        let configured_cash = self.settings().roles.cash.clone();
+        let picked = |ledger: &Ledger| {
+            (
+                configured_cash.is_empty()
+                    && reconcilable::cash_accounts(ledger, &[]).contains(&id),
+                reconcilable::card_accounts(ledger).contains(&id),
+            )
+        };
+        let before = picked(store.ledger());
+        let previous_name = store
+            .ledger()
+            .chart()
+            .get(id)
+            .expect("resolved")
+            .name
+            .clone();
+        store
+            .rename_account(id, &p.name, reason)
+            .map_err(|e| e.to_string())?;
+        let ledger = store.ledger();
+        let a = ledger.chart().get(id).expect("resolved");
+        let after = picked(ledger);
+        let mut notes = vec![format!(
+            "Every report, past periods included, prints \u{201c}{}\u{201d} now; the journal keeps \u{201c}{previous_name}\u{201d}. QuickBooks matches accounts by name: if the CPA imported an earlier IIF, tell them.",
+            a.name
+        )];
+        let children = ledger
+            .chart()
+            .all()
+            .filter(|c| c.parent == Some(id))
+            .count();
+        if children > 0 {
+            notes.push(format!(
+                "Its {children} sub-account{} carry the new name in their QuickBooks full names (IIF) too.",
+                if children == 1 { "" } else { "s" }
+            ));
+        }
+        for (was, is, what) in [
+            (
+                before.0,
+                after.0,
+                "a cash account (books.cash_accounts is unset, so cash accounts are the asset accounts whose names say cash, bank, checking, savings or money market): the reconciliation reminders and the viewer's cash figures, Cash page and cash flow statement follow it. Set books.cash_accounts to choose them by code",
+            ),
+            (
+                before.1,
+                after.1,
+                "a card account (a liability whose name says card): the reconciliation reminders follow it",
+            ),
+        ] {
+            if was != is {
+                notes.push(format!(
+                    "{} {} is {} {what}.",
+                    a.code,
+                    a.name,
+                    if is { "now" } else { "no longer" }
+                ));
+            }
+        }
+        // A blank old name (an earlier version wrote one) is in every
+        // text: it names no convention.
+        let old = previous_name.trim().to_lowercase();
+        for c in ledger
+            .conventions()
+            .conventions()
+            .filter(|c| c.retired.is_none() && !old.is_empty())
+            .filter(|c| {
+                c.title.to_lowercase().contains(&old) || c.body_md.to_lowercase().contains(&old)
+            })
+        {
+            notes.push(format!(
+                "Convention {} names \u{201c}{previous_name}\u{201d} in its text: if it means this account, revise it with books.set_convention.",
+                c.id
+            ));
+        }
+        Ok(Json(RenameAccountOut {
+            id,
+            code: a.code.clone(),
+            previous_name,
+            name: a.name.clone(),
+            notes,
+        }))
+    }
+
+    #[tool(
         name = "books.label_asset",
         title = "Label a fixed asset",
         description = "Change a fixed asset's description, link it to the entry that acquired it (acquisition_entry), or set or change its tag (the label on the thing: letters, digits, - _ . /, at most 32; unique ignoring case and never reused by another asset, even after a retag or disposal) and its manufacturer serial number. The asset is its id or current tag. Journaled. Print labels with books.asset_labels.",
@@ -5199,7 +5520,7 @@ impl BooksServer {
     #[tool(
         name = "books.set_tax_category",
         title = "Set an account's tax category",
-        description = "Map a revenue or expense account to a tax category (see books.tax_categories), optionally overriding its deductible percent; category null clears it. Drives the tax_summary report.",
+        description = "Map a revenue or expense account to a tax category (see books.tax_categories), optionally overriding its deductible percent; category null clears it (refused under policy.require_tax_category = refuse, for a revenue or expense account that isn't a header). Drives the tax_summary report.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -5236,7 +5557,7 @@ impl BooksServer {
     #[tool(
         name = "books.import_chart_csv",
         title = "Import a chart of accounts",
-        description = "Import a chart of accounts from CSV (header: code,name,type,parent_code): csv_text, or upload_id (books.begin_upload purpose import). Types: asset, liability, equity, revenue, expense. Parents must come before children. Fails on the first bad row; nothing is half-imported.",
+        description = "Import a chart of accounts from CSV (header: code,name,type,parent_code,tax_category; the last is optional): csv_text, or upload_id (books.begin_upload purpose import). Types: asset, liability, equity, revenue, expense. Parents must come before children. Fails on the first bad row; nothing is half-imported. A revenue or expense row without a tax_category is listed in warnings, or, under policy.require_tax_category = refuse, refuses the file.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -5261,10 +5582,12 @@ impl BooksServer {
         };
         // Rehearse the whole import on a copy of the ledger first, so a bad
         // row anywhere (a duplicate within the file, a parent listed after
-        // its child or of another type, a blank code) refuses the file and
-        // nothing is half-imported. The old up-front checks covered only
-        // clashes with the existing chart and tax categories.
+        // its child or of another type, a blank code, a name a sibling
+        // has, a missing category the policy requires) refuses the file
+        // and nothing is half-imported. The old up-front checks covered
+        // only clashes with the existing chart and tax categories.
         let mut scratch = store.ledger().clone();
+        let mut warnings = Vec::new();
         for row in &rows {
             let account_type = parse_type(&row.account_type)?;
             let parent = match &row.parent_code {
@@ -5280,6 +5603,22 @@ impl BooksServer {
             let id = scratch
                 .add_account(&row.code, &row.name, account_type, parent, false)
                 .map_err(|e| format!("{}: {e}", row.code))?;
+            // A row is never a header account (the file can't say so), so
+            // a revenue or expense row needs a category under refuse.
+            scratch
+                .check_tax_category_required(
+                    &row.code,
+                    &row.name,
+                    account_type,
+                    false,
+                    row.tax_category.as_deref(),
+                )
+                .map_err(|e| {
+                    format!(
+                        "{}: {e}, as the file's fifth column (tax_category); a row of the file is never a header account",
+                        row.code
+                    )
+                })?;
             if let Some(cat) = &row.tax_category {
                 ledger_core::tax::check_category(
                     cat,
@@ -5290,6 +5629,8 @@ impl BooksServer {
                 scratch
                     .set_account_tax(id, Some(cat), None)
                     .map_err(|e| format!("{}: {e}", row.code))?;
+            } else if ledger_core::tax::needs_category(account_type, false) {
+                warnings.push(uncategorized_warning(&row.code, &row.name));
             }
         }
         // Rehearsed whole: the upload is used up as the writing begins.
@@ -5315,24 +5656,30 @@ impl BooksServer {
                 ),
                 None => None,
             };
-            let id = store
-                .add_account(&row.code, &row.name, account_type, parent, false)
+            store
+                .add_account_with_tax(
+                    &row.code,
+                    &row.name,
+                    account_type,
+                    parent,
+                    false,
+                    row.tax_category.as_deref().map(|c| (c, None)),
+                )
                 .map_err(|e| e.to_string())?;
-            if let Some(cat) = &row.tax_category {
-                store
-                    .set_account_tax(id, Some(cat), None)
-                    .map_err(|e| e.to_string())?;
-            }
             created.push(row.code.clone());
         }
         let count = created.len();
-        Ok(Json(ImportChartCsvOut { created, count }))
+        Ok(Json(ImportChartCsvOut {
+            created,
+            count,
+            warnings,
+        }))
     }
 
     #[tool(
         name = "books.export",
         title = "Export a report",
-        description = "Export a report. Reports: profit_and_loss, balance_sheet, cash_flow (direct method, with its reconciliation and noncash schedules; needs cash_accounts), trial_balance (as_of), members_equity (multi-member LLC; members from the settings), general_ledger (by account: running balances, splits), general_journal (every entry in date order; alias journal), fixed_asset_register (as_of: every asset with tag, serial, cost, depreciation, book value, reconciled to the books). Formats: pdf and xlsx (base64) for the five statements and fixed_asset_register; xlsx, csv, json for every report; iif for general_journal (QuickBooks Desktop: plain ASCII text, CR LF; every posted entry from the first through as_of, period closes left out, DOCNUM the entry id; names, numbers and memos fit QuickBooks' limits; warnings says what is written differently from the books, memos grouped, to tell the human). Dates: start/end for period reports (start defaults to the first entry, end to today), as_of for balance_sheet, trial_balance, fixed_asset_register, and iif (default today).",
+        description = "Export a report. Reports: profit_and_loss, balance_sheet, cash_flow (direct method, with its reconciliation and noncash schedules; needs cash_accounts), trial_balance (as_of), members_equity (multi-member LLC; members from the settings), general_ledger (by account: running balances, splits), general_journal (each entry posted in the period; alias journal), fixed_asset_register (as_of: every asset with tag, serial, cost, depreciation, book value, reconciled to the books). Formats: pdf and xlsx (base64) for the five statements and fixed_asset_register; xlsx, csv, json for every report; iif for general_journal or journal (QuickBooks Desktop: plain ASCII text, CR LF; every posted entry from the first through as_of (start and end are refused), period closes left out, DOCNUM the entry id; names, numbers and memos fit QuickBooks' limits; warnings says what is written differently from the books, memos grouped, to tell the human). Dates: start/end for period reports (omitted: the fiscal year to date), as_of for balance_sheet, trial_balance, fixed_asset_register and iif (omitted: today).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn export(&self, params: Parameters<ExportParams>) -> Result<Json<ExportOut>, String> {
@@ -5355,11 +5702,10 @@ impl BooksServer {
             if p.start.is_some() || p.end.is_some() {
                 return Err("iif takes as_of, not start or end: the file holds every posted entry from the first through as_of, so QuickBooks' balances match the books'".to_string());
             }
-            // As of today by default, like every other as-of export.
-            let as_of = match p.as_of.as_deref() {
-                Some(s) => parse_date(s)?,
-                None => today(),
-            };
+            // As of today by default, like every other as-of export
+            // (rules.md B-30); never a period, so the general journal's
+            // default period never shortens it (D-36, B-34).
+            let as_of = self.as_of(p.as_of.as_deref())?;
             let iif = self.export_iif(as_of, &p.cash_accounts)?;
             let warnings = iif.warnings();
             return Ok(Json(ExportOut {
@@ -5385,7 +5731,7 @@ impl BooksServer {
             }));
         }
         let content = match report.as_str() {
-            "journal" | "general_journal" => self.export_journal(&format)?,
+            "journal" | "general_journal" => self.export_journal(&format, &p)?,
             "trial_balance" => self.export_trial_balance(&format, p.as_of.as_deref())?,
             "general_ledger" => self.export_general_ledger(&format, &p)?,
             "members_equity" => self.export_members_equity(&format, &p)?,
@@ -5422,14 +5768,14 @@ impl BooksServer {
         use ledger_import::report;
         let members = self.report_members();
         Ok(match report {
-            "profit_and_loss" => report::profit_and_loss(&pnl_statement(
+            "profit_and_loss" => report::profit_and_loss(&self.pnl_statement(
                 ledger,
                 p.start.as_deref(),
                 p.end.as_deref(),
                 None,
             )?),
             "balance_sheet" => {
-                let bs = bs_statement(ledger, p.as_of.as_deref())?;
+                let bs = self.bs_statement(ledger, p.as_of.as_deref())?;
                 let earnings = self.year_earnings(ledger, bs.as_of)?;
                 report::balance_sheet(&bs, earnings, &members)
             }
@@ -5442,21 +5788,18 @@ impl BooksServer {
                 &p.investing_accounts,
             )?),
             "trial_balance" => {
-                let as_of = match &p.as_of {
-                    Some(s) => parse_date(s)?,
-                    None => today(),
-                };
+                let as_of = self.as_of(p.as_of.as_deref())?;
                 report::trial_balance(&reports::trial_balance_as_of(ledger, as_of), as_of)
             }
             "tax_summary" => {
-                let (start, end) = statement_range(ledger, p.start.as_deref(), p.end.as_deref())?;
+                let (start, end) = self.statement_range(p.start.as_deref(), p.end.as_deref())?;
                 report::tax_summary(
                     &ledger_core::tax_summary(ledger, start, end, self.settings().company.tax_form)
                         .map_err(|e| e.to_string())?,
                 )
             }
             "members_equity" => {
-                let (start, end) = statement_range(ledger, p.start.as_deref(), p.end.as_deref())?;
+                let (start, end) = self.statement_range(p.start.as_deref(), p.end.as_deref())?;
                 let me =
                     ledger_core::members_equity(ledger, start, end, &self.member_capitals(ledger)?)
                         .map_err(|e| e.to_string())?;
@@ -5477,23 +5820,20 @@ impl BooksServer {
         let meta = self.report_meta(&store);
         let ledger = store.ledger();
         if report == "fixed_asset_register" {
-            let as_of = match p.as_of.as_deref() {
-                Some(s) => parse_date(s)?,
-                None => today(),
-            };
+            let as_of = self.as_of(p.as_of.as_deref())?;
             let r = ledger_core::fixed_asset_register(ledger, as_of).map_err(|e| e.to_string())?;
             return ledger_import::asset_register_xlsx(&r, &meta).map_err(|e| e.to_string());
         }
         let xlsx = |r: XlsxReport<'_>| report_to_xlsx(&r, &meta).map_err(|e| e.to_string());
         match report {
             "general_ledger" => {
-                let (start, end) = statement_range(ledger, p.start.as_deref(), p.end.as_deref())?;
+                let (start, end) = self.statement_range(p.start.as_deref(), p.end.as_deref())?;
                 let gl =
                     ledger_core::general_ledger(ledger, start, end).map_err(|e| e.to_string())?;
                 xlsx(XlsxReport::GeneralLedger(&gl))
             }
             "general_journal" | "journal" => {
-                let (start, end) = statement_range(ledger, p.start.as_deref(), p.end.as_deref())?;
+                let (start, end) = self.statement_range(p.start.as_deref(), p.end.as_deref())?;
                 xlsx(XlsxReport::GeneralJournal(ledger, start, end))
             }
             _ => xlsx(XlsxReport::Statement(
@@ -5510,10 +5850,7 @@ impl BooksServer {
         let store = self.lock()?;
         let meta = self.report_meta(&store);
         if report == "fixed_asset_register" {
-            let as_of = match p.as_of.as_deref() {
-                Some(s) => parse_date(s)?,
-                None => today(),
-            };
+            let as_of = self.as_of(p.as_of.as_deref())?;
             let r = ledger_core::fixed_asset_register(store.ledger(), as_of)
                 .map_err(|e| e.to_string())?;
             return ledger_import::asset_register_pdf(&r, &meta).map_err(|e| e.to_string());
@@ -7247,7 +7584,10 @@ impl BooksServer {
     #[tool(
         name = "books.parties",
         title = "List parties",
-        description = "The party directory, by id: each party's name, label, roles (vendor and customer included), vendor and customer record ids, whether W-9 facts (with the TIN's last four) and W-4 facts are on file, archived, and what was paid to and received from it in the year (default this year; defined as in books.party). Filter by role; archived parties only with include_archived.",
+        description = described(
+            "The party directory, by id: each party's name, label, roles (vendor and customer included), vendor and customer record ids, whether W-9 facts (with the TIN's last four) and W-4 facts are on file, archived, and what was paid to and received from it in the year (defined as in books.party). Filter by role; archived parties only with include_archived.",
+            ledger_core::calendar::PeriodKind::CalendarYear
+        ),
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn parties(
@@ -7260,7 +7600,7 @@ impl BooksServer {
             .as_deref()
             .map(|r| parse_roles(&[r.to_string()]).map(|v| v[0]))
             .transpose()?;
-        let year = p.year.unwrap_or_else(this_year);
+        let year = p.year.unwrap_or_else(|| self.periods().calendar_year());
         let settings = self.settings();
         let store = self.lock()?;
         let mut parties = Vec::new();
@@ -7293,12 +7633,15 @@ impl BooksServer {
     #[tool(
         name = "books.party",
         title = "Get a party",
-        description = "One party, by id or name: its facts and roles, vendor and customer record ids, the year's totals (default this year: paid to it, received from it, invoiced, billed, the 1099 amount for a vendor, payroll gross and net), what it is owed and owes now (open bills and invoices), every entry it is on (tagged with it or its vendor record, its invoices and their payments, and their reversals), its invoices and bills, and the payroll lines naming it. Totals come from the journal: the output's schema says exactly how.",
+        description = described(
+            "One party, by id or name: its facts and roles, vendor and customer record ids, the year's totals (paid to it, received from it, invoiced, billed, the 1099 amount for a vendor, payroll gross and net), what it is owed and owes now (open bills and invoices), every entry it is on (tagged with it or its vendor record, its invoices and their payments, and their reversals), its invoices and bills, and the payroll lines naming it. Totals come from the journal: the output's schema says exactly how.",
+            ledger_core::calendar::PeriodKind::CalendarYear
+        ),
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn party(&self, params: Parameters<PartyParams>) -> Result<Json<PartyDetailOut>, String> {
         let p = params.0;
-        let year = p.year.unwrap_or_else(this_year);
+        let year = p.year.unwrap_or_else(|| self.periods().calendar_year());
         let settings = self.settings();
         let store = self.lock()?;
         let ledger = store.ledger();
@@ -7534,6 +7877,7 @@ impl BooksServer {
                 })
             })
             .collect::<Result<_, String>>()?;
+        let first_new = store.ledger().next_account_id();
         let id = store
             .create_invoice(
                 p.party_id,
@@ -7550,6 +7894,7 @@ impl BooksServer {
             id,
             total: inv.total().map_err(|e| e.to_string())?.to_string(),
             entry_id: inv.entry_id,
+            warnings: created_uncategorized(store.ledger(), first_new),
         }))
     }
 
@@ -7579,6 +7924,7 @@ impl BooksServer {
                 })
             })
             .collect::<Result<_, String>>()?;
+        let first_new = store.ledger().next_account_id();
         let id = store
             .create_bill(
                 p.party_id,
@@ -7595,6 +7941,7 @@ impl BooksServer {
             id,
             total: bill.total().map_err(|e| e.to_string())?.to_string(),
             entry_id: bill.entry_id,
+            warnings: created_uncategorized(store.ledger(), first_new),
         }))
     }
 
@@ -7681,15 +8028,19 @@ impl BooksServer {
     #[tool(
         name = "books.ar_aging",
         title = "Receivables aging",
-        description = "A/R aging report as of a date: outstanding balances per customer, bucketed by days past due (current, 30, 60, 90, 90+).",
+        description = described(
+            "A/R aging report as of a date: outstanding balances per customer, bucketed by days past due (current, 30, 60, 90, 90+).",
+            ledger_core::calendar::PeriodKind::AsOf
+        ),
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn ar_aging(&self, params: Parameters<AgingParams>) -> Result<Json<AgingOut>, String> {
         let p = params.0;
+        let as_of = self.as_of(p.as_of.as_deref())?;
         let store = self.lock()?;
         let rows = store
             .ledger()
-            .ar_aging(parse_date(&p.as_of)?)
+            .ar_aging(as_of)
             .map_err(|e| e.to_string())?
             .into_iter()
             .map(|r| {
@@ -7705,21 +8056,28 @@ impl BooksServer {
                 })
             })
             .collect::<Result<_, String>>()?;
-        Ok(Json(AgingOut { rows }))
+        Ok(Json(AgingOut {
+            as_of: as_of.to_string(),
+            rows,
+        }))
     }
 
     #[tool(
         name = "books.ap_aging",
         title = "Payables aging",
-        description = "A/P aging report as of a date: outstanding balances per vendor, bucketed by days past due (current, 30, 60, 90, 90+).",
+        description = described(
+            "A/P aging report as of a date: outstanding balances per vendor, bucketed by days past due (current, 30, 60, 90, 90+).",
+            ledger_core::calendar::PeriodKind::AsOf
+        ),
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn ap_aging(&self, params: Parameters<AgingParams>) -> Result<Json<AgingOut>, String> {
         let p = params.0;
+        let as_of = self.as_of(p.as_of.as_deref())?;
         let store = self.lock()?;
         let rows = store
             .ledger()
-            .ap_aging(parse_date(&p.as_of)?)
+            .ap_aging(as_of)
             .map_err(|e| e.to_string())?
             .into_iter()
             .map(|r| {
@@ -7735,7 +8093,10 @@ impl BooksServer {
                 })
             })
             .collect::<Result<_, String>>()?;
-        Ok(Json(AgingOut { rows }))
+        Ok(Json(AgingOut {
+            as_of: as_of.to_string(),
+            rows,
+        }))
     }
 
     // ------------------------------------------------------------------
@@ -7832,6 +8193,7 @@ impl BooksServer {
                 "name each payroll line's employee party (employee), so the entry names who was paid",
             ));
         }
+        let first_new = store.ledger().next_account_id();
         let run_id = store
             .run_payroll(parse_date(&p.date)?, lines, cash)
             .map_err(|e| e.to_string())?;
@@ -7846,6 +8208,7 @@ impl BooksServer {
             entry_id: run.entry_id,
             total_gross: money(total_gross),
             total_net: money(total_net),
+            warnings: created_uncategorized(store.ledger(), first_new),
         }))
     }
 
@@ -7969,7 +8332,10 @@ impl BooksServer {
     #[tool(
         name = "books.profit_and_loss_by_class",
         title = "Profit and loss by class",
-        description = "P&L broken down by tracking class for a period, plus an unclassified row for untagged lines. Dates are YYYY-MM-DD; omit for all time.",
+        description = described(
+            "P&L broken down by tracking class for a period, plus an unclassified row for untagged lines.",
+            ledger_core::calendar::PeriodKind::Statement
+        ),
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn profit_and_loss_by_class(
@@ -7979,17 +8345,7 @@ impl BooksServer {
         let p = params.0;
         let store = self.lock()?;
         let ledger = store.ledger();
-        let start = match p.start {
-            Some(s) => parse_date(&s)?,
-            None => NaiveDate::from_ymd_opt(1, 1, 1).unwrap(),
-        };
-        let end = match p.end {
-            Some(s) => parse_date(&s)?,
-            None => today(),
-        };
-        if end < start {
-            return Err("end is before start".to_string());
-        }
+        let (start, end) = self.statement_range(p.start.as_deref(), p.end.as_deref())?;
         // One class, if asked (validated like every reference).
         let only = match &p.class {
             Some(c) => Some(resolve_class(&store, c)?),
@@ -8109,10 +8465,7 @@ impl BooksServer {
         params: Parameters<ExportCpaPackageParams>,
     ) -> Result<Json<ExportCpaPackageOut>, String> {
         let p = params.0;
-        let as_of = match &p.as_of {
-            Some(s) => parse_date(s)?,
-            None => today(),
-        };
+        let as_of = self.as_of(p.as_of.as_deref())?;
         let store = self.lock()?;
         let book = book_name(&store);
         // The vault, opened once and never creating a key: locked, each
@@ -8187,12 +8540,17 @@ impl BooksServer {
 // ---------------------------------------------------------------------------
 
 impl BooksServer {
-    fn export_journal(&self, format: &str) -> Result<String, String> {
+    /// The general journal as JSON or CSV: each entry posted in the
+    /// period (rules.md B-30, as the XLSX journal), in posting order.
+    fn export_journal(&self, format: &str, p: &ExportParams) -> Result<String, String> {
+        let (start, end) = self.statement_range(p.start.as_deref(), p.end.as_deref())?;
         let store = self.lock()?;
         let ledger = store.ledger();
+        let in_period = |e: &&ledger_core::JournalEntry| (start..=end).contains(&e.date());
         if format == "json" {
             let rows: Vec<serde_json::Value> = ledger
                 .posted_entries()
+                .filter(in_period)
                 .map(|e| {
                     serde_json::json!({
                         "entry_id": e.id(),
@@ -8217,7 +8575,7 @@ impl BooksServer {
         let mut csv = String::from(
             "entry_id,date,description,reversal_of,account_code,account_name,side,amount,currency\n",
         );
-        for e in ledger.posted_entries() {
+        for e in ledger.posted_entries().filter(in_period) {
             for l in e.lines() {
                 let a = ledger.chart().get(l.account).unwrap();
                 csv.push_str(&format!(
@@ -8242,10 +8600,7 @@ impl BooksServer {
 
     fn export_trial_balance(&self, format: &str, as_of: Option<&str>) -> Result<String, String> {
         let store = self.lock()?;
-        let as_of = match as_of {
-            Some(s) => parse_date(s)?,
-            None => today(),
-        };
+        let as_of = self.as_of(as_of)?;
         let tb = reports::trial_balance_as_of(store.ledger(), as_of);
         if format == "json" {
             return serde_json::to_string_pretty(&serde_json::json!({
@@ -8286,10 +8641,7 @@ impl BooksServer {
         as_of: Option<&str>,
     ) -> Result<String, String> {
         let store = self.lock()?;
-        let as_of = match as_of {
-            Some(s) => parse_date(s)?,
-            None => today(),
-        };
+        let as_of = self.as_of(as_of)?;
         let r =
             ledger_core::fixed_asset_register(store.ledger(), as_of).map_err(|e| e.to_string())?;
         // The same words as the XLSX and PDF register.
@@ -8366,7 +8718,7 @@ impl BooksServer {
     fn export_general_ledger(&self, format: &str, p: &ExportParams) -> Result<String, String> {
         let store = self.lock()?;
         let ledger = store.ledger();
-        let (start, end) = statement_range(ledger, p.start.as_deref(), p.end.as_deref())?;
+        let (start, end) = self.statement_range(p.start.as_deref(), p.end.as_deref())?;
         let gl = ledger_core::general_ledger(ledger, start, end).map_err(|e| e.to_string())?;
         if format == "json" {
             return serde_json::to_string_pretty(&serde_json::json!({
@@ -8419,7 +8771,7 @@ impl BooksServer {
     fn export_tax_summary(&self, format: &str, p: &ExportParams) -> Result<String, String> {
         let store = self.lock()?;
         let ledger = store.ledger();
-        let (start, end) = statement_range(ledger, p.start.as_deref(), p.end.as_deref())?;
+        let (start, end) = self.statement_range(p.start.as_deref(), p.end.as_deref())?;
         let ts = ledger_core::tax_summary(ledger, start, end, self.settings().company.tax_form)
             .map_err(|e| e.to_string())?;
         let line = |l: &ledger_core::TaxSummaryLine| {
@@ -8436,6 +8788,11 @@ impl BooksServer {
                 "cost_of_goods": ts.cost_of_goods.iter().map(line).collect::<Vec<_>>(),
                 "deductions": ts.deductions.iter().map(line).collect::<Vec<_>>(),
                 "separately_stated": ts.separately_stated.iter().map(line).collect::<Vec<_>>(),
+                // Book amounts only: Form 4797 figures the tax gain.
+                "form_4797": ts.form_4797.iter().map(|l| serde_json::json!({
+                    "category": l.category, "label": l.label, "accounts": l.accounts,
+                    "book": money(l.book),
+                })).collect::<Vec<_>>(),
                 "uncategorized": ts.uncategorized.iter().map(|u| serde_json::json!({
                     "account": u.account, "book": money(u.book),
                 })).collect::<Vec<_>>(),
@@ -8462,6 +8819,15 @@ impl BooksServer {
                 ));
             }
         }
+        for l in &ts.form_4797 {
+            csv.push_str(&format!(
+                "form_4797,{},{},{},{},\n",
+                l.category,
+                csv_escape(&l.label),
+                csv_escape(&l.accounts.join("; ")),
+                money(l.book)
+            ));
+        }
         for u in &ts.uncategorized {
             csv.push_str(&format!(
                 "uncategorized,,,{},{},\n",
@@ -8475,7 +8841,7 @@ impl BooksServer {
     fn export_members_equity(&self, format: &str, p: &ExportParams) -> Result<String, String> {
         let store = self.lock()?;
         let ledger = store.ledger();
-        let (start, end) = statement_range(ledger, p.start.as_deref(), p.end.as_deref())?;
+        let (start, end) = self.statement_range(p.start.as_deref(), p.end.as_deref())?;
         let me = ledger_core::members_equity(ledger, start, end, &self.member_capitals(ledger)?)
             .map_err(|e| e.to_string())?;
         let col = |c: &ledger_core::MemberEquityColumn| {
@@ -8518,7 +8884,7 @@ impl BooksServer {
         end: Option<&str>,
     ) -> Result<String, String> {
         let store = self.lock()?;
-        let pl = pnl_statement(store.ledger(), start, end, None)?;
+        let pl = self.pnl_statement(store.ledger(), start, end, None)?;
         if format == "json" {
             return serde_json::to_string_pretty(&serde_json::json!({
                 "start": pl.start.to_string(), "end": pl.end.to_string(),
@@ -8551,7 +8917,7 @@ impl BooksServer {
 
     fn export_balance_sheet(&self, format: &str, as_of: Option<&str>) -> Result<String, String> {
         let store = self.lock()?;
-        let bs = bs_statement(store.ledger(), as_of)?;
+        let bs = self.bs_statement(store.ledger(), as_of)?;
         if format == "json" {
             return serde_json::to_string_pretty(&serde_json::json!({
                 "as_of": bs.as_of.to_string(),
@@ -9643,7 +10009,7 @@ mod tests {
         const D: Hints = (Some(false), Some(true), None);
         const WI: Hints = (Some(false), Some(false), Some(true));
         const DI: Hints = (Some(false), Some(true), Some(true));
-        let table: [(&str, Hints); 111] = [
+        let table: [(&str, Hints); 112] = [
             ("books.handbook", R),
             ("books.start", R),
             ("books.set_setting", DI),
@@ -9699,6 +10065,7 @@ mod tests {
             ("books.chart_template", R),
             ("books.tax_categories", R),
             ("books.renumber_account", D),
+            ("books.rename_account", D),
             ("books.label_asset", W),
             ("books.correct_asset", D),
             ("books.set_asset_tax_basis", W),
@@ -9794,8 +10161,8 @@ mod tests {
                 "{name}: openWorldHint"
             );
         }
-        // docs/mcp-interface.md names the 28 destructive tools.
-        assert_eq!(table.iter().filter(|(_, h)| h.1 == Some(true)).count(), 28);
+        // docs/mcp-interface.md names the 29 destructive tools.
+        assert_eq!(table.iter().filter(|(_, h)| h.1 == Some(true)).count(), 29);
     }
 
     /// Every refusal an agent can be given whose text is fixed here, or
@@ -10281,6 +10648,198 @@ mod tests {
             .collect();
         over.sort();
         assert_eq!(over, OVER, "tool descriptions over 700 characters");
+    }
+
+    /// rules.md B-30 (defect 16): every report tool says what its omitted
+    /// dates mean in the one sentence the resolver's kind gives
+    /// (PeriodKind::describe), and each date parameter in the schema's
+    /// own words (START_DOC, END_DOC, AS_OF_DOC, YEAR_DOC); the two tools
+    /// over the description budget (books.export, books.show) and the CPA
+    /// package say it in their parameters. No tool or schema says "all
+    /// time", "beginning of time" or "first entry" any more. The resources
+    /// read with dates omitted say which period they cover.
+    #[test]
+    fn period_tools_describe_the_one_default() {
+        use ledger_core::calendar::{AS_OF_DOC, END_DOC, PeriodKind, START_DOC, YEAR_DOC};
+        let tools = BooksServer::tool_router().list_all();
+        let tool = |name: &str| {
+            tools
+                .iter()
+                .find(|t| t.name == name)
+                .unwrap_or_else(|| panic!("no tool {name}"))
+        };
+        let field = |name: &str, f: &str| -> String {
+            tool(name).input_schema["properties"][f]["description"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{name}.{f} has no description"))
+                .to_string()
+        };
+        for (name, kind, fields) in [
+            (
+                "books.profit_and_loss",
+                PeriodKind::Statement,
+                &[("start", START_DOC), ("end", END_DOC)][..],
+            ),
+            (
+                "books.profit_and_loss_by_class",
+                PeriodKind::Statement,
+                &[("start", START_DOC), ("end", END_DOC)][..],
+            ),
+            (
+                "books.cash_flow",
+                PeriodKind::Statement,
+                &[("start", START_DOC), ("end", END_DOC)][..],
+            ),
+            (
+                "books.trial_balance",
+                PeriodKind::AsOf,
+                &[("as_of", AS_OF_DOC)][..],
+            ),
+            (
+                "books.balance_sheet",
+                PeriodKind::AsOf,
+                &[("as_of", AS_OF_DOC)][..],
+            ),
+            (
+                "books.ar_aging",
+                PeriodKind::AsOf,
+                &[("as_of", AS_OF_DOC)][..],
+            ),
+            (
+                "books.ap_aging",
+                PeriodKind::AsOf,
+                &[("as_of", AS_OF_DOC)][..],
+            ),
+            (
+                "books.parties",
+                PeriodKind::CalendarYear,
+                &[("year", YEAR_DOC)][..],
+            ),
+            (
+                "books.party",
+                PeriodKind::CalendarYear,
+                &[("year", YEAR_DOC)][..],
+            ),
+        ] {
+            let d = tool(name).description.as_deref().unwrap_or_default();
+            assert!(d.ends_with(kind.describe()), "{name}: {d}");
+            for (f, doc) in fields {
+                assert_eq!(field(name, f), *doc, "{name}.{f}");
+            }
+        }
+        // Over the budget, or the package: in the parameters' words.
+        for (name, f, doc) in [
+            ("books.export", "start", START_DOC),
+            ("books.export", "end", END_DOC),
+            ("books.export", "as_of", AS_OF_DOC),
+            ("books.show", "start", START_DOC),
+            ("books.show", "end", END_DOC),
+            ("books.export_cpa_package", "as_of", AS_OF_DOC),
+        ] {
+            assert!(
+                field(name, f).ends_with(doc),
+                "{name}.{f}: {}",
+                field(name, f)
+            );
+        }
+        assert!(
+            tool("books.export")
+                .description
+                .as_deref()
+                .unwrap()
+                .contains("omitted: the fiscal year to date")
+        );
+        // Nothing left of the old defaults, anywhere.
+        for t in tools.iter() {
+            let text = format!(
+                "{} {}",
+                t.description.as_deref().unwrap_or_default(),
+                serde_json::Value::Object((*t.input_schema).clone())
+            )
+            .to_lowercase();
+            for stale in [
+                "all time",
+                "beginning of time",
+                "first entry",
+                "first posted entry",
+            ] {
+                assert!(!text.contains(stale), "{} says {stale:?}", t.name);
+            }
+        }
+        let resources = resource_list();
+        let resource = |uri: &str| {
+            resources
+                .iter()
+                .find(|r| r.uri == uri)
+                .and_then(|r| r.description.clone())
+                .unwrap()
+        };
+        assert!(resource("books://reports/profit-and-loss").contains("fiscal year to date"));
+        assert!(resource("books://reports/trial-balance").contains("as of today"));
+        assert!(resource("books://reports/balance-sheet").contains("as of today"));
+    }
+
+    /// books.show (defect 15): how the viewer reads each report's dates,
+    /// and the options a report ignores, refused (one match, so each arm
+    /// is pinned).
+    #[test]
+    fn show_reads_each_reports_dates_as_the_viewer_does() {
+        for (report, columns, compare, want) in [
+            ("profit_and_loss", None, None, Ok(ShownDates::Period)),
+            ("cash_flow", Some("month"), None, Ok(ShownDates::Period)),
+            ("members_equity", None, None, Ok(ShownDates::Period)),
+            ("general_ledger", None, None, Ok(ShownDates::Period)),
+            (
+                "tax_summary",
+                None,
+                Some("prior_year"),
+                Ok(ShownDates::Period),
+            ),
+            ("trial_balance", None, None, Ok(ShownDates::AsOf)),
+            ("ar_aging", None, None, Ok(ShownDates::AsOf)),
+            ("ap_aging", None, None, Ok(ShownDates::AsOf)),
+            ("fixed_asset_register", None, None, Ok(ShownDates::AsOf)),
+            ("vendor_1099", None, None, Ok(ShownDates::Year)),
+            ("balance_sheet", None, None, Ok(ShownDates::AsOf)),
+            ("balance_sheet", Some("total"), None, Ok(ShownDates::AsOf)),
+            (
+                "balance_sheet",
+                None,
+                Some("prior_year"),
+                Ok(ShownDates::AsOf),
+            ),
+            (
+                "balance_sheet",
+                None,
+                Some("prior_period"),
+                Ok(ShownDates::Period),
+            ),
+            (
+                "balance_sheet",
+                Some("quarter"),
+                None,
+                Ok(ShownDates::Period),
+            ),
+            ("trial_balance", Some("total"), None, Err("columns")),
+            ("tax_summary", Some("month"), None, Err("columns")),
+            ("vendor_1099", None, Some("prior_year"), Err("compare")),
+            ("general_ledger", None, Some("prior_period"), Err("compare")),
+            (
+                "profit_and_loss",
+                Some("year"),
+                Some("prior_year"),
+                Err("split"),
+            ),
+        ] {
+            let got = show_report_dates(report, columns, compare);
+            match want {
+                Ok(dates) => assert_eq!(got, Ok(dates), "{report} {columns:?} {compare:?}"),
+                Err(word) => {
+                    let e = got.unwrap_err();
+                    assert!(e.contains(word), "{report} {columns:?} {compare:?}: {e}");
+                }
+            }
+        }
     }
 
     /// How many masked TINs a text holds.

@@ -1553,3 +1553,162 @@ fn old_book_answers_every_tool(dir: &Path, per_tool: usize) -> Vec<String> {
     let _ = std::fs::remove_dir_all(&p.base);
     failures
 }
+
+/// P3 (defects 8, 15, 16): renames, refused report ranges and tax
+/// categories at creation, at their edges, are each answered (a result or
+/// a refusal, never a stop), and the books reopen after them. A new name
+/// is one line of at most 200 characters (ledger_core::account::
+/// MAX_ACCOUNT_NAME): 200 is taken and read back whole; 201, a
+/// 100,000-character one, a line break or a tab is refused.
+#[test]
+fn hostile_renames_ranges_and_categories_are_answered() {
+    let p = places("p3");
+    let mut m = Mcp::start(&p);
+    fixture(&mut m, &p);
+    let refused = |r: &Value| r["isError"] == json!(true);
+    for (tool, args, refuse) in [
+        (
+            "books.rename_account",
+            json!({"account": "6300", "name": ""}),
+            true,
+        ),
+        (
+            "books.rename_account",
+            json!({"account": "6300", "name": "   "}),
+            true,
+        ),
+        (
+            "books.rename_account",
+            json!({"account": "9999", "name": "X"}),
+            true,
+        ),
+        (
+            "books.rename_account",
+            json!({"account": "6300", "name": "insurance"}),
+            false,
+        ),
+        (
+            "books.rename_account",
+            json!({"account": "6300", "name": "Contract labor"}),
+            true,
+        ),
+        (
+            "books.rename_account",
+            json!({"account": "6300", "name": "Policy 123456789"}),
+            true,
+        ),
+        (
+            "books.rename_account",
+            json!({"account": "6300", "name": "Policy ٠١٢٣٤٥٦٧٨"}),
+            true,
+        ),
+        (
+            "books.rename_account",
+            json!({"account": "6300", "name": "Risk", "reason": "x".repeat(2_001)}),
+            true,
+        ),
+        (
+            "books.rename_account",
+            json!({"account": "6300", "name": "Risk", "reason": "\u{0}"}),
+            true,
+        ),
+        (
+            "books.show",
+            json!({"account": "1000", "start": "9999-12-31"}),
+            true,
+        ),
+        (
+            "books.show",
+            json!({"report": "profit_and_loss", "start": "9999-12-31"}),
+            true,
+        ),
+        (
+            "books.show",
+            json!({"report": "profit_and_loss", "end": "0001-01-01"}),
+            false,
+        ),
+        (
+            "books.show",
+            json!({"report": "trial_balance", "end": "9999-12-31"}),
+            false,
+        ),
+        (
+            "books.profit_and_loss",
+            json!({"start": "9999-12-31"}),
+            true,
+        ),
+        ("books.profit_and_loss", json!({"end": "0001-01-01"}), false),
+        (
+            "books.profit_and_loss_by_class",
+            json!({"start": "2026-12-31", "end": "2026-01-01"}),
+            true,
+        ),
+        (
+            "books.cash_flow",
+            json!({"start": "9999-12-31", "cash_accounts": ["1000"]}),
+            true,
+        ),
+        ("books.ar_aging", json!({}), false),
+        ("books.ap_aging", json!({"as_of": "9999-12-31"}), false),
+        (
+            "books.add_account",
+            json!({"code": "4100", "name": "Fees", "account_type": "revenue", "tax_category": "meals"}),
+            true,
+        ),
+        (
+            "books.add_account",
+            json!({"code": "4101", "name": "Fees", "account_type": "revenue", "deductible_percent": "1e9"}),
+            true,
+        ),
+        (
+            "books.rename_account",
+            json!({"account": "6300", "name": "N".repeat(201)}),
+            true,
+        ),
+        (
+            "books.rename_account",
+            json!({"account": "6300", "name": "N".repeat(100_000)}),
+            true,
+        ),
+        (
+            "books.rename_account",
+            json!({"account": "6300", "name": "Risk\nPolicy"}),
+            true,
+        ),
+        (
+            "books.rename_account",
+            json!({"account": "6300", "name": "Risk\tPolicy"}),
+            true,
+        ),
+        (
+            "books.add_account",
+            json!({"code": "6310", "name": "X".repeat(201), "account_type": "expense"}),
+            true,
+        ),
+        (
+            "books.add_account",
+            json!({"code": "6311", "name": "Two\nlines", "account_type": "expense"}),
+            true,
+        ),
+    ] {
+        let r = pinned(&mut m, tool, args.clone());
+        assert_eq!(refused(&r), refuse, "{tool} {}: {r}", truncated(&args));
+    }
+    // A name of 200 characters: taken, and read back whole.
+    let long = "N".repeat(200);
+    let r = pinned(
+        &mut m,
+        "books.rename_account",
+        json!({"account": "1000", "name": long}),
+    );
+    assert!(!refused(&r), "{}", truncated(&r));
+    let chart = m.ok("books.chart", json!({}));
+    assert!(
+        chart["accounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["code"] == "1000" && a["name"].as_str().unwrap() == long)
+    );
+    reopens(m, &p, "P3's hostile inputs");
+}

@@ -537,6 +537,34 @@ open_at_start = "ask"
         );
     }
 
+    /// INVARIANT 4 for policy.require_tax_category (rules.md B-32): it is
+    /// `[books] require_tax_category` in a file, and round-trips; a file
+    /// without it clears it back to warn.
+    #[test]
+    fn the_tax_category_policy_round_trips() {
+        let file = FERNHILL.replace(
+            "parties = \"require\"\n",
+            "parties = \"require\"\nrequire_tax_category = \"required\"\n",
+        );
+        let s = imported(&file);
+        assert_eq!(
+            s.require_tax_category(),
+            ledger_core::settings::TaxCategoryPolicy::Refuse
+        );
+        let text = export(&s, "USD");
+        assert!(text.contains("require_tax_category = \"refuse\""), "{text}");
+        let back = import(&text, None, &s, "USD").unwrap();
+        assert!(back.changes.is_empty(), "{:?}\n{text}", back.changes);
+        let cleared = import(FERNHILL, None, &s, "USD").unwrap();
+        assert_eq!(
+            cleared.changes,
+            [Change {
+                key: "policy.require_tax_category".into(),
+                value: None
+            }]
+        );
+    }
+
     /// INVARIANT 1: keys the file leaves out are cleared.
     #[test]
     fn what_the_file_leaves_out_is_cleared() {

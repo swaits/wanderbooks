@@ -30,11 +30,12 @@
 //!      D-U-N-S number's own key aside (nine digits that are no TIN).
 //!   5. Unset keys mean the defaults the settings file had: "Unnamed
 //!      company", a calendar year, accrual basis, receipts above 25.00,
-//!      parties suggested, approval rules off, the computer's time zone.
+//!      parties suggested, a missing tax category warned of (not
+//!      refused), approval rules off, the computer's time zone.
 //! ```
 
 use crate::TaxForm;
-use chrono::{Datelike, NaiveDate};
+use chrono::NaiveDate;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -150,6 +151,8 @@ const ACCRUAL_CASH: &[(&str, &[&str])] = &[("accrual", &[]), ("cash", &[])];
 const PARTY_POLICY: &[(&str, &[&str])] =
     &[("off", &[]), ("suggest", &[]), ("require", &["required"])];
 const APPROVAL_MODE: &[(&str, &[&str])] = &[("off", &[]), ("enforce", &[])];
+const TAX_CATEGORY_POLICY: &[(&str, &[&str])] =
+    &[("warn", &[]), ("refuse", &["required", "require"])];
 
 /// A return's key as a setting keeps it.
 pub fn tax_form_key(f: TaxForm) -> &'static str {
@@ -360,6 +363,13 @@ pub static KEYS: &[Key] = &[
         doc: "Whether entries name their counterparty: off, suggest (a draft without one names the likely one), or require (posting is refused until an entry names a party or is marked as having none). Unset: suggest.",
     },
     Key {
+        name: "policy.require_tax_category",
+        toml: ("books", "require_tax_category"),
+        kind: Kind::Choice(TAX_CATEGORY_POLICY),
+        sensitivity: Sensitivity::Public,
+        doc: "Whether a revenue or expense account (not a header) must have a tax category, the line of the return it maps to: warn (it is created, the result and Needs attention say so) or refuse (books.add_account, books.import_chart_csv and books.set_tax_category won't leave one without; accounts invoices, bills and payroll create are never refused, and are listed). Existing accounts are untouched. Unset: warn.",
+    },
+    Key {
         name: "policy.approval_rules",
         toml: ("books", "approval_rules"),
         kind: Kind::Choice(APPROVAL_MODE),
@@ -491,20 +501,27 @@ impl Company {
             .collect()
     }
 
-    /// The fiscal year containing `d`: `(first day, last day)`, inclusive.
+    /// The fiscal year containing `d`: `(first day, last day)`, inclusive,
+    /// as chrono counts them (unclamped: a July year holding 0001-03-01
+    /// starts 0000-07-01). The first day is
+    /// [`crate::calendar::fiscal_year_start_on`]'s, before its clamp.
     pub fn fiscal_year_containing(&self, d: NaiveDate) -> (NaiveDate, NaiveDate) {
-        let (m, day) = self.fiscal_year_start;
-        let on = |year| NaiveDate::from_ymd_opt(year, m, day).expect("validated month-day");
-        let start = if on(d.year()) <= d {
-            on(d.year())
-        } else {
-            on(d.year() - 1)
-        };
-        let end = on(start.year() + 1)
-            .pred_opt()
-            .expect("not the minimum date");
-        (start, end)
+        crate::calendar::fiscal_year_unclamped(self.fiscal_year_start, d)
     }
+}
+
+/// `policy.require_tax_category`: whether a revenue or expense account
+/// must map to a line of the return (rules.md B-32; DECISION, owner,
+/// 2026-10-20: warn by default; a company may refuse).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TaxCategoryPolicy {
+    /// An account is created without one, and the result and Needs
+    /// attention say so.
+    #[default]
+    Warn,
+    /// The chart tools refuse to create or leave a revenue or expense
+    /// account (not a header) without one.
+    Refuse,
 }
 
 /// `policy.parties`: whether entries name their counterparty
@@ -1286,6 +1303,14 @@ impl Settings {
             .unwrap_or_default()
     }
 
+    /// `policy.require_tax_category` (unset: warn).
+    pub fn require_tax_category(&self) -> TaxCategoryPolicy {
+        match self.str("policy.require_tax_category") {
+            Some("refuse") => TaxCategoryPolicy::Refuse,
+            _ => TaxCategoryPolicy::Warn,
+        }
+    }
+
     /// `policy.approval_rules`.
     pub fn approval_rules(&self) -> ApprovalMode {
         match self.str("policy.approval_rules") {
@@ -1561,6 +1586,61 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(s.get("company.name").unwrap().seq, 7);
+    }
+
+    /// policy.require_tax_category (rules.md B-32): warn or refuse, one
+    /// spelling each ("required" and "require" are refuse), nothing else
+    /// ("off" is no value: the warning is the floor); unset is warn.
+    #[test]
+    fn the_tax_category_policy_is_warn_or_refuse() {
+        let s = Settings::default();
+        assert_eq!(s.require_tax_category(), TaxCategoryPolicy::Warn);
+        let one = |v: &str| set(&s, "policy.require_tax_category", json!(v));
+        for (spelling, canon) in [
+            ("warn", "warn"),
+            (" Warn ", "warn"),
+            ("refuse", "refuse"),
+            ("REFUSE", "refuse"),
+            ("required", "refuse"),
+            ("require", "refuse"),
+        ] {
+            assert_eq!(
+                one(spelling).unwrap()[0].value,
+                Some(json!(canon)),
+                "{spelling}"
+            );
+        }
+        for bad in ["off", "none", "", "yes", "true"] {
+            assert!(one(bad).is_err(), "{bad}");
+        }
+        let mut s = Settings::default();
+        s.apply(&one("refuse").unwrap(), &src(), 3).unwrap();
+        assert_eq!(s.require_tax_category(), TaxCategoryPolicy::Refuse);
+        s.apply(&one("warn").unwrap(), &src(), 4).unwrap();
+        assert_eq!(s.require_tax_category(), TaxCategoryPolicy::Warn);
+        // Cleared: back to the default.
+        s.apply(
+            &[Change {
+                key: "policy.require_tax_category".into(),
+                value: None,
+            }],
+            &src(),
+            5,
+        )
+        .unwrap();
+        assert_eq!(s.require_tax_category(), TaxCategoryPolicy::Warn);
+        // A value only a later version writes reads as the default here
+        // (replay takes any string, INVARIANT 3).
+        s.apply(
+            &[Change {
+                key: "policy.require_tax_category".into(),
+                value: Some(json!("refuse_later")),
+            }],
+            &src(),
+            6,
+        )
+        .unwrap();
+        assert_eq!(s.require_tax_category(), TaxCategoryPolicy::Warn);
     }
 
     /// INVARIANT 4: no full TIN outside company.ein.

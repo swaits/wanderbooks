@@ -8,6 +8,7 @@ The books keep their own record of how they are kept. Every agent, anywhere, rea
 - Change settings with books.set_setting: one or more {key, value} together, with who decided (decided_by) and when (decided_on, default today). A value is checked and kept in one spelling; null clears a key back to its default. Change a setting when the human tells you a company fact or decides a policy, when a tool refuses naming a setting, when books.settings or books.digest lists a problem, and after books.renumber_account lists config_mentions.
 - The company's EIN is the one identity number the settings keep; it is shown masked. No other setting, note or convention ever holds a full TIN: those go only into the vault (the parties-and-tins section).
 - company.timezone sets what "today" means for the books.
+- policy.require_tax_category is warn (unset: a revenue or expense account without a tax category is created, and the result and Needs attention say so) or refuse (books.add_account, books.import_chart_csv and books.set_tax_category won't leave one without; the accounts invoices, bills and payroll create are never refused, and their results name them). Before setting refuse, categorize with the human every account books.digest lists in uncategorized_accounts.
 - books.export_settings writes the settings out as a settings file (TOML), each with who decided it. It is a copy: editing it changes nothing.
 
 ## Books that still read a settings file

@@ -35,8 +35,8 @@ pub use books::PackageBooks;
 pub use iif::export_iif;
 pub use package::{Package, PackageRequest, build_package, package_file_name};
 pub use reports::{
-    Settings, bs_statement, cash_flow_for, cash_flow_statement, member_capitals, pnl_statement,
-    report_members, report_meta, statement_range, year_earnings,
+    Settings, as_of_date, bs_statement, cash_flow_for, cash_flow_statement, member_capitals,
+    pnl_statement, report_members, report_meta, statement_range, year_earnings,
 };
 pub use text::{csv_escape, money, parse_date, share_text};
 pub use tins::{TinSource, tin_kind, tin_type_key, vault_tin};

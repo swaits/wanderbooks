@@ -883,3 +883,109 @@ fn read_journal_and_format_gives_every_line_and_the_format() {
         }
     );
 }
+
+/// P3's journal extensions (rules.md B-27; plan D-39): each is announced
+/// by a feature this version knows, declared once, just before the first
+/// line that needs it, with the features in force kept: `account_renamed`
+/// before the first `account.renamed`, `require_tax_category` before the
+/// first `settings.set` naming `policy.require_tax_category`. A reader
+/// whose features don't include it (every earlier version: none) stops at
+/// the declaration as newer, never at the line, and never calls it
+/// corrupt; books that never use either stay format 1 or 2 with no
+/// feature.
+#[test]
+fn p3_features_are_declared_once_before_the_first_line_that_needs_them() {
+    for f in ["account_renamed", "require_tax_category"] {
+        assert!(KNOWN_FEATURES.contains(&f), "{f}");
+    }
+    let dir = test_dir("p3-features");
+    books(&dir);
+    let mut store = Store::open(&dir).unwrap();
+    assert!(store.journal_format().features.is_empty());
+    store.rename_account(1, "Business Checking", None).unwrap();
+    store.rename_account(1, "Checking", None).unwrap();
+    store
+        .change_settings(
+            &[ledger_core::settings::Change {
+                key: "policy.require_tax_category".into(),
+                value: Some(json!("refuse")),
+            }],
+            &ledger_core::settings::Source {
+                decided_by: "Owner".into(),
+                decided_on: NaiveDate::from_ymd_opt(2026, 10, 20).unwrap(),
+                citation: None,
+                note: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        store.journal_format().features,
+        ["account_renamed", "require_tax_category"]
+    );
+    drop(store);
+    let text = std::fs::read_to_string(dir.join(JOURNAL_FILE)).unwrap();
+    let lines: Vec<serde_json::Value> = text
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let kinds: Vec<(&str, serde_json::Value)> = lines
+        .iter()
+        .map(|l| (l["type"].as_str().unwrap(), l["payload"].clone()))
+        .filter(|(t, _)| matches!(*t, FORMAT_SET | "account.renamed" | "settings.set"))
+        .collect();
+    assert_eq!(kinds[0].0, FORMAT_SET);
+    assert_eq!(
+        kinds[0].1,
+        json!({"format": 2, "features": ["account_renamed"]})
+    );
+    assert_eq!(kinds[1].0, "account.renamed");
+    assert_eq!(kinds[2].0, "account.renamed");
+    assert_eq!(kinds[3].0, FORMAT_SET);
+    assert_eq!(
+        kinds[3].1,
+        json!({"format": 2, "features": ["account_renamed", "require_tax_category"]})
+    );
+    assert_eq!(kinds[4].0, "settings.set");
+    assert_eq!(kinds.len(), 5);
+    // An earlier reader knows no feature (P2: KNOWN_FEATURES was empty),
+    // so the gate stops it at the first declaration, before the rename:
+    // the gate's refusal of a feature it doesn't know is pinned by
+    // an_unknown_feature_before_a_rename_is_newer_at_the_declaration.
+    // This version opens them, in the writer and the viewer.
+    let store = Store::open(&dir).unwrap();
+    store.verify().unwrap();
+    assert_eq!(store.ledger().chart().get(1).unwrap().name, "Checking");
+    drop(store);
+    let snap = Snapshot::load(&dir).unwrap();
+    assert_eq!(snap.ledger().chart().get(1).unwrap().name, "Checking");
+}
+
+/// A feature this version doesn't know, declared before an account.renamed
+/// (as a later version would), is newer at the declaration: the line after
+/// it is never read.
+#[test]
+fn an_unknown_feature_before_a_rename_is_newer_at_the_declaration() {
+    let dir = test_dir("p3-unknown-feature");
+    books(&dir);
+    let seqs = append(
+        &dir,
+        &[
+            (
+                FORMAT_SET,
+                json!({"format": 2, "features": ["account_renamed", "later"]}),
+            ),
+            (
+                "account.renamed",
+                json!({"account_id": 1, "code": "1000", "name": "x", "previous": "Cash", "reason": null}),
+            ),
+        ],
+    );
+    let _ = std::fs::remove_file(dir.join(DB_FILE));
+    match Store::open(&dir) {
+        Err(StoreError::NewerJournal { seq, need, .. }) => {
+            assert_eq!(seq, seqs[0]);
+            assert_eq!(need, "journal features later");
+        }
+        other => panic!("expected NewerJournal, got {:?}", other.map(|_| ())),
+    }
+}

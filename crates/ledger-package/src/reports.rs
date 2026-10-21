@@ -8,9 +8,11 @@
 //!         books.cash_flow, books.export_cpa_package); ASC 230-10-20
 //!         (financing and investing activities).
 //! INVARIANTS:
-//!   1. A range defaults its end to `today` and its start to the first
-//!      posted entry (never after the end); an end before its start is
-//!      refused.
+//!   1. A range's omitted dates are the one default (rules.md B-30,
+//!      `ledger_core::calendar::PeriodDefaults`): an omitted end is
+//!      `today`, an omitted start the first day of the fiscal year that
+//!      holds the end; a start after the end, given or derived, is
+//!      refused, never swapped. An omitted as_of is `today`.
 //!   2. The cash flow statement needs at least one cash account, and
 //!      every code it is given must be in the chart; account lists a call
 //!      leaves empty default to the settings' roles. It foots, or it is
@@ -46,68 +48,67 @@ pub struct Settings<'a> {
     pub investing_accounts: &'a [String],
 }
 
-/// Resolve a statement's date range: `end` defaults to `today` and `start`
-/// to the first posted entry (where "from the beginning" really begins, so
-/// no statement says "0001-01-01"), or to `end` for empty books. An end
-/// before its start is refused (INVARIANT 1).
+/// Resolve a statement's date range (INVARIANT 1): the dates as given,
+/// each omitted one the books' default for `company` on `today`
+/// (rules.md B-30).
 pub fn statement_range(
-    ledger: &Ledger,
+    company: &Company,
     start: Option<&str>,
     end: Option<&str>,
     today: NaiveDate,
 ) -> Result<(NaiveDate, NaiveDate), String> {
-    let end = match end {
-        Some(s) => parse_date(s)?,
-        None => today,
-    };
-    let start = match start {
-        Some(s) => parse_date(s)?,
-        None => ledger
-            .posted_entries()
-            .map(|e| e.date())
-            .min()
-            .map_or(end, |first| first.min(end)),
-    };
-    if end < start {
-        return Err("end is before start".to_string());
-    }
-    Ok((start, end))
+    let start = start.map(parse_date).transpose()?;
+    let end = end.map(parse_date).transpose()?;
+    ledger_core::calendar::period_defaults(company, today)
+        .statement(start, end)
+        .map_err(|e| e.to_string())
+}
+
+/// Resolve a point-in-time report's day (INVARIANT 1): as given, else
+/// `today`.
+pub fn as_of_date(
+    company: &Company,
+    as_of: Option<&str>,
+    today: NaiveDate,
+) -> Result<NaiveDate, String> {
+    let given = as_of.map(parse_date).transpose()?;
+    Ok(ledger_core::calendar::period_defaults(company, today).as_of(given))
 }
 
 /// Profit and loss for a range (see [`statement_range`]), optionally one
 /// class.
 pub fn pnl_statement(
     ledger: &Ledger,
+    company: &Company,
     start: Option<&str>,
     end: Option<&str>,
     class_id: Option<ledger_core::ClassId>,
     today: NaiveDate,
 ) -> Result<ledger_core::ProfitAndLossStatement, String> {
-    let (start, end) = statement_range(ledger, start, end, today)?;
+    let (start, end) = statement_range(company, start, end, today)?;
     ledger_core::profit_and_loss_for_period(ledger, start, end, class_id).map_err(|e| e.to_string())
 }
 
-/// Balance sheet as of a date (default `today`).
+/// Balance sheet as of a day (see [`as_of_date`]).
 pub fn bs_statement(
     ledger: &Ledger,
+    company: &Company,
     as_of: Option<&str>,
     today: NaiveDate,
 ) -> Result<ledger_core::BalanceSheetStatement, String> {
-    let as_of = match as_of {
-        Some(s) => parse_date(s)?,
-        None => today,
-    };
+    let as_of = as_of_date(company, as_of, today)?;
     ledger_core::balance_sheet_as_of(ledger, as_of).map_err(|e| e.to_string())
 }
 
 /// Build the cash flow statement from account codes, as the exports need it:
-/// `start` defaults to the beginning of time, `end` to `today`, and at
-/// least one cash account is required (the statement reconciles to them).
-/// A member whose capital account the chart lacks is left unnamed (equity
-/// is then named by account), never a refusal of the statement.
+/// the range as [`statement_range`] resolves it, and at least one cash
+/// account (the statement reconciles to them). A member whose capital
+/// account the chart lacks is left unnamed (equity is then named by
+/// account), never a refusal of the statement.
 #[allow(clippy::too_many_arguments)]
 pub fn cash_flow_statement(
     ledger: &Ledger,
+    company: &Company,
     start: Option<&str>,
     end: Option<&str>,
     cash_codes: &[String],
@@ -137,7 +138,7 @@ pub fn cash_flow_statement(
     }
     let financing_accounts = resolve(financing_codes, "financing")?;
     let investing_accounts = resolve(investing_codes, "investing")?;
-    let (start, end) = statement_range(ledger, start, end, today)?;
+    let (start, end) = statement_range(company, start, end, today)?;
     let chart = ledger.chart();
     let members = members
         .iter()
@@ -190,6 +191,7 @@ pub fn cash_flow_for(
     };
     cash_flow_statement(
         ledger,
+        settings.company,
         start,
         end,
         &or(cash, settings.cash_accounts),
@@ -274,7 +276,7 @@ pub fn year_earnings(
     company: &Company,
     as_of: NaiveDate,
 ) -> Result<ledger_import::YearEarnings, String> {
-    let (fy_start, _) = company.fiscal_year_containing(as_of);
+    let fy_start = ledger_core::calendar::fiscal_year_start_on(company.fiscal_year_start, as_of);
     let net_income_ytd = ledger_core::profit_and_loss_for_period(ledger, fy_start, as_of, None)
         .map_err(|e| e.to_string())?
         .net_income();

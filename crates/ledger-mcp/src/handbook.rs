@@ -43,7 +43,8 @@ pub const CONNECT_LEAD: usize = 512;
 
 /// The handbook's sections, in reading order: (id, markdown). Each starts
 /// with a `# Title` line; `{evidence_rule}` stands for the receipt rule in
-/// force.
+/// force, and `{period_rule}` for what omitted report dates mean
+/// ([`period_rule`]).
 pub const SECTIONS: &[(&str, &str)] = &[
     ("contract", include_str!("../handbook/contract.md")),
     ("entries", include_str!("../handbook/entries.md")),
@@ -116,7 +117,10 @@ pub const ALL: &str = "all";
 /// The section `id` (or [`ALL`]), rendered for these settings and the
 /// books' base currency (None: no such section).
 pub fn section(id: &str, settings: &Settings, currency: &str) -> Option<String> {
-    let render = |md: &str| md.replace("{evidence_rule}", &evidence_rule(settings, currency));
+    let render = |md: &str| {
+        md.replace("{evidence_rule}", &evidence_rule(settings, currency))
+            .replace("{period_rule}", &period_rule())
+    };
     if id == ALL {
         let parts: Vec<String> = SECTIONS.iter().map(|(_, md)| render(md)).collect();
         return Some(parts.join("\n"));
@@ -125,6 +129,17 @@ pub fn section(id: &str, settings: &Settings, currency: &str) -> Option<String> 
         .iter()
         .find(|(s, _)| *s == id)
         .map(|(_, md)| render(md))
+}
+
+/// What omitted report dates mean (rules.md B-30), in the words every
+/// report tool's description uses (`ledger_core::calendar::PeriodKind`).
+pub fn period_rule() -> String {
+    use ledger_core::calendar::PeriodKind;
+    format!(
+        "{} For a report as of a day (balance sheet, trial balance, aging): {}",
+        PeriodKind::Statement.describe(),
+        PeriodKind::AsOf.describe()
+    )
 }
 
 /// The receipt rule in force (INVARIANT 2).
@@ -460,7 +475,14 @@ mod tests {
             assert!(!title(md).is_empty());
             let text = section(id, &s, "USD").unwrap();
             assert!(!text.contains("{evidence_rule}"), "{id}");
+            assert!(!text.contains("{period_rule}"), "{id}");
         }
+        // The default period, in the descriptions' own words (B-30).
+        assert!(
+            section("tracing-figures", &s, "USD")
+                .unwrap()
+                .contains(ledger_core::calendar::PeriodKind::Statement.describe())
+        );
         assert!(
             section("evidence-and-receipts", &s, "USD")
                 .unwrap()
@@ -497,6 +519,7 @@ mod tests {
             at += found + one.len();
         }
         assert!(!all.contains("{evidence_rule}"));
+        assert!(!all.contains("{period_rule}"));
         assert!(SECTIONS.iter().all(|(id, _)| *id != ALL));
     }
 

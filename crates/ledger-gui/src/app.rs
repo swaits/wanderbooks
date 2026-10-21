@@ -374,15 +374,33 @@ impl App {
     }
 
     /// Go where the agent asked (`books.show`).
+    ///
+    /// ```text
+    /// GOAL: the viewer shows what the agent was told it shows.
+    /// SOURCE: rules.md B-30 (one default period; a start after the end is
+    ///         refused, never swapped); plan/served.md P3 defect 15.
+    /// INVARIANTS:
+    ///   1. A target's dates are taken as the server resolved them, an
+    ///      omitted one (an earlier writer's) by the same rule
+    ///      (Books::periods), never swapped, clamped or guessed.
+    ///   2. A target the viewer can't honour (an unknown page, report,
+    ///      split or comparison; text that isn't a date; a start after
+    ///      the end; an account, asset or party not in the books) is
+    ///      ignored whole: the page, range and split stay as they were.
+    /// ```
     pub fn show(&mut self, target: ledger_store::ops::ViewerTarget) {
         use crate::nav::ReportKind;
         use ledger_store::ops::ViewerTarget as T;
         let Some(b) = self.books.clone() else {
             return;
         };
-        let date = |s: &Option<String>| {
-            s.as_deref()
-                .and_then(|d| d.parse::<chrono::NaiveDate>().ok())
+        // Some(None): omitted; None: text that isn't a date.
+        let date = |s: &Option<String>| match s.as_deref() {
+            None => Some(None),
+            Some(d) => d.parse::<chrono::NaiveDate>().ok().map(Some),
+        };
+        let dates = |start: &Option<String>, end: &Option<String>| {
+            b.periods().statement(date(start)?, date(end)?).ok()
         };
         let route = match target {
             T::Page { page } => match page.as_str() {
@@ -401,15 +419,17 @@ impl App {
             },
             T::Entry { entry_id } => Route::Entry(entry_id),
             T::Account { code, start, end } => {
+                use crate::pages::accounts::RegisterRange;
                 let Some(a) = b.ledger.chart().find_by_code(&code) else {
                     return;
                 };
-                self.state.accounts.range = match (date(&start), date(&end)) {
-                    (None, None) => None,
-                    (s, e) => Some((
-                        s.unwrap_or_else(|| b.kpis.first_entry.unwrap_or(b.today)),
-                        e.unwrap_or(b.today),
-                    )),
+                let Some((s, e)) = dates(&start, &end) else {
+                    return;
+                };
+                self.state.accounts.range = if start.is_none() && end.is_none() {
+                    RegisterRange::Default
+                } else {
+                    RegisterRange::Dates(s, e)
                 };
                 Route::Account(a.id)
             }
@@ -420,17 +440,22 @@ impl App {
                 columns,
                 compare,
             } => {
-                use crate::pages::reports::{Columns, Compare};
-                self.state.reports.columns = match columns.as_deref() {
+                use crate::pages::reports::{Columns, Compare, Range};
+                let columns = match columns.as_deref() {
+                    None | Some("total") => Columns::Total,
                     Some("month") => Columns::Month,
                     Some("quarter") => Columns::Quarter,
                     Some("year") => Columns::Year,
-                    _ => Columns::Total,
+                    Some(_) => return,
                 };
-                self.state.reports.compare = match compare.as_deref() {
+                let compare = match compare.as_deref() {
+                    None => Compare::None,
                     Some("prior_period") => Compare::PriorPeriod,
                     Some("prior_year") => Compare::PriorYear,
-                    _ => Compare::None,
+                    Some(_) => return,
+                };
+                let Some((s, e)) = dates(&start, &end) else {
+                    return;
                 };
                 let kind = match report.as_str() {
                     "profit_and_loss" => ReportKind::ProfitAndLoss,
@@ -446,13 +471,14 @@ impl App {
                     "fixed_asset_register" => ReportKind::FixedAssetRegister,
                     _ => return,
                 };
-                if let (s, e) = (date(&start), date(&end))
-                    && (s.is_some() || e.is_some())
-                {
-                    let (ds, de) = crate::pages::reports::Range::YearToDate.dates(&b);
-                    self.state.reports.range =
-                        crate::pages::reports::Range::Custom(s.unwrap_or(ds), e.unwrap_or(de));
-                }
+                self.state.reports.columns = columns;
+                self.state.reports.compare = compare;
+                // The dates as sent, by a preset's name when they are one
+                // (the default first: "Year to date"), else Custom.
+                self.state.reports.range = std::iter::once(Range::default())
+                    .chain(Range::PRESETS)
+                    .find(|r| r.dates(&b) == (s, e))
+                    .unwrap_or(Range::Custom(s, e));
                 Route::Reports(kind)
             }
             T::Document { attachment_id } => Route::Document(attachment_id),

@@ -558,6 +558,25 @@ pub fn tax_summary(ts: &ledger_core::TaxSummary) -> Statement {
         ));
         rows.extend(lines(&ts.separately_stated));
     }
+    if !ts.form_4797.is_empty() {
+        rows.push(spacer());
+        rows.push(section("Gains and losses on business property (Form 4797)"));
+        rows.push(subheading(
+            "Book amounts; the CPA figures the tax gain from the tax basis and where it goes; not included above:",
+        ));
+        rows.extend(ts.form_4797.iter().map(|l| {
+            let codes: Vec<&str> = l
+                .accounts
+                .iter()
+                .map(|a| a.split_whitespace().next().unwrap_or(""))
+                .collect();
+            row(
+                RowKind::Line,
+                format!("{} ({})", l.label, codes.join(", ")),
+                vec![Some(l.book), None, None],
+            )
+        }));
+    }
     if !ts.uncategorized.is_empty() {
         rows.push(spacer());
         rows.push(section("Not yet categorized"));

@@ -510,7 +510,8 @@ impl Integrity {
 ///      minus revenue, divided by the months of those the books cover
 ///      (from the first posted entry's month); Some only when positive,
 ///      rounded to the cent half away from zero.
-///   7. first_entry: the earliest posted entry's date.
+///   7. first_entry, last_entry: the earliest and the latest posted
+///      entry's date.
 /// ```
 #[derive(Clone, Debug, Default)]
 pub struct Kpis {
@@ -527,6 +528,9 @@ pub struct Kpis {
     /// Average monthly net loss over the last three full months, if losing.
     pub monthly_burn: Option<Decimal>,
     pub first_entry: Option<NaiveDate>,
+    /// The latest posted entry's date (an entry may be dated after
+    /// today).
+    pub last_entry: Option<NaiveDate>,
 }
 
 impl Books {
@@ -846,10 +850,42 @@ impl Books {
         (start, self.today)
     }
 
-    /// The fiscal year to date.
+    /// The fiscal year to date: the fiscal year's first day through today
+    /// (the "Year to date" preset and the overview's figures). The
+    /// fiscal-year fact itself, not "what an omitted date means"
+    /// ([`Self::default_period`]): a label never follows a default.
     pub fn fiscal_ytd(&self) -> (NaiveDate, NaiveDate) {
-        let (start, _) = self.settings.company.fiscal_year_containing(self.today);
+        let start = ledger_core::calendar::fiscal_year_start_on(
+            self.settings.company.fiscal_year_start,
+            self.today,
+        );
         (start, self.today)
+    }
+
+    /// What omitted dates mean today, for these books: the one rule the
+    /// server's report tools, `books.show` and the viewer share (rules.md
+    /// B-30).
+    pub fn periods(&self) -> ledger_core::calendar::PeriodDefaults {
+        ledger_core::calendar::period_defaults(&self.settings.company, self.today)
+    }
+
+    /// Every date the books hold: the first posted entry (today when
+    /// there is none, or when it is later) through the later of today and
+    /// the last posted entry, so no entry dated after today is left out
+    /// ("Show all dates", "All time"; as `party_span`'s all time ends).
+    pub fn all_dates(&self) -> (NaiveDate, NaiveDate) {
+        let t = self.today;
+        (
+            self.kpis.first_entry.unwrap_or(t).min(t),
+            self.kpis.last_entry.unwrap_or(t).max(t),
+        )
+    }
+
+    /// The period a report or register opens on when nobody chose one:
+    /// the fiscal year to date (rules.md B-30), as the agent's report
+    /// tools give it for no dates.
+    pub fn default_period(&self) -> (NaiveDate, NaiveDate) {
+        self.periods().statement_range()
     }
 
     fn compute_kpis(&self) -> Kpis {
@@ -880,12 +916,14 @@ impl Books {
         let (fy_start, _) = self.fiscal_ytd();
         let ytd = pl(fy_start, today);
         let three = pl(ms - chrono::Months::new(3), prev_end);
-        let first_entry = self
-            .entries
-            .iter()
-            .filter(|e| e.status == EntryStatus::Posted)
-            .map(|e| e.date)
-            .min();
+        let posted = || {
+            self.entries
+                .iter()
+                .filter(|e| e.status == EntryStatus::Posted)
+                .map(|e| e.date)
+        };
+        let first_entry = posted().min();
+        let last_entry = posted().max();
         let monthly_burn = three.and_then(|p| {
             let loss = p.total_expenses - p.total_revenue;
             // Only months the books cover count toward the average.
@@ -918,6 +956,7 @@ impl Books {
                 .unwrap_or_default(),
             monthly_burn,
             first_entry,
+            last_entry,
         }
     }
 
@@ -968,7 +1007,7 @@ impl Books {
     /// Every party's [`PartyInfo`].
     fn party_infos(&self) -> BTreeMap<PartyId, PartyInfo> {
         let l = &self.ledger;
-        let year = self.today.year();
+        let year = self.periods().calendar_year();
         let in_year = |d: NaiveDate| d.year() == year;
         // A sum that can't be computed exactly stays None (INVARIANT 4a).
         let add = |sum: &mut Option<Decimal>, v: Result<Decimal, LedgerError>| {
@@ -1386,7 +1425,7 @@ impl Books {
             )
         };
         match period {
-            PartyPeriod::ThisYear => year(self.today.year()),
+            PartyPeriod::ThisYear => year(self.periods().calendar_year()),
             PartyPeriod::LastYear => year(self.today.year() - 1),
             PartyPeriod::Year(y) => year(y),
             PartyPeriod::AllTime => {

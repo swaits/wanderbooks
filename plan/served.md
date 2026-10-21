@@ -556,7 +556,7 @@ Every event may carry an additive `actor {principal, client_id, kind}`, which re
 | `convention.set {id, kind: posting_template\|approval_rule\|policy\|close_step\|calendar\|mapping\|note, title, body_md, structured?, source, supersedes?}` / `convention.retired` | P1 | `Conventions` |
 | `decision.recorded {id, subject, decision_md, decided_by[party], decided_on, evidence_attachment?, supersedes?}` | P1 | `Conventions` |
 | `open_item.raised` / `open_item.resolved` | P1 | `Conventions` |
-| `account.renamed {code, name, previous, reason}` | P3 | chart |
+| `account.renamed {account_id, code, name, previous, reason}` (keyed by id, as `account.renumbered`: a code can change, an id can't; `code` is informational; the journal feature `account_renamed` is declared before the first) | P3 | chart |
 | `instrument.added {id, kind: bank\|business_card\|member_card\|member_cash_or_check\|platform, label, last4?, owner_party?, account?}` / `entry.instrument_set` | P3 | `Ledger` (1099) |
 | `asset.basis_set {asset, rule: purchase\|carryover_723\|personal_use_conversion, fmv_at_contribution?, contributor_adjusted_basis?, tax_basis_723, depreciable_basis, built_in_gain_704c, sec704c_method?}` (legacy `asset.tax_basis_set` still replays) | P3 | assets |
 | `schedule.registered` + `convention` (absent = `monthly_even`) | P3 | schedules |
@@ -591,7 +591,7 @@ Each key has a validator, a docstring (which becomes the `books.settings` schema
 |---|---|
 | company | `company.name`, `.entity_type`, `.tax_classification`, `.tax_form`, `.fiscal_year_start`, `.timezone` (drives `today()`, replacing `chrono::Local` at S:1943), `.legal{formation_state, formed, state_entity_number, address, registered_agent, partnership_representative, irs_name_control, duns}`, `.ein` (identity; D-5, decided), `.cpa` (party), `.members` (effective-dated `[{party, share, capital_account, distribution_account, files_jointly_with}]`) |
 | books | `books.accounting_basis`, `.cash_accounts`, `.financing_accounts`, `.investing_accounts`, `.asset_tag_prefix`, `.close_into`, `.close_sweep`, `.schedule_convention` |
-| policy | `policy.evidence{threshold, required_accounts, exempt_accounts}` (replaces config.json `receipt_policy`), `policy.parties`, `policy.capitalization{de_minimis, twelve_month_rule, sources}`, `policy.require_tax_category`, `policy.attestation_bar` (default per D-9), `policy.cpa_package_requires_audit: refuse\|warn` (default `refuse`, overridable per export with a reason; D-9), `policy.audit_cadence`, `policy.approval_rules: off\|enforce` (default `off`: `approval_rule` conventions are recorded but never block a post) |
+| policy | `policy.evidence{threshold, required_accounts, exempt_accounts}` (replaces config.json `receipt_policy`), `policy.parties`, `policy.capitalization{de_minimis, twelve_month_rule, sources}`, `policy.require_tax_category: warn\|refuse` (default `warn`; the journal feature `require_tax_category` is declared before the first change naming it), `policy.attestation_bar` (default per D-9), `policy.cpa_package_requires_audit: refuse\|warn` (default `refuse`, overridable per export with a reason; D-9), `policy.audit_cadence`, `policy.approval_rules: off\|enforce` (default `off`: `approval_rule` conventions are recorded but never block a post) |
 
 `base_currency` stays in `store.created`. `[books] data_dir`, `[vault] key_file` and `[viewer]` are dropped on import with a note. Unknown keys are reported as problems instead of being silently ignored.
 

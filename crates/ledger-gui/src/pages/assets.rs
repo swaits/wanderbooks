@@ -764,7 +764,7 @@ fn reconciliation(ui: &mut Ui, b: &Books, r: &AssetRegister, shell: &mut Shell<'
         },
     );
     if let Some(id) = go {
-        shell.state.accounts.range = None;
+        shell.state.accounts.range = crate::pages::accounts::RegisterRange::Default;
         shell.go(Route::Account(id));
     }
 }
@@ -927,7 +927,8 @@ pub fn show_asset(ui: &mut Ui, b: &Books, id: AssetId, shell: &mut Shell<'_>) {
                                 )
                                 .clicked()
                                 {
-                                    shell.state.accounts.range = None;
+                                    shell.state.accounts.range =
+                                        crate::pages::accounts::RegisterRange::Default;
                                     go = Some(Route::Account(acct));
                                 }
                                 ui.end_row();

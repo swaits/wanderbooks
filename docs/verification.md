@@ -169,9 +169,19 @@ sequence of commands, of any length**:
     checked by `settings_replay_is_pure`, which snapshots every figure and
     entry around each record (rules.md B-29). Settings that change how the
     same entries are presented (the fiscal year, cash flow roles, members)
-    are outside this law by design.
+    are outside this law by design. A rename (`rename_account`, P3,
+    rules.md B-31) is a record too: the model's chart is `(code, type)`
+    (`Ledger.lean`), names are not modelled, so a rename is the identity
+    on the model and needs no new `Step` (plan I-13 is met as P1 met it
+    for records). The engine's side is the property
+    `prop_rename_changes_no_figure` (ledger-store `tests/store.rs`: every
+    statement amount, entry and earlier journal line unchanged, live
+    equals replay, the projection unchanged but `accounts.name`), and the
+    stateful model `tests/model.rs` keeps a name per account so engine
+    and model agree on every rename's refusal and nothing else moves.
     - Lean `Step.record_changes_no_figure`, `Reachable.records` (no
-      axioms at all) · property `settings_replay_is_pure`
+      axioms at all) · property `settings_replay_is_pure` ·
+      `prop_rename_changes_no_figure` · model `Cmd::Rename`
 
 ### Closing
 

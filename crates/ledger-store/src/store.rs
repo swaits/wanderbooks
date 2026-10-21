@@ -584,24 +584,36 @@ impl Store {
     }
 
     /// Declare a journal feature (crate::format::KNOWN_FEATURES) before the
-    /// first event that needs it: a field or value on a known event type
-    /// that an older version would otherwise misread silently. Declared
-    /// with the format in force (at least 2) and every feature already in
-    /// force; nothing is journaled when it is already declared. Books that
-    /// never use the feature stay readable by older versions.
+    /// first line that needs it: a new event type, or a field or value on
+    /// a known event type that an older version would otherwise misread
+    /// silently. Declared with the format in force (at least format 2,
+    /// crate::meta::FORMAT) and every feature already in force; nothing is
+    /// journaled when it is already declared. Books that never use the
+    /// feature stay readable by older versions.
     ///
     /// ```text
     /// GOAL: an older wanderbooks stops at the declaration (NewerJournal)
-    ///       instead of misreading a line it thinks it knows.
+    ///       instead of misreading, or failing on, a line it can't read.
     /// SOURCE: rules.md B-27; plan/served.md 5.1 (format gate).
     /// ```
     fn ensure_feature(&mut self, feature: &str) -> Result<(), StoreError> {
-        if self.format.features.iter().any(|f| f == feature) {
+        self.ensure_features(&[feature])
+    }
+
+    /// [`Self::ensure_feature`] for several at once: one declaration
+    /// naming every one not yet in force, or none when all are.
+    fn ensure_features(&mut self, needed: &[&str]) -> Result<(), StoreError> {
+        let mut features: Vec<String> = self.format.features.clone();
+        let before = features.len();
+        for f in needed {
+            if !features.iter().any(|g| g == f) {
+                features.push(f.to_string());
+            }
+        }
+        if features.len() == before {
             return Ok(());
         }
         let format = self.format.format.max(crate::meta::FORMAT);
-        let mut features = self.format.features.clone();
-        features.push(feature.to_string());
         let features: Vec<&str> = features.iter().map(String::as_str).collect();
         self.declare_journal_format(format, &features)
     }
@@ -642,6 +654,14 @@ impl Store {
         if changes.is_empty() && !(adopt && !self.ledger.settings().is_journaled()) {
             return Ok(changes);
         }
+        // A key an older version doesn't know needs its feature declared
+        // first (crate::format::setting_feature), in the one declaration
+        // that also brings the books to format 2.
+        let needed: Vec<&str> = changes
+            .iter()
+            .filter_map(|c| crate::format::setting_feature(&c.key))
+            .collect();
+        self.ensure_features(&needed)?;
         self.ensure_format()?;
         let line =
             self.append_journal("settings.set", crate::meta::settings_set(&changes, source))?;
@@ -827,7 +847,8 @@ impl Store {
         self.journal.append(line_type, payload)
     }
 
-    /// Add an account to the chart.
+    /// Add an account to the chart, with no tax category (see
+    /// [`Self::add_account_with_tax`]).
     pub fn add_account(
         &mut self,
         code: &str,
@@ -836,7 +857,73 @@ impl Store {
         parent: Option<AccountId>,
         placeholder: bool,
     ) -> Result<AccountId, StoreError> {
-        self.rehearse(|l| l.add_account(code, name, account_type, parent, placeholder))?;
+        self.add_account_with_tax(code, name, account_type, parent, placeholder, None)
+    }
+
+    /// Add an account to the chart (`Ledger::add_account`) with, when
+    /// `tax` is given, its tax category and deductible percent:
+    /// `account.added`, then `account.tax_set`, the two events
+    /// `books.import_chart_csv` has always written.
+    ///
+    /// ```text
+    /// GOAL: an account created with the line of the return it maps to.
+    /// SOURCE: rules.md B-32 (policy.require_tax_category).
+    /// INVARIANTS:
+    ///   1. Rehearsed whole first: a refusal (of the account, or of its
+    ///      category) journals nothing.
+    ///   2. Under policy.require_tax_category = refuse, a revenue or
+    ///      expense account that isn't a header and has no category is
+    ///      refused (TaxCategoryRequired), journaling nothing.
+    ///   3. No new event and no new field: a power cut between the two
+    ///      appends leaves an account without a category, the warn
+    ///      state, which Needs attention lists; never a damaged journal.
+    ///   4. The name is journaled trimmed, as `Ledger::add_account` keeps
+    ///      it and a rename journals one, so live equals replay.
+    /// ```
+    pub fn add_account_with_tax(
+        &mut self,
+        code: &str,
+        name: &str,
+        account_type: AccountType,
+        parent: Option<AccountId>,
+        placeholder: bool,
+        tax: Option<(&str, Option<Decimal>)>,
+    ) -> Result<AccountId, StoreError> {
+        let name = name.trim();
+        let (category, pct) = match tax {
+            Some((c, p)) => (Some(c), p),
+            None => (None, None),
+        };
+        self.rehearse(|l| {
+            let id = l.add_account(code, name, account_type, parent, placeholder)?;
+            if category.is_some() {
+                l.set_account_tax(id, category, pct)?;
+            }
+            Ok(id)
+        })?;
+        self.ledger
+            .check_tax_category_required(code, name, account_type, placeholder, category)?;
+        let id =
+            self.journal_account_added(code, name, account_type, parent, placeholder, |l| {
+                l.add_account(code, name, account_type, parent, placeholder)
+            })?;
+        if category.is_some() {
+            self.journal_account_tax(id, category, pct)?;
+        }
+        Ok(id)
+    }
+
+    /// Journal `account.added` and apply it with `add` (the command the
+    /// caller rehearsed).
+    fn journal_account_added(
+        &mut self,
+        code: &str,
+        name: &str,
+        account_type: AccountType,
+        parent: Option<AccountId>,
+        placeholder: bool,
+        add: impl FnOnce(&mut Ledger) -> Result<AccountId, LedgerError>,
+    ) -> Result<AccountId, StoreError> {
         // Pure pre-validation replicating ChartOfAccounts::add, so the
         // journal write below cannot be followed by a failed mutation.
         let chart = self.ledger.chart();
@@ -864,9 +951,7 @@ impl Store {
                 "currency": self.base_currency.code(),
             }),
         )?;
-        let live = self
-            .ledger
-            .add_account(code, name, account_type, parent, placeholder)?;
+        let live = add(&mut self.ledger)?;
         debug_assert_eq!(live, id, "id allocator diverged from journal");
         apply_line_to_sqlite(&self.conn, &line)?;
         Ok(live)
@@ -1970,7 +2055,10 @@ impl Store {
     /// code), creating it at its code through the journaled
     /// account path when missing. The ledger's internal ensure_account
     /// then no-ops, which keeps replay deterministic: every account
-    /// creation is an `account.added` event.
+    /// creation is an `account.added` event. The engine's account
+    /// (`Ledger::add_control_account`): never refused for its name or a
+    /// missing tax category (rules.md B-32), so an invoice, a bill or a
+    /// payroll run is never refused over a chart label.
     fn ensure_control_account(
         &mut self,
         c: &ledger_core::ControlAccount,
@@ -1978,7 +2066,10 @@ impl Store {
         if let Some(id) = self.ledger.role_account(c) {
             return Ok(id);
         }
-        self.add_account(c.code, c.name, c.account_type, None, false)
+        self.rehearse(|l| l.add_control_account(c))?;
+        self.journal_account_added(c.code, c.name, c.account_type, None, false, |l| {
+            l.add_control_account(c)
+        })
     }
 
     /// Journal an auto-posted two-line entry (debit one account, credit
@@ -2854,6 +2945,58 @@ impl Store {
         Ok(())
     }
 
+    /// Give an account a new name (see `Ledger::rename_account`), with an
+    /// optional reason. Journaled as `account.renamed`, keyed by the
+    /// account's id (a code can change; an id can't), with its code, the
+    /// new name, the name it had and the reason. The first rename declares
+    /// the journal feature `account_renamed`
+    /// ([`crate::format::FEATURE_ACCOUNT_RENAMED`]), so an earlier version
+    /// stops at the declaration.
+    ///
+    /// ```text
+    /// GOAL: rename an account, keeping the name it had in the journal.
+    /// SOURCE: rules.md B-31; Rev. Proc. 98-25 (docs/spec/sources/
+    ///         irs-records.md): a report printed under the old name can
+    ///         be tied to the new one.
+    /// INVARIANTS:
+    ///   1. Only the account's name changes (Ledger::rename_account
+    ///      INVARIANT 1): every entry, line, hash and earlier journal line
+    ///      stays as it was.
+    ///   2. Rehearsed and checked first: a refusal journals nothing, not
+    ///      even the feature's declaration.
+    /// ```
+    pub fn rename_account(
+        &mut self,
+        account: AccountId,
+        name: &str,
+        reason: Option<&str>,
+    ) -> Result<(), StoreError> {
+        self.rehearse(|l| l.rename_account(account, name))?;
+        self.ledger.check_rename_account(account, name)?;
+        let reason = reason.map(Ledger::check_rename_reason).transpose()?;
+        let a = self
+            .ledger
+            .chart()
+            .get(account)
+            .ok_or(LedgerError::UnknownAccount(account))?;
+        let (code, previous) = (a.code.clone(), a.name.clone());
+        let name = name.trim();
+        self.ensure_feature(crate::format::FEATURE_ACCOUNT_RENAMED)?;
+        let line = self.append_journal(
+            "account.renamed",
+            json!({
+                "account_id": account,
+                "code": code,
+                "name": name,
+                "previous": previous,
+                "reason": reason,
+            }),
+        )?;
+        self.ledger.rename_account(account, name)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
     /// Assign a control role an account, or (`None`) return it to its code
     /// (see `Ledger::assign_role`). Journaled as `role.assigned`, with the
     /// account that filled the role before.
@@ -2874,7 +3017,10 @@ impl Store {
     }
 
     /// Set (or clear) an account's tax category and deductible percent.
-    /// Journaled as `account.tax_set`.
+    /// Journaled as `account.tax_set`. Under
+    /// `policy.require_tax_category = refuse`, an account that needs a
+    /// category is never left without one (rules.md B-32;
+    /// `Ledger::check_tax_category_kept`).
     pub fn set_account_tax(
         &mut self,
         account: AccountId,
@@ -2882,6 +3028,17 @@ impl Store {
         deductible_percent: Option<Decimal>,
     ) -> Result<(), StoreError> {
         self.rehearse(|l| l.set_account_tax(account, category, deductible_percent))?;
+        self.ledger.check_tax_category_kept(account, category)?;
+        self.journal_account_tax(account, category, deductible_percent)
+    }
+
+    /// Journal `account.tax_set` and apply it (the policy is the caller's).
+    fn journal_account_tax(
+        &mut self,
+        account: AccountId,
+        category: Option<&str>,
+        deductible_percent: Option<Decimal>,
+    ) -> Result<(), StoreError> {
         self.ledger
             .check_account_tax(account, category, deductible_percent)?;
         let line = self.append_journal(
@@ -4585,6 +4742,12 @@ pub(crate) fn replay_line_into_ledger(
         "account.renumbered" => {
             ledger.renumber_account(get_u64(p, "account_id")?, get_str(p, "code")?)?;
         }
+        "account.renamed" => {
+            // Only that the account exists: the name rules are the
+            // command's (rules.md B-28). `code`, `previous` and `reason`
+            // are the record, not state.
+            ledger.replay_rename_account(get_u64(p, "account_id")?, get_str(p, "name")?)?;
+        }
         "role.assigned" => {
             let account = match p.get("account_id") {
                 None | Some(Value::Null) => None,
@@ -5533,6 +5696,12 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
             conn.execute(
                 "UPDATE accounts SET code = ? WHERE id = ?",
                 params![get_str(p, "code")?, get_u64(p, "account_id")? as i64],
+            )?;
+        }
+        "account.renamed" => {
+            conn.execute(
+                "UPDATE accounts SET name = ? WHERE id = ?",
+                params![get_str(p, "name")?, get_u64(p, "account_id")? as i64],
             )?;
         }
         "account.tax_set" => {

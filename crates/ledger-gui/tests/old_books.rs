@@ -30,6 +30,7 @@ use chrono::NaiveDate;
 use egui_kittest::Harness;
 use ledger_gui::books::{Books, PartyPeriod};
 use ledger_gui::nav::{ReportKind, Route};
+use ledger_gui::pages::accounts::RegisterRange;
 use ledger_gui::pages::reports::{Columns, Compare, Range};
 use ledger_gui::{App, Source, data};
 use serde_json::json;
@@ -360,7 +361,7 @@ fn every_page_renders(shard: usize, of: usize) {
         for at in edges {
             h.state_mut().state_mut().assets.as_of = Some(at);
             show(&mut h, Route::Assets);
-            h.state_mut().state_mut().accounts.range = Some((NaiveDate::MIN, at));
+            h.state_mut().state_mut().accounts.range = RegisterRange::Dates(NaiveDate::MIN, at);
             for &a in &accounts {
                 show(&mut h, Route::Account(a));
             }

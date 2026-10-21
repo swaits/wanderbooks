@@ -975,6 +975,11 @@ mod refusals {
         SetVendor1099(u64, bool),
         SetAccountTax(u64, u8),
         Renumber(u64, u8),
+        // P3 (defects 8, 15): renames, accounts added with a category,
+        // and the tax category policy turned on and off.
+        Rename(u64, u8),
+        AddAccountTax(u8, u8, u8, bool),
+        SetTaxPolicy(bool),
         // The rest of the command surface (2026-10-13).
         AttachReceipt(Option<u64>, u8),
         FileDocument(u8),
@@ -1049,6 +1054,10 @@ mod refusals {
             (0u64..4, any::<bool>()).prop_map(|(v, t)| Op::SetVendor1099(v, t)),
             (0u64..10, 0u8..4).prop_map(|(a, k)| Op::SetAccountTax(a, k)),
             (0u64..10, 0u8..9).prop_map(|(a, c)| Op::Renumber(a, c)),
+            (0u64..12, 0u8..8).prop_map(|(a, n)| Op::Rename(a, n)),
+            (0u8..8, 0u8..5, 0u8..4, any::<bool>())
+                .prop_map(|(c, t, k, h)| Op::AddAccountTax(c, t, k, h)),
+            any::<bool>().prop_map(Op::SetTaxPolicy),
             (prop::option::of(id.clone()), 0u8..4).prop_map(|(e, b)| Op::AttachReceipt(e, b)),
             (0u8..4).prop_map(Op::FileDocument),
             (0u64..6, id.clone()).prop_map(|(a, e)| Op::LinkReceipt(a, e)),
@@ -1138,8 +1147,56 @@ mod refusals {
             }]
         };
         match *op {
+            // Named for the code: a sibling's name is refused (B-31), and
+            // a code is the first refusal.
             Op::AddAccount(c, t, p, h) => store
-                .add_account(CODES[c as usize], "acct", TYPES[t as usize], p, h)
+                .add_account(
+                    CODES[c as usize],
+                    &format!("Account {}", CODES[c as usize]),
+                    TYPES[t as usize],
+                    p,
+                    h,
+                )
+                .map(drop),
+            // A setup account's own name, another's (in other capitals),
+            // a blank, nine digits, and fresh names.
+            Op::Rename(a, n) => store.rename_account(
+                a,
+                [
+                    "Sales",
+                    "sales",
+                    "CASH",
+                    "",
+                    "Card 123456789",
+                    "Renamed",
+                    "Office",
+                    "Rent ",
+                ][n as usize],
+                (n % 2 == 0).then_some("owner asked"),
+            ),
+            Op::AddAccountTax(c, t, k, h) => store
+                .add_account_with_tax(
+                    CODES[c as usize],
+                    &format!("Taxed {}", CODES[c as usize]),
+                    TYPES[t as usize],
+                    None,
+                    h,
+                    TAX[k as usize].map(|cat| (cat, None)),
+                )
+                .map(drop),
+            Op::SetTaxPolicy(refuse) => store
+                .change_settings(
+                    &[ledger_core::settings::Change {
+                        key: "policy.require_tax_category".into(),
+                        value: Some(serde_json::json!(if refuse { "refuse" } else { "warn" })),
+                    }],
+                    &ledger_core::settings::Source {
+                        decided_by: "Owner".into(),
+                        decided_on: day(0),
+                        citation: None,
+                        note: None,
+                    },
+                )
                 .map(drop),
             Op::CreateEntry(d) => store.create_entry(day(d), "e").map(drop),
             Op::AddLine(e, a, d, c) => {
@@ -1468,8 +1525,14 @@ mod refusals {
                 }
             }
             // The converse law: an accepted command is on the record. Only
-            // a batch run may find nothing to do.
-            if result.is_ok() && !matches!(op, Op::RunDepreciation(..) | Op::RunRecurring(..)) {
+            // a batch run may find nothing to do, and a setting changed to
+            // the value it has changes nothing.
+            if result.is_ok()
+                && !matches!(
+                    op,
+                    Op::RunDepreciation(..) | Op::RunRecurring(..) | Op::SetTaxPolicy(..)
+                )
+            {
                 let after = std::fs::read_to_string(&journal).unwrap();
                 prop_assert!(
                     after.len() > before.len(),
@@ -2775,4 +2838,741 @@ fn a_database_with_damaged_pages_is_rebuilt() {
         })
         .count();
     assert_eq!(kept, 1);
+}
+
+// ---------------------------------------------------------------------------
+// P3: renaming an account, and the tax category policy (defects 15 and 8;
+// rules.md B-31, B-32).
+// ---------------------------------------------------------------------------
+
+/// Every row of every projection table but the journal's own (`events`,
+/// `meta`), as text, with `accounts.name` blanked: what a rename may
+/// change is that one column.
+fn projection_but_names(dir: &std::path::Path) -> Vec<(String, Vec<String>)> {
+    let conn = rusqlite::Connection::open(dir.join(ledger_store::DB_FILE)).unwrap();
+    let mut tables: Vec<String> = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    // The journal's own rows (every line, and its head) grow with every
+    // command: what a rename adds there is checked from the journal.
+    tables.retain(|t| !t.starts_with("sqlite_") && t != "events" && t != "meta");
+    tables
+        .into_iter()
+        .map(|t| {
+            let mut stmt = conn.prepare(&format!("SELECT * FROM \"{t}\"")).unwrap();
+            let names: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
+            let mut rows: Vec<String> = stmt
+                .query_map([], |r| {
+                    Ok((0..names.len())
+                        .map(|i| {
+                            if t == "accounts" && names[i] == "name" {
+                                "-".to_string()
+                            } else {
+                                format!("{:?}", r.get_ref(i).unwrap())
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("|"))
+                })
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            rows.sort();
+            (t, rows)
+        })
+        .collect()
+}
+
+/// Every figure of the books with account names left out: the trial
+/// balance, the P&L and balance sheet (whole and for January), and every
+/// entry's lines.
+fn figures_but_names(l: &ledger_core::Ledger) -> serde_json::Value {
+    use ledger_core::reports;
+    let jan = |d: u32| NaiveDate::from_ymd_opt(2026, 1, d).unwrap();
+    let lines = |v: &[ledger_core::StatementLine]| {
+        v.iter()
+            .map(|x| (x.code.clone(), x.amount.normalize().to_string()))
+            .collect::<Vec<_>>()
+    };
+    let tb = reports::trial_balance(l);
+    let pl = reports::profit_and_loss_for_period(l, jan(1), jan(31), None).unwrap();
+    let bs = reports::balance_sheet_as_of(l, jan(31)).unwrap();
+    serde_json::json!({
+        "tb": tb.lines.iter().map(|x| (x.code.clone(), x.debit.normalize().to_string(), x.credit.normalize().to_string())).collect::<Vec<_>>(),
+        "tb_totals": (tb.total_debits.normalize().to_string(), tb.total_credits.normalize().to_string()),
+        "pl": (lines(&pl.revenue), lines(&pl.expenses), pl.net_income().normalize().to_string()),
+        "bs": (lines(&bs.assets), lines(&bs.liabilities), lines(&bs.equity), bs.total_assets.normalize().to_string()),
+        "entries": (1..l.next_entry_id()).filter_map(|id| l.get_entry(id)).collect::<Vec<_>>(),
+    })
+}
+
+/// rename_account (repro 1.2; rules.md B-31): a rename changes the
+/// account's name and nothing else: no figure, entry or line, no earlier
+/// journal line, no projection row but `accounts.name`; the journal gains
+/// one `account.renamed` line (keyed by id, with the old name and the
+/// reason) after the feature's declaration; a refused rename (unknown,
+/// blank, unchanged, a sibling's name, nine digits, a bad reason) appends
+/// nothing; the name survives a reopen, a rebuild and the viewer's read.
+#[test]
+fn rename_account_changes_only_the_name_defect_15() {
+    let dir = test_dir("rename-only-name");
+    let mut store = build_books(&dir);
+    let journal = dir.join(ledger_store::JOURNAL_FILE);
+    let text = std::fs::read_to_string(&journal).unwrap();
+    let figures = figures_but_names(store.ledger());
+    let rows = projection_but_names(&dir);
+    let rent = store.ledger().chart().find_by_code("6000").unwrap().id;
+    for (id, name, reason) in [
+        (999, "Office Rent", None),
+        (rent, "", None),
+        (rent, "  Rent Expense ", None),
+        (rent, "cash", None),
+        (rent, "Lease 123456789", None),
+        (rent, "Office Rent", Some("")),
+        (rent, "Office Rent", Some("lease no. 123-45-6789")),
+    ] {
+        assert!(
+            store.rename_account(id, name, reason).is_err(),
+            "{name:?} {reason:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&journal).unwrap(), text, "{name:?}");
+        assert_eq!(projection_but_names(&dir), rows, "{name:?}");
+    }
+    let (seq, _) = store.head();
+    store
+        .rename_account(rent, " Office Rent ", Some("owner asked 2026-10-21"))
+        .unwrap();
+    let after = std::fs::read_to_string(&journal).unwrap();
+    // Every earlier line kept, byte for byte; two lines appended: the
+    // feature's declaration, then the rename.
+    assert!(after.starts_with(&text));
+    let added: Vec<serde_json::Value> = after[text.len()..]
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(added.len(), 2);
+    assert_eq!(added[0]["type"], "journal.format_set");
+    assert_eq!(
+        added[0]["payload"],
+        serde_json::json!({"format": 2, "features": ["account_renamed"]})
+    );
+    assert_eq!(added[1]["type"], "account.renamed");
+    assert_eq!(
+        added[1]["payload"],
+        serde_json::json!({
+            "account_id": rent, "code": "6000", "name": "Office Rent",
+            "previous": "Rent Expense", "reason": "owner asked 2026-10-21"
+        })
+    );
+    assert_eq!(store.head().0, seq + 2);
+    assert_eq!(
+        store.ledger().chart().get(rent).unwrap().name,
+        "Office Rent"
+    );
+    assert_eq!(figures_but_names(store.ledger()), figures);
+    assert_eq!(projection_but_names(&dir), rows);
+    // The one column a rename changes, read from the projection itself
+    // (projection_but_names blanks it).
+    let db_name = |dir: &std::path::Path| -> String {
+        rusqlite::Connection::open(dir.join(ledger_store::DB_FILE))
+            .unwrap()
+            .query_row(
+                "SELECT name FROM accounts WHERE id = ?",
+                [rent as i64],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(db_name(&dir), "Office Rent");
+    store.verify().unwrap();
+    // A second rename declares nothing more.
+    store.rename_account(rent, "Rent", None).unwrap();
+    let again = std::fs::read_to_string(&journal).unwrap();
+    let last: serde_json::Value = serde_json::from_str(again.lines().last().unwrap()).unwrap();
+    assert_eq!(again.lines().count(), after.lines().count() + 1);
+    assert_eq!(last["payload"]["previous"], "Office Rent");
+    assert_eq!(last["payload"]["reason"], serde_json::Value::Null);
+    drop(store);
+    let reopened = Store::open(&dir).unwrap();
+    reopened.verify().unwrap();
+    assert_eq!(reopened.ledger().chart().get(rent).unwrap().name, "Rent");
+    assert_eq!(figures_but_names(reopened.ledger()), figures);
+    drop(reopened);
+    let _ = std::fs::remove_file(dir.join(ledger_store::DB_FILE));
+    let rebuilt = Store::open(&dir).unwrap();
+    assert_eq!(rebuilt.ledger().chart().get(rent).unwrap().name, "Rent");
+    assert_eq!(projection_but_names(&dir), rows);
+    assert_eq!(db_name(&dir), "Rent");
+    drop(rebuilt);
+    let snap = ledger_store::Snapshot::load(&dir).unwrap();
+    assert_eq!(snap.ledger().chart().get(rent).unwrap().name, "Rent");
+}
+
+/// rules.md B-28's pair for renames (review R5): the command refuses a
+/// blank name, a sibling's or nine digits; replay takes a journaled line
+/// holding any of them (a later version may tighten the rules, never lock
+/// out books it wrote), and refuses only an account that doesn't exist.
+#[test]
+fn a_journaled_rename_replays_past_the_command_rules() {
+    use serde_json::json;
+    for (name, opens) in [
+        ("", true),
+        ("Cash", true),
+        ("Lease 123456789", true),
+        ("Rent Expense", true),
+    ] {
+        let dir = test_dir("rename-replay");
+        let store = build_books(&dir);
+        let rent = store.ledger().chart().find_by_code("6000").unwrap().id;
+        drop(store);
+        let mut w = JournalWriter::open(&dir.join(ledger_store::JOURNAL_FILE)).unwrap();
+        w.append(
+            "journal.format_set",
+            json!({"format": 2, "features": ["account_renamed"]}),
+        )
+        .unwrap();
+        w.append(
+            "account.renamed",
+            json!({"account_id": rent, "code": "6000", "name": name, "previous": "Rent Expense", "reason": null}),
+        )
+        .unwrap();
+        drop(w);
+        let _ = std::fs::remove_file(dir.join(ledger_store::DB_FILE));
+        let store = Store::open(&dir);
+        assert_eq!(store.is_ok(), opens, "{name:?}");
+        let store = store.unwrap();
+        store.verify().unwrap();
+        assert_eq!(store.ledger().chart().get(rent).unwrap().name, name);
+    }
+    // An account that doesn't exist: the line can't be replayed.
+    let dir = test_dir("rename-replay-unknown");
+    drop(build_books(&dir));
+    let mut w = JournalWriter::open(&dir.join(ledger_store::JOURNAL_FILE)).unwrap();
+    w.append(
+        "journal.format_set",
+        json!({"format": 2, "features": ["account_renamed"]}),
+    )
+    .unwrap();
+    w.append(
+        "account.renamed",
+        json!({"account_id": 99, "code": "9", "name": "x", "previous": "y", "reason": null}),
+    )
+    .unwrap();
+    drop(w);
+    let _ = std::fs::remove_file(dir.join(ledger_store::DB_FILE));
+    assert!(Store::open(&dir).is_err());
+}
+
+fn tax_policy(store: &mut Store, value: Option<&str>) {
+    store
+        .change_settings(
+            &[ledger_core::settings::Change {
+                key: "policy.require_tax_category".into(),
+                value: value.map(|v| serde_json::json!(v)),
+            }],
+            &ledger_core::settings::Source {
+                decided_by: "Owner".into(),
+                decided_on: NaiveDate::from_ymd_opt(2026, 10, 20).unwrap(),
+                citation: None,
+                note: None,
+            },
+        )
+        .unwrap();
+}
+
+/// add_account_with_tax and the policy (rules.md B-32): under warn an
+/// account is created without a category; under refuse a revenue or
+/// expense account that isn't a header is refused without one, journaling
+/// nothing, and created with one as account.added then account.tax_set;
+/// a needed category can't be cleared; the accounts the engine creates
+/// for a control role are never refused. The first setting of the key
+/// declares the feature require_tax_category, once.
+#[test]
+fn the_tax_category_policy_refuses_only_what_it_says() {
+    let dir = test_dir("tax-policy");
+    let mut store = build_books(&dir);
+    let journal = dir.join(ledger_store::JOURNAL_FILE);
+    store
+        .add_account("6150", "Software", AccountType::Expense, None, false)
+        .unwrap();
+    let before = std::fs::read_to_string(&journal).unwrap();
+    tax_policy(&mut store, Some("refuse"));
+    let declared = std::fs::read_to_string(&journal).unwrap();
+    let new: Vec<serde_json::Value> = declared[before.len()..]
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(new[0]["type"], "journal.format_set");
+    assert_eq!(
+        new[0]["payload"],
+        serde_json::json!({"format": 2, "features": ["require_tax_category"]})
+    );
+    assert_eq!(new.last().unwrap()["type"], "settings.set");
+    for (code, t, header, tax, refused) in [
+        ("6160", AccountType::Expense, false, None, true),
+        ("4100", AccountType::Revenue, false, None, true),
+        ("6170", AccountType::Expense, true, None, false),
+        ("1100", AccountType::Asset, false, None, false),
+        ("2100", AccountType::Liability, false, None, false),
+        ("3100", AccountType::Equity, false, None, false),
+        (
+            "6180",
+            AccountType::Expense,
+            false,
+            Some(("bogus", None)),
+            true,
+        ),
+        (
+            "4200",
+            AccountType::Revenue,
+            false,
+            Some(("supplies", None)),
+            true,
+        ),
+    ] {
+        let text = std::fs::read_to_string(&journal).unwrap();
+        let got = store.add_account_with_tax(code, &format!("Acct {code}"), t, None, header, tax);
+        assert_eq!(got.is_err(), refused, "{code} {got:?}");
+        if refused {
+            assert_eq!(std::fs::read_to_string(&journal).unwrap(), text, "{code}");
+            assert!(store.ledger().chart().find_by_code(code).is_none());
+        }
+    }
+    let err = store
+        .add_account("6160", "Hosting", AccountType::Expense, None, false)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("policy.require_tax_category is refuse"),
+        "{err}"
+    );
+    assert!(err.contains("6160 Hosting"), "{err}");
+    // With a category: two lines, account.added then account.tax_set.
+    let text = std::fs::read_to_string(&journal).unwrap();
+    let id = store
+        .add_account_with_tax(
+            "6160",
+            "Hosting",
+            AccountType::Expense,
+            None,
+            false,
+            Some(("other_deductions", Some(Decimal::from(80)))),
+        )
+        .unwrap();
+    let added: Vec<serde_json::Value> = std::fs::read_to_string(&journal).unwrap()[text.len()..]
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(
+        added
+            .iter()
+            .map(|l| l["type"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["account.added", "account.tax_set"]
+    );
+    let a = store.ledger().chart().get(id).unwrap();
+    assert_eq!(a.tax_category.as_deref(), Some("other_deductions"));
+    assert_eq!(a.deductible_percent, Some(Decimal::from(80)));
+    // A needed category is never cleared; a header's or an asset's is no
+    // concern; an existing uncategorized account is left as it was.
+    let text = std::fs::read_to_string(&journal).unwrap();
+    assert!(store.set_account_tax(id, None, None).is_err());
+    let software = store.ledger().chart().find_by_code("6150").unwrap().id;
+    assert!(store.set_account_tax(software, None, None).is_err());
+    assert_eq!(std::fs::read_to_string(&journal).unwrap(), text);
+    assert!(
+        store
+            .ledger()
+            .chart()
+            .get(software)
+            .unwrap()
+            .tax_category
+            .is_none()
+    );
+    store
+        .set_account_tax(software, Some("other_deductions"), None)
+        .unwrap();
+    // The engine's own accounts: a bill makes 6999 General Expenses with
+    // no category, under refuse too.
+    let v = store.add_vendor("Coastline Hosting").unwrap();
+    store
+        .create_bill(
+            v,
+            NaiveDate::from_ymd_opt(2026, 2, 1).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
+            vec![ledger_core::DocumentLine {
+                description: "hosting".into(),
+                amount: Decimal::new(4_200, 2),
+            }],
+        )
+        .unwrap();
+    let general = store.ledger().chart().find_by_code("6999").unwrap();
+    assert!(general.tax_category.is_none());
+    // Back to warn: no second declaration, and the account is created.
+    let text = std::fs::read_to_string(&journal).unwrap();
+    tax_policy(&mut store, Some("warn"));
+    let lines: Vec<serde_json::Value> = std::fs::read_to_string(&journal).unwrap()[text.len()..]
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0]["type"], "settings.set");
+    store
+        .add_account("6190", "Domains", AccountType::Expense, None, false)
+        .unwrap();
+    store.verify().unwrap();
+    drop(store);
+    Store::open(&dir).unwrap().verify().unwrap();
+}
+
+/// rules.md B-28's pair for the policy (review R5): the policy is the
+/// commands', never replay's. A journal that sets refuse and then clears
+/// a category, or adds an uncategorized expense account, replays.
+#[test]
+fn a_journaled_clear_replays_under_refuse() {
+    use serde_json::json;
+    let dir = test_dir("tax-policy-replay");
+    let mut store = build_books(&dir);
+    let rent = store.ledger().chart().find_by_code("6000").unwrap().id;
+    store
+        .set_account_tax(rent, Some("rent_property"), None)
+        .unwrap();
+    tax_policy(&mut store, Some("refuse"));
+    let next = store.ledger().next_account_id();
+    drop(store);
+    let mut w = JournalWriter::open(&dir.join(ledger_store::JOURNAL_FILE)).unwrap();
+    w.append(
+        "account.tax_set",
+        json!({"account_id": rent, "tax_category": null, "deductible_percent": null}),
+    )
+    .unwrap();
+    w.append(
+        "account.added",
+        json!({"id": next, "code": "6150", "name": "Software", "account_type": "Expense",
+               "parent": null, "placeholder": false, "currency": "USD"}),
+    )
+    .unwrap();
+    drop(w);
+    let _ = std::fs::remove_file(dir.join(ledger_store::DB_FILE));
+    let store = Store::open(&dir).unwrap();
+    store.verify().unwrap();
+    assert!(
+        store
+            .ledger()
+            .chart()
+            .get(rent)
+            .unwrap()
+            .tax_category
+            .is_none()
+    );
+    assert!(store.ledger().chart().find_by_code("6150").is_some());
+    assert_eq!(
+        store.ledger().settings().require_tax_category(),
+        ledger_core::settings::TaxCategoryPolicy::Refuse
+    );
+}
+
+mod p3_properties {
+    use super::*;
+    use proptest::prelude::*;
+
+    const NAMES: [&str; 8] = [
+        "Office",
+        "office",
+        "Cash",
+        "",
+        "Lease 123456789",
+        "Rent Expense",
+        "Studio",
+        "Tools",
+    ];
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: std::env::var("STORE_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(64),
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        })]
+
+        /// rules.md B-31 (the engine-side counterpart to the Lean note,
+        /// docs/verification.md 13a): on books with postings, any sequence
+        /// of renames changes no figure (the ledger's statements, without
+        /// names), no entry and no earlier journal line; live equals
+        /// replay; the projection equals a fresh one. The sets picked by
+        /// name (cash, card accounts) are presentation, outside this law.
+        #[test]
+        fn prop_rename_changes_no_figure(
+            renames in prop::collection::vec((1u64..6, 0usize..NAMES.len()), 1..12),
+            seed in any::<u64>(),
+        ) {
+            let dir = test_dir(&format!("prop-rename-{seed}"));
+            let mut store = build_books(&dir);
+            let journal = dir.join(ledger_store::JOURNAL_FILE);
+            let figures = figures_but_names(store.ledger());
+            let rows = projection_but_names(&dir);
+            let mut text = std::fs::read_to_string(&journal).unwrap();
+            for (account, n) in renames {
+                let ok = store.rename_account(account, NAMES[n], None).is_ok();
+                let now = std::fs::read_to_string(&journal).unwrap();
+                prop_assert!(now.starts_with(&text));
+                prop_assert_eq!(ok, now.len() > text.len());
+                text = now;
+                prop_assert_eq!(&figures_but_names(store.ledger()), &figures);
+                prop_assert_eq!(&projection_but_names(&dir), &rows);
+            }
+            prop_assert!(store.verify().is_ok());
+            let live = store.ledger().clone();
+            drop(store);
+            let reopened = Store::open(&dir).unwrap();
+            prop_assert!(live.differs_from(reopened.ledger()).is_empty());
+        }
+
+        /// rules.md B-32: add_account_with_tax is refused exactly when the
+        /// policy is refuse, the account needs a category (revenue or
+        /// expense, not a header) and none is given, or when the category
+        /// doesn't fit; a refusal journals nothing.
+        #[test]
+        fn prop_tax_policy_refuses_exactly(
+            refuse in any::<bool>(),
+            t in 0usize..5,
+            header in any::<bool>(),
+            cat in 0usize..4,
+            seed in any::<u64>(),
+        ) {
+            let types = [
+                AccountType::Asset,
+                AccountType::Liability,
+                AccountType::Equity,
+                AccountType::Revenue,
+                AccountType::Expense,
+            ];
+            let cats = [None, Some("other_income"), Some("supplies"), Some("bogus")];
+            let dir = test_dir(&format!("prop-tax-{seed}"));
+            let mut store = build_books(&dir);
+            tax_policy(&mut store, Some(if refuse { "refuse" } else { "warn" }));
+            let journal = dir.join(ledger_store::JOURNAL_FILE);
+            let text = std::fs::read_to_string(&journal).unwrap();
+            let t = types[t];
+            let needs = matches!(t, AccountType::Revenue | AccountType::Expense) && !header;
+            let fits = match cats[cat] {
+                None => true,
+                Some("other_income") => matches!(t, AccountType::Revenue | AccountType::Expense),
+                Some("supplies") => t == AccountType::Expense,
+                _ => false,
+            };
+            let want_refused = !fits || (refuse && needs && cats[cat].is_none());
+            let got = store.add_account_with_tax(
+                "7000", "Prop", t, None, header, cats[cat].map(|c| (c, None)),
+            );
+            prop_assert_eq!(got.is_err(), want_refused, "{:?}", got);
+            let after = std::fs::read_to_string(&journal).unwrap();
+            if want_refused {
+                prop_assert_eq!(after, text);
+            } else {
+                let lines = after[text.len()..].lines().count();
+                prop_assert_eq!(lines, if cats[cat].is_some() { 2 } else { 1 });
+            }
+        }
+    }
+}
+
+/// Each account as the books hold it, by id: what chart.json in the
+/// p3_rename fixture records (expected.json's figures carry no names).
+fn chart_of(l: &ledger_core::Ledger) -> serde_json::Value {
+    let mut accounts: Vec<_> = l.chart().all().collect();
+    accounts.sort_by_key(|a| a.id);
+    serde_json::json!(accounts)
+}
+
+fn p3_fixture() -> PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/old-books/p3_rename")
+}
+
+/// How the p3_rename fixture was written (2026-10-20, P3): through the
+/// Store API of the version that introduced `account.renamed` and
+/// `policy.require_tax_category`, with their journal features, a header
+/// and its children, refused commands between them. Run once with
+/// `--ignored`; the journal it wrote is frozen in the fixture, and later
+/// versions must open it to the same figures
+/// (books_an_earlier_version_wrote_open_to_its_figures) and names
+/// (books_written_under_p3_keep_their_names).
+#[test]
+#[ignore]
+fn write_p3_rename_fixture() {
+    let dir = test_dir("p3-fixture");
+    let mut s = Store::create(&dir, Currency::USD).unwrap();
+    let day = |m: u32, d: u32| NaiveDate::from_ymd_opt(2026, m, d).unwrap();
+    let bank = s
+        .add_account("1000", "Bank", AccountType::Asset, None, false)
+        .unwrap();
+    let capital = s
+        .add_account("3000", "Capital", AccountType::Equity, None, false)
+        .unwrap();
+    let ops = s
+        .add_account("6000", "Operating", AccountType::Expense, None, true)
+        .unwrap();
+    let software = s
+        .add_account("6150", "Software", AccountType::Expense, Some(ops), false)
+        .unwrap();
+    s.add_account("6160", "Hosting", AccountType::Expense, Some(ops), false)
+        .unwrap();
+    s.add_account_with_tax(
+        "4000",
+        "Sales",
+        AccountType::Revenue,
+        None,
+        false,
+        Some(("gross_receipts", None)),
+    )
+    .unwrap();
+    tax_policy(&mut s, Some("refuse"));
+    assert!(
+        s.add_account("6170", "Domains", AccountType::Expense, Some(ops), false)
+            .is_err()
+    );
+    s.add_account_with_tax(
+        "6170",
+        "Domains",
+        AccountType::Expense,
+        Some(ops),
+        false,
+        Some(("other_deductions", None)),
+    )
+    .unwrap();
+    for (m, d, dr, cr, cents) in [
+        (1u32, 5u32, bank, capital, 500_000i64),
+        (2, 3, software, bank, 4_999),
+        (3, 9, software, bank, 4_999),
+    ] {
+        let e = s.create_entry(day(m, d), "fixture").unwrap();
+        let money = Money::new(Decimal::new(cents, 2), Currency::USD);
+        s.add_line(e, dr, Side::Debit, money).unwrap();
+        s.add_line(e, cr, Side::Credit, money).unwrap();
+        s.post_entry(e).unwrap();
+    }
+    assert!(s.rename_account(software, "hosting", None).is_err());
+    s.rename_account(
+        software,
+        "Software subscriptions",
+        Some("owner asked 2026-10-20"),
+    )
+    .unwrap();
+    s.rename_account(ops, "Operating expenses", None).unwrap();
+    assert!(s.set_account_tax(software, None, None).is_err());
+    s.set_account_tax(software, Some("other_deductions"), None)
+        .unwrap();
+    s.rename_account(software, "Software", Some("back to the short name"))
+        .unwrap();
+    tax_policy(&mut s, None);
+    s.verify().unwrap();
+    let out = p3_fixture();
+    let _ = std::fs::remove_dir_all(&out);
+    std::fs::create_dir_all(&out).unwrap();
+    std::fs::copy(
+        dir.join(ledger_store::JOURNAL_FILE),
+        out.join(ledger_store::JOURNAL_FILE),
+    )
+    .unwrap();
+    let mut figures = old_books_figures(s.ledger());
+    figures["verify"] = serde_json::json!({"Ok": null});
+    std::fs::write(
+        out.join("expected.json"),
+        serde_json::to_string_pretty(&figures).unwrap() + "\n",
+    )
+    .unwrap();
+    std::fs::write(
+        out.join("chart.json"),
+        serde_json::to_string_pretty(&chart_of(s.ledger())).unwrap() + "\n",
+    )
+    .unwrap();
+}
+
+/// Books written under P3 (fixture p3_rename): every account's name,
+/// code, parent and tax category, as journaled through renames and the
+/// tax category policy, read back the same by the writer, a rebuild and
+/// the viewer; and the features it declared are the ones this version
+/// knows.
+#[test]
+fn books_written_under_p3_keep_their_names() {
+    let fixture = p3_fixture();
+    let want: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(fixture.join("chart.json")).unwrap()).unwrap();
+    let dir = old_books_copy(&fixture, "p3-names");
+    let store = Store::open(&dir).unwrap();
+    store.verify().unwrap();
+    assert_eq!(chart_of(store.ledger()), want);
+    assert_eq!(
+        store.journal_format().features,
+        ["account_renamed", "require_tax_category"]
+    );
+    let names: Vec<&str> = want
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "Bank",
+            "Capital",
+            "Operating expenses",
+            "Software",
+            "Hosting",
+            "Sales",
+            "Domains"
+        ]
+    );
+    drop(store);
+    let _ = std::fs::remove_file(dir.join(ledger_store::DB_FILE));
+    let rebuilt = Store::open(&dir).unwrap();
+    assert_eq!(chart_of(rebuilt.ledger()), want);
+    drop(rebuilt);
+    let snap = ledger_store::Snapshot::load(&dir).unwrap();
+    assert_eq!(chart_of(snap.ledger()), want);
+}
+
+/// rules.md B-31: a new account's name is journaled trimmed, as a rename
+/// journals one, so the live books, a reopen and the projection all read
+/// the same name; the command's text rules refuse a name a report can't
+/// print on one line, journaling nothing.
+#[test]
+fn a_new_accounts_name_is_journaled_trimmed() {
+    let dir = test_dir("add-trimmed");
+    let mut store = build_books(&dir);
+    let journal = dir.join(ledger_store::JOURNAL_FILE);
+    let text = std::fs::read_to_string(&journal).unwrap();
+    for name in ["Two\nlines", &"N".repeat(201)] {
+        assert!(
+            store
+                .add_account("6150", name, AccountType::Expense, None, false)
+                .is_err(),
+            "{name:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&journal).unwrap(), text);
+    }
+    let id = store
+        .add_account("6150", "  Hosting\t", AccountType::Expense, None, false)
+        .unwrap();
+    let after = std::fs::read_to_string(&journal).unwrap();
+    let line: serde_json::Value = serde_json::from_str(after.lines().last().unwrap()).unwrap();
+    assert_eq!(line["type"], "account.added");
+    assert_eq!(line["payload"]["name"], "Hosting");
+    assert_eq!(store.ledger().chart().get(id).unwrap().name, "Hosting");
+    let live = store.ledger().clone();
+    drop(store);
+    let _ = std::fs::remove_file(dir.join(ledger_store::DB_FILE));
+    let reopened = Store::open(&dir).unwrap();
+    assert!(live.differs_from(reopened.ledger()).is_empty());
+    let conn = rusqlite::Connection::open(dir.join(ledger_store::DB_FILE)).unwrap();
+    let name: String = conn
+        .query_row("SELECT name FROM accounts WHERE id = ?", [id as i64], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(name, "Hosting");
 }

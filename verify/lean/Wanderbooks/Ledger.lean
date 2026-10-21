@@ -15,7 +15,9 @@ Mirrors `Ledger::add_account`, `try_create_entry`, `post_entry`,
 conventions, decisions, open items and approvals (`apply_settings`,
 `apply_convention`, `apply_decision`, `apply_open_item`,
 `apply_approval`, and their retirements and resolutions), each a record
-the step adds and nothing else.
+the step adds and nothing else; and an account's rename
+(`rename_account`, `account.renamed`, rules.md B-31), since the model's
+chart is codes and types and a name is no part of it.
 -/
 
 namespace Wanderbooks
@@ -129,7 +131,8 @@ inductive Step : Ledger → Ledger → Prop
       Step L { L with posted := L.posted ++ closingFor L p ts id, periods := closeIn p L.periods }
   /-- `apply_settings`, `apply_convention`, `apply_decision`,
   `apply_open_item`, `apply_approval` and their retirements and
-  resolutions: a record of how the books are kept, and nothing else. -/
+  resolutions: a record of how the books are kept, and nothing else.
+  `rename_account` too: a name is outside the chart the model keeps. -/
   | record (L : Ledger) (r : Nat) : Step L { L with records := r :: L.records }
 
 /-- States reachable from empty books. -/

@@ -1,6 +1,7 @@
 //! Screenshots of every screen, for eyes. Set `SHOT_BOOKS` to a books dir
 //! (containing `books-data/`, its settings in its journal) and `SHOT_DIR` to
-//! where the PNGs go; without them this test does nothing.
+//! where the PNGs go; without them this test does nothing. `SHOT_REGISTER=all`
+//! shows an account's register on every date instead of its default.
 
 use egui_kittest::Harness;
 use ledger_gui::nav::{ReportKind, Route};
@@ -152,6 +153,12 @@ fn screenshots() {
             .build_eframe(|cc| App::with_books(&cc.egui_ctx, books, dark, route.clone()));
         if std::env::var("SHOT_LIVE").is_ok() {
             harness.state_mut().show_live_label();
+        }
+        // SHOT_REGISTER=all: a register showing every date (after "Show
+        // all dates"); otherwise it opens on the default period.
+        if std::env::var("SHOT_REGISTER").is_ok_and(|r| r == "all") {
+            harness.state_mut().state_mut().accounts.range =
+                ledger_gui::pages::accounts::RegisterRange::All;
         }
         harness.run_steps(4);
         let ctx = harness.ctx.clone();

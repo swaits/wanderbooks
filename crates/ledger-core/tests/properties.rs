@@ -385,3 +385,89 @@ proptest! {
         prop_assert_eq!(loss, gain.iter().map(|p| -*p).collect::<Vec<_>>());
     }
 }
+
+/// A fiscal year start as the books may hold one: any month and day 2001
+/// has (a new setting is the first of a month; replay takes any day every
+/// year has, rules.md B-28).
+fn arb_fiscal_start() -> impl Strategy<Value = (u32, u32)> {
+    (1u32..=12, 1u32..=31).prop_filter("a day 2001 has", |&(m, d)| {
+        NaiveDate::from_ymd_opt(2001, m, d).is_some()
+    })
+}
+
+/// A day in the books' calendar, 0001-01-01 through 9999-12-31.
+fn arb_calendar_day() -> impl Strategy<Value = NaiveDate> {
+    let span = (ledger_core::calendar::LAST_DAY - ledger_core::calendar::FIRST_DAY).num_days();
+    prop_oneof![
+        // Near the edges as often as anywhere: year 1 under a July year
+        // starts in year 0 (clamped), 9999-12-31 is the last day.
+        (0i64..800).prop_map(|n| ledger_core::calendar::FIRST_DAY + chrono::Days::new(n as u64)),
+        (0i64..800).prop_map(|n| ledger_core::calendar::LAST_DAY - chrono::Days::new(n as u64)),
+        (0i64..=span).prop_map(|n| ledger_core::calendar::FIRST_DAY + chrono::Days::new(n as u64)),
+    ]
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(5000))]
+
+    /// rules.md B-30, PeriodDefaults INVARIANTS 1-5, for every fiscal
+    /// year start the books hold, every today in the calendar, and every
+    /// mix of given and omitted dates: the resolved dates are the given
+    /// ones or the defaults, never swapped; Err exactly when the resolved
+    /// start is after the resolved end, as InvalidDateRange when both
+    /// were given and StartAfterToday when the end was defaulted.
+    #[test]
+    fn prop_period_defaults_resolve(
+        md in arb_fiscal_start(),
+        today in arb_calendar_day(),
+        start in prop::option::of(arb_calendar_day()),
+        end in prop::option::of(arb_calendar_day()),
+    ) {
+        use ledger_core::calendar::{FIRST_DAY, fiscal_year_start_on, period_defaults};
+        use chrono::Datelike;
+        let company = ledger_core::settings::Company {
+            fiscal_year_start: md,
+            ..Default::default()
+        };
+        let p = period_defaults(&company, today);
+        let want_end = end.unwrap_or(today);
+        let fy = fiscal_year_start_on(md, want_end);
+        let want_start = start.unwrap_or(fy);
+        // The fiscal year start of the end: on or before it, md in its
+        // own year, and the next one after the end (unless year 0's,
+        // clamped to the calendar's first day).
+        prop_assert!(fy <= want_end && fy >= FIRST_DAY);
+        let next = NaiveDate::from_ymd_opt(fy.year() + 1, md.0, md.1).unwrap();
+        if (fy.month(), fy.day()) == md {
+            prop_assert!(want_end < next, "{fy} {want_end}");
+            let this = NaiveDate::from_ymd_opt(want_end.year(), md.0, md.1).unwrap();
+            prop_assert_eq!(fy, if this <= want_end { this } else {
+                NaiveDate::from_ymd_opt(want_end.year() - 1, md.0, md.1).unwrap()
+            });
+        } else {
+            // Clamped: the year began in year 0.
+            prop_assert_eq!(fy, FIRST_DAY);
+            prop_assert!(want_end < NaiveDate::from_ymd_opt(1, md.0, md.1).unwrap());
+        }
+        match p.statement(start, end) {
+            Ok((s, e)) => {
+                prop_assert!(want_start <= want_end);
+                prop_assert_eq!((s, e), (want_start, want_end));
+            }
+            Err(err) => {
+                prop_assert!(want_start > want_end);
+                let (s, e) = (want_start.to_string(), want_end.to_string());
+                let expected = if end.is_some() {
+                    ledger_core::LedgerError::InvalidDateRange { start: s, end: e }
+                } else {
+                    ledger_core::LedgerError::StartAfterToday { start: s, today: e }
+                };
+                prop_assert_eq!(err, expected);
+            }
+        }
+        prop_assert_eq!(p.statement(None, None), Ok(p.statement_range()));
+        prop_assert_eq!(p.as_of(None), today);
+        prop_assert_eq!(p.as_of(start), start.unwrap_or(today));
+        prop_assert_eq!(p.calendar_year(), today.year());
+    }
+}

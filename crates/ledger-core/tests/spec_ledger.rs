@@ -2539,3 +2539,361 @@ fn renumber_refusals_leave_the_books_unchanged() {
     l.renumber_account(hosting, "6999").unwrap();
     l.renumber_account(cash, "1200").unwrap();
 }
+
+// ---------------------------------------------------------------------
+// Ledger::rename_account (P3, defect 15; rules.md B-31).
+// ---------------------------------------------------------------------
+
+proptest! {
+    /// rename_account INVARIANT 1: only the name changes. Every other part
+    /// of the ledger is equal, every account keeps its other fields, and
+    /// the trial balance is the same line for line apart from that name.
+    #[test]
+    fn rename_account_changes_only_the_name(
+        postings in proptest::collection::vec((0usize..4, 0usize..4, 1i64..1_000_000), 0..12),
+        which in 0usize..4,
+        name in "[A-Za-z][A-Za-z &-]{0,30}",
+    ) {
+        let mut l = Ledger::new(Currency::USD);
+        let ids: Vec<_> = [
+            ("1000", AccountType::Asset),
+            ("2000", AccountType::Liability),
+            ("4000", AccountType::Revenue),
+            ("6100", AccountType::Expense),
+        ]
+        .iter()
+        .map(|(c, t)| l.add_account(c, c, *t, None, false).unwrap())
+        .collect();
+        for (dr, cr, c) in postings {
+            if dr == cr {
+                continue;
+            }
+            let e = l.create_entry(d(2026, 1, 5), "x");
+            let m = Money::new(Decimal::new(c, 2), Currency::USD);
+            l.add_line(e, ids[dr], Side::Debit, m).unwrap();
+            l.add_line(e, ids[cr], Side::Credit, m).unwrap();
+            l.post_entry(e).unwrap();
+        }
+        // A name the account doesn't have and no sibling has (the others
+        // are named for their codes: digits).
+        let new = format!("Renamed {}", name.trim());
+        let before = l.clone();
+        l.rename_account(ids[which], &new).unwrap();
+        prop_assert_eq!(l.differs_from(&before), vec!["chart"]);
+        for id in &ids {
+            let (a, b) = (l.chart().get(*id).unwrap(), before.chart().get(*id).unwrap());
+            let mut b = b.clone();
+            if *id == ids[which] {
+                b.name = new.trim().to_string();
+            }
+            prop_assert_eq!(a, &b);
+        }
+        let (t1, t0) = (trial_balance(&l), trial_balance(&before));
+        prop_assert_eq!(t1.total_debits, t0.total_debits);
+        prop_assert_eq!(t1.total_credits, t0.total_credits);
+        let pick = |t: &ledger_core::TrialBalance| {
+            let mut v: Vec<_> = t.lines.iter().map(|x| (x.code.clone(), x.debit, x.credit)).collect();
+            v.sort();
+            v
+        };
+        prop_assert_eq!(pick(&t1), pick(&t0));
+        for e in l.posted_entries() {
+            prop_assert_eq!(Some(e), before.get_entry(e.id()));
+        }
+    }
+}
+
+fn named_chart() -> (Ledger, AccountId, AccountId, AccountId) {
+    let mut l = Ledger::new(Currency::USD);
+    let ops = l
+        .add_account("6000", "Operations", AccountType::Expense, None, true)
+        .unwrap();
+    let software = l
+        .add_account("6150", "Software", AccountType::Expense, Some(ops), false)
+        .unwrap();
+    let hosting = l
+        .add_account("6160", "Hosting", AccountType::Expense, Some(ops), false)
+        .unwrap();
+    l.add_account("6900", "Bank Fees", AccountType::Expense, None, false)
+        .unwrap();
+    (l, ops, software, hosting)
+}
+
+/// rename_account SCENARIOS 1-5 and INVARIANT 2: an unknown account, a
+/// blank name, the name it has (trimmed), a sibling's name ignoring
+/// capitals and surrounding space (top-level accounts are siblings too),
+/// and a run of nine digits are refused, leaving the books as they were.
+#[test]
+fn rename_account_refusals_leave_the_books_unchanged() {
+    let (mut l, ops, software, hosting) = named_chart();
+    let before = l.clone();
+    for (id, name, want) in [
+        (999, "Tools", LedgerError::UnknownAccount(999)),
+        (software, "", LedgerError::EmptyAccountName),
+        (software, "   ", LedgerError::EmptyAccountName),
+        (
+            software,
+            " Software ",
+            LedgerError::AccountNameUnchanged {
+                code: "6150".into(),
+                name: "Software".into(),
+            },
+        ),
+        (
+            software,
+            "hosting",
+            LedgerError::DuplicateAccountName {
+                name: "hosting".into(),
+                sibling: "6160 Hosting".into(),
+            },
+        ),
+        (
+            software,
+            "  HOSTING ",
+            LedgerError::DuplicateAccountName {
+                name: "HOSTING".into(),
+                sibling: "6160 Hosting".into(),
+            },
+        ),
+        (
+            ops,
+            "bank fees",
+            LedgerError::DuplicateAccountName {
+                name: "bank fees".into(),
+                sibling: "6900 Bank Fees".into(),
+            },
+        ),
+        (software, "Card 123456789", LedgerError::AccountNameHoldsTin),
+        (
+            software,
+            "Acct 12-345-6789",
+            LedgerError::AccountNameHoldsTin,
+        ),
+    ] {
+        let checked = l.check_rename_account(id, name);
+        assert_eq!(l.rename_account(id, name), checked, "{name:?}");
+        assert_eq!(checked, Err(want), "{name:?}");
+        assert!(l.differs_from(&before).is_empty(), "{name:?}");
+    }
+    // Its own name in other capitals is a rename; a name an account under
+    // another parent has is no sibling's; the last four of a number are
+    // kept; the name is kept trimmed.
+    l.rename_account(software, "SOFTWARE").unwrap();
+    assert_eq!(l.chart().get(software).unwrap().name, "SOFTWARE");
+    l.rename_account(hosting, "  Bank Fees  ").unwrap();
+    assert_eq!(l.chart().get(hosting).unwrap().name, "Bank Fees");
+    l.rename_account(software, "Card ending 6789").unwrap();
+    assert_eq!(l.chart().get(software).unwrap().name, "Card ending 6789");
+}
+
+/// rename_account SCENARIO 6: a closed period, a role and a control code
+/// never block a rename (they name accounts by code or id, and a name is
+/// no posting).
+#[test]
+fn a_closed_period_or_a_role_never_blocks_a_rename() {
+    let b = books();
+    let mut l = b.l;
+    post(
+        &mut l,
+        d(2026, 1, 10),
+        &[
+            (b.exp, Side::Debit, "10.00"),
+            (b.cash, Side::Credit, "10.00"),
+        ],
+    );
+    let p = l
+        .create_period("January", d(2026, 1, 1), d(2026, 1, 31))
+        .unwrap();
+    l.close_period(p).unwrap();
+    l.assign_role("general_expense", Some(b.exp)).unwrap();
+    l.rename_account(b.exp, "Software subscriptions").unwrap();
+    assert_eq!(l.chart().get(b.exp).unwrap().name, "Software subscriptions");
+    assert_eq!(l.role_account(&ledger_core::GENERAL_EXPENSES), Some(b.exp));
+}
+
+/// rename_account INVARIANT 3 (rules.md B-28's pair): replay takes a
+/// journaled name the command now refuses (blank, a sibling's, nine
+/// digits, unchanged) for an account that exists, and refuses only an
+/// unknown account.
+#[test]
+fn a_journaled_rename_replays_past_the_command_rules() {
+    let (mut l, _, software, _) = named_chart();
+    for name in ["", "Hosting", "Card 123456789", "Hosting"] {
+        l.replay_rename_account(software, name).unwrap();
+        assert_eq!(l.chart().get(software).unwrap().name, name);
+    }
+    assert_eq!(
+        l.replay_rename_account(999, "x"),
+        Err(LedgerError::UnknownAccount(999))
+    );
+}
+
+/// add_account SCENARIOS 5-6 (rules.md B-31): a new account named like a
+/// sibling (ignoring capitals and surrounding space; top-level accounts
+/// are siblings) or holding a run of nine digits is refused, using up no
+/// id; under another parent the name is free. Replay takes them all, and
+/// the accounts the engine creates for a control role are never refused
+/// for a sibling's name.
+#[test]
+fn a_new_account_named_like_a_sibling_or_holding_a_tin_is_refused() {
+    let (mut l, ops, _, _) = named_chart();
+    let before = l.clone();
+    for (name, parent, want) in [
+        (
+            "software",
+            Some(ops),
+            LedgerError::DuplicateAccountName {
+                name: "software".into(),
+                sibling: "6150 Software".into(),
+            },
+        ),
+        (
+            " BANK FEES",
+            None,
+            LedgerError::DuplicateAccountName {
+                name: "BANK FEES".into(),
+                sibling: "6900 Bank Fees".into(),
+            },
+        ),
+        ("Loan 123 45 6789", None, LedgerError::AccountNameHoldsTin),
+    ] {
+        assert_eq!(
+            l.add_account("6200", name, AccountType::Expense, parent, false),
+            Err(want),
+            "{name:?}"
+        );
+        assert!(l.differs_from(&before).is_empty(), "{name:?}");
+    }
+    // A code in use is still the first refusal.
+    assert_eq!(
+        l.add_account("6150", "Software", AccountType::Expense, Some(ops), false),
+        Err(LedgerError::DuplicateAccountCode("6150".into()))
+    );
+    // Another parent: no sibling.
+    l.add_account("6200", "Software", AccountType::Expense, None, false)
+        .unwrap();
+    // Replay takes what an earlier version wrote.
+    l.replay_add_account("6201", "software", AccountType::Expense, Some(ops), false)
+        .unwrap();
+    l.replay_add_account("6202", "Loan 123456789", AccountType::Expense, None, false)
+        .unwrap();
+    // A chart with its own top-level "Revenue" under another code: an
+    // invoice still creates the revenue role's account (4000 Revenue).
+    let mut l = Ledger::new(Currency::USD);
+    l.add_account("4100", "Revenue", AccountType::Revenue, None, false)
+        .unwrap();
+    let c = l.add_customer("Pine Street Studio").unwrap();
+    l.create_invoice(
+        c,
+        d(2026, 3, 1),
+        d(2026, 3, 31),
+        vec![DocumentLine {
+            description: "work".into(),
+            amount: dec("100.00"),
+        }],
+    )
+    .unwrap();
+    assert_eq!(l.chart().find_by_code("4000").unwrap().name, "Revenue");
+}
+
+/// check_rename_reason: one line or more of text, at most 2,000
+/// characters, no control character but line breaks and tabs, no run of
+/// nine digits; kept trimmed.
+#[test]
+fn a_rename_reason_is_bounded_text_without_a_tin() {
+    assert_eq!(
+        Ledger::check_rename_reason("  owner asked\n2026-10-21 "),
+        Ok("owner asked\n2026-10-21".to_string())
+    );
+    for bad in [
+        String::new(),
+        "  ".into(),
+        "a\u{7}b".into(),
+        "x".repeat(2_001),
+        "their number is 123456789".into(),
+        "SSN 123-45-6789".into(),
+    ] {
+        assert!(
+            matches!(
+                Ledger::check_rename_reason(&bad),
+                Err(LedgerError::InvalidRenameReason(_))
+            ),
+            "{bad:?}"
+        );
+    }
+    assert!(Ledger::check_rename_reason(&"x".repeat(2_000)).is_ok());
+}
+
+/// add_account SCENARIOS 7-8 and rename_account SCENARIO 6 (rules.md
+/// B-31): a new name is one line of at most MAX_ACCOUNT_NAME characters,
+/// kept trimmed, by a new account and a rename alike: 200 characters are
+/// taken, 201 refused, and so is a line break, a tab or another control
+/// character; surrounding space is dropped the same way on both paths.
+/// Replay takes any journaled name (B-28).
+#[test]
+fn a_new_name_is_one_trimmed_line_of_bounded_length() {
+    use ledger_core::account::MAX_ACCOUNT_NAME;
+    assert_eq!(MAX_ACCOUNT_NAME, 200);
+    let (mut l, ops, software, _) = named_chart();
+    let before = l.clone();
+    let long = "N".repeat(MAX_ACCOUNT_NAME + 1);
+    for name in [
+        long.as_str(),
+        "Two\nlines",
+        "Tab\there",
+        "Bell\u{7}",
+        "Escape \u{1b}[31m",
+        "Next\u{85}line",
+    ] {
+        let add = l.add_account("6200", name, AccountType::Expense, Some(ops), false);
+        assert!(
+            matches!(add, Err(LedgerError::InvalidAccountName(_))),
+            "{name:?}: {add:?}"
+        );
+        let rename = l.check_rename_account(software, name);
+        assert!(
+            matches!(rename, Err(LedgerError::InvalidAccountName(_))),
+            "{name:?}: {rename:?}"
+        );
+        assert_eq!(l.rename_account(software, name), rename);
+        assert!(l.differs_from(&before).is_empty(), "{name:?}");
+    }
+    let id = l
+        .add_account(
+            "6200",
+            &format!("  {}  ", "N".repeat(MAX_ACCOUNT_NAME)),
+            AccountType::Expense,
+            Some(ops),
+            false,
+        )
+        .unwrap();
+    assert_eq!(
+        l.chart().get(id).unwrap().name,
+        "N".repeat(MAX_ACCOUNT_NAME)
+    );
+    let id = l
+        .add_account(
+            "6210",
+            "  Domains \t",
+            AccountType::Expense,
+            Some(ops),
+            false,
+        )
+        .unwrap();
+    assert_eq!(l.chart().get(id).unwrap().name, "Domains");
+    l.rename_account(id, " Domain names\t").unwrap();
+    assert_eq!(l.chart().get(id).unwrap().name, "Domain names");
+    // Replay: as journaled.
+    let id = l
+        .replay_add_account(
+            "6220",
+            " Two\nlines ",
+            AccountType::Expense,
+            Some(ops),
+            false,
+        )
+        .unwrap();
+    assert_eq!(l.chart().get(id).unwrap().name, " Two\nlines ");
+    l.replay_rename_account(id, &long).unwrap();
+    assert_eq!(l.chart().get(id).unwrap().name, long);
+}

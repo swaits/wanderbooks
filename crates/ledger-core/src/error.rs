@@ -306,6 +306,59 @@ pub enum LedgerError {
     #[error("account name must not be empty")]
     EmptyAccountName,
 
+    /// A rename to the name the account already has: there is nothing to
+    /// journal.
+    #[error("account {code} is already named {name:?}: nothing to rename")]
+    AccountNameUnchanged {
+        /// The account's code.
+        code: String,
+        /// Its name.
+        name: String,
+    },
+
+    /// A new name (a new account's, or a rename's) that another account
+    /// under the same parent already has, ignoring capitals: QuickBooks
+    /// matches accounts by name (docs/spec/sources/intuit-iif.md), so the
+    /// CPA's import would merge the two.
+    #[error(
+        "{sibling} already has the name {name:?} under the same parent (names compare ignoring capitals): QuickBooks matches accounts by name and would merge the two, so choose another name"
+    )]
+    DuplicateAccountName {
+        /// The name refused.
+        name: String,
+        /// The account that has it, `"CODE Name"`.
+        sibling: String,
+    },
+
+    /// A new account name holding a run of nine digits: it reads as a full
+    /// SSN, EIN or account number, and every report prints it.
+    #[error(
+        "the account name holds nine digits in a row, which read as a full SSN, EIN or account number, and every report prints it: write only the last four (a full TIN goes only into the vault, books.set_tin)"
+    )]
+    AccountNameHoldsTin,
+
+    /// A new account name (a new account's, or a rename's) that isn't one
+    /// line of text within the bound ([`crate::account::MAX_ACCOUNT_NAME`]
+    /// characters): every report, export and the IIF print it on one line.
+    #[error("account name {0}")]
+    InvalidAccountName(String),
+
+    /// A rename's reason the journal can't keep: blank, too long, holding
+    /// a control character or a full TIN.
+    #[error("rename reason: {0}")]
+    InvalidRenameReason(String),
+
+    /// `policy.require_tax_category = refuse`, and a revenue or expense
+    /// account (not a placeholder) would be created, or left, without a
+    /// tax category.
+    #[error("{}", tax_category_required_text(account, *clearing))]
+    TaxCategoryRequired {
+        /// The account, `"CODE Name"`.
+        account: String,
+        /// Whether the command would clear the category it has.
+        clearing: bool,
+    },
+
     /// The referenced parent account does not exist.
     #[error("unknown parent account id {0}")]
     UnknownParentAccount(u64),
@@ -388,7 +441,7 @@ pub enum LedgerError {
     #[error("invalid members: {0}")]
     InvalidMembers(String),
 
-    /// Cash-flow period end is before period start.
+    /// A report period's end is before its start.
     #[error("invalid date range: end {end} is before start {start}")]
     InvalidDateRange {
         /// Period start, YYYY-MM-DD.
@@ -419,6 +472,18 @@ pub enum LedgerError {
     /// names the setting and says what to change.
     #[error("cash flow account roles: {0}")]
     CashFlowRoles(String),
+
+    /// A report period given only a start, after today: an omitted end is
+    /// today (rules.md B-30), so the period would end before it starts.
+    #[error(
+        "invalid date range: start {start} is after the end, which defaults to today ({today}): pass end"
+    )]
+    StartAfterToday {
+        /// Period start, YYYY-MM-DD.
+        start: String,
+        /// Today, the end an omitted end means, YYYY-MM-DD.
+        today: String,
+    },
 
     /// The referenced accounting period does not exist.
     #[error("unknown period id {0}")]
@@ -566,4 +631,18 @@ pub enum LedgerError {
         "approval rules cover the entry this would post at once ({0}): draft it instead (books.draft_entry), have it approved (books.approve_entry), then post it"
     )]
     ApprovalNeedsDraft(String),
+}
+
+/// The refusal [`LedgerError::TaxCategoryRequired`] gives: what to pass,
+/// and where the categories are listed.
+fn tax_category_required_text(account: &str, clearing: bool) -> String {
+    if clearing {
+        format!(
+            "policy.require_tax_category is refuse: {account} keeps a tax category (give it another with books.set_tax_category; books.tax_categories lists them)"
+        )
+    } else {
+        format!(
+            "policy.require_tax_category is refuse: give {account} a tax_category (books.tax_categories lists them)"
+        )
+    }
 }

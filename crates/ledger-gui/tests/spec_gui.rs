@@ -1064,8 +1064,18 @@ fn small_books(tag: &str) -> Small {
     let cash = store
         .add_account("1000", "Checking", AccountType::Asset, None, false)
         .unwrap();
+    // Mapped to the return, so books with nothing else to do have
+    // nothing in Needs attention (rules.md B-32 lists every expense
+    // account without a category, used or not).
     let rent = store
-        .add_account("6100", "Rent", AccountType::Expense, None, false)
+        .add_account_with_tax(
+            "6100",
+            "Rent",
+            AccountType::Expense,
+            None,
+            false,
+            Some(("rent_property", None)),
+        )
         .unwrap();
     Small {
         dir,

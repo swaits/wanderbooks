@@ -12,7 +12,6 @@ use crate::books::{Attention, Books, Severity};
 use crate::fmt;
 use crate::nav::Route;
 use chrono::Datelike;
-use ledger_core::reports::profit_and_loss_for_period;
 use ledger_core::{AccountType, EntryStatus, PeriodStatus, vendor_1099_report};
 use rust_decimal::Decimal;
 
@@ -45,8 +44,11 @@ fn cant_compute(what: String, why: &ledger_core::LedgerError, target: Option<Rou
 ///   2. One item per: draft entry (Todo); posted entry missing a receipt
 ///      (Problem; four or more are one combined item); recurring entry or
 ///      schedule due through today (Todo); period ended and still open
-///      (Todo); fiscal-year account with activity and no tax category
-///      (Info); legal rule known only through a past year (Todo); 1099
+///      (Todo); the revenue and expense accounts (not headers) with no tax
+///      category, with activity or not (ledger_core::tax::
+///      uncategorized_accounts: one item; Info, Todo under
+///      policy.require_tax_category = refuse); legal rule known only
+///      through a past year (Todo); 1099
 ///      vendor without a W-9 (Problem); overdue bills, and overdue
 ///      invoices (Problem, one each, with the total); money owed to
 ///      owners (Info, per account with a balance); the database differing
@@ -242,38 +244,36 @@ pub fn find(b: &Books) -> Vec<Attention> {
         }
     }
 
-    let (fy_start, _) = b.fiscal_ytd();
-    if let Ok(pl) = profit_and_loss_for_period(&b.ledger, fy_start, today, None) {
-        let uncategorized: Vec<String> = pl
-            .revenue
-            .iter()
-            .chain(&pl.expenses)
-            .filter(|l| {
-                b.ledger
-                    .chart()
-                    .find_by_code(&l.code)
-                    .is_some_and(|a| a.tax_category.is_none())
-            })
-            .map(|l| format!("{} {}", l.code, l.name))
-            .collect();
-        if !uncategorized.is_empty() {
-            out.push(Attention {
-                severity: Severity::Info,
-                title: format!(
-                    "{} without a tax category",
-                    fmt::count(uncategorized.len(), "account", "accounts")
-                ),
-                detail: format!(
-                    "{}. The tax summary lists them as uncategorized.",
-                    uncategorized.join(", ")
-                ),
-                target: Some(Route::Accounts),
-                prompt: format!(
-                    "In wanderbooks, propose a tax category for each of these accounts ({}) using books.tax_categories, and set them with books.set_tax_category once I agree.",
-                    uncategorized.join(", ")
-                ),
-            });
-        }
+    // Every revenue and expense account (not a header) without a tax
+    // category, with activity or not (rules.md B-32): the one list the
+    // digest gives the agent too.
+    let uncategorized: Vec<String> = ledger_core::tax::uncategorized_accounts(&b.ledger)
+        .into_iter()
+        .map(|a| format!("{} {}", a.code, a.name))
+        .collect();
+    if !uncategorized.is_empty() {
+        let refuse = b.ledger.settings().require_tax_category()
+            == ledger_core::settings::TaxCategoryPolicy::Refuse;
+        out.push(Attention {
+            severity: if refuse {
+                Severity::Todo
+            } else {
+                Severity::Info
+            },
+            title: format!(
+                "{} without a tax category",
+                fmt::count(uncategorized.len(), "account", "accounts")
+            ),
+            detail: format!(
+                "{}. Each revenue and expense account maps to a line of the return (the tax summary and the CPA package list it as uncategorized until then).",
+                uncategorized.join(", ")
+            ),
+            target: Some(Route::Accounts),
+            prompt: format!(
+                "In wanderbooks, propose a tax category for each of these accounts ({}) using books.tax_categories, and set them with books.set_tax_category once I agree.",
+                uncategorized.join(", ")
+            ),
+        });
     }
 
     // Rules set by law that wanderbooks may no longer know (rules.md;

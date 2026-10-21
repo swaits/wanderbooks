@@ -1080,12 +1080,19 @@ lowers the format in force. Opening the books checks every complete line
 before it changes anything: a cut-off last line is set aside only when the
 lines before it pass, so an older version never alters newer books.
 
-A feature (`ledger_store::format::KNOWN_FEATURES`) is a field or value on
-an event type an older version knows but would misread; the writer declares
-it with the format in force (at least 2) just before the first line that
-needs it, so books that never use it stay readable by versions before it:
-`members_cumulative` (P3, B-13: a members close counted from its count's
-first close, `"rounding": "cumulative_since"`).
+A line an earlier version can't read is announced by a journal feature
+(`ledger_store::format::KNOWN_FEATURES`): a new event type, or a field or
+value on an event type an earlier version knows but would misread. The
+writer declares it once, in the `journal.format_set` just before the
+first line that needs it, with the format in force (at least 2) and the
+features already in force (`Store::ensure_feature`): an earlier reader
+stops at the declaration, and books that never use the feature stay
+readable by it. P3's: `members_cumulative` (B-13: a members close counted
+from its count's first close, `"rounding": "cumulative_since"`),
+`account_renamed` (before the first `account.renamed`, B-31) and
+`require_tax_category` (before the first `settings.set` naming
+`policy.require_tax_category`, B-32). A later piece asks the owner's
+go-ahead before the first such declaration (plan D-39).
 
 **Enforced:** `ledger_store::format` (`JournalFormat::admit`, `declared`,
 `gate`, `settle`, `declaration`), `journal::ENVELOPE_KEYS`,
@@ -1281,6 +1288,196 @@ checked to change no figure or entry; `approval_rules_off_by_default`,
 `tests/spec_kept.rs`; Lean `Step.record_changes_no_figure`,
 `Reachable.records`; fuzz `fuzz_settings_replay`.
 
+## B-30 A report asked for without dates covers this fiscal year so far
+
+**Status:** AUTHORITY for the period (IRS Pub. 538,
+`sources/irs-periods-and-methods.md`: "A tax year is an annual accounting
+period for keeping records and reporting income and expenses"; 26 U.S.C.
+§6041(a), "in any calendar year", and §6041A(a)(2), "during such calendar
+year", `sources/irs-1099-thresholds.md`, for the calendar-year counts);
+DECISION for using it as the default (no authority says what a tool's
+omitted dates mean; the owner, 2026-10-20, `plan/served.md` P3 "Settled in
+design": "a report asked for without dates covers this fiscal year so
+far, everywhere, and an account's register opens on it with 'Show all
+dates' one click away").
+
+The books' annual period is the fiscal year (`company.fiscal_year_start`,
+B-29). Every place a date may be omitted resolves it by one rule
+(`ledger_core::calendar::PeriodDefaults`), so the agent's report tools,
+`books.show`, the viewer and the tool descriptions can't say different
+things:
+
+| Kind | Used for | Both dates omitted | Only `end` given | Only `start` given |
+|---|---|---|---|---|
+| A period | profit and loss (and by class), cash flow, tax summary, members' equity, general ledger, general journal (csv, json, xlsx), an account's register, `books.show` of an account or a report | the first day of the fiscal year that holds today, through today | the first day of the fiscal year that holds `end`, through `end` | `start` through today |
+| An instant | balance sheet, trial balance, A/R and A/P aging, fixed asset register, the IIF's `as_of` (every posted entry from the first through it, B-34), the CPA package's `as_of` | today | | |
+| A calendar year | party totals (`books.parties`, `books.party`, the viewer's party pages), the viewer's 1099 worksheet | today's calendar year | | |
+
+- A resolved start after the resolved end is refused, whether the caller
+  gave both dates (`InvalidDateRange`) or only a start after today, the
+  end an omitted end means (`StartAfterToday`, whose message says the end
+  was defaulted: "pass end"). It is never swapped or clamped to fit.
+- A derived start before 0001-01-01 is the calendar's first day (only an
+  end early in year 1 under a non-January fiscal year, B-28).
+- The first year: when the company was formed after its fiscal year's
+  first day, the default start comes before formation. The amounts are
+  the same, and the start is not moved to `company.formed`: start-up and
+  organizational costs (IRC §195, §709) can be dated before formation.
+- "Today" is the company's (`company.timezone`, B-29).
+- The CPA package's period and the viewer's "Year to date" preset are
+  the fiscal year that holds their day (`calendar::fiscal_year_start_on`),
+  the fact itself, never "what an omitted date means": they don't follow
+  this default if it ever changes.
+- Not covered (no default period): search filters, the activity digest
+  (its `since` is required; the `books://digest` resource reads this
+  month so far), the `through` of `books.run_schedules` and
+  `books.run_recurring` (today: an operation, not a period), and the
+  viewer's drill-downs from a balance, which run from the books' first
+  entry because a balance is cumulative. The IIF is never a period (B-34):
+  it refuses `start` and `end`, so the general journal's default period
+  never shortens it, nor anything in the CPA package, which gives its
+  statements and ledgers its own fiscal year to date.
+
+**Enforced:** `ledger_core::calendar` (`period_defaults`,
+`PeriodDefaults::statement`, `statement_range`, `as_of`,
+`calendar_year`, `fiscal_year_start_on`, `PeriodKind::describe`,
+`START_DOC`, `END_DOC`, `AS_OF_DOC`, `YEAR_DOC`); `ledger_package`
+`statement_range`, `as_of_date`, `pnl_statement`, `bs_statement`,
+`cash_flow_statement`, `build_package`; `ledger-mcp` `BooksServer::periods`,
+`statement_range`, `as_of`, every report tool, `books.show`, the
+generated descriptions (`described`) and parameter docs; `ledger-gui`
+`Books::periods`, `default_period`, `fiscal_ytd`, `App::show`,
+`RegisterRange`. **Checked:** `ledger-core` `calendar.rs` unit tests and
+`tests/properties.rs` `prop_period_defaults_resolve`; `ledger-mcp`
+`server.rs` `period_tools_describe_the_one_default`, `tests/mcp_stdio.rs`
+`one_default_period_everywhere_defect_16` and
+`the_default_period_never_shortens_the_iif_or_the_package`,
+`tests/oracle_mcp.rs`
+`show_sends_the_dates_it_names_defect_16`,
+`show_refuses_start_after_end_defect_15`,
+`show_refuses_a_derived_inverted_range_defect_15`; `ledger-gui`
+`tests/show.rs`; bookspec `examples/default-period-fiscal-year-to-date.toml`.
+
+## B-31 Renaming an account changes its label, nothing else
+
+**Status:** DECISION (the owner, `plan/served.md` 4.9 and P3 "Settled in
+design", 2026-10-20: "a new account named like a sibling (ignoring
+capitals), or holding a nine-digit number, is refused"); B-8 (posted is
+forever); AUTHORITY for keeping the old name (Rev. Proc. 98-25 §5.01,
+`sources/irs-records.md`: "the relationship (i.e., audit trail): (a)
+between the total of the amounts in the taxpayer's machine-sensible
+records by account and the account totals in the taxpayer's books");
+Intuit IIF (`sources/intuit-iif.md`: "Accounts are identified by NAME")
+for refusing a sibling's name.
+
+Entries name accounts by id, so a rename changes no entry, line, hash,
+balance or statement amount: every report, past periods included, prints
+the new name. The journal keeps the old one (`account.renamed {account_id,
+code, name, previous, reason}`), so a report printed under the old name
+can be tied to the new. A rename is refused when the account is unknown,
+the name is blank, the name (trimmed) is the one it has, another account
+under the same parent (top-level accounts are siblings too) has it
+ignoring capitals and surrounding space (QuickBooks would merge the two),
+it holds a run of nine digits (a full SSN, EIN or account number, B-26:
+every report prints a name), or it is not one line of at most 200
+characters (`account::MAX_ACCOUNT_NAME`, the bound of the company's own
+name: no line break, tab or other control character, which no report, CSV
+or IIF line can hold). The name is kept trimmed. The same name rules hold
+for a new account (`books.add_account`, `books.import_chart_csv`), which
+is journaled with its name trimmed too; accounts the engine
+creates for a control role keep their fixed names and are never refused
+for one. Approval rules, roles, settings and closed periods name accounts
+by code or id, and a name is no posting, so none of them blocks a rename.
+Existing charts are untouched: the rules are the commands', never replay's
+(B-28).
+
+A rename can still change what the books pick by name (no amount): with
+`books.cash_accounts` unset, the cash accounts are the asset accounts
+whose names say they hold cash, and the card accounts are the
+liabilities named "card" (`ledger_store::reconcilable`); the result says
+when the new name moves the account into or out of either. It also lists
+conventions whose text names the old name. QuickBooks matches accounts
+by name, so a CPA who imported an earlier IIF is told.
+
+**Enforced:** `Ledger::rename_account` / `check_rename_account`,
+`check_account_name` (also in `add_account`), `account::MAX_ACCOUNT_NAME`,
+`check_rename_reason`,
+`replay_rename_account` (only that the account exists),
+`ChartOfAccounts::set_name`, `Ledger::add_control_account`;
+`Store::rename_account` (journal feature `account_renamed`, declared
+before the first rename, B-27); `books.rename_account` (scope
+`books:post`, like renumbering). **Checked:** `ledger-core`
+`tests/spec_ledger.rs` (`rename_account_*`), `tests/model.rs`
+(`Cmd::Rename`); `ledger-store` `tests/store.rs`
+(`rename_account_changes_only_the_name_defect_15`,
+`prop_rename_changes_no_figure`, `a_journaled_rename_replays_past_the_command_rules`),
+`tests/format.rs`; `ledger-mcp` `tests/mcp_stdio.rs`
+(`rename_account_end_to_end_defect_15`), `tests/hostile_args.rs`;
+`ledger-core` `tests/spec_ledger.rs`
+(`a_new_name_is_one_trimmed_line_of_bounded_length`), `ledger-store`
+`tests/store.rs` (`a_new_accounts_name_is_journaled_trimmed`); Lean
+`Step.record` (a name is outside the model: `docs/verification.md` 13a);
+bookspec `examples/rename-changes-no-amount.toml`.
+
+## B-32 Every revenue and expense account maps to a line of the return
+
+**Status:** AUTHORITY for why it matters (IRS Pub. 583,
+`sources/irs-records.md`: "Your books must show your gross income, as
+well as your deductions and credits"; IRS Pub. 538: "you must maintain
+records that will enable you to file a correct return"; Rev. Proc. 98-25
+§5.01: the relationship "between the total of the amounts in the
+taxpayer's machine-sensible records by account and the taxpayer's
+return"); DECISION for warn versus refuse (Pub. 583: "the law does not
+require any specific kind of records"; the owner, 2026-10-20: warn by
+default, header accounts exempt, the first company set to refuse at the
+P3 cutover).
+
+A tax category is the account's link to the return (`ledger_core::tax`,
+`sources/irs-tax-lines.md`). An account needs one when it is a revenue or
+expense account and not a header (a header takes no postings, so nothing
+of its own reaches the return: no entry posts to one, a replayed one
+included, and an account's header flag never changes).
+
+- Needs attention and the digest (`uncategorized_accounts`) list every
+  account that needs a category and has none, with activity or not.
+- `policy.require_tax_category`: `warn` (unset) or `refuse`. Under `warn`,
+  `books.add_account` and `books.import_chart_csv` create the account and
+  their results say so. Under `refuse`, they refuse it (the file whole),
+  naming the account and where the categories are listed; both take the
+  category at creation, so the refusal is always met in one call; and
+  `books.set_tax_category` won't clear a category an account needs.
+- The accounts invoices, bills and payroll create for a control role
+  (Revenue 4000, General Expenses 6999, Salary & Wage Expense 6100,
+  Payroll Tax Expense 6110) are never refused, so an invoice is never
+  refused over a chart label: their results warn, and Needs attention
+  lists them. The policy is "no uncategorized account made through the
+  chart tools", not "never any".
+- Turning the policy to `refuse` changes no existing account: it applies
+  to new commands (B-28). Needs attention keeps listing the gaps.
+- Every account a tool can require has a category that fits it on every
+  return: the gain or loss account of a disposal (`form_4797_gain_loss`,
+  Form 4797), tax-exempt income (`tax_exempt_income`, Schedule K), and
+  each control role's. A gain or loss on business property is figured on
+  Form 4797 from the tax basis, and its split (ordinary gain, net section
+  1231 gain) decides the line, never Schedule C: the tax summary lists it
+  apart (`TaxSummary::form_4797`), at its book amount, with no tax amount
+  and in no total, on every return.
+
+**Enforced:** `tax::needs_category`, `account_needs_category`,
+`uncategorized_accounts`, `CATEGORIES`; `Ledger::check_tax_category_required`,
+`check_tax_category_kept` (commands only, never `set_account_tax`, which
+replay calls); `settings::TaxCategoryPolicy`, `Settings::require_tax_category`;
+`Store::add_account_with_tax`, `add_account`, `set_account_tax`
+(journal feature `require_tax_category`, declared before the first
+`settings.set` naming the key); `ledger-mcp` `books.add_account`,
+`books.import_chart_csv`, `books.digest`; `ledger-gui` Needs attention
+(Info under warn, Todo under refuse). **Checked:** `ledger-core`
+`tests/tax.rs`; `ledger-store` `tests/store.rs`
+(`prop_tax_policy_refuses_exactly`, `a_journaled_clear_replays_under_refuse`);
+`ledger-mcp` `tests/spec_tax_policy.rs`; `ledger-gui` `tests/view_model.rs`
+(`needs_attention_flags_every_uncategorized_pl_account_defect_8`);
+bookspec `examples/tax-category-required.toml`.
+
 ## B-33 A package as of a day shows the books through that day
 
 **Status:** CONVENTION (a report as of a day reports the books on that
@@ -1447,4 +1644,5 @@ appendix: the file line by line and its changes, derived by hand);
 `ledger-mcp` `oracle_mcp.rs`
 (`iif_declares_accounts_by_role_and_balances_every_transaction`,
 `iif_without_as_of_is_as_of_today_and_ties_to_the_trial_balance`),
-`mcp_stdio.rs` (`mcp_import_export_over_stdio`).
+`mcp_stdio.rs` (`mcp_import_export_over_stdio`,
+`the_default_period_never_shortens_the_iif_or_the_package`).

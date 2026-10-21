@@ -92,4 +92,6 @@ pub use schedules::{
     ScheduleId, ScheduleKind, TemplateLine,
 };
 pub use shares::{PartyMember, PartyShare, Share};
-pub use tax::{TaxCategory, TaxForm, TaxKind, TaxSummary, TaxSummaryLine, tax_summary};
+pub use tax::{
+    BookOnlyLine, TaxCategory, TaxForm, TaxKind, TaxSummary, TaxSummaryLine, tax_summary,
+};

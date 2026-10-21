@@ -1,6 +1,7 @@
 //! Tool parameter and output types. Amounts cross MCP as decimal strings,
 //! never JSON floats.
 
+use ledger_core::calendar::{AS_OF_DOC, END_DOC, START_DOC, YEAR_DOC};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -13,7 +14,10 @@ use serde::{Deserialize, Serialize};
 pub struct AddAccountParams {
     /// Account code, e.g. "1000". Must be unique.
     pub code: String,
-    /// Human name, e.g. "Business Checking".
+    /// Human name, e.g. "Business Checking": one line of at most 200
+    /// characters, kept trimmed; no other account under the same parent
+    /// has it (ignoring capitals), and it holds no run of nine digits
+    /// (write an account number's last four).
     pub name: String,
     /// One of: asset, liability, equity, revenue, expense.
     pub account_type: String,
@@ -21,6 +25,14 @@ pub struct AddAccountParams {
     pub parent: Option<u64>,
     /// True for header accounts that never take postings.
     pub placeholder: Option<bool>,
+    /// The tax category of a revenue or expense account (a key from
+    /// `books.tax_categories`): the line of the return it maps to.
+    #[serde(default)]
+    pub tax_category: Option<String>,
+    /// Percent deductible, overriding the category's default (0 to 100),
+    /// as a decimal string. Needs tax_category.
+    #[serde(default)]
+    pub deductible_percent: Option<String>,
 }
 
 /// Result of `books.add_account`.
@@ -28,6 +40,45 @@ pub struct AddAccountParams {
 pub struct AddAccountOut {
     /// The new account's id.
     pub account_id: u64,
+    /// What to tell the human: a revenue or expense account created
+    /// without a tax category (the tax summary lists it as uncategorized
+    /// until it has one).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+/// Parameters for `books.rename_account`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RenameAccountParams {
+    /// The account's code (or id).
+    pub account: String,
+    /// Its new name, kept trimmed: one line of at most 200 characters,
+    /// not the one it has, not one another account under the same parent
+    /// has (ignoring capitals), and no run of nine digits.
+    pub name: String,
+    /// Why, in a line or two, for the journal (the human's words, or what
+    /// they asked). Optional.
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// Result of `books.rename_account`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct RenameAccountOut {
+    /// The account's id (unchanged).
+    pub id: u64,
+    /// Its code (unchanged).
+    pub code: String,
+    /// The name it had: the journal keeps it.
+    pub previous_name: String,
+    /// The name it has now.
+    pub name: String,
+    /// What else the new name changes: a set of accounts picked by name
+    /// it joins or leaves (cash and card accounts, when the settings name
+    /// none), conventions whose text names the old name, and the
+    /// QuickBooks import (IIF matches accounts by name).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }
 
 /// One account in the chart.
@@ -474,15 +525,36 @@ pub struct ShowParams {
     /// A page: overview, cash, profit, transactions, reports, accounts,
     /// assets, parties, documents, company, journal.
     pub page: Option<String>,
-    /// For account and report: first date, YYYY-MM-DD.
+    /// For an account or a report over a period: its first day (see
+    /// [`show_start_doc`]).
+    #[schemars(description = show_start_doc())]
     pub start: Option<String>,
-    /// For account and report: last date, YYYY-MM-DD.
+    /// For an account or a report: its last day, or the day a report as
+    /// of a day is as of (see [`show_end_doc`]).
+    #[schemars(description = show_end_doc())]
     pub end: Option<String>,
     /// For a report: split into columns, "total" (default), "month",
     /// "quarter", or "year" (P&L, balance sheet, cash flow).
     pub columns: Option<String>,
-    /// For a report: compare with "prior_period" or "prior_year".
+    /// For a report: compare with "prior_period" or "prior_year" (P&L,
+    /// balance sheet, cash flow, tax summary; not with a split).
     pub compare: Option<String>,
+}
+
+/// `books.show`'s `start`, in the one default's words
+/// ([`ledger_core::calendar::START_DOC`]).
+pub fn show_start_doc() -> String {
+    format!(
+        "For an account, or a report over a period (a balance sheet only when split or compared with the prior period). {START_DOC}"
+    )
+}
+
+/// `books.show`'s `end`, in the one default's words
+/// ([`ledger_core::calendar::END_DOC`]).
+pub fn show_end_doc() -> String {
+    format!(
+        "For an account or a report: the last day, or the day a report as of a day is as of (vendor_1099: a day in its year). {END_DOC}"
+    )
 }
 
 /// Result of `books.show`.
@@ -738,8 +810,9 @@ pub struct TrialBalanceLineOut {
 /// Parameters for `books.trial_balance`.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct TrialBalanceParams {
-    /// As of this date, YYYY-MM-DD. Defaults to today.
+    /// As of this day ([`AS_OF_DOC`]).
     #[serde(default)]
+    #[schemars(description = AS_OF_DOC)]
     pub as_of: Option<String>,
 }
 
@@ -761,9 +834,11 @@ pub struct TrialBalanceOut {
 /// Parameters for `books.profit_and_loss`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ProfitAndLossParams {
-    /// Period start, YYYY-MM-DD. Defaults to the beginning of time.
+    /// Period start ([`START_DOC`]).
+    #[schemars(description = START_DOC)]
     pub start: Option<String>,
-    /// Period end, YYYY-MM-DD. Defaults to today.
+    /// Period end ([`END_DOC`]).
+    #[schemars(description = END_DOC)]
     pub end: Option<String>,
     /// Optional class name or id to filter to one division.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -803,9 +878,11 @@ pub struct StatementLineOut {
 /// Parameters for `books.cash_flow`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CashFlowParams {
-    /// Period start, YYYY-MM-DD. Defaults to the beginning of time.
+    /// Period start ([`START_DOC`]).
+    #[schemars(description = START_DOC)]
     pub start: Option<String>,
-    /// Period end, YYYY-MM-DD. Defaults to today.
+    /// Period end ([`END_DOC`]).
+    #[schemars(description = END_DOC)]
     pub end: Option<String>,
     /// Asset account codes treated as cash (e.g. `["1000", "1010"]`): the
     /// statement explains the change in these accounts. Defaults to the
@@ -1081,12 +1158,17 @@ pub struct ImportChartCsvOut {
     pub created: Vec<String>,
     /// Number of accounts created.
     pub count: usize,
+    /// What to tell the human: each revenue or expense account created
+    /// without a tax category.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// Parameters for `books.balance_sheet`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct BalanceSheetParams {
-    /// As of this date, YYYY-MM-DD. Defaults to today.
+    /// As of this day ([`AS_OF_DOC`]).
+    #[schemars(description = AS_OF_DOC)]
     pub as_of: Option<String>,
 }
 
@@ -1773,6 +1855,11 @@ pub struct DigestOut {
     /// with a recorded statement) with activity not reconciled through the
     /// end of last month: record each statement and reconcile it.
     pub unreconciled_accounts: Vec<UnreconciledAccountOut>,
+    /// Revenue and expense accounts (not headers) with no tax category,
+    /// active or not, "CODE Name": the list the viewer's Needs attention
+    /// shows. Propose a category for each from books.tax_categories and
+    /// set it with books.set_tax_category once the human agrees.
+    pub uncategorized_accounts: Vec<String>,
 }
 
 /// An account due for reconciliation (`books.digest`).
@@ -1827,13 +1914,14 @@ pub struct ExportParams {
     /// "journal", "trial_balance", "profit_and_loss", "balance_sheet", or
     /// "cash_flow".
     pub report: String,
-    /// Period start for profit_and_loss and cash_flow, YYYY-MM-DD.
+    /// Period start for the period reports (see [`export_start_doc`]).
+    #[schemars(description = export_start_doc())]
     pub start: Option<String>,
-    /// Period end for profit_and_loss and cash_flow, YYYY-MM-DD.
+    /// Period end for the period reports (see [`export_end_doc`]).
+    #[schemars(description = export_end_doc())]
     pub end: Option<String>,
-    /// As-of date for balance_sheet, trial_balance, fixed_asset_register,
-    /// and iif (every posted entry dated on or before it), YYYY-MM-DD.
-    /// Defaults to today.
+    /// As-of day for the reports as of a day (see [`export_as_of_doc`]).
+    #[schemars(description = export_as_of_doc())]
     pub as_of: Option<String>,
     /// Cash account codes for cash_flow, and for iif its BANK accounts.
     /// Defaults to `[books] cash_accounts`; one or the other is required
@@ -1849,6 +1937,28 @@ pub struct ExportParams {
     /// `[books] investing_accounts`.
     #[serde(default)]
     pub investing_accounts: Vec<String>,
+}
+
+/// `books.export`'s `start`, in the one default's words
+/// ([`ledger_core::calendar::START_DOC`]).
+pub fn export_start_doc() -> String {
+    format!(
+        "For the period reports: profit_and_loss, cash_flow, members_equity, tax_summary, general_ledger, general_journal (csv, json, xlsx; iif takes as_of instead). {START_DOC}"
+    )
+}
+
+/// `books.export`'s `end`, in the one default's words
+/// ([`ledger_core::calendar::END_DOC`]).
+pub fn export_end_doc() -> String {
+    format!("For the period reports, as for start. {END_DOC}")
+}
+
+/// `books.export`'s `as_of`, in the one default's words
+/// ([`ledger_core::calendar::AS_OF_DOC`]).
+pub fn export_as_of_doc() -> String {
+    format!(
+        "For balance_sheet, trial_balance, fixed_asset_register and iif (every posted entry dated on or before it). {AS_OF_DOC}"
+    )
 }
 
 /// Result of `books.export`.
@@ -2534,6 +2644,10 @@ pub struct CreateDocumentOut {
     pub total: String,
     /// The auto-posted journal entry's id.
     pub entry_id: u64,
+    /// What to tell the human: a revenue or expense account this created
+    /// (Revenue 4000, General Expenses 6999) has no tax category yet.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// Parameters for `books.receive_payment` / `books.pay_bill`.
@@ -2563,8 +2677,10 @@ pub struct PaymentOut {
 /// Parameters for `books.ar_aging` / `books.ap_aging`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AgingParams {
-    /// As-of date, YYYY-MM-DD.
-    pub as_of: String,
+    /// As of this day ([`AS_OF_DOC`]).
+    #[serde(default)]
+    #[schemars(description = AS_OF_DOC)]
+    pub as_of: Option<String>,
 }
 
 /// One row of an aging report.
@@ -2589,6 +2705,8 @@ pub struct AgingRowOut {
 /// Output of `books.ar_aging` / `books.ap_aging`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AgingOut {
+    /// The day it is as of, YYYY-MM-DD.
+    pub as_of: String,
     /// Rows, one per party with an outstanding balance.
     pub rows: Vec<AgingRowOut>,
 }
@@ -2669,6 +2787,11 @@ pub struct RunPayrollOut {
     pub total_gross: String,
     /// Total net pay, decimal string.
     pub total_net: String,
+    /// What to tell the human: an expense account this created (Salary &
+    /// Wage Expense 6100, Payroll Tax Expense 6110) has no tax category
+    /// yet.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// Parameters for `books.remit_payroll_taxes`.
@@ -2780,7 +2903,9 @@ pub struct ProfitAndLossByClassOut {
 /// Parameters for `books.export_cpa_package`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ExportCpaPackageParams {
-    /// As-of date, YYYY-MM-DD. Defaults to today.
+    /// As of this day ([`AS_OF_DOC`]); the period reports cover the
+    /// fiscal year that holds it, through it.
+    #[schemars(description = AS_OF_DOC)]
     pub as_of: Option<String>,
     /// Cash account codes the cash flow statement reconciles to, e.g.
     /// `["1000"]`. Defaults to `[books] cash_accounts`; one or the other
@@ -3114,8 +3239,9 @@ pub struct ListPartiesParams {
     /// Include archived parties (default false).
     #[serde(default)]
     pub include_archived: bool,
-    /// Calendar year for `paid` and `received` (default: this year, so
-    /// year to date).
+    /// Calendar year for `paid` and `received` ([`YEAR_DOC`]: this year,
+    /// so year to date).
+    #[schemars(description = YEAR_DOC)]
     pub year: Option<i32>,
 }
 
@@ -3124,7 +3250,9 @@ pub struct ListPartiesParams {
 pub struct PartyParams {
     /// The party: id or name.
     pub party: String,
-    /// Calendar year for the totals (default: this year, so year to date).
+    /// Calendar year for the totals ([`YEAR_DOC`]: this year, so year to
+    /// date).
+    #[schemars(description = YEAR_DOC)]
     pub year: Option<i32>,
 }
 

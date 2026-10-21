@@ -178,7 +178,7 @@ fn mcp_end_to_end_over_stdio() {
     // Tool listing: the narrow tools; chart is read-only.
     let list = mcp.request("tools/list", json!({}));
     let tools = list["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 108, "expected 108 tools, got {}", tools.len());
+    assert_eq!(tools.len(), 109, "expected 109 tools, got {}", tools.len());
     // Files come in as tool input: books.begin_upload, never a local path.
     assert!(tools.iter().any(|t| t["name"] == "books.begin_upload"));
     assert!(!tools.iter().any(|t| t["name"] == "books.import_local_file"));
@@ -309,7 +309,7 @@ fn mcp_end_to_end_over_stdio() {
     // Export works.
     let export = mcp.call(
         "books.export",
-        json!({"format": "csv", "report": "journal"}),
+        json!({"format": "csv", "report": "journal", "start": "2026-01-01", "end": "2026-12-31"}),
     );
     assert!(export["content"].as_str().unwrap().contains("January rent"));
 
@@ -1445,10 +1445,15 @@ fn mcp_period_statements_over_stdio() {
     assert_eq!(feb["net_income"], "-0.50");
     assert_eq!(feb["expense_accounts"][0]["code"], "6000");
     assert_eq!(feb["expense_accounts"][0]["amount"], "3.00");
-    // No start: the statement begins at the first entry, not year 1.
-    let all = mcp.call("books.profit_and_loss", json!({"end": "2026-02-28"}));
-    assert_eq!(all["start"], "2026-01-02");
-    assert_eq!(all["revenue"], "6.50");
+    // No start (rules.md B-30): the fiscal year that holds the end, to
+    // it. The fiscal year starts 02-01, so January's 4.00 of sales is
+    // last year's, and February's 2.50 is this one's.
+    let ytd = mcp.call("books.profit_and_loss", json!({"end": "2026-02-28"}));
+    assert_eq!(ytd["start"], "2026-02-01");
+    assert_eq!(ytd["revenue"], "2.50");
+    let last = mcp.call("books.profit_and_loss", json!({"end": "2026-01-31"}));
+    assert_eq!(last["start"], "2025-02-01");
+    assert_eq!(last["revenue"], "4.00");
 
     // As of Jan 31: cash 1,004.00 = capital 1,000.00 + earnings 4.00.
     let jan = mcp.call("books.balance_sheet", json!({"as_of": "2026-01-31"}));
@@ -2774,4 +2779,460 @@ fn renumbering_an_account_keeps_its_history() {
         !codes.contains(&"6100") && !codes.contains(&"1000"),
         "{codes:?}"
     );
+}
+
+/// A server on books whose settings come from `toml`, initialized.
+fn served(dir: &std::path::Path, toml: &str) -> Mcp {
+    let path = dir.join("wanderbooks.toml");
+    std::fs::write(&path, toml).unwrap();
+    let mut mcp = Mcp::spawn_with(
+        &dir.join("books-data"),
+        &[std::ffi::OsStr::new("--books-toml"), path.as_os_str()],
+    );
+    init(&mut mcp);
+    mcp
+}
+
+/// Post one balanced two-line entry over stdio.
+fn post_pair(mcp: &mut Mcp, date: &str, dr: &str, cr: &str, amount: &str) -> u64 {
+    let e = mcp.call(
+        "books.draft_entry",
+        json!({"date": date, "description": "x", "no_party_reason": "test"}),
+    );
+    let id = e["entry_id"].as_u64().unwrap();
+    for (account, side) in [(dr, "debit"), (cr, "credit")] {
+        mcp.call(
+            "books.add_line",
+            json!({"entry_id": id, "account": account, "side": side, "amount": amount}),
+        );
+    }
+    mcp.call(
+        "books.post_entry",
+        json!({"entry_id": id, "confirmed": true}),
+    );
+    id
+}
+
+/// Defect 16 (rules.md B-30): one default period everywhere. On books with
+/// a July fiscal year and a first entry in the fiscal year before, every
+/// period report given only an end covers the fiscal year that holds it
+/// (2025-07-01 through 2026-03-31, never the first entry's day, never
+/// 0001-01-01): profit and loss, by class, cash flow, and the exported tax
+/// summary, members' equity, general ledger and general journal (csv and
+/// json, whose entries are the period's); the CPA package as of that day
+/// covers the same. With no dates at all, every one of them returns the
+/// same pair, today's fiscal year to date (the clock read before and
+/// after, so midnight can't fail it).
+#[test]
+fn one_default_period_everywhere_defect_16() {
+    let dir = test_dir("one-default");
+    let mut mcp = served(
+        &dir,
+        "[company]\nname = \"Fernhill Labs LLC\"\nfiscal_year_start = \"07-01\"\ntax_classification = \"partnership\"\n[[company.members]]\nname = \"A\"\nshare = \"50%\"\ncapital_account = \"3000\"\n[[company.members]]\nname = \"B\"\nshare = \"50%\"\ncapital_account = \"3001\"\n[books]\nreceipt_threshold = \"1000000.00\"\ncash_accounts = [\"1000\"]\n",
+    );
+    mcp.call(
+        "books.import_chart_csv",
+        json!({"csv_text": "code,name,type,parent_code,tax_category\n1000,Cash,asset,,\n3000,Capital A,equity,,\n3001,Capital B,equity,,\n4000,Sales,revenue,,gross_receipts\n6000,Software,expense,,other_deductions\n"}),
+    );
+    let first = post_pair(&mut mcp, "2025-03-15", "1000", "3000", "500.00");
+    let mid = post_pair(&mut mcp, "2025-09-10", "1000", "4000", "120.00");
+    let late = post_pair(&mut mcp, "2026-02-01", "6000", "1000", "20.00");
+    let _after = post_pair(&mut mcp, "2026-05-01", "1000", "4000", "7.00");
+    let end = json!({"end": "2026-03-31"});
+    let pair = |v: &Value| {
+        (
+            v["start"].as_str().unwrap().to_string(),
+            v["end"].as_str().unwrap().to_string(),
+        )
+    };
+    let want = ("2025-07-01".to_string(), "2026-03-31".to_string());
+    let pl = mcp.call("books.profit_and_loss", end.clone());
+    assert_eq!(pair(&pl), want);
+    assert_eq!(pl["revenue"], "120.00");
+    assert_eq!(pl["expenses"], "20.00");
+    assert_eq!(
+        pair(&mcp.call("books.profit_and_loss_by_class", end.clone())),
+        want
+    );
+    assert_eq!(pair(&mcp.call("books.cash_flow", end.clone())), want);
+    for report in ["tax_summary", "members_equity", "general_ledger"] {
+        let out = mcp.call(
+            "books.export",
+            json!({"report": report, "format": "json", "end": "2026-03-31"}),
+        );
+        let v: Value = serde_json::from_str(out["content"].as_str().unwrap()).unwrap();
+        assert_eq!(pair(&v), want, "{report}");
+    }
+    // The general journal: the period's entries, in json and csv alike.
+    let out = mcp.call(
+        "books.export",
+        json!({"report": "general_journal", "format": "json", "end": "2026-03-31"}),
+    );
+    let v: Value = serde_json::from_str(out["content"].as_str().unwrap()).unwrap();
+    let ids: Vec<u64> = v
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["entry_id"].as_u64().unwrap())
+        .collect();
+    assert_eq!(ids, [mid, late], "not {first}, not after the end");
+    let csv = mcp.call(
+        "books.export",
+        json!({"report": "journal", "format": "csv", "end": "2026-03-31"}),
+    );
+    let rows = csv["content"].as_str().unwrap().lines().count();
+    assert_eq!(rows, 1 + 4, "header and two entries of two lines");
+    // An inverted range is refused by the journal too (review R1).
+    let err = mcp.call_err(
+        "books.export",
+        json!({"report": "general_journal", "format": "json", "start": "2026-12-31", "end": "2026-01-01"}),
+    );
+    assert!(err.contains("is before start"), "{err}");
+    // The CPA package as of that day: the same fiscal year to date.
+    let pkg = mcp.call(
+        "books.export_cpa_package",
+        json!({"as_of": "2026-03-31", "include_receipts": false, "include_tins": false}),
+    );
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(handed(&pkg["file"]))).unwrap();
+    let mut readme = String::new();
+    std::io::Read::read_to_string(&mut zip.by_name("README.txt").unwrap(), &mut readme).unwrap();
+    assert!(
+        readme.contains("Fiscal year to date: 2025-07-01 through 2026-03-31."),
+        "{readme}"
+    );
+    // No dates: the same pair from every period report.
+    let today = || ledger_core::settings::today_in(None);
+    let before = today();
+    let mut got = vec![
+        pair(&mcp.call("books.profit_and_loss", json!({}))),
+        pair(&mcp.call("books.profit_and_loss_by_class", json!({}))),
+        pair(&mcp.call("books.cash_flow", json!({}))),
+    ];
+    for report in ["tax_summary", "members_equity", "general_ledger"] {
+        let out = mcp.call("books.export", json!({"report": report, "format": "json"}));
+        let v: Value = serde_json::from_str(out["content"].as_str().unwrap()).unwrap();
+        got.push(pair(&v));
+    }
+    let after = today();
+    let fy = |t: chrono::NaiveDate| {
+        let c = ledger_core::settings::Company {
+            fiscal_year_start: (7, 1),
+            ..Default::default()
+        };
+        let (s, _) = ledger_core::calendar::period_defaults(&c, t).statement_range();
+        (s.to_string(), t.to_string())
+    };
+    for p in &got {
+        assert!(*p == fy(before) || *p == fy(after), "{p:?}");
+    }
+    assert!(
+        got.iter().all(|p| p == &got[0]) || before != after,
+        "{got:?}"
+    );
+}
+
+/// The entry ids (DOCNUM) of an IIF file's transactions, in file order.
+fn iif_docnums(iif: &str) -> Vec<u64> {
+    let mut docnum = None;
+    let mut ids = Vec::new();
+    for line in iif.split("\r\n") {
+        let f: Vec<&str> = line.split('\t').collect();
+        match f[0] {
+            "!TRNS" => docnum = f.iter().position(|c| *c == "DOCNUM"),
+            "TRNS" => ids.push(f[docnum.expect("!TRNS before TRNS")].parse().unwrap()),
+            _ => {}
+        }
+    }
+    ids
+}
+
+/// The default period (rules.md B-30) against the IIF (B-34, D-36) and
+/// the CPA package (B-33): a general journal asked for without dates is
+/// the fiscal year to date, but the IIF is never a period. Without dates
+/// it holds every posted entry from the first through today, under
+/// either name of the report, and a start or end is refused; the
+/// package's IIF holds every entry from the first through its as_of, the
+/// one before its fiscal year included.
+#[test]
+fn the_default_period_never_shortens_the_iif_or_the_package() {
+    let dir = test_dir("default-vs-iif");
+    let mut mcp = served(
+        &dir,
+        "[company]\nname = \"Fernhill Labs LLC\"\nfiscal_year_start = \"07-01\"\n[books]\nreceipt_threshold = \"1000000.00\"\ncash_accounts = [\"1000\"]\n",
+    );
+    mcp.call(
+        "books.import_chart_csv",
+        json!({"csv_text": "code,name,type,parent_code,tax_category\n1000,Cash,asset,,\n3000,Capital,equity,,\n4000,Sales,revenue,,gross_receipts\n6000,Software,expense,,other_deductions\n"}),
+    );
+    let entries = [
+        ("2025-03-15", "1000", "3000", "500.00"),
+        ("2025-09-10", "1000", "4000", "120.00"),
+        ("2026-02-01", "6000", "1000", "20.00"),
+        ("2026-05-01", "1000", "4000", "7.00"),
+    ]
+    .map(|(date, dr, cr, amount)| (date, post_pair(&mut mcp, date, dr, cr, amount)));
+    let every: Vec<u64> = entries.iter().map(|(_, id)| *id).collect();
+    let today = || ledger_core::settings::today_in(None);
+    let before = today();
+    // The general journal without dates: the fiscal year to date.
+    let out = mcp.call(
+        "books.export",
+        json!({"report": "general_journal", "format": "json"}),
+    );
+    let after = today();
+    let v: Value = serde_json::from_str(out["content"].as_str().unwrap()).unwrap();
+    let journal: Vec<u64> = v
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["entry_id"].as_u64().unwrap())
+        .collect();
+    let fytd = |t: chrono::NaiveDate| -> Vec<u64> {
+        let c = ledger_core::settings::Company {
+            fiscal_year_start: (7, 1),
+            ..Default::default()
+        };
+        let (start, end) = ledger_core::calendar::period_defaults(&c, t).statement_range();
+        entries
+            .iter()
+            .filter(|(date, _)| {
+                let d = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").unwrap();
+                start <= d && d <= end
+            })
+            .map(|(_, id)| *id)
+            .collect()
+    };
+    assert!(
+        journal == fytd(before) || journal == fytd(after),
+        "{journal:?}"
+    );
+    assert_ne!(journal, every, "the journal's default is a period");
+    // The IIF without dates: every posted entry through today, by either
+    // name of the report.
+    for report in ["general_journal", "journal", "GENERAL_JOURNAL"] {
+        let iif = mcp.call("books.export", json!({"report": report, "format": "iif"}));
+        assert_eq!(iif["report"], report.to_lowercase());
+        assert_eq!(
+            iif_docnums(iif["content"].as_str().unwrap()),
+            every,
+            "{report}"
+        );
+    }
+    for dates in [json!({"start": "2025-07-01"}), json!({"end": "2026-03-31"})] {
+        let mut args = json!({"report": "general_journal", "format": "iif"});
+        args.as_object_mut()
+            .unwrap()
+            .extend(dates.as_object().unwrap().clone());
+        let err = mcp.call_err("books.export", args);
+        assert!(err.contains("iif takes as_of, not start or end"), "{err}");
+    }
+    // The package as of 2026-03-31: its statements' fiscal year starts
+    // 2025-07-01, and its IIF still holds the entry before it.
+    let pkg = mcp.call(
+        "books.export_cpa_package",
+        json!({"as_of": "2026-03-31", "include_receipts": false, "include_tins": false}),
+    );
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(handed(&pkg["file"]))).unwrap();
+    let mut read = |name: &str| {
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut zip.by_name(name).unwrap(), &mut text).unwrap();
+        text
+    };
+    let readme = read("README.txt");
+    assert!(
+        readme.contains("Fiscal year to date: 2025-07-01 through 2026-03-31."),
+        "{readme}"
+    );
+    assert_eq!(iif_docnums(&read("general-journal.iif")), every[..3]);
+}
+
+/// Defect 15 (rules.md B-31) over the real binary: books.rename_account
+/// gives an account a new name and nothing else. The chart shows it; a
+/// past period's P&L export prints it; the general journal's IIF declares
+/// the account by it; the books verify, the journal grew by the rename
+/// and its feature's declaration only; refusals (a blank name, the name
+/// it has, a sibling's ignoring capitals, nine digits) write nothing; and
+/// a restarted server reads the new name back.
+#[test]
+fn rename_account_end_to_end_defect_15() {
+    let dir = test_dir("rename-e2e");
+    let mut mcp = served(
+        &dir,
+        "[company]\nname = \"Fernhill Labs LLC\"\n[books]\nreceipt_threshold = \"1000000.00\"\ncash_accounts = [\"1000\"]\n",
+    );
+    mcp.call(
+        "books.import_chart_csv",
+        json!({"csv_text": "code,name,type,parent_code,tax_category\n1000,Business Checking,asset,,\n3000,Capital,equity,,\n6000,Operating,expense,,other_deductions\n6150,Software,expense,6000,other_deductions\n6160,Hosting,expense,6000,other_deductions\n"}),
+    );
+    post_pair(&mut mcp, "2025-11-04", "1000", "3000", "800.00");
+    post_pair(&mut mcp, "2025-11-20", "6150", "1000", "29.00");
+    let verified = mcp.call("books.verify", json!({"blobs": false}));
+    let events = verified["events"].as_u64().unwrap();
+    for (name, says) in [
+        ("", "must not be empty"),
+        (" Software ", "already named"),
+        ("HOSTING", "same parent"),
+        ("Card 1234 5678 9", "nine digits"),
+    ] {
+        let err = mcp.call_err(
+            "books.rename_account",
+            json!({"account": "6150", "name": name}),
+        );
+        assert!(err.contains(says), "{name:?}: {err}");
+    }
+    assert_eq!(
+        mcp.call("books.verify", json!({"blobs": false}))["events"],
+        json!(events),
+        "refusals write nothing"
+    );
+    let out = mcp.call(
+        "books.rename_account",
+        json!({"account": "6150", "name": "Software subscriptions", "reason": "owner asked"}),
+    );
+    assert!(out["id"].as_u64().unwrap() > 0);
+    assert_eq!(out["code"], "6150");
+    assert_eq!(out["previous_name"], "Software");
+    assert_eq!(out["name"], "Software subscriptions");
+    let notes = out["notes"].to_string();
+    assert!(
+        notes.contains("QuickBooks matches accounts by name"),
+        "{notes}"
+    );
+    let after = mcp.call("books.verify", json!({"blobs": false}));
+    assert_eq!(after["status"], "ok");
+    assert_eq!(
+        after["events"],
+        json!(events + 2),
+        "the feature and the rename"
+    );
+    let chart = mcp.call("books.chart", json!({}));
+    let acct = chart["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["code"] == "6150")
+        .unwrap()
+        .clone();
+    assert_eq!(acct["name"], "Software subscriptions");
+    assert_eq!(acct["balance"], "29.00");
+    assert_eq!(acct["tax_category"], "other_deductions");
+    // A past period prints the new name; the amounts are the same.
+    let out = mcp.call(
+        "books.export",
+        json!({"report": "profit_and_loss", "format": "json", "start": "2025-11-01", "end": "2025-11-30"}),
+    );
+    let pl: Value = serde_json::from_str(out["content"].as_str().unwrap()).unwrap();
+    assert_eq!(pl["expense_accounts"][0]["name"], "Software subscriptions");
+    assert_eq!(pl["expense_accounts"][0]["amount"], "29.00");
+    let iif = mcp.call(
+        "books.export",
+        json!({"report": "journal", "format": "iif"}),
+    );
+    let iif = iif["content"].as_str().unwrap();
+    assert!(iif.contains("Operating:Software subscriptions"), "{iif}");
+    // A renamed parent: its children's full names follow, and the note
+    // says so.
+    let out = mcp.call(
+        "books.rename_account",
+        json!({"account": "6000", "name": "Operating expenses"}),
+    );
+    assert!(out["notes"].to_string().contains("2 sub-accounts"), "{out}");
+    // Renaming the bank account to a name without "checking" or "bank"
+    // moves nothing: books.cash_accounts names it by code.
+    let out = mcp.call(
+        "books.rename_account",
+        json!({"account": "1000", "name": "Treasury"}),
+    );
+    assert!(!out["notes"].to_string().contains("cash account"), "{out}");
+    drop(mcp);
+    let mut mcp = Mcp::spawn(&dir.join("books-data"));
+    init(&mut mcp);
+    let chart = mcp.call("books.chart", json!({}));
+    let names: Vec<(String, String)> = chart["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| {
+            (
+                a["code"].as_str().unwrap().to_string(),
+                a["name"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    for want in [
+        ("6150", "Software subscriptions"),
+        ("6000", "Operating expenses"),
+        ("1000", "Treasury"),
+    ] {
+        assert!(
+            names.contains(&(want.0.to_string(), want.1.to_string())),
+            "{names:?}"
+        );
+    }
+    assert_eq!(
+        mcp.call("books.verify", json!({"blobs": false}))["status"],
+        "ok"
+    );
+}
+
+/// Review R10 (rules.md B-31): on books that name no cash accounts
+/// (books.cash_accounts unset, so they are picked by name), a rename that
+/// moves an account into or out of the cash or card accounts says so; one
+/// that moves nothing says nothing of them. A convention naming the old
+/// name is listed, and one that doesn't isn't.
+#[test]
+fn rename_says_what_the_new_name_moves_defect_15() {
+    let dir = test_dir("rename-sets");
+    let mut mcp = served(
+        &dir,
+        "[company]\nname = \"Fernhill Labs LLC\"\n[books]\nreceipt_threshold = \"1000000.00\"\n",
+    );
+    mcp.call(
+        "books.import_chart_csv",
+        json!({"csv_text": "code,name,type,parent_code,tax_category\n1000,Business Checking,asset,,\n1010,Petty Fund,asset,,\n2100,Visa,liability,,\n2200,Credit Card,liability,,\n6000,Software,expense,,other_deductions\n"}),
+    );
+    mcp.call(
+        "books.set_convention",
+        json!({"id": "software-note", "kind": "note", "title": "Subscriptions",
+               "body_md": "Every SaaS bill goes to Software.", "decided_by": "A"}),
+    );
+    let notes = |out: &Value| out["notes"].to_string();
+    for (account, name, says) in [
+        (
+            "1000",
+            "Treasury",
+            "1000 Treasury is no longer a cash account",
+        ),
+        (
+            "1010",
+            "Petty Cash",
+            "1010 Petty Cash is now a cash account",
+        ),
+        ("2100", "Visa Card", "2100 Visa Card is now a card account"),
+        ("2200", "Amex", "2200 Amex is no longer a card account"),
+    ] {
+        let out = mcp.call(
+            "books.rename_account",
+            json!({"account": account, "name": name}),
+        );
+        assert!(notes(&out).contains(says), "{name}: {out}");
+    }
+    let out = mcp.call(
+        "books.rename_account",
+        json!({"account": "1010", "name": "Petty Cash Box"}),
+    );
+    assert!(!notes(&out).contains("cash account"), "{out}");
+    let out = mcp.call(
+        "books.rename_account",
+        json!({"account": "6000", "name": "Software subscriptions"}),
+    );
+    assert!(
+        notes(&out).contains("Convention software-note names \u{201c}Software\u{201d}"),
+        "{out}"
+    );
+    let out = mcp.call(
+        "books.rename_account",
+        json!({"account": "6000", "name": "Tools"}),
+    );
+    assert!(!notes(&out).contains("Convention"), "{out}");
 }

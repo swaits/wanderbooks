@@ -350,6 +350,65 @@ SHA-256 of the retrieved file (`i1120s.pdf`): `eab655cff9226dbc6d80213350bac0500
 
 > Enter only taxable portfolio interest on this line. Taxable interest is interest from all sources except interest exempt from tax and interest on tax-free covenant bonds.
 
+---
+
+## Gains and losses on business property (Form 4797), and tax-exempt income
+Governs `form_4797_gain_loss` and `tax_exempt_income` (added in P3, defect 8, 2026-10-20: under `policy.require_tax_category = refuse` every revenue and expense account needs a category that fits it, and the gain or loss account `books.dispose_asset` takes had none). Each file below was retrieved again on 2026-10-20 and is byte for byte the one quoted above (its SHA-256 is the same); only the passages are new. Captions as above.
+
+**Form 1065 (2025), Schedule K** (Source: <https://www.irs.gov/pub/irs-pdf/f1065.pdf>; Retrieved: 2026-10-20; SHA-256 `0f19f556e12ef53c41ba27e5930b4373103f3abcf64693c4ea686451b2a8f56f`)
+
+> 10 Net section 1231 gain (loss) (attach Form 4797)
+>
+> 18a Tax-exempt interest income
+>
+> b Other tax-exempt income
+>
+> c Nondeductible expenses
+
+**Form 1120-S (2025), Schedule K** (Source: <https://www.irs.gov/pub/irs-pdf/f1120s.pdf>; Retrieved: 2026-10-20; SHA-256 `c4b7cae7f2283a2e3225523ea001a710109fee34aad909461421025b287cd18d`)
+
+> 9 Net section 1231 gain (loss) (attach Form 4797)
+>
+> 16a Tax-exempt interest income
+>
+> b Other tax-exempt income
+>
+> c Nondeductible expenses
+
+**Form 1120 (2025), Schedule K item 9 and Schedule M-1 line 7** (Source: <https://www.irs.gov/pub/irs-pdf/f1120.pdf>; Retrieved: 2026-10-20; SHA-256 `016c7fb4042a565c23a98014b17019af7ddc89e3260dd3f926b84d6688b7be6e`)
+
+> 9 Enter the amount of tax-exempt interest received or accrued during this tax year
+>
+> 7 Income recorded on books this year not included on this return (itemize): Tax-exempt interest $
+
+**Instructions for Form 1065 (2025), Line 6 and Tax-exempt income, in part** (Source: <https://www.irs.gov/pub/irs-pdf/i1065.pdf>; Retrieved: 2026-10-20; SHA-256 `f4a35a24c7abac486908d3610754397a66b2130f0eb425dda897d78a9d91b786`)
+
+> Line 6. Net Gain (Loss) From Form 4797
+>
+> Caution: Include only ordinary gains or losses from the sale, exchange, or involuntary conversion of assets used in a trade or business activity.
+
+> Tax-exempt income. Don’t include any tax-exempt income on lines 1a through 8. A partnership that receives any tax-exempt income other than interest, or holds any property or engages in any activity that produces tax-exempt income, reports this income on Schedule K, line 18b, and in box 18 of Schedule K-1 using code B.
+>
+> Report tax-exempt interest income, including exempt-interest dividends received as a shareholder in a mutual fund or other RIC, on Schedule K, line 18a, and in box 18 of Schedule K-1 using code A.
+
+**Instructions for Form 1120-S (2025), Line 4 and Tax-exempt income, in part** (Source: <https://www.irs.gov/pub/irs-pdf/i1120s.pdf>; Retrieved: 2026-10-20; SHA-256 `eab655cff9226dbc6d80213350bac050009ba90daf621c182d31c541bc62c3f2`)
+
+> Line 4. Net Gain (Loss) From Form 4797
+>
+> Caution: Include only ordinary gains or losses from the sale, exchange, or involuntary conversion of assets used in a trade or business activity.
+
+> Tax-exempt income. Don’t include any tax-exempt income on lines 1a through 5. A corporation that receives any tax-exempt income other than interest or holds any property or engages in any activity that produces tax-exempt income reports this income on Schedule K, line 16b, and in box 16 of Schedule K-1 using code B.
+>
+> Report tax-exempt interest income, including exempt-interest dividends received as a shareholder in a mutual fund or other regulated investment company, on Schedule K, line 16a, and in box 16 of Schedule K-1 using code A.
+
+**Instructions for Form 1120 (2025), Line 5, in part** (Source: <https://www.irs.gov/pub/irs-pdf/i1120.pdf>; Retrieved: 2026-10-20; SHA-256 `49476a6f69a38a0fdb96fea1d66ddc936404e9b2eebb249da8e20830b0743358`)
+
+> Report tax-exempt interest on Schedule K, item 9. Also, if required, include the same amount on Schedule M-1, line 7, or Schedule M-3 (Form 1120), Part II, line 13, if applicable.
+
+**Instructions for Schedule C (2025), Other Schedules and Forms You May Have To File, in part** (Source: <https://www.irs.gov/pub/irs-pdf/i1040sc.pdf>; Retrieved: 2026-10-20; SHA-256 `b5536db91498a450572e37078d7d5ee8fdc400e385d4fee3a26c230a33e399b6`)
+
+> • Form 4797 to report sales, exchanges, and involuntary conversions (not from a casualty or theft) of trade or business property.
+
 ## Mapping (wanderbooks, derived)
 
 **This section is derived, not quoted.** It is wanderbooks' reading of the 2025 forms and instructions above, written 2026-10-13, for the categories in `crates/ledger-core/src/tax.rs`. It is not tax advice; the CPA decides the return. "—" means the category does not apply to that form (per `TaxCategory::forms`). "Not page 1" means the quoted page-1 lines have no place for it; where it goes instead (for example Schedule K) is not quoted in this file and is left to the CPA.
@@ -359,7 +418,9 @@ SHA-256 of the retrieved file (`i1120s.pdf`): `eab655cff9226dbc6d80213350bac0500
 | `gross_receipts` | 1 | 1a | 1a | 1a |
 | `returns_allowances` | 2 | 1b | 1b | 1b |
 | `interest_income` | 6 for interest on notes and accounts receivable (instructions, line 6); other interest not determined here | Not page 1: Schedule K line 5, portfolio interest (quoted above) | Not page 1: Schedule K line 4, portfolio interest (quoted above) | 5 |
+| `form_4797_gain_loss` | Not on Schedule C: Form 4797 (instructions, quoted above) | 6 (the ordinary part, from Form 4797); net section 1231 gain on Schedule K line 10 (quoted above) | 4 (the ordinary part); net section 1231 gain on Schedule K line 9 (quoted above) | 9 |
 | `other_income` | 6 | 7 | 5 | 10 |
+| `tax_exempt_income` | — | Not page 1: Schedule K line 18a (interest) or 18b (other) (quoted above) | Not page 1: Schedule K line 16a or 16b (quoted above) | Not page 1: Schedule K item 9 and Schedule M-1 line 7, tax-exempt interest (quoted above) |
 | `cost_of_goods_sold` | 4 (from Part III, line 42) | 2 | 2 | 2 |
 | `advertising` | 8 | 21 (no advertising line) | 16 | 22 |
 | `bad_debts` | 27b via Part V (no line in Part II; instructions list bad debts under Part V) | 12 | 10 | 15 |
@@ -395,3 +456,5 @@ Notes on the derivation:
 - Form 1065 line 13 "Rent" and Forms 1120-S line 11 / 1120 line 16 "Rents" do not split equipment from property; Schedule C line 20 does.
 - Schedule C has no line for bad debts or for organizational and start-up costs; the Part V instructions quoted above put them in Other expenses (line 48 to line 27b).
 - Schedule C line 30 (business use of home) and Form 1065 line 20 / 1120-S line 19 / 1120 line 25 (energy efficient commercial buildings) have no wanderbooks category.
+- `form_4797_gain_loss` (2026-10-20) is the book gain or loss on business property. Form 4797 figures the tax gain from the tax basis (book and tax depreciation differ), and splits ordinary gain (recapture) from section 1231 gain; the CPA does both, and the split decides the line (the row above). So, unlike `depreciation` (on page 1 of every return, only its amount the CPA's), the tax summary can't place it: it lists it apart (`form_4797`), at its book amount, with no tax amount and outside income and both nets, on every return alike. A Form 4797 gain or loss never goes on Schedule C (the Schedule C instructions send sales of business property to Form 4797).
+- `tax_exempt_income` (2026-10-20) is income at 0%: none of it is taxable, so it appears in the summary's book amounts and not in its tax amounts, the income twin of `nondeductible`. It is for the entity returns; a sole proprietor's tax-exempt interest is not business income.

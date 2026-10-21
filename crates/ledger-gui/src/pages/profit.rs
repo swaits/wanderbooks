@@ -281,7 +281,8 @@ fn spending_changes(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
         },
     );
     if let Some(id) = go {
-        shell.state.accounts.range = Some((ms - Months::new(3), b.today));
+        shell.state.accounts.range =
+            crate::pages::accounts::RegisterRange::Dates(ms - Months::new(3), b.today);
         shell.go(Route::Account(id));
     }
     ui.add_space(16.0);

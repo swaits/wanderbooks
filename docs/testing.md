@@ -1050,6 +1050,193 @@ the end.
 (plan P3 accept). Likely equivalent, to adjudicate: `min` against `max`
 in `take` where both bounds coincide, and the kind order's tie-breaks.
 
+## P3: rename, defaults and tax categories (2026-10-20)
+
+Defects 15, 16 and 8 (`plan/served.md` P3; rules.md B-30, B-31, B-32).
+Every fixture is fictional (Fernhill Labs LLC, its members and vendors);
+no mutation run (D-33): the targets are listed for P12 below.
+
+**Named regressions**, from the brief's reproductions:
+- `ledger-mcp` `tests/oracle_mcp.rs`: `show_refuses_start_after_end_defect_15`
+  (1.1.1-1.1.2: refused, nothing reaches the viewer),
+  `show_refuses_a_derived_inverted_range_defect_15` (1.1.3: a start after
+  today with no end, the message saying the end was defaulted),
+  `show_sends_the_dates_it_names_defect_16` (1.1.4: only an end covers its
+  fiscal year to it; "as of" and "for" wording; the viewer gets the pair
+  `shown` names), `show_refuses_options_its_target_ignores_defect_15`, and
+  `show_writes_the_viewer_command_for_each_target` (resolved dates; a
+  split never compared).
+- `ledger-mcp` `tests/mcp_stdio.rs`: `one_default_period_everywhere_defect_16`
+  (a July fiscal year, a first entry the year before: P&L, by class, cash
+  flow, the exported tax summary, members' equity, general ledger and
+  journal (csv, json: the period's entries only) and the CPA package all
+  give 2025-07-01 through 2026-03-31 for that end; with no dates every one
+  gives today's fiscal year to date, the clock read before and after, R14),
+  `rename_account_end_to_end_defect_15` (the chart, a past period's P&L,
+  the IIF's full names, verify, two journal lines, refusals write nothing,
+  a restart keeps the name); `mcp_period_statements_over_stdio`'s old pin
+  (no start = the first entry) now pins the fiscal year (02-01) that holds
+  the end.
+- `ledger-mcp` `tests/spec_tax_policy.rs`: `add_account_warns_without_tax_category_defect_8`
+  (1.4.1), `require_tax_category_refuses_defect_8` (refused without,
+  created with, the import refused whole, clearing refused, a bill's 6999
+  created and named in its warnings and the digest),
+  `a_new_account_named_like_a_sibling_is_refused`.
+- `ledger-gui` `tests/view_model.rs`: `needs_attention_flags_every_uncategorized_pl_account_defect_8`
+  (1.4.2-1.4.3: unused and last-year-only accounts listed, headers and
+  categorized ones not; Info under warn, Todo under refuse), and
+  `the_overview_numbers_are_the_books_numbers` now pins that the viewer's
+  default report range, its register's default and the server's resolver
+  agree on random books and fiscal years.
+- `ledger-gui` `tests/show.rs`: `show_never_swaps_an_inverted_target_defect_15`,
+  `show_report_with_only_end_uses_that_years_start_defect_16`,
+  `show_all_dates_is_one_click_from_a_shown_register` (review R4).
+- `ledger-store` `tests/store.rs`: `rename_account_changes_only_the_name_defect_15`
+  (every figure, entry and earlier journal line, every projection row but
+  `accounts.name`; refusals append nothing; reopen, rebuild and viewer),
+  `a_journaled_rename_replays_past_the_command_rules` and
+  `a_journaled_clear_replays_under_refuse` (B-28's pairs, review R5),
+  `the_tax_category_policy_refuses_only_what_it_says`,
+  `books_written_under_p3_keep_their_names` (fixture `old-books/p3_rename`,
+  written once by `write_p3_rename_fixture`, `--ignored`; its figures are
+  also in `books_an_earlier_version_wrote_open_to_its_figures`).
+- `ledger-store` `tests/format.rs`: `p3_features_are_declared_once_before_the_first_line_that_needs_them`,
+  `an_unknown_feature_before_a_rename_is_newer_at_the_declaration`.
+
+**Properties:** `prop_period_defaults_resolve` (`ledger-core`, 5,000
+cases: every fiscal year start replay admits, every today and every mix of
+given and omitted dates, the calendar's edges weighted);
+`prop_rename_changes_no_figure` and `prop_tax_policy_refuses_exactly`
+(`ledger-store`, `STORE_CASES`, 64 by default); the refusal law
+(`refused_commands_never_reach_the_journal`) gains renames, accounts added
+with a category, and the policy turned on and off; the core model
+(`tests/model.rs`) gains `Cmd::Rename`, its model keeping a name per
+account.
+
+**Unit tests:** `calendar.rs` (each `PeriodDefaults` invariant and scenario:
+fiscal years 01-01, 07-01, 12-01 and a lenient 07-15; the start day and
+the day before; year 1 under a July year, clamped; 9999-12-31; a one-day
+period; a start one day late; no month-day or chrono date panics);
+`settings.rs` (`the_tax_category_policy_is_warn_or_refuse`); `ledger-config`
+`codec.rs` (`the_tax_category_policy_round_trips`); `ledger-core`
+`tests/spec_ledger.rs` (`rename_account_changes_only_the_name`,
+`rename_account_refusals_leave_the_books_unchanged`,
+`a_closed_period_or_a_role_never_blocks_a_rename`,
+`a_journaled_rename_replays_past_the_command_rules`,
+`a_new_account_named_like_a_sibling_or_holding_a_tin_is_refused`,
+`a_rename_reason_is_bounded_text_without_a_tin`) and `tests/tax.rs`
+(`needs_category`'s and the policy's truth tables, the catalog fitting
+every account a tool requires on every return, tax-exempt income at 0%);
+`ledger-mcp` `server.rs` `period_tools_describe_the_one_default` (every
+report tool's description ends with its kind's sentence and each date
+parameter is the shared constant; "all time", "beginning of time" and
+"first entry" are gone from every tool and schema; the resources say
+their period) and `show_reads_each_reports_dates_as_the_viewer_does`;
+`handbook.rs` (the period rule rendered from the same constant);
+`hostile_args.rs` `hostile_renames_ranges_and_categories_are_answered`.
+
+Test fixtures that gave two accounts one name under one parent
+(`ledger-core` `invariants.rs` and `spec_roles.rs`, the store's refusal
+law) now name each for its code: the sibling rule is the commands', and
+existing charts and journals are untouched (replay takes any name). The
+viewer's `spec_gui.rs` small books give their one expense account a
+category, so "empty books have nothing" still holds now that an unused
+uncategorized expense account is listed.
+
+**Adversarial review (2026-10-21).** Each finding has a test that failed
+before its fix (checked by breaking the code and watching it fail):
+- `ledger-core` `tests/tax.rs` `a_gain_on_business_property_is_figured_on_form_4797_on_every_return`,
+  `ledger-import` `tests/spec_import.rs` `tax_summary_lists_form_4797_apart`,
+  `ledger-mcp` `tests/spec_tax_policy.rs` `a_gain_on_business_property_is_exported_apart`:
+  a `form_4797_gain_loss` amount was ordinary income on every return
+  (Schedule C included, whose instructions send it to Form 4797; on a
+  partnership net section 1231 gain is Schedule K line 10), its Tax column
+  the book gain; it is now `TaxSummary::form_4797`, book only, in no
+  total.
+- `ledger-core` `tests/spec_ledger.rs` `a_new_name_is_one_trimmed_line_of_bounded_length`,
+  `ledger-store` `tests/store.rs` `a_new_accounts_name_is_journaled_trimmed`,
+  `hostile_args.rs` (the 100,000-character name now refused): a new
+  account's name was journaled untrimmed while a rename's was trimmed,
+  and names had no bound and could hold a line break or tab.
+- `ledger-gui` `tests/view_model.rs` `all_dates_holds_an_entry_dated_after_today`:
+  "Show all dates" and "All time" ended today, leaving out entries dated
+  after it.
+- `ledger-mcp` `tests/oracle_mcp.rs` `show_refuses_options_its_target_ignores_defect_15`
+  (a split past 240 columns): `books.show` sent a split the viewer shows
+  as one total.
+- `ledger-mcp` `tests/mcp_stdio.rs` `rename_says_what_the_new_name_moves_defect_15`:
+  the notes for the name-picked cash and card sets and conventions had no
+  test of their own.
+- `ledger-store` `tests/store.rs` `rename_account_changes_only_the_name_defect_15`
+  now reads the projection's renamed name itself (its comparison blanked
+  that column); `tests/format.rs` lost a check that recomputed the gate's
+  answer itself.
+
+**Landing on main (2026-10-21),** beside odd cents, the IIF and the
+cash flow statement:
+- `ledger-mcp` `tests/mcp_stdio.rs` `the_default_period_never_shortens_the_iif_or_the_package`:
+  on a July fiscal year with entries before it, the general journal asked
+  without dates is the fiscal year to date, while the IIF without dates
+  holds every posted entry from the first through today under
+  `general_journal`, `journal` and any capitals, refuses `start` and
+  `end`, and the CPA package's IIF holds the entry before the package's
+  fiscal year.
+- `ledger-core` `tests/bookspec.rs`: the three examples are in the
+  loader's one shape, and the loader gained what they need (bookspec
+  `README.md`): `setup.today` and omitted dates resolved by B-30,
+  `header` and `tax_category` on an account, a `bill` event, `[[changes]]`
+  (a rename, the policy) made after an event's expectations, the queries
+  `period`, `day`, `calendar_year`, `account_names` and
+  `uncategorized_accounts`, and the commands `rename_account`,
+  `add_account` and `set_tax_category`, tried on a copy and accepted or
+  refused for a named reason. Each new key has a refusal test
+  (`a_period_other_than_the_rules_is_refused`,
+  `a_refusal_for_another_reason_is_refused`,
+  `an_omitted_date_without_today_is_refused`,
+  `account_names_leaving_an_account_out_is_refused`,
+  `a_change_is_made_after_its_events_expectations`,
+  `a_command_runs_under_the_policy_in_force`,
+  `a_command_with_values_is_refused`).
+- `ledger-import` `tests/spec_import.rs`: the IIF's tests
+  (`iif_names_never_clash_and_every_change_is_listed`,
+  `iif_distinct_accounts_never_share_a_name`,
+  `iif_writes_plain_ascii_and_lists_every_change`,
+  `iif_warnings_never_hold_a_tin`) make their siblings of one name, names
+  with a tab and names holding a TIN by replay (`replay_add_account`), as
+  books written before P3 hold them: B-31 refuses them in a new name, and
+  the file must still keep them apart, write them on one line and mask
+  them.
+- `books.cash_flow`'s description is the direct method's, shortened to
+  fit the 700-character cap with its dates sentence
+  (`tool_descriptions_fit_700_characters`,
+  `period_tools_describe_the_one_default`).
+
+**For P12** (D-33; none run): `ledger-core` `calendar::{fiscal_year_start_unclamped,
+fiscal_year_unclamped, fiscal_year_start_on, period_defaults}`,
+`PeriodDefaults::{statement, statement_range, as_of, calendar_year}`,
+`PeriodKind::describe`, `Company::fiscal_year_containing`,
+`ChartOfAccounts::set_name`, `Ledger::{add_account (its new name checks),
+add_control_account, check_account_name, rename_account,
+check_rename_account, replay_rename_account, check_rename_reason,
+check_tax_category_required, check_tax_category_kept}`,
+`tax::{needs_category, account_needs_category, uncategorized_accounts,
+on_form_4797}` and `tax_summary`'s Form 4797 section,
+`Settings::require_tax_category`; `ledger-store` `Store::{ensure_feature,
+ensure_features, journal_settings (its feature), add_account,
+add_account_with_tax, journal_account_added, ensure_control_account,
+rename_account, set_account_tax, journal_account_tax}`, the
+`account.renamed` replay and projection arms, `format::setting_feature`,
+`ops::report_columns`;
+`ledger-package` `statement_range`, `as_of_date`, `pnl_statement`,
+`bs_statement`, `cash_flow_statement`, `year_earnings`, `build_package`'s
+fiscal year; `ledger-mcp` `show` (the option refusals, the resolve, the
+`shown` wording), `show_report_dates`, `rename_account` (its notes),
+`add_account`, `import_chart_csv` (both loops), `profit_and_loss_by_class`'s
+range, `export_journal`'s period, `described`, `uncategorized_warning`,
+`created_uncategorized`, the digest's `uncategorized_accounts`,
+`handbook::period_rule`. The viewer is not mutated (owner, 2026-10-18):
+`view_model.rs` and `show.rs` cover it.
+
 ## Benchmarks (baseline 2026-10-13)
 
 No budget, by decision (the owner, 2026-10-13: the books do little work

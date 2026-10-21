@@ -22,6 +22,10 @@ use ledger_core::{AccountId, AccountType, MemberCapital, tax_summary, vendor_109
 use rust_decimal::Decimal;
 use std::collections::BTreeMap;
 
+/// The range a report covers. The default (a report nobody chose dates
+/// for) is the fiscal year to date: what an omitted date means
+/// everywhere (rules.md B-30, `Books::default_period`; a test pins that
+/// they agree).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Range {
     ThisMonth,
@@ -52,7 +56,7 @@ impl Range {
                 (s - Months::new(12), s - Days::new(1))
             }
             Range::Last12Months => (ms - Months::new(11), t),
-            Range::AllTime => (b.kpis.first_entry.unwrap_or(t).min(t), t),
+            Range::AllTime => b.all_dates(),
             Range::Custom(s, e) => (s, e),
         }
     }
@@ -70,7 +74,8 @@ impl Range {
         }
     }
 
-    const PRESETS: [Range; 7] = [
+    /// The ranges the picker offers by name.
+    pub const PRESETS: [Range; 7] = [
         Range::ThisMonth,
         Range::LastMonth,
         Range::ThisQuarter,
@@ -354,7 +359,7 @@ fn col_title(s: NaiveDate, e: NaiveDate, columns: Columns) -> String {
 }
 
 /// The most columns a split report shows.
-const MAX_COLUMNS: i64 = 240;
+const MAX_COLUMNS: i64 = ledger_store::ops::MAX_REPORT_COLUMNS;
 
 /// How many columns splitting `s..=e` by `columns` makes, when that is
 /// more than [`MAX_COLUMNS`]; counted from the months, before building
@@ -366,9 +371,8 @@ fn too_many_columns(s: NaiveDate, e: NaiveDate, columns: Columns) -> Option<i64>
         Columns::Quarter => 3,
         Columns::Year => 12,
     };
-    let months = (i64::from(e.year()) - i64::from(s.year())) * 12 + i64::from(e.month())
-        - i64::from(s.month());
-    let n = months / per + 1;
+    // The count books.show refuses past, so the two never disagree.
+    let n = ledger_store::ops::report_columns(s, e, per);
     (n > MAX_COLUMNS).then_some(n)
 }
 
@@ -1028,6 +1032,19 @@ fn tax(b: &Books, s: NaiveDate, e: NaiveDate) -> Table {
             &ts.separately_stated,
         );
     }
+    // Book amounts only: Form 4797 figures the tax gain from the tax
+    // basis, and its split decides the line (ledger_core::tax).
+    if !ts.form_4797.is_empty() {
+        t.section("Gains and losses on business property (Form 4797)");
+        for l in &ts.form_4797 {
+            t.rows.push(Row {
+                kind: Kind::Line,
+                label: l.label.clone(),
+                detail: l.accounts.join(", "),
+                cells: vec![Cell::of(l.book), Cell::none()],
+            });
+        }
+    }
     if !ts.uncategorized.is_empty() {
         t.section("Not categorized");
         for u in &ts.uncategorized {
@@ -1056,6 +1073,9 @@ fn tax(b: &Books, s: NaiveDate, e: NaiveDate) -> Table {
     }
     let form = ts.form.map(fmt::tax_form).unwrap_or("not set");
     t.note(format!("Return: {form}. Deductible percentages applied (meals 50%, penalties 0%). A worksheet for the CPA, not a filing."));
+    if !ts.form_4797.is_empty() {
+        t.note("Gains and losses on business property are book amounts, in no total: the CPA figures them on Form 4797.");
+    }
     t
 }
 
@@ -1460,6 +1480,11 @@ fn report(ui: &mut Ui, b: &Books, kind: ReportKind, shell: &mut Shell<'_>, picke
             let s = widgets::date_picker(ui, "from", s);
             ui.label(RichText::new("to").color(p.muted));
             let e = widgets::date_picker(ui, "to", e);
+            // The human's own pickers: a "from" set past the "to" reads
+            // as the two in order. Never a books.show target's dates:
+            // App::show takes only a resolved range in order (rules.md
+            // B-30) and ignores any other, so this never changes what the
+            // agent was told the viewer shows.
             st.range = Range::Custom(s.min(e), e.max(s));
         }
         if splittable {
@@ -1987,7 +2012,7 @@ fn render(ui: &mut Ui, t: &Table, pdf: &PdfInfo, shell: &mut Shell<'_>) {
         start_pdf(ui.ctx(), st, t, pdf);
     }
     if let Some(d) = go {
-        shell.state.accounts.range = Some((d.start, d.end));
+        shell.state.accounts.range = crate::pages::accounts::RegisterRange::Dates(d.start, d.end);
         shell.go(Route::Account(d.account));
     }
 }
@@ -2162,7 +2187,7 @@ fn gl(ui: &mut Ui, b: &Books, s: NaiveDate, e: NaiveDate, shell: &mut Shell<'_>)
     }
     if let Some(r) = go {
         if let Route::Account(_) = r {
-            shell.state.accounts.range = Some((s, e));
+            shell.state.accounts.range = crate::pages::accounts::RegisterRange::Dates(s, e);
         }
         shell.go(r);
     }

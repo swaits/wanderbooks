@@ -129,12 +129,13 @@ pub fn build_package<B: PackageBooks + ?Sized>(
     let tins = req.tins;
     let mut tin_gaps: Vec<String> = Vec::new();
 
-    // Fiscal year to date, per the company's fiscal_year_start.
-    let (fy_start, _) = company.fiscal_year_containing(as_of);
-    let (fy_start, as_of_s) = (fy_start.to_string(), as_of.to_string());
+    // The fiscal year to date: the tax year holding as_of (IRS Pub. 538),
+    // the fiscal-year fact itself, not "what omitted dates mean" (rules.md
+    // B-30), so the package's year never follows a default.
+    let fy = ledger_core::calendar::fiscal_year_start_on(company.fiscal_year_start, as_of);
+    let (fy_start, as_of_s) = (fy.to_string(), as_of.to_string());
     let xlsx = |r: XlsxReport<'_>| report_to_xlsx(&r, &meta).map_err(|e| e.to_string());
     let pdf = |st: &ledger_import::Statement| statement_pdf(st, &meta).map_err(|e| e.to_string());
-    let fy = NaiveDate::parse_from_str(&fy_start, "%Y-%m-%d").map_err(|e| e.to_string())?;
     let members = report_members(company);
     // One list of each per package (INVARIANT 7).
     let cash_codes = if req.cash_accounts.is_empty() {
@@ -154,6 +155,7 @@ pub fn build_package<B: PackageBooks + ?Sized>(
             "profit-and-loss",
             report::profit_and_loss(&pnl_statement(
                 ledger,
+                company,
                 Some(&fy_start),
                 Some(&as_of_s),
                 None,
@@ -163,7 +165,7 @@ pub fn build_package<B: PackageBooks + ?Sized>(
         (
             "balance-sheet",
             report::balance_sheet(
-                &bs_statement(ledger, Some(&as_of_s), today)?,
+                &bs_statement(ledger, company, Some(&as_of_s), today)?,
                 year_earnings(ledger, company, as_of)?,
                 &members,
             ),

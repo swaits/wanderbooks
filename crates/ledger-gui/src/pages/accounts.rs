@@ -22,9 +22,35 @@ use rust_decimal::Decimal;
 
 #[derive(Default)]
 pub struct State {
-    /// Limit the register to these dates (set by drill-downs).
-    pub range: Option<(NaiveDate, NaiveDate)>,
+    /// Which dates the register shows.
+    pub range: RegisterRange,
     pub show_empty: bool,
+}
+
+/// Which dates an account's register shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RegisterRange {
+    /// What a register opens on when nobody chose dates: the fiscal year
+    /// to date (rules.md B-30, `Books::default_period`), its opening
+    /// balance carried in.
+    #[default]
+    Default,
+    /// Every date: the books' first entry through the later of today
+    /// and the last ("Show all dates", `Books::all_dates`).
+    All,
+    /// These dates: a drill-down's, or a `books.show` target's.
+    Dates(NaiveDate, NaiveDate),
+}
+
+impl RegisterRange {
+    /// The first and last day shown.
+    pub fn dates(self, b: &Books) -> (NaiveDate, NaiveDate) {
+        match self {
+            RegisterRange::Default => b.default_period(),
+            RegisterRange::All => b.all_dates(),
+            RegisterRange::Dates(s, e) => (s, e),
+        }
+    }
 }
 
 pub fn show_chart(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
@@ -152,7 +178,7 @@ pub fn show_chart(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                 },
             );
             if let Some(id) = go {
-                shell.state.accounts.range = None;
+                shell.state.accounts.range = RegisterRange::Default;
                 shell.go(Route::Account(id));
             }
             ui.add_space(12.0);
@@ -165,12 +191,7 @@ pub fn show_account(ui: &mut Ui, b: &Books, id: u64, shell: &mut Shell<'_>) {
     let Some(a) = b.ledger.chart().get(id) else {
         return;
     };
-    let first = b.kpis.first_entry.unwrap_or(b.today);
-    let (s, e) = shell
-        .state
-        .accounts
-        .range
-        .unwrap_or((first.min(b.today), b.today));
+    let (s, e) = shell.state.accounts.range.dates(b);
     page(ui, "account", |ui| {
         widgets::copyable(
             ui,
@@ -226,8 +247,14 @@ pub fn show_account(ui: &mut Ui, b: &Books, id: u64, shell: &mut Shell<'_>) {
                 ))
                 .font(theme::semibold(13.5)),
             );
-            if shell.state.accounts.range.is_some() && ui.button("Show all dates").clicked() {
-                shell.state.accounts.range = None;
+            // "Show all dates" one click away from any other range; from
+            // all dates, back to the fiscal year to date.
+            if shell.state.accounts.range == RegisterRange::All {
+                if ui.button("Fiscal year to date").clicked() {
+                    shell.state.accounts.range = RegisterRange::Default;
+                }
+            } else if ui.button("Show all dates").clicked() {
+                shell.state.accounts.range = RegisterRange::All;
             }
             if ui
                 .button(format!("{} Find in transactions", icon::LIST_BULLETS))
@@ -238,8 +265,20 @@ pub fn show_account(ui: &mut Ui, b: &Books, id: u64, shell: &mut Shell<'_>) {
             }
         });
         ui.add_space(8.0);
-        let Ok(gl) = general_ledger(&b.ledger, s, e) else {
-            return;
+        let gl = match general_ledger(&b.ledger, s, e) {
+            Ok(gl) => gl,
+            Err(why) => {
+                // Never a blank page: say why these dates can't be shown.
+                widgets::card(ui, |ui| {
+                    widgets::empty(
+                        ui,
+                        icon::WARNING,
+                        "These dates can't be shown",
+                        &format!("{why}. Choose other dates."),
+                    )
+                });
+                return;
+            }
         };
         let Some(acct) = gl.accounts.iter().find(|x| x.code == a.code) else {
             widgets::card(ui, |ui| {

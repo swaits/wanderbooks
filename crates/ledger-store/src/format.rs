@@ -18,6 +18,12 @@
 //! whitespace). A newer format adds its fields inside `payload`. So this
 //! version can always follow the chain one line past the first line it
 //! can't read, and say whether that line is intact.
+//!
+//! A line an earlier version can't read is announced by a feature
+//! ([`KNOWN_FEATURES`]): the writer declares it (`journal.format_set`,
+//! the features in force and the new one) just before the first line that
+//! needs it, so the earlier reader stops at the declaration, and books
+//! that never use the feature stay readable by it.
 
 use crate::error::StoreError;
 use crate::journal::{JournalLine, ReadLine};
@@ -26,13 +32,18 @@ use serde_json::{Value, json};
 /// The newest journal format this version reads and writes.
 pub const SUPPORTED_JOURNAL_FORMAT: u32 = 2;
 
-/// Optional journal features this version reads. Each is a field or value
-/// on an event type an older version knows, which that version would
-/// misread silently; a writer declares the feature (`journal.format_set`)
-/// before its first such line, so the older version stops there instead
-/// (rules.md B-27). Books that never use one stay readable by versions
-/// before it.
-pub const KNOWN_FEATURES: &[&str] = &[MEMBERS_CUMULATIVE];
+/// Optional journal features this version reads. Each marks lines an
+/// older version can't read: a new event type (which it would refuse as
+/// unknown), or a field or value on an event type it knows (which it
+/// would misread silently). A writer declares the feature
+/// (`journal.format_set`) before its first such line, so the older
+/// version stops there instead (rules.md B-27). Books that never use one
+/// stay readable by versions before it.
+pub const KNOWN_FEATURES: &[&str] = &[
+    MEMBERS_CUMULATIVE,
+    FEATURE_ACCOUNT_RENAMED,
+    FEATURE_REQUIRE_TAX_CATEGORY,
+];
 
 /// Feature: `period.closed` closes to members with `"rounding":
 /// "cumulative_since"` and `since_seq`, the count of members closes
@@ -42,6 +53,23 @@ pub const KNOWN_FEATURES: &[&str] = &[MEMBERS_CUMULATIVE];
 /// rule, which can split it differently.
 pub const MEMBERS_CUMULATIVE: &str = "members_cumulative";
 
+/// The feature declared before the first `account.renamed` (P3, defect
+/// 15).
+pub const FEATURE_ACCOUNT_RENAMED: &str = "account_renamed";
+
+/// The feature declared before the first `settings.set` naming
+/// `policy.require_tax_category` (P3, defect 8).
+pub const FEATURE_REQUIRE_TAX_CATEGORY: &str = "require_tax_category";
+
+/// The feature a `settings.set` naming `key` needs declared first: a key
+/// an earlier version doesn't know.
+pub(crate) fn setting_feature(key: &str) -> Option<&'static str> {
+    match key {
+        "policy.require_tax_category" => Some(FEATURE_REQUIRE_TAX_CATEGORY),
+        _ => None,
+    }
+}
+
 /// The line type that declares the journal format.
 pub const FORMAT_SET: &str = "journal.format_set";
 
@@ -49,6 +77,7 @@ pub const FORMAT_SET: &str = "journal.format_set";
 /// projection arm in `store.rs` (`tests/format.rs` checks both ways).
 pub const EVENT_TYPES: &[&str] = &[
     "account.added",
+    "account.renamed",
     "account.renumbered",
     "account.tax_set",
     "asset.acquisition_linked",

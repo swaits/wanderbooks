@@ -56,6 +56,12 @@ impl AccountType {
     }
 }
 
+/// The longest name a new account (or a rename) may take, in characters:
+/// one line that every report prints, as long as the company's own name
+/// may be ([`crate::settings::MAX_TEXT`]). The command's bound, never
+/// replay's (rules.md B-28): a journaled name of any length replays.
+pub const MAX_ACCOUNT_NAME: usize = crate::settings::MAX_TEXT;
+
 /// A single account in the chart of accounts.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Account {
@@ -140,6 +146,18 @@ impl ChartOfAccounts {
         self.by_code.remove(&a.code);
         a.code = code.to_string();
         self.by_code.insert(a.code.clone(), id);
+        Ok(())
+    }
+
+    /// Give an account a new name. Only the account must exist: what a
+    /// new name may be is the command's to check
+    /// ([`crate::Ledger::rename_account`]), never replay's (rules.md B-28).
+    pub fn set_name(&mut self, id: AccountId, name: &str) -> Result<(), LedgerError> {
+        let a = self
+            .accounts
+            .get_mut(&id)
+            .ok_or(LedgerError::UnknownAccount(id))?;
+        a.name = name.to_string();
         Ok(())
     }
 

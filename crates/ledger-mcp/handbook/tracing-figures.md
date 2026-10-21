@@ -1,6 +1,7 @@
 # Tracing figures
 
 - Reports are pure functions of the posted entries. When the human questions a figure, trace it to its entries with the tools: the report (books.trial_balance, books.profit_and_loss, books.balance_sheet, books.cash_flow), then books.search_entries and books.get_entry for the entries behind it, and books.show to put them on the human's screen.
+- A report without dates covers the fiscal year to date, everywhere (the report tools, the export, books.show and the viewer); one with only an end date covers that date's fiscal year to it. {period_rule} The IIF is never a period: every posted entry from the first through its as_of. Every result names the dates it covers: say them when you quote a figure, and pass dates whenever the human means another period.
 - A cash flow line names its entry (books.cash_flow: each line's entry, kind and accounts). An expense a member paid personally (or equipment a lender paid for) is cash borrowed and spent on its date: a financing line and an operating (or investing) line, each with on_behalf, the part no bank account moved; the reimbursement is a repayment. A noncash disclosure is an entry that moved no cash at all (property contributed, debt converted to capital). A warning names an entry whose later payment or collection the books can't classify, with the fix. A role refusal names the setting to change.
 - Never guess, and never look for the books' files: the tools are the evidence.
 - books.verify checks the books end to end when a number looks wrong or a human asks whether the books are intact.

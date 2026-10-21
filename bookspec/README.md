@@ -65,8 +65,10 @@ operating = "0.00"
 Events count from 1, as entries do: the first `[[events]]` is event 1
 (entry #1), and `reverses = N` reverses the Nth event, one before it;
 `reverses = 0` names no event and is refused. An event is an entry
-(`lines`), a reversal (`reverses`) or a close (`close`, below), exactly
-one of them, and posts entry #N. A key the shape doesn't have is refused
+(`lines`), a reversal (`reverses`), a close (`close`, below) or a bill
+(`bill`, below), exactly one of them, and posts entry #N. A change that
+posts no entry (a rename, a policy) is a `[[changes]]` entry instead
+(below), so the numbering holds. A key the shape doesn't have is refused
 too, never ignored.
 
 `rounding` names the rule the example's figures are rounded by where one
@@ -89,6 +91,14 @@ the side gives the direction.
   file today). It loads like any other; only it may ask a format query.
 - `parent` on an account: its parent account's code. A parent is declared
   before its subaccounts.
+- `header = true` on an account: a header, which groups other accounts
+  and takes no postings (it needs no tax category: rules.md B-32).
+- `tax_category` on an account: its tax category, a key of the books'
+  catalog (`gross_receipts`, `office_expense`, ...; `ledger_core::tax`),
+  its link to a line of the return (B-32).
+- `today` (in `[setup]`): the day the books are asked on, `YYYY-MM-DD`,
+  in the company's time zone: what an omitted date means (B-30). A query
+  that omits a date needs it.
 - `cash_accounts`, `financing_accounts`, `investing_accounts`: arrays of
   account codes, the statement of cash flows' account roles (ASC
   230-10-45-10 to 45-15). The cash and financing accounts are also what a
@@ -118,14 +128,30 @@ the side gives the direction.
   splits that close's net on its own instead (books from an engine that
   rounded each close by itself). A close must have something to close: it
   posts entry #N like any other event.
-- `after = N` on an expectation: asked of the books after event N, not
-  after the last (1 to the number of events; not on a format query).
+- `bill = { vendor, amount }` as an event: a bill from `vendor` (a name;
+  a payee's record if one has it) for `amount`, dated and due on the
+  event's date. It posts entry #N: General Expenses (6999) debited and
+  Accounts Payable (2000) credited, each account created with that fixed
+  name when first needed, as the books create a control role's account
+  (B-32).
+- `[[changes]]` `{ after, rename?, require_tax_category? }`: a change
+  that posts no entry, exactly one of `rename = { code, name }` (rename
+  the account `code`, B-31) and `require_tax_category = "warn"` or
+  `"refuse"` (the policy, B-32; the books start at `warn`). It is made
+  right after event `after` (1 to the number of events), once the
+  expectations asked after that event are checked, in the order listed.
+- `after = N` on an expectation: asked of the books after event N (before
+  the changes made after it), not after the last event and every change
+  (1 to the number of events; not on a format query).
 
 ### Queries and their values
 
 A query over a period takes `from` and `to`; a query as of a day takes
-`as_of`; the other is refused. A query no crate answers is refused, never
-skipped.
+`as_of`; the other is refused. A date left out is resolved by the one
+rule (rules.md B-30) on `setup.today`: an omitted `to` is today, an
+omitted `from` the first day of the fiscal year that holds `to`, an
+omitted `as_of` today (`vendor_1099_paid` and the format queries give
+theirs). A query no crate answers is refused, never skipped.
 
 | query | dates | values | checked by |
 |---|---|---|---|
@@ -136,11 +162,39 @@ skipped.
 | `balances` | `as_of` | each account named by code, its balance on its normal side (a member's capital after a loss is negative); the example names the accounts it shows | `ledger-core` `tests/bookspec.rs` |
 | `members_equity` | `from`, `to` | the statement of changes in members' equity (rules.md B-13): `"<member>.beginning"`, `.contributions`, `.net_income`, `.distributions`, `.other`, `.ending`; the example names the figures it shows | `ledger-core` `tests/bookspec.rs` |
 | `vendor_1099_paid` | `from` (January 1 of `to`'s year), `to` | each payee's payments by name, out of the cash and financing accounts (`cash_accounts` required), every payee listed | `ledger-core` `tests/bookspec.rs` |
+| `period` | `from`, `to`, either or both left out | the dates a period report asked with those dates covers, by the one rule (B-30): `from`, `to` (`YYYY-MM-DD`); or `refused` | `ledger-core` `tests/bookspec.rs` |
+| `day` | `as_of`, or left out | the day a report as of a day is made as of: `as_of` | `ledger-core` `tests/bookspec.rs` |
+| `calendar_year` | none | the year a calendar-year count (1099s, party totals) asked without one counts: `year` | `ledger-core` `tests/bookspec.rs` |
+| `account_names` | none | each account's name by code, as the chart holds it and every report prints it, past periods included (B-31); every account listed, those the books created included | `ledger-core` `tests/bookspec.rs` |
+| `uncategorized_accounts` | none | a list: every account that needs a tax category (revenue or expense, not a header) and has none, with activity or not, `"<code> <name>"`, by code (B-32) | `ledger-core` `tests/bookspec.rs` |
 | `iif_lines` | `as_of` | formats appendix: the file's lines in order, each its fields joined by tabs, without the CR LF that ends each | `ledger-package` `the_bookspec_iif_example_matches_the_engine` |
 | `iif_changes` | `as_of` | formats appendix: each text the file writes differently from the books, in file order, as `[what, books' text, file's text]` (the example's header gives `what`) | `ledger-package` `the_bookspec_iif_example_matches_the_engine` |
 
 A figure query is a table (`[expect.values]`, or `values = { ... }`); a
-format query is an array (`values = [ ... ]`).
+format query, and `uncategorized_accounts`, an array (`values = [ ...
+]`). `period`, `day` and `calendar_year` give dates and a year, and
+`account_names` names, not figures.
+
+A command is tried on a copy of the books, as the books' own command
+does it, and changes nothing checked after it. It shows no values: it is
+`accepted = true`, or `refused = "<reason>"`.
+
+| command | keys | |
+|---|---|---|
+| `rename_account` | `code`, `name` | rename the account (B-31); accepted, it must move no amount and keep the name trimmed |
+| `add_account` | `account = { code, name, type, parent?, header?, tax_category? }` | add the account, under the policy in force (B-31, B-32) |
+| `set_tax_category` | `code`, `category` (left out: clear it) | set or clear the account's tax category, under the policy in force (B-32) |
+
+A refusal (a command's, or a `period`'s) is named for what was refused,
+never by an engine's message: `end_before_start` (both dates given, the
+start after the end), `start_after_today` (only a start, after today, the
+end an omitted end means), `blank`, `unchanged` (the name the account has,
+trimmed), `sibling_has_it` (another account under the same parent has the
+name, ignoring capitals and surrounding space), `holds_a_tin` (a run of
+nine digits), `not_one_line` (a line break, tab or other control
+character, or past 200 characters), `code_taken`, and
+`tax_category_required` (an account that needs a category left without
+one under `refuse`).
 
 `cash_flow` (rules.md B-14): the statement of cash flows for `[from, to]`.
 

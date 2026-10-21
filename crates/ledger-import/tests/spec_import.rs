@@ -1630,7 +1630,10 @@ proptest! {
             // A blank name is refused by the books; it can't reach the file.
             let name = if name.trim().is_empty() { "x" } else { name.as_str() };
             let parent = parent.map(|p| ids[p]);
-            ids.push(l.add_account(&code_of(i), name, AccountType::Expense, parent, false).unwrap());
+            // Replayed, as books written before P3 hold them: a sibling's
+            // name, a tab, nine digits (rules.md B-31 refuses them in a
+            // new name, never in a journaled one).
+            ids.push(l.replay_add_account(&code_of(i), name, AccountType::Expense, parent, false).unwrap());
         }
         let accounts = iif_accounts(&l, |_| QbAccountType::Expense);
         match journal_to_iif(&accounts, &[]) {
@@ -1896,7 +1899,9 @@ fn iif_writes_plain_ascii_and_lists_every_change() {
         ("6050", "René 😀"),
         ("６０７０", "Wide number"),
     ] {
-        l.add_account(code, name, AccountType::Expense, None, false)
+        // Replayed: a tab in a name is refused in a new one (rules.md
+        // B-31), never in one books written before P3 hold.
+        l.replay_add_account(code, name, AccountType::Expense, None, false)
             .unwrap();
     }
     let memos = [
@@ -2001,9 +2006,12 @@ fn iif_every_line_ends_cr_lf() {
 #[test]
 fn iif_distinct_accounts_never_share_a_name() {
     let mut l = Ledger::new(Currency::USD);
+    // Replayed, as books written before P3 hold them: siblings of one
+    // name (rules.md B-31 refuses one in a new name, never in a journaled
+    // one), which the file must still keep apart.
     let mut add = |code: &str, name: &str, parent: Option<&str>| {
         let p = parent.map(|c| l.chart().find_by_code(c).unwrap().id);
-        l.add_account(code, name, AccountType::Expense, p, false)
+        l.replay_add_account(code, name, AccountType::Expense, p, false)
             .unwrap();
     };
     add("6100", "Software", None);
@@ -2069,7 +2077,7 @@ fn iif_distinct_accounts_never_share_a_name() {
     // tagged alike, so the match remains, and is refused naming both.
     let mut l = Ledger::new(Currency::USD);
     for code in ["6100", "6\u{FF11}00"] {
-        l.add_account(code, "Software", AccountType::Expense, None, false)
+        l.replay_add_account(code, "Software", AccountType::Expense, None, false)
             .unwrap();
     }
     let accounts = iif_accounts(&l, |_| QbAccountType::Expense);
@@ -2401,7 +2409,10 @@ fn iif_warnings_group_the_memos_by_what_is_written_differently() {
 #[test]
 fn iif_warnings_never_hold_a_tin() {
     let (mut l, cash, rev, _) = small_ledger();
-    l.add_account(
+    // Replayed, as books written before P3 hold them: a name holding a
+    // TIN, or a tab, is refused in a new name (rules.md B-31), never in a
+    // journaled one, so the file must still mask it.
+    l.replay_add_account(
         "6300",
         "Loan from 123-45-6789 \u{2014} member",
         AccountType::Liability,
@@ -2411,7 +2422,7 @@ fn iif_warnings_never_hold_a_tin() {
     .unwrap();
     // A TIN only once written: its digits a tab apart, which the file
     // writes a space apart.
-    l.add_account(
+    l.replay_add_account(
         "6400",
         "Loan 123\t45\t6789",
         AccountType::Liability,
@@ -3902,6 +3913,53 @@ fn tax_summary_difference_and_schedule_k() {
         net.amounts[0],
         Some(cents(90_000)),
         "interest is outside the net"
+    );
+}
+
+/// A gain on business property (rules.md B-32; ledger_core::tax
+/// `TaxSummary::form_4797`): on a Schedule C business's summary it is in
+/// its own Form 4797 section, at its book amount with no tax amount, and
+/// outside the net, never Schedule C income.
+#[test]
+fn tax_summary_lists_form_4797_apart() {
+    use ledger_core::tax::{TaxForm, tax_summary};
+    let mut l = Ledger::new(Currency::USD);
+    let cash = l
+        .add_account("1000", "Cash", AccountType::Asset, None, false)
+        .unwrap();
+    let mut acct = |code: &str, t, cat: &str| {
+        let id = l.add_account(code, code, t, None, false).unwrap();
+        l.set_account_tax(id, Some(cat), None).unwrap();
+        id
+    };
+    let sales = acct("4000", AccountType::Revenue, "gross_receipts");
+    let gain = acct("4700", AccountType::Revenue, "form_4797_gain_loss");
+    for (cr, c) in [(sales, 100_000), (gain, 7_500)] {
+        let e = l.create_entry(d(2026, 2, 1), "x");
+        l.add_line(e, cash, Side::Debit, usd(c)).unwrap();
+        l.add_line(e, cr, Side::Credit, usd(c)).unwrap();
+        l.post_entry(e).unwrap();
+    }
+    let ts = tax_summary(&l, d(2026, 1, 1), d(2026, 12, 31), Some(TaxForm::ScheduleC)).unwrap();
+    let st = report::tax_summary(&ts);
+    let at = |label: &str| {
+        st.rows
+            .iter()
+            .position(|r| r.label.starts_with(label))
+            .unwrap_or_else(|| panic!("no row {label}"))
+    };
+    let section = at("Gains and losses on business property (Form 4797)");
+    let line = at("Gain or loss on business property (Form 4797) (4700)");
+    assert!(line > section && section > at("Income less deductions"));
+    assert_eq!(st.rows[line].amounts, vec![Some(cents(7_500)), None, None]);
+    assert_eq!(
+        st.rows[at("Total income")].amounts[0],
+        Some(cents(100_000)),
+        "the gain is no Schedule C income"
+    );
+    assert_eq!(
+        st.rows[at("Income less deductions")].amounts,
+        vec![Some(cents(100_000)), Some(cents(100_000)), None]
     );
 }
 

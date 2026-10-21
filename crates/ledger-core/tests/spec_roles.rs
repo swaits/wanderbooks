@@ -838,7 +838,12 @@ fn every_balance_sheet_role_holds_while_its_account_has_a_balance() {
         held.push((c, cur));
     }
     for (i, (c, cur)) in held.iter().enumerate() {
-        let target = add(&mut l, &format!("{}", 9100 + i), "Target", c.account_type);
+        let target = add(
+            &mut l,
+            &format!("{}", 9100 + i),
+            &format!("Target {i}"),
+            c.account_type,
+        );
         assert!(
             matches!(
                 refuses(&mut l, c.key, Some(target)),
@@ -1078,16 +1083,37 @@ fn pool_books() -> (Ledger, Vec<AccountId>) {
         .into_iter()
         .enumerate()
     {
-        ids.push(add(&mut l, &format!("{}", 8000 + 10 * i), "spare a", t));
-        ids.push(add(&mut l, &format!("{}", 8001 + 10 * i), "spare b", t));
+        ids.push(add(
+            &mut l,
+            &format!("{}", 8000 + 10 * i),
+            &format!("spare a {i}"),
+            t,
+        ));
+        ids.push(add(
+            &mut l,
+            &format!("{}", 8001 + 10 * i),
+            &format!("spare b {i}"),
+            t,
+        ));
         ids.push(
-            l.add_account(&format!("{}", 8002 + 10 * i), "group", t, None, true)
-                .unwrap(),
+            l.add_account(
+                &format!("{}", 8002 + 10 * i),
+                &format!("group {i}"),
+                t,
+                None,
+                true,
+            )
+            .unwrap(),
         );
     }
     while ids.len() < POOL {
         let n = ids.len();
-        ids.push(add(&mut l, &format!("{}", 8500 + n), "extra", Expense));
+        ids.push(add(
+            &mut l,
+            &format!("{}", 8500 + n),
+            &format!("extra {n}"),
+            Expense,
+        ));
     }
     assert_eq!(ids.len(), POOL);
     (l, ids)

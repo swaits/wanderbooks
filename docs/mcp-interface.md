@@ -334,12 +334,13 @@ Tool descriptions are at most 700 characters; eight longer ones are listed
 in `tool_descriptions_fit_700_characters`, to be shortened in P5.
 
 **Annotations.** Every tool has a `title` and a `readOnlyHint`; every tool
-that changes anything also has a `destructiveHint`, true for these 28:
+that changes anything also has a `destructiveHint`, true for these 29:
 `books.post_entry`, `books.reverse_entry`, `books.import_settings`,
 `books.set_setting`, `books.retire_convention`, `books.unlink_receipt`,
 `books.unlink_attachment`, `books.withdraw_attachment`,
 `books.correct_asset`, `books.dispose_asset`, `books.run_depreciation`,
 `books.run_schedules`, `books.run_recurring`, `books.renumber_account`,
+`books.rename_account` (the label every past report prints),
 `books.assign_role`, `books.close_period`, `books.reconcile`,
 `books.void_statement`, `books.void_reconciliation`, `books.set_w9`,
 `books.set_tin` (both overwrite a vault record), `books.purge_tin`,
@@ -411,6 +412,20 @@ every tool over every book in ledger-store's `tests/fixtures/old-books`.
 - `books.handbook { section? }`: the guide (see "Server instructions").
 - `books.chart` → `{ accounts: [{ id, code, name, type, parent, placeholder,
   balance }] }`. Balances included: one call answers "what do we have."
+- `books.add_account { code, name, account_type, parent?, placeholder?,
+  tax_category?, deductible_percent? }` → `{ account_id, warnings? }`.
+  Codes are unique; a name another account under the same parent has
+  (top-level accounts are siblings too; ignoring capitals and surrounding
+  space), one holding a run of nine digits, or one that isn't one line of
+  at most 200 characters, is refused (rules.md B-31); the name is kept
+  trimmed. A revenue or expense account (not a header) without `tax_category` is
+  created with a warning ("6150 Software has no tax category: the tax
+  summary will list it as uncategorized. Propose one from
+  books.tax_categories and set it with books.set_tax_category once the
+  human agrees."), or, under `policy.require_tax_category = refuse`,
+  refused (rules.md B-32). The category is checked against the account's
+  type and the return, as `books.set_tax_category` checks it; journaled as
+  `account.added` then `account.tax_set`.
 - `books.draft_entry { date: "2026-10-10", description: "...", vendor?,
   party?, parties?, no_party_reason? }` → `{ entry_id, status: "draft" }`.
   `party` tags the counterparty (see "Tools — parties"); given with
@@ -443,6 +458,16 @@ every tool over every book in ledger-store's `tests/fixtures/old-books`.
   (older books hold such drafts) shows an empty code and "(no account N)".
 - `books.search_entries { account?, date_from?, date_to?, text?, limit?, offset? }`
   → entries with lines, newest first. `limit` caps at 100.
+- **Omitted dates (rules.md B-30).** One rule everywhere
+  (`ledger_core::calendar::PeriodDefaults`), stated in every report
+  tool's description and date parameters in the same words: a period
+  report with no dates covers the fiscal year to date
+  (`company.fiscal_year_start`): `end` defaults to today (the company's
+  time zone), `start` to the first day of the fiscal year that holds
+  `end`; a `start` after the `end`, given or derived (`start` after today
+  with no `end`), is refused, never swapped. An `as_of` defaults to
+  today; a party's `year` to this calendar year. Every result names the
+  dates it covers.
 - `books.trial_balance { as_of? }` → `as_of`, lines, totals, `balanced`
   (the trial balance as of the date, default today).
 - `books.balance_sheet { as_of? }` → totals (`assets`, `liabilities`,
@@ -450,13 +475,14 @@ every tool over every book in ledger-store's `tests/fixtures/old-books`.
   `liability_accounts`, `equity_accounts` (`{code, name, amount}`), as of
   the date (default today).
 - `books.profit_and_loss { start?, end?, class? }` → totals plus
-  `revenue_accounts` and `expense_accounts` for the range. `end` defaults to
-  today, `start` to the first posted entry. Closing entries are excluded, so
-  a closed period still shows what it earned.
+  `revenue_accounts` and `expense_accounts` for the range (omitted dates:
+  the fiscal year to date). Closing entries are excluded, so a closed
+  period still shows what it earned.
 - `books.cash_flow { start?, end?, cash_accounts?, financing_accounts?, investing_accounts? }` (each defaults to the books' settings, `books.cash_accounts` and so on; cash is required one way or the other)
   → the statement of cash flows, direct method (rules.md B-14, P3 defect
-  1): `{ method: "direct", start, end, operating_by_class, operating,
-  cash_from_operations, investing_by_kind, investing, cash_from_investing,
+  1; omitted dates: the fiscal year to date): `{ method: "direct", start,
+  end, operating_by_class, operating, cash_from_operations,
+  investing_by_kind, investing, cash_from_investing,
   financing_by_kind, financing, cash_from_financing, net_change_in_cash,
   cash_beginning, cash_ending, noncash_disclosures,
   operating_reconciliation, reconciles, warnings }`.
@@ -521,6 +547,9 @@ every tool over every book in ledger-store's `tests/fixtures/old-books`.
   with a recorded statement, that have posted activity through the end of
   last month but no reconciliation (not voided) through it. The viewer's
   Needs attention uses the same rule (`ledger_store::reconcilable`).
+  `uncategorized_accounts` lists every revenue and expense account (not a
+  header) with no tax category, active or not, `"CODE Name"`: the list
+  Needs attention shows (rules.md B-32).
 
 ## Tools — fixed assets
 
@@ -605,8 +634,9 @@ through the policy.
 ## Tools — the viewer
 
 - `books.show { entry_id | account | report | attachment_id | asset |
-  party | reconciliation | search | page, start?, end? }` → `{ shown,
-  viewer_open, note }`. Asks the human's viewer (`ledger-gui`) to open an
+  party | reconciliation | search | page, start?, end?, columns?, compare? }`
+  → `{ shown, viewer_open, note }`. Asks the human's viewer (`ledger-gui`)
+  to open an
   entry, an account register or a report (for start/end dates if given),
   a stored file, an asset, a party (by id or name, resolved as in "Tools
   — parties"), a reconciliation (by id: its account's page, with its
@@ -623,6 +653,30 @@ through the policy.
   `viewer_open` says whether one does. The note says "The viewer shows
   …", or "No viewer has these books open: ask the human to open it
   (opened within a couple of minutes, it shows …)".
+  - **Dates (rules.md B-30).** For an account or a report, the dates are
+    resolved by the one default (omitted: the fiscal year to date; only
+    `end`: its fiscal year to it) and sent to the viewer resolved, so
+    `shown` and the screen can't differ: "the register of 1000 Business
+    Checking, 2026-01-01 to 2026-10-20", "the profit and loss report,
+    2026-01-01 to 2026-10-20", "the trial balance report, as of
+    2026-10-20" (trial balance, aging, fixed asset register, a balance
+    sheet in one total column), "the vendor 1099 report, for 2026". A
+    start after the end, given or derived, is refused and nothing is
+    sent.
+  - **Options a target ignores are refused**, naming what takes them:
+    `start`, `end`, `columns` and `compare` for any target but an account
+    or a report; `columns` and `compare` for an account; `columns` but for
+    `profit_and_loss`, `balance_sheet` and `cash_flow`; `compare` but for
+    those and `tax_summary`, and never with a split; `start` for a report
+    as of a day (the trial balance, the agings, the fixed asset register,
+    a balance sheet in one total column unless compared with the prior
+    period) or for `vendor_1099` (its year is `end`'s); and a split into
+    more columns than the viewer shows (`ops::MAX_REPORT_COLUMNS`, 240:
+    past it the viewer shows the total).
+  - The viewer takes a target's dates as sent; one it can't honour (text
+    that isn't a date, a start after the end from an earlier writer or a
+    hand-edited `ops/show.jsonl`, an unknown split) is ignored whole, as
+    an unknown page is.
 
 ## Tools — integrity
 
@@ -1196,13 +1250,17 @@ posting.
     closed: rules.md B-13, D-38),
     `general_ledger` (by account: beginning balance, postings with running
     balance and split, ending balance), `general_journal` (alias
-    `journal`: every entry, line by line, in date order).
+    `journal`: each entry posted in the period, line by line; `iif`:
+    every posted entry from the first through `as_of`, never a period).
   - Formats: `pdf` and `xlsx` (base64) for the five statements; `xlsx`,
     `csv`, `json` for every report; `iif` for `general_journal` (alias
     `journal`), for QuickBooks Desktop.
-  - Dates: period reports take `start` (default: first entry) and `end`
-    (default: today, local time); `balance_sheet`, `trial_balance`,
-    `fixed_asset_register` and `iif` take `as_of` (default today).
+  - Dates (rules.md B-30): the period reports (`profit_and_loss`,
+    `cash_flow`, `members_equity`, `tax_summary`, `general_ledger`, and
+    `general_journal` as csv, json and xlsx) take `start` and `end`
+    (omitted: the fiscal year to date; a start after the end is
+    refused); `balance_sheet`, `trial_balance`, `fixed_asset_register`
+    and `iif` take `as_of` (omitted: today, the company's time zone).
   - IIF (`docs/spec/rules.md` B-34; plan D-36): plain ASCII text, every
     line ending CR LF, inline (no `content_encoding`): every posted entry
     from the first through `as_of`, period-closing entries left out
@@ -1267,16 +1325,49 @@ posting.
   code for an account of the wrong type. `config_mentions` lists the
   wanderbooks.toml settings still naming the old code (edit them; the
   server reloads the file). Journaled as `account.renumbered`.
+- `books.rename_account { account, name, reason? }` → `{ id, code,
+  previous_name, name, notes }` (scope `books:post`, destructive: a
+  rename changes the label every past report prints): give an account a
+  new name (rules.md B-31). Only the name changes (entries name accounts
+  by id): no entry, balance or statement amount moves, and every report,
+  past periods included, prints the new name. Refuses an unknown account,
+  a blank name, the name it has, a name another account under the same
+  parent has (ignoring capitals), one holding a run of nine digits, or
+  one that isn't one line of at most 200 characters (kept trimmed); a
+  `reason` is one to 2,000 characters with no full TIN. Journaled as
+  `account.renamed { account_id, code, name, previous, reason }`, keyed
+  by id (a code can change; an id can't); the first rename declares the
+  journal feature `account_renamed` (rules.md B-27), so an earlier
+  version stops at the declaration. `notes` always says that QuickBooks
+  matches accounts by name (tell a CPA who imported an earlier IIF), says
+  when sub-accounts' full names change with it, when the new name moves
+  the account into or out of the cash accounts (`books.cash_accounts`
+  unset: picked by name) or the card accounts (named "card"), and lists
+  conventions whose text names the old name.
 - `books.set_tax_category { account, category?, deductible_percent? }`:
   map a revenue or expense account to a category (null clears),
-  optionally overriding its deductible percent. Journaled as
+  optionally overriding its deductible percent. Under
+  `policy.require_tax_category = refuse` a revenue or expense account
+  that isn't a header is never left without one. Journaled as
   `account.tax_set`.
 - `books.export { report: "tax_summary" }`: book vs. tax amounts by
   category, the difference where they disagree (meals 50%, penalties 0%),
-  and every P&L account still uncategorized. In the CPA package for the
-  fiscal year to date.
+  and every P&L account still uncategorized. Gains and losses on business
+  property (`form_4797_gain_loss`) are listed apart in `form_4797`, at
+  their book amounts with no tax amount and outside income and both nets,
+  on every return: Form 4797 figures them from the tax basis and splits
+  ordinary from section 1231 gain, which decides the line (never Schedule
+  C). In the CPA package for the fiscal year to date.
 - `books.import_chart_csv` accepts an optional fifth `tax_category` column,
-  validated before anything is created.
+  validated before anything is created. A revenue or expense row without
+  one is listed in `warnings`, or, under `policy.require_tax_category =
+  refuse`, refuses the whole file (a row is never a header account: the
+  file can't say so).
+- `policy.require_tax_category` (`books.set_setting`): `warn` (unset) or
+  `refuse` (rules.md B-32). The accounts invoices, bills and payroll
+  create (Revenue 4000, General Expenses 6999, 6100, 6110) are never
+  refused; their results' `warnings` name them. The first change naming
+  the key declares the journal feature `require_tax_category`.
 
 ## Tools — import
 
@@ -1287,8 +1378,10 @@ posting.
   `import_source`) is checked before any draft and linked to the bank
   account (`source_linked`; false when it was already), never to the
   drafts: a bank export is not a receipt.
-- `books.import_chart_csv { csv_text? | upload_id? }` → creates accounts
-  from `code,name,type,parent_code` CSV. All-or-nothing.
+- `books.import_chart_csv { csv_text? | upload_id? }` → `{ created,
+  count, warnings? }`: creates accounts from
+  `code,name,type,parent_code[,tax_category]` CSV. All-or-nothing; the
+  name and tax category rules are `books.add_account`'s.
 - Each takes the CSV as `csv_text` or as an upload (`books.begin_upload`
   purpose `import`; UTF-8), never both. The CSV itself is not filed: file
   it with `books.file_document` (category `import_source`) for
@@ -1434,17 +1527,18 @@ R-FUTURE-3 and rides the engine roadmap, not the MCP layer.
 - `books.add_vendor { name }` → `{ id, party_id }`. Both link the record to
   a party ("Tools — parties").
 - `books.create_invoice { party_id, date, due_date, lines: [{ description,
-  amount }] }` → `{ id, total, entry_id }`. Auto-posts Dr `1200` Accounts
-  Receivable / Cr `4000` Revenue.
+  amount }] }` → `{ id, total, entry_id, warnings? }`. Auto-posts Dr
+  `1200` Accounts Receivable / Cr `4000` Revenue. `warnings` names a
+  revenue account it created with no tax category (rules.md B-32).
 - `books.create_bill { party_id, date, due_date, lines }` → `{ id, total,
-  entry_id }`. Auto-posts Dr `6999` General Expenses / Cr `2000` Accounts
-  Payable.
+  entry_id, warnings? }`. Auto-posts Dr `6999` General Expenses / Cr
+  `2000` Accounts Payable; `warnings` as for invoices.
 - `books.receive_payment { document_id, date, amount, cash_account }` →
   `{ entry_id, remaining, status }`. Posts Dr Cash / Cr A/R.
 - `books.pay_bill { document_id, date, amount, cash_account }` →
   `{ entry_id, remaining, status }`. Posts Dr A/P / Cr Cash.
-- `books.ar_aging { as_of }` → `{ rows: [{ name, current, days_30, days_60,
-  days_90, days_90_plus, total }] }`.
+- `books.ar_aging { as_of? }` → `{ as_of, rows: [{ name, current, days_30,
+  days_60, days_90, days_90_plus, total }] }` (`as_of` omitted: today).
 - `books.ap_aging { as_of }` → same, per vendor.
 
 ## Tools — foreign exchange
@@ -1464,7 +1558,9 @@ entries.
 - `books.run_payroll { date, cash_account, lines: [{ employee?,
   employee_name?, gross_pay, federal_withholding, state_withholding, ss_employee,
   medicare_employee, ss_employer, medicare_employer, other_deductions }] }`
-  → `{ run_id, entry_id, total_gross, total_net }`. One balanced entry:
+  → `{ run_id, entry_id, total_gross, total_net, warnings? }` (`warnings`
+  names an expense account it created with no tax category). One
+  balanced entry:
   Dr 6100 Salary & Wage Expense (gross), Dr 6110 Payroll Tax Expense
   (employer SS + Medicare), Cr 2110–2150 withholding payables, Cr cash
   (net). Auto-creates the 61xx/21xx accounts. Respects closed periods.
@@ -1490,7 +1586,8 @@ entries.
 - `books.add_line` gains optional `class` (name or id): tags the new line.
   Shared costs are split explicitly across lines at entry time.
 - `books.profit_and_loss` gains optional `class` filter.
-- `books.profit_and_loss_by_class { start, end, class? }` → per-class revenue,
+- `books.profit_and_loss_by_class { start?, end?, class? }` (omitted dates:
+  the fiscal year to date, as every period report) → per-class revenue,
   expenses, net income, plus an unclassified row (only that class's row
   when `class` is given; an unknown or ambiguous class is refused). Reversals carry their
   class so divisional P&L nets correctly.

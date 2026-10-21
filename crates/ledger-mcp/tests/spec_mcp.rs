@@ -746,6 +746,10 @@ fn happy_path(name: &str) -> Mcp {
         "books.renumber_account",
         json!({"account": "7000", "code": "7100"}),
     );
+    m.ok(
+        "books.rename_account",
+        json!({"account": "7100", "name": "Gain or Loss on Sale", "reason": "clearer"}),
+    );
     m.ok("books.settings", json!({}));
     m.ok("books.roles", json!({}));
     m.ok(

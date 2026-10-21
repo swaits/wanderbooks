@@ -163,6 +163,22 @@ proptest! {
             fy = fy - Months::new(12);
         }
         prop_assert_eq!(b.fiscal_ytd(), (fy, t));
+        // One default period everywhere (rules.md B-30): what a report or
+        // register opens on is the fiscal year to date, the server's
+        // resolver's own answer for no dates, and party totals count this
+        // calendar year.
+        prop_assert_eq!(b.default_period(), (fy, t));
+        prop_assert_eq!(b.periods().statement(None, None), Ok((fy, t)));
+        prop_assert_eq!(ledger_gui::pages::reports::Range::default().dates(&b), (fy, t));
+        prop_assert_eq!(
+            ledger_gui::pages::accounts::RegisterRange::default().dates(&b),
+            (fy, t)
+        );
+        let jan1 = NaiveDate::from_ymd_opt(t.year(), 1, 1).unwrap();
+        prop_assert_eq!(
+            b.party_span(ledger_gui::books::PartyPeriod::ThisYear).0,
+            jan1
+        );
         let ytd = pl(fy, t);
         prop_assert_eq!(k.net_ytd, ytd.total_revenue - ytd.total_expenses);
         let first = p.entries.iter().map(|e| t - Days::new(e.0)).min();
@@ -668,4 +684,136 @@ fn more_origins_and_parties() {
     let r = b.entry(remit).unwrap();
     assert_eq!(r.origin, "Payroll taxes");
     assert!(!r.missing_receipt, "a remittance isn't a hand-made entry");
+}
+
+/// Defect 8, repros 1.4.2 and 1.4.3 (rules.md B-32): Needs attention lists
+/// every revenue and expense account without a tax category, with
+/// activity or not: one never used, one used only last fiscal year; never
+/// a header, an account with a category, or an asset. Info under warn,
+/// Todo under refuse.
+#[test]
+fn needs_attention_flags_every_uncategorized_pl_account_defect_8() {
+    let today = NaiveDate::from_ymd_opt(2026, 10, 20).unwrap();
+    let d = dir("attention-tax");
+    let mut s = Store::create(&d.join("books-data"), Currency::USD).unwrap();
+    let cash = s
+        .add_account("1000", "Checking", AccountType::Asset, None, false)
+        .unwrap();
+    let ops = s
+        .add_account("6000", "Operating", AccountType::Expense, None, true)
+        .unwrap();
+    s.add_account("6150", "Software", AccountType::Expense, Some(ops), false)
+        .unwrap();
+    let hosting = s
+        .add_account("6160", "Hosting", AccountType::Expense, Some(ops), false)
+        .unwrap();
+    s.add_account_with_tax(
+        "4000",
+        "Sales",
+        AccountType::Revenue,
+        None,
+        false,
+        Some(("gross_receipts", None)),
+    )
+    .unwrap();
+    let e = s
+        .create_entry(NaiveDate::from_ymd_opt(2025, 6, 1).unwrap(), "last year")
+        .unwrap();
+    let m = Money::new(Decimal::new(1_200, 2), Currency::USD);
+    s.add_line(e, hosting, Side::Debit, m).unwrap();
+    s.add_line(e, cash, Side::Credit, m).unwrap();
+    s.post_entry(e).unwrap();
+    journal_settings(
+        &mut s,
+        "[company]\nname = \"Fernhill Labs LLC\"\n[books]\ncash_accounts = [\"1000\"]\n",
+    );
+    let source = Source {
+        data_dir: d.join("books-data"),
+        today: Some(today),
+    };
+    let item = |b: &ledger_gui::books::Books| {
+        ledger_gui::attention::find(b)
+            .into_iter()
+            .find(|a| a.title.contains("without a tax category"))
+    };
+    let b = data::load_once(&source).unwrap();
+    let a = item(&b).expect("listed");
+    assert_eq!(a.title, "2 accounts without a tax category");
+    assert!(
+        a.detail.starts_with("6150 Software, 6160 Hosting. Each revenue and expense account maps to a line of the return"),
+        "{}",
+        a.detail
+    );
+    assert_eq!(a.severity, ledger_gui::books::Severity::Info);
+    assert!(
+        a.prompt.contains("books.tax_categories") && a.prompt.contains("books.set_tax_category")
+    );
+    // Under refuse, a to-do.
+    s.change_settings(
+        &[ledger_core::settings::Change {
+            key: "policy.require_tax_category".into(),
+            value: Some(serde_json::json!("refuse")),
+        }],
+        &ledger_core::settings::Source {
+            decided_by: "Tobin Harlow".into(),
+            decided_on: today,
+            citation: None,
+            note: None,
+        },
+    )
+    .unwrap();
+    let b = data::load_once(&source).unwrap();
+    assert_eq!(
+        item(&b).unwrap().severity,
+        ledger_gui::books::Severity::Todo
+    );
+    // Categorized: no item at all.
+    for code in ["6150", "6160"] {
+        let id = s.ledger().chart().find_by_code(code).unwrap().id;
+        s.set_account_tax(id, Some("other_deductions"), None)
+            .unwrap();
+    }
+    let b = data::load_once(&source).unwrap();
+    assert!(item(&b).is_none());
+}
+
+/// "Show all dates" is every date (P3 settled in design, rules.md B-30):
+/// the register's and the reports' all-dates range runs from the first
+/// posted entry through the later of today and the last, so an entry
+/// dated after today is never left out of it (as party totals' "All time"
+/// already ends); with no such entry it ends today.
+#[test]
+fn all_dates_holds_an_entry_dated_after_today() {
+    use ledger_gui::pages::accounts::RegisterRange;
+    use ledger_gui::pages::reports::Range;
+    let today = NaiveDate::from_ymd_opt(2026, 10, 20).unwrap();
+    let d = dir("all-dates-future");
+    let mut s = Store::create(&d.join("books-data"), Currency::USD).unwrap();
+    let cash = s
+        .add_account("1000", "Checking", AccountType::Asset, None, false)
+        .unwrap();
+    let capital = s
+        .add_account("3000", "Capital", AccountType::Equity, None, false)
+        .unwrap();
+    let source = Source {
+        data_dir: d.join("books-data"),
+        today: Some(today),
+    };
+    let post = |s: &mut Store, day: NaiveDate| {
+        let e = s.create_entry(day, "x").unwrap();
+        let m = Money::new(Decimal::new(500, 2), Currency::USD);
+        s.add_line(e, cash, Side::Debit, m).unwrap();
+        s.add_line(e, capital, Side::Credit, m).unwrap();
+        s.post_entry(e).unwrap();
+    };
+    let first = NaiveDate::from_ymd_opt(2025, 3, 15).unwrap();
+    post(&mut s, first);
+    let b = data::load_once(&source).unwrap();
+    assert_eq!(b.all_dates(), (first, today));
+    let later = NaiveDate::from_ymd_opt(2026, 12, 1).unwrap();
+    post(&mut s, later);
+    let b = data::load_once(&source).unwrap();
+    assert_eq!(b.kpis.last_entry, Some(later));
+    assert_eq!(RegisterRange::All.dates(&b), (first, later));
+    assert_eq!(Range::AllTime.dates(&b), (first, later));
 }

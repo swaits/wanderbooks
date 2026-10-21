@@ -1,0 +1,107 @@
+[
+  {
+    "account_type": "Asset",
+    "code": "1000",
+    "currency": [
+      85,
+      83,
+      68
+    ],
+    "deductible_percent": null,
+    "id": 1,
+    "name": "Bank",
+    "parent": null,
+    "placeholder": false,
+    "tax_category": null
+  },
+  {
+    "account_type": "Equity",
+    "code": "3000",
+    "currency": [
+      85,
+      83,
+      68
+    ],
+    "deductible_percent": null,
+    "id": 2,
+    "name": "Capital",
+    "parent": null,
+    "placeholder": false,
+    "tax_category": null
+  },
+  {
+    "account_type": "Expense",
+    "code": "6000",
+    "currency": [
+      85,
+      83,
+      68
+    ],
+    "deductible_percent": null,
+    "id": 3,
+    "name": "Operating expenses",
+    "parent": null,
+    "placeholder": true,
+    "tax_category": null
+  },
+  {
+    "account_type": "Expense",
+    "code": "6150",
+    "currency": [
+      85,
+      83,
+      68
+    ],
+    "deductible_percent": null,
+    "id": 4,
+    "name": "Software",
+    "parent": 3,
+    "placeholder": false,
+    "tax_category": "other_deductions"
+  },
+  {
+    "account_type": "Expense",
+    "code": "6160",
+    "currency": [
+      85,
+      83,
+      68
+    ],
+    "deductible_percent": null,
+    "id": 5,
+    "name": "Hosting",
+    "parent": 3,
+    "placeholder": false,
+    "tax_category": null
+  },
+  {
+    "account_type": "Revenue",
+    "code": "4000",
+    "currency": [
+      85,
+      83,
+      68
+    ],
+    "deductible_percent": null,
+    "id": 6,
+    "name": "Sales",
+    "parent": null,
+    "placeholder": false,
+    "tax_category": "gross_receipts"
+  },
+  {
+    "account_type": "Expense",
+    "code": "6170",
+    "currency": [
+      85,
+      83,
+      68
+    ],
+    "deductible_percent": null,
+    "id": 7,
+    "name": "Domains",
+    "parent": 3,
+    "placeholder": false,
+    "tax_category": "other_deductions"
+  }
+]

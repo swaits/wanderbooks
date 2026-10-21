@@ -749,9 +749,13 @@ impl Ledger {
     /// Add an account to the chart. Returns its id.
     ///
     /// ```text
-    /// GOAL: register an account under a unique code.
+    /// GOAL: register an account under a unique code and a name no
+    ///       sibling has.
     /// SOURCE: rules.md B-4 (the five elements); R-4; DECISION (owner,
-    ///         2026-10-13): a child has its parent's type.
+    ///         2026-10-13): a child has its parent's type; rules.md B-31
+    ///         (names: QuickBooks matches accounts by name,
+    ///         docs/spec/sources/intuit-iif.md; no full TIN in what every
+    ///         report prints, B-26; DECISION, owner, 2026-10-20).
     /// SCENARIOS:
     ///   1. IF the code is empty or taken: SHOULD refuse.
     ///   2. IF the parent doesn't exist: SHOULD refuse.
@@ -759,10 +763,23 @@ impl Ledger {
     ///      - SHOULD refuse with ParentTypeMismatch
     ///      - NEVER add the account
     ///      BECAUSE a child subdivides its parent.
+    ///   4. IF the name is blank: SHOULD refuse with EmptyAccountName.
+    ///   5. IF an account under the same parent (or, for a top-level
+    ///      account, another top-level one) has the name, ignoring
+    ///      capitals and surrounding space: SHOULD refuse with
+    ///      DuplicateAccountName.
+    ///   6. IF the name holds a run of nine digits (a full SSN, EIN or
+    ///      account number): SHOULD refuse with AccountNameHoldsTin.
+    ///   7. IF the name, trimmed, is longer than MAX_ACCOUNT_NAME
+    ///      characters, or holds a line break, tab or other control
+    ///      character: SHOULD refuse with InvalidAccountName
+    ///      BECAUSE every report, export and the IIF print it on one line.
+    ///   8. The name is kept trimmed, as a rename keeps it.
     /// ```
     ///
-    /// Replay of journals written before the parent rule uses
-    /// [`Self::replay_add_account`].
+    /// Replay of journals written before these rules uses
+    /// [`Self::replay_add_account`]; the accounts the engine creates for a
+    /// control role use [`Self::add_control_account`].
     pub fn add_account(
         &mut self,
         code: &str,
@@ -777,7 +794,8 @@ impl Ledger {
         if code.trim().is_empty() {
             return Err(LedgerError::EmptyAccountCode);
         }
-        if name.trim().is_empty() {
+        let name = name.trim();
+        if name.is_empty() {
             return Err(LedgerError::EmptyAccountName);
         }
         if let Some(p) = parent.and_then(|p| self.chart.get(p))
@@ -790,7 +808,64 @@ impl Ledger {
                 found: account_type,
             });
         }
+        if self.chart.find_by_code(code).is_some() {
+            return Err(LedgerError::DuplicateAccountCode(code.to_string()));
+        }
+        self.check_account_name(None, name, parent)?;
         self.replay_add_account(code, name, account_type, parent, placeholder)
+    }
+
+    /// Create the account a control role posts to, at its code with its
+    /// name (invoices, bills, payroll and closes create them when first
+    /// needed). The engine's own names: never refused for a sibling's
+    /// name, and never for a missing tax category (rules.md B-32), so an
+    /// invoice is never refused over a chart label.
+    pub fn add_control_account(&mut self, c: &ControlAccount) -> Result<AccountId, LedgerError> {
+        self.replay_add_account(c.code, c.name, c.account_type, None, false)
+    }
+
+    /// The name rules for a new name (a new account's, or a rename's),
+    /// given trimmed and not blank: one line of at most
+    /// [`crate::account::MAX_ACCOUNT_NAME`] characters, no run of nine
+    /// digits, and none of `account`'s siblings under `parent` has it,
+    /// ignoring capitals and surrounding space ([`Self::add_account`]
+    /// SCENARIOS 5-7). `account` is the one being renamed, never its own
+    /// sibling.
+    fn check_account_name(
+        &self,
+        account: Option<AccountId>,
+        name: &str,
+        parent: Option<AccountId>,
+    ) -> Result<(), LedgerError> {
+        let max = crate::account::MAX_ACCOUNT_NAME;
+        if name.chars().count() > max {
+            return Err(LedgerError::InvalidAccountName(format!(
+                "is longer than {max} characters: every report prints it on one line"
+            )));
+        }
+        if name.chars().any(char::is_control) {
+            return Err(LedgerError::InvalidAccountName(
+                "holds a line break, tab or other control character: every report prints it on one line".into(),
+            ));
+        }
+        if crate::parties::has_full_tin(name) {
+            return Err(LedgerError::AccountNameHoldsTin);
+        }
+        let key = crate::parties::name_key(name);
+        let mut siblings: Vec<&Account> = self
+            .chart
+            .all()
+            .filter(|a| a.parent == parent && Some(a.id) != account)
+            .filter(|a| crate::parties::name_key(&a.name) == key)
+            .collect();
+        siblings.sort_by_key(|a| a.id);
+        match siblings.first() {
+            Some(a) => Err(LedgerError::DuplicateAccountName {
+                name: name.trim().to_string(),
+                sibling: format!("{} {}", a.code, a.name),
+            }),
+            None => Ok(()),
+        }
     }
 
     /// [`Self::add_account`] without the rules added on 2026-10-13 (a
@@ -844,6 +919,141 @@ impl Ledger {
     pub fn renumber_account(&mut self, account: AccountId, code: &str) -> Result<(), LedgerError> {
         self.check_renumber_account(account, code)?;
         self.chart.set_code(account, code)
+    }
+
+    /// Give an account a new name: `name`, trimmed.
+    ///
+    /// ```text
+    /// GOAL: let the human rename an account without touching its history.
+    /// SOURCE: rules.md B-31; DECISION (owner, plan/served.md 4.9 and P3
+    ///         "Settled in design", 2026-10-20); rules.md B-8 (posted is
+    ///         forever: entries name accounts by id, so a name is a label).
+    /// INVARIANTS:
+    ///   1. Only the name changes: the account's id, code, type, parent,
+    ///      placeholder flag, tax category, and every entry posted to it
+    ///      stay as they were, so no entry, balance or statement amount
+    ///      changes; every report, past periods included, prints the new
+    ///      name.
+    ///   2. A refusal MUST leave the books unchanged.
+    ///   3. The rules are the command's: replay takes any journaled name
+    ///      for an account that exists (Self::replay_rename_account,
+    ///      rules.md B-28).
+    /// SCENARIOS:
+    ///   1. IF the account is unknown: SHOULD refuse with UnknownAccount.
+    ///   2. IF the name is blank: SHOULD refuse with EmptyAccountName.
+    ///   3. IF the name, trimmed, is the one it has: SHOULD refuse with
+    ///      AccountNameUnchanged (nothing to journal).
+    ///   4. IF another account under the same parent has it, ignoring
+    ///      capitals and surrounding space: SHOULD refuse with
+    ///      DuplicateAccountName.
+    ///   5. IF it holds a run of nine digits: SHOULD refuse with
+    ///      AccountNameHoldsTin.
+    ///   6. IF it is longer than MAX_ACCOUNT_NAME characters or holds a
+    ///      control character: SHOULD refuse with InvalidAccountName (the
+    ///      rules a new account's name meets, Self::add_account).
+    ///   7. Approval rules, roles, settings and closed periods never
+    ///      block it: they name accounts by code or id, and a name is no
+    ///      posting.
+    /// ```
+    pub fn rename_account(&mut self, account: AccountId, name: &str) -> Result<(), LedgerError> {
+        self.check_rename_account(account, name)?;
+        self.chart.set_name(account, name.trim())
+    }
+
+    /// The validation behind [`Self::rename_account`], for stores that
+    /// journal before mutating.
+    pub fn check_rename_account(&self, account: AccountId, name: &str) -> Result<(), LedgerError> {
+        let a = self
+            .chart
+            .get(account)
+            .ok_or(LedgerError::UnknownAccount(account))?;
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(LedgerError::EmptyAccountName);
+        }
+        if name == a.name {
+            return Err(LedgerError::AccountNameUnchanged {
+                code: a.code.clone(),
+                name: a.name.clone(),
+            });
+        }
+        self.check_account_name(Some(account), name, a.parent)
+    }
+
+    /// Replay a journaled rename: the account must exist; the name is
+    /// taken as journaled, whatever later versions refuse in a new one
+    /// (rules.md B-28).
+    pub fn replay_rename_account(
+        &mut self,
+        account: AccountId,
+        name: &str,
+    ) -> Result<(), LedgerError> {
+        self.chart.set_name(account, name)
+    }
+
+    /// Check a rename's reason before it is journaled: one to
+    /// [`crate::settings::MAX_LONG_TEXT`] characters, line breaks and tabs
+    /// allowed but no other control character, and no full TIN (rules.md
+    /// B-26). Returns it trimmed.
+    pub fn check_rename_reason(reason: &str) -> Result<String, LedgerError> {
+        let r = crate::settings::long_text("reason", reason, crate::settings::MAX_LONG_TEXT)
+            .map_err(LedgerError::InvalidRenameReason)?;
+        if crate::parties::has_full_tin(&r) {
+            return Err(LedgerError::InvalidRenameReason(
+                "reason holds nine digits in a row, which read as a full SSN or EIN: write only the last four".into(),
+            ));
+        }
+        Ok(r)
+    }
+
+    /// Whether `policy.require_tax_category` lets an account be created
+    /// with `category` (rules.md B-32): under `refuse`, a revenue or
+    /// expense account that isn't a header needs one. The command's check
+    /// only, never replay's (rules.md B-28); the accounts the engine
+    /// creates for a control role never meet it.
+    pub fn check_tax_category_required(
+        &self,
+        code: &str,
+        name: &str,
+        account_type: AccountType,
+        placeholder: bool,
+        category: Option<&str>,
+    ) -> Result<(), LedgerError> {
+        if self.settings.require_tax_category() == crate::settings::TaxCategoryPolicy::Refuse
+            && crate::tax::needs_category(account_type, placeholder)
+            && category.is_none()
+        {
+            return Err(LedgerError::TaxCategoryRequired {
+                account: format!("{} {}", code.trim(), name.trim()),
+                clearing: false,
+            });
+        }
+        Ok(())
+    }
+
+    /// Whether `policy.require_tax_category` lets `account`'s category be
+    /// set to `category` (rules.md B-32): under `refuse`, an account that
+    /// needs one ([`crate::tax::account_needs_category`]) keeps one. The
+    /// command's check only, never replay's.
+    pub fn check_tax_category_kept(
+        &self,
+        account: AccountId,
+        category: Option<&str>,
+    ) -> Result<(), LedgerError> {
+        let a = self
+            .chart
+            .get(account)
+            .ok_or(LedgerError::UnknownAccount(account))?;
+        if self.settings.require_tax_category() == crate::settings::TaxCategoryPolicy::Refuse
+            && category.is_none()
+            && crate::tax::account_needs_category(a)
+        {
+            return Err(LedgerError::TaxCategoryRequired {
+                account: format!("{} {}", a.code, a.name),
+                clearing: a.tax_category.is_some(),
+            });
+        }
+        Ok(())
     }
 
     /// The validation behind [`Self::renumber_account`], for stores that
@@ -2582,18 +2792,10 @@ impl Ledger {
         if let Some(&id) = self.roles.get(RETAINED_EARNINGS.key) {
             return Ok(id);
         }
-        Ok(
-            match self.chart.find_by_code(periods::RETAINED_EARNINGS_CODE) {
-                Some(a) => a.id,
-                None => self.add_account(
-                    periods::RETAINED_EARNINGS_CODE,
-                    "Retained Earnings",
-                    AccountType::Equity,
-                    None,
-                    false,
-                )?,
-            },
-        )
+        Ok(match self.chart.find_by_code(RETAINED_EARNINGS.code) {
+            Some(a) => a.id,
+            None => self.add_control_account(&RETAINED_EARNINGS)?,
+        })
     }
 
     /// Validate a close target: every account an equity account, targets
@@ -3777,18 +3979,18 @@ impl Ledger {
     fn ensure_control(&mut self, c: &ControlAccount) -> AccountId {
         match self.roles.get(c.key) {
             Some(&id) => id,
-            None => self.ensure_account(c.code, c.name, c.account_type),
+            None => self.ensure_account(c),
         }
     }
 
-    /// Ensure an account exists by code, creating it with the given type
-    /// and name if missing. Returns the account id.
-    fn ensure_account(&mut self, code: &str, name: &str, account_type: AccountType) -> AccountId {
-        if let Some(a) = self.chart.find_by_code(code) {
+    /// Ensure a control role's account exists at its code, creating it
+    /// (with the role's name and type: [`Self::add_control_account`]) if
+    /// missing. Returns the account id.
+    fn ensure_account(&mut self, c: &ControlAccount) -> AccountId {
+        if let Some(a) = self.chart.find_by_code(c.code) {
             return a.id;
         }
-        self.add_account(code, name, account_type, None, false)
-            .expect("fresh code cannot fail")
+        self.add_control_account(c).expect("fresh code cannot fail")
     }
 
     /// Create a sales invoice. Auto-posts: Dr `1200` Accounts Receivable,

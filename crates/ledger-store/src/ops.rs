@@ -36,6 +36,28 @@ pub const VIEWER_LOCK: &str = "viewer.lock";
 /// The most show requests kept.
 pub const KEPT: usize = 32;
 
+/// The most columns the viewer splits a report into: past it, the
+/// viewer shows the report in one total column and says why, so
+/// `books.show` refuses such a split (it would be an option the viewer
+/// ignores).
+pub const MAX_REPORT_COLUMNS: i64 = 240;
+
+/// How many columns splitting `start..=end` into periods of
+/// `months_per_column` months makes (each started period a column),
+/// counted from the months, before building any: a range across chrono's
+/// calendar is millions of months. The one count `books.show` and the
+/// viewer share.
+pub fn report_columns(
+    start: chrono::NaiveDate,
+    end: chrono::NaiveDate,
+    months_per_column: u32,
+) -> i64 {
+    use chrono::Datelike;
+    let months = (i64::from(end.year()) - i64::from(start.year())) * 12 + i64::from(end.month())
+        - i64::from(start.month());
+    months / i64::from(months_per_column.max(1)) + 1
+}
+
 /// Where to go.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "show", rename_all = "snake_case")]
@@ -51,24 +73,29 @@ pub enum ViewerTarget {
         /// Entry id.
         entry_id: u64,
     },
-    /// An account's register, optionally for a date range.
+    /// An account's register, for a date range.
     Account {
         /// Account code.
         code: String,
-        /// First date, YYYY-MM-DD.
+        /// First date, YYYY-MM-DD. `books.show` always sends both dates,
+        /// resolved (rules.md B-30); `None` only from an earlier writer,
+        /// which the viewer resolves by the same rule.
         start: Option<String>,
-        /// Last date, YYYY-MM-DD.
+        /// Last date, YYYY-MM-DD (see `start`).
         end: Option<String>,
     },
-    /// A report, optionally for a date range.
+    /// A report, for a date range.
     Report {
         /// profit_and_loss, balance_sheet, cash_flow, members_equity,
         /// trial_balance, general_ledger, tax_summary, vendor_1099,
         /// ar_aging, ap_aging, fixed_asset_register.
         report: String,
-        /// First date, YYYY-MM-DD.
+        /// First date, YYYY-MM-DD. `books.show` always sends both dates,
+        /// resolved (rules.md B-30); `None` only from an earlier writer,
+        /// which the viewer resolves by the same rule.
         start: Option<String>,
-        /// Last date, YYYY-MM-DD.
+        /// Last date, YYYY-MM-DD (see `start`): the as-of day of a report
+        /// as of a day.
         end: Option<String>,
         /// Split into columns: total, month, quarter, or year.
         #[serde(default)]

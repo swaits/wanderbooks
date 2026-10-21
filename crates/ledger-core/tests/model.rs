@@ -53,8 +53,10 @@ struct MPeriod {
 
 #[derive(Clone, Debug, Default)]
 struct Model {
-    /// (id, code, type, placeholder)
-    accounts: Vec<(u64, String, AccountType, bool)>,
+    /// (id, code, type, placeholder, name). The name is outside the Lean
+    /// model (its chart is code and type): kept here so the two agree on
+    /// renames' refusals, and a rename moves nothing else (rules.md B-31).
+    accounts: Vec<(u64, String, AccountType, bool, String)>,
     drafts: Vec<MEntry>,
     posted: Vec<MEntry>,
     periods: Vec<MPeriod>,
@@ -79,7 +81,7 @@ impl Model {
         }
     }
 
-    fn account(&self, id: u64) -> Option<&(u64, String, AccountType, bool)> {
+    fn account(&self, id: u64) -> Option<&(u64, String, AccountType, bool, String)> {
         self.accounts.iter().find(|a| a.0 == id)
     }
 
@@ -101,13 +103,53 @@ impl Model {
             .sum()
     }
 
-    fn add_account(&mut self, code: &str, t: AccountType, placeholder: bool) -> bool {
-        if code.is_empty() || self.accounts.iter().any(|a| a.1 == code) {
+    fn add_account(&mut self, code: &str, name: &str, t: AccountType, placeholder: bool) -> bool {
+        if code.is_empty()
+            || self.accounts.iter().any(|a| a.1 == code)
+            || !self.name_free(None, name)
+        {
             return false;
         }
+        self.add_engine_account(code, name, t, placeholder);
+        true
+    }
+
+    /// An account the engine makes for a control role: its fixed name,
+    /// never refused for one.
+    fn add_engine_account(&mut self, code: &str, name: &str, t: AccountType, placeholder: bool) {
         self.accounts
-            .push((self.next_account, code.into(), t, placeholder));
+            .push((self.next_account, code.into(), t, placeholder, name.into()));
         self.next_account += 1;
+    }
+
+    /// rules.md B-31: a name is free for `account` (None: a new one) when
+    /// it isn't blank, holds no nine digits in a row, and no other account
+    /// (all are top-level here, so all are siblings) has it, ignoring
+    /// capitals and surrounding space.
+    fn name_free(&self, account: Option<u64>, name: &str) -> bool {
+        let key = name.trim().to_lowercase();
+        let nine_digits = name
+            .as_bytes()
+            .windows(9)
+            .any(|w| w.iter().all(u8::is_ascii_digit));
+        !key.is_empty()
+            && !nine_digits
+            && !self
+                .accounts
+                .iter()
+                .any(|a| Some(a.0) != account && a.4.trim().to_lowercase() == key)
+    }
+
+    /// rules.md B-31: rename an account that exists to a free name other
+    /// than its own; only the name changes.
+    fn rename(&mut self, id: u64, name: &str) -> bool {
+        let Some(i) = self.accounts.iter().position(|a| a.0 == id) else {
+            return false;
+        };
+        if name.trim() == self.accounts[i].4 || !self.name_free(Some(id), name) {
+            return false;
+        }
+        self.accounts[i].4 = name.trim().to_string();
         true
     }
 
@@ -278,7 +320,12 @@ impl Model {
             let re = match self.accounts.iter().find(|a| a.1 == "3999") {
                 Some(a) => a.0,
                 None => {
-                    self.add_account("3999", AccountType::Equity, false);
+                    self.add_engine_account(
+                        "3999",
+                        "Retained Earnings",
+                        AccountType::Equity,
+                        false,
+                    );
                     self.next_account - 1
                 }
             };
@@ -314,6 +361,21 @@ impl Model {
 // ---------------------------------------------------------------------------
 
 const CODES: [&str; 7] = ["1000", "2000", "3000", "3999", "4000", "6000", "1900"];
+/// New names: a free one, its own in other capitals and spacing, a
+/// sibling's (the accounts are named for their codes), blank, nine
+/// digits, the engine's own name for retained earnings.
+const NAMES: [&str; 10] = [
+    "Software",
+    "SOFTWARE",
+    " software ",
+    "Hosting",
+    "",
+    "   ",
+    "Acct 123456789",
+    "1000",
+    "Retained Earnings",
+    "Rent",
+];
 const TYPES: [AccountType; 5] = [
     AccountType::Asset,
     AccountType::Liability,
@@ -333,6 +395,9 @@ enum Cmd {
     Reverse(usize, u32),
     CreatePeriod(u32, u32),
     Close(usize),
+    /// Rename an account (rules.md B-31): `Step.record` in the Lean model,
+    /// whose chart has no names.
+    Rename(usize, usize),
 }
 
 fn day(n: u32) -> NaiveDate {
@@ -353,6 +418,7 @@ fn cmd() -> impl Strategy<Value = Cmd> {
         2 => (0usize..8, 0u32..180).prop_map(|(e, d)| Cmd::Reverse(e, d)),
         2 => (0u32..180, 0u32..60).prop_map(|(s, len)| Cmd::CreatePeriod(s, s + len)),
         2 => (0usize..4).prop_map(Cmd::Close),
+        2 => (0usize..8, 0..NAMES.len()).prop_map(|(a, n)| Cmd::Rename(a, n)),
     ]
 }
 
@@ -368,7 +434,7 @@ fn apply(l: &mut Ledger, m: &mut Model, c: &Cmd) -> (bool, bool) {
         Cmd::AddAccount(code, t, h) => (
             l.add_account(CODES[code], CODES[code], TYPES[t], None, h)
                 .is_ok(),
-            m.add_account(CODES[code], TYPES[t], h),
+            m.add_account(CODES[code], CODES[code], TYPES[t], h),
         ),
         Cmd::Draft(d) => {
             let got = l.try_create_entry(day(d), "x").ok();
@@ -437,6 +503,10 @@ fn apply(l: &mut Ledger, m: &mut Model, c: &Cmd) -> (bool, bool) {
             let id = ids.get(i).copied().unwrap_or(999);
             (l.close_period(id).is_ok(), m.close(i))
         }
+        Cmd::Rename(a, n) => {
+            let a = pick(&accounts, a);
+            (l.rename_account(a, NAMES[n]).is_ok(), m.rename(a, NAMES[n]))
+        }
     }
 }
 
@@ -444,9 +514,12 @@ fn apply(l: &mut Ledger, m: &mut Model, c: &Cmd) -> (bool, bool) {
 fn agree(l: &Ledger, m: &Model) -> Result<(), TestCaseError> {
     // Chart.
     prop_assert_eq!(l.chart().len(), m.accounts.len());
-    for (id, code, t, h) in &m.accounts {
+    for (id, code, t, h, name) in &m.accounts {
         let a = l.chart().get(*id).expect("account");
-        prop_assert_eq!((&a.code, a.account_type, a.placeholder), (code, *t, *h));
+        prop_assert_eq!(
+            (&a.code, a.account_type, a.placeholder, &a.name),
+            (code, *t, *h, name)
+        );
     }
     // The posted log, in order, line for line.
     let log: Vec<_> = l.posted_entries().collect();

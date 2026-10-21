@@ -22,7 +22,8 @@ use libfuzzer_sys::fuzz_target;
 use serde_json::{Map, Value, json};
 
 const TYPES: &[&str] = &[
-    "account.added", "account.tax_set", "asset.depreciation_posted", "asset.disposed",
+    "account.added", "account.renamed", "account.tax_set", "asset.depreciation_posted",
+    "asset.disposed",
     "asset.registered", "attachment.withdrawn", "bill.created", "bill.paid", "class.added",
     "customer.added", "document.filed", "entry.created", "entry.line_added",
     "entry.line_class_set", "entry.posted", "entry.reversed", "entry.vendor_set",
@@ -47,7 +48,7 @@ const FIELDS: &[&str] = &[
     "total", "useful_life_months", "vendor_id", "type", "account_type", "rounding",
     "members", "distributions", "sweep", "format", "features", "changes", "key", "value",
     "source", "decided_by", "decided_on", "kind", "title", "body_md", "structured", "subject",
-    "decision_md", "supersedes", "resolution", "approver",
+    "decision_md", "supersedes", "resolution", "approver", "previous",
 ];
 
 /// A value replay might plausibly see: small ids, amounts as decimal

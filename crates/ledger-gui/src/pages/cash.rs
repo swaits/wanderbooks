@@ -105,7 +105,7 @@ pub fn show(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                     },
                 );
                 if r.interact(Sense::click()).clicked() {
-                    shell.state.accounts.range = None;
+                    shell.state.accounts.range = crate::pages::accounts::RegisterRange::Default;
                     shell.go(Route::Account(*id));
                 }
             });

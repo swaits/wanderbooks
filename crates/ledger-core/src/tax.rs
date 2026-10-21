@@ -148,7 +148,23 @@ pub const CATEGORIES: &[TaxCategory] = &[
         100,
         "Portfolio interest: partnerships and S corps state it separately (Schedule K). Interest earned in the business itself (on customer accounts, say) is ordinary income: use other_income.",
     ),
+    cat(
+        "form_4797_gain_loss",
+        "Gain or loss on business property (Form 4797)",
+        Income,
+        ALL,
+        100,
+        "Gain or loss on selling or disposing of business property (the gain or loss account of books.dispose_asset). Form 4797 figures the tax gain from the tax basis, not the book one, and splits it: the ordinary part goes on Form 1065 line 6, Form 1120-S line 4 or Form 1120 line 9, and a partnership or S corp states net section 1231 gain separately (Schedule K line 10 or 9). On Schedule C books it goes on Form 4797, never Schedule C. The tax summary lists it apart, at its book amount and in no total: the CPA figures it.",
+    ),
     cat("other_income", "Other income", Income, ALL, 100, ""),
+    cat(
+        "tax_exempt_income",
+        "Tax-exempt income",
+        Income,
+        ENTITIES,
+        0,
+        "Tax-exempt interest and other tax-exempt income: on no line of page 1 (Form 1065 Schedule K lines 18a-18b, Form 1120-S Schedule K lines 16a-16b, Form 1120 Schedule K item 9 and Schedule M-1 line 7). None of it is taxable: a book-to-tax difference, the income twin of nondeductible.",
+    ),
     cat(
         "cost_of_goods_sold",
         "Cost of goods sold",
@@ -379,6 +395,44 @@ pub fn check_category(
     Ok(c)
 }
 
+/// Whether an account of `account_type` maps to a line of the return:
+/// revenue and expense accounts do, unless a header (a placeholder takes
+/// no postings, so nothing of its own reaches the return).
+///
+/// ```text
+/// GOAL: the accounts a tax category is for (rules.md B-32).
+/// SOURCE: IRS Pub. 583, "Your books must show your gross income, as well
+///         as your deductions and credits"; Rev. Proc. 98-25 §5.01, a
+///         relationship between "the amounts ... by account and the
+///         taxpayer's return" (docs/spec/sources/irs-records.md); DECISION
+///         (owner, 2026-10-20): header accounts are exempt.
+/// ```
+pub fn needs_category(account_type: AccountType, placeholder: bool) -> bool {
+    matches!(account_type, AccountType::Revenue | AccountType::Expense) && !placeholder
+}
+
+/// Whether `account` maps to a line of the return ([`needs_category`]
+/// of its type and header flag). A header never has a posting of its own
+/// to report: no entry posts to one, now or on replay
+/// (`JournalEntry::validate` refuses it), and an account's header flag
+/// never changes.
+pub fn account_needs_category(account: &crate::Account) -> bool {
+    needs_category(account.account_type, account.placeholder)
+}
+
+/// Every account that maps to a line of the return and has no tax
+/// category ([`account_needs_category`]), with or without activity,
+/// sorted by code: what Needs attention and the digest list.
+pub fn uncategorized_accounts(ledger: &Ledger) -> Vec<&crate::Account> {
+    let mut out: Vec<&crate::Account> = ledger
+        .chart()
+        .all()
+        .filter(|a| a.tax_category.is_none() && account_needs_category(a))
+        .collect();
+    out.sort_by(|a, b| a.code.cmp(&b.code).then(a.id.cmp(&b.id)));
+    out
+}
+
 /// One category's line on the tax summary.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct TaxSummaryLine {
@@ -405,6 +459,20 @@ pub struct Uncategorized {
     pub book: Decimal,
 }
 
+/// A category's book amount that the summary can't place on the return
+/// or tax: see [`TaxSummary::form_4797`].
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct BookOnlyLine {
+    /// Category key.
+    pub category: String,
+    /// Category label.
+    pub label: String,
+    /// The accounts that roll into it, `"CODE Name"`.
+    pub accounts: Vec<String>,
+    /// Book amount: a gain positive, a loss negative.
+    pub book: Decimal,
+}
+
 /// The tax summary for a period: book amounts by tax category, deductible
 /// amounts, and every account still needing a category.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -427,6 +495,17 @@ pub struct TaxSummary {
     /// irs-tax-lines.md). Not in [`TaxSummary::book_net`] or `tax_net`.
     #[serde(default)]
     pub separately_stated: Vec<TaxSummaryLine>,
+    /// Gains and losses on business property ([`on_form_4797`]), at their
+    /// book amounts, with no tax amount and in no total
+    /// ([`TaxSummary::book_net`], `tax_net`): Form 4797 figures the tax
+    /// gain from the tax basis (book and tax depreciation differ) and
+    /// splits ordinary gain from net section 1231 gain, and the split
+    /// decides where it goes (Form 1065 line 6 or Schedule K line 10; Form
+    /// 1120-S line 4 or Schedule K line 9; Form 1120 line 9; on Schedule C
+    /// books Form 4797 itself, never Schedule C: docs/spec/sources/
+    /// irs-tax-lines.md). The CPA figures it, on every return alike.
+    #[serde(default)]
+    pub form_4797: Vec<BookOnlyLine>,
     /// P&L accounts with activity and no category.
     pub uncategorized: Vec<Uncategorized>,
 }
@@ -506,11 +585,21 @@ pub fn tax_summary(
         cost_of_goods: vec![],
         deductions: vec![],
         separately_stated: vec![],
+        form_4797: vec![],
         uncategorized,
     };
     // Catalog order, so the summary reads like the return.
     for c in CATEGORIES {
         if let Some(line) = by_cat.remove(c.key) {
+            if on_form_4797(c.key) {
+                out.form_4797.push(BookOnlyLine {
+                    category: line.category,
+                    label: line.label,
+                    accounts: line.accounts,
+                    book: line.book,
+                });
+                continue;
+            }
             if separately_stated(c.key, form) {
                 out.separately_stated.push(line);
                 continue;
@@ -523,6 +612,17 @@ pub fn tax_summary(
         }
     }
     Ok(out)
+}
+
+/// Whether this category is a gain or loss on business property, which
+/// Form 4797 figures from the tax basis, on every return
+/// ([`TaxSummary::form_4797`]). Form 1065 line 6 and Form 1120-S line 4:
+/// "Include only ordinary gains or losses"; Schedule K: "Net section 1231
+/// gain (loss) (attach Form 4797)"; the Schedule C instructions: "Form
+/// 4797 to report sales, exchanges, and involuntary conversions ... of
+/// trade or business property".
+pub fn on_form_4797(key: &str) -> bool {
+    key == "form_4797_gain_loss"
 }
 
 /// Whether a partnership or S corporation states this category separately

@@ -1092,8 +1092,8 @@ fn cash_flow_exports_equal_the_core_statement() {
     assert_eq!(tool, j);
 }
 
-/// The journal export, CSV and JSON, is every posted entry line by line
-/// (no drafts), as the ledger holds them. Kills: export_journal's
+/// The journal export, CSV and JSON, over every date, is every posted
+/// entry line by line (no drafts), as the ledger holds them. Kills: export_journal's
 /// json/csv switch.
 #[test]
 fn journal_exports_hold_every_posted_line() {
@@ -1106,7 +1106,10 @@ fn journal_exports_hold_every_posted_line() {
     let mut m = Mcp::start(&dir, "1000000.00");
 
     for report in ["journal", "general_journal"] {
-        let csv = m.export_text(json!({"format": "csv", "report": report}));
+        // Every date: the journal covers a period (rules.md B-30).
+        let csv = m.export_text(
+            json!({"format": "csv", "report": report, "start": "0001-01-01", "end": "9999-12-31"}),
+        );
         let rows = csv_rows(
             &csv,
             &[
@@ -1148,9 +1151,10 @@ fn journal_exports_hold_every_posted_line() {
         }
     }
 
-    let j: Value =
-        serde_json::from_str(&m.export_text(json!({"format": "json", "report": "journal"})))
-            .unwrap();
+    let j: Value = serde_json::from_str(&m.export_text(
+        json!({"format": "json", "report": "journal", "start": "0001-01-01", "end": "9999-12-31"}),
+    ))
+    .unwrap();
     let got = j.as_array().unwrap();
     assert_eq!(got.len(), posted.len(), "a JSON entry per posted entry");
     for (g, e) in got.iter().zip(&posted) {
@@ -1291,6 +1295,17 @@ fn ledger_tax_and_equity_exports_equal_the_core_reports() {
                 l.tax.to_string(),
             ]);
         }
+    }
+    // Book amounts only: Form 4797 figures the tax gain.
+    for l in &ts.form_4797 {
+        want.push(vec![
+            "form_4797".into(),
+            l.category.clone(),
+            l.label.clone(),
+            l.accounts.join("; "),
+            l.book.to_string(),
+            String::new(),
+        ]);
     }
     for u in &ts.uncategorized {
         want.push(vec![
@@ -2287,11 +2302,15 @@ fn show_writes_the_viewer_command_for_each_target() {
         }
     );
 
+    // A split, or one total column compared (the viewer compares only a
+    // report in one total column: defect 15, options a target ignores are
+    // refused).
     for (columns, compare) in [
-        ("month", "prior_year"),
-        ("quarter", "prior_period"),
-        ("year", "prior_year"),
-        ("total", "prior_period"),
+        (Some("month"), None),
+        (Some("quarter"), None),
+        (Some("year"), None),
+        (Some("total"), Some("prior_period")),
+        (None, Some("prior_year")),
     ] {
         let out = m.ok(
             "books.show",
@@ -2304,16 +2323,25 @@ fn show_writes_the_viewer_command_for_each_target() {
                 report: "profit_and_loss".into(),
                 start: Some("2025-01-01".into()),
                 end: Some("2025-12-31".into()),
-                columns: Some(columns.into()),
-                compare: Some(compare.into()),
+                columns: columns.map(Into::into),
+                compare: compare.map(Into::into),
             }
         );
-        if columns != "total" {
-            assert!(
-                out["shown"].as_str().unwrap().contains(columns),
-                "shown names the {columns} columns: {out}"
-            );
+        let shown = out["shown"].as_str().unwrap();
+        assert!(shown.contains("2025-01-01 to 2025-12-31"), "{out}");
+        if let Some(c) = columns.filter(|c| *c != "total") {
+            assert!(shown.contains(&format!("by {c}")), "{out}");
         }
+        if let Some(c) = compare {
+            assert!(shown.contains(&c.replace('_', " ")), "{out}");
+        }
+    }
+    for (columns, compare) in [("month", "prior_year"), ("quarter", "prior_period")] {
+        let e = m.refuse(
+            "books.show",
+            json!({"report": "profit_and_loss", "columns": columns, "compare": compare}),
+        );
+        assert!(e.contains("one total column"), "{e}");
     }
     m.refuse(
         "books.show",
@@ -2368,6 +2396,250 @@ fn show_writes_the_viewer_command_for_each_target() {
     }
     m.refuse("books.show", json!({"page": "settings"}));
     m.refuse("books.show", json!({}));
+}
+
+/// The command `books.show` last wrote, or None before any.
+fn last_show(m: &Mcp) -> Option<ledger_store::ops::ViewerCommand> {
+    let books = m.run.parent().unwrap().to_path_buf();
+    ledger_store::ops::read(&data_dir(&books))
+}
+
+/// Defect 15, repros 1.1.1 and 1.1.2: a start after the end, given, is
+/// refused for a report and for an account, and nothing reaches the
+/// viewer (the last command it was sent stays the last). A start equal to
+/// the end is a one-day period.
+#[test]
+fn show_refuses_start_after_end_defect_15() {
+    let dir = test_dir("show-inverted");
+    drop(new_store(&dir));
+    let mut m = Mcp::start(&dir, "1000000.00");
+    m.ok("books.show", json!({"page": "overview"}));
+    let before = last_show(&m).unwrap();
+    for args in [
+        json!({"report": "profit_and_loss", "start": "2026-12-31", "end": "2026-01-01"}),
+        json!({"account": "1000", "start": "2026-12-31", "end": "2026-01-01"}),
+        json!({"report": "cash_flow", "start": "2026-01-02", "end": "2026-01-01"}),
+        json!({"report": "balance_sheet", "columns": "month", "start": "2026-03-01", "end": "2026-02-28"}),
+    ] {
+        let e = m.refuse("books.show", args.clone());
+        assert!(e.contains("is before start"), "{args}: {e}");
+        assert_eq!(last_show(&m), Some(before.clone()), "{args}");
+    }
+    let out = m.ok(
+        "books.show",
+        json!({"report": "profit_and_loss", "start": "2026-03-01", "end": "2026-03-01"}),
+    );
+    assert!(
+        out["shown"]
+            .as_str()
+            .unwrap()
+            .contains("2026-03-01 to 2026-03-01"),
+        "{out}"
+    );
+}
+
+/// Defect 15, repro 1.1.3: a start after today with no end (the end an
+/// omitted end means) is refused, saying the end was defaulted; nothing
+/// reaches the viewer.
+#[test]
+fn show_refuses_a_derived_inverted_range_defect_15() {
+    let dir = test_dir("show-derived");
+    drop(new_store(&dir));
+    let mut m = Mcp::start(&dir, "1000000.00");
+    m.ok("books.show", json!({"page": "journal"}));
+    let before = last_show(&m).unwrap();
+    for args in [
+        json!({"account": "1000", "start": "9999-12-31"}),
+        json!({"report": "general_ledger", "start": "9999-01-01"}),
+    ] {
+        let e = m.refuse("books.show", args.clone());
+        assert!(
+            e.contains("defaults to today") && e.contains("pass end"),
+            "{args}: {e}"
+        );
+        assert_eq!(last_show(&m), Some(before.clone()), "{args}");
+    }
+}
+
+/// Defect 16, repro 1.1.4: books.show sends the dates it names, resolved
+/// by the one default (rules.md B-30): only an end covers that end's
+/// fiscal year to it (2025-01-01 to 2025-06-30, never today's year's
+/// start); no dates cover today's fiscal year to date (checked against
+/// the clock read before and after, R14); a report as of a day says "as
+/// of", vendor_1099 "for" its year; and the viewer gets the same pair.
+#[test]
+fn show_sends_the_dates_it_names_defect_16() {
+    let dir = test_dir("show-dates");
+    drop(new_store(&dir));
+    let mut m = Mcp::start(&dir, "1000000.00");
+    let target = |m: &Mcp| match last_show(m).unwrap().target {
+        ViewerTarget::Report { start, end, .. } | ViewerTarget::Account { start, end, .. } => {
+            (start.unwrap(), end.unwrap())
+        }
+        other => panic!("not dated: {other:?}"),
+    };
+    for (args, shown, dates) in [
+        (
+            json!({"report": "profit_and_loss", "end": "2025-06-30"}),
+            "the profit and loss report, 2025-01-01 to 2025-06-30",
+            ("2025-01-01", "2025-06-30"),
+        ),
+        (
+            json!({"account": "1000", "end": "2025-06-30"}),
+            "the register of 1000 Bank, 2025-01-01 to 2025-06-30",
+            ("2025-01-01", "2025-06-30"),
+        ),
+        (
+            json!({"report": "profit_and_loss", "start": "2025-03-01", "end": "2025-03-31"}),
+            "the profit and loss report, 2025-03-01 to 2025-03-31",
+            ("2025-03-01", "2025-03-31"),
+        ),
+        (
+            json!({"report": "trial_balance", "end": "2025-06-30"}),
+            "the trial balance report, as of 2025-06-30",
+            ("2025-01-01", "2025-06-30"),
+        ),
+        (
+            json!({"report": "balance_sheet", "end": "2025-06-30"}),
+            "the balance sheet report, as of 2025-06-30",
+            ("2025-01-01", "2025-06-30"),
+        ),
+        (
+            json!({"report": "balance_sheet", "end": "2025-06-30", "columns": "quarter"}),
+            "the balance sheet report, 2025-01-01 to 2025-06-30, by quarter",
+            ("2025-01-01", "2025-06-30"),
+        ),
+        (
+            json!({"report": "fixed_asset_register", "end": "2024-12-31"}),
+            "the fixed asset register report, as of 2024-12-31",
+            ("2024-01-01", "2024-12-31"),
+        ),
+        (
+            json!({"report": "ar_aging", "end": "2025-02-15"}),
+            "the ar aging report, as of 2025-02-15",
+            ("2025-01-01", "2025-02-15"),
+        ),
+        (
+            json!({"report": "vendor_1099", "end": "2025-12-31"}),
+            "the vendor 1099 report, for 2025",
+            ("2025-01-01", "2025-12-31"),
+        ),
+    ] {
+        let out = m.ok("books.show", args.clone());
+        assert_eq!(out["shown"], shown, "{args}");
+        assert_eq!(
+            target(&m),
+            (dates.0.to_string(), dates.1.to_string()),
+            "{args}"
+        );
+    }
+    // No dates: today's fiscal year to date, whichever day the call saw.
+    let before = ledger_core::settings::today_in(None);
+    let out = m.ok("books.show", json!({"report": "profit_and_loss"}));
+    let after = ledger_core::settings::today_in(None);
+    let (s, e) = target(&m);
+    let ok = [before, after].iter().any(|t| {
+        let (fy, _) = ledger_core::settings::Company::default().fiscal_year_containing(*t);
+        (s.clone(), e.clone()) == (fy.to_string(), t.to_string())
+            && out["shown"] == format!("the profit and loss report, {fy} to {t}")
+    });
+    assert!(ok, "{s} to {e}: {out}");
+}
+
+/// Defect 15 (settled: books.show refuses options its target ignores):
+/// dates, columns or a comparison for an entry, a page or any other
+/// non-dated target; columns or a comparison for an account; columns for
+/// a report that doesn't split; a comparison for one that doesn't compare;
+/// a start for a report as of a day, or for the 1099 worksheet. Each names
+/// what takes the option, and nothing reaches the viewer.
+#[test]
+fn show_refuses_options_its_target_ignores_defect_15() {
+    let dir = test_dir("show-options");
+    let mut s = new_store(&dir);
+    let e = post(
+        &mut s,
+        "2025-01-02",
+        "Seed",
+        &[("1000", Dr, "1.00"), ("4000", Cr, "1.00")],
+    );
+    drop(s);
+    let mut m = Mcp::start(&dir, "1000000.00");
+    m.ok("books.show", json!({"page": "overview"}));
+    let before = last_show(&m).unwrap();
+    for (args, says) in [
+        (
+            json!({"entry_id": e, "start": "2025-01-01"}),
+            "for an account or a report",
+        ),
+        (
+            json!({"page": "reports", "end": "2025-01-31"}),
+            "for an account or a report",
+        ),
+        (
+            json!({"search": "x", "columns": "month"}),
+            "for an account or a report",
+        ),
+        (
+            json!({"entry_id": e, "start": "2025-01-01", "compare": "prior_year"}),
+            "start and compare are",
+        ),
+        (
+            json!({"account": "1000", "columns": "month"}),
+            "takes only start and end",
+        ),
+        (
+            json!({"account": "1000", "compare": "prior_year"}),
+            "takes only start and end",
+        ),
+        (
+            json!({"report": "trial_balance", "columns": "total"}),
+            "columns is for profit_and_loss, balance_sheet and cash_flow",
+        ),
+        (
+            json!({"report": "tax_summary", "columns": "month"}),
+            "columns is for",
+        ),
+        (
+            json!({"report": "general_ledger", "compare": "prior_year"}),
+            "compare is for profit_and_loss, balance_sheet, cash_flow and tax_summary",
+        ),
+        (
+            json!({"report": "trial_balance", "start": "2025-01-01", "end": "2025-03-31"}),
+            "is as of a day: pass end",
+        ),
+        (
+            json!({"report": "balance_sheet", "start": "2025-01-01", "end": "2025-03-31"}),
+            "in one total column is as of a day",
+        ),
+        (
+            json!({"report": "vendor_1099", "start": "2025-01-01"}),
+            "is for a calendar year",
+        ),
+        // A split past the viewer's 240 columns, which it shows as the
+        // total: 312 months.
+        (
+            json!({"report": "profit_and_loss", "start": "2000-01-01", "end": "2025-12-31", "columns": "month"}),
+            "is 312 columns, and the viewer splits a report into at most 240",
+        ),
+        (
+            json!({"report": "balance_sheet", "start": "0001-01-01", "end": "2025-12-31", "columns": "year"}),
+            "at most 240",
+        ),
+    ] {
+        let err = m.refuse("books.show", args.clone());
+        assert!(err.contains(says), "{args}: {err}");
+        assert_eq!(last_show(&m), Some(before.clone()), "{args}");
+    }
+    // What a balance sheet takes a start for: a split, or the prior period;
+    // and 240 months is a split the viewer shows.
+    for args in [
+        json!({"report": "balance_sheet", "start": "2025-01-01", "end": "2025-03-31", "columns": "month"}),
+        json!({"report": "balance_sheet", "start": "2025-01-01", "end": "2025-03-31", "compare": "prior_period"}),
+        json!({"report": "profit_and_loss", "start": "2006-01-01", "end": "2025-12-31", "columns": "month"}),
+        json!({"report": "profit_and_loss", "start": "0001-01-01", "end": "2025-12-31", "columns": "total"}),
+    ] {
+        m.ok("books.show", args);
+    }
 }
 
 // ------------------------------------------------- resources

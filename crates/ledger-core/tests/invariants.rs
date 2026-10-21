@@ -1423,8 +1423,14 @@ fn a_last_absorbs_close_gives_the_rounding_to_the_last_member() {
     let capital: Vec<AccountId> = ["3001", "3002", "3003"]
         .iter()
         .map(|code| {
-            l.add_account(code, "Capital", AccountType::Equity, None, false)
-                .unwrap()
+            l.add_account(
+                code,
+                &format!("Capital {code}"),
+                AccountType::Equity,
+                None,
+                false,
+            )
+            .unwrap()
         })
         .collect();
     let e = l.create_entry(date(5), "sale");

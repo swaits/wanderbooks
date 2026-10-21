@@ -1,0 +1,11 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 1a4be67a53e1782122f6ca192c3525f029bef45f52351847fa24cd7fb89ce84d # shrinks to ops = [Post { day: 44, template: 9, amounts: [1, 1, 1], who: false }], extra = (0, [1, 1, 1], false), (a, m, e) = (0, 0, 44), designate = true, k = 2
+cc 69f4101495a47fc6b8c78e94de304cd3b728a1be3ada022514c5999d13048ae6 # shrinks to ops = [Post { day: 113, template: 25, amounts: [1, 1, 1], who: false }, Post { day: 0, template: 0, amounts: [1, 1, 1], who: false }, Post { day: 0, template: 0, amounts: [1, 1, 1], who: false }, Post { day: 0, template: 0, amounts: [1, 1, 1], who: false }, Post { day: 0, template: 0, amounts: [1, 1, 1], who: false }, Post { day: 0, template: 0, amounts: [1, 1, 1], who: false }, Post { day: 0, template: 0, amounts: [1, 1, 1], who: false }, Post { day: 0, template: 0, amounts: [1, 1, 1], who: false }, Post { day: 0, template: 0, amounts: [1, 1, 1], who: false }, Post { day: 0, template: 0, amounts: [1, 1, 1], who: false }, Reverse { of: 4714218928808477990, after: 54 }], (a, e) = (114, 0), designate = true
+cc 0f108f7a6a6438f5cd89f1029b529e74b202af6b7ace3603d971b726ba7523af # shrinks to ops = [Post { day: 210, template: 24, amounts: [1, 1, 1], who: false }], (a, e) = (0, 210), designate = false
+cc 3418b7695f5874cfdfde9e98e12ca276a457b5049339bfe0036bae842dc0346b # shrinks to ops = [Post { day: 0, template: 0, amounts: [1, 1, 1], who: false }], extra = (9, [1, 1, 1], false), (a, m, e) = (0, 0, 0), designate = true, k = 2
+cc 4f1c756113272b826d9234f5307df5d5839cb23ffe8a44b8eb370561679d44b3 # shrinks to ops = [Post { day: 93, template: 1, amounts: [1, 1, 1], who: false }], extra = (0, [1, 1, 1], false), (a, m, e) = (0, 0, 93), designate = false, k = 2

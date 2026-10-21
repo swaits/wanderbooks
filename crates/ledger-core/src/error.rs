@@ -397,6 +397,29 @@ pub enum LedgerError {
         end: String,
     },
 
+    /// The statement of cash flows would not foot (rules.md B-14 rule 9):
+    /// an engine error, never output. It cannot happen on balanced books
+    /// (Lean `cashflow_sections_sum_to_cash_change`); if it does, the
+    /// engine is wrong, and nothing is shown rather than a wrong figure.
+    #[error(
+        "engine error: the cash flow statement does not foot ({what}: {found} against {expected}); nothing was produced, please report it"
+    )]
+    CashFlowDoesNotFoot {
+        /// Which check failed: "sections", "investing lines", "operating
+        /// reconciliation", "entry #N", ...
+        what: String,
+        /// The figure it should equal.
+        expected: Decimal,
+        /// The figure it came to.
+        found: Decimal,
+    },
+
+    /// The cash flow statement's account roles (cash, financing, investing)
+    /// contradict each other or the chart (rules.md B-14 rule 2). The text
+    /// names the setting and says what to change.
+    #[error("cash flow account roles: {0}")]
+    CashFlowRoles(String),
+
     /// The referenced accounting period does not exist.
     #[error("unknown period id {0}")]
     UnknownPeriod(u64),

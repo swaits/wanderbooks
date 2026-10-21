@@ -76,7 +76,10 @@ fn cant_compute(what: String, why: &ledger_core::LedgerError, target: Option<Rou
 ///      engine makes from a schedule (period closes, depreciation,
 ///      amortization: no counterparty by nature) (one item: Info under
 ///      suggest, Todo under require; its prompt names
-///      books.set_entry_party).
+///      books.set_entry_party); each warning of the fiscal year's
+///      statement of cash flows (rules.md B-14 rule 12: equipment sold for
+///      an IOU, Todo; bought on an operating payable, Info; one per
+///      entry, its detail the warning's fix).
 ///   3. Nothing else: books with none of those yield no items, except
 ///      that a figure behind an item that can't be computed (an
 ///      amortization plan past chrono's last day, an aging past exact
@@ -657,6 +660,46 @@ pub fn find(b: &Books) -> Vec<Attention> {
             prompt: verify_prompt,
         });
     }
+    // The statement of cash flows' warnings this fiscal year (rules.md
+    // B-14 rule 12, D-35): equipment sold for an IOU, flagged with its fix
+    // (Todo); equipment bought on an operating payable, following how the
+    // payable is classified (Info). A statement the settings can't give
+    // (no cash accounts yet) has none.
+    let settings = ledger_package::Settings {
+        company: &b.settings.company,
+        cash_accounts: &b.settings.cash_accounts,
+        financing_accounts: &b.settings.financing_accounts,
+        investing_accounts: &b.settings.investing_accounts,
+    };
+    let (fy_start, _) = b.fiscal_ytd();
+    if let Ok(cf) = ledger_package::cash_flow_for(
+        &b.ledger,
+        &settings,
+        Some(&fy_start.to_string()),
+        Some(&today.to_string()),
+        &[],
+        &[],
+        &[],
+        today,
+    ) {
+        for w in cf.warnings {
+            let sold = w.kind == ledger_core::CashFlowWarningKind::AssetSoldOnOperatingReceivable;
+            out.push(Attention {
+                severity: if sold { Severity::Todo } else { Severity::Info },
+                title: if sold {
+                    format!("Equipment sold for an IOU: entry #{}", w.entry)
+                } else {
+                    format!("Equipment bought on an operating payable: entry #{}", w.entry)
+                },
+                detail: w.message.clone(),
+                target: Some(Route::Entry(w.entry)),
+                prompt: format!(
+                    "In wanderbooks, the cash flow statement flags entry {}: {} Show me the entry and what you would change, and change nothing until I agree.",
+                    w.entry, w.message
+                ),
+            });
+        }
+    }
     out.sort_by_key(|a| a.severity);
     out
 }
@@ -679,6 +722,93 @@ mod tests {
             today: Some(today),
         })
         .unwrap()
+    }
+
+    /// INVARIANT 2's cash flow items (rules.md B-14 rule 12, D-35): a
+    /// sale of equipment for an IOU is a Todo naming the entry, with the
+    /// statement's fix; equipment bought on an operating card is Info; a
+    /// sale for cash asks nothing.
+    #[test]
+    fn cash_flow_warnings_are_items() {
+        use crate::test_support::{Build, d};
+        use ledger_core::{AccountType, Currency, Money, NewAsset, Side};
+        let mut b = Build::new("attention-cf");
+        let mut add =
+            |code: &str, name: &str, ty| b.s.add_account(code, name, ty, None, false).unwrap();
+        let equipment = add("1500", "Equipment", AccountType::Asset);
+        let accum = add("1510", "Accumulated Depreciation", AccountType::Asset);
+        let iou = add("1210", "Due from buyer", AccountType::Asset);
+        let card = add("2050", "Card", AccountType::Liability);
+        let depr = add("6500", "Depreciation", AccountType::Expense);
+        let import = ledger_config::codec::import(
+            "[books]\ncash_accounts = [\"1000\"]\n",
+            None,
+            b.s.ledger().settings(),
+            "USD",
+        )
+        .unwrap();
+        b.s.adopt_settings(
+            &import.changes,
+            &ledger_core::settings::Source {
+                decided_by: "the test".into(),
+                decided_on: d(2026, 1, 1),
+                citation: None,
+                note: None,
+            },
+        )
+        .unwrap();
+        let (cash, capital) = (b.cash, b.capital);
+        b.post(d(2026, 2, 1), cash, capital, 500_000);
+        b.s.register_asset(NewAsset {
+            description: "Laptop".into(),
+            purchase_date: d(2026, 2, 2),
+            cost: Money::new(rust_decimal::Decimal::new(100_000, 2), Currency::USD),
+            salvage_value: Money::new(rust_decimal::Decimal::ZERO, Currency::USD),
+            useful_life_months: 36,
+            cost_account: equipment,
+            accum_depr_account: accum,
+            expense_account: depr,
+        })
+        .unwrap();
+        let bought = b.post(d(2026, 2, 2), equipment, card, 100_000);
+        let usd = |c: i64| Money::new(rust_decimal::Decimal::new(c, 2), Currency::USD);
+        let e =
+            b.s.create_entry(d(2026, 3, 2), "Sell the laptop on an IOU")
+                .unwrap();
+        b.s.add_line(e, iou, Side::Debit, usd(100_000)).unwrap();
+        b.s.add_line(e, equipment, Side::Credit, usd(100_000))
+            .unwrap();
+        b.s.attach_receipt(Some(e), "r.pdf", "application/pdf", b"%PDF r", None)
+            .unwrap();
+        b.s.post_entry(e).unwrap();
+        let (_dir, books) = b.books();
+        let items = find(&books);
+        let sold = items
+            .iter()
+            .find(|a| a.title == format!("Equipment sold for an IOU: entry #{e}"))
+            .unwrap_or_else(|| panic!("{items:?}"));
+        assert_eq!(sold.severity, Severity::Todo);
+        assert_eq!(sold.target, Some(Route::Entry(e)));
+        assert!(
+            sold.detail.contains("books.investing_accounts"),
+            "{}",
+            sold.detail
+        );
+        assert!(sold.prompt.starts_with("In wanderbooks,"));
+        let on_card = items
+            .iter()
+            .find(|a| {
+                a.title == format!("Equipment bought on an operating payable: entry #{bought}")
+            })
+            .unwrap_or_else(|| panic!("{items:?}"));
+        assert_eq!(on_card.severity, Severity::Info);
+        assert_eq!(
+            items
+                .iter()
+                .filter(|a| a.title.starts_with("Equipment"))
+                .count(),
+            2
+        );
     }
 
     /// INVARIANTS 2 and 4: a dated rule past its review is one Todo item

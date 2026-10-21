@@ -245,4 +245,74 @@ proptest! {
             prop_assert!(drift.abs() < Decimal::from(big_w) / Decimal::from(100), "{drift}");
         }
     }
+
+    /// rules.md B-14 rule 3: the statement of cash flows' per-entry split
+    /// (`kernel::entry_flows`, Kani `entry_flows_*`) is the same at both
+    /// instantiations, on balanced and unbalanced lines alike.
+    #[test]
+    fn entry_flows_agree(lines in arb_lines()) {
+        let tagged = |a: u8| match a {
+            0 => kernel::Flow::Cash,
+            1 => kernel::Flow::Operating,
+            2 => kernel::Flow::Investing,
+            _ => kernel::Flow::Financing,
+        };
+        let li: Vec<_> = lines.iter().map(|&(k, s, a)| (tagged(k), s, a)).collect();
+        let ld: Vec<_> = lines.iter().map(|&(k, s, a)| (tagged(k), s, dec(a))).collect();
+        let fi = kernel::entry_flows(&li).map(|f| kernel::EntryFlows {
+            cash: dec(f.cash),
+            flows: f.flows.map(dec),
+            noncash: f.noncash.map(dec),
+        });
+        prop_assert_eq!(fi, kernel::entry_flows(&ld));
+    }
+
+    /// `kernel::apply_cash` (how a section's cash splits among its kinds)
+    /// and `kernel::exchanged` agree at both instantiations.
+    #[test]
+    fn apply_cash_and_exchanged_agree(
+        cash in arb_cents(),
+        moves in prop::collection::vec(arb_cents(), 0..5),
+        d in 0i64..=MAX_CENTS,
+        c in 0i64..=MAX_CENTS,
+        inflow in 0i64..=MAX_CENTS,
+        outflow in 0i64..=MAX_CENTS,
+    ) {
+        let mut ai = vec![0i64; moves.len()];
+        let mut ad = vec![Decimal::ZERO; moves.len()];
+        let md: Vec<Decimal> = moves.iter().copied().map(dec).collect();
+        let oi = kernel::apply_cash(cash, &moves, &mut ai);
+        let od = kernel::apply_cash(dec(cash), &md, &mut ad);
+        prop_assert_eq!(oi, od);
+        if oi.is_some() {
+            prop_assert_eq!(ai.into_iter().map(dec).collect::<Vec<_>>(), ad);
+        }
+        prop_assert_eq!(
+            kernel::exchanged(d, c, inflow, outflow).map(dec),
+            kernel::exchanged(dec(d), dec(c), dec(inflow), dec(outflow))
+        );
+    }
+
+    /// rules.md B-14 rule 11: `kernel::constructive` (what a member or
+    /// lender paid or received for the company; Kani
+    /// `constructive_nets_to_zero`, `constructive_mirrors`) agrees at both
+    /// instantiations.
+    #[test]
+    fn constructive_agrees(
+        paid in any::<bool>(),
+        sources in prop::collection::vec(arb_cents(), 0..4),
+        uses in prop::collection::vec(arb_cents(), 0..4),
+    ) {
+        let way = if paid { kernel::OnBehalf::Paid } else { kernel::OnBehalf::Received };
+        let (mut fi, mut ti) = (vec![0i64; sources.len()], vec![0i64; uses.len()]);
+        let sd: Vec<Decimal> = sources.iter().copied().map(dec).collect();
+        let ud: Vec<Decimal> = uses.iter().copied().map(dec).collect();
+        let (mut fd, mut td) = (vec![Decimal::ZERO; sd.len()], vec![Decimal::ZERO; ud.len()]);
+        let oi = kernel::constructive(way, &sources, &uses, &mut fi, &mut ti);
+        let od = kernel::constructive(way, &sd, &ud, &mut fd, &mut td);
+        prop_assert_eq!(oi, od);
+        prop_assert!(oi.is_some());
+        prop_assert_eq!(fi.into_iter().map(dec).collect::<Vec<_>>(), fd);
+        prop_assert_eq!(ti.into_iter().map(dec).collect::<Vec<_>>(), td);
+    }
 }

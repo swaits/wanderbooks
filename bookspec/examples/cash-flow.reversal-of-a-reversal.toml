@@ -1,0 +1,90 @@
+id = "cash-flow.reversal-of-a-reversal"
+title = "A contribution, its reversal and the reversal's reversal"
+rule = "Reversals MUST pair along the chain from its root: an entry and its reversal both in the period drop out together, and a reversal of a reversal whose partner is already paired MUST be reported, as its root would be."
+status = "AUTHORITY"
+sources = [
+  "ASC 230-10-45-14(a)",
+  "ASC 230-10-45-24",
+  "Pacioli, Summa (1494), ch. 31 (the correcting entry)",
+]
+tags = ["accrual", "book", "us", "cash-flow", "reversal"]
+
+[setup]
+currency = "USD"
+fiscal_year_start = "01-01"
+basis = "accrual"
+rounding = "half-even"
+cash_accounts = ["1000"]
+
+[[setup.accounts]]
+code = "1000"
+name = "Cash"
+type = "asset"
+
+[[setup.accounts]]
+code = "3001"
+name = "Capital — Member B"
+type = "equity"
+
+[[setup.members]]
+name = "Member B"
+capital_account = "3001"
+
+[[events]]
+date = "2026-01-20"
+description = "Opening contribution"
+lines = [
+  { account = "1000", side = "debit", amount = "1000.00" },
+  { account = "3001", side = "credit", amount = "1000.00" },
+]
+
+[[events]]
+date = "2026-02-02"
+description = "Contribution — Member B"
+lines = [
+  { account = "1000", side = "debit", amount = "300.00" },
+  { account = "3001", side = "credit", amount = "300.00" },
+]
+
+[[events]]
+date = "2026-02-03"
+description = "Reverse entry 2"
+reverses = 2
+
+[[events]]
+date = "2026-02-04"
+description = "Reverse entry 3: the contribution stands"
+reverses = 3
+
+# By hand, February: entries 2 and 3 pair (the root and its reversal);
+# entry 4 reinstates the contribution and is reported: financing +300.00,
+# the change in cash.
+[[expect]]
+query = "cash_flow"
+from = "2026-02-01"
+to = "2026-02-28"
+
+[expect.values]
+financing = "300.00"
+net_change = "300.00"
+cash_beginning = "1000.00"
+cash_ending = "1300.00"
+difference = "0.00"
+"financing.4" = "300.00"
+"financing.count" = "1"
+"noncash.count" = "0"
+
+# From February 3 the root is before the period: entries 3 and 4 pair, and
+# nothing is reported (no cash moved net, 1,300.00 to 1,300.00).
+[[expect]]
+query = "cash_flow"
+from = "2026-02-03"
+to = "2026-02-28"
+
+[expect.values]
+financing = "0.00"
+net_change = "0.00"
+cash_beginning = "1300.00"
+cash_ending = "1300.00"
+difference = "0.00"
+"financing.count" = "0"

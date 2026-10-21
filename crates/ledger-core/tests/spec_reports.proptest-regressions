@@ -1,0 +1,11 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 99b387de55e0ece2480575f9cc93c688e0ad408686703012ce503dd21f73ba85 # shrinks to gens = [Gen { day: 67, mode: 1, picks: [4, 0, 4], x: 1, y: 1, classes: [0, 0, 0] }], (a, _m, e) = (0, 0, 67), designate = false
+cc 9f5e63191433240d6df895c196fdd89b56ce1a2a3d8d5225740c2f10dc720756 # shrinks to gens = [Gen { day: 100, mode: 2, picks: [3, 0, 4], x: 1, y: 1, classes: [0, 0, 0] }], (a, _m, e) = (0, 0, 100), designate = true
+cc 5397d840688ed53dc033aceaf98b8db5df3a7a2616c4afe7f3f5fc2e0c8775f2 # shrinks to gens = [Gen { day: 140, mode: 2, picks: [0, 0, 2], x: 1, y: 1, classes: [0, 0, 0] }], (a, _m, e) = (0, 0, 140), designate = false
+cc abd84709578e7889c275a0019ae0e71366d77526ae93072777be614d7ffb0dd5 # shrinks to gens = [Gen { day: 108, mode: 1, picks: [1, 5, 3], x: 1, y: 1, classes: [0, 0, 0] }], (a, _m, e) = (0, 0, 108), k = 2
+cc 7481a0fb806d08439357ce4be66224389a7f76a7d91bf93ac320bb2b3c4d4891 # shrinks to gens = [Gen { day: 3, mode: 1, picks: [4, 5, 1], x: 1, y: 1, classes: [0, 0, 0] }], drafts = [Gen { day: 0, mode: 0, picks: [0, 0, 0], x: 1, y: 1, classes: [0, 0, 0] }], (a, _m, e) = (0, 0, 3)

@@ -1,0 +1,84 @@
+id = "cash-flow.reversed-property-contribution"
+title = "A property contribution reversed the same day leaves the statement of cash flows empty"
+rule = "An entry and its reversal both in the period MUST contribute nothing to any section or disclosure, and the sections MUST sum to the change in cash."
+status = "AUTHORITY"
+sources = [
+  "ASC 230-10-45-1",
+  "ASC 230-10-45-24",
+  "ASC 230-10-50-3",
+  "Pacioli, Summa (1494), ch. 31 (the correcting entry)",
+]
+tags = ["accrual", "book", "us", "cash-flow", "reversal", "regression:p3-defect-1"]
+
+[setup]
+currency = "USD"
+fiscal_year_start = "01-01"
+basis = "accrual"
+rounding = "half-even"
+cash_accounts = ["1000"]
+
+[[setup.accounts]]
+code = "1000"
+name = "Cash"
+type = "asset"
+
+[[setup.accounts]]
+code = "1500"
+name = "Equipment"
+type = "asset"
+
+[[setup.accounts]]
+code = "1510"
+name = "Accumulated depreciation"
+type = "asset"
+
+[[setup.accounts]]
+code = "6100"
+name = "Depreciation"
+type = "expense"
+
+[[setup.accounts]]
+code = "3000"
+name = "Capital"
+type = "equity"
+
+[[setup.fixed_assets]]
+cost_account = "1500"
+accumulated_account = "1510"
+expense_account = "6100"
+
+[[events]]
+date = "2026-01-10"
+description = "Property contributed"
+lines = [
+  { account = "1500", side = "debit", amount = "2340.00" },
+  { account = "3000", side = "credit", amount = "2340.00" },
+]
+
+[[events]]
+date = "2026-01-10"
+description = "Reverse entry 1"
+reverses = 1
+
+# By hand: no cash moved (sections 0.00, change in cash 0.00), and the
+# entry and its reversal cancel, so nothing is disclosed either. Before the
+# fix (wanderbooks P3, defect 1) investing showed -2,340.00 against a
+# change of 0.00: the reversal's credit to equipment fell in no section.
+[[expect]]
+query = "cash_flow"
+from = "2026-01-01"
+to = "2026-12-31"
+
+[expect.values]
+operating = "0.00"
+investing = "0.00"
+financing = "0.00"
+net_change = "0.00"
+cash_beginning = "0.00"
+cash_ending = "0.00"
+difference = "0.00"
+net_income = "0.00"
+"operating.count" = "0"
+"investing.count" = "0"
+"financing.count" = "0"
+"noncash.count" = "0"

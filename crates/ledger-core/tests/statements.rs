@@ -215,16 +215,17 @@ fn a_closed_period_still_reports_its_earnings() {
             cash_accounts: vec![b.cash],
             financing_accounts: vec![],
             investing_accounts: vec![],
+            members: vec![],
         },
     )
     .unwrap();
-    assert_eq!(cf.net_income, dec(1_700));
+    assert_eq!(cf.operating_reconciliation.net_income, dec(1_700));
     assert_eq!(cf.financing.len(), 1);
     assert_eq!(cf.cash_from_financing, dec(10_000));
     assert_eq!(cf.net_change_in_cash, dec(11_700));
 }
 
-/// Cash flow lines come out in account-code order, every time. (The chart
+/// Cash flow kinds come out in account-code order, every time. (The chart
 /// iterates in hash order; the statement must not.)
 #[test]
 fn cash_flow_lines_are_in_code_order() {
@@ -251,14 +252,16 @@ fn cash_flow_lines_are_in_code_order() {
                 cash_accounts: vec![cash],
                 financing_accounts: vec![],
                 investing_accounts: vec![],
+                members: vec![],
             },
         )
         .unwrap();
-        // Labels read "Owner contributions — 3000 3000" (code, then name).
+        // Kinds read "Contributions from owners — 3000 3000" (code, then
+        // name): one per account, in code order.
         let codes: Vec<&str> = cf
             .financing
             .iter()
-            .map(|f| f.label.rsplit(' ').next().unwrap())
+            .map(|f| f.kind.rsplit(' ').next().unwrap())
             .collect();
         assert_eq!(
             codes,
@@ -525,9 +528,11 @@ fn members_must_be_configured_correctly() {
     ));
 }
 
+/// Each line names the accounts it moved, and is listed under its
+/// member's kind (D-35: "Contributions from members — <member>").
 #[test]
 fn cash_flow_lines_name_their_account() {
-    let (l, _) = partnership(false);
+    let (l, members) = partnership(false);
     let cf = cash_flow(
         &l,
         &CashFlowParams {
@@ -536,15 +541,23 @@ fn cash_flow_lines_name_their_account() {
             cash_accounts: vec![1],
             financing_accounts: vec![],
             investing_accounts: vec![],
+            members,
         },
     )
     .unwrap();
-    let accounts: Vec<Option<&str>> = cf.financing.iter().map(|f| f.account.as_deref()).collect();
+    let accounts: Vec<&[String]> = cf.financing.iter().map(|f| &f.accounts[..]).collect();
     // Gross (ASC 230-10-45-7): 3001 contributed and took a distribution,
     // so it has a line for each.
-    assert_eq!(accounts, [Some("3000"), Some("3001"), Some("3001")]);
-    assert!(cf.financing[1].label.starts_with("Owner contributions"));
-    assert!(cf.financing[2].label.starts_with("Owner distributions"));
+    assert_eq!(accounts, [["3000"], ["3001"], ["3001"]]);
+    let kinds: Vec<&str> = cf.financing.iter().map(|f| f.kind.as_str()).collect();
+    assert_eq!(
+        kinds,
+        [
+            "Contributions from members — Alice",
+            "Contributions from members — Bob",
+            "Distributions to members — Bob"
+        ]
+    );
     assert!(cf.financing[1].amount > Decimal::ZERO && cf.financing[2].amount < Decimal::ZERO);
 }
 
@@ -1023,17 +1036,24 @@ fn cf_params(start: NaiveDate, end: NaiveDate, cash: AccountId) -> CashFlowParam
         cash_accounts: vec![cash],
         financing_accounts: vec![],
         investing_accounts: vec![],
+        members: vec![],
     }
 }
 
 fn reconciles(cf: &ledger_core::CashFlowStatement) {
-    // B-14 / cash_flow INVARIANT 1: the three sections sum to the change in
-    // cash, exactly.
+    // B-14 / cash_flow INVARIANT 4: the three sections sum to the change in
+    // cash, exactly, and net income and its reconciling items to operating.
     assert_eq!(
         cf.cash_from_operations + cf.cash_from_investing + cf.cash_from_financing,
         cf.net_change_in_cash
     );
     assert_eq!(cf.cash_ending - cf.cash_beginning, cf.net_change_in_cash);
+    assert_eq!(cf.reconciles.difference, Decimal::ZERO);
+    let r = &cf.operating_reconciliation;
+    assert_eq!(
+        r.net_income + r.lines.iter().map(|l| l.amount).sum::<Decimal>(),
+        cf.cash_from_operations
+    );
 }
 
 #[test]
@@ -1044,7 +1064,11 @@ fn cash_flow_starts_counting_on_the_start_date() {
     let cf = cash_flow(&b.ledger, &cf_params(d(1, 15), d(1, 15), b.cash)).unwrap();
     assert_eq!(cf.cash_beginning, dec(10_000));
     assert_eq!(cf.cash_ending, dec(12_500));
-    assert_eq!(cf.net_income, dec(2_500));
+    assert_eq!(cf.operating_reconciliation.net_income, dec(2_500));
+    assert_eq!(
+        cf.operating_by_class(),
+        [(ledger_core::OperatingClass::FromCustomers, dec(2_500))]
+    );
     reconciles(&cf);
     // Backwards is refused.
     assert!(matches!(
@@ -1093,8 +1117,12 @@ fn cash_flow_labels_say_which_way_each_balance_moved() {
     post(&mut l, d(3, 5), "Repay", loan, cash, 300);
     post(&mut l, d(3, 6), "Distribution", capital, cash, 400);
 
-    let lines = |v: &[ledger_core::CashFlowLine]| -> Vec<(String, Decimal)> {
-        v.iter().map(|l| (l.label.clone(), l.amount)).collect()
+    let rec = |cf: &ledger_core::CashFlowStatement| -> Vec<(String, Decimal)> {
+        let r = &cf.operating_reconciliation.lines;
+        r.iter().map(|l| (l.label.clone(), l.amount)).collect()
+    };
+    let kinds = |v: &[ledger_core::CashFlowLine]| -> Vec<(String, Decimal)> {
+        v.iter().map(|l| (l.kind.clone(), l.amount)).collect()
     };
     let s = |x: &str| x.to_string();
     let params = |start, end| CashFlowParams {
@@ -1103,24 +1131,27 @@ fn cash_flow_labels_say_which_way_each_balance_moved() {
         cash_accounts: vec![cash],
         financing_accounts: vec![loan],
         investing_accounts: vec![],
+        members: vec![],
     };
 
     // February: net income 100 - 50 = 50; receivable up 100 (cash out),
-    // payable up 50 (cash in): operations 0. Borrowed 300, contributed 400.
+    // payable up 50 (cash in): operations 0. Borrowed 300, contributed 400
+    // (the kinds in the statement's order: contributions, then
+    // borrowing; ASC 230-10-45-14(a), (b)).
     let feb = cash_flow(&l, &params(d(2, 1), d(2, 28))).unwrap();
-    assert_eq!(feb.net_income, dec(50));
+    assert_eq!(feb.operating_reconciliation.net_income, dec(50));
     assert_eq!(
-        lines(&feb.working_capital),
+        rec(&feb),
         [
             (s("Increase in 1100 Receivable"), dec(-100)),
             (s("Increase in 2000 Payable"), dec(50)),
         ]
     );
     assert_eq!(
-        lines(&feb.financing),
+        kinds(&feb.financing),
         [
-            (s("Proceeds from 2500 Loan"), dec(300)),
-            (s("Owner contributions — 3000 Capital"), dec(400)),
+            (s("Contributions from owners — 3000 Capital"), dec(400)),
+            (s("Proceeds from borrowing — 2500 Loan"), dec(300)),
         ]
     );
     assert_eq!(feb.cash_from_operations, dec(0));
@@ -1128,21 +1159,22 @@ fn cash_flow_labels_say_which_way_each_balance_moved() {
     reconciles(&feb);
 
     // March: the mirror image. Collected 100, paid 50, repaid 300,
-    // distributed 400.
+    // distributed 400 (45-15(a), (b)): an original's direction is its
+    // nature; only a reversal never takes a label from its sign.
     let mar = cash_flow(&l, &params(d(3, 1), d(3, 31))).unwrap();
-    assert_eq!(mar.net_income, dec(0));
+    assert_eq!(mar.operating_reconciliation.net_income, dec(0));
     assert_eq!(
-        lines(&mar.working_capital),
+        rec(&mar),
         [
             (s("Decrease in 1100 Receivable"), dec(100)),
             (s("Decrease in 2000 Payable"), dec(-50)),
         ]
     );
     assert_eq!(
-        lines(&mar.financing),
+        kinds(&mar.financing),
         [
-            (s("Repayment of 2500 Loan"), dec(-300)),
-            (s("Owner distributions — 3000 Capital"), dec(-400)),
+            (s("Distributions to owners — 3000 Capital"), dec(-400)),
+            (s("Repayments of borrowing — 2500 Loan"), dec(-300)),
         ]
     );
     assert_eq!(mar.net_change_in_cash, dec(-650));
@@ -1198,24 +1230,33 @@ fn a_loss_on_disposal_moves_out_of_operating_into_investing() {
     l.add_line(e, equipment, Side::Credit, usd(1_000)).unwrap();
     l.post_entry(e).unwrap();
 
-    let lines = |v: &[ledger_core::CashFlowLine]| -> Vec<(String, Decimal)> {
-        v.iter().map(|l| (l.label.clone(), l.amount)).collect()
-    };
     // February: net income -300; the loss is added back (positive, it used
-    // no cash), so operations is 0; the 600 proceeds are investing.
+    // no cash), so operations is 0; the 600 proceeds are investing (ASC
+    // 230-10-45-12(c), 45-28(b)).
     let feb = cash_flow(&l, &cf_params(d(2, 1), d(2, 28), cash)).unwrap();
-    assert_eq!(feb.net_income, dec(-300));
+    assert_eq!(feb.operating_reconciliation.net_income, dec(-300));
+    let rec: Vec<(&str, Decimal)> = feb
+        .operating_reconciliation
+        .lines
+        .iter()
+        .map(|l| (l.label.as_str(), l.amount))
+        .collect();
     assert_eq!(
-        lines(&feb.working_capital),
+        rec,
         [(
-            "Less: gain on sale of fixed assets (in investing)".to_string(),
+            "(Gain) loss and other noncash changes in investing assets",
             dec(300)
         )]
     );
     assert_eq!(feb.cash_from_operations, dec(0));
+    let inv: Vec<(&str, Decimal)> = feb
+        .investing
+        .iter()
+        .map(|l| (l.kind.as_str(), l.amount))
+        .collect();
     assert_eq!(
-        lines(&feb.investing),
-        [("Sale of fixed assets — 1000 Cash".to_string(), dec(600))]
+        inv,
+        [("Proceeds from sales of property and equipment", dec(600))]
     );
     assert_eq!(feb.net_change_in_cash, dec(600));
     reconciles(&feb);
@@ -1324,21 +1365,27 @@ fn roles() -> (Ledger, CashFlowParams) {
         cash_accounts: vec![cash],
         financing_accounts: vec![loan, due_owners],
         investing_accounts: vec![member_loan],
+        members: vec![],
     };
     (l, params)
 }
 
 fn lines(ls: &[ledger_core::reports::CashFlowLine]) -> Vec<(String, Decimal)> {
     ls.iter()
-        .map(|l| (l.account.clone().unwrap_or_default(), l.amount))
+        .map(|l| (l.accounts.join(","), l.amount))
         .collect()
 }
 
 /// Oracle: ASC 230-10-45-7 ("information about the gross amounts of cash
 /// receipts and cash payments during a period is more relevant than
 /// information about the net amounts"), 230-10-45-14(b) (proceeds from
-/// "other short- or long-term borrowing") and 45-15(2) ("Repayments of
-/// amounts borrowed"): borrowing and repayment are separate lines.
+/// "other short- or long-term borrowing") and 45-15(b) ("Repayments of
+/// amounts borrowed"): borrowing and repayment are separate lines, one
+/// per entry, borrowing first (each lender's, by code), then repayments.
+/// The software the owner paid personally is borrowed from the owner and
+/// spent on its date (rules.md B-14 rule 11, D-42: constructive receipt
+/// and disbursement). Financing: +100 + 1,000 − 100 − 400 = 600; nothing
+/// is disclosed.
 #[test]
 fn financing_is_gross_borrowing_apart_from_repayment() {
     let (l, params) = roles();
@@ -1347,12 +1394,13 @@ fn financing_is_gross_borrowing_apart_from_repayment() {
         lines(&cf.financing),
         [
             ("2100".into(), dec(100)),
-            ("2100".into(), dec(-100)),
             ("2500".into(), dec(1000)),
+            ("2100".into(), dec(-100)),
             ("2500".into(), dec(-400)),
         ]
     );
     assert_eq!(cf.cash_from_financing, dec(600));
+    assert!(cf.noncash_disclosures.is_empty());
 }
 
 /// Oracle: ASC 230-10-20 ("Investing activities include making and
@@ -1365,37 +1413,39 @@ fn a_loan_the_entity_makes_is_investing_gross() {
     let cf = cash_flow(&l, &params).unwrap();
     assert_eq!(
         lines(&cf.investing),
-        [("1400".into(), dec(200)), ("1400".into(), dec(-500))]
+        [("1400".into(), dec(-500)), ("1400".into(), dec(200))]
     );
-    assert!(cf.investing[0].label.starts_with("Collections on"));
-    assert!(cf.investing[1].label.starts_with("Payments for"));
+    assert!(cf.investing[0].kind.starts_with("Payments for"));
+    assert!(cf.investing[1].kind.starts_with("Collections on"));
     assert!(
-        cf.working_capital
+        cf.operating_reconciliation
+            .lines
             .iter()
             .all(|w| w.account.as_deref() != Some("1400"))
     );
     assert_eq!(cf.cash_from_investing, dec(-300));
 }
 
-/// Oracle: PwC Viewpoint, Financial statement presentation 6.9.3.1
-/// (constructive receipts and disbursements: cash a third party pays on
-/// the entity's behalf is presented "as though the transaction took place
-/// through the bank accounts of the reporting entity"). The owner paying
-/// software personally is a borrowing (financing in) and an operating
-/// payment (in net income); reimbursing the owner is a repayment.
-/// Hand-computed: operating -100, investing -300, financing +600 = +200,
-/// the change in cash.
+/// Oracle: D-42 (rules.md B-14 rule 11; ASC 230 is silent on a payment
+/// made on the entity's behalf, PwC FSP 6.9.3.1 and DART Roadmap 7.2
+/// present it as constructive receipt and disbursement). The owner paying
+/// software personally is cash the company borrowed (financing +100) and
+/// spent (operating −100, 230-10-45-17(b)) on Mar 5; reimbursing the owner
+/// is a repayment (−100, 45-15(b)). Hand-computed: operating −100 (net
+/// income −100, no reconciling item), investing −300, financing +600 =
+/// +200, the change in cash. Replaces
+/// `an_expense_the_owner_paid_is_disclosed_then_repaid` (D-35).
 #[test]
-fn an_expense_the_owner_paid_is_borrowing_then_operating() {
+fn an_expense_the_owner_paid_is_borrowed_spent_then_repaid() {
     let (l, params) = roles();
     let cf = cash_flow(&l, &params).unwrap();
-    assert_eq!(cf.net_income, dec(-100));
+    assert_eq!(cf.operating_reconciliation.net_income, dec(-100));
     assert_eq!(cf.cash_from_operations, dec(-100));
+    assert_eq!(lines(&cf.operating), [("6000".into(), dec(-100))]);
+    assert_eq!(cf.operating[0].on_behalf, dec(-100));
+    assert!(cf.operating_reconciliation.lines.is_empty());
     assert_eq!(cf.net_change_in_cash, dec(200));
-    assert_eq!(
-        cf.cash_from_operations + cf.cash_from_investing + cf.cash_from_financing,
-        cf.net_change_in_cash
-    );
+    reconciles(&cf);
 }
 
 /// Gross lines net only within one entry: an entry that both debits and
@@ -1412,6 +1462,8 @@ fn an_entry_that_nets_to_nothing_on_an_account_adds_no_line() {
     let cf = cash_flow(&l, &params).unwrap();
     assert_eq!(cf.cash_from_financing, dec(600));
     assert_eq!(cf.financing.len(), 4);
+    // Nothing exchanged either: the account nets to zero first.
+    assert!(cf.noncash_disclosures.iter().all(|n| n.entry != 7));
 }
 
 mod chaining {

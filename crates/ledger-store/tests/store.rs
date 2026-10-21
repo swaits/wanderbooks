@@ -1821,19 +1821,27 @@ fn every_figure_of(l: &ledger_core::Ledger) -> (usize, usize) {
         tally(reports::profit_and_loss_for_period(l, start, end, None).map(|_| ()));
         tally(reports::general_ledger(l, start, end).map(|_| ()));
         tally(reports::members_equity(l, start, end, &members).map(|_| ()));
-        tally(
-            reports::cash_flow(
-                l,
-                &reports::CashFlowParams {
-                    start,
-                    end,
-                    cash_accounts: cash.clone(),
-                    financing_accounts: vec![],
-                    investing_accounts: vec![],
-                },
-            )
-            .map(|_| ()),
+        // The statement of cash flows foots on every book, or is refused
+        // for a reason: never an engine error (rules.md B-14 rule 9).
+        let cf = reports::cash_flow(
+            l,
+            &reports::CashFlowParams {
+                start,
+                end,
+                cash_accounts: cash.clone(),
+                financing_accounts: vec![],
+                investing_accounts: vec![],
+                members: members.clone(),
+            },
         );
+        assert!(
+            !matches!(
+                cf,
+                Err(ledger_core::LedgerError::CashFlowDoesNotFoot { .. })
+            ),
+            "{cf:?}"
+        );
+        tally(cf.map(|_| ()));
         tally(ledger_core::k1::k1_worksheet(l, start, end, &members, &cash).map(|_| ()));
         tally(ledger_core::tax_summary(l, start, end, None).map(|_| ()));
         let _ = reports::cancelled_in_span(l, start, end);

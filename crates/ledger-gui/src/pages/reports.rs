@@ -15,8 +15,8 @@ use egui::{CornerRadius, RichText, Sense, Stroke, Ui, vec2};
 use egui_phosphor::regular as icon;
 use ledger_core::analysis::{Interval, intervals};
 use ledger_core::reports::{
-    CashFlowParams, balance_sheet_as_of, cash_flow, general_ledger, members_equity,
-    profit_and_loss_for_period, trial_balance_as_of,
+    balance_sheet_as_of, general_ledger, members_equity, profit_and_loss_for_period,
+    trial_balance_as_of,
 };
 use ledger_core::{AccountId, AccountType, MemberCapital, tax_summary, vendor_1099_report};
 use rust_decimal::Decimal;
@@ -138,6 +138,9 @@ impl PdfInfo {
 enum Kind {
     Section,
     Line,
+    /// A transaction under the line above it (a cash flow kind): part of
+    /// that line's amount, set further in and quieter.
+    Detail,
     Subtotal,
     Grand,
     Note,
@@ -283,6 +286,7 @@ impl Table {
             let kind = match r.kind {
                 Kind::Section => RowKind::Section,
                 Kind::Line => RowKind::Line,
+                Kind::Detail => RowKind::Detail,
                 Kind::Subtotal => RowKind::Subtotal,
                 Kind::Grand => RowKind::Total,
                 Kind::Note => RowKind::Subheading,
@@ -570,71 +574,67 @@ fn balance_sheet(b: &Books, dates: &[(NaiveDate, String)]) -> Table {
     t
 }
 
-/// Financing accounts: from `[books] financing_accounts`, else liabilities
-/// whose names say they are debt.
-fn financing_accounts(b: &Books) -> Vec<AccountId> {
-    if !b.financing_accounts.is_empty() {
-        return b.financing_accounts.clone();
-    }
-    b.ledger
-        .chart()
-        .all()
-        .filter(|a| {
-            let n = a.name.to_lowercase();
-            a.account_type == AccountType::Liability
-                && (n.contains("loan")
-                    || n.contains("note payable")
-                    || n.contains("line of credit"))
-        })
-        .map(|a| a.id)
-        .collect()
-}
+/// One row of the cash flow table, keyed across its columns: (key, label,
+/// amount, the account it drills to).
+type KeyedRow = (String, String, Decimal, Option<String>);
 
+/// The statement of cash flows, one column per range: the server's own
+/// statement (ledger_package::cash_flow_for, the roles and members from
+/// the books' settings, refused alike), laid out as printed (D-35):
+/// operating by ASC 230-10-45-25 class; investing and financing by kind,
+/// each transaction listed under its kind; then net income reconciled to
+/// operating cash and the noncash investing and financing activities.
 fn cash_flow_table(b: &Books, cols: &Cols, total: bool) -> Table {
+    use ledger_core::{CashFlowSection, ReconcilingKind};
     let mut cols = cols.to_vec();
     if total && cols.len() > 1 {
         cols.push((cols[0].0, cols[cols.len() - 1].1, "Total".into()));
     }
-    let fin = financing_accounts(b);
-    let stmts: Vec<_> = cols
+    let settings = ledger_package::Settings {
+        company: &b.settings.company,
+        cash_accounts: &b.settings.cash_accounts,
+        financing_accounts: &b.settings.financing_accounts,
+        investing_accounts: &b.settings.investing_accounts,
+    };
+    let stmts: Vec<Result<ledger_core::CashFlowStatement, String>> = cols
         .iter()
         .map(|(s, e, _)| {
-            cash_flow(
+            ledger_package::cash_flow_for(
                 &b.ledger,
-                &CashFlowParams {
-                    start: *s,
-                    end: *e,
-                    cash_accounts: b.cash_accounts.clone(),
-                    financing_accounts: fin.clone(),
-                    investing_accounts: b.investing_accounts.clone(),
-                },
+                &settings,
+                Some(&s.to_string()),
+                Some(&e.to_string()),
+                &[],
+                &[],
+                &[],
+                b.today,
             )
-            .ok()
         })
         .collect();
     let mut t = Table::new(cols.iter().map(|c| c.2.clone()).collect());
+    // A cell per column; blank where the statement was refused.
     let val = |f: &dyn Fn(&ledger_core::CashFlowStatement) -> Decimal| -> Vec<Cell> {
         stmts
             .iter()
             .map(|s| Cell {
-                value: s.as_ref().map(f),
+                value: s.as_ref().ok().map(f),
                 drill: None,
             })
             .collect()
     };
-    let lines = |t: &mut Table,
-                 pick: &dyn Fn(
-        &ledger_core::CashFlowStatement,
-    ) -> &Vec<ledger_core::CashFlowLine>| {
-        let mut labels: Vec<(String, Option<String>)> = Vec::new();
+    // Rows keyed across the columns, in first-seen order.
+    let keyed = |t: &mut Table,
+                 kind: Kind,
+                 rows: &dyn Fn(&ledger_core::CashFlowStatement) -> Vec<KeyedRow>| {
+        let mut order: Vec<(String, String, Option<String>)> = Vec::new();
         for s in stmts.iter().flatten() {
-            for l in pick(s) {
-                if !labels.iter().any(|(x, _)| x == &l.label) {
-                    labels.push((l.label.clone(), l.account.clone()));
+            for (key, label, _, account) in rows(s) {
+                if !order.iter().any(|(k, _, _)| *k == key) {
+                    order.push((key, label, account));
                 }
             }
         }
-        for (label, account) in labels {
+        for (key, label, account) in order {
             let id = account
                 .as_deref()
                 .and_then(|c| b.ledger.chart().find_by_code(c))
@@ -643,12 +643,13 @@ fn cash_flow_table(b: &Books, cols: &Cols, total: bool) -> Table {
                 .iter()
                 .zip(&stmts)
                 .map(|((s, e, _), st)| Cell {
-                    value: Some(
-                        st.as_ref()
-                            .and_then(|st| pick(st).iter().find(|l| l.label == label))
-                            .map(|l| l.amount)
-                            .unwrap_or_default(),
-                    ),
+                    value: st.as_ref().ok().map(|st| {
+                        rows(st)
+                            .into_iter()
+                            .filter(|r| r.0 == key)
+                            .map(|r| r.2)
+                            .sum()
+                    }),
                     drill: id.map(|account| Drill {
                         account,
                         start: *s,
@@ -656,36 +657,68 @@ fn cash_flow_table(b: &Books, cols: &Cols, total: bool) -> Table {
                     }),
                 })
                 .collect();
-            t.row(Kind::Line, label, cells);
+            t.row(kind, label, cells);
         }
     };
+    // The account a line drills to: its one account, if it has one.
+    let one = |accounts: &[String]| match accounts {
+        [a] => Some(a.clone()),
+        _ => None,
+    };
+
     t.section("Operating activities");
-    t.row(Kind::Line, "Net income", val(&|s| s.net_income));
-    t.row(
-        Kind::Line,
-        "Depreciation (non-cash)",
-        val(&|s| s.depreciation),
-    );
-    lines(&mut t, &|s| &s.working_capital);
+    keyed(&mut t, Kind::Line, &|s| {
+        s.operating_by_class()
+            .into_iter()
+            .map(|(c, a)| (c.label().to_string(), c.label().to_string(), a, None))
+            .collect()
+    });
     t.row(
         Kind::Subtotal,
-        "Cash from operations",
+        "Net cash from operating activities",
         val(&|s| s.cash_from_operations),
     );
-    t.section("Investing activities");
-    lines(&mut t, &|s| &s.investing);
-    t.row(
-        Kind::Subtotal,
-        "Cash from investing",
-        val(&|s| s.cash_from_investing),
-    );
-    t.section("Financing activities");
-    lines(&mut t, &|s| &s.financing);
-    t.row(
-        Kind::Subtotal,
-        "Cash from financing",
-        val(&|s| s.cash_from_financing),
-    );
+    for (sec, title, subtotal) in [
+        (
+            CashFlowSection::Investing,
+            "Investing activities",
+            "Net cash from investing activities",
+        ),
+        (
+            CashFlowSection::Financing,
+            "Financing activities",
+            "Net cash from financing activities",
+        ),
+    ] {
+        t.section(title);
+        // Each kind with its total (D-35), then its transactions listed
+        // under it.
+        let mut kinds: Vec<String> = Vec::new();
+        for st in stmts.iter().flatten() {
+            for k in st.kinds(sec) {
+                if !kinds.contains(&k.kind) {
+                    kinds.push(k.kind);
+                }
+            }
+        }
+        for kind in kinds {
+            keyed(&mut t, Kind::Line, &|s| {
+                s.kinds(sec)
+                    .into_iter()
+                    .filter(|k| k.kind == kind)
+                    .map(|k| (k.kind.clone(), k.kind, k.amount, None))
+                    .collect()
+            });
+            keyed(&mut t, Kind::Detail, &|s| {
+                s.lines(sec)
+                    .iter()
+                    .filter(|l| l.kind == kind)
+                    .map(|l| (l.label.clone(), l.label.clone(), l.amount, one(&l.accounts)))
+                    .collect()
+            });
+        }
+        t.row(Kind::Subtotal, subtotal, val(&|s| s.total(sec)));
+    }
     t.row(
         Kind::Grand,
         "Net change in cash",
@@ -693,12 +726,114 @@ fn cash_flow_table(b: &Books, cols: &Cols, total: bool) -> Table {
     );
     t.row(Kind::Line, "Cash at beginning", val(&|s| s.cash_beginning));
     t.row(Kind::Line, "Cash at end", val(&|s| s.cash_ending));
+
+    t.section("Reconciliation of net income to operating cash");
+    t.row(
+        Kind::Line,
+        "Net income (loss)",
+        val(&|s| s.operating_reconciliation.net_income),
+    );
+    // A balance's change is keyed by its account (review item 17): one
+    // row across the columns, whichever way it moved in each.
+    keyed(&mut t, Kind::Line, &|s| {
+        s.operating_reconciliation
+            .lines
+            .iter()
+            .map(|l| match (&l.kind, &l.account) {
+                (ReconcilingKind::OperatingBalanceChange, Some(code)) => {
+                    let liability = b
+                        .ledger
+                        .chart()
+                        .find_by_code(code)
+                        .is_some_and(|a| a.account_type != AccountType::Asset);
+                    let name = b
+                        .ledger
+                        .chart()
+                        .find_by_code(code)
+                        .map_or(code.clone(), |a| format!("{} {}", a.code, a.name));
+                    let label = if liability {
+                        format!("Increase (decrease) in {name}")
+                    } else {
+                        format!("(Increase) decrease in {name}")
+                    };
+                    (
+                        format!("change {code}"),
+                        label,
+                        l.amount,
+                        Some(code.clone()),
+                    )
+                }
+                _ => (
+                    l.label.clone(),
+                    l.label.clone(),
+                    l.amount,
+                    l.account.clone(),
+                ),
+            })
+            .collect()
+    });
+    t.row(
+        Kind::Subtotal,
+        "Net cash from operating activities",
+        val(&|s| s.operating_reconciliation.net_cash_from_operating),
+    );
+
+    t.section("Noncash investing and financing activities");
+    let any = stmts
+        .iter()
+        .flatten()
+        .any(|s| !s.noncash_disclosures.is_empty());
+    if any {
+        keyed(&mut t, Kind::Line, &|s| {
+            s.noncash_disclosures
+                .iter()
+                .map(|n| (n.label.clone(), n.label.clone(), n.amount, None))
+                .collect()
+        });
+    } else {
+        t.note("None");
+    }
+
+    let mut notes: Vec<String> = Vec::new();
+    for st in &stmts {
+        let note = match st {
+            Err(why) => format!("This statement can't be shown: {why}."),
+            Ok(s) => {
+                for w in &s.warnings {
+                    let n = format!("Note: {}", w.message);
+                    if !notes.contains(&n) {
+                        notes.push(n);
+                    }
+                }
+                continue;
+            }
+        };
+        if !notes.contains(&note) {
+            notes.push(note);
+        }
+    }
+    for n in notes {
+        t.note(n);
+    }
+    if cols.len() > 1 {
+        t.note(
+            "An entry and its reversal in the same column drop out of it; in different columns each shows, and the Total nets them.",
+        );
+    }
     let names: Vec<String> = b
+        .settings
         .cash_accounts
         .iter()
-        .map(|a| b.account_label(*a))
+        .map(|code| {
+            b.ledger
+                .chart()
+                .find_by_code(code)
+                .map_or(code.clone(), |a| format!("{} {}", a.code, a.name))
+        })
         .collect();
-    t.note(format!("Cash accounts: {}.", names.join(", ")));
+    if !names.is_empty() {
+        t.note(format!("Cash accounts: {}.", names.join(", ")));
+    }
     t
 }
 
@@ -1698,12 +1833,13 @@ fn render(ui: &mut Ui, t: &Table, pdf: &PdfInfo, shell: &mut Shell<'_>) {
                         }
                     };
                     let (rr, resp) = ui.allocate_exact_size(vec2(width, h), Sense::hover());
-                    if matches!(r.kind, Kind::Line) && resp.hovered() {
+                    if matches!(r.kind, Kind::Line | Kind::Detail) && resp.hovered() {
                         ui.painter().rect_filled(rr, CornerRadius::same(4), p.hover);
                     }
                     let (font, color, indent) = match r.kind {
                         Kind::Section => (theme::semibold(13.5), p.text, 0.0),
                         Kind::Line => (theme::regular(13.5), p.text, 18.0),
+                        Kind::Detail => (theme::regular(12.5), p.muted, 36.0),
                         Kind::Subtotal => (theme::semibold(13.5), p.text, 0.0),
                         Kind::Grand => (theme::bold(14.5), p.text, 0.0),
                         Kind::Note => (theme::regular(12.0), p.muted, 0.0),
@@ -2243,6 +2379,318 @@ mod tests {
                 .iter()
                 .any(|row| row.kind == Kind::Note && row.label.contains("fair market value"))
         );
+    }
+
+    /// A two-member LLC's first weeks (Member A and Member B, generic
+    /// vendors, every amount and date made up): cash contributions,
+    /// expenses the members paid personally (borrowed and spent, D-42) and
+    /// their reimbursement, property contributed (one contribution
+    /// reversed), a card, and a bank loan left out of the financing
+    /// setting. Settings journaled: cash 1000, financing 2100, the members
+    /// on 3000 and 3001.
+    fn two_member_llc_shape(tag: &str) -> (crate::test_support::TempDir, Books) {
+        use crate::test_support::{Build, d};
+        let mut b = Build::new(tag);
+        let mut add =
+            |code: &str, name: &str, ty| b.s.add_account(code, name, ty, None, false).unwrap();
+        let equipment = add("1500", "Equipment", AccountType::Asset);
+        let accum = add("1510", "Accumulated Depreciation", AccountType::Asset);
+        let card = add("2050", "Business Card", AccountType::Liability);
+        let due = add("2100", "Due to Members", AccountType::Liability);
+        let loan = add("2500", "Bank Loan", AccountType::Liability);
+        let member_b = add("3001", "Capital — Member B", AccountType::Equity);
+        let depr = add("6500", "Depreciation Expense", AccountType::Expense);
+        let toml = "[company]\nname = \"Acme LLC\"\n\
+            [[company.members]]\nname = \"Member A\"\nshare = \"50%\"\ncapital_account = \"3000\"\n\
+            [[company.members]]\nname = \"Member B\"\nshare = \"50%\"\ncapital_account = \"3001\"\n\
+            [books]\ncash_accounts = [\"1000\"]\nfinancing_accounts = [\"2100\"]\n";
+        let import =
+            ledger_config::codec::import(toml, None, b.s.ledger().settings(), "USD").unwrap();
+        b.s.adopt_settings(
+            &import.changes,
+            &ledger_core::settings::Source {
+                decided_by: "the test".into(),
+                decided_on: d(2026, 1, 1),
+                citation: None,
+                note: None,
+            },
+        )
+        .unwrap();
+        let (cash, capital, rent) = (b.cash, b.capital, b.rent);
+        b.post_as("Formation filing fee", d(2026, 3, 2), rent, due, 8_500);
+        b.post_as(
+            "Contribution — Member A",
+            d(2026, 3, 9),
+            cash,
+            capital,
+            120_000,
+        );
+        b.post_as(
+            "Contribution — Member B",
+            d(2026, 3, 10),
+            cash,
+            member_b,
+            80_000,
+        );
+        b.post_as("Subscription", d(2026, 3, 12), rent, due, 21_640);
+        b.post_as("Reimburse members", d(2026, 3, 23), due, cash, 30_140);
+        b.post_as("API credits", d(2026, 3, 25), rent, card, 1_420);
+        let laptop = b.post_as(
+            "Laptop contributed",
+            d(2026, 3, 27),
+            equipment,
+            capital,
+            148_000,
+        );
+        b.post_as(
+            "Tablet contributed",
+            d(2026, 3, 27),
+            equipment,
+            member_b,
+            63_000,
+        );
+        b.post_as("Bank loan", d(2026, 3, 27), cash, loan, 250_000);
+        b.s.register_asset(ledger_core::NewAsset {
+            description: "Tablet".into(),
+            purchase_date: d(2026, 3, 27),
+            cost: Money::new(Decimal::new(63_000, 2), ledger_core::Currency::USD),
+            salvage_value: Money::new(Decimal::ZERO, ledger_core::Currency::USD),
+            useful_life_months: 36,
+            cost_account: equipment,
+            accum_depr_account: accum,
+            expense_account: depr,
+        })
+        .unwrap();
+        b.s.reverse_entry(laptop, d(2026, 3, 27), "Contributed jointly instead")
+            .unwrap();
+        b.books()
+    }
+
+    use ledger_core::Money;
+
+    /// The viewer's cash flow is the server's statement (D1-f: no guess
+    /// from account names), laid out as printed: operating by class,
+    /// investing and financing by kind with each transaction under it,
+    /// the reconciliation and the noncash activities. The bank loan the
+    /// financing setting leaves out is operating in both.
+    #[test]
+    fn the_cash_flow_page_is_the_servers_statement() {
+        let (_dir, b) = two_member_llc_shape("cf-server");
+        let cols = vec![(
+            NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 3, 27).unwrap(),
+            "Total".to_string(),
+        )];
+        let t = cash_flow_table(&b, &cols, false);
+        let settings = ledger_package::Settings {
+            company: &b.settings.company,
+            cash_accounts: &b.settings.cash_accounts,
+            financing_accounts: &b.settings.financing_accounts,
+            investing_accounts: &b.settings.investing_accounts,
+        };
+        let cf = ledger_package::cash_flow_for(
+            &b.ledger,
+            &settings,
+            Some("2026-01-01"),
+            Some("2026-03-27"),
+            &[],
+            &[],
+            &[],
+            b.today,
+        )
+        .unwrap();
+        let rows: Vec<(String, Option<Decimal>)> = t
+            .rows
+            .iter()
+            .filter(|r| r.kind != Kind::Section)
+            .map(|r| (r.label.clone(), r.cells.first().and_then(|c| c.value)))
+            .collect();
+        let mut want: Vec<(String, Option<Decimal>)> = Vec::new();
+        for (c, a) in cf.operating_by_class() {
+            want.push((c.label().into(), Some(a)));
+        }
+        want.push((
+            "Net cash from operating activities".into(),
+            Some(cf.cash_from_operations),
+        ));
+        for (sec, sub) in [
+            (
+                ledger_core::CashFlowSection::Investing,
+                "Net cash from investing activities",
+            ),
+            (
+                ledger_core::CashFlowSection::Financing,
+                "Net cash from financing activities",
+            ),
+        ] {
+            for k in cf.kinds(sec) {
+                want.push((k.kind.clone(), Some(k.amount)));
+                for l in cf.lines(sec).iter().filter(|l| l.kind == k.kind) {
+                    want.push((l.label.clone(), Some(l.amount)));
+                }
+            }
+            want.push((sub.into(), Some(cf.total(sec))));
+        }
+        want.push(("Net change in cash".into(), Some(cf.net_change_in_cash)));
+        want.push(("Cash at beginning".into(), Some(cf.cash_beginning)));
+        want.push(("Cash at end".into(), Some(cf.cash_ending)));
+        let r = &cf.operating_reconciliation;
+        want.push(("Net income (loss)".into(), Some(r.net_income)));
+        for l in &r.lines {
+            let label = match l.kind {
+                ledger_core::ReconcilingKind::OperatingBalanceChange => {
+                    let a = b
+                        .ledger
+                        .chart()
+                        .find_by_code(l.account.as_deref().unwrap())
+                        .unwrap();
+                    if a.account_type == AccountType::Asset {
+                        format!("(Increase) decrease in {} {}", a.code, a.name)
+                    } else {
+                        format!("Increase (decrease) in {} {}", a.code, a.name)
+                    }
+                }
+                _ => l.label.clone(),
+            };
+            want.push((label, Some(l.amount)));
+        }
+        want.push((
+            "Net cash from operating activities".into(),
+            Some(r.net_cash_from_operating),
+        ));
+        for n in &cf.noncash_disclosures {
+            want.push((n.label.clone(), Some(n.amount)));
+        }
+        want.push(("Cash accounts: 1000 Cash.".into(), None));
+        assert_eq!(rows, want);
+        // Each investing and financing kind is a line with its total; its
+        // transactions are details under it, never summed into the section.
+        let kind_of = |label: &str| t.rows.iter().find(|r| r.label == label).map(|r| r.kind);
+        for sec in [
+            ledger_core::CashFlowSection::Investing,
+            ledger_core::CashFlowSection::Financing,
+        ] {
+            for k in cf.kinds(sec) {
+                assert!(kind_of(&k.kind) == Some(Kind::Line), "{}", k.kind);
+            }
+            for l in cf.lines(sec) {
+                assert!(kind_of(&l.label) == Some(Kind::Detail), "{}", l.label);
+            }
+        }
+        // The figures, by hand: the loan (not a financing setting) is an
+        // operating receipt, 2,500.00; what the members paid personally
+        // (85.00 and 216.40, 301.40) is borrowed from them through 2100
+        // and spent (D-42, rules.md B-14 rule 11); the members'
+        // contributions are financing, each named (1,200.00 and 800.00);
+        // the reimbursement repays 2100 (301.40); the tablet is disclosed
+        // (630.00), the reversed laptop gone.
+        assert_eq!(
+            cf.operating_by_class(),
+            [
+                (
+                    ledger_core::OperatingClass::OtherReceipts,
+                    Decimal::new(250_000, 2)
+                ),
+                (
+                    ledger_core::OperatingClass::ToSuppliersAndEmployees,
+                    Decimal::new(-30_140, 2)
+                ),
+            ]
+        );
+        let kinds: Vec<(String, Decimal)> = cf
+            .kinds(ledger_core::CashFlowSection::Financing)
+            .into_iter()
+            .map(|k| (k.kind, k.amount))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                (
+                    "Contributions from members — Member A".to_string(),
+                    Decimal::new(120_000, 2)
+                ),
+                (
+                    "Contributions from members — Member B".to_string(),
+                    Decimal::new(80_000, 2)
+                ),
+                (
+                    "Proceeds from borrowing — 2100 Due to Members".to_string(),
+                    Decimal::new(30_140, 2)
+                ),
+                (
+                    "Repayments of borrowing — 2100 Due to Members".to_string(),
+                    Decimal::new(-30_140, 2)
+                ),
+            ]
+        );
+        let disclosed: Vec<Decimal> = cf.noncash_disclosures.iter().map(|n| n.amount).collect();
+        assert_eq!(disclosed, [Decimal::new(63_000, 2)]);
+        assert!(
+            !t.rows
+                .iter()
+                .any(|r| r.label.contains("Bank Loan") && r.label.contains("borrowing"))
+        );
+    }
+
+    /// A statement the server refuses is refused here too: blank cells
+    /// and the reason, never a number.
+    #[test]
+    fn a_refused_cash_flow_shows_why_and_no_number() {
+        use crate::test_support::{Build, d};
+        let mut b = Build::new("cf-refused");
+        let (cash, capital) = (b.cash, b.capital);
+        b.post(d(2026, 10, 7), cash, capital, 50_000);
+        let (_dir, books) = b.books();
+        let cols = vec![(d(2026, 1, 1), d(2026, 10, 15), "Total".to_string())];
+        let t = cash_flow_table(&books, &cols, false);
+        assert!(
+            t.rows
+                .iter()
+                .flat_map(|r| &r.cells)
+                .all(|c| c.value.is_none())
+        );
+        assert!(
+            t.rows
+                .iter()
+                .any(|r| r.kind == Kind::Note && r.label.contains("cash_accounts is required")),
+            "{:?}",
+            t.rows.iter().map(|r| &r.label).collect::<Vec<_>>()
+        );
+    }
+
+    /// The page as painted (and, with `SHOT_DIR` set, as a PNG for eyes:
+    /// `cashflow-two-member-llc-shape.png`).
+    #[test]
+    fn the_cash_flow_page_paints_its_schedules() {
+        use crate::test_support::{find, harness, painted};
+        let (_dir, b) = two_member_llc_shape("cf-paint");
+        let mut h = harness(b, Route::Reports(ReportKind::CashFlow));
+        h.state_mut().state_mut().reports.range = Range::Custom(
+            NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 3, 27).unwrap(),
+        );
+        h.run_steps(4);
+        let texts = painted(h.output());
+        for text in [
+            "Operating activities",
+            "Other operating cash receipts",
+            "Cash paid to suppliers and employees",
+            "Contributions from members — Member A",
+            "Proceeds from borrowing — 2100 Due to Members",
+            "Repayments of borrowing — 2100 Due to Members",
+            "Reconciliation of net income to operating cash",
+            "Noncash investing and financing activities",
+            "Tablet contributed (#8)",
+        ] {
+            find(&texts, text);
+        }
+        if let Ok(dir) = std::env::var("SHOT_DIR") {
+            let dir = std::path::PathBuf::from(dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let img = h.render().unwrap();
+            img.save(dir.join("cashflow-two-member-llc-shape.png"))
+                .unwrap();
+        }
     }
 
     /// Every table-backed report typesets as a PDF, in its plain, by-month,

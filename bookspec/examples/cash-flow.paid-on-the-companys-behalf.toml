@@ -1,0 +1,187 @@
+id = "cash-flow.paid-on-the-companys-behalf"
+title = "A member and a lender pay for the company directly; the member is repaid"
+rule = "When a member or a lender pays a company expense or purchase directly, with no cash account moving, the statement of cash flows MUST show a financing inflow (borrowed from the member or lender, or contributed when the member's capital is credited for an expense) and the operating or investing outflow, both on that payment's date; repaying the member or lender MUST be a financing outflow; such a payment and its reversal MUST net out together."
+# CHOICE: ASC 230 does not address cash a third party pays on the entity's
+# behalf. The firm guides present it by substance as a constructive
+# receipt and disbursement (PwC 6.9.3.1; Deloitte 7.2, Example 7-2, a
+# lender paying an insurer; BDO 3.4, Example 3-5, a bank paying the
+# supplier of equipment, and a parent paying a subsidiary's expenses),
+# and the owner chose that (wanderbooks D-42). KPMG also accepts a noncash
+# presentation for equipment a lender pays for.
+status = "CHOICE"
+sources = [
+  "ASC 230-10-45-13(c)",
+  "ASC 230-10-45-14(a)",
+  "ASC 230-10-45-14(b)",
+  "ASC 230-10-45-15(b)",
+  "ASC 230-10-45-17(b)",
+  "PwC Viewpoint, Financial statement presentation 6.9.3.1 (cash a third party receives or pays on the entity's behalf is included as though through the entity's accounts)",
+  "Deloitte Roadmap, Statement of cash flows 7.2 (constructive receipt and disbursement; Example 7-2)",
+  "BDO Blueprint, Statement of cash flows under ASC 230 (December 2025) 3.4 and Example 3-5",
+  "EY Financial reporting developments, Statement of cash flows (July 2026) 4.6.2 and 5.3.1",
+  "wanderbooks D-42 (owner, 2026-10-20: a member or lender paying for the company is cash borrowed and spent)",
+]
+tags = ["accrual", "book", "us", "cash-flow", "constructive", "partnership"]
+
+[setup]
+currency = "USD"
+fiscal_year_start = "01-01"
+basis = "accrual"
+rounding = "half-even"
+cash_accounts = ["1000"]
+financing_accounts = ["2100", "2500"]
+
+[[setup.accounts]]
+code = "1000"
+name = "Cash"
+type = "asset"
+
+[[setup.accounts]]
+code = "1500"
+name = "Equipment"
+type = "asset"
+
+[[setup.accounts]]
+code = "1510"
+name = "Accumulated depreciation"
+type = "asset"
+
+[[setup.accounts]]
+code = "2100"
+name = "Due to members"
+type = "liability"
+
+[[setup.accounts]]
+code = "2500"
+name = "Bank loan"
+type = "liability"
+
+[[setup.accounts]]
+code = "3000"
+name = "Capital — Member A"
+type = "equity"
+
+[[setup.accounts]]
+code = "6000"
+name = "Supplies"
+type = "expense"
+
+[[setup.accounts]]
+code = "6100"
+name = "Depreciation"
+type = "expense"
+
+[[setup.fixed_assets]]
+cost_account = "1500"
+accumulated_account = "1510"
+expense_account = "6100"
+
+[[setup.members]]
+name = "Member A"
+capital_account = "3000"
+
+[[events]]
+date = "2026-03-02"
+description = "Member A contributes cash"
+lines = [
+  { account = "1000", side = "debit", amount = "1000.00" },
+  { account = "3000", side = "credit", amount = "1000.00" },
+]
+
+[[events]]
+date = "2026-03-05"
+description = "Supplies, paid by Member A personally (owed back)"
+lines = [
+  { account = "6000", side = "debit", amount = "120.00" },
+  { account = "2100", side = "credit", amount = "120.00" },
+]
+
+[[events]]
+date = "2026-03-09"
+description = "Equipment, paid to the seller by the bank (a loan)"
+lines = [
+  { account = "1500", side = "debit", amount = "2400.00" },
+  { account = "2500", side = "credit", amount = "2400.00" },
+]
+
+[[events]]
+date = "2026-03-12"
+description = "Supplies, paid by Member A personally (contributed)"
+lines = [
+  { account = "6000", side = "debit", amount = "45.00" },
+  { account = "3000", side = "credit", amount = "45.00" },
+]
+
+[[events]]
+date = "2026-03-15"
+description = "Supplies, paid by Member A personally (posted in error)"
+lines = [
+  { account = "6000", side = "debit", amount = "30.00" },
+  { account = "2100", side = "credit", amount = "30.00" },
+]
+
+[[events]]
+date = "2026-03-16"
+description = "Reverse entry 5"
+reverses = 5
+
+[[events]]
+date = "2026-03-20"
+description = "Reimburse Member A"
+lines = [
+  { account = "2100", side = "debit", amount = "120.00" },
+  { account = "1000", side = "credit", amount = "120.00" },
+]
+
+[[events]]
+date = "2026-03-28"
+description = "Loan payment"
+lines = [
+  { account = "2500", side = "debit", amount = "200.00" },
+  { account = "1000", side = "credit", amount = "200.00" },
+]
+
+# By hand, March. Operating: entry 2, -120.00, and entry 4, -45.00 (cash
+# paid to suppliers, 45-17(b), by the member for the company): -165.00;
+# entries 5 and 6 net out. Investing: entry 3, -2,400.00 (equipment,
+# 45-13(c), paid by the bank). Financing: entry 1 +1,000.00 and entry 4
+# +45.00 (contributions, 45-14(a)), entry 2 +120.00 and entry 3 +2,400.00
+# (borrowing, 45-14(b)), entry 7 -120.00 and entry 8 -200.00 (repayments,
+# 45-15(b)): +3,245.00. Sum -165.00 - 2,400.00 + 3,245.00 = +680.00, the
+# change in cash (1,000.00 - 120.00 - 200.00). Net income -165.00 equals
+# operating: no reconciling item. Nothing is disclosed: no part of any
+# entry went unsettled.
+[[expect]]
+query = "cash_flow"
+from = "2026-03-01"
+to = "2026-03-31"
+
+[expect.values]
+operating = "-165.00"
+investing = "-2400.00"
+financing = "3245.00"
+net_change = "680.00"
+cash_beginning = "0.00"
+cash_ending = "680.00"
+difference = "0.00"
+net_income = "-165.00"
+"operating.2" = "-120.00"
+"operating.2.on_behalf" = "-120.00"
+"operating.4" = "-45.00"
+"operating.count" = "2"
+"investing.3" = "-2400.00"
+"investing.3.on_behalf" = "-2400.00"
+"investing.count" = "1"
+"financing.1" = "1000.00"
+"financing.1.on_behalf" = "0.00"
+"financing.2" = "120.00"
+"financing.2.on_behalf" = "120.00"
+"financing.3" = "2400.00"
+"financing.3.on_behalf" = "2400.00"
+"financing.4" = "45.00"
+"financing.4.on_behalf" = "45.00"
+"financing.7" = "-120.00"
+"financing.7.on_behalf" = "0.00"
+"financing.8" = "-200.00"
+"financing.count" = "6"
+"noncash.count" = "0"

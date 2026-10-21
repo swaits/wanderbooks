@@ -19,7 +19,7 @@ use chrono::NaiveDate;
 use rust_decimal::Decimal;
 
 /// A money amount as a decimal string with at least two places: "0.00",
-/// "207.68", "1000.00". Padding only, never rounding: an exact amount with
+/// "318.42", "1000.00". Padding only, never rounding: an exact amount with
 /// more places (an FX-converted line) keeps them. Never "-0".
 pub fn money(n: Decimal) -> String {
     let mut n = if n.is_zero() { Decimal::ZERO } else { n };
@@ -89,7 +89,7 @@ mod tests {
         assert_eq!(m("-0"), "0.00");
         assert_eq!(m("1000"), "1000.00");
         assert_eq!(m("5.8"), "5.80");
-        assert_eq!(m("-207.68"), "-207.68");
+        assert_eq!(m("-318.42"), "-318.42");
         assert_eq!(m("12.3456"), "12.3456");
     }
 

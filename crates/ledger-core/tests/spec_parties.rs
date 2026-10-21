@@ -1557,9 +1557,9 @@ fn entry_flow_scenarios() {
     }
     // 2. Reimbursing members; paying the card.
     for liab in [members, card] {
-        let f = case(&[(liab, D, "387.64"), (bank, C, "387.64")]);
-        assert_eq!(f.net, dec("387.64"));
-        assert_eq!(f.what_for, vec![(liab, dec("387.64"))]);
+        let f = case(&[(liab, D, "412.30"), (bank, C, "412.30")]);
+        assert_eq!(f.net, dec("412.30"));
+        assert_eq!(f.what_for, vec![(liab, dec("412.30"))]);
     }
     // 3. A loan.
     let f = case(&[(bank, D, "1000.00"), (loan, C, "1000.00")]);

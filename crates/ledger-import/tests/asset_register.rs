@@ -116,9 +116,9 @@ fn sample() -> AssetRegister {
         // A member's personal camera: worth less than its basis, so tax
         // basis is the fair market value and there's a built-in loss.
         contributed(
-            row(4, "FL-0004", "Sony A7 IV camera", 165000, 0),
+            row(4, "FL-0004", "Sony A7 IV camera", 175000, 0),
             TaxBasisRule::PersonalUseConversion,
-            191721,
+            200000,
         ),
         // No tax basis recorded yet.
         row(5, "FL-0005", "Standing desk", 80000, 0),
@@ -172,9 +172,9 @@ fn pdf_shows_assets_totals_and_reconciliation() {
         "Active",
         "Disposed 2026-09-30, proceeds 45.00",
         "Total, assets held",
-        "6,249.00", // cost held: 2,500.00 + 1,299.00 + 1,650.00 + 800.00
+        "6,349.00", // cost held: 2,500.00 + 1,299.00 + 1,750.00 + 800.00
         "852.53",   // accumulated held
-        "5,396.47", // book value held
+        "5,496.47", // book value held: 6,349.00 - 852.53
         "Cost per register",
         "Cost per books",
         "Difference (unregistered cost)",
@@ -189,7 +189,7 @@ fn pdf_shows_assets_totals_and_reconciliation() {
     // The disposed asset's cost (400.00) is shown but in no total.
     assert!(t.contains("400.00"));
     let l = layout(&sample());
-    assert_eq!(l.totals, [cents(624900), cents(85253), cents(539647)]);
+    assert_eq!(l.totals, [cents(634900), cents(85253), cents(549647)]);
 }
 
 /// INVARIANTS 7-9: the tax table shows each rule in short words, the
@@ -209,12 +209,12 @@ fn pdf_shows_tax_basis() {
         "Personal-use conversion",
         "900.00",   // MacBook: contributor's basis = tax basis
         "399.00",   // its built-in gain
-        "1,917.21", // camera: contributor's basis
-        "1,650.00", // its tax basis: the fair market value
-        "(267.21)", // its built-in loss
+        "2,000.00", // camera: contributor's basis
+        "1,750.00", // its tax basis: the fair market value
+        "(250.00)", // its built-in loss: 1,750.00 - 2,000.00
         "Not recorded",
         "Total tax basis, assets held",
-        "5,050.00", // 2,500.00 + 900.00 + 1,650.00; the desk has none
+        "5,150.00", // 2,500.00 + 900.00 + 1,750.00; the desk has none
         "Tax basis not recorded for 1 asset",
         "Notes",
         "Book value is the fair market value at contribution",
@@ -227,7 +227,7 @@ fn pdf_shows_tax_basis() {
     }
     let l = layout(&r);
     assert_eq!(l.tax_total, r.total_tax_basis);
-    assert_eq!(l.tax_total, cents(505000));
+    assert_eq!(l.tax_total, cents(515000));
     assert_eq!(
         l.missing.as_deref(),
         Some("Tax basis not recorded for 1 asset")
@@ -311,7 +311,7 @@ fn rule_marks_match_their_notes() {
         "(Ryzen 7 7840U, 64 GB, 4 TB) Cost 1 2,500.00",
         "MacBook Air Carryover 2 1,299.00",
         "Old monitor Cost 1 400.00",
-        "Sony A7 IV camera Personal-use conversion 3 1,650.00",
+        "Sony A7 IV camera Personal-use conversion 3 1,750.00",
         "Standing desk Not recorded 800.00",
         "1 Cost: property the company bought",
         "2 Carryover (IRC §723): property a member contributes",

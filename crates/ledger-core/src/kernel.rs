@@ -29,7 +29,14 @@
 //!   remainder (B-13);
 //! * a cumulative allocation hands out exactly the new amount, and leaves
 //!   each running total one allocation of everything allocated, so it never
-//!   drifts a unit from its exact share (B-13).
+//!   drifts a unit from its exact share (B-13);
+//! * an entry's cash is applied to the sections of the statement of cash
+//!   flows moving against it, in a fixed order, each up to its own
+//!   movement: the parts sum to the entry's cash, what no cash settled sums
+//!   to zero, and a reversal's parts are the original's negated (B-14);
+//! * what a member or lender paid or received for the company, with no
+//!   cash account moving, is split among the kinds it settled, netting to
+//!   zero, and mirrored by a reversal (B-14 rule 11).
 
 use crate::{AccountType, Side};
 use rust_decimal::Decimal;
@@ -409,9 +416,349 @@ pub fn apportion_cumulative<T: Amount>(
     Some(())
 }
 
+/// Where a line falls on the statement of cash flows (rules.md B-14 rule
+/// 2): a cash account, or one of the three sections.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Flow {
+    /// A cash account: what the statement explains the change in.
+    Cash,
+    /// Operating activities.
+    Operating,
+    /// Investing activities.
+    Investing,
+    /// Financing activities.
+    Financing,
+}
+
+impl Flow {
+    /// The three sections, in the order cash is applied to them (rules.md
+    /// B-14 rule 3): operating, investing, financing.
+    pub const SECTIONS: [Flow; 3] = [Flow::Operating, Flow::Investing, Flow::Financing];
+}
+
+/// One entry's effect on the statement of cash flows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EntryFlows<T> {
+    /// Net movement of the entry's cash lines, debit-positive: + is cash
+    /// in.
+    pub cash: T,
+    /// Cash per section, `[operating, investing, financing]`, + is in.
+    /// Sums to `cash`.
+    pub flows: [T; 3],
+    /// What no cash settled, per section, debit-positive: the section's
+    /// movement plus its cash. Sums to zero.
+    pub noncash: [T; 3],
+}
+
+/// The cash one section takes from what is left of an entry's cash
+/// (`remaining`), given the section's net movement (debit-positive): only
+/// a section moving against the cash takes any, and never more than its
+/// own movement. Cash in (`remaining > 0`) settles credits (`movement <
+/// 0`); cash out settles debits.
+pub fn take<T: Amount>(remaining: T, movement: T) -> Option<T> {
+    let against = movement.checked_neg()?;
+    Some(if remaining > T::ZERO && movement < T::ZERO {
+        remaining.min(against)
+    } else if remaining < T::ZERO && movement > T::ZERO {
+        remaining.max(against)
+    } else {
+        T::ZERO
+    })
+}
+
+/// Apply `cash` to `movements` in order, each taking [`take`] of what is
+/// left: `applied[k]` is the cash of part `k`. `None` when something is
+/// left over (the movements against the cash are smaller than it), the
+/// slices differ in length, or on overflow.
+///
+/// ```text
+/// GOAL: split an entry's cash among the parts it settled, without
+///       inventing or losing any.
+/// SOURCE: rules.md B-14 rule 3 (ASC 230-10-50-5: only the cash portion
+///         of a part-cash transaction is a cash flow; the order is a
+///         CONVENTION, the ASC is silent).
+/// INVARIANTS:
+///   1. On success the parts sum to `cash` exactly.
+///   2. Each part has the sign of `cash` (or is zero) and is no larger
+///      than its own movement, which runs against the cash.
+///   3. Applying `-cash` to the negated movements gives the negated parts
+///      (a reversal mirrors its original).
+/// SCENARIOS:
+///   1. IF the movements against the cash sum to at least the cash:
+///      - SHOULD succeed (a balanced entry always does)
+///   2. IF they don't: SHOULD return None, never a part out of thin air.
+/// ```
+pub fn apply_cash<T: Amount>(cash: T, movements: &[T], applied: &mut [T]) -> Option<()> {
+    if movements.len() != applied.len() {
+        return None;
+    }
+    let mut remaining = cash;
+    for (out, &movement) in applied.iter_mut().zip(movements) {
+        let part = take(remaining, movement)?;
+        *out = part;
+        remaining = remaining.checked_sub(part)?;
+    }
+    (remaining == T::ZERO).then_some(())
+}
+
+/// An entry's cash flows (rules.md B-14 rule 3): the net movement of its
+/// cash lines, applied to the sections moving against it in the order
+/// operating, investing, financing, each up to its own movement; what is
+/// left of a section's movement is the part no cash settled. `None` when
+/// the lines don't net to zero (never for a posted entry) or on overflow.
+pub fn entry_flows<T: Amount>(lines: &[(Flow, Side, T)]) -> Option<EntryFlows<T>> {
+    let mut cash = T::ZERO;
+    let mut moved = [T::ZERO; 3];
+    for &(flow, side, amount) in lines {
+        let delta = signed(side, amount)?;
+        let slot = match flow {
+            Flow::Cash => &mut cash,
+            Flow::Operating => &mut moved[0],
+            Flow::Investing => &mut moved[1],
+            Flow::Financing => &mut moved[2],
+        };
+        *slot = slot.checked_add(delta)?;
+    }
+    // Balanced lines only: every part below rests on it.
+    let mut total = cash;
+    for &m in &moved {
+        total = total.checked_add(m)?;
+    }
+    if total != T::ZERO {
+        return None;
+    }
+    let mut flows = [T::ZERO; 3];
+    apply_cash(cash, &moved, &mut flows)?;
+    let mut noncash = [T::ZERO; 3];
+    for ((n, m), f) in noncash.iter_mut().zip(moved).zip(flows) {
+        *n = m.checked_add(f)?;
+    }
+    Some(EntryFlows {
+        cash,
+        flows,
+        noncash,
+    })
+}
+
+/// The credits and the debits among some movements (debit-positive):
+/// `(Σ max(-m, 0), Σ max(m, 0))`.
+fn credits_and_debits<T: Amount>(movements: &[T]) -> Option<(T, T)> {
+    let (mut credits, mut debits) = (T::ZERO, T::ZERO);
+    for &m in movements {
+        if m < T::ZERO {
+            credits = credits.checked_sub(m)?;
+        } else {
+            debits = debits.checked_add(m)?;
+        }
+    }
+    Some((credits, debits))
+}
+
+/// Which way money a member or a lender handled for the company went
+/// (rules.md B-14 rule 11, D-42).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum OnBehalf {
+    /// Paid for the company: sources credited (borrowed, contributed)
+    /// against uses debited (spent).
+    Paid,
+    /// Received for the company: sources debited (repaid, distributed)
+    /// against uses credited (collected).
+    Received,
+}
+
+impl OnBehalf {
+    /// The other way: what an entry's reversal does.
+    pub fn mirror(self) -> Self {
+        match self {
+            OnBehalf::Paid => OnBehalf::Received,
+            OnBehalf::Received => OnBehalf::Paid,
+        }
+    }
+}
+
+/// What a member or a lender paid, or received, for the company with no
+/// cash account moving: a constructive receipt and disbursement (rules.md
+/// B-14 rule 11, D-42). `sources` are what is left unsettled of the
+/// entry's kinds that can pay or receive for the company (a financing
+/// liability, a member's equity), `uses` of the kinds they can pay or
+/// receive for, each debit-positive. [`OnBehalf::Paid`]: `amount =
+/// min(source credits, use debits)`, cash in to the sources' credits and
+/// out of the uses' debits (borrowed or contributed, then spent);
+/// [`OnBehalf::Received`]: `amount = min(source debits, use credits)`,
+/// cash in to the uses' credits and out of the sources' debits (collected,
+/// then repaid or distributed). `from[i]` is source `i`'s cash (+ in) and
+/// `to[j]` use `j`'s, each applied in order by [`apply_cash`]. `None` when
+/// the slices differ in length, or on overflow.
+///
+/// ```text
+/// GOAL: show money a member or lender handled for the company as the
+///       company's own, borrowed (or contributed) and spent, without
+///       inventing or losing a cent.
+/// SOURCE: rules.md B-14 rule 11 (D-42; ASC 230 is silent, PwC Viewpoint
+///         FSP 6.9.3.1, Deloitte DART Roadmap 7.2, BDO Blueprint 3.4).
+/// INVARIANTS:
+///   1. The parts net to zero: Σ from + Σ to = 0, so the entry's cash
+///      flows still sum to its cash.
+///   2. Each part settles its own movement, toward zero and never past it
+///      (zero, or the opposite sign and no larger).
+///   3. The other way, minus the sources and minus the uses give minus
+///      the parts (a reversal mirrors its original).
+///   4. As much is settled as can be: afterwards, paid, no source credit
+///      is left beside a use debit; received, no source debit beside a use
+///      credit.
+/// ```
+pub fn constructive<T: Amount>(
+    way: OnBehalf,
+    sources: &[T],
+    uses: &[T],
+    from: &mut [T],
+    to: &mut [T],
+) -> Option<()> {
+    let (source_credits, source_debits) = credits_and_debits(sources)?;
+    let (use_credits, use_debits) = credits_and_debits(uses)?;
+    // The cash the sources take (+ in): what was paid, or minus what was
+    // received; the uses take the opposite.
+    let cash = match way {
+        OnBehalf::Paid => source_credits.min(use_debits),
+        OnBehalf::Received => source_debits.min(use_credits).checked_neg()?,
+    };
+    apply_cash(cash, sources, from)?;
+    apply_cash(cash.checked_neg()?, uses, to)
+}
+
+/// How much of an entry is an exchange inside investing and financing
+/// that no cash settled (rules.md B-14 rule 7, ASC 230-10-50-4: debt
+/// converted to equity, one asset traded for another). `debits` and
+/// `credits` are the net debits and net credits of the entry's investing
+/// and financing balance-sheet accounts (each account netted first; both
+/// non-negative); `inflow` and `outflow` are the cash those two sections
+/// took in and paid out (both non-negative; constructive cash included,
+/// rule 11). Cash in settles credits and cash out settles debits; what's
+/// left of the smaller side was exchanged:
+/// `max(0, min(debits - outflow, credits - inflow))`.
+pub fn exchanged<T: Amount>(debits: T, credits: T, inflow: T, outflow: T) -> Option<T> {
+    let d = debits.checked_sub(outflow)?;
+    let c = credits.checked_sub(inflow)?;
+    Some(d.min(c).max(T::ZERO))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// rules.md B-14 rule 3, by hand. Equipment 1,000 for 300 cash and a
+    /// 700 note: investing takes the 300, the note's 700 and the rest of
+    /// the equipment's are the noncash part.
+    #[test]
+    fn part_cash_part_noncash_takes_only_the_cash() {
+        use Flow::*;
+        let f = entry_flows(&[
+            (Investing, Side::Debit, 1000i64),
+            (Cash, Side::Credit, 300),
+            (Financing, Side::Credit, 700),
+        ])
+        .unwrap();
+        assert_eq!(f.cash, -300);
+        assert_eq!(f.flows, [0, -300, 0]);
+        assert_eq!(f.noncash, [0, 700, -700]);
+        // A fee withheld from a loan: Dr cash 9,900, Dr fee 100 / Cr loan
+        // 10,000. Operating moves with the cash (a debit), so takes none.
+        let f = entry_flows(&[
+            (Cash, Side::Debit, 9900i64),
+            (Operating, Side::Debit, 100),
+            (Financing, Side::Credit, 10000),
+        ])
+        .unwrap();
+        assert_eq!(f.flows, [0, 0, 9900]);
+        assert_eq!(f.noncash, [100, 0, -100]);
+    }
+
+    /// Lines that don't net to zero are refused (review item 12): no part
+    /// is made up for them.
+    #[test]
+    fn unbalanced_lines_have_no_flows() {
+        use Flow::*;
+        assert_eq!(
+            entry_flows(&[(Operating, Side::Debit, 5i64), (Investing, Side::Debit, 5)]),
+            None
+        );
+        assert_eq!(
+            entry_flows(&[(Cash, Side::Debit, 5i64), (Investing, Side::Credit, 4)]),
+            None
+        );
+        // Too little against the cash: nothing is invented.
+        let mut out = [0i64; 2];
+        assert_eq!(apply_cash(10, &[-3, 4], &mut out), None);
+        assert_eq!(apply_cash(10, &[-3], &mut out), None);
+    }
+
+    /// The exchange measure (rules.md B-14 rule 7) on the review's
+    /// hand-checked cases.
+    #[test]
+    fn exchanged_matches_the_hand_checked_cases() {
+        // Debt to equity, 500.
+        assert_eq!(exchanged(500i64, 500, 0, 0), Some(500));
+        // Part-cash purchase with the seller's note: D 1,000, C 700, cash
+        // out 300.
+        assert_eq!(exchanged(1000i64, 700, 0, 300), Some(700));
+        // Note received for equipment: D 700, C 1,000, cash in 300.
+        assert_eq!(exchanged(700i64, 1000, 300, 0), Some(700));
+        // Trade-in with 1,500 boot: D 2,000, C 1,000, cash out 1,500.
+        assert_eq!(exchanged(2000i64, 1000, 0, 1500), Some(500));
+        // A cash sale: nothing debited, cash in 500.
+        assert_eq!(exchanged(0i64, 1000, 500, 0), Some(0));
+        // A cash purchase: cash out covers every debit.
+        assert_eq!(exchanged(1000i64, 0, 0, 1000), Some(0));
+        // Equipment a lender paid for (rule 11): 1,000 borrowed in, 1,000
+        // spent out, nothing exchanged.
+        assert_eq!(exchanged(1000i64, 1000, 1000, 1000), Some(0));
+    }
+
+    /// rules.md B-14 rule 11 (D-42), by hand.
+    #[test]
+    fn constructive_pays_and_receives_for_the_company() {
+        use OnBehalf::{Paid, Received};
+        // A member pays a 59 expense (Dr expense / Cr due to members): the
+        // source's 59 credit pays the use's 59 debit.
+        let (mut from, mut to) = ([0i64; 1], [0i64; 1]);
+        constructive(Paid, &[-59], &[59], &mut from, &mut to).unwrap();
+        assert_eq!((from, to), ([59], [-59]));
+        // Its reversal, the other way, mirrors it.
+        constructive(Received, &[59], &[-59], &mut from, &mut to).unwrap();
+        assert_eq!((from, to), ([-59], [59]));
+        // The reversal's shape read as a payment settles nothing.
+        constructive(Paid, &[59], &[-59], &mut from, &mut to).unwrap();
+        assert_eq!((from, to), ([0], [0]));
+        // A 100 credit from the source against 60 of uses (the other 40
+        // against something else): only 60 is paid; uses take in order.
+        let (mut from, mut to) = ([0i64; 2], [0i64; 2]);
+        constructive(Paid, &[-100, 0], &[25, 35], &mut from, &mut to).unwrap();
+        assert_eq!((from, to), ([60, 0], [-25, -35]));
+        // Two sources, one use smaller than both: the first source pays
+        // first.
+        constructive(Paid, &[-30, -30], &[40, 0], &mut from, &mut to).unwrap();
+        assert_eq!((from, to), ([30, 10], [-40, 0]));
+        // Each way settles only its own side.
+        constructive(Paid, &[-50, 20], &[50, -20], &mut from, &mut to).unwrap();
+        assert_eq!((from, to), ([50, 0], [-50, 0]));
+        constructive(Received, &[-50, 20], &[50, -20], &mut from, &mut to).unwrap();
+        assert_eq!((from, to), ([0, -20], [0, 20]));
+        // Nothing against: nothing moves.
+        constructive(Paid, &[-50, 0], &[-10, 0], &mut from, &mut to).unwrap();
+        assert_eq!((from, to), ([0, 0], [0, 0]));
+        // Mismatched lengths are refused.
+        let one = [-1i64];
+        assert_eq!(
+            constructive(Paid, &one, &[1], &mut [0i64; 2], &mut [0]),
+            None
+        );
+        assert_eq!(
+            constructive(Paid, &one, &[1], &mut [0i64], &mut [0; 2]),
+            None
+        );
+        assert_eq!(Paid.mirror(), Received);
+        assert_eq!(Received.mirror(), Paid);
+    }
 
     #[test]
     fn max_line_amount_is_one_quadrillion() {

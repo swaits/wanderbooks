@@ -6,13 +6,13 @@
 # rules.md B-19, B-33; regression test `the_1099_worksheet_stops_at_as_of`
 # (ledger-package tests/package.rs).
 #
-# Setup beyond the accounts: `cash_accounts` are the accounts payments
-# are made from; each `[[setup.payees]]` is a payee marked for a form;
-# an event's `payee` tags the payment to them. Expected values:
-# vendor_1099_paid gives each marked payee's payments counted from `from`
-# through `to` (both in one calendar year). The 2026 threshold is $2,000
-# (B-19), so the payee is not yet reportable as of June 30 (1400.00) and
-# is for the year (3050.00).
+# Setup beyond the accounts (bookspec/README.md): `cash_accounts` are the
+# accounts payments are made from; each `[[setup.payees]]` is a payee
+# marked for a form; an event's `payee` tags the payment to them. Event N
+# is entry N. Expected values: vendor_1099_paid gives each marked payee's
+# payments counted from `from`, January 1, through `to`, every payee
+# listed. The 2026 threshold is $2,000 (B-19), so the payee is not yet
+# reportable as of June 30 (1400.00) and is for the year (3050.00).
 
 id = "1099-worksheet-through-as-of"
 title = "A 1099 worksheet as of a day counts the year's payments through that day"
@@ -29,7 +29,7 @@ tags = ["1099", "as-of", "calendar-year", "information-return", "period-boundary
 currency = "USD"
 fiscal_year_start = "01-01"
 basis = "cash"
-rounding = "half_away_from_zero"
+rounding = "half-away-from-zero"
 cash_accounts = ["1000"]
 
 [[setup.accounts]]
@@ -56,7 +56,7 @@ type = "expense"
 name = "Contractor A"
 form = "1099-NEC"
 
-# 0: the year before.
+# Entry 1: the year before.
 [[events]]
 date = "2025-12-31"
 description = "Contract work, December"
@@ -66,7 +66,7 @@ lines = [
   { account = "1000", side = "credit", amount = "100.00" },
 ]
 
-# 1
+# Entry 2.
 [[events]]
 date = "2026-01-02"
 description = "Owner contribution"
@@ -75,7 +75,7 @@ lines = [
   { account = "3000", side = "credit", amount = "10000.00" },
 ]
 
-# 2
+# Entry 3.
 [[events]]
 date = "2026-03-15"
 description = "Contract work, March"
@@ -85,7 +85,7 @@ lines = [
   { account = "1000", side = "credit", amount = "900.00" },
 ]
 
-# 3: by card, so reported on Form 1099-K, never counted here.
+# Entry 4: by card, so reported on Form 1099-K, never counted here.
 [[events]]
 date = "2026-06-10"
 description = "Contract work, June, by card"
@@ -95,7 +95,7 @@ lines = [
   { account = "2200", side = "credit", amount = "300.00" },
 ]
 
-# 4: made on the day itself, so counted.
+# Entry 5: made on the day itself, so counted.
 [[events]]
 date = "2026-06-30"
 description = "Contract work, June"
@@ -105,7 +105,7 @@ lines = [
   { account = "1000", side = "credit", amount = "500.00" },
 ]
 
-# 5: the day after.
+# Entry 6: the day after.
 [[events]]
 date = "2026-07-01"
 description = "Contract work, July"
@@ -115,7 +115,7 @@ lines = [
   { account = "1000", side = "credit", amount = "700.00" },
 ]
 
-# 6
+# Entry 7.
 [[events]]
 date = "2026-11-20"
 description = "Contract work, November"

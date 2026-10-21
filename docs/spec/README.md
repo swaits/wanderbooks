@@ -63,4 +63,13 @@ Read on 2026-10-13 through Deloitte's free DART roadmaps, which reproduce
 ASC text: ASC 230-10-45-16 and -28, 326-20-55-37/38, 606-10-25-23, 45-2,
 55-37/38, 830-20-30-1. Read directly in the ASC basic view on 2026-10-14
 (`sources/fasb-asc.md`): 360-10-35-4, 340-10-05-2/4/5, 210-10-45-1/2/5,
-230-10-45-7/10/12/13/14/15, 606-10-55-36 through 55-38. None left open.
+230-10-45-7/10/12/13/14/15, 606-10-55-36 through 55-38. Read on
+2026-10-20 where public sources reproduce the Codification (EY's FRD on
+the statement of cash flows, July 2026; FASB ASUs 2016-15 and 2016-18;
+Deloitte's public DART Roadmap): ASC 230-10-10-1, 45-1, 45-4, 45-5,
+45-8, 45-9, 45-12(c), 45-13(c), 45-14(a), 45-15(a)/(c), 45-16(a)/(b),
+45-17, 45-24 to 45-26, 45-28 to 45-31, 50-3 to 50-8, and 830-230-45-1;
+each checked again against the same sources in the P3 review (numbers,
+pages and wording hold). Open: 105-10-05-1 to 05-3, read only in their
+2009 text (ASU 2009-01, and as Wiley GAAP 2020 quotes them); their
+current wording is unconfirmed.

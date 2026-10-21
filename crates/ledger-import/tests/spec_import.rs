@@ -245,7 +245,9 @@ fn assert_sections_foot(st: &Statement) -> Vec<(String, String)> {
                 }
                 sums = vec![Decimal::ZERO; st.columns.len()];
             }
-            RowKind::Subheading | RowKind::Spacer => {}
+            // A detail's amount is part of the line above it, not of the
+            // section (cash flow kinds).
+            RowKind::Subheading | RowKind::Detail | RowKind::Spacer => {}
         }
     }
     checked
@@ -315,7 +317,7 @@ fn assert_accounting_shape(s: &str) {
 #[test]
 fn format_amount_examples_from_the_spec() {
     assert_eq!(format_amount(dec("1234.56")), "1,234.56");
-    assert_eq!(format_amount(dec("-207.68")), "(207.68)");
+    assert_eq!(format_amount(dec("-318.42")), "(318.42)");
     assert_eq!(format_amount(Decimal::ZERO), "0.00");
     // INVARIANT 2's own finding: -0.004 printed "(0.00)".
     assert_eq!(format_amount(dec("-0.004")), "0.00");
@@ -552,13 +554,15 @@ proptest! {
         }
     }
 
-    /// cash_flow INVARIANTS 1-3: operating lines (net income, depreciation,
-    /// working capital) foot to "Net cash from operating activities",
-    /// investing and financing to theirs; the three sum to "Net increase
-    /// (decrease) in cash"; beginning cash plus it is "Cash at end of
-    /// period"; a member's capital/distributions line is "Member
-    /// contributions — Name" (cash in) or "Member distributions — Name"
-    /// (cash out).
+    /// cash_flow INVARIANTS 1-5 (direct method, rules.md B-14, D-35): the
+    /// operating class rows foot to "Net cash from operating activities",
+    /// each other section's kind rows to theirs, and each kind's
+    /// transaction details to its kind's row; the three sum to
+    /// "Net increase (decrease) in cash"; beginning cash plus it is "Cash
+    /// at end of period"; net income and the reconciling items foot to the
+    /// schedule's subtotal, which is operating's; every row is the
+    /// engine's, kind for kind and label for label (none made up from a
+    /// sign); the noncash schedule lists every disclosure, or "None".
     #[test]
     fn cash_flow_foots_and_reconciles((specs, oe, end_off) in books_strategy()) {
         let b = build_books(&specs, oe);
@@ -569,14 +573,13 @@ proptest! {
             cash_accounts: vec![b.ids[0], b.ids[1]],
             financing_accounts: vec![b.ids[5]],
             investing_accounts: vec![b.ids[3]],
+            members: member_capitals(&b),
         }).unwrap();
-        let ms = members();
-        let st = report::cash_flow(&cf, &ms);
+        let st = report::cash_flow(&cf);
         let checked = assert_sections_foot(&st);
-        prop_assert_eq!(checked.len(), 3, "three sections: {:?}", checked);
+        prop_assert_eq!(checked.len(), 4, "three sections and the schedule: {:?}", checked);
         let op = find(&st, RowKind::Subtotal, "Net cash from operating activities").expect("operating subtotal");
-        prop_assert!(checked.iter().any(|(_, t)| t == &op.label));
-        let three: Decimal = checked.iter().map(|(_, t)| amt(st.rows.iter().find(|r| &r.label == t).unwrap(), 0)).sum();
+        let three: Decimal = checked[..3].iter().map(|(_, t)| amt(st.rows.iter().find(|r| &r.label == t).unwrap(), 0)).sum();
         let net = st.rows.iter().find(|r| r.label == "Net increase (decrease) in cash").expect("net change row");
         prop_assert_eq!(amt(net, 0), three);
         let begin = st.rows.iter().find(|r| r.kind == RowKind::Line && r.label.to_lowercase().contains("beginning")).expect("beginning cash");
@@ -586,19 +589,52 @@ proptest! {
         prop_assert_eq!(amt(op, 0), cf.cash_from_operations);
         prop_assert_eq!(amt(begin, 0), cf.cash_beginning);
         prop_assert_eq!(amt(endrow, 0), cf.cash_ending);
-        // INVARIANT 3: members named on their capital/distributions lines.
-        let mut fin: Vec<(String, Decimal)> = section_lines(&st, "Financing").iter().map(|r| (r.label.clone(), amt(r, 0))).collect();
-        for line in &cf.financing {
-            let Some(code) = &line.account else { continue };
-            let Some(m) = ms.iter().find(|m| &m.capital_code == code || m.distribution_code.as_ref() == Some(code)) else { continue };
-            let want = if line.amount > Decimal::ZERO {
-                format!("Member contributions — {}", m.name)
-            } else {
-                format!("Member distributions — {}", m.name)
-            };
-            let pos = fin.iter().position(|(l, a)| *l == want && *a == line.amount);
-            prop_assert!(pos.is_some(), "no {:?} {} among {:?}", want, line.amount, fin);
-            fin.remove(pos.unwrap());
+        // INVARIANT 3: the schedule closes on operating's figure.
+        let (sched, sched_total) = &checked[3];
+        prop_assert!(sched.starts_with("Reconciliation of net income"));
+        let sched_row = st.rows.iter().filter(|r| &r.label == sched_total).nth(1).expect("schedule subtotal");
+        prop_assert_eq!(amt(sched_row, 0), cf.cash_from_operations);
+        // INVARIANT 4: every row is the engine's, in its order.
+        let ops: Vec<(String, Decimal)> = section_lines(&st, "Operating").iter().map(|r| (r.label.clone(), amt(r, 0))).collect();
+        let want: Vec<(String, Decimal)> = cf.operating_by_class().into_iter().map(|(c, a)| (c.label().to_string(), a)).collect();
+        prop_assert_eq!(ops, want);
+        // Investing and financing: each kind a line with its total (D-35),
+        // its transactions listed under it as details that sum to it.
+        for (sec, name) in [(ledger_core::CashFlowSection::Investing, "Investing"), (ledger_core::CashFlowSection::Financing, "Financing")] {
+            let mut want = Vec::new();
+            let mut kind = None;
+            for l in cf.lines(sec) {
+                if kind != Some(&l.kind) {
+                    let total: Decimal = cf.lines(sec).iter().filter(|x| x.kind == l.kind).map(|x| x.amount).sum();
+                    want.push((RowKind::Line, l.kind.clone(), Some(total)));
+                    kind = Some(&l.kind);
+                }
+                want.push((RowKind::Detail, l.label.clone(), Some(l.amount)));
+            }
+            let mut got = Vec::new();
+            let mut inside = false;
+            for r in &st.rows {
+                match r.kind {
+                    RowKind::Section => inside = r.label.starts_with(name),
+                    RowKind::Subtotal => inside = false,
+                    RowKind::Line | RowKind::Detail | RowKind::Subheading if inside => {
+                        got.push((r.kind, r.label.clone(), r.amounts.first().copied().flatten()));
+                    }
+                    _ => {}
+                }
+            }
+            prop_assert_eq!(got, want);
+        }
+        prop_assert!(st.rows.iter().all(|r| !r.label.starts_with("Member ")));
+        // INVARIANT 5: the noncash schedule.
+        let noncash = section_lines(&st, "Noncash");
+        if cf.noncash_disclosures.is_empty() {
+            prop_assert_eq!(noncash.len(), 1);
+            prop_assert_eq!(&noncash[0].label, "None");
+        } else {
+            let got: Vec<(String, Decimal)> = noncash.iter().map(|r| (r.label.clone(), amt(r, 0))).collect();
+            let want: Vec<(String, Decimal)> = cf.noncash_disclosures.iter().map(|n| (n.label.clone(), n.amount)).collect();
+            prop_assert_eq!(got, want);
         }
     }
 
@@ -2988,7 +3024,7 @@ fn xlsx_precision_boundaries() {
             line("neg max exact", "-9999999999999.99"),
             line("sixteen digits", "12345678901234.56"),
             line("neg sixteen digits", "-12345678901234.56"),
-            line("plain", "-207.68"),
+            line("plain", "-318.42"),
         ],
     );
     check_xlsx(&st);
@@ -3049,6 +3085,7 @@ fn xlsx_renders_every_statement_and_ledger_report() {
             cash_accounts: vec![b.ids[0]],
             financing_accounts: vec![],
             investing_accounts: vec![],
+            members: member_capitals(&b),
         },
     )
     .unwrap();
@@ -3056,7 +3093,7 @@ fn xlsx_renders_every_statement_and_ledger_report() {
     for st in [
         report::profit_and_loss(&pl),
         report::balance_sheet(&bs, ye, &members()),
-        report::cash_flow(&cf, &members()),
+        report::cash_flow(&cf),
         report::trial_balance(&trial_balance_as_of(&b.ledger, e), e),
         report::members_equity(&me),
     ] {
@@ -3868,46 +3905,65 @@ fn tax_summary_difference_and_schedule_k() {
     );
 }
 
-/// The cash flow's "Adjustments" subheading and depreciation line appear
-/// only when there is something to adjust.
+/// The reconciliation's "Adjustments:" subheading appears only when there
+/// is something to reconcile, and the noncash schedule says "None" when
+/// nothing was disclosed (cash_flow INVARIANT 5). A contribution of
+/// property is disclosed under its label; depreciation is an adjustment.
 #[test]
 fn cash_flow_adjustments_appear_only_when_there_are_some() {
-    let mk = |depreciation: Decimal, wc: Vec<ledger_core::CashFlowLine>| {
-        ledger_core::CashFlowStatement {
-            start: d(2026, 1, 1),
-            end: d(2026, 1, 31),
-            net_income: cents(1_000),
-            depreciation,
-            cash_from_operations: cents(1_000)
-                + depreciation
-                + wc.iter().map(|l| l.amount).sum::<Decimal>(),
-            working_capital: wc,
-            investing: vec![],
-            cash_from_investing: Decimal::ZERO,
-            financing: vec![],
-            cash_from_financing: Decimal::ZERO,
-            net_change_in_cash: Decimal::ZERO,
-            cash_beginning: Decimal::ZERO,
-            cash_ending: Decimal::ZERO,
-        }
+    let mut l = Ledger::new(Currency::USD);
+    let mut add = |code: &str, t| l.add_account(code, code, t, None, false).unwrap();
+    let cash = add("1000", AccountType::Asset);
+    let equip = add("1500", AccountType::Asset);
+    let accum = add("1510", AccountType::Asset);
+    let cap = add("3000", AccountType::Equity);
+    let rev = add("4000", AccountType::Revenue);
+    let depr = add("6100", AccountType::Expense);
+    let post = |l: &mut Ledger, day, desc: &str, dr, cr, n: i64| {
+        let e = l.create_entry(d(2026, 1, day), desc);
+        l.add_line(e, dr, Side::Debit, usd(n)).unwrap();
+        l.add_line(e, cr, Side::Credit, usd(n)).unwrap();
+        l.post_entry(e).unwrap();
+    };
+    post(&mut l, 2, "Sale", cash, rev, 1_000);
+    let st = |l: &Ledger| {
+        let cf = cash_flow(
+            l,
+            &CashFlowParams {
+                start: d(2026, 1, 1),
+                end: d(2026, 1, 31),
+                cash_accounts: vec![cash],
+                financing_accounts: vec![],
+                investing_accounts: vec![],
+                members: vec![],
+            },
+        )
+        .unwrap();
+        report::cash_flow(&cf)
     };
     let has = |st: &Statement, p: &str| st.rows.iter().any(|r| r.label.starts_with(p));
-    let plain = report::cash_flow(&mk(Decimal::ZERO, vec![]), &[]);
+    let plain = st(&l);
     assert!(!has(&plain, "Adjustments") && !has(&plain, "Depreciation"));
-    let dep = report::cash_flow(&mk(cents(100), vec![]), &[]);
+    assert_eq!(section_lines(&plain, "Noncash")[0].label, "None");
+    l.register_asset(ledger_core::NewAsset {
+        description: "Laptop".into(),
+        purchase_date: d(2026, 1, 3),
+        cost: usd(900),
+        salvage_value: usd(0),
+        useful_life_months: 36,
+        cost_account: equip,
+        accum_depr_account: accum,
+        expense_account: depr,
+    })
+    .unwrap();
+    post(&mut l, 3, "Laptop contributed", equip, cap, 900);
+    post(&mut l, 31, "Depreciation", depr, accum, 25);
+    let dep = st(&l);
     assert!(has(&dep, "Adjustments") && has(&dep, "Depreciation"));
-    let wc = report::cash_flow(
-        &mk(
-            Decimal::ZERO,
-            vec![ledger_core::CashFlowLine {
-                label: "Increase in AR".into(),
-                amount: cents(-50),
-                account: None,
-            }],
-        ),
-        &[],
-    );
-    assert!(has(&wc, "Adjustments") && !has(&wc, "Depreciation"));
+    let noncash = section_lines(&dep, "Noncash");
+    assert_eq!(noncash.len(), 1);
+    assert_eq!(noncash[0].label, "Laptop contributed (#2)");
+    assert_eq!(noncash[0].amounts, vec![Some(cents(900))]);
 }
 
 /// A template takes at most 90 owners.

@@ -453,10 +453,58 @@ every tool over every book in ledger-store's `tests/fixtures/old-books`.
   `revenue_accounts` and `expense_accounts` for the range. `end` defaults to
   today, `start` to the first posted entry. Closing entries are excluded, so
   a closed period still shows what it earned.
-- `books.cash_flow { start?, end?, cash_accounts?, financing_accounts?, investing_accounts? }` (each defaults to `[books]` in wanderbooks.toml; cash is required one way or the other)
-  → indirect-method cash flow statement. `cash_accounts` are the reconciling
-  accounts (required); the three sections always sum to their net change.
-  Disposal gains/losses move from operating to investing automatically.
+- `books.cash_flow { start?, end?, cash_accounts?, financing_accounts?, investing_accounts? }` (each defaults to the books' settings, `books.cash_accounts` and so on; cash is required one way or the other)
+  → the statement of cash flows, direct method (rules.md B-14, P3 defect
+  1): `{ method: "direct", start, end, operating_by_class, operating,
+  cash_from_operations, investing_by_kind, investing, cash_from_investing,
+  financing_by_kind, financing, cash_from_financing, net_change_in_cash,
+  cash_beginning, cash_ending, noncash_disclosures,
+  operating_reconciliation, reconciles, warnings }`.
+  - Lines (`operating`, `investing`, `financing`) are one per entry, section
+    and kind: `{ entry, date, label, kind, amount, on_behalf?, accounts,
+    reverses?, class? }`; every transaction is listed (D-35), each under its
+    kind. An entry's interest is its own operating class, (b) or (e), apart
+    from the rest of its operating cash. What a member or a lender paid or
+    received for the company with no cash account moving is cash borrowed
+    (or contributed) and spent, on the entry's date (D-42, rules.md B-14
+    rule 11): an expense a member paid personally through Due to Members
+    is a "Proceeds from borrowing — <account>" line and an operating
+    line, each with `on_behalf`, the part of its amount so handled (absent
+    when none; an entry's `on_behalf` parts net to zero).
+    Labels never come from a reversal's sign: "Reversal of #N — …",
+    "Reinstatement of #A (reverses #B)". An entry and its reversal in the
+    same period drop out together.
+  - `operating_by_class`, `investing_by_kind`, `financing_by_kind`:
+    `{ kind, class?, amount, entries }`, how the printed statement shows the
+    sections: operating by ASC 230-10-45-25 class (`from_customers`,
+    `interest_and_dividends_received`, `other_receipts`,
+    `to_suppliers_and_employees`, `interest_paid`, `income_taxes_paid`,
+    `other_payments`), investing and financing by kind ("Contributions from
+    members — <member>", "Repayments of borrowing — <account>", "Purchases
+    of property and equipment", …).
+  - `noncash_disclosures`: `{ entry, date, label, amount, operating,
+    investing, financing, exchanged, reverses? }`, the investing and
+    financing activities no cash settled (ASC 230-10-50-3): property
+    contributed, debt converted to equity, a purchase on the seller's
+    credit, interest charged into a loan, the noncash part of a part-cash
+    purchase.
+  - `operating_reconciliation`: `{ net_income, lines: [{ kind, label,
+    amount, account?, entries }], net_cash_from_operating }`, net income
+    reconciled to operating cash (ASC 230-10-45-30), kinds `depreciation`,
+    `investing_gain_loss`, `noncash_through`, `other_noncash`,
+    `operating_balance_change`.
+  - `reconciles`: `{ sections_sum, net_change, difference }`; `difference`
+    is always `"0.00"`: a statement that wouldn't foot is an engine error,
+    never output.
+  - `warnings`: `{ entry, kind, message }` for an entry whose later payment
+    or collection the books can't classify (`asset_on_operating_payable`,
+    `asset_sold_on_operating_receivable`), with the fix.
+  - Refused, naming the setting, when the roles contradict the chart or
+    each other (cash and investing accounts must be assets, financing
+    accounts liabilities or equity; no account in two lists or twice in
+    one; no registered asset's account as cash).
+  - Changed in P3 (breaking): `net_income`, `depreciation` and
+    `working_capital` are gone (net income is in `operating_reconciliation`).
 - `books.digest { since: "2026-10-01" }`
   → `{ entries_posted: [...], totals_by_account: [...], stale_rules: [...] }`.
   The human review surface: "what did the AI do with my books lately." The
@@ -1133,8 +1181,15 @@ posting.
 - `books.export { format, report, start?, end?, as_of?, cash_accounts?,
   financing_accounts?, investing_accounts? }` → `{ content,
   content_encoding?, warnings? }`.
-  - Reports: `profit_and_loss`, `balance_sheet`, `cash_flow` (needs
-    `cash_accounts`), `trial_balance`, `members_equity` (statement of
+  - Reports: `profit_and_loss`, `balance_sheet`, `cash_flow` (direct
+    method; needs `cash_accounts`; json is `books.cash_flow`'s answer, csv
+    is `section,kind,class,entry,date,label,amount,on_behalf` (`on_behalf`
+    on a section's lines only) with sections
+    `operating`, `investing`, `financing`, `reconciliation`, `noncash`,
+    `footing` and `warning` (its kind, entry and message; no amount); xlsx
+    and pdf are the printed statement, operating by class and investing
+    and financing by kind with each kind's transactions under it, with its
+    two schedules), `trial_balance`, `members_equity` (statement of
     changes in members' equity; members from `wanderbooks.toml`; earnings
     not yet closed are split the way the next members close will split
     them, so a member's capital on a day never changes when its month is
@@ -1506,7 +1561,10 @@ entries.
   README says which. With TINs it adds `party_id, tin_last4, tin,
   tin_type, tin_note`. A zip with the full set, each
   statement as PDF and XLSX: `profit-and-loss`, `balance-sheet`,
-  `cash-flow` (reconciled to `cash_accounts`), `members-equity`
+  `cash-flow` (the direct method, as `books.export` prints it: operating
+  by class, investing and financing by kind with each member named, and
+  its two schedules; reconciled to the package's cash accounts),
+  `members-equity`
   (multi-member LLCs), `trial-balance`; plus `general-ledger.xlsx` and
   `general-journal.xlsx`. Period reports cover the fiscal year to date.
   What the CPA needs; they never log into the system.

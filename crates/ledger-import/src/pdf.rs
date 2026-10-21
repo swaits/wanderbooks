@@ -65,6 +65,7 @@ pub fn template_data(st: &Statement, meta: &ReportMeta) -> serde_json::Value {
         RowKind::Section => "section",
         RowKind::Subheading => "subheading",
         RowKind::Line => "line",
+        RowKind::Detail => "detail",
         RowKind::Subtotal => "subtotal",
         RowKind::Total => "total",
         RowKind::Spacer => "spacer",
@@ -146,7 +147,7 @@ mod tests {
         ReportMeta {
             company: "Test Co".to_string(),
             basis: "Accrual".to_string(),
-            prepared_on: NaiveDate::from_ymd_opt(2026, 10, 11).unwrap(),
+            prepared_on: NaiveDate::from_ymd_opt(2026, 3, 19).unwrap(),
             journal_seq: 42,
         }
     }
@@ -158,15 +159,15 @@ mod tests {
             amount: Decimal::new(cents, 2),
         };
         ProfitAndLossStatement {
-            start: NaiveDate::from_ymd_opt(2026, 10, 4).unwrap(),
-            end: NaiveDate::from_ymd_opt(2026, 10, 11).unwrap(),
+            start: NaiveDate::from_ymd_opt(2026, 3, 2).unwrap(),
+            end: NaiveDate::from_ymd_opt(2026, 3, 18).unwrap(),
             revenue: vec![],
             expenses: vec![
-                line("6000", "Organizational Costs", 5900),
-                line("6400", "Memberships & Licenses", 10638),
+                line("6000", "Organizational Costs", 7200),
+                line("6400", "Memberships & Licenses", 11840),
             ],
             total_revenue: Decimal::ZERO,
-            total_expenses: Decimal::new(16538, 2),
+            total_expenses: Decimal::new(19040, 2),
         }
     }
 
@@ -180,19 +181,19 @@ mod tests {
             serde_json::json!({
                 "company": "Test Co",
                 "title": "Profit and Loss",
-                "period": "October 4 – October 11, 2026",
-                "footer": "Accrual basis · Prepared Sunday, October 11, 2026 · Journal seq 42",
+                "period": "March 2 – March 18, 2026",
+                "footer": "Accrual basis · Prepared Thursday, March 19, 2026 · Journal seq 42",
                 "columns": ["Total"],
                 "rows": [
                     {"kind": "section", "label": "Revenue", "rule": false, "currency": false, "amounts": []},
                     {"kind": "subtotal", "label": "Total revenue", "rule": false, "currency": true, "amounts": amt("0.00", false)},
                     {"kind": "spacer", "label": "", "rule": false, "currency": false, "amounts": []},
                     {"kind": "section", "label": "Expenses", "rule": false, "currency": false, "amounts": []},
-                    {"kind": "line", "label": "6000 Organizational Costs", "rule": false, "currency": false, "amounts": amt("59.00", false)},
-                    {"kind": "line", "label": "6400 Memberships & Licenses", "rule": false, "currency": false, "amounts": amt("106.38", false)},
-                    {"kind": "subtotal", "label": "Total expenses", "rule": true, "currency": true, "amounts": amt("165.38", false)},
+                    {"kind": "line", "label": "6000 Organizational Costs", "rule": false, "currency": false, "amounts": amt("72.00", false)},
+                    {"kind": "line", "label": "6400 Memberships & Licenses", "rule": false, "currency": false, "amounts": amt("118.40", false)},
+                    {"kind": "subtotal", "label": "Total expenses", "rule": true, "currency": true, "amounts": amt("190.40", false)},
                     {"kind": "spacer", "label": "", "rule": false, "currency": false, "amounts": []},
-                    {"kind": "total", "label": "Net income (loss)", "rule": true, "currency": true, "amounts": amt("165.38", true)},
+                    {"kind": "total", "label": "Net income (loss)", "rule": true, "currency": true, "amounts": amt("190.40", true)},
                 ],
             })
         );

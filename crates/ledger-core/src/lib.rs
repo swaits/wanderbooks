@@ -21,6 +21,7 @@ pub mod analysis;
 pub mod arap;
 pub mod assets;
 pub mod calendar;
+pub mod cashflow;
 pub mod classes;
 pub mod conventions;
 pub mod error;
@@ -53,6 +54,12 @@ pub use assets::{
     ScheduleLine, TaxBasis, TaxBasisRule, accumulated_depreciation, book_value,
     depreciation_schedule, disposal_amounts,
 };
+pub use cashflow::{
+    CashFlowFooting, CashFlowKind, CashFlowLine, CashFlowParams, CashFlowSection,
+    CashFlowStatement, CashFlowWarning, CashFlowWarningKind, NoncashDisclosure, OperatingClass,
+    OperatingReconciliation, ReconcilingKind, ReconcilingLine, RoleList, RoleProblem, cash_flow,
+    role_problems,
+};
 pub use classes::{Class, ClassId};
 pub use error::LedgerError;
 pub use form1099::{
@@ -60,6 +67,7 @@ pub use form1099::{
     vendor_1099_report_with, vendor_1099_report_with_members,
 };
 pub use journal::{EntryId, EntryStatus, JournalEntry, JournalLine};
+pub use kernel::{EntryFlows, Flow};
 pub use ledger::{
     ControlAccount, GENERAL_EXPENSES, Ledger, PAYABLES, PAYROLL, RECEIVABLES, RETAINED_EARNINGS,
     REVENUE, ReconciliationReport, UnclearedLine, control_account, control_accounts,
@@ -73,12 +81,11 @@ pub use periods::{
     PeriodId, PeriodStatus, RETAINED_EARNINGS_CODE,
 };
 pub use reports::{
-    AssetRegister, AssetRegisterRow, BalanceSheet, BalanceSheetStatement, CashFlowLine,
-    CashFlowParams, CashFlowStatement, ClassProfitAndLoss, GeneralLedger, LedgerAccount,
-    LedgerPosting, MemberCapital, MemberEquityColumn, MembersEquityStatement, ProfitAndLoss,
-    ProfitAndLossStatement, StatementLine, TrialBalance, TrialBalanceLine, balance_sheet_as_of,
-    cash_flow, fixed_asset_register, general_ledger, members_equity, profit_and_loss_for_period,
-    trial_balance_as_of,
+    AssetRegister, AssetRegisterRow, BalanceSheet, BalanceSheetStatement, ClassProfitAndLoss,
+    GeneralLedger, LedgerAccount, LedgerPosting, MemberCapital, MemberEquityColumn,
+    MembersEquityStatement, ProfitAndLoss, ProfitAndLossStatement, StatementLine, TrialBalance,
+    TrialBalanceLine, balance_sheet_as_of, fixed_asset_register, general_ledger, members_equity,
+    profit_and_loss_for_period, trial_balance_as_of,
 };
 pub use schedules::{
     AmortizationSchedule, Frequency, NewRecurring, NewSchedule, RecurringEntry, RecurringId,

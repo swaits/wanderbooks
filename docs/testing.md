@@ -23,7 +23,7 @@ promise.
 | Model-based stateful | the Lean state machine, transcribed (3) | `tests/model.rs` | `just check` | ~3s | every change |
 | Differential: Decimal vs i64 | the kernel at two types (3) | `kernel_bridge.rs` | `just check` | <1s | every change |
 | Differential: GnuCash | another implementation, adjudicated (3) | `tests/oracle_gnucash.rs`, `oracle/gnucash/` | `just oracle` | ~2 min | weekly |
-| Formal proofs | Kani (bounded) and Lean (unbounded) | `src/proofs.rs`, `verify/lean/` | `just prove` | ~3 min | weekly |
+| Formal proofs | Kani (bounded) and Lean (unbounded) | `src/proofs.rs`, `verify/lean/` | `just prove` | ~15-20 min (bounded by `entry_flows_of_a_reversal_mirror`, ~14 min; all 29 harnesses ~43 min of CPU, run in parallel) | weekly |
 | Fuzzing | crash, hang, broken books (4); for `fuzz_store_replay` (validly chained journals with fuzz-chosen events): books that open must verify, and the viewer must accept exactly what the writer does | `fuzz/fuzz_targets/`, corpora in `fuzz/corpus/` | `just fuzz <target> <secs>` | 10 min each | weekly |
 | Miri | undefined behavior in our use of dependencies (4) | the core's unit, bridge, invariant tests | `just miri` | ~2 min | on demand |
 | Golden | `tests/golden/fixture_company.json` (5) | `invariants.rs` | `just check` | <1s | every change |
@@ -606,7 +606,9 @@ worked by hand in the test's comment.
 anonymized, with a close to retained earnings between two members closes.
 The run rule left A −399.24 / B −399.22; the rule since P3 gives −399.23
 each (March: Dr 3000 199.61, Dr 3001 199.62). Its bookspec example is
-`bookspec/examples/members-close.odd-cent-across-closes.toml`.
+`bookspec/examples/members-close.odd-cent-across-closes.toml`; it and the
+other `members-close.*` examples are checked with every example by
+`ledger-core` `tests/bookspec.rs` (`every_bookspec_example_holds`).
 
 **Core** (`ledger-core` `tests/odd_cent.rs`): a true-up from inception
 (`members_closes_true_up_from_inception`); a close that posts nothing
@@ -763,7 +765,17 @@ fixtures:
   ones (`bookspec/examples/as-of-package-stops-at-as-of.toml`,
   `1099-worksheet-through-as-of.toml`) and the IIF's
   (`iif-quickbooks-journal-file.toml`, formats appendix), each expected
-  value derived by hand; `the_bookspec_iif_example_matches_the_engine`
+  value derived by hand. `ledger-core` `tests/bookspec.rs` loads every
+  example, the formats appendix's too, and checks the as-of ones' trial
+  balances, profits and losses and 1099 payments against the engine
+  (`every_bookspec_example_holds`, the one loader of every example; the
+  tests beside it refuse a query no crate answers, a format query outside
+  the formats appendix, an unknown appendix, a payee not in the setup, a
+  figure query leaving out an account, payee or entry line it covers, an
+  as-of query given a period, `after` past the last event, members'
+  shares not summing to 1 and a members close declared with another
+  rounding, and show `after` asks the books after that event);
+  `the_bookspec_iif_example_matches_the_engine`
   reads the IIF example and checks the engine gives exactly its file and
   changes.
 - Review R18 and the README: `one_list_of_cash_accounts_per_package`,
@@ -895,6 +907,149 @@ condition and `receivable_payable`; `fonts.rs` and `theme.rs`
 `parties.rs` `tin_separator`'s arms and `tin_invisible`, and the gap that
 doesn't count them.
 
+## P3: cash flow (defect 1, 2026-10-20)
+
+The statement of cash flows was rebuilt by the direct method (rules.md
+B-14, D-35), and what a member or a lender pays for the company shown as
+cash borrowed and spent (D-42, rule 11). Built, reviewed twice, `just
+check` and `just prove`; no mutation run (D-33): what P12 must cover is at
+the end.
+
+- **Named regressions** (`crates/ledger-core/tests/spec_cash_flow.rs`;
+  also bookspec examples, `bookspec/examples/cash-flow.*.toml`, checked by
+  `tests/bookspec.rs` on every run):
+  `defect1_reversed_contributions_foot_regression` (the minimal
+  reproduction: a property contribution reversed, which broke footing by
+  the contribution's amount), `defect1_two_member_llc_first_year_regression`
+  and `defect1_two_member_llc_as_of_march_18_regression` (a replica of
+  the 23 entries defect 1 was found in: the same shape, order, accounts
+  and roles, Member A and B and generic vendors, every amount and date
+  made up, so none is the real books'; to 2026-03-31, operating -596.24,
+  investing 0.00, financing +2,216.40, the change in cash +1,620.16, and
+  to 2026-03-18, operating -549.86, financing +2,549.86, worked by hand
+  in the test's doc comment).
+- **The rule, case by case** (same file; each oracle worked by hand from
+  its paragraph in the test's doc comment): disposals at a gain, a loss
+  and before any depreciation (`disposal_proceeds_all_investing`); a sale
+  on an IOU (disclosed, flagged, with the fix); property contributed;
+  what a member or lender pays or receives for the company (D-42, rule
+  11): an expense through Due to Members, equipment a bank paid for, an
+  expense paid into capital, a financing card, part cash and part a
+  member's, a refund to a member, a customer paying a member, a payment
+  made for the company and its reversal (in the period and alone, a
+  prepaid and equipment too), the reimbursement, the uses' order (rule
+  11's convention); and what stays noncash: property a member owned (with
+  members configured and without), the seller's credit (flagged), interest
+  and guaranteed payments charged to a creditor, a fee withheld on a
+  contra-liability. From the second review: odd shapes (two cash accounts
+  in one entry, one account on both sides, a reversal chain across the
+  period start, a close: `odd_shapes_foot_and_net`) and taxes and
+  government fees as other payments, (g); reversals in the
+  period, alone, taking their root's sections and class, and reversals of
+  reversals (review item 1); part cash (50-5); a fee withheld from a loan;
+  interest with principal, paid and received; one entry per operating
+  class (a)-(g); depreciation; cash spent on a depreciation expense account
+  (D1-e); the reconciliation tying to operating; closes; the start date;
+  transfers between cash accounts; debt converted to capital, a note
+  received for equipment, a trade-in (review item 2); the bill split
+  (D-35, through a bill restored as a later version would journal it),
+  and a bill payment reversed in the period; a card purchase of
+  equipment, on an operating and a financing card; each member's kinds;
+  the five role refusals and `foot` directly. From the P3 review: interest
+  classed apart from the rest of an entry's operating cash
+  (`operating_cash_is_classed_kind_by_kind`) and kept operating in a
+  disposal; a loss on disposal on a revenue-typed or an expense-typed
+  account; an investment sold at a gain; a reversal three levels down;
+  and both of rule 3's conventions pinned (the sections' order, the kinds'
+  order).
+- **Properties, 5,000 cases each** (`CF_CASES`, default 5,000, about 16 s):
+  `prop_cash_flow_laws` over random books of 33 templates (every shape
+  the rule names, rule 11's included) and reversals of any earlier entry,
+  reversals included: the sections are the change in cash and the
+  model's; each section is its lines and kinds; the reconciliation is
+  operating; an entry's lines are its cash, what was handled for it
+  netting to zero, each line's cash part with the entry's sign; every
+  disclosure is its parts' positive sum or its exchange; an entry and its
+  reversal in the period change nothing; periods split and add; closing
+  every month changes nothing; scaling scales every figure.
+  `prop_pure_entries_sections_are_movements`: for pure entries, each
+  section is minus its accounts' movement over the entries that touch
+  cash or that a member or lender settled whole for the company (the
+  plan's wording, with rule 11 modelled apart from the engine; review
+  item 7's definition of pure). The older properties in `spec_reports.rs`
+  are kept with new oracles (financing is the cash part of equity and
+  designated debt plus what the loan or capital paid or received for the
+  company, by an independent model of rules 3 and 11).
+- **Bridge:** `entry_flows_agree`, `apply_cash_and_exchanged_agree`,
+  `constructive_agrees`.
+- **Proofs:** Kani `entry_flows_sum_to_cash`,
+  `entry_flows_pure_are_movements`, `entry_flows_are_bounded`,
+  `entry_flows_of_a_reversal_mirror`, `no_cash_no_flow` (entries of up to
+  three lines), `take_is_odd_and_bounded`, `apply_cash_mirrors`,
+  `apply_cash_spends_exactly`, `exchanged_is_bounded`,
+  `constructive_nets_to_zero`, `constructive_mirrors`; Lean
+  `cashflow_sections_sum_to_cash_change`, `entry_flows_sum`,
+  `flows_reversal`, `constructive_nets`, `constructive_neg`,
+  `constructive_sections_net`, `stmt_flows_sum`, `stmt_flows_reversal`,
+  `operating_reconciliation_ties(_all)`, `cashflow_reversal_nets`,
+  `Reachable.cashflow_foots`, `Reachable.cashflow_is_change_in_cash`
+  (docs/verification.md, law 10).
+- **Sensitivity (P3 review, by hand, no mutation run):** 18 deliberate
+  breaks to `cashflow.rs` and `kernel.rs` (a dropped reversal
+  flip, no netting, financing read as operating, no rule 4, no exchange
+  disclosure, no interest class, no warnings, the bill's payments
+  ignored, the label's depth parity, repeated codes allowed, depreciation
+  disclosed, the sections' or kinds' order reversed, the customer party
+  ignored, accumulated depreciation in the exchange, the interest
+  exception dropped, rule 4 for investing accounts): 17 fail a test (4
+  of them only since the review's tests); one is equivalent today
+  (`mirrors` ignoring amounts: every reversal mirrors its original until
+  P4's drafts).
+- **Sensitivity, second round (after D-42, by hand, no mutation run):**
+  17 breaks to rule 11 and the kernel's `constructive` (no lender pass, no
+  member pass, no receipts for the company, a reversal not mirrored, a
+  lender paying for no investing, capital paying for property, receipts
+  for property, receivables not received, guaranteed payments or
+  interest paid for, `on_behalf` not reported, the exchange on the net
+  flow, owners' equity read as a lender, pairing that ignores
+  `on_behalf`, the kernel's received sign, `max` for `min`, the uses'
+  order reversed): 16 fail a test; one is equivalent today (pairing that
+  ignores `on_behalf`: a mirrored reversal's real and constructive parts
+  are each proved to mirror, Kani `entry_flows_of_a_reversal_mirror` and
+  `constructive_mirrors`, so the check is defensive, for P4's drafts).
+  The first round's 18 breaks, re-run on the reworked code (four
+  adapted where the code moved), and one more for the taxes class: 18
+  fail a test, `mirrors` ignoring amounts still the one equivalent.
+- **End to end:** the printed statement's footing, schedules and rows as
+  the engine's (`cash_flow_foots_and_reconciles`,
+  `cash_flow_adjustments_appear_only_when_there_are_some`, ledger-import);
+  the CPA package's statement with both schedules
+  (`the_cash_flow_carries_both_schedules`); the MCP tool and its exports
+  field for field against the core (`cash_flow_exports_equal_the_core_statement`),
+  the CSV's warnings, the settings' roles and a member-paid expense over stdio
+  (`cash_flow_reads_its_account_roles_from_the_books_settings`), refusals
+  naming the setting (`cash_flow_refuses_contradictory_roles`), the
+  settings' problems from the same check; the viewer's statement as the
+  server's, a loan the setting leaves out operating in both, a refusal
+  shown as a reason and no number, and the page painted
+  (`the_cash_flow_page_is_the_servers_statement`,
+  `a_refused_cash_flow_shows_why_and_no_number`,
+  `the_cash_flow_page_paints_its_schedules`; with `SHOT_DIR`, a PNG); the
+  statement's warnings as Needs attention items
+  (`cash_flow_warnings_are_items`);
+  every old-books fixture's statement computed or refused, never an
+  engine error (`every_figure_over_old_books_is_computed_or_refused`).
+
+**For P12** (D-33): `cargo mutants` on `ledger-core`'s `cashflow.rs`
+(`cash_flow`, `analyse`, `pairs`, `label`, `class_of`, `reconcile`,
+`warnings`, `bill_splits`, `role_problems`, `foot`, `on_behalf`) and
+`kernel.rs`'s `take`, `apply_cash`, `entry_flows`, `constructive`,
+`exchanged`; `ledger-import`'s
+`report::cash_flow`; `ledger-mcp`'s `cash_flow_out`, `cash_flow_csv`,
+`export_cash_flow` and `settings_problems`; zero unexplained survivors
+(plan P3 accept). Likely equivalent, to adjudicate: `min` against `max`
+in `take` where both bounds coincide, and the kind order's tie-breaks.
+
 ## Benchmarks (baseline 2026-10-13)
 
 No budget, by decision (the owner, 2026-10-13: the books do little work
@@ -940,6 +1095,7 @@ accounting question), CHANGE (a source says otherwise; work pending).
 | 6 | Reconciliation balances | CONFIRMED | Signed by the account's normal side (a card reads as owed), as statements show it; `reconciling_a_card_reads_its_normal_side_...` |
 | 7 | A member's ending on one equity statement may differ by a cent from the next statement's beginning | CHANGED 2026-10-13; CHANGED P3 | A capital account is one running balance (Treas. Reg. §1.704-1(b)(2)(iv)(b); the Item L quote this row once gave was misread, P3 review R-4). Undistributed earnings now split cumulatively as of each date, so each member's capital chains exactly (`each_members_capital_chains_across_statements`; it fails on the old code); since P3 the split is what the count's next close would give, so a date's capital never moves when its month is closed (D-38; `each_members_capital_chains_and_holds_through_closes`); rules.md B-13 |
 | 8 | Cash flow nets one line per account; investing comes only from registered assets | CHANGED 2026-10-13 | ASC 230-10-45-7: gross receipts and payments "more relevant" than net; 45-8 limits netting to quick-turnover items. Financing and investing are now gross; loans made and investments bought are investing (230-10-20, 45-13) via `[books] investing_accounts`. Owner-advanced expenses: PwC 6.9.3.1 constructive treatment via `[books] financing_accounts` (rules.md B-14) |
+| 8a | Cash flow by the indirect method; member-paid expenses as constructive receipts | CHANGED 2026-10-20 | The direct method with the reconciliation as a separate schedule (ASC 230-10-45-25, 45-30); noncash investing and financing activities disclosed, only the cash portion reported (50-3, 50-5). Member-paid expenses stay constructive receipts and disbursements, now gross and on each payment's date, and the same for a lender's payments and an expense paid into capital: a choice (D-42, after a day as noncash under D-35), since ASC 230 doesn't address payments made on the entity's behalf and the firm guides present them so (PwC 6.9.3.1, DART 7.2, BDO 3.4, EY 4.6.2; KPMG Q8.3.10 also accepts noncash for property a lender pays for). rules.md B-14 rule 11, P3 defect 1 |
 | 9 | An asset's life ends at purchase + life months, that day not held; day-count proration | CONVENTION | Exactly N months of service; day proration and the mid-month convention are both accepted book policies (ASC 360-10-35-4, read 2026-10-14: any systematic and rational allocation) |
 | 10 | A payroll entry has one line per account total | CONFIRMED | The per-employee detail the IRS requires ("Amounts and dates of all wage ... payments", Employment Tax Recordkeeping) is kept in the run; a summary entry is standard |
 | 11 | A period with exactly the dates of an existing one is allowed | DESIGN | Nothing governs duplicate periods; harmless (the second close locks only). Refusing exact duplicates is an option |

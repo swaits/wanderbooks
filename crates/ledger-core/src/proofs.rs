@@ -9,8 +9,10 @@
 //! property test checks the two instantiations agree.
 //!
 //! Bounds: entries of up to [`N`] lines over up to [`K`] accounts, and
-//! amounts up to 2^40 in magnitude. The Lean model in `verify/lean`
-//! proves the same laws for any number of lines and accounts.
+//! amounts up to 2^40 in magnitude; the statement of cash flows' entry
+//! harnesses, up to [`NF`] lines, each in any of the four places. The Lean
+//! model in `verify/lean` proves the same laws for any number of lines and
+//! accounts.
 
 use crate::kernel::{self, Amount, LineError};
 use crate::{AccountType, Side};
@@ -711,6 +713,382 @@ fn cumulative_closing_entry_balances() {
     }
     assert_eq!(wide_net(&entry[..len]), 0);
     kani::cover!(true_up, "a true-up line on a member");
+}
+
+// ---------------------------------------------------------------------------
+// The statement of cash flows
+// ---------------------------------------------------------------------------
+
+use kernel::Flow;
+
+/// Most lines per entry the cash flow harnesses explore: three is the
+/// fewest an entry needs to be mixed (cash and two sections), and each
+/// line can land in any of the four places. (Four lines ran past half an
+/// hour per harness, too long for `just prove`; the Lean model covers any
+/// number.)
+const NF: usize = 3;
+
+/// Any count up to `NF`.
+fn any_flow_len() -> usize {
+    let n: usize = kani::any();
+    kani::assume(n <= NF);
+    n
+}
+
+fn any_flow() -> Flow {
+    let t: u8 = kani::any();
+    kani::assume(t < 4);
+    match t {
+        0 => Flow::Cash,
+        1 => Flow::Operating,
+        2 => Flow::Investing,
+        _ => Flow::Financing,
+    }
+}
+
+/// `NF` lines, each tagged with its place on the statement (use a
+/// prefix).
+fn any_flow_lines() -> [(Flow, Side, i64); NF] {
+    core::array::from_fn(|_| (any_flow(), any_side(), any_amount()))
+}
+
+/// The spec's net movement of the lines tagged `f`.
+fn tagged(lines: &[(Flow, Side, i64)], f: Flow) -> i64 {
+    let mut total = 0i64;
+    for &(g, s, a) in lines {
+        if g == f {
+            total += wide(s, a);
+        }
+    }
+    total
+}
+
+/// The spec's section movements, `[operating, investing, financing]`.
+fn sections(lines: &[(Flow, Side, i64)]) -> [i64; 3] {
+    [
+        tagged(lines, Flow::Operating),
+        tagged(lines, Flow::Investing),
+        tagged(lines, Flow::Financing),
+    ]
+}
+
+/// Whether the lines would post: their sides and amounts pass
+/// `check_lines`.
+fn accepted(lines: &[(Flow, Side, i64)]) -> bool {
+    let mut s = [(Side::Debit, 0i64); N];
+    for (o, &(_, side, a)) in s.iter_mut().zip(lines) {
+        *o = (side, a);
+    }
+    kernel::check_lines(&s[..lines.len()]).is_ok()
+}
+
+/// The building block of every cash flow harness below, for any two
+/// amounts: what a section takes is odd (a reversal takes minus it), has
+/// the cash's sign (or is zero), comes only from a movement against the
+/// cash, and is never more than the cash left or the movement.
+#[kani::proof]
+fn take_is_odd_and_bounded() {
+    let r = any_amount();
+    let n = any_amount();
+    let t = kernel::take(r, n).expect("in range");
+    assert_eq!(kernel::take(-r, -n), Some(-t));
+    assert!(t == 0 || (t > 0) == (r > 0));
+    assert!(t == 0 || (t > 0) == (n < 0));
+    assert!(t.abs() <= r.abs() && t.abs() <= n.abs());
+    kani::cover!(
+        t != 0 && t.abs() < r.abs(),
+        "a movement smaller than the cash"
+    );
+}
+
+/// Applying minus the cash to minus the movements gives minus the parts,
+/// part by part, and succeeds exactly when the original does.
+#[kani::proof]
+#[kani::unwind(5)]
+fn apply_cash_mirrors() {
+    const M: usize = 3;
+    let cash = any_amount();
+    let moves: [i64; M] = core::array::from_fn(|_| any_amount());
+    let neg: [i64; M] = core::array::from_fn(|k| -moves[k]);
+    let mut a = [0i64; M];
+    let mut b = [0i64; M];
+    let ra = kernel::apply_cash(cash, &moves, &mut a);
+    let rb = kernel::apply_cash(-cash, &neg, &mut b);
+    assert_eq!(ra.is_some(), rb.is_some());
+    if ra.is_some() {
+        for k in 0..M {
+            assert_eq!(b[k], -a[k]);
+        }
+        kani::cover!(a[0] != 0 && a[2] != 0, "two sections settled, mirrored");
+    }
+}
+
+/// An accepted entry always has cash flows, and they explain its cash
+/// exactly: the sections' cash sums to the entry's cash, and what no cash
+/// settled (each section's movement plus its cash) sums to zero
+/// (rules.md B-14 rules 3 and 9: the statement foots, entry by entry).
+#[kani::proof]
+#[kani::unwind(5)]
+fn entry_flows_sum_to_cash() {
+    let all = any_flow_lines();
+    let lines = &all[..any_flow_len()];
+    if !accepted(lines) {
+        return;
+    }
+    let f = kernel::entry_flows(lines).expect("an accepted entry has cash flows");
+    let n = sections(lines);
+    assert_eq!(f.cash, tagged(lines, Flow::Cash));
+    assert_eq!(f.flows[0] + f.flows[1] + f.flows[2], f.cash);
+    assert_eq!(f.noncash[0] + f.noncash[1] + f.noncash[2], 0);
+    for k in 0..3 {
+        assert_eq!(f.noncash[k], n[k] + f.flows[k]);
+    }
+    kani::cover!(
+        f.flows[1] != 0 && f.noncash[1] != 0,
+        "a part-cash, part-noncash investing entry"
+    );
+}
+
+/// When every section moves against the cash (or not at all), the cash
+/// settles every movement: each section's cash is minus its movement and
+/// nothing is noncash. (With no cash at all the premise would hold
+/// vacuously; review item 7: it needs cash.)
+#[kani::proof]
+#[kani::unwind(5)]
+fn entry_flows_pure_are_movements() {
+    let all = any_flow_lines();
+    let lines = &all[..any_flow_len()];
+    if !accepted(lines) {
+        return;
+    }
+    let c = tagged(lines, Flow::Cash);
+    let n = sections(lines);
+    let against = |m: i64| m == 0 || (c > 0 && m < 0) || (c < 0 && m > 0);
+    if c == 0 || !(against(n[0]) && against(n[1]) && against(n[2])) {
+        return;
+    }
+    let f = kernel::entry_flows(lines).expect("an accepted entry has cash flows");
+    for k in 0..3 {
+        assert_eq!(f.flows[k], -n[k]);
+        assert_eq!(f.noncash[k], 0);
+    }
+    kani::cover!(n[0] != 0 && n[2] != 0, "cash settling two sections at once");
+}
+
+/// Each section's cash has the cash's sign (or is zero), is never larger
+/// than the section's own movement, and comes only from a section moving
+/// against the cash.
+#[kani::proof]
+#[kani::unwind(5)]
+fn entry_flows_are_bounded() {
+    let all = any_flow_lines();
+    let lines = &all[..any_flow_len()];
+    let Some(f) = kernel::entry_flows(lines) else {
+        return;
+    };
+    let n = sections(lines);
+    for k in 0..3 {
+        let x = f.flows[k];
+        assert!(x == 0 || (x > 0) == (f.cash > 0));
+        assert!(x.abs() <= n[k].abs());
+        assert!(x == 0 || (x > 0) == (n[k] < 0));
+    }
+    kani::cover!(
+        f.flows[0] != 0 && f.flows[0].abs() < n[0].abs(),
+        "a section only partly settled by cash"
+    );
+}
+
+/// A reversal's cash flows are its original's, negated, part by part:
+/// what lets an entry and its reversal in one period drop out of the
+/// statement together (rules.md B-14 rule 6).
+#[kani::proof]
+#[kani::unwind(5)]
+fn entry_flows_of_a_reversal_mirror() {
+    let all = any_flow_lines();
+    let n = any_flow_len();
+    let lines = &all[..n];
+    // Element by element (see `kani_symbolic_copy_canary`).
+    let mut rev = [(Flow::Cash, Side::Debit, 0i64); NF];
+    for i in 0..n {
+        rev[i] = kernel::reverse_line(lines[i]);
+    }
+    let a = kernel::entry_flows(lines);
+    let b = kernel::entry_flows(&rev[..n]);
+    assert_eq!(a.is_some(), b.is_some());
+    if let (Some(a), Some(b)) = (a, b) {
+        assert_eq!(b.cash, -a.cash);
+        for k in 0..3 {
+            assert_eq!(b.flows[k], -a.flows[k]);
+            assert_eq!(b.noncash[k], -a.noncash[k]);
+        }
+        kani::cover!(
+            a.flows[1] != 0 && a.noncash[2] != 0,
+            "a mixed entry, reversed"
+        );
+    }
+}
+
+/// An entry with no cash line has no cash flows: every movement is
+/// noncash.
+#[kani::proof]
+#[kani::unwind(5)]
+fn no_cash_no_flow() {
+    let all = any_flow_lines();
+    let lines = &all[..any_flow_len()];
+    for &(f, _, _) in lines {
+        kani::assume(f != Flow::Cash);
+    }
+    if !accepted(lines) {
+        return;
+    }
+    let f = kernel::entry_flows(lines).expect("an accepted entry has cash flows");
+    let n = sections(lines);
+    assert_eq!(f.cash, 0);
+    for k in 0..3 {
+        assert_eq!(f.flows[k], 0);
+        assert_eq!(f.noncash[k], n[k]);
+    }
+    kani::cover!(n[1] != 0 && n[2] != 0, "property contributed for capital");
+}
+
+/// How a section's cash splits among its kinds (contributions per member,
+/// borrowing per lender): `apply_cash` succeeds exactly when the
+/// movements against the cash cover it, and then the parts sum to the
+/// cash, each with its sign and within its own movement.
+#[kani::proof]
+#[kani::unwind(5)]
+fn apply_cash_spends_exactly() {
+    const M: usize = 3;
+    let cash = any_amount();
+    let moves: [i64; M] = core::array::from_fn(|_| any_amount());
+    let n: usize = kani::any();
+    kani::assume(n <= M);
+    let mut against = 0i64;
+    for &m in &moves[..n] {
+        if (cash > 0 && m < 0) || (cash < 0 && m > 0) {
+            against += m.abs();
+        }
+    }
+    let mut out = [0i64; M];
+    let ok = kernel::apply_cash(cash, &moves[..n], &mut out[..n]);
+    assert_eq!(ok.is_some(), cash.abs() <= against);
+    if ok.is_some() {
+        let mut sum = 0i64;
+        for k in 0..n {
+            let x = out[k];
+            sum += x;
+            assert!(x == 0 || (x > 0) == (cash > 0));
+            assert!(x.abs() <= moves[k].abs());
+        }
+        assert_eq!(sum, cash);
+        kani::cover!(n == M && out[2] != 0, "the third kind takes the rest");
+    }
+}
+
+/// Any amount a line may carry, not negative.
+fn any_magnitude() -> i64 {
+    let a = any_amount();
+    kani::assume(a >= 0);
+    a
+}
+
+/// The exchange inside investing and financing is the smaller side left
+/// once cash in has settled credits and cash out debits, never negative
+/// and never more than either side.
+#[kani::proof]
+fn exchanged_is_bounded() {
+    let (d, c) = (any_magnitude(), any_magnitude());
+    let (inflow, outflow) = (any_magnitude(), any_magnitude());
+    let x = kernel::exchanged(d, c, inflow, outflow).expect("no overflow");
+    let spec = (d - outflow).min(c - inflow).max(0);
+    assert_eq!(x, spec);
+    assert!(0 <= x && x <= d && x <= c);
+    kani::cover!(x > 0 && outflow != 0, "a part-cash exchange");
+    kani::cover!(
+        x > 0 && inflow != 0 && outflow != 0,
+        "an exchange beside cash in and out"
+    );
+}
+
+fn any_way() -> kernel::OnBehalf {
+    if kani::any() {
+        kernel::OnBehalf::Paid
+    } else {
+        kernel::OnBehalf::Received
+    }
+}
+
+/// What a member or a lender paid or received for the company (rules.md
+/// B-14 rule 11, D-42) invents and loses nothing: the parts net to zero,
+/// so an entry's flows still sum to its cash; each part settles its own
+/// movement toward zero, never past it; and as much is settled as can be.
+#[kani::proof]
+#[kani::unwind(4)]
+fn constructive_nets_to_zero() {
+    const M: usize = 2;
+    let way = any_way();
+    let s: [i64; M] = core::array::from_fn(|_| any_amount());
+    let u: [i64; M] = core::array::from_fn(|_| any_amount());
+    let (mut from, mut to) = ([0i64; M], [0i64; M]);
+    kernel::constructive(way, &s, &u, &mut from, &mut to).expect("amounts in range always settle");
+    assert_eq!(from[0] + from[1] + to[0] + to[1], 0);
+    let settles = |x: i64, m: i64| (x == 0 || (x > 0) == (m < 0)) && x.abs() <= m.abs();
+    for k in 0..M {
+        assert!(settles(from[k], s[k]));
+        assert!(settles(to[k], u[k]));
+    }
+    let ls = [s[0] + from[0], s[1] + from[1]];
+    let lu = [u[0] + to[0], u[1] + to[1]];
+    let any = |xs: [i64; M], f: fn(i64) -> bool| f(xs[0]) || f(xs[1]);
+    match way {
+        kernel::OnBehalf::Paid => {
+            assert!(!(any(ls, |x| x < 0) && any(lu, |x| x > 0)));
+            // Paying never touches a source debit or a use credit.
+            for k in 0..M {
+                assert!(s[k] < 0 || from[k] == 0);
+                assert!(u[k] > 0 || to[k] == 0);
+            }
+        }
+        kernel::OnBehalf::Received => {
+            assert!(!(any(ls, |x| x > 0) && any(lu, |x| x < 0)));
+            for k in 0..M {
+                assert!(s[k] > 0 || from[k] == 0);
+                assert!(u[k] < 0 || to[k] == 0);
+            }
+        }
+    }
+    kani::cover!(from[0] > 0 && from[1] > 0, "two sources pay");
+    kani::cover!(from[0] < 0 && to[1] > 0, "received for the company");
+    kani::cover!(
+        ls[0] < 0 && to[0] < 0,
+        "a source larger than what it paid for"
+    );
+}
+
+/// The other way, minus the sources and minus the uses give minus the
+/// parts: a reversal of a payment made on the company's behalf mirrors it
+/// (rules.md B-14 rule 6), so the two drop out together.
+#[kani::proof]
+#[kani::unwind(4)]
+fn constructive_mirrors() {
+    const M: usize = 2;
+    let way = any_way();
+    let s: [i64; M] = core::array::from_fn(|_| any_amount());
+    let u: [i64; M] = core::array::from_fn(|_| any_amount());
+    let (ns, nu) = ([-s[0], -s[1]], [-u[0], -u[1]]);
+    let (mut fa, mut ta) = ([0i64; M], [0i64; M]);
+    let (mut fb, mut tb) = ([0i64; M], [0i64; M]);
+    let a = kernel::constructive(way, &s, &u, &mut fa, &mut ta);
+    let b = kernel::constructive(way.mirror(), &ns, &nu, &mut fb, &mut tb);
+    assert_eq!(a.is_some(), b.is_some());
+    if a.is_some() {
+        for k in 0..M {
+            assert_eq!(fb[k], -fa[k]);
+            assert_eq!(tb[k], -ta[k]);
+        }
+        kani::cover!(fa[0] != 0 && ta[1] != 0, "a payment, mirrored");
+    }
 }
 
 // ---------------------------------------------------------------------------

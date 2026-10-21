@@ -1331,6 +1331,7 @@ fn cf_transfer_between_cash_accounts_is_not_a_flow() {
             cash_accounts: vec![cash, ar],
             financing_accounts: vec![],
             investing_accounts: vec![],
+            members: vec![],
         },
     )
     .unwrap();
@@ -1340,6 +1341,7 @@ fn cf_transfer_between_cash_accounts_is_not_a_flow() {
     assert_eq!(cf.cash_from_financing, Decimal::ZERO);
     assert_eq!(cf.cash_beginning, c(100000));
     assert_eq!(cf.cash_ending, c(100000));
+    assert!(cf.operating.is_empty() && cf.noncash_disclosures.is_empty());
 }
 
 // ===========================================================================
@@ -1406,12 +1408,13 @@ fn sorted_amounts(lines: &[ledger_core::CashFlowLine]) -> Vec<Decimal> {
     v
 }
 
-/// Oracle: CF INVARIANTS 1, 2, 4 — hand-computed February (indirect): NI
-/// 400; AR up 300 (-300), AP up 80 (+80); CFO 180; financing loan 300 +
-/// contribution 100 = 400; net change 580 = cash 1000 -> 1580.
+/// Oracle: CF INVARIANTS 1, 2, 4 — hand-computed February (direct):
+/// collected 200, paid 20: CFO 180; reconciled from NI 400, AR up 300
+/// (-300), AP up 80 (+80); financing loan 300 + contribution 100 = 400;
+/// net change 580 = cash 1000 -> 1580.
 ///
-/// Working capital is one line per account that changed; financing is gross per
-/// account (docs/testing.md #8): here each financing account moved one way only.
+/// The reconciliation has one line per operating account that changed;
+/// financing is one line per entry (docs/testing.md #8).
 #[test]
 fn cf_hand_computed_with_designated_debt() {
     let co = cf_example_books();
@@ -1421,16 +1424,21 @@ fn cf_hand_computed_with_designated_debt() {
         cash_accounts: vec![co.cash],
         financing_accounts: vec![co.loan],
         investing_accounts: vec![],
+        members: vec![],
     };
     let cf = cash_flow(&co.l, &params).unwrap();
     assert_eq!(cf.start, d(2026, 2, 1));
     assert_eq!(cf.end, d(2026, 2, 28));
-    assert_eq!(cf.net_income, c(40000));
-    assert_eq!(cf.depreciation, Decimal::ZERO);
-    assert_eq!(
-        sorted_amounts(&cf.working_capital),
-        vec![c(-30000), c(8000)]
-    );
+    assert_eq!(cf.operating_reconciliation.net_income, c(40000));
+    let mut rec: Vec<Decimal> = cf
+        .operating_reconciliation
+        .lines
+        .iter()
+        .map(|l| l.amount)
+        .collect();
+    rec.sort();
+    assert_eq!(rec, vec![c(-30000), c(8000)]);
+    assert_eq!(sorted_amounts(&cf.operating), vec![c(-2000), c(20000)]);
     assert_eq!(cf.cash_from_operations, c(18000));
     assert_eq!(cf.cash_from_investing, Decimal::ZERO);
     assert_eq!(sorted_amounts(&cf.financing), vec![c(10000), c(30000)]);
@@ -1441,9 +1449,9 @@ fn cf_hand_computed_with_designated_debt() {
 }
 
 /// Oracle: CashFlowParams doc — by default all liabilities are operating
-/// working capital (the loan moves to operating: CFO 480, financing 100).
+/// (the loan's cash moves to operating: CFO 480, financing 100).
 #[test]
-fn cf_undesignated_liability_is_working_capital() {
+fn cf_undesignated_liability_is_operating() {
     let co = cf_example_books();
     let params = CashFlowParams {
         start: d(2026, 2, 1),
@@ -1451,6 +1459,7 @@ fn cf_undesignated_liability_is_working_capital() {
         cash_accounts: vec![co.cash],
         financing_accounts: vec![],
         investing_accounts: vec![],
+        members: vec![],
     };
     let cf = cash_flow(&co.l, &params).unwrap();
     assert_eq!(cf.cash_from_operations, c(48000));
@@ -1470,6 +1479,7 @@ fn cf_never_counts_closing_entries() {
         cash_accounts: vec![co.cash],
         financing_accounts: vec![co.loan],
         investing_accounts: vec![],
+        members: vec![],
     };
     let before = cash_flow(&co.l, &params).unwrap();
     let p1 =
@@ -1481,14 +1491,15 @@ fn cf_never_counts_closing_entries() {
             .unwrap();
     co.l.close_period(p2).unwrap();
     let after = cash_flow(&co.l, &params).unwrap();
-    assert_eq!(after.net_income, c(40000));
+    assert_eq!(after.operating_reconciliation.net_income, c(40000));
     assert_eq!(cf_key(&after), cf_key(&before));
 }
 
 /// Oracle: CF INVARIANTS 1-3 — fixed-asset purchase in investing,
-/// depreciation added back, disposal gain moved out of operating with the
-/// proceeds in investing (hand-computed: Feb NI -100, depr 100, CFO 0,
-/// investing -1200; Mar NI -50, depr 100, CFO 0, investing +1050).
+/// depreciation reconciling, disposal gain taken out of net income with
+/// the proceeds in investing (hand-computed: Feb NI -100, depr 100, CFO 0,
+/// investing -1200; Mar NI -50, depr 100, gain -50, CFO 0, investing
+/// +1050).
 ///
 /// ASSUMED: depreciation is recognised as credits to a registered asset's
 /// accumulated-depreciation account against expense, and the disposal is
@@ -1552,11 +1563,13 @@ fn cf_fixed_asset_purchase_depreciation_and_disposal() {
             cash_accounts: vec![cash],
             financing_accounts: vec![],
             investing_accounts: vec![],
+            members: vec![],
         },
     )
     .unwrap();
-    assert_eq!(feb.net_income, c(-10000));
-    assert_eq!(feb.depreciation, c(10000));
+    assert_eq!(feb.operating_reconciliation.net_income, c(-10000));
+    assert_eq!(feb.operating_reconciliation.lines[0].label, "Depreciation");
+    assert_eq!(feb.operating_reconciliation.lines[0].amount, c(10000));
     assert_eq!(feb.cash_from_operations, Decimal::ZERO);
     assert_eq!(feb.cash_from_investing, c(-120000));
     assert_eq!(feb.cash_from_financing, Decimal::ZERO);
@@ -1570,11 +1583,18 @@ fn cf_fixed_asset_purchase_depreciation_and_disposal() {
             cash_accounts: vec![cash],
             financing_accounts: vec![],
             investing_accounts: vec![],
+            members: vec![],
         },
     )
     .unwrap();
-    assert_eq!(mar.net_income, c(-5000));
-    assert_eq!(mar.depreciation, c(10000));
+    assert_eq!(mar.operating_reconciliation.net_income, c(-5000));
+    let rec: Vec<Decimal> = mar
+        .operating_reconciliation
+        .lines
+        .iter()
+        .map(|l| l.amount)
+        .collect();
+    assert_eq!(rec, vec![c(10000), c(-5000)]);
     assert_eq!(mar.cash_from_operations, Decimal::ZERO);
     assert_eq!(mar.cash_from_investing, c(105000));
     assert_eq!(mar.net_change_in_cash, c(105000));
@@ -2000,7 +2020,7 @@ proptest! {
     fn prop_drafts_change_no_report(gens in arb_books(), drafts in prop::collection::vec(arb_gen(), 1..5), (a, _m, e) in three_days()) {
         let mut b = build(&gens);
         let (s0, e0) = (day(a), day(e));
-        let cfp = CashFlowParams { start: s0, end: e0, cash_accounts: vec![b.ids[CASH]], financing_accounts: vec![], investing_accounts: vec![] };
+        let cfp = CashFlowParams { start: s0, end: e0, cash_accounts: vec![b.ids[CASH]], financing_accounts: vec![], investing_accounts: vec![], members: vec![] };
         let tb = tb_lines(&trial_balance_as_of(&b.l, e0));
         let pl = pnl_key(&profit_and_loss_for_period(&b.l, s0, e0, None).unwrap());
         let bs = bs_key(&balance_sheet_as_of(&b.l, e0).unwrap());
@@ -2426,12 +2446,12 @@ proptest! {
     /// Oracle: CF INVARIANTS 1-2, 4 — operating + investing + financing =
     /// net change = ending - beginning cash (model), NI is the period P&L
     /// (model, closes excluded), section totals are their line sums, CFO =
-    /// NI + depreciation + working capital; with or without a close and a
+    /// NI + the reconciling items; with or without a close and a
     /// designated loan.
     ///
-    /// With no registered fixed assets and no investing accounts (docs/testing.md #8),
-    /// depreciation and investing
-    /// are zero (receivables are current, so working capital).
+    /// With no registered fixed assets and no investing accounts
+    /// (docs/testing.md #8), investing is zero (receivables are current,
+    /// so operating).
     #[test]
     fn prop_cf_sections_sum_to_change_in_cash(gens in arb_books(), (a, _m, e) in three_days(), month in opt_month(), designate in any::<bool>()) {
         let mut b = build(&gens);
@@ -2442,6 +2462,7 @@ proptest! {
             cash_accounts: vec![b.ids[CASH]],
             financing_accounts: if designate { vec![b.ids[LOAN]] } else { vec![] },
             investing_accounts: vec![],
+            members: vec![],
         };
         let cf = cash_flow(&b.l, &params).unwrap();
         prop_assert_eq!(cf.cash_from_operations + cf.cash_from_investing + cf.cash_from_financing, cf.net_change_in_cash);
@@ -2450,18 +2471,27 @@ proptest! {
         let end = model(&gens, early(), day(e), None).get("1000").copied().unwrap_or_default();
         prop_assert_eq!(cf.cash_beginning, beg);
         prop_assert_eq!(cf.cash_ending, end);
-        prop_assert_eq!(cf.net_income, model_ni(&model(&gens, day(a), day(e), None)));
-        prop_assert_eq!(cf.depreciation, Decimal::ZERO);
+        let r = &cf.operating_reconciliation;
+        prop_assert_eq!(r.net_income, model_ni(&model(&gens, day(a), day(e), None)));
         prop_assert_eq!(cf.cash_from_investing, Decimal::ZERO);
-        let wc: Decimal = cf.working_capital.iter().map(|l| l.amount).sum();
-        prop_assert_eq!(cf.cash_from_operations, cf.net_income + cf.depreciation + wc);
+        let items: Decimal = r.lines.iter().map(|l| l.amount).sum();
+        prop_assert_eq!(cf.cash_from_operations, r.net_income + items);
+        prop_assert_eq!(cf.cash_from_operations, cf.operating.iter().map(|l| l.amount).sum::<Decimal>());
+        prop_assert_eq!(cf.reconciles.difference, Decimal::ZERO);
         prop_assert_eq!(cf.cash_from_investing, cf.investing.iter().map(|l| l.amount).sum::<Decimal>());
         prop_assert_eq!(cf.cash_from_financing, cf.financing.iter().map(|l| l.amount).sum::<Decimal>());
     }
 
-    /// Oracle: CF INVARIANT 4 against the model — financing is the change in
-    /// equity accounts (other than earnings) plus designated debt; the rest
-    /// of the non-cash balance sheet is working capital.
+    /// Oracle: CF INVARIANT 2 against an independent model — financing is
+    /// the cash part of the equity and designated-debt movements: each
+    /// entry's cash applied to the sections moving against it, operating,
+    /// investing, financing, each up to its own movement (rules.md B-14
+    /// rule 3), then to the kinds within each section in their order;
+    /// plus what the loan or a member's capital paid or received for the
+    /// company (rule 11, D-42): the loan pays for operating lines (the
+    /// balance-sheet ones first) and receives for revenue and expense;
+    /// capital pays and receives for revenue and expense only. Written
+    /// here apart from the kernel.
     #[test]
     fn prop_cf_financing_is_equity_plus_designated_debt(gens in arb_books(), (a, _m, e) in three_days(), designate in any::<bool>()) {
         let b = build(&gens);
@@ -2471,13 +2501,72 @@ proptest! {
             cash_accounts: vec![b.ids[CASH]],
             financing_accounts: if designate { vec![b.ids[LOAN]] } else { vec![] },
             investing_accounts: vec![],
+            members: vec![],
         };
         let cf = cash_flow(&b.l, &params).unwrap();
-        let m = model(&gens, day(a), day(e), None);
-        let credit = |code: &str| -m.get(code).copied().unwrap_or_default();
-        let mut fin = credit("3000") + credit("3001");
-        if designate { fin += credit("2500"); }
-        prop_assert_eq!(cf.cash_from_financing, fin);
+        // Take up to `amount` (>= 0) from the parts of `qs` with sign
+        // `debits`, in order, moving them toward zero.
+        fn settle(qs: &mut [i64], mut amount: i64, debits: bool) {
+            for q in qs.iter_mut() {
+                let room = if debits { (*q).max(0) } else { (-*q).max(0) };
+                let t = amount.min(room);
+                *q += if debits { -t } else { t };
+                amount -= t;
+            }
+        }
+        let credits = |qs: &[i64]| qs.iter().map(|q| (-q).max(0)).sum::<i64>();
+        let debits = |qs: &[i64]| qs.iter().map(|q| (*q).max(0)).sum::<i64>();
+        let mut fin = 0i64;
+        for g in gens.iter().filter(|g| g.date() >= day(a) && g.date() <= day(e)) {
+            // Kinds: cash; operating balance sheet, revenue and expense;
+            // capital A, capital B, the loan (financing when designated).
+            let mut cash = 0i64;
+            let mut op = [0i64; 2];
+            let mut fi = [0i64; 3];
+            for (i, side, cents) in g.legs(1) {
+                let m = if side == DR { cents } else { -cents };
+                match RCHART[i].0 {
+                    "1000" => cash += m,
+                    "3000" => fi[0] += m,
+                    "3001" => fi[1] += m,
+                    "2500" if designate => fi[2] += m,
+                    "4000" | "4100" | "6000" | "6100" => op[1] += m,
+                    _ => op[0] += m,
+                }
+            }
+            // Rule 3: operating, then financing (no investing here).
+            let take = |left: i64, m: i64| {
+                if left > 0 && m < 0 {
+                    left.min(-m)
+                } else if left < 0 && m > 0 {
+                    left.max(-m)
+                } else {
+                    0
+                }
+            };
+            let to_op = take(cash, op[0] + op[1]);
+            let to_fin = take(cash - to_op, fi.iter().sum());
+            fin += to_fin;
+            if to_op > 0 { settle(&mut op, to_op, false) } else { settle(&mut op, -to_op, true) }
+            if to_fin > 0 { settle(&mut fi, to_fin, false) } else { settle(&mut fi, -to_fin, true) }
+            // Rule 11: the loan pays, then receives; then capital.
+            if designate {
+                let paid = credits(&fi[2..]).min(debits(&op));
+                fi[2] += paid;
+                settle(&mut op, paid, true);
+                let received = debits(&fi[2..]).min(credits(&op[1..]));
+                fi[2] -= received;
+                settle(&mut op[1..], received, false);
+                fin += paid - received;
+            }
+            let paid = credits(&fi[..2]).min(debits(&op[1..]));
+            settle(&mut fi[..2], paid, false);
+            settle(&mut op[1..], paid, true);
+            let received = debits(&fi[..2]).min(credits(&op[1..]));
+            settle(&mut fi[..2], received, true);
+            fin += paid - received;
+        }
+        prop_assert_eq!(cf.cash_from_financing, c(fin));
     }
 
     /// Oracle: CF INVARIANT 5 — closing a period changes no cash flow
@@ -2487,10 +2576,10 @@ proptest! {
         let open = build(&gens);
         let mut closed = build(&gens);
         close_through(&mut closed, Some(month), &re_close());
-        let p = |b: &Books| CashFlowParams { start: day(a), end: day(e), cash_accounts: vec![b.ids[CASH]], financing_accounts: vec![b.ids[LOAN]], investing_accounts: vec![] };
+        let p = |b: &Books| CashFlowParams { start: day(a), end: day(e), cash_accounts: vec![b.ids[CASH]], financing_accounts: vec![b.ids[LOAN]], investing_accounts: vec![], members: vec![] };
         let x = cash_flow(&open.l, &p(&open)).unwrap();
         let y = cash_flow(&closed.l, &p(&closed)).unwrap();
-        prop_assert_eq!(x.net_income, y.net_income);
+        prop_assert_eq!(&x.operating_reconciliation, &y.operating_reconciliation);
         prop_assert_eq!(x.cash_from_operations, y.cash_from_operations);
         prop_assert_eq!(x.cash_from_investing, y.cash_from_investing);
         prop_assert_eq!(x.cash_from_financing, y.cash_from_financing);
@@ -2504,10 +2593,10 @@ proptest! {
         let kk = Decimal::from(k);
         let one = build(&gens);
         let many = build_scaled(&gens, k);
-        let p = |b: &Books| CashFlowParams { start: day(a), end: day(e), cash_accounts: vec![b.ids[CASH]], financing_accounts: vec![], investing_accounts: vec![] };
+        let p = |b: &Books| CashFlowParams { start: day(a), end: day(e), cash_accounts: vec![b.ids[CASH]], financing_accounts: vec![], investing_accounts: vec![], members: vec![] };
         let x = cash_flow(&one.l, &p(&one)).unwrap();
         let y = cash_flow(&many.l, &p(&many)).unwrap();
-        prop_assert_eq!(y.net_income, x.net_income * kk);
+        prop_assert_eq!(y.operating_reconciliation.net_income, x.operating_reconciliation.net_income * kk);
         prop_assert_eq!(y.cash_from_operations, x.cash_from_operations * kk);
         prop_assert_eq!(y.cash_from_financing, x.cash_from_financing * kk);
         prop_assert_eq!(y.cash_beginning, x.cash_beginning * kk);

@@ -9,8 +9,9 @@ through MCP. Self-hosted, no rent.
 
 - **`ledger-core`** — the semantics engine. Exact decimal money, five
   account types, balanced journal entries, immutable posted log with
-  reversing entries, trial balance, P&L, balance sheet, indirect-method
-  cash flow, fixed-asset register with straight-line depreciation.
+  reversing entries, trial balance, P&L, balance sheet, the statement of
+  cash flows (direct method, with the reconciliation and noncash
+  schedules), fixed-asset register with straight-line depreciation.
 - **`ledger-store`** — durable storage. The source of truth is an
   append-only, hash-chained JSONL journal; SQLite is a disposable
   projection rebuilt from it; receipts live in a content-addressed blob

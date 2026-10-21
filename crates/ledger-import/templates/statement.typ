@@ -7,8 +7,8 @@
 // parsed as markup.
 //
 // Shape: { company, title, period, footer, columns: ["Total"] | [...],
-//          rows: [{ kind: "section" | "subheading" | "line" | "subtotal"
-//                       | "total" | "spacer",
+//          rows: [{ kind: "section" | "subheading" | "line" | "detail"
+//                       | "subtotal" | "total" | "spacer",
 //                   label, rule (rule above), currency ("$" on amounts),
 //                   amounts: [null | { digits: "1,234.56", negative }] }] }
 //
@@ -72,11 +72,15 @@
 #let row-cells(r) = {
   let bold = r.kind == "subtotal" or r.kind == "total"
   let stroke = if r.rule { (top: if r.kind == "total" { firm } else { hair }) } else { none }
-  let label = if r.kind == "line" { pad(left: 1.4em, r.label) } else { r.label }
+  // A detail (a transaction under its kind's line) sits further in and
+  // quieter: its amount is part of the line above, not of the section.
+  let detail = r.kind == "detail"
+  let quietly(body) = if detail { text(size: 0.9em, fill: quiet, body) } else { body }
+  let label = if r.kind == "line" { pad(left: 1.4em, r.label) } else if detail { pad(left: 2.8em, quietly(r.label)) } else { r.label }
   let label = if bold { text(weight: "bold", label) } else { label }
   (
     table.cell(stroke: stroke, label),
-    ..r.amounts.map(a => table.cell(stroke: stroke, amount(a, r.currency))),
+    ..r.amounts.map(a => table.cell(stroke: stroke, quietly(amount(a, r.currency)))),
   )
 }
 

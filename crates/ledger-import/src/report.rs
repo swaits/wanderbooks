@@ -14,7 +14,7 @@
 use chrono::{Datelike, NaiveDate};
 use ledger_core::RETAINED_EARNINGS_CODE;
 use ledger_core::reports::{
-    BalanceSheetStatement, CashFlowLine, CashFlowStatement, MembersEquityStatement,
+    BalanceSheetStatement, CashFlowSection, CashFlowStatement, MembersEquityStatement,
     ProfitAndLossStatement, StatementLine, TrialBalance,
 };
 use rust_decimal::Decimal;
@@ -67,6 +67,10 @@ pub enum RowKind {
     Subheading,
     /// One account or one flow, indented under its section.
     Line,
+    /// One transaction listed under the line above it (a statement of
+    /// cash flows' kind): its amount is part of that line's, so it never
+    /// sums into the section, and it is set apart (further in, quieter).
+    Detail,
     /// A section total ("Total revenue").
     Subtotal,
     /// A statement total ("Net income (loss)"); double rule beneath.
@@ -150,7 +154,10 @@ pub fn statement(title: &str, period: String, columns: &[&str], mut rows: Vec<Ro
         r.currency = matches!(r.kind, RowKind::Subtotal | RowKind::Total);
         r.rule_above = match r.kind {
             RowKind::Total => true,
-            RowKind::Subtotal => matches!(above, Some(RowKind::Line | RowKind::Subtotal)),
+            RowKind::Subtotal => matches!(
+                above,
+                Some(RowKind::Line | RowKind::Detail | RowKind::Subtotal)
+            ),
             _ => false,
         };
         if !matches!(r.kind, RowKind::Spacer | RowKind::Subheading) {
@@ -310,73 +317,64 @@ pub fn balance_sheet(
     )
 }
 
-/// Cash flow lines, naming members on their capital accounts.
-fn flow_lines<'a>(
-    lines: &'a [CashFlowLine],
-    members: &'a [Member],
-) -> impl Iterator<Item = Row> + 'a {
-    lines.iter().map(move |l| {
-        let member = members.iter().find(|m| {
-            let code = l.account.as_deref();
-            code == Some(m.capital_code.as_str()) || code == m.distribution_code.as_deref()
-        });
-        let label = match member {
-            Some(m) if l.amount >= Decimal::ZERO => format!("Member contributions — {}", m.name),
-            Some(m) => format!("Member distributions — {}", m.name),
-            None => l.label.clone(),
-        };
-        one(RowKind::Line, label, l.amount)
-    })
-}
-
-/// Lay out a cash flow statement (indirect method).
+/// Lay out a statement of cash flows, direct method (rules.md B-14, D-35):
+/// operating cash one row per class ASC 230-10-45-25 requires; investing
+/// and financing one row per kind ("Contributions from members — Name"),
+/// each with its total and its transactions listed under it; then the
+/// reconciliation of net income to operating cash, a separate schedule
+/// (45-30), and the noncash investing and financing activities (50-3).
 ///
 /// ```text
-/// GOAL: the cash flow statement as printed, footing and reconciling.
-/// SOURCE: rules.md B-14 (ASC 230); footing.
+/// GOAL: the statement of cash flows as printed, footing and reconciling.
+/// SOURCE: rules.md B-14 (ASC 230-10-45-24, -25, -29, -30; 50-3, 50-6:
+///         the noncash schedule on the same page); D-35 (layout by kind).
 /// INVARIANTS:
-///   1. Net income, depreciation, and the working-capital lines sum to
-///      "Net cash from operating activities"; investing and financing lines
-///      to theirs.
-///   2. The three section totals sum to "Net increase (decrease) in cash",
-///      and beginning cash plus it is "Cash at end of period".
-///   3. A member's capital or distributions line names the member:
-///      "Member contributions — Name" for cash in, "Member distributions
-///      — Name" for cash out.
+///   1. The operating class rows sum to "Net cash from operating
+///      activities"; each other section's kind rows to its own subtotal,
+///      and each kind's transaction rows (details, never summed into the
+///      section) to the kind's row.
+///   2. The three subtotals sum to "Net increase (decrease) in cash", and
+///      beginning cash plus it is "Cash at end of period".
+///   3. "Net income (loss)" and the reconciling items sum to the
+///      schedule's "Net cash from operating activities", the operating
+///      subtotal.
+///   4. NEVER a label derived from an amount's sign here: kinds and labels
+///      come from the engine, a reversal listed under its original's kind.
+///   5. The noncash schedule lists every disclosure, or "None".
 /// ```
-pub fn cash_flow(cf: &CashFlowStatement, members: &[Member]) -> Statement {
-    let mut rows = vec![section("Operating activities")];
-    rows.push(one(RowKind::Line, "Net income (loss)", cf.net_income));
-    if !cf.depreciation.is_zero() || !cf.working_capital.is_empty() {
-        rows.push(subheading(
-            "Adjustments to reconcile net income (loss) to net cash from operating activities:",
-        ));
+pub fn cash_flow(cf: &CashFlowStatement) -> Statement {
+    let mut rows = vec![section(CashFlowSection::Operating.label())];
+    for (class, amount) in cf.operating_by_class() {
+        rows.push(one(RowKind::Line, class.label(), amount));
     }
-    if !cf.depreciation.is_zero() {
-        rows.push(one(RowKind::Line, "Depreciation", cf.depreciation));
-    }
-    rows.extend(flow_lines(&cf.working_capital, members));
     rows.push(one(
         RowKind::Subtotal,
         "Net cash from operating activities",
         cf.cash_from_operations,
     ));
-    rows.push(spacer());
-    rows.push(section("Investing activities"));
-    rows.extend(flow_lines(&cf.investing, members));
-    rows.push(one(
-        RowKind::Subtotal,
-        "Net cash from investing activities",
-        cf.cash_from_investing,
-    ));
-    rows.push(spacer());
-    rows.push(section("Financing activities"));
-    rows.extend(flow_lines(&cf.financing, members));
-    rows.push(one(
-        RowKind::Subtotal,
-        "Net cash from financing activities",
-        cf.cash_from_financing,
-    ));
+    for (sec, subtotal) in [
+        (
+            CashFlowSection::Investing,
+            "Net cash from investing activities",
+        ),
+        (
+            CashFlowSection::Financing,
+            "Net cash from financing activities",
+        ),
+    ] {
+        rows.push(spacer());
+        rows.push(section(sec.label()));
+        // Each kind with its total, its transactions listed under it (the
+        // engine lists a kind's lines together, in the kinds' order).
+        let mut lines = cf.lines(sec).iter();
+        for k in cf.kinds(sec) {
+            rows.push(one(RowKind::Line, k.kind.clone(), k.amount));
+            for l in lines.by_ref().take(k.entries.len()) {
+                rows.push(one(RowKind::Detail, l.label.clone(), l.amount));
+            }
+        }
+        rows.push(one(RowKind::Subtotal, subtotal, cf.total(sec)));
+    }
     rows.push(spacer());
     rows.push(one(
         RowKind::Subtotal,
@@ -389,6 +387,31 @@ pub fn cash_flow(cf: &CashFlowStatement, members: &[Member]) -> Statement {
         cf.cash_beginning,
     ));
     rows.push(one(RowKind::Total, "Cash at end of period", cf.cash_ending));
+    rows.push(spacer());
+    let r = &cf.operating_reconciliation;
+    rows.push(section(
+        "Reconciliation of net income (loss) to net cash from operating activities",
+    ));
+    rows.push(one(RowKind::Line, "Net income (loss)", r.net_income));
+    if !r.lines.is_empty() {
+        rows.push(subheading("Adjustments:"));
+    }
+    for l in &r.lines {
+        rows.push(one(RowKind::Line, l.label.clone(), l.amount));
+    }
+    rows.push(one(
+        RowKind::Subtotal,
+        "Net cash from operating activities",
+        r.net_cash_from_operating,
+    ));
+    rows.push(spacer());
+    rows.push(section("Noncash investing and financing activities"));
+    if cf.noncash_disclosures.is_empty() {
+        rows.push(row(RowKind::Line, "None", vec![None]));
+    }
+    for n in &cf.noncash_disclosures {
+        rows.push(one(RowKind::Line, n.label.clone(), n.amount));
+    }
     statement(
         "Statement of Cash Flows",
         period_label(cf.start, cf.end),
@@ -576,7 +599,7 @@ pub fn period_label(start: NaiveDate, end: NaiveDate) -> String {
 }
 
 /// Exact accounting format: thousands separators, two decimals, negatives
-/// in parentheses. "1,234.56", "(207.68)", "0.00". Never a float.
+/// in parentheses. "1,234.56", "(318.42)", "0.00". Never a float.
 ///
 /// ```text
 /// GOAL: an amount as an accountant writes it.
@@ -643,8 +666,8 @@ mod tests {
         assert_eq!(format_amount(dec("0")), "0.00");
         assert_eq!(format_amount(dec("-0")), "0.00");
         assert_eq!(format_amount(dec("5.8")), "5.80");
-        assert_eq!(format_amount(dec("207.68")), "207.68");
-        assert_eq!(format_amount(dec("-207.68")), "(207.68)");
+        assert_eq!(format_amount(dec("318.42")), "318.42");
+        assert_eq!(format_amount(dec("-318.42")), "(318.42)");
         assert_eq!(format_amount(dec("1000")), "1,000.00");
         assert_eq!(format_amount(dec("1234567.891")), "1,234,567.89");
         assert_eq!(format_amount(dec("-100000")), "(100,000.00)");

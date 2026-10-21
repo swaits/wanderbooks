@@ -782,12 +782,28 @@ fn pnl_and_balance_sheet_exports_equal_the_core_statements() {
 }
 
 /// Cash flow CSV and JSON equal `ledger_core::cash_flow` for the same
-/// account roles. Kills: export_cash_flow stubs and its json/csv switch.
+/// account roles and members, field for field (rules.md B-14; the JSON is
+/// the tool's own answer). Kills: export_cash_flow stubs and its json/csv
+/// switch, and any field the mapping drops.
 #[test]
 fn cash_flow_exports_equal_the_core_statement() {
     let dir = test_dir("cf");
     let mut s = new_store(&dir);
     rich_books(&mut s);
+    // Equipment on an operating payable: a warning, in the CSV too.
+    post(
+        &mut s,
+        "2025-04-02",
+        "Monitor on account",
+        &[("1500", Dr, "250.00"), ("2000", Cr, "250.00")],
+    );
+    let member = |name: &str, code: &str| ledger_core::MemberCapital {
+        name: name.into(),
+        capital_account: id_of(&s, code),
+        distribution_account: None,
+        share: Decimal::new(5, 1),
+    };
+    let members = vec![member("A", "3000"), member("B", "3001")];
     let cf = ledger_core::cash_flow(
         s.ledger(),
         &CashFlowParams {
@@ -796,6 +812,7 @@ fn cash_flow_exports_equal_the_core_statement() {
             cash_accounts: vec![id_of(&s, "1000")],
             financing_accounts: vec![id_of(&s, "2100")],
             investing_accounts: vec![],
+            members,
         },
     )
     .unwrap();
@@ -805,54 +822,173 @@ fn cash_flow_exports_equal_the_core_statement() {
         json!({"format": format, "report": "cash_flow", "start": START, "end": END,
                "cash_accounts": ["1000"], "financing_accounts": ["2100"]})
     };
+    use ledger_core::CashFlowSection as S;
 
     let csv = m.export_text(args("csv"));
-    let rows = csv_rows(&csv, &["section", "label", "amount"]);
-    let mut want: Vec<(String, String, Decimal)> = vec![
-        ("operating".into(), "Net income".into(), cf.net_income),
-        ("operating".into(), "Depreciation".into(), cf.depreciation),
-    ];
-    for l in &cf.working_capital {
-        want.push(("operating".into(), l.label.clone(), l.amount));
+    let rows = csv_rows(
+        &csv,
+        &[
+            "section",
+            "kind",
+            "class",
+            "entry",
+            "date",
+            "label",
+            "amount",
+            "on_behalf",
+        ],
+    );
+    let row = |sec: &str, kind: &str, class: &str, entry: String, date: String, label: &str, v| {
+        (
+            sec.to_string(),
+            kind.to_string(),
+            class.to_string(),
+            entry,
+            date,
+            label.to_string(),
+            v,
+            None,
+        )
+    };
+    let mut want = Vec::new();
+    for (sec, total) in [
+        (S::Operating, "Net cash from operating activities"),
+        (S::Investing, "Net cash from investing activities"),
+        (S::Financing, "Net cash from financing activities"),
+    ] {
+        for l in cf.lines(sec) {
+            let mut r = row(
+                sec.key(),
+                &l.kind,
+                l.class.map_or("", |c| c.key()),
+                l.entry.to_string(),
+                l.date.to_string(),
+                &l.label,
+                l.amount,
+            );
+            r.7 = Some(l.on_behalf);
+            want.push(r);
+        }
+        want.push(row(
+            sec.key(),
+            "",
+            "",
+            String::new(),
+            String::new(),
+            total,
+            cf.total(sec),
+        ));
     }
-    want.push((
-        "operating".into(),
-        "Cash from operations".into(),
-        cf.cash_from_operations,
+    let r = &cf.operating_reconciliation;
+    want.push(row(
+        "reconciliation",
+        "",
+        "",
+        String::new(),
+        String::new(),
+        "Net income (loss)",
+        r.net_income,
     ));
-    for l in &cf.investing {
-        want.push(("investing".into(), l.label.clone(), l.amount));
+    for l in &r.lines {
+        want.push(row(
+            "reconciliation",
+            l.kind.key(),
+            "",
+            String::new(),
+            String::new(),
+            &l.label,
+            l.amount,
+        ));
     }
-    want.push((
-        "investing".into(),
-        "Cash from investing".into(),
-        cf.cash_from_investing,
+    want.push(row(
+        "reconciliation",
+        "",
+        "",
+        String::new(),
+        String::new(),
+        "Net cash from operating activities",
+        r.net_cash_from_operating,
     ));
-    for l in &cf.financing {
-        want.push(("financing".into(), l.label.clone(), l.amount));
+    for n in &cf.noncash_disclosures {
+        want.push(row(
+            "noncash",
+            "",
+            "",
+            n.entry.to_string(),
+            n.date.to_string(),
+            &n.label,
+            n.amount,
+        ));
     }
-    want.push((
-        "financing".into(),
-        "Cash from financing".into(),
-        cf.cash_from_financing,
-    ));
-    want.push((
-        "reconciliation".into(),
-        "Net change in cash".into(),
-        cf.net_change_in_cash,
-    ));
+    for (label, v) in [
+        ("Net increase (decrease) in cash", cf.net_change_in_cash),
+        ("Cash at beginning of period", cf.cash_beginning),
+        ("Cash at end of period", cf.cash_ending),
+        ("Sections sum", cf.reconciles.sections_sum),
+        ("Difference", cf.reconciles.difference),
+    ] {
+        want.push(row(
+            "footing",
+            "",
+            "",
+            String::new(),
+            String::new(),
+            label,
+            v,
+        ));
+    }
+    // The warnings close the CSV: kind, entry and message, no amount.
+    let (warned, rows): (Vec<_>, Vec<_>) = rows.into_iter().partition(|r| r[0] == "warning");
+    let want_warned: Vec<Vec<String>> = cf
+        .warnings
+        .iter()
+        .map(|w| {
+            vec![
+                "warning".to_string(),
+                w.kind.key().to_string(),
+                String::new(),
+                w.entry.to_string(),
+                String::new(),
+                w.message.clone(),
+                String::new(),
+                String::new(),
+            ]
+        })
+        .collect();
+    assert_eq!(warned, want_warned, "cash flow CSV warnings");
+    assert_eq!(cf.warnings.len(), 1, "the monitor bought on account");
     let got: Vec<_> = rows
         .iter()
-        .map(|r| (r[0].clone(), r[1].clone(), amt(&r[2])))
+        .map(|r| {
+            (
+                r[0].clone(),
+                r[1].clone(),
+                r[2].clone(),
+                r[3].clone(),
+                r[4].clone(),
+                r[5].clone(),
+                amt(&r[6]),
+                (!r[7].is_empty()).then(|| amt(&r[7])),
+            )
+        })
         .collect();
     assert_eq!(got, want, "cash flow CSV");
+    assert!(
+        cf.operating.len() + cf.financing.len() > 1,
+        "the books move cash"
+    );
+    // The lunch a member paid through 2100 is borrowed and spent (D-42):
+    // its lines carry what was paid on the company's behalf.
+    assert!(
+        cf.financing.iter().any(|l| !l.on_behalf.is_zero()),
+        "a payment made for the company"
+    );
 
     let j: Value = serde_json::from_str(&m.export_text(args("json"))).unwrap();
+    assert_eq!(j["method"], "direct");
     assert_eq!(j["start"], START);
     assert_eq!(j["end"], END);
     for (k, v) in [
-        ("net_income", cf.net_income),
-        ("depreciation", cf.depreciation),
         ("cash_from_operations", cf.cash_from_operations),
         ("cash_from_investing", cf.cash_from_investing),
         ("cash_from_financing", cf.cash_from_financing),
@@ -862,18 +998,98 @@ fn cash_flow_exports_equal_the_core_statement() {
     ] {
         assert_eq!(jamt(&j[k]), v, "cash flow {k}");
     }
-    for (k, lines) in [
-        ("working_capital", &cf.working_capital),
-        ("investing", &cf.investing),
-        ("financing", &cf.financing),
+    for (k, sec) in [
+        ("operating", S::Operating),
+        ("investing", S::Investing),
+        ("financing", S::Financing),
     ] {
+        let lines = cf.lines(sec);
         let got = j[k].as_array().unwrap();
         assert_eq!(got.len(), lines.len(), "{k}");
         for (g, l) in got.iter().zip(lines) {
+            assert_eq!(g["entry"], json!(l.entry));
+            assert_eq!(g["date"], l.date.to_string());
             assert_eq!(g["label"], l.label.as_str());
+            assert_eq!(g["kind"], l.kind.as_str());
             assert_eq!(jamt(&g["amount"]), l.amount);
+            if l.on_behalf.is_zero() {
+                assert!(g.get("on_behalf").is_none(), "{g}");
+            } else {
+                assert_eq!(jamt(&g["on_behalf"]), l.on_behalf);
+            }
+            assert_eq!(g["accounts"], json!(l.accounts));
+            assert_eq!(g["reverses"], json!(l.reverses));
+            assert_eq!(g["class"], json!(l.class.map(|c| c.key())));
+        }
+        let by = if sec == S::Operating {
+            "operating_by_class".to_string()
+        } else {
+            format!("{k}_by_kind")
+        };
+        let kinds = cf.kinds(sec);
+        let got = j[&by].as_array().unwrap();
+        assert_eq!(got.len(), kinds.len(), "{by}");
+        for (g, kd) in got.iter().zip(&kinds) {
+            assert_eq!(g["kind"], kd.kind.as_str());
+            assert_eq!(jamt(&g["amount"]), kd.amount);
+            assert_eq!(g["entries"], json!(kd.entries));
+            assert_eq!(g["class"], json!(kd.class.map(|c| c.key())));
         }
     }
+    let got = j["noncash_disclosures"].as_array().unwrap();
+    assert_eq!(got.len(), cf.noncash_disclosures.len());
+    for (g, n) in got.iter().zip(&cf.noncash_disclosures) {
+        assert_eq!(g["entry"], json!(n.entry));
+        assert_eq!(g["date"], n.date.to_string());
+        assert_eq!(g["label"], n.label.as_str());
+        for (k, v) in [
+            ("amount", n.amount),
+            ("operating", n.operating),
+            ("investing", n.investing),
+            ("financing", n.financing),
+            ("exchanged", n.exchanged),
+        ] {
+            assert_eq!(jamt(&g[k]), v, "disclosure {k}");
+        }
+        assert_eq!(g["reverses"], json!(n.reverses));
+    }
+    let rj = &j["operating_reconciliation"];
+    assert_eq!(jamt(&rj["net_income"]), r.net_income);
+    assert_eq!(
+        jamt(&rj["net_cash_from_operating"]),
+        r.net_cash_from_operating
+    );
+    let got = rj["lines"].as_array().unwrap();
+    assert_eq!(got.len(), r.lines.len());
+    for (g, l) in got.iter().zip(&r.lines) {
+        assert_eq!(g["kind"], l.kind.key());
+        assert_eq!(g["label"], l.label.as_str());
+        assert_eq!(jamt(&g["amount"]), l.amount);
+        assert_eq!(g["account"], json!(l.account));
+        assert_eq!(g["entries"], json!(l.entries));
+    }
+    assert_eq!(
+        jamt(&j["reconciles"]["sections_sum"]),
+        cf.reconciles.sections_sum
+    );
+    assert_eq!(
+        jamt(&j["reconciles"]["net_change"]),
+        cf.reconciles.net_change
+    );
+    assert_eq!(j["reconciles"]["difference"], "0.00");
+    let got = j["warnings"].as_array().unwrap();
+    assert_eq!(got.len(), cf.warnings.len());
+    for (g, w) in got.iter().zip(&cf.warnings) {
+        assert_eq!(g["entry"], json!(w.entry));
+        assert_eq!(g["kind"], w.kind.key());
+        assert_eq!(g["message"], w.message.as_str());
+    }
+    // The tool's answer is the export's JSON.
+    let tool = m.ok(
+        "books.cash_flow",
+        json!({"start": START, "end": END, "cash_accounts": ["1000"], "financing_accounts": ["2100"]}),
+    );
+    assert_eq!(tool, j);
 }
 
 /// The journal export, CSV and JSON, is every posted entry line by line

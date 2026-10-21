@@ -28,7 +28,7 @@ No other statuses.
 | Reversing entries | Reverse transaction | done | linked via `reversal_of` |
 | Canonical report snapshots (JSON) | — (our oracle format) | done | `reports::snapshot` |
 | Fixed-asset register + straight-line depreciation | Fixed Asset register | done | `assets.rs`; golden-covered schedule; idempotent runs; disposal with gain/loss |
-| Cash flow statement (indirect) | Reports → Cash Flow | done | R-FUTURE-3 |
+| Cash flow statement (direct, with the reconciliation schedule and noncash disclosures) | Reports → Cash Flow | done | R-FUTURE-3; rules.md B-14 (P3 defect 1) |
 | Foreign-currency lines (base + foreign stored) | Multi-currency accts | done | R-FUTURE-1 |
 | Period close (closing entry to Retained Earnings) | Close books | done | R-FUTURE-2 |
 | Bank reconciliation (cleared flags + report) | Reconcile | done | — |

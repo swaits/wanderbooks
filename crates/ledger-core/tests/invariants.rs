@@ -744,7 +744,7 @@ fn entry_movements_sum_to_zero() {
 }
 
 // ---------------------------------------------------------------------------
-// Cash flow statement (indirect method).
+// Cash flow statement (direct method, rules.md B-14).
 // ---------------------------------------------------------------------------
 
 use ledger_core::NewAsset;
@@ -757,6 +757,7 @@ fn cash_flow_params(cash: AccountId) -> CashFlowParams {
         cash_accounts: vec![cash],
         financing_accounts: vec![],
         investing_accounts: vec![],
+        members: vec![],
     }
 }
 
@@ -779,20 +780,36 @@ fn cash_flow_reconciles_to_change_in_cash() {
     assert_eq!(cf.net_change_in_cash, Decimal::new(820000, 2));
 
     // Net income: 4,000 revenue - 800 rent = 3,200.
-    assert_eq!(cf.net_income, Decimal::new(320000, 2));
+    let r = &cf.operating_reconciliation;
+    assert_eq!(r.net_income, Decimal::new(320000, 2));
     // No depreciation: the fixture's equipment is not a registered asset.
-    assert_eq!(cf.depreciation, Decimal::ZERO);
+    assert!(r.lines.iter().all(|l| l.label != "Depreciation"));
 
-    // Operating: 3,200 net income
-    //   - 2,500 increase in AR (4,000 billed - 1,500 collected)
-    //   - 2,500 equipment purchase (not a registered asset: working capital)
-    //   + 10,000 owner investment is equity -> financing, not operating.
-    // Financing: +10,000 owner contribution.
-    // => operating = 3,200 - 2,500 - 2,500 = -1,800
-    // => investing = 0, financing = 10,000. Sum = 8,200. Reconciles.
+    // Operating, by the direct method: collected 1,500 (class (a)); paid
+    // 2,500 for equipment (not a registered asset: operating, rules.md
+    // B-14's limit R4) and 800 rent (class (d)) = -1,800. Reconciled:
+    // 3,200 net income - 2,500 increase in AR (4,000 billed - 1,500
+    // collected) - 2,500 increase in equipment = -1,800.
+    // Financing: +10,000 owner contribution. Sum = 8,200. Reconciles.
     assert_eq!(cf.cash_from_operations, Decimal::new(-180000, 2));
+    assert_eq!(
+        cf.operating_by_class(),
+        [
+            (
+                ledger_core::OperatingClass::FromCustomers,
+                Decimal::new(150000, 2)
+            ),
+            (
+                ledger_core::OperatingClass::ToSuppliersAndEmployees,
+                Decimal::new(-330000, 2)
+            ),
+        ]
+    );
+    let total: Decimal = r.net_income + r.lines.iter().map(|l| l.amount).sum::<Decimal>();
+    assert_eq!(total, cf.cash_from_operations);
     assert_eq!(cf.cash_from_investing, Decimal::ZERO);
     assert_eq!(cf.cash_from_financing, Decimal::new(1000000, 2));
+    assert_eq!(cf.reconciles.difference, Decimal::ZERO);
 }
 
 #[test]
@@ -894,11 +911,46 @@ fn cash_flow_with_registered_asset_and_disposal() {
     // Cash: 100,000 - 60,000 + 59,600 = 99,600.
     assert_eq!(cf.cash_ending, Decimal::new(9960000, 2));
     // Net income: 148 gain - 548 depreciation = -400.
-    assert_eq!(cf.net_income, Decimal::new(-40000, 2));
-    // Depreciation added back: 548.
-    assert_eq!(cf.depreciation, Decimal::new(54800, 2));
-    // Operating: -400 + 548 - 148 (gain removed) = 0.
+    let r = &cf.operating_reconciliation;
+    assert_eq!(r.net_income, Decimal::new(-40000, 2));
+    // Depreciation added back: 548; the gain taken out: -148 (its cash is
+    // investing).
+    let rec: Vec<(&str, Decimal)> = r
+        .lines
+        .iter()
+        .map(|l| (l.label.as_str(), l.amount))
+        .collect();
+    assert_eq!(
+        rec,
+        [
+            ("Depreciation", Decimal::new(54800, 2)),
+            (
+                "(Gain) loss and other noncash changes in investing assets",
+                Decimal::new(-14800, 2)
+            ),
+        ]
+    );
+    // Operating: -400 + 548 - 148 = 0.
     assert_eq!(cf.cash_from_operations, Decimal::ZERO);
+    // Gross (ASC 230-10-45-7): the purchase and the sale apart.
+    let inv: Vec<(&str, Decimal)> = cf
+        .investing
+        .iter()
+        .map(|l| (l.kind.as_str(), l.amount))
+        .collect();
+    assert_eq!(
+        inv,
+        [
+            (
+                "Purchases of property and equipment",
+                Decimal::new(-6000000, 2)
+            ),
+            (
+                "Proceeds from sales of property and equipment",
+                Decimal::new(5960000, 2)
+            ),
+        ]
+    );
     // Investing: -60,000 purchase + 59,600 proceeds = -400.
     assert_eq!(cf.cash_from_investing, Decimal::new(-40000, 2));
     // Financing: +100,000 owner investment.

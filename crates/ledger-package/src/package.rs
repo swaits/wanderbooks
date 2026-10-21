@@ -170,19 +170,19 @@ pub fn build_package<B: PackageBooks + ?Sized>(
         ),
         (
             "cash-flow",
-            report::cash_flow(
-                &cash_flow_for(
-                    ledger,
-                    settings,
-                    Some(&fy_start),
-                    Some(&as_of_s),
-                    req.cash_accounts,
-                    req.financing_accounts,
-                    req.investing_accounts,
-                    today,
-                )?,
-                &members,
-            ),
+            // The package's one list of each (INVARIANT 7); investing
+            // accounts are the cash flow's alone (the request's, else the
+            // settings').
+            report::cash_flow(&cash_flow_for(
+                ledger,
+                settings,
+                Some(&fy_start),
+                Some(&as_of_s),
+                cash_codes,
+                financing_codes,
+                req.investing_accounts,
+                today,
+            )?),
         ),
     ];
     let mut k1_csv: Option<(String, Vec<u8>)> = None;

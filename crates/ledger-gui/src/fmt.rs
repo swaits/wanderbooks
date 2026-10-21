@@ -103,7 +103,7 @@ fn group(d: Decimal) -> String {
 }
 
 /// The plain decimal behind a displayed amount, for the clipboard:
-/// `$1,234.56` → `1234.56`, `(207.68)` and `−12.00` → `-207.68`, `-12.00`.
+/// `$1,234.56` → `1234.56`, `(318.42)` and `−12.00` → `-318.42`, `-12.00`.
 /// Exact (the display never rounds). None when the text isn't an amount.
 pub fn plain(display: &str) -> Option<String> {
     let t = display.trim();
@@ -254,7 +254,7 @@ mod tests {
         assert_eq!(money(dec("-12")), "\u{2212}12.00");
         assert_eq!(money(dec("0")), "0.00");
         assert_eq!(money(dec("-0.00")), "0.00");
-        assert_eq!(accounting(dec("-207.68")), "(207.68)");
+        assert_eq!(accounting(dec("-318.42")), "(318.42)");
         assert_eq!(dollars(dec("999.999")), "$999.999");
         assert_eq!(money(dec("0.125")), "0.125");
         assert_eq!(compact(dec("-0.4")), "$0");
@@ -266,7 +266,7 @@ mod tests {
         assert_eq!(label("irs_name_control"), "IRS name control");
         assert_eq!(words("PrepaidExpense"), "Prepaid expense");
         assert_eq!(plain("$1,234.56").as_deref(), Some("1234.56"));
-        assert_eq!(plain("(207.68)").as_deref(), Some("-207.68"));
+        assert_eq!(plain("(318.42)").as_deref(), Some("-318.42"));
         assert_eq!(plain("\u{2212}$12.00").as_deref(), Some("-12.00"));
         assert_eq!(plain("+1,000.005").as_deref(), Some("1000.005"));
         assert_eq!(plain("0.00").as_deref(), Some("0.00"));

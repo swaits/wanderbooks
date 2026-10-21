@@ -2510,7 +2510,11 @@ fn settings_that_disagree_with_the_chart_are_problems() {
         .map(|p| p.as_str().unwrap().to_string())
         .collect();
     assert_eq!(problems.len(), 1, "{problems:?}");
-    assert!(problems[0].contains("[books] financing_accounts names 6000"));
+    assert!(
+        problems[0].contains("[books] financing_accounts lists 6000"),
+        "{problems:?}"
+    );
+    assert!(problems[0].ends_with("remove it from [books] financing_accounts in the settings"));
     let text = std::fs::read_to_string(&toml)
         .unwrap()
         .replace("cash_accounts = [\"1000\"]", "cash_accounts = [\"1010\"]")
@@ -2527,7 +2531,7 @@ fn settings_that_disagree_with_the_chart_are_problems() {
         "{problems}"
     );
     assert!(
-        problems.contains("[books] financing_accounts names 6000"),
+        problems.contains("[books] financing_accounts lists 6000"),
         "{problems}"
     );
 }

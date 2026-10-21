@@ -13,7 +13,12 @@
 //!      refused.
 //!   2. The cash flow statement needs at least one cash account, and
 //!      every code it is given must be in the chart; account lists a call
-//!      leaves empty default to the settings' roles.
+//!      leaves empty default to the settings' roles. It foots, or it is
+//!      refused (an engine error, never a figure: rules.md B-14 rule 9);
+//!      roles that contradict each other or the chart are refused by the
+//!      engine, naming the setting, so the viewer and the server refuse
+//!      alike. Members are named on their contributions and
+//!      distributions (D-35).
 //!   3. The year's earnings split net income year to date from the part
 //!      not yet closed into equity (closes are cumulative).
 //! ```
@@ -98,6 +103,9 @@ pub fn bs_statement(
 /// Build the cash flow statement from account codes, as the exports need it:
 /// `start` defaults to the beginning of time, `end` to `today`, and at
 /// least one cash account is required (the statement reconciles to them).
+/// A member whose capital account the chart lacks is left unnamed (equity
+/// is then named by account), never a refusal of the statement.
+#[allow(clippy::too_many_arguments)]
 pub fn cash_flow_statement(
     ledger: &Ledger,
     start: Option<&str>,
@@ -105,6 +113,7 @@ pub fn cash_flow_statement(
     cash_codes: &[String],
     financing_codes: &[String],
     investing_codes: &[String],
+    members: &[Member],
     today: NaiveDate,
 ) -> Result<ledger_core::reports::CashFlowStatement, String> {
     let resolve = |codes: &[String], what: &str| -> Result<Vec<AccountId>, String> {
@@ -129,6 +138,22 @@ pub fn cash_flow_statement(
     let financing_accounts = resolve(financing_codes, "financing")?;
     let investing_accounts = resolve(investing_codes, "investing")?;
     let (start, end) = statement_range(ledger, start, end, today)?;
+    let chart = ledger.chart();
+    let members = members
+        .iter()
+        .filter_map(|m| {
+            Some(ledger_core::MemberCapital {
+                name: m.name.clone(),
+                capital_account: chart.find_by_code(&m.capital_account)?.id,
+                distribution_account: m
+                    .distribution_account
+                    .as_deref()
+                    .and_then(|c| chart.find_by_code(c))
+                    .map(|a| a.id),
+                share: m.share,
+            })
+        })
+        .collect();
     ledger_core::cash_flow(
         ledger,
         &ledger_core::CashFlowParams {
@@ -137,6 +162,7 @@ pub fn cash_flow_statement(
             cash_accounts,
             financing_accounts,
             investing_accounts,
+            members,
         },
     )
     .map_err(|e| e.to_string())
@@ -169,6 +195,7 @@ pub fn cash_flow_for(
         &or(cash, settings.cash_accounts),
         &or(financing, settings.financing_accounts),
         &or(investing, settings.investing_accounts),
+        &settings.company.members,
         today,
     )
 }

@@ -113,7 +113,9 @@ requirement conflict, the requirement wins.
 
 ## Promoted from future (done)
 
-- **R-? — Cash flow statement** (indirect method). Was R-FUTURE-3.
+- **R-? — Cash flow statement** (direct method, with the reconciliation
+  of net income to operating cash and the noncash investing and financing
+  activities; rules.md B-14, P3 defect 1). Was R-FUTURE-3.
   `ledger-core::reports::cash_flow` + `books.cash_flow`.
 - **R-? — QuickBooks-compatible import/export.** Was R-FUTURE-4.
   `ledger-import` crate: CSV bank/chart import, IIF and XLSX export.

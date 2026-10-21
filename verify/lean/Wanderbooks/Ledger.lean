@@ -457,6 +457,80 @@ theorem statements_add_up (t : AccountType) (b c : Nat) (h : b ≤ c) (es : List
         + typeTotal t (allLines (between b c es)) chart :=
   typeTotal_split t _ _ _ (fun a => movement_split a b c h es) chart
 
+/-! ## The statement of cash flows foots (rules.md B-14 rule 9) -/
+
+/-- Some entries' cash, summed, is the movement of the cash accounts over
+their lines, when the cash tag follows the account. -/
+theorem cashTotal_is_movement (F : List Line → Line → Flow) (cash : List Nat)
+    (hd : Distinct cash) (hF : ∀ e l, F e l = .cash ↔ l.account ∈ cash) :
+    ∀ xs : List Entry,
+      cashTotal F (xs.map Entry.lines) = sumOver (fun a => movement a (allLines xs)) cash := by
+  intro xs
+  induction xs with
+  | nil => simpa [cashTotal, allLines] using (sumOver_zero cash).symm
+  | cons x xs ih =>
+    simp only [List.map_cons, cashTotal, allLines, movement_append]
+    rw [sumOver_add, ← ih, cashOf, secNet_cash_is_movement (F x.lines) cash hd (hF x.lines)]
+
+/-- **The statement of cash flows foots**, in every reachable state: over
+the posted entries dated after day `b` through day `c` (any selection of
+them, `p`: the engine leaves out closing entries), operating + investing +
+financing is the movement of the cash accounts over the same entries, for
+any tagging whose cash tag follows the account, and whatever a member or
+lender handled for each entry (`C`, rule 11) as long as it nets to zero
+(`constructive_nets`). Every posted entry is accepted (`Reachable.inv`),
+so each nets to zero. -/
+theorem Reachable.cashflow_foots {L : Ledger} (r : Reachable L) (b c : Nat) (p : Entry → Bool)
+    (F : List Line → Line → Flow) (C : List Line → List Int) (hC : ∀ e, sum3 (C e) = 0)
+    (cash : List Nat) (hd : Distinct cash)
+    (hF : ∀ e l, F e l = .cash ↔ l.account ∈ cash) :
+    let xs := (between b c L.posted).filter p
+    sectionTotal F C 0 (xs.map Entry.lines) + sectionTotal F C 1 (xs.map Entry.lines)
+        + sectionTotal F C 2 (xs.map Entry.lines)
+      = sumOver (fun a => movement a (allLines xs)) cash := by
+  intro xs
+  rw [cashflow_sections_sum_to_cash_change, cashTotal_is_movement F cash hd hF]
+  · intro e he
+    obtain ⟨x, hx, rfl⟩ := List.mem_map.1 he
+    have hb := (List.mem_filter.1 hx).1
+    exact (r.inv.accepted x (List.mem_filter.1 hb).1).net_zero
+  · exact fun e _ => hC e
+
+/-- **The sections are the change in the cash accounts' balances**: with
+every entry between `b` and `c` counted, the three sections sum to the
+cash accounts' movement through `c` less their movement through `b`
+(their ending balance less their beginning balance). -/
+theorem Reachable.cashflow_is_change_in_cash {L : Ledger} (r : Reachable L) (b c : Nat)
+    (hbc : b ≤ c) (F : List Line → Line → Flow) (C : List Line → List Int)
+    (hC : ∀ e, sum3 (C e) = 0) (cash : List Nat) (hd : Distinct cash)
+    (hF : ∀ e l, F e l = .cash ↔ l.account ∈ cash) :
+    let es := (between b c L.posted).map Entry.lines
+    sectionTotal F C 0 es + sectionTotal F C 1 es + sectionTotal F C 2 es
+      = sumOver (fun a => movement a (allLines (through c L.posted))) cash
+        - sumOver (fun a => movement a (allLines (through b L.posted))) cash := by
+  intro es
+  have h := r.cashflow_foots b c (fun _ => true) F C hC cash hd hF
+  have hall : (between b c L.posted).filter (fun _ => true) = between b c L.posted :=
+    List.filter_eq_self.2 (fun _ _ => rfl)
+  simp only [hall] at h
+  rw [h]
+  have hs : ∀ a, movement a (allLines (through c L.posted))
+      = movement a (allLines (through b L.posted)) + movement a (allLines (between b c L.posted)) :=
+    fun a => movement_split a b c hbc L.posted
+  rw [sumOver_congr _ _ cash (fun a _ => hs a), sumOver_add]
+  omega
+
+/-- **A reversal and its original in one period drop out together**: for
+an entry and its reversal (lines flipped, tagged as the original's, and
+what was handled for it mirrored, `constructive_neg`), the sum of their
+flows in each section is zero. -/
+theorem cashflow_reversal_nets (F : List Line → Line → Flow) (C : List Line → List Int)
+    (e : List Line) (hF : ∀ l ∈ e, F (reversal e) l.reverse = F e l)
+    (hC : C (reversal e) = (C e).map (fun x => -x)) (k : Nat) :
+    sectionTotal F C k [e, reversal e] = 0 := by
+  simp only [sectionTotal, stmt_flows_reversal F C e hF hC, getD_neg]
+  omega
+
 /-! ## How the books are kept changes no figure -/
 
 /-- **A record changes nothing the books hold**: a settings change, a

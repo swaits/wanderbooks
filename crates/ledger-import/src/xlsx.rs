@@ -58,6 +58,8 @@ pub(crate) struct Formats {
     pub(crate) dollars_total: Format,
     pub(crate) line_label: Format,
     pub(crate) sub_label: Format,
+    pub(crate) detail_label: Format,
+    pub(crate) detail_amount: Format,
     pub(crate) note: Format,
 }
 
@@ -85,6 +87,14 @@ impl Formats {
                 .set_border_bottom(FormatBorder::Double),
             line_label: Format::new().set_indent(1),
             sub_label: Format::new().set_italic().set_indent(1),
+            detail_label: Format::new()
+                .set_indent(2)
+                .set_font_size(9)
+                .set_font_color("#666666"),
+            detail_amount: Format::new()
+                .set_num_format(PLAIN)
+                .set_font_size(9)
+                .set_font_color("#666666"),
             note: Format::new()
                 .set_italic()
                 .set_font_size(9)
@@ -225,6 +235,7 @@ fn statement(
             RowKind::Section => (&f.bold, &f.plain),
             RowKind::Subheading => (&f.sub_label, &f.plain),
             RowKind::Line => (&f.line_label, &f.plain),
+            RowKind::Detail => (&f.detail_label, &f.detail_amount),
             RowKind::Subtotal if r.rule_above => (&f.bold, &f.dollars_sum),
             RowKind::Subtotal => (&f.bold, &dollars_unruled),
             RowKind::Total => (&f.bold, &f.dollars_total),

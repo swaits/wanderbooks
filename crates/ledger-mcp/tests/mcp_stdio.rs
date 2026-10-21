@@ -2379,8 +2379,11 @@ fn a_restarted_server_waits_for_the_old_one_to_let_go() {
 }
 
 /// `books.cash_flow` with no accounts passed reads the roles from
-/// `[books]` in wanderbooks.toml (rules.md B-14): the owners' advance is
-/// financing, gross; a loan to a member is investing.
+/// `[books]` in wanderbooks.toml (rules.md B-14): the expense the owners
+/// paid through 2100 is borrowed from them and spent on its date, each
+/// line with `on_behalf` (D-42, rule 11); repaying the advance is
+/// financing; a loan to a member is investing; the statement is the direct
+/// method's, and it foots.
 #[test]
 fn cash_flow_reads_its_account_roles_from_the_books_settings() {
     let dir = test_dir("cash-roles");
@@ -2448,10 +2451,89 @@ fn cash_flow_reads_its_account_roles_from_the_books_settings() {
             .map(|l| l["amount"].as_str().unwrap().to_string())
             .collect()
     };
-    // Financing, gross and sorted by code: 2100 in and out, then capital.
-    assert_eq!(amounts("financing"), ["100.00", "-100.00", "1000.00"]);
+    // Financing by kind: the contribution, what the owners paid for the
+    // company (borrowed through 2100), then the repayment of 2100.
+    assert_eq!(amounts("financing"), ["1000.00", "100.00", "-100.00"]);
+    assert_eq!(cf["financing"][1]["entry"], 2);
+    assert_eq!(cf["financing"][1]["on_behalf"], "100.00");
+    assert!(cf["financing"][0].get("on_behalf").is_none());
+    let kinds: Vec<&str> = cf["financing_by_kind"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| k["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "Contributions from owners — 3000 Capital",
+            "Proceeds from borrowing — 2100 Due to owners",
+            "Repayments of borrowing — 2100 Due to owners"
+        ]
+    );
     assert_eq!(amounts("investing"), ["-500.00"]);
+    assert_eq!(amounts("operating"), ["-100.00"]);
+    assert_eq!(cf["operating"][0]["on_behalf"], "-100.00");
+    assert_eq!(cf["operating"][0]["class"], "to_suppliers_and_employees");
+    assert_eq!(cf["method"], "direct");
     assert_eq!(cf["net_change_in_cash"], "400.00");
+    assert_eq!(cf["reconciles"]["sections_sum"], "400.00");
+    assert_eq!(cf["reconciles"]["difference"], "0.00");
+    // Nothing noncash: the software is net income's only item.
+    assert_eq!(cf["noncash_disclosures"], json!([]));
+    let r = &cf["operating_reconciliation"];
+    assert_eq!(r["net_income"], "-100.00");
+    assert_eq!(r["lines"], json!([]));
+    assert_eq!(r["net_cash_from_operating"], "-100.00");
+    for gone in ["net_income", "depreciation", "working_capital"] {
+        assert!(cf.get(gone).is_none(), "{gone} is gone");
+    }
+}
+
+/// rules.md B-14 rule 2: roles that contradict the chart are refused,
+/// naming the setting and the fix, never a statement on a wrong partition.
+#[test]
+fn cash_flow_refuses_contradictory_roles() {
+    let dir = test_dir("cash-refuse");
+    let mut mcp = Mcp::spawn(&dir);
+    mcp.request(
+        "initialize",
+        json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "smoke-test", "version": "0.1.0"},
+        }),
+    );
+    mcp.notify("notifications/initialized");
+    for (code, name, typ) in [
+        ("1000", "Bank", "asset"),
+        ("1500", "Equipment", "asset"),
+        ("2100", "Due to owners", "liability"),
+    ] {
+        mcp.call(
+            "books.add_account",
+            json!({"code": code, "name": name, "account_type": typ}),
+        );
+    }
+    let err = mcp.call_err(
+        "books.cash_flow",
+        json!({"cash_accounts": ["1000"], "financing_accounts": ["1500"]}),
+    );
+    assert!(
+        err.contains("financing_accounts (from the call or books.financing_accounts) lists 1500"),
+        "{err}"
+    );
+    assert!(err.contains("financing accounts are liabilities"), "{err}");
+    let err = mcp.call_err(
+        "books.cash_flow",
+        json!({"cash_accounts": ["1000", "2100"]}),
+    );
+    assert!(err.contains("cash accounts are asset accounts"), "{err}");
+    let err = mcp.call_err(
+        "books.cash_flow",
+        json!({"cash_accounts": ["1000"], "investing_accounts": ["1000"]}),
+    );
+    assert!(err.contains("is in both cash_accounts"), "{err}");
 }
 
 /// A chart CSV with a bad row anywhere is refused whole: nothing is

@@ -807,61 +807,200 @@ pub struct CashFlowParams {
     pub start: Option<String>,
     /// Period end, YYYY-MM-DD. Defaults to today.
     pub end: Option<String>,
-    /// Account codes treated as cash (e.g. `["1000", "1010"]`): the
-    /// statement reconciles to the net change in these accounts. Defaults
-    /// to `[books] cash_accounts`; one or the other is required.
+    /// Asset account codes treated as cash (e.g. `["1000", "1010"]`): the
+    /// statement explains the change in these accounts. Defaults to the
+    /// books' cash accounts setting (books.settings shows it); one or the
+    /// other is required.
     #[serde(default)]
     pub cash_accounts: Vec<String>,
-    /// Account codes for liabilities treated as financing (loans, and what
-    /// owners advanced: ASC 230-10-45-14(b)). Defaults to `[books]
-    /// financing_accounts`, else empty (liabilities are working capital).
+    /// Liability account codes treated as financing (loans, and what
+    /// members advanced: ASC 230-10-45-14(b)); equity is always financing.
+    /// Defaults to the books' financing accounts setting, else empty
+    /// (other liabilities are operating).
     #[serde(default)]
     pub financing_accounts: Vec<String>,
-    /// Asset account codes treated as investing for cash_flow: loans the
-    /// company makes, investments it buys (ASC 230-10-20). Defaults to
-    /// `[books] investing_accounts`.
+    /// Asset account codes treated as investing: loans the company makes,
+    /// investments it buys (ASC 230-10-20). Registered fixed assets are
+    /// investing unlisted. Defaults to the books' investing accounts
+    /// setting.
     #[serde(default)]
     pub investing_accounts: Vec<String>,
 }
 
-/// One cash flow line.
+/// One entry's cash in one kind of one section of the cash flow
+/// statement.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct CashFlowLineOut {
-    /// Human label.
+    /// The entry that moved the cash.
+    pub entry: u64,
+    /// Its date, YYYY-MM-DD.
+    pub date: String,
+    /// "<description> (#N)", "Reversal of #N — <N's description>", or
+    /// "Reinstatement of #A (reverses #B)".
     pub label: String,
-    /// Signed amount, decimal string. Positive = inflow.
+    /// The kind it is listed under: an operating class ("Cash paid to
+    /// suppliers and employees") or an investing or financing kind
+    /// ("Contributions from members — <member>").
+    pub kind: String,
+    /// The cash, decimal string; positive is cash in.
     pub amount: String,
+    /// Of `amount`, what a member or a lender paid or received for the
+    /// company with no cash account moving (a constructive receipt or
+    /// payment, D-42: an expense a member paid personally is borrowed from
+    /// the member and spent), decimal string; absent when none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_behalf: Option<String>,
+    /// Codes of this kind's accounts the entry moved.
+    pub accounts: Vec<String>,
+    /// The entry this one reverses, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reverses: Option<u64>,
+    /// Operating lines: the ASC 230-10-45-25 class key
+    /// (`from_customers`, `interest_and_dividends_received`,
+    /// `other_receipts`, `to_suppliers_and_employees`, `interest_paid`,
+    /// `income_taxes_paid`, `other_payments`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub class: Option<String>,
 }
 
-/// Result of `books.cash_flow`.
+/// A kind's total: how the printed statement and the viewer show a
+/// section.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct CashFlowKindOut {
+    /// The caption.
+    pub kind: String,
+    /// The operating class key, for an operating kind.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub class: Option<String>,
+    /// The kind's cash, decimal string.
+    pub amount: String,
+    /// Its entries.
+    pub entries: Vec<u64>,
+}
+
+/// One reconciling item between net income and operating cash.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ReconcilingLineOut {
+    /// `depreciation`, `investing_gain_loss`, `noncash_through`,
+    /// `other_noncash`, or `operating_balance_change`.
+    pub kind: String,
+    /// "Depreciation", "Noncash: through 2500 Bank loan", "Increase
+    /// in 1300 Prepaid Expenses", ...
+    pub label: String,
+    /// Added to net income, decimal string.
+    pub amount: String,
+    /// The account it is about, if one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    /// The entries behind it (an entry and its reversal in the period
+    /// left out).
+    pub entries: Vec<u64>,
+}
+
+/// Net income reconciled to net cash from operating activities (ASC
+/// 230-10-45-30: a separate schedule with the direct method).
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct OperatingReconciliationOut {
+    /// The period's net income, decimal string.
+    pub net_income: String,
+    /// The reconciling items.
+    pub lines: Vec<ReconcilingLineOut>,
+    /// Net income plus the items: equal to cash_from_operations.
+    pub net_cash_from_operating: String,
+}
+
+/// A noncash investing or financing activity (ASC 230-10-50-3).
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct NoncashDisclosureOut {
+    /// The entry.
+    pub entry: u64,
+    /// Its date, YYYY-MM-DD.
+    pub date: String,
+    /// Its label.
+    pub label: String,
+    /// The amount disclosed, decimal string.
+    pub amount: String,
+    /// The operating part no cash settled, debit-positive.
+    pub operating: String,
+    /// The investing part no cash settled, debit-positive.
+    pub investing: String,
+    /// The financing part no cash settled, debit-positive.
+    pub financing: String,
+    /// What was exchanged inside investing and financing (debt to equity,
+    /// one asset for another).
+    pub exchanged: String,
+    /// The entry it reverses, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reverses: Option<u64>,
+}
+
+/// The footing check: always a zero difference (a nonzero one is an
+/// engine error, never output).
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct CashFlowFootingOut {
+    /// Operating + investing + financing.
+    pub sections_sum: String,
+    /// The cash accounts' ending balance less their beginning balance.
+    pub net_change: String,
+    /// sections_sum − net_change: "0.00".
+    pub difference: String,
+}
+
+/// An entry whose later settlement the books can't classify by
+/// themselves, with what to change.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct CashFlowWarningOut {
+    /// The entry.
+    pub entry: u64,
+    /// `asset_on_operating_payable` or `asset_sold_on_operating_receivable`.
+    pub kind: String,
+    /// What happened and the fix.
+    pub message: String,
+}
+
+/// Result of `books.cash_flow`; `books.export` writes the same JSON.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct CashFlowOut {
+    /// "direct" (ASC 230-10-45-25).
+    pub method: String,
     /// Period start, YYYY-MM-DD.
     pub start: String,
     /// Period end, YYYY-MM-DD.
     pub end: String,
-    /// Period net income, decimal string.
-    pub net_income: String,
-    /// Non-cash depreciation added back, decimal string.
-    pub depreciation: String,
-    /// Working-capital adjustments.
-    pub working_capital: Vec<CashFlowLineOut>,
-    /// Cash from operations, decimal string.
+    /// Operating cash by ASC 230-10-45-25 class, (a) to (g).
+    pub operating_by_class: Vec<CashFlowKindOut>,
+    /// Every entry's operating cash, by class, then date.
+    pub operating: Vec<CashFlowLineOut>,
+    /// Net cash from operating activities, decimal string.
     pub cash_from_operations: String,
-    /// Investing flows (purchases, disposal proceeds).
+    /// Investing cash by kind (purchases and sales of property and
+    /// equipment, loans made and collected).
+    pub investing_by_kind: Vec<CashFlowKindOut>,
+    /// Every entry's investing cash, by kind, then date.
     pub investing: Vec<CashFlowLineOut>,
-    /// Cash from investing, decimal string.
+    /// Net cash from investing activities, decimal string.
     pub cash_from_investing: String,
-    /// Financing flows (equity, designated debt).
+    /// Financing cash by kind (contributions and distributions per member,
+    /// borrowing and repayments per lender).
+    pub financing_by_kind: Vec<CashFlowKindOut>,
+    /// Every entry's financing cash, by kind, then date.
     pub financing: Vec<CashFlowLineOut>,
-    /// Cash from financing, decimal string.
+    /// Net cash from financing activities, decimal string.
     pub cash_from_financing: String,
     /// Net change in cash, decimal string.
     pub net_change_in_cash: String,
-    /// Cash balance at period start, decimal string.
+    /// Cash at the start, decimal string.
     pub cash_beginning: String,
-    /// Cash balance at period end, decimal string.
+    /// Cash at the end, decimal string.
     pub cash_ending: String,
+    /// Noncash investing and financing activities.
+    pub noncash_disclosures: Vec<NoncashDisclosureOut>,
+    /// Net income reconciled to operating cash.
+    pub operating_reconciliation: OperatingReconciliationOut,
+    /// The footing check.
+    pub reconciles: CashFlowFootingOut,
+    /// Entries whose later settlement the books can't classify.
+    pub warnings: Vec<CashFlowWarningOut>,
 }
 
 /// Parameters for `books.import_bank_csv`.

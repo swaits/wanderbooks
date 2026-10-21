@@ -16,7 +16,7 @@ Statuses: `covered` (built and tested), `partial` (built, known gaps listed),
 | 2 | Chart of accounts | engine + `books.chart` (with live balances) | covered |
 | 3 | Live P&L tab | engine + `books.profit_and_loss` | covered |
 | 4 | Live Balance Sheet tab | engine + `books.balance_sheet` | covered |
-| 5 | Live Cash Flow tab | engine `cash_flow` (indirect) + `books.cash_flow` | covered |
+| 5 | Live Cash Flow tab | engine `cash_flow` (direct, with the reconciliation schedule) + `books.cash_flow` | covered |
 | 6 | Transaction Journal as append-only log | engine posting log + `books.search_entries` | covered |
 | 7 | Receipt storage in Drive | blob store + `books.attach_receipt` / `link_receipt` / `unlink_receipt` / `withdraw_attachment` | covered |
 | 8 | Document filing by category (01 Formation / 02 Legal / 03 Tax / 04 Accounting) | `books.file_document` | covered |

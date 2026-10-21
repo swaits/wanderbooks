@@ -1734,16 +1734,23 @@ fn the_readme_names_the_entries_on_receivables_and_payables() {
     assert!(!text(&p, "README.txt").contains("customer or vendor"));
 }
 
-/// An XLSX's shared strings, as text.
+/// Every text the package's XLSX `name` holds: its XML parts (the shared
+/// strings and the sheets), concatenated, `&amp;` read as `&`.
 fn xlsx_strings(p: &Package, name: &str) -> String {
-    let (_, bytes) = p.files.iter().find(|(n, _)| n == name).unwrap();
+    let (_, bytes) = p
+        .files
+        .iter()
+        .find(|(n, _)| n == name)
+        .unwrap_or_else(|| panic!("{name} in {:?}", names(p)));
     let mut x = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
     let mut out = String::new();
-    x.by_name("xl/sharedStrings.xml")
-        .unwrap()
-        .read_to_string(&mut out)
-        .unwrap();
-    out
+    for i in 0..x.len() {
+        let mut part = x.by_index(i).unwrap();
+        if part.name().unwrap().ends_with(".xml") {
+            part.read_to_string(&mut out).unwrap();
+        }
+    }
+    out.replace("&amp;", "&")
 }
 
 /// Random books for [`iif_ties_to_the_trial_balance_as_of`]: entries of
@@ -1946,4 +1953,36 @@ fn the_bookspec_iif_example_matches_the_engine() {
         checked += 1;
     }
     assert_eq!(checked, 2);
+}
+
+/// The package's statement of cash flows is the direct method's (rules.md
+/// B-14, D-35): operating by ASC 230-10-45-25 class, financing by kind
+/// with each member named, and both schedules: the reconciliation of net
+/// income to operating cash (45-30) and the noncash investing and
+/// financing activities (50-3; "None" here: every entry moved cash).
+#[test]
+fn the_cash_flow_carries_both_schedules() {
+    let dir = tempfile::tempdir().unwrap();
+    let b = books(dir.path());
+    let company = company(true);
+    let cash = cash();
+    let p = build_package(&b.store, &settings(&company, &cash), &request(true, None)).unwrap();
+    let text = xlsx_strings(&p, "cash-flow.xlsx");
+    for m in &company.members {
+        let want = format!("Contributions from members — {}", m.name);
+        assert!(text.contains(&want), "{want:?} not in the cash flow");
+    }
+    for want in [
+        "Statement of Cash Flows",
+        "Cash received from customers",
+        "Cash paid to suppliers and employees",
+        "Members' contributions (#",
+        "Reconciliation of net income (loss) to net cash from operating activities",
+        "Noncash investing and financing activities",
+        "None",
+    ] {
+        assert!(text.contains(want), "{want:?} not in the cash flow");
+    }
+    assert!(!text.contains("Member distributions"));
+    assert!(p.files.iter().any(|(n, _)| n == "cash-flow.pdf"));
 }

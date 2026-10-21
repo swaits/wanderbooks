@@ -6,10 +6,11 @@
 # `every_file_in_an_as_of_package_stops_at_as_of` and
 # `as_of_package_iif_stops_at_as_of` (ledger-package tests/package.rs).
 #
-# Expected values: trial_balance gives each account's balance, debit
-# positive and credit negative, every account listed; profit_and_loss
-# gives each revenue and expense account's activity for the period as a
-# positive amount, and net_income (revenue less expenses).
+# Expected values (bookspec/README.md): trial_balance gives each
+# account's balance as of the day, debit positive and credit negative,
+# every account listed; profit_and_loss gives each revenue and expense
+# account's activity for the period on its normal side, every one
+# listed, and net_income (revenue less expenses).
 
 id = "as-of-package-stops-at-as-of"
 title = "A report as of a day leaves out what is dated after it"
@@ -25,7 +26,7 @@ tags = ["as-of", "trial-balance", "profit-and-loss", "reversal", "period-boundar
 currency = "USD"
 fiscal_year_start = "01-01"
 basis = "accrual"
-rounding = "half_away_from_zero"
+rounding = "half-away-from-zero"
 
 [[setup.accounts]]
 code = "1000"
@@ -47,7 +48,7 @@ code = "6000"
 name = "Rent"
 type = "expense"
 
-# 0
+# Entry 1.
 [[events]]
 date = "2026-01-02"
 description = "Owner contribution"
@@ -56,7 +57,7 @@ lines = [
   { account = "3000", side = "credit", amount = "10000.00" },
 ]
 
-# 1
+# Entry 2.
 [[events]]
 date = "2026-02-01"
 description = "Sale"
@@ -65,7 +66,7 @@ lines = [
   { account = "4000", side = "credit", amount = "4000.00" },
 ]
 
-# 2: dated the day itself, so in.
+# Entry 3: dated the day itself, so in.
 [[events]]
 date = "2026-06-30"
 description = "June rent"
@@ -74,7 +75,7 @@ lines = [
   { account = "1000", side = "credit", amount = "1200.00" },
 ]
 
-# 3: the day after, so out of anything as of 2026-06-30.
+# Entry 4: the day after, so out of anything as of 2026-06-30.
 [[events]]
 date = "2026-07-01"
 description = "July rent"
@@ -83,20 +84,15 @@ lines = [
   { account = "1000", side = "credit", amount = "1200.00" },
 ]
 
-# 4: a reversal dated after the day leaves its original in.
+# Entry 5: a reversal dated after the day leaves its original in.
 [[events]]
 date = "2026-07-15"
 description = "Reversal of the February sale"
-reverses = 1
-lines = [
-  { account = "4000", side = "debit", amount = "4000.00" },
-  { account = "1000", side = "credit", amount = "4000.00" },
-]
+reverses = 2
 
 [[expect]]
 query = "trial_balance"
-from = "2026-01-01"
-to = "2026-06-30"
+as_of = "2026-06-30"
 values = { "1000" = "12800.00", "3000" = "-10000.00", "4000" = "-4000.00", "6000" = "1200.00" }
 
 [[expect]]
@@ -108,8 +104,7 @@ values = { "4000" = "4000.00", "6000" = "1200.00", net_income = "2800.00" }
 # The same books a month later: the July rent and the reversal are in.
 [[expect]]
 query = "trial_balance"
-from = "2026-01-01"
-to = "2026-07-31"
+as_of = "2026-07-31"
 values = { "1000" = "7600.00", "3000" = "-10000.00", "4000" = "0.00", "6000" = "2400.00" }
 
 [[expect]]

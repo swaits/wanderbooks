@@ -1245,6 +1245,46 @@ fn settings_problems(ledger: &Ledger, cfg: &Settings) -> Vec<String> {
     } else {
         " in the settings"
     };
+    // The cash flow roles: codes the chart lacks here; the rest is the
+    // engine's own check, the one the statement refuses on (rules.md B-14
+    // rule 2), so the two never disagree.
+    let lists = [
+        (
+            ledger_core::RoleList::Cash,
+            label("books.cash_accounts", "[books] cash_accounts"),
+            &cfg.roles.cash,
+        ),
+        (
+            ledger_core::RoleList::Financing,
+            label("books.financing_accounts", "[books] financing_accounts"),
+            &cfg.roles.financing,
+        ),
+        (
+            ledger_core::RoleList::Investing,
+            label("books.investing_accounts", "[books] investing_accounts"),
+            &cfg.roles.investing,
+        ),
+    ];
+    let mut ids: [Vec<ledger_core::AccountId>; 3] = Default::default();
+    for ((_, setting, codes), ids) in lists.iter().zip(&mut ids) {
+        for code in codes.iter() {
+            match ledger.chart().find_by_code(code) {
+                Some(a) => ids.push(a.id),
+                None => out.push(format!(
+                    "{setting} names {code}, which isn't in the chart: add that account, or change {setting}{how}"
+                )),
+            }
+        }
+    }
+    let named = |l: ledger_core::RoleList| {
+        lists
+            .iter()
+            .find(|(list, _, _)| *list == l)
+            .map_or(String::new(), |(_, setting, _)| setting.to_string())
+    };
+    for p in ledger_core::role_problems(ledger, &ids[0], &ids[1], &ids[2]) {
+        out.push(format!("{}{how}", p.message(named)));
+    }
     let mut check = |setting: &str, code: &str, want: &[AccountType]| {
         match ledger.chart().find_by_code(code) {
             None => out.push(format!(
@@ -1260,27 +1300,7 @@ fn settings_problems(ledger: &Ledger, cfg: &Settings) -> Vec<String> {
         }
     };
     use AccountType::*;
-    for code in &cfg.roles.cash {
-        check(
-            label("books.cash_accounts", "[books] cash_accounts"),
-            code,
-            &[Asset],
-        );
-    }
-    for code in &cfg.roles.financing {
-        check(
-            label("books.financing_accounts", "[books] financing_accounts"),
-            code,
-            &[Liability, Equity],
-        );
-    }
-    for code in &cfg.roles.investing {
-        check(
-            label("books.investing_accounts", "[books] investing_accounts"),
-            code,
-            &[Asset],
-        );
-    }
+
     let c = &cfg.company;
     for m in &c.members {
         check(
@@ -2798,7 +2818,7 @@ impl BooksServer {
     #[tool(
         name = "books.cash_flow",
         title = "Cash flow statement",
-        description = "Cash flow statement (indirect method) for a period: net income, depreciation add-back, working-capital changes, investing (asset purchases, disposal proceeds), financing. The three sections reconcile to the net change in the given cash accounts.",
+        description = "Statement of cash flows for a period, direct method (ASC 230): each entry that moved cash, by section and kind (operating by ASC 230-10-45-25 class; investing and financing by kind, such as each member's contributions), gross; an entry and its reversal in the same period drop out together. What a member or lender paid for the company is borrowed and spent on its date (on_behalf). Also noncash investing and financing activities (property contributed, debt converted), net income reconciled to operating cash, warnings, and reconciles: the sections sum to the change in the cash accounts. Account roles default to the books' settings.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn cash_flow(
@@ -2816,25 +2836,7 @@ impl BooksServer {
             &p.financing_accounts,
             &p.investing_accounts,
         )?;
-        let line = |l: &ledger_core::CashFlowLine| CashFlowLineOut {
-            label: l.label.clone(),
-            amount: money(l.amount),
-        };
-        Ok(Json(CashFlowOut {
-            start: stmt.start.to_string(),
-            end: stmt.end.to_string(),
-            net_income: money(stmt.net_income),
-            depreciation: money(stmt.depreciation),
-            working_capital: stmt.working_capital.iter().map(line).collect(),
-            cash_from_operations: money(stmt.cash_from_operations),
-            investing: stmt.investing.iter().map(line).collect(),
-            cash_from_investing: money(stmt.cash_from_investing),
-            financing: stmt.financing.iter().map(line).collect(),
-            cash_from_financing: money(stmt.cash_from_financing),
-            net_change_in_cash: money(stmt.net_change_in_cash),
-            cash_beginning: money(stmt.cash_beginning),
-            cash_ending: money(stmt.cash_ending),
-        }))
+        Ok(Json(cash_flow_out(&stmt)))
     }
 
     #[tool(
@@ -5330,7 +5332,7 @@ impl BooksServer {
     #[tool(
         name = "books.export",
         title = "Export a report",
-        description = "Export a report. Reports: profit_and_loss, balance_sheet, cash_flow (needs cash_accounts), trial_balance (as_of), members_equity (multi-member LLC; members from the settings), general_ledger (by account: running balances, splits), general_journal (every entry in date order; alias journal), fixed_asset_register (as_of: every asset with tag, serial, cost, depreciation, book value, reconciled to the books). Formats: pdf and xlsx (base64) for the five statements and fixed_asset_register; xlsx, csv, json for every report; iif for general_journal (QuickBooks Desktop: plain ASCII text, CR LF; every posted entry from the first through as_of, period closes left out, DOCNUM the entry id; names, numbers and memos fit QuickBooks' limits; warnings says what is written differently from the books, memos grouped, to tell the human). Dates: start/end for period reports (start defaults to the first entry, end to today), as_of for balance_sheet, trial_balance, fixed_asset_register, and iif (default today).",
+        description = "Export a report. Reports: profit_and_loss, balance_sheet, cash_flow (direct method, with its reconciliation and noncash schedules; needs cash_accounts), trial_balance (as_of), members_equity (multi-member LLC; members from the settings), general_ledger (by account: running balances, splits), general_journal (every entry in date order; alias journal), fixed_asset_register (as_of: every asset with tag, serial, cost, depreciation, book value, reconciled to the books). Formats: pdf and xlsx (base64) for the five statements and fixed_asset_register; xlsx, csv, json for every report; iif for general_journal (QuickBooks Desktop: plain ASCII text, CR LF; every posted entry from the first through as_of, period closes left out, DOCNUM the entry id; names, numbers and memos fit QuickBooks' limits; warnings says what is written differently from the books, memos grouped, to tell the human). Dates: start/end for period reports (start defaults to the first entry, end to today), as_of for balance_sheet, trial_balance, fixed_asset_register, and iif (default today).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn export(&self, params: Parameters<ExportParams>) -> Result<Json<ExportOut>, String> {
@@ -5431,17 +5433,14 @@ impl BooksServer {
                 let earnings = self.year_earnings(ledger, bs.as_of)?;
                 report::balance_sheet(&bs, earnings, &members)
             }
-            "cash_flow" => report::cash_flow(
-                &self.cash_flow_for(
-                    ledger,
-                    p.start.as_deref(),
-                    p.end.as_deref(),
-                    &p.cash_accounts,
-                    &p.financing_accounts,
-                    &p.investing_accounts,
-                )?,
-                &members,
-            ),
+            "cash_flow" => report::cash_flow(&self.cash_flow_for(
+                ledger,
+                p.start.as_deref(),
+                p.end.as_deref(),
+                &p.cash_accounts,
+                &p.financing_accounts,
+                &p.investing_accounts,
+            )?),
             "trial_balance" => {
                 let as_of = match &p.as_of {
                     Some(s) => parse_date(s)?,
@@ -8098,7 +8097,7 @@ impl BooksServer {
     #[tool(
         name = "books.export_cpa_package",
         title = "CPA handoff package",
-        description = "Build the CPA handoff package as a zip: the profit and loss, balance sheet, cash flow, statement of changes in members' equity (multi-member LLCs), tax summary, and trial balance, each as PDF and XLSX; the fixed asset register as PDF and XLSX when there are fixed assets; the general ledger (by account) and general journal (entry by entry) as XLSX; the journal through as_of as IIF (imports into QuickBooks Desktop; plain ASCII within its limits: warnings says what is written differently from the books, and so does the README); the 1099 worksheet as CSV (payments from January 1 through as_of); with members, the K-1 worksheet (k1-members.csv: per member their party, share, capital account, TIN, and beginning capital, contributions in cash and in property, share of income, distributions, and ending capital for the fiscal year to date); every receipt behind the year's entries, filed on them or linked to them (receipts/, with an index.csv tying each file to its entry) and the company's documents (documents/), unless include_receipts is false; and a README with the journal's verified hash. By default (include_tins) the K-1 and 1099 worksheets carry every member's and payee's full TIN from the TIN vault; include_tins: false, last fours only. The zip is handed over: run its download command to save it in a folder (books served by `wanderbooks mcp`; over stdio it comes back inline). Never file it into the books. A locked vault or a missing TIN doesn't stop the package: tin_gaps lists each one (collect them with books.set_tin or books.set_w9 and export again). cash_accounts (e.g. [\"1000\"]) is required: the cash flow statement reconciles to them. as_of defaults to today; period reports cover the fiscal year to date.",
+        description = "Build the CPA handoff package as a zip: the profit and loss, balance sheet, cash flow (direct method, with its reconciliation and noncash schedules), statement of changes in members' equity (multi-member LLCs), tax summary, and trial balance, each as PDF and XLSX; the fixed asset register as PDF and XLSX when an asset was bought by as_of; the general ledger (by account) and general journal (entry by entry) as XLSX; the journal through as_of as IIF (imports into QuickBooks Desktop; plain ASCII within its limits: warnings says what is written differently from the books, and so does the README); the 1099 worksheet as CSV (payments from January 1 through as_of); with members, the K-1 worksheet (k1-members.csv: per member their party, share, capital account, TIN, and beginning capital, contributions in cash and in property, share of income, distributions, and ending capital for the fiscal year to date); every receipt behind the year's entries, filed on them or linked to them (receipts/, with an index.csv tying each file to its entry) and the company's documents (documents/), unless include_receipts is false; and a README with the journal's verified hash. By default (include_tins) the K-1 and 1099 worksheets carry every member's and payee's full TIN from the TIN vault; include_tins: false, last fours only. The zip is handed over: run its download command to save it in a folder (books served by `wanderbooks mcp`; over stdio it comes back inline). Never file it into the books. A locked vault or a missing TIN doesn't stop the package: tin_gaps lists each one (collect them with books.set_tin or books.set_w9 and export again). cash_accounts (e.g. [\"1000\"]) is required: the cash flow statement reconciles to them. as_of defaults to today; period reports cover the fiscal year to date.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -8602,76 +8601,217 @@ impl BooksServer {
             &p.investing_accounts,
         )?;
         if format == "json" {
-            return serde_json::to_string_pretty(&serde_json::json!({
-                "start": stmt.start.to_string(), "end": stmt.end.to_string(),
-                "net_income": money(stmt.net_income),
-                "depreciation": money(stmt.depreciation),
-                "working_capital": stmt.working_capital.iter().map(|l| serde_json::json!({
-                    "label": l.label, "amount": money(l.amount),
-                })).collect::<Vec<_>>(),
-                "cash_from_operations": money(stmt.cash_from_operations),
-                "investing": stmt.investing.iter().map(|l| serde_json::json!({
-                    "label": l.label, "amount": money(l.amount),
-                })).collect::<Vec<_>>(),
-                "cash_from_investing": money(stmt.cash_from_investing),
-                "financing": stmt.financing.iter().map(|l| serde_json::json!({
-                    "label": l.label, "amount": money(l.amount),
-                })).collect::<Vec<_>>(),
-                "cash_from_financing": money(stmt.cash_from_financing),
-                "net_change_in_cash": money(stmt.net_change_in_cash),
-                "cash_beginning": money(stmt.cash_beginning),
-                "cash_ending": money(stmt.cash_ending),
-            }))
-            .map_err(|e| e.to_string());
+            // The tool's own answer, from the one function (they can't
+            // drift apart).
+            return serde_json::to_string_pretty(&cash_flow_out(&stmt)).map_err(|e| e.to_string());
         }
-        let mut csv = String::from("section,label,amount\n");
-        csv.push_str(&format!(
-            "operating,Net income,{}\n",
-            money(stmt.net_income)
-        ));
-        csv.push_str(&format!(
-            "operating,Depreciation,{}\n",
-            money(stmt.depreciation)
-        ));
-        for l in &stmt.working_capital {
-            csv.push_str(&format!(
-                "operating,{},{}\n",
-                csv_escape(&l.label),
-                money(l.amount)
-            ));
-        }
-        csv.push_str(&format!(
-            "operating,Cash from operations,{}\n",
-            money(stmt.cash_from_operations)
-        ));
-        for l in &stmt.investing {
-            csv.push_str(&format!(
-                "investing,{},{}\n",
-                csv_escape(&l.label),
-                money(l.amount)
-            ));
-        }
-        csv.push_str(&format!(
-            "investing,Cash from investing,{}\n",
-            money(stmt.cash_from_investing)
-        ));
-        for l in &stmt.financing {
-            csv.push_str(&format!(
-                "financing,{},{}\n",
-                csv_escape(&l.label),
-                money(l.amount)
-            ));
-        }
-        csv.push_str(&format!(
-            "financing,Cash from financing,{}\n",
-            money(stmt.cash_from_financing)
-        ));
-        csv.push_str(&format!(
-            "reconciliation,Net change in cash,{}\n",
-            money(stmt.net_change_in_cash)
-        ));
-        Ok(csv)
+        Ok(cash_flow_csv(&stmt))
     }
+}
+
+/// `books.cash_flow`'s answer, and `books.export`'s cash flow JSON.
+fn cash_flow_out(stmt: &ledger_core::CashFlowStatement) -> CashFlowOut {
+    use ledger_core::CashFlowSection as S;
+    let line = |l: &ledger_core::CashFlowLine| CashFlowLineOut {
+        entry: l.entry,
+        date: l.date.to_string(),
+        label: l.label.clone(),
+        kind: l.kind.clone(),
+        amount: money(l.amount),
+        on_behalf: (!l.on_behalf.is_zero()).then(|| money(l.on_behalf)),
+        accounts: l.accounts.clone(),
+        reverses: l.reverses,
+        class: l.class.map(|c| c.key().to_string()),
+    };
+    let kinds = |sec: S| {
+        stmt.kinds(sec)
+            .into_iter()
+            .map(|k| CashFlowKindOut {
+                kind: k.kind,
+                class: k.class.map(|c| c.key().to_string()),
+                amount: money(k.amount),
+                entries: k.entries,
+            })
+            .collect()
+    };
+    let r = &stmt.operating_reconciliation;
+    CashFlowOut {
+        method: "direct".to_string(),
+        start: stmt.start.to_string(),
+        end: stmt.end.to_string(),
+        operating_by_class: kinds(S::Operating),
+        operating: stmt.operating.iter().map(line).collect(),
+        cash_from_operations: money(stmt.cash_from_operations),
+        investing_by_kind: kinds(S::Investing),
+        investing: stmt.investing.iter().map(line).collect(),
+        cash_from_investing: money(stmt.cash_from_investing),
+        financing_by_kind: kinds(S::Financing),
+        financing: stmt.financing.iter().map(line).collect(),
+        cash_from_financing: money(stmt.cash_from_financing),
+        net_change_in_cash: money(stmt.net_change_in_cash),
+        cash_beginning: money(stmt.cash_beginning),
+        cash_ending: money(stmt.cash_ending),
+        noncash_disclosures: stmt
+            .noncash_disclosures
+            .iter()
+            .map(|n| NoncashDisclosureOut {
+                entry: n.entry,
+                date: n.date.to_string(),
+                label: n.label.clone(),
+                amount: money(n.amount),
+                operating: money(n.operating),
+                investing: money(n.investing),
+                financing: money(n.financing),
+                exchanged: money(n.exchanged),
+                reverses: n.reverses,
+            })
+            .collect(),
+        operating_reconciliation: OperatingReconciliationOut {
+            net_income: money(r.net_income),
+            lines: r
+                .lines
+                .iter()
+                .map(|l| ReconcilingLineOut {
+                    kind: l.kind.key().to_string(),
+                    label: l.label.clone(),
+                    amount: money(l.amount),
+                    account: l.account.clone(),
+                    entries: l.entries.clone(),
+                })
+                .collect(),
+            net_cash_from_operating: money(r.net_cash_from_operating),
+        },
+        reconciles: CashFlowFootingOut {
+            sections_sum: money(stmt.reconciles.sections_sum),
+            net_change: money(stmt.reconciles.net_change),
+            difference: money(stmt.reconciles.difference),
+        },
+        warnings: stmt
+            .warnings
+            .iter()
+            .map(|w| CashFlowWarningOut {
+                entry: w.entry,
+                kind: w.kind.key().to_string(),
+                message: w.message.clone(),
+            })
+            .collect(),
+    }
+}
+
+/// `books.export`'s cash flow CSV:
+/// `section,kind,class,entry,date,label,amount,on_behalf`, every line of
+/// every section (`on_behalf`: of its amount, what a member or lender
+/// paid or received for the company, D-42), the reconciliation, the
+/// noncash disclosures, the footing and the warnings (`warning`, its
+/// kind, its entry and its message; no amount). Only a section's lines
+/// have an `on_behalf`.
+fn cash_flow_csv(stmt: &ledger_core::CashFlowStatement) -> String {
+    use ledger_core::CashFlowSection as S;
+    let mut csv = String::from("section,kind,class,entry,date,label,amount,on_behalf\n");
+    let mut row = |section: &str,
+                   kind: &str,
+                   class: &str,
+                   entry: Option<u64>,
+                   date: Option<chrono::NaiveDate>,
+                   label: &str,
+                   amount: rust_decimal::Decimal,
+                   on_behalf: Option<rust_decimal::Decimal>| {
+        csv.push_str(&format!(
+            "{section},{},{class},{},{},{},{},{}\n",
+            csv_escape(kind),
+            entry.map_or(String::new(), |e| e.to_string()),
+            date.map_or(String::new(), |d| d.to_string()),
+            csv_escape(label),
+            money(amount),
+            on_behalf.map_or(String::new(), money)
+        ));
+    };
+    for (sec, total) in [
+        (S::Operating, "Net cash from operating activities"),
+        (S::Investing, "Net cash from investing activities"),
+        (S::Financing, "Net cash from financing activities"),
+    ] {
+        for l in stmt.lines(sec) {
+            let class = l.class.map_or("", |c| c.key());
+            row(
+                sec.key(),
+                &l.kind,
+                class,
+                Some(l.entry),
+                Some(l.date),
+                &l.label,
+                l.amount,
+                Some(l.on_behalf),
+            );
+        }
+        row(sec.key(), "", "", None, None, total, stmt.total(sec), None);
+    }
+    let r = &stmt.operating_reconciliation;
+    row(
+        "reconciliation",
+        "",
+        "",
+        None,
+        None,
+        "Net income (loss)",
+        r.net_income,
+        None,
+    );
+    for l in &r.lines {
+        row(
+            "reconciliation",
+            l.kind.key(),
+            "",
+            None,
+            None,
+            &l.label,
+            l.amount,
+            None,
+        );
+    }
+    row(
+        "reconciliation",
+        "",
+        "",
+        None,
+        None,
+        "Net cash from operating activities",
+        r.net_cash_from_operating,
+        None,
+    );
+    for n in &stmt.noncash_disclosures {
+        row(
+            "noncash",
+            "",
+            "",
+            Some(n.entry),
+            Some(n.date),
+            &n.label,
+            n.amount,
+            None,
+        );
+    }
+    let f = &stmt.reconciles;
+    for (label, amount) in [
+        ("Net increase (decrease) in cash", stmt.net_change_in_cash),
+        ("Cash at beginning of period", stmt.cash_beginning),
+        ("Cash at end of period", stmt.cash_ending),
+        ("Sections sum", f.sections_sum),
+        ("Difference", f.difference),
+    ] {
+        row("footing", "", "", None, None, label, amount, None);
+    }
+    // The warnings, as the tool gives them: no amount (figures are
+    // unaffected).
+    for w in &stmt.warnings {
+        csv.push_str(&format!(
+            "warning,{},,{},,{},,\n",
+            w.kind.key(),
+            w.entry,
+            csv_escape(&w.message)
+        ));
+    }
+    csv
 }
 
 // ---------------------------------------------------------------------------

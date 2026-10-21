@@ -83,6 +83,58 @@ Each law, and what proves it. Kani harnesses are in
      `Reachable.accounting_equation_through` (any number of accounts)
 9. **Period statements add up**: a year's P&L is the sum of its months'.
    - Lean `statements_add_up`
+10. **The statement of cash flows foots** (rules.md B-14, plan P3 defect
+    1): each entry's cash is applied to the sections moving against it,
+    operating, investing, financing, each up to its own movement; what a
+    member or a lender paid or received for the entry, with no cash
+    account moving (rule 11, D-42), is added as a constructive receipt
+    and disbursement that nets to zero within the entry; so each entry's
+    flows sum to its cash and what neither settled sums to zero, and
+    operating + investing + financing is exactly the change in the cash
+    accounts, over any entries, for any tagging whose cash tag follows
+    the account. A reversal's flows, constructive ones included, are its
+    original's negated (so an entry and its reversal in one period drop
+    out together), and net income plus the reconciling items (gains and
+    losses on investing assets, the noncash operating parts, the changes
+    in operating balances) is the operating section, whenever revenue and
+    expense lines are only operating or investing. The engine checks the
+    same identities at runtime and refuses (`CashFlowDoesNotFoot`) rather
+    than show a statement that doesn't foot.
+    - Kani `entry_flows_sum_to_cash`, `entry_flows_pure_are_movements`,
+      `entry_flows_are_bounded`, `entry_flows_of_a_reversal_mirror`,
+      `no_cash_no_flow` (end to end on entries of up to three lines, each
+      in any of the four places: four lines ran past half an hour per
+      harness; at three, the reversal's mirror is the slowest harness in
+      the suite, about 14 minutes on the development laptop, the others
+      seconds to 6 minutes), `take_is_odd_and_bounded`, `apply_cash_mirrors` (the
+      parts, for any amounts), `apply_cash_spends_exactly` (how a
+      section's cash splits among its kinds, operating's classes
+      included), `exchanged_is_bounded` (the
+      exchange inside investing and financing that is disclosed, given
+      the cash in and out of the two sections),
+      `constructive_nets_to_zero` and `constructive_mirrors` (what a
+      member or lender paid or received for the company, either way, for
+      any amounts: the parts net to zero, settle their own movements
+      toward zero and no further, leave no source beside a use it could
+      settle, and mirror under a reversal)
+    - Lean `net_splits_by_flow`, `applyCash_conserves`,
+      `applyCash_exhausts`, `applyCash_neg`, `entry_flows_sum`,
+      `flows_reversal`, `constructive_nets`, `constructive_neg`,
+      `constructive_sections_net` (the kernel's `constructive` modelled as
+      it is written: two passes of `applyCash`; its parts by section net
+      to zero), `stmt_flows_sum`, `stmt_flows_reversal` (an entry's
+      statement flows, its cash flows plus any constructive triple that
+      nets to zero, and mirrors for a reversal), and over them
+      `cashflow_sections_sum_to_cash_change`,
+      `secNet_cash_is_movement`, `operating_reconciliation_ties`,
+      `operating_reconciliation_ties_all`, `cashflow_reversal_nets`;
+      `Reachable.cashflow_foots` and `Reachable.cashflow_is_change_in_cash`
+      (in every reachable state: the sections over the entries between two
+      days are the cash accounts' ending balance less their beginning)
+    - bridge `entry_flows_agree`, `apply_cash_and_exchanged_agree`,
+      `constructive_agrees`;
+      properties `prop_cash_flow_laws`,
+      `prop_pure_entries_sections_are_movements` (5,000 cases each)
 
 ### The books over time
 
@@ -94,21 +146,21 @@ Each step carries the checks the engine makes before it mutates. These
 theorems hold in **every state reachable from empty books, by any
 sequence of commands, of any length**:
 
-10. **The invariant holds**: chart codes are unique, every posted entry is
+11. **The invariant holds**: chart codes are unique, every posted entry is
     acceptable and on known accounts, and no draft is dated in a closed
     period. (That last one is why the store can journal a post before
     applying it: a post can never then fail on a closed period.)
     - Lean `Step.inv`, `Reachable.inv`
-11. **The books always net to zero.** · Lean `Reachable.books_net_zero`
-12. **Posted is forever**: posting only appends. After any sequence of
+12. **The books always net to zero.** · Lean `Reachable.books_net_zero`
+13. **Posted is forever**: posting only appends. After any sequence of
     commands the old log is a prefix of the new one. Nothing is edited,
     reordered, or removed.
     - Lean `Step.extends`, `Steps.extends`
-13. **Closed periods are frozen**: once a period is closed, no sequence of
+14. **Closed periods are frozen**: once a period is closed, no sequence of
     commands adds, removes, or changes an entry dated in it, and it stays
     closed.
     - Lean `Step.frozen`, `Steps.frozen`
-13a. **How the books are kept changes no entry**: in the model, a record
+14a. **How the books are kept changes no entry**: in the model, a record
     (a setting, convention, decision, open item or approval) leaves the
     chart, every posted entry, every draft and every period exactly as they
     were, and any number of them keeps a reachable state reachable. The
@@ -123,7 +175,7 @@ sequence of commands, of any length**:
 
 ### Closing
 
-14. **A closing line zeroes its account**, and **a closing entry balances
+15. **A closing line zeroes its account**, and **a closing entry balances
     and zeroes every revenue and expense account** through the period's
     last day, whether the net goes to one account or is split among
     members.
@@ -131,14 +183,14 @@ sequence of commands, of any length**:
       `closing_entry_balances`
     - Lean `closingEntry_net`, `closingEntry_zeroes`,
       `closingEntry_accepted`, `close_zeroes`
-15. **A close credits equity with exactly the net income**: revenue minus
+16. **A close credits equity with exactly the net income**: revenue minus
     expenses through the period's last day.
     - Lean `net_closings_is_net_income`, `close_credits_net_income`
-16. **An allocation's parts sum to the whole, to the unit**, however the
+17. **An allocation's parts sum to the whole, to the unit**, however the
     other shares were rounded, and only the last share changes.
     - Kani `plug_last_sums_exactly` · Lean `plugLast_total`,
       `plugLast_keeps`
-17. **A run of member closes telescopes**: each member's total from a run
+18. **A run of member closes telescopes**: each member's total from a run
     of cumulative closes is their allocation of everything the run closed
     (so its rounding is one allocation's, never a sum of them), and each
     close hands out exactly its net, for any allocation whose parts sum to
@@ -249,7 +301,10 @@ can also prove false claims. So:
 - **The proofs are not vacuous.** `kani::cover!` statements make Kani
   show that the interesting cases are reachable: an accepted four-line
   entry, a reversal on one account with several lines, three distinct
-  accounts, a balanced three-account chart, a close to two members. `just prove` fails if any cover is unsatisfiable.
+  accounts, a balanced three-account chart, a close to two members, a
+  part-cash part-noncash investing entry, cash settling two sections at
+  once, a mixed entry reversed, property contributed for capital. `just
+  prove` fails if any cover is unsatisfiable.
 
 ## What is and isn't proved
 
@@ -257,7 +312,8 @@ Be precise about the claims:
 
 - **Kani is bounded.** It proves the kernel for every input up to 4 lines
   over 3 accounts and amounts to 2^40 units (the accounting equation end
-  to end: up to 3 accounts). Lean proves the laws for any
+  to end: up to 3 accounts; the cash flow entry harnesses: up to 3 lines,
+  each tagged any of 4 ways). Lean proves the laws for any
   size, but of a *model*. The model is a direct restatement of the kernel,
   and the bridge property test ties the `Decimal` instantiation to the
   `i64` one Kani checked.
@@ -276,6 +332,24 @@ Be precise about the claims:
   structurally), A/R and A/P documents, payroll, depreciation schedules
   (those have their own property tests), and persistence (the journal
   store's hash chain is tested in `ledger-store`).
+- **The cash flow model tags lines per entry with any function** meeting
+  the engine's guarantees (the cash tag follows the account; revenue and
+  expense lines are operating or investing; a reversal takes its
+  original's tags); which tag the engine picks for a line (rule 4's
+  disposals, the bill split, the chain root) is checked by the property
+  and example tests, not proved. A line the engine splits between two
+  sections is two lines in the model, the entry's net unchanged.
+- **Closing entries and the cash balance.** The engine leaves closing
+  entries out of the sections but not out of the cash accounts'
+  balances; the two agree because a close moves only revenue, expense
+  and equity (`Ledger::validate_close_to`) and cash accounts must be
+  assets (rules.md B-14 rule 2). The Lean model's close step lets a
+  target be any balance-sheet account, so `Reachable.cashflow_foots`
+  takes any selection of entries with the cash over the same selection,
+  and `Reachable.cashflow_is_change_in_cash` counts every entry, closes
+  included. That a close never moves cash is checked by tests
+  (`closing_entries_never_appear`, `prop_cash_flow_laws` law 7), not
+  proved.
 
 ### P0 guard rails (2026-10-16)
 
@@ -324,8 +398,15 @@ mise install   # once: Kani, Lean, and the rest, pinned in mise.toml
 just prove
 ```
 
-`just prove` runs every Kani harness, builds the Lean proofs (seconds),
+`just prove` runs every Kani harness, in parallel (`-j $(nproc)`, under
+a 30-minute timeout), builds the Lean proofs (seconds),
 and fails if any headline theorem depends on anything beyond Lean's
 standard axioms (`propext`, `Quot.sound`, `Classical.choice`). In
-particular, `sorryAx` fails it. Kani downloads its pinned nightly and
-CBMC into `~/.kani` on first use.
+particular, `sorryAx` fails it. Its time is the slowest harness's:
+`entry_flows_of_a_reversal_mirror`, about 14 minutes on the development
+laptop (8 cores); the 20 harnesses before P3 take about 17 minutes of
+CPU in all (`accounting_equation` the longest, about 4), the cash flow's
+other ten about 17 (`constructive_mirrors` about 2.5 minutes,
+`constructive_nets_to_zero` about 1.5), so the whole run is about 15 to
+20 minutes. Kani
+downloads its pinned nightly and CBMC into `~/.kani` on first use.

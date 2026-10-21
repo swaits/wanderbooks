@@ -18,16 +18,15 @@
 # Setup beyond the accounts: `cash_accounts` are the bank accounts (BANK);
 # an account's QuickBooks type otherwise follows its type (asset OCASSET,
 # liability OCLIAB, equity EQUITY, revenue INC, expense EXP); an account's
-# `parent` is its parent's code. Each event is a posted entry, its id one
-# more than its index. Expected values: iif_lines gives the file's lines
-# in order, each a string of fields joined by tabs ("\t"), every line
-# ending CR LF in the file; iif_changes gives each text written
-# differently from the books, in file order (the accounts as declared:
-# by code, each after its parent; then the entries), as [what, books'
-# text, file's text], where what is "name <code>", "number" (left out of
-# ACCNUM when the file's text is empty), "top level <code>" (written
-# apart from its parent, the books' text: the parent's code) or
-# "memo <entry id>".
+# `parent` is its parent's code. Event N is entry N (bookspec/README.md).
+# Expected values: iif_lines gives the file's lines in order, each a
+# string of fields joined by tabs ("\t"), every line ending CR LF in the
+# file; iif_changes gives each text written differently from the books,
+# in file order (the accounts as declared: by code, each after its
+# parent; then the entries), as [what, books' text, file's text], where
+# what is "name <code>", "number" (left out of ACCNUM when the file's
+# text is empty), "top level <code>" (written apart from its parent, the
+# books' text: the parent's code) or "memo <entry id>".
 
 id = "iif-quickbooks-journal-file"
 appendix = "formats"
@@ -48,7 +47,7 @@ tags = ["iif", "quickbooks", "as-of", "format", "transliteration"]
 currency = "USD"
 fiscal_year_start = "01-01"
 basis = "cash"
-rounding = "half_away_from_zero"
+rounding = "half-away-from-zero"
 cash_accounts = ["1000"]
 
 [[setup.accounts]]
@@ -96,7 +95,7 @@ code = "6100"
 name = "Professional services and consulting fees"
 type = "expense"
 
-# 0: entry 1.
+# Entry 1.
 [[events]]
 date = "2026-01-02"
 description = "Owner contribution"
@@ -105,7 +104,7 @@ lines = [
   { account = "3000", side = "credit", amount = "5000.00" },
 ]
 
-# 1: entry 2. An em dash and double quotes.
+# Entry 2. An em dash and double quotes.
 [[events]]
 date = "2026-01-15"
 description = "Lunch — \"team\""
@@ -114,7 +113,7 @@ lines = [
   { account = "1000", side = "credit", amount = "42.50" },
 ]
 
-# 2: entry 3. An account named past 31 characters.
+# Entry 3. An account named past 31 characters.
 [[events]]
 date = "2026-01-20"
 description = "Consulting"
@@ -123,7 +122,7 @@ lines = [
   { account = "1000", side = "credit", amount = "300.00" },
 ]
 
-# 3: entry 4, dated the day itself: in.
+# Entry 4, dated the day itself: in.
 [[events]]
 date = "2026-02-01"
 description = "Sale"
@@ -132,7 +131,7 @@ lines = [
   { account = "4000", side = "credit", amount = "1000.00" },
 ]
 
-# 4: entry 5, the day after: out.
+# Entry 5, the day after: out.
 [[events]]
 date = "2026-02-02"
 description = "Second sale"

@@ -63,6 +63,53 @@ use crate::{AccountId, AssetId, AssetStatus, EntryId, Ledger, LedgerError, Side}
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
 
+/// The depreciation an asset's disposal entry posts, if it was disposed in
+/// `[start, end]`: its lines on the asset's depreciation expense account,
+/// debit-positive (the depreciation still due through the disposal day,
+/// or, negative, what the month's run posted past it, credited back:
+/// rules.md B-15 rule 5). With the runs
+/// (`Ledger::depreciation_posted_between`) it is the asset's depreciation
+/// expense in the span, the P&L's and the cash flow's (B-14 rule 8).
+/// The disposal entry is the posted entry dated the disposal day that
+/// credits the asset's cost account by its cost (`Store::dispose_asset`
+/// posts it so).
+fn disposal_depreciation(
+    ledger: &Ledger,
+    a: &crate::Asset,
+    start: NaiveDate,
+    end: NaiveDate,
+) -> Result<Decimal, LedgerError> {
+    let AssetStatus::Disposed { date, .. } = a.status else {
+        return Ok(Decimal::ZERO);
+    };
+    if date < start || date > end {
+        return Ok(Decimal::ZERO);
+    }
+    let closings = ledger.closing_entry_ids();
+    let Some(e) = ledger.posted_entries().find(|e| {
+        e.date() == date
+            && !closings.contains(&e.id())
+            && e.reversal_of().is_none()
+            && e.lines().iter().any(|l| {
+                l.side == Side::Credit
+                    && l.account == a.cost_account
+                    && l.amount.amount == a.cost.amount
+            })
+    }) else {
+        return Ok(Decimal::ZERO);
+    };
+    e.lines()
+        .iter()
+        .filter(|l| l.account == a.expense_account)
+        .try_fold(Decimal::ZERO, |t, l| {
+            t.checked_add(match l.side {
+                Side::Debit => l.amount.amount,
+                Side::Credit => -l.amount.amount,
+            })
+        })
+        .ok_or_else(|| LedgerError::TooLargeToCompute(format!("asset {}'s depreciation", a.id)))
+}
+
 /// A figure the books can't know, with what they do have.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Open {
@@ -104,7 +151,8 @@ pub enum Open {
     /// Treas. Reg. §1.704-3): the CPA's. The book depreciation posted in
     /// the span, all members, and the part on contributed property.
     TaxDepreciation {
-        /// Book depreciation posted in the span from runs.
+        /// Book depreciation posted in the span: the runs, and what
+        /// disposals posted to depreciation expense (the P&L's).
         book: Decimal,
         /// The part of it on contributed property.
         contributed_book: Decimal,
@@ -424,7 +472,10 @@ fn span(
         if a.in_service_date <= end && !gone_before {
             in_service = true;
         }
-        let d = ledger.depreciation_posted_between(a.id, start, end)?;
+        let d = ledger
+            .depreciation_posted_between(a.id, start, end)?
+            .checked_add(disposal_depreciation(ledger, a, start, end)?)
+            .ok_or_else(too_large)?;
         book_depr = book_depr.checked_add(d).ok_or_else(too_large)?;
         if a.basis.as_ref().is_some_and(|b| b.rule.is_contribution()) {
             contributed_depr = contributed_depr.checked_add(d).ok_or_else(too_large)?;

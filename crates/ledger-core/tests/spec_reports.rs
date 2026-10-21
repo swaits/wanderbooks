@@ -2517,12 +2517,33 @@ proptest! {
         let credits = |qs: &[i64]| qs.iter().map(|q| (-q).max(0)).sum::<i64>();
         let debits = |qs: &[i64]| qs.iter().map(|q| (*q).max(0)).sum::<i64>();
         let mut fin = 0i64;
+        // Rule 2: a liability left operating that only entries debiting
+        // nothing but equity credit, through the end, holds distributions
+        // declared: financing, after the loan.
+        let declared = |code: &str| {
+            let mut by_declaration = false;
+            for g in gens.iter().filter(|g| g.date() <= day(e)) {
+                let legs = g.legs(1);
+                if !legs.iter().any(|&(i, s, _)| s == CR && RCHART[i].0 == code) {
+                    continue;
+                }
+                if legs.iter().filter(|l| l.1 == DR).all(|&(i, _, _)| RCHART[i].2 == AccountType::Equity) {
+                    by_declaration = true;
+                } else {
+                    return false;
+                }
+            }
+            by_declaration
+        };
+        let (payables_declared, loan_declared) = (declared("2000"), !designate && declared("2500"));
         for g in gens.iter().filter(|g| g.date() >= day(a) && g.date() <= day(e)) {
             // Kinds: cash; operating balance sheet, revenue and expense;
-            // capital A, capital B, the loan (financing when designated).
+            // capital A, capital B, the loan (financing when designated),
+            // then the liabilities holding distributions declared.
             let mut cash = 0i64;
             let mut op = [0i64; 2];
             let mut fi = [0i64; 3];
+            let mut declared_fi = [0i64; 2];
             for (i, side, cents) in g.legs(1) {
                 let m = if side == DR { cents } else { -cents };
                 match RCHART[i].0 {
@@ -2530,10 +2551,13 @@ proptest! {
                     "3000" => fi[0] += m,
                     "3001" => fi[1] += m,
                     "2500" if designate => fi[2] += m,
+                    "2000" if payables_declared => declared_fi[0] += m,
+                    "2500" if loan_declared => declared_fi[1] += m,
                     "4000" | "4100" | "6000" | "6100" => op[1] += m,
                     _ => op[0] += m,
                 }
             }
+            let fi_all = fi.iter().sum::<i64>() + declared_fi.iter().sum::<i64>();
             // Rule 3: operating, then financing (no investing here).
             let take = |left: i64, m: i64| {
                 if left > 0 && m < 0 {
@@ -2545,10 +2569,12 @@ proptest! {
                 }
             };
             let to_op = take(cash, op[0] + op[1]);
-            let to_fin = take(cash - to_op, fi.iter().sum());
+            let to_fin = take(cash - to_op, fi_all);
             fin += to_fin;
             if to_op > 0 { settle(&mut op, to_op, false) } else { settle(&mut op, -to_op, true) }
-            if to_fin > 0 { settle(&mut fi, to_fin, false) } else { settle(&mut fi, -to_fin, true) }
+            let mut kinds: Vec<i64> = fi.iter().chain(&declared_fi).copied().collect();
+            if to_fin > 0 { settle(&mut kinds, to_fin, false) } else { settle(&mut kinds, -to_fin, true) }
+            fi.copy_from_slice(&kinds[..3]);
             // Rule 11: the loan pays, then receives; then capital.
             if designate {
                 let paid = credits(&fi[2..]).min(debits(&op));

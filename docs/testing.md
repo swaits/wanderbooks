@@ -1640,6 +1640,47 @@ the projection loader's two key sets; `tax_capital::share` and
 conditions (`in_service`, the disposal window), and the reconciliation's
 signs.
 
+## P3: the seams between the pieces (2026-10-21)
+
+One year of fictional books for a two-member LLC, built through the real
+`Store` (`ledger-package/tests/seams/books.rs`: cash and property
+contributions, member-paid expenses through Due to Members and their
+reimbursement, card purchases and payments, a daily prepaid, a 1099
+contractor paid by check, card and a member's check whose status changes
+mid-year, a refund, a loan, depreciation with a run reversed and caught
+up, a disposal that credits back part of a month's run, a distribution
+declared then paid, monthly closes with odd cents), checked on June 30,
+September 15 and December 31: the same fact from two pieces agrees, or
+rules.md says why not. Mutation runs wait for P12 (D-33).
+
+- **Engine** (`ledger-package/tests/p3_seams.rs`):
+  `the_members_figures_agree_on_every_date` (members' equity, the K-1
+  worksheet, party totals on both bases, the cash flow's contributions,
+  advances and distributions, B-35 items 4 and 8),
+  `a_distribution_declared_then_paid_is_financing_when_paid`,
+  `the_1099_worksheet_ties_to_party_totals_and_the_ledger` (B-35 item 9,
+  B-19), `depreciation_is_one_figure_everywhere` (the P&L, the cash flow
+  add-back, the tax-basis K-1's open item, the IIF, the register posted
+  and scheduled, the balance sheet), `every_statement_foots_on_every_date`,
+  `the_cpa_package_as_of_each_date_is_the_tools_figures` (B-33).
+- **Viewer** (`ledger-gui/tests/p3_seams.rs`): its capital statements,
+  party money, cash flow, register and 1099 worksheet, read from the
+  books' folder and settings file as it opens them, are the engine's.
+- **Tools** (`ledger-mcp/tests/p3_seams.rs`, the real binary over
+  stdio): `books.cash_flow` line by line, `books.profit_and_loss`,
+  `books.export` members_equity and iif, `books.list_assets`,
+  `books.vendor_1099` through each date, `books.party` on both bases.
+- **Found and fixed** (each test fails before its fix): a distribution
+  declared to a payable and paid later read as cash paid to suppliers
+  (B-14 rule 2; `a_distribution_declared_then_paid_is_a_distribution_paid`
+  in `ledger-core/tests/spec_cash_flow.rs`, with the property
+  `prop_cf_financing_is_equity_plus_designated_debt`'s model extended);
+  a disposal's depreciation credit-back was in the cash flow's gain or
+  loss, not its depreciation (B-14 rule 8;
+  `a_disposals_depreciation_credit_back_is_depreciation`), and the
+  tax-basis K-1's book depreciation left it out (B-36); `books.list_assets`
+  as of a day said "disposed" for a later disposal (B-15 rule 8).
+
 ## Benchmarks (baseline 2026-10-13)
 
 No budget, by decision (the owner, 2026-10-13: the books do little work

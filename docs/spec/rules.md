@@ -387,8 +387,24 @@ in public sources that reproduce the Codification, `sources/fasb-asc.md`):
    operating (45-10), so every non-cash account is in exactly one section:
    investing (the cost and accumulated-depreciation accounts of every
    registered fixed asset, and `books.investing_accounts`); financing
-   (equity, and `books.financing_accounts`); operating (every other
-   balance-sheet account, and revenue and expense, but see rule 4). The
+   (equity, `books.financing_accounts`, and a liability that holds
+   distributions declared, below); operating (every other balance-sheet
+   account, and revenue and expense, but see rule 4). A liability left
+   operating that, in the posted entries dated through the period's end
+   (closes and reversals aside), only entries debiting nothing but equity
+   credit, at least once (Dr Distributions / Cr Distributions Payable; a
+   corporation's Dr Retained Earnings / Cr Dividends Payable), holds
+   distributions declared and unpaid: paying it is a distribution
+   (45-15(a): "payments of dividends or other distributions to owners"),
+   listed as "Distributions to members — <the payable>" (the statement
+   reads no parties, so not by member), and the declaration an exchange
+   inside financing, disclosed (rule 7; 50-3). A liability credited by any
+   other entry as well (what the members advanced, an accrued expense,
+   money borrowed) stays where it is (P3 seam review, 2026-10-21: before,
+   a distribution declared then paid read as "Cash paid to suppliers and
+   employees", the declaration as "Other noncash items" beside an increase
+   in the payable; `a_distribution_declared_then_paid_is_a_distribution_paid`,
+   `a_distribution_declared_then_paid_is_financing_when_paid`). The
    roles must agree with the chart and each other, or the statement is
    refused with the setting to change: cash and investing accounts are
    assets; financing accounts are liabilities (equity listed is accepted:
@@ -483,7 +499,17 @@ in public sources that reproduce the Codification, `sources/fasb-asc.md`):
    or "Other noncash items"; W, minus each
    operating balance-sheet account's movement ("Increase in" / "Decrease
    in"). An identity over balanced entries (Lean
-   `operating_reconciliation_ties`), checked at runtime.
+   `operating_reconciliation_ties`), checked at runtime. G's lines on a
+   registered asset's depreciation expense account (a disposal's
+   depreciation still due through its day, or what the month's run posted
+   past it, credited back: B-15 rule 5) are shown in the "Depreciation"
+   line, not the gain or loss, so that line is the P&L's depreciation
+   expense for the period (45-28(a)'s depreciation is the expense
+   recognized; the sum NI + G + X + W is unchanged). P3 seam review,
+   2026-10-21: before, a disposal that credited back 25.00 of a month's run
+   showed depreciation 25.00 above the P&L's and the loss 25.00 below the
+   entry's (`a_disposals_depreciation_credit_back_is_depreciation`,
+   `depreciation_is_one_figure_everywhere`).
 9. **The sections foot** (45-24: the statement reconciles beginning and
    ending cash). `reconciles {sections_sum, net_change, difference}`; any
    difference, a section unequal to its lines, or a reconciliation unequal
@@ -663,7 +689,13 @@ shapes), `prop_pure_entries_sections_are_movements`; regressions
 `converting_member_debt_to_capital_is_disclosed`,
 `a_bill_payment_carries_its_bills_split`,
 `a_reversed_bill_payment_leaves_the_purchase_unpaid`, the role refusals,
-`foot_refuses_any_difference` (`crates/ledger-core/tests/spec_cash_flow.rs`).
+`foot_refuses_any_difference`,
+`a_distribution_declared_then_paid_is_a_distribution_paid`,
+`a_disposals_depreciation_credit_back_is_depreciation`
+(`crates/ledger-core/tests/spec_cash_flow.rs`); the seam review's year
+of books (`ledger-package` `tests/p3_seams.rs`, its books
+`tests/seams/books.rs`; the viewer's `ledger-gui` `tests/p3_seams.rs`;
+the tools' `ledger-mcp` `tests/p3_seams.rs`).
 
 ## B-15 Depreciation: straight line, salvage never depreciated, partial months by days
 
@@ -783,7 +815,15 @@ The rule, exactly (P3, defect 22; the engineer settled it from ASC
    zero once the asset is disposed, its disposal entry having cleared it)
    are two figures, never one: book value is cost less the posted figure
    (`assets::scheduled_book_value` is the schedule's own, for the
-   schedule only).
+   schedule only). An asset's depreciation expense over a span is its
+   runs' (`Ledger::depreciation_posted_between`) plus its disposal entry's
+   lines on its expense account (rule 5): the P&L's, the cash flow
+   reconciliation's "Depreciation" (B-14 rule 8), the tax-basis K-1's
+   open item (B-36) and the IIF's all show that one figure
+   (`depreciation_is_one_figure_everywhere`). `books.list_assets` as of a
+   day says "disposed" only for a disposal dated by then, as `held` and
+   the figures do (B-33; before the seam review a later disposal showed
+   on an earlier day).
 
 **Enforced:** `assets::depreciation_schedule`, `assets::run_amount`,
 `assets::catch_up_room`, `assets::depreciation_effects`,
@@ -2325,7 +2365,18 @@ not the books' accounting method (`books.accounting_basis`).
    and spent, on that date (a financing inflow and an operating or
    investing outflow); paying the member back is a financing outflow;
    property a member contributes, and a debt to them converted to
-   capital, are noncash (disclosed). Party totals report what moved with
+   capital, are noncash (disclosed); a distribution declared to a
+   distributions payable is a distribution on the statement when it is
+   paid (B-14 rule 2), listed under the payable ("Distributions to
+   members — 2200 Distributions Payable"), not by member: the statement
+   reads accounts, not parties, so the member a payment from the payable
+   went to is party totals' (the payment's own parties) and the
+   declaration's (the statement of members' equity, at its date). So over
+   a span, the statement's distributions (by member and under the payable)
+   are the statement of members' equity's less what is declared and still
+   unpaid at the span's end, and party totals' paid to the members on the
+   entries that move their capital or pay a declared distribution, exactly
+   (`the_members_figures_agree_on_every_date`). Party totals report what moved with
    each party: the vendor is paid when the member pays it (the same date
    and amount as the statement's outflow); the member is paid back when
    the statement shows the financing outflow; and a member's capital
@@ -2424,7 +2475,12 @@ book capital reconciles to tax capital:
   treatment of a change in book capital the books can't explain, and
   last year's tax ending when an earlier year left a figure open. Each
   such line is left blank and marked open, with what the books know so
-  far and the book amount the CPA's figure replaces.
+  far and the book amount the CPA's figure replaces. The book
+  depreciation the tax figure replaces is the period's depreciation
+  expense, the P&L's: each asset's runs and what its disposal entry posts
+  to its expense account (B-15 rule 8; before the seam review the runs
+  alone, so a disposal that credited back part of a month's run stated
+  more than the P&L).
 - The reconciliation: book ending less tax ending (as far as the books
   know it) = beginning (book less tax) + the built-in gain or loss share
   + property without a basis (at book) − property distributed (at book),
@@ -2434,4 +2490,6 @@ book capital reconciles to tax capital:
 `ledger-package` `k1_tax` (`k1-tax-basis-capital.csv` in the CPA
 package). **Checked:** `ledger-core` `tests/tax_capital.rs`;
 `ledger-package` `tests/package.rs`
-(`the_k1_worksheet_reports_tax_basis_capital`).
+(`the_k1_worksheet_reports_tax_basis_capital`), `tests/p3_seams.rs`
+(`depreciation_is_one_figure_everywhere`,
+`the_cpa_package_as_of_each_date_is_the_tools_figures`).

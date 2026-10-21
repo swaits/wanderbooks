@@ -717,6 +717,10 @@ enum Bucket {
     Equity(String),
     /// A `financing_accounts` liability, by code.
     Borrowing(String),
+    /// A liability a distribution was declared to (rule 2: distributions
+    /// payable), by code: its payment is a distribution paid (ASC
+    /// 230-10-45-15(a)), never a supplier's.
+    Declared(String),
 }
 
 /// One line of an entry, or one part of a line split between sections
@@ -751,6 +755,10 @@ struct Roles<'a> {
     receivables: Option<AccountId>,
     member_of: HashMap<AccountId, usize>,
     members: Vec<String>,
+    /// Liabilities a distribution was declared to (rule 2).
+    declared: BTreeSet<AccountId>,
+    /// The registered fixed assets' depreciation expense accounts (rule 8).
+    depreciation: BTreeSet<AccountId>,
 }
 
 impl<'a> Roles<'a> {
@@ -791,9 +799,11 @@ impl<'a> Roles<'a> {
         }
         let mut cost = BTreeSet::new();
         let mut accum = BTreeSet::new();
+        let mut depreciation = BTreeSet::new();
         for asset in ledger.registered_assets() {
             cost.insert(asset.cost_account);
             accum.insert(asset.accum_depr_account);
+            depreciation.insert(asset.expense_account);
         }
         let mut member_of = HashMap::new();
         for (i, m) in params.members.iter().enumerate() {
@@ -802,11 +812,19 @@ impl<'a> Roles<'a> {
                 member_of.insert(d, i);
             }
         }
+        let cash: BTreeSet<AccountId> = params.cash_accounts.iter().copied().collect();
+        let financing: BTreeSet<AccountId> = params.financing_accounts.iter().copied().collect();
+        let investing: BTreeSet<AccountId> = params.investing_accounts.iter().copied().collect();
+        let declared = declared_payables(ledger, params.end, |id| {
+            !cash.contains(&id) && !financing.contains(&id) && !investing.contains(&id)
+        });
         Ok(Roles {
             ledger,
-            cash: params.cash_accounts.iter().copied().collect(),
-            financing: params.financing_accounts.iter().copied().collect(),
-            investing: params.investing_accounts.iter().copied().collect(),
+            declared,
+            depreciation,
+            cash,
+            financing,
+            investing,
             cost,
             accum,
             receivables: ledger.role_account(&crate::RECEIVABLES),
@@ -843,6 +861,8 @@ impl<'a> Roles<'a> {
             }
         } else if self.financing.contains(&a.id) {
             (Flow::Financing, Bucket::Borrowing(a.code.clone()))
+        } else if self.declared.contains(&a.id) {
+            (Flow::Financing, Bucket::Declared(a.code.clone()))
         } else if Some(a.id) == self.receivables {
             (Flow::Operating, Bucket::Receivables)
         } else {
@@ -929,6 +949,14 @@ impl<'a> Roles<'a> {
                 (1, 1, c.clone()),
                 format!("Distributions to {owners} — {}", named(c)),
             ),
+            (Bucket::Declared(c), true) => (
+                (0, 2, c.clone()),
+                format!("Contributions from {owners} — {}", named(c)),
+            ),
+            (Bucket::Declared(c), false) => (
+                (1, 2, c.clone()),
+                format!("Distributions to {owners} — {}", named(c)),
+            ),
             (Bucket::Borrowing(c), true) => (
                 (2, 0, c.clone()),
                 format!("Proceeds from borrowing — {}", named(c)),
@@ -939,6 +967,50 @@ impl<'a> Roles<'a> {
             ),
         }
     }
+}
+
+/// The liabilities that hold distributions declared by `end` (rules.md
+/// B-14 rule 2), among the accounts `open` leaves to be placed: each
+/// credited, in the posted entries dated on or before `end` (closes and
+/// reversals aside), only by entries whose debits are all to equity (Dr
+/// Distributions / Cr Distributions Payable; a corporation's Dr Retained
+/// Earnings / Cr Dividends Payable), at least once. A liability credited
+/// by any other entry as well (what the members advanced, an accrued
+/// expense, money borrowed) is not one: its payments are what they paid
+/// for. Paying one is a distribution paid, a financing
+/// outflow (ASC 230-10-45-15(a)), and the declaration an exchange inside
+/// financing, disclosed (50-3, 50-4), never a payment to a supplier and a
+/// noncash operating item: before the P3 seam review a distribution
+/// declared then paid read as cash paid to suppliers.
+fn declared_payables(
+    ledger: &Ledger,
+    end: NaiveDate,
+    open: impl Fn(AccountId) -> bool,
+) -> BTreeSet<AccountId> {
+    let chart = ledger.chart();
+    let of = |id: AccountId, t: AccountType| chart.get(id).is_some_and(|a| a.account_type == t);
+    let closings = ledger.closing_entry_ids();
+    let (mut declared, mut other) = (BTreeSet::new(), BTreeSet::new());
+    for e in ledger
+        .posted_entries()
+        .filter(|e| e.date() <= end && !closings.contains(&e.id()) && e.reversal_of().is_none())
+    {
+        let lines = e.lines();
+        let declares = lines
+            .iter()
+            .filter(|l| l.side == Side::Debit)
+            .all(|l| of(l.account, AccountType::Equity));
+        for l in lines {
+            if l.side == Side::Credit && of(l.account, AccountType::Liability) && open(l.account) {
+                if declares {
+                    declared.insert(l.account);
+                } else {
+                    other.insert(l.account);
+                }
+            }
+        }
+    }
+    declared.difference(&other).copied().collect()
 }
 
 /// Where a kind sits in its section: its group (contributions before
@@ -1842,18 +1914,27 @@ fn reconcile(
     const WHAT: &str = "the operating reconciliation";
     let mut net_income = Decimal::ZERO;
     let mut gains = (Decimal::ZERO, Vec::new());
+    // A disposal's lines on a fixed asset's depreciation expense account
+    // (the depreciation still due through the disposal day, or what the
+    // month's run posted past it, credited back): depreciation, not gain
+    // or loss, so the line equals the P&L's depreciation expense.
+    let mut disposed = (Decimal::ZERO, Vec::new());
     // X by key: 0 depreciation, 1 through an account (by code), 2 other.
     let mut noncash: BTreeMap<(u8, String), (Decimal, Vec<EntryId>)> = BTreeMap::new();
     // W by code: the operating balance-sheet accounts' movements.
     let mut balances: BTreeMap<String, (AccountId, Decimal)> = BTreeMap::new();
     for a in kept {
         let shown = !paired.contains(&a.entry.id());
-        let mut g = Decimal::ZERO;
+        let (mut g, mut dep) = (Decimal::ZERO, Decimal::ZERO);
         for p in &a.parts {
             if p.pl {
                 net_income = add(net_income, -p.signed(), WHAT)?;
                 if p.flow == Flow::Investing {
-                    g = add(g, p.signed(), WHAT)?;
+                    if roles.depreciation.contains(&p.account) {
+                        dep = add(dep, p.signed(), WHAT)?;
+                    } else {
+                        g = add(g, p.signed(), WHAT)?;
+                    }
                 }
             } else if p.flow == Flow::Operating {
                 let code = roles.account(p.account)?.code.clone();
@@ -1865,6 +1946,12 @@ fn reconcile(
             gains.0 = add(gains.0, g, WHAT)?;
             if shown {
                 gains.1.push(a.entry.id());
+            }
+        }
+        if !dep.is_zero() {
+            disposed.0 = add(disposed.0, dep, WHAT)?;
+            if shown {
+                disposed.1.push(a.entry.id());
             }
         }
         let x = a.flows.noncash[0];
@@ -1904,6 +1991,15 @@ fn reconcile(
     };
     let mut depreciation = None;
     let mut rest = Vec::new();
+    if !disposed.0.is_zero() {
+        let slot = noncash
+            .entry((0, String::new()))
+            .or_insert((Decimal::ZERO, Vec::new()));
+        slot.0 = add(slot.0, disposed.0, WHAT)?;
+        slot.1.extend(disposed.1);
+        slot.1.sort_unstable();
+        slot.1.dedup();
+    }
     for ((key, code), (amount, entries)) in noncash {
         if amount.is_zero() {
             continue;

@@ -6466,7 +6466,7 @@ impl BooksServer {
     #[tool(
         name = "books.list_assets",
         title = "List fixed assets",
-        description = "List every registered fixed asset as of a date (as_of, default today): in-service and acquired dates, cost, and per asset accumulated_posted (what the books carry: runs posted, less reversals), accumulated_scheduled_through (what the schedule says is due by as_of), unposted_depreciation (the difference: run books.run_depreciation for it) and book_value (cost less posted: what the books carry); held says whether the books hold it on as_of. With its basis facts and tax figures. An asset whose figures can't be computed (one an earlier version took) lists with null figures and schedule_error.",
+        description = "List every registered fixed asset as of a date (as_of, default today): in-service and acquired dates, cost, and per asset accumulated_posted (what the books carry: runs posted, less reversals), accumulated_scheduled_through (what the schedule says is due by as_of), unposted_depreciation (the difference: run books.run_depreciation for it) and book_value (cost less posted: what the books carry); status (active or disposed) and held (acquired and not yet disposed) are as of as_of too, so a later disposal never shows. With its basis facts and tax figures. An asset whose figures can't be computed (one an earlier version took) lists with null figures and schedule_error.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn list_assets(
@@ -6513,10 +6513,9 @@ impl BooksServer {
                     acquired_date: acquired.to_string(),
                     cost: money(a.cost.amount),
                     useful_life_months: a.useful_life_months,
-                    status: match a.status {
-                        AssetStatus::Active => "active".to_string(),
-                        AssetStatus::Disposed { .. } => "disposed".to_string(),
-                    },
+                    // As of as_of, like every figure here: a disposal
+                    // after it hasn't happened yet (rules.md B-33).
+                    status: if disposed { "disposed" } else { "active" }.to_string(),
                     held: acquired <= as_of && !disposed,
                     accumulated_posted: figure(|r| r.accumulated_posted),
                     accumulated_scheduled_through: figure(|r| r.accumulated_scheduled),

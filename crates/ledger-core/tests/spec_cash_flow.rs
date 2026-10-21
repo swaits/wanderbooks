@@ -3124,3 +3124,108 @@ proptest! {
         prop_assert!(cf.noncash_disclosures.is_empty());
     }
 }
+
+/// Rule 2 (P3 seam review): a distribution declared to a liability that
+/// holds only distributions (Dr capital / Cr 2400 Distributions Payable)
+/// and paid later is a distribution paid, financing (ASC
+/// 230-10-45-15(a)), under the payable's kind; the declaration is an
+/// exchange inside financing, disclosed (50-3, 50-4). Before the fix the
+/// payment was "Cash paid to suppliers and employees" and the declaration
+/// an "Other noncash items" line beside an increase in the payable.
+#[test]
+fn a_distribution_declared_then_paid_is_a_distribution_paid() {
+    let mut b = funded();
+    b.acct("2400", "Distributions payable", AccountType::Liability);
+    let declared = b.post(
+        d(2026, 1, 31),
+        "Distribution declared",
+        &[
+            ("3000", DR, "600.00"),
+            ("3001", DR, "400.00"),
+            ("2400", CR, "1000.00"),
+        ],
+    );
+    let paid = b.post(
+        d(2026, 2, 10),
+        "Distribution paid",
+        &[("2400", DR, "1000.00"), ("1000", CR, "1000.00")],
+    );
+    let cf = feb(&b, &[], &[]);
+    assert!(cf.operating.is_empty(), "{:?}", cf.operating);
+    assert_eq!(
+        kinds(&cf, CashFlowSection::Financing),
+        [(
+            s("Distributions to members — 2400 Distributions payable"),
+            x("-1000.00")
+        )]
+    );
+    assert_eq!(em(&cf.financing), [(paid, x("-1000.00"))]);
+    assert!(recon(&cf).is_empty(), "{:?}", recon(&cf));
+    // The declaration's month: no cash, the exchange disclosed, and no
+    // operating item.
+    let jan = b.cf(d(2026, 1, 1), d(2026, 1, 31), &["1000", "1010"], &[], &[]);
+    foots(&jan);
+    assert_eq!(disclosed(&jan), [(declared, x("1000.00"))]);
+    assert!(
+        recon(&jan).is_empty(),
+        "{:?}",
+        jan.operating_reconciliation.lines
+    );
+    // A liability credited for anything else as well is no distributions
+    // payable: an expense accrued to it keeps it operating.
+    b.post(
+        d(2026, 2, 20),
+        "Accrued supplies",
+        &[("6000", DR, "50.00"), ("2400", CR, "50.00")],
+    );
+    let cf = feb(&b, &[], &[]);
+    assert_eq!(
+        cf.operating.iter().map(|l| l.entry).collect::<Vec<_>>(),
+        [paid]
+    );
+}
+
+/// Rule 8 (P3 seam review): a disposal's lines on the asset's
+/// depreciation expense account (the days a month's run posted past the
+/// disposal, credited back) are depreciation on the reconciliation, not
+/// gain or loss, so its depreciation line is the P&L's depreciation
+/// expense.
+#[test]
+fn a_disposals_depreciation_credit_back_is_depreciation() {
+    let mut b = funded();
+    b.post(
+        d(2026, 1, 10),
+        "Buy equipment",
+        &[("1500", DR, "1000.00"), ("1000", CR, "1000.00")],
+    );
+    b.post(
+        d(2026, 2, 28),
+        "Depreciation",
+        &[("6100", DR, "30.00"), ("1510", CR, "30.00")],
+    );
+    // Sold Feb 14: 15 of the month's 30.00 taken back, a 10.00 loss on
+    // the 985.00 book value.
+    b.post(
+        d(2026, 2, 14),
+        "Sell equipment",
+        &[
+            ("1000", DR, "975.00"),
+            ("1510", DR, "30.00"),
+            ("6900", DR, "10.00"),
+            ("1500", CR, "1000.00"),
+            ("6100", CR, "15.00"),
+        ],
+    );
+    let cf = feb(&b, &[], &[]);
+    assert_eq!(
+        recon(&cf),
+        [
+            (s("Depreciation"), x("15.00")),
+            (
+                s("(Gain) loss and other noncash changes in investing assets"),
+                x("10.00")
+            ),
+        ]
+    );
+    assert_eq!(cf.cash_from_investing, x("975.00"));
+}

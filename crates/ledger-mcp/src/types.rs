@@ -2607,7 +2607,8 @@ pub struct AssetSummary {
     pub cost: String,
     /// Useful life in months.
     pub useful_life_months: u32,
-    /// "active" or "disposed".
+    /// "active" or "disposed", on as_of: "disposed" once a disposal dated
+    /// on or before it is recorded (a later one doesn't show).
     pub status: String,
     /// Whether the books hold it on as_of: acquired by then and not yet
     /// disposed.

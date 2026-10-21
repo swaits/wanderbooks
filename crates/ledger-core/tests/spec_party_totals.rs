@@ -647,7 +647,7 @@ fn defect24_an_accrual_through_another_liability_counts_once() {
     assert_eq!(b.totals(c, Basis::All), (Decimal::ZERO, d("1200.00")));
 }
 
-/// Defect 24 and B-35 item 1: a credit to what the company owes a party
+/// Defect 24 and B-35 item 6: a credit to what the company owes a party
 /// itself never counts as paying it. A fee on the issuer's own card is a
 /// bill from the issuer (counted when the card is paid); a distribution
 /// still owed to a member counts when it is paid; equipment bought on the

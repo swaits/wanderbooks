@@ -15,6 +15,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: jdx/mise-action@v2
       - run: just prove
+  # The Kani harnesses too slow for prove's 30 minutes on four cores
+  # (justfile kani_slow; docs/verification.md), on a runner of their own.
+  prove-slow:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - run: just prove-slow
   oracle:
     runs-on: ubuntu-24.04
     steps:

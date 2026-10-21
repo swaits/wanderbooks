@@ -6,7 +6,7 @@ rule = "The accumulated depreciation the books carry for an asset counts each ru
 status = "AUTHORITY"
 sources = [
   "wanderbooks docs/spec/rules.md B-8, B-9 (a correction is an opposite entry; reversing the reversal reinstates the original)",
-  "wanderbooks docs/spec/rules.md B-24",
+  "wanderbooks docs/spec/rules.md B-15 rules 6 and 8",
 ]
 tags = ["fixed-assets", "depreciation", "reversal"]
 

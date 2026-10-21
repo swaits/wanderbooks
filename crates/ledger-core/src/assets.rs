@@ -11,7 +11,7 @@
 //! — and postings go through the normal entry machinery, so every
 //! accounting invariant holds.
 //!
-//! Two figures of accumulated depreciation, never confused (rules.md B-24):
+//! Two figures of accumulated depreciation, never confused (rules.md B-15 rule 8):
 //! what the schedule says is due through a date
 //! ([`accumulated_scheduled_through`]) and what the books carry, the runs
 //! posted and not reversed ([`crate::Ledger::accumulated_posted`]). Book
@@ -743,7 +743,7 @@ fn schedule_months(asset: &Asset, through: NaiveDate) -> Result<Vec<MonthLine>, 
 /// (inclusive), exact to the minor unit ([`depreciation_schedule`]): the
 /// tools' `accumulated_scheduled_through`. What the books carry is
 /// [`crate::Ledger::accumulated_posted`]; the two agree once every month
-/// due is posted (rules.md B-24).
+/// due is posted (rules.md B-15 rule 8).
 pub fn accumulated_scheduled_through(
     asset: &Asset,
     as_of: NaiveDate,

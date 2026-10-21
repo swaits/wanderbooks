@@ -23,7 +23,7 @@ promise.
 | Model-based stateful | the Lean state machine, transcribed (3) | `tests/model.rs` | `just check` | ~3s | every change |
 | Differential: Decimal vs i64 | the kernel at two types (3) | `kernel_bridge.rs` | `just check` | <1s | every change |
 | Differential: GnuCash | another implementation, adjudicated (3) | `tests/oracle_gnucash.rs`, `oracle/gnucash/` | `just oracle` | ~2 min | weekly |
-| Formal proofs | Kani (bounded) and Lean (unbounded) | `src/proofs.rs`, `verify/lean/` | `just prove` | ~15-20 min (bounded by `entry_flows_of_a_reversal_mirror`, ~14 min; all 29 harnesses ~43 min of CPU, run in parallel) | weekly |
+| Formal proofs | Kani (bounded) and Lean (unbounded) | `src/proofs.rs`, `verify/lean/` | `just prove` (47 harnesses and Lean), `just prove-slow` (the 8 in the justfile's `kani_slow`, each under its own 30-minute cap) | prove ~5 min and prove-slow ~8 min at four jobs on a quiet laptop (each ~25 min under heavy load; docs/verification.md, "Running it") | weekly (CI runs both) |
 | Fuzzing | crash, hang, broken books (4); for `fuzz_store_replay` (validly chained journals with fuzz-chosen events): books that open must verify, and the viewer must accept exactly what the writer does | `fuzz/fuzz_targets/`, corpora in `fuzz/corpus/` | `just fuzz <target> <secs>` | 10 min each | weekly |
 | Miri | undefined behavior in our use of dependencies (4) | the core's unit, bridge, invariant tests (the exhaustive calendar walk aside) | `just miri` | ~4 min | on demand |
 | Golden | `tests/golden/fixture_company.json` (5) | `invariants.rs` | `just check` | <1s | every change |
@@ -984,8 +984,10 @@ the end.
   `constructive_agrees`.
 - **Proofs:** Kani `entry_flows_sum_to_cash`,
   `entry_flows_pure_are_movements`, `entry_flows_are_bounded`,
-  `entry_flows_of_a_reversal_mirror`, `no_cash_no_flow` (entries of up to
-  three lines), `take_is_odd_and_bounded`, `apply_cash_mirrors`,
+  `no_cash_no_flow` (entries of up to three lines), the reversal's mirror
+  (`entry_movements_of_a_reversal_mirror` and `flows_of_mirrors` at three
+  lines, `entry_flows_of_a_reversal_mirror` end to end at two, since the
+  P3 surface review), `take_is_odd_and_bounded`, `apply_cash_mirrors`,
   `apply_cash_spends_exactly`, `exchanged_is_bounded`,
   `constructive_nets_to_zero`, `constructive_mirrors`; Lean
   `cashflow_sections_sum_to_cash_change`, `entry_flows_sum`,
@@ -1015,7 +1017,8 @@ the end.
   `on_behalf`, the kernel's received sign, `max` for `min`, the uses'
   order reversed): 16 fail a test; one is equivalent today (pairing that
   ignores `on_behalf`: a mirrored reversal's real and constructive parts
-  are each proved to mirror, Kani `entry_flows_of_a_reversal_mirror` and
+  are each proved to mirror, Kani `entry_movements_of_a_reversal_mirror`,
+  `flows_of_mirrors`, `entry_flows_of_a_reversal_mirror` and
   `constructive_mirrors`, so the check is defensive, for P4's drafts).
   The first round's 18 breaks, re-run on the reworked code (four
   adapted where the code moved), and one more for the taxes class: 18
@@ -1436,7 +1439,7 @@ bound, the minor-unit plan check), `first_day`, `last_day`, `next`, `due`'s
 zero months, `ScheduleConvention::parse`/`key`; `settings.rs` the new key
 and `schedule_convention()`'s default; `store.rs` `run_depreciation`
 (nothing due, the feature on a re-run), `live_runs`,
-`depreciation_runs_ever`, `dispose_preview` (true-up split, `in_month`),
+`Ledger::depreciation_runs` (was `depreciation_runs_ever`), `dispose_preview` (true-up split, `in_month`),
 `check_nothing_after_disposal`, `disposal_lines`, `check_reverse_entry`
 (the re-instatement room),
 `register_schedule` (the feature only for daily), `ensure_feature`,
@@ -1689,6 +1692,68 @@ rules.md says why not. Mutation runs wait for P12 (D-33).
   `a_disposals_depreciation_credit_back_is_depreciation`), and the
   tax-basis K-1's book depreciation left it out (B-36); `books.list_assets`
   as of a day said "disposed" for a later disposal (B-15 rule 8).
+
+## P3: the surface review (2026-10-21)
+
+The agent's surface, the docs and the whole proof run, on `main` with all
+of P3 landed (first `2f999c6`, then rebased onto `2c5b5a7` with the
+seams, asset basis and data safety reviews, and checked again). No
+mutation run (D-33). What was run, in this
+order, each alone (under `taskset -c 4-15`, four build jobs, on a laptop
+other work kept at a load average near 30): `just check` (clean, before
+and after the fixes); `just prove` as it stood (it ran past its
+30-minute cap at four jobs, 52 of 53 harnesses verified: see
+docs/verification.md, "Running it"); `just prove` and `just prove-slow`
+after the split, until both passed; the viewer's screenshots on the demo
+books; the privacy sweep below.
+
+| What | Where | Oracle |
+|---|---|---|
+| Every tool the server has is documented in `docs/mcp-interface.md`, and every tool the doc documents exists (115; `books.access_log` had no entry) | `ledger-mcp` `server.rs` `every_tool_is_documented_and_every_documented_tool_exists` (with a check of its own reader) | the doc, read tool by tool against the code |
+| The reversal's cash flow mirror at three lines, in two halves: a reversal's movements are its original's negated, and `kernel::flows_of` is odd; end to end at two lines | Kani `entry_movements_of_a_reversal_mirror`, `flows_of_mirrors`, `entry_flows_of_a_reversal_mirror` (`kernel::entry_flows` split into `entry_movements` and `flows_of`, behavior unchanged: every cash flow test, bridge and property passes) | docs/verification.md law 10; Lean `flows_reversal` |
+| A closed-list value in a bookspec example (a 1099 form, a payment method's kind, a reason kind, a party totals basis) is spelled exactly as the README spells it; a K-1 query needs `cash_accounts` | `ledger-core` `tests/bookspec.rs` `a_form_in_another_case_is_refused`, `a_payment_method_kind_in_another_case_is_refused`, `a_reason_kind_in_another_case_is_refused`; `check_k1` | bookspec/README.md |
+| Every Kani harness in `src/proofs.rs` runs in exactly one of `just prove` and `just prove-slow`, each run's count is checked, and a slow-list name that isn't a harness fails | `justfile` `_kani` | docs/verification.md, "Running it" |
+
+**Docs corrected** (each against the code): `docs/mcp-interface.md`, about
+60 fixes (parameter names: `search_entries`' `account_id`, `link_receipt`'s
+`attachment_id`; outputs: `books.chart`, `books.digest`, `get_receipt`,
+`run_recurring`, `label_asset`, `asset_schedule`, `dispose_asset`,
+`import_bank_csv`; refusals: `reverse_entry`'s date rule,
+`create_schedule`, `renumber_account`, `register_asset`, `correct_asset`,
+`set_vendor_1099`, `set_entry_party`, `withdraw_attachment`; the
+idempotent list (ten, not seven), the handbook's section list,
+`books.start`'s next steps, the receipt policy's keys, the export reports
+and formats, the CPA package's files, the close's targets, stale "out of
+scope" text); tool and schema text in `server.rs` and `types.rs` where it
+said the same wrong things; rules.md cross-references (eight wrong B-rule
+numbers in code, tests and one example); bookspec's README (what the
+loader takes, the statuses defined) and thirteen examples' statuses (an
+example whose figures follow an owner decision is CHOICE and cites it);
+docs/verification.md (laws numbered 1 to 31, no gaps; every harness listed
+with its law, recipe and time); `README.md`'s tool count.
+
+**Privacy sweep** (after the rebase onto `2c5b5a7`). `scrubber.originals_left`
+over every tracked file (626, binaries decoded too): none in any text
+file or fixture (the P2 served-books fixture's journal, database and
+vault included); the six Inter font files match only a descending digit
+run in their TrueType bytecode, a placeholder number the scrub's map also
+holds, not a TIN from the books. The first company's people, places and bank, by name
+(case-insensitive, LICENSE files aside): none. The eighteen figures from
+its books, with and without thousands separators: none.
+
+**The viewer** (the demo books, `cargo test -p ledger-gui --test screens`,
+every page; PNGs kept outside the repo): the figures tie across pages.
+Fixed: a report's notes were drawn on one line and cut (the fixed asset
+register's explanation of its tax columns ended mid-word); they wrap over
+the table's width now. The Accounts page listed each type's accounts in
+the order they were added; it lists them by code, as the reports do.
+
+**For P12 (mutation targets, none run):** `kernel::entry_movements` and
+`kernel::flows_of` (the split of `entry_flows`; the same mutants as
+before); the bookspec loader's exact-spelling filters and `check_k1`'s
+`cash_accounts` check; `documented_tools` (its own sample checks it).
+The earlier P3 sections' lists stand (one name corrected:
+`Ledger::depreciation_runs`, which was `depreciation_runs_ever`).
 
 ## Benchmarks (baseline 2026-10-13)
 

@@ -1,8 +1,11 @@
 id = "depreciation-reversal-before-its-run-is-refused"
 title = "A depreciation run can't be reversed on a day before its own"
 rule = "A correction comes after what it corrects: a depreciation run, or a reversal of one, can't be reversed on a day before its own. A run of March reversed on Jan 31 would leave January and February with negative depreciation."
-status = "AUTHORITY"
-sources = ["Pacioli 1494, ch. 31"]
+status = "CONVENTION"
+sources = [
+  "Pacioli 1494, ch. 31",
+  "wanderbooks docs/spec/rules.md B-15 rule 6, B-9: a correction comes after what it corrects (CONVENTION)",
+]
 tags = ["depreciation", "reversal", "refusal", "p3-defect-22"]
 
 [setup]

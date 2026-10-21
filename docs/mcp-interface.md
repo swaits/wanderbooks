@@ -39,9 +39,11 @@ the books), `.formation_state`, `.formed`, `.state_entity_number`, `.ein`
 (`books.accounting_basis`, `.cash_accounts`, `.financing_accounts` (loans,
 and money the owners advanced: ASC 230-10-45-14(b)), `.investing_accounts`
 (ASC 230-10-20), `.close_into` (single owner only), `.close_sweep`,
-`.asset_tag_prefix`); and policy (`policy.evidence.threshold` (receipts
+`.asset_tag_prefix`, `.schedule_convention` (daily, the default, or
+monthly_even)); backups (`backup.git_remote`, `backup.folder`); and policy (`policy.evidence.threshold` (receipts
 strictly above it; "0.00": every entry), `.required_accounts`,
-`.exempt_accounts`, `policy.parties` (off, suggest, require),
+`.exempt_accounts`, `policy.parties` (off, suggest, require), `policy.require_tax_category`
+(warn, the default, or refuse),
 `policy.approval_rules` (off, the default, or enforce)). A value is checked
 by its key and kept in one spelling (a time zone as the database spells it,
 an amount without leading zeros, a return as `schedule_c`, `1065`, `1120s`
@@ -129,7 +131,7 @@ settings-and-conventions section says how to use them.
   state ("needs_onboarding" or "active"), settings_source, rules: {
   evidence, parties, approval_rules }, settings_summary: [{ key, value,
   set_by, seq }], conventions: [{ id, kind, title, summary }], open_items:
-  [{ id, title, due }], truncated, handbook_sections, format_upgrade?: {
+  [{ id, title, due }], truncated?, handbook_sections, format_upgrade?: {
   guard, format, adds, how }, next_steps: [{ tool, args?, why }],
   isolation }`. The connect text names it as the first call.
   `format_upgrade` is there only for books waiting for a format upgrade
@@ -139,8 +141,16 @@ settings-and-conventions section says how to use them.
   `isolation` is `same_user (advisory)` (D-32): the books are hidden from
   agents in the owner's own account, not locked against them. Lists cut
   to fit say so in `truncated` ("conventions: 4 more (books.conventions)").
-  `focus` adds steps: `onboarding` the onboarding step, `close` the
-  company's close steps, `audit` `books.verify`. Not built yet (P5):
+  `next_steps`, in order: the format upgrade's (when waiting);
+  `books.import_settings` (books that still read a settings file); the
+  onboarding step (`books.handbook {section: "contract"}`, when the chart
+  is empty or `focus` is `onboarding`); `books.open_items` (an item due
+  within 30 days or overdue); `books.backup` (none set up, or one stale,
+  failing, paused or failing its drill); the focus's step (`close`:
+  `books.conventions {kind: "close_step"}`; `audit`: `books.verify`); then
+  always `books.handbook {section: "contract"}` and `books.digest`.
+  `focus` is `daily` (the default), `onboarding`, `close` or `audit`;
+  anything else is refused. Not built yet (P5):
   `book.id`, `book.url`, `head.last_handoff`, the `agent` input, and
   loading it up front under tool search. Also `books://start`.
 **The format upgrade** (plan 3.9, D-39, rules.md B-27). Books an older
@@ -304,9 +314,8 @@ where there is one; under "off" nothing); corrections by reversal; the receipt r
 never rounded, the accounts that always need a receipt and those exempt,
 and that reversals need none); the exemptions (depreciation and
 amortization, whose schedules are the evidence, and closes, derived from
-the books); that `books.create_invoice`, `books.create_bill`,
-`books.receive_payment`, `books.pay_bill`, `books.run_payroll` and
-`books.remit_payroll_taxes` post at once without a receipt check; TINs
+the books); that the invoice, bill, payment and payroll tools post at
+once, unchecked (in those words, naming no tool); TINs
 only into the vault; show the numbers, and after posting check
 `books.digest` and offer it to the human; and where settings live: in the
 books, changed only through the tools, or, for books that still read a
@@ -336,8 +345,8 @@ The long guidance is the **handbook**, compiled in from
   contract, entries, drafts-and-reversals, evidence-and-receipts,
   attachments, files-in-out, reconciliation, fixed-assets,
   prepaid-and-recurring, revenue-and-payouts, parties-and-tins, 1099,
-  cpa-handoff, settings-and-conventions, viewer, rules-that-change,
-  control-roles, tracing-figures.
+  cpa-handoff, settings-and-conventions, viewer, backups, format-upgrade,
+  rules-that-change, control-roles, tracing-figures.
 - The same as resources: `books://handbook` (the index, JSON) and
   `books://handbook/{section}` (Markdown, `text/markdown`), one listed per
   section.
@@ -370,10 +379,12 @@ that changes anything also has a `destructiveHint`, true for these 29:
 `books.set_tin` (both overwrite a vault record), `books.purge_tin`,
 `books.create_invoice`, `books.create_bill`, `books.receive_payment`,
 `books.pay_bill`, `books.run_payroll`, `books.remit_payroll_taxes`; and an
-`idempotentHint` on the seven that a repeat with the same arguments leaves
+`idempotentHint` on the ten that a repeat with the same arguments leaves
 the journal and the vault as they were: `books.verify`,
 `books.run_depreciation`, `books.run_schedules`, `books.run_recurring`,
-`books.set_party_roles`, `books.set_setting` and `books.import_settings` (a setter such as `books.update_party`,
+`books.set_party_roles`, `books.set_setting`, `books.import_settings`,
+`books.set_vendor_1099`, `books.set_entry_instrument` and
+`books.back_up_now` (a setter such as `books.update_party`,
 `books.set_fx_rate` or `books.set_tin` journals a line, and `books.set_tin`
 seals a new vault record, every time, so none carries it;
 `idempotent_tools_change_nothing_when_repeated` calls each candidate twice
@@ -434,8 +445,9 @@ every tool over every book in ledger-store's `tests/fixtures/old-books`.
 ## Tools — books
 
 - `books.handbook { section? }`: the guide (see "Server instructions").
-- `books.chart` → `{ accounts: [{ id, code, name, type, parent, placeholder,
-  balance }] }`. Balances included: one call answers "what do we have."
+- `books.chart` → `{ accounts: [{ id, code, name, account_type, parent,
+  placeholder, balance, tax_category, deductible_percent }], base_currency
+  }`. Balances included: one call answers "what do we have."
 - `books.add_account { code, name, account_type, parent?, placeholder?,
   tax_category?, deductible_percent? }` → `{ account_id, warnings? }`.
   Codes are unique; a name another account under the same parent has
@@ -459,11 +471,13 @@ every tool over every book in ledger-store's `tests/fixtures/old-books`.
 - `books.add_line { entry_id, account: "1000" | <id>, side: "debit" | "credit",
   amount: "123.45" }` → `{ ok: true }`. A refused line (unknown account or
   class, bad amount) adds nothing.
-- `books.post_entry { entry_id, confirmed }` → `{ status, entry_id, date,
+- `books.post_entry { entry_id, confirmed?, expected_total? }` → `{ status, entry_id, date,
   description, total, lines (with resulting balances), receipts,
   receipt_required, receipt_missing, split_detected, party_policy,
   party_id?, party?, parties, parties_error?, no_party_reason?,
-  party_missing, party_suggestions }`. Without `confirmed: true`, `status`
+  party_missing, party_suggestions, approvals_missing? }`. `expected_total`,
+  when given, must be the entry's total debits, else nothing posts.
+  Without `confirmed: true`, `status`
   is `"preview"` and nothing changes; with it, the receipt policy is
   enforced and `status` is `"posted"`. `parties` lists every party the
   entry names with its share resolved to the cent (`{ party_id, party,
@@ -478,7 +492,9 @@ every tool over every book in ledger-store's `tests/fixtures/old-books`.
   and a reversal whose reversal would post a depreciation period or a
   schedule month a second time (naming the entry that posts it now), or
   re-instate a run a later run caught up (carrying the books past the
-  schedule).
+  schedule); and a reversal of a depreciation run or a schedule month's
+  posting (or of a reversal in its chain) dated before that entry's own
+  date (a correction comes after what it corrects, B-9).
 - `books.get_entry { entry_id }` → full entry with lines, receipts, and
   its `vendor`, `party_id`, and `party` (the party's label, when it names
   exactly one) tags, `parties` / `parties_error` as in the `post_entry`
@@ -487,8 +503,11 @@ every tool over every book in ledger-store's `tests/fixtures/old-books`.
   why, for a draft an earlier version journaled whose lines exact
   arithmetic can't sum; a draft line on an account the chart doesn't have
   (older books hold such drafts) shows an empty code and "(no account N)".
-- `books.search_entries { account?, date_from?, date_to?, text?, limit?, offset? }`
-  → entries with lines, newest first. `limit` caps at 100.
+- `books.search_entries { account_id?, date_from?, date_to?, text?, limit?,
+  offset? }` → `{ entries: [{ entry_id, date, description, total,
+  reversal_of, receipt_count }] }`, posted entries, newest first (no
+  lines: `books.get_entry` has them). `limit` defaults to 50 and caps at
+  500.
 - **Omitted dates (rules.md B-30).** One rule everywhere
   (`ledger_core::calendar::PeriodDefaults`), stated in every report
   tool's description and date parameters in the same words: a period
@@ -563,11 +582,13 @@ every tool over every book in ledger-store's `tests/fixtures/old-books`.
   - Changed in P3 (breaking): `net_income`, `depreciation` and
     `working_capital` are gone (net income is in `operating_reconciliation`).
 - `books.digest { since: "2026-10-01" }`
-  → `{ entries_posted: [...], totals_by_account: [...], stale_rules: [...] }`.
+  → `{ since, entries: [...], totals_by_account: [...], stale_rules: [...],
+  journal_repairs: [...], settings_problems: [...], unreconciled_accounts:
+  [...], uncategorized_accounts: [...] }`.
   The human review surface: "what did the AI do with my books lately." The
   digest is the answer to "trust, but verify." `stale_rules` lists legal
   amounts wanderbooks may no longer know as of today (`{ name,
-  known_through, catalog, source, why }`): research the current value or
+  known_through, source, why }`): research the current value or
   ask the human, then update it upstream (pull request or issue at
   github.com/swaits/wanderbooks). `unreconciled_accounts` lists the cash
   and card accounts due for reconciliation (`{ code, name,
@@ -606,23 +627,29 @@ life's last day is 9999-12-31 at the latest.
   day it is ready and available for its use) starts depreciation (P3,
   defect 13; B-15); `purchase_date` is its alias for one release (both
   given and meaning different days: refused; the alias noted in `notes`). The
-  `acquisition_entry` (posted, debiting the cost account, dated on or
-  before the in-service date) gives `acquired_date`, which puts the asset
+  `acquisition_entry` (posted, debiting the cost account, neither a
+  reversal nor reversed, dated on or before the in-service date) gives
+  `acquired_date`, which puts the asset
   on the register; with none, the acquired date is the in-service date.
   The basis facts are `books.set_asset_tax_basis`'s (`tax_basis_rule` and
   `contributor_basis`, with the old rule names, are aliases for one
-  release); a bad one registers nothing.
-- `books.label_asset { asset, tag?, serial?, clear_serial? }` → `{ asset_id,
-  tag, serial }`: set or change the tag (unique ignoring case, never reused
-  by another asset even after a retag or disposal) or the manufacturer's
-  serial. `asset` is the id or current tag. Journaled as `asset.tagged`,
+  release); a bad one registers nothing, and so do basis facts given
+  without `basis_rule`.
+- `books.label_asset { asset, tag?, serial?, clear_serial?, description?,
+  acquisition_entry? }` → `{ asset_id, tag, serial, acquisition_entry,
+  description }`: set or change the tag (unique ignoring case, never reused
+  by another asset even after a retag or disposal), the manufacturer's
+  serial, the description, or the linked acquisition entry (posted,
+  debiting the cost account, not reversed). Refused with nothing to
+  change, or with both `serial` and `clear_serial`. `asset` is the id or current tag. Journaled as `asset.tagged`,
   `asset.serial_set`.
 - `books.asset_labels { assets?, skip? }` → `{ file_name, content_base64,
   tags }`: an Avery 5160/8160 label sheet (PDF): company, tag, QR code of
   the tag, description, serial. Default: every active tagged asset; `skip`
   reuses a partly used sheet.
 - `books.asset_schedule { asset_id | tag, through? }`
-  → `{ status, schedule: [{ period, amount, accumulated, book_value }] }`;
+  → `{ asset_id, description, cost, salvage_value, useful_life_months,
+  status, schedule: [{ period, amount, accumulated, book_value }] }`;
   a disposed asset's ends on its disposal day. A schedule an earlier
   version's asset can't compute is a tool error saying why, never a
   panic.
@@ -678,8 +705,9 @@ life's last day is 9999-12-31 at the latest.
   in_service_date?, reason }` → `{ asset_id, tag, cost, salvage_value,
   useful_life_months, in_service_date, acquired_date, basis, notes? }`.
   Refused while the books carry depreciation for it (a run posted and not
-  reversed), and for an in-service date before its acquisition entry's
-  date; `in_service` is the alias of `in_service_date` for one release.
+  reversed), for a disposed asset, for a blank `reason`, and for an
+  in-service date before its acquisition entry's date; `in_service` is the
+  alias of `in_service_date` for one release.
   A recorded value at contribution, and so the built-in gain, never
   moves; a basis recorded before P3 has none and reads it as the book
   cost, so a cost correction moves its built-in gain, and `notes` says so.
@@ -701,7 +729,8 @@ life's last day is 9999-12-31 at the latest.
 - `books.dispose_asset { asset_id | tag, date, proceeds, proceeds_account,
   gain_loss_account, buyer?, confirmed?, receipt_attachment_ids? }` (the
   date never before the acquired date) →
-  without confirmation: `{ status: "preview", accumulated, book_value,
+  without confirmation: `{ status: "preview", asset_id, entry_id (0 in a
+  preview), accumulated, book_value,
   proceeds, gain_loss, final_depreciation, excess_depreciation,
   catch_up_depreciation, lines, receipt_required }` and posts nothing;
   with `confirmed: true`: auto-posts the final depreciation (through the
@@ -774,8 +803,10 @@ through the policy.
   the next month end to post (null once every month has). Refused: a
   convention but those two (naming them); a `monthly_even` schedule not
   starting on the 1st (naming the 1st, and `daily`); one whose months
-  aren't whole minor units (yen); a daily one whose last day is after
-  9999-12-31. `plan_error` is null, except for a schedule an earlier
+  aren't whole minor units (yen); `months` outside 1 to 600; one whose
+  last day is after 9999-12-31; and, in books an older version wrote, a
+  daily one (it needs the journal feature `schedule_convention`:
+  `format_upgrade_pending` until the owner's format upgrade). `plan_error` is null, except for a schedule an earlier
   version accepted whose months run past the last date the books can
   compute: then it says why, `remaining` and `next` are null and `months`
   empty, and `books.run_schedules` refuses until it is dealt with.
@@ -796,7 +827,10 @@ through the policy.
   month-end start stays on month ends (Jan 31, Feb 28, Mar 31).
 - `books.list_recurring {}` → `{ recurring: [...] }`.
 - `books.run_recurring { through? }` → `{ drafts: [{ recurring_id, date,
-  entry_id }] }`: one draft per occurrence on or before `through`, once.
+  entry_id }], skipped_closed_period: [{ recurring_id, date }] }`: one
+  draft per occurrence on or before `through`, once; an occurrence dated
+  in a closed period is not generated and is listed in
+  `skipped_closed_period` for the human to decide.
 
 ## Tools — the viewer
 
@@ -850,7 +884,8 @@ through the policy.
 - `books.verify { blobs? }` → `{ status: "ok" | "healed", events, head,
   healed?, blobs_verified?, database, other_databases?, checked }`
   (`database`: the projection file verified, one for each schema,
-  `wanderbooks.v{N}.db`; `other_databases`: other schemas' files beside it,
+  `wanderbooks.v{N}.db`, or the older `wanderbooks.db` when it holds this
+  version's schema; `other_databases`: other schemas' files beside it,
   left for the versions that use them). Verifies the journal's hash chain,
   replays it against the live ledger, and compares every table of the
   SQLite database row for row against a fresh projection of the journal.
@@ -858,6 +893,22 @@ through the policy.
   `wanderbooks.v{N}.mismatch.<time>`). With `blobs` (default true), re-hashes
   every stored file. The server runs the same check, and heals the same
   way, every time it starts.
+
+## Tools — access
+
+- `books.access_log { limit?, before?, token?, action?, outcome? }`
+  (books:admin; read-only) → `{ records, total, more, head: { seq, hash }
+  }`: who reached these books through the server (plan I-9), newest
+  first, each record its token, client, tool or resource, a digest of
+  its arguments and whether it ran (`ok`), failed (`error`) or was
+  refused. `limit` is 1 to 500 (default 50); `before` pages back (records
+  before that seq); `token` narrows to a token's name, `action` to `tool`,
+  `resource` or `connect` (refused at the door), `outcome` to `ok`,
+  `error` or `refused` (anything else is refused). `total` counts the
+  whole log; `more` says older records match too. The log is read whole
+  and its chain checked first: a damaged log is reported, never shown in
+  part. Books served over stdio keep no access log: the tool is not
+  offered there (and is refused if called).
 
 ## Tools — backups
 
@@ -1005,9 +1056,13 @@ first entry's).
   incorporates is a new vendor. A dated decision with nothing decided
   before it is refused; one the same as the decision before its date
   takes out any decision recorded for that date ("removed"); recorded
-  again exactly so, nothing is journaled ("unchanged"). Without
-  `form_1099`, `tin_on_file` alone marks the W-9, keeping the decision and
-  who made it; `tin_on_file` omitted keeps the flag. `warnings` names each
+  again exactly so (who decided and when included), nothing is journaled
+  but a changed W-9 flag ("unchanged"). Without `form_1099`, `tin_on_file`
+  alone marks the W-9, keeping the decision and who made it (`changed` is
+  then "unchanged", with no warnings); `reason_kind`, `reason` or
+  `effective` without `form_1099` are refused, and so is a call with
+  neither `form_1099` nor `tin_on_file`; `tin_on_file` omitted keeps the
+  flag. `warnings` names each
   year (and its entries) whose payments the change reaches in a closed
   period or after that year's 1099s were due (January 31 of the next
   year): tell the human, a filed 1099 may need correcting. Journaled as
@@ -1035,7 +1090,10 @@ first entry's).
   `entry.instrument_set`.
 - `books.set_entry_vendor { entry_id, vendor? }` → the entry (as
   `books.get_entry`, which shows `vendor`, and `instrument` and
-  `instrument_id`). Omitting `vendor` clears the tag. Metadata only:
+  `instrument_id`). Omitting `vendor` clears the tag. On an entry naming
+  no party or one, the vendor's party becomes its party (clearing a
+  no-party mark), and clearing the tag clears the party too when it was
+  the vendor's. Metadata only:
   posted entries may be tagged. `books.draft_entry` takes `vendor` and
   `instrument` too; bills and their payments are tagged automatically.
   `books.set_entry_party` tags the vendor too when the party has a vendor
@@ -1155,9 +1213,9 @@ texts are at most 500 characters, no control characters.
   kept), so `books.vendor_1099`'s `missing_w9` follows.
   `tin` and `tin_type` put the full TIN in the TIN vault, and the signed
   form (`w9_upload_id`, or `w9_content_base64` with `w9_sha256`, as in
-  "Tools — receipts & documents") goes there too (below); with them
-  `tin_last4` comes from the TIN (a given one must agree) and `kept_at`
-  defaults to `"wanderbooks vault"`.
+  "Tools — receipts & documents") goes there too (below); with a TIN,
+  `tin_last4` comes from it (a given one must agree); with a TIN or the
+  form, `kept_at` defaults to `"wanderbooks vault"`.
 - `books.set_w4 { party, received_on, state, kept_at }` or `{ party, clear:
   true }` → the party. Journaled as `party.w4_set`.
 - `books.set_entry_party { entry_id, party?, parties?, no_party_reason? }`
@@ -1174,7 +1232,11 @@ texts are at most 500 characters, no control characters.
   place of `party`, names every counterparty with its share; `[]` clears.
   Journaled as `entry.parties_set { entry_id, parties: [{ party_id, share
   }] }`, `share` being `{"amount": "30.00"}`, `{"percent": "60"}`, or
-  `"derived"`. Each share, of what the entry moved (its `entry_flow` net;
+  `"derived"`. Once the entry is posted (at `post_entry`, or tagging a
+  posted entry), a derived split among several parties is journaled again
+  as the exact amounts it resolves to (a second `entry.parties_set`), so a
+  later change to `[[company.members]]` never re-splits posted history; it
+  stays derived when the shares don't resolve or a part is zero. Each share, of what the entry moved (its `entry_flow` net;
   for an entry moving no money, like property contributed, its total):
   - `amount`: exactly that, positive, in cents; the amounts must sum to
     what it moved.
@@ -1188,8 +1250,9 @@ texts are at most 500 characters, no control characters.
     `[[company.members]]` shares, rescaled to the members named, rounded as
     percents are. A derived share for a non-member among several is
     refused.
-  Every party gives the same kind of share. Refused, journaling nothing: a
-  party named twice, an unknown party, mixed kinds, percents not summing
+  Every party gives the same kind of share. Refused, journaling nothing:
+  `party` with `parties`, or either with `no_party_reason`; a share giving
+  both `amount` and `percent`; a party named twice, an unknown party, mixed kinds, percents not summing
   to 100, an amount finer than a cent, two parties with vendor records (a
   1099 counts a payment toward one vendor; the one vendor party's record
   is tagged and counts the whole payment), and, once the entry has
@@ -1272,7 +1335,7 @@ rules.md B-35):
   cash_accounts` (every asset account but receivables when none are set),
   the cards (the business-card payment methods' liability accounts,
   `books.instruments`; while the books record none, the liability
-  accounts whose names say "card", not "gift card"; never a member's
+  accounts whose names say "card" and not "gift"; never a member's
   card or a platform's account: the one rule the reconciliation reminders
   and the viewer read), and the `[books]
   financing_accounts` (what the members advanced, loans). Any other
@@ -1495,10 +1558,11 @@ and no control or invisible (Unicode format) characters; a MIME type
   the upload's; inline they are required. The upload is taken only after
   the entry and every `link_to` subject check out. `link_to` as in "Tools
   — attachments".
-- `books.link_receipt { receipt_id, entry_id }` → link a previously filed
+- `books.link_receipt { attachment_id, entry_id }` → `{ ok }`. Links a previously filed
   (unlinked, not withdrawn) receipt to its entry. A receipt linked elsewhere
   must be unlinked first; one already linked to that entry
   (`books.link_attachment`) is refused, as filing it there twice.
+  Journaled as `receipt.linked`.
 - `books.unlink_receipt { attachment_id, reason }` → `{ ok, entry_id,
   remaining_receipts }`. Detaches a receipt from its entry; it stays filed,
   unlinked. Journaled as `receipt.unlinked` with the reason. Subject to the
@@ -1506,7 +1570,9 @@ and no control or invisible (Unicode format) characters; a MIME type
   (`receipt_required` error, remedy `books.attach_receipt`), so replacing a
   receipt is attach-new, then unlink-old.
 - `books.withdraw_attachment { attachment_id, reason }` → `{ ok }`. Retires
-  an unlinked receipt or a filed document: hidden from listings, never
+  a receipt or document that is neither filed on an entry nor linked to
+  any subject (take those off first: `books.unlink_receipt`,
+  `books.unlink_attachment`); the reason must not be blank. Hidden from listings, never
   linkable again. Journaled as `attachment.withdrawn`; the bytes stay in the
   blob store. Nothing in the evidence trail is ever erased — receipts change
   by new events, the same way entries change by reversals.
@@ -1516,7 +1582,8 @@ and no control or invisible (Unicode format) characters; a MIME type
   are omitted unless `include_withdrawn` is true. `entry_id` lists the
   files filed on the entry and linked to it.
 - `books.get_receipt { attachment_id, view?: "meta" | "bytes" }` → `{
-  metadata, description?, links, content_base64?, download? }`. `meta`
+  attachment_id, sha256, entry_id?, category, file_name, mime_type,
+  size_bytes, description?, links, content_base64?, download? }`. `meta`
   (the default) returns no bytes. `bytes` adds `content_base64`
   (hash-verified) for a file of at most 256 KiB; a larger one gives
   `download`, the command `wanderbooks download --book B <id> --to <a
@@ -1540,11 +1607,14 @@ engine stays policy-free (it knows nothing of receipts) — enforcement lives
 in the MCP layer, which reads the `attachments` table before confirming a
 posting.
 
-- **Policy config** (server config file, not per-call): `require_receipts_above`
-  (default `"25.00"` in base currency), plus `receipt_required_accounts`
-  (account codes that always require receipts, e.g. meals and travel) and
-  `receipt_exempt_accounts` (e.g. automated bank fees). Human-edited and
-  versioned with the deployment.
+- **Policy** (the books' settings, "Company settings"; not per-call):
+  `policy.evidence.threshold` (receipts strictly above it; unset
+  `"25.00"`; `"0.00"`: every entry), `policy.evidence.required_accounts`
+  (account codes whose entries always need one, e.g. meals and travel)
+  and `policy.evidence.exempt_accounts` (e.g. automated bank fees; an
+  entry is exempt only when every line is in one). Changed with
+  `books.set_setting`; books from before P1 read `config.json`'s
+  `receipt_policy`.
 - **Preview.** Every `post_entry` preview includes the receipt checklist
   (`receipts: [...]`, `receipt_required: bool`, `receipt_missing: bool`,
   `split_detected: [...]`), so the human sees it before confirming. A
@@ -1560,6 +1630,12 @@ posting.
   — not to shrink the amount or split the entry to dodge the threshold. The
   tool description says this explicitly; gaming the policy is a correctness
   violation, and the append-only audit log would show it anyway.
+  (`asset_id` instead of `entry_id` for a disposal; `split_group: [ids]`
+  when the split check triggered.)
+- **Not checked yet:** `books.create_invoice`, `books.create_bill`,
+  `books.receive_payment`, `books.pay_bill`, `books.run_payroll` and
+  `books.remit_payroll_taxes` post at once with no preview and no receipt
+  check: attach their evidence right after, to the entry they return.
 - **Anti-splitting.** Posting an entry triggers a split check: posted
   entries on the same date with the same normalized description and debit
   accounts are grouped, and if the group total exceeds the threshold while
@@ -1585,17 +1661,21 @@ posting.
     and pdf are the printed statement, operating by class and investing
     and financing by kind with each kind's transactions under it, with its
     two schedules), `trial_balance`, `members_equity` (statement of
-    changes in members' equity; members from `wanderbooks.toml`; earnings
+    changes in members' equity; members from the settings (`company.members`); earnings
     not yet closed are split the way the next members close will split
     them, so a member's capital on a day never changes when its month is
     closed: rules.md B-13, D-38),
     `general_ledger` (by account: beginning balance, postings with running
     balance and split, ending balance), `general_journal` (alias
     `journal`: each entry posted in the period, line by line; `iif`:
-    every posted entry from the first through `as_of`, never a period).
-  - Formats: `pdf` and `xlsx` (base64) for the five statements; `xlsx`,
-    `csv`, `json` for every report; `iif` for `general_journal` (alias
-    `journal`), for QuickBooks Desktop.
+    every posted entry from the first through `as_of`, never a period),
+    `tax_summary` (see "Tools — tax categories"), `fixed_asset_register`
+    (as of a day; see "Tools — fixed assets").
+  - Formats: `pdf` and `xlsx` (base64) for `profit_and_loss`,
+    `balance_sheet`, `cash_flow`, `trial_balance`, `members_equity`,
+    `tax_summary` and `fixed_asset_register`; `xlsx`, `csv`, `json` for
+    every report (`general_ledger` and `general_journal` have no pdf);
+    `iif` for `general_journal` (alias `journal`), for QuickBooks Desktop.
   - Dates (rules.md B-30): the period reports (`profit_and_loss`,
     `cash_flow`, `members_equity`, `tax_summary`, `general_ledger`, and
     `general_journal` as csv, json and xlsx) take `start` and `end`
@@ -1612,7 +1692,8 @@ posting.
     character past ASCII is transliterated ("René" "Rene", "北京" "Bei
     Jing", "—" "--"), a double quote is a single one (QuickBooks reads it
     as a text delimiter), a tab or line break is a space, a control
-    character '?'. Within QuickBooks Desktop's limits (Intuit): an account
+    character, or a character with no transliteration, '?'; a colon in an
+    account's name or number '-' (a colon separates levels). Within QuickBooks Desktop's limits (Intuit): an account
     name level past 31 characters is cut there; accounts whose names would
     then match get " (code)" (QuickBooks would merge them); a subaccount
     whose QuickBooks type differs from its parent's is written at the top
@@ -1648,8 +1729,9 @@ posting.
   capital and draws; per-partner capital and distributions plus guaranteed
   payments; officer compensation and shareholder distributions; dividends
   and income tax expense), common income and expense accounts with tax
-  categories, and the `wanderbooks.toml` settings (tax form, members, close
-  target). A proposal: review with the human, then `books.import_chart_csv`.
+  categories, and `settings_toml`, the settings that go with it (tax form,
+  members, where closes go) as settings-file TOML for
+  `books.import_settings`. A proposal: review with the human, then `books.import_chart_csv`.
 
 ## Tools — tax categories
 
@@ -1662,10 +1744,14 @@ posting.
 - `books.renumber_account { account, code }` → `{ id, previous_code,
   code, config_mentions }`: give an account a new code. Only the code
   changes (entries name accounts by id), so balances and reports don't
-  move. Refuses a code in use, or an unassigned control role's default
-  code for an account of the wrong type. `config_mentions` lists the
-  wanderbooks.toml settings still naming the old code (edit them; the
-  server reloads the file). Journaled as `account.renumbered`.
+  move. Refuses an empty code, a code in use, an unassigned control
+  role's default code for an account of the wrong type or a header
+  (placeholder), and any account an approval rule names (revise or retire
+  the rule first). `config_mentions` lists each setting still naming the
+  old code (as `books.set_setting` keys, or settings-file labels for books
+  whose settings are in a file) and each convention whose template or
+  approval rule names it: change each with `books.set_setting` /
+  `books.set_convention`. Journaled as `account.renumbered`.
 - `books.rename_account { account, name, reason? }` → `{ id, code,
   previous_name, name, notes }` (scope `books:post`, destructive: a
   rename changes the label every past report prints): give an account a
@@ -1718,8 +1804,13 @@ posting.
 
 - `books.import_bank_csv { csv_text? | upload_id?, bank_account_code,
   default_offset_code, rules?, date_order?, source_attachment_id? }` →
-  creates one draft per transaction (QBO upload layout). `rules` maps
-  description substrings to account codes. `source_attachment_id` (the export as filed, category
+  `{ imported: [{ entry_id, date, description, amount, offset_account }],
+  count, source_attachment_id, source_linked }`: one draft per
+  transaction, all or none, from the QuickBooks bank-upload layout
+  (`Date,Description,Amount`, payments negative, or
+  `Date,Description,<money out>,<money in>`). `rules` maps description
+  substrings (ignoring case; the longest match wins) to account codes,
+  else `default_offset_code`. `source_attachment_id` (the export as filed, category
   `import_source`) is checked before any draft and linked to the bank
   account (`source_linked`; false when it was already), never to the
   drafts: a bank export is not a receipt.
@@ -1748,7 +1839,7 @@ Hand-rolled on `ServerHandler` (rmcp 3.x has no resource macros):
 - `books://receipts/{id}` — receipt metadata (as `books.get_receipt`
   view `meta`; no bytes)
 
-Resources exist so read-only clients (dashboards, the future read-only GUI,
+Resources exist so read-only clients (dashboards, the viewer,
 auditors) never need tool credentials. Tested end-to-end over stdio.
 
 ## The agent operating contract
@@ -1775,9 +1866,8 @@ in the server's tool descriptions, so the model reads it at use time):
 
 ## Out of scope for this phase
 
-Bank feeds, payment processing, payroll, tax filing, multi-user authN/Z, the
-GUI (it consumes the event log in a later phase). Cash flow reporting is
-R-FUTURE-3 and rides the engine roadmap, not the MCP layer.
+Bank feeds, payment processing, payroll tax tables and filing (payroll is
+accounting only: the caller supplies every figure), tax filing.
 
 ## Tools — periods
 
@@ -1789,9 +1879,11 @@ R-FUTURE-3 and rides the engine roadmap, not the MCP layer.
   ledger), posting nothing; with `confirmed: true`: `{ status: "closed",
   period_id, closing_entry, lines, members }`, posting it and marking the
   period closed. The entry zeroes revenue and expense balances as of the
-  period end; the net goes to `3999` Retained Earnings, or, with
-  `[[company.members]]` in the settings, to each member's capital account
-  by share, cumulatively (rules.md B-13; D-10): each close gives a member
+  period end; the net goes to `3999` Retained Earnings (created if
+  missing), or to `books.close_into` (a single owner's capital), zeroing
+  the `books.close_sweep` accounts (draws, dividends) into it too; or,
+  with `company.members` in the settings, to each member's capital
+  account by share (each member's distribution account zeroed into it), cumulatively (rules.md B-13; D-10): each close gives a member
   their share of everything closed to these members and shares so far, to
   the currency's minor unit (odd units by largest remainder, ties to the
   member listed first when the count began), less what earlier closes gave
@@ -1875,16 +1967,19 @@ R-FUTURE-3 and rides the engine roadmap, not the MCP layer.
   amount }] }` → `{ id, total, entry_id, warnings? }`. Auto-posts Dr
   `1200` Accounts Receivable / Cr `4000` Revenue. `warnings` names a
   revenue account it created with no tax category (rules.md B-32).
+  `party_id` is the customer's `id` from `books.add_customer`, not its
+  `party_id`.
 - `books.create_bill { party_id, date, due_date, lines }` → `{ id, total,
   entry_id, warnings? }`. Auto-posts Dr `6999` General Expenses / Cr
-  `2000` Accounts Payable; `warnings` as for invoices.
+  `2000` Accounts Payable; `warnings` as for invoices. `party_id` is the
+  vendor's `id` from `books.add_vendor`, not its `party_id`.
 - `books.receive_payment { document_id, date, amount, cash_account }` →
   `{ entry_id, remaining, status }`. Posts Dr Cash / Cr A/R.
 - `books.pay_bill { document_id, date, amount, cash_account }` →
   `{ entry_id, remaining, status }`. Posts Dr A/P / Cr Cash.
 - `books.ar_aging { as_of? }` → `{ as_of, rows: [{ name, current, days_30,
   days_60, days_90, days_90_plus, total }] }` (`as_of` omitted: today).
-- `books.ap_aging { as_of }` → same, per vendor.
+- `books.ap_aging { as_of? }` → same, per vendor (`as_of` omitted: today).
 
 ## Tools — foreign exchange
 
@@ -1956,7 +2051,7 @@ entries.
   file keeps the books' text), the README lists the same lines (and
   names the entries with a line on accounts receivable or payable, to
   which QuickBooks Desktop may ask the CPA to add a customer or vendor),
-  and `note` ends "N account name(s), number(s), place(s) or memo(s)
+  and, when the file writes anything differently, `note` ends "N account name(s), number(s), place(s) or memo(s)
   are written differently in general-journal.iif to fit QuickBooks
   Desktop (warnings says how; so does the README): tell the human.", N
   counting each name, number, place and memo.
@@ -1978,7 +2073,11 @@ entries.
   last fours only.", or "The package, with full TINs, for the CPA.",
   followed, with gaps, by "N TIN(s) are missing (tin_gaps): collect them
   with books.set_tin or books.set_w9 and export again." **K-1 worksheet** (`k1-members.csv`, with
-  `[[company.members]]`): one row per member, in order: `member,
+  `[[company.members]]`): one row per member, in order (with more than one
+  member, a last row totals them, "Total, all members (not a K-1)", to tie
+  to Schedule L; a worksheet that can't be made is replaced by
+  `<name>-NOT-INCLUDED.txt` saying why, the K-1, tax-basis and 1099
+  worksheets alike): `member,
   party_id, share, capital_account, tin, tin_type, tin_note` (without
   TINs: `tin_last4, tin_type`), then `beginning_capital,
   contributions_cash, contributions_property, net_income, distributions,
@@ -2023,6 +2122,10 @@ entries.
   by class, investing and financing by kind with each member named, and
   its two schedules; reconciled to the package's cash accounts),
   `members-equity`
-  (multi-member LLCs), `trial-balance`; plus `general-ledger.xlsx` and
-  `general-journal.xlsx`. Period reports cover the fiscal year to date.
+  (multi-member LLCs), `tax-summary`, `trial-balance`;
+  `fixed-asset-register` (PDF and XLSX) when an asset was acquired by
+  `as_of`; plus `general-ledger.xlsx` and `general-journal.xlsx`; and
+  `README.txt` first (the year, the basis, the journal's verified event
+  count and what each file is). Period reports cover the fiscal year
+  holding `as_of`, through it.
   What the CPA needs; they never log into the system.

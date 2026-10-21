@@ -221,7 +221,7 @@ pub struct YearEarnings {
 ///
 /// ```text
 /// GOAL: the balance sheet as printed, footing and balancing.
-/// SOURCE: rules.md B-4/B-5 (assets = liabilities + equity); footing.
+/// SOURCE: rules.md B-7 (the accounting equation); footing.
 /// INVARIANTS:
 ///   1. Asset lines sum to "Total assets", liability lines to "Total
 ///      liabilities", equity lines (accounts and the earnings lines) to the
@@ -425,7 +425,7 @@ pub fn cash_flow(cf: &CashFlowStatement) -> Statement {
 ///
 /// ```text
 /// GOAL: the trial balance as printed, footing.
-/// SOURCE: rules.md B-2 (debits equal credits); footing.
+/// SOURCE: rules.md B-6 (the trial balance balances; B-1); footing.
 /// INVARIANTS:
 ///   1. Each column's lines sum to its total; the totals are equal for
 ///      balanced books.

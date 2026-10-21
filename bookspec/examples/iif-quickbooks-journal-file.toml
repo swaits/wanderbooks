@@ -32,7 +32,7 @@ id = "iif-quickbooks-journal-file"
 appendix = "formats"
 title = "A QuickBooks Desktop journal file as of a day"
 rule = "An IIF journal file as of a day D MUST declare every account first (NAME, ACCNTTYPE, ACCNUM), then hold one GENERAL JOURNAL transaction per posted entry dated on or before D, period closes excepted, in the order posted: a TRNS line and SPL lines, debits positive and credits negative, dated M/D/YYYY, each numbered (DOCNUM) with the entry's id; then ENDTRNS. It MUST be ASCII text, every line ending CR LF, no field holding a tab, a line break or a double quote; an account name level MUST be at most 31 characters and no two NAMEs alike, an account number at most 7 characters and no two alike (else left out), a memo at most 4,095 characters; each parent MUST be declared before its subaccounts, and a subaccount whose QuickBooks type differs from its parent's MUST be written at the top level. Each text written differently from the books MUST be reported."
-status = "AUTHORITY"
+status = "CHOICE"
 sources = [
   "Intuit, IIF Overview: import kit, sample files, and headers: IIF files are ASCII text, tab-separated; an account not already in the company file is created as a new bank account (docs/spec/sources/intuit-iif.md)",
   "Intuit, IIF Import Kit, IIF Header Help !TRNS, !SPL, !ACCNT: TRNS and SPL lines then ENDTRNS; \"Debit amounts are always positive, credit amounts are always negative\"; DOCNUM is the transaction's number; a subaccount's NAME its parents' names first, joined by colons (docs/spec/sources/intuit-iif.md)",
@@ -40,6 +40,7 @@ sources = [
   "Intuit, Character limitations for fields in QuickBooks (US, updated 8/3/2026): Account Name 31, Account Numbers 7, Memo 4,095 (docs/spec/sources/intuit-iif.md)",
   "Intuit, Add, edit, or delete accounts in QuickBooks Desktop (updated 8/4/2026): \"The parent and subaccount must be the same account type.\" (docs/spec/sources/intuit-iif.md)",
   "Reckon, IIF import changes a double quote to a single one by design; J. Clark (2003): QuickBooks uses double quotes as text delimiters (docs/spec/sources/intuit-iif.md; not Intuit)",
+  "DECISION D-36 (owner, 2026-10-20): plain ASCII, what isn't ASCII transliterated and listed; CR LF; DOCNUM the entry's id; closes left out (wanderbooks plan/served.md; rules.md B-34)",
 ]
 tags = ["iif", "quickbooks", "as-of", "format", "transliteration"]
 

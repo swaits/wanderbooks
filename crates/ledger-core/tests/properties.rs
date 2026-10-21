@@ -596,7 +596,7 @@ mod p3 {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(500))]
 
-    /// B-15 INVARIANT 5 (defect 22): accumulated depreciation never falls,
+    /// depreciation_schedule INVARIANT 5 (rules.md B-15; defect 22): accumulated depreciation never falls,
     /// never exceeds cost − salvage, is 0 before the in-service date and
     /// cost − salvage from the life's last day on; each schedule's lines
     /// sum to its accumulated and none is negative. Sampled through: every
@@ -719,7 +719,7 @@ proptest! {
         }
     }
 
-    /// B-15 INVARIANT 6 (P3 depreciation brief 2.3, R1, R8): through every
+    /// B-15 rule 4 (depreciation_schedule INVARIANT 6; P3 depreciation brief 2.3, R1, R8): through every
     /// month end of the life, the schedule is the pre-P3 running total
     /// (USD, a two-place currency), except where the exact cumulative is a
     /// half-cent tie, which the old 28-digit Decimal quotients could round

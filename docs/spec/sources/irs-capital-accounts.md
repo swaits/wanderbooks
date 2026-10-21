@@ -4,7 +4,7 @@ Governs what a member's party totals count (rules.md B-35): a member's capital a
 ## Treas. Reg. §1.704-1(b)(2)(iv)(b): basic rules of capital accounts
 Source: <https://www.ecfr.gov/api/renderer/v1/content/enhanced/current/title-26?part=1&section=1.704-1>  
 Retrieved: 2026-10-20  
-SHA-256 of the retrieved file (`ecfr7041.html`): `0eafa6f27d7df3a3cc93ebad7cbdc0c37a49b055c53a43d5e5e8efa29f80beeb`
+SHA-256 of the retrieved file (`ecfr17041.html`): `0eafa6f27d7df3a3cc93ebad7cbdc0c37a49b055c53a43d5e5e8efa29f80beeb`
 
 > (b) Basic rules. Except as otherwise provided in this paragraph (b)(2)(iv), the partners' capital accounts will be considered to be determined and maintained in accordance with the rules of this paragraph (b)(2)(iv) if, and only if, each partner's capital account is increased by
 
@@ -30,6 +30,9 @@ Source: as above (the same retrieved file).
 ## Partner's Instructions for Schedule K-1 (Form 1065), Item L
 Source: <https://www.irs.gov/instructions/i1065sk1>  
 Retrieved: 2026-10-20  
-SHA-256 of the retrieved file (`i1065sk1.html`): `87d46c0e6c07eb0b642e9479f72aed7c35ed005cab0b1c644af5572a9df22d7c`
+SHA-256 of the retrieved file (`i1065sk1.html`): `87d46c0e6c07eb0b642e9479f72aed7c35ed005cab0b1c644af5572a9df22d7c`  
+(This page's HTML differs from fetch to fetch, so each retrieval has its
+own hash: `irs-partnerships.md` quotes another retrieval of the same day. A re-fetch on
+2026-10-21 hashed differently again; the quoted text was checked present.)
 
 > The partnership must report your beginning capital account and ending capital account for the year using the tax-basis method, including the amount of capital you contributed to the partnership during the year, your share of the partnership’s current-year net income or loss as computed for tax purposes, any withdrawals and distributions made to you by the partnership, and any other increases or decreases to your capital account determined in a manner generally consistent with figuring the partner’s adjusted tax basis in its partnership interest (without regard to partnership liabilities), taking into account the rules and principles of sections 705, 722, 733, and 742.

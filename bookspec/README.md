@@ -94,9 +94,20 @@ down, the units left over to the largest remainders, ties to the part
 listed first; rules.md B-13). An example that closes to the members
 declares `largest-remainder`, the rule a members close splits by.
 
-Required everywhere: the top-level keys, `[setup]` with its four keys and
-its accounts, the events (`events = []`, before `[setup]`, when nothing is
-posted), and at least one `[[expect]]` with values: a figure query's are
+`status` says what the expected values rest on: `AUTHORITY`, the cited
+authorities alone (a standard, a regulation, a statute, a court, the
+mechanics of double entry); `CONVENTION`, common practice where no
+authority governs (rules.md's CONVENTION); `CHOICE`, an owner's or the
+house's decision (a plan D-number, or a DECISION rules.md records) that
+some expected value depends on, even when authorities carry the rest. An
+example whose figures follow a decision cites it in `sources`.
+
+Required everywhere: the top-level keys (`title`, `rule`, `tags` and
+`sources` non-empty), `[setup]` with its four keys and its accounts, the
+events (`events = []`, before `[setup]`, when nothing is posted), and at
+least one `[[expect]]`. A value from a closed list (a type, a kind, a
+role, a form, a basis) is spelled exactly as written here. A figure
+query's values are
 exact decimal strings (`"2340.00"`, `"-12.50"`; never a float), a format
 query's are text (below). Amounts on lines are positive;
 the side gives the direction.
@@ -183,11 +194,12 @@ the side gives the direction.
   code, the company owes the party itself (a card's issuer, a lender,
   each member for what the members advanced: B-35 item 6). `tin_last4`:
   its TIN facts' last four (an SSN's); `w9_tin_last4`: its W-9's (a 1099
-  role's); `tin_purged = true`: the vault's copy purged, the facts kept.
+  role's); `tin_purged = true`: the vault's copy purged, the facts kept (needs
+  `tin_last4`).
   Never a full TIN. Each name once.
 - `[[setup.members]]` `{ name, capital_account, share?,
   distributions_account? }`: the members of a multi-member LLC. `share`
-  is the member's share of income, an exact decimal fraction (`"0.5"`,
+  is the member's share of income, an exact decimal fraction above zero (`"0.5"`,
   `"0.3333"`); every member has one or none does, and the shares sum to
   1. A close to the members, `members_equity`, `k1`, `k1_tax_basis` and
   `k1_reconciliation` need them. `distributions_account`: the member's
@@ -211,7 +223,8 @@ the side gives the direction.
 - `[[setup.instruments]]` `{ label, kind, account, last4?, owner? }`: a
   payment method (B-19): `kind` `bank`, `business_card`, `member_card`,
   `member_cash_or_check` or `platform`; `account` the code it pays
-  through; `owner` a party's name (informational). A business card's
+  through; `owner` a party's name in `setup.parties` (informational); each label
+  once. A business card's
   liability is a card account (B-35 item 5): while none is recorded, a
   liability whose name says "card", not "gift card", is.
 - `payee` on an event: the payee (by name, one of `setup.payees`) the
@@ -232,7 +245,7 @@ the side gives the direction.
   `"members"` (split by share, in the order listed) or
   `"retained_earnings"`. A close to the members splits cumulatively, each
   close giving each member their split of everything the members' closes
-  have closed less what earlier closes gave them; `rounding = "per-close"`
+  have closed less what earlier closes gave them; `rounding = "per-close"` (members only)
   splits that close's net on its own instead (books from an engine that
   rounded each close by itself). A close must have something to close: it
   posts one entry like any other event.
@@ -292,8 +305,8 @@ answers is refused, never skipped.
 | query | dates | values | checked by |
 |---|---|---|---|
 | `cash_flow` | `from`, `to` | figures (below) | `ledger-core` `tests/bookspec.rs` |
-| `trial_balance` | `as_of` | each account's balance by code, debits less credits (a credit balance negative), every account listed | `ledger-core` `tests/bookspec.rs` |
-| `profit_and_loss` | `from`, `to` | each revenue and expense account's activity by code, on its normal side, closing entries left out, every one listed; `net_income`, revenue less expenses | `ledger-core` `tests/bookspec.rs` |
+| `trial_balance` | `as_of` | each account's balance by code, debits less credits (a credit balance negative), every account of `setup.accounts` listed (not those the books create) | `ledger-core` `tests/bookspec.rs` |
+| `profit_and_loss` | `from`, `to` | each revenue and expense account's activity by code, on its normal side, closing entries left out, every one of `setup.accounts` listed; `net_income`, revenue less expenses | `ledger-core` `tests/bookspec.rs` |
 | `entry` | `entry = N`, no dates | the lines of event N's entry, `"<code>.debit"` and `"<code>.credit"` each the sum of that account's lines on that side, every line of the entry named | `ledger-core` `tests/bookspec.rs` |
 | `balances` | `as_of` | each account named by code, its balance on its normal side (a member's capital after a loss is negative); the example names the accounts it shows | `ledger-core` `tests/bookspec.rs` |
 | `members_equity` | `from`, `to` | the statement of changes in members' equity (rules.md B-13): `"<member>.beginning"`, `.contributions`, `.net_income`, `.distributions`, `.other`, `.ending`; the example names the figures it shows | `ledger-core` `tests/bookspec.rs` |

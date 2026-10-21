@@ -2,7 +2,11 @@ id = "members-close.thirds-over-twelve-months"
 title = "Three members at a third each, twelve monthly closes"
 rule = "Each monthly close to the members MUST give each member their largest-remainder split of everything closed so far, to the minor unit, less what earlier closes gave them, so after every close each member's total is less than one minor unit from their exact share."
 status = "CHOICE"
-sources = ["26 U.S.C. §704(a)", "Treas. Reg. §1.704-1(b)(2)(iv)(b)"]
+sources = [
+  "26 U.S.C. §704(a)",
+  "Treas. Reg. §1.704-1(b)(2)(iv)(b)",
+  "DECISION (owner, 2026-10-13: largest remainder; D-10, 2026-10-16: counted from the first close) (wanderbooks rules.md B-13)",
+]
 tags = ["partnership", "close", "rounding", "book", "us"]
 
 # A third each can't be written as decimal shares summing to one, so the

@@ -2534,7 +2534,7 @@ impl Ledger {
     /// ```text
     /// GOAL: a run the books record is the entry that posted it, no more
     ///       and no less, so accumulated_posted is what the books carry.
-    /// SOURCE: rules.md B-24; B-28 (new commands are bounded; replay checks
+    /// SOURCE: rules.md B-15 rules 6 and 8, B-24; B-28 (new commands are bounded; replay checks
     ///         only what every journaled run passed:
     ///         record_depreciation_run).
     /// ```

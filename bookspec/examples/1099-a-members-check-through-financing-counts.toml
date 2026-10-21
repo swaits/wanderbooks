@@ -13,11 +13,12 @@ member's payment whose method isn't recorded is undetermined, never
 guessed; the payee is reportable only if what certainly counts reaches the
 threshold.
 """
-status = "AUTHORITY"
+status = "CHOICE"
 sources = [
   "Treas. Reg. §1.6041-1(a)(1)(i), (e)(1) (docs/spec/sources/irs-1099-payment-method.md)",
   "Treas. Reg. §1.6041-1(a)(1)(iv)",
   "26 U.S.C. §6041(a), as amended by Pub. L. 119-21 §70433 (docs/spec/sources/irs-1099-thresholds.md)",
+  "DECISION (owner, plan/served.md P3 defect 12; D-40, 2026-10-20): a payment through financing with no payment method recorded is undetermined (wanderbooks rules.md B-19)",
 ]
 tags = ["1099", "financing", "member-paid", "instruments"]
 

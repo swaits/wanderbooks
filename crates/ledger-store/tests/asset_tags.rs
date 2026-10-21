@@ -1175,7 +1175,7 @@ fn reversing_a_linked_acquisition_still_opens_and_verifies() {
     Store::open(&dir).unwrap().verify().unwrap();
 }
 
-// ------------------------------------------------- depreciation runs (rules.md B-24)
+// ------------------------------------------------- depreciation runs (rules.md B-15 rules 6 and 8)
 
 /// A run is the books' record of what they carry for an asset
 /// (Ledger::accumulated_posted): recorded live, replayed from the journal,

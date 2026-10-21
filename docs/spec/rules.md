@@ -78,8 +78,9 @@ schedules round to it (B-15, B-16); assets an earlier version took finer
 replay as journaled. **Checked:**
 `an_asset_cost_finer_than_a_cent_is_refused`,
 `a_foreign_line_is_booked_in_whole_base_units`,
-`no_entry_posts_a_fraction_of_the_minor_unit`; the GnuCash oracle.
-**Checked:** `foreign_currency_line_is_rejected`, `fx_overflow_is_an_error`.
+`no_entry_posts_a_fraction_of_the_minor_unit`,
+`foreign_currency_line_is_rejected`, `fx_overflow_is_an_error`; the
+GnuCash oracle.
 
 ## B-4 Five elements, closed list
 
@@ -1997,7 +1998,7 @@ books declare before their first rename, B-27); `books.rename_account` (scope
 `ledger-core` `tests/spec_ledger.rs`
 (`a_new_name_is_one_trimmed_line_of_bounded_length`), `ledger-store`
 `tests/store.rs` (`a_new_accounts_name_is_journaled_trimmed`); Lean
-`Step.record` (a name is outside the model: `docs/verification.md` 13a);
+`Step.record` (a name is outside the model: `docs/verification.md` law 15);
 bookspec `examples/rename-changes-no-amount.toml`.
 
 ## B-32 Every revenue and expense account maps to a line of the return

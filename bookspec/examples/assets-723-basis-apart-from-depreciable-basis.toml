@@ -3,13 +3,14 @@
 id = "assets-723-basis-apart-from-depreciable-basis"
 title = "Property contributed from personal use: the §723 basis apart from the depreciable basis"
 rule = "The partnership's basis in property a partner contributes is the partner's adjusted basis (IRC §723). Its depreciable basis, for property converted from personal use, is the lesser of fair market value and that adjusted basis at conversion (CHOICE recorded by the owner as D-41, the CPA to confirm). The §704(c) built-in gain or loss is fair market value less the §723 basis at contribution; a built-in loss counts only for the contributing partner (IRC §704(c)(1)(C))."
-status = "AUTHORITY"
+status = "CHOICE"
 sources = [
   "26 U.S.C. §723",
   "Treas. Reg. §1.168(i)-4(b)(1): 'the lesser of its fair market value or its adjusted depreciable basis'",
   "IRS Pub. 946 (2025), Property changed from personal use",
   "Treas. Reg. §1.704-3(a)(3)(ii)",
   "26 U.S.C. §704(c)(1)(C)",
+  "DECISION D-41 (owner, 2026-10-20): the depreciable basis of contributed personal-use property is the lesser of its fair market value and the member's adjusted basis, the CPA to confirm (wanderbooks plan/served.md; rules.md B-25)",
 ]
 tags = ["fixed-assets", "tax-basis", "partnerships", "704c"]
 

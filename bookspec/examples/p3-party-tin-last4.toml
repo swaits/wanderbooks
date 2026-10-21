@@ -14,7 +14,7 @@ the K-1), else its W-9 facts'; the two never disagree. A TIN purged from
 the vault keeps its last four in the books. A party with neither has
 none.
 """
-status = "AUTHORITY"
+status = "CHOICE"
 sources = [
   "Treas. Reg. §301.6109-4(a): a truncated TIN shows the last four digits (wanderbooks docs/spec/sources/irs-truncated-tin.md)",
   "DECISION (owner, 2026-10-15): a party's TIN facts and W-9 facts never disagree (wanderbooks ledger-core parties INVARIANT 2a)",

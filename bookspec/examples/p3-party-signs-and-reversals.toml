@@ -19,12 +19,13 @@ negated. A bill or invoice moves nothing with the party yet (neither).
 Party totals on basis cash count the cash parts, on basis all the cash
 and in-kind parts, each on its root original's side.
 """
-status = "CONVENTION"
+status = "CHOICE"
 sources = [
   "Pacioli, Summa (1494), Geijsbeek tr., ch. 36: debit is what owes, credit what is owed (wanderbooks docs/spec/sources/pacioli-1494.md)",
   "Treas. Reg. §1.704-1(b)(2)(iv)(b)(1)-(2), (4)-(5): a partner's capital account rises by money and property contributed, falls by money and property distributed (docs/spec/sources/irs-capital-accounts.md)",
   "Helvering v. Price, 309 U.S. 409, 412-413 (1940): a promise to pay is not payment (docs/spec/sources/helvering-v-price-1940.md)",
   "DECISION (owner, 2026-10-20): a member's entry counts what moved their capital (wanderbooks rules.md B-35)",
+  "DECISION D-42 (owner, 2026-10-20): what a member pays for the company through the members' financing is money: cash borrowed and spent (wanderbooks plan/served.md; rules.md B-14 rule 11, B-35 items 5 and 8)",
 ]
 tags = ["parties", "signs", "reversals", "members", "in-kind", "basis"]
 

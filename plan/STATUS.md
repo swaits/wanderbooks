@@ -1,6 +1,6 @@
-# STATUS — 2026-10-20: "Served" P0, P1 and P2 live; P3 next
+# STATUS — 2026-10-21: "Served" P0, P1 and P2 live; P3 built and landed, its cutover pending
 
-## Now: Served (plan/served.md), P0, P1 and P2 live
+## Now: Served (plan/served.md), P0, P1 and P2 live; P3 on main
 
 The 2026-10-16 audit of the first company's books (62 verified findings,
 20 engine defects) and the design discussion that followed produced
@@ -88,38 +88,105 @@ folder's `legacy/`. Agents connect with `wanderbooks connect`, the viewer is
 books data. The before-check found defect 21 again (the IIF ignores
 `as_of`).
 
-**Open from P3's depreciation and schedules work (defects 22 and 9,
-review 2026-10-20), for the P3 lead:** the viewer still recomputes a
-long-life asset's whole schedule every frame (plan defect 22's note; R12
-of its brief: slow, never wrong); a schedule month a run leaves for a
-human (dated in a closed period, or reversed after it ended) stays
-unposted with nothing to mark it booked by hand, so its schedule never
-shows complete, and a schedule or an asset registered by mistake has no
-way to stop (a reversed month comes due again); both want a design
-(a schedule's postings are its plan's, re-derived on replay, so it can't
-catch a month up as depreciation does). From review round 2: a reversal
-dated before the entry it reverses is refused for depreciation runs and
-schedule postings only (B-9: a correction comes after what it corrects);
-every other entry still takes one, a general rule for the P3 lead to
-settle; the bookspec examples cite ASC 606-10-25-23, which `sources/`
-holds only through DART (vendor it with 25-31, 25-32 and 55-20); the
-every-order search runs three commands deep in `just check`; four and
-five ran clean by hand (`WB_ORDERS_DEPTH`, one and five minutes), six is
-P12's. Seen in the same review, not P3's: `ledger-store`
-`ops::tests::the_server_makes_the_folder_and_the_viewer_only_reads_it`
-failed once in a whole-workspace run (`!viewer_open` after both holders
-dropped) and passed alone and in six runs of the crate's tests; likely a
-child a concurrent test forks (backup's git) holding the viewer lock's
-descriptor until it execs.
+**P3 (engine correctness): built and landed on `main`, the cutover
+pending.** Every defect group of plan P3 is on `main` (`2c5b5a7`), each
+built from its brief, reviewed until a round came back clean, and with
+its regression tests written as bookspec examples (51 in
+`bookspec/examples/`, every one checked by `cargo test`): the odd cent
+(defect 17, D-10, D-38), the IIF in plain ASCII and the CPA package as of
+one day (defects 7, 21, D-36), the cash flow statement by ASC 230's
+direct method (defect 1, D-35, D-42), rename, one set of period defaults
+and tax categories that warn or refuse (defects 15, 16, 8), party totals
+by what moved the money (defects 14, 11, 24), dated 1099 decisions,
+payment methods and the card exception (defects 23, 12, 18, D-40),
+depreciation straight-line by days through the final month and daily
+schedules (defects 22, 9, D-37), the format upgrade only with the owner's
+go-ahead (D-39), and assets' posted and scheduled depreciation, their
+bases and the K-1 on the tax basis (defect 13, D-41); then three review
+commits: the seams between the pieces (one fictional year checked
+across engine, viewer, tools and package; three defects found and
+fixed), asset basis (schema 14, shipped migrations pinned by hash; the
+tax K-1's net income always open), and data safety (three new journal
+features, replay with P2's TIN detector, the P2 served-books fixture). Mutation waits for
+P12 (D-33): each piece's targets are listed in `docs/testing.md`.
 
-**Next:** P3 (engine correctness; designed: one brief per defect group,
-each attacked by a reviewer, kept outside this public repo since they cite
-the first company's figures; the owner's questions come one at a time as
-each is built), then P4-P13 as planned. P11: one app for Windows, Mac and
-Linux (D-24). P12: max testing again (D-33). P13: bookspec (D-34), a
-formal, sourced accounting specification first, then its own formal
-validation and a conformance harness for any engine; P3's regression
-tests are its first examples.
+**The P3 surface review (2026-10-21)** checked the agent's surface, the
+docs and the whole proof run on `main` with all of P3: `just check`
+clean; the tools' docs (`docs/mcp-interface.md`) corrected tool by tool
+against the code (about 60 fixes: wrong parameter names, missing outputs
+and refusals, the idempotent list, the handbook's section list,
+`books.start`'s next steps, the CPA package's files) and a new test that
+every tool is documented and every documented tool exists
+(`every_tool_is_documented_and_every_documented_tool_exists`; 115 tools,
+`books.access_log` was undocumented); B-rule cross-references fixed in
+code and tests (eight wrong); bookspec's statuses made consistent (an
+example whose figures follow an owner decision is CHOICE and cites it:
+thirteen statuses changed, five more examples given the decision they
+rest on), its README now saying exactly what the loader takes,
+and the loader refusing a closed-list value spelled any other way. **`just
+prove` could not finish in its 30-minute cap at four jobs** (a CI
+runner's cores) on a heavily loaded laptop: 52 of 53 harnesses in, the
+reversal mirror at three lines still running. It is split, nothing
+dropped: that harness is proved in two halves (`kernel::entry_flows` is
+now `entry_movements` then `flows_of`) plus end to end at two lines, and
+`just prove` runs 47 harnesses and Lean (308 s at four jobs on a quiet
+machine; 83 headline theorems, standard axioms only) while `just
+prove-slow` runs the eight slowest, each under its own cap (467 s), and
+CI runs both (`docs/verification.md`, "Running it"). The laws are numbered
+1 to 31 with no gaps, every harness listed with its runtime. The viewer's
+P3 pages were rendered on the demo books and looked at
+(`~/.cache/wanderbooks/shots-p3-surface/`): the figures tie across
+pages (the register, the asset, the balance sheet, the tax summary, the
+1099 worksheet and the party agree to the cent); two faults fixed: a
+report's notes were cut to one line (the fixed asset register's lost its
+explanation of the tax columns; they wrap now), and the Accounts page
+listed accounts in the order they were added, not by code.
+
+**Before P3 is live (the lead):** the cutover on the first company's
+books: reinstall from `main`, the format upgrade with the owner's go-ahead
+(D-39), `books.verify`, the P3 change log adjudicated against the P2
+goldens (cash flow, the odd cent's true-up, depreciation by days), the
+books fully categorized and then `policy.require_tax_category = refuse`
+(P3, "Settled in design"), and the D-40/D-41 records. The installed
+server still lacks P3's tools (`books.add_instrument` and the rest) until
+then.
+
+**Still open after P3 (each for the phase named, or the lead):**
+- The viewer recomputes a long-life asset's whole schedule every frame
+  (`ledger-gui` `pages/assets.rs` `schedule`, called from the asset
+  page's draw; defect 22's note: slow, never wrong).
+- A schedule month a run leaves for a human (dated in a closed period, or
+  reversed after it ended) has nothing to mark it booked by hand, so its
+  schedule never shows complete; a schedule or an asset registered by
+  mistake has no way to stop. Both want a design.
+- A reversal dated before what it reverses is refused for depreciation
+  runs and schedule postings only (B-9); every other entry still takes
+  one: a general rule to settle (P4's reversal as a draft is the natural
+  place).
+- Sources not yet read or vendored (`docs/spec/README.md`, "Open"): ASC
+  606-10-25-23 (DART only), 25-31, 25-32, 55-20 (B-16); 230-10-45-15(f)
+  (B-14 rule 11); the ASC 250 paragraph B-15 rule 6 means; 606-10-55-39
+  (B-17); 105-10-05-1 to 05-3's current wording. Public domain but not
+  vendored: IRC §701 and §6225 (B-14 rule 5), Treas. Reg.
+  §1.704-1(b)(2)(iv)(d)(1) and (g)(3) (B-25, cited only). Several cited
+  pages in `sources/intuit-iif.md` carry no SHA-256, and
+  `irs-entity-classification.md` and `file-names.md` no Source, Retrieved
+  or SHA-256 lines; Unicode UAX #14 (B-34) has no source file; Rev. Proc.
+  98-25's excerpt (`irs-records.md`) carries no "§5.01" label.
+- Eight tool descriptions are over 700 characters (listed in
+  `tool_descriptions_fit_700_characters`): shortened in P5.
+- The every-order asset search runs three commands deep in `just check`
+  (four and five clean by hand, `WB_ORDERS_DEPTH`); six is P12's. The
+  `ledger-store` test
+  `ops::tests::the_server_makes_the_folder_and_the_viewer_only_reads_it`
+  failed once in a whole-workspace run (likely a forked git child holding
+  the viewer lock's descriptor); it passed in this review's runs.
+
+**Next:** the P3 cutover, then P4-P13 as planned. P11: one app for
+Windows, Mac and Linux (D-24). P12: max testing again (D-33). P13:
+bookspec (D-34), a formal, sourced accounting specification first, then
+its own formal validation and a conformance harness for any engine; P3's
+regression tests are its first examples.
 
 ---
 

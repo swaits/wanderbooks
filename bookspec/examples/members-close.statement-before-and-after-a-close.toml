@@ -2,7 +2,10 @@ id = "members-close.statement-before-and-after-a-close"
 title = "A member's capital on a day is the same before and after its month closes"
 rule = "The statement of members' equity MUST split earnings not yet closed the way the next close to the members will (each member's split of everything closed plus those earnings, less their split of what was closed), so a member's capital as of a day MUST NOT change when a period ending on or before it is closed."
 status = "CHOICE"
-sources = ["Treas. Reg. §1.704-1(b)(2)(iv)(b)"]
+sources = [
+  "Treas. Reg. §1.704-1(b)(2)(iv)(b)",
+  "DECISION D-38 (owner, 2026-10-20): the statement splits unclosed earnings the same running way as the closes (wanderbooks rules.md B-13)",
+]
 tags = ["partnership", "close", "rounding", "statement", "book", "us"]
 
 # Two members at 50/50; January's cent is closed to them, February's is

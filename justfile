@@ -43,21 +43,17 @@ server-only:
 sweep-test-tmp:
     @find "${TMPDIR:-/tmp}" /tmp -maxdepth 1 -user "$(id -u)" -type d -mmin +60 \( -name 'wb-*' -o -name 'wanderbooks-*' -o -name 'ledger-*' \) -exec rm -rf {} + 2>/dev/null || true
 
-# Formal proofs: Kani on the accounting kernel, Lean for books of any size (docs/verification.md)
-prove:
+# The Kani harnesses `prove` leaves to `prove-slow`: each takes four to
+# twenty minutes alone on a busy machine, and with them the suite (about
+# 100 minutes of CPU, 2026-10-21) can't finish inside the 30-minute cap at
+# four jobs, a CI runner's. Every other harness in src/proofs.rs runs in `prove`, a new one
+# included; a name here that isn't a harness fails both (docs/verification.md).
+kani_slow := "accounting_equation cumulative_close_never_drifts_a_unit_at_near_thirds cumulative_closing_entry_balances entry_flows_pure_are_movements entry_flows_sum_to_cash prorate_parts_sum_to_total sums_are_exact the_last_months_charge_is_within_half_a_cent"
+
+# Formal proofs: Kani on the accounting kernel (all but kani_slow), Lean for books of any size (docs/verification.md)
+prove: (_kani "fast")
     #!/usr/bin/env bash
     set -euo pipefail
-    # Capped: a harness that blows up should fail, not eat the machine.
-    log=$(mktemp)
-    (ulimit -v 12000000; cd crates/ledger-core &&
-        timeout 1800 cargo kani -j "$(nproc)" --output-format terse | tee "$log")
-    # A cover that can't be satisfied means a proof is vacuous.
-    if grep -E "\*\* [0-9]+ of [0-9]+ cover properties satisfied" "$log" |
-        awk '{ if ($2 != $4) bad = 1 } END { exit !bad }'; then
-        echo "Kani: an unsatisfiable cover; some proof is vacuous" >&2
-        exit 1
-    fi
-    rm -f "$log"
     cd verify/lean
     lake build
     audit=$(lake env lean Audit.lean)
@@ -66,6 +62,66 @@ prove:
         exit 1
     fi
     echo "Lean: $(wc -l <<<"$audit") headline theorems, standard axioms only"
+
+# The slow Kani harnesses (kani_slow), each under its own 30-minute cap, $(nproc) at a time (CI runs it beside prove)
+prove-slow: (_kani "slow")
+
+# Every proof: prove, then prove-slow
+prove-all: prove prove-slow
+
+# Kani on one set of the harnesses: "fast" (all but kani_slow, the whole
+# run under the cap) or "slow" (each harness under the cap)
+_kani set:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Every harness: the fn after each #[kani::proof] in src/proofs.rs.
+    all=$(awk '/#\[kani::proof\]/ { p = 1; next } p && match($0, /^fn [a-z_0-9]+/) { print substr($0, 4, RLENGTH - 3); p = 0 }' crates/ledger-core/src/proofs.rs | sort)
+    slow=$(tr ' ' '\n' <<<"{{kani_slow}}" | sort)
+    if missing=$(comm -13 <(echo "$all") <(echo "$slow")) && [ -n "$missing" ]; then
+        echo "kani_slow names no harness: $missing" >&2
+        exit 1
+    fi
+    if [ "{{set}}" = slow ]; then names=$slow; else names=$(comm -23 <(echo "$all") <(echo "$slow")); fi
+    logs=$(mktemp -d)
+    # What each run must show: every harness asked for verified, and no
+    # cover unsatisfiable (a vacuous proof).
+    checked() { # log, count
+        if ! grep -qE "^Complete - $2 successfully verified harnesses, 0 failures, $2 total" "$1"; then
+            echo "Kani: expected $2 harness(es) verified, see $1" >&2
+            return 1
+        fi
+        if grep -E "\*\* [0-9]+ of [0-9]+ cover properties satisfied" "$1" |
+            awk '{ if ($2 != $4) bad = 1 } END { exit !bad }'; then
+            echo "Kani: an unsatisfiable cover; some proof is vacuous ($1)" >&2
+            return 1
+        fi
+    }
+    cd crates/ledger-core
+    # Capped (timeout 1800, 12 GB each): a harness that blows up should
+    # fail, not eat the machine.
+    ulimit -v 12000000
+    if [ "{{set}}" = fast ]; then
+        args=()
+        for h in $names; do args+=(--harness "proofs::$h"); done
+        timeout 1800 cargo kani -j "$(nproc)" --output-format terse --exact "${args[@]}" | tee "$logs/fast.log"
+        checked "$logs/fast.log" "$(wc -l <<<"$names")"
+    else
+        cargo kani --only-codegen --output-format terse
+        failed=0
+        for h in $names; do
+            while [ "$(jobs -rp | wc -l)" -ge "$(nproc)" ]; do wait -n || failed=1; done
+            ( start=$(date +%s)
+              timeout 1800 cargo kani --output-format terse --exact --harness "proofs::$h" > "$logs/$h.log" 2>&1 &&
+                  checked "$logs/$h.log" 1 &&
+                  echo "Kani: $h verified in $(( $(date +%s) - start )) s" ||
+                  { echo "Kani: $h failed or ran past 1800 s ($logs/$h.log)" >&2; exit 1; } ) &
+        done
+        while [ "$(jobs -rp | wc -l)" -gt 0 ]; do wait -n || failed=1; done
+        wait || failed=1
+        [ "$failed" = 0 ] || exit 1
+    fi
+    rm -rf "$logs"
+    echo "Kani ({{set}}): $(wc -l <<<"$names") harnesses verified"
 
 # Random books through wanderbooks and GnuCash 5.10, compared exactly (Docker)
 oracle:

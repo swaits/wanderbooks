@@ -1031,12 +1031,17 @@ fn entry_flows_are_bounded() {
 
 /// A reversal's cash flows are its original's, negated, part by part:
 /// what lets an entry and its reversal in one period drop out of the
-/// statement together (rules.md B-14 rule 6).
+/// statement together (rules.md B-14 rule 6). End to end, on entries of
+/// up to two lines: at three (`NF`) one run went past half an hour at
+/// four jobs on a busy machine (2026-10-21), so three lines are proved in
+/// two halves, `entry_movements_of_a_reversal_mirror` and
+/// `flows_of_mirrors`, and Lean `flows_reversal` proves it at any size.
 #[kani::proof]
 #[kani::unwind(5)]
 fn entry_flows_of_a_reversal_mirror() {
     let all = any_flow_lines();
     let n = any_flow_len();
+    kani::assume(n <= 2);
     let lines = &all[..n];
     // Element by element (see `kani_symbolic_copy_canary`).
     let mut rev = [(Flow::Cash, Side::Debit, 0i64); NF];
@@ -1045,6 +1050,67 @@ fn entry_flows_of_a_reversal_mirror() {
     }
     let a = kernel::entry_flows(lines);
     let b = kernel::entry_flows(&rev[..n]);
+    assert_eq!(a.is_some(), b.is_some());
+    if let (Some(a), Some(b)) = (a, b) {
+        assert_eq!(b.cash, -a.cash);
+        for k in 0..3 {
+            assert_eq!(b.flows[k], -a.flows[k]);
+            assert_eq!(b.noncash[k], -a.noncash[k]);
+        }
+        kani::cover!(a.flows[1] != 0, "cash settling investing, reversed");
+    }
+}
+
+/// The two halves of `entry_flows_of_a_reversal_mirror`, each for every
+/// input in its bounds: `kernel::entry_flows` is `entry_movements` then
+/// `flows_of`, so a reversal mirrors when its movements are its
+/// original's negated (this harness, up to `NF` lines each in any of the
+/// four places) and `flows_of` is odd (the next, for any movements three
+/// lines can make). Together they prove the end-to-end harness's claim,
+/// whose single run past half an hour at four jobs on a busy machine
+/// (2026-10-21) moved it to `just prove-slow`.
+#[kani::proof]
+#[kani::unwind(5)]
+fn entry_movements_of_a_reversal_mirror() {
+    let all = any_flow_lines();
+    let n = any_flow_len();
+    let lines = &all[..n];
+    // Element by element (see `kani_symbolic_copy_canary`).
+    let mut rev = [(Flow::Cash, Side::Debit, 0i64); NF];
+    for i in 0..n {
+        rev[i] = kernel::reverse_line(lines[i]);
+    }
+    let a = kernel::entry_movements(lines);
+    let b = kernel::entry_movements(&rev[..n]);
+    assert_eq!(a.is_some(), b.is_some());
+    if let (Some((ca, ma)), Some((cb, mb))) = (a, b) {
+        assert_eq!(cb, -ca);
+        for k in 0..3 {
+            assert_eq!(mb[k], -ma[k]);
+        }
+        kani::cover!(
+            n == NF && ca != 0 && ma[1] != 0,
+            "three lines, cash and investing"
+        );
+    }
+}
+
+/// `kernel::flows_of` is odd: the negated movements give the negated
+/// flows, part by part, and succeed exactly when the original's do; for
+/// any cash and section movements up to `NF` lines' worth.
+#[kani::proof]
+#[kani::unwind(5)]
+fn flows_of_mirrors() {
+    let wide_amount = || {
+        let a: i64 = kani::any();
+        // What up to NF in-range lines can sum to (`in_line_range`: 2^40).
+        kani::assume(a.unsigned_abs() <= (NF as u64) << 40);
+        a
+    };
+    let cash = wide_amount();
+    let moved: [i64; 3] = core::array::from_fn(|_| wide_amount());
+    let a = kernel::flows_of(cash, moved);
+    let b = kernel::flows_of(-cash, [-moved[0], -moved[1], -moved[2]]);
     assert_eq!(a.is_some(), b.is_some());
     if let (Some(a), Some(b)) = (a, b) {
         assert_eq!(b.cash, -a.cash);

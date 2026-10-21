@@ -1303,7 +1303,7 @@ fn acquired_date_comes_from_the_acquisition_entry() {
     );
 }
 
-// ------------------------------- posted and scheduled (rules.md B-24)
+// ------------------------------- posted and scheduled (rules.md B-15 rule 8)
 
 /// Named regression 1 (the brief's reproduction 1, its figures made up): a
 /// $1,440.00 laptop, 36 months, in service 2026-05-15, nothing run. As of

@@ -2,7 +2,10 @@ id = "members-close.true-up-of-a-per-close-split"
 title = "Closes rounded one at a time, trued up by the first cumulative close"
 rule = "When earlier closes split each close's net on its own, the first cumulative close that posts an entry MUST give each member their split of everything closed to the members, less what the earlier closes gave them, so it trues up the rounding they left; until it posts, the statement of members' equity MUST show the capital those closes posted, not the pending true-up."
 status = "CHOICE"
-sources = ["Treas. Reg. §1.704-1(b)(2)(iv)(b)"]
+sources = [
+  "Treas. Reg. §1.704-1(b)(2)(iv)(b)",
+  "DECISION D-10 (owner, 2026-10-16): members closes counted from the first close, so a later close carries any earlier rounding as a true-up (wanderbooks rules.md B-13)",
+]
 tags = ["partnership", "close", "rounding", "statement", "book", "us"]
 
 # Books migrated from an engine that rounded each close on its own: three

@@ -2,7 +2,11 @@ id = "members-close.odd-cent-across-closes"
 title = "An odd cent split cumulatively across closes, a close to retained earnings between"
 rule = "Each close to the members MUST give each member their largest-remainder split of everything closed to the same members and shares so far, to the minor unit, less what earlier closes gave them; a close to retained earnings allocates nothing to the members and MUST NOT restart the count."
 status = "CHOICE"
-sources = ["26 U.S.C. §704(a)", "Treas. Reg. §1.704-1(b)(2)(iv)(b)"]
+sources = [
+  "26 U.S.C. §704(a)",
+  "Treas. Reg. §1.704-1(b)(2)(iv)(b)",
+  "DECISION (owner, 2026-10-13: largest remainder; D-10, 2026-10-16: counted from the first close) (wanderbooks rules.md B-13)",
+]
 tags = ["partnership", "close", "rounding", "book", "us"]
 
 # The regression this example comes from (wanderbooks P3 defect 17, audit

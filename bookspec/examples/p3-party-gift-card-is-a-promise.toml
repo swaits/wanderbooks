@@ -16,7 +16,7 @@ owes its customers in service (deferred revenue), a promise. Selling one
 is money received from the buyer; redeeming it moves no money and counts
 nothing.
 """
-status = "CONVENTION"
+status = "CHOICE"
 sources = [
   "DECISION (owner, 2026-10-20): money is cash, cards, the members' financing and loans; every other liability is a promise, counted when settled (wanderbooks rules.md B-35 item 5)",
   "Helvering v. Price, 309 U.S. 409, 412-413 (1940): a promise to pay is not payment (docs/spec/sources/helvering-v-price-1940.md)",

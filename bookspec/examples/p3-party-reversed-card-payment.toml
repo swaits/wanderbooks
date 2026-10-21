@@ -14,9 +14,10 @@ their own funds (Dr card / Cr due to members), tagged with the card's
 issuer, is paid to the issuer; its reversal takes that back, so the pair
 nets to zero; reversing the reversal pays it again.
 """
-status = "AUTHORITY"
+status = "CHOICE"
 sources = [
   "Pacioli, Summa (1494), Geijsbeek tr.: a mistake is corrected by the opposite entry (wanderbooks docs/spec/sources/pacioli-1494.md, rules.md B-9)",
+  "DECISION D-42 (owner, 2026-10-20): what a member pays for the company through the members' financing is money: cash borrowed and spent (wanderbooks plan/served.md; rules.md B-14 rule 11, B-35 items 5 and 8)",
 ]
 tags = ["parties", "reversals", "liabilities"]
 

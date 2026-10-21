@@ -127,7 +127,7 @@ pub struct CreateScheduleParams {
     /// "daily" (by the day from start, like depreciation: a mid-month
     /// start posts a small first and last month, one more month end than
     /// its months) or "monthly_even" (equal months, starting on the 1st).
-    /// Default: the books' `[books] schedule_convention` setting, else
+    /// Default: the books' `schedule_convention` setting, else
     /// daily.
     #[serde(default)]
     pub convention: Option<String>,
@@ -588,7 +588,8 @@ pub struct Vendor1099LineOut {
     pub reportable: bool,
     /// The vendor's party.
     pub party_id: Option<u64>,
-    /// The TIN's last four digits, from the party's W-9 facts.
+    /// The TIN's last four digits: from the party's TIN facts
+    /// (books.set_tin), else its W-9 facts.
     pub tin_last4: Option<String>,
     /// The full TIN, formatted (123-45-6789, 12-3456789): only with
     /// include_tins, and only when the vault holds it.
@@ -775,8 +776,8 @@ pub struct ChartTemplateOut {
     /// Chart CSV (code,name,type,parent_code,tax_category) for
     /// `books.import_chart_csv`, after review.
     pub csv: String,
-    /// The `wanderbooks.toml` settings that go with it: tax form, owners,
-    /// where period closes go.
+    /// The settings that go with it, as settings-file TOML for
+    /// `books.import_settings`: tax form, owners, where period closes go.
     pub settings_toml: String,
     /// What to decide or know.
     pub notes: Vec<String>,
@@ -800,8 +801,10 @@ pub struct RenumberAccountOut {
     pub previous_code: String,
     /// The code it has now.
     pub code: String,
-    /// Settings in wanderbooks.toml that still name the old code: change
-    /// each to the new one (the server reloads the file).
+    /// Settings that still name the old code (as books.set_setting keys,
+    /// or the settings file's labels for books whose settings are in a
+    /// file), and conventions whose template or approval rule names it:
+    /// change each (books.set_setting, books.set_convention).
     pub config_mentions: Vec<String>,
 }
 
@@ -1820,7 +1823,9 @@ pub struct ReceiptOut {
     pub sha256: String,
     /// Linked entry id, if any.
     pub entry_id: Option<u64>,
-    /// Category: receipts, formation, legal, tax, accounting, other.
+    /// Category: receipts (books.attach_receipt), or a document's:
+    /// formation, legal, tax, accounting, statement, contract, photo,
+    /// warranty, import_source, other.
     pub category: String,
     /// Original file name.
     pub file_name: String,
@@ -2125,12 +2130,13 @@ pub struct StaleRule {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ExportParams {
     /// "csv", "json", "xlsx", "pdf", or "iif". XLSX and PDF are
-    /// base64-encoded; PDF covers profit_and_loss, balance_sheet, and
-    /// cash_flow; IIF (plain ASCII text) is only valid with report
+    /// base64-encoded; PDF covers every report but general_ledger and
+    /// general_journal; IIF (plain ASCII text) is only valid with report
     /// "general_journal" (alias "journal").
     pub format: String,
-    /// "journal", "trial_balance", "profit_and_loss", "balance_sheet", or
-    /// "cash_flow".
+    /// "general_journal" (alias "journal"), "general_ledger",
+    /// "trial_balance", "profit_and_loss", "balance_sheet", "cash_flow",
+    /// "members_equity", "tax_summary", or "fixed_asset_register".
     pub report: String,
     /// Period start for the period reports (see [`export_start_doc`]).
     #[schemars(description = export_start_doc())]
@@ -3406,7 +3412,8 @@ pub struct AddPartyParams {
 /// Parameters for `books.update_party`. Give at least one field to change.
 /// Every field given is checked before any is written: a bad one changes
 /// nothing. Each is journaled as its own `party.updated`, in this order:
-/// name, display_name, website, address, notes, archived.
+/// name, display_name, website, address, notes, archived; then one
+/// `party.creditor_set` per `creditor_of` account added or dropped.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct UpdatePartyParams {
     /// The party: id or name.

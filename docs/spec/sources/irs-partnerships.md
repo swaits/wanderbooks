@@ -1,5 +1,5 @@
 # Partnerships: shares of income and capital accounts
-Governs `CloseTo::Members`, the members' equity statement, and the K-1 worksheet's capital accounts on the tax basis (`ledger_core::tax_capital`, rules.md B-36). Partners' shares come from the partnership agreement (IRC §704(a)); a partner's capital account is one running balance of what they contributed, their allocations of income and loss, and what was distributed to them (Treas. Reg. §1.704-1(b)(2)(iv)(b)); when a partner's interest changes during the year, the distributive shares take the varying interests into account, period by period (IRC §706(d)(1), Treas. Reg. §1.706-4(a)); Form 1065 reports each partner's capital account on the tax basis (Schedule K-1 item L) and the changes in them (Schedule M-2). No authority prescribes how to round a share to the cent: that rule is the owner's decision (largest remainder, 2026-10-13), counted from the company's first close (D-10, 2026-10-16).
+Governs `CloseTo::Members`, the members' equity statement, and the K-1 worksheet's capital accounts on the tax basis (rules.md B-13; `ledger_core::tax_capital`, rules.md B-36). Partners' shares come from the partnership agreement (IRC §704(a)); a partner's capital account is one running balance of what they contributed, their allocations of income and loss, and what was distributed to them (Treas. Reg. §1.704-1(b)(2)(iv)(b)); when a partner's interest changes during the year, the distributive shares take the varying interests into account, period by period (IRC §706(d)(1), Treas. Reg. §1.706-4(a)); Form 1065 reports each partner's capital account on the tax basis (Schedule K-1 item L) and the changes in them (Schedule M-2). No authority prescribes how to round a share to the cent: that rule is the owner's decision (largest remainder, 2026-10-13), counted from the company's first close (D-10, 2026-10-16).
 
 ## 26 U.S.C. §704(a)-(b)
 Source: <https://www.law.cornell.edu/uscode/text/26/704>  
@@ -59,7 +59,10 @@ SHA-256 of the retrieved file (`ecfr17064.html`): `e7b07463190db6a610dee37660efe
 ## Partner's Instructions for Schedule K-1 (Form 1065) (2025)
 Source: <https://www.irs.gov/instructions/i1065sk1>  
 Retrieved: 2026-10-20  
-SHA-256 of the retrieved file (`i1065sk1.html`): `d7d6298286601fd95ab8e445c10fd62499ea1e37f8e5c3531f8e1783862d8d03`
+SHA-256 of the retrieved file (`i1065sk1.html`): `d7d6298286601fd95ab8e445c10fd62499ea1e37f8e5c3531f8e1783862d8d03`  
+(This page's HTML differs from fetch to fetch, so each retrieval has its
+own hash: `irs-capital-accounts.md` quotes another retrieval of the same day. A re-fetch on
+2026-10-21 hashed differently again; the quoted text was checked present.)
 
 **Item L, its first paragraph** (the partner's capital account, on the tax basis; the K-1 worksheet carries the book capital account and, beside it, the tax-basis one as far as the books know it, rules.md B-36)
 

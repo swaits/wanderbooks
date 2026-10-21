@@ -20,11 +20,12 @@ promise: it counts nothing until it is paid, then once, as paid. The
 statement of members' equity counts a distribution when it is declared,
 so party totals catch up with it when it is paid.
 """
-status = "AUTHORITY"
+status = "CHOICE"
 sources = [
   "Helvering v. Price, 309 U.S. 409, 412-413 (1940): a promise to pay is not payment (wanderbooks docs/spec/sources/helvering-v-price-1940.md)",
   "Treas. Reg. §1.704-1(b)(2)(iv)(b)(4)-(5): a partner's capital account falls by the money and the property distributed (docs/spec/sources/irs-capital-accounts.md)",
   "DECISION (owner, 2026-10-20): a member's entry counts what moved their capital; money is cash, cards, the members' financing and loans (rules.md B-35)",
+  "DECISION (owner, 2026-10-20): property distributed counts at the books' carrying amount, not its fair market value (wanderbooks rules.md B-35 item 3)",
 ]
 tags = ["parties", "members", "distributions", "promises", "in-kind", "money"]
 

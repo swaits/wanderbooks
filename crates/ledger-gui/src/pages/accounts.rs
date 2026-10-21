@@ -78,7 +78,7 @@ pub fn show_chart(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
             (AccountType::Revenue, "Income"),
             (AccountType::Expense, "Expenses"),
         ] {
-            let accounts: Vec<_> = b
+            let mut accounts: Vec<_> = b
                 .ledger
                 .chart()
                 .all()
@@ -86,6 +86,8 @@ pub fn show_chart(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                     a.account_type == t && (shell.state.accounts.show_empty || used.contains(&a.id))
                 })
                 .collect();
+            // In the chart's order: by code, as every report lists them.
+            accounts.sort_by(|x, y| x.code.cmp(&y.code));
             if accounts.is_empty() {
                 continue;
             }

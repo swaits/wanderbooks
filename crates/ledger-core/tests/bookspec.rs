@@ -743,9 +743,14 @@ fn bookspec_source(id: &str) -> Source {
 fn decision(ex: &str, what: &str, kind: Option<&str>, reason: Option<&str>) -> Decision1099 {
     match what {
         "not_reportable" => {
-            let kind = kind.and_then(ExemptReason::parse).unwrap_or_else(|| {
-                panic!("{ex}: not_reportable needs a reason_kind, got {kind:?}")
-            });
+            // Exactly as the README spells it: the engine's parse forgives
+            // case and spaces, an example doesn't.
+            let kind = kind
+                .and_then(ExemptReason::parse)
+                .filter(|k| Some(k.key()) == kind)
+                .unwrap_or_else(|| {
+                    panic!("{ex}: not_reportable needs a reason_kind, got {kind:?}")
+                });
             let reason = reason.unwrap_or_else(|| panic!("{ex}: not_reportable needs a reason"));
             Decision1099::not_reportable(kind, reason).unwrap_or_else(|e| panic!("{ex}: {e}"))
         }
@@ -1058,7 +1063,7 @@ impl<'a> Books<'a> {
         for p in &s.payees {
             let what = format!("{}: payee {}", ex.id, p.name);
             let form = Form1099::parse(&p.form)
-                .filter(|_| p.form.starts_with("1099-"))
+                .filter(|f| f.label() == p.form)
                 .unwrap_or_else(|| panic!("{what}: form {:?}", p.form));
             // A payee in the directory with the vendor role is that
             // party's vendor record.
@@ -1099,6 +1104,7 @@ impl<'a> Books<'a> {
         for i in &s.instruments {
             let what = format!("{} instrument {}", ex.id, i.label);
             let kind = InstrumentKind::parse(&i.kind)
+                .filter(|k| k.key() == i.kind)
                 .unwrap_or_else(|| panic!("{what}: kind {:?}", i.kind));
             let account = id(store.ledger(), &i.account);
             let owner = i.owner.as_ref().map(|o| {
@@ -1959,7 +1965,11 @@ fn check_party_totals(b: &Books<'_>, x: &Expect) {
     let basis = x
         .basis
         .as_deref()
-        .map(|k| Basis::parse(k).unwrap_or_else(|| panic!("{}: basis {k:?}", ex.id)))
+        .map(|k| {
+            Basis::parse(k)
+                .filter(|b| b.key() == k)
+                .unwrap_or_else(|| panic!("{}: basis {k:?}", ex.id))
+        })
         .unwrap_or_else(|| panic!("{}: party_totals names its basis", ex.id));
     let party = expect_party(b, x);
     let a = ledger_core::parties::activity_with(
@@ -2033,6 +2043,11 @@ fn check_k1(ex: &Example, l: &Ledger, members: &[MemberCapital], x: &Expect) {
     assert!(
         !members.is_empty() && members.iter().all(|m| m.share > Decimal::ZERO),
         "{}: k1 needs the members and their shares",
+        ex.id
+    );
+    assert!(
+        !ex.setup.cash_accounts.is_empty(),
+        "{}: k1 needs cash_accounts (what is money rather than property)",
         ex.id
     );
     let cash = codes(l, &ex.setup.cash_accounts, &ex.id);
@@ -3422,6 +3437,37 @@ fn a_payment_method_not_in_the_setup_is_refused() {
         t.replacen(
             "instrument = \"Harbor debit card\"",
             "instrument = \"Harbor debit\"",
+            1,
+        )
+    });
+}
+
+/// A value from a closed list is spelled exactly as bookspec/README.md
+/// spells it: the engine's own parse forgives case and spaces, the
+/// loader doesn't (a spec has one spelling).
+#[test]
+#[should_panic(expected = "form \"1099-nec\"")]
+fn a_form_in_another_case_is_refused() {
+    run_edited("1099-a-dated-status-applies-by-payment-date.toml", |t| {
+        t.replacen("form = \"1099-NEC\"", "form = \"1099-nec\"", 1)
+    });
+}
+
+#[test]
+#[should_panic(expected = "kind \"Business_Card\"")]
+fn a_payment_method_kind_in_another_case_is_refused() {
+    run_edited("1099-card-payments-are-excluded.toml", |t| {
+        t.replacen("kind = \"business_card\"", "kind = \"Business_Card\"", 1)
+    });
+}
+
+#[test]
+#[should_panic(expected = "not_reportable needs a reason_kind")]
+fn a_reason_kind_in_another_case_is_refused() {
+    run_edited("1099-a-dated-status-applies-by-payment-date.toml", |t| {
+        t.replacen(
+            "reason_kind = \"corporation\"",
+            "reason_kind = \"Corporation\"",
             1,
         )
     });

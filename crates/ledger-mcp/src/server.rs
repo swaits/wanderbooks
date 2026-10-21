@@ -3019,7 +3019,7 @@ impl BooksServer {
     #[tool(
         name = "books.add_account",
         title = "Add an account",
-        description = "Add an account to the chart. Codes must be unique; check books.chart first. Give a revenue or expense account its tax_category (books.tax_categories): without one the result warns, or, under policy.require_tax_category = refuse, the account is refused. A name another account under the same parent has (ignoring capitals), one holding nine digits in a row, or more than one line of 200 characters, is refused.",
+        description = "Add an account to the chart. Codes must be unique; check books.chart first. Give a revenue or expense account its tax_category (books.tax_categories): without one the result warns, or, under policy.require_tax_category = refuse, the account is refused. A name another account under the same parent has (ignoring capitals), one holding nine digits in a row, or one that isn't a single line of at most 200 characters, is refused.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -3793,7 +3793,7 @@ impl BooksServer {
     #[tool(
         name = "books.withdraw_attachment",
         title = "Withdraw a receipt or document",
-        description = "Withdraw an unlinked receipt or a filed document, with a reason recorded in the journal. It drops out of books.list_receipts and can never be linked again. Nothing is deleted: the bytes stay in the blob store and the journal keeps the filing and the withdrawal. Unlink a linked receipt first.",
+        description = "Withdraw an unlinked receipt or a filed document, with a reason recorded in the journal. It drops out of books.list_receipts and can never be linked again. Nothing is deleted: the bytes stay in the blob store and the journal keeps the filing and the withdrawal. Unlink it first (books.unlink_receipt from its entry, books.unlink_attachment from anything else).",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -4752,7 +4752,7 @@ impl BooksServer {
     #[tool(
         name = "books.create_schedule",
         title = "Create an amortization schedule",
-        description = "Spread a prepaid expense (an asset used up as time passes, e.g. a year of insurance paid up front) or deferred revenue (a liability earned as time passes, e.g. an annual subscription collected up front) over the time it covers, to the cent. convention: daily (default, by the day from start: a mid-month start posts a small first and last month, one month end more than its months) or monthly_even (equal months; starts on the 1st). Record the original payment first (Dr prepaid / Cr cash, with its receipt; or Dr cash / Cr deferred revenue). Returns the plan; post it with books.run_schedules.",
+        description = "Spread a prepaid expense (an asset used up as time passes, e.g. a year of insurance paid up front) or deferred revenue (a liability earned as time passes, e.g. an annual subscription collected up front) over the time it covers, to the cent. convention: daily (by the day from start: a mid-month start posts a small first and last month, one month end more than its months) or monthly_even (equal months; starts on the 1st); omitted, the schedule_convention setting, else daily. Record the original payment first (Dr prepaid / Cr cash, with its receipt; or Dr cash / Cr deferred revenue). Returns the plan; post it with books.run_schedules.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -5185,7 +5185,7 @@ impl BooksServer {
     #[tool(
         name = "books.set_entry_vendor",
         title = "Tag an entry's vendor",
-        description = "Tag an entry (draft or posted) with the vendor it paid, for 1099 tracking, or omit vendor to clear the tag. Reporting metadata only: amounts never change. On an entry naming several parties (books.set_entry_party parties) the parties stay as they are: the vendor of a party already named is tagged with every share kept; any other vendor, or clearing the tag while its party is named, is refused (change the parties instead). An entry and its reversal are tagged together. books.pay_bill tags its payments automatically; books.draft_entry takes a vendor too.",
+        description = "Tag an entry (draft or posted) with the vendor it paid, for 1099 tracking, or omit vendor to clear the tag. Reporting metadata only: amounts never change. On an entry naming one party or none, the vendor's party becomes its party; clearing also clears that party. On an entry naming several parties (books.set_entry_party parties) the parties stay as they are: the vendor of a party already named is tagged with every share kept; any other vendor, or clearing the tag while its party is named, is refused (change the parties instead). An entry and its reversal are tagged together. books.pay_bill tags its payments automatically; books.draft_entry takes a vendor too.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -5450,7 +5450,7 @@ impl BooksServer {
     #[tool(
         name = "books.rename_account",
         title = "Rename an account",
-        description = "Give an account a new name. Only the name changes: its id, code, type, tax category and every entry posted to it stay, so no entry, balance or statement amount changes; every report, past periods included, prints the new name, and the journal keeps the old one. Refuses a blank name, the name it has, a name another account under the same parent has (ignoring capitals), one holding nine digits in a row, or more than one line of 200 characters. QuickBooks matches accounts by name: if the CPA imported an earlier IIF, tell them. Never rename the human's accounts on your own: only when they ask.",
+        description = "Give an account a new name. Only the name changes: its id, code, type, tax category and every entry posted to it stay, so no entry, balance or statement amount changes; every report, past periods included, prints the new name, and the journal keeps the old one. Refuses a blank name, the name it has, a name another account under the same parent has (ignoring capitals), one holding nine digits in a row, or one that isn't a single line of at most 200 characters. QuickBooks matches accounts by name: if the CPA imported an earlier IIF, tell them. Never rename the human's accounts on your own: only when they ask.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -6078,7 +6078,7 @@ impl BooksServer {
     #[tool(
         name = "books.export",
         title = "Export a report",
-        description = "Export a report. Reports: profit_and_loss, balance_sheet, cash_flow (direct method, with its reconciliation and noncash schedules; needs cash_accounts), trial_balance (as_of), members_equity (multi-member LLC; members from the settings), general_ledger (by account: running balances, splits), general_journal (each entry posted in the period; alias journal), fixed_asset_register (as_of: every asset with tag, serial, cost, depreciation, book value, reconciled to the books). Formats: pdf and xlsx (base64) for the five statements and fixed_asset_register; xlsx, csv, json for every report; iif for general_journal or journal (QuickBooks Desktop: plain ASCII text, CR LF; every posted entry from the first through as_of (start and end are refused), period closes left out, DOCNUM the entry id; names, numbers and memos fit QuickBooks' limits; warnings says what is written differently from the books, memos grouped, to tell the human). Dates: start/end for period reports (omitted: the fiscal year to date), as_of for balance_sheet, trial_balance, fixed_asset_register and iif (omitted: today).",
+        description = "Export a report. Reports: profit_and_loss, balance_sheet, cash_flow (direct method, with its reconciliation and noncash schedules; needs cash_accounts), trial_balance (as_of), members_equity (multi-member LLC; members from the settings), tax_summary, general_ledger (by account: running balances, splits), general_journal (each entry posted in the period; alias journal), fixed_asset_register (as_of: every asset with tag, serial, cost, depreciation, book value, reconciled to the books). Formats: pdf and xlsx (base64) for the statements, tax_summary and fixed_asset_register; xlsx, csv, json for every report; iif for general_journal or journal (QuickBooks Desktop: plain ASCII text, CR LF; every posted entry from the first through as_of (start and end are refused), period closes left out, DOCNUM the entry id; names, numbers and memos fit QuickBooks' limits; warnings says what is written differently from the books, memos grouped, to tell the human). Dates: start/end for period reports (omitted: the fiscal year to date), as_of for balance_sheet, trial_balance, fixed_asset_register and iif (omitted: today).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn export(&self, params: Parameters<ExportParams>) -> Result<Json<ExportOut>, String> {
@@ -11288,6 +11288,68 @@ mod tests {
             .collect();
         over.sort();
         assert_eq!(over, OVER, "tool descriptions over 700 characters");
+    }
+
+    /// The tools docs/mcp-interface.md documents: a line (or a bullet)
+    /// that starts with `` `books.NAME` `` or `` `books.NAME { `` , and
+    /// any `` `books.NAME { `` signature within a line.
+    fn documented_tools(doc: &str) -> std::collections::BTreeSet<String> {
+        let name_at = |s: &str| -> Option<(String, char)> {
+            let rest = s.strip_prefix("`books.")?;
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '_')
+                .collect();
+            let next = rest[name.len()..].chars().next()?;
+            (!name.is_empty()).then(|| (format!("books.{name}"), next))
+        };
+        let mut out = std::collections::BTreeSet::new();
+        for line in doc.lines() {
+            let t = line.trim_start();
+            let t = t.strip_prefix("- ").unwrap_or(t);
+            if let Some((name, next)) = name_at(t)
+                && (next == '`' || next == ' ')
+            {
+                out.insert(name);
+            }
+            for (i, _) in line.match_indices("`books.") {
+                if let Some((name, ' ')) = name_at(&line[i..])
+                    && line[i + 1 + name.len()..].starts_with(" {")
+                {
+                    out.insert(name);
+                }
+            }
+        }
+        out
+    }
+
+    /// Every tool the server has is documented in docs/mcp-interface.md,
+    /// and every tool the doc documents is one the server has.
+    #[test]
+    fn every_tool_is_documented_and_every_documented_tool_exists() {
+        let doc = include_str!("../../../docs/mcp-interface.md");
+        let documented = documented_tools(doc);
+        let tools: std::collections::BTreeSet<String> = BooksServer::tool_router()
+            .list_all()
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        let undocumented: Vec<&String> = tools.difference(&documented).collect();
+        let unknown: Vec<&String> = documented.difference(&tools).collect();
+        assert!(
+            undocumented.is_empty(),
+            "tools docs/mcp-interface.md doesn't document: {undocumented:?}"
+        );
+        assert!(
+            unknown.is_empty(),
+            "docs/mcp-interface.md documents tools there aren't: {unknown:?}"
+        );
+        // The reader catches what it should, and only that.
+        let sample = "- `books.chart` → x\n  `books.decisions { a? }`; \
+                      `books.open_items { b? }`.\nsee `books.cash_accounts`, \
+                      `books.show`.";
+        let got: Vec<String> = documented_tools(sample).into_iter().collect();
+        assert_eq!(got, ["books.chart", "books.decisions", "books.open_items"]);
     }
 
     /// rules.md B-30 (defect 16): every report tool says what its omitted

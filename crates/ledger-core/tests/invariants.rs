@@ -787,7 +787,7 @@ fn cash_flow_reconciles_to_change_in_cash() {
 
     // Operating, by the direct method: collected 1,500 (class (a)); paid
     // 2,500 for equipment (not a registered asset: operating, rules.md
-    // B-14's limit R4) and 800 rent (class (d)) = -1,800. Reconciled:
+    // B-14 rule 12's limits) and 800 rent (class (d)) = -1,800. Reconciled:
     // 3,200 net income - 2,500 increase in AR (4,000 billed - 1,500
     // collected) - 2,500 increase in equipment = -1,800.
     // Financing: +10,000 owner contribution. Sum = 8,200. Reconciles.

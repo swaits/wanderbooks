@@ -3417,7 +3417,7 @@ mod p3_properties {
         })]
 
         /// rules.md B-31 (the engine-side counterpart to the Lean note,
-        /// docs/verification.md 13a): on books with postings, any sequence
+        /// docs/verification.md law 15): on books with postings, any sequence
         /// of renames changes no figure (the ledger's statements, without
         /// names), no entry and no earlier journal line; live equals
         /// replay; the projection equals a fresh one. The sets picked by

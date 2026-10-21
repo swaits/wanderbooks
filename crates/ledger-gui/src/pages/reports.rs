@@ -1881,6 +1881,26 @@ fn render(ui: &mut Ui, t: &Table, pdf: &PdfInfo, shell: &mut Shell<'_>) {
                     Stroke::new(1.0, p.border),
                 );
                 for (ri, r) in t.rows.iter().enumerate() {
+                    // A note wraps over the table's width, never cut short:
+                    // it says how to read the figures above it.
+                    if r.kind == Kind::Note {
+                        let mut job = egui::text::LayoutJob::single_section(
+                            r.label.clone(),
+                            egui::TextFormat::simple(theme::regular(12.0), p.muted),
+                        );
+                        job.wrap.max_width = (width - 8.0).max(10.0);
+                        let galley = ui.painter().layout_job(job);
+                        let (rr, _) = ui.allocate_exact_size(
+                            vec2(width, galley.size().y + 14.0),
+                            Sense::hover(),
+                        );
+                        ui.painter().galley(
+                            egui::pos2(rr.left() + 4.0, rr.top() + 7.0),
+                            galley,
+                            p.muted,
+                        );
+                        continue;
+                    }
                     let h = match r.kind {
                         Kind::Section => 36.0,
                         Kind::Grand => 38.0,

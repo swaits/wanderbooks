@@ -15,7 +15,7 @@
 id = "rename-changes-no-amount"
 title = "Renaming an account changes its label, never an amount"
 rule = "Entries name accounts by identity, not by name, so renaming an account MUST change no posted entry, line, balance or statement amount, and every report, past periods included, MUST print the new name. A new name MUST be refused when it is blank, the name the account has, one another account under the same parent has (ignoring capitals and surrounding space), one that holds a run of nine digits, or not one line of at most 200 characters."
-status = "AUTHORITY"
+status = "CHOICE"
 sources = [
   "Pacioli, Summa de arithmetica (1494), ch. 36: \"You should not write backward, but always forward\" (posted is forever: AUTHORITY; docs/spec/sources/pacioli-1494.md)",
   "Rev. Proc. 98-25 §5.01: \"the relationship (i.e., audit trail): (a) between the total of the amounts in the taxpayer's machine-sensible records by account and the account totals in the taxpayer's books\" (an amount never moves with a name: AUTHORITY; docs/spec/sources/irs-records.md)",

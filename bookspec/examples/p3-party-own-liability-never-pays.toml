@@ -15,7 +15,7 @@ seller's own note, a distribution credited to what the members are owed.
 It counts when it is paid. Property a member contributes subject to a
 loan counts at its value net of the loan, in kind.
 """
-status = "AUTHORITY"
+status = "CHOICE"
 sources = [
   "Helvering v. Price, 309 U.S. 409, 412-413 (1940): a promise to pay, even a secured one, is not payment (wanderbooks docs/spec/sources/helvering-v-price-1940.md)",
   "Treas. Reg. §1.704-1(b)(2)(iv)(b)(2): property contributed, net of liabilities the partnership takes it subject to (docs/spec/sources/irs-capital-accounts.md)",

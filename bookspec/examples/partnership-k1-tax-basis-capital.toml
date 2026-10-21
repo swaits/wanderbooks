@@ -8,6 +8,7 @@ sources = [
   "Instructions for Form 1065 (2020), Item L: 'you must use the tax basis method this year'",
   "26 U.S.C. §723",
   "Treas. Reg. §1.704-3(a)(3)(ii)",
+  "DECISION D-41 (owner, 2026-10-20): the K-1 worksheet reports tax-basis capital beside the book figures (wanderbooks plan/served.md; rules.md B-36)",
 ]
 tags = ["partnerships", "k1", "tax-basis", "capital"]
 

@@ -680,7 +680,17 @@ pub fn apply_cash<T: Amount>(cash: T, movements: &[T], applied: &mut [T]) -> Opt
 /// operating, investing, financing, each up to its own movement; what is
 /// left of a section's movement is the part no cash settled. `None` when
 /// the lines don't net to zero (never for a posted entry) or on overflow.
+/// It is [`entry_movements`] then [`flows_of`], so each is proved on its
+/// own (docs/verification.md, law 10).
 pub fn entry_flows<T: Amount>(lines: &[(Flow, Side, T)]) -> Option<EntryFlows<T>> {
+    let (cash, moved) = entry_movements(lines)?;
+    flows_of(cash, moved)
+}
+
+/// An entry's net movement on its cash lines and on each section's,
+/// `(cash, [operating, investing, financing])`, debit-positive. `None`
+/// on overflow.
+pub fn entry_movements<T: Amount>(lines: &[(Flow, Side, T)]) -> Option<(T, [T; 3])> {
     let mut cash = T::ZERO;
     let mut moved = [T::ZERO; 3];
     for &(flow, side, amount) in lines {
@@ -693,6 +703,13 @@ pub fn entry_flows<T: Amount>(lines: &[(Flow, Side, T)]) -> Option<EntryFlows<T>
         };
         *slot = slot.checked_add(delta)?;
     }
+    Some((cash, moved))
+}
+
+/// The cash flows of an entry whose cash lines moved `cash` and whose
+/// sections moved `moved` ([`entry_flows`]). `None` when they don't net
+/// to zero, or on overflow.
+pub fn flows_of<T: Amount>(cash: T, moved: [T; 3]) -> Option<EntryFlows<T>> {
     // Balanced lines only: every part below rests on it.
     let mut total = cash;
     for &m in &moved {

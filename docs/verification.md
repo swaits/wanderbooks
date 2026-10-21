@@ -103,12 +103,19 @@ Each law, and what proves it. Kani harnesses are in
     same identities at runtime and refuses (`CashFlowDoesNotFoot`) rather
     than show a statement that doesn't foot.
     - Kani `entry_flows_sum_to_cash`, `entry_flows_pure_are_movements`,
-      `entry_flows_are_bounded`, `entry_flows_of_a_reversal_mirror`,
-      `no_cash_no_flow` (end to end on entries of up to three lines, each
-      in any of the four places: four lines ran past half an hour per
-      harness; at three, the reversal's mirror is the slowest harness in
-      the suite, about 14 minutes on the development laptop, the others
-      seconds to 6 minutes), `take_is_odd_and_bounded`, `apply_cash_mirrors` (the
+      `entry_flows_are_bounded`, `no_cash_no_flow` (end to end on entries
+      of up to three lines, each in any of the four places: four lines
+      ran past half an hour per harness); the reversal's mirror at three
+      lines in two halves, `entry_movements_of_a_reversal_mirror` (a
+      reversal's cash and section movements are its original's negated)
+      and `flows_of_mirrors` (`kernel::flows_of` is odd, for any
+      movements three lines can make), `kernel::entry_flows` being the
+      one then the other, and end to end on up to two lines,
+      `entry_flows_of_a_reversal_mirror` (at three lines end to end it
+      took about 14 minutes alone, 2026-10-20, and past 30 minutes at
+      four jobs on a busy machine, 2026-10-21; split then, nothing
+      weakened: the halves cover every three-line entry the end-to-end
+      harness did), `take_is_odd_and_bounded`, `apply_cash_mirrors` (the
       parts, for any amounts), `apply_cash_spends_exactly` (how a
       section's cash splits among its kinds, operating's classes
       included), `exchanged_is_bounded` (the
@@ -162,7 +169,7 @@ sequence of commands, of any length**:
     commands adds, removes, or changes an entry dated in it, and it stays
     closed.
     - Lean `Step.frozen`, `Steps.frozen`
-14a. **How the books are kept changes no entry**: in the model, a record
+15. **How the books are kept changes no entry**: in the model, a record
     (a setting, convention, decision, open item or approval; a vendor's
     1099 decision or W-9 flag, a payment method, an entry's payment-method
     tag) leaves the
@@ -193,7 +200,7 @@ sequence of commands, of any length**:
 
 ### Closing
 
-15. **A closing line zeroes its account**, and **a closing entry balances
+16. **A closing line zeroes its account**, and **a closing entry balances
     and zeroes every revenue and expense account** through the period's
     last day, whether the net goes to one account or is split among
     members.
@@ -201,14 +208,22 @@ sequence of commands, of any length**:
       `closing_entry_balances`
     - Lean `closingEntry_net`, `closingEntry_zeroes`,
       `closingEntry_accepted`, `close_zeroes`
-16. **A close credits equity with exactly the net income**: revenue minus
+17. **A close credits equity with exactly the net income**: revenue minus
     expenses through the period's last day.
     - Lean `net_closings_is_net_income`, `close_credits_net_income`
-17. **An allocation's parts sum to the whole, to the unit**, however the
-    other shares were rounded, and only the last share changes.
-    - Kani `plug_last_sums_exactly` · Lean `plugLast_total`,
-      `plugLast_keeps`
-18. **A run of member closes telescopes**: each member's total from a run
+18. **An allocation's parts sum to the whole, to the unit**, however the
+    other shares were rounded, and only the last share changes; and the
+    largest-remainder apportionment (`kernel::apportion`, rules.md B-13)
+    succeeds exactly when the rounded-down parts are short of the whole by
+    less than a unit each, then sums to the whole, gives each part nothing
+    or one unit (one part may also take the sub-unit fraction), and never
+    gives a unit to a part while one with a strictly larger remainder goes
+    without (no member favored by position).
+    - Kani `plug_last_sums_exactly`, `apportion_is_exact`,
+      `apportion_is_fair` · Lean `plugLast_total`, `plugLast_keeps`,
+      `Apportion.ranks_perm`, `Apportion.apportion_sum`,
+      `Apportion.apportion_sum_of_shortfall` (any number of parts)
+19. **A run of member closes telescopes**: each member's total from a run
     of cumulative closes is their allocation of everything the run closed
     (so its rounding is one allocation's, never a sum of them), and each
     close hands out exactly its net, for any allocation whose parts sum to
@@ -217,56 +232,56 @@ sequence of commands, of any length**:
     - Lean `runPart_telescopes`, `closePart_total` · property
       `each_member_stays_within_a_cent_of_their_share`
 
-The P3 odd cent (defect 17; rules.md B-13; D-10, D-38) adds three laws;
-their numbers are assigned when P3 lands:
+The P3 odd cent (defect 17; rules.md B-13; D-10, D-38) adds three laws:
 
-- **A cumulative members close hands out exactly its net, and leaves each
-  member's running total one allocation of everything the count closed**,
-  whatever rule the count's earlier closes were made under, as long as
-  they handed out what they closed. The run rule is the special case where
-  they gave exactly the allocation. A refusal leaves the parts as they
-  were.
-  - Kani `apportion_cumulative_is_exact`,
-    `cumulative_closing_entry_balances` (the closing entry nets to zero
-    whatever the true-up)
-  - Lean `trueUp_total`, `trueUp_running`, `closePart_eq_trueUp`,
-    `Apportion.allocW_sum`, `Apportion.allocW_cumulative_total`
-  - properties `apportion_cumulative_agrees`,
-    `allocate_cumulative_agrees_with_the_integer_model`
-- **Bounded drift: no member's running total is ever a minor unit from
-  their exact share.** With shares w_i / W (exact decimals) and every
-  amount a whole number of minor units (B-3), after every cumulative
-  close |(given_i + part_i)·W − T·w_i| < W, whatever earlier closes gave.
-  The precondition is the code's: `periods::allocate_cumulative` refuses a
-  product Decimal would round, so the remainders it ranks are exact, and
-  they sum to whole units (the Lean hypothesis of `rem_pos_of_rank_lt`).
-  - Kani `cumulative_close_never_drifts_a_unit_at_halves`, `_at_tenths`
-    and `_at_near_thirds` (two members at 50/50, three at 20/30/50%, three
-    at 33.33/33.33/33.34%; every running total, net and earlier split to
-    2^12 units)
-  - Lean `Apportion.rem_pos_of_rank_lt` (a member given a unit had a
-    positive remainder), `Apportion.apportion_drift` (one apportionment
-    is within a unit), `Apportion.allocW_drift` (the model of
-    `allocate_cumulative`, gain or loss), `cumulative_drift` (any
-    allocation within a unit stays so under the true-up),
-    `Apportion.allocW_cumulative_drift` (the two together): any number of
-    members, any amounts
-  - property `members_capital_never_drifts_a_cent_from_their_share`
-- **A member's capital on a day never moves when its period is closed.**
-  The statement of members' equity gives each member, of the earnings not
-  yet closed, what the count's next close would give them; closing moves
-  those earnings into capital without changing the sum. When the count's
-  earlier closes gave something else (closes under an earlier rule), the
-  figure moves by exactly the true-up the close posts, never before.
-  - Lean `statement_after_close`, `statement_unmoved_by_close`
-  - property `each_members_capital_chains_and_holds_through_closes`;
-    `three_members_at_a_third_each_over_twelve_months` (every day of a
-    year, closed and never closed), the viewer's
-    `a_members_page_shows_the_same_capital_before_and_after_a_close`
+20. **A cumulative members close hands out exactly its net, and leaves each
+    member's running total one allocation of everything the count closed**,
+    whatever rule the count's earlier closes were made under, as long as
+    they handed out what they closed. The run rule is the special case where
+    they gave exactly the allocation. A refusal leaves the parts as they
+    were.
+    - Kani `apportion_cumulative_is_exact`,
+      `cumulative_closing_entry_balances` (the closing entry nets to zero
+      whatever the true-up)
+    - Lean `trueUp_total`, `trueUp_running`, `closePart_eq_trueUp`,
+      `Apportion.allocW_sum`, `Apportion.allocW_cumulative_total`
+    - properties `apportion_cumulative_agrees`,
+      `allocate_cumulative_agrees_with_the_integer_model`
+21. **Bounded drift: no member's running total is ever a minor unit from
+    their exact share.** With shares w_i / W (exact decimals) and every
+    amount a whole number of minor units (B-3), after every cumulative
+    close |(given_i + part_i)·W − T·w_i| < W, whatever earlier closes gave.
+    The precondition is the code's: `periods::allocate_cumulative` refuses a
+    product Decimal would round, so the remainders it ranks are exact, and
+    they sum to whole units (the Lean hypothesis of `rem_pos_of_rank_lt`).
+    - Kani `cumulative_close_never_drifts_a_unit_at_halves`,
+      `cumulative_close_never_drifts_a_unit_at_tenths` and
+      `cumulative_close_never_drifts_a_unit_at_near_thirds` (two members at 50/50, three at 20/30/50%, three
+      at 33.33/33.33/33.34%; every running total, net and earlier split to
+      2^12 units)
+    - Lean `Apportion.rem_pos_of_rank_lt` (a member given a unit had a
+      positive remainder), `Apportion.apportion_drift` (one apportionment
+      is within a unit), `Apportion.allocW_drift` (the model of
+      `allocate_cumulative`, gain or loss), `cumulative_drift` (any
+      allocation within a unit stays so under the true-up),
+      `Apportion.allocW_cumulative_drift` (the two together): any number of
+      members, any amounts
+    - property `members_capital_never_drifts_a_cent_from_their_share`
+22. **A member's capital on a day never moves when its period is closed.**
+    The statement of members' equity gives each member, of the earnings not
+    yet closed, what the count's next close would give them; closing moves
+    those earnings into capital without changing the sum. When the count's
+    earlier closes gave something else (closes under an earlier rule), the
+    figure moves by exactly the true-up the close posts, never before.
+    - Lean `statement_after_close`, `statement_unmoved_by_close`
+    - property `each_members_capital_chains_and_holds_through_closes`;
+      `three_members_at_a_third_each_over_twelve_months` (every day of a
+      year, closed and never closed), the viewer's
+      `a_members_page_shows_the_same_capital_before_and_after_a_close`
 
 ### Parties
 
-19. **A party's part of an entry is signed as its own account would be,
+23. **A party's part of an entry is signed as its own account would be,
     with a direction that is its sign**: paid exactly when what counts is
     positive, received when negative, neither exactly when nothing counts;
     the money and property in it each carry the whole's sign and never
@@ -275,7 +290,7 @@ their numbers are assigned when P3 lands:
     property than it gave, the rest still owed (rules.md B-35).
     - Kani `party_target_direction_is_its_sign` · bridge
       `party_target_agrees`
-20. **A reversal is the exact opposite of what it reverses**: the target
+24. **A reversal is the exact opposite of what it reverses**: the target
     is odd (negating the lines' capital movement, money and own-account
     movement gives the original's reverse, but for the debits fallback and
     a member's entry whose cash isn't exactly its money: an expense booked
@@ -292,7 +307,7 @@ their numbers are assigned when P3 lands:
 
 ### 1099 payments
 
-21. **A payment to a vendor is split, never lost or counted twice**:
+25. **A payment to a vendor is split, never lost or counted twice**:
     each payment line goes in the bucket rules.md B-19's table names (its
     16 cases: with no payment method naming its account, a financing line
     never counts and a card account's line is always a card's); the
@@ -317,7 +332,7 @@ function, `kernel::prorate_by_days` (each month's share through
 unit, `MONTH_L` = lcm(28, 29, 30, 31) = 377,580 parts of a month, so a day
 of any month is a whole number of them.
 
-22. **The parts of a span sum to its total exactly, none is negative, and
+26. **The parts of a span sum to its total exactly, none is negative, and
     the last is the total less the others** (plan/served.md P3 defect 9:
     "parts sum to the total; the last part absorbs the remainder"). Every
     split whose parts but the last fit in the span is computed; only parts
@@ -329,7 +344,7 @@ of any month is a whole number of them.
       (a total in whole units is charged, so split, in whole units), from
       `Prorate.prorate_total`, `Prorate.prorate_nonneg`,
       `Prorate.parts_telescope` · bridge `prorate_agrees_at_i64_and_i128`
-23. **Each part but the last is its days times the monthly rate within one
+27. **Each part but the last is its days times the monthly rate within one
     minor unit** (P3 defect 9: "each part equals days × rate within 0.01",
     stated for any currency's minor unit). Each cumulative charge is its
     exact share rounded half up to a multiple of the unit (a tie goes up;
@@ -344,7 +359,7 @@ of any month is a whole number of them.
       `the_last_months_charge_in_tenths_is_within_half_a_cent` · Lean
       `Prorate.roundUnit_near`, `Prorate.cum_near`, `Prorate.part_near`,
       `Prorate.part_within_a_unit` · bridge `prorated_through_agrees_at_i32_and_i128`
-24. **The charge through a day never falls, never exceeds the total, is
+28. **The charge through a day never falls, never exceeds the total, is
     continuous where one month ends and the next begins, and is the total
     on the last day**; malformed input (a negative total, no months, a
     unit that isn't positive, a part no month has, a day past the part, a
@@ -361,7 +376,7 @@ of any month is a whole number of them.
       above the total, the total on the last day),
       `prorated_through_refuses_malformed_input` · property
       `prop_depreciation_is_monotone_and_bounded` (the engine)
-25. **A catch-up run never carries the books past the schedule** at a
+29. **A catch-up run never carries the books past the schedule** at a
     month end already posted, and posts everything due through its month
     when no run comes after it (plan/served.md P3, settled in design: a
     month skipped is caught up in the month the run is made); every
@@ -377,7 +392,7 @@ of any month is a whole number of them.
       · property `prop_run_amounts_are_each_months_run_amount`
       · store `a_run_reversed_after_its_month_is_caught_up_in_the_reversals_month`,
       `reinstating_a_run_a_later_run_caught_up_is_refused`
-26. **A disposal's true-up reaches the schedule** through its day from what
+30. **A disposal's true-up reaches the schedule** through its day from what
     the books carry, up or down, never both (`true_up` is `columns` of the
     gap).
     - Kani `true_up_reaches_the_target` · bridge `catch_up_and_true_up_agree`
@@ -424,7 +439,7 @@ unit tests check the rest.
 The register's tax figures beside book value (rules.md B-25) come from
 one kernel function, `kernel::basis_figures`, for every rule:
 
-27. **Each figure follows from the rule and the facts, and none
+31. **Each figure follows from the rule and the facts, and none
     overflows**: a purchase depreciates from its cost and has no §723 basis
     or built-in gain; a contribution's §723 basis is the member's adjusted
     basis and its built-in gain the value less it (a loss exactly when the
@@ -575,7 +590,8 @@ the Decimal exactness check in `allocate_cumulative`, and the journal's
 old-books fixture `x_member_closes` (docs/testing.md, "P3: odd cents").
 Kani times, each harness alone on a busy laptop (Kani 0.68, 2026-10-20):
 `apportion_cumulative_is_exact` 257 s, `cumulative_close_never_drifts_a_unit_at_halves`
-17 s, `_at_tenths` 320 s, `_at_near_thirds` 449 s,
+17 s, `cumulative_close_never_drifts_a_unit_at_tenths` 320 s,
+`cumulative_close_never_drifts_a_unit_at_near_thirds` 449 s,
 `cumulative_closing_entry_balances` 202 s (`apportion_is_exact`, for
 scale: 121 s). Two shapes were too slow and were changed, not weakened in
 what they prove: restating apportion's postconditions on the cumulative
@@ -590,18 +606,103 @@ Lean carrying any weights.
 
 ```sh
 mise install   # once: Kani, Lean, and the rest, pinned in mise.toml
-just prove
+just prove       # 47 Kani harnesses and Lean
+just prove-slow  # the other 8: the justfile's kani_slow
+just prove-all   # both
 ```
 
-`just prove` runs every Kani harness, in parallel (`-j $(nproc)`, under
-a 30-minute timeout), builds the Lean proofs (seconds),
-and fails if any headline theorem depends on anything beyond Lean's
-standard axioms (`propext`, `Quot.sound`, `Classical.choice`). In
-particular, `sorryAx` fails it. Its time is the slowest harness's:
-`entry_flows_of_a_reversal_mirror`, about 14 minutes on the development
-laptop (8 cores); the 20 harnesses before P3 take about 17 minutes of
-CPU in all (`accounting_equation` the longest, about 4), the cash flow's
-other ten about 17 (`constructive_mirrors` about 2.5 minutes,
-`constructive_nets_to_zero` about 1.5), so the whole run is about 15 to
-20 minutes. Kani
-downloads its pinned nightly and CBMC into `~/.kani` on first use.
+`just prove` runs every Kani harness but the justfile's `kani_slow`, in
+parallel (`-j $(nproc)`), the whole run under a 30-minute timeout; builds
+the Lean proofs (seconds); and fails if any headline theorem depends on
+anything beyond Lean's standard axioms (`propext`, `Quot.sound`,
+`Classical.choice`). In particular, `sorryAx` fails it. `just prove-slow`
+runs the slow harnesses, `$(nproc)` at a time, each under its own
+30-minute timeout. Both fail if a harness they ask for isn't verified (the
+count is checked), if any cover is unsatisfiable (a vacuous proof), or if
+`kani_slow` names a harness `src/proofs.rs` doesn't have; a new harness
+runs in `prove` until it is listed as slow. CI's weekly run does both, on
+two runners (`.github/workflows/scheduled.yml`). Kani downloads its
+pinned nightly and CBMC into `~/.kani` on first use.
+
+**Why the split (2026-10-21, the P3 surface review).** With all of P3 the
+suite is 55 harnesses. One `just prove` at four jobs (a CI runner's
+cores), on the development laptop under heavy load from other work (a
+load average near 30 on 16 cores, the run held to 12), could not finish
+inside its 30 minutes: 52 of the 53 harnesses of the time were verified,
+all of them proved, and the last, `entry_flows_of_a_reversal_mirror` at
+three lines, was still running; alone, under the same load, it passed 30
+minutes too. A run is only as safe as its slowest harness under the
+machine it gets, so: that harness's claim at three lines is now proved in
+two halves (`entry_movements_of_a_reversal_mirror`, `flows_of_mirrors`;
+law 10) that take a minute or two each, and the end-to-end harness runs
+at two lines; the eight harnesses that take the longest run in `just
+prove-slow`, each capped on its own. Nothing was dropped.
+
+Measured, four jobs: under that load, `just prove` 1,450 s (48 harnesses
+then) and `just prove-slow` 1,365 s (seven then; `entry_flows_sum_to_cash`
+1,228 s); on the same laptop quiet (2026-10-22, the final configuration),
+`just prove` 308 s (47 harnesses, about 19 minutes of CPU, and Lean's 83
+headline theorems) and `just prove-slow` 467 s (8 harnesses, the slowest
+`entry_flows_sum_to_cash` at 301 s).
+
+Every harness, the law it proves, the recipe that runs it, and its time
+in that quiet run (`prove`: each harness's verification time; `prove-slow`:
+each harness's whole run, its compile of about 50 s included):
+
+| Harness | Law | Recipe | Seconds |
+|---|---|---|---:|
+| `flip_negates` | 5 | prove | 0 |
+| `sums_are_exact` | 4 | prove-slow | 82 |
+| `check_lines_is_exact` | 1 | prove | 7 |
+| `out_of_range_is_rejected` | 1 | prove | 0 |
+| `accepted_entry_nets_to_zero` | 2 | prove | 15 |
+| `movements_are_per_account` | 3 | prove | 12 |
+| `movements_sum_to_the_net` | 3 | prove | 58 |
+| `reversal_mirrors` | 5 | prove | 25 |
+| `reversal_cancels` | 5 | prove | 69 |
+| `normal_balance_is_signed` | 8 | prove | 0 |
+| `accounting_equation` | 8 | prove-slow | 176 |
+| `normal_side_increases` | 6 | prove | 0 |
+| `trial_balance_columns` | 7 | prove | 62 |
+| `closing_line_zeroes` | 16 | prove | 0 |
+| `credit_line_credits` | 16 | prove | 0 |
+| `closing_entry_balances` | 16 | prove | 11 |
+| `payment_bucket_is_the_table` | 25 | prove | 0 |
+| `payment_split_is_exact` | 25 | prove | 18 |
+| `net_buckets_keeps_the_total` | 25 | prove | 5 |
+| `plug_last_sums_exactly` | 18 | prove | 4 |
+| `apportion_is_exact` | 18 | prove | 56 |
+| `apportion_is_fair` | 18 | prove | 18 |
+| `apportion_cumulative_is_exact` | 20 | prove | 44 |
+| `cumulative_close_never_drifts_a_unit_at_halves` | 21 | prove | 11 |
+| `cumulative_close_never_drifts_a_unit_at_tenths` | 21 | prove | 149 |
+| `cumulative_close_never_drifts_a_unit_at_near_thirds` | 21 | prove-slow | 216 |
+| `cumulative_closing_entry_balances` | 20 | prove-slow | 150 |
+| `take_is_odd_and_bounded` | 10 | prove | 1 |
+| `apply_cash_mirrors` | 10 | prove | 12 |
+| `entry_flows_sum_to_cash` | 10 | prove-slow | 301 |
+| `entry_flows_pure_are_movements` | 10 | prove-slow | 151 |
+| `entry_flows_are_bounded` | 10 | prove | 20 |
+| `entry_flows_of_a_reversal_mirror` | 10 | prove | 36 |
+| `entry_movements_of_a_reversal_mirror` | 10 | prove | 30 |
+| `flows_of_mirrors` | 10 | prove | 56 |
+| `no_cash_no_flow` | 10 | prove | 75 |
+| `apply_cash_spends_exactly` | 10 | prove | 36 |
+| `exchanged_is_bounded` | 10 | prove | 0 |
+| `constructive_nets_to_zero` | 10 | prove | 26 |
+| `constructive_mirrors` | 10 | prove | 52 |
+| `party_target_direction_is_its_sign` | 23 | prove | 2 |
+| `party_target_is_odd` | 24 | prove | 5 |
+| `reverse_target_is_an_involution` | 24 | prove | 0 |
+| `prorate_parts_sum_to_total` | 26 | prove-slow | 222 |
+| `prorate_last_part_absorbs_the_remainder` | 26 | prove | 33 |
+| `a_months_charge_is_within_half_a_cent` | 27 | prove | 48 |
+| `a_months_charge_in_tenths_is_within_half_a_cent` | 27 | prove | 42 |
+| `the_last_months_charge_is_within_half_a_cent` | 27 | prove-slow | 148 |
+| `the_last_months_charge_in_tenths_is_within_half_a_cent` | 27 | prove | 36 |
+| `prorated_through_refuses_malformed_input` | 28 | prove | 7 |
+| `catch_up_never_overtakes_the_schedule` | 29 | prove | 8 |
+| `catch_ups_is_every_suffixs_catch_up` | 29 | prove | 35 |
+| `true_up_reaches_the_target` | 30 | prove | 0 |
+| `basis_figures_laws` | 31 | prove | 0 |
+| `kani_symbolic_copy_canary` | (the checker: "Trusting the checker") | prove | 3 |

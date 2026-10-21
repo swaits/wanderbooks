@@ -2679,6 +2679,10 @@ fn schedule_out(ledger: &Ledger, s: &ledger_core::AmortizationSchedule) -> Sched
         balance_account: code(s.balance_account),
         pl_account: code(s.pl_account),
         total: money(s.total.amount),
+        convention: s.convention.key().to_string(),
+        start: s.first_day().to_string(),
+        end: s.last_day().map(|d| d.to_string()),
+        next: s.next().ok().flatten().map(|d| d.to_string()),
         remaining: plan.as_ref().ok().and(s.remaining().ok()).map(money),
         months: plan
             .as_ref()
@@ -3386,6 +3390,11 @@ impl BooksServer {
             return Err(format!("entry {} is not posted", p.entry_id));
         }
         let date = parse_date(&p.date)?;
+        // Refused before the preview, as the post would be (an asset's
+        // disposal, a run its disposal took as final, a month posted twice).
+        store
+            .check_reverse_entry(p.entry_id, date)
+            .map_err(|e| e.to_string())?;
         // Build the preview from the flipped lines without mutating.
         let flipped: Vec<(AccountId, Side, Money)> = orig
             .lines()
@@ -4556,7 +4565,7 @@ impl BooksServer {
     #[tool(
         name = "books.create_schedule",
         title = "Create an amortization schedule",
-        description = "Spread a prepaid expense (asset expensed monthly, e.g. a year of insurance paid up front) or deferred revenue (liability earned monthly, e.g. an annual subscription collected up front) evenly over the months it covers, to the cent (the last month absorbs rounding). Record the original payment first (Dr prepaid / Cr cash, with its receipt; or Dr cash / Cr deferred revenue). Returns the monthly plan; post it with books.run_schedules.",
+        description = "Spread a prepaid expense (an asset used up as time passes, e.g. a year of insurance paid up front) or deferred revenue (a liability earned as time passes, e.g. an annual subscription collected up front) over the time it covers, to the cent. convention: daily (default, by the day from start: a mid-month start posts a small first and last month, one month end more than its months) or monthly_even (equal months; starts on the 1st). Record the original payment first (Dr prepaid / Cr cash, with its receipt; or Dr cash / Cr deferred revenue). Returns the plan; post it with books.run_schedules.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -4578,6 +4587,12 @@ impl BooksServer {
                 ));
             }
         };
+        // The books' setting, else daily (D-11, D-37).
+        let convention = match p.convention.as_deref() {
+            None => store.ledger().settings().schedule_convention(),
+            Some(c) => ledger_core::ScheduleConvention::parse(c)
+                .ok_or_else(|| format!("convention {c:?}: expected daily or monthly_even"))?,
+        };
         let currency = store.ledger().base_currency();
         let balance_account = resolve_account(&store, &p.balance_account)?;
         let pl_account = resolve_account(&store, &p.pl_account)?;
@@ -4590,6 +4605,7 @@ impl BooksServer {
                 months: p.months,
                 balance_account,
                 pl_account,
+                convention,
             })
             .map_err(|e| e.to_string())?;
         Ok(Json(schedule_out(
@@ -4601,7 +4617,7 @@ impl BooksServer {
     #[tool(
         name = "books.list_schedules",
         title = "List amortization schedules",
-        description = "Amortization schedules (prepaid expenses, deferred revenue): each month's amount, what has posted, and what remains.",
+        description = "Amortization schedules (prepaid expenses, deferred revenue): each one's convention (daily or monthly_even), the first and last day it covers, each month's amount, what has posted, the next month to post, and what remains.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn list_schedules(&self) -> Result<Json<ListSchedulesOut>, String> {
@@ -4618,7 +4634,7 @@ impl BooksServer {
     #[tool(
         name = "books.run_schedules",
         title = "Post scheduled amortization",
-        description = "Post every amortization schedule's months ending on or before `through` (default today) that haven't posted. Idempotent: a month posts once. Without confirmed=true, returns the postings it would make. Exempt from the receipt policy: the schedule is the evidence (the original payment carries the receipt).",
+        description = "Post every amortization schedule's months ending on or before `through` (default today) that haven't posted. Idempotent: a month posts once; a month reversed in its own month is due again. A month in a closed period, or reversed after it ended, is listed under skipped, not posted. Without confirmed=true, returns the postings it would make. Exempt from the receipt policy: the schedule is the evidence (the original payment carries the receipt).",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -4646,6 +4662,23 @@ impl BooksServer {
             due.extend(months.into_iter().map(|(d, a)| (d, s.id, a)));
         }
         due.sort();
+        // A month dated in a closed period can't post, nor one whose
+        // posting was reversed after the month ended (it would count twice
+        // until then): left for a human, and said, never a failed run.
+        let (held, due): (Vec<_>, Vec<_>) = due
+            .into_iter()
+            .partition(|(d, id, _)| store.ledger().schedule_month_hold(*id, *d).is_some());
+        let skipped: Vec<ScheduleSkippedOut> = held
+            .into_iter()
+            .map(|(d, id, _)| ScheduleSkippedOut {
+                schedule_id: id,
+                date: d.to_string(),
+                reason: store
+                    .ledger()
+                    .schedule_month_hold(id, d)
+                    .unwrap_or_default(),
+            })
+            .collect();
         let describe = |store: &Store, id: u64, date: NaiveDate| -> Result<String, String> {
             Ok(store
                 .ledger()
@@ -4669,6 +4702,7 @@ impl BooksServer {
             return Ok(Json(RunSchedulesOut {
                 status: "preview".to_string(),
                 postings,
+                skipped,
             }));
         }
         let mut postings = Vec::new();
@@ -4688,6 +4722,7 @@ impl BooksServer {
         Ok(Json(RunSchedulesOut {
             status: "posted".to_string(),
             postings,
+            skipped,
         }))
     }
 
@@ -6112,7 +6147,7 @@ impl BooksServer {
     #[tool(
         name = "books.asset_schedule",
         title = "Depreciation schedule",
-        description = "Month-by-month straight-line depreciation schedule for an asset: period, amount, accumulated, book value. Partial first and last months are prorated by days; the lifetime total is exactly cost minus salvage.",
+        description = "Month-by-month straight-line depreciation schedule for an asset: period, amount, accumulated, book value. Depreciation accrues by the day: a partial first month, the life's final month, and a month the schedule stops in (through a date, or a disposed asset's disposal day, which is held) are prorated by days; the lifetime total is exactly cost minus salvage.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn asset_schedule(
@@ -6134,6 +6169,7 @@ impl BooksServer {
             None => NaiveDate::MAX,
         };
         let schedule = depreciation_schedule(&asset, through)
+            .map_err(|e| format!("asset {asset_id}'s schedule: {e}"))?
             .into_iter()
             .map(|l| ScheduleLineOut {
                 period: l.period,
@@ -6159,7 +6195,7 @@ impl BooksServer {
     #[tool(
         name = "books.list_assets",
         title = "List fixed assets",
-        description = "List all registered fixed assets with accumulated depreciation and book value as of today.",
+        description = "List all registered fixed assets with accumulated depreciation by schedule and book value as of today (a disposed asset's through its disposal day). An asset whose schedule can't be computed lists with null figures and schedule_error.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn list_assets(&self) -> Result<Json<ListAssetsOut>, String> {
@@ -6168,22 +6204,33 @@ impl BooksServer {
         let assets = store
             .ledger()
             .registered_assets()
-            .map(|a| AssetSummary {
-                asset_id: a.id,
-                tag: a.tag.clone(),
-                serial: a.serial.clone(),
-                acquisition_entry: a.acquired_by,
-                tax: tax_out(a),
-                description: a.description.clone(),
-                purchase_date: a.purchase_date.to_string(),
-                cost: money(a.cost.amount),
-                useful_life_months: a.useful_life_months,
-                status: match a.status {
-                    AssetStatus::Active => "active".to_string(),
-                    AssetStatus::Disposed { .. } => "disposed".to_string(),
-                },
-                accumulated: money(accumulated_depreciation(a, today)),
-                book_value: money(book_value(a, today)),
+            .map(|a| {
+                // One asset whose schedule can't be computed (an earlier
+                // version's) lists with why, never failing the whole list.
+                let figures = accumulated_depreciation(a, today)
+                    .and_then(|acc| Ok((acc, book_value(a, today)?)));
+                let (accumulated, book_value, schedule_error) = match figures {
+                    Ok((acc, bv)) => (Some(money(acc)), Some(money(bv)), None),
+                    Err(e) => (None, None, Some(e.to_string())),
+                };
+                AssetSummary {
+                    asset_id: a.id,
+                    tag: a.tag.clone(),
+                    serial: a.serial.clone(),
+                    acquisition_entry: a.acquired_by,
+                    tax: tax_out(a),
+                    description: a.description.clone(),
+                    purchase_date: a.purchase_date.to_string(),
+                    cost: money(a.cost.amount),
+                    useful_life_months: a.useful_life_months,
+                    status: match a.status {
+                        AssetStatus::Active => "active".to_string(),
+                        AssetStatus::Disposed { .. } => "disposed".to_string(),
+                    },
+                    accumulated,
+                    book_value,
+                    schedule_error,
+                }
             })
             .collect();
         Ok(Json(ListAssetsOut { assets }))
@@ -6192,7 +6239,7 @@ impl BooksServer {
     #[tool(
         name = "books.run_depreciation",
         title = "Post depreciation",
-        description = "Post one month of depreciation (Dr Depreciation Expense / Cr Accumulated Depreciation) for one asset, or for every active asset when asset_id is omitted. Idempotent: re-running a posted period returns the original entry instead of double-posting. Depreciation is an allocation, not money movement, so it is exempt from the receipt policy; the registered asset and its schedule are the evidence.",
+        description = "Post one month of depreciation (Dr Depreciation Expense / Cr Accumulated Depreciation) for one asset, or for every active asset when asset_id is omitted: what the schedule says is due through the month's end, so a month skipped (or reversed) is caught up in the month run (caught_up says how much; a material miss is a restatement for the CPA, ASC 250). Idempotent: re-running a posted period returns the original entry. Nothing due (rounds to nothing, already caught up, life over) is listed under skipped. Exempt from the receipt policy: the asset and its schedule are the evidence.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -6226,35 +6273,49 @@ impl BooksServer {
         let mut runs = Vec::with_capacity(targets.len());
         let mut skipped = Vec::new();
         for (id, description) in targets {
-            // Run-all skips assets whose depreciable life doesn't touch the
-            // period instead of failing the whole batch.
+            let skip = |reason: String| SkippedDepreciation {
+                asset_id: id,
+                description: description.clone(),
+                reason,
+            };
+            // Run-all skips assets not yet in service, and any whose
+            // schedule can't be computed (an earlier version's), instead of
+            // failing the whole batch.
             if p.asset_id.is_none()
                 && let Some(asset) = store.ledger().get_asset(id)
+                && asset.purchase_date > period_end
             {
-                let touches = depreciation_schedule(asset, period_end)
-                    .iter()
-                    .any(|l| l.period == p.period);
-                if !touches {
-                    skipped.push(SkippedDepreciation {
-                        asset_id: id,
-                        description,
-                        reason: format!(
-                            "period {} is outside the asset's depreciable life",
-                            p.period
-                        ),
-                    });
+                skipped.push(skip(format!(
+                    "placed in service {}, after {}",
+                    asset.purchase_date, p.period
+                )));
+                continue;
+            }
+            let r = match store.run_depreciation(id, &p.period) {
+                Ok(r) => r,
+                Err(ledger_store::StoreError::Ledger(
+                    e @ (ledger_core::LedgerError::TooLargeToCompute(_)
+                    | ledger_core::LedgerError::DateOutOfRange(_)),
+                )) if p.asset_id.is_none() => {
+                    skipped.push(skip(format!("its schedule can't be computed: {e}")));
                     continue;
                 }
-            }
-            let r = store
-                .run_depreciation(id, &p.period)
-                .map_err(|e| e.to_string())?;
+                Err(e) => return Err(e.to_string()),
+            };
+            let Some(entry_id) = r.entry_id else {
+                skipped
+                    .push(skip(r.nothing_due.unwrap_or_else(|| {
+                        format!("nothing is due for {}", p.period)
+                    })));
+                continue;
+            };
             runs.push(DepreciationRunOut {
                 asset_id: r.asset_id,
                 description,
                 period: r.period,
                 amount: money(r.amount),
-                entry_id: r.entry_id,
+                caught_up: money((r.amount - r.scheduled).max(Decimal::ZERO)),
+                entry_id,
                 already_posted: r.already_posted,
             });
         }
@@ -6264,7 +6325,7 @@ impl BooksServer {
     #[tool(
         name = "books.dispose_asset",
         title = "Dispose of a fixed asset",
-        description = "Dispose of a fixed asset (sell or retire). Without confirmed=true returns a preview — book value, gain/loss, the auto-posted final depreciation, and the disposal entry's lines — and posts nothing. With confirmed=true posts the disposal entry (plus any missing final-period depreciation) after enforcing the receipt policy: file the bill of sale with books.file_document first and pass its attachment ids as receipt_attachment_ids. Name the buyer (buyer: a party id or name): it is the entry's party, and [books] parties = \"require\" refuses a sale without one; a retirement with no proceeds and no buyer is marked as having no counterparty.",
+        description = "Dispose of a fixed asset (sell or retire). Without confirmed=true returns a preview (book value, gain/loss, the depreciation through the disposal day, which is held, and the disposal entry's lines) and posts nothing. With confirmed=true posts it after the receipt policy: file the bill of sale with books.file_document and pass its ids as receipt_attachment_ids. Depreciation a run posted past the disposal day is credited back (excess_depreciation); a later month's run is refused (reverse it first). Name the buyer (a party id or name): [books] parties = \"require\" refuses a sale without one.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -6317,18 +6378,22 @@ impl BooksServer {
                 .map(|a| a.code.clone())
                 .ok_or_else(|| format!("unknown account {id}"))
         };
+        let adjusts =
+            !(preview.excess_depreciation.is_zero() && preview.catch_up_depreciation.is_zero());
         let codes: Vec<String> = [
             asset.accum_depr_account,
             proceeds_account,
             asset.cost_account,
             gain_loss_account,
         ]
-        .iter()
-        .map(|id| code_of(*id))
+        .into_iter()
+        .chain(adjusts.then_some(asset.expense_account))
+        .map(code_of)
         .collect::<Result<_, _>>()?;
         let code_refs: Vec<&str> = codes.iter().map(|s| s.as_str()).collect();
         let debits = preview.accumulated
             + proceeds.amount
+            + preview.catch_up_depreciation
             + if preview.gain_loss < Decimal::ZERO {
                 -preview.gain_loss
             } else {
@@ -6348,6 +6413,8 @@ impl BooksServer {
             proceeds: money(proceeds.amount),
             gain_loss: money(preview.gain_loss),
             final_depreciation: money(preview.final_depreciation),
+            excess_depreciation: money(preview.excess_depreciation),
+            catch_up_depreciation: money(preview.catch_up_depreciation),
             lines: preview_lines_for(&store, &raw)?,
             receipt_required,
         };

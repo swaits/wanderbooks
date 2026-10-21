@@ -419,9 +419,27 @@ pub enum LedgerError {
     #[error("asset account links must be distinct; account id {0} is linked twice")]
     DuplicateAssetAccount(u64),
 
-    /// purchase_date + useful life overflows the date range.
+    /// purchase_date + useful life overflows the date range: a new asset's
+    /// last day of depreciation is 9999-12-31 at the latest.
     #[error("purchase date plus useful life overflows the calendar")]
     AssetDateOverflow,
+
+    /// A depreciation run for a month that can't be run: not a month, or
+    /// one ending before the asset was placed in service.
+    #[error("invalid depreciation period: {0}")]
+    InvalidDepreciationPeriod(String),
+
+    /// An entry of a fixed asset's that can't be reversed (its disposal,
+    /// or depreciation the disposal took as final), with why.
+    #[error("entry {0} can't be reversed: {1}")]
+    AssetEntryIrreversible(u64, String),
+
+    /// A disposal refused because a depreciation run of the asset carries
+    /// at the end of the disposal's month other than what it carries now
+    /// (a run of a later month that stands; a reversal or re-instatement
+    /// dated after the month, not undone), with what to do.
+    #[error("the disposal is dated before depreciation the books carry: {0}")]
+    DepreciationPastDisposal(String),
 
     /// An amortization schedule or recurring entry is invalid, unknown, or
     /// already posted for that date.

@@ -1,0 +1,107 @@
+id = "schedule-daily-small-first-and-last-month"
+title = "A prepaid expense spread by the day: a small first and last month around full ones"
+rule = "A prepaid expense covering whole months from a mid-month start is expensed by the day: each full month an equal share, the first month its days' share, and the last month what the others leave, one posting per calendar month touched."
+status = "CHOICE"
+sources = ["ASC 340-10-05-4", "ASC 210-10-45-1(g)", "DECISION: plan/served.md D-11, D-37 (owner, 2026-10-20)"]
+tags = ["schedules", "prepaid-expense", "daily", "p3-defect-9"]
+
+[setup]
+currency = "USD"
+fiscal_year_start = "01-01"
+basis = "accrual"
+rounding = "half-away-from-zero"
+
+[[setup.accounts]]
+code = "1000"
+name = "Bank"
+type = "asset"
+
+[[setup.accounts]]
+code = "1300"
+name = "Prepaid Expenses"
+type = "asset"
+
+[[setup.accounts]]
+code = "3000"
+name = "Capital"
+type = "equity"
+
+[[setup.accounts]]
+code = "6300"
+name = "Insurance"
+type = "expense"
+
+# 1,200.00 of insurance covering 2026-03-15 through 2027-03-14.
+[[setup.schedules]]
+id = "INS"
+kind = "prepaid_expense"
+description = "Liability insurance"
+total = "1200.00"
+start = "2026-03-15"
+months = 12
+convention = "daily"
+balance_account = "1300"
+pl_account = "6300"
+
+[[events]]
+date = "2026-03-15"
+description = "Capital"
+lines = [
+  { account = "1000", side = "debit", amount = "1200.00" },
+  { account = "3000", side = "credit", amount = "1200.00" },
+]
+
+[[events]]
+date = "2026-03-15"
+description = "Paid a year of insurance"
+lines = [
+  { account = "1300", side = "debit", amount = "1200.00" },
+  { account = "1000", side = "credit", amount = "1200.00" },
+]
+
+[[events]]
+run_schedules = { through = "2027-03-31" }
+
+# Hand check (worked without the code): 1,200.00 / 12 = 100.00 a month.
+# March 2026 holds 17 of its 31 days (15-31): 100.00 x 17/31 = 54.838...
+# -> 54.84. April 2026 through February 2027 are whole: 100.00 each, 11 of
+# them (cumulatives 154.84 ... 1,154.84). March 2027 holds days 1-14 and
+# takes what is left: 1,200.00 - 1,154.84 = 45.16 (= 100.00 x 14/31 to the
+# cent). Thirteen month ends for a twelve-month policy.
+[[expect]]
+query = "schedule_plan"
+schedule = "INS"
+
+[expect.values]
+"2026-03-31" = "54.84"
+"2026-04-30" = "100.00"
+"2026-05-31" = "100.00"
+"2026-06-30" = "100.00"
+"2026-07-31" = "100.00"
+"2026-08-31" = "100.00"
+"2026-09-30" = "100.00"
+"2026-10-31" = "100.00"
+"2026-11-30" = "100.00"
+"2026-12-31" = "100.00"
+"2027-01-31" = "100.00"
+"2027-02-28" = "100.00"
+"2027-03-31" = "45.16"
+
+# Through June 2026 the books have expensed 54.84 + 3 x 100.00 = 354.84,
+# and 845.16 is still prepaid.
+[[expect]]
+query = "balances"
+as_of = "2026-06-30"
+
+[expect.values]
+"1300" = "845.16"
+"6300" = "354.84"
+
+# Through March 2027, all of it.
+[[expect]]
+query = "balances"
+as_of = "2027-03-31"
+
+[expect.values]
+"1300" = "0.00"
+"6300" = "1200.00"

@@ -1,0 +1,93 @@
+id = "depreciation-final-month-by-days"
+title = "Straight-line depreciation by the day through the life's final month"
+rule = "Depreciation through a day of an asset's final month is the depreciation before that month plus the final month's share for the days held, never the whole remaining cost."
+status = "CONVENTION"
+sources = ["ASC 360-10-35-4"]
+tags = ["depreciation", "straight-line", "final-month", "p3-defect-22"]
+
+[setup]
+currency = "USD"
+fiscal_year_start = "01-01"
+basis = "accrual"
+rounding = "half-away-from-zero"
+
+[[setup.accounts]]
+code = "1000"
+name = "Bank"
+type = "asset"
+
+[[setup.accounts]]
+code = "1500"
+name = "Equipment"
+type = "asset"
+
+[[setup.accounts]]
+code = "1510"
+name = "Accumulated Depreciation"
+type = "asset"
+
+[[setup.accounts]]
+code = "3000"
+name = "Capital"
+type = "equity"
+
+[[setup.accounts]]
+code = "6200"
+name = "Depreciation Expense"
+type = "expense"
+
+# Asset X: 12,000.00, no salvage, 12 months from 2026-01-01. Its life is
+# 2026-01-01 through 2026-12-31; December is its final month.
+[[setup.assets]]
+id = "X"
+description = "Asset X"
+cost = "12000.00"
+salvage = "0.00"
+life_months = 12
+in_service = "2026-01-01"
+method = "straight_line"
+cost_account = "1500"
+accumulated_account = "1510"
+expense_account = "6200"
+
+[[events]]
+date = "2026-01-01"
+description = "Capital"
+lines = [
+  { account = "1000", side = "debit", amount = "12000.00" },
+  { account = "3000", side = "credit", amount = "12000.00" },
+]
+
+[[events]]
+date = "2026-01-01"
+description = "Bought asset X"
+lines = [
+  { account = "1500", side = "debit", amount = "12000.00" },
+  { account = "1000", side = "credit", amount = "12000.00" },
+]
+
+# Hand check (worked without the code): 12,000.00 / 12 = 1,000.00 a month.
+# Through Dec 15: January..November, 11 x 1,000.00 = 11,000.00, plus
+# December's 1,000.00 x 15/31 = 483.870... -> 483.87 (half away from zero).
+# Accumulated 11,483.87; book value 12,000.00 - 11,483.87 = 516.13.
+[[expect]]
+query = "depreciation_schedule"
+asset = "X"
+as_of = "2026-12-15"
+
+[expect.values]
+"2026-11" = "1000.00"
+"2026-12" = "483.87"
+accumulated = "11483.87"
+book_value = "516.13"
+
+# Hand check: through the life's last day, the whole of it.
+[[expect]]
+query = "depreciation_schedule"
+asset = "X"
+as_of = "2026-12-31"
+
+[expect.values]
+"2026-12" = "1000.00"
+accumulated = "12000.00"
+book_value = "0.00"

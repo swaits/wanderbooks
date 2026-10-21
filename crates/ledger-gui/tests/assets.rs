@@ -228,7 +228,8 @@ fn depreciation_due_is_the_register_through_the_last_finished_month() {
     assert_eq!(due.periods, vec!["2026-08", "2026-09"]);
     // Independently: the laptop's August and September, the monitor's
     // September, straight from the schedules.
-    let sched = |id| depreciation_schedule(f.oracle.get_asset(id).unwrap(), d(2026, 9, 30));
+    let sched =
+        |id| depreciation_schedule(f.oracle.get_asset(id).unwrap(), d(2026, 9, 30)).unwrap();
     let month = |id, p: &str| {
         sched(id)
             .into_iter()
@@ -273,9 +274,9 @@ fn depreciation_due_is_the_register_through_the_last_finished_month() {
 fn an_assets_schedule_and_trail() {
     let f = fixture("schedule");
     let b = &f.books;
-    let lines = schedule(b, f.laptop);
+    let lines = schedule(b, f.laptop).unwrap();
     let asset = f.oracle.get_asset(f.laptop).unwrap();
-    let oracle = depreciation_schedule(asset, NaiveDate::MAX);
+    let oracle = depreciation_schedule(asset, NaiveDate::MAX).unwrap();
     assert_eq!(
         oracle.len(),
         37,
@@ -793,7 +794,7 @@ proptest! {
         // Every period listed is unposted and in some schedule.
         for p in &due.periods {
             let found = b.ledger.registered_assets().any(|a| {
-                depreciation_schedule(a, due.through).iter().any(|l| &l.period == p)
+                depreciation_schedule(a, due.through).unwrap().iter().any(|l| &l.period == p)
                     && !b.asset_trail(a.id).depreciation.contains_key(p)
             });
             prop_assert!(found, "{} listed but not due", p);
@@ -838,4 +839,347 @@ fn every_journal_event_has_plain_language_text() {
         let e = ledger_gui::pages::journal::describe_any(&f.books, &line);
         assert_ne!(e.text, kind, "{kind} has no journal text");
     }
+}
+
+/// Books holding asset X of the P3 depreciation brief (12,000.00 over 12
+/// months from 2026-01-01, 1,000.00 a month), with the store to post to.
+fn asset_x(tag: &str) -> (TempDir, PathBuf, Store, AssetId, (u64, u64)) {
+    let dir = TempDir::new(tag);
+    let data = dir.0.join("books-data");
+    let mut s = Store::create(&data, Currency::USD).unwrap();
+    let mut add = |code: &str, t| s.add_account(code, code, t, None, false).unwrap();
+    let cash = add("1000", AccountType::Asset);
+    let equip = add("1500", AccountType::Asset);
+    let accum = add("1510", AccountType::Asset);
+    let dep = add("6500", AccountType::Expense);
+    let gain = add("7000", AccountType::Revenue);
+    let x = s
+        .register_asset(NewAsset {
+            description: "Asset X".into(),
+            purchase_date: d(2026, 1, 1),
+            cost: usd(1_200_000),
+            salvage_value: usd(0),
+            useful_life_months: 12,
+            cost_account: equip,
+            accum_depr_account: accum,
+            expense_account: dep,
+        })
+        .unwrap();
+    (dir, data, s, x, (cash, gain))
+}
+
+/// Defect 22 in the viewer: a disposed asset's page shows its schedule
+/// through the disposal day, held, as the store posted it. Hand check:
+/// January through May run, disposed of 2026-06-15: June is 1,000.00 ×
+/// 15/30 = 500.00 (the final depreciation, posted), accumulated 5,500.00,
+/// book value 6,500.00; every month posted.
+#[test]
+fn a_disposed_assets_page_shows_what_it_depreciated_through_its_disposal() {
+    let (dir, _data, mut s, x, (cash, gain)) = asset_x("disposed-page");
+    for m in 1..=5 {
+        s.run_depreciation(x, &format!("2026-{m:02}")).unwrap();
+    }
+    s.dispose_asset(x, d(2026, 6, 15), usd(700_000), cash, gain)
+        .unwrap();
+    drop(s);
+    let b = load(&dir.0, today());
+    let lines = schedule(&b, x).unwrap();
+    assert_eq!(lines.len(), 6);
+    let (jun, st) = lines.last().unwrap();
+    assert_eq!(jun.period, "2026-06");
+    assert_eq!(jun.amount, Decimal::new(50_000, 2));
+    assert_eq!(jun.accumulated, Decimal::new(550_000, 2));
+    assert_eq!(jun.book_value, Decimal::new(650_000, 2));
+    assert!(matches!(st, MonthStatus::Posted(_)));
+    assert!(
+        lines
+            .iter()
+            .all(|(_, st)| matches!(st, MonthStatus::Posted(_)))
+    );
+    assert_eq!(b.asset_trail(x).posted(), Decimal::new(550_000, 2));
+}
+
+/// The catch-up rule in the viewer (plan/served.md P3, settled in design):
+/// a month a later run caught up is Covered, never Due forever; a run
+/// reversed within its month is no longer the books', so its month (and
+/// one it covered) is Due again, and the books carry what is in effect.
+/// Hand check: January and March run (March 2,000.00), February skipped:
+/// February Covered; March's run reversed on Mar 31: February and March
+/// Due, 1,000.00 carried.
+#[test]
+fn a_month_a_later_run_caught_up_is_covered_and_a_reversed_one_due() {
+    let (dir, data, mut s, x, _) = asset_x("caught-up-page");
+    s.run_depreciation(x, "2026-01").unwrap();
+    let mar = s.run_depreciation(x, "2026-03").unwrap();
+    assert_eq!(mar.amount, Decimal::new(200_000, 2));
+    drop(s);
+    let b = load(&dir.0, today());
+    let st: Vec<MonthStatus> = schedule(&b, x)
+        .unwrap()
+        .into_iter()
+        .map(|(_, s)| s)
+        .collect();
+    assert!(matches!(st[0], MonthStatus::Posted(_)));
+    assert_eq!(st[1], MonthStatus::Covered);
+    assert!(matches!(st[2], MonthStatus::Posted(_)));
+    assert_eq!(st[3], MonthStatus::Due);
+    let due = b.depreciation_due(d(2026, 4, 30)).unwrap();
+    assert_eq!(due.periods, vec!["2026-04"]);
+    let mut s = Store::open(&data).unwrap();
+    s.reverse_entry(mar.entry_id.unwrap(), d(2026, 3, 31), "reversed")
+        .unwrap();
+    drop(s);
+    let b = load(&dir.0, today());
+    let st: Vec<MonthStatus> = schedule(&b, x)
+        .unwrap()
+        .into_iter()
+        .map(|(_, s)| s)
+        .collect();
+    assert_eq!((st[1], st[2]), (MonthStatus::Due, MonthStatus::Due));
+    assert_eq!(b.asset_trail(x).posted(), Decimal::new(100_000, 2));
+    let due = b.depreciation_due(d(2026, 4, 30)).unwrap();
+    assert_eq!(due.periods, vec!["2026-02", "2026-03", "2026-04"]);
+}
+
+/// P3 review of the catch-up rule, in the viewer: a run reversed after its
+/// month ended carried that month at its end, so the month isn't Due (a
+/// run of it would post nothing); the month the reversal is in is, with
+/// everything since caught up. Hand check: January and March run (March
+/// 2,000.00); March's run reversed on Apr 2: February and March Covered,
+/// April Due; through September (today is in October) 9,000.00 is due,
+/// less the 1,000.00 carried: 8,000.00 unposted.
+#[test]
+fn a_run_reversed_after_its_month_leaves_the_reversals_month_due() {
+    let (dir, data, mut s, x, _) = asset_x("reversed-later-page");
+    s.run_depreciation(x, "2026-01").unwrap();
+    let mar = s.run_depreciation(x, "2026-03").unwrap();
+    s.reverse_entry(mar.entry_id.unwrap(), d(2026, 4, 2), "reversed")
+        .unwrap();
+    drop(s);
+    let b = load(&dir.0, today());
+    let st: Vec<MonthStatus> = schedule(&b, x)
+        .unwrap()
+        .into_iter()
+        .map(|(_, s)| s)
+        .collect();
+    assert_eq!(
+        (st[1], st[2], st[3]),
+        (MonthStatus::Covered, MonthStatus::Covered, MonthStatus::Due)
+    );
+    assert_eq!(
+        ledger_gui::pages::assets::unposted(&b, x).unwrap(),
+        Decimal::new(800_000, 2)
+    );
+    let due = b.depreciation_due(d(2026, 4, 30)).unwrap();
+    assert_eq!(due.periods, vec!["2026-04"]);
+    // The store agrees: March again posts nothing, April 3,000.00.
+    let mut s = Store::open(&data).unwrap();
+    assert_eq!(s.run_depreciation(x, "2026-03").unwrap().entry_id, None);
+    assert_eq!(
+        s.run_depreciation(x, "2026-04").unwrap().amount,
+        Decimal::new(300_000, 2)
+    );
+}
+
+/// P3 review: a disposed asset's figures in the viewer are what its
+/// disposal took. Hand check: January through June run (6,000.00, June's
+/// dated Jun 30), disposed of Jun 15 for 7,000.00: the disposal credits
+/// June's last 15 days back (500.00), so the books' depreciation for it is
+/// 5,500.00 and its book value at disposal 6,500.00, as books.dispose_asset
+/// and books.list_assets say. Disposed the same way after March's run was
+/// reversed (on Jun 20), the disposal entry itself charges 500.00 (March's
+/// 1,000.00, less June's last 15 days already in June's run): again
+/// 5,500.00, and March isn't Due, the disposal took it.
+#[test]
+fn a_disposed_assets_figures_are_what_its_disposal_took() {
+    let (dir, _data, mut s, x, (cash, gain)) = asset_x("disposed-true-up");
+    for m in 1..=6 {
+        s.run_depreciation(x, &format!("2026-{m:02}")).unwrap();
+    }
+    s.dispose_asset(x, d(2026, 6, 15), usd(700_000), cash, gain)
+        .unwrap();
+    drop(s);
+    let b = load(&dir.0, today());
+    assert_eq!(b.asset_trail(x).posted(), Decimal::new(550_000, 2));
+    assert_eq!(b.asset_trail(x).disposal_true_up, Decimal::new(-50_000, 2));
+    assert_eq!(
+        ledger_gui::pages::assets::unposted(&b, x).unwrap(),
+        Decimal::ZERO
+    );
+
+    let (dir, _data, mut s, x, (cash, gain)) = asset_x("disposed-catch-up");
+    let mut mar = 0;
+    for m in 1..=6 {
+        let r = s.run_depreciation(x, &format!("2026-{m:02}")).unwrap();
+        if m == 3 {
+            mar = r.entry_id.unwrap();
+        }
+    }
+    s.reverse_entry(mar, d(2026, 6, 20), "reversed").unwrap();
+    let p = s.dispose_preview(x, d(2026, 6, 15), usd(700_000)).unwrap();
+    assert_eq!(p.catch_up_depreciation, Decimal::new(50_000, 2));
+    s.dispose_asset(x, d(2026, 6, 15), usd(700_000), cash, gain)
+        .unwrap();
+    drop(s);
+    let b = load(&dir.0, today());
+    assert_eq!(b.asset_trail(x).posted(), Decimal::new(550_000, 2));
+    let st: Vec<MonthStatus> = schedule(&b, x)
+        .unwrap()
+        .into_iter()
+        .map(|(_, s)| s)
+        .collect();
+    assert_eq!(st[2], MonthStatus::Covered);
+    assert!(!st.contains(&MonthStatus::Due));
+}
+
+/// A command for [`prop_the_viewer_reads_an_asset_as_the_store_does`].
+#[derive(Clone, Copy, Debug)]
+enum AssetOp {
+    Run(u32),
+    Reverse(usize, NaiveDate),
+    Dispose(NaiveDate),
+}
+
+/// The entries asset commands made, in journal order: runs (the disposal's
+/// final depreciation too), reversals, disposals.
+fn asset_entries(data: &Path) -> Vec<EntryId> {
+    let text = std::fs::read_to_string(data.join(ledger_store::JOURNAL_FILE)).unwrap();
+    text.lines()
+        .filter_map(|l| {
+            let v: serde_json::Value = serde_json::from_str(l).unwrap();
+            let p = &v["payload"];
+            match v["type"].as_str()? {
+                "asset.depreciation_posted" | "asset.disposed" => p["entry_id"].as_u64(),
+                "entry.reversed" => p["id"].as_u64(),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// An account's balance (debit positive) at the end of a day.
+fn balance_on(store: &Store, account: u64, on: NaiveDate) -> Decimal {
+    let code = &store.ledger().chart().get(account).unwrap().code;
+    ledger_core::reports::trial_balance_as_of(store.ledger(), on)
+        .lines
+        .iter()
+        .find(|l| &l.code == code)
+        .map_or(Decimal::ZERO, |l| l.debit - l.credit)
+}
+
+fn arb_asset_op() -> impl Strategy<Value = AssetOp> {
+    let date = (1u32..=6, 1u32..=31).prop_map(|(m, day)| {
+        NaiveDate::from_ymd_opt(2026, m, day).unwrap_or_else(|| {
+            ledger_core::schedules::month_end(NaiveDate::from_ymd_opt(2026, m, 1).unwrap())
+        })
+    });
+    prop_oneof![
+        4 => (1u32..=6).prop_map(AssetOp::Run),
+        4 => (0usize..8, date.clone()).prop_map(|(n, on)| AssetOp::Reverse(n, on)),
+        1 => date.prop_map(AssetOp::Dispose),
+    ]
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(48))]
+
+    /// P3 review round 2: whatever runs, reversals, re-runs,
+    /// re-instatements and disposals the books hold, the viewer reads the
+    /// asset as the store does. On July 15: what it says the books carry
+    /// is the accumulated depreciation account (a disposed asset's, what
+    /// its disposal took: the schedule through its day); each finished
+    /// month is Posted by the entry a run of it says is already posted,
+    /// Due exactly when a run of it would post something, and Covered
+    /// otherwise; and what it says is unposted is what the schedule says
+    /// through June less what the books carry then.
+    #[test]
+    fn prop_the_viewer_reads_an_asset_as_the_store_does(
+        ops in prop::collection::vec(arb_asset_op(), 1..10)
+    ) {
+        let (dir, data, mut s, x, (cash, gain)) = asset_x("viewer-orders");
+        for op in &ops {
+            let _ = match *op {
+                AssetOp::Run(m) => s.run_depreciation(x, &format!("2026-{m:02}")).map(|_| ()),
+                AssetOp::Reverse(n, on) => match asset_entries(&data).get(n) {
+                    Some(&e) => s.reverse_entry(e, on, "reversed").map(|_| ()),
+                    None => Ok(()),
+                },
+                AssetOp::Dispose(on) => s.dispose_asset(x, on, usd(100_000), cash, gain).map(|_| ()),
+            };
+        }
+        let a = s.ledger().get_asset(x).unwrap().clone();
+        let accum = a.accum_depr_account;
+        let expense = a.expense_account;
+        drop(s);
+        let today = d(2026, 7, 15);
+        let b = load(&dir.0, today);
+        let trail = b.asset_trail(x);
+        let s = Store::open(&data).unwrap();
+        let disposed = a.status != ledger_core::AssetStatus::Active;
+        if disposed {
+            prop_assert_eq!(
+                trail.posted(),
+                ledger_core::accumulated_depreciation(&a, NaiveDate::MAX).unwrap()
+            );
+            prop_assert_eq!(balance_on(&s, accum, NaiveDate::MAX), Decimal::ZERO);
+        } else {
+            prop_assert_eq!(trail.posted(), -balance_on(&s, accum, NaiveDate::MAX));
+            let june = d(2026, 6, 30);
+            let owed = ledger_core::accumulated_depreciation(&a, june).unwrap()
+                - balance_on(&s, expense, june);
+            prop_assert_eq!(
+                ledger_gui::pages::assets::unposted(&b, x).unwrap(),
+                owed.max(Decimal::ZERO)
+            );
+        }
+        drop(s);
+        let lines = schedule(&b, x).unwrap();
+        for (line, st) in lines.iter().filter(|(l, _)| l.period.as_str() < "2026-07") {
+            // A run of the month, on a copy of the books.
+            let copy = TempDir::new("viewer-orders-copy");
+            let to = copy.0.join("books-data");
+            std::fs::create_dir_all(&to).unwrap();
+            std::fs::copy(data.join(ledger_store::JOURNAL_FILE), to.join(ledger_store::JOURNAL_FILE)).unwrap();
+            let mut c = Store::open(&to).unwrap();
+            let run = c.run_depreciation(x, &line.period);
+            let want = match run {
+                Ok(r) if r.already_posted => MonthStatus::Posted(r.entry_id.unwrap()),
+                Ok(r) if r.entry_id.is_some() => MonthStatus::Due,
+                Ok(_) => MonthStatus::Covered,
+                Err(_) => {
+                    prop_assert!(disposed, "{} refused: {:?}", line.period, run);
+                    MonthStatus::Covered
+                }
+            };
+            prop_assert_eq!(*st, want, "{} ({:?})", line.period, ops);
+        }
+    }
+}
+
+/// P3 review round 2, in the viewer: a run re-instated after its month was
+/// run again and that second run reversed is the month's run, as the store
+/// reads it. Hand check: January run (A), reversed on Jan 31; run again
+/// (A2), reversed on Jan 31; A's reversal reversed on Jan 31: A stands.
+/// January is Posted(A), the books carry 1,000.00, and nothing is unposted
+/// but February through June (5,000.00). Before this review the viewer read
+/// January's latest run (A2, reversed): January Due, 0.00 carried.
+#[test]
+fn the_viewer_counts_a_run_reinstated_after_its_rerun_was_reversed() {
+    let (dir, _data, mut s, x, _) = asset_x("reinstated-page");
+    let jan31 = d(2026, 1, 31);
+    let a = s.run_depreciation(x, "2026-01").unwrap().entry_id.unwrap();
+    let b_rev = s.reverse_entry(a, jan31, "first doubt").unwrap();
+    let a2 = s.run_depreciation(x, "2026-01").unwrap().entry_id.unwrap();
+    s.reverse_entry(a2, jan31, "second doubt").unwrap();
+    s.reverse_entry(b_rev, jan31, "the first was right")
+        .unwrap();
+    drop(s);
+    let b = load(&dir.0, d(2026, 7, 15));
+    assert_eq!(b.asset_trail(x).posted(), Decimal::new(100_000, 2));
+    let st = schedule(&b, x).unwrap();
+    assert_eq!(st[0].1, MonthStatus::Posted(a));
+    assert_eq!(
+        ledger_gui::pages::assets::unposted(&b, x).unwrap(),
+        Decimal::new(500_000, 2)
+    );
 }

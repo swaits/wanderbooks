@@ -1261,8 +1261,9 @@ impl AssetRegister {
 ///      unposted_depreciation and unregistered_cost are zero exactly when
 ///      register and books agree.
 ///   6. NEVER panics: a contributor basis is as journaled, of any size
-///      (rules.md B-28), and a total past exact arithmetic is refused
-///      (TooLargeToCompute).
+///      (rules.md B-28), and a total past exact arithmetic, or a schedule
+///      that can't be computed, is refused (TooLargeToCompute,
+///      DateOutOfRange).
 /// ```
 pub fn fixed_asset_register(
     ledger: &Ledger,
@@ -1290,7 +1291,7 @@ pub fn fixed_asset_register(
         let acc = if disposed.is_some() {
             Decimal::ZERO
         } else {
-            crate::assets::accumulated_depreciation(a, as_of)
+            crate::assets::accumulated_depreciation(a, as_of)?
         };
         if disposed.is_none() {
             cost = cost

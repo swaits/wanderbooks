@@ -15,7 +15,7 @@ use crate::fmt;
 use crate::nav::{ReportKind, Route};
 use crate::theme::{self, pal};
 use crate::widgets;
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 use egui::{Color32, CornerRadius, Margin, RichText, Sense, Ui, vec2};
 use egui_phosphor::regular as icon;
 use ledger_core::{Asset, AssetId, AssetRegister, AssetRegisterRow, AssetStatus, TaxBasisRule};
@@ -774,8 +774,14 @@ fn reconciliation(ui: &mut Ui, b: &Books, r: &AssetRegister, shell: &mut Shell<'
 pub enum MonthStatus {
     /// Posted, by this entry.
     Posted(ledger_core::EntryId),
-    /// The month has ended and nothing is posted for it.
+    /// The month has ended, nothing is posted for it, and a run for it
+    /// would post something.
     Due,
+    /// The month has ended with no run of its own, and nothing is due for
+    /// it: a later run caught it up, its run was reversed after it ended
+    /// (the reversal's month catches it up), it rounds to nothing, or the
+    /// asset's disposal took it.
+    Covered,
     /// The month under way.
     ThisMonth,
     /// A month still to come.
@@ -788,29 +794,91 @@ pub enum MonthStatus {
 /// ```text
 /// INVARIANTS:
 ///   1. The lines are ledger_core::depreciation_schedule(asset, the end of
-///      time), unchanged and in order.
-///   2. A month with depreciation posted (asset.depreciation_posted) is
-///      Posted(its entry); otherwise Due when it ended before today,
-///      ThisMonth when today is in it, Scheduled after.
+///      time), unchanged and in order: for a disposed asset, through its
+///      disposal day.
+///   2. A month with a run in effect (asset.depreciation_posted, not
+///      reversed) is Posted(its entry); otherwise, once it has ended, Due
+///      when a run for it would post something (ledger_core::run_amount,
+///      over what the books carry, every run and reversal in its own
+///      month) and Covered when not (a later run caught it up, its run was
+///      reversed after it ended, or it rounds to nothing); ThisMonth when
+///      today is in it, Scheduled after. A disposed asset's months are
+///      never Due: its disposal took the schedule through its day.
+///   3. A schedule the books can't compute (an asset an earlier version
+///      took) is refused, never a panic: the page says why.
 /// ```
-pub fn schedule(b: &Books, id: AssetId) -> Vec<(ledger_core::ScheduleLine, MonthStatus)> {
+pub fn schedule(
+    b: &Books,
+    id: AssetId,
+) -> Result<Vec<(ledger_core::ScheduleLine, MonthStatus)>, ledger_core::LedgerError> {
     let Some(a) = b.ledger.get_asset(id) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let trail = b.asset_trail(id);
     let this_month = b.today.format("%Y-%m").to_string();
-    ledger_core::depreciation_schedule(a, NaiveDate::MAX)
+    // What a run would post for each month ended before this one, in one
+    // pass (a long life has many).
+    let ended = b
+        .today
+        .with_day(1)
+        .and_then(|d| d.pred_opt())
+        .map_or((i32::MIN, 1), |d| (d.year(), d.month()));
+    let disposed = matches!(a.status, AssetStatus::Disposed { .. });
+    let due: std::collections::HashMap<(i32, u32), Decimal> = if disposed {
+        Default::default()
+    } else {
+        ledger_core::run_amounts(a, ended, &trail.effects)?
+            .into_iter()
+            .map(|(y, m, r)| ((y, m), r.amount))
+            .collect()
+    };
+    Ok(ledger_core::depreciation_schedule(a, NaiveDate::MAX)?
         .into_iter()
         .map(|l| {
             let st = match trail.depreciation.get(&l.period) {
                 Some((e, _)) => MonthStatus::Posted(*e),
-                None if l.period < this_month => MonthStatus::Due,
+                None if disposed => MonthStatus::Covered,
+                None if l.period < this_month => {
+                    let owed = crate::books::period_month(&l.period)
+                        .and_then(|ym| due.get(&ym).copied())
+                        .unwrap_or(l.amount);
+                    if owed.is_zero() {
+                        MonthStatus::Covered
+                    } else {
+                        MonthStatus::Due
+                    }
+                }
                 None if l.period == this_month => MonthStatus::ThisMonth,
                 None => MonthStatus::Scheduled,
             };
             (l, st)
         })
-        .collect()
+        .collect())
+}
+
+/// Depreciation for finished months that the books don't carry yet: what
+/// a run of the last month before today's would post
+/// (ledger_core::run_amounts), every skipped or reversed month caught up.
+/// Zero for a disposed asset (its disposal took the schedule through its
+/// day) or one with nothing due.
+pub fn unposted(b: &Books, id: AssetId) -> Result<Decimal, ledger_core::LedgerError> {
+    let Some(a) = b
+        .ledger
+        .get_asset(id)
+        .filter(|a| a.status == AssetStatus::Active)
+    else {
+        return Ok(Decimal::ZERO);
+    };
+    let ended = b
+        .today
+        .with_day(1)
+        .and_then(|d| d.pred_opt())
+        .map_or((i32::MIN, 1), |d| (d.year(), d.month()));
+    Ok(
+        ledger_core::run_amounts(a, ended, &b.asset_trail(id).effects)?
+            .last()
+            .map_or(Decimal::ZERO, |(_, _, r)| r.amount),
+    )
 }
 
 /// One asset, completely.
@@ -1014,12 +1082,20 @@ pub fn show_asset(ui: &mut Ui, b: &Books, id: AssetId, shell: &mut Shell<'_>) {
         ui.add_space(14.0);
 
         // The schedule.
-        let lines = schedule(b, id);
-        let due: Decimal = lines
-            .iter()
-            .filter(|(_, s)| *s == MonthStatus::Due)
-            .map(|(l, _)| l.amount)
-            .sum();
+        let (lines, schedule_error) = match schedule(b, id) {
+            Ok(lines) => (lines, None),
+            Err(e) => (Vec::new(), Some(e)),
+        };
+        if let Some(e) = &schedule_error {
+            notice_box(
+                ui,
+                &Notice {
+                    problem: true,
+                    text: format!("Its depreciation schedule can't be computed: {e}."),
+                },
+            );
+        }
+        let due = unposted(b, id).unwrap_or(Decimal::ZERO);
         if due > Decimal::ZERO {
             notice_box(
                 ui,
@@ -1051,10 +1127,12 @@ pub fn show_asset(ui: &mut Ui, b: &Books, id: AssetId, shell: &mut Shell<'_>) {
             },
             |ui| {
                 if lines.is_empty() {
-                    ui.label(
-                        RichText::new("Nothing to depreciate: its salvage value is its cost.")
-                            .color(p.muted),
-                    );
+                    let why = if schedule_error.is_some() {
+                        "The schedule can't be computed (above)."
+                    } else {
+                        "Nothing to depreciate: its salvage value is its cost."
+                    };
+                    ui.label(RichText::new(why).color(p.muted));
                     return;
                 }
                 let amt = widgets::AMOUNT_MIN + 16.0;
@@ -1085,6 +1163,13 @@ pub fn show_asset(ui: &mut Ui, b: &Books, id: AssetId, shell: &mut Shell<'_>) {
                         let (status, color) = match st {
                             MonthStatus::Posted(e) => (format!("Posted · entry #{e}"), p.positive),
                             MonthStatus::Due => ("Not posted".to_string(), p.warning),
+                            MonthStatus::Covered if l.amount.is_zero() => {
+                                ("Rounds to nothing".to_string(), p.muted)
+                            }
+                            MonthStatus::Covered if a.status != AssetStatus::Active => {
+                                ("Taken by the disposal".to_string(), p.muted)
+                            }
+                            MonthStatus::Covered => ("Nothing due".to_string(), p.muted),
                             MonthStatus::ThisMonth => ("This month".to_string(), p.muted),
                             MonthStatus::Scheduled => ("Scheduled".to_string(), p.faint),
                         };
@@ -1422,7 +1507,7 @@ mod tests {
         for i in 0..2 {
             let (_dir, books, ids) = two_assets(&format!("asset-page-{i}"));
             let a = books.ledger.get_asset(ids[i]).unwrap().clone();
-            let want = ledger_core::book_value(&a, today());
+            let want = ledger_core::book_value(&a, today()).unwrap();
             let (texts, _) = render(books, Route::Asset(ids[i]), |_| {});
             assert_eq!(
                 beside(&texts, "Book value today").text,

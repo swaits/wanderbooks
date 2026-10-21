@@ -88,6 +88,30 @@ folder's `legacy/`. Agents connect with `wanderbooks connect`, the viewer is
 books data. The before-check found defect 21 again (the IIF ignores
 `as_of`).
 
+**Open from P3's depreciation and schedules work (defects 22 and 9,
+review 2026-10-20), for the P3 lead:** the viewer still recomputes a
+long-life asset's whole schedule every frame (plan defect 22's note; R12
+of its brief: slow, never wrong); a schedule month a run leaves for a
+human (dated in a closed period, or reversed after it ended) stays
+unposted with nothing to mark it booked by hand, so its schedule never
+shows complete, and a schedule or an asset registered by mistake has no
+way to stop (a reversed month comes due again); both want a design
+(a schedule's postings are its plan's, re-derived on replay, so it can't
+catch a month up as depreciation does). From review round 2: a reversal
+dated before the entry it reverses is refused for depreciation runs and
+schedule postings only (B-9: a correction comes after what it corrects);
+every other entry still takes one, a general rule for the P3 lead to
+settle; the bookspec examples cite ASC 606-10-25-23, which `sources/`
+holds only through DART (vendor it with 25-31, 25-32 and 55-20); the
+every-order search runs three commands deep in `just check`; four and
+five ran clean by hand (`WB_ORDERS_DEPTH`, one and five minutes), six is
+P12's. Seen in the same review, not P3's: `ledger-store`
+`ops::tests::the_server_makes_the_folder_and_the_viewer_only_reads_it`
+failed once in a whole-workspace run (`!viewer_open` after both holders
+dropped) and passed alone and in six runs of the crate's tests; likely a
+child a concurrent test forks (backup's git) holding the viewer lock's
+descriptor until it execs.
+
 **Next:** P3 (engine correctness; designed: one brief per defect group,
 each attacked by a reviewer, kept outside this public repo since they cite
 the first company's figures; the owner's questions come one at a time as

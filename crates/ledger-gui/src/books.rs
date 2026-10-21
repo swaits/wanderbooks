@@ -93,10 +93,28 @@ pub struct EntryParty {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AssetTrail {
     /// Depreciation the books carry, by month ("YYYY-MM"): the entry and
-    /// its amount, from `asset.depreciation_posted`.
+    /// its amount, from `asset.depreciation_posted`, each entry in effect
+    /// (a reversed run is left out: its month is due again, as the store
+    /// reads it).
     pub depreciation: BTreeMap<String, (EntryId, Decimal)>,
+    /// Depreciation runs reversed since (their months un-posted).
+    pub reversed_runs: Vec<EntryId>,
+    /// Every run journaled, reversed or not, with its amount.
+    pub runs: Vec<(EntryId, Decimal)>,
+    /// Each of [`Self::runs`]' month ("YYYY-MM"), in the same order.
+    pub periods: Vec<String>,
+    /// What the books carry for it, entry by entry, each in its own month,
+    /// as the catch-up rule reads it: every run, and every reversal of one
+    /// (ledger_core::depreciation_effects of [`Self::runs`], computed once
+    /// at load).
+    pub effects: Vec<ledger_core::PostedRun>,
     /// The disposal entry, from `asset.disposed`.
     pub disposal_entry: Option<EntryId>,
+    /// Depreciation the disposal entry itself charged (positive: the
+    /// store's catch_up_depreciation) or credited back (negative: its
+    /// excess_depreciation), so a disposed asset's depreciation is what
+    /// the disposal took.
+    pub disposal_true_up: Decimal,
     /// The entry that put it on the books, when one can be told: posted,
     /// debiting its cost account exactly its cost, dated its in-service
     /// date (else the nearest such entry within 31 days), and not already
@@ -108,18 +126,29 @@ pub struct AssetTrail {
 
 impl AssetTrail {
     /// Every entry that touches the asset: purchase, depreciation (by
-    /// month), disposal.
+    /// month, then any run reversed), disposal.
     pub fn entries(&self) -> Vec<EntryId> {
         let mut out: Vec<EntryId> = self.purchase_entry.into_iter().collect();
         out.extend(self.depreciation.values().map(|(e, _)| *e));
+        out.extend(&self.reversed_runs);
         out.extend(self.disposal_entry);
         out
     }
 
-    /// Depreciation the books carry for it, summed exactly.
+    /// Depreciation the books carry for it, summed exactly: its runs in
+    /// effect, and what its disposal trued up (so a disposed asset's is
+    /// what the disposal took, ledger_store's dispose_preview).
     pub fn posted(&self) -> Decimal {
-        self.depreciation.values().map(|(_, a)| *a).sum()
+        self.depreciation.values().map(|(_, a)| *a).sum::<Decimal>() + self.disposal_true_up
     }
+}
+
+/// A "YYYY-MM" period as (year, month), read leniently (an earlier version
+/// posted "10000-01").
+pub fn period_month(period: &str) -> Option<(i32, u32)> {
+    let (y, m) = period.split_once('-')?;
+    let (y, m) = (y.parse().ok()?, m.parse().ok()?);
+    (1..=12).contains(&m).then_some((y, m))
 }
 
 /// One party's dealings with the company: its entries, documents, and
@@ -201,8 +230,11 @@ pub struct PartyInfo {
 ///   2. amount is fixed_asset_register(ledger, through)
 ///      .unposted_depreciation(), exactly.
 ///   3. periods: the months ("YYYY-MM", ascending, distinct) that some
-///      asset held on `through` has in its schedule through `through`
-///      and no depreciation posted for.
+///      asset held on `through` has in its schedule through `through`,
+///      no run in effect for, and something due for (ledger_core::
+///      run_amount): a month a later run caught up, or that rounds to
+///      nothing, is never due (P3: a month skipped is caught up in the
+///      month the run is made).
 /// ```
 #[derive(Clone, Debug, PartialEq)]
 pub struct DepreciationDue {
@@ -1210,9 +1242,22 @@ impl Books {
             if matches!(a.status, AssetStatus::Disposed { date, .. } if date <= through) {
                 continue;
             }
-            let posted = self.asset_trails.get(&a.id);
-            for l in ledger_core::depreciation_schedule(a, through) {
-                if !posted.is_some_and(|t| t.depreciation.contains_key(&l.period)) {
+            let trail = self.asset_trails.get(&a.id).cloned().unwrap_or_default();
+            // Due when a run for the month would post something: not when a
+            // later run caught it up, or it rounds to nothing (one pass).
+            let due: HashMap<(i32, u32), Decimal> =
+                ledger_core::run_amounts(a, (through.year(), through.month()), &trail.effects)?
+                    .into_iter()
+                    .map(|(y, m, r)| ((y, m), r.amount))
+                    .collect();
+            for l in ledger_core::depreciation_schedule(a, through)? {
+                if trail.depreciation.contains_key(&l.period) {
+                    continue;
+                }
+                if period_month(&l.period)
+                    .and_then(|ym| due.get(&ym))
+                    .is_some_and(|a| !a.is_zero())
+                {
                     periods.insert(l.period);
                 }
             }
@@ -2030,6 +2075,7 @@ fn asset_trails(ledger: &Ledger, journal: &[JournalLine]) -> HashMap<AssetId, As
         .map(|a| (a.id, AssetTrail::default()))
         .collect();
     let u = |p: &Value, k: &str| p.get(k).and_then(|v| v.as_u64());
+    let mut gain_loss_accounts: HashMap<AssetId, Option<u64>> = HashMap::new();
     for (i, line) in journal.iter().enumerate() {
         let p = &line.payload;
         let asset = match line.line_type.as_str() {
@@ -2050,11 +2096,44 @@ fn asset_trails(ledger: &Ledger, journal: &[JournalLine]) -> HashMap<AssetId, As
                         .and_then(|v| v.as_str())
                         .and_then(|s| s.parse::<Decimal>().ok()),
                 ) {
-                    t.depreciation.insert(period.to_string(), (entry, amount));
+                    t.runs.push((entry, amount));
+                    t.periods.push(period.to_string());
                 }
             }
-            "asset.disposed" => t.disposal_entry = u(p, "entry_id"),
+            "asset.disposed" => {
+                t.disposal_entry = u(p, "entry_id");
+                if let Some(a) = asset {
+                    gain_loss_accounts.insert(a, u(p, "gain_loss_account"));
+                }
+            }
             _ => {}
+        }
+    }
+    // The runs in effect, by month; a run reversed (and not re-instated)
+    // no longer counts. Every run is read, not a month's latest: one
+    // re-instated after its month was run again and that run reversed
+    // counts (P3 review round 2, as the store reads it).
+    for t in out.values_mut() {
+        for (&(e, amount), period) in t.runs.iter().zip(&t.periods) {
+            if ledger.in_effect(e) {
+                t.depreciation.insert(period.clone(), (e, amount));
+            } else {
+                t.reversed_runs.push(e);
+            }
+        }
+    }
+    for t in out.values_mut() {
+        t.effects = ledger_core::depreciation_effects(ledger, &t.runs);
+    }
+    // What each disposal trued up, from its entry.
+    for (id, t) in out.iter_mut() {
+        if let (Some(a), Some(e)) = (
+            ledger.get_asset(*id),
+            t.disposal_entry.and_then(|e| ledger.get_entry(e)),
+        ) {
+            let runs: Decimal = t.depreciation.values().map(|(_, a)| *a).sum();
+            let gain_loss = gain_loss_accounts.get(id).copied().flatten();
+            t.disposal_true_up = disposal_true_up(a, e, gain_loss, runs);
         }
     }
     // The purchase: an entry that debits the cost account exactly the cost,
@@ -2106,6 +2185,32 @@ fn asset_trails(ledger: &Ledger, journal: &[JournalLine]) -> HashMap<AssetId, As
         }
     }
     out
+}
+
+/// Depreciation a disposal entry itself charged (positive) or credited
+/// back (negative): its lines on the asset's depreciation expense account
+/// (ledger_store's disposal_lines: catch_up_depreciation debited,
+/// excess_depreciation credited). When the disposal's gain or loss went to
+/// that same account the lines can't be told apart, and the disposal took
+/// the schedule through its day: that, less the runs in effect.
+fn disposal_true_up(
+    asset: &ledger_core::Asset,
+    entry: &ledger_core::JournalEntry,
+    gain_loss_account: Option<u64>,
+    runs: Decimal,
+) -> Decimal {
+    if gain_loss_account.is_some_and(|g| g != asset.expense_account) {
+        return entry
+            .lines()
+            .iter()
+            .filter(|l| l.account == asset.expense_account)
+            .map(|l| match l.side {
+                Side::Debit => l.amount.amount,
+                Side::Credit => -l.amount.amount,
+            })
+            .sum();
+    }
+    ledger_core::accumulated_depreciation(asset, NaiveDate::MAX).map_or(Decimal::ZERO, |t| t - runs)
 }
 
 /// Entry ids a journal line refers to.

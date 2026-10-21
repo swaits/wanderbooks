@@ -100,6 +100,7 @@ fn dates_outside_the_calendar_are_refused_everywhere() {
         months,
         balance_account: b.prepaid,
         pl_account: b.expense,
+        convention: ledger_core::ScheduleConvention::MonthlyEven,
     };
     for (start, months) in [
         (d(9999, 12, 15), 2),
@@ -175,6 +176,7 @@ fn replayed_dates_outside_the_calendar_are_accepted() {
         months,
         balance_account: b.prepaid,
         pl_account: b.expense,
+        convention: ledger_core::ScheduleConvention::MonthlyEven,
     };
     for (start, months) in [
         (d(9999, 12, 15), 2),
@@ -788,4 +790,141 @@ fn the_bound_is_the_line_limit_itself() {
         b.ledger.post_entry(draft).unwrap_err(),
         LedgerError::AmountOutOfRange
     );
+}
+
+// ------------------------------------------------- P3: assets, schedules
+
+/// The equipment accounts an asset needs, on these books.
+fn asset_accounts(b: &mut Books) -> (AccountId, AccountId, AccountId) {
+    let mut add = |code: &str, ty| b.ledger.add_account(code, code, ty, None, false).unwrap();
+    (
+        add("1500", AccountType::Asset),
+        add("1501", AccountType::Asset),
+        add("6100", AccountType::Expense),
+    )
+}
+
+fn new_asset(
+    accounts: (AccountId, AccountId, AccountId),
+    cost: &str,
+    salvage: &str,
+    purchase_date: NaiveDate,
+    life: u32,
+) -> ledger_core::NewAsset {
+    ledger_core::NewAsset {
+        description: "Machine".into(),
+        purchase_date,
+        cost: usd(cost.parse().unwrap()),
+        salvage_value: usd(salvage.parse().unwrap()),
+        useful_life_months: life,
+        cost_account: accounts.0,
+        accum_depr_account: accounts.1,
+        expense_account: accounts.2,
+    }
+}
+
+/// B-3 (P3): a new asset's cost and salvage are in the currency's minor
+/// unit (every depreciation and disposal line derives from them, and a
+/// line finer than a cent never posts). Its replay pair: an asset an
+/// earlier version took in tenths of a cent opens, and its schedule is
+/// computed, never a panic: whole cents until its last day, which is
+/// exactly its cost (1,200.005 over 12 months from 2026-01-01: 100.00 a
+/// month, the cumulatives 100.0004 × m rounding to whole cents, and
+/// December the rest, 100.005).
+#[test]
+fn an_asset_cost_finer_than_a_cent_is_refused() {
+    let mut b = books();
+    let acc = asset_accounts(&mut b);
+    for (cost, salvage) in [("1200.005", "0"), ("1200.00", "0.001")] {
+        let before = b.ledger.clone();
+        assert!(matches!(
+            b.ledger
+                .register_asset(new_asset(acc, cost, salvage, d(2026, 1, 1), 12)),
+            Err(LedgerError::FinerThanMinorUnit { .. })
+        ));
+        assert!(b.ledger.differs_from(&before).is_empty());
+    }
+    let id = b
+        .ledger
+        .replay_register_asset(new_asset(acc, "1200.005", "0", d(2026, 1, 1), 12))
+        .unwrap();
+    let s = ledger_core::depreciation_schedule(b.ledger.get_asset(id).unwrap(), NaiveDate::MAX)
+        .unwrap();
+    assert_eq!(s.len(), 12);
+    for line in &s[..11] {
+        assert_eq!(line.amount, Decimal::new(10000, 2), "{}", line.period);
+    }
+    assert_eq!(s[11].amount, "100.005".parse::<Decimal>().unwrap());
+    assert_eq!(s[11].accumulated, "1200.005".parse::<Decimal>().unwrap());
+}
+
+/// B-28 (P3: lives past 9999, plan/served.md defect 22): a new asset's
+/// last day of depreciation is at most 9999-12-31, the calendar's last
+/// day, so every month of its life is one the books can post. A life
+/// ending on that day is taken (P0 bounded the life's exclusive end, one
+/// day too strict); one a day later is refused. Replay takes either.
+#[test]
+fn a_life_ending_on_9999_12_31_is_accepted() {
+    let mut b = books();
+    let acc = asset_accounts(&mut b);
+    // 9999-01-01 + 12 months = 10000-01-01, exclusive: last day 9999-12-31.
+    b.ledger
+        .register_asset(new_asset(acc, "1200.00", "0", d(9999, 1, 1), 12))
+        .unwrap();
+    // 9999-12-01 + 1 month = 10000-01-01: last day 9999-12-31.
+    b.ledger
+        .register_asset(new_asset(acc, "1200.00", "0", d(9999, 12, 1), 1))
+        .unwrap();
+}
+
+/// The pair of a_life_ending_on_9999_12_31_is_accepted.
+#[test]
+fn a_life_ending_after_it_is_refused() {
+    let mut b = books();
+    let acc = asset_accounts(&mut b);
+    for (start, life) in [
+        (d(9999, 1, 2), 12),
+        (d(9999, 12, 2), 1),
+        (d(9999, 12, 31), 1),
+    ] {
+        assert_eq!(
+            b.ledger
+                .register_asset(new_asset(acc, "1200.00", "0", start, life))
+                .unwrap_err(),
+            LedgerError::AssetDateOverflow,
+            "{start} + {life}"
+        );
+        b.ledger
+            .replay_register_asset(new_asset(acc, "1200.00", "0", start, life))
+            .unwrap();
+    }
+}
+
+/// B-28 (P3): a daily schedule's last day is in the calendar: one month
+/// from 9999-12-15 covers through 10000-01-14, refused; one month from
+/// 9999-12-01 ends on 9999-12-31, taken. Replay takes either.
+#[test]
+fn a_daily_schedule_whose_last_day_passes_9999_is_refused() {
+    let mut b = books();
+    let schedule = |start: NaiveDate| NewSchedule {
+        description: "Insurance".into(),
+        kind: ledger_core::schedules::ScheduleKind::PrepaidExpense,
+        total: usd(Decimal::new(30000, 2)),
+        start,
+        months: 1,
+        balance_account: b.prepaid,
+        pl_account: b.expense,
+        convention: ledger_core::ScheduleConvention::Daily,
+    };
+    let (late, ok) = (schedule(d(9999, 12, 15)), schedule(d(9999, 12, 1)));
+    assert!(matches!(
+        b.ledger.register_schedule(late.clone()),
+        Err(LedgerError::InvalidSchedule(m)) if m.contains("9999-12-31")
+    ));
+    b.ledger.register_schedule(ok).unwrap();
+    let id = b.ledger.replay_register_schedule(late).unwrap();
+    // Its plan is computed: December 9999, then January 10000.
+    let plan = b.ledger.get_schedule(id).unwrap().plan().unwrap();
+    assert_eq!(plan.len(), 2);
+    assert_eq!(plan[1].0, d(10000, 1, 31));
 }

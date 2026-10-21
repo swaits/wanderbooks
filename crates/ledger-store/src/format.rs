@@ -47,6 +47,8 @@ pub const KNOWN_FEATURES: &[&str] = &[
     PARTY_CREDITORS,
     PAYMENT_INSTRUMENTS,
     VENDOR_1099_DECISIONS,
+    MONTH_REPOSTING,
+    SCHEDULE_CONVENTION,
 ];
 
 /// Feature: `period.closed` closes to members with `"rounding":
@@ -87,6 +89,17 @@ pub const PAYMENT_INSTRUMENTS: &str = "payment_instruments";
 /// plan P3, defects 18 and 23, D-40) and W-9 flags kept apart from them
 /// (`vendor.w9_flag_set`).
 pub const VENDOR_1099_DECISIONS: &str = "vendor_1099_decisions";
+
+/// Feature: a schedule month or a depreciation period posted again after a
+/// reversal un-posted it. An older version would refuse the second
+/// `schedule.posted` as posted twice, and its projection would ignore the
+/// second `asset.depreciation_posted` (P3 depreciation review R3).
+pub const MONTH_REPOSTING: &str = "month_reposting";
+
+/// Feature: `schedule.registered` carries `convention` (`daily` or
+/// `monthly_even`). An older version would read a daily schedule as equal
+/// months (P3 defect 9, plan/served.md D-11).
+pub const SCHEDULE_CONVENTION: &str = "schedule_convention";
 
 /// The line type that declares the journal format.
 pub const FORMAT_SET: &str = "journal.format_set";
@@ -523,6 +536,38 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    /// P3's features (schedule_convention, month_reposting): this version
+    /// reads them; a version before them (KNOWN_FEATURES empty, as through
+    /// P2) stops at their declaration with NewerJournal, never misreading a
+    /// daily schedule as equal months or a second run of a month as none.
+    #[test]
+    fn an_older_reader_stops_at_p3s_features() {
+        for f in [SCHEDULE_CONVENTION, MONTH_REPOSTING] {
+            assert!(KNOWN_FEATURES.contains(&f));
+            let l = line(FORMAT_SET, json!({"format": 2, "features": [f]}));
+            assert_eq!(
+                declared(&l).unwrap(),
+                JournalFormat {
+                    format: 2,
+                    features: vec![f.to_string()]
+                }
+            );
+            match declared_knowing(&l, &[]) {
+                Err(StoreError::NewerJournal { need, .. }) => {
+                    assert_eq!(need, format!("journal features {f}"))
+                }
+                other => panic!("expected NewerJournal, got {other:?}"),
+            }
+        }
+        // Declared together, sorted.
+        assert_eq!(
+            JournalFormat::default()
+                .declaration(2, &[SCHEDULE_CONVENTION, MONTH_REPOSTING])
+                .unwrap(),
+            json!({"format": 2, "features": ["month_reposting", "schedule_convention"]})
+        );
     }
 
     /// A format newer than this version reads is newer whatever shape the

@@ -345,8 +345,9 @@ impl Ledger {
     }
 
     /// [`Self::register_schedule`] without the total's range and minor-unit
-    /// checks added on 2026-10-13, for replaying journals written before
-    /// them. Never for new work.
+    /// checks added on 2026-10-13, or the calendar bound and the
+    /// equal-months start on the 1st (D-37) added since, for replaying
+    /// journals written before them. Never for new work.
     pub fn replay_register_schedule(
         &mut self,
         new: NewSchedule,
@@ -366,9 +367,71 @@ impl Ledger {
                 balance_account: new.balance_account,
                 pl_account: new.pl_account,
                 posted: Default::default(),
+                convention: new.convention,
+                postings: Default::default(),
             },
         );
         Ok(id)
+    }
+
+    /// Whether a schedule's month was ever posted (and so, if it isn't
+    /// posted now, a reversal un-posted it): posting it again needs a
+    /// journal an older version refuses (store feature `month_reposting`).
+    pub fn schedule_month_posted_before(&self, id: ScheduleId, month_end: NaiveDate) -> bool {
+        self.schedules
+            .get(&id)
+            .and_then(|s| s.postings.get(&month_end))
+            .is_some_and(|p| !p.is_empty())
+    }
+
+    /// The latest date after a schedule month's end that one of its
+    /// postings was reversed (or re-instated) on, if any: posting the month
+    /// again on its own date would have the books carry it twice from then
+    /// until that date, so it is left for a human
+    /// ([`Self::preview_schedule_month`], [`Self::schedule_month_hold`]).
+    ///
+    /// ```text
+    /// GOAL: a schedule month is never recognized twice at a month end.
+    /// SOURCE: docs/spec/rules.md B-9 (a correction is dated when it is
+    ///         made), B-16; P3 depreciation review R3 (a reversed month is
+    ///         due again: when the reversal is the month's own).
+    /// ```
+    pub fn schedule_month_reversed_after(
+        &self,
+        id: ScheduleId,
+        month_end: NaiveDate,
+    ) -> Option<NaiveDate> {
+        self.schedules
+            .get(&id)?
+            .postings
+            .get(&month_end)?
+            .iter()
+            .flat_map(|&e| {
+                self.reversal_chain(e)
+                    .into_iter()
+                    .skip_while(move |&c| c != e)
+                    .skip(1)
+            })
+            .filter_map(|c| self.entries.get(&c).map(JournalEntry::date))
+            .filter(|d| *d > month_end)
+            .max()
+    }
+
+    /// Why a run of schedules leaves a due month for a human, if it must:
+    /// it is dated in a closed period (which takes no new entries), or its
+    /// posting was reversed after the month ended
+    /// ([`Self::schedule_month_reversed_after`]).
+    pub fn schedule_month_hold(&self, id: ScheduleId, month_end: NaiveDate) -> Option<String> {
+        if let Some(p) = self.closed_period_containing(month_end) {
+            return Some(format!(
+                "{month_end} is in closed period {p}: book it in an open one by hand, or not at all"
+            ));
+        }
+        self.schedule_month_reversed_after(id, month_end).map(|r| {
+            format!(
+                "its posting was reversed on {r}, after the month ended: posting it again on {month_end} would recognize the month twice until then; book it by hand in an open period, or not at all"
+            )
+        })
     }
 
     /// The id the next schedule will receive (for journaling stores).
@@ -407,6 +470,11 @@ impl Ledger {
         if s.posted.contains(&date) {
             return Err(LedgerError::InvalidSchedule(format!(
                 "schedule {id} already posted {date}"
+            )));
+        }
+        if let Some(r) = self.schedule_month_reversed_after(id, date) {
+            return Err(LedgerError::InvalidSchedule(format!(
+                "schedule {id}'s {date} posting was reversed on {r}, after its month ended: posting it again on {date} would recognize the month twice until then (book it by hand in an open period, or not at all)"
             )));
         }
         let money = Money::new(amount, s.total.currency);
@@ -448,11 +516,9 @@ impl Ledger {
             self.add_line(entry, account, side, money)?;
         }
         self.post_entry(entry)?;
-        self.schedules
-            .get_mut(&id)
-            .expect("previewed")
-            .posted
-            .insert(date);
+        let s = self.schedules.get_mut(&id).expect("previewed");
+        s.posted.insert(date);
+        s.postings.entry(date).or_default().push(entry);
         Ok(entry)
     }
 
@@ -1615,6 +1681,14 @@ impl Ledger {
     ///   4. IF `date` falls in a closed period:
     ///      - SHOULD refuse with `ClosedPeriod`
     ///      BECAUSE closed periods take no new postings.
+    ///   5. IF the entry reverses a schedule month's posting (so reversing
+    ///      it re-instates that posting) and the month has been posted
+    ///      again since:
+    ///      - SHOULD refuse (InvalidSchedule), naming the entry that posts
+    ///        it now
+    ///      - NEVER recognize one month of a schedule twice
+    ///      BECAUSE a reversed month is due again and may have been run
+    ///      again (P3 depreciation review R3).
     /// ```
     pub fn check_reversal(&self, entry: EntryId, date: NaiveDate) -> Result<(), LedgerError> {
         let original = self
@@ -1636,7 +1710,72 @@ impl Ledger {
         if let Some(pid) = self.closed_period_containing(date) {
             return Err(LedgerError::ClosedPeriod(pid, date.to_string()));
         }
+        // SCENARIO 5. `entry` ends its chain (it isn't reversed), so
+        // reversing it flips whether the chain's original stands.
+        if let Some(top) = self.schedule_chain_top(entry)
+            && !self.in_effect(top)
+            && let Some((s, month)) = self.schedule_month_of(top)
+            && let Some(now) = s.postings[&month]
+                .iter()
+                .find(|&&e| e != top && self.in_effect(e))
+        {
+            return Err(LedgerError::InvalidSchedule(format!(
+                "reversing entry {entry} would post schedule {}'s {month} a second time: entry {now} posts it now (reverse that one instead)",
+                s.id
+            )));
+        }
         Ok(())
+    }
+
+    /// The original an entry's reversal chain starts from (the entry itself
+    /// when it reverses nothing), when some schedule month was ever posted:
+    /// books without one skip the chain walk.
+    fn schedule_chain_top(&self, entry: EntryId) -> Option<EntryId> {
+        if self.schedules.values().all(|s| s.postings.is_empty()) {
+            return None;
+        }
+        Some(self.reversal_chain(entry).first().copied().unwrap_or(entry))
+    }
+
+    /// Whether a posted entry's effect stands: nothing reverses it, or what
+    /// reverses it is itself reversed, and so on (an even number of
+    /// reversals after it in its chain). A draft or an unknown id stands
+    /// for nothing.
+    ///
+    /// ```text
+    /// SOURCE: docs/spec/rules.md B-9 (a mistake is corrected by an
+    ///         opposite entry), B-10 (reversed at most once; reversing the
+    ///         reversal re-instates it).
+    /// ```
+    pub fn in_effect(&self, entry: EntryId) -> bool {
+        if self
+            .entries
+            .get(&entry)
+            .is_none_or(|e| e.status() != EntryStatus::Posted)
+        {
+            return false;
+        }
+        let chain = self.reversal_chain(entry);
+        chain
+            .iter()
+            .position(|&e| e == entry)
+            .is_some_and(|i| (chain.len() - 1 - i).is_multiple_of(2))
+    }
+
+    /// The schedule and month an entry posted, if it posted one (a
+    /// schedule month's posting; not its reversal).
+    pub fn schedule_posting(&self, entry: EntryId) -> Option<(ScheduleId, NaiveDate)> {
+        self.schedule_month_of(entry).map(|(s, m)| (s.id, m))
+    }
+
+    /// The schedule and month an entry posted, if it posted one.
+    fn schedule_month_of(&self, entry: EntryId) -> Option<(&AmortizationSchedule, NaiveDate)> {
+        self.schedules.values().find_map(|s| {
+            s.postings
+                .iter()
+                .find(|(_, es)| es.contains(&entry))
+                .map(|(m, _)| (s, *m))
+        })
     }
 
     /// Post a reversing entry: same lines with sides flipped, linked back to
@@ -1695,6 +1834,21 @@ impl Ledger {
         if let Some(why) = self.entry_no_party.get(&entry).cloned() {
             self.entry_no_party.insert(id, why);
         }
+        // A reversed schedule month is un-posted, so it is due again; a
+        // reversed reversal posts it back (P3 depreciation review R3).
+        if let Some(top) = self.schedule_chain_top(entry)
+            && let Some((sid, month)) = self.schedule_month_of(top).map(|(s, m)| (s.id, m))
+        {
+            let posted = self.schedules[&sid].postings[&month]
+                .iter()
+                .any(|&e| self.in_effect(e));
+            let s = self.schedules.get_mut(&sid).expect("found");
+            if posted {
+                s.posted.insert(month);
+            } else {
+                s.posted.remove(&month);
+            }
+        }
         Ok(id)
     }
 
@@ -1709,19 +1863,23 @@ impl Ledger {
 
     /// Pure pre-validation for [`Self::register_asset`]: every check that
     /// does not mutate, so journaling stores can validate before journaling.
-    /// [`Self::validate_new_asset_journaled`], and both ends of the life
-    /// inside the calendar the books keep (crate::calendar): a life that
-    /// runs past 9999-12-31 is refused like one past chrono's last day (P0
-    /// review round 3, S1).
+    /// [`Self::validate_new_asset_journaled`]; the in-service date and the
+    /// life's last day of depreciation inside the calendar the books keep
+    /// (crate::calendar): a life whose last day is after 9999-12-31 is
+    /// refused like one past chrono's last day (P0 review round 3, S1; P3:
+    /// the bound is the last day held, so a life ending on 9999-12-31 is
+    /// taken); and the cost and salvage in the currency's minor unit
+    /// (rules.md B-3: every depreciation and disposal line derives from
+    /// them, and a line finer than a cent could never post).
     pub fn validate_new_asset(&self, new: &NewAsset) -> Result<(), LedgerError> {
         self.check_new_asset(new, true)
     }
 
     /// The checks every journaled `asset.registered` and `asset.corrected`
     /// passed when it was written (the rule through 2026-10-16):
-    /// [`Self::validate_new_asset`] without the calendar bound, the end of
-    /// the life only representable. Replay applies exactly these
-    /// (rules.md B-28).
+    /// [`Self::validate_new_asset`] without the calendar bound or the minor
+    /// unit, the end of the life only representable. Replay applies
+    /// exactly these (rules.md B-28).
     pub fn validate_new_asset_journaled(&self, new: &NewAsset) -> Result<(), LedgerError> {
         self.check_new_asset(new, false)
     }
@@ -1758,17 +1916,25 @@ impl Ledger {
         if new.useful_life_months < 1 {
             return Err(LedgerError::InvalidUsefulLife(new.useful_life_months));
         }
+        if strict {
+            check_minor_units(new.cost)?;
+            check_minor_units(new.salvage_value)?;
+        }
         // The schedule walks every month of the asset's life; a purchase
         // date near the end of the calendar would overflow date arithmetic
         // (and hang or panic the schedule). Reject it up front. New ones
-        // keep both ends inside the calendar the books keep.
+        // keep the in-service date and the life's last day (the day before
+        // its exclusive end) inside the calendar the books keep, so every
+        // month of the life is a month the books can post.
         if strict {
             crate::calendar::check(new.purchase_date)?;
         }
         let end = new
             .purchase_date
             .checked_add_months(Months::new(new.useful_life_months));
-        if !end.is_some_and(|end| !strict || crate::calendar::in_calendar(end)) {
+        if !end
+            .is_some_and(|end| !strict || end.pred_opt().is_some_and(crate::calendar::in_calendar))
+        {
             return Err(LedgerError::AssetDateOverflow);
         }
         assets::validate_asset_accounts(
@@ -2273,8 +2439,10 @@ impl Ledger {
             });
         }
         let asset = self.assets.get(&id).ok_or(LedgerError::UnknownAsset(id))?;
-        // Pure math validates activeness, proceeds sign, and date order.
-        crate::disposal_amounts(asset, date, proceeds)?;
+        // Activeness, proceeds sign, and date order; no depreciation is
+        // computed, so a journaled disposal replays even where the figure
+        // can't be (rules.md B-28).
+        assets::check_disposal(asset, date, proceeds)?;
         if strict {
             // Proceeds are a line of the disposal entry, and its date one
             // the books keep (P0 review round 3, S1).

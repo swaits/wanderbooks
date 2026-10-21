@@ -77,6 +77,7 @@ fn fixture(tag: &str) -> Fixture {
         months: 12,
         balance_account: prepaid,
         pl_account: insurance,
+        convention: ledger_core::ScheduleConvention::MonthlyEven,
     })
     .unwrap();
     let sam = s.add_party("Sam", &[Role::Contractor]).unwrap();

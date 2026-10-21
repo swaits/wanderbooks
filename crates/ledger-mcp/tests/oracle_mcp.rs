@@ -2012,11 +2012,19 @@ fn dispose_asset_previews_equal_the_store_and_gate_receipts_on_debits() {
     );
 }
 
-/// Run-all depreciation skips an asset whose life doesn't touch the period
-/// and posts the others by their schedule. Kills: run_depreciation's
-/// period match.
+/// Run-all depreciation posts each asset what its schedule says is due
+/// through the month's end (plan/served.md P3, settled in design: a month
+/// skipped is caught up in the month the run is made), and skips an asset
+/// not yet in service, or one with nothing due. Hand check: "Short-lived"
+/// is 600.00 over 2 months from 2025-01-01 (life Jan-Feb 2025), never run;
+/// "Long-lived" 600.00 over 12 months from 2025-05-01, 50.00 a month, May
+/// never run. A June run posts the first's whole 600.00 (all caught up)
+/// and the second's May and June, 100.00 (50.00 caught up). An April run
+/// then skips both: the second isn't in service yet, and the first's life
+/// is over with June's run carrying all of it. Kills: run_depreciation's
+/// catch-up and its skips.
 #[test]
-fn run_depreciation_skips_assets_outside_their_life() {
+fn run_depreciation_catches_up_and_skips_what_has_nothing_due() {
     let dir = test_dir("depr");
     let mut s = new_store(&dir);
     let reg = |s: &mut Store, desc: &str, date: &str, months: u32| {
@@ -2034,23 +2042,37 @@ fn run_depreciation_skips_assets_outside_their_life() {
     };
     let old = reg(&mut s, "Short-lived", "2025-01-01", 2);
     let new = reg(&mut s, "Long-lived", "2025-05-01", 12);
-    let sched = depreciation_schedule(s.ledger().get_asset(new).unwrap(), d("2025-06-30"));
+    let sched = depreciation_schedule(s.ledger().get_asset(new).unwrap(), d("2025-06-30")).unwrap();
     let june = sched.iter().find(|l| l.period == "2025-06").unwrap().amount;
-    assert!(
-        !depreciation_schedule(s.ledger().get_asset(old).unwrap(), d("2025-06-30"))
-            .iter()
-            .any(|l| l.period == "2025-06")
-    );
+    assert_eq!(june, dec("50.00"));
     drop(s);
     let mut m = Mcp::start(&dir, "1000000.00");
     let out = m.ok("books.run_depreciation", json!({"period": "2025-06"}));
     let runs = out["runs"].as_array().unwrap();
-    assert_eq!(runs.len(), 1, "{out}");
-    assert_eq!(runs[0]["asset_id"], json!(new));
-    assert_eq!(jamt(&runs[0]["amount"]), june);
+    assert_eq!(runs.len(), 2, "{out}");
+    let run = |id: u64| {
+        runs.iter()
+            .find(|r| r["asset_id"] == json!(id))
+            .unwrap_or_else(|| panic!("{id} in {out}"))
+            .clone()
+    };
+    assert_eq!(jamt(&run(old)["amount"]), dec("600.00"));
+    assert_eq!(jamt(&run(old)["caught_up"]), dec("600.00"));
+    assert_eq!(jamt(&run(new)["amount"]), dec("100.00"));
+    assert_eq!(jamt(&run(new)["caught_up"]), dec("50.00"));
+    assert_eq!(out["skipped"], json!([]));
+    let out = m.ok("books.run_depreciation", json!({"period": "2025-04"}));
+    assert_eq!(out["runs"], json!([]), "{out}");
     let skipped = out["skipped"].as_array().unwrap();
-    assert_eq!(skipped.len(), 1);
-    assert_eq!(skipped[0]["asset_id"], json!(old));
+    assert_eq!(skipped.len(), 2, "{out}");
+    let why = |id: u64| {
+        skipped.iter().find(|r| r["asset_id"] == json!(id)).unwrap()["reason"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert!(why(new).contains("placed in service 2025-05-01"), "{out}");
+    assert!(why(old).contains("life is over"), "{out}");
 }
 
 // ------------------------------------------------- payroll

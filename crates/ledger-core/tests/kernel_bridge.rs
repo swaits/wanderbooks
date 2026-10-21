@@ -369,4 +369,96 @@ proptest! {
         let ri = ti.and_then(kernel::reverse_target);
         prop_assert_eq!(ri.map(as_dec), td.and_then(kernel::reverse_target));
     }
+
+    /// The proration Kani proves at i64 is the engine's at i128, part for
+    /// part, on calendar-shaped parts (each month 28 to 31 days, 1 to all
+    /// of them) and on parts no calendar has, refusals included.
+    #[test]
+    fn prorate_agrees_at_i64_and_i128(
+        total in 0i64..=(1 << 30),
+        months in 1u32..=24,
+        parts in prop::collection::vec((28u32..=31, 0u32..=32), 1..=26),
+        tenths in any::<bool>(),
+    ) {
+        let parts: Vec<kernel::MonthPart> = parts
+            .into_iter()
+            .map(|(month_days, days)| kernel::MonthPart { days, month_days })
+            .collect();
+        let unit = if tenths { 10 } else { 1 };
+        let mut oi = vec![0i64; parts.len()];
+        let mut ow = vec![0i128; parts.len()];
+        let ri = kernel::prorate_by_days(total, months, &parts, unit, &mut oi);
+        let rw = kernel::prorate_by_days(i128::from(total), months, &parts, i128::from(unit), &mut ow);
+        prop_assert_eq!(ri.is_some(), rw.is_some());
+        if ri.is_some() {
+            prop_assert_eq!(oi.iter().map(|&o| i128::from(o)).collect::<Vec<_>>(), ow);
+        }
+    }
+
+    /// The charge Kani proves at i32 (small totals, 1 or 2 months) is the
+    /// engine's at i128, through every day of a part, refusals included.
+    #[test]
+    fn prorated_through_agrees_at_i32_and_i128(
+        total in 0i32..=2_048,
+        months in 1u32..=2,
+        month_days in 28u32..=31,
+        days in 0u32..=32,
+        k in 0u32..=32,
+        before in 0i32..=800_000,
+        last in any::<bool>(),
+        tenths in any::<bool>(),
+    ) {
+        let part = kernel::MonthPart { days, month_days };
+        let unit = if tenths { 10 } else { 1 };
+        let narrow = kernel::prorated_through(total, months, before, part, k, last, unit);
+        let wide = kernel::prorated_through(
+            i128::from(total), months, i128::from(before), part, k, last, i128::from(unit),
+        );
+        // At i32 a product past its range is refused; at i128 it isn't.
+        if let Some(n) = narrow {
+            prop_assert_eq!(Some(i128::from(n)), wide);
+        } else if wide.is_some() {
+            // Refused at i32 only when a product the kernel forms there
+            // overflows it.
+            let w = i128::from(months) * i128::from(kernel::MONTH_L);
+            let (t, b, k, d, u) = (
+                i128::from(total),
+                i128::from(before),
+                i128::from(k),
+                i128::from(days),
+                i128::from(unit),
+            );
+            let formed: Vec<i128> = if last {
+                let elapsed = b * d + (w - b) * k;
+                vec![b * d, (w - b) * k, elapsed, t * elapsed, w * d, w * d * u]
+            } else {
+                let elapsed = b + k * i128::from(kernel::MONTH_L / month_days);
+                vec![elapsed, t * elapsed, w * u]
+            };
+            prop_assert!(
+                formed.iter().any(|&p| p > i128::from(i32::MAX)),
+                "refused at i32 though nothing overflows it: {formed:?}"
+            );
+        }
+    }
+
+    /// catch_up and true_up agree at i64 and on Decimal (the engine's).
+    #[test]
+    fn catch_up_and_true_up_agree(
+        pairs in prop::collection::vec((arb_cents(), arb_cents()), 0..6),
+    ) {
+        let (si, pi): (Vec<i64>, Vec<i64>) = pairs.iter().copied().unzip();
+        let sd: Vec<Decimal> = si.iter().copied().map(dec).collect();
+        let pd: Vec<Decimal> = pi.iter().copied().map(dec).collect();
+        prop_assert_eq!(
+            kernel::catch_up(&si, &pi).map(dec),
+            kernel::catch_up(&sd, &pd)
+        );
+        if let Some(&(t, p)) = pairs.first() {
+            prop_assert_eq!(
+                kernel::true_up(t, p).map(|(u, d)| (dec(u), dec(d))),
+                kernel::true_up(dec(t), dec(p))
+            );
+        }
+    }
 }

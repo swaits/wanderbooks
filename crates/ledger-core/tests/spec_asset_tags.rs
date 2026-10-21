@@ -853,8 +853,8 @@ fn register_accumulated_mid_month_follows_the_schedule() {
     let (l, _, laptop, server) = register_fixture();
     let on = date(2026, 5, 17);
     let r = fixed_asset_register(&l, on).unwrap();
-    let la = accumulated_depreciation(l.get_asset(laptop).unwrap(), on);
-    let sa = accumulated_depreciation(l.get_asset(server).unwrap(), on);
+    let la = accumulated_depreciation(l.get_asset(laptop).unwrap(), on).unwrap();
+    let sa = accumulated_depreciation(l.get_asset(server).unwrap(), on).unwrap();
     assert_eq!(r.rows[0].accumulated, la);
     assert_eq!(r.rows[1].accumulated, sa);
     assert_eq!(r.rows[0].book_value, d("12000.00") - la);
@@ -898,7 +898,7 @@ fn register_leaves_out_assets_not_yet_in_service() {
     assert_eq!(ids, vec![laptop, server, chair]);
     assert_eq!(
         r.rows[2].accumulated,
-        accumulated_depreciation(l.get_asset(chair).unwrap(), date(2026, 6, 1))
+        accumulated_depreciation(l.get_asset(chair).unwrap(), date(2026, 6, 1)).unwrap()
     );
     // Before anything: empty and zero.
     let r = fixed_asset_register(&l, date(2025, 12, 31)).unwrap();
@@ -1028,4 +1028,36 @@ fn register_of_no_assets_is_empty() {
     assert_eq!(r.ledger_accumulated, Decimal::ZERO);
     assert_eq!(r.unposted_depreciation(), Decimal::ZERO);
     assert_eq!(r.unregistered_cost(), Decimal::ZERO);
+}
+
+/// Defect 22 in the register (INVARIANT 2): an asset disposed of later in
+/// the same month as `as_of` is held on `as_of`, its accumulated
+/// depreciation prorated by days through `as_of`, never plugged to the
+/// whole. Hand check: the 12,000.00 laptop (12 months from 2026-01-01),
+/// disposed of 2026-06-20; on 2026-06-10, five months of 1,000.00 and
+/// June's 10/30: 5,333.33, book value 6,666.67. Before P3 the disposed
+/// schedule ended in a plug, so the register showed 12,000.00 and 0.00.
+/// The same in the life's final month: on 2026-12-15, 11,483.87.
+#[test]
+fn register_as_of_a_day_before_a_same_month_disposal_is_prorated() {
+    let (mut l, _, laptop, _) = register_fixture();
+    l.dispose_asset(laptop, date(2026, 6, 20), usd("5000.00"))
+        .unwrap();
+    let r = fixed_asset_register(&l, date(2026, 6, 10)).unwrap();
+    assert_eq!(r.rows[0].disposed, None);
+    assert_eq!(r.rows[0].accumulated, d("5333.33"));
+    assert_eq!(r.rows[0].book_value, d("6666.67"));
+    assert_totals_are_sums(&r);
+    // On the disposal day it is gone: no figures, in no total.
+    let r = fixed_asset_register(&l, date(2026, 6, 20)).unwrap();
+    assert_eq!(r.rows[0].accumulated, Decimal::ZERO);
+    assert!(r.rows[0].disposed.is_some());
+
+    let (l, _, laptop, _) = register_fixture();
+    let r = fixed_asset_register(&l, date(2026, 12, 15)).unwrap();
+    let row = r.rows.iter().find(|x| x.asset_id == laptop).unwrap();
+    assert_eq!(
+        (row.accumulated, row.book_value),
+        (d("11483.87"), d("516.13"))
+    );
 }

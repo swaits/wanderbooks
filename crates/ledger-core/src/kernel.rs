@@ -42,7 +42,13 @@
 //!   zero, and mirrored by a reversal (B-14 rule 11);
 //! * a party's part of an entry is signed as a line on the party's own
 //!   account would be, a reversal's is its original's negated, and what of
-//!   it counts as money or as property never exceeds it (B-35).
+//!   it counts as money or as property never exceeds it (B-35);
+//! * a span prorated by days (depreciation, B-15; daily schedules, B-16)
+//!   splits into parts that sum to its total, each but the last its days
+//!   times the monthly rate within one unit, the last the remainder;
+//! * a catch-up run brings the books to the schedule without ever carrying
+//!   more than it says at a month end already posted (B-15), and a
+//!   disposal trues what the books carry up or down to the schedule.
 
 use crate::{AccountType, Side};
 use rust_decimal::Decimal;
@@ -1022,6 +1028,380 @@ pub fn reverse_target<T: Amount>(t: PartyTarget<T>) -> Option<PartyTarget<T>> {
     })
 }
 
+// ---------------------------------------------------------------------------
+// Proration by days
+// ---------------------------------------------------------------------------
+
+/// Exact integer arithmetic the proration by days needs: money as a whole
+/// number of its smallest step (`i128` in the engine; `i64` and, for the
+/// harnesses whose properties relate a product to a quotient, `i32` under
+/// Kani). Kept apart from [`Amount`]: proration multiplies and divides,
+/// which no journal line ever does.
+pub trait Units: Copy + Ord {
+    /// Zero.
+    const ZERO: Self;
+    /// One.
+    const ONE: Self;
+    /// `n`, exactly, or `None` when it doesn't fit.
+    fn from_u32(n: u32) -> Option<Self>;
+    /// `self + rhs`, or `None` on overflow.
+    fn checked_add(self, rhs: Self) -> Option<Self>;
+    /// `self - rhs`, or `None` on overflow.
+    fn checked_sub(self, rhs: Self) -> Option<Self>;
+    /// `self * rhs`, or `None` on overflow.
+    fn checked_mul(self, rhs: Self) -> Option<Self>;
+    /// `(self / rhs, self % rhs)` for `self >= 0` and `rhs > 0`; `None`
+    /// otherwise.
+    fn checked_div_rem(self, rhs: Self) -> Option<(Self, Self)>;
+}
+
+impl Units for i32 {
+    const ZERO: Self = 0;
+    const ONE: Self = 1;
+    fn from_u32(n: u32) -> Option<Self> {
+        i32::try_from(n).ok()
+    }
+    fn checked_add(self, rhs: Self) -> Option<Self> {
+        i32::checked_add(self, rhs)
+    }
+    fn checked_sub(self, rhs: Self) -> Option<Self> {
+        i32::checked_sub(self, rhs)
+    }
+    fn checked_mul(self, rhs: Self) -> Option<Self> {
+        i32::checked_mul(self, rhs)
+    }
+    fn checked_div_rem(self, rhs: Self) -> Option<(Self, Self)> {
+        if self < 0 || rhs <= 0 {
+            return None;
+        }
+        Some((self / rhs, self % rhs))
+    }
+}
+
+impl Units for i64 {
+    const ZERO: Self = 0;
+    const ONE: Self = 1;
+    fn from_u32(n: u32) -> Option<Self> {
+        Some(i64::from(n))
+    }
+    fn checked_add(self, rhs: Self) -> Option<Self> {
+        i64::checked_add(self, rhs)
+    }
+    fn checked_sub(self, rhs: Self) -> Option<Self> {
+        i64::checked_sub(self, rhs)
+    }
+    fn checked_mul(self, rhs: Self) -> Option<Self> {
+        i64::checked_mul(self, rhs)
+    }
+    fn checked_div_rem(self, rhs: Self) -> Option<(Self, Self)> {
+        if self < 0 || rhs <= 0 {
+            return None;
+        }
+        Some((self / rhs, self % rhs))
+    }
+}
+
+impl Units for i128 {
+    const ZERO: Self = 0;
+    const ONE: Self = 1;
+    fn from_u32(n: u32) -> Option<Self> {
+        Some(i128::from(n))
+    }
+    fn checked_add(self, rhs: Self) -> Option<Self> {
+        i128::checked_add(self, rhs)
+    }
+    fn checked_sub(self, rhs: Self) -> Option<Self> {
+        i128::checked_sub(self, rhs)
+    }
+    fn checked_mul(self, rhs: Self) -> Option<Self> {
+        i128::checked_mul(self, rhs)
+    }
+    fn checked_div_rem(self, rhs: Self) -> Option<(Self, Self)> {
+        if self < 0 || rhs <= 0 {
+            return None;
+        }
+        Some((self / rhs, self % rhs))
+    }
+}
+
+/// lcm(28, 29, 30, 31): every month's length divides it, so a day of any
+/// month is a whole number of `MONTH_L`ths of a month, and proration needs
+/// no fractions.
+pub const MONTH_L: u32 = 377_580;
+
+/// One calendar month's share of a span of days: `days` of the month's
+/// `month_days`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MonthPart {
+    /// Days of the span in the month, 1 to `month_days`.
+    pub days: u32,
+    /// Days in the month, 28 to 31.
+    pub month_days: u32,
+}
+
+impl MonthPart {
+    /// Whether it is a share a calendar month can have: 28 to 31 days in
+    /// the month, 1 to all of them in the span.
+    pub fn is_valid(self) -> bool {
+        (28..=31).contains(&self.month_days) && (1..=self.month_days).contains(&self.days)
+    }
+}
+
+/// A part's weight in `MONTH_L`ths of a month: `days × (MONTH_L /
+/// month_days)`, exactly. `None` for a part no month has.
+pub fn part_weight<T: Units>(p: MonthPart) -> Option<T> {
+    if !p.is_valid() {
+        return None;
+    }
+    T::from_u32(p.days)?.checked_mul(T::from_u32(MONTH_L / p.month_days)?)
+}
+
+/// `num / den` rounded half away from zero to a multiple of `unit` (`num`
+/// not negative; `den` and `unit` positive).
+fn round_to_unit<T: Units>(num: T, den: T, unit: T) -> Option<T> {
+    let step = den.checked_mul(unit)?;
+    let (q, r) = num.checked_div_rem(step)?;
+    // Up when the remainder is half a step or more: compared as r >=
+    // step - r, so nothing is doubled and nothing can overflow.
+    let q = if r >= step.checked_sub(r)? {
+        q.checked_add(T::ONE)?
+    } else {
+        q
+    };
+    q.checked_mul(unit)
+}
+
+/// The exact cumulative charge of `total` (in units) spread over `months`
+/// months by day, through `k` days of `part`, after earlier parts weighing
+/// `before` `MONTH_L`ths; `last` marks the span's last part. Rounded half
+/// away from zero (half up: nothing here is negative) to a multiple of
+/// `unit`, or `total` itself when that rounds above it (a total that isn't
+/// a whole number of units); and the last part's last day is `total`.
+///
+/// ```text
+/// GOAL: how much of a total a span of days has used up by a given day,
+///       each day of a month bearing the same share, the whole total
+///       reached on the span's last day and never before.
+/// SOURCE: docs/spec/rules.md B-15 (straight line, partial months by days;
+///         ASC 360-10-35-4: "systematic and rational", as equitably as
+///         possible to the periods served), B-16 (daily schedules, D-11),
+///         B-21 (exact totals).
+/// INVARIANTS (W = months × MONTH_L, m = part.month_days, d = part.days):
+///   1. Not the last part: round(total × (before + k × MONTH_L / m) / W):
+///      the monthly rate total/months times the days held over the days
+///      in each month.
+///   2. The last part: round(total × (before × d + (W − before) × k) /
+///      (W × d)): what the earlier parts leave of the total, C = total ×
+///      before / W, plus the remainder R = total − C spread evenly over
+///      its d days. It is never "plugged": through an earlier day of the
+///      last month it is prorated by days.
+///   3. It is non-decreasing in (part, k), never above total, continuous
+///      at part boundaries ((i, days_i) equals (i + 1, 0)), and exactly
+///      total at (last, d).
+/// SCENARIOS:
+///   1. IF total is negative, months is 0, unit isn't positive, the part
+///      is no month's (see MonthPart::is_valid), k > d, before is negative
+///      or above W, a part but the last is charged through a day past W
+///      (before + k × MONTH_L / m > W; prorate_by_days charges every part
+///      but the last through its last day, so it refuses a part ending past
+///      W), or any product overflows:
+///      - SHOULD return None
+///      - NEVER panic
+///      BECAUSE a figure the books can't compute is refused (rules.md
+///      B-28), and symbolic parts are not a calendar.
+///   2. IF 12,000.00 over 12 months from Jan 1, through Dec 15 (the last
+///      part, 31 days, before = 11 months):
+///      - SHOULD be 11,000.00 + 1,000.00 × 15/31 = 11,483.87
+///      - NEVER 12,000.00 (the old plug)
+///      BECAUSE the final month is charged by its days like any other.
+/// ```
+pub fn prorated_through<T: Units>(
+    total: T,
+    months: u32,
+    before: T,
+    part: MonthPart,
+    k: u32,
+    last: bool,
+    unit: T,
+) -> Option<T> {
+    if total < T::ZERO
+        || months == 0
+        || unit <= T::ZERO
+        || !part.is_valid()
+        || k > part.days
+        || before < T::ZERO
+    {
+        return None;
+    }
+    let whole = T::from_u32(months)?.checked_mul(T::from_u32(MONTH_L)?)?;
+    if before > whole {
+        return None;
+    }
+    let charged = if last {
+        if k == part.days {
+            // Exactly the total, even one that isn't a whole number of
+            // units (an asset an earlier version took in tenths of a cent).
+            return Some(total);
+        }
+        let d = T::from_u32(part.days)?;
+        let left = whole.checked_sub(before)?;
+        let elapsed = before
+            .checked_mul(d)?
+            .checked_add(left.checked_mul(T::from_u32(k)?)?)?;
+        round_to_unit(total.checked_mul(elapsed)?, whole.checked_mul(d)?, unit)?
+    } else {
+        let rate = T::from_u32(MONTH_L / part.month_days)?;
+        let elapsed = before.checked_add(T::from_u32(k)?.checked_mul(rate)?)?;
+        if elapsed > whole {
+            return None;
+        }
+        round_to_unit(total.checked_mul(elapsed)?, whole, unit)?
+    };
+    // A total that isn't a whole number of units can round above itself
+    // on the day before the last; the cap keeps every part non-negative.
+    Some(charged.min(total))
+}
+
+/// Split `total` (in units) over a span of `months` months cut into
+/// calendar-month `parts`: `out[i]` is the cumulative charge through the
+/// end of part `i` ([`prorated_through`]) less the one before it, and the
+/// last part is `total` less all the others. `out` must be as long as
+/// `parts`; on `None` its contents mean nothing.
+///
+/// ```text
+/// GOAL: one month's posting of a span spread by day (depreciation,
+///       daily prepaid and deferred-revenue schedules).
+/// SOURCE: docs/spec/rules.md B-15, B-16 (D-11), B-21; plan/served.md P3
+///         defect 9 (one shared prorate_by_days, Kani: parts sum to the
+///         total, each is days × rate within one unit, the last absorbs
+///         the remainder).
+/// INVARIANTS:
+///   1. The parts sum to total exactly.
+///   2. Every part is >= 0.
+///   3. Each part but the last is within one unit of total × days_i /
+///      (months × month_days_i).
+///   4. The last part is total − Σ others.
+/// SCENARIOS:
+///   1. IF there are no parts, out isn't as long as parts, or prorated_
+///      through refuses a part (the weights of all but the last above W,
+///      among others): SHOULD return None, never panic.
+///   2. IF 1,200.00 over 12 months from Mar 15 (parts 17/31, eleven full
+///      months, then 14 days):
+///      - SHOULD be 54.84, eleven × 100.00, then 45.16
+///      BECAUSE each day bears the same share, and the last part takes
+///      what the others leave.
+/// ```
+///
+/// Allocation-free and O(n): a loop over fixed slices, so the model
+/// checker can prove it outright.
+pub fn prorate_by_days<T: Units>(
+    total: T,
+    months: u32,
+    parts: &[MonthPart],
+    unit: T,
+    out: &mut [T],
+) -> Option<()> {
+    if out.len() != parts.len() {
+        return None;
+    }
+    let (&last, rest) = parts.split_last()?;
+    let mut before = T::ZERO;
+    let mut charged = T::ZERO;
+    for (o, &p) in out.iter_mut().zip(rest) {
+        let through = prorated_through(total, months, before, p, p.days, false, unit)?;
+        *o = through.checked_sub(charged)?;
+        charged = through;
+        before = before.checked_add(part_weight(p)?)?;
+    }
+    // The last part is checked too (its weight before it within the span),
+    // and its whole is the total, so it takes the remainder.
+    let through = prorated_through(total, months, before, last, last.days, true, unit)?;
+    *out.last_mut()? = through.checked_sub(charged)?;
+    Some(())
+}
+
+// ---------------------------------------------------------------------------
+// Catching up and truing up
+// ---------------------------------------------------------------------------
+
+/// What a run catches up: the largest amount, at least zero, that can be
+/// added to what the books carry at every month end from the run's on
+/// without carrying more than the schedule says there:
+/// `max(0, min_i(scheduled[i] − posted[i]))`, where `scheduled[i]` and
+/// `posted[i]` are cumulative at successive month ends starting with the
+/// run's own. `None` when the slices differ in length or are empty, or on
+/// overflow.
+///
+/// ```text
+/// GOAL: a skipped month is caught up in the month the run is made, and a
+///       run never overtakes the schedule at a month end already posted.
+/// SOURCE: plan/served.md P3 "Settled in design" (2026-10-20): a month of
+///         depreciation skipped is caught up in the month the run is made
+///         (an immaterial miss; a material one is restated, ASC 250);
+///         docs/spec/rules.md B-15.
+/// INVARIANTS:
+///   1. The result is >= 0.
+///   2. Whenever every posted[i] <= scheduled[i], posted[i] + result <=
+///      scheduled[i] for every i: the run never carries the books past the
+///      schedule at any month end it reaches.
+///   3. The result is 0 or some scheduled[i] − posted[i]: with one month
+///      (no run after this one), it is everything the schedule says is due
+///      through it.
+/// ```
+pub fn catch_up<T: Amount>(scheduled: &[T], posted: &[T]) -> Option<T> {
+    if scheduled.len() != posted.len() {
+        return None;
+    }
+    let mut least: Option<T> = None;
+    for (&s, &p) in scheduled.iter().zip(posted) {
+        let gap = s.checked_sub(p)?;
+        least = Some(match least {
+            Some(l) if l <= gap => l,
+            _ => gap,
+        });
+    }
+    let least = least?;
+    Some(if least > T::ZERO { least } else { T::ZERO })
+}
+
+/// [`catch_up`] of every suffix at once: `out[i]` is `catch_up(&scheduled[i..],
+/// &posted[i..])`, what a run at each month end posts. One pass from the
+/// end, O(n), so a viewer can say of every month of a long life whether
+/// anything is due for it. `None` when the slices differ in length, or on
+/// overflow.
+pub fn catch_ups<T: Amount>(scheduled: &[T], posted: &[T], out: &mut [T]) -> Option<()> {
+    if scheduled.len() != posted.len() || out.len() != scheduled.len() {
+        return None;
+    }
+    let mut least: Option<T> = None;
+    for ((&s, &p), o) in scheduled.iter().zip(posted).zip(out.iter_mut()).rev() {
+        let gap = s.checked_sub(p)?;
+        let l = match least {
+            Some(l) if l <= gap => l,
+            _ => gap,
+        };
+        least = Some(l);
+        *o = if l > T::ZERO { l } else { T::ZERO };
+    }
+    Some(())
+}
+
+/// Bring what the books carry (`posted`) to `target`: `(post, take_back)`,
+/// both >= 0, one of them zero, with `posted + post − take_back = target`.
+/// This is [`columns`] of `target − posted`: raising the books by `post`
+/// and lowering them by `take_back` are a debit and a credit of the gap.
+///
+/// ```text
+/// GOAL: a disposal clears exactly what the schedule says was used up
+///       through its day, whatever the runs posted.
+/// SOURCE: docs/spec/rules.md B-15 (a disposed asset depreciates through
+///         its disposal day); Ledger::dispose_asset INVARIANT 1 (gain =
+///         proceeds − book value at the disposal date).
+/// ```
+pub fn true_up<T: Amount>(target: T, posted: T) -> Option<(T, T)> {
+    columns(target.checked_sub(posted)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1138,6 +1518,236 @@ mod tests {
         );
         assert_eq!(Paid.mirror(), Received);
         assert_eq!(Received.mirror(), Paid);
+    }
+
+    fn part(days: u32, month_days: u32) -> MonthPart {
+        MonthPart { days, month_days }
+    }
+
+    /// Every month length divides MONTH_L, and it is the least such.
+    #[test]
+    fn month_l_is_the_lcm_of_month_lengths() {
+        for m in 28..=31 {
+            assert_eq!(MONTH_L % m, 0, "{m}");
+        }
+        for smaller in 1..MONTH_L {
+            assert!((28..=31).any(|m| smaller % m != 0), "{smaller}");
+        }
+        assert_eq!(part_weight::<i64>(part(31, 31)), Some(i64::from(MONTH_L)));
+        assert_eq!(part_weight::<i64>(part(1, 28)), Some(13_485));
+        assert_eq!(part_weight::<i64>(part(0, 30)), None);
+        assert_eq!(part_weight::<i64>(part(32, 31)), None);
+        assert_eq!(part_weight::<i64>(part(27, 27)), None);
+    }
+
+    /// Spec scenario 2 of prorated_through, and the brief's 1,200.00 from
+    /// March 15 (prorate_by_days scenario 2), in cents.
+    #[test]
+    fn the_final_month_is_prorated_and_a_mid_month_span_splits_by_day() {
+        let l = i128::from(MONTH_L);
+        let dec15 = prorated_through(1_200_000i128, 12, 11 * l, part(31, 31), 15, true, 1);
+        assert_eq!(dec15, Some(1_148_387));
+        assert_eq!(
+            prorated_through(1_200_000i128, 12, 11 * l, part(31, 31), 31, true, 1),
+            Some(1_200_000)
+        );
+        let mut parts = vec![part(17, 31)];
+        parts.extend([30, 31, 30, 31, 31, 30, 31, 30, 31, 31, 28].map(|m| part(m, m)));
+        parts.push(part(14, 31));
+        let mut out = vec![0i128; parts.len()];
+        prorate_by_days(120_000i128, 12, &parts, 1, &mut out).unwrap();
+        let mut want = vec![5_484i128];
+        want.extend([10_000; 11]);
+        want.push(4_516);
+        assert_eq!(out, want);
+    }
+
+    /// Half a unit rounds away from zero (up, for the non-negative amounts
+    /// here): 0.01 over 2 months from the 1st gives 0.005 after one month.
+    #[test]
+    fn half_a_unit_rounds_up() {
+        let mut out = [0i64; 2];
+        prorate_by_days(1, 2, &[part(31, 31), part(28, 28)], 1, &mut out).unwrap();
+        assert_eq!(out, [1, 0]);
+        // Just under half a unit stays down: 0.01 over 3 months.
+        let mut out = [0i64; 3];
+        prorate_by_days(
+            1,
+            3,
+            &[part(31, 31), part(28, 28), part(31, 31)],
+            1,
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(out, [0, 1, 0]);
+    }
+
+    /// R4(a): a total that isn't a whole number of units (100.006 in
+    /// thousandths, rounded to cents) never makes the last part negative.
+    #[test]
+    fn a_total_finer_than_its_unit_never_gives_a_negative_part() {
+        let l = i64::from(MONTH_L);
+        let mut out = [0i64; 2];
+        prorate_by_days(100_006, 2, &[part(31, 31), part(28, 28)], 10, &mut out).unwrap();
+        assert_eq!(out, [50_000, 50_006]);
+        // 30 of 31 days of a one-month span: 100.006 × 30/31 = 96.780
+        // exactly, already whole cents.
+        assert_eq!(
+            prorated_through(100_006i64, 1, 0, part(31, 31), 30, true, 10),
+            Some(96_780)
+        );
+        // One day short of a 4,000-month span: 100.006 less 0.0008 is
+        // 100.0052, which rounds to 100.01, past the total: capped there,
+        // so the day left gets 0, never -0.004.
+        let w = 4_000 * l;
+        assert_eq!(
+            prorated_through(100_006i64, 4_000, w - l, part(30, 31), 30, false, 10),
+            Some(100_006)
+        );
+    }
+
+    /// Spec scenario 1 of prorated_through (R4(b), R4(c)): malformed input
+    /// is refused, never a panic.
+    #[test]
+    fn malformed_proration_is_refused() {
+        let l = i64::from(MONTH_L);
+        let p = part(10, 30);
+        assert_eq!(prorated_through(-1i64, 1, 0, p, 1, false, 1), None);
+        assert_eq!(prorated_through(1i64, 0, 0, p, 1, false, 1), None);
+        assert_eq!(prorated_through(1i64, 1, 0, p, 1, false, 0), None);
+        assert_eq!(prorated_through(1i64, 1, 0, p, 11, false, 1), None);
+        assert_eq!(prorated_through(1i64, 1, -1, p, 1, false, 1), None);
+        assert_eq!(prorated_through(1i64, 1, l + 1, p, 1, true, 1), None);
+        assert_eq!(prorated_through(1i64, 1, 0, part(0, 30), 0, false, 1), None);
+        assert_eq!(
+            prorated_through(1i64, 1, 0, part(31, 30), 1, false, 1),
+            None
+        );
+        // A part but the last that ends past the span.
+        assert_eq!(prorated_through(1i64, 1, l, part(1, 31), 1, false, 1), None);
+        let mut out = [0i64; 3];
+        assert_eq!(
+            prorate_by_days(
+                100,
+                1,
+                &[part(31, 31), part(31, 31), part(5, 30)],
+                1,
+                &mut out
+            ),
+            None
+        );
+        assert_eq!(prorate_by_days(100i64, 1, &[], 1, &mut []), None);
+        assert_eq!(
+            prorate_by_days(100i64, 1, &[part(31, 31)], 1, &mut []),
+            None
+        );
+        assert_eq!(
+            prorated_through(i64::MAX, 600, 0, part(31, 31), 31, false, 1),
+            None
+        );
+    }
+
+    /// prorated_through over every span of 1 to 3 months starting on any
+    /// day of a common year and a leap year, walked day by day, for a
+    /// spread of totals and both units: it never falls (within a month and
+    /// across a month's end: the charge through a month's last day is the
+    /// next month's through none of its days), never exceeds the total, and
+    /// is the total on the last day. Exhaustive over those spans; the
+    /// relation between two divisions is too costly for Kani's solver
+    /// (docs/verification.md), and Lean proves the law for the model.
+    /// Not under Miri, which looks for undefined behavior: this is safe
+    /// integer arithmetic the other kernel tests already take through it,
+    /// and walked exhaustively under the interpreter it held `just miri`
+    /// for over ten minutes.
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "exhaustive arithmetic: the other kernel tests cover it under Miri"
+    )]
+    fn the_charge_never_falls_and_is_continuous_over_real_calendars() {
+        use chrono::NaiveDate;
+        let mut start = NaiveDate::from_ymd_opt(2027, 1, 1).unwrap();
+        let stop = NaiveDate::from_ymd_opt(2029, 1, 1).unwrap();
+        let mut spans = 0;
+        while start < stop {
+            for months in 1..=3u32 {
+                let end = start
+                    .checked_add_months(chrono::Months::new(months))
+                    .unwrap();
+                let parts: Vec<_> = crate::calendar::month_parts(start, end).collect();
+                for total in [0i64, 1, 3, 7, 10, 999, 100_005, 65_536] {
+                    for unit in [1i64, 10] {
+                        let mut before = 0i64;
+                        let mut last_charge = 0i64;
+                        for p in &parts {
+                            for k in 0..=p.part.days {
+                                let c = prorated_through(
+                                    total, months, before, p.part, k, p.last, unit,
+                                )
+                                .unwrap();
+                                assert!(
+                                    c >= last_charge && c <= total,
+                                    "{start} + {months}: {c} after {last_charge}"
+                                );
+                                last_charge = c;
+                            }
+                            before += part_weight::<i64>(p.part).unwrap();
+                        }
+                        assert_eq!(last_charge, total, "{start} + {months}");
+                    }
+                }
+                spans += 1;
+            }
+            start = start.succ_opt().unwrap();
+        }
+        assert_eq!(spans, 731 * 3);
+    }
+
+    /// catch_up: everything due through the run's month when no run comes
+    /// after it; never past a later month end already posted.
+    #[test]
+    fn a_catch_up_never_overtakes_a_posted_month_end() {
+        // Jan run, Feb skipped, a Feb run with nothing after it: Feb's.
+        assert_eq!(catch_up(&[200i64], &[100]), Some(100));
+        // March already caught February up: a Feb run posts nothing.
+        assert_eq!(catch_up(&[200i64, 300], &[100, 300]), Some(0));
+        // A run carried past the schedule (an old tie cent): nothing.
+        assert_eq!(catch_up(&[200i64], &[201]), Some(0));
+        // January reversed after March ran: January posts it back.
+        assert_eq!(catch_up(&[100i64, 200, 300], &[0, 100, 200]), Some(100));
+        assert_eq!(catch_up::<i64>(&[], &[]), None);
+        assert_eq!(catch_up(&[1i64], &[1, 2]), None);
+    }
+
+    /// catch_ups is catch_up of every suffix: positive and distinct ones
+    /// (a catch_ups that wrote zeros would fail), and a month carried past
+    /// the schedule (zero from it back).
+    #[test]
+    fn catch_ups_is_every_suffixs_catch_up() {
+        let (s, p) = ([100i64, 200, 300, 400], [0i64, 100, 150, 250]);
+        let mut out = [0i64; 4];
+        catch_ups(&s, &p, &mut out).unwrap();
+        for i in 0..4 {
+            assert_eq!(Some(out[i]), catch_up(&s[i..], &p[i..]), "{i}");
+        }
+        assert_eq!(out, [100, 100, 150, 150]);
+        let (s, p) = ([100i64, 200, 300, 400], [0i64, 300, 200, 400]);
+        catch_ups(&s, &p, &mut out).unwrap();
+        for i in 0..4 {
+            assert_eq!(Some(out[i]), catch_up(&s[i..], &p[i..]), "{i}");
+        }
+        assert_eq!(out, [0, 0, 0, 0]);
+        let mut none: [i64; 0] = [];
+        assert_eq!(catch_ups::<i64>(&[], &[], &mut none), Some(()));
+        assert_eq!(catch_ups(&s, &p, &mut [0i64; 3]), None);
+    }
+
+    /// true_up is the gap's columns.
+    #[test]
+    fn a_true_up_reaches_the_target() {
+        assert_eq!(true_up(5_500i64, 5_000), Some((500, 0)));
+        assert_eq!(true_up(5_500i64, 6_000), Some((0, 500)));
+        assert_eq!(true_up(5_500i64, 5_500), Some((0, 0)));
     }
 
     #[test]

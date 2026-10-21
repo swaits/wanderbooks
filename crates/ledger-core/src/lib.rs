@@ -52,8 +52,9 @@ pub use arap::{
 };
 pub use assets::{
     Asset, AssetCorrection, AssetId, AssetStatus, DepreciationMethod, DisposalAmounts, NewAsset,
-    ScheduleLine, TaxBasis, TaxBasisRule, accumulated_depreciation, book_value,
-    depreciation_schedule, disposal_amounts,
+    PostedRun, RunAmount, ScheduleLine, TaxBasis, TaxBasisRule, accumulated_depreciation,
+    book_value, catch_up_room, check_disposal, depreciation_effects, depreciation_schedule,
+    disposal_amounts, life_end, run_amount, run_amounts,
 };
 pub use cashflow::{
     CashFlowFooting, CashFlowKind, CashFlowLine, CashFlowParams, CashFlowSection,
@@ -91,7 +92,7 @@ pub use reports::{
 };
 pub use schedules::{
     AmortizationSchedule, Frequency, NewRecurring, NewSchedule, RecurringEntry, RecurringId,
-    ScheduleId, ScheduleKind, TemplateLine,
+    ScheduleConvention, ScheduleId, ScheduleKind, TemplateLine,
 };
 pub use shares::{PartyMember, PartyShare, Share};
 pub use tax::{

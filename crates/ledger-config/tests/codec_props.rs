@@ -62,6 +62,8 @@ fn candidates() -> Vec<(&'static str, Value)> {
         ("books.close_into", json!("3000")),
         ("books.close_sweep", json!(["3100"])),
         ("books.asset_tag_prefix", json!("FL")),
+        ("books.schedule_convention", json!("monthly_even")),
+        ("books.schedule_convention", json!("daily")),
         ("policy.evidence.threshold", json!("0.00")),
         ("policy.evidence.threshold", json!("25.5")),
         ("policy.evidence.required_accounts", json!(["6200"])),

@@ -1984,19 +1984,22 @@ fn mcp_schedules_and_recurring_over_stdio() {
         );
     }
 
-    // 1,000.00 of insurance over 3 months: 333.33, 333.33, 333.34.
+    // 1,000.00 of insurance over 3 equal months: 333.33, 333.33, 333.34
+    // (an equal-months schedule starts on the 1st, D-37).
     let s = mcp.call(
         "books.create_schedule",
         json!({
             "kind": "prepaid_expense",
             "description": "Liability insurance",
             "total": "1000.00",
-            "start": "2026-11-15",
+            "start": "2026-11-01",
             "months": 3,
             "balance_account": "1300",
             "pl_account": "6300",
+            "convention": "monthly_even",
         }),
     );
+    assert_eq!(s["convention"], "monthly_even");
     let amounts: Vec<&str> = s["months"]
         .as_array()
         .unwrap()
@@ -3256,4 +3259,107 @@ fn rename_says_what_the_new_name_moves_defect_15() {
         json!({"account": "6000", "name": "Tools"}),
     );
     assert!(!notes(&out).contains("Convention"), "{out}");
+}
+
+/// Defect 9 end to end (plan/served.md D-11, D-37): a schedule created
+/// without a convention spreads by the day; books.list_schedules says how,
+/// the first and last day covered, the next month to post, and what
+/// remains; a run posts by the day; with books.schedule_convention set to
+/// monthly_even, new schedules are equal months, and one that doesn't
+/// start on the 1st is refused. Hand check: 1,200.00 from 2026-03-15 for
+/// 12 months: March 100 × 17/31 = 54.84, then 100.00 a month, the last
+/// March 45.16; through April 30, 154.84 posted, 1,045.16 left.
+#[test]
+fn mcp_daily_schedule_over_stdio() {
+    let dir = test_dir("daily-schedule");
+    let mut mcp = Mcp::spawn(&dir);
+    init(&mut mcp);
+    for (code, name, typ) in [
+        ("1300", "Prepaid Expenses", "asset"),
+        ("6300", "Insurance", "expense"),
+    ] {
+        mcp.call(
+            "books.add_account",
+            json!({"code": code, "name": name, "account_type": typ}),
+        );
+    }
+    let create = |start: &str| {
+        json!({
+            "kind": "prepaid_expense",
+            "description": "Liability insurance",
+            "total": "1200.00",
+            "start": start,
+            "months": 12,
+            "balance_account": "1300",
+            "pl_account": "6300",
+        })
+    };
+    let s = mcp.call("books.create_schedule", create("2026-03-15"));
+    assert_eq!(s["convention"], "daily");
+    assert_eq!(s["start"], "2026-03-15");
+    assert_eq!(s["end"], "2027-03-14");
+    assert_eq!(s["next"], "2026-03-31");
+    assert_eq!(s["remaining"], "1200.00");
+    let months = s["months"].as_array().unwrap();
+    assert_eq!(months.len(), 13);
+    assert_eq!(months[0]["amount"], "54.84");
+    assert_eq!(months[1]["amount"], "100.00");
+    assert_eq!(months[12]["date"], "2027-03-31");
+    assert_eq!(months[12]["amount"], "45.16");
+
+    let preview = mcp.call("books.run_schedules", json!({"through": "2026-04-30"}));
+    assert_eq!(preview["status"], "preview");
+    let amounts: Vec<&str> = preview["postings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["amount"].as_str().unwrap())
+        .collect();
+    assert_eq!(amounts, ["54.84", "100.00"]);
+    assert_eq!(preview["skipped"], json!([]));
+    let run = mcp.call(
+        "books.run_schedules",
+        json!({"through": "2026-04-30", "confirmed": true}),
+    );
+    assert_eq!(run["postings"].as_array().unwrap().len(), 2);
+    let list = mcp.call("books.list_schedules", json!({}));
+    let one = &list["schedules"][0];
+    assert_eq!(one["convention"], "daily");
+    assert_eq!(one["next"], "2026-05-31");
+    assert_eq!(one["remaining"], "1045.16");
+
+    // The books take their settings in (there was no file: the defaults),
+    // then new schedules are set to equal months.
+    let done = mcp.call(
+        "books.import_settings",
+        json!({"toml_text": "", "decided_by": "Owner", "confirmed": true}),
+    );
+    assert_eq!(done["status"], "imported");
+    mcp.call(
+        "books.set_setting",
+        json!({"changes": [{"key": "books.schedule_convention", "value": "monthly_even"}],
+               "decided_by": "Owner", "decided_on": "2026-10-20"}),
+    );
+    let err = mcp.call_err("books.create_schedule", create("2026-03-15"));
+    assert!(err.contains("2026-03-01"), "{err}");
+    let even = mcp.call("books.create_schedule", create("2026-03-01"));
+    assert_eq!(even["convention"], "monthly_even");
+    assert_eq!(even["months"].as_array().unwrap().len(), 12);
+    assert_eq!(even["end"], "2027-02-28");
+    // A convention asked for wins over the setting; an unknown one is
+    // refused, naming the two.
+    let daily = mcp.call(
+        "books.create_schedule",
+        json!({"kind": "prepaid_expense", "description": "x", "total": "10.00",
+               "start": "2026-05-20", "months": 1, "balance_account": "1300",
+               "pl_account": "6300", "convention": "daily"}),
+    );
+    assert_eq!(daily["convention"], "daily");
+    let err = mcp.call_err(
+        "books.create_schedule",
+        json!({"kind": "prepaid_expense", "description": "x", "total": "10.00",
+               "start": "2026-05-01", "months": 1, "balance_account": "1300",
+               "pl_account": "6300", "convention": "weekly"}),
+    );
+    assert!(err.contains("daily or monthly_even"), "{err}");
 }

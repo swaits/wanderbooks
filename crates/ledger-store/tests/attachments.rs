@@ -366,6 +366,7 @@ fn every_subject(s: &mut Store, fx: &Fx) -> Vec<Subject> {
             months: 12,
             balance_account: prepaid,
             pl_account: fx.expense,
+            convention: ledger_core::ScheduleConvention::MonthlyEven,
         })
         .unwrap();
     clear_jan(s, fx);

@@ -56,7 +56,7 @@ fn depreciation_reaches_chronos_last_month() {
         })
         .unwrap();
     let a = l.get_asset(id).unwrap();
-    let full = ledger_core::depreciation_schedule(a, NaiveDate::MAX);
+    let full = ledger_core::depreciation_schedule(a, NaiveDate::MAX).unwrap();
     assert_eq!(full.len(), 12);
     assert_eq!(full[0].period, format!("{y}-01"));
     assert_eq!(full[11].period, format!("{y}-12"));
@@ -66,17 +66,30 @@ fn depreciation_reaches_chronos_last_month() {
         Decimal::new(120000, 2)
     );
     // Through November: eleven months, December not yet.
-    let nov = ledger_core::depreciation_schedule(a, d(y, 11, 30));
+    let nov = ledger_core::depreciation_schedule(a, d(y, 11, 30)).unwrap();
     assert_eq!(nov.len(), 11);
     assert!(nov.last().unwrap().accumulated < Decimal::new(120000, 2));
-    // December is walked without stepping past chrono's last day.
-    let dec = ledger_core::depreciation_schedule(a, d(y, 12, 10));
+    // December is walked without stepping past chrono's last day, and,
+    // the life's final month (its days 1-14), charged by the day (P3,
+    // defect 22): the life holds Jan 15-31 (17/31 of a month), ten whole
+    // months, then what they leave of 1,200.00, 1,200 × (14/31)/11, over
+    // December's 14 days, so 1,200/(31 × 11) a day, January's own rate.
+    // Through Dec 10: 1,200 × (17/31 + 10 + 10/31)/11 = 404,400/341 =
+    // 1,185.9237 → 1,185.92.
+    let dec = ledger_core::depreciation_schedule(a, d(y, 12, 10)).unwrap();
     assert_eq!(dec.last().unwrap().period, format!("{y}-12"));
+    let want = (Decimal::from(404_400) / Decimal::from(341))
+        .round_dp_with_strategy(2, rust_decimal::RoundingStrategy::MidpointAwayFromZero);
+    assert_eq!(want, Decimal::new(118592, 2));
+    assert_eq!(dec.last().unwrap().accumulated, want);
     assert_eq!(
-        ledger_core::accumulated_depreciation(a, NaiveDate::MAX),
+        ledger_core::accumulated_depreciation(a, NaiveDate::MAX).unwrap(),
         Decimal::new(120000, 2)
     );
-    assert_eq!(ledger_core::book_value(a, NaiveDate::MAX), Decimal::ZERO);
+    assert_eq!(
+        ledger_core::book_value(a, NaiveDate::MAX).unwrap(),
+        Decimal::ZERO
+    );
 }
 
 /// An asset whose life runs past 9999 (or starts before year 1) trues up
@@ -108,7 +121,7 @@ fn a_life_past_9999_trues_up_to_the_cent() {
             })
             .unwrap();
         let a = l.get_asset(id).unwrap();
-        let s = ledger_core::depreciation_schedule(a, NaiveDate::MAX);
+        let s = ledger_core::depreciation_schedule(a, NaiveDate::MAX).unwrap();
         assert_eq!(
             s.last().unwrap().accumulated,
             Decimal::new(99_999, 2),
@@ -170,7 +183,7 @@ fn february_is_prorated_by_chronos_calendar_in_every_year() {
             .unwrap();
         let a = l.get_asset(id).unwrap();
         // Through the 14th: 14 of February's days.
-        let half = ledger_core::depreciation_schedule(a, d(year, 2, 14));
+        let half = ledger_core::depreciation_schedule(a, d(year, 2, 14)).unwrap();
         let days = if leap { 29 } else { 28 };
         let want = (Decimal::from(1450) * Decimal::from(14) / Decimal::from(days))
             .round_dp_with_strategy(2, rust_decimal::RoundingStrategy::MidpointAwayFromZero);

@@ -664,6 +664,7 @@ fn schedules_and_recurring_entries_replay_exactly() {
             months: 3,
             balance_account: prepaid,
             pl_account: ins,
+            convention: ledger_core::ScheduleConvention::MonthlyEven,
         })
         .unwrap();
     store
@@ -1033,7 +1034,7 @@ mod refusals {
         DisposeAsset(u64, u32, i64, u64, u64),
         RunPayroll(u32, i64, i64, u64),
         Remit(u32, u64),
-        RegisterSchedule(bool, i64, u32, u32, u64, u64),
+        RegisterSchedule(bool, i64, u32, u32, u64, u64, bool),
         PostScheduleMonth(u64, u32),
         RegisterRecurring(u64, u64, i64, u32),
         RunRecurring(u32),
@@ -1045,7 +1046,7 @@ mod refusals {
         // that need a chain of earlier steps get exercised too.
         Book(u32, u64, u64, i64),
         GoodAsset(i64, u32),
-        GoodSchedule(bool, i64, u32),
+        GoodSchedule(bool, i64, u32, bool),
         GoodInvoice(u32, i64),
         GoodBill(u32, i64),
         GoodClose(u32),
@@ -1053,6 +1054,16 @@ mod refusals {
 
     fn day(n: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 1, 1).unwrap() + chrono::Days::new(u64::from(n % 120))
+    }
+
+    /// A schedule's convention: by the day, or equal months (refused
+    /// unless it starts on the 1st, D-37).
+    fn convention(daily: bool) -> ledger_core::ScheduleConvention {
+        if daily {
+            ledger_core::ScheduleConvention::Daily
+        } else {
+            ledger_core::ScheduleConvention::MonthlyEven
+        }
     }
 
     /// Cents, biased toward the edges: zero, negative, tiny, huge.
@@ -1135,9 +1146,12 @@ mod refusals {
                 0u32..120,
                 0u32..30,
                 0u64..10,
-                0u64..10
+                0u64..10,
+                any::<bool>()
             )
-                .prop_map(|(k, t, st, m, b, p)| Op::RegisterSchedule(k, t, st, m, b, p)),
+                .prop_map(|(k, t, st, m, b, p, daily)| Op::RegisterSchedule(
+                    k, t, st, m, b, p, daily
+                )),
             (0u64..4, 0u32..12).prop_map(|(s, m)| Op::PostScheduleMonth(s, m)),
             (0u64..10, 0u64..10, arb_cents(), 0u32..120)
                 .prop_map(|(a, b, c, d)| Op::RegisterRecurring(a, b, c, d)),
@@ -1159,8 +1173,8 @@ mod refusals {
             (0u32..120, 1u64..10, 1u64..10, 1i64..500_000)
                 .prop_map(|(d, a, b, c)| Op::Book(d, a, b, c)),
             (1i64..5_000_000, 1u32..60).prop_map(|(c, m)| Op::GoodAsset(c, m)),
-            (any::<bool>(), 1i64..1_000_000, 1u32..24)
-                .prop_map(|(k, t, m)| Op::GoodSchedule(k, t, m)),
+            (any::<bool>(), 1i64..1_000_000, 1u32..24, any::<bool>())
+                .prop_map(|(k, t, m, daily)| Op::GoodSchedule(k, t, m, daily)),
             (0u32..120, 1i64..1_000_000).prop_map(|(d, c)| Op::GoodInvoice(d, c)),
             (0u32..120, 1i64..1_000_000).prop_map(|(d, c)| Op::GoodBill(d, c)),
             (1u32..5).prop_map(Op::GoodClose),
@@ -1384,7 +1398,7 @@ mod refusals {
                 )
                 .map(drop),
             Op::Remit(d, c) => store.remit_payroll_taxes(day(d), c).map(drop),
-            Op::RegisterSchedule(k, t, st, m, b, pl) => store
+            Op::RegisterSchedule(k, t, st, m, b, pl, daily) => store
                 .register_schedule(ledger_core::NewSchedule {
                     description: "sched".into(),
                     kind: if k {
@@ -1397,6 +1411,7 @@ mod refusals {
                     months: m,
                     balance_account: b,
                     pl_account: pl,
+                    convention: convention(daily),
                 })
                 .map(drop),
             Op::PostScheduleMonth(id, m) => {
@@ -1440,7 +1455,7 @@ mod refusals {
                     expense_account: 9,
                 })
                 .map(drop),
-            Op::GoodSchedule(k, t, m) => store
+            Op::GoodSchedule(k, t, m, daily) => store
                 .register_schedule(ledger_core::NewSchedule {
                     description: "insurance".into(),
                     kind: if k {
@@ -1453,6 +1468,7 @@ mod refusals {
                     months: m,
                     balance_account: if k { 1 } else { 6 },
                     pl_account: if k { 8 } else { 7 },
+                    convention: convention(daily),
                 })
                 .map(drop),
             Op::GoodInvoice(d, c) => {
@@ -1976,8 +1992,8 @@ fn every_figure_of(l: &ledger_core::Ledger) -> (usize, usize) {
                 tally(s.due(d).map(|_| ()));
             }
             for a in l.registered_assets() {
-                let _ = ledger_core::depreciation_schedule(a, d);
-                let _ = ledger_core::book_value(a, d);
+                tally(ledger_core::depreciation_schedule(a, d).map(|_| ()));
+                tally(ledger_core::book_value(a, d).map(|_| ()));
                 tally(
                     ledger_core::disposal_amounts(
                         a,
@@ -2863,6 +2879,7 @@ fn replay_refuses_a_schedule_posting_it_does_not_rederive() {
             months: 12,
             balance_account: prepaid,
             pl_account: insurance,
+            convention: ledger_core::ScheduleConvention::MonthlyEven,
         })
         .unwrap();
     store.post_schedule_month(id, day(1, 31)).unwrap();

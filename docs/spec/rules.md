@@ -71,7 +71,12 @@ minor unit), `Ledger::add_line_fx` (base amount = foreign amount × rate,
 rounded to the minor unit; original kept), `Ledger::post_entry` (every
 line, whatever made it: payroll, closes, disposals; `FinerThanMinorUnit`,
 since 2026-10-13 after a payroll run posted $65.27794). Journals from
-before replay as booked (`replay_post_entry`). **Checked:**
+before replay as booked (`replay_post_entry`). A new asset's cost and
+salvage are in the minor unit too (P3: every depreciation and disposal
+line derives from them; `validate_new_asset`), and depreciation and daily
+schedules round to it (B-15, B-16); assets an earlier version took finer
+replay as journaled. **Checked:**
+`an_asset_cost_finer_than_a_cent_is_refused`,
 `a_foreign_line_is_booked_in_whole_base_units`,
 `no_entry_posts_a_fraction_of_the_minor_unit`; the GnuCash oracle.
 **Checked:** `foreign_currency_line_is_rejected`, `fx_overflow_is_an_error`.
@@ -679,9 +684,127 @@ allocation.
 Tax conventions (half-year, mid-month, mid-quarter): IRS Pub. 946
 (`sources/irs-depreciation.md`), for the CPA.
 
-**Enforced:** `assets::depreciation_schedule`. **Checked:**
+The rule, exactly (P3, defect 22; the engineer settled it from ASC
+360-10-35-4, 2026-10-20):
+
+1. The life is `[in-service date, in-service date + life months)` (chrono
+   clamps a day past a month's end: Jan 31 plus one month is Feb 28), cut
+   into the calendar months it touches.
+2. Through day `k` of a month but the life's last, the depreciation is
+   (cost − salvage) / life × (the months before, each as days held over
+   days in the month, + `k` / days in this month): the monthly rate by
+   days.
+3. The life's last month takes what the months before it leave, evenly
+   over its days: through its last day the depreciation is exactly cost
+   − salvage, and through an earlier day of it, prorated by days, never
+   plugged to the whole. (Without clamping its daily rate is the first
+   month's: the remainder is that month's missing days.) Before P3 any
+   schedule through a day of the final month, and every disposed asset's,
+   plugged to the whole: a disposal in the final month posted too much
+   depreciation and too large a gain.
+4. Each cumulative figure is rounded half away from zero to the
+   currency's minor unit (cents; whole yen; a thousandth of a dinar;
+   ISO 4217, `sources/iso-4217.md`), in exact integer arithmetic
+   (`kernel::prorated_through`); a month's amount is the difference of
+   consecutive ones. Through every month end this is the per-month
+   running total books posted before P3, except where the exact figure is
+   a half-cent tie, which the old 28-digit Decimal quotients could round
+   either way; P3 rounds it up, exactly, moving that cent to the month
+   before.
+5. A disposed asset depreciates through its disposal day, held
+   (inclusive): its schedule, accumulated depreciation and book value
+   stop there, and equal what the disposal took. The disposal's book
+   value is cost less the schedule through that day whatever the runs
+   posted: depreciation still due posts as the final depreciation;
+   depreciation the disposal month's run (dated its end) posted past the
+   day is credited back to depreciation expense in the disposal entry
+   (`excess_depreciation`); and the disposal clears what the runs carry,
+   so the asset leaves the accumulated depreciation account at zero. A
+   disposal is refused unless every run carries at the end of the
+   disposal's month what it carries now (the disposal clears what they
+   carry now): while a run of a later month stands (reverse it first:
+   credited back at the disposal day, it would leave the disposal month's
+   accumulated depreciation a debit and its expense short), or while a
+   reversal (or re-instatement) of an earlier run dated after the month
+   isn't undone (the disposal would charge that run again, and the
+   reversal take it away only later; undone on any open day, so a closed
+   month never blocks a disposal for ever). A change a run carries only
+   at later month ends (a later month's run reversed after its month) is
+   that run's error and its correction, dated when made, and the disposal
+   leaves it as it is.
+6. A month's run posts what the schedule says is due through the
+   month's end, less what the books carry then, but never so much that
+   the books would carry more than the schedule at a later month end
+   (`kernel::catch_up`). What the books carry is read entry by entry, each
+   in its own month (`assets::depreciation_effects`): a run adds its
+   amount in its month, a reversal of it takes it away in the reversal's
+   month. So a month skipped, or a run reversed, is caught up in the month
+   the run is made (plan/served.md P3, settled in design, 2026-10-20: an
+   immaterial miss; a material one is restated under ASC 250, a
+   correction for a human and the CPA), and a month whose run was
+   reversed after it ended is never run twice (it carried the month at
+   its end; the run of the reversal's month catches it up). A month a
+   later run caught up, or that rounds to nothing, posts nothing (an entry
+   carries no zero line); a run after the life posts what is still due.
+   A reversed run is un-posted (its month due again, when reversed within
+   it); re-instating one (reversing its reversal) is refused when it would
+   carry the books past the schedule (a later run caught its month up:
+   `assets::catch_up_room`); a disposal, or a run its disposal took as
+   final, can't be reversed; and a run, or a reversal of one, can't be
+   reversed on a day before its own (a correction comes after what it
+   corrects, B-9: a run of March reversed on Jan 31 would leave January
+   and February with negative depreciation; commands only, journals
+   replay as written). The viewer and the store read every run the
+   journal holds, not a month's latest (a run re-instated after its month
+   was run again and that run reversed is the month's run).
+
+**Enforced:** `assets::depreciation_schedule`, `assets::run_amount`,
+`assets::catch_up_room`, `assets::depreciation_effects`,
+`kernel::prorated_through`, `kernel::catch_up`, `kernel::true_up`,
+`calendar::month_parts`, `Store::run_depreciation`,
+`Store::dispose_preview` (`check_nothing_after_disposal`),
+`Store::check_reverse_entry`. **Checked:**
 `schedule_sums_exactly_to_depreciable_amount`,
-`salvage_value_is_never_depreciated`, `prop_depreciation_schedule_exact`.
+`salvage_value_is_never_depreciated`, `prop_depreciation_schedule_exact`,
+`defect22_depreciation_through_mid_final_month_is_prorated_not_plugged`,
+`defect22_final_month_drift_is_spread_by_days`,
+`defect22_a_disposed_assets_schedule_stops_at_its_disposal_day`,
+`defect22_a_disposal_in_the_final_month_posts_depreciation_by_days`,
+`defect22_a_disposal_inside_a_posted_month_takes_back_the_extra_days`,
+`a_run_reinstated_after_its_rerun_was_reversed_still_counts`,
+`the_viewer_counts_a_run_reinstated_after_its_rerun_was_reversed`,
+`a_reversal_dated_before_the_entry_it_reverses_is_refused`,
+`a_disposal_is_taken_once_a_late_change_is_undone_after_its_month_closed`,
+`a_disposal_whose_month_has_run_charges_what_is_still_due_in_its_entry`,
+`every_order_of_runs_reversals_disposals_and_closes_keeps_the_books_right`,
+`prop_any_sequence_keeps_the_books_right`,
+`prop_the_viewer_reads_an_asset_as_the_store_does`,
+`prop_run_amounts_are_each_months_run_amount`,
+`jpy_depreciation_posts_whole_yen`, `a_skipped_month_is_caught_up_in_the_month_run`,
+`a_reversed_depreciation_month_can_be_run_again`,
+`a_run_reversed_after_its_month_is_caught_up_in_the_reversals_month`,
+`reinstating_a_run_a_later_run_caught_up_is_refused`,
+`a_disposal_before_a_later_months_run_is_refused_until_it_is_reversed`,
+`a_disposal_before_a_later_reversal_of_an_earlier_run_is_refused`,
+`a_disposal_entry_cannot_be_reversed`,
+`prop_the_final_month_takes_the_remainder_by_its_days`,
+`depreciation_effects_read_each_entry_in_its_month`,
+`prop_depreciation_is_monotone_and_bounded`,
+`prop_disposed_schedule_equals_what_disposal_computed`,
+`prop_month_end_schedules_match_the_legacy_arithmetic_except_half_cent_ties`;
+`the_charge_never_falls_and_is_continuous_over_real_calendars`; Kani
+`prorate_parts_sum_to_total`, `prorate_last_part_absorbs_the_remainder`,
+`a_months_charge_is_within_half_a_cent`,
+`a_months_charge_in_tenths_is_within_half_a_cent`,
+`the_last_months_charge_is_within_half_a_cent`,
+`the_last_months_charge_in_tenths_is_within_half_a_cent`,
+`prorated_through_refuses_malformed_input`,
+`catch_up_never_overtakes_the_schedule`,
+`catch_ups_is_every_suffixs_catch_up`, `true_up_reaches_the_target`;
+Lean `Prorate.kernel_parts_total`, `Prorate.kernel_parts_nonneg`,
+`Prorate.part_near`, `Prorate.cum_near`, `Prorate.chargeMid_eq_cum`,
+`Prorate.chargeLast_eq_cum`, `Prorate.chargeLast_start`,
+`Prorate.chargeLast_mono`, `Prorate.cum_mono` (`docs/verification.md`).
 
 ## B-16 Prepaid expenses and deferred revenue are recognized over the period benefited or earned
 
@@ -697,8 +820,51 @@ current within the operating cycle; the ASC prescribes no expensing
 method, so monthly expensing stays a convention. Tax: the 12-month rule, Treas. Reg. §1.263(a)-4(f)
 (`sources/irs-capitalization.md`).
 
-**Enforced:** `schedules`. **Checked:** `a_prepaid_expense_is_expensed_month_by_month`,
-`deferred_revenue_is_earned_to_the_cent`.
+Conventions (P3, defect 9): `daily` or `monthly_even`. A new schedule
+spreads by the day from its start (the first day covered), as
+depreciation does (B-15 rules 1-4: full months equal, the first and last
+partial months by their days, the last taking what the others leave,
+rounded to the minor unit): a 12-month policy from March 15 posts
+thirteen month ends, a small March and a small final March (DECISION,
+the owner, D-11 confirmed in D-37, 2026-10-20). Schedules registered before
+P3 keep equal months, the last absorbing rounding, forever: a posted
+month's replay re-derives its plan. `books.schedule_convention` sets the
+convention new schedules take (unset: daily). An equal-months schedule
+starts on the 1st of a month, for prepaid expenses and deferred revenue
+alike (DECISION, the owner, D-37, 2026-10-20): revenue is never recognized
+before it is earned (ASC 606-10-25-23), and one rule for both is simpler
+and never early; schedules an earlier version took mid-month replay as
+they were. A reversed month is un-posted, so it is due again; a month in
+a closed period, or one whose posting was reversed after the month ended
+(posting it again on its own date would recognize it twice until the
+reversal; a schedule posts its plan's months, so it can't catch one up
+later), is left by a run for a human, listed with why, never a failed run.
+A month's posting can't be reversed on a day before its own (a
+correction comes after what it corrects, B-9; commands only). Not yet
+vendored: ASC 606-10-25-31 (progress toward satisfying an obligation over
+time), 606-10-25-32 (one method, applied consistently), 606-10-55-20 (time
+elapsed as an input method): to read from the owner's ASC login before
+B-16 cites them (P3 depreciation review R7).
+
+**Enforced:** `schedules` (`daily_plan`, `amortization_plan`,
+`validate_schedule`), `kernel::prorate_by_days`, `Ledger::reverse_entry`,
+`Ledger::schedule_month_hold`.
+**Checked:** `a_prepaid_expense_is_expensed_month_by_month`,
+`deferred_revenue_is_earned_to_the_cent`,
+`defect9_a_new_schedule_spreads_by_the_day`,
+`defect9_deferred_revenue_daily_is_earned_to_the_cent`,
+`defect9_legacy_schedules_stay_monthly_even`,
+`an_equal_months_schedule_starts_on_the_first`,
+`a_jpy_daily_schedule_posts_whole_yen`, `a_kwd_daily_schedule_rounds_to_the_fils`,
+`a_reversed_schedule_month_is_due_again`,
+`a_reversal_dated_before_the_entry_it_reverses_is_refused`,
+`a_schedule_month_reversed_after_it_ended_is_left_for_a_human`,
+`a_month_that_rounds_to_nothing_is_never_a_posting`,
+`a_schedule_month_posted_again_declares_month_reposting_and_replays`,
+`daily_plans_pin_month_end_clamping`,
+`prop_daily_plan_sums_exactly_and_lands_on_month_ends`,
+`prop_monthly_even_plan_is_unchanged`; `ledger-mcp`
+`mcp_daily_schedule_over_stdio`.
 
 ## B-17 Platform payouts are recorded gross when the business is the principal
 
@@ -1258,13 +1424,23 @@ count's first close, `"rounding": "cumulative_since"`), `account_renamed`
 (before the first `settings.set` naming `policy.require_tax_category`,
 B-32), `party_creditors` (`party.creditor_set`: defect 24, B-35),
 `payment_instruments` (`instrument.added`, `entry.instrument_set`:
-defect 12, B-19) and `vendor_1099_decisions` (`vendor.1099_set` with who
+defect 12, B-19), `vendor_1099_decisions` (`vendor.1099_set` with who
 decided, a `not_reportable` decision, its reason or the date it takes
-effect, and `vendor.w9_flag_set`: defects 18 and 23, D-40, B-19). A value
+effect, and `vendor.w9_flag_set`: defects 18 and 23, D-40, B-19),
+`schedule_convention` (a daily schedule's `schedule.registered` carries
+`convention: daily`; an older version would read it as equal months,
+B-16) and `month_reposting` (a schedule month or a depreciation period
+posted again after a reversal un-posted it; an older version would refuse
+the second `schedule.posted`, and its projection ignore the second
+`asset.depreciation_posted`, B-15). A value
 in a line of a known type that only a newer version writes (a 1099
 decision or reason kind, a payment method's kind) is newer, never
-corrupt. A later piece asks the owner's go-ahead before the first such
-declaration (plan D-39).
+corrupt. A command decides whether it needs a feature, and declares it,
+before its first journaled line, so a feature refused (a format upgrade
+awaiting the owner's consent) journals nothing, never an entry without
+the line that says what it is
+(`a_refused_journal_feature_journals_nothing`). A later piece asks the
+owner's go-ahead before the first such declaration (plan D-39).
 
 **Enforced:** `ledger_store::format` (`JournalFormat::admit`, `declared`,
 `gate`, `settle`, `declaration`), `journal::ENVELOPE_KEYS`,
@@ -1299,7 +1475,12 @@ bounds are the commands', never replay's)
 0001-01-01 through 9999-12-31 (`ledger_core::calendar`): a date given
 to a tool is exactly YYYY-MM-DD, a real day in that range (no sign, no
 space, no fifth year digit); a period is a month of it; a new schedule's
-last month, a new asset's last day of depreciation, a new recurring
+last month (a daily one's last day), a new asset's last day of
+depreciation (so a life ending on 9999-12-31 is taken, and one a day
+later refused: P3 settled the plan's defect 22 question this way, lives
+past 9999 refused at registration, the bound the life's last day held;
+ones an earlier version took open, and their months after 9999-12 show
+as scheduled and never post), a new recurring
 entry's start and end, a new period, a new invoice's or bill's date and
 due date, a disposal's date stay in it. Every amount a command takes,
 not only a posted line's, is at most a journal line's

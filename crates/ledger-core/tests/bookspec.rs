@@ -5,16 +5,23 @@
 //! Each example is a setup, events and expected values worked by hand from
 //! its cited source (`bookspec/README.md` gives the shape). Every example
 //! must load, whatever it asks or whichever appendix it is in: its shape,
-//! its accounts, fixed assets, parties, members, payees, payees' dated
-//! 1099 decisions and payment methods, every event (an entry, a reversal,
-//! a close or a bill, posting entry #N as event N, with the parties,
-//! payee and payment method it is tagged with) and every change that
-//! posts no entry (a rename, a policy). The queries the core answers
-//! (`cash_flow`, `trial_balance`, `profit_and_loss`, `vendor_1099_paid`,
-//! `vendor_1099`, `entry`, `balances`, `members_equity`, `k1`,
-//! `party_part`, `party_totals`, `party_tin_last4`, `period`, `day`,
-//! `calendar_year`, `account_names`, `uncategorized_accounts`) are then
-//! checked value by value, and the commands it tries
+//! its accounts, fixed assets, schedules, parties, members, payees,
+//! payees' dated 1099 decisions and payment methods, every event (an
+//! entry, a reversal, a close, a bill, or a command that posts what is
+//! due: a depreciation run, a disposal, a schedule run or registration),
+//! each accepted or refused as it says, with the parties, payee and
+//! payment method it is tagged with, and every change that posts no entry
+//! (a rename, a policy). The books are the engine's own store
+//! (`ledger_store::Store`, in a directory of their own), so every event
+//! goes through the command the books take it by, journaled, and the
+//! books must replay to what was kept (`Store::verify`). The queries the
+//! core answers (`cash_flow`, `trial_balance`, `profit_and_loss`,
+//! `vendor_1099_paid`, `vendor_1099`, `entry`, `balances`,
+//! `members_equity`, `k1`, `party_part`, `party_totals`,
+//! `party_tin_last4`, `period`, `day`, `calendar_year`, `account_names`,
+//! `uncategorized_accounts`, `run`, `disposal`, `depreciation_schedule`,
+//! `schedule_plan`) are then checked value by value, and the commands it
+//! tries
 //! (`rename_account`, `add_account`, `set_tax_category`) accepted or
 //! refused on a copy of the books, each after the event it names (`after`)
 //! or the last; the formats appendix's (`iif_lines`, `iif_changes`) are
@@ -30,13 +37,15 @@ use ledger_core::calendar::{PeriodDefaults, period_defaults};
 use ledger_core::parties::{Basis, MoneyAccounts};
 use ledger_core::settings::{Company, Source};
 use ledger_core::{
-    AccountType, CashFlowParams, CashFlowSection, CashFlowStatement, CloseTo, Currency, Dated1099,
-    Decision1099, DocumentLine, EntryId, ExemptReason, Form1099, InstrumentId, InstrumentKind,
-    Ledger, LedgerError, MemberCapital, MemberClose, Money, NewAsset, PartyId, PartyMember,
-    PartyShare, PaymentAccounts, ReconcilingKind, Role, Share, Side, TinFacts, TinType, VendorId,
+    AccountType, AssetId, CashFlowParams, CashFlowSection, CashFlowStatement, CloseTo, Currency,
+    Dated1099, Decision1099, DocumentLine, EntryId, EntryStatus, ExemptReason, Form1099,
+    InstrumentId, InstrumentKind, Ledger, LedgerError, MemberCapital, MemberClose, Money, NewAsset,
+    NewSchedule, PartyId, PartyMember, PartyShare, PaymentAccounts, ReconcilingKind, Role,
+    ScheduleConvention, ScheduleId, ScheduleKind, Share, Side, TinFacts, TinType, VendorId,
     W9Facts, cash_flow, members_equity, profit_and_loss_for_period, trial_balance_as_of,
     vendor_1099_report,
 };
+use ledger_store::{DepreciationRun, DisposalPreview, Store, StoreError};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 
@@ -77,6 +86,13 @@ struct Setup {
     investing_accounts: Vec<String>,
     #[serde(default)]
     fixed_assets: Vec<FixedAsset>,
+    /// Fixed assets registered, with their figures (rules.md B-15).
+    #[serde(default)]
+    assets: Vec<AssetSpec>,
+    /// Prepaid-expense and deferred-revenue schedules registered (rules.md
+    /// B-16).
+    #[serde(default)]
+    schedules: Vec<ScheduleSpec>,
     /// The company's directory: parties other than a payee's vendor
     /// record, and the payees' when the example names their roles.
     #[serde(default)]
@@ -135,6 +151,44 @@ struct FixedAsset {
     cost_account: String,
     accumulated_account: String,
     expense_account: String,
+}
+
+/// A fixed asset registered before the first event, named `id` by the
+/// events and queries that ask about it: straight line over its life from
+/// its in-service date (rules.md B-15).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AssetSpec {
+    id: String,
+    description: String,
+    cost: String,
+    salvage: String,
+    life_months: u32,
+    in_service: String,
+    /// `"straight_line"`, the one method the books have.
+    method: String,
+    cost_account: String,
+    accumulated_account: String,
+    expense_account: String,
+}
+
+/// A prepaid expense or deferred revenue recognized over `months` from
+/// `start` (rules.md B-16), named `id`: in `setup.schedules`, or registered
+/// by a `register_schedule` event.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScheduleSpec {
+    id: String,
+    /// `"prepaid_expense"` or `"deferred_revenue"`.
+    kind: String,
+    description: String,
+    total: String,
+    start: String,
+    months: u32,
+    /// `"daily"` or `"monthly_even"`.
+    convention: String,
+    balance_account: String,
+    pl_account: String,
 }
 
 #[derive(Deserialize)]
@@ -234,12 +288,20 @@ struct ShareSpec {
 }
 
 /// One event: an entry (`lines`), a reversal (`reverses`), a close
-/// (`close`) or a bill (`bill`), exactly one of them.
+/// (`close`), a bill (`bill`), or a command that posts what is due
+/// (`run_depreciation`, `dispose_asset`, `run_schedules`) or registers a
+/// schedule (`register_schedule`), exactly one of them.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Event {
-    date: String,
-    description: String,
+    /// The day of an entry, a reversal, a bill or a disposal, the last day
+    /// of a close; a command that dates its own entries takes none.
+    #[serde(default)]
+    date: Option<String>,
+    /// An entry's, a reversal's, a close's or a bill's; a command writes
+    /// its own.
+    #[serde(default)]
+    description: Option<String>,
     #[serde(default)]
     lines: Vec<LineSpec>,
     reverses: Option<usize>,
@@ -247,6 +309,20 @@ struct Event {
     close: Option<CloseSpec>,
     #[serde(default)]
     bill: Option<BillSpec>,
+    #[serde(default)]
+    run_depreciation: Option<RunSpec>,
+    #[serde(default)]
+    dispose_asset: Option<DisposeSpec>,
+    #[serde(default)]
+    run_schedules: Option<RunSchedulesSpec>,
+    #[serde(default)]
+    register_schedule: Option<ScheduleSpec>,
+    /// The engine refuses the event, for this reason in the words of
+    /// [`refusal`]: it changes nothing, and the books go on without it.
+    /// For a reversal or a command, which the books take whole or not at
+    /// all.
+    #[serde(default)]
+    refused: Option<String>,
     /// The payee (in `setup.payees`) the entry paid.
     #[serde(default)]
     payee: Option<String>,
@@ -257,6 +333,34 @@ struct Event {
     /// The payment method (an `setup.instruments` label) it was paid with.
     #[serde(default)]
     instrument: Option<String>,
+}
+
+/// A depreciation run of `asset` for `period` ("YYYY-MM"): what is due
+/// through the month's end, dated then (rules.md B-15).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RunSpec {
+    asset: String,
+    period: String,
+}
+
+/// The disposal of `asset` on the event's date for `proceeds`, received
+/// into `proceeds_account`, its gain or loss to `gain_loss_account`
+/// (rules.md B-15).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DisposeSpec {
+    asset: String,
+    proceeds: String,
+    proceeds_account: String,
+    gain_loss_account: String,
+}
+
+/// Every schedule's months due through `through`, posted (rules.md B-16).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RunSchedulesSpec {
+    through: String,
 }
 
 /// A bill from `vendor` for `amount`, dated and due on the event's date:
@@ -323,8 +427,15 @@ struct Expect {
     from: Option<String>,
     to: Option<String>,
     as_of: Option<String>,
-    /// The entry an `entry` or `party_part` query asks about.
-    entry: Option<EntryId>,
+    /// The event whose entry an `entry` or `party_part` query asks about.
+    entry: Option<usize>,
+    /// The `run_depreciation` event a `run` query asks about.
+    event: Option<usize>,
+    /// The fixed asset (`setup.assets` id) a `disposal` or
+    /// `depreciation_schedule` query asks about.
+    asset: Option<String>,
+    /// The schedule (its id) a `schedule_plan` query asks about.
+    schedule: Option<String>,
     /// The party a `party_part`, `party_totals` or `party_tin_last4`
     /// query asks about (in `setup.parties`).
     party: Option<String>,
@@ -484,9 +595,23 @@ fn refusal(e: &LedgerError) -> String {
         LedgerError::InvalidAccountName(_) => "not_one_line",
         LedgerError::DuplicateAccountCode(_) => "code_taken",
         LedgerError::TaxCategoryRequired { .. } => "tax_category_required",
+        LedgerError::DepreciationPastDisposal(_) => "depreciation_past_disposal",
+        LedgerError::AssetEntryIrreversible(..) => "entry_irreversible",
+        LedgerError::AssetAlreadyDisposed(_) => "already_disposed",
+        LedgerError::InvalidDepreciationPeriod(_) => "invalid_depreciation_period",
+        LedgerError::InvalidSchedule(_) => "invalid_schedule",
         other => return format!("another refusal: {other}"),
     }
     .to_string()
+}
+
+/// [`refusal`] of a command the books refused: the engine's reason, or the
+/// store's own (none is in the examples' words).
+fn store_refusal(e: &StoreError) -> String {
+    match e {
+        StoreError::Ledger(e) => refusal(e),
+        other => format!("another refusal: {other}"),
+    }
 }
 
 fn examples_dir() -> PathBuf {
@@ -511,10 +636,14 @@ fn exact(s: &str, what: &str) -> Decimal {
         .unwrap_or_else(|e| panic!("{what}: {s:?} is not a decimal: {e}"))
 }
 
-/// An example's books: its setup, then its events as they are applied.
+/// An example's books: its setup, then its events as they are applied,
+/// kept by the engine's own store (each command journaled as the books
+/// journal it), in a directory of their own that goes when they do.
 struct Books<'a> {
     ex: &'a Example,
-    l: Ledger,
+    store: Store,
+    /// Where the store keeps them.
+    _dir: tempfile::TempDir,
     currency: Currency,
     /// The members, with their shares (zero when the example gives none).
     members: Vec<MemberCapital>,
@@ -529,6 +658,24 @@ struct Books<'a> {
     vendors: BTreeMap<String, VendorId>,
     /// The payment methods, by label.
     instruments: BTreeMap<String, InstrumentId>,
+    /// The fixed assets of `setup.assets`, by id.
+    assets: BTreeMap<String, AssetId>,
+    /// The schedules of `setup.schedules` and `register_schedule` events,
+    /// by id.
+    schedules: BTreeMap<String, ScheduleId>,
+    /// The entries each event applied so far posted, in order: event N's
+    /// at N - 1.
+    posted: Vec<Vec<EntryId>>,
+    /// Each `run_depreciation` event's run, by event.
+    runs: BTreeMap<usize, DepreciationRun>,
+    /// What each disposal took, by asset id, as the engine computed it
+    /// just before posting it.
+    disposals: BTreeMap<String, DisposalPreview>,
+}
+
+/// A store command's result, unwrapped: the example's books take it.
+fn took<T>(r: Result<T, StoreError>, what: &str) -> T {
+    r.unwrap_or_else(|e| panic!("{what}: {e}"))
 }
 
 /// Who an example's decisions and records are made by.
@@ -568,7 +715,7 @@ fn decision(ex: &str, what: &str, kind: Option<&str>, reason: Option<&str>) -> D
 /// The example's directory (`setup.parties`), by name: each party with
 /// its roles (a vendor or customer with its record), the liabilities it
 /// is the creditor of, and its TIN and W-9 facts' last four.
-fn add_parties(ex: &Example, l: &mut Ledger) -> BTreeMap<String, PartyId> {
+fn add_parties(ex: &Example, store: &mut Store) -> BTreeMap<String, PartyId> {
     let mut out = BTreeMap::new();
     for p in &ex.setup.parties {
         let what = format!("{} party {}", ex.id, p.name);
@@ -586,35 +733,34 @@ fn add_parties(ex: &Example, l: &mut Ledger) -> BTreeMap<String, PartyId> {
         let id = match (record(Role::Vendor), record(Role::Customer)) {
             (true, true) => panic!("{what}: a vendor or a customer, not both"),
             (true, false) => {
-                let v = l
-                    .add_vendor(&p.name)
-                    .unwrap_or_else(|e| panic!("{what}: {e}"));
-                l.party_of_vendor(v).expect("a vendor's party")
+                let v = took(store.add_vendor(&p.name), &what);
+                store.ledger().party_of_vendor(v).expect("a vendor's party")
             }
             (false, true) => {
-                let c = l
-                    .add_customer(&p.name)
-                    .unwrap_or_else(|e| panic!("{what}: {e}"));
-                l.party_of_customer(c).expect("a customer's party")
+                let c = took(store.add_customer(&p.name), &what);
+                store
+                    .ledger()
+                    .party_of_customer(c)
+                    .expect("a customer's party")
             }
-            (false, false) => l
-                .add_party(&p.name, &others)
-                .unwrap_or_else(|e| panic!("{what}: {e}")),
+            (false, false) => took(store.add_party(&p.name, &others), &what),
         };
         if record(Role::Vendor) || record(Role::Customer) {
             for r in &others {
-                l.set_party_role(id, *r, true)
-                    .unwrap_or_else(|e| panic!("{what}: {e}"));
+                took(store.set_party_role(id, *r, true), &what);
             }
         }
         for code in &p.creditor_of {
-            let account = l
+            let account = store
+                .ledger()
                 .chart()
                 .find_by_code(code)
                 .unwrap_or_else(|| panic!("{what}: no account {code}"))
                 .id;
-            l.set_party_creditor(id, account, true)
-                .unwrap_or_else(|e| panic!("{what}: creditor of {code}: {e}"));
+            took(
+                store.set_party_creditor(id, account, true),
+                &format!("{what}: creditor of {code}"),
+            );
         }
         assert!(
             !p.tin_purged || p.tin_last4.is_some(),
@@ -627,8 +773,7 @@ fn add_parties(ex: &Example, l: &mut Ledger) -> BTreeMap<String, PartyId> {
                 vault_record: (!p.tin_purged).then(|| "0".repeat(64)),
                 purged: p.tin_purged.then(|| "purged: retention ended".into()),
             };
-            l.set_party_tin(id, Some(facts))
-                .unwrap_or_else(|e| panic!("{what}: {e}"));
+            took(store.set_party_tin(id, Some(facts)), &what);
         }
         if let Some(last4) = &p.w9_tin_last4 {
             let facts = W9Facts {
@@ -640,22 +785,50 @@ fn add_parties(ex: &Example, l: &mut Ledger) -> BTreeMap<String, PartyId> {
                 kept_at: "wanderbooks vault".into(),
                 vault_record: None,
             };
-            l.set_party_w9(id, Some(facts))
-                .unwrap_or_else(|e| panic!("{what}: {e}"));
+            took(store.set_party_w9(id, Some(facts)), &what);
         }
         assert!(out.insert(p.name.clone(), id).is_none(), "{what}: twice");
     }
     out
 }
 
+/// A schedule as the books register it.
+fn new_schedule(l: &Ledger, s: &ScheduleSpec, currency: Currency, what: &str) -> NewSchedule {
+    let account = |code: &str| {
+        l.chart()
+            .find_by_code(code)
+            .unwrap_or_else(|| panic!("{what}: no account {code}"))
+            .id
+    };
+    NewSchedule {
+        description: s.description.clone(),
+        kind: match s.kind.as_str() {
+            "prepaid_expense" => ScheduleKind::PrepaidExpense,
+            "deferred_revenue" => ScheduleKind::DeferredRevenue,
+            other => panic!("{what}: schedule kind {other:?}"),
+        },
+        total: Money::new(exact(&s.total, what), currency),
+        start: date(&s.start, what),
+        months: s.months,
+        balance_account: account(&s.balance_account),
+        pl_account: account(&s.pl_account),
+        convention: ScheduleConvention::parse(&s.convention)
+            .unwrap_or_else(|| panic!("{what}: schedule convention {:?}", s.convention)),
+    }
+}
+
 impl<'a> Books<'a> {
     /// The books an example sets up, before any event: its shape checked,
-    /// its accounts, fixed assets, parties, members, payees, their dated
-    /// decisions, and payment methods.
+    /// its accounts, fixed assets, schedules, parties, members, payees,
+    /// their dated decisions, and payment methods.
     fn new(ex: &'a Example) -> Self {
         let s = &ex.setup;
         let currency = Currency::new(&s.currency).unwrap();
-        let mut l = Ledger::new(currency);
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = took(
+            Store::create(&dir.path().join("books"), currency),
+            &format!("{}: the books", ex.id),
+        );
         assert!(
             ex.appendix.as_deref().is_none_or(|a| a == "formats"),
             "{}: appendix {:?}",
@@ -700,32 +873,67 @@ impl<'a> Books<'a> {
                 .id
         };
         for a in &s.accounts {
+            let what = format!("{}: account {}", ex.id, a.code);
             // A parent is declared before its subaccounts.
-            let parent = a.parent.as_deref().map(|p| id(&l, p));
-            let account = l
-                .add_account(&a.code, &a.name, a.account_type(&ex.id), parent, a.header)
-                .unwrap_or_else(|e| panic!("{}: account {}: {e}", ex.id, a.code));
+            let parent = a.parent.as_deref().map(|p| id(store.ledger(), p));
+            let account = took(
+                store.add_account(&a.code, &a.name, a.account_type(&ex.id), parent, a.header),
+                &what,
+            );
             if let Some(c) = &a.tax_category {
-                l.set_account_tax(account, Some(c), None)
-                    .unwrap_or_else(|e| panic!("{}: account {}: {e}", ex.id, a.code));
+                took(store.set_account_tax(account, Some(c), None), &what);
             }
         }
         let first = ex
             .events
-            .first()
-            .map_or(date("2026-01-01", "start"), |e| date(&e.date, "date"));
+            .iter()
+            .find_map(|e| e.date.as_deref())
+            .map_or(date("2026-01-01", "start"), |d| date(d, "date"));
         for fa in &s.fixed_assets {
-            l.register_asset(NewAsset {
+            let new = NewAsset {
                 description: format!("Fixed asset on {}", fa.cost_account),
                 purchase_date: first,
                 cost: Money::new(Decimal::ONE, currency),
                 salvage_value: Money::new(Decimal::ZERO, currency),
                 useful_life_months: 12,
-                cost_account: id(&l, &fa.cost_account),
-                accum_depr_account: id(&l, &fa.accumulated_account),
-                expense_account: id(&l, &fa.expense_account),
-            })
-            .unwrap_or_else(|e| panic!("{}: fixed asset: {e}", ex.id));
+                cost_account: id(store.ledger(), &fa.cost_account),
+                accum_depr_account: id(store.ledger(), &fa.accumulated_account),
+                expense_account: id(store.ledger(), &fa.expense_account),
+            };
+            took(
+                store.register_asset(new),
+                &format!("{}: fixed asset", ex.id),
+            );
+        }
+        let mut assets = BTreeMap::new();
+        for a in &s.assets {
+            let what = format!("{}: asset {}", ex.id, a.id);
+            assert_eq!(a.method, "straight_line", "{what}: method");
+            let new = NewAsset {
+                description: a.description.clone(),
+                purchase_date: date(&a.in_service, &what),
+                cost: Money::new(exact(&a.cost, &what), currency),
+                salvage_value: Money::new(exact(&a.salvage, &what), currency),
+                useful_life_months: a.life_months,
+                cost_account: id(store.ledger(), &a.cost_account),
+                accum_depr_account: id(store.ledger(), &a.accumulated_account),
+                expense_account: id(store.ledger(), &a.expense_account),
+            };
+            let asset = took(store.register_asset(new), &what);
+            assert!(
+                assets.insert(a.id.clone(), asset).is_none(),
+                "{what}: id used twice"
+            );
+        }
+        let mut schedules = BTreeMap::new();
+        for sc in &s.schedules {
+            let what = format!("{}: schedule {}", ex.id, sc.id);
+            let new = new_schedule(store.ledger(), sc, currency, &what);
+            let schedule = took(store.register_schedule(new), &what);
+            assert!(
+                schedules.insert(sc.id.clone(), schedule).is_none(),
+                "{what}: id used twice"
+            );
         }
         let shared = s.members.iter().filter(|m| m.share.is_some()).count();
         assert!(
@@ -738,8 +946,11 @@ impl<'a> Books<'a> {
             .iter()
             .map(|m| MemberCapital {
                 name: m.name.clone(),
-                capital_account: id(&l, &m.capital_account),
-                distribution_account: m.distributions_account.as_deref().map(|c| id(&l, c)),
+                capital_account: id(store.ledger(), &m.capital_account),
+                distribution_account: m
+                    .distributions_account
+                    .as_deref()
+                    .map(|c| id(store.ledger(), c)),
                 share: m.share.as_deref().map_or(Decimal::ZERO, |x| {
                     let share = exact(x, &format!("{} {} share", ex.id, m.name));
                     assert!(share > Decimal::ZERO, "{}: {}'s share", ex.id, m.name);
@@ -751,13 +962,13 @@ impl<'a> Books<'a> {
             let total: Decimal = members.iter().map(|m| m.share).sum();
             assert_eq!(total, Decimal::ONE, "{}: the shares sum to 1", ex.id);
         }
-        let parties = add_parties(ex, &mut l);
+        let parties = add_parties(ex, &mut store);
         // A member who is a party (by name, with the member role), as the
         // settings' members are (settings::Company::party_members).
         let party_members: Vec<PartyMember> = members
             .iter()
             .filter_map(|m| {
-                let p = l.party_by_name(&m.name)?;
+                let p = store.ledger().party_by_name(&m.name)?;
                 p.roles.contains(&Role::Member).then_some(PartyMember {
                     party: p.id,
                     share: m.share,
@@ -769,20 +980,21 @@ impl<'a> Books<'a> {
         let source = bookspec_source(&ex.id);
         let mut payees = BTreeMap::new();
         for p in &s.payees {
+            let what = format!("{}: payee {}", ex.id, p.name);
             let form = Form1099::parse(&p.form)
                 .filter(|_| p.form.starts_with("1099-"))
-                .unwrap_or_else(|| panic!("{}: payee {}: form {:?}", ex.id, p.name, p.form));
+                .unwrap_or_else(|| panic!("{what}: form {:?}", p.form));
             // A payee in the directory with the vendor role is that
             // party's vendor record.
-            let v = match parties.get(&p.name).and_then(|&id| l.get_party(id)?.vendor) {
+            let known = parties
+                .get(&p.name)
+                .and_then(|&id| store.ledger().get_party(id)?.vendor);
+            let v = match known {
                 Some(v) => v,
-                None => l
-                    .add_vendor(&p.name)
-                    .unwrap_or_else(|e| panic!("{}: payee {}: {e}", ex.id, p.name)),
+                None => took(store.add_vendor(&p.name), &what),
             };
             let dated = Dated1099::from_beginning(Decision1099::Files(form), Some(source.clone()));
-            l.set_vendor_1099(v, dated, false)
-                .unwrap_or_else(|e| panic!("{}: payee {}: {e}", ex.id, p.name));
+            took(store.set_vendor_1099(v, &dated, Some(false)), &what);
             assert!(
                 payees.insert(p.name.clone(), v).is_none(),
                 "{}: payee {} twice",
@@ -805,27 +1017,23 @@ impl<'a> Books<'a> {
                 ),
                 source: Some(source.clone()),
             };
-            l.set_vendor_1099(v, dated, false)
-                .unwrap_or_else(|e| panic!("{what}: {e}"));
+            took(store.set_vendor_1099(v, &dated, Some(false)), &what);
         }
         let mut instruments = BTreeMap::new();
         for i in &s.instruments {
             let what = format!("{} instrument {}", ex.id, i.label);
             let kind = InstrumentKind::parse(&i.kind)
                 .unwrap_or_else(|| panic!("{what}: kind {:?}", i.kind));
-            let account = l
-                .chart()
-                .find_by_code(&i.account)
-                .unwrap_or_else(|| panic!("{what}: no account {}", i.account))
-                .id;
+            let account = id(store.ledger(), &i.account);
             let owner = i.owner.as_ref().map(|o| {
                 *parties
                     .get(o)
                     .unwrap_or_else(|| panic!("{what}: owner {o:?} not in setup.parties"))
             });
-            let id = l
-                .add_instrument(kind, &i.label, i.last4.as_deref(), owner, account)
-                .unwrap_or_else(|e| panic!("{what}: {e}"));
+            let id = took(
+                store.add_instrument(kind, &i.label, i.last4.as_deref(), owner, account),
+                &what,
+            );
             assert!(
                 instruments.insert(i.label.clone(), id).is_none(),
                 "{what}: twice"
@@ -833,7 +1041,8 @@ impl<'a> Books<'a> {
         }
         Books {
             ex,
-            l,
+            store,
+            _dir: dir,
             currency,
             members,
             party_members,
@@ -841,74 +1050,236 @@ impl<'a> Books<'a> {
             vendors: payees.clone(),
             payees,
             instruments,
+            assets,
+            schedules,
+            posted: Vec::new(),
+            runs: BTreeMap::new(),
+            disposals: BTreeMap::new(),
         }
     }
 
+    /// The books as they stand.
+    fn l(&self) -> &Ledger {
+        self.store.ledger()
+    }
+
     fn id(&self, code: &str) -> ledger_core::AccountId {
-        self.l
+        self.l()
             .chart()
             .find_by_code(code)
             .unwrap_or_else(|| panic!("{}: no account {code}", self.ex.id))
             .id
     }
 
-    /// Event `n` (counting from 1), which must post entry #n.
-    fn apply(&mut self, n: EntryId, e: &Event) {
-        let ex = &self.ex.id;
-        let when = date(&e.date, &format!("{ex} event {n}"));
+    /// The fixed asset `setup.assets` names `name`.
+    fn asset(&self, name: &str, what: &str) -> AssetId {
+        *self
+            .assets
+            .get(name)
+            .unwrap_or_else(|| panic!("{what}: no asset {name:?} in setup.assets"))
+    }
+
+    /// The entry event `event` (counting from 1) posted: an event applied
+    /// already, that posted exactly one.
+    fn entry_of(&self, event: usize, what: &str) -> EntryId {
         assert!(
-            e.payee.is_none() || (e.reverses.is_none() && e.close.is_none() && e.bill.is_none()),
-            "{ex} event {n}: a reversal takes its original's payee, a bill names its vendor, and a close has none"
+            event >= 1 && event <= self.posted.len(),
+            "{what}: event {event}: events count from 1, to the last one applied ({})",
+            self.posted.len()
+        );
+        match self.posted[event - 1].as_slice() {
+            [e] => *e,
+            other => panic!(
+                "{what}: event {event} posted {} entries: only an event that posts one entry names it",
+                other.len()
+            ),
+        }
+    }
+
+    /// Event `n` (counting from 1): accepted, or refused for the reason it
+    /// gives and changing nothing; the entries it posted kept as event
+    /// n's, tagged with the parties, payee and payment method it names.
+    fn apply(&mut self, n: usize, e: &Event) {
+        let spec = self.ex;
+        let ex = spec.id.as_str();
+        let kinds = [
+            ("lines", !e.lines.is_empty()),
+            ("reverses", e.reverses.is_some()),
+            ("close", e.close.is_some()),
+            ("bill", e.bill.is_some()),
+            ("run_depreciation", e.run_depreciation.is_some()),
+            ("dispose_asset", e.dispose_asset.is_some()),
+            ("run_schedules", e.run_schedules.is_some()),
+            ("register_schedule", e.register_schedule.is_some()),
+        ];
+        let kind = match kinds.iter().filter(|(_, given)| *given).collect::<Vec<_>>()[..] {
+            [(kind, _)] => *kind,
+            _ => panic!(
+                "{ex} event {n}: an event is one of lines, reverses, close, bill, run_depreciation, dispose_asset, run_schedules or register_schedule"
+            ),
+        };
+        // An entry of the example's own words: dated and described. A
+        // disposal is dated; the other commands date their own entries,
+        // and every command describes its own.
+        let own = matches!(kind, "lines" | "reverses" | "close" | "bill");
+        assert_eq!(
+            e.date.is_some(),
+            own || kind == "dispose_asset",
+            "{ex} event {n}: {kind} {}",
+            if own || kind == "dispose_asset" {
+                "is dated (date)"
+            } else {
+                "dates its own entries: no date"
+            }
+        );
+        assert_eq!(
+            e.description.is_some(),
+            own,
+            "{ex} event {n}: {kind} {}",
+            if own {
+                "is described (description)"
+            } else {
+                "describes its own entries: no description"
+            }
         );
         assert!(
-            (e.parties.is_empty() && e.instrument.is_none()) || e.reverses.is_none(),
+            e.payee.is_none() || kind == "lines",
+            "{ex} event {n}: a payee is an entry's: a reversal takes its original's, a bill names its vendor, a close and a command have none"
+        );
+        assert!(
+            (e.parties.is_empty() && e.instrument.is_none()) || kind != "reverses",
             "{ex} event {n}: a reversal takes its original's parties and payment method"
         );
-        let posted = match (&e.close, e.reverses, e.lines.is_empty()) {
-            (None, None, true) if e.bill.is_some() => {
-                let b = e.bill.as_ref().unwrap();
-                let amount = exact(&b.amount, ex);
-                assert!(
-                    amount > Decimal::ZERO,
-                    "{ex} event {n}: amounts are positive"
+        assert!(
+            (e.parties.is_empty() && e.instrument.is_none()) || own,
+            "{ex} event {n}: {kind} is tagged with no parties or payment method"
+        );
+        assert!(
+            e.refused.is_none() || !matches!(kind, "lines" | "close" | "bill"),
+            "{ex} event {n}: refused is for a reversal or a command, which the books take whole or not at all"
+        );
+        let what = format!("{ex} event {n}");
+        let when = e.date.as_deref().map(|d| date(d, &what));
+        let description = e.description.as_deref().unwrap_or_default();
+        let head = self.store.head();
+        let first = self.l().next_entry_id();
+        let result = self.take(n, e, kind, when, description, &what);
+        match (result, &e.refused) {
+            (Ok(()), None) => {}
+            (Err(err), Some(want)) => {
+                assert_eq!(store_refusal(&err), *want, "{what}: {kind} refused ({err})");
+                assert_eq!(
+                    self.store.head(),
+                    head,
+                    "{what}: a refused {kind} changes nothing"
                 );
-                let vendor = match self.vendors.get(&b.vendor) {
-                    Some(&v) => v,
-                    None => {
-                        let v = self
-                            .l
-                            .add_vendor(&b.vendor)
-                            .unwrap_or_else(|err| panic!("{ex} event {n}: {err}"));
-                        self.vendors.insert(b.vendor.clone(), v);
-                        v
-                    }
-                };
-                let bill = self
-                    .l
-                    .create_bill(
-                        vendor,
-                        when,
-                        when,
-                        vec![DocumentLine {
-                            description: e.description.clone(),
-                            amount,
-                        }],
-                    )
-                    .unwrap_or_else(|err| panic!("{ex} event {n}: {err}"));
-                self.l.get_bill(bill).expect("the bill just made").entry_id
             }
-            (_, _, _) if e.bill.is_some() => {
-                panic!("{ex} event {n}: an event is one of lines, reverses, close or bill")
+            (Err(err), None) => panic!("{what}: {kind}: {err}"),
+            (Ok(()), Some(want)) => panic!("{what}: {kind} accepted, expected refused: {want}"),
+        }
+        let next = self.l().next_entry_id();
+        let posted: Vec<EntryId> = (first..next).collect();
+        for &id in &posted {
+            assert_eq!(
+                self.l().get_entry(id).map(|x| x.status()),
+                Some(EntryStatus::Posted),
+                "{what}: entry {id}, which it made, is posted"
+            );
+        }
+        if own && e.refused.is_none() {
+            assert_eq!(posted.len(), 1, "{what}: {kind} posts one entry");
+        }
+        self.posted.push(posted);
+        if !e.parties.is_empty() {
+            let entry = self.entry_of(n, &what);
+            let shares: Vec<PartyShare> = e
+                .parties
+                .iter()
+                .map(|sh| {
+                    let party = *self
+                        .parties
+                        .get(&sh.party)
+                        .unwrap_or_else(|| panic!("{what}: party {:?} not in setup", sh.party));
+                    let share = match (&sh.amount, &sh.percent) {
+                        (None, None) => Share::Derived,
+                        (Some(a), None) => Share::Amount(exact(a, ex)),
+                        (None, Some(p)) => Share::Percent(exact(p, ex)),
+                        _ => panic!("{what}: a share is an amount or a percent"),
+                    };
+                    PartyShare { party, share }
+                })
+                .collect();
+            took(self.store.set_entry_parties(entry, &shares), &what);
+        }
+        // The payee after the parties: a payee's party must be among
+        // several named (the vendor tag follows the parties).
+        if let Some(p) = &e.payee {
+            let v = *self
+                .payees
+                .get(p)
+                .unwrap_or_else(|| panic!("{what}: payee {p:?} not in setup"));
+            let entry = self.entry_of(n, &what);
+            took(self.store.set_entry_vendor(entry, Some(v)), &what);
+        }
+        if let Some(label) = &e.instrument {
+            let i = *self
+                .instruments
+                .get(label)
+                .unwrap_or_else(|| panic!("{what}: payment method {label:?} not in setup"));
+            let entry = self.entry_of(n, &what);
+            took(self.store.set_entry_instrument(entry, Some(i)), &what);
+        }
+    }
+
+    /// Event `n`'s command, given to the books (`kind`, as [`Self::apply`]
+    /// found it): whatever it posts is posted, or the books refuse it.
+    fn take(
+        &mut self,
+        n: usize,
+        e: &Event,
+        kind: &str,
+        when: Option<NaiveDate>,
+        description: &str,
+        what: &str,
+    ) -> Result<(), StoreError> {
+        let money = |s: &str| {
+            let amount = exact(s, what);
+            assert!(amount > Decimal::ZERO, "{what}: amounts are positive");
+            amount
+        };
+        let day = || when.expect("checked: dated");
+        match kind {
+            "lines" => {
+                let entry = self.store.create_entry(day(), description)?;
+                for line in &e.lines {
+                    let side = match line.side.as_str() {
+                        "debit" => Side::Debit,
+                        "credit" => Side::Credit,
+                        other => panic!("{what}: side {other:?}"),
+                    };
+                    let amount = Money::new(money(&line.amount), self.currency);
+                    let account = self.id(&line.account);
+                    self.store.add_line(entry, account, side, amount)?;
+                }
+                self.store.post_entry(entry)
             }
-            (Some(c), None, true) => {
+            "reverses" => {
+                let of = e.reverses.expect("checked: a reversal");
+                // Events count from 1, as entries do: `reverses = 1` is
+                // the first event (bookspec/README.md).
+                assert!(of >= 1, "{what}: reverses = {of}: events count from 1");
+                assert!(of < n, "{what}: reverses a later event");
+                let entry = self.entry_of(of, what);
+                self.store
+                    .reverse_entry(entry, day(), description)
+                    .map(|_| ())
+            }
+            "close" => {
+                let c = e.close.as_ref().expect("checked: a close");
+                let start = date(&c.start, what);
                 let p = self
-                    .l
-                    .create_period(
-                        &format!("event {n}"),
-                        date(&c.start, &format!("{ex} event {n}")),
-                        when,
-                    )
-                    .unwrap_or_else(|err| panic!("{ex} event {n}: {err}"));
+                    .store
+                    .create_period(&format!("event {n}"), start, day())?;
                 let members: Vec<MemberClose> = self
                     .members
                     .iter()
@@ -921,102 +1292,95 @@ impl<'a> Books<'a> {
                 if c.to == "members" {
                     assert!(
                         !members.is_empty() && members.iter().all(|m| m.share > Decimal::ZERO),
-                        "{ex} event {n}: a close to the members needs their shares"
+                        "{what}: a close to the members needs their shares"
                     );
                 }
                 let to = match (c.to.as_str(), c.rounding.as_deref()) {
                     ("members", None) => CloseTo::Members(members),
                     ("members", Some("per-close")) => CloseTo::MembersPerClose(members),
                     ("retained_earnings", None) => CloseTo::RetainedEarnings { sweep: vec![] },
-                    other => panic!("{ex} event {n}: close {other:?}"),
+                    other => panic!("{what}: close {other:?}"),
                 };
-                self.l
-                    .close_period_to(p, &to)
-                    .unwrap_or_else(|err| panic!("{ex} event {n}: {err}"))
-                    .unwrap_or_else(|| panic!("{ex} event {n}: the close has nothing to close"))
+                let closed = self.store.close_period_to(p, &to)?;
+                assert!(closed.is_some(), "{what}: the close has nothing to close");
+                Ok(())
             }
-            (None, Some(of), true) => {
-                // Events count from 1, as entries do: `reverses = 1` is
-                // the first event (bookspec/README.md).
-                assert!(
-                    of >= 1,
-                    "{ex} event {n}: reverses = {of}: events count from 1"
-                );
-                assert!(
-                    (of as EntryId) < n,
-                    "{ex} event {n}: reverses a later event"
-                );
-                self.l
-                    .reverse_entry(of as EntryId, when, &e.description)
-                    .unwrap_or_else(|err| panic!("{ex} event {n}: {err}"))
+            "bill" => {
+                let b = e.bill.as_ref().expect("checked: a bill");
+                let amount = money(&b.amount);
+                let vendor = match self.vendors.get(&b.vendor) {
+                    Some(&v) => v,
+                    None => {
+                        let v = self.store.add_vendor(&b.vendor)?;
+                        self.vendors.insert(b.vendor.clone(), v);
+                        v
+                    }
+                };
+                let lines = vec![DocumentLine {
+                    description: description.to_string(),
+                    amount,
+                }];
+                self.store
+                    .create_bill(vendor, day(), day(), lines)
+                    .map(|_| ())
             }
-            (None, Some(_), false) => panic!("{ex} event {n}: a reversal has no lines"),
-            (None, None, false) => {
-                let entry = self.l.create_entry(when, &e.description);
-                for line in &e.lines {
-                    let side = match line.side.as_str() {
-                        "debit" => Side::Debit,
-                        "credit" => Side::Credit,
-                        other => panic!("{ex} event {n}: side {other:?}"),
-                    };
-                    let amount = exact(&line.amount, ex);
-                    assert!(
-                        amount > Decimal::ZERO,
-                        "{ex} event {n}: amounts are positive"
-                    );
-                    let account = self.id(&line.account);
-                    self.l
-                        .add_line(entry, account, side, Money::new(amount, self.currency))
-                        .unwrap_or_else(|err| panic!("{ex} event {n}: {err}"));
+            "run_depreciation" => {
+                let r = e.run_depreciation.as_ref().expect("checked: a run");
+                let asset = self.asset(&r.asset, what);
+                let run = self.store.run_depreciation(asset, &r.period)?;
+                self.runs.insert(n, run);
+                Ok(())
+            }
+            "dispose_asset" => {
+                let d = e.dispose_asset.as_ref().expect("checked: a disposal");
+                let asset = self.asset(&d.asset, what);
+                let proceeds = exact(&d.proceeds, what);
+                assert!(
+                    proceeds >= Decimal::ZERO,
+                    "{what}: proceeds aren't negative"
+                );
+                let proceeds = Money::new(proceeds, self.currency);
+                let (into, gain_loss) =
+                    (self.id(&d.proceeds_account), self.id(&d.gain_loss_account));
+                // What the disposal takes, as the engine computes it before
+                // posting; the disposal itself refused whenever its
+                // computation is.
+                let preview = self.store.dispose_preview(asset, day(), proceeds);
+                let disposed = self
+                    .store
+                    .dispose_asset(asset, day(), proceeds, into, gain_loss);
+                match (preview, disposed) {
+                    (Ok(p), Ok(_)) => {
+                        assert!(
+                            self.disposals.insert(d.asset.clone(), p).is_none(),
+                            "{what}: asset {} disposed of twice",
+                            d.asset
+                        );
+                        Ok(())
+                    }
+                    (Err(p), Ok(_)) => {
+                        panic!("{what}: disposed of, though its computation was refused: {p}")
+                    }
+                    (_, Err(err)) => Err(err),
                 }
-                self.l
-                    .post_entry(entry)
-                    .unwrap_or_else(|err| panic!("{ex} event {n}: {err}"));
-                entry
             }
-            _ => panic!("{ex} event {n}: an event is one of lines, reverses, close or bill"),
-        };
-        assert_eq!(posted, n, "{ex}: event {n} must be entry #{n}");
-        if !e.parties.is_empty() {
-            let shares: Vec<PartyShare> = e
-                .parties
-                .iter()
-                .map(|sh| {
-                    let party = *self.parties.get(&sh.party).unwrap_or_else(|| {
-                        panic!("{ex} event {n}: party {:?} not in setup", sh.party)
-                    });
-                    let share = match (&sh.amount, &sh.percent) {
-                        (None, None) => Share::Derived,
-                        (Some(a), None) => Share::Amount(exact(a, ex)),
-                        (None, Some(p)) => Share::Percent(exact(p, ex)),
-                        _ => panic!("{ex} event {n}: a share is an amount or a percent"),
-                    };
-                    PartyShare { party, share }
-                })
-                .collect();
-            self.l
-                .set_entry_parties(n, &shares)
-                .unwrap_or_else(|err| panic!("{ex} event {n}: {err}"));
-        }
-        // The payee after the parties: a payee's party must be among
-        // several named (the vendor tag follows the parties).
-        if let Some(p) = &e.payee {
-            let v = *self
-                .payees
-                .get(p)
-                .unwrap_or_else(|| panic!("{ex} event {n}: payee {p:?} not in setup"));
-            self.l
-                .set_entry_vendor(n, Some(v))
-                .unwrap_or_else(|err| panic!("{ex} event {n}: {err}"));
-        }
-        if let Some(label) = &e.instrument {
-            let i = *self
-                .instruments
-                .get(label)
-                .unwrap_or_else(|| panic!("{ex} event {n}: payment method {label:?} not in setup"));
-            self.l
-                .set_entry_instrument(n, Some(i))
-                .unwrap_or_else(|err| panic!("{ex} event {n}: {err}"));
+            "run_schedules" => {
+                let r = e.run_schedules.as_ref().expect("checked: a run");
+                let through = date(&r.through, what);
+                self.store.run_schedules(through).map(|_| ())
+            }
+            "register_schedule" => {
+                let sc = e.register_schedule.as_ref().expect("checked: a schedule");
+                let new = new_schedule(self.l(), sc, self.currency, what);
+                let schedule = self.store.register_schedule(new)?;
+                assert!(
+                    self.schedules.insert(sc.id.clone(), schedule).is_none(),
+                    "{what}: schedule id {} used twice",
+                    sc.id
+                );
+                Ok(())
+            }
+            other => unreachable!("{other} is no event"),
         }
     }
 }
@@ -1026,42 +1390,28 @@ impl Books<'_> {
     fn change(&mut self, c: &ChangeSpec) {
         let ex = &self.ex.id;
         let after = c.after;
+        let what = format!("{ex} change after {after}");
         match (&c.rename, &c.require_tax_category) {
             (Some(r), None) => {
                 let account = self.id(&r.code);
-                self.l
-                    .rename_account(account, &r.name)
-                    .unwrap_or_else(|e| panic!("{ex} change after {after}: {e}"));
+                took(self.store.rename_account(account, &r.name, None), &what);
             }
             (None, Some(policy)) => {
                 assert!(
                     matches!(policy.as_str(), "warn" | "refuse"),
-                    "{ex} change after {after}: require_tax_category {policy:?}"
+                    "{what}: require_tax_category {policy:?}"
                 );
-                use ledger_core::settings::{Change, Source};
-                let source = Source {
-                    decided_by: "bookspec".into(),
-                    decided_on: date("2026-01-01", ex),
-                    citation: None,
-                    note: None,
+                use ledger_core::settings::Change;
+                let change = Change {
+                    key: "policy.require_tax_category".into(),
+                    value: Some(serde_json::json!(policy)),
                 };
-                let changes = self
-                    .l
-                    .check_settings(
-                        &[Change {
-                            key: "policy.require_tax_category".into(),
-                            value: Some(serde_json::json!(policy)),
-                        }],
-                        &source,
-                    )
-                    .unwrap_or_else(|e| panic!("{ex} change after {after}: {e}"));
-                self.l
-                    .apply_settings(&changes, &source, 1)
-                    .unwrap_or_else(|e| panic!("{ex} change after {after}: {e}"));
+                took(
+                    self.store.change_settings(&[change], &bookspec_source(ex)),
+                    &what,
+                );
             }
-            _ => panic!(
-                "{ex} change after {after}: a change is one of rename or require_tax_category"
-            ),
+            _ => panic!("{what}: a change is one of rename or require_tax_category"),
         }
     }
 }
@@ -1071,7 +1421,7 @@ impl Books<'_> {
 fn load(ex: &Example) -> Books<'_> {
     let mut b = Books::new(ex);
     for (i, e) in ex.events.iter().enumerate() {
-        b.apply(i as EntryId + 1, e);
+        b.apply(i + 1, e);
         for c in ex.changes.iter().filter(|c| c.after == i + 1) {
             b.change(c);
         }
@@ -1080,8 +1430,13 @@ fn load(ex: &Example) -> Books<'_> {
 }
 
 /// The `cash_flow` query's value for `key` (bookspec/README.md), or None
-/// for a key it doesn't know.
-fn cash_flow_value(cf: &CashFlowStatement, key: &str) -> Option<Decimal> {
+/// for a key it doesn't know. A key's `<N>` is event N, whose entry
+/// `entry_of` gives.
+fn cash_flow_value(
+    cf: &CashFlowStatement,
+    key: &str,
+    entry_of: &dyn Fn(usize) -> EntryId,
+) -> Option<Decimal> {
     let sections = [
         ("operating", CashFlowSection::Operating),
         ("investing", CashFlowSection::Investing),
@@ -1101,7 +1456,7 @@ fn cash_flow_value(cf: &CashFlowStatement, key: &str) -> Option<Decimal> {
             }
             let (head, tail) = key.split_once('.')?;
             if head == "noncash" {
-                let n: EntryId = tail.parse().ok()?;
+                let n = entry_of(tail.parse().ok()?);
                 return Some(
                     cf.noncash_disclosures
                         .iter()
@@ -1138,14 +1493,15 @@ fn cash_flow_value(cf: &CashFlowStatement, key: &str) -> Option<Decimal> {
                 let entries: BTreeSet<EntryId> = lines.iter().map(|l| l.entry).collect();
                 return Some(count(entries.len()));
             }
-            // `<section>.<N>`, or `<section>.<N>.on_behalf`: of entry N's
-            // cash there, what a member or lender handled for the company.
+            // `<section>.<N>`, or `<section>.<N>.on_behalf`: of event N's
+            // entry's cash there, what a member or lender handled for the
+            // company.
             let (n, on_behalf) = match tail.split_once('.') {
                 Some((n, "on_behalf")) => (n, true),
                 Some(_) => return None,
                 None => (tail, false),
             };
-            let n: EntryId = n.parse().ok()?;
+            let n = entry_of(n.parse().ok()?);
             lines
                 .iter()
                 .filter(|l| l.entry == n)
@@ -1171,7 +1527,8 @@ fn reconciliation_key(l: &ledger_core::ReconcilingLine) -> String {
 }
 
 /// Check one `cash_flow` expectation, every value it gives.
-fn check_cash_flow(ex: &Example, l: &Ledger, members: &[MemberCapital], x: &Expect) {
+fn check_cash_flow(b: &Books<'_>, x: &Expect) {
+    let (ex, l, members) = (b.ex, b.l(), &b.members);
     let (start, end) = x.period(ex);
     let values = x.figures(&ex.id);
     let params = CashFlowParams {
@@ -1185,7 +1542,8 @@ fn check_cash_flow(ex: &Example, l: &Ledger, members: &[MemberCapital], x: &Expe
     let cf = cash_flow(l, &params).unwrap_or_else(|e| panic!("{}: {e}", ex.id));
     for (key, want) in values {
         let want = exact(want, &format!("{} {key}", ex.id));
-        let got = cash_flow_value(&cf, key)
+        let entry_of = |n: usize| b.entry_of(n, &format!("{} cash_flow {key}", ex.id));
+        let got = cash_flow_value(&cf, key, &entry_of)
             .unwrap_or_else(|| panic!("{}: unknown cash_flow key {key:?}", ex.id));
         assert_eq!(
             got, want,
@@ -1313,7 +1671,7 @@ fn check_profit_and_loss(ex: &Example, l: &Ledger, x: &Expect) {
 /// of the cash and financing accounts, an entry's shares resolved with
 /// the members who are parties (rules.md B-19, B-33).
 fn report_1099(b: &Books<'_>, x: &Expect) -> (NaiveDate, NaiveDate, ledger_core::Vendor1099Report) {
-    let (ex, l) = (b.ex, &b.l);
+    let (ex, l) = (b.ex, b.l());
     // A calendar-year count, never the fiscal default (rules.md B-30):
     // both dates given.
     assert!(
@@ -1442,15 +1800,16 @@ fn expect_party(b: &Books<'_>, x: &Expect) -> PartyId {
 /// of it moved as money (`cash`) and as property (`in_kind`); every one
 /// given.
 fn check_party_part(b: &Books<'_>, x: &Expect) {
-    let (ex, l) = (b.ex, &b.l);
+    let (ex, l) = (b.ex, b.l());
     assert!(
         x.from.is_none() && x.to.is_none() && x.as_of.is_none(),
         "{}: party_part asks about one entry, no dates",
         ex.id
     );
-    let n = x
+    let event = x
         .entry
-        .unwrap_or_else(|| panic!("{}: a party_part query names its entry", ex.id));
+        .unwrap_or_else(|| panic!("{}: a party_part query names its event", ex.id));
+    let n = b.entry_of(event, &format!("{} party_part", ex.id));
     let party = expect_party(b, x);
     let r = ledger_core::shares::resolve(
         l,
@@ -1485,7 +1844,7 @@ fn check_party_part(b: &Books<'_>, x: &Expect) {
 /// money; `all`: money and property in kind), each entry's part on its
 /// root original's side (rules.md B-35 item 4); both given.
 fn check_party_totals(b: &Books<'_>, x: &Expect) {
-    let (ex, l) = (b.ex, &b.l);
+    let (ex, l) = (b.ex, b.l());
     assert!(
         x.from.is_some() && x.to.is_some(),
         "{}: party_totals gives from and to",
@@ -1544,10 +1903,11 @@ fn check_party_tin_last4(b: &Books<'_>, x: &Expect) {
     );
     let party = expect_party(b, x);
     exactly(ex, x, &["tin_last4".to_string()].into());
-    let got =
-        b.l.get_party(party)
-            .and_then(|p| p.tin_last4())
-            .unwrap_or_default();
+    let got = b
+        .l()
+        .get_party(party)
+        .and_then(|p| p.tin_last4())
+        .unwrap_or_default();
     assert_eq!(
         got,
         x.figures(&ex.id)["tin_last4"],
@@ -1639,10 +1999,11 @@ fn check_format_shape(ex: &Example, x: &Expect) {
     }
 }
 
-/// Check one `entry` expectation: entry N's lines, `"<code>.debit"` and
+/// Check one `entry` expectation: the lines of event N's entry, `"<code>.debit"` and
 /// `"<code>.credit"` each summing that account's lines on that side,
 /// every line of the entry named.
-fn check_entry(ex: &Example, l: &Ledger, x: &Expect) {
+fn check_entry(b: &Books<'_>, x: &Expect) {
+    let (ex, l) = (b.ex, b.l());
     assert!(
         x.from.is_none() && x.to.is_none() && x.as_of.is_none(),
         "{}: entry asks about one entry, no dates",
@@ -1650,10 +2011,10 @@ fn check_entry(ex: &Example, l: &Ledger, x: &Expect) {
     );
     let n = x
         .entry
-        .unwrap_or_else(|| panic!("{}: an entry query names its entry", ex.id));
+        .unwrap_or_else(|| panic!("{}: an entry query names its event", ex.id));
     let entry = l
-        .get_entry(n)
-        .unwrap_or_else(|| panic!("{}: no entry {n}", ex.id));
+        .get_entry(b.entry_of(n, &format!("{} entry {n}", ex.id)))
+        .expect("an entry an event posted");
     let mut got: BTreeMap<String, Decimal> = BTreeMap::new();
     for line in entry.lines() {
         let code = &l.chart().get(line.account).unwrap().code;
@@ -1732,6 +2093,165 @@ fn check_members_equity(ex: &Example, l: &Ledger, members: &[MemberCapital], x: 
             "{} members' equity [{from} .. {to}]: {key}",
             ex.id
         );
+    }
+}
+
+/// No dates: a query about one thing the books did, not about a day.
+fn undated(ex: &Example, x: &Expect) {
+    assert!(
+        x.from.is_none() && x.to.is_none() && x.as_of.is_none(),
+        "{}: {} takes no dates",
+        ex.id,
+        x.query
+    );
+}
+
+/// Check one `run` expectation: what the `run_depreciation` event `event`
+/// posted (`amount`: zero when nothing was due, or the month already had
+/// its run) and, of it, what it caught up beyond its own month's
+/// depreciation (`caught_up`), both listed (rules.md B-15).
+fn check_run(b: &Books<'_>, x: &Expect) {
+    let ex = b.ex;
+    undated(ex, x);
+    let n = x
+        .event
+        .unwrap_or_else(|| panic!("{}: run names its event", ex.id));
+    let run = b.runs.get(&n).unwrap_or_else(|| {
+        panic!(
+            "{}: event {n} is no run_depreciation (or not yet run)",
+            ex.id
+        )
+    });
+    let posted = if run.already_posted {
+        Decimal::ZERO
+    } else {
+        run.amount
+    };
+    let caught_up = (posted - run.scheduled).max(Decimal::ZERO);
+    exactly(
+        ex,
+        x,
+        &["amount".to_string(), "caught_up".to_string()].into(),
+    );
+    for (key, got) in [("amount", posted), ("caught_up", caught_up)] {
+        let want = exact(&x.figures(&ex.id)[key], &format!("{} {key}", ex.id));
+        assert_eq!(got, want, "{} run of event {n}: {key}", ex.id);
+    }
+}
+
+/// Check one `disposal` expectation: what the disposal of `asset` took, as
+/// the engine computed it when posting it (rules.md B-15), every figure
+/// listed: `final_depreciation` (posted in its own entry before the
+/// disposal), `catch_up_depreciation` and `excess_depreciation` (charged,
+/// and credited back, in the disposal entry), `accumulated` (cleared),
+/// `book_value` and `gain_loss` (a gain positive).
+fn check_disposal(b: &Books<'_>, x: &Expect) {
+    let ex = b.ex;
+    undated(ex, x);
+    let asset = x
+        .asset
+        .as_deref()
+        .unwrap_or_else(|| panic!("{}: disposal names its asset", ex.id));
+    let p = b
+        .disposals
+        .get(asset)
+        .unwrap_or_else(|| panic!("{}: asset {asset:?} wasn't disposed of", ex.id));
+    let figures = [
+        ("final_depreciation", p.final_depreciation),
+        ("catch_up_depreciation", p.catch_up_depreciation),
+        ("excess_depreciation", p.excess_depreciation),
+        ("accumulated", p.accumulated),
+        ("book_value", p.book_value),
+        ("gain_loss", p.gain_loss),
+    ];
+    exactly(ex, x, &figures.iter().map(|(k, _)| k.to_string()).collect());
+    for (key, got) in figures {
+        let want = exact(&x.figures(&ex.id)[key], &format!("{} {key}", ex.id));
+        assert_eq!(got, want, "{} disposal of {asset}: {key}", ex.id);
+    }
+}
+
+/// A month key, "YYYY-MM", checked.
+fn month_key(key: &str, what: &str) {
+    assert!(
+        key.len() == 7 && NaiveDate::parse_from_str(&format!("{key}-01"), "%Y-%m-%d").is_ok(),
+        "{what}: {key:?} is no month (YYYY-MM)"
+    );
+}
+
+/// Check one `depreciation_schedule` expectation: the schedule of `asset`
+/// through `as_of` (rules.md B-15), each month named (`"YYYY-MM"`) its
+/// depreciation, 0.00 for a month the schedule doesn't reach;
+/// `accumulated` and `book_value` through `as_of`; the example names the
+/// figures it shows.
+fn check_depreciation_schedule(b: &Books<'_>, x: &Expect) {
+    let ex = b.ex;
+    let as_of = x.day(ex);
+    let name = x
+        .asset
+        .as_deref()
+        .unwrap_or_else(|| panic!("{}: depreciation_schedule names its asset", ex.id));
+    let what = format!("{} depreciation_schedule of {name} through {as_of}", ex.id);
+    let asset = b
+        .l()
+        .get_asset(b.asset(name, &what))
+        .expect("a registered asset");
+    let lines =
+        ledger_core::depreciation_schedule(asset, as_of).unwrap_or_else(|e| panic!("{what}: {e}"));
+    for (key, want) in x.figures(&ex.id) {
+        let want = exact(want, &format!("{what}: {key}"));
+        let got = match key.as_str() {
+            "accumulated" => ledger_core::accumulated_depreciation(asset, as_of),
+            "book_value" => ledger_core::book_value(asset, as_of),
+            month => {
+                month_key(month, &what);
+                Ok(lines
+                    .iter()
+                    .find(|l| l.period == month)
+                    .map_or(Decimal::ZERO, |l| l.amount))
+            }
+        }
+        .unwrap_or_else(|e| panic!("{what}: {key}: {e}"));
+        assert_eq!(got, want, "{what}: {key}");
+    }
+}
+
+/// Check one `schedule_plan` expectation: what the schedule's plan
+/// recognizes at each month end named (`"YYYY-MM-DD"`, 0.00 at a month end
+/// the plan doesn't post), and `total`, all it recognizes (rules.md B-16);
+/// the example names the figures it shows.
+fn check_schedule_plan(b: &Books<'_>, x: &Expect) {
+    let ex = b.ex;
+    undated(ex, x);
+    let name = x
+        .schedule
+        .as_deref()
+        .unwrap_or_else(|| panic!("{}: schedule_plan names its schedule", ex.id));
+    let what = format!("{} schedule_plan of {name}", ex.id);
+    let id = *b
+        .schedules
+        .get(name)
+        .unwrap_or_else(|| panic!("{what}: no schedule {name:?}"));
+    let plan = b
+        .l()
+        .get_schedule(id)
+        .expect("a registered schedule")
+        .plan()
+        .unwrap_or_else(|e| panic!("{what}: {e}"));
+    for (key, want) in x.figures(&ex.id) {
+        let want = exact(want, &format!("{what}: {key}"));
+        let got: Decimal = if key == "total" {
+            plan.iter().map(|(_, a)| *a).sum()
+        } else {
+            let d = date(key, &what);
+            assert_eq!(
+                d,
+                ledger_core::schedules::month_end(d),
+                "{what}: {key} is no month end"
+            );
+            plan.iter().filter(|(m, _)| *m == d).map(|(_, a)| *a).sum()
+        };
+        assert_eq!(got, want, "{what}: {key}");
     }
 }
 
@@ -1939,7 +2459,7 @@ fn check_uncategorized_accounts(ex: &Example, l: &Ledger, x: &Expect) {
 /// to the test [`FORMAT_QUERIES`] names (returned); a query no crate
 /// answers is refused.
 fn check(b: &Books<'_>, x: &Expect) -> Option<&'static str> {
-    let (ex, l) = (b.ex, &b.l);
+    let (ex, l) = (b.ex, b.l());
     let q = x.query.as_str();
     let only = |given: bool, key: &str, queries: &[&str]| {
         assert!(
@@ -1950,6 +2470,13 @@ fn check(b: &Books<'_>, x: &Expect) -> Option<&'static str> {
         );
     };
     only(x.entry.is_some(), "entry", &["entry", "party_part"]);
+    only(x.event.is_some(), "event", &["run"]);
+    only(
+        x.asset.is_some(),
+        "asset",
+        &["disposal", "depreciation_schedule"],
+    );
+    only(x.schedule.is_some(), "schedule", &["schedule_plan"]);
     only(
         x.party.is_some(),
         "party",
@@ -1998,12 +2525,16 @@ fn check(b: &Books<'_>, x: &Expect) -> Option<&'static str> {
         "calendar_year" => check_calendar_year(ex, x),
         "account_names" => check_account_names(ex, l, x),
         "uncategorized_accounts" => check_uncategorized_accounts(ex, l, x),
-        "cash_flow" => check_cash_flow(ex, l, &b.members, x),
+        "cash_flow" => check_cash_flow(b, x),
         "trial_balance" => check_trial_balance(ex, l, x),
         "profit_and_loss" => check_profit_and_loss(ex, l, x),
         "vendor_1099_paid" => check_vendor_1099_paid(b, x),
         "vendor_1099" => check_vendor_1099(b, x),
-        "entry" => check_entry(ex, l, x),
+        "entry" => check_entry(b, x),
+        "run" => check_run(b, x),
+        "disposal" => check_disposal(b, x),
+        "depreciation_schedule" => check_depreciation_schedule(b, x),
+        "schedule_plan" => check_schedule_plan(b, x),
         "balances" => check_balances(ex, l, x),
         "members_equity" => check_members_equity(ex, l, &b.members, x),
         "k1" => check_k1(ex, l, &b.members, x),
@@ -2043,7 +2574,7 @@ fn run(ex: &Example) -> Vec<(String, Option<&'static str>)> {
     let mut b = Books::new(ex);
     let mut out = Vec::new();
     for (i, e) in ex.events.iter().enumerate() {
-        b.apply(i as EntryId + 1, e);
+        b.apply(i + 1, e);
         for x in ex.expect.iter().filter(|x| x.after == Some(i + 1)) {
             out.push((x.query.clone(), check(&b, x)));
         }
@@ -2054,6 +2585,11 @@ fn run(ex: &Example) -> Vec<(String, Option<&'static str>)> {
     for x in ex.expect.iter().filter(|x| x.after.is_none()) {
         out.push((x.query.clone(), check(&b, x)));
     }
+    // What the books kept replays to the books (the journal, the live
+    // books and their projection agree).
+    b.store
+        .verify()
+        .unwrap_or_else(|e| panic!("{}: the books replay as kept: {e}", ex.id));
     out
 }
 
@@ -2096,7 +2632,7 @@ fn every_bookspec_example_holds() {
     // Each query the examples use ran: the cash flow's six examples at
     // least, the as-of and 1099 examples', the members closes', the
     // formats appendix's, and P3's default period, rename, tax category,
-    // parties and 1099 examples'.
+    // parties, 1099, depreciation and schedules examples'.
     for (q, at_least) in [
         ("cash_flow", 6),
         ("trial_balance", 2),
@@ -2120,6 +2656,10 @@ fn every_bookspec_example_holds() {
         ("rename_account", 5),
         ("add_account", 4),
         ("set_tax_category", 2),
+        ("run", 4),
+        ("disposal", 5),
+        ("depreciation_schedule", 5),
+        ("schedule_plan", 3),
     ] {
         let n = checked.get(q).copied().unwrap_or(0);
         assert!(n >= at_least, "{q} ran {n} times, fewer than {at_least}");
@@ -2191,7 +2731,7 @@ none = "0"
 fn reverses_counts_events_from_one() {
     let ex = reversing(2);
     let b = load(&ex);
-    let r = b.l.get_entry(3).unwrap();
+    let r = b.l().get_entry(3).unwrap();
     assert_eq!(r.reversal_of(), Some(2));
     let amounts: Vec<Decimal> = r.lines().iter().map(|x| x.amount.amount).collect();
     assert_eq!(amounts, [Decimal::new(25000, 2), Decimal::new(25000, 2)]);
@@ -2513,6 +3053,96 @@ fn a_payment_method_not_in_the_setup_is_refused() {
         t.replacen(
             "instrument = \"Harbor debit card\"",
             "instrument = \"Harbor debit\"",
+            1,
+        )
+    });
+}
+
+/// An event the example says the engine refuses must be refused: one it
+/// takes fails the example (March's run reversed on its own day is taken).
+#[test]
+#[should_panic(expected = "accepted, expected refused: entry_irreversible")]
+fn an_event_the_engine_takes_is_not_refused() {
+    run_edited(
+        "depreciation-reversal-before-its-run-is-refused.toml",
+        |t| t.replacen("date = \"2026-02-10\"", "date = \"2026-03-31\"", 1),
+    );
+}
+
+/// A refused event is refused for the reason it gives, in the examples'
+/// words, never another.
+#[test]
+#[should_panic(expected = "reverses refused")]
+fn an_event_refused_for_another_reason_is_refused() {
+    run_edited(
+        "depreciation-reversal-before-its-run-is-refused.toml",
+        |t| {
+            t.replacen(
+                "refused = \"entry_irreversible\"",
+                "refused = \"depreciation_past_disposal\"",
+                1,
+            )
+        },
+    );
+}
+
+/// A refused event posts nothing, so nothing can name its entry.
+#[test]
+#[should_panic(expected = "event 6 posted 0 entries")]
+fn a_refused_event_has_no_entry_to_reverse() {
+    run_edited(
+        "depreciation-reversal-before-its-run-is-refused.toml",
+        |t| {
+            t.replacen(
+                "reverses = 5\n\n# Hand check",
+                "reverses = 6\n\n# Hand check",
+                1,
+            )
+        },
+    );
+}
+
+/// A command dates its own entries: a run given a date is refused, never
+/// read as the day it runs.
+#[test]
+#[should_panic(expected = "dates its own entries: no date")]
+fn a_run_given_a_date_is_refused() {
+    run_edited("depreciation-catch-up-month.toml", |t| {
+        t.replacen(
+            "[[events]]\nrun_depreciation",
+            "[[events]]\ndate = \"2026-01-31\"\nrun_depreciation",
+            1,
+        )
+    });
+}
+
+/// `run` asks about a run_depreciation event, nothing else.
+#[test]
+#[should_panic(expected = "event 2 is no run_depreciation")]
+fn a_run_query_naming_another_event_is_refused() {
+    run_edited("depreciation-catch-up-month.toml", |t| {
+        t.replacen("event = 4", "event = 2", 1)
+    });
+}
+
+/// A disposal lists every figure it took: one left out is refused.
+#[test]
+#[should_panic(expected = "lists exactly what it covers")]
+fn a_disposal_leaving_a_figure_out_is_refused() {
+    run_edited("depreciation-disposal-mid-month.toml", |t| {
+        t.replacen("catch_up_depreciation = \"0.00\"\n", "", 1)
+    });
+}
+
+/// The example's figures are the engine's, checked: a schedule month off
+/// by a cent fails it.
+#[test]
+#[should_panic(expected = "schedule_plan of SUB: 2026-02-28")]
+fn a_schedule_month_off_by_a_cent_fails() {
+    run_edited("schedule-daily-deferred-revenue.toml", |t| {
+        t.replacen(
+            "\"2026-02-28\" = \"333.34\"",
+            "\"2026-02-28\" = \"333.33\"",
             1,
         )
     });

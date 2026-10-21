@@ -279,7 +279,7 @@ const PLAN_CASH: AccountId = 100;
 #[test]
 fn full_months_each_take_one_twelfth_b15() {
     let a = asset("12000.00", "0.00", 12, date(2026, 1, 1));
-    let s = depreciation_schedule(&a, date(2026, 12, 31));
+    let s = depreciation_schedule(&a, date(2026, 12, 31)).unwrap();
     assert_eq!(s.len(), 12);
     for (i, line) in s.iter().enumerate() {
         let n = i as i64 + 1;
@@ -296,7 +296,7 @@ fn full_months_each_take_one_twelfth_b15() {
 #[test]
 fn schedule_through_a_mid_month_date_prorates_that_month_by_days() {
     let a = asset("12000.00", "0.00", 12, date(2026, 1, 1));
-    let s = depreciation_schedule(&a, date(2026, 6, 15));
+    let s = depreciation_schedule(&a, date(2026, 6, 15)).unwrap();
     assert_eq!(s.len(), 6);
     assert_eq!(s.last().unwrap().period, "2026-06");
     assert_eq!(s.last().unwrap().amount, d("500.00"));
@@ -309,7 +309,7 @@ fn schedule_through_a_mid_month_date_prorates_that_month_by_days() {
 #[test]
 fn schedule_clamps_to_end_of_life() {
     let a = asset("12000.00", "0.00", 12, date(2026, 1, 1));
-    let s = depreciation_schedule(&a, date(2030, 12, 31));
+    let s = depreciation_schedule(&a, date(2030, 12, 31)).unwrap();
     let total: Decimal = s.iter().map(|l| l.amount).sum();
     assert_eq!(total, d("12000.00"));
     assert_eq!(s.iter().filter(|l| !l.amount.is_zero()).count(), 12);
@@ -327,7 +327,7 @@ fn schedule_clamps_to_end_of_life() {
 #[test]
 fn partial_first_and_last_months_make_one_full_month_b15() {
     let a = asset("620.00", "0.00", 2, date(2026, 1, 15));
-    let s = depreciation_schedule(&a, date(2027, 12, 31));
+    let s = depreciation_schedule(&a, date(2027, 12, 31)).unwrap();
     let got: Vec<(&str, Decimal, Decimal, Decimal)> = s
         .iter()
         .map(|l| (l.period.as_str(), l.amount, l.accumulated, l.book_value))
@@ -352,7 +352,7 @@ fn partial_first_and_last_months_make_one_full_month_b15() {
 #[test]
 fn last_month_trues_up_unequal_month_lengths_b15() {
     let a = asset("1030.00", "100.00", 3, date(2026, 1, 15));
-    let s = depreciation_schedule(&a, date(2027, 12, 31));
+    let s = depreciation_schedule(&a, date(2027, 12, 31)).unwrap();
     let got: Vec<(&str, Decimal, Decimal, Decimal)> = s
         .iter()
         .map(|l| (l.period.as_str(), l.amount, l.accumulated, l.book_value))
@@ -373,13 +373,13 @@ fn last_month_trues_up_unequal_month_lengths_b15() {
 #[test]
 fn salvage_value_is_never_depreciated_b15() {
     let a = asset("5000.00", "1000.00", 4, date(2026, 3, 1));
-    let s = depreciation_schedule(&a, date(2026, 6, 30));
+    let s = depreciation_schedule(&a, date(2026, 6, 30)).unwrap();
     let amounts: Vec<Decimal> = s.iter().map(|l| l.amount).collect();
     assert_eq!(amounts, vec![d("1000.00"); 4]);
     assert_eq!(s.last().unwrap().book_value, d("1000.00"));
-    assert_eq!(book_value(&a, date(2040, 1, 31)), d("1000.00"));
+    assert_eq!(book_value(&a, date(2040, 1, 31)).unwrap(), d("1000.00"));
     assert_eq!(
-        accumulated_depreciation(&a, date(2040, 1, 31)),
+        accumulated_depreciation(&a, date(2040, 1, 31)).unwrap(),
         d("4000.00")
     );
 }
@@ -390,7 +390,7 @@ fn salvage_value_is_never_depreciated_b15() {
 #[test]
 fn uneven_split_rounds_to_cents_and_sums_exactly() {
     let a = asset("1000.00", "0.00", 3, date(2026, 1, 1));
-    let s = depreciation_schedule(&a, date(2026, 3, 31));
+    let s = depreciation_schedule(&a, date(2026, 3, 31)).unwrap();
     assert_eq!(s.len(), 3);
     for l in &s {
         assert!(
@@ -412,9 +412,16 @@ fn uneven_split_rounds_to_cents_and_sums_exactly() {
 #[test]
 fn nothing_depreciates_before_purchase() {
     let a = asset("12000.00", "0.00", 12, date(2026, 1, 1));
-    assert!(depreciation_schedule(&a, date(2025, 12, 31)).is_empty());
-    assert_eq!(accumulated_depreciation(&a, date(2025, 12, 31)), d("0"));
-    assert_eq!(book_value(&a, date(2025, 12, 31)), d("12000.00"));
+    assert!(
+        depreciation_schedule(&a, date(2025, 12, 31))
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        accumulated_depreciation(&a, date(2025, 12, 31)).unwrap(),
+        d("0")
+    );
+    assert_eq!(book_value(&a, date(2025, 12, 31)).unwrap(), d("12000.00"));
 }
 
 /// Oracle: interface docs "accumulated through as_of" and "book value =
@@ -423,10 +430,205 @@ fn nothing_depreciates_before_purchase() {
 fn accumulated_and_book_value_mid_life() {
     let a = asset("12000.00", "0.00", 12, date(2026, 1, 1));
     assert_eq!(
-        accumulated_depreciation(&a, date(2026, 6, 30)),
+        accumulated_depreciation(&a, date(2026, 6, 30)).unwrap(),
         d("6000.00")
     );
-    assert_eq!(book_value(&a, date(2026, 6, 30)), d("6000.00"));
+    assert_eq!(book_value(&a, date(2026, 6, 30)).unwrap(), d("6000.00"));
+}
+
+// ------------------------------- defect 22: the final month, disposals
+
+/// Defect 22, reproduction A (plan/served.md P3; P0 review round 4): a
+/// schedule through a day of the life's final month is prorated by days,
+/// never plugged to the whole. Hand check: 12,000.00 over 12 months from
+/// 2026-01-01; the life ends 2027-01-01, so December is its final month.
+/// Through Dec 15: the eleven months before, 11,000.00, plus December's
+/// 1,000.00 × 15/31 = 483.870 → 483.87; accumulated 11,483.87, book value
+/// 516.13. Before P3 December plugged to 1,000.00 (book value 0.00).
+#[test]
+fn defect22_depreciation_through_mid_final_month_is_prorated_not_plugged() {
+    let a = asset("12000.00", "0.00", 12, date(2026, 1, 1));
+    let s = depreciation_schedule(&a, date(2026, 12, 15)).unwrap();
+    let dec = s.last().unwrap();
+    assert_eq!(dec.period, "2026-12");
+    assert_eq!(dec.amount, d("483.87"));
+    assert_eq!(dec.accumulated, d("11483.87"));
+    assert_eq!(dec.book_value, d("516.13"));
+    assert_eq!(book_value(&a, date(2026, 12, 15)).unwrap(), d("516.13"));
+    // Through its last day, the whole of it.
+    let s = depreciation_schedule(&a, date(2026, 12, 31)).unwrap();
+    assert_eq!(
+        (s.last().unwrap().amount, s.last().unwrap().accumulated),
+        (d("1000.00"), d("12000.00"))
+    );
+}
+
+/// Defect 22, reproduction D: the month-length drift of a mid-month life
+/// is spread over the final month's days, not charged on one. Hand check:
+/// 1,030.00 − 100.00 = 930.00 over 3 months from 2026-01-15; the life ends
+/// 2026-04-15, so April holds days 1-14. January 17/31 of 310.00 = 170.00,
+/// February and March 310.00 each: 790.00 before April, 140.00 left for
+/// its 14 days, 10.00 a day (January's daily rate, 310.00/31). Through
+/// Apr 13: April 130.00, accumulated 920.00, book value 110.00. Through
+/// Apr 14, the life's last day: April 140.00, accumulated 930.00.
+#[test]
+fn defect22_final_month_drift_is_spread_by_days() {
+    let a = asset("1030.00", "100.00", 3, date(2026, 1, 15));
+    let s = depreciation_schedule(&a, date(2026, 4, 13)).unwrap();
+    let apr = s.last().unwrap();
+    assert_eq!(
+        (
+            apr.period.as_str(),
+            apr.amount,
+            apr.accumulated,
+            apr.book_value
+        ),
+        ("2026-04", d("130.00"), d("920.00"), d("110.00"))
+    );
+    let s = depreciation_schedule(&a, date(2026, 4, 14)).unwrap();
+    let apr = s.last().unwrap();
+    assert_eq!(
+        (apr.amount, apr.accumulated, apr.book_value),
+        (d("140.00"), d("930.00"), d("100.00"))
+    );
+    // Past the life: nothing more.
+    assert_eq!(
+        depreciation_schedule(&a, date(2030, 1, 1)).unwrap().len(),
+        4
+    );
+}
+
+/// Defect 22, reproduction B: a disposed asset's schedule stops at its
+/// disposal day (held, inclusive) and shows what the disposal took. Hand
+/// check: 12,000.00 over 12 months from 2026-01-01, disposed of
+/// 2026-06-15: five months of 1,000.00, then June's 15 of 30 days, 500.00;
+/// accumulated 5,500.00, book value 6,500.00, the gain on 7,000.00 500.00.
+/// Before P3 the disposed schedule plugged June to 7,000.00 (accumulated
+/// 12,000.00, book value 0.00).
+#[test]
+fn defect22_a_disposed_assets_schedule_stops_at_its_disposal_day() {
+    let (mut l, accts) = fixture();
+    let id = l.register_asset(new_asset(&accts)).unwrap();
+    let before =
+        disposal_amounts(l.get_asset(id).unwrap(), date(2026, 6, 15), usd("7000.00")).unwrap();
+    assert_eq!(
+        (before.accumulated, before.book_value, before.gain_loss),
+        (d("5500.00"), d("6500.00"), d("500.00"))
+    );
+    l.dispose_asset(id, date(2026, 6, 15), usd("7000.00"))
+        .unwrap();
+    let a = l.get_asset(id).unwrap();
+    let s = depreciation_schedule(a, NaiveDate::MAX).unwrap();
+    let jun = s.last().unwrap();
+    assert_eq!(
+        (
+            jun.period.as_str(),
+            jun.amount,
+            jun.accumulated,
+            jun.book_value
+        ),
+        ("2026-06", d("500.00"), d("5500.00"), d("6500.00"))
+    );
+    assert_eq!(jun.accumulated, before.accumulated);
+    assert_eq!(
+        accumulated_depreciation(a, NaiveDate::MAX).unwrap(),
+        d("5500.00")
+    );
+    // A through-date before the disposal is unchanged by it.
+    assert_eq!(
+        accumulated_depreciation(a, date(2026, 5, 31)).unwrap(),
+        d("5000.00")
+    );
+
+    // Disposed of on its in-service day: one day held, 1,000.00 / 31 =
+    // 32.258 → 32.26.
+    let (mut l, accts) = fixture();
+    let id = l.register_asset(new_asset(&accts)).unwrap();
+    l.dispose_asset(id, date(2026, 1, 1), usd("0.00")).unwrap();
+    let s = depreciation_schedule(l.get_asset(id).unwrap(), NaiveDate::MAX).unwrap();
+    assert_eq!(s.len(), 1);
+    assert_eq!((s[0].amount, s[0].accumulated), (d("32.26"), d("32.26")));
+}
+
+/// R1 (P3 depreciation review): depreciation rounds to the currency's own
+/// minor unit. ¥100,000 over 12 months from 2026-01-01: each month's
+/// cumulative 100,000 × m / 12, rounded half up to the yen (8,333.33 →
+/// 8,333; 16,666.67 → 16,667; 25,000; ...), so months alternate 8,333 and
+/// 8,334 and sum to 100,000. Every one is whole yen, so it can post (an
+/// entry refuses a fraction of the minor unit, B-3).
+#[test]
+fn jpy_depreciation_posts_whole_yen() {
+    let mut a = asset("100000", "0", 12, date(2026, 1, 1));
+    a.cost = Money::new(d("100000"), Currency::JPY);
+    a.salvage_value = Money::new(d("0"), Currency::JPY);
+    let s = depreciation_schedule(&a, date(2026, 12, 31)).unwrap();
+    let got: Vec<Decimal> = s.iter().map(|l| l.amount).collect();
+    let want: Vec<Decimal> = [
+        8333, 8334, 8333, 8333, 8334, 8333, 8333, 8334, 8333, 8333, 8334, 8333,
+    ]
+    .into_iter()
+    .map(Decimal::from)
+    .collect();
+    assert_eq!(got, want);
+    assert!(s.iter().all(|l| l.amount.normalize().scale() == 0));
+    assert_eq!(s.last().unwrap().accumulated, d("100000"));
+    // And the ledger posts each month.
+    let mut l = Ledger::new(Currency::JPY);
+    let exp = l
+        .add_account("6200", "Depreciation", AccountType::Expense, None, false)
+        .unwrap();
+    let acc = l
+        .add_account("1510", "Accumulated", AccountType::Asset, None, false)
+        .unwrap();
+    for line in &s {
+        let e = l
+            .try_create_entry(date(2026, 12, 31), "Depreciation")
+            .unwrap();
+        let yen = Money::new(line.amount, Currency::JPY);
+        l.add_line(e, exp, Side::Debit, yen).unwrap();
+        l.add_line(e, acc, Side::Credit, yen).unwrap();
+        l.post_entry(e).unwrap();
+    }
+}
+
+/// The run's catch-up rule (plan/served.md P3, settled in design: a month
+/// skipped is caught up in the month the run is made). Hand check, the
+/// same 12,000.00 asset: January run (1,000.00), February skipped; a March
+/// run posts February and March, 2,000.00; a February run after it posts
+/// nothing; with January's run reversed later, a January run posts its
+/// 1,000.00 back; a run after the life posts what is left.
+#[test]
+fn a_skipped_month_is_caught_up_in_the_month_run() {
+    use ledger_core::{PostedRun, run_amount};
+    let a = asset("12000.00", "0.00", 12, date(2026, 1, 1));
+    let run = |y, m, amount: &str| PostedRun {
+        year: y,
+        month: m,
+        amount: d(amount),
+    };
+    let jan = run(2026, 1, "1000.00");
+    let mar = run_amount(&a, 2026, 3, &[jan]).unwrap();
+    assert_eq!((mar.amount, mar.scheduled), (d("2000.00"), d("1000.00")));
+    let mar = run(2026, 3, "2000.00");
+    assert_eq!(run_amount(&a, 2026, 2, &[jan, mar]).unwrap().amount, d("0"));
+    // January reversed: posted is March's 2,000.00 alone.
+    assert_eq!(
+        run_amount(&a, 2026, 1, &[mar]).unwrap().amount,
+        d("1000.00")
+    );
+    // Nothing posted, a run in 2027: the whole life.
+    assert_eq!(run_amount(&a, 2027, 6, &[]).unwrap().amount, d("12000.00"));
+    assert_eq!(
+        run_amount(&a, 2027, 6, &[run(2026, 12, "12000.00")])
+            .unwrap()
+            .amount,
+        d("0")
+    );
+    // Before the asset was in service: refused.
+    assert!(matches!(
+        run_amount(&a, 2025, 12, &[]),
+        Err(LedgerError::InvalidDepreciationPeriod(_))
+    ));
 }
 
 // ------------------------------------------------------------- disposal
@@ -1109,7 +1311,7 @@ proptest! {
     fn prop_full_schedule_laws(a in arb_asset()) {
         let cost = a.cost.amount;
         let salvage = a.salvage_value.amount;
-        let s = depreciation_schedule(&a, date(2050, 12, 31));
+        let s = depreciation_schedule(&a, date(2050, 12, 31)).unwrap();
         prop_assert!(!s.is_empty());
         let total: Decimal = s.iter().map(|l| l.amount).sum();
         prop_assert_eq!(total, cost - salvage);
@@ -1139,17 +1341,17 @@ proptest! {
     /// one, and nothing is depreciated before purchase.
     #[test]
     fn prop_point_queries_agree_with_schedule(a in arb_asset()) {
-        let full = depreciation_schedule(&a, date(2050, 12, 31));
+        let full = depreciation_schedule(&a, date(2050, 12, 31)).unwrap();
         for (i, l) in full.iter().enumerate() {
             let end = period_end(&l.period);
-            prop_assert_eq!(accumulated_depreciation(&a, end), l.accumulated);
-            prop_assert_eq!(book_value(&a, end), l.book_value);
-            let prefix = depreciation_schedule(&a, end);
+            prop_assert_eq!(accumulated_depreciation(&a, end).unwrap(), l.accumulated);
+            prop_assert_eq!(book_value(&a, end).unwrap(), l.book_value);
+            let prefix = depreciation_schedule(&a, end).unwrap();
             prop_assert_eq!(&prefix[..], &full[..=i]);
         }
         let before = a.purchase_date.pred_opt().unwrap();
-        prop_assert_eq!(accumulated_depreciation(&a, before), Decimal::ZERO);
-        prop_assert_eq!(book_value(&a, before), a.cost.amount);
+        prop_assert_eq!(accumulated_depreciation(&a, before).unwrap(), Decimal::ZERO);
+        prop_assert_eq!(book_value(&a, before).unwrap(), a.cost.amount);
     }
 
     /// Oracle: B-15 partial months by days + interface "the last month absorbs
@@ -1167,7 +1369,7 @@ proptest! {
         let mut a = asset("1.00", "0.00", life, p);
         a.salvage_value = Money::new(Decimal::new(salvage, 2), Currency::USD);
         a.cost = Money::new(Decimal::new(salvage + m * i64::from(life), 2), Currency::USD);
-        let s = depreciation_schedule(&a, date(2050, 12, 31));
+        let s = depreciation_schedule(&a, date(2050, 12, 31)).unwrap();
         prop_assert_eq!(s.len(), life as usize + 1);
         for l in &s[1..s.len() - 1] {
             prop_assert_eq!(l.amount, monthly);
@@ -1187,9 +1389,9 @@ proptest! {
         let when = month_end(a.purchase_date.checked_add_months(Months::new(offset)).unwrap());
         let pr = Decimal::new(proceeds, 2);
         let got = disposal_amounts(&a, when, Money::new(pr, Currency::USD)).unwrap();
-        prop_assert_eq!(got.accumulated, accumulated_depreciation(&a, when));
+        prop_assert_eq!(got.accumulated, accumulated_depreciation(&a, when).unwrap());
         prop_assert_eq!(got.book_value, a.cost.amount - got.accumulated);
-        prop_assert_eq!(got.book_value, book_value(&a, when));
+        prop_assert_eq!(got.book_value, book_value(&a, when).unwrap());
         prop_assert_eq!(got.gain_loss, pr - got.book_value);
         prop_assert!(got.book_value >= a.salvage_value.amount);
     }
@@ -1304,4 +1506,54 @@ proptest! {
         }
         prop_assert_eq!(balance_of(&l, "1000"), d("10000.00") - cost);
     }
+}
+
+/// P3 review: what the books carry is read entry by entry, each in its own
+/// month (depreciation_effects): a run adds its amount in its month, its
+/// reversal takes it away in the reversal's month, a reversal of that
+/// reversal adds it back in its own. Hand check: January's run (1,000.00,
+/// Jan 31) reversed on Feb 2: +1,000.00 in January, -1,000.00 in February,
+/// so a January run posts nothing (Jan 31 carried January) and a February
+/// one 2,000.00 (the schedule through Feb 28 less the 0.00 then carried).
+/// Re-instated on Mar 3: +1,000.00 in March too.
+#[test]
+fn depreciation_effects_read_each_entry_in_its_month() {
+    use ledger_core::{PostedRun, depreciation_effects, run_amount};
+    let (mut l, a) = fixture();
+    let id = l.register_asset(new_asset(&a)).unwrap();
+    let e = l
+        .try_create_entry(date(2026, 1, 31), "Depreciation")
+        .unwrap();
+    l.add_line(e, a.depr_expense, Side::Debit, usd("1000.00"))
+        .unwrap();
+    l.add_line(e, a.accum, Side::Credit, usd("1000.00"))
+        .unwrap();
+    l.post_entry(e).unwrap();
+    let rev = l.reverse_entry(e, date(2026, 2, 2), "undo").unwrap();
+    let runs = [(e, d("1000.00"))];
+    let fx = |y, m, amount: &str| PostedRun {
+        year: y,
+        month: m,
+        amount: d(amount),
+    };
+    let effects = depreciation_effects(&l, &runs);
+    assert_eq!(effects, [fx(2026, 1, "1000.00"), fx(2026, 2, "-1000.00")]);
+    let asset = l.get_asset(id).unwrap().clone();
+    assert_eq!(
+        run_amount(&asset, 2026, 1, &effects).unwrap().amount,
+        d("0")
+    );
+    assert_eq!(
+        run_amount(&asset, 2026, 2, &effects).unwrap().amount,
+        d("2000.00")
+    );
+    l.reverse_entry(rev, date(2026, 3, 3), "redo").unwrap();
+    assert_eq!(
+        depreciation_effects(&l, &runs),
+        [
+            fx(2026, 1, "1000.00"),
+            fx(2026, 2, "-1000.00"),
+            fx(2026, 3, "1000.00")
+        ]
+    );
 }

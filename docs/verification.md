@@ -6,9 +6,9 @@ ways, each covering what the others can't:
 
 | Layer | Tool | What it proves | Scope |
 |---|---|---|---|
-| **Code** | [Kani](https://model-checking.github.io/kani/) (bounded model checking) | The engine's own Rust kernel is correct and never panics or overflows | Every input within the bounds: up to 4 lines, 3 accounts, amounts to 2^40 |
+| **Code** | [Kani](https://model-checking.github.io/kani/) (bounded model checking) | The engine's own Rust kernel is correct and never panics or overflows | Every input within the bounds: up to 4 lines, 3 accounts, amounts to 2^40; proration by days up to 3 month parts (bounds below) |
 | **Laws** | [Lean 4](https://lean-lang.org) (machine-checked proof) | The laws hold for books of any size, after any sequence of commands | Unbounded: any number of entries, accounts, periods, steps |
-| **Bridge** | proptest | The kernel on `Decimal` (what the engine runs) agrees with the kernel on `i64` (what Kani proves) | 2,000 random cases per property |
+| **Bridge** | proptest | The kernel on `Decimal` (what the engine runs) agrees with the kernel on `i64` (what Kani proves); proration's `i128` (the engine's) with its `i64` and `i32` | 2,000 random cases per property |
 
 Run all of it with `just prove` (after `mise install`; see the end).
 
@@ -26,12 +26,14 @@ period closing, `periods::allocate`, and the trial balance. There is no
 second copy of the arithmetic for proofs to drift from.
 
 Kani compiles the same functions at `i64` (exact integer money in the
-smallest unit) and explores every input in the bounds. (Grouping by
+smallest unit; the four proration charge harnesses at `i32`) and
+explores every input in the bounds. (Grouping by
 account is proved through `movements_into`, the allocation-free core
 that `movements` wraps: symbolic heap growth is beyond what the model
 checker explores in reasonable time.) The Lean model in
-`verify/lean` restates each function over `Int` and proves the laws with
-no bounds at all.
+`verify/lean` restates each function over `Int` (proration over `Nat`,
+both of `prorated_through`'s branches) and proves the laws with no bounds
+at all.
 
 ## The laws
 
@@ -306,6 +308,117 @@ their numbers are assigned when P3 lands:
       `a_reversal_nets_every_bucket_to_zero` (ledger-core
       `tests/form1099.rs`)
 
+### Proration by days, catching up, truing up (P3, defects 22 and 9)
+
+Depreciation (rules.md B-15) and daily prepaid and deferred-revenue
+schedules (B-16) spread a total over a span of days with one kernel
+function, `kernel::prorate_by_days` (each month's share through
+`kernel::prorated_through`), in exact integer arithmetic over a common
+unit, `MONTH_L` = lcm(28, 29, 30, 31) = 377,580 parts of a month, so a day
+of any month is a whole number of them.
+
+22. **The parts of a span sum to its total exactly, none is negative, and
+    the last is the total less the others** (plan/served.md P3 defect 9:
+    "parts sum to the total; the last part absorbs the remainder"). Every
+    split whose parts but the last fit in the span is computed; only parts
+    no calendar has are refused.
+    - Kani `prorate_parts_sum_to_total`, `prorate_last_part_absorbs_the_remainder` (a
+      corollary, kept because the plan names the law) · Lean
+      `Prorate.kernel_parts_total`, `Prorate.kernel_parts_nonneg` (the
+      kernel's split, any number of parts and any sizes), `Prorate.cum_dvd`
+      (a total in whole units is charged, so split, in whole units), from
+      `Prorate.prorate_total`, `Prorate.prorate_nonneg`,
+      `Prorate.parts_telescope` · bridge `prorate_agrees_at_i64_and_i128`
+23. **Each part but the last is its days times the monthly rate within one
+    minor unit** (P3 defect 9: "each part equals days × rate within 0.01",
+    stated for any currency's minor unit). Each cumulative charge is its
+    exact share rounded half up to a multiple of the unit (a tie goes up;
+    the total itself when that rounds above it): Kani of the kernel at its
+    bounds, Lean of both of the kernel's branches at any size
+    (`roundUnit_near`, `cum_near`; `chargeMid_eq_cum`, `chargeLast_eq_cum`
+    say the kernel's two formulas are the model's). Two such halves make
+    the part's one unit (`part_near`, at any size, for any parts).
+    - Kani `a_months_charge_is_within_half_a_cent`,
+      `a_months_charge_in_tenths_is_within_half_a_cent`,
+      `the_last_months_charge_is_within_half_a_cent`,
+      `the_last_months_charge_in_tenths_is_within_half_a_cent` · Lean
+      `Prorate.roundUnit_near`, `Prorate.cum_near`, `Prorate.part_near`,
+      `Prorate.part_within_a_unit` · bridge `prorated_through_agrees_at_i32_and_i128`
+24. **The charge through a day never falls, never exceeds the total, is
+    continuous where one month ends and the next begins, and is the total
+    on the last day**; malformed input (a negative total, no months, a
+    unit that isn't positive, a part no month has, a day past the part, a
+    weight outside the span) is refused, never a panic.
+    - Lean `Prorate.cum_mono`, `Prorate.cum_le`, `Prorate.cum_full` (the
+      model, any span), `Prorate.chargeLast_mono` and
+      `Prorate.chargeLast_start` (the kernel's last month, by days, from
+      where the month before ends: rounding is unchanged when an amount and
+      its denominator are scaled together, `Prorate.roundUnit_scale`) · unit
+      `the_charge_never_falls_and_is_continuous_over_real_calendars`
+      (the kernel, exhaustively: every span of 1 to 3 months from every day
+      of a common and a leap year, walked day by day, eight totals, both
+      units) · Kani's four charge harnesses (bounded: never negative, never
+      above the total, the total on the last day),
+      `prorated_through_refuses_malformed_input` · property
+      `prop_depreciation_is_monotone_and_bounded` (the engine)
+25. **A catch-up run never carries the books past the schedule** at a
+    month end already posted, and posts everything due through its month
+    when no run comes after it (plan/served.md P3, settled in design: a
+    month skipped is caught up in the month the run is made); every
+    month's figure at once (`catch_ups`) is each suffix's catch-up. What
+    the books carry at each month end is read entry by entry, each run and
+    each reversal in its own month (`assets::depreciation_effects`), so the
+    kernel's law is a law of the books' month ends, not of the runs'
+    periods (a run reversed after its month ended is never run twice; a
+    re-instated run never carries the books past the schedule).
+    - Kani `catch_up_never_overtakes_the_schedule`,
+      `catch_ups_is_every_suffixs_catch_up` · bridge
+      `catch_up_and_true_up_agree` · unit `catch_ups_is_every_suffixs_catch_up`
+      · property `prop_run_amounts_are_each_months_run_amount`
+      · store `a_run_reversed_after_its_month_is_caught_up_in_the_reversals_month`,
+      `reinstating_a_run_a_later_run_caught_up_is_refused`
+26. **A disposal's true-up reaches the schedule** through its day from what
+    the books carry, up or down, never both (`true_up` is `columns` of the
+    gap).
+    - Kani `true_up_reaches_the_target` · bridge `catch_up_and_true_up_agree`
+
+Bounds (Kani): the split harnesses, at `i64`: up to 3 month parts, 1 to
+3 months, each month 28 to 31 days with 1 to all of them in the span,
+totals to 2^16 units (they also passed at 2^20, 2026-10-20), a unit of
+1 or 10. The charge harnesses, at `i32` (the kernel is generic over
+`Units`; `i32` so the solver can relate a product to a quotient): 1 or
+2 months, any one month part and weight before it, totals to 2,048 units
+(a month but the last) or 64 (the last month, whose numerator carries the
+month's days), each unit in its own harness;
+the malformed-input harness: totals to 2^20 either sign, months 0 to 3,
+days, month lengths and k 0 to 40, a weight before of up to 4 ×
+MONTH_L either sign, units -10 to 10; catch-up (and every suffix's) over
+up to 3 month ends, and the true-up, at amounts to 2^40.
+
+What the solver could not do, and what carries it instead: a harness
+relating two symbolic divisions (a part against days × rate directly; a
+charge never falling within a month; the charge through a month's last
+day against the next month's through none of its days) ran past twenty
+minutes each, at 2^20 and again at 2^16, with CaDiCaL and with Kissat,
+and was stopped (2026-10-20); so did the one-division charge bound at
+`i64` (a checked 64-bit product is a 128-bit multiplier to the solver).
+Each such relation is nonlinear in the divisor. So Kani proves the
+one-division fact at `i32` (each charge within half a unit of its exact
+share: one to seven minutes a harness), the bridge ties the `i32` kernel
+to the engine's `i128` one, and Lean proves every one of these relations
+at any size, of the kernel's own two formulas: the model's charge is
+`cum t unit V w` (the total times `w/V`, rounded half up to a multiple of
+`unit`, capped at the total, and the total at `w = V`), and
+`chargeMid`/`chargeLast` are `prorated_through`'s two branches written
+out, proved equal to `cum` over `W` = months × MONTH_L and over `W` × the
+last month's days, with the two meeting where the last month starts
+(`roundUnit_scale`). The one hypothesis is the calendar's: every part
+but the last ends short of the span (`e < W`), which a walk from any
+in-service date keeps (B-15: a first month of at most one, then whole
+months); an exhaustive test walks the kernel itself over every
+1-to-3-month span of two calendar years, and the bridge and the exact
+unit tests check the rest.
+
 ## What the proofs found
 
 The engine already had 190+ tests, property tests, mutation testing,
@@ -363,8 +476,11 @@ can also prove false claims. So:
   entry, a reversal on one account with several lines, three distinct
   accounts, a balanced three-account chart, a close to two members, a
   part-cash part-noncash investing entry, cash settling two sections at
-  once, a mixed entry reversed, property contributed for capital. `just
-  prove` fails if any cover is unsatisfiable.
+  once, a mixed entry reversed, property contributed for capital; a split
+  of three parts, a half-unit tie rounding up, a charge capped at a total
+  finer than its unit, a catch-up across three month ends and distinct
+  ones for every suffix, a true-up each way. `just prove` fails if any
+  cover is unsatisfiable.
 
 ## What is and isn't proved
 
@@ -373,10 +489,12 @@ Be precise about the claims:
 - **Kani is bounded.** It proves the kernel for every input up to 4 lines
   over 3 accounts and amounts to 2^40 units (the accounting equation end
   to end: up to 3 accounts; the cash flow entry harnesses: up to 3 lines,
-  each tagged any of 4 ways). Lean proves the laws for any
-  size, but of a *model*. The model is a direct restatement of the kernel,
-  and the bridge property test ties the `Decimal` instantiation to the
-  `i64` one Kani checked.
+  each tagged any of 4 ways), and the proration by days within the bounds
+  above. Lean proves the laws for any size, but of a *model*. The model
+  is a direct restatement of the kernel (for proration, its two formulas
+  written out and proved equal to the model's charge), and the bridge
+  property tests tie the `Decimal` (and `i128`) instantiation to the
+  `i64` (and `i32`) one Kani checked.
 - **`Decimal` itself is trusted.** `rust_decimal` is exact for these
   sizes: 96-bit integers scaled by a power of ten. With lines capped at
   one quadrillion and ten decimal places, every sum is exact while the
@@ -389,9 +507,10 @@ Be precise about the claims:
   `tests/properties.rs` (trial balance, balance sheet, reversals,
   immutability) and the golden files.
 - **Out of scope:** currency (the ledger is single-currency, enforced
-  structurally), A/R and A/P documents, payroll, depreciation schedules
-  (those have their own property tests), and persistence (the journal
-  store's hash chain is tested in `ledger-store`).
+  structurally), A/R and A/P documents, payroll, the calendar walk around
+  the proration kernel (`calendar::month_parts`, `assets::depreciation_schedule`,
+  `schedules::daily_plan`: property tests, `tests/properties.rs`, P3), and
+  persistence (the journal store's hash chain is tested in `ledger-store`).
 - **The cash flow model tags lines per entry with any function** meeting
   the engine's guarantees (the cash tag follows the account; revenue and
   expense lines are operating or investing; a reversal takes its

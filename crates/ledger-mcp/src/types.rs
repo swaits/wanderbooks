@@ -115,7 +115,8 @@ pub struct CreateScheduleParams {
     pub description: String,
     /// Amount to spread, decimal string.
     pub total: String,
-    /// Any date in the first month covered, YYYY-MM-DD.
+    /// The first day covered, YYYY-MM-DD: any day for daily; the 1st of a
+    /// month for monthly_even.
     pub start: String,
     /// Months covered.
     pub months: u32,
@@ -123,6 +124,13 @@ pub struct CreateScheduleParams {
     pub balance_account: String,
     /// Expense or revenue account code.
     pub pl_account: String,
+    /// "daily" (by the day from start, like depreciation: a mid-month
+    /// start posts a small first and last month, one more month end than
+    /// its months) or "monthly_even" (equal months, starting on the 1st).
+    /// Default: the books' `[books] schedule_convention` setting, else
+    /// daily.
+    #[serde(default)]
+    pub convention: Option<String>,
 }
 
 /// One month of a schedule.
@@ -151,6 +159,17 @@ pub struct ScheduleOut {
     pub pl_account: String,
     /// Total, decimal string.
     pub total: String,
+    /// "daily" or "monthly_even".
+    pub convention: String,
+    /// The first day covered, YYYY-MM-DD (for a monthly_even schedule an
+    /// earlier version took mid-month, the 1st of its month).
+    pub start: String,
+    /// The last day covered, YYYY-MM-DD; null past the last date the books
+    /// can compute.
+    pub end: Option<String>,
+    /// The next month end to post, YYYY-MM-DD; null once every month has
+    /// posted (or when the plan can't be computed: see `plan_error`).
+    pub next: Option<String>,
     /// Not yet recognized, decimal string. Null when the plan can't be
     /// computed (see `plan_error`).
     pub remaining: Option<String>,
@@ -194,6 +213,17 @@ pub struct SchedulePostingOut {
     pub entry_id: Option<u64>,
 }
 
+/// A schedule month a run leaves unposted.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ScheduleSkippedOut {
+    /// Schedule id.
+    pub schedule_id: u64,
+    /// Month-end date.
+    pub date: String,
+    /// Why it can't post.
+    pub reason: String,
+}
+
 /// Result of `books.run_schedules`.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct RunSchedulesOut {
@@ -201,6 +231,11 @@ pub struct RunSchedulesOut {
     pub status: String,
     /// Postings due (preview) or made.
     pub postings: Vec<SchedulePostingOut>,
+    /// Months due that a run leaves for a human: dated in a closed period,
+    /// or posted and then reversed after the month ended (posting it again
+    /// would recognize it twice); a human books each in an open period by
+    /// hand, or not at all.
+    pub skipped: Vec<ScheduleSkippedOut>,
 }
 
 /// One line of a recurring entry.
@@ -2404,10 +2439,17 @@ pub struct AssetSummary {
     pub useful_life_months: u32,
     /// "active" or "disposed".
     pub status: String,
-    /// Accumulated depreciation through today, decimal string.
-    pub accumulated: String,
-    /// Book value today, decimal string.
-    pub book_value: String,
+    /// Accumulated depreciation by its schedule through today (a disposed
+    /// asset's through its disposal day), decimal string. Null when the
+    /// schedule can't be computed (see `schedule_error`).
+    pub accumulated: Option<String>,
+    /// Book value today (cost less `accumulated`), decimal string. Null
+    /// when the schedule can't be computed.
+    pub book_value: Option<String>,
+    /// Why `accumulated` and `book_value` are null, when they are: an
+    /// asset an earlier version took whose schedule the books can't
+    /// compute. It lists, and the rest of the register with it.
+    pub schedule_error: Option<String>,
 }
 
 /// Result of `books.list_assets`.
@@ -2435,8 +2477,13 @@ pub struct DepreciationRunOut {
     pub description: String,
     /// Calendar month posted.
     pub period: String,
-    /// Amount posted, decimal string.
+    /// Amount posted, decimal string: the month's own depreciation plus
+    /// any earlier month caught up.
     pub amount: String,
+    /// What the run caught up from earlier months (skipped, or reversed),
+    /// decimal string: the amount less the month's own depreciation, when
+    /// more ("0.00" otherwise).
+    pub caught_up: String,
     /// The posted entry's id.
     pub entry_id: u64,
     /// True when this period was already posted (idempotent no-op).
@@ -2448,8 +2495,11 @@ pub struct DepreciationRunOut {
 pub struct RunDepreciationOut {
     /// One result per asset run.
     pub runs: Vec<DepreciationRunOut>,
-    /// Assets skipped by a run-all because the period is outside their
-    /// depreciable life.
+    /// Assets with nothing posted: a run-all's assets not yet in service,
+    /// and any asset with nothing due (the month rounds to nothing, a later
+    /// run caught it up or its run was reversed after it ended, its life is
+    /// over and fully posted, or the books carry more than its schedule),
+    /// each with why.
     pub skipped: Vec<SkippedDepreciation>,
 }
 
@@ -2511,9 +2561,18 @@ pub struct DisposeAssetOut {
     pub proceeds: String,
     /// Gain (positive) or loss (negative), decimal string.
     pub gain_loss: String,
-    /// Depreciation auto-posted for the final partial period, decimal string
-    /// ("0.00" when the period was already posted).
+    /// Depreciation auto-posted (its own entry) through the disposal day,
+    /// decimal string ("0.00" when the runs already reach it).
     pub final_depreciation: String,
+    /// Depreciation the runs posted past the disposal day (the disposal
+    /// month's run is dated its end), taken back by a credit to
+    /// depreciation expense in the disposal entry, decimal string.
+    pub excess_depreciation: String,
+    /// Depreciation still due through the disposal day when the disposal
+    /// month already has a run (an earlier run reversed and not run
+    /// again), debited to depreciation expense in the disposal entry,
+    /// decimal string.
+    pub catch_up_depreciation: String,
     /// The disposal entry's lines with resulting balances.
     pub lines: Vec<PreviewLine>,
     /// True when posting requires a receipt (bill of sale) first.

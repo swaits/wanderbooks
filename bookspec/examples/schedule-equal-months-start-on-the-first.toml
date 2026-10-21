@@ -1,0 +1,63 @@
+id = "schedule-equal-months-start-on-the-first"
+title = "An equal-months schedule starts on the 1st of a month"
+rule = "A schedule that spreads its total in equal months must start on the 1st of a month, for prepaid expenses and deferred revenue alike, so it never recognizes days it does not cover."
+status = "CHOICE"
+sources = ["ASC 606-10-25-23", "DECISION: plan/served.md D-37 (owner, 2026-10-20)"]
+tags = ["schedules", "monthly-even", "refusal", "p3-defect-9"]
+
+[setup]
+currency = "USD"
+fiscal_year_start = "01-01"
+basis = "accrual"
+# Equal months keep the rounding schedules had before P3 (each month the
+# total over the months to the cent, ties to even; the last month takes
+# what the others leave): a posted month's replay re-derives its plan.
+rounding = "half-even"
+
+[[setup.accounts]]
+code = "1300"
+name = "Prepaid Expenses"
+type = "asset"
+
+[[setup.accounts]]
+code = "2400"
+name = "Deferred Revenue"
+type = "liability"
+
+[[setup.accounts]]
+code = "4000"
+name = "Subscription Revenue"
+type = "revenue"
+
+[[setup.accounts]]
+code = "6300"
+name = "Insurance"
+type = "expense"
+
+# Equal months from March 15: refused (it would recognize all of March's
+# 100.00, 45.16 of it, March 1 to 14 at 100.00 × 14/31, before the service
+# began). The refusal names the 1st.
+[[events]]
+register_schedule = { id = "MID", kind = "deferred_revenue", description = "Annual plan", total = "1200.00", start = "2026-03-15", months = 12, convention = "monthly_even", balance_account = "2400", pl_account = "4000" }
+refused = "invalid_schedule"
+
+# The same for a prepaid expense: one rule for both.
+[[events]]
+register_schedule = { id = "MIDP", kind = "prepaid_expense", description = "Insurance", total = "1200.00", start = "2026-03-15", months = 12, convention = "monthly_even", balance_account = "1300", pl_account = "6300" }
+refused = "invalid_schedule"
+
+# From the 1st it is taken: twelve equal months.
+[[events]]
+register_schedule = { id = "FIRST", kind = "deferred_revenue", description = "Annual plan", total = "1200.00", start = "2026-03-01", months = 12, convention = "monthly_even", balance_account = "2400", pl_account = "4000" }
+
+# Hand check (worked without the code): 1,200.00 / 12 = 100.00, every
+# month, the last absorbing no rounding.
+[[expect]]
+query = "schedule_plan"
+schedule = "FIRST"
+
+[expect.values]
+"2026-03-31" = "100.00"
+"2026-09-30" = "100.00"
+"2027-02-28" = "100.00"
+total = "1200.00"

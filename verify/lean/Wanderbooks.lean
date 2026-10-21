@@ -5,3 +5,4 @@ import Wanderbooks.Closing
 import Wanderbooks.Ledger
 import Wanderbooks.Apportion
 import Wanderbooks.Parties
+import Wanderbooks.Prorate

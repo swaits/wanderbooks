@@ -153,6 +153,7 @@ const PARTY_POLICY: &[(&str, &[&str])] =
 const APPROVAL_MODE: &[(&str, &[&str])] = &[("off", &[]), ("enforce", &[])];
 const TAX_CATEGORY_POLICY: &[(&str, &[&str])] =
     &[("warn", &[]), ("refuse", &["required", "require"])];
+const SCHEDULE_CONVENTION: &[(&str, &[&str])] = &[("daily", &[]), ("monthly_even", &[])];
 
 /// A return's key as a setting keeps it.
 pub fn tax_form_key(f: TaxForm) -> &'static str {
@@ -333,6 +334,13 @@ pub static KEYS: &[Key] = &[
         kind: Kind::TagPrefix,
         sensitivity: Sensitivity::Public,
         doc: "Prefix of generated asset tags (\"AC\" for AC-0001): one to eight letters or digits. Unset: the company name's initials.",
+    },
+    Key {
+        name: "books.schedule_convention",
+        toml: ("books", "schedule_convention"),
+        kind: Kind::Choice(SCHEDULE_CONVENTION),
+        sensitivity: Sensitivity::Public,
+        doc: "How a new prepaid-expense or deferred-revenue schedule spreads its total: daily (from its start date: full months equal, the first and last partial months by their days, like depreciation) or monthly_even (equal months; the schedule starts on the 1st of a month). Unset: daily (D-11). Existing schedules keep theirs.",
     },
     Key {
         name: "policy.evidence.threshold",
@@ -1294,6 +1302,14 @@ impl Settings {
     /// `books.asset_tag_prefix`, if set.
     pub fn asset_tag_prefix(&self) -> Option<&str> {
         self.str("books.asset_tag_prefix")
+    }
+
+    /// `books.schedule_convention`: how a new schedule spreads its total.
+    /// Unset: daily (plan/served.md D-11, confirmed in D-37).
+    pub fn schedule_convention(&self) -> crate::ScheduleConvention {
+        self.str("books.schedule_convention")
+            .and_then(crate::ScheduleConvention::parse)
+            .unwrap_or(crate::ScheduleConvention::Daily)
     }
 
     /// `policy.parties`.

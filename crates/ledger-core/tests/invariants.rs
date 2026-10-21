@@ -1257,6 +1257,7 @@ fn id_allocators_predict_the_next_id_and_never_repeat() {
         months: 12,
         balance_account: c.equipment,
         pl_account: c.rent,
+        convention: ledger_core::ScheduleConvention::MonthlyEven,
     };
     let mut seen = Vec::new();
     for n in ["a", "b"] {

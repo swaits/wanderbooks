@@ -856,7 +856,15 @@ pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
         ),
         "schedule.registered" => ev(
             icon::CALENDAR,
-            format!("Schedule: {}", s(p, "description")),
+            format!(
+                "Schedule: {} ({})",
+                s(p, "description"),
+                // Journals before P3 carry no convention: equal months.
+                match s(p, "convention") {
+                    "daily" => "by the day",
+                    _ => "equal months",
+                }
+            ),
             Some(Route::Company),
         ),
         "schedule.posted" => ev(

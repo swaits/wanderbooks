@@ -1,0 +1,136 @@
+id = "depreciation-disposal-in-final-month"
+title = "A disposal in the life's final month depreciates that month by its days held"
+rule = "A disposal dated inside an asset's final month takes depreciation for the days held in that month, not the month's whole charge."
+status = "CONVENTION"
+sources = ["ASC 360-10-35-4"]
+tags = ["depreciation", "disposal", "final-month", "p3-defect-22"]
+
+[setup]
+currency = "USD"
+fiscal_year_start = "01-01"
+basis = "accrual"
+rounding = "half-away-from-zero"
+
+[[setup.accounts]]
+code = "1000"
+name = "Bank"
+type = "asset"
+
+[[setup.accounts]]
+code = "1500"
+name = "Equipment"
+type = "asset"
+
+[[setup.accounts]]
+code = "1510"
+name = "Accumulated Depreciation"
+type = "asset"
+
+[[setup.accounts]]
+code = "3000"
+name = "Capital"
+type = "equity"
+
+[[setup.accounts]]
+code = "6200"
+name = "Depreciation Expense"
+type = "expense"
+
+[[setup.accounts]]
+code = "7100"
+name = "Gain or Loss on Disposal"
+type = "revenue"
+
+# Asset X: 12,000.00, no salvage, 12 months from 2026-01-01 (1,000.00 a
+# month; December the final month).
+[[setup.assets]]
+id = "X"
+description = "Asset X"
+cost = "12000.00"
+salvage = "0.00"
+life_months = 12
+in_service = "2026-01-01"
+method = "straight_line"
+cost_account = "1500"
+accumulated_account = "1510"
+expense_account = "6200"
+
+[[events]]
+date = "2026-01-01"
+description = "Capital"
+lines = [
+  { account = "1000", side = "debit", amount = "12000.00" },
+  { account = "3000", side = "credit", amount = "12000.00" },
+]
+
+[[events]]
+date = "2026-01-01"
+description = "Bought asset X"
+lines = [
+  { account = "1500", side = "debit", amount = "12000.00" },
+  { account = "1000", side = "credit", amount = "12000.00" },
+]
+
+[[events]]
+run_depreciation = { asset = "X", period = "2026-01" }
+
+[[events]]
+run_depreciation = { asset = "X", period = "2026-02" }
+
+[[events]]
+run_depreciation = { asset = "X", period = "2026-03" }
+
+[[events]]
+run_depreciation = { asset = "X", period = "2026-04" }
+
+[[events]]
+run_depreciation = { asset = "X", period = "2026-05" }
+
+[[events]]
+run_depreciation = { asset = "X", period = "2026-06" }
+
+[[events]]
+run_depreciation = { asset = "X", period = "2026-07" }
+
+[[events]]
+run_depreciation = { asset = "X", period = "2026-08" }
+
+[[events]]
+run_depreciation = { asset = "X", period = "2026-09" }
+
+[[events]]
+run_depreciation = { asset = "X", period = "2026-10" }
+
+[[events]]
+run_depreciation = { asset = "X", period = "2026-11" }
+
+# Disposed of 2026-12-10 for 1,000.00.
+[[events]]
+date = "2026-12-10"
+dispose_asset = { asset = "X", proceeds = "1000.00", proceeds_account = "1000", gain_loss_account = "7100" }
+
+# Hand check (worked without the code): January..November run, 11,000.00.
+# December held through the 10th: 1,000.00 x 10/31 = 322.580... -> 322.58.
+# Accumulated 11,322.58; book value 677.42; gain 1,000.00 - 677.42 =
+# 322.58. (Before P3: 1,000.00 of depreciation and a 1,000.00 gain.)
+[[expect]]
+query = "disposal"
+asset = "X"
+
+[expect.values]
+final_depreciation = "322.58"
+catch_up_depreciation = "0.00"
+excess_depreciation = "0.00"
+accumulated = "11322.58"
+book_value = "677.42"
+gain_loss = "322.58"
+
+[[expect]]
+query = "balances"
+as_of = "2026-12-31"
+
+[expect.values]
+"1000" = "1000.00"
+"1510" = "0.00"
+"6200" = "11322.58"
+"7100" = "322.58"

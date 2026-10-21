@@ -989,3 +989,367 @@ fn an_unknown_feature_before_a_rename_is_newer_at_the_declaration() {
         other => panic!("expected NewerJournal, got {:?}", other.map(|_| ())),
     }
 }
+
+/// Books with a prepaid account and an expense to schedule against;
+/// returns (prepaid, insurance).
+fn schedule_books(dir: &Path) -> (u64, u64) {
+    books(dir);
+    let mut store = Store::open(dir).unwrap();
+    let prepaid = store
+        .add_account("1300", "Prepaid", AccountType::Asset, None, false)
+        .unwrap();
+    let insurance = store
+        .add_account("6300", "Insurance", AccountType::Expense, None, false)
+        .unwrap();
+    (prepaid, insurance)
+}
+
+fn insurance(
+    accounts: (u64, u64),
+    start: NaiveDate,
+    convention: ledger_core::ScheduleConvention,
+) -> ledger_core::NewSchedule {
+    ledger_core::NewSchedule {
+        description: "Liability insurance".into(),
+        kind: ledger_core::ScheduleKind::PrepaidExpense,
+        total: Money::new(Decimal::from(1200), Currency::USD),
+        start,
+        months: 12,
+        balance_account: accounts.0,
+        pl_account: accounts.1,
+        convention,
+    }
+}
+
+fn day(y: i32, m: u32, d: u32) -> NaiveDate {
+    NaiveDate::from_ymd_opt(y, m, d).unwrap()
+}
+
+/// The journal's lines, parsed.
+fn lines(dir: &Path) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(dir.join(JOURNAL_FILE))
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+/// P3 (defect 9; rules.md B-27): the first daily schedule declares journal
+/// feature schedule_convention, on the line before its schedule.registered,
+/// which carries convention "daily". A version before P3 knew no features,
+/// so it stops at that declaration (NewerJournal; format.rs's
+/// an_older_reader_stops_at_p3s_features), never reading the schedule as
+/// equal months. This version reads it back, posts by the day, and
+/// verifies; a second daily schedule declares nothing more.
+#[test]
+fn the_first_daily_schedule_declares_its_feature_and_an_older_reader_stops_there() {
+    let dir = test_dir("daily-feature");
+    let accounts = schedule_books(&dir);
+    let mut store = Store::open(&dir).unwrap();
+    let id = store
+        .register_schedule(insurance(
+            accounts,
+            day(2026, 3, 15),
+            ledger_core::ScheduleConvention::Daily,
+        ))
+        .unwrap();
+    let journal = lines(&dir);
+    let n = journal.len();
+    assert_eq!(journal[n - 1]["type"], "schedule.registered");
+    assert_eq!(journal[n - 1]["payload"]["convention"], "daily");
+    assert_eq!(journal[n - 2]["type"], FORMAT_SET);
+    assert_eq!(
+        journal[n - 2]["payload"],
+        json!({"format": 2, "features": ["schedule_convention"]})
+    );
+    store.run_schedules(day(2026, 5, 31)).unwrap();
+    store
+        .register_schedule(insurance(
+            accounts,
+            day(2026, 4, 2),
+            ledger_core::ScheduleConvention::Daily,
+        ))
+        .unwrap();
+    let declared = lines(&dir)
+        .iter()
+        .filter(|l| l["type"] == FORMAT_SET)
+        .count();
+    assert_eq!(declared, 1, "declared once");
+    store.verify().unwrap();
+    let posted: Vec<NaiveDate> = store
+        .ledger()
+        .get_schedule(id)
+        .unwrap()
+        .posted
+        .iter()
+        .copied()
+        .collect();
+    assert_eq!(
+        posted,
+        [day(2026, 3, 31), day(2026, 4, 30), day(2026, 5, 31)]
+    );
+    drop(store);
+    // Reopened, rebuilt, and through the viewer: the same plan, posted.
+    let mut store = Store::open(&dir).unwrap();
+    store.rebuild().unwrap();
+    store.verify().unwrap();
+    let s = store.ledger().get_schedule(id).unwrap();
+    assert_eq!(s.convention, ledger_core::ScheduleConvention::Daily);
+    assert_eq!(s.plan().unwrap()[0].1, Decimal::new(5484, 2));
+    let snap = Snapshot::load(&dir).unwrap();
+    assert_eq!(
+        snap.ledger().differs_from(store.ledger()),
+        Vec::<&str>::new()
+    );
+}
+
+/// P3: an equal-months schedule (journals before P3 hold only these)
+/// declares no feature: books that never use a daily schedule stay
+/// readable by versions before it. Its line names its convention.
+#[test]
+fn a_monthly_even_schedule_declares_no_feature() {
+    let dir = test_dir("monthly-even-no-feature");
+    let accounts = schedule_books(&dir);
+    let mut store = Store::open(&dir).unwrap();
+    store
+        .register_schedule(insurance(
+            accounts,
+            day(2026, 3, 1),
+            ledger_core::ScheduleConvention::MonthlyEven,
+        ))
+        .unwrap();
+    let journal = lines(&dir);
+    assert!(journal.iter().all(|l| l["type"] != FORMAT_SET));
+    assert_eq!(
+        journal.last().unwrap()["payload"]["convention"],
+        "monthly_even"
+    );
+    assert_eq!(store.journal_format(), &JournalFormat::default());
+    store.verify().unwrap();
+}
+
+/// P3: a schedule convention this version doesn't know (one a newer
+/// version adds) is newer, never corrupt (rules.md B-27); one that isn't a
+/// string is damage.
+#[test]
+fn an_unknown_schedule_convention_is_newer_not_corrupt() {
+    let dir = test_dir("unknown-convention");
+    let accounts = schedule_books(&dir);
+    let registered = |convention: serde_json::Value| {
+        json!({
+            "id": 1,
+            "description": "Insurance",
+            "kind": "prepaid_expense",
+            "total": {"amount": "1200", "currency": "USD"},
+            "start": "2026-03-15",
+            "months": 12,
+            "balance_account": accounts.0,
+            "pl_account": accounts.1,
+            "convention": convention,
+        })
+    };
+    let seq = append(
+        &dir,
+        &[("schedule.registered", registered(json!("weekly")))],
+    )[0];
+    std::fs::remove_file(dir.join(DB_FILE)).unwrap();
+    for got in [Store::open(&dir).err(), Snapshot::load(&dir).err()] {
+        match got {
+            Some(StoreError::NewerJournal { seq: s, need, .. }) => {
+                assert_eq!(s, seq);
+                assert_eq!(need, "the schedule convention weekly");
+            }
+            other => panic!("expected NewerJournal, got {other:?}"),
+        }
+    }
+    let dir = test_dir("bad-convention");
+    let accounts2 = schedule_books(&dir);
+    assert_eq!(accounts2, accounts);
+    append(&dir, &[("schedule.registered", registered(json!(7)))]);
+    std::fs::remove_file(dir.join(DB_FILE)).unwrap();
+    assert_corrupt(Store::open(&dir));
+}
+
+/// P3 (R3; rules.md B-27): a schedule month reversed within its month is
+/// posted again only after journal feature month_reposting is declared
+/// (an older version would refuse the second schedule.posted as posted
+/// twice), and the books replay to the same ledger. A month reversed after
+/// it ended is left by the run, listed with why (it would count twice until
+/// the reversal), and declares nothing. Hand check: equal months of 100.00
+/// from 2026-03-01; March posted, reversed on Mar 31, run again: one
+/// March, 100.00; April posted, reversed on May 2: April held.
+#[test]
+fn a_schedule_month_posted_again_declares_month_reposting_and_replays() {
+    let dir = test_dir("schedule-repost");
+    let accounts = schedule_books(&dir);
+    let mut store = Store::open(&dir).unwrap();
+    let id = store
+        .register_schedule(insurance(
+            accounts,
+            day(2026, 3, 1),
+            ledger_core::ScheduleConvention::MonthlyEven,
+        ))
+        .unwrap();
+    let mar = store.post_schedule_month(id, day(2026, 3, 31)).unwrap();
+    store
+        .reverse_entry(mar, day(2026, 3, 31), "posted early")
+        .unwrap();
+    assert!(store.journal_format().features.is_empty());
+    let posted = store.run_schedules(day(2026, 3, 31)).unwrap();
+    assert_eq!(posted.len(), 1);
+    assert_eq!(
+        store.journal_format().features,
+        vec![ledger_store::format::MONTH_REPOSTING.to_string()]
+    );
+    let apr = store.post_schedule_month(id, day(2026, 4, 30)).unwrap();
+    store
+        .reverse_entry(apr, day(2026, 5, 2), "wrong policy")
+        .unwrap();
+    let head = store.head();
+    let posted = store.run_schedules(day(2026, 4, 30)).unwrap();
+    assert!(posted.is_empty(), "{posted:?}");
+    assert_eq!(store.head(), head);
+    let held = store.schedule_months_held(day(2026, 4, 30)).unwrap();
+    assert_eq!(held.len(), 1);
+    assert_eq!((held[0].0, held[0].1), (id, day(2026, 4, 30)));
+    assert!(held[0].2.contains("2026-05-02"), "{}", held[0].2);
+    store.verify().unwrap();
+    drop(store);
+    let mut store = Store::open(&dir).unwrap();
+    store.rebuild().unwrap();
+    store.verify().unwrap();
+    let s = store.ledger().get_schedule(id).unwrap();
+    assert!(s.posted.contains(&day(2026, 3, 31)));
+    assert!(!s.posted.contains(&day(2026, 4, 30)));
+    let snap = Snapshot::load(&dir).unwrap();
+    assert_eq!(
+        snap.ledger().differs_from(store.ledger()),
+        Vec::<&str>::new()
+    );
+}
+
+/// P3 review round 2 (the format-upgrade gate refuses a feature until the
+/// owner consents): every command that needs a journal feature decides it,
+/// and is refused, before its first journaled line, so a refused feature
+/// journals nothing: never a depreciation entry without the
+/// `asset.depreciation_posted` that makes it the period's run, nor a
+/// disposal's final depreciation without its line. Each command: a period
+/// run again after its run was reversed (month_reposting), a disposal whose
+/// month's run was reversed (its final depreciation, month_reposting), a
+/// daily schedule (schedule_convention), and a schedule month posted again
+/// (month_reposting). Taken again, each journals and the books verify.
+#[test]
+fn a_refused_journal_feature_journals_nothing() {
+    let dir = test_dir("feature-refused");
+    let accounts = schedule_books(&dir);
+    let mut store = Store::open(&dir).unwrap();
+    let add = |s: &mut Store, code: &str, t| s.add_account(code, code, t, None, false).unwrap();
+    let cost = add(&mut store, "1500", AccountType::Asset);
+    let accum = add(&mut store, "1501", AccountType::Asset);
+    let expense = add(&mut store, "6100", AccountType::Expense);
+    let gain = add(&mut store, "4900", AccountType::Revenue);
+    let cash = store.ledger().chart().find_by_code("1000").unwrap().id;
+    let usd = |a: i64| Money::new(Decimal::new(a, 2), Currency::USD);
+    let lathe = |s: &mut Store, what: &str| {
+        s.register_asset(ledger_core::NewAsset {
+            description: what.into(),
+            purchase_date: day(2026, 1, 1),
+            cost: usd(1_200_000),
+            salvage_value: usd(0),
+            useful_life_months: 12,
+            cost_account: cost,
+            accum_depr_account: accum,
+            expense_account: expense,
+        })
+        .unwrap()
+    };
+    // One asset's January run, reversed within January: due again.
+    let asset = lathe(&mut store, "Lathe");
+    let run = store.run_depreciation(asset, "2026-01").unwrap();
+    store
+        .reverse_entry(run.entry_id.unwrap(), day(2026, 1, 31), "doubted")
+        .unwrap();
+    // Another's January to March run, March reversed within March: a
+    // disposal on Mar 15 posts March's final depreciation again.
+    let sold = lathe(&mut store, "Old lathe");
+    for m in ["2026-01", "2026-02"] {
+        store.run_depreciation(sold, m).unwrap();
+    }
+    let mar = store.run_depreciation(sold, "2026-03").unwrap();
+    store
+        .reverse_entry(mar.entry_id.unwrap(), day(2026, 3, 31), "sold")
+        .unwrap();
+    let monthly = store
+        .register_schedule(insurance(
+            accounts,
+            day(2026, 1, 1),
+            ledger_core::ScheduleConvention::MonthlyEven,
+        ))
+        .unwrap();
+    let jan = store
+        .post_schedule_month(monthly, day(2026, 1, 31))
+        .unwrap();
+    store
+        .reverse_entry(jan, day(2026, 1, 31), "doubted")
+        .unwrap();
+    assert!(store.journal_format().features.is_empty());
+
+    store.refuse_new_features(true);
+    let head = store.head();
+    let refused = |r: Result<(), StoreError>, what: &str| match r {
+        Err(StoreError::FormatRefused(why)) => assert!(why.contains("feature"), "{what}: {why}"),
+        other => panic!("{what}: {other:?}"),
+    };
+    refused(
+        store.run_depreciation(asset, "2026-01").map(|_| ()),
+        "a period run again",
+    );
+    refused(
+        store
+            .dispose_asset(sold, day(2026, 3, 15), usd(900_000), cash, gain)
+            .map(|_| ()),
+        "a disposal's final depreciation",
+    );
+    refused(
+        store
+            .register_schedule(insurance(
+                accounts,
+                day(2026, 3, 15),
+                ledger_core::ScheduleConvention::Daily,
+            ))
+            .map(|_| ()),
+        "a daily schedule",
+    );
+    refused(
+        store
+            .post_schedule_month(monthly, day(2026, 1, 31))
+            .map(|_| ()),
+        "a schedule month posted again",
+    );
+    assert_eq!(store.head(), head, "nothing journaled");
+    assert_eq!(store.ledger().next_entry_id(), {
+        let snap = Snapshot::load(&dir).unwrap();
+        snap.ledger().next_entry_id()
+    });
+    store.verify().unwrap();
+
+    store.refuse_new_features(false);
+    assert!(
+        store
+            .run_depreciation(asset, "2026-01")
+            .unwrap()
+            .entry_id
+            .is_some()
+    );
+    store
+        .post_schedule_month(monthly, day(2026, 1, 31))
+        .unwrap();
+    store
+        .dispose_asset(sold, day(2026, 3, 15), usd(900_000), cash, gain)
+        .unwrap();
+    assert_eq!(
+        store.journal_format().features,
+        vec![ledger_store::format::MONTH_REPOSTING.to_string()]
+    );
+    store.verify().unwrap();
+}

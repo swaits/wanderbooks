@@ -18,8 +18,9 @@
 //! ```
 
 use crate::LedgerError;
+use crate::kernel::MonthPart;
 use crate::settings::Company;
-use chrono::{Datelike, NaiveDate};
+use chrono::{Datelike, Months, NaiveDate};
 
 /// The first day the books keep.
 pub const FIRST_DAY: NaiveDate = match NaiveDate::from_ymd_opt(1, 1, 1) {
@@ -248,9 +249,145 @@ impl PeriodDefaults {
     }
 }
 
+/// The days in a month of a year chrono holds, without stepping to the
+/// next month, so chrono's last month (December 262142, whose next month
+/// chrono can't hold) has its 31 days too (rules.md B-28: a schedule an
+/// earlier version accepted is computed, never a panic).
+pub fn days_in_month(year: i32, month: u32) -> u32 {
+    match month {
+        2 if NaiveDate::from_ymd_opt(year, 2, 29).is_some() => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    }
+}
+
+/// The first day of the month after `month_start`'s, or `None` past
+/// chrono's last day (the month containing NaiveDate::MAX).
+pub fn next_month_start(month_start: NaiveDate) -> Option<NaiveDate> {
+    month_start.checked_add_months(Months::new(1))
+}
+
+/// One calendar month's share of a span of days ([`month_parts`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpanPart {
+    /// The month's year.
+    pub year: i32,
+    /// The month, 1 to 12.
+    pub month: u32,
+    /// The span's first day in the month.
+    pub first: NaiveDate,
+    /// Its days in the month, of the month's days.
+    pub part: MonthPart,
+    /// True for the span's last month (the one holding its last day).
+    pub last: bool,
+}
+
+/// The calendar months of the span `[start, end)`, in order, each with the
+/// span's days in it: lazily, so a walk through a date reads only the
+/// months up to it.
+///
+/// ```text
+/// GOAL: cut a span of days (an asset's life, a schedule's coverage) into
+///       the calendar months it touches, for proration by days.
+/// SOURCE: docs/spec/rules.md B-15, B-16; kernel::prorate_by_days.
+/// INVARIANTS:
+///   1. The parts' days sum to the span's days; every part has 1 to its
+///      month's days (a valid kernel::MonthPart), and only the last is
+///      marked last.
+///   2. NEVER steps past chrono's last day: December 262142, whose next
+///      month chrono can't hold, still has its 31 days, and its part ends
+///      at `end`.
+///   3. An empty span (end <= start) has no parts.
+/// ```
+pub fn month_parts(start: NaiveDate, end: NaiveDate) -> impl Iterator<Item = SpanPart> {
+    let mut at = (start < end).then_some(start);
+    std::iter::from_fn(move || {
+        let first = at?;
+        let month_start = first.with_day(1)?;
+        let next = next_month_start(month_start);
+        // The span ends in this month when its end is no later than the
+        // next month's first day (or chrono has no next month).
+        let last = next.is_none_or(|n| end <= n);
+        let part_end = if last { end } else { next? };
+        let days = u32::try_from((part_end - first).num_days()).ok()?;
+        at = if last { None } else { next };
+        Some(SpanPart {
+            year: first.year(),
+            month: first.month(),
+            first,
+            part: MonthPart {
+                days,
+                month_days: days_in_month(first.year(), first.month()),
+            },
+            last,
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn d(y: i32, m: u32, day: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, day).unwrap()
+    }
+
+    /// INVARIANT 1, on a span from mid-month with a short final month.
+    #[test]
+    fn a_span_cuts_into_its_calendar_months() {
+        let parts: Vec<_> = month_parts(d(2026, 1, 15), d(2026, 4, 15)).collect();
+        let got: Vec<_> = parts
+            .iter()
+            .map(|p| (p.year, p.month, p.part.days, p.part.month_days, p.last))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (2026, 1, 17, 31, false),
+                (2026, 2, 28, 28, false),
+                (2026, 3, 31, 31, false),
+                (2026, 4, 14, 30, true),
+            ]
+        );
+        assert_eq!(parts[0].first, d(2026, 1, 15));
+        assert_eq!(parts[3].first, d(2026, 4, 1));
+        // A span from the 1st: whole months, the last one marked.
+        let whole: Vec<_> = month_parts(d(2028, 1, 1), d(2028, 3, 1))
+            .map(|p| (p.part.days, p.part.month_days, p.last))
+            .collect();
+        assert_eq!(whole, [(31, 31, false), (29, 29, true)]);
+        // INVARIANT 3.
+        assert_eq!(month_parts(d(2026, 1, 1), d(2026, 1, 1)).count(), 0);
+        assert_eq!(month_parts(d(2026, 1, 2), d(2026, 1, 1)).count(), 0);
+    }
+
+    /// INVARIANT 2: chrono's last month is walked to the span's end.
+    #[test]
+    fn the_walk_reaches_chronos_last_month() {
+        let y = NaiveDate::MAX.year();
+        let parts: Vec<_> = month_parts(d(y, 11, 20), d(y, 12, 15)).collect();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(
+            parts[1].part,
+            MonthPart {
+                days: 14,
+                month_days: 31
+            }
+        );
+        assert!(parts[1].last);
+        let to_max: Vec<_> = month_parts(d(y, 12, 1), NaiveDate::MAX).collect();
+        assert_eq!(to_max.len(), 1);
+        assert_eq!(
+            to_max[0].part,
+            MonthPart {
+                days: 30,
+                month_days: 31
+            }
+        );
+        assert_eq!(days_in_month(y, 12), 31);
+        assert_eq!(next_month_start(d(y, 12, 1)), None);
+    }
 
     #[test]
     fn the_calendar_is_four_digit_years() {
@@ -280,10 +417,6 @@ mod tests {
             assert!(NaiveDate::from_ymd_opt(chrono::Datelike::year(&d) - 1, 12, 31).is_some());
             assert!(d.pred_opt().is_some() && d.succ_opt().is_some());
         }
-    }
-
-    fn d(y: i32, m: u32, day: u32) -> NaiveDate {
-        NaiveDate::from_ymd_opt(y, m, day).unwrap()
     }
 
     fn company(md: (u32, u32)) -> Company {

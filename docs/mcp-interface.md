@@ -447,7 +447,14 @@ every tool over every book in ledger-store's `tests/fixtures/old-books`.
   when the shares don't add up to what the entry moved, `parties_error`
   says why and confirming fails with code `party_shares`.
 - `books.reverse_entry { entry_id, date, description, confirmed }` → same
-  preview/confirm pattern as post.
+  preview/confirm pattern as post. A reversed depreciation run or schedule
+  month is un-posted (its month is due again); refused, at the preview
+  already (P3): an asset's disposal entry (it would stay disposed), a
+  depreciation run of a disposed asset (its disposal took it as final),
+  and a reversal whose reversal would post a depreciation period or a
+  schedule month a second time (naming the entry that posts it now), or
+  re-instate a run a later run caught up (carrying the books past the
+  schedule).
 - `books.get_entry { entry_id }` → full entry with lines, receipts, and
   its `vendor`, `party_id`, and `party` (the party's label, when it names
   exactly one) tags, `parties` / `parties_error` as in the `post_entry`
@@ -556,8 +563,13 @@ every tool over every book in ledger-store's `tests/fixtures/old-books`.
 ## Tools — fixed assets
 
 Straight-line **book** depreciation only; tax depreciation stays with the
-CPA. Partial first/final months prorated by days; the final month trues up
-so the lifetime total is exactly (cost − salvage).
+CPA. Depreciation accrues by the day (rules.md B-15): a partial first
+month, the life's final month (which takes what the others leave, evenly
+over its days), and any month a schedule stops in (through a date, or a
+disposed asset's disposal day, held) are prorated by days, never plugged;
+the lifetime total is exactly (cost − salvage), rounded to the currency's
+minor unit. A new asset's cost and salvage are in the minor unit, and its
+life's last day is 9999-12-31 at the latest.
 
 - `books.register_asset { description, purchase_date, cost, salvage_value?,
   useful_life_months, cost_account, accum_depr_account, expense_account,
@@ -573,19 +585,50 @@ so the lifetime total is exactly (cost − salvage).
   tags }`: an Avery 5160/8160 label sheet (PDF): company, tag, QR code of
   the tag, description, serial. Default: every active tagged asset; `skip`
   reuses a partly used sheet.
-- `books.asset_schedule { asset_id | tag }`
-  → `{ status, schedule: [{ period, amount, accumulated, book_value }] }`.
-- `books.list_assets {}` → assets with status and current book values.
+- `books.asset_schedule { asset_id | tag, through? }`
+  → `{ status, schedule: [{ period, amount, accumulated, book_value }] }`;
+  a disposed asset's ends on its disposal day. A schedule an earlier
+  version's asset can't compute is a tool error saying why, never a
+  panic.
+- `books.list_assets {}` → assets with status, accumulated depreciation
+  by schedule and book value as of today (a disposed asset's through its
+  disposal day); `accumulated` and `book_value` are null, with
+  `schedule_error` saying why, for an asset whose schedule can't be
+  computed (one bad asset never fails the list).
 - `books.run_depreciation { period: "YYYY-MM", asset_id? }`
-  → per-asset `{ entry_id, amount, already_posted }`, plus `skipped` for
-  assets outside their useful life. Idempotent per asset and period.
+  → `runs: [{ asset_id, description, period, amount, caught_up, entry_id,
+  already_posted }]` and `skipped: [{ asset_id, description, reason }]`.
+  A run posts what the schedule says is due through the month's end, so a
+  month skipped or reversed is caught up in the month run (`caught_up`:
+  the part beyond the month's own; a material miss is a restatement for
+  the CPA, ASC 250), and never more than the schedule at a later month
+  end. What the books carry is read entry by entry, each in its own
+  month, so a month whose run was reversed after it ended posts nothing
+  (it carried the month then; the run of the reversal's month catches it
+  up). Idempotent per asset and period. Nothing due (the
+  month rounds to nothing, a later run caught it up, the life is over and
+  posted) posts nothing and is listed under `skipped` with why, as are a
+  run-all's assets not yet in service and any whose schedule can't be
+  computed. A run before the in-service date is refused.
 - `books.dispose_asset { asset_id | tag, date, proceeds, proceeds_account,
   gain_loss_account, buyer?, confirmed?, receipt_attachment_ids? }` →
-  without
-  confirmation: `{ status: "preview", ... }` and posts nothing; with
-  `confirmed: true`: auto-posts missing final-period depreciation, then
-  posts the balanced disposal entry. Subject to receipt policy (bill of
-  sale); monthly depreciation is exempt as an allocation. `buyer` (a
+  without confirmation: `{ status: "preview", accumulated, book_value,
+  proceeds, gain_loss, final_depreciation, excess_depreciation,
+  catch_up_depreciation, lines, receipt_required }` and posts nothing;
+  with `confirmed: true`: auto-posts the final depreciation (through the
+  disposal day, held), then posts the balanced disposal entry. Book value
+  is cost less the schedule through the disposal day, whatever the runs
+  posted: depreciation a run posted past it (the disposal month's run is
+  dated its end) is credited back to depreciation expense in the disposal
+  entry (`excess_depreciation`); depreciation still due when the disposal
+  month already has a run is debited there (`catch_up_depreciation`); the
+  entry clears everything the runs carry. Refused, at the preview already,
+  unless every run carries at the end of the disposal's month what it
+  carries now: a run of a later month that stands (reverse it first), or
+  a reversal (or re-instatement) of an earlier run dated after the
+  disposal's month that a later one hasn't undone (undo it, on any open
+  day). Subject to receipt policy (bill
+  of sale); monthly depreciation is exempt as an allocation. `buyer` (a
   party) is the disposal entry's party; under `[books] parties =
   "require"` a sale with proceeds without one is refused before anything
   posts (`party_required`); a retirement with no proceeds and no buyer is
@@ -603,27 +646,47 @@ so the lifetime total is exactly (cost − salvage).
 ## Tools — schedules and recurring entries
 
 Amortization spreads a prepaid expense (asset → expense) or deferred
-revenue (liability → revenue) evenly over the months it covers, posting on
-each month end, to the cent (the last month absorbs rounding). Like
+revenue (liability → revenue) over the time it covers, posting on each
+month end, to the minor unit (rules.md B-16). A new schedule's convention
+is `books.schedule_convention` (unset: `daily`, D-11/D-37): `daily`
+spreads by the day from `start`, the first day covered, as depreciation
+does, so a mid-month start posts a small first and last month (a 12-month
+policy from March 15 is thirteen month ends: 54.84, eleven of 100.00,
+45.16 for 1,200.00); `monthly_even` is equal months, the last absorbing
+rounding, and starts on the 1st (D-37: revenue is never earned early,
+ASC 606-10-25-23). Schedules registered before P3 stay `monthly_even`
+(mid-month starts included), forever. Like
 depreciation, the schedule is the evidence: its postings are exempt from
 the receipt policy (the original payment carries the receipt). Recurring
 entries never post: they generate drafts, so every real receipt still goes
 through the policy.
 
 - `books.create_schedule { kind: "prepaid_expense" | "deferred_revenue",
-  description, total, start, months, balance_account, pl_account }` →
-  `{ schedule_id, ..., total, remaining, months: [{ date, amount, posted }],
-  plan_error }`. Prepaid needs an asset and an expense account; deferred
-  revenue a liability and a revenue account. `plan_error` is null, except
-  for a schedule an earlier version accepted whose months run past the
-  last date the books can compute: then it says why, `remaining` is null
-  and `months` empty, and `books.run_schedules` refuses until it is dealt
-  with.
+  description, total, start, months, balance_account, pl_account,
+  convention?: "daily" | "monthly_even" }` → `{ schedule_id, ...,
+  convention, start, end, next, total, remaining, months: [{ date, amount,
+  posted }], plan_error }`. Prepaid needs an asset and an expense account;
+  deferred revenue a liability and a revenue account. `start` is the
+  first day covered (for a monthly_even schedule an earlier version took
+  mid-month, the 1st of its month), `end` the last day covered, `next`
+  the next month end to post (null once every month has). Refused: a
+  convention but those two (naming them); a `monthly_even` schedule not
+  starting on the 1st (naming the 1st, and `daily`); one whose months
+  aren't whole minor units (yen); a daily one whose last day is after
+  9999-12-31. `plan_error` is null, except for a schedule an earlier
+  version accepted whose months run past the last date the books can
+  compute: then it says why, `remaining` and `next` are null and `months`
+  empty, and `books.run_schedules` refuses until it is dealt with.
 - `books.list_schedules {}` → `{ schedules: [...] }`, same shape.
 - `books.run_schedules { through?, confirmed? }` → `{ status: "preview" |
   "posted", postings: [{ schedule_id, date, description, amount,
-  entry_id? }] }`: every unposted month ending on or before `through`
-  (default today). Idempotent; closed periods are refused.
+  entry_id? }], skipped: [{ schedule_id, date, reason }] }`: every
+  unposted month ending on or before `through` (default today).
+  Idempotent; a month reversed within its month is due again; a month
+  dated in a closed period, or whose posting was reversed after the month
+  ended (posting it again would recognize it twice until then), is left
+  and listed under `skipped` with why (book it in an open period by hand,
+  or not at all), never a failed run.
 - `books.create_recurring { description, frequency: "weekly" | "monthly" |
   "quarterly" | "yearly", start, end?, lines: [{ account, side, amount }] }`
   → `{ recurring_id, ..., generated: [] }`. Lines must balance. Monthly and

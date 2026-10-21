@@ -37,7 +37,7 @@ use crate::journal::{
     GENESIS_PREV, JournalLine, JournalWriter, read_and_verify_journal, sha256_hex,
 };
 use crate::schema;
-use chrono::{Months, NaiveDate};
+use chrono::{Datelike, Months, NaiveDate};
 use ledger_core::{
     AccountId, AccountType, AssetId, AssetStatus, BillId, Class, ClassId, CloseTo, Currency,
     CustomerId, DocumentLine, EntryId, EntryStatus, InvoiceId, Ledger, LedgerError, Money,
@@ -122,19 +122,30 @@ pub struct EventRow {
     pub created_at: String,
 }
 
-/// The outcome of posting one month of depreciation for one asset.
+/// The outcome of one month's depreciation run for one asset.
 #[derive(Clone, Debug)]
 pub struct DepreciationRun {
     /// Asset id.
     pub asset_id: u64,
     /// Calendar month, "YYYY-MM".
     pub period: String,
-    /// Amount posted, exact cents.
+    /// Amount posted, exact to the minor unit: the month's own
+    /// depreciation and any month before it caught up
+    /// (ledger_core::run_amount). Zero when nothing was due.
     pub amount: Decimal,
-    /// The posted entry's id.
-    pub entry_id: u64,
+    /// The month's own scheduled depreciation (zero after the life).
+    pub scheduled: Decimal,
+    /// The posted entry's id; `None` when nothing was due, so nothing
+    /// posted.
+    pub entry_id: Option<u64>,
     /// True when this period was already posted (idempotent no-op).
     pub already_posted: bool,
+    /// Why nothing posted, when nothing did and the period wasn't already
+    /// posted: the month rounds to nothing, a later run caught it up, its
+    /// run was reversed after the month ended (the reversal's month catches
+    /// it up), the life is over and fully depreciated, or the books carry
+    /// more than the schedule (a correction for a human).
+    pub nothing_due: Option<String>,
 }
 
 /// The outcome of disposing an asset, computed without posting anything.
@@ -147,18 +158,42 @@ pub struct DisposalPreview {
     pub date: chrono::NaiveDate,
     /// Proceeds.
     pub proceeds: Money,
-    /// Accumulated depreciation that will be cleared: already posted plus
-    /// the final partial period.
+    /// Accumulated depreciation the disposal entry clears: every run the
+    /// books carry for the asset, plus the final depreciation.
     pub accumulated: Decimal,
-    /// Depreciation auto-posted for the final partial period. Zero when the
-    /// disposal month was already posted.
+    /// Depreciation auto-posted (its own entry) for the months the runs
+    /// haven't reached, through the disposal day. Zero when the runs
+    /// already reach it.
     pub final_depreciation: Decimal,
-    /// Book value at disposal.
+    /// Depreciation the runs posted beyond the disposal day (the disposal
+    /// month's run, dated its end; a run of a later month is refused, to be
+    /// reversed first), taken back by a credit to depreciation expense in
+    /// the disposal entry.
+    pub excess_depreciation: Decimal,
+    /// Depreciation still due through the disposal day when the disposal
+    /// month already has a run (an earlier month's run reversed and not
+    /// posted again), charged by a debit to depreciation expense in the
+    /// disposal entry: the month's run can't be posted twice.
+    pub catch_up_depreciation: Decimal,
+    /// Book value at disposal: cost less the schedule through the disposal
+    /// day, whatever the runs posted.
     pub book_value: Decimal,
     /// proceeds − book_value. Positive is a gain.
     pub gain_loss: Decimal,
     /// The disposal month, "YYYY-MM".
     pub period: String,
+}
+
+/// A depreciation run the books carry for an asset: its row in the
+/// projection, its entry in effect (not reversed).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LiveRun {
+    /// Its month, "YYYY-MM" as journaled.
+    period: String,
+    /// The entry that posted it.
+    entry_id: EntryId,
+    /// What it posted.
+    amount: Decimal,
 }
 
 /// Attachment metadata (bytes live in the blob store).
@@ -215,6 +250,10 @@ pub struct Store {
     base_currency: Currency,
     /// The journal format in force (the format gate's record).
     format: JournalFormat,
+    /// Refuse every journal feature not yet in force
+    /// ([`Self::refuse_new_features`]): a stand-in for a format-upgrade
+    /// gate that refuses until the owner consents.
+    refuse_features: bool,
 }
 
 /// One filing of bytes into the blob store and journal.
@@ -268,6 +307,7 @@ impl Store {
             ledger: Ledger::new(base_currency),
             base_currency,
             format: JournalFormat::default(),
+            refuse_features: false,
         };
         let line = store.journal.append(
             "store.created",
@@ -393,6 +433,7 @@ impl Store {
             ledger,
             base_currency,
             format,
+            refuse_features: false,
         };
         store.catch_up(&lines)?;
         if let Some(t) = torn {
@@ -622,9 +663,24 @@ impl Store {
         if features.len() == before {
             return Ok(());
         }
+        if self.refuse_features {
+            return Err(StoreError::FormatRefused(format!(
+                "journal features {:?}: these books take no new feature now",
+                &features[before..]
+            )));
+        }
         let format = self.format.format.max(crate::meta::FORMAT);
         let features: Vec<&str> = features.iter().map(String::as_str).collect();
         self.declare_journal_format(format, &features)
+    }
+
+    /// Refuse (`refuse: true`) or take again every journal feature not yet
+    /// in force, as a format-upgrade gate does that waits for the owner's
+    /// consent: what a command does when [`Self::ensure_feature`] refuses
+    /// (it journals nothing). Not saved: the books open taking features.
+    #[doc(hidden)]
+    pub fn refuse_new_features(&mut self, refuse: bool) {
+        self.refuse_features = refuse;
     }
 
     /// Change settings (`settings.set`): all or nothing, each value
@@ -1113,7 +1169,9 @@ impl Store {
         Ok(())
     }
 
-    /// Post a reversing entry for a posted entry.
+    /// Post a reversing entry for a posted entry. A reversed depreciation
+    /// run or schedule month is un-posted (due again; P3 depreciation review
+    /// R3); see [`Self::check_reverse_entry`] for what is refused.
     pub fn reverse_entry(
         &mut self,
         entry: EntryId,
@@ -1127,7 +1185,7 @@ impl Store {
             .clone();
         // Every refusal before the journal: a journaled reversal the engine
         // then refuses could never be replayed, and the books would not open.
-        self.ledger.check_reversal(entry, date)?;
+        self.check_reverse_entry(entry, date)?;
         let new_id = self.ledger.next_entry_id();
         let flipped: Vec<Value> = orig.lines().iter().map(flip_line_json).collect();
         // Reversals journal a single entry.reversed line (no separate
@@ -1147,6 +1205,149 @@ impl Store {
         debug_assert_eq!(live, new_id, "id allocator diverged from journal");
         apply_line_to_sqlite(&self.conn, &reversed)?;
         Ok(live)
+    }
+
+    /// Every refusal of [`Self::reverse_entry`]: the ledger's
+    /// ([`Ledger::check_reversal`]) and those only the store can make,
+    /// since only it knows which entries a fixed asset's disposal and
+    /// depreciation runs are.
+    ///
+    /// ```text
+    /// GOAL: a reversal never leaves a fixed asset's figures and its books
+    ///       apart.
+    /// SOURCE: docs/spec/rules.md B-9, B-15; P3 depreciation review R3.
+    /// SCENARIOS (the entry, or the original its reversal chain starts
+    /// from, since reversing a reversal re-instates that original):
+    ///   1. IF it is an asset's disposal entry:
+    ///      - SHOULD refuse (AssetEntryIrreversible)
+    ///      BECAUSE the register would still say disposed: un-disposing is
+    ///      not a feature (correct with an entry by hand).
+    ///   2. IF it is a depreciation run of a disposed asset (the disposal's
+    ///      final depreciation included):
+    ///      - SHOULD refuse
+    ///      BECAUSE the disposal cleared what the runs posted, and took them
+    ///      as final; reversing one would leave the asset's accumulated
+    ///      depreciation behind it.
+    ///   3. IF reversing re-instates a run whose period has been run again:
+    ///      - SHOULD refuse, naming the run that posts it now
+    ///      - NEVER carry one month's depreciation twice.
+    ///   4. IF reversing re-instates a run that would carry the books past
+    ///      the schedule at a month end from the reversal's month on (a
+    ///      later run caught the month up: ledger_core::catch_up_room):
+    ///      - SHOULD refuse, naming the room left
+    ///      - NEVER let accumulated depreciation pass the schedule, or cost
+    ///        less salvage.
+    ///   5. IF it is a depreciation run or a schedule month's posting, or a
+    ///      reversal in the chain of one, and `date` is before the entry's
+    ///      own date:
+    ///      - SHOULD refuse
+    ///      - NEVER carry a correction at month ends the entry it corrects
+    ///        never reached (a run of March reversed on Jan 31 would leave
+    ///        January and February with negative depreciation, and a
+    ///        disposal in February clearing what they don't carry)
+    ///      BECAUSE a correction comes after what it corrects (B-9, Pacioli
+    ///      ch. 31: "after you have made this correction"). Commands only:
+    ///      a journal an earlier version wrote replays as it was (B-28).
+    ///   6. Otherwise: a run of an active asset is un-posted (its month is
+    ///      due again, caught up by the next run).
+    /// ```
+    pub fn check_reverse_entry(
+        &self,
+        entry: EntryId,
+        date: chrono::NaiveDate,
+    ) -> Result<(), StoreError> {
+        self.ledger.check_reversal(entry, date)?;
+        let top = self
+            .ledger
+            .reversal_chain(entry)
+            .first()
+            .copied()
+            .unwrap_or(entry);
+        let refuse = |why: String| Err(LedgerError::AssetEntryIrreversible(entry, why).into());
+        // SCENARIO 5: the date of the entry reversed (it ends its chain).
+        let dated = self
+            .ledger
+            .get_entry(entry)
+            .map(ledger_core::JournalEntry::date);
+        let before_it = dated.filter(|&d| date < d);
+        if let (Some(on), Some((sid, month))) = (before_it, self.ledger.schedule_posting(top)) {
+            return Err(LedgerError::InvalidSchedule(format!(
+                "entry {entry} (schedule {sid}'s {month}) is dated {on}: a reversal of it can't be dated before it, on {date}"
+            ))
+            .into());
+        }
+        let payloads = |t: &str| -> Result<Vec<Value>, StoreError> {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT payload FROM events WHERE type = ? ORDER BY seq")?;
+            let rows = stmt.query_map(params![t], |r| r.get::<_, String>(0))?;
+            rows.map(|r| Ok(serde_json::from_str(&r?)?)).collect()
+        };
+        let what = if top == entry {
+            "it is"
+        } else {
+            "reversing it re-instates"
+        };
+        for p in payloads("asset.disposed")? {
+            if p.get("entry_id").and_then(Value::as_u64) == Some(top) {
+                let asset = p.get("asset_id").and_then(Value::as_u64).unwrap_or(0);
+                return refuse(format!(
+                    "{what} the disposal of asset {asset}, and an asset can't be un-disposed (correct it with an entry by hand)"
+                ));
+            }
+        }
+        for p in payloads("asset.depreciation_posted")? {
+            if p.get("entry_id").and_then(Value::as_u64) != Some(top) {
+                continue;
+            }
+            let asset_id = get_u64(&p, "asset_id")?;
+            let period = get_str(&p, "period")?;
+            if let Some(on) = before_it {
+                return refuse(format!(
+                    "it is dated {on}, and a reversal of asset {asset_id}'s depreciation for {period} can't be dated before it, on {date}"
+                ));
+            }
+            if self
+                .ledger
+                .get_asset(asset_id)
+                .is_some_and(|a| a.status != AssetStatus::Active)
+            {
+                return refuse(format!(
+                    "{what} depreciation of asset {asset_id}, which is disposed: its disposal cleared what the runs posted (correct it with an entry by hand)"
+                ));
+            }
+            if self.ledger.in_effect(top) {
+                continue;
+            }
+            // Reversing `entry` re-instates the run, adding it back in the
+            // reversal's month.
+            if let Some((now, _)) = self.depreciation_posted_entry(asset_id, period)?
+                && now != top
+            {
+                return refuse(format!(
+                    "it would post asset {asset_id}'s depreciation for {period} a second time: entry {now} posts it now (reverse that one instead)"
+                ));
+            }
+            let amount: Decimal = get_str(&p, "amount")?
+                .parse()
+                .map_err(|_| StoreError::JournalCorrupt("bad amount".into()))?;
+            if let Some(asset) = self.ledger.get_asset(asset_id) {
+                let room = ledger_core::catch_up_room(
+                    asset,
+                    date.year(),
+                    date.month(),
+                    &self.depreciation_effects(asset_id)?,
+                )?
+                .amount;
+                if amount > room {
+                    return refuse(format!(
+                        "re-instating asset {asset_id}'s depreciation for {period} ({amount}) on {date} would carry more than its schedule: the books have room for {room} from {} on (a later run caught the month up; run a month again instead, which posts what is due)",
+                        date.format("%Y-%m")
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     // ------------------------------------------------------------------
@@ -1482,105 +1683,232 @@ impl Store {
         Ok(())
     }
 
-    /// Was depreciation already posted for this asset and period?
+    /// The depreciation runs the books carry for an asset: every run
+    /// journaled for it ([`Self::depreciation_runs_ever`]) whose entry is in
+    /// effect, in journal order. A reversed run is left out, so its month is
+    /// due again (P3 depreciation review R3); a reversed reversal counts
+    /// again, even after its month was run again and that run reversed (the
+    /// projection's row for the month names the latest run only, so it is
+    /// not read here: P3 review round 2).
+    fn live_runs(&self, asset_id: AssetId) -> Result<Vec<LiveRun>, StoreError> {
+        Ok(self
+            .depreciation_runs_ever(asset_id)?
+            .into_iter()
+            .filter(|(entry_id, _, _)| self.ledger.in_effect(*entry_id))
+            .map(|(entry_id, amount, period)| LiveRun {
+                period,
+                entry_id,
+                amount,
+            })
+            .collect())
+    }
+
+    /// The run the books carry for this asset and period, if any: (entry,
+    /// amount).
     fn depreciation_posted_entry(
         &self,
         asset_id: AssetId,
         period: &str,
     ) -> Result<Option<(u64, Decimal)>, StoreError> {
-        let row: Option<(i64, String)> = self
+        Ok(self
+            .live_runs(asset_id)?
+            .into_iter()
+            .find(|r| r.period == period)
+            .map(|r| (r.entry_id, r.amount)))
+    }
+
+    /// Whether this asset's period was ever run, reversed or not: running
+    /// it again writes a second `asset.depreciation_posted` for it, which an
+    /// older version would ignore (feature `month_reposting`).
+    fn depreciation_period_was_run(
+        &self,
+        asset_id: AssetId,
+        period: &str,
+    ) -> Result<bool, StoreError> {
+        Ok(self
             .conn
             .query_row(
-                "SELECT entry_id, amount FROM asset_depreciation WHERE asset_id = ? AND period = ?",
+                "SELECT 1 FROM asset_depreciation WHERE asset_id = ? AND period = ?",
                 params![asset_id as i64, period],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |_| Ok(()),
             )
-            .optional()?;
-        row.map(|(eid, amount)| {
+            .optional()?
+            .is_some())
+    }
+
+    /// Every depreciation run journaled for an asset, reversed or not, in
+    /// journal order: each `asset.depreciation_posted` (its runs, and its
+    /// disposal's final depreciation) as (entry, amount, period). The
+    /// projection keeps a period's latest run only; the journal keeps each.
+    fn depreciation_runs_ever(
+        &self,
+        asset_id: AssetId,
+    ) -> Result<Vec<(EntryId, Decimal, String)>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT payload FROM events WHERE type = 'asset.depreciation_posted' ORDER BY seq",
+        )?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            let p: Value = serde_json::from_str(&row?)?;
+            if get_u64(&p, "asset_id")? != asset_id {
+                continue;
+            }
+            let amount = get_str(&p, "amount")?;
             let amount = amount
                 .parse()
                 .map_err(|_| StoreError::JournalCorrupt(format!("bad amount {amount}")))?;
-            Ok((eid as u64, amount))
-        })
-        .transpose()
-    }
-
-    /// Sum of depreciation amounts posted for an asset. Summed in Rust with
-    /// exact Decimal math: amounts are TEXT in SQLite, so SQLite must not
-    /// sum them (REAL would lose pennies).
-    fn asset_depreciation_total(&self, asset_id: AssetId) -> Result<Decimal, StoreError> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT amount FROM asset_depreciation WHERE asset_id = ?")?;
-        let amounts = stmt.query_map(params![asset_id as i64], |r| r.get::<_, String>(0))?;
-        let mut total = Decimal::ZERO;
-        for a in amounts {
-            let s: String = a?;
-            let amount = s
-                .parse::<Decimal>()
-                .map_err(|_| StoreError::JournalCorrupt(format!("bad amount {s}")))?;
-            total = total.checked_add(amount).ok_or_else(|| {
-                StoreError::JournalCorrupt(format!("asset {asset_id}'s depreciation is too large"))
-            })?;
+            out.push((
+                get_u64(&p, "entry_id")?,
+                amount,
+                get_str(&p, "period")?.to_string(),
+            ));
         }
-        Ok(total)
+        Ok(out)
     }
 
-    /// Post one month of depreciation for one asset. Idempotent: running it
-    /// twice for the same period returns the original entry.
+    /// What the books carry for an asset's depreciation, entry by entry,
+    /// each in its own month: every run and every reversal of one
+    /// (ledger_core::depreciation_effects), as the catch-up rule reads it.
+    fn depreciation_effects(
+        &self,
+        asset_id: AssetId,
+    ) -> Result<Vec<ledger_core::PostedRun>, StoreError> {
+        let runs: Vec<(EntryId, Decimal)> = self
+            .depreciation_runs_ever(asset_id)?
+            .into_iter()
+            .map(|(e, a, _)| (e, a))
+            .collect();
+        Ok(ledger_core::depreciation_effects(&self.ledger, &runs))
+    }
+
+    /// Sum of the depreciation the books carry for an asset (its runs in
+    /// effect). Summed in Rust with exact Decimal math: amounts are TEXT in
+    /// SQLite, so SQLite must not sum them (REAL would lose pennies).
+    fn asset_depreciation_total(&self, asset_id: AssetId) -> Result<Decimal, StoreError> {
+        self.live_runs(asset_id)?
+            .iter()
+            .try_fold(Decimal::ZERO, |t, r| t.checked_add(r.amount))
+            .ok_or_else(|| {
+                StoreError::JournalCorrupt(format!("asset {asset_id}'s depreciation is too large"))
+            })
+    }
+
+    /// Post one month's depreciation for one asset: what is due through the
+    /// month's end (ledger_core::run_amount), dated then, Dr depreciation
+    /// expense / Cr accumulated depreciation.
     ///
     /// Depreciation is an allocation, not money movement, so it is exempt
     /// from the receipt policy by construction: the registered asset and its
     /// schedule are the supporting documentation.
+    ///
+    /// ```text
+    /// GOAL: the books carry the schedule through the month's end.
+    /// SOURCE: docs/spec/rules.md B-15; plan/served.md P3 "Settled in
+    ///         design" (2026-10-20): a month skipped is caught up in the
+    ///         month the run is made (an immaterial miss; a material one is
+    ///         restated, ASC 250, by a human and the CPA).
+    /// INVARIANTS:
+    ///   1. Idempotent: a period the books carry a run for returns that run
+    ///      (already_posted), journaling nothing.
+    ///   2. What posts is ledger_core::run_amount over what the books carry,
+    ///      every run and reversal in its own month (Self::depreciation_effects):
+    ///      earlier months skipped or reversed are caught up in this one,
+    ///      and the books never carry more than the schedule at a month end
+    ///      a run reached; a month whose run was reversed after it ended
+    ///      isn't run twice (the reversal's month catches it up).
+    ///   3. Nothing due (the month rounds to nothing, a later run caught it
+    ///      up, the life is over and posted) journals nothing: an entry
+    ///      can't carry a zero line (P3 depreciation review R10).
+    ///   4. A period run before and reversed is run again only after
+    ///      journal feature month_reposting is declared.
+    /// SCENARIOS:
+    ///   1. IF the asset is unknown or disposed, the period malformed, or
+    ///      it ends before the asset was placed in service: SHOULD refuse.
+    ///   2. IF the period is after the life and something is still due (its
+    ///      final month skipped, or in a closed period): SHOULD post it.
+    /// ```
     pub fn run_depreciation(
         &mut self,
         asset_id: AssetId,
         period: &str,
     ) -> Result<DepreciationRun, StoreError> {
-        if let Some((entry_id, amount)) = self.depreciation_posted_entry(asset_id, period)? {
-            return Ok(DepreciationRun {
-                asset_id,
-                period: period.to_string(),
-                amount,
-                entry_id,
-                already_posted: true,
-            });
-        }
+        let (year, month) = parse_period(period)?;
         let asset = self
             .ledger
             .get_asset(asset_id)
             .ok_or(LedgerError::UnknownAsset(asset_id))?
             .clone();
+        let period_end = last_day_of_month(year, month)?;
+        let own = |a: &ledger_core::Asset| -> Result<Decimal, StoreError> {
+            Ok(ledger_core::depreciation_schedule(a, period_end)?
+                .into_iter()
+                .find(|l| l.period == period)
+                .map_or(Decimal::ZERO, |l| l.amount))
+        };
+        if let Some((entry_id, amount)) = self.depreciation_posted_entry(asset_id, period)? {
+            return Ok(DepreciationRun {
+                asset_id,
+                period: period.to_string(),
+                amount,
+                scheduled: own(&asset)?,
+                entry_id: Some(entry_id),
+                already_posted: true,
+                nothing_due: None,
+            });
+        }
         if asset.status != AssetStatus::Active {
             return Err(LedgerError::AssetAlreadyDisposed(asset_id).into());
         }
-        let (year, month) = parse_period(period)?;
-        let period_end = last_day_of_month(year, month)?;
-        let sched = ledger_core::depreciation_schedule(&asset, period_end);
-        let line = sched.iter().find(|l| l.period == period).ok_or_else(|| {
-            StoreError::JournalCorrupt(format!(
-                "period {period} is outside asset {asset_id}'s depreciable life"
-            ))
+        let due =
+            ledger_core::run_amount(&asset, year, month, &self.depreciation_effects(asset_id)?)?;
+        if due.amount.is_zero() {
+            let last = ledger_core::life_end(&asset)?
+                .pred_opt()
+                .map(|d| (d.year(), d.month()));
+            let why = if !due.over.is_zero() {
+                format!(
+                    "the books carry {} more than the schedule through {period}, which no run takes back (a correction for a human)",
+                    due.over
+                )
+            } else if last.is_some_and(|l| (year, month) > l) {
+                "the asset's life is over, and the books carry all of its depreciation".to_string()
+            } else if due.scheduled.is_zero() {
+                format!("{period}'s depreciation rounds to nothing")
+            } else {
+                format!(
+                    "the books already carry the schedule through {period} (a later run caught it up, or its run was reversed after the month ended: the run of the reversal's month catches that up)"
+                )
+            };
+            return Ok(DepreciationRun {
+                asset_id,
+                period: period.to_string(),
+                amount: Decimal::ZERO,
+                scheduled: due.scheduled,
+                entry_id: None,
+                already_posted: false,
+                nothing_due: Some(why),
+            });
+        }
+        let amount = due.amount;
+        let description = format!("Depreciation — {} — {period}", asset.description);
+        let money = Money::new(amount, self.base_currency);
+        // Every refusal before the first journaled line: the entry on a
+        // copy, then the journal feature a period run again needs. A
+        // refusal after the entry posted would leave it without the line
+        // that makes it the period's run.
+        self.rehearse(|l| {
+            let e = l.try_create_entry(period_end, &description)?;
+            l.add_line(e, asset.expense_account, Side::Debit, money)?;
+            l.add_line(e, asset.accum_depr_account, Side::Credit, money)?;
+            l.post_entry(e)
         })?;
-        let amount = line.amount;
-        debug_assert!(amount > Decimal::ZERO);
-
-        let entry_id = self.create_entry(
-            period_end,
-            &format!("Depreciation — {} — {period}", asset.description),
-        )?;
-        self.add_line(
-            entry_id,
-            asset.expense_account,
-            Side::Debit,
-            Money::new(amount, self.base_currency),
-        )?;
-        self.add_line(
-            entry_id,
-            asset.accum_depr_account,
-            Side::Credit,
-            Money::new(amount, self.base_currency),
-        )?;
+        if self.depreciation_period_was_run(asset_id, period)? {
+            self.ensure_feature(crate::format::MONTH_REPOSTING)?;
+        }
+        let entry_id = self.create_entry(period_end, &description)?;
+        self.add_line(entry_id, asset.expense_account, Side::Debit, money)?;
+        self.add_line(entry_id, asset.accum_depr_account, Side::Credit, money)?;
         self.post_entry_unchecked(entry_id)?;
         let dline = self.append_journal(
             "asset.depreciation_posted",
@@ -1596,8 +1924,10 @@ impl Store {
             asset_id,
             period: period.to_string(),
             amount,
-            entry_id,
+            scheduled: due.scheduled,
+            entry_id: Some(entry_id),
             already_posted: false,
+            nothing_due: None,
         })
     }
 
@@ -1606,6 +1936,18 @@ impl Store {
     /// for both the preview and the post. Zero lines are left out (an
     /// engine entry has none): scrapping brings no proceeds, and an asset
     /// disposed before its first depreciation has none accumulated.
+    ///
+    /// ```text
+    /// INVARIANTS:
+    ///   1. Dr accumulated depreciation by everything the books carry for
+    ///      the asset (preview.accumulated), Dr proceeds, Cr cost; depreciation
+    ///      the runs posted past the disposal day credited back to the
+    ///      asset's depreciation expense (excess), or depreciation still due
+    ///      debited to it (catch_up); the gain or loss the difference.
+    ///   2. The lines balance, and the book value they take is cost less
+    ///      the schedule through the disposal day (Ledger::dispose_asset
+    ///      INVARIANT 1).
+    /// ```
     pub fn disposal_lines(
         asset: &ledger_core::Asset,
         preview: &DisposalPreview,
@@ -1616,7 +1958,17 @@ impl Store {
         [
             (asset.accum_depr_account, Side::Debit, preview.accumulated),
             (proceeds_account, Side::Debit, proceeds),
+            (
+                asset.expense_account,
+                Side::Debit,
+                preview.catch_up_depreciation,
+            ),
             (asset.cost_account, Side::Credit, asset.cost.amount),
+            (
+                asset.expense_account,
+                Side::Credit,
+                preview.excess_depreciation,
+            ),
             (gain_loss_account, Side::Credit, preview.gain_loss),
             (gain_loss_account, Side::Debit, -preview.gain_loss),
         ]
@@ -1625,8 +1977,150 @@ impl Store {
         .collect()
     }
 
-    /// Compute a disposal without posting. Pure reads plus the posted-vs-
-    /// scheduled reconciliation that [`Store::dispose_asset`] performs.
+    /// Refuse a disposal unless every depreciation run of the asset carries,
+    /// at the end of the disposal's month, what it carries in the end (in
+    /// effect, or reversed): the disposal entry clears what the runs carry
+    /// in effect, so it must be what they carry at that month end.
+    ///
+    /// ```text
+    /// GOAL: a disposal never leaves the books wrong at the end of its
+    ///       month, nor in the end: the expense is the schedule through the
+    ///       disposal day, and accumulated depreciation 0.00. It neither
+    ///       makes nor hides an error at a later month end: what a run
+    ///       carries there and not in the end (a later month's run reversed
+    ///       after its month, a run reversed and re-instated after the
+    ///       disposal's month) is that run's own error and correction, dated
+    ///       when they were made, the same with or without the disposal.
+    /// SOURCE: docs/spec/rules.md B-15 (a disposed asset depreciates through
+    ///         its disposal day); B-9 (a mistake is corrected by an opposite
+    ///         entry); plan/served.md P3, settled in design (a miss is
+    ///         corrected in the period the correction is made, a material
+    ///         one restated); Ledger::dispose_asset INVARIANT 1. P3 review
+    ///         round 2: round 1 checked only the runs of the disposal's month
+    ///         and before at later month ends, which refused a disposal for
+    ///         ever once the month that could undo a change was closed, and
+    ///         let a later month's run reversed on a day in or before the
+    ///         disposal's month through (its reversal charged the disposal
+    ///         month, the disposal charged the month again).
+    /// SCENARIOS:
+    ///   1. IF July ran and the asset is disposed of on Jun 15:
+    ///      - SHOULD refuse, naming July's run: reverse it first (dated
+    ///        when the correction is made; a reversal dated after July
+    ///        leaves July's books as they were, the correction a later
+    ///        month's)
+    ///      - NEVER credit July back at Jun 15 (June's expense 1,000.00
+    ///        short, its accumulated depreciation a 1,000.00 debit)
+    ///   2. IF the disposal month's own run (dated its end) stands: SHOULD
+    ///      allow it (no month end falls between; the disposal entry credits
+    ///      the days after the disposal back).
+    ///   3. IF May's run was reversed on Aug 1 and the asset is disposed of
+    ///      on Jun 15: SHOULD refuse (the disposal would charge May again
+    ///      at Jun 15, and the reversal take it away only in August), until
+    ///      that reversal is itself reversed (May stands again), on any day.
+    ///   4. IF March's run was reversed on Jan 31 (a reversal dated before
+    ///      its run) and the asset is disposed of on Feb 15: SHOULD refuse
+    ///      (February's end would carry the reversal and the disposal's
+    ///      whole charge through Feb 15).
+    /// ```
+    fn check_nothing_after_disposal(
+        &self,
+        asset_id: AssetId,
+        date: NaiveDate,
+    ) -> Result<(), StoreError> {
+        let month = (date.year(), date.month());
+        let month_end = ledger_core::schedules::month_end(date);
+        let (mut later, mut late) = (Vec::new(), Vec::new());
+        for (run, amount, period) in self.depreciation_runs_ever(asset_id)? {
+            if period_month(&period) > month && self.ledger.in_effect(run) {
+                later.push(format!("{period} (entry {run})"));
+                continue;
+            }
+            // The run's chain, each entry dated: what it carries at the
+            // disposal month's end must be what it carries in the end.
+            let dated: Vec<(EntryId, NaiveDate, Decimal)> = self
+                .ledger
+                .reversal_chain(run)
+                .into_iter()
+                .skip_while(|&e| e != run)
+                .enumerate()
+                .filter_map(|(i, e)| {
+                    let d = self.ledger.get_entry(e)?.date();
+                    Some((e, d, if i % 2 == 0 { amount } else { -amount }))
+                })
+                .collect();
+            let at_disposal: Decimal = dated
+                .iter()
+                .filter(|(_, d, _)| *d <= month_end)
+                .map(|(_, _, a)| *a)
+                .sum();
+            let in_the_end: Decimal = dated.iter().map(|(_, _, a)| *a).sum();
+            if at_disposal != in_the_end {
+                // The entries the difference is in: those dated after the
+                // month (or the run itself, dated after a reversal of it).
+                let after: Vec<String> = dated
+                    .iter()
+                    .filter(|(_, d, _)| *d > month_end)
+                    .map(|(e, d, _)| format!("entry {e} on {d}"))
+                    .collect();
+                late.push(format!(
+                    "{period}'s run (entry {run}), by {}",
+                    after.join(", ")
+                ));
+            }
+        }
+        if !later.is_empty() {
+            return Err(LedgerError::DepreciationPastDisposal(format!(
+                "asset {asset_id} has depreciation runs for months after {}, the disposal's month: {}; reverse them first (books.reverse_entry), then dispose of it",
+                date.format("%Y-%m"),
+                later.join(", ")
+            ))
+            .into());
+        }
+        if !late.is_empty() {
+            return Err(LedgerError::DepreciationPastDisposal(format!(
+                "what asset {asset_id}'s runs carry at {month_end}, the end of the disposal's month, isn't what they carry now: {}; the disposal clears what they carry now, so make the two agree first (reverse the latest of those entries, on any open day)",
+                late.join("; ")
+            ))
+            .into());
+        }
+        Ok(())
+    }
+
+    /// Compute a disposal without posting: the schedule through the
+    /// disposal day against what the books carry ([`Store::dispose_asset`]
+    /// posts it).
+    ///
+    /// ```text
+    /// GOAL: a disposal takes exactly the depreciation of the days held,
+    ///       whatever the runs posted.
+    /// SOURCE: docs/spec/rules.md B-15 (the disposal day is held);
+    ///         Ledger::dispose_asset INVARIANTS 1, 2; P3 depreciation
+    ///         review R2.
+    /// INVARIANTS:
+    ///   1. target = the schedule through the disposal day; posted = the
+    ///      runs the books carry (reversed ones left out); (up, down) =
+    ///      kernel::true_up(target, posted).
+    ///   2. book_value = cost − target; gain_loss = proceeds − book_value.
+    ///   3. up is posted as the final depreciation (its own entry), or, when
+    ///      the disposal month already has a run (which can't be posted
+    ///      twice), as catch_up_depreciation in the disposal entry; down is
+    ///      excess_depreciation, credited back in the disposal entry.
+    ///   4. accumulated (cleared) = posted + final_depreciation: the asset
+    ///      leaves the accumulated depreciation account at zero.
+    /// SCENARIOS:
+    ///   1. IF June ran (1,000.00 dated Jun 30) and the asset is disposed
+    ///      of on Jun 15 for 7,000.00 (cost 12,000.00, 1,000.00 a month):
+    ///      - SHOULD clear 6,000.00, credit back 500.00, book value
+    ///        6,500.00, gain 500.00
+    ///      - NEVER keep June's last 15 days of depreciation (a book value
+    ///        of 6,000.00, a gain of 1,000.00)
+    ///      BECAUSE the asset was held through Jun 15, not Jun 30.
+    ///   2. IF a run carries at the end of the disposal's month other than
+    ///      what it carries now (a run of a later month stands; a reversal
+    ///      or re-instatement dated after the month isn't undone): SHOULD
+    ///      refuse (DepreciationPastDisposal,
+    ///      Self::check_nothing_after_disposal).
+    /// ```
     pub fn dispose_preview(
         &self,
         asset_id: AssetId,
@@ -1659,23 +2153,29 @@ impl Store {
             return Err(LedgerError::DisposalBeforePurchase(date.to_string()).into());
         }
         let period = date.format("%Y-%m").to_string();
-        let posted = self.asset_depreciation_total(asset_id)?;
-        let target = ledger_core::accumulated_depreciation(asset, date);
-        let already = self.depreciation_posted_entry(asset_id, &period)?.is_some();
-        let final_depreciation = if already {
-            Decimal::ZERO
-        } else {
-            (target - posted).max(Decimal::ZERO)
-        };
+        self.check_nothing_after_disposal(asset_id, date)?;
+        let runs = self.live_runs(asset_id)?;
         let too_large =
             || StoreError::JournalCorrupt(format!("asset {asset_id}'s depreciation is too large"));
+        let posted = runs
+            .iter()
+            .try_fold(Decimal::ZERO, |t, r| t.checked_add(r.amount))
+            .ok_or_else(too_large)?;
+        let target = ledger_core::accumulated_depreciation(asset, date)?;
+        let (up, down) = ledger_core::kernel::true_up(target, posted).ok_or_else(too_large)?;
+        let in_month = runs.iter().any(|r| r.period == period);
+        let (final_depreciation, catch_up_depreciation) = if in_month {
+            (Decimal::ZERO, up)
+        } else {
+            (up, Decimal::ZERO)
+        };
         let accumulated = posted
             .checked_add(final_depreciation)
             .ok_or_else(too_large)?;
         let book_value = asset
             .cost
             .amount
-            .checked_sub(accumulated)
+            .checked_sub(target)
             .ok_or_else(too_large)?;
         Ok(DisposalPreview {
             asset_id,
@@ -1683,8 +2183,13 @@ impl Store {
             proceeds,
             accumulated,
             final_depreciation,
+            excess_depreciation: down,
+            catch_up_depreciation,
             book_value,
-            gain_loss: proceeds.amount - book_value,
+            gain_loss: proceeds
+                .amount
+                .checked_sub(book_value)
+                .ok_or_else(too_large)?,
             period,
         })
     }
@@ -1694,10 +2199,12 @@ impl Store {
     /// accumulated depreciation, record proceeds and gain/loss) and mark
     /// the asset disposed. Returns the disposal entry's id.
     ///
-    /// The auto-post matters: the disposal entry must clear exactly the
-    /// accumulated depreciation the books actually carry, not the schedule's
-    /// theoretical number. If the agent already ran depreciation for the
-    /// disposal month, that posted amount is the books' truth.
+    /// The disposal entry clears exactly the accumulated depreciation the
+    /// books carry for the asset, and takes the book value the schedule
+    /// gives through the disposal day ([`Store::dispose_preview`]): a run
+    /// that reached past the disposal day (the disposal month's, dated its
+    /// end) is taken back by a credit to depreciation expense, so the
+    /// depreciation and the gain or loss are both of the days held.
     pub fn dispose_asset(
         &mut self,
         asset_id: AssetId,
@@ -1835,6 +2342,13 @@ impl Store {
             },
             true,
         )?;
+        // The disposal month's run was reversed (else the final
+        // depreciation would be in the disposal entry): its line again,
+        // which needs a journal feature, declared (or refused) before the
+        // first line is journaled.
+        if depreciation.is_some() && self.depreciation_period_was_run(asset_id, &preview.period)? {
+            self.ensure_feature(crate::format::MONTH_REPOSTING)?;
+        }
         if let Some((description, lines)) = &depreciation {
             let eid = self.create_entry(date, description)?;
             for (account, side, amount) in lines {
@@ -2800,7 +3314,11 @@ impl Store {
         Ok((id, sha, dedup))
     }
 
-    /// Register an amortization schedule. Journaled as `schedule.registered`.
+    /// Register an amortization schedule. Journaled as `schedule.registered`,
+    /// with its `convention` (`daily` or `monthly_even`). The first daily
+    /// schedule declares journal feature `schedule_convention` before its
+    /// line: an older version reads every schedule as equal months, and
+    /// would refuse a daily one's postings as wrong (rather than as newer).
     pub fn register_schedule(
         &mut self,
         new: ledger_core::NewSchedule,
@@ -2808,6 +3326,9 @@ impl Store {
         self.rehearse(|l| l.register_schedule(new.clone()))?;
         ledger_core::schedules::validate_schedule(&new, self.ledger.chart())?;
         let id = self.ledger.next_schedule_id();
+        if new.convention == ledger_core::ScheduleConvention::Daily {
+            self.ensure_feature(crate::format::SCHEDULE_CONVENTION)?;
+        }
         let line = self.append_journal(
             "schedule.registered",
             json!({
@@ -2819,6 +3340,7 @@ impl Store {
                 "months": new.months,
                 "balance_account": new.balance_account,
                 "pl_account": new.pl_account,
+                "convention": new.convention.key(),
             }),
         )?;
         let got = self.ledger.register_schedule(new)?;
@@ -2829,7 +3351,9 @@ impl Store {
 
     /// Post one month of a schedule. Journaled as `schedule.posted` with the
     /// whole entry, so a month is never half-posted or posted twice; replay
-    /// re-derives the entry and checks it line by line.
+    /// re-derives the entry and checks it line by line. A month a reversal
+    /// un-posted posts again only after journal feature `month_reposting` is
+    /// declared: an older version would refuse it as posted twice.
     pub fn post_schedule_month(
         &mut self,
         id: ledger_core::ScheduleId,
@@ -2841,6 +3365,9 @@ impl Store {
         let (date, _, _) = self.ledger.preview_schedule_month(id, month_end)?;
         let mut next = self.ledger.clone();
         let entry = next.post_schedule_month(id, month_end)?;
+        if self.ledger.schedule_month_posted_before(id, date) {
+            self.ensure_feature(crate::format::MONTH_REPOSTING)?;
+        }
         let line = self.append_journal(
             "schedule.posted",
             json!({
@@ -2855,7 +3382,12 @@ impl Store {
     }
 
     /// Post every schedule's due months through `through`, oldest first.
-    /// Returns (schedule, month, entry) for each.
+    /// Returns (schedule, month, entry) for each. A month a run must leave
+    /// for a human (dated in a closed period, which takes no new entries;
+    /// or its posting reversed after the month ended, so posting it again
+    /// would recognize it twice: Ledger::schedule_month_hold) is left
+    /// unposted, as run_recurring leaves its occurrences, and
+    /// [`Self::schedule_months_held`] lists it.
     pub fn run_schedules(
         &mut self,
         through: NaiveDate,
@@ -2870,7 +3402,29 @@ impl Store {
         due.sort();
         let mut out = Vec::with_capacity(due.len());
         for (month, id) in due {
+            if self.ledger.schedule_month_hold(id, month).is_some() {
+                continue;
+            }
             out.push((id, month, self.post_schedule_month(id, month)?));
+        }
+        Ok(out)
+    }
+
+    /// Schedule months due through `through` that a run leaves for a human,
+    /// as (schedule, month, why): dated in a closed period, or reversed
+    /// after the month ended (Ledger::schedule_month_hold). A human books
+    /// each in an open period by hand, or not at all.
+    pub fn schedule_months_held(
+        &self,
+        through: NaiveDate,
+    ) -> Result<Vec<(ledger_core::ScheduleId, NaiveDate, String)>, StoreError> {
+        let mut out = Vec::new();
+        for s in self.ledger.schedules() {
+            for (d, _) in s.due(through)? {
+                if let Some(why) = self.ledger.schedule_month_hold(s.id, d) {
+                    out.push((s.id, d, why));
+                }
+            }
         }
         Ok(out)
     }
@@ -4653,6 +5207,17 @@ fn parse_period(period: &str) -> Result<(i32, u32), StoreError> {
     Ok((year, month))
 }
 
+/// A run's period as (year, month), read leniently, since an earlier
+/// version posted "10000-01"; a period no month parses as counts before
+/// every month.
+fn period_month(period: &str) -> (i32, u32) {
+    period
+        .split_once('-')
+        .and_then(|(y, m)| Some((y.parse::<i32>().ok()?, m.parse::<u32>().ok()?)))
+        .filter(|(_, m)| (1..=12).contains(m))
+        .unwrap_or((i32::MIN, 1))
+}
+
 /// Last calendar day of a month; refused, never a panic, for a month
 /// chrono can't reach.
 fn last_day_of_month(year: i32, month: u32) -> Result<NaiveDate, StoreError> {
@@ -4804,6 +5369,22 @@ pub(crate) fn replay_line_into_ledger(
         }
         "schedule.registered" => {
             let want = get_u64(p, "id")?;
+            // No convention (every schedule before P3): equal months, as
+            // they were posted. A convention this version doesn't know is
+            // newer, never corrupt (rules.md B-27).
+            let convention = match p.get("convention") {
+                None | Some(Value::Null) => ledger_core::ScheduleConvention::MonthlyEven,
+                Some(Value::String(c)) => {
+                    ledger_core::ScheduleConvention::parse(c).ok_or_else(|| {
+                        crate::format::newer_content(line, format!("the schedule convention {c}"))
+                    })?
+                }
+                Some(_) => {
+                    return Err(StoreError::JournalCorrupt(
+                        "schedule.registered convention".into(),
+                    ));
+                }
+            };
             let got = ledger.replay_register_schedule(ledger_core::NewSchedule {
                 description: get_str(p, "description")?.to_string(),
                 kind: serde_json::from_value(p["kind"].clone())?,
@@ -4812,6 +5393,7 @@ pub(crate) fn replay_line_into_ledger(
                 months: get_u64(p, "months")? as u32,
                 balance_account: get_u64(p, "balance_account")?,
                 pl_account: get_u64(p, "pl_account")?,
+                convention,
             })?;
             if got != want {
                 return Err(StoreError::ReplayMismatch(format!(
@@ -6004,8 +6586,13 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
             )?;
         }
         "asset.depreciation_posted" => {
+            // A period run again after its run was reversed takes the row
+            // (feature month_reposting); a period whose run stands keeps
+            // it, as before.
             conn.execute(
-                "INSERT OR IGNORE INTO asset_depreciation(asset_id, period, entry_id, amount) VALUES (?,?,?,?)",
+                "INSERT INTO asset_depreciation(asset_id, period, entry_id, amount) VALUES (?,?,?,?) \
+                 ON CONFLICT(asset_id, period) DO UPDATE SET entry_id = excluded.entry_id, amount = excluded.amount \
+                 WHERE EXISTS (SELECT 1 FROM entries r WHERE r.reversal_of = asset_depreciation.entry_id)",
                 params![
                     get_u64(p, "asset_id")? as i64,
                     get_str(p, "period")?,

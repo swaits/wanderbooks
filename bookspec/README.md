@@ -39,7 +39,7 @@ code = "1000"
 name = "Cash"
 type = "asset"                  # asset | liability | equity | revenue | expense
 
-[[events]]                      # in order; event N is entry #N
+[[events]]                      # in order, counting from 1
 date = "2026-01-10"
 description = "Property contributed"
 lines = [
@@ -50,8 +50,9 @@ lines = [
 [[events]]
 date = "2026-01-10"
 description = "Reverse entry 1"
-reverses = 1                    # the event (1-based) this one reverses:
-                                # its lines, sides flipped; no `lines` here
+reverses = 1                    # the event (1-based) whose entry this
+                                # one reverses: its lines, sides flipped;
+                                # no `lines` here
 
 [[expect]]
 query = "cash_flow"             # what is asked of the books (see below)
@@ -62,14 +63,29 @@ to = "2026-12-31"               # inclusive (a query as of a day: as_of)
 operating = "0.00"
 ```
 
-Events count from 1, as entries do: the first `[[events]]` is event 1
-(entry #1), and `reverses = N` reverses the Nth event, one before it;
-`reverses = 0` names no event and is refused. An event is an entry
-(`lines`), a reversal (`reverses`), a close (`close`, below) or a bill
-(`bill`, below), exactly one of them, and posts entry #N. A change that
-posts no entry (a rename, a policy) is a `[[changes]]` entry instead
-(below), so the numbering holds. A key the shape doesn't have is refused
-too, never ignored.
+Events count from 1: the first `[[events]]` is event 1. An event is an
+entry (`lines`), a reversal (`reverses`), a close (`close`, below) or a
+bill (`bill`, below), each posting one entry; or one of the books'
+commands that post what is due (`run_depreciation`, `dispose_asset`,
+`run_schedules`, below), which post as many entries as are due, none
+included; or a schedule's registration (`register_schedule`), which
+posts none: exactly one of them. A key that names an event (`reverses =
+N`, `entry = N`, a cash flow's `<N>`) names the entry event N posted, one
+before it: an event that posted none, or several, can't be named that
+way, and `reverses = 0` names no event and is refused. While every event
+posts one entry, event N's is entry #N. A change that posts no entry (a
+rename, a policy) is a `[[changes]]` entry instead (below). A key the
+shape doesn't have is refused too, never ignored.
+
+An entry, a reversal, a close, a bill and a disposal are dated (`date`);
+the other commands date their own entries (a run its month's end) and
+take no date. An entry, a reversal, a close and a bill are described
+(`description`); a command describes its own entries and takes none.
+
+The books are the engine's own (`ledger_store::Store`, in a directory of
+their own): each event is the command the books take it by, journaled as
+they journal it, and after every expectation is checked the books must
+replay to what they kept (`Store::verify`).
 
 `rounding` names the rule the example's figures are rounded by where one
 rounds: `half-even` or `half-away-from-zero` to the currency's minor unit,
@@ -113,6 +129,34 @@ the side gives the direction.
   expense_account }`: accounts that hold property and equipment (their
   cost and accumulated depreciation are investing; ASC 230-10-45-12(c),
   45-13(c)).
+- `[[setup.assets]]`: fixed assets registered before the first event,
+  each named by its `id` in the events and queries that ask about it
+  (rules.md B-15):
+
+  ```toml
+  [[setup.assets]]
+  id = "X"                      # its name in this example
+  description = "Asset X"
+  cost = "12000.00"
+  salvage = "0.00"
+  life_months = 12
+  in_service = "2026-01-01"     # depreciation starts here
+  method = "straight_line"      # the one method the books have
+  cost_account = "1500"
+  accumulated_account = "1510"
+  expense_account = "6200"
+  ```
+
+  Registering an asset posts nothing: the entry that buys it is an event
+  of its own.
+- `[[setup.schedules]]`, and `register_schedule = { ... }` as an event: a
+  prepaid expense or deferred revenue recognized over its months (rules.md
+  B-16), named by its `id`:
+  `{ id, kind, description, total, start, months, convention,
+  balance_account, pl_account }`, `kind` `"prepaid_expense"` or
+  `"deferred_revenue"`, `convention` `"daily"` (by the day, the last month
+  taking what the others leave) or `"monthly_even"` (equal months from
+  the 1st). Registering one posts nothing.
 - `[[setup.parties]]` `{ name, roles, creditor_of?, tin_last4?,
   w9_tin_last4?, tin_purged? }`: the company's directory (B-26). `roles`
   are role keys (`member`, `vendor`, `customer`, `contractor`,
@@ -153,8 +197,8 @@ the side gives the direction.
   liability is a card account (B-35 item 5): while none is recorded, a
   liability whose name says "card", not "gift card", is.
 - `payee` on an event: the payee (by name, one of `setup.payees`) the
-  entry paid. Not on a reversal, which takes its original's, nor on a
-  close.
+  entry paid. Only on an entry (`lines`): a reversal takes its
+  original's, a bill names its vendor, a close and a command have none.
 - `parties = [{ party, amount? }, { party, percent? }, ...]` on an event:
   the parties (by name, in `setup.parties`) the entry is with, each with
   its share: an `amount` (an exact decimal string), a `percent`, or
@@ -164,7 +208,7 @@ the side gives the direction.
   `payee` as well, the payee's party is one of the parties.
 - `instrument` on an event: the payment method (a `setup.instruments`
   label) the entry was paid with. Neither `parties` nor `instrument` on a
-  reversal, which takes its original's.
+  reversal, which takes its original's, nor on a command.
 - `close = { start, to, rounding? }` as an event: closes the period from
   `start` through the event's `date` (rules.md B-11, B-13), `to`
   `"members"` (split by share, in the order listed) or
@@ -173,13 +217,28 @@ the side gives the direction.
   have closed less what earlier closes gave them; `rounding = "per-close"`
   splits that close's net on its own instead (books from an engine that
   rounded each close by itself). A close must have something to close: it
-  posts entry #N like any other event.
+  posts one entry like any other event.
 - `bill = { vendor, amount }` as an event: a bill from `vendor` (a name;
   a payee's record if one has it) for `amount`, dated and due on the
-  event's date. It posts entry #N: General Expenses (6999) debited and
+  event's date. It posts one entry: General Expenses (6999) debited and
   Accounts Payable (2000) credited, each account created with that fixed
   name when first needed, as the books create a control role's account
   (B-32).
+- `run_depreciation = { asset, period }` as an event: the asset's run for
+  `period` (`"YYYY-MM"`), which posts what the schedule says is due
+  through the month's end and the books don't carry, dated then: a
+  skipped month caught up, nothing when nothing is due (rules.md B-15).
+- `dispose_asset = { asset, proceeds, proceeds_account, gain_loss_account
+  }` as an event, dated: the asset's disposal for `proceeds` (an exact
+  decimal, zero allowed), received into `proceeds_account`, its gain or
+  loss to `gain_loss_account` (B-15). It posts the depreciation still due
+  through its day in an entry of its own when the month has no run, then
+  the disposal entry.
+- `run_schedules = { through }` as an event: every schedule's months due
+  through `through` posted (B-16).
+- `refused = "<reason>"` on a reversal or a command: the books refuse it,
+  for that reason (below); it changes nothing, posts nothing, and the
+  example goes on without it.
 - `[[changes]]` `{ after, rename?, require_tax_category? }`: a change
   that posts no entry, exactly one of `rename = { code, name }` (rename
   the account `code`, B-31) and `require_tax_category = "warn"` or
@@ -213,7 +272,7 @@ answers is refused, never skipped.
 | `cash_flow` | `from`, `to` | figures (below) | `ledger-core` `tests/bookspec.rs` |
 | `trial_balance` | `as_of` | each account's balance by code, debits less credits (a credit balance negative), every account listed | `ledger-core` `tests/bookspec.rs` |
 | `profit_and_loss` | `from`, `to` | each revenue and expense account's activity by code, on its normal side, closing entries left out, every one listed; `net_income`, revenue less expenses | `ledger-core` `tests/bookspec.rs` |
-| `entry` | `entry = N`, no dates | entry N's lines, `"<code>.debit"` and `"<code>.credit"` each the sum of that account's lines on that side, every line of the entry named | `ledger-core` `tests/bookspec.rs` |
+| `entry` | `entry = N`, no dates | the lines of event N's entry, `"<code>.debit"` and `"<code>.credit"` each the sum of that account's lines on that side, every line of the entry named | `ledger-core` `tests/bookspec.rs` |
 | `balances` | `as_of` | each account named by code, its balance on its normal side (a member's capital after a loss is negative); the example names the accounts it shows | `ledger-core` `tests/bookspec.rs` |
 | `members_equity` | `from`, `to` | the statement of changes in members' equity (rules.md B-13): `"<member>.beginning"`, `.contributions`, `.net_income`, `.distributions`, `.other`, `.ending`; the example names the figures it shows | `ledger-core` `tests/bookspec.rs` |
 | `k1` | `from`, `to` | the K-1 worksheet (B-13; Schedule K-1 Item L): `"<member>.beginning"`, `.contributions_cash`, `.contributions_property`, `.net_income`, `.distributions`, `.other`, `.ending`; the example names the figures it shows (`cash_accounts` required) | `ledger-core` `tests/bookspec.rs` |
@@ -227,6 +286,10 @@ answers is refused, never skipped.
 | `calendar_year` | none | the year a calendar-year count (1099s, party totals) asked without one counts: `year` | `ledger-core` `tests/bookspec.rs` |
 | `account_names` | none | each account's name by code, as the chart holds it and every report prints it, past periods included (B-31); every account listed, those the books created included | `ledger-core` `tests/bookspec.rs` |
 | `uncategorized_accounts` | none | a list: every account that needs a tax category (revenue or expense, not a header) and has none, with activity or not, `"<code> <name>"`, by code (B-32) | `ledger-core` `tests/bookspec.rs` |
+| `run` | `event = N`, no dates | what the `run_depreciation` event N posted: `amount` (zero when nothing was due, or the month had its run already), and `caught_up`, what of it is beyond the month's own depreciation (B-15); both listed | `ledger-core` `tests/bookspec.rs` |
+| `disposal` | `asset`, no dates | what the asset's disposal took (B-15), every figure listed: `final_depreciation` (posted in its own entry), `catch_up_depreciation` and `excess_depreciation` (charged, and credited back, in the disposal entry), `accumulated` (cleared), `book_value`, `gain_loss` (a gain positive) | `ledger-core` `tests/bookspec.rs` |
+| `depreciation_schedule` | `asset`, `as_of` | the asset's schedule through the day (B-15): each month named (`"YYYY-MM"`) its depreciation, `"0.00"` for a month it doesn't reach; `accumulated` and `book_value` through the day; the example names the figures it shows | `ledger-core` `tests/bookspec.rs` |
+| `schedule_plan` | `schedule`, no dates | the schedule's plan (B-16): what it recognizes at each month end named (`"YYYY-MM-DD"`), `"0.00"` at one it doesn't post; `total`, all it recognizes; the example names the figures it shows | `ledger-core` `tests/bookspec.rs` |
 | `iif_lines` | `as_of` | formats appendix: the file's lines in order, each its fields joined by tabs, without the CR LF that ends each | `ledger-package` `the_bookspec_iif_example_matches_the_engine` |
 | `iif_changes` | `as_of` | formats appendix: each text the file writes differently from the books, in file order, as `[what, books' text, file's text]` (the example's header gives `what`) | `ledger-package` `the_bookspec_iif_example_matches_the_engine` |
 
@@ -255,7 +318,15 @@ name, ignoring capitals and surrounding space), `holds_a_tin` (a run of
 nine digits), `not_one_line` (a line break, tab or other control
 character, or past 200 characters), `code_taken`, and
 `tax_category_required` (an account that needs a category left without
-one under `refuse`).
+one under `refuse`). A refused event's: `depreciation_past_disposal` (a
+disposal dated before depreciation a run carries: a later month's run
+stands, or a run's change dated after the disposal's month isn't undone),
+`entry_irreversible` (an asset's entry that can't be reversed: its
+disposal, a disposed asset's depreciation, a run re-instated twice or past
+its schedule, or a reversal dated before its run), `already_disposed`,
+`invalid_depreciation_period` (a month that ends before the asset is in
+service) and `invalid_schedule` (an equal-months schedule not starting on
+the 1st, among others).
 
 `cash_flow` (rules.md B-14): the statement of cash flows for `[from, to]`.
 
@@ -265,10 +336,10 @@ one under `refuse`).
 | `net_change`, `cash_beginning`, `cash_ending` | the cash accounts' change and balances |
 | `difference` | sections less the change in cash: always `"0.00"` |
 | `net_income` | revenue less expenses, closing entries excluded |
-| `<section>.<N>` | entry N's cash in that section (`financing.4`) |
+| `<section>.<N>` | event N's entry's cash in that section (`financing.4`) |
 | `<section>.<N>.on_behalf` | of it, what a member or a lender paid or received for the company, no cash account moving (constructive receipt and disbursement) |
 | `<section>.count` | how many entries the section lists |
-| `noncash.<N>` | entry N's noncash investing and financing disclosure |
+| `noncash.<N>` | event N's entry's noncash investing and financing disclosure |
 | `noncash.count` | how many entries are disclosed |
 | `reconciliation.depreciation` | depreciation added back |
 | `reconciliation.investing_gain_loss` | gains and losses whose cash is investing, taken out |
@@ -284,8 +355,9 @@ reconciliation key not given must be zero or absent.
 Every example, in any appendix, is loaded by
 `crates/ledger-core/tests/bookspec.rs` (`every_bookspec_example_holds`):
 its shape (a key the shape doesn't have is refused), its setup, and every
-event posted. Each query is then checked by the crate that answers it (the
-table above), so the shape never rots either.
+event taken or refused as it says, on the books' own store. Each query is
+then checked by the crate that answers it (the table above), so the shape
+never rots either.
 
 ## Licence and sources
 

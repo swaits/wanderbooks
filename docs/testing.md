@@ -1368,6 +1368,88 @@ unknown-code check, the accounts passed) and `update_party`'s feature
 declaration; the bookspec loader's party, payee, decision and payment
 method setup.
 
+## P3: depreciation and schedules (defects 22 and 9, 2026-10-20)
+
+Every expected figure below was worked by hand from the rule (rules.md
+B-15, B-16) and is written out in the test's doc comment; the fixtures are
+made up (asset X: 12,000.00 over 12 months from 2026-01-01; a 1,200.00
+policy from March 15). Each regression that is an accounting rule is also
+a bookspec example (`bookspec/examples/`, P13, D-34).
+
+| Law | Test |
+|---|---|
+| Through a day of the life's final month, depreciation is prorated by days, never plugged (repro A: December 483.87, accumulated 11,483.87) | `ledger-core` `spec_assets_payroll.rs` `defect22_depreciation_through_mid_final_month_is_prorated_not_plugged`; `spec_asset_tags.rs` `register_as_of_a_day_before_a_same_month_disposal_is_prorated` |
+| A mid-month life's drift is spread over the final month's days (repro D: through Apr 13, 920.00; Apr 14, 930.00) | `defect22_final_month_drift_is_spread_by_days`; `spec_replayed_extremes.rs` `depreciation_reaches_chronos_last_month` (1,185.92 through Dec 10 of year 262142) |
+| A disposed asset's schedule stops at its disposal day, held, and equals what the disposal took (repro B) | `defect22_a_disposed_assets_schedule_stops_at_its_disposal_day`, property `prop_disposed_schedule_equals_what_disposal_computed`; `ledger-mcp` `spec_assets.rs` `a_disposed_asset_lists_what_it_depreciated_through_its_disposal` |
+| A disposal in the final month posts depreciation by days (repro C: 322.58, gain 322.58) | `ledger-store` `tests/assets.rs` `defect22_a_disposal_in_the_final_month_posts_depreciation_by_days` |
+| A disposal inside a month already run takes back the days after it (R2: excess 500.00, book value 6,500.00) | `defect22_a_disposal_inside_a_posted_month_takes_back_the_extra_days` (store and `ledger-mcp` `spec_assets.rs`) |
+| A month skipped is caught up in the month the run is made; a later run for it posts nothing (settled in design, P3) | core `a_skipped_month_is_caught_up_in_the_month_run`, store `a_skipped_month_is_caught_up_in_the_month_run`, MCP `a_skipped_month_is_caught_up_and_said` |
+| A reversed run is un-posted and runs again (feature month_reposting); re-instating a run whose month ran again is refused; a disposal, and a run its disposal took as final, can't be reversed; a reversed run before a disposal leaves nothing behind (R3) | store `a_reversed_depreciation_month_can_be_run_again`, `a_disposal_entry_cannot_be_reversed`, `a_reversed_run_before_a_disposal_leaves_nothing_behind`; core `a_reversed_schedule_month_is_due_again` |
+| What the books carry is read entry by entry, each in its own month: a run reversed after its month ended isn't run twice (its month posts nothing; the reversal's month catches it up), for depreciation; a schedule month reversed after it ended is left for a human, listed with why (P3 review) | store `a_run_reversed_after_its_month_is_caught_up_in_the_reversals_month`; GUI `a_run_reversed_after_its_month_leaves_the_reversals_month_due`; core `schedules.rs` `a_schedule_month_reversed_after_it_ended_is_left_for_a_human`; store `format.rs` `a_schedule_month_posted_again_declares_month_reposting_and_replays` |
+| Re-instating a run (reversing its reversal) never carries the books past the schedule, nor past cost less salvage (P3 review) | store `reinstating_a_run_a_later_run_caught_up_is_refused` |
+| What the books carry is each run and each reversal in its own month, alternately adding and taking away (P3 review) | core `spec_assets_payroll.rs` `depreciation_effects_read_each_entry_in_its_month` |
+| A schedule month that rounds to nothing is never a posting: left out of a daily plan, never due in an equal-months one (P3 review; no test held it before) | core `schedules.rs` `a_month_that_rounds_to_nothing_is_never_a_posting` |
+| A disposal is refused while a later month's run stands, or while an earlier run's reversal is dated after the disposal's month; once undone, the disposal month ends at 0.00 accumulated and its expense whole (P3 review) | store `a_disposal_before_a_later_months_run_is_refused_until_it_is_reversed`, `a_disposal_before_a_later_reversal_of_an_earlier_run_is_refused` |
+| A disposed asset's figures in the viewer are what its disposal took (its excess or catch-up from the disposal entry) and none of its months is Due (P3 review) | GUI `a_disposed_assets_figures_are_what_its_disposal_took` |
+| The final month is C + (D − C) × k / d, rounded half up, against arithmetic written in the test (P3 review) | property `prop_the_final_month_takes_the_remainder_by_its_days` (500 cases) |
+| A month that rounds to nothing posts and journals nothing (R10) | store `run_depreciation_posts_nothing_for_a_month_that_rounds_to_nothing`, MCP `run_depreciation_skips_a_month_that_rounds_to_nothing` |
+| Depreciation and daily schedules round to the currency's minor unit (R1: yen, dinars) | `jpy_depreciation_posts_whole_yen`, store `jpy_depreciation_runs_post_whole_yen`, `schedules.rs` `a_jpy_daily_schedule_posts_whole_yen`, `a_kwd_daily_schedule_rounds_to_the_fils`; `money.rs` `steps_are_the_currencys_minor_unit` |
+| A new schedule spreads by the day (1,200.00 from March 15: 54.84, eleven 100.00, 45.16); deferred revenue is earned by the day (290.32, 333.34, 333.33, 43.01) | `schedules.rs` `defect9_a_new_schedule_spreads_by_the_day`, `defect9_deferred_revenue_daily_is_earned_to_the_cent`; `schedules.rs` unit `a_daily_plan_spreads_by_the_day`; `ledger-mcp` `mcp_stdio.rs` `mcp_daily_schedule_over_stdio` |
+| Schedules from before P3 stay equal months, forever | `defect9_legacy_schedules_stay_monthly_even`, property `prop_monthly_even_plan_is_unchanged`; every old-books fixture (`books_an_earlier_version_wrote_open_to_its_figures`) |
+| An equal-months schedule starts on the 1st (D-37); a daily one's last day is in the calendar | `an_equal_months_schedule_starts_on_the_first`, `spec_bounds.rs` `a_daily_schedule_whose_last_day_passes_9999_is_refused` |
+| chrono's month-end clamping is pinned for daily plans (Jan 29, 30, 31; Feb 29) | `schedules.rs` unit `daily_plans_pin_month_end_clamping` |
+| A new asset's cost and salvage are in the minor unit (replay takes finer ones, computed); a life ending 9999-12-31 is taken, a day later refused | `spec_bounds.rs` `an_asset_cost_finer_than_a_cent_is_refused`, `a_life_ending_on_9999_12_31_is_accepted`, `a_life_ending_after_it_is_refused` |
+| The first daily schedule declares feature schedule_convention; an older reader stops there; monthly_even declares nothing; an unknown convention is newer, never corrupt | `ledger-store` `tests/format.rs` `the_first_daily_schedule_declares_its_feature_and_an_older_reader_stops_there`, `a_monthly_even_schedule_declares_no_feature`, `an_unknown_schedule_convention_is_newer_not_corrupt`; `format.rs` unit `an_older_reader_stops_at_p3s_features` |
+| Accumulated depreciation never falls, never exceeds cost − salvage, is 0 before service and the whole from the last day (sampled days: the first and final months, two between, a dozen month ends; R9) | property `prop_depreciation_is_monotone_and_bounded` (500 cases) |
+| No posted month moves but a half-cent tie's cent (old Decimal arithmetic as the oracle) | property `prop_month_end_schedules_match_the_legacy_arithmetic_except_half_cent_ties` (500 cases) |
+| A daily plan sums exactly, lands on month ends, each amount > 0; from the 1st, `months` postings within a cent of total/months | property `prop_daily_plan_sums_exactly_and_lands_on_month_ends` (2,000 cases) |
+| Refused commands never reach the journal, now with daily and monthly_even schedules and zero-month runs | `ledger-store` `tests/store.rs` `refused_commands_never_reach_the_journal` |
+| Every order of runs, reversals (any day, before an entry's own included), re-runs, re-instatements, disposals and closes on one asset keeps the books right: refusals journal nothing; at every month end before the disposal the expense is the accumulated depreciation and within the schedule; one run in effect per month; a disposal's month and the end at the schedule through its day, accumulated 0.00, the gain proceeds less book value; an active asset run month by month past its life takes exactly cost less salvage (P3 review round 2) | store `asset_orders.rs` `every_order_of_runs_reversals_disposals_and_closes_keeps_the_books_right` (exhaustive, three commands deep; four and five with `WB_ORDERS_DEPTH`, run clean 2026-10-21), `prop_any_sequence_keeps_the_books_right` (64 cases, up to 9 commands, any day) |
+| The viewer reads an asset as the store does, whatever the runs, reversals and disposals: what the books carry, each finished month's status against a run of it, what is unposted (P3 review round 2) | GUI `prop_the_viewer_reads_an_asset_as_the_store_does` (48 cases), `the_viewer_counts_a_run_reinstated_after_its_rerun_was_reversed` |
+| A run re-instated after its month was run again and that run reversed still counts: in the store, the disposal and the viewer (P3 review round 2; before, the projection's row named the reversed re-run) | store `a_run_reinstated_after_its_rerun_was_reversed_still_counts`; GUI `the_viewer_counts_a_run_reinstated_after_its_rerun_was_reversed` |
+| A depreciation run's or schedule month's reversal can't be dated before the entry it reverses (P3 review round 2: a run of March reversed on Jan 31, then a disposal on Feb 15, ended February with a 1,000.00 debit in accumulated depreciation) | store `a_reversal_dated_before_the_entry_it_reverses_is_refused` |
+| A disposal waits only until what the runs carry at its month's end is what they carry now, so a late change undone after its month closed lets it through (P3 review round 2; round 1 refused it for ever) | store `a_disposal_is_taken_once_a_late_change_is_undone_after_its_month_closed` |
+| Depreciation still due when the disposal's month has a run is charged in the disposal entry, never as a second run of the month (P3 review round 2; no store test held it) | store `a_disposal_whose_month_has_run_charges_what_is_still_due_in_its_entry` |
+| A command that needs a journal feature decides and declares it before its first journaled line: a refused feature journals nothing (the format-upgrade gate) | store `format.rs` `a_refused_journal_feature_journals_nothing` |
+| What a viewer's one pass says a run of each month posts is run_amount's for that month | property `prop_run_amounts_are_each_months_run_amount` (500 cases); Kani `catch_ups_is_every_suffixs_catch_up` |
+| The kernel on i64 and i32 (Kani's) is the kernel on i128 and Decimal (the engine's) | `kernel_bridge.rs` `prorate_agrees_at_i64_and_i128`, `prorated_through_agrees_at_i32_and_i128`, `catch_up_and_true_up_agree` |
+| The charge never falls and is continuous at month ends, over every 1-to-3-month span from every day of a common and a leap year | `kernel.rs` unit `the_charge_never_falls_and_is_continuous_over_real_calendars` (exhaustive) |
+| Proofs | Kani `prorate_parts_sum_to_total`, `prorate_last_part_absorbs_the_remainder`, `a_months_charge_is_within_half_a_cent`, `a_months_charge_in_tenths_is_within_half_a_cent`, `the_last_months_charge_is_within_half_a_cent`, `the_last_months_charge_in_tenths_is_within_half_a_cent`, `prorated_through_refuses_malformed_input`, `catch_up_never_overtakes_the_schedule`, `catch_ups_is_every_suffixs_catch_up`, `true_up_reaches_the_target`; Lean `Prorate.lean` (`cum_mono`, `cum_le`, `cum_full`, `parts_telescope`, `prorate_total`, `prorate_nonneg`, `part_within_a_unit`, `roundUnit_near`, `roundUnit_scale`, `cum_near`, `part_near`, `chargeMid_eq_cum`, `chargeLast_eq_cum`, `chargeLast_start`, `chargeLast_mono`, `kernel_parts_total`, `kernel_parts_nonneg`; `docs/verification.md`) |
+
+**Mutation targets for P12** (none run in P3, D-33): `kernel.rs`
+`prorated_through` (the last/not-last branch, the rounding comparison
+`r >= step - r` against `>`, the `k == days && last` shortcut, the cap at
+the total, every refusal), `round_to_unit`, `prorate_by_days`,
+`part_weight`, `MonthPart::is_valid`, the three `Units` impls, `catch_up`,
+`catch_ups`, `true_up`; `calendar.rs` `month_parts`, `days_in_month`,
+`next_month_start`; `money.rs` `Steps::of`, `Steps::decimal`; `assets.rs`
+`schedule_months` (the stop date's `min` with the disposal day, the
+inclusive `+ 1`, the partial-month break), `life_end`, `check_disposal`,
+`run_amount`, `catch_up_room`, `depreciation_effects` (the chain's
+alternating signs), `run_amounts` (its stop past the life), `cumulatives`;
+`ledger.rs` `check_new_asset` (the minor-unit checks, the `pred()`
+bound), `check_reversal` SCENARIO 5, `in_effect`, `reverse_entry_steps`'
+schedule un-posting, `schedule_month_posted_before`,
+`schedule_month_reversed_after`, `schedule_month_hold`; `schedules.rs`
+`daily_plan`, `plan_for`, `validate_schedule` (the 1st rule, the daily
+bound, the minor-unit plan check), `first_day`, `last_day`, `next`, `due`'s
+zero months, `ScheduleConvention::parse`/`key`; `settings.rs` the new key
+and `schedule_convention()`'s default; `store.rs` `run_depreciation`
+(nothing due, the feature on a re-run), `live_runs`,
+`depreciation_runs_ever`, `dispose_preview` (true-up split, `in_month`),
+`check_nothing_after_disposal`, `disposal_lines`, `check_reverse_entry`
+(the re-instatement room),
+`register_schedule` (the feature only for daily), `ensure_feature`,
+`post_schedule_month`'s feature, `run_schedules`' held months, the
+`schedule.registered` replay arm's convention, the `asset.depreciation_posted`
+projection upsert, `period_month`; `format.rs` `KNOWN_FEATURES`,
+`declared_knowing`; `server.rs` `create_schedule`'s default resolution,
+`schedule_out`'s new fields, `run_depreciation`'s skips, `list_assets`'
+`schedule_error`, `dispose_asset`'s debits, `run_schedules`' held months;
+`ledger-gui` `books.rs` `disposal_true_up`, `pages/assets.rs` `unposted`
+and `schedule`'s disposed months. Equivalent mutants foreseen:
+none (`r >= step - r` against `>` is killed by `half_a_unit_rounds_up`).
+
 ## Benchmarks (baseline 2026-10-13)
 
 No budget, by decision (the owner, 2026-10-13: the books do little work

@@ -1246,3 +1246,190 @@ fn export_fixed_asset_register_carries_tax_basis() {
     let total = csv_row("TOTAL");
     assert_eq!(canon(&total[c_tax]), "3050.25");
 }
+
+// ------------------------------------- P3: defect 22 and runs, over MCP
+
+/// Books holding asset X of the P3 depreciation brief (12,000.00, no
+/// salvage, 12 months from 2026-01-01: 1,000.00 a month), paid for.
+fn asset_x(name: &str) -> (Mcp, u64) {
+    let mut m = books(name);
+    m.post(
+        "2026-01-01",
+        &[
+            ("1000", "debit", "20000.00"),
+            ("3000", "credit", "20000.00"),
+        ],
+    );
+    m.post(
+        "2026-01-01",
+        &[
+            ("1500", "debit", "12000.00"),
+            ("1000", "credit", "12000.00"),
+        ],
+    );
+    let (x, _) = m.register_ok(json!({"cost": "12000.00"}));
+    (m, x)
+}
+
+fn dispose_args(x: u64, date: &str, proceeds: &str) -> Value {
+    json!({"asset_id": x, "date": date, "proceeds": proceeds,
+           "proceeds_account": "1000", "gain_loss_account": "7100"})
+}
+
+/// Defect 22, reproduction B over MCP: January through May run, then a
+/// disposal on 2026-06-15 for 7,000.00. Hand check: June held 15 of 30
+/// days, 500.00 (the final depreciation); accumulated 5,500.00, book value
+/// 6,500.00, gain 500.00. Afterwards books.asset_schedule ends there and
+/// books.list_assets says the same. Before P3 the schedule showed June
+/// 7,000.00, accumulated 12,000.00, book value 0.00.
+#[test]
+fn a_disposed_asset_lists_what_it_depreciated_through_its_disposal() {
+    let (mut m, x) = asset_x("disposed-figures");
+    for p in ["2026-01", "2026-02", "2026-03", "2026-04", "2026-05"] {
+        m.ok(
+            "books.run_depreciation",
+            json!({"period": p, "asset_id": x}),
+        );
+    }
+    let preview = m.ok(
+        "books.dispose_asset",
+        dispose_args(x, "2026-06-15", "7000.00"),
+    );
+    assert_eq!(the_value(&preview, "final_depreciation"), "500");
+    assert_eq!(the_value(&preview, "excess_depreciation"), "0");
+    assert_eq!(the_value(&preview, "book_value"), "6500");
+    assert_eq!(the_value(&preview, "gain_loss"), "500");
+    let doc = m.file_bill_of_sale();
+    let mut confirm = dispose_args(x, "2026-06-15", "7000.00");
+    confirm["confirmed"] = json!(true);
+    confirm["receipt_attachment_ids"] = json!([doc]);
+    m.ok("books.dispose_asset", confirm);
+    let s = m.read_only("books.asset_schedule", json!({"asset_id": x}));
+    assert_eq!(s["status"], "disposed");
+    let lines = s["schedule"].as_array().unwrap();
+    let jun = lines.last().unwrap();
+    assert_eq!(jun["period"], "2026-06");
+    assert_eq!(canon(jun["amount"].as_str().unwrap()), "500");
+    assert_eq!(canon(jun["accumulated"].as_str().unwrap()), "5500");
+    assert_eq!(canon(jun["book_value"].as_str().unwrap()), "6500");
+    let listed = m.asset(x);
+    assert_eq!(canon(listed["accumulated"].as_str().unwrap()), "5500");
+    assert_eq!(canon(listed["book_value"].as_str().unwrap()), "6500");
+    assert_eq!(listed["schedule_error"], Value::Null);
+}
+
+/// P3 depreciation review R2 over MCP: with June already run (dated Jun
+/// 30), a disposal on Jun 15 for 7,000.00 credits back June's last 15
+/// days. Hand check: the runs carry 6,000.00; the schedule through Jun 15
+/// is 5,500.00, so 500.00 is excess; book value 6,500.00, gain 500.00. The
+/// entry: Dr 1510 6,000.00, Dr 1000 7,000.00 / Cr 1500 12,000.00, Cr 6500
+/// 500.00, Cr 7100 500.00.
+#[test]
+fn a_disposal_inside_a_posted_month_takes_back_the_extra_days() {
+    let (mut m, x) = asset_x("disposed-inside");
+    for p in 1..=6 {
+        m.ok(
+            "books.run_depreciation",
+            json!({"period": format!("2026-{p:02}"), "asset_id": x}),
+        );
+    }
+    let preview = m.ok(
+        "books.dispose_asset",
+        dispose_args(x, "2026-06-15", "7000.00"),
+    );
+    assert_eq!(the_value(&preview, "final_depreciation"), "0");
+    assert_eq!(the_value(&preview, "excess_depreciation"), "500");
+    assert_eq!(the_value(&preview, "catch_up_depreciation"), "0");
+    assert_eq!(the_value(&preview, "accumulated"), "6000");
+    assert_eq!(the_value(&preview, "book_value"), "6500");
+    assert_eq!(the_value(&preview, "gain_loss"), "500");
+    let line = |code: &str| {
+        preview["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|l| l["code"] == code)
+            .unwrap_or_else(|| panic!("no {code} line in {preview}"))
+            .clone()
+    };
+    assert_eq!(line("6500")["side"], "credit");
+    assert_eq!(canon(line("6500")["amount"].as_str().unwrap()), "500");
+    assert_eq!(canon(line("1510")["amount"].as_str().unwrap()), "6000");
+}
+
+/// P3 depreciation review R10 over MCP: a run-all for a month whose
+/// depreciation rounds to 0.00 posts nothing for that asset and lists it
+/// under skipped, with why; journaling nothing. Hand check: 0.01 over 3
+/// months from 2026-01-01: January's cumulative a third of a cent, 0.00.
+#[test]
+fn run_depreciation_skips_a_month_that_rounds_to_nothing() {
+    let mut m = books("zero-month");
+    let (a, _) = m.register_ok(json!({"cost": "0.01", "useful_life_months": 3}));
+    let before = m.journal();
+    let r = m.ok("books.run_depreciation", json!({"period": "2026-01"}));
+    assert_eq!(r["runs"], json!([]));
+    let skipped = r["skipped"].as_array().unwrap();
+    assert_eq!(skipped.len(), 1);
+    assert_eq!(skipped[0]["asset_id"], json!(a));
+    assert!(
+        skipped[0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("rounds to nothing"),
+        "{r}"
+    );
+    assert_eq!(m.journal(), before, "nothing journaled");
+    let r = m.ok("books.run_depreciation", json!({"period": "2026-02"}));
+    assert_eq!(canon(r["runs"][0]["amount"].as_str().unwrap()), "0.01");
+}
+
+/// The catch-up rule over MCP (plan/served.md P3, settled in design):
+/// January run, February skipped, a March run posts 2,000.00, of which
+/// 1,000.00 is caught up; a run reversed within its month is due again
+/// (reversed after it, the next run catches it up: the store's
+/// a_run_reversed_after_its_month_is_caught_up_in_the_reversals_month), and
+/// a disposal entry can't be reversed.
+#[test]
+fn a_skipped_month_is_caught_up_and_said() {
+    let (mut m, x) = asset_x("caught-up");
+    m.ok(
+        "books.run_depreciation",
+        json!({"period": "2026-01", "asset_id": x}),
+    );
+    let r = m.ok(
+        "books.run_depreciation",
+        json!({"period": "2026-03", "asset_id": x}),
+    );
+    assert_eq!(canon(r["runs"][0]["amount"].as_str().unwrap()), "2000");
+    assert_eq!(canon(r["runs"][0]["caught_up"].as_str().unwrap()), "1000");
+    let jan_entry = {
+        let again = m.ok(
+            "books.run_depreciation",
+            json!({"period": "2026-01", "asset_id": x}),
+        );
+        assert_eq!(again["runs"][0]["already_posted"], json!(true));
+        again["runs"][0]["entry_id"].as_u64().unwrap()
+    };
+    m.ok(
+        "books.reverse_entry",
+        json!({"entry_id": jan_entry, "date": "2026-01-31", "description": "undo",
+               "confirmed": true}),
+    );
+    let r = m.ok(
+        "books.run_depreciation",
+        json!({"period": "2026-01", "asset_id": x}),
+    );
+    assert_eq!(r["runs"][0]["already_posted"], json!(false));
+    assert_eq!(canon(r["runs"][0]["amount"].as_str().unwrap()), "1000");
+    let doc = m.file_bill_of_sale();
+    let mut confirm = dispose_args(x, "2026-03-31", "9000.00");
+    confirm["confirmed"] = json!(true);
+    confirm["receipt_attachment_ids"] = json!([doc]);
+    let disposed = m.ok("books.dispose_asset", confirm);
+    let entry = disposed["entry_id"].as_u64().unwrap();
+    let err = m.refuse(
+        "books.reverse_entry",
+        json!({"entry_id": entry, "date": "2026-04-02", "description": "undo"}),
+    );
+    assert!(err.contains("can't be reversed"), "{err}");
+}

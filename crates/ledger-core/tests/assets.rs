@@ -70,7 +70,7 @@ fn schedule_sums_exactly_to_depreciable_amount() {
     // Odd numbers chosen to not divide evenly: 100000 / 60.
     let id = van_asset(&mut ledger, 100_000, cost, accum, expense);
     let asset = ledger.get_asset(id).unwrap();
-    let sched = depreciation_schedule(asset, date(2031, 12, 31));
+    let sched = depreciation_schedule(asset, date(2031, 12, 31)).unwrap();
     // 61 calendar months touched (partial first and last), 60 months' worth.
     assert_eq!(sched.len(), 61);
     let total: Decimal = sched.iter().map(|l| l.amount).sum();
@@ -94,7 +94,7 @@ fn partial_months_complement_to_whole() {
     let (mut ledger, cost, accum, expense) = test_ledger();
     let id = van_asset(&mut ledger, 100_000, cost, accum, expense);
     let asset = ledger.get_asset(id).unwrap();
-    let sched = depreciation_schedule(asset, date(2031, 12, 31));
+    let sched = depreciation_schedule(asset, date(2031, 12, 31)).unwrap();
     // Jan 2026 (17/31) + Jan 2031 (14/31) = exactly one month's charge.
     let monthly = Decimal::from(100_000) / Decimal::from(60);
     let monthly_rounded =
@@ -122,7 +122,7 @@ fn salvage_value_is_never_depreciated() {
         })
         .unwrap();
     let asset = ledger.get_asset(id).unwrap();
-    let sched = depreciation_schedule(asset, date(2030, 12, 31));
+    let sched = depreciation_schedule(asset, date(2030, 12, 31)).unwrap();
     let total: Decimal = sched.iter().map(|l| l.amount).sum();
     assert_eq!(total, Decimal::from(45_000));
     assert_eq!(sched.last().unwrap().book_value, Decimal::from(5_000));
@@ -133,11 +133,11 @@ fn book_value_tracks_accumulated() {
     let (mut ledger, cost, accum, expense) = test_ledger();
     let id = van_asset(&mut ledger, 60_000, cost, accum, expense);
     let asset = ledger.get_asset(id).unwrap();
-    let acc = accumulated_depreciation(asset, date(2026, 12, 31));
+    let acc = accumulated_depreciation(asset, date(2026, 12, 31)).unwrap();
     // Jan 2026 prorated 17/31 of 1000 = 548.39, then 11 full months of 1000.
     assert_eq!(acc, Decimal::new(54839, 2) + Decimal::from(11_000));
     assert_eq!(
-        book_value(asset, date(2026, 12, 31)),
+        book_value(asset, date(2026, 12, 31)).unwrap(),
         Decimal::from(60_000) - acc
     );
 }
@@ -281,9 +281,13 @@ fn schedule_through_purchase_date_covers_one_day() {
         .unwrap();
     let asset = ledger.get_asset(id).unwrap();
     // Through the day before purchase: nothing.
-    assert!(depreciation_schedule(asset, date(2026, 1, 14)).is_empty());
+    assert!(
+        depreciation_schedule(asset, date(2026, 1, 14))
+            .unwrap()
+            .is_empty()
+    );
     // Through the purchase date itself: one day of the first month.
-    let one_day = depreciation_schedule(asset, date(2026, 1, 15));
+    let one_day = depreciation_schedule(asset, date(2026, 1, 15)).unwrap();
     assert_eq!(one_day.len(), 1);
     assert_eq!(one_day[0].period, "2026-01");
     // 62000/62 = 1000/month; 1/31 of that = 32.26.
@@ -302,7 +306,7 @@ fn van_schedule_is_the_hand_computed_one() {
     let (mut ledger, cost, accum, expense) = test_ledger();
     let id = van_asset(&mut ledger, 60_000, cost, accum, expense);
     let asset = ledger.get_asset(id).unwrap();
-    let sched = depreciation_schedule(asset, date(2032, 1, 1));
+    let sched = depreciation_schedule(asset, date(2032, 1, 1)).unwrap();
     assert_eq!(sched.len(), 61);
     let mut accumulated = Decimal::ZERO;
     for (k, line) in sched.iter().enumerate() {
@@ -421,7 +425,7 @@ fn one_month_useful_life_is_valid() {
         })
         .unwrap();
     let asset = ledger.get_asset(id).unwrap();
-    let sched = depreciation_schedule(asset, date(2026, 12, 31));
+    let sched = depreciation_schedule(asset, date(2026, 12, 31)).unwrap();
     // A one-month life starting Mar 10 spans two calendar months.
     assert_eq!(sched.len(), 2);
     // March: 22/31 of 300 = 212.90.

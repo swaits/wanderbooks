@@ -1,0 +1,112 @@
+id = "depreciation-catch-up-month"
+title = "A month of depreciation skipped is caught up in the month the run is made"
+rule = "A depreciation run for a month posts everything the schedule says is due through that month's end that the books don't carry, so a skipped month is caught up in it, and a later run for the skipped month posts nothing."
+status = "CHOICE"
+sources = ["ASC 360-10-35-4", "DECISION: plan/served.md P3, Settled in design (2026-10-20)"]
+tags = ["depreciation", "catch-up", "skipped-month", "p3"]
+
+[setup]
+currency = "USD"
+fiscal_year_start = "01-01"
+basis = "accrual"
+rounding = "half-away-from-zero"
+
+[[setup.accounts]]
+code = "1000"
+name = "Bank"
+type = "asset"
+
+[[setup.accounts]]
+code = "1500"
+name = "Equipment"
+type = "asset"
+
+[[setup.accounts]]
+code = "1510"
+name = "Accumulated Depreciation"
+type = "asset"
+
+[[setup.accounts]]
+code = "3000"
+name = "Capital"
+type = "equity"
+
+[[setup.accounts]]
+code = "6200"
+name = "Depreciation Expense"
+type = "expense"
+
+[[setup.accounts]]
+code = "7100"
+name = "Gain or Loss on Disposal"
+type = "revenue"
+
+# Asset X: 12,000.00, no salvage, 12 months from 2026-01-01 (1,000.00 a
+# month; December the final month).
+[[setup.assets]]
+id = "X"
+description = "Asset X"
+cost = "12000.00"
+salvage = "0.00"
+life_months = 12
+in_service = "2026-01-01"
+method = "straight_line"
+cost_account = "1500"
+accumulated_account = "1510"
+expense_account = "6200"
+
+[[events]]
+date = "2026-01-01"
+description = "Capital"
+lines = [
+  { account = "1000", side = "debit", amount = "12000.00" },
+  { account = "3000", side = "credit", amount = "12000.00" },
+]
+
+[[events]]
+date = "2026-01-01"
+description = "Bought asset X"
+lines = [
+  { account = "1500", side = "debit", amount = "12000.00" },
+  { account = "1000", side = "credit", amount = "12000.00" },
+]
+
+[[events]]
+run_depreciation = { asset = "X", period = "2026-01" }
+
+# February is skipped; March is run.
+[[events]]
+run_depreciation = { asset = "X", period = "2026-03" }
+
+# February run afterwards: nothing is due (March caught it up).
+[[events]]
+run_depreciation = { asset = "X", period = "2026-02" }
+
+# Hand check (worked without the code): the schedule through Mar 31 is
+# 3 x 1,000.00 = 3,000.00; January's run carried 1,000.00, so March's run
+# posts 2,000.00 (its own 1,000.00 and February's, caught up). February's
+# run then posts 0.00: the books already carry the schedule through
+# February's end and beyond.
+[[expect]]
+query = "run"
+event = 4
+
+[expect.values]
+amount = "2000.00"
+caught_up = "1000.00"
+
+[[expect]]
+query = "run"
+event = 5
+
+[expect.values]
+amount = "0.00"
+caught_up = "0.00"
+
+[[expect]]
+query = "balances"
+as_of = "2026-03-31"
+
+[expect.values]
+"1510" = "-3000.00"
+"6200" = "3000.00"

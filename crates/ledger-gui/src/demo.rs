@@ -539,6 +539,9 @@ pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
         months: 12,
         balance_account: prepaid,
         pl_account: insurance,
+        // A new schedule spreads by the day (D-11, D-37): a small first
+        // and last month around eleven full ones.
+        convention: ledger_core::ScheduleConvention::Daily,
     })?;
 
     let mut open_invoices: Vec<(u64, NaiveDate, Decimal)> = Vec::new();

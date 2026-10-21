@@ -22,8 +22,12 @@ workspace = true
 [dev-dependencies]
 criterion = "0.8.2"
 proptest = "1"
-# bookspec examples are TOML (tests/bookspec.rs).
+# bookspec examples are TOML (tests/bookspec.rs), run on the engine's own
+# store (a dev-dependency only: the store depends on this crate), each in
+# a directory of its own.
 toml = "1"
+ledger-store = { path = "../ledger-store" }
+tempfile = "3"
 
 [[bench]]
 name = "books"

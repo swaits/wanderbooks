@@ -11,6 +11,7 @@ use crate::theme::{self, pal};
 use crate::widgets;
 use egui::{CornerRadius, RichText, Sense, Ui, vec2};
 use egui_phosphor::regular as icon;
+use ledger_core::AssetStatus;
 use ledger_core::PeriodStatus;
 use ledger_core::assets::{accumulated_depreciation, book_value};
 use rust_decimal::Decimal;
@@ -355,22 +356,9 @@ fn assets(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
         },
         |ui| {
             for a in &assets {
-                // What has actually been posted, so this ties to the balance
-                // sheet; the schedule may run ahead of the books.
-                let acc: Decimal = b
-                    .journal
-                    .iter()
-                    .filter(|l| {
-                        l.line_type == "asset.depreciation_posted"
-                            && l.payload.get("asset_id").and_then(|v| v.as_u64()) == Some(a.id)
-                    })
-                    .filter_map(|l| {
-                        l.payload
-                            .get("amount")
-                            .and_then(|v| v.as_str())
-                            .and_then(|s| s.parse::<Decimal>().ok())
-                    })
-                    .sum();
+                // What the books carry (runs in effect), so this ties to the
+                // balance sheet; the schedule may run ahead of the books.
+                let acc: Decimal = b.asset_trail(a.id).posted();
                 let bv = a.cost.amount - acc;
                 let scheduled = accumulated_depreciation(a, b.today);
                 let _ = book_value;
@@ -394,7 +382,11 @@ fn assets(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                             "bought {} · {} months · {}",
                             fmt::date(a.purchase_date),
                             a.useful_life_months,
-                            fmt::words(&format!("{:?}", a.status)).to_lowercase()
+                            match &a.status {
+                                AssetStatus::Active => "active".to_string(),
+                                AssetStatus::Disposed { date, .. } =>
+                                    format!("disposed {}", fmt::date(*date)),
+                            }
                         ))
                         .font(theme::regular(12.0))
                         .color(p.muted),
@@ -406,11 +398,13 @@ fn assets(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                         );
                     });
                 });
-                let behind = scheduled - acc;
-                let note = if behind > Decimal::ZERO {
-                    format!(" · {} more scheduled through today", fmt::dollars(behind))
-                } else {
-                    String::new()
+                let note = match scheduled {
+                    Ok(s) if s > acc => {
+                        format!(" · {} more scheduled through today", fmt::dollars(s - acc))
+                    }
+                    Ok(_) => String::new(),
+                    // An earlier version's asset: said, never guessed.
+                    Err(_) => " · its schedule can't be computed".to_string(),
                 };
                 progress(
                     ui,
@@ -489,12 +483,20 @@ fn schedules(ui: &mut Ui, b: &Books) {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new(&s.description).font(theme::semibold(13.5)));
                     ui.label(
-                        RichText::new(format!(
-                            "{} · {} months from {}",
-                            fmt::words(&format!("{:?}", s.kind)),
-                            s.months,
-                            fmt::month(s.start)
-                        ))
+                        RichText::new(match s.convention {
+                            ledger_core::ScheduleConvention::Daily => format!(
+                                "{} · {} months from {}, by the day",
+                                fmt::words(&format!("{:?}", s.kind)),
+                                s.months,
+                                fmt::date(s.start)
+                            ),
+                            ledger_core::ScheduleConvention::MonthlyEven => format!(
+                                "{} · {} months from {}",
+                                fmt::words(&format!("{:?}", s.kind)),
+                                s.months,
+                                fmt::month(s.start)
+                            ),
+                        })
                         .font(theme::regular(12.0))
                         .color(p.muted),
                     );
@@ -729,6 +731,7 @@ mod tests {
             months: 12,
             balance_account: prepaid,
             pl_account: insurance,
+            convention: ledger_core::ScheduleConvention::MonthlyEven,
         })
         .unwrap();
         b.s.run_schedules(d(2026, 3, 31)).unwrap();

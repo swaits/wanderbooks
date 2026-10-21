@@ -4,17 +4,22 @@
 //! harness: CBMC explores *every* input within the stated bounds, not a
 //! sample, and fails if any one of them breaks an assertion, panics, or
 //! overflows. The code under proof is the engine's own [`crate::kernel`],
-//! instantiated at `i64` (exact integer money, in the smallest unit); the
-//! engine runs the same functions on `Decimal`, and the `kernel_bridge`
-//! property test checks the two instantiations agree.
+//! instantiated at `i64` (exact integer money, in the smallest unit; the
+//! four charge harnesses of the proration by days at `i32`); the engine
+//! runs the same functions on `Decimal` (proration on `i128`), and the
+//! `kernel_bridge` property tests check the instantiations agree.
 //!
 //! Bounds: entries of up to [`N`] lines over up to [`K`] accounts, and
 //! amounts up to 2^40 in magnitude; the statement of cash flows' entry
-//! harnesses, up to [`NF`] lines, each in any of the four places. The Lean
-//! model in `verify/lean` proves the same laws for any number of lines and
-//! accounts.
+//! harnesses, up to [`NF`] lines, each in any of the four places;
+//! proration over up to [`PR`] month parts, 1 to 3 months, totals up to
+//! [`PR_TOTAL`] units (the charges: 1 or 2 months, totals to 2,048 units,
+//! 64 in a span's last month). The Lean model in `verify/lean` proves the
+//! same laws for any number of lines and accounts, and the proration's
+//! for any number of parts and any sizes (docs/verification.md says
+//! which, and how it ties to the kernel's formula).
 
-use crate::kernel::{self, Amount, LineError};
+use crate::kernel::{self, Amount, LineError, MONTH_L, MonthPart};
 use crate::{AccountType, Side};
 
 /// Most lines per entry the harnesses explore.
@@ -1352,6 +1357,322 @@ fn reverse_target_is_an_involution() {
         }
     }
     kani::cover!(t.amount == i64::MIN, "the range's edge");
+}
+
+// ---------------------------------------------------------------------------
+// Proration by days (depreciation, B-15; daily schedules, B-16)
+// ---------------------------------------------------------------------------
+
+/// Most month parts the proration harnesses explore.
+const PR: usize = 3;
+
+/// Any share a calendar month can have: 28 to 31 days in the month, 1 to
+/// all of them.
+fn any_part() -> MonthPart {
+    let month_days: u32 = kani::any();
+    kani::assume((28..=31).contains(&month_days));
+    let days: u32 = kani::any();
+    kani::assume(days >= 1 && days <= month_days);
+    MonthPart { days, month_days }
+}
+
+/// The largest total the proration harnesses explore, in units: 2^16
+/// (655.36 in cents). The kernel divides a symbolic 64-bit product by a
+/// symbolic divisor, which the SAT solver finds costly; narrowed from 2^20
+/// first, as the P3 brief says, before anything else (docs/verification.md
+/// says what no bound made tractable, and what proves it instead).
+const PR_TOTAL: i64 = 1 << 16;
+
+/// A total up to `PR_TOTAL` units, 1 to 3 months, 1 to `PR` parts, a unit
+/// of 1 or 10 (cents, or cents of an amount in tenths of a cent).
+fn any_proration() -> (i64, u32, [MonthPart; PR], usize, i64) {
+    let total: i64 = kani::any();
+    kani::assume(total >= 0 && total <= PR_TOTAL);
+    let months: u32 = kani::any();
+    kani::assume(months >= 1 && months <= 3);
+    let parts: [MonthPart; PR] = core::array::from_fn(|_| any_part());
+    let n: usize = kani::any();
+    kani::assume(n >= 1 && n <= PR);
+    let unit = if kani::any() { 1 } else { 10 };
+    (total, months, parts, n, unit)
+}
+
+/// The weight of parts, in MONTH_L-ths of a month.
+fn weight(parts: &[MonthPart]) -> i64 {
+    parts
+        .iter()
+        .map(|p| i64::from(p.days) * i64::from(MONTH_L / p.month_days))
+        .sum()
+}
+
+/// The parts of a total prorated by days sum to it exactly, and none is
+/// negative; and every split whose parts but the last fit in the span is
+/// computed (only symbolic parts that are no calendar's are refused).
+#[kani::proof]
+#[kani::unwind(5)]
+fn prorate_parts_sum_to_total() {
+    let (total, months, parts, n, unit) = any_proration();
+    let mut out = [0i64; PR];
+    let got = kernel::prorate_by_days(total, months, &parts[..n], unit, &mut out[..n]);
+    let fits = weight(&parts[..n - 1]) <= i64::from(months) * i64::from(MONTH_L);
+    assert_eq!(got.is_some(), fits);
+    if got.is_some() {
+        let mut sum = 0i64;
+        for &o in &out[..n] {
+            assert!(o >= 0);
+            sum += o;
+        }
+        assert_eq!(sum, total);
+        kani::cover!(n == PR && total > 0, "three parts of a positive total");
+    }
+}
+
+/// The last part is the total less all the others: it absorbs the
+/// remainder, the final month's drift included, and is never negative.
+/// A corollary of [`prorate_parts_sum_to_total`] (the parts sum to the
+/// total and none is negative), kept as its own harness because the plan
+/// names the law (plan/served.md P3 defect 9).
+#[kani::proof]
+#[kani::unwind(5)]
+fn prorate_last_part_absorbs_the_remainder() {
+    let (total, months, parts, n, unit) = any_proration();
+    let mut out = [0i64; PR];
+    if kernel::prorate_by_days(total, months, &parts[..n], unit, &mut out[..n]).is_none() {
+        return;
+    }
+    let mut others = 0i64;
+    for &o in &out[..n - 1] {
+        others += o;
+    }
+    assert_eq!(out[n - 1], total - others);
+    assert!(out[n - 1] >= 0);
+    kani::cover!(
+        n == PR && parts[0].days < parts[0].month_days,
+        "a partial first month, then the last absorbing the drift"
+    );
+}
+
+/// A cumulative charge is its exact share rounded half up to a multiple of
+/// the unit (or the total itself, when that rounds above it): a multiple of
+/// the unit or the total, with −unit × den < 2 × (charge × den − num) <=
+/// unit × den (a tie goes up, never down), where num/den is the exact
+/// share of the total the kernel rounds (a month but the last: total ×
+/// (before + k × MONTH_L / days in month) / W; the last month: total ×
+/// (before × d + (W − before) × k) / (W × d)); never negative, never above
+/// the total; and the total exactly on the last month's last day. Each
+/// part but the last, a difference of two such charges over W, is then
+/// its days times the monthly rate within one unit (plan/served.md P3
+/// defect 9: "each part equals days × rate within 0.01", for any minor
+/// unit): Lean `Prorate.part_within_a_unit` does that arithmetic, for any
+/// parts.
+///
+/// At `i32` (the kernel is generic over [`kernel::Units`]), 1 or 2 months,
+/// totals to `max_total`, a unit fixed per harness: a property relating a
+/// product to a quotient is costly for the solver, and at `i64` these ran
+/// past twenty minutes (docs/verification.md). The bridge checks the `i32`
+/// kernel against the engine's `i128` one. Returns (charge, total, num,
+/// den) for the callers' covers; `None` on the last month's last day.
+fn charge_is_within_half_a_unit(
+    last: bool,
+    unit: i32,
+    max_total: i32,
+) -> Option<(i64, i64, i64, i64)> {
+    let total: i32 = kani::any();
+    kani::assume(total >= 0 && total <= max_total);
+    let months: u32 = kani::any();
+    kani::assume(months >= 1 && months <= 2);
+    let part = any_part();
+    let whole = months as i32 * MONTH_L as i32;
+    let before: i32 = kani::any();
+    kani::assume(before >= 0 && before <= whole);
+    let k: u32 = kani::any();
+    kani::assume(k <= part.days);
+    let rate = (MONTH_L / part.month_days) as i32;
+    // A month but the last ends inside the span.
+    kani::assume(last || before + k as i32 * rate <= whole);
+    let c = kernel::prorated_through(total, months, before, part, k, last, unit)
+        .expect("well formed, in the span, and no overflow at these sizes");
+    assert!(0 <= c && c <= total);
+    if last && k == part.days {
+        assert_eq!(c, total);
+        return None;
+    }
+    assert!(c % unit == 0 || c == total);
+    let (total, whole, before, k, unit) = (
+        i64::from(total),
+        i64::from(whole),
+        i64::from(before),
+        i64::from(k),
+        i64::from(unit),
+    );
+    let (num, den) = if last {
+        let d = i64::from(part.days);
+        (total * (before * d + (whole - before) * k), whole * d)
+    } else {
+        (total * (before + k * i64::from(rate)), whole)
+    };
+    let c = i64::from(c);
+    let e = 2 * (c * den - num);
+    assert!(e <= unit * den && e > -(unit * den));
+    kani::cover!(c > 0 && c < total, "a charge strictly inside the total");
+    kani::cover!(e == unit * den, "a half-unit tie rounds up");
+    Some((c, total, num, den))
+}
+
+/// The cap reached: a total that isn't a whole number of units, whose
+/// exact share rounds above it before the last day, is charged itself.
+fn cover_the_cap(got: Option<(i64, i64, i64, i64)>) {
+    kani::cover!(
+        got.is_some_and(|(c, total, num, den)| c == total && total % 10 != 0 && num < total * den),
+        "the charge capped at a total finer than its unit"
+    );
+}
+
+/// [`charge_is_within_half_a_unit`] for a month but the last, in cents
+/// (totals to 2,048 units).
+#[kani::proof]
+fn a_months_charge_is_within_half_a_cent() {
+    charge_is_within_half_a_unit(false, 1, 2_048);
+}
+
+/// [`charge_is_within_half_a_unit`] for a month but the last, in cents of
+/// an amount kept in tenths of a cent (an asset an earlier version took).
+#[kani::proof]
+fn a_months_charge_in_tenths_is_within_half_a_cent() {
+    cover_the_cap(charge_is_within_half_a_unit(false, 10, 2_048));
+}
+
+/// [`charge_is_within_half_a_unit`] for the span's last month, in cents
+/// (totals to 64 units: its numerator is the total times up to 31 months'
+/// worth of MONTH_L-ths).
+#[kani::proof]
+fn the_last_months_charge_is_within_half_a_cent() {
+    charge_is_within_half_a_unit(true, 1, 64);
+}
+
+/// [`charge_is_within_half_a_unit`] for the span's last month, in cents of
+/// an amount kept in tenths of a cent.
+#[kani::proof]
+fn the_last_months_charge_in_tenths_is_within_half_a_cent() {
+    cover_the_cap(charge_is_within_half_a_unit(true, 10, 64));
+}
+
+/// Malformed input is refused, never a panic: a negative total, no months,
+/// a unit that isn't positive, a part no month has, a day past the part,
+/// a weight before it outside the span, or a part but the last ending past
+/// it.
+#[kani::proof]
+fn prorated_through_refuses_malformed_input() {
+    let total: i64 = kani::any();
+    kani::assume(total.unsigned_abs() <= 1 << 20);
+    let months: u32 = kani::any();
+    kani::assume(months <= 3);
+    let before: i64 = kani::any();
+    kani::assume(before.unsigned_abs() <= 4 * u64::from(MONTH_L));
+    let part = MonthPart {
+        days: kani::any(),
+        month_days: kani::any(),
+    };
+    kani::assume(part.days <= 40 && part.month_days <= 40);
+    let k: u32 = kani::any();
+    kani::assume(k <= 40);
+    let last: bool = kani::any();
+    let unit: i64 = kani::any();
+    kani::assume(unit.unsigned_abs() <= 10);
+    let got = kernel::prorated_through(total, months, before, part, k, last, unit);
+    let whole = i64::from(months) * i64::from(MONTH_L);
+    let malformed = total < 0
+        || months == 0
+        || unit <= 0
+        || !(28..=31).contains(&part.month_days)
+        || part.days == 0
+        || part.days > part.month_days
+        || k > part.days
+        || before < 0
+        || before > whole;
+    kani::cover!(malformed, "malformed input");
+    kani::cover!(
+        !malformed && got.is_none(),
+        "a part but the last past the span"
+    );
+    if malformed {
+        assert!(got.is_none());
+    }
+    if !malformed {
+        // At these sizes nothing overflows: only a part but the last that
+        // ends past the span is refused.
+        let ends_past =
+            !last && before + i64::from(k) * i64::from(MONTH_L / part.month_days) > whole;
+        assert_eq!(got.is_none(), ends_past);
+    }
+    kani::cover!(got.is_some(), "well-formed input is computed");
+}
+
+// ---------------------------------------------------------------------------
+// Catching up and truing up (B-15)
+// ---------------------------------------------------------------------------
+
+/// A catch-up run posts max(0, min gap), never negative, and never carries
+/// the books past the schedule at a month end already posted.
+#[kani::proof]
+#[kani::unwind(5)]
+fn catch_up_never_overtakes_the_schedule() {
+    let n = any_len();
+    kani::assume(n >= 1 && n <= PR);
+    let scheduled: [i64; PR] = core::array::from_fn(|_| any_amount());
+    let posted: [i64; PR] = core::array::from_fn(|_| any_amount());
+    let got = kernel::catch_up(&scheduled[..n], &posted[..n]).expect("in range");
+    assert!(got >= 0);
+    let mut least = scheduled[0] - posted[0];
+    for i in 0..n {
+        least = least.min(scheduled[i] - posted[i]);
+    }
+    assert_eq!(got, least.max(0));
+    // When the books carry no more than the schedule anywhere, the run
+    // keeps it so at every month end.
+    if least >= 0 {
+        for i in 0..n {
+            assert!(posted[i] + got <= scheduled[i]);
+        }
+    }
+    kani::cover!(n == PR && got > 0, "a catch-up across three month ends");
+}
+
+/// What a run of every month posts at once (a viewer's one pass) is the
+/// catch-up of every suffix, month by month.
+#[kani::proof]
+#[kani::unwind(5)]
+fn catch_ups_is_every_suffixs_catch_up() {
+    let n = any_len();
+    kani::assume(n >= 1 && n <= PR);
+    let scheduled: [i64; PR] = core::array::from_fn(|_| any_amount());
+    let posted: [i64; PR] = core::array::from_fn(|_| any_amount());
+    let mut out = [0i64; PR];
+    kernel::catch_ups(&scheduled[..n], &posted[..n], &mut out[..n]).expect("in range");
+    for i in 0..n {
+        assert_eq!(
+            Some(out[i]),
+            kernel::catch_up(&scheduled[i..n], &posted[i..n])
+        );
+    }
+    kani::cover!(
+        n == PR && out[0] > 0 && out[0] < out[1],
+        "distinct positive suffixes"
+    );
+}
+
+/// A disposal's true-up reaches the target from what the books carry: up
+/// or down, never both, both non-negative.
+#[kani::proof]
+fn true_up_reaches_the_target() {
+    let target = any_amount();
+    let posted = any_amount();
+    let (up, down) = kernel::true_up(target, posted).expect("in range");
+    assert!(up >= 0 && down >= 0);
+    assert!(up == 0 || down == 0);
+    assert_eq!(posted + up - down, target);
+    kani::cover!(up > 0, "depreciation still due");
+    kani::cover!(down > 0, "depreciation past the day, credited back");
 }
 
 // ---------------------------------------------------------------------------

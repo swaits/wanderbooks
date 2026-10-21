@@ -1549,6 +1549,15 @@ the way. P3's: `members_cumulative` (B-13: a members close counted from
 its count's first close, `"rounding": "cumulative_since"`),
 `account_renamed` (an `account.renamed`, B-31), `require_tax_category` (a
 `settings.set` naming `policy.require_tax_category`, B-32),
+`tax_categories_gain_exempt` (an `account.tax_set` naming
+`form_4797_gain_loss` or `tax_exempt_income`, categories an earlier version
+refuses), `disposal_before_service` (an `asset.disposed` dated before the
+asset's in-service date, on or after the day it was acquired: an earlier
+version refuses a disposal before its purchase date), `depreciation_catch_up`
+(an `asset.depreciation_posted` whose amount isn't its month's own: months
+skipped or reversed caught up in it, B-15; an earlier version reads it as the
+month's own, shows the months it caught up as not yet run, and running them
+there posts them twice),
 `party_creditors` (`party.creditor_set`: defect 24, B-35),
 `payment_instruments` (`instrument.added`, `entry.instrument_set`:
 defect 12, B-19), `vendor_1099_decisions` (`vendor.1099_set` with who
@@ -1556,7 +1565,8 @@ decided, a `not_reportable` decision, its reason or the date it takes
 effect, and `vendor.w9_flag_set`: defects 18 and 23, D-40, B-19),
 `schedule_convention` (a daily schedule's `schedule.registered` carries
 `convention: daily`; an older version would read it as equal months,
-B-16), `month_reposting` (a schedule month or a depreciation period
+B-16; and a `settings.set` naming `books.schedule_convention`, a key an
+earlier version refuses), `month_reposting` (a schedule month or a depreciation period
 posted again after a reversal un-posted it; an older version would refuse
 the second `schedule.posted`, and its projection ignore the second
 `asset.depreciation_posted`, B-15) and `asset_basis` (an
@@ -1585,7 +1595,13 @@ they are, byte for byte; everything that needs nothing new is written as
 ever; a write that would need the newer format or a feature they haven't
 declared is refused before anything is journaled
 (`StoreError::FormatUpgradePending`, guard `format_upgrade_pending`), never
-declared on the way. Only the owner's go-ahead moves them, with the owner
+declared on the way. Every setting key and tax category an earlier version
+didn't read needs a feature (`format::setting_feature`,
+`format::tax_category_feature`: the P3 data-safety review, 2026-10-21,
+found `books.schedule_convention`, both new tax categories, a disposal
+before the in-service date and a depreciation catch-up journaled without
+one, each leaving books P2 refused or misread before consent;
+`tests/p2_compat.rs`). Only the owner's go-ahead moves them, with the owner
 passphrase (the server checks it, Argon2id): in the app, which asks at
 every open until it is given, or with `wanderbooks books upgrade ID` at a
 terminal, whose commands that open the books also ask; never an agent, and
@@ -1708,7 +1724,13 @@ command's (`Ledger::add_line`, `register_asset`, `AssetBasis::check`,
 `replay_register_asset`, `AssetBasis::check_journaled`, `AssetBasis::check_legacy_journaled`,
 `shares::check_shares_journaled`, ...), and every bound has its pair of
 tests: the command refuses past it; replay of an old line past it is
-accepted. What an earlier version left beside its journal is kept for it
+accepted. The full-TIN rule (B-26) is one of these bounds: P3's detector
+finds a TIN across every Unicode space and dash and invisible characters,
+P2's only across ASCII separators, the no-break space and a few dashes, so
+replay finds one as P2 did (`ledger_core::parties::replaying`, around every
+replayed line), and a name, reason or fact P2 took opens
+(`a_name_p2_took_replays_though_the_command_now_refuses_it`; the P3
+data-safety review, 2026-10-21, found P3 refusing to open such books). What an earlier version left beside its journal is kept for it
 the same way: its projection database, in its own schema's file, is never
 migrated or written by a later version (B-27, "each projection schema in a
 file of its own"), so the earlier version, gone back to, opens its books

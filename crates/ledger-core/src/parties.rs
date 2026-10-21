@@ -467,7 +467,97 @@ fn full_tin_runs(chars: &[char]) -> Vec<(usize, usize)> {
 /// the space, hyphen, dot, slash and underscore separate.
 pub fn has_full_tin(text: &str) -> bool {
     let chars: Vec<char> = text.chars().collect();
+    if REPLAYING.with(std::cell::Cell::get) {
+        return !journaled_tin_runs(&chars).is_empty();
+    }
     !full_tin_runs(&chars).is_empty()
+}
+
+std::thread_local! {
+    /// Set while a journaled line is replayed ([`replaying`]).
+    static REPLAYING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f` as the replay of a journaled line: within it,
+/// [`has_full_tin`] (and so [`check_text`] and the facts' checks) finds a
+/// TIN as the version before P3 did, never more.
+///
+/// ```text
+/// GOAL: books an earlier version wrote open, forever, however a later
+///       version widens what reads as a full TIN.
+/// SOURCE: rules.md B-28 ("Replay accepts every line an earlier version
+///         accepted": the bounds are the commands', never replay's);
+///         B-26 (no full TIN in the books).
+/// INVARIANTS:
+///   1. Within it, a text is refused only if P2's detector
+///      ([`journaled_tin_runs`]) refuses it: every name, reason and fact
+///      P2 took replays.
+///   2. Outside it (every command), the detector is P3's, which finds
+///      everything P2's did and more (Unicode spaces and dashes,
+///      invisible characters).
+///   3. Restored on the way out, a panic included.
+/// SCENARIOS:
+///   1. IF a P2 journal holds a vendor named with a fullwidth-dash run of
+///      nine digits: SHOULD replay (P3 review, 2026-10-21: P3 refused to
+///      open such books).
+/// ```
+pub fn replaying<T>(f: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            REPLAYING.with(|r| r.set(self.0));
+        }
+    }
+    let _restore = Restore(REPLAYING.with(|r| r.replace(true)));
+    f()
+}
+
+/// The separators P2 (and every version before P3) read between a TIN's
+/// digits: space, hyphen, dot, slash, underscore, the no-break space and
+/// the dashes U+2010 to U+2014 and U+2212.
+fn journaled_tin_separator(c: char) -> bool {
+    matches!(
+        c,
+        ' ' | '-' | '.' | '/' | '_' | '\u{a0}' | '\u{2010}'..='\u{2014}' | '\u{2212}'
+    )
+}
+
+/// [`full_tin_runs`] as P2 found them: [`journaled_tin_separator`] only,
+/// one to [`MAX_TIN_GAP`] between neighbors, no invisible characters.
+fn journaled_tin_runs(chars: &[char]) -> Vec<(usize, usize)> {
+    let mut runs = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if !chars[i].is_numeric() {
+            i += 1;
+            continue;
+        }
+        let (mut digits, mut last, mut j) = (1, i, i + 1);
+        while j < chars.len() {
+            if chars[j].is_numeric() {
+                digits += 1;
+                last = j;
+                j += 1;
+                continue;
+            }
+            let gap = chars[j..]
+                .iter()
+                .take_while(|c| journaled_tin_separator(**c))
+                .count();
+            if (1..=MAX_TIN_GAP).contains(&gap)
+                && chars.get(j + gap).is_some_and(|c| c.is_numeric())
+            {
+                j += gap;
+            } else {
+                break;
+            }
+        }
+        if digits >= 9 {
+            runs.push((i, last));
+        }
+        i = last + 1;
+    }
+    runs
 }
 
 /// `text` with every run [`has_full_tin`] finds masked: each of its

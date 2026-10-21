@@ -33,7 +33,13 @@ const TYPES: &[&str] = &[
     "schedule.posted", "schedule.registered", "vendor.1099_set", "vendor.added",
     "journal.format_set", "settings.set", "convention.set", "convention.retired",
     "decision.recorded", "open_item.raised", "open_item.resolved", "entry.approved",
-    "vendor.w9_flag_set", "instrument.added", "entry.instrument_set",
+    "vendor.w9_flag_set", "instrument.added", "entry.instrument_set", "asset.basis_set",
+    "party.creditor_set", "account.renumbered", "asset.acquisition_linked", "asset.corrected",
+    "asset.described", "asset.serial_set", "asset.tagged", "asset.tax_basis_set",
+    "attachment.linked", "attachment.unlinked", "entry.no_party", "entry.parties_set",
+    "entry.party_set", "party.added", "party.role_set", "party.tin_set", "party.updated",
+    "party.w4_set", "party.w9_set", "payroll.taxes_remitted", "reconciliation.completed",
+    "reconciliation.voided", "role.assigned", "statement.recorded", "statement.voided",
 ];
 
 const FIELDS: &[&str] = &[
@@ -51,6 +57,8 @@ const FIELDS: &[&str] = &[
     "source", "decided_by", "decided_on", "kind", "title", "body_md", "structured", "subject",
     "decision_md", "supersedes", "resolution", "approver", "previous", "form_1099",
     "reason_kind", "effective", "instrument_id", "label", "last4", "owner_party_id",
+    "rule", "contributor_adjusted_basis", "fmv_at_contribution", "sec704c_method",
+    "tax_basis_723", "depreciable_basis", "built_in_gain_704c", "on", "convention",
 ];
 
 /// A value replay might plausibly see: small ids, amounts as decimal

@@ -56,6 +56,9 @@ pub const KNOWN_FEATURES: &[&str] = &[
     MONTH_REPOSTING,
     SCHEDULE_CONVENTION,
     ASSET_BASIS,
+    TAX_CATEGORIES_GAIN_EXEMPT,
+    DISPOSAL_BEFORE_SERVICE,
+    DEPRECIATION_CATCH_UP,
 ];
 
 /// Feature: `period.closed` closes to members with `"rounding":
@@ -75,12 +78,45 @@ pub const FEATURE_REQUIRE_TAX_CATEGORY: &str = "require_tax_category";
 
 /// The feature a `settings.set` naming `key` needs the books to have
 /// declared: a key an earlier version doesn't know.
+///
+/// Every key P3 added is one (P3 review, 2026-10-21: `books.schedule_convention`
+/// wasn't, so setting it left books P2 refuses to open, before consent).
 pub(crate) fn setting_feature(key: &str) -> Option<&'static str> {
     match key {
         "policy.require_tax_category" => Some(FEATURE_REQUIRE_TAX_CATEGORY),
+        "books.schedule_convention" => Some(SCHEDULE_CONVENTION),
         _ => None,
     }
 }
+
+/// Feature: an `account.tax_set` naming a tax category P3 added
+/// (`form_4797_gain_loss`, `tax_exempt_income`). An earlier version
+/// refuses the category, so it can't open the books (P3 review,
+/// 2026-10-21).
+pub const TAX_CATEGORIES_GAIN_EXEMPT: &str = "tax_categories_gain_exempt";
+
+/// The feature an `account.tax_set` naming `category` needs the books to
+/// have declared: a category an earlier version doesn't know.
+pub fn tax_category_feature(category: &str) -> Option<&'static str> {
+    match category {
+        "form_4797_gain_loss" | "tax_exempt_income" => Some(TAX_CATEGORIES_GAIN_EXEMPT),
+        _ => None,
+    }
+}
+
+/// Feature: an `asset.disposed` dated before the asset's in-service date
+/// (on or after the day it was acquired, P3 defect 13). An earlier version
+/// refuses a disposal before its `purchase_date`, so it can't open the
+/// books (P3 review, 2026-10-21).
+pub const DISPOSAL_BEFORE_SERVICE: &str = "disposal_before_service";
+
+/// Feature: an `asset.depreciation_posted` whose amount is not its month's
+/// own depreciation: earlier months skipped or reversed caught up in it, or
+/// a final month left over past the life (P3's run rule, B-15). An earlier
+/// version reads every run as its month's own: it would show the caught-up
+/// months as not yet run, and running them post their depreciation twice
+/// (P3 review, 2026-10-21).
+pub const DEPRECIATION_CATCH_UP: &str = "depreciation_catch_up";
 
 /// The feature `party.creditor_set` lines need: a party named the
 /// creditor of a liability (rules.md B-35, P3 defect 24).
@@ -881,6 +917,103 @@ mod tests {
                 assert_eq!(need, "journal features members_cumulative")
             }
             other => panic!("expected NewerJournal, got {other:?}"),
+        }
+    }
+
+    /// The setting keys and tax categories P2 (9c99a0cf, the last version
+    /// before P3) read: a `settings.set` or `account.tax_set` naming any
+    /// other makes P2 refuse the books, so each other needs a feature
+    /// (P3 review, 2026-10-21: `books.schedule_convention` and two tax
+    /// categories didn't have one).
+    const P2_SETTING_KEYS: &[&str] = &[
+        "company.name",
+        "company.entity_type",
+        "company.tax_classification",
+        "company.tax_form",
+        "company.fiscal_year_start",
+        "company.timezone",
+        "company.formation_state",
+        "company.formed",
+        "company.state_entity_number",
+        "company.ein",
+        "company.irs_name_control",
+        "company.duns",
+        "company.address",
+        "company.registered_agent",
+        "company.partnership_representative",
+        "company.cpa",
+        "company.members",
+        "books.accounting_basis",
+        "books.cash_accounts",
+        "books.financing_accounts",
+        "books.investing_accounts",
+        "books.close_into",
+        "books.close_sweep",
+        "books.asset_tag_prefix",
+        "policy.evidence.threshold",
+        "policy.evidence.required_accounts",
+        "policy.evidence.exempt_accounts",
+        "policy.parties",
+        "policy.approval_rules",
+        "backup.git_remote",
+        "backup.folder",
+    ];
+    const P2_TAX_CATEGORIES: &[&str] = &[
+        "gross_receipts",
+        "returns_allowances",
+        "interest_income",
+        "other_income",
+        "cost_of_goods_sold",
+        "advertising",
+        "bad_debts",
+        "car_truck",
+        "charitable_contributions",
+        "commissions_fees",
+        "contract_labor",
+        "depreciation",
+        "employee_benefits",
+        "guaranteed_payments",
+        "insurance",
+        "interest_expense",
+        "legal_professional",
+        "meals",
+        "office_expense",
+        "officer_compensation",
+        "organization_startup",
+        "pension_profit_sharing",
+        "rent_equipment",
+        "rent_property",
+        "repairs",
+        "salaries_wages",
+        "supplies",
+        "taxes_licenses",
+        "travel",
+        "utilities",
+        "other_deductions",
+        "nondeductible",
+    ];
+
+    #[test]
+    fn every_setting_key_and_tax_category_p2_didnt_read_needs_a_feature() {
+        for k in ledger_core::settings::KEYS {
+            let known = P2_SETTING_KEYS.contains(&k.name);
+            assert_eq!(
+                setting_feature(k.name).is_none(),
+                known,
+                "{}: P2 {} it",
+                k.name,
+                if known { "reads" } else { "refuses" }
+            );
+        }
+        for c in ledger_core::tax::CATEGORIES {
+            let known = P2_TAX_CATEGORIES.contains(&c.key);
+            assert_eq!(tax_category_feature(c.key).is_none(), known, "{}", c.key);
+        }
+        for f in [
+            setting_feature("books.schedule_convention"),
+            tax_category_feature("tax_exempt_income"),
+        ] {
+            assert!(KNOWN_FEATURES.contains(&f.unwrap()));
         }
     }
 }

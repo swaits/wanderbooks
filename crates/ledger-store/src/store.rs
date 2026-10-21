@@ -1137,6 +1137,11 @@ impl Store {
         })?;
         self.ledger
             .check_tax_category_required(code, name, account_type, placeholder, category)?;
+        // A category an earlier version doesn't know needs its feature:
+        // asked before the account's first line, never between the two.
+        if let Some(f) = category.and_then(crate::format::tax_category_feature) {
+            self.ensure_feature(f)?;
+        }
         let id =
             self.journal_account_added(code, name, account_type, parent, placeholder, |l| {
                 l.add_account(code, name, account_type, parent, placeholder)
@@ -2045,6 +2050,11 @@ impl Store {
         if self.depreciation_period_was_run(asset_id, period) {
             self.ensure_feature(crate::format::MONTH_REPOSTING)?;
         }
+        // More or less than the month's own (another month caught up in
+        // it): a run an earlier version would read as the month's own.
+        if amount != due.scheduled {
+            self.ensure_feature(crate::format::DEPRECIATION_CATCH_UP)?;
+        }
         let entry_id = self.create_entry(period_end, &description)?;
         self.add_line(entry_id, asset.expense_account, Side::Debit, money)?;
         self.add_line(entry_id, asset.accum_depr_account, Side::Credit, money)?;
@@ -2516,6 +2526,13 @@ impl Store {
         // that haven't declared it) before the first line is journaled.
         if depreciation.is_some() && self.depreciation_period_was_run(asset_id, &preview.period) {
             self.ensure_feature(crate::format::MONTH_REPOSTING)?;
+        }
+        // Disposed before it was placed in service (acquired, not yet in
+        // use): an earlier version refuses that line (its floor was the
+        // in-service date), so it needs its feature, asked here, before
+        // the first line.
+        if date < asset.in_service_date {
+            self.ensure_feature(crate::format::DISPOSAL_BEFORE_SERVICE)?;
         }
         if let Some((description, lines)) = &depreciation {
             let eid = self.create_entry(date, description)?;
@@ -3806,6 +3823,9 @@ impl Store {
     ) -> Result<(), StoreError> {
         self.ledger
             .check_account_tax(account, category, deductible_percent)?;
+        if let Some(f) = category.and_then(crate::format::tax_category_feature) {
+            self.ensure_feature(f)?;
+        }
         let line = self.append_journal(
             "account.tax_set",
             json!({
@@ -5484,7 +5504,21 @@ fn get_str<'a>(p: &'a Value, key: &str) -> Result<&'a str, StoreError> {
 /// Replay one journal line into a ledger, asserting recorded ids. Used by
 /// hydration, `verify`, and `rebuild`: the journal is the script, the engine
 /// is the actor.
+///
+/// A full TIN is found as the version before P3 found one
+/// (`ledger_core::parties::replaying`): a name, reason or fact an earlier
+/// version took replays, however the commands' detector has widened since
+/// (rules.md B-28).
 pub(crate) fn replay_line_into_ledger(
+    ledger: &mut Ledger,
+    line: &JournalLine,
+    base_currency: Currency,
+) -> Result<(), StoreError> {
+    ledger_core::parties::replaying(|| replay_line(ledger, line, base_currency))
+}
+
+/// [`replay_line_into_ledger`]'s work.
+fn replay_line(
     ledger: &mut Ledger,
     line: &JournalLine,
     base_currency: Currency,

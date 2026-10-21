@@ -610,3 +610,167 @@ fn format_upgrade_waits_for_consent() {
     );
     assert_eq!(format_lines(&dir), 1);
 }
+
+/// Copy the tree `from` into `to`, private as the server keeps a book
+/// (folders 0700, files 0600).
+fn copy_private(from: &Path, to: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(to).unwrap();
+    std::fs::set_permissions(to, std::fs::Permissions::from_mode(0o700)).unwrap();
+    for entry in std::fs::read_dir(from).unwrap().flatten() {
+        let (src, dst) = (entry.path(), to.join(entry.file_name()));
+        if entry.file_type().unwrap().is_dir() {
+            copy_private(&src, &dst);
+        } else {
+            std::fs::copy(&src, &dst).unwrap();
+            std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+    }
+}
+
+/// The cutover of books P2 served, from end to end (the P3 data-safety
+/// review, 2026-10-21). `tests/fixtures/p2-served` is a book the P2
+/// executable itself wrote (9c99a0cf, the revision before P3; fictional
+/// throughout): 470 journal lines through its MCP tools (settings, which
+/// declared format 2 with no features, a chart, members, vendors, two TINs
+/// in its vault with its key, 64 entries with receipts, an asset and ten
+/// months of its depreciation, a schedule, a closed quarter), and P2's
+/// projection `wanderbooks.db` at schema 12 as P2 left it.
+///
+/// ```text
+/// INVARIANTS:
+///   1. Before consent: the books open and are served, waiting; P2's
+///      database is never written; what P2 can read is written, and every
+///      write P2 would refuse or misread is refused, journaling nothing
+///      (a setting key, a tax category, a depreciation catch-up, a members
+///      close counted from the count's start).
+///   2. The consent backup holds the books exactly as they were, keys and
+///      vault too; the upgrade is one line after P2's, byte for byte.
+///   3. After it: the same figures, and every refused write is made; the
+///      books verify; P2's database is still byte for byte.
+/// ```
+#[test]
+fn books_p2_served_cut_over_whole() {
+    let home = Home::new("p2-served");
+    let dir = home.book_dir("acme");
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/p2-served");
+    copy_private(&fixture, &dir);
+    let p2_db = std::fs::read(dir.join(ledger_store::LEGACY_DB_FILE)).unwrap();
+    let p2_journal = journal(&dir);
+    let _held = serve(&home);
+    let out = home
+        .cmd("token")
+        .args(["create", "--book", "acme"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let mut a = Agent::start(&home, "acme");
+    let start = a.call("books.start", json!({})).unwrap();
+    assert_eq!(start["format_upgrade"]["format"], 2, "{start}");
+    let verified = a.call("books.verify", json!({})).unwrap();
+    assert_eq!(verified["status"], "ok", "{verified}");
+    assert_eq!(verified["events"], 470);
+    assert_eq!(verified["database"], ledger_store::db_file());
+    assert_eq!(verified["other_databases"], json!(["wanderbooks.db"]));
+    let figures = |a: &mut Agent| {
+        [
+            a.call("books.trial_balance", json!({"as_of": "2025-12-31"})),
+            a.call(
+                "books.profit_and_loss",
+                json!({"start": "2025-01-01", "end": "2025-12-31"}),
+            ),
+            a.call("books.balance_sheet", json!({"as_of": "2025-12-31"})),
+        ]
+        .map(Result::unwrap)
+    };
+    let before = figures(&mut a);
+
+    // INVARIANT 1: what P2 reads is written; the rest waits.
+    a.call(
+        "books.add_account",
+        json!({"code": "6600", "name": "Travel", "account_type": "expense"}),
+    )
+    .unwrap();
+    let q2 = a
+        .call(
+            "books.create_period",
+            json!({"name": "2025-Q2", "start": "2025-04-01", "end": "2025-06-30"}),
+        )
+        .unwrap()["period_id"]
+        .clone();
+    let waiting = journal(&dir);
+    let refused: Vec<(&str, Value)> = vec![
+        (
+            "books.set_setting",
+            json!({"decided_by": "Avery Quill",
+                   "changes": [{"key": "books.schedule_convention", "value": "monthly_even"}]}),
+        ),
+        (
+            "books.add_account",
+            json!({"code": "4900", "name": "Gain on sale", "account_type": "revenue",
+                   "tax_category": "form_4797_gain_loss"}),
+        ),
+        // January and February 2026 not run: March's run would carry them.
+        (
+            "books.run_depreciation",
+            json!({"period": "2026-03", "asset_id": 1}),
+        ),
+        (
+            "books.close_period",
+            json!({"period_id": q2, "confirmed": true}),
+        ),
+    ];
+    for (tool, args) in &refused {
+        let e = a.call(tool, args.clone()).unwrap_err();
+        assert!(e.starts_with("format_upgrade_pending"), "{tool}: {e}");
+    }
+    assert_eq!(journal(&dir), waiting, "a refusal journals nothing");
+    assert!(journal(&dir).starts_with(&p2_journal));
+    assert_eq!(
+        std::fs::read(dir.join(ledger_store::LEGACY_DB_FILE)).unwrap(),
+        p2_db,
+        "P2's database is never written"
+    );
+
+    // INVARIANT 2: the go-ahead.
+    let mut words = home.words("books");
+    words.extend(["upgrade".into(), "acme".into()]);
+    let (code, shown) = home.at_terminal(&words, &[PASS]);
+    assert_eq!(code, 0, "{shown}");
+    let after = journal(&dir);
+    assert!(after.starts_with(&waiting));
+    assert_eq!(
+        format_lines(&dir),
+        2,
+        "P2's declaration, then the upgrade's"
+    );
+    let backup = archive_git(&dir, &["rev-parse", "HEAD"]);
+    assert_eq!(
+        archive_git(&dir, &["show", &format!("{}:journal.jsonl", backup.trim())]).as_bytes(),
+        waiting.as_slice(),
+        "the backup holds the books as they were"
+    );
+    for kept in ["keys/legacy.key", "vault/tin-1.bin", "vault/tin-3.bin"] {
+        let out = Command::new("git")
+            .arg(format!("--git-dir={}", dir.join("archive.git").display()))
+            .args(["show", &format!("{}:{kept}", backup.trim())])
+            .output()
+            .unwrap();
+        assert_eq!(out.stdout, std::fs::read(dir.join(kept)).unwrap(), "{kept}");
+    }
+
+    // INVARIANT 3.
+    assert_eq!(figures(&mut a), before, "the upgrade moves no figure");
+    for (tool, args) in refused {
+        a.call(tool, args.clone())
+            .unwrap_or_else(|e| panic!("{tool} after the upgrade: {e}"));
+    }
+    let verified = a.call("books.verify", json!({})).unwrap();
+    assert_eq!(verified["status"], "ok", "{verified}");
+    assert_eq!(
+        std::fs::read(dir.join(ledger_store::LEGACY_DB_FILE)).unwrap(),
+        p2_db,
+        "and never after"
+    );
+}

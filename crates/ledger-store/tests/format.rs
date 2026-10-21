@@ -1380,3 +1380,27 @@ fn a_write_waiting_for_the_upgrade_journals_nothing() {
     assert_eq!(*store.journal_format(), ledger_store::format::current());
     store.verify().unwrap();
 }
+
+/// The replay fuzz target (`fuzz_store_replay`: the writer and the viewer
+/// agree on every journal) draws its lines from every event type this
+/// version reads, P3's included (`asset.basis_set`, `party.creditor_set`
+/// were missing: the fuzzer never wrote them, so it never checked the two
+/// readers agree on them).
+#[test]
+fn the_replay_fuzzer_writes_every_event_type() {
+    let target = include_str!("../../../fuzz/fuzz_targets/fuzz_store_replay.rs");
+    let list = target
+        .split("const TYPES: &[&str] = &[")
+        .nth(1)
+        .and_then(|rest| rest.split("];").next())
+        .expect("the fuzz target's TYPES");
+    let missing: Vec<&str> = EVENT_TYPES
+        .iter()
+        .copied()
+        .filter(|t| *t != "store.created" && !list.contains(&format!("\"{t}\"")))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "the replay fuzzer never writes {missing:?}"
+    );
+}

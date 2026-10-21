@@ -6017,6 +6017,14 @@ impl BooksServer {
                     self.settings().company.tax_form,
                 )
                 .map_err(|e| format!("{}: {e}", row.code))?;
+                // A category an earlier version doesn't know waits for the
+                // books' format upgrade: refused here, with the file whole,
+                // never after the rows before it were written.
+                if let Some(f) = ledger_store::format::tax_category_feature(cat) {
+                    store
+                        .ensure_feature(f)
+                        .map_err(|e| format!("{}: {e}", row.code))?;
+                }
                 scratch
                     .set_account_tax(id, Some(cat), None)
                     .map_err(|e| format!("{}: {e}", row.code))?;

@@ -4,10 +4,12 @@
 //! SQLite projection agreeing with the journal (`Store::verify`), books
 //! written before tags existed, refusals journaling nothing, and corrupt
 //! `asset.serial_set` lines refused on open; and tax basis (B-25:
-//! `asset.tax_basis_set` {asset_id, rule, contributor_basis | null}, the
-//! v10 schema, corrupt payloads). A database at an older schema under this
-//! version's file name is rebuilt, never migrated (each schema keeps a file
-//! of its own: rules.md B-27, tests/schema_files.rs).
+//! `asset.basis_set`, pre-P3 `asset.tax_basis_set` {asset_id, rule,
+//! contributor_basis | null} replayed, the v10 schema and v13's, corrupt
+//! and newer payloads). A database at an older schema under this
+//! version's file name is rebuilt, never migrated, and P2's own file is
+//! left as it is (each schema keeps a file of its own: rules.md B-27,
+//! tests/schema_files.rs).
 //!
 //! Expectations come from the doc comments on `Store::set_asset_tag`,
 //! `Store::set_asset_serial`, `Store::open`, `Store::verify`,
@@ -90,7 +92,7 @@ fn laptop(store: &mut Store, a: &Accts, name: &str) -> AssetId {
     store
         .register_asset(NewAsset {
             description: name.to_string(),
-            purchase_date: date(2026, 1, 1),
+            in_service_date: date(2026, 1, 1),
             cost: usd("1200.00"),
             salvage_value: usd("0.00"),
             useful_life_months: 12,
@@ -571,98 +573,123 @@ fn a_description_change_replays_and_verifies() {
 
 // ------------------------------------------------- tax basis (rules.md B-25)
 //
-// Expectations from `Store::set_asset_tax_basis` (journaled as
-// `asset.tax_basis_set`), `Ledger::set_asset_tax_basis` INVARIANTS and
-// SCENARIOS, and the schema v10 migration comment (tax_rule and
-// contributor_basis as TEXT, exact decimal).
+// Expectations from `Store::set_asset_basis` (journaled as
+// `asset.basis_set`, the feature `asset_basis` declared first),
+// `Ledger::set_asset_basis` INVARIANTS and SCENARIOS, the replay of
+// pre-P3 `asset.tax_basis_set` lines, and the schema v10 and v13
+// migration comments (tax_rule, contributor_basis, fmv_at_contribution as
+// TEXT, exact decimal).
 
-fn tax(rule: ledger_core::TaxBasisRule, basis: Option<&str>) -> ledger_core::TaxBasis {
-    ledger_core::TaxBasis {
+fn dec(s: &str) -> rust_decimal::Decimal {
+    s.parse().unwrap()
+}
+
+fn contribution(
+    rule: ledger_core::BasisRule,
+    adjusted: &str,
+    fmv: &str,
+) -> ledger_core::AssetBasis {
+    ledger_core::AssetBasis::contribution(rule, dec(adjusted), dec(fmv))
+}
+
+/// A pre-P3 record, as `asset.tax_basis_set` replays it.
+fn legacy(rule: ledger_core::BasisRule, basis: Option<&str>) -> ledger_core::AssetBasis {
+    ledger_core::AssetBasis {
         rule,
-        contributor_basis: basis.map(|b| b.parse().unwrap()),
+        contributor_adjusted_basis: basis.map(dec),
+        fmv_at_contribution: None,
+        sec704c_method: None,
+        source: None,
     }
 }
 
-fn tax_of(s: &Store, id: AssetId) -> Option<ledger_core::TaxBasis> {
-    s.ledger().get_asset(id).unwrap().tax
+fn basis_of(s: &Store, id: AssetId) -> Option<ledger_core::AssetBasis> {
+    s.ledger().get_asset(id).unwrap().basis.clone()
 }
 
-/// Journaled as `asset.tax_basis_set` {asset_id, rule, contributor_basis}:
-/// the basis a decimal string, or null for a purchase.
+/// Journaled as `asset.basis_set` {asset_id, rule, contributor_adjusted_basis,
+/// fmv_at_contribution, sec704c_method, source, tax_basis_723,
+/// depreciable_basis, built_in_gain_704c}: the facts, and the figures for
+/// the line's readers (a purchase's depreciable basis null: the cost,
+/// whatever it becomes). The first declares the feature asset_basis.
 #[test]
-fn tax_basis_journals_asset_tax_basis_set() {
-    use ledger_core::TaxBasisRule::*;
+fn a_basis_journals_asset_basis_set() {
+    use ledger_core::BasisRule::*;
     let (dir, mut s, _, x, y) = fixture("journal-tax");
-    s.set_asset_tax_basis(x, tax(Cost, None)).unwrap();
-    s.set_asset_tax_basis(y, tax(PersonalUseConversion, Some("1500.25")))
+    s.set_asset_basis(x, ledger_core::AssetBasis::purchase())
         .unwrap();
-    s.set_asset_tax_basis(x, tax(Carryover, Some("800.00")))
-        .unwrap();
+    let mut b = contribution(PersonalUseConversion, "1500.25", "1200.00");
+    b.sec704c_method = Some(ledger_core::Sec704cMethod::Traditional);
+    s.set_asset_basis(y, b.clone()).unwrap();
     let j = journal(&dir);
+    let with_feature = |p: &Value| {
+        p["features"]
+            .as_array()
+            .is_some_and(|f| f.contains(&json!("asset_basis")))
+    };
+    let declared: Vec<usize> = j
+        .iter()
+        .enumerate()
+        .filter(|(_, (t, p))| t == "journal.format_set" && with_feature(p))
+        .map(|(i, _)| i)
+        .collect();
+    let first = j.iter().position(|(t, _)| t == "asset.basis_set").unwrap();
+    assert_eq!(declared.len(), 1, "declared once");
+    assert!(declared[0] < first, "before the first asset.basis_set");
     let set: Vec<&Value> = j
         .iter()
-        .filter(|(t, _)| t == "asset.tax_basis_set")
+        .filter(|(t, _)| t == "asset.basis_set")
         .map(|(_, p)| p)
         .collect();
-    assert_eq!(set.len(), 3);
+    assert_eq!(set.len(), 2);
     assert_eq!(
         set[0],
-        &json!({"asset_id": x, "rule": "cost", "contributor_basis": null})
+        &json!({"asset_id": x, "rule": "purchase", "contributor_adjusted_basis": null,
+                "fmv_at_contribution": null, "sec704c_method": null, "source": null,
+                "tax_basis_723": null, "depreciable_basis": null, "built_in_gain_704c": null})
     );
-    assert_eq!(set[1]["asset_id"], json!(y));
-    assert_eq!(set[1]["rule"], "personal_use_conversion");
-    let b = set[1]["contributor_basis"]
-        .as_str()
-        .expect("a decimal string");
     assert_eq!(
-        b.parse::<rust_decimal::Decimal>().unwrap(),
-        "1500.25".parse().unwrap()
+        set[1],
+        &json!({"asset_id": y, "rule": "personal_use_conversion",
+                "contributor_adjusted_basis": "1500.25", "fmv_at_contribution": "1200.00",
+                "sec704c_method": "traditional", "source": null,
+                "tax_basis_723": "1500.25", "depreciable_basis": "1200.00",
+                "built_in_gain_704c": "-300.25"})
     );
-    assert_eq!(set[2]["rule"], "carryover");
-    let b = set[2]["contributor_basis"]
-        .as_str()
-        .expect("a decimal string");
-    assert_eq!(
-        b.parse::<rust_decimal::Decimal>().unwrap(),
-        "800.00".parse().unwrap()
-    );
-    // Set again replaces (the journal keeps both).
-    assert_eq!(tax_of(&s, x), Some(tax(Carryover, Some("800.00"))));
-    assert_eq!(
-        s.ledger().get_asset(y).unwrap().tax_basis(),
-        Some("1200.00".parse().unwrap()),
-        "lesser of the 1200.00 book cost and the 1500.25 basis"
-    );
+    assert_eq!(basis_of(&s, y), Some(b));
     s.verify().unwrap();
 }
 
-/// A refused tax basis (Ledger::set_asset_tax_basis INVARIANT 3) journals
-/// nothing and changes nothing, now or on reopen.
+/// A refused basis (Ledger::set_asset_basis INVARIANT 3) journals nothing
+/// (not even the feature declaration) and changes nothing, now or on
+/// reopen. A contribution's value is required.
 #[test]
-fn a_refused_tax_basis_journals_nothing() {
-    use ledger_core::TaxBasisRule::*;
+fn a_refused_basis_journals_nothing() {
+    use ledger_core::BasisRule::*;
     let (dir, mut s, _, x, _) = fixture("refused-tax");
-    s.set_asset_tax_basis(x, tax(Carryover, Some("100.00")))
-        .unwrap();
     let lines = journal(&dir).len();
     let before = s.ledger().clone();
+    let mut purchase_with_basis = ledger_core::AssetBasis::purchase();
+    purchase_with_basis.contributor_adjusted_basis = Some(dec("100.00"));
+    let mut no_fmv = contribution(Carryover723, "100.00", "100.00");
+    no_fmv.fmv_at_contribution = None;
     for bad in [
-        tax(Cost, Some("100.00")),
-        tax(Carryover, None),
-        tax(PersonalUseConversion, None),
-        tax(Carryover, Some("-0.01")),
-        tax(PersonalUseConversion, Some("10.001")),
+        purchase_with_basis,
+        no_fmv,
+        legacy(PersonalUseConversion, None),
+        contribution(Carryover723, "-0.01", "1.00"),
+        contribution(PersonalUseConversion, "10.001", "1.00"),
     ] {
         assert!(
             matches!(
-                s.set_asset_tax_basis(x, bad),
+                s.set_asset_basis(x, bad.clone()),
                 Err(StoreError::Ledger(LedgerError::InvalidTaxBasis(_)))
             ),
             "{bad:?}"
         );
     }
     assert!(matches!(
-        s.set_asset_tax_basis(x + 99, tax(Cost, None)),
+        s.set_asset_basis(x + 99, ledger_core::AssetBasis::purchase()),
         Err(StoreError::Ledger(LedgerError::UnknownAsset(_)))
     ));
     assert_eq!(journal(&dir).len(), lines, "nothing journaled");
@@ -674,18 +701,27 @@ fn a_refused_tax_basis_journals_nothing() {
     s.verify().unwrap();
 }
 
-/// Tax basis replays on reopen, with the database and rebuilt from the
-/// journal alone, and verifies each time.
+/// A basis replays on reopen, with the database and rebuilt from the
+/// journal alone, and in the viewer, and verifies each time (its facts and
+/// source included).
 #[test]
-fn tax_basis_replays_on_reopen() {
-    use ledger_core::TaxBasisRule::*;
+fn asset_basis_set_journals_replays_and_reloads() {
+    use ledger_core::BasisRule::*;
     let (dir, mut s, a, x, y) = fixture("replay-tax");
     let z = laptop(&mut s, &a, "Laptop C");
-    s.set_asset_tax_basis(x, tax(Carryover, Some("900.00")))
+    s.set_asset_basis(x, contribution(Carryover723, "900.00", "1200.00"))
         .unwrap();
-    s.set_asset_tax_basis(x, tax(PersonalUseConversion, Some("2000.00")))
+    let mut b = contribution(PersonalUseConversion, "2000.00", "1200.00");
+    b.sec704c_method = Some(ledger_core::Sec704cMethod::Remedial);
+    b.source = Some(ledger_core::settings::Source {
+        decided_by: "Tobin Harlow".into(),
+        decided_on: date(2026, 10, 20),
+        citation: Some("entry 3".into()),
+        note: Some("value as booked".into()),
+    });
+    s.set_asset_basis(x, b.clone()).unwrap();
+    s.set_asset_basis(y, ledger_core::AssetBasis::purchase())
         .unwrap();
-    s.set_asset_tax_basis(y, tax(Cost, None)).unwrap();
     s.verify().unwrap();
     let live = s.ledger().clone();
     drop(s);
@@ -696,32 +732,221 @@ fn tax_basis_replays_on_reopen() {
         let s = Store::open(&dir).unwrap();
         s.verify().unwrap();
         assert_eq!(s.ledger(), &live, "rebuild={rebuild}");
-        assert_eq!(
-            tax_of(&s, x),
-            Some(tax(PersonalUseConversion, Some("2000.00")))
-        );
-        assert_eq!(tax_of(&s, y), Some(tax(Cost, None)));
-        assert_eq!(tax_of(&s, z), None);
+        assert_eq!(basis_of(&s, x), Some(b.clone()));
+        assert_eq!(basis_of(&s, y), Some(ledger_core::AssetBasis::purchase()));
+        assert_eq!(basis_of(&s, z), None);
         let ax = s.ledger().get_asset(x).unwrap();
-        assert_eq!(ax.tax_basis(), Some("1200.00".parse().unwrap()));
-        assert_eq!(ax.built_in_gain(), Some("-800.00".parse().unwrap()));
+        assert_eq!(ax.depreciable_basis(), Some(dec("1200.00")));
+        assert_eq!(ax.built_in_gain_704c(), Some(dec("-800.00")));
         drop(s);
     }
+    let snap = ledger_store::Snapshot::load(&dir).unwrap();
+    assert_eq!(snap.ledger(), &live, "the viewer");
+}
+
+/// Pre-P3 `asset.tax_basis_set` lines replay to the figures that version
+/// gave, with the database and rebuilt from the journal.
+#[test]
+fn legacy_tax_basis_set_lines_replay_to_todays_figures() {
+    use ledger_core::BasisRule::*;
+    let (dir, s, _, x, y) = fixture("legacy-tax");
+    drop(s);
+    let mut w = JournalWriter::open(&dir.join(JOURNAL_FILE)).unwrap();
+    w.append(
+        "asset.tax_basis_set",
+        json!({"asset_id": x, "rule": "personal_use_conversion", "contributor_basis": "1500.25"}),
+    )
+    .unwrap();
+    w.append(
+        "asset.tax_basis_set",
+        json!({"asset_id": y, "rule": "cost", "contributor_basis": null}),
+    )
+    .unwrap();
+    drop(w);
+    for rebuild in [false, true] {
+        if rebuild {
+            std::fs::remove_file(dir.join(db_file())).unwrap();
+        }
+        let s = Store::open(&dir).unwrap();
+        s.verify().unwrap();
+        assert_eq!(
+            basis_of(&s, x),
+            Some(legacy(PersonalUseConversion, Some("1500.25")))
+        );
+        assert_eq!(basis_of(&s, y), Some(legacy(Purchase, None)));
+        let ax = s.ledger().get_asset(x).unwrap();
+        // The lesser of the 1,200.00 book cost and the 1,500.25 basis.
+        assert_eq!(ax.depreciable_basis(), Some(dec("1200.00")));
+        assert_eq!(ax.tax_basis_723(), Some(dec("1500.25")));
+        assert_eq!(ax.built_in_gain_704c(), Some(dec("-300.25")));
+        assert!(!ax.fmv_is_recorded());
+        drop(s);
+    }
+}
+
+/// Review R1: a line's figures are for its readers; replay never
+/// recomputes them, so a line whose figures disagree with today's formula
+/// (a later version's, or a CPA's correction) still replays, and the
+/// books show today's figures from its facts.
+#[test]
+fn a_basis_set_whose_figures_disagree_still_replays() {
+    let (dir, s, _, x, _) = fixture("figures-disagree");
+    drop(s);
+    let mut w = JournalWriter::open(&dir.join(JOURNAL_FILE)).unwrap();
+    w.append(
+        "journal.format_set",
+        json!({"format": 2, "features": ["asset_basis"]}),
+    )
+    .unwrap();
+    w.append(
+        "asset.basis_set",
+        json!({"asset_id": x, "rule": "personal_use_conversion",
+               "contributor_adjusted_basis": "1500.00", "fmv_at_contribution": "1200.00",
+               "sec704c_method": null, "source": null,
+               "tax_basis_723": "1.00", "depreciable_basis": "1500.00", "built_in_gain_704c": "0"}),
+    )
+    .unwrap();
+    drop(w);
+    for rebuild in [false, true] {
+        if rebuild {
+            std::fs::remove_file(dir.join(db_file())).unwrap();
+        }
+        let s = Store::open(&dir).unwrap();
+        s.verify().unwrap();
+        let a = s.ledger().get_asset(x).unwrap();
+        assert_eq!(a.depreciable_basis(), Some(dec("1200.00")));
+        assert_eq!(a.tax_basis_723(), Some(dec("1500.00")));
+        assert_eq!(a.built_in_gain_704c(), Some(dec("-300.00")));
+        drop(s);
+    }
+}
+
+/// A basis rule or §704(c) method this version doesn't know was written
+/// by a newer one: NewerJournal, never corrupt (rules.md B-27); a figure
+/// or fact that isn't a decimal string (or null) is corrupt.
+#[test]
+fn an_unknown_basis_rule_or_method_is_newer() {
+    let base = json!({"rule": "carryover_723", "contributor_adjusted_basis": "1.00",
+        "fmv_at_contribution": "1.00", "sec704c_method": null, "source": null,
+        "tax_basis_723": "1.00", "depreciable_basis": "1.00", "built_in_gain_704c": "0.00"});
+    let with = |k: &str, v: Value| {
+        let mut p = base.clone();
+        p[k] = v;
+        p
+    };
+    for (bad, newer) in [
+        (with("rule", json!("gift_1015")), true),
+        (with("sec704c_method", json!("aggregated")), true),
+        (with("rule", json!(7)), false),
+        (with("sec704c_method", json!(1)), false),
+        (with("fmv_at_contribution", json!(1.5)), false),
+        (with("tax_basis_723", json!("one")), false),
+        (with("source", json!({"decided_by": 1})), false),
+        (with("rule", json!("cost")), true),
+    ] {
+        let (dir, s, _, x, _) = fixture("newer-basis");
+        drop(s);
+        let mut p = bad.clone();
+        p["asset_id"] = json!(x);
+        let mut w = JournalWriter::open(&dir.join(JOURNAL_FILE)).unwrap();
+        w.append(
+            "journal.format_set",
+            json!({"format": 2, "features": ["asset_basis"]}),
+        )
+        .unwrap();
+        w.append("asset.basis_set", p).unwrap();
+        drop(w);
+        match (Store::open(&dir), newer) {
+            (Err(StoreError::NewerJournal { .. }), true) => {}
+            (Err(StoreError::JournalCorrupt(_)), false) => {}
+            (Err(other), _) => panic!("{bad}: got {other:?}"),
+            (Ok(_), _) => panic!("{bad}: opened"),
+        }
+    }
+}
+
+/// Downgrade the database to schema v12 (none of v13's 1099 decisions or
+/// payment methods, nor its basis columns; runs keyed by asset and
+/// period), as P2 left it.
+fn downgrade_db_to_v12(db: &Path) {
+    let conn = rusqlite::Connection::open(db).unwrap();
+    conn.execute_batch(
+        "DROP TABLE vendor_1099_decisions;
+         DROP TABLE instruments;
+         DROP TABLE entry_instruments;
+         ALTER TABLE assets DROP COLUMN fmv_at_contribution;
+         ALTER TABLE assets DROP COLUMN sec704c_method;
+         ALTER TABLE assets DROP COLUMN basis_source_json;
+         CREATE TABLE asset_depreciation_v12(asset_id INTEGER NOT NULL, period TEXT NOT NULL,
+           entry_id INTEGER NOT NULL, amount TEXT NOT NULL, PRIMARY KEY (asset_id, period));
+         INSERT INTO asset_depreciation_v12 SELECT asset_id, period, entry_id, amount FROM asset_depreciation;
+         DROP TABLE asset_depreciation;
+         ALTER TABLE asset_depreciation_v12 RENAME TO asset_depreciation;
+         UPDATE meta SET value = '12' WHERE key = 'schema_version';",
+    )
+    .unwrap();
 }
 
 /// Downgrade the database to schema v10 (none of v11's attachment links,
 /// statements, reconciliations, or payroll_lines.employee_id).
 fn downgrade_db_to_v10(dir: &Path) {
+    downgrade_db_to_v12(&dir.join(db_file()));
     let conn = rusqlite::Connection::open(dir.join(db_file())).unwrap();
     conn.execute_batch(
         "DROP TABLE attachment_links;
          DROP TABLE statements;
          DROP TABLE reconciliations;
          DROP TABLE reconciliation_lines;
+         DROP TABLE settings;
+         DROP TABLE conventions;
+         DROP TABLE decisions;
+         DROP TABLE open_items;
+         DROP TABLE entry_approvals;
          ALTER TABLE payroll_lines DROP COLUMN employee_id;
          UPDATE meta SET value = '10' WHERE key = 'schema_version';",
     )
     .unwrap();
+}
+
+/// P2's database (`wanderbooks.db`, schema v12) is left as it is, byte
+/// for byte: this version builds its own v13 file from the journal, its
+/// runs table keyed by entry with every run kept and the new columns
+/// empty, and it verifies; a basis set after then reloads from it (each
+/// schema in a file of its own: rules.md B-27).
+#[test]
+fn a_p2_database_is_left_and_v13_built_from_the_journal() {
+    use ledger_core::BasisRule::*;
+    let (dir, mut s, _, x, y) = fixture("v12");
+    s.run_depreciation(x, "2026-01").unwrap();
+    drop(s);
+    // As P2 left the books: its schema in the legacy file, none of this
+    // version's.
+    let legacy = dir.join(ledger_store::LEGACY_DB_FILE);
+    std::fs::rename(dir.join(db_file()), &legacy).unwrap();
+    downgrade_db_to_v12(&legacy);
+    let p2 = std::fs::read(&legacy).unwrap();
+    let mut s = Store::open(&dir).expect("P2's books open");
+    assert_eq!(s.database_file(), db_file());
+    s.verify().unwrap();
+    assert_eq!(s.ledger().depreciation_runs(x).len(), 1);
+    assert_eq!(basis_of(&s, y), None);
+    s.set_asset_basis(y, contribution(Carryover723, "640.00", "1200.00"))
+        .unwrap();
+    s.verify().unwrap();
+    drop(s);
+    let s = Store::open(&dir).unwrap();
+    s.verify().unwrap();
+    assert_eq!(
+        basis_of(&s, y),
+        Some(contribution(Carryover723, "640.00", "1200.00"))
+    );
+    assert_eq!(s.ledger().depreciation_runs(x).len(), 1);
+    drop(s);
+    assert_eq!(
+        std::fs::read(&legacy).unwrap(),
+        p2,
+        "P2's file, byte for byte"
+    );
 }
 
 /// A database at schema v10 under this version's own file name is rebuilt
@@ -752,10 +977,10 @@ fn downgrade_db_to_v9(dir: &Path) {
 }
 
 /// A database at schema v9 under this version's own file name is rebuilt
-/// as the books open (as the v8 one above), verifies, and takes tax bases.
+/// as the books open (as the v8 one above), verifies, and takes bases.
 #[test]
 fn a_v9_database_migrates_and_verifies() {
-    use ledger_core::TaxBasisRule::*;
+    use ledger_core::BasisRule::*;
     let (dir, mut s, _, x, y) = fixture("v9");
     s.set_asset_tag(x, "FL-0001").unwrap();
     drop(s);
@@ -764,21 +989,24 @@ fn a_v9_database_migrates_and_verifies() {
     assert!(kept_aside(&dir), "rebuilt, not migrated");
     s.verify().unwrap();
     assert_eq!(tag_of(&s, x).as_deref(), Some("FL-0001"));
-    assert_eq!(tax_of(&s, x), None);
-    s.set_asset_tax_basis(y, tax(Carryover, Some("640.00")))
+    assert_eq!(basis_of(&s, x), None);
+    s.set_asset_basis(y, contribution(Carryover723, "640.00", "1200.00"))
         .unwrap();
     s.verify().unwrap();
     drop(s);
     let s = Store::open(&dir).unwrap();
     s.verify().unwrap();
-    assert_eq!(tax_of(&s, y), Some(tax(Carryover, Some("640.00"))));
+    assert_eq!(
+        basis_of(&s, y),
+        Some(contribution(Carryover723, "640.00", "1200.00"))
+    );
 }
 
 /// A v9 database behind a journal with a tax basis line is rebuilt from
 /// the whole journal, that line with it, and verifies.
 #[test]
 fn a_v9_database_behind_a_journal_with_tax_basis_catches_up() {
-    use ledger_core::TaxBasisRule::*;
+    use ledger_core::BasisRule::*;
     let (dir, s, _, x, _) = fixture("v9-behind");
     drop(s);
     downgrade_db_to_v9(&dir);
@@ -792,7 +1020,7 @@ fn a_v9_database_behind_a_journal_with_tax_basis_catches_up() {
     let s = Store::open(&dir).expect("opens and catches up");
     assert!(kept_aside(&dir), "rebuilt, not migrated");
     s.verify().unwrap();
-    assert_eq!(tax_of(&s, x), Some(tax(Carryover, Some("300.00"))));
+    assert_eq!(basis_of(&s, x), Some(legacy(Carryover723, Some("300.00"))));
 }
 
 /// An `asset.tax_basis_set` line with an unknown rule, or a contributor
@@ -841,7 +1069,7 @@ fn an_asset_is_corrected_until_depreciation_is_posted() {
         cost: usd(cost),
         salvage_value: usd("0.00"),
         useful_life_months: 12,
-        purchase_date: date(2026, 1, 1),
+        in_service_date: date(2026, 1, 1),
     };
     let before = journal(&dir).len();
     assert!(matches!(
@@ -902,4 +1130,86 @@ fn reversing_a_linked_acquisition_still_opens_and_verifies() {
     assert!(!s.ledger().acquisition_reversed(x));
     drop(s);
     Store::open(&dir).unwrap().verify().unwrap();
+}
+
+// ------------------------------------------------- depreciation runs (rules.md B-24)
+
+/// A run is the books' record of what they carry for an asset
+/// (Ledger::accumulated_posted): recorded live, replayed from the journal,
+/// reloaded from the database, the same in the viewer, and verify
+/// catches a run the database holds differently from the journal (review
+/// R5).
+#[test]
+fn runs_replay_reload_and_verify_catches_a_tampered_run() {
+    let (dir, mut s, _, x, _) = fixture("runs");
+    s.run_depreciation(x, "2026-01").unwrap();
+    s.run_depreciation(x, "2026-02").unwrap();
+    let live = s.ledger().depreciation_runs(x).to_vec();
+    assert_eq!(live.len(), 2);
+    assert_eq!(
+        s.ledger().accumulated_posted(x, date(2026, 2, 28)).unwrap(),
+        dec("200.00")
+    );
+    s.verify().unwrap();
+    drop(s);
+    for rebuild in [false, true] {
+        if rebuild {
+            std::fs::remove_file(dir.join(db_file())).unwrap();
+        }
+        let s = Store::open(&dir).unwrap();
+        assert_eq!(s.ledger().depreciation_runs(x), live.as_slice());
+        s.verify().unwrap();
+        drop(s);
+    }
+    let snap = ledger_store::Snapshot::load(&dir).unwrap();
+    assert_eq!(snap.ledger().depreciation_runs(x), live.as_slice());
+    let conn = rusqlite::Connection::open(dir.join(db_file())).unwrap();
+    conn.execute(
+        "UPDATE asset_depreciation SET amount = '99.00' WHERE period = '2026-02'",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    let s = Store::open(&dir).unwrap();
+    assert!(matches!(s.verify(), Err(StoreError::VerifyMismatch(_))));
+}
+
+/// The writer and the viewer read an `asset.depreciation_posted` line the
+/// same way: well formed and naming an asset and an entry that exist, it
+/// replays (any period an earlier version journaled, rules.md B-28);
+/// otherwise both refuse it as corrupt.
+#[test]
+fn the_viewer_and_writer_agree_on_a_bad_depreciation_posted_payload() {
+    for (amount, asset_known, ok) in [
+        ("lots", true, false),
+        ("1.00", false, false),
+        ("0.001", true, true),
+    ] {
+        let (dir, mut s, a, x, _) = fixture("bad-run");
+        let e = s.create_entry(date(2026, 1, 31), "depreciation").unwrap();
+        s.add_line(e, a.expense, ledger_core::Side::Debit, usd("1.00"))
+            .unwrap();
+        s.add_line(e, a.accum, ledger_core::Side::Credit, usd("1.00"))
+            .unwrap();
+        s.post_entry(e).unwrap();
+        drop(s);
+        let mut w = JournalWriter::open(&dir.join(JOURNAL_FILE)).unwrap();
+        w.append(
+            "asset.depreciation_posted",
+            json!({"asset_id": if asset_known { x } else { x + 99 }, "period": "10000-01",
+                   "entry_id": e, "amount": amount}),
+        )
+        .unwrap();
+        drop(w);
+        let _ = std::fs::remove_file(dir.join(db_file()));
+        let writer = Store::open(&dir).map(|s| s.ledger().depreciation_runs(x).len());
+        let viewer =
+            ledger_store::Snapshot::load(&dir).map(|s| s.ledger().depreciation_runs(x).len());
+        assert_eq!(writer.is_ok(), ok, "{amount} {asset_known}: {writer:?}");
+        assert_eq!(viewer.is_ok(), ok, "{amount} {asset_known}: {viewer:?}");
+        if ok {
+            assert_eq!(writer.unwrap(), 1);
+            assert_eq!(viewer.unwrap(), 1);
+        }
+    }
 }

@@ -501,8 +501,16 @@ fn members_get_the_k1_worksheet_with_full_tins_only_from_a_source() {
     for p in [&with, &without] {
         let n = names(p);
         assert!(n.contains(&"members-equity.pdf") && n.contains(&"members-equity.xlsx"));
-        // The K-1 worksheet comes after the evidence, before the IIF.
-        assert_eq!(&n[n.len() - 2..], ["k1-members.csv", "general-journal.iif"]);
+        // The K-1 worksheet (book, then tax basis) comes after the
+        // evidence, before the IIF.
+        assert_eq!(
+            &n[n.len() - 3..],
+            [
+                "k1-members.csv",
+                "k1-tax-basis-capital.csv",
+                "general-journal.iif"
+            ]
+        );
         assert_zip_is_the_files(p);
     }
     // Capital: 5000 in each; income 4000 - 1200 - 2500 = 300, half each.
@@ -1314,7 +1322,7 @@ fn books_around(dir: &Path, as_of: NaiveDate, later: bool, desk: bool) -> Books 
         let id = s
             .register_asset(ledger_core::NewAsset {
                 description: "Desk".into(),
-                purchase_date: d("2026-01-10"),
+                in_service_date: d("2026-01-10"),
                 cost: usd("1200.00"),
                 salvage_value: usd("0.00"),
                 useful_life_months: 60,
@@ -1352,7 +1360,7 @@ fn books_around(dir: &Path, as_of: NaiveDate, later: bool, desk: bool) -> Books 
         let (cost, accum, expense) = (id_of(s, "1500"), id_of(s, "1510"), id_of(s, "6500"));
         s.register_asset(ledger_core::NewAsset {
             description: "Laptop".into(),
-            purchase_date: bought,
+            in_service_date: bought,
             cost: usd("1800.00"),
             salvage_value: usd("0.00"),
             useful_life_months: 36,
@@ -2122,4 +2130,153 @@ fn the_cash_flow_carries_both_schedules() {
     }
     assert!(!text.contains("Member distributions"));
     assert!(p.files.iter().any(|(n, _)| n == "cash-flow.pdf"));
+}
+
+/// The K-1 worksheet reports tax-basis capital (rules.md B-36; Form 1065
+/// instructions, Item L, the tax-basis method), beside the book figures,
+/// with the reconciliation. By hand, per member of two at 50/50: cash in
+/// 1,000.00; a laptop (worth 1,440.00, adjusted basis 1,688.40) and a
+/// camera (1,300.00; 1,080.00) contributed jointly from personal use,
+/// 1,370.00 each at book, 1,384.20 each at §723 basis ((1,688.40 +
+/// 1,080.00) / 2), the built-in gain share (−248.40 + 220.00) / 2 =
+/// −14.20; revenue 600.00 less a year of depreciation (24-month lives:
+/// 720.00 + 650.00 = 1,370.00) = −770.00, −385.00 each, its tax figure
+/// open (tax depreciation is the CPA's); 300.00 out each. Book ending
+/// 1,685.00; tax ending as far as the books know 1,699.20; book less tax
+/// −14.20.
+#[test]
+fn the_k1_worksheet_reports_tax_basis_capital() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Store::create(&dir.path().join("books-data"), Currency::USD).unwrap();
+    for (code, name, ty) in [
+        ("1000", "Checking", AccountType::Asset),
+        ("1500", "Equipment", AccountType::Asset),
+        ("1510", "Accumulated Depreciation", AccountType::Asset),
+        ("3000", "Capital, Tobin", AccountType::Equity),
+        ("3001", "Capital, Mo", AccountType::Equity),
+        ("4000", "Sales", AccountType::Revenue),
+        ("6200", "Depreciation", AccountType::Expense),
+    ] {
+        s.add_account(code, name, ty, None, false).unwrap();
+    }
+    s.add_party("Tobin Example", &[Role::Member]).unwrap();
+    s.add_party("Mo Example", &[Role::Member]).unwrap();
+    post(
+        &mut s,
+        "2026-01-01",
+        "Cash in",
+        &[
+            ("1000", Side::Debit, "2000.00"),
+            ("3000", Side::Credit, "1000.00"),
+            ("3001", Side::Credit, "1000.00"),
+        ],
+    );
+    let devices = post(
+        &mut s,
+        "2026-01-01",
+        "Devices contributed",
+        &[
+            ("1500", Side::Debit, "1440.00"),
+            ("1500", Side::Debit, "1300.00"),
+            ("3000", Side::Credit, "1370.00"),
+            ("3001", Side::Credit, "1370.00"),
+        ],
+    );
+    let (equipment, accum, depreciation) =
+        (id_of(&s, "1500"), id_of(&s, "1510"), id_of(&s, "6200"));
+    for (name, fmv, adjusted) in [
+        ("Laptop", "1440.00", "1688.40"),
+        ("Camera", "1300.00", "1080.00"),
+    ] {
+        let id = s
+            .register_asset(ledger_core::NewAsset {
+                description: name.into(),
+                in_service_date: d("2026-01-01"),
+                cost: usd(fmv),
+                salvage_value: usd("0.00"),
+                useful_life_months: 24,
+                cost_account: equipment,
+                accum_depr_account: accum,
+                expense_account: depreciation,
+            })
+            .unwrap();
+        s.set_asset_acquisition(id, devices).unwrap();
+        let mut basis = ledger_core::AssetBasis::contribution(
+            ledger_core::BasisRule::PersonalUseConversion,
+            Decimal::from_str(adjusted).unwrap(),
+            Decimal::from_str(fmv).unwrap(),
+        );
+        basis.sec704c_method = Some(ledger_core::Sec704cMethod::Traditional);
+        s.set_asset_basis(id, basis).unwrap();
+        for m in 1..=12 {
+            s.run_depreciation(id, &format!("2026-{m:02}")).unwrap();
+        }
+    }
+    post(
+        &mut s,
+        "2026-02-01",
+        "Sale",
+        &[
+            ("1000", Side::Debit, "600.00"),
+            ("4000", Side::Credit, "600.00"),
+        ],
+    );
+    post(
+        &mut s,
+        "2026-12-15",
+        "Draws",
+        &[
+            ("3000", Side::Debit, "300.00"),
+            ("3001", Side::Debit, "300.00"),
+            ("1000", Side::Credit, "600.00"),
+        ],
+    );
+    let company = company(true);
+    let cash = cash();
+    let p = build_package(&s, &settings(&company, &cash), &request(false, None)).unwrap();
+    let csv = text(&p, "k1-tax-basis-capital.csv");
+    let lines: Vec<&str> = csv.lines().collect();
+    assert_eq!(
+        lines[0],
+        "member,item,book,tax_basis,book_less_tax,status,note"
+    );
+    assert_eq!(lines.len(), 1 + 2 * 12, "{csv}");
+    let depreciation_note = "tax depreciation of the fixed assets in service (MACRS, IRC §168), in place of the book depreciation posted (1370.00 in the span, 1370.00 of it on contributed property, whose tax depreciation each property's §704(c) method allocates, Treas. Reg. §1.704-3)";
+    for member in ["Tobin Example", "Mo Example"] {
+        for want in [
+            format!("{member},Beginning capital,0.00,0.00,0.00,tax basis,"),
+            format!("{member},Capital contributed: cash,1000.00,1000.00,0.00,tax basis,"),
+            format!(
+                "{member},Capital contributed: property,1370.00,1384.20,-14.20,tax basis,at the property's adjusted basis (IRC §723); book: its fair market value"
+            ),
+            format!(
+                "{member},Current year net income (loss),-385.00,,,open: the CPA's,\"known so far -385.00; needs {depreciation_note}\""
+            ),
+            format!("{member},Other increase (decrease),0.00,0.00,0.00,tax basis,"),
+            format!(
+                "{member},Withdrawals and distributions,300.00,300.00,0.00,tax basis,\"cash, plus the adjusted tax basis of property distributed\""
+            ),
+            format!(
+                "{member},Ending capital,1685.00,,,open: the CPA's,\"known so far 1699.20; needs {depreciation_note}\""
+            ),
+            format!(
+                "{member},\"Reconciliation: beginning capital, book less tax\",,,0.00,reconciliation,"
+            ),
+            format!(
+                "{member},Reconciliation: built-in gain (loss) of property contributed,,,-14.20,reconciliation,\"fair market value less §723 basis at contribution, IRC §704(c) (Treas. Reg. §1.704-3(a)(3)(ii))\""
+            ),
+            format!(
+                "{member},Reconciliation: book ending less tax ending,,,-14.20,reconciliation,\"to the tax ending the books know so far, before the CPA's figures above\""
+            ),
+        ] {
+            assert!(lines.contains(&want.as_str()), "{want}\nnot in\n{csv}");
+        }
+    }
+    let readme = text(&p, "README.txt");
+    assert!(
+        readme.contains("k1-tax-basis-capital.csv: each member's capital account on the tax basis, as Item L reports it"),
+        "{readme}"
+    );
+    // The book worksheet is the same as without assets' bases.
+    assert!(text(&p, "k1-members.csv").contains(",1685.00\n"));
 }

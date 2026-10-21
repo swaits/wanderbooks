@@ -1238,11 +1238,11 @@ impl Books {
         };
         let amount = self.asset_register(through)?.unposted_depreciation();
         let mut periods = std::collections::BTreeSet::new();
-        for a in self
-            .ledger
-            .registered_assets()
-            .filter(|a| a.purchase_date <= through)
-        {
+        for a in self.ledger.registered_assets().filter(|a| {
+            self.ledger
+                .asset_acquired_date(a.id)
+                .is_some_and(|d| d <= through)
+        }) {
             if matches!(a.status, AssetStatus::Disposed { date, .. } if date <= through) {
                 continue;
             }
@@ -2091,26 +2091,22 @@ fn asset_trails(ledger: &Ledger, journal: &[JournalLine]) -> HashMap<AssetId, As
             continue;
         };
         t.events.push(i);
-        match line.line_type.as_str() {
-            "asset.depreciation_posted" => {
-                if let (Some(period), Some(entry), Some(amount)) = (
-                    p.get("period").and_then(|v| v.as_str()),
-                    u(p, "entry_id"),
-                    p.get("amount")
-                        .and_then(|v| v.as_str())
-                        .and_then(|s| s.parse::<Decimal>().ok()),
-                ) {
-                    t.runs.push((entry, amount));
-                    t.periods.push(period.to_string());
-                }
+        if line.line_type == "asset.disposed" {
+            t.disposal_entry = u(p, "entry_id");
+            if let Some(a) = asset {
+                gain_loss_accounts.insert(a, u(p, "gain_loss_account"));
             }
-            "asset.disposed" => {
-                t.disposal_entry = u(p, "entry_id");
-                if let Some(a) = asset {
-                    gain_loss_accounts.insert(a, u(p, "gain_loss_account"));
-                }
+        }
+    }
+    // Every run journaled, reversed or not, in the order recorded: the
+    // ledger's runs (each asset.depreciation_posted as replay recorded it),
+    // one reading of the journal, never a second copy read here.
+    for a in ledger.registered_assets() {
+        if let Some(t) = out.get_mut(&a.id) {
+            for run in ledger.depreciation_runs(a.id) {
+                t.runs.push((run.entry, run.amount));
+                t.periods.push(run.period.clone());
             }
-            _ => {}
         }
     }
     // The runs in effect, by month; a run reversed (and not re-instated)
@@ -2168,7 +2164,7 @@ fn asset_trails(ledger: &Ledger, journal: &[JournalLine]) -> HashMap<AssetId, As
             {
                 continue;
             }
-            let days = (e.date() - a.purchase_date).num_days().abs();
+            let days = (e.date() - a.in_service_date).num_days().abs();
             if days > 31 {
                 continue;
             }
@@ -2214,7 +2210,8 @@ fn disposal_true_up(
             })
             .sum();
     }
-    ledger_core::accumulated_depreciation(asset, NaiveDate::MAX).map_or(Decimal::ZERO, |t| t - runs)
+    ledger_core::accumulated_scheduled_through(asset, NaiveDate::MAX)
+        .map_or(Decimal::ZERO, |t| t - runs)
 }
 
 /// Entry ids a journal line refers to.

@@ -5,7 +5,7 @@
 use chrono::{Datelike, Days, Months, NaiveDate};
 use egui_kittest::Harness;
 use ledger_core::{
-    AccountType, AssetId, Currency, EntryId, Money, NewAsset, Side, TaxBasis, TaxBasisRule,
+    AccountType, AssetBasis, AssetId, BasisRule, Currency, EntryId, Money, NewAsset, Side,
     depreciation_schedule, fixed_asset_register,
 };
 use ledger_gui::books::Books;
@@ -124,7 +124,7 @@ fn fixture(tag: &str) -> Fixture {
     let register = |s: &mut Store, what: &str, date, cents, salvage, months| {
         s.register_asset(NewAsset {
             description: what.into(),
-            purchase_date: date,
+            in_service_date: date,
             cost: usd(cents),
             salvage_value: usd(salvage),
             useful_life_months: months,
@@ -146,15 +146,13 @@ fn fixture(tag: &str) -> Fixture {
     s.set_asset_tag(old, "FL-0009").unwrap();
     s.set_asset_serial(old, Some("X1")).unwrap();
     s.set_asset_serial(old, None).unwrap();
-    let tax = |rule, basis: Option<i64>| TaxBasis {
-        rule,
-        contributor_basis: basis.map(|c| Decimal::new(c, 2)),
+    let given = |rule, adjusted: i64, fmv: i64| {
+        AssetBasis::contribution(rule, Decimal::new(adjusted, 2), Decimal::new(fmv, 2))
     };
-    s.set_asset_tax_basis(laptop, tax(TaxBasisRule::Carryover, Some(200_000)))
+    s.set_asset_basis(laptop, given(BasisRule::Carryover723, 200_000, 300_000))
         .unwrap();
-    s.set_asset_tax_basis(laptop, tax(TaxBasisRule::Cost, None))
-        .unwrap();
-    s.set_asset_tax_basis(old, tax(TaxBasisRule::PersonalUseConversion, Some(70_000)))
+    s.set_asset_basis(laptop, AssetBasis::purchase()).unwrap();
+    s.set_asset_basis(old, given(BasisRule::PersonalUseConversion, 70_000, 60_000))
         .unwrap();
     for m in 1..=7 {
         s.run_depreciation(laptop, &format!("2026-{m:02}")).unwrap();
@@ -457,39 +455,50 @@ fn attention_asks_for_depreciation_and_tags() {
 }
 
 /// The viewer's tax figures are ledger-core's: each asset's
-/// (Asset::tax_basis, Asset::built_in_gain), each register row's, and the
-/// register's total and missing count, on every date.
+/// (Asset::basis_figures), each register row's, and the register's totals
+/// and missing count, on every date.
 #[test]
-fn tax_basis_is_ledger_cores() {
+fn basis_figures_are_ledger_cores() {
     let f = fixture("tax");
     let b = &f.books;
     for id in [f.laptop, f.monitor, f.old] {
         let core = f.oracle.get_asset(id).unwrap();
         let mine = TaxFacts::of(b.ledger.get_asset(id).unwrap());
-        assert_eq!(mine.rule, core.tax.map(|t| t.rule), "asset {id}");
+        let figures = core.basis_figures().unwrap();
+        assert_eq!(mine.rule, core.basis.as_ref().map(|x| x.rule), "asset {id}");
         assert_eq!(
-            mine.contributor_basis,
-            core.tax.and_then(|t| t.contributor_basis)
+            mine.contributor_adjusted_basis,
+            core.basis
+                .as_ref()
+                .and_then(|x| x.contributor_adjusted_basis)
         );
-        assert_eq!(mine.tax_basis, core.tax_basis(), "asset {id}");
-        assert_eq!(mine.built_in_gain, core.built_in_gain(), "asset {id}");
+        assert_eq!(mine.tax_basis_723, figures.and_then(|x| x.tax_basis_723));
+        assert_eq!(mine.depreciable_basis, figures.map(|x| x.depreciable_basis));
+        assert_eq!(
+            mine.built_in_gain_704c,
+            figures.and_then(|x| x.built_in_gain_704c)
+        );
+        assert_eq!(mine.fmv_at_contribution, core.fmv_at_contribution());
     }
-    // Independently: the laptop's basis is its cost; the old laptop's is
-    // its value ($600.00, under the member's $700.00), a $100.00 loss.
+    // Independently: the laptop's basis is its cost; the old laptop's
+    // §723 basis is the member's $700.00, its depreciable basis its value
+    // ($600.00, the lesser), a $100.00 built-in loss.
     let laptop = TaxFacts::of(b.ledger.get_asset(f.laptop).unwrap());
-    assert_eq!(laptop.rule, Some(TaxBasisRule::Cost));
-    assert_eq!(laptop.tax_basis, Some(Decimal::new(300_000, 2)));
-    assert_eq!(laptop.built_in_gain, None);
+    assert_eq!(laptop.rule, Some(BasisRule::Purchase));
+    assert_eq!(laptop.depreciable_basis, Some(Decimal::new(300_000, 2)));
+    assert_eq!(laptop.tax_basis_723, None);
+    assert_eq!(laptop.built_in_gain_704c, None);
     let old = TaxFacts::of(b.ledger.get_asset(f.old).unwrap());
-    assert_eq!(old.tax_basis, Some(Decimal::new(60_000, 2)));
-    assert_eq!(old.built_in_gain, Some(Decimal::new(-10_000, 2)));
+    assert_eq!(old.tax_basis_723, Some(Decimal::new(70_000, 2)));
+    assert_eq!(old.depreciable_basis, Some(Decimal::new(60_000, 2)));
+    assert_eq!(old.built_in_gain_704c, Some(Decimal::new(-10_000, 2)));
     assert_eq!(
         old.summary(),
-        "Personal-use conversion · contributor's basis $700.00"
+        "Personal-use conversion · §723 basis $700.00"
     );
     assert_eq!(
         old.detail(),
-        "Tax basis $600.00: Personal-use conversion (Treas. Reg. §1.168(i)-4(b)); contributor's basis $700.00; built-in loss $100.00."
+        "Depreciable basis $600.00: Personal-use conversion (Treas. Reg. §1.168(i)-4(b)); §723 basis $700.00; value at contribution $600.00; built-in loss $100.00."
     );
     assert_eq!(
         TaxFacts::of(b.ledger.get_asset(f.monitor).unwrap()).detail(),
@@ -499,29 +508,37 @@ fn tax_basis_is_ledger_cores() {
         TaxFacts::of(b.ledger.get_asset(f.monitor).unwrap()),
         TaxFacts {
             rule: None,
-            contributor_basis: None,
-            tax_basis: None,
-            built_in_gain: None
+            contributor_adjusted_basis: None,
+            fmv_at_contribution: None,
+            fmv_recorded: false,
+            tax_basis_723: None,
+            depreciable_basis: None,
+            built_in_gain_704c: None,
+            sec704c_method: None,
         }
     );
     for as_of in [d(2026, 1, 31), d(2026, 6, 30), today()] {
         let r = b.asset_register(as_of).unwrap();
         let oracle = fixed_asset_register(&f.oracle, as_of).unwrap();
-        assert_eq!(r.total_tax_basis, oracle.total_tax_basis, "{as_of}");
-        assert_eq!(r.missing_tax_basis, oracle.missing_tax_basis, "{as_of}");
+        assert_eq!(
+            r.total_depreciable_basis, oracle.total_depreciable_basis,
+            "{as_of}"
+        );
+        assert_eq!(r.total_tax_basis_723, oracle.total_tax_basis_723, "{as_of}");
+        assert_eq!(r.missing_basis, oracle.missing_basis, "{as_of}");
         for x in &r.rows {
             let a = f.oracle.get_asset(x.asset_id).unwrap();
             let facts = TaxFacts::of_row(x);
-            assert_eq!(facts.tax_basis, a.tax_basis());
-            assert_eq!(facts.built_in_gain, a.built_in_gain());
+            assert_eq!(facts.depreciable_basis, a.depreciable_basis());
+            assert_eq!(facts.built_in_gain_704c, a.built_in_gain_704c());
             assert_eq!(facts, TaxFacts::of(a));
         }
     }
     // Today: the laptop's $3,000.00 (the monitor has none; the old laptop
     // is gone), and one missing, said in the notices.
     let r = b.asset_register(today()).unwrap();
-    assert_eq!(r.total_tax_basis, Decimal::new(300_000, 2));
-    assert_eq!(r.missing_tax_basis, 1);
+    assert_eq!(r.total_depreciable_basis, Decimal::new(300_000, 2));
+    assert_eq!(r.missing_basis, 1);
     let want = missing_tax_notice(1).unwrap();
     assert!(want.starts_with("Tax basis not recorded for 1 asset"));
     assert!(want.contains("books.set_asset_tax_basis"));
@@ -534,14 +551,17 @@ fn tax_basis_is_ledger_cores() {
     );
 }
 
+/// The journal names each basis figure for what it is: the §723 basis,
+/// the depreciable basis, the built-in gain or loss; a pre-P3
+/// `asset.tax_basis_set` too, its value read as the book cost.
 #[test]
-fn journal_text_for_tax_basis() {
+fn journal_text_names_each_basis_figure() {
     let f = fixture("tax-journal");
     let b = &f.books;
     let texts: Vec<(String, Option<Route>)> = b
         .journal
         .iter()
-        .filter(|l| l.line_type == "asset.tax_basis_set")
+        .filter(|l| l.line_type == "asset.basis_set")
         .filter_map(|l| describe(b, l))
         .map(|e| (e.text, e.route))
         .collect();
@@ -549,19 +569,42 @@ fn journal_text_for_tax_basis() {
         texts,
         vec![
             (
-                "Tax basis of FL-0001: carryover, contributor's basis $2,000.00 → tax basis $2,000.00"
+                "Tax basis of FL-0001: carryover, value $3,000.00, contributor's adjusted basis $2,000.00: §723 basis $2,000.00, depreciable basis $2,000.00, built-in gain $1,000.00"
                     .to_string(),
                 Some(Route::Asset(f.laptop))
             ),
             (
-                "Tax basis of FL-0001: cost, tax basis $3,000.00".to_string(),
+                "Tax basis of FL-0001: purchase: depreciable basis $3,000.00".to_string(),
                 Some(Route::Asset(f.laptop))
             ),
             (
-                "Tax basis of FL-0009: personal-use conversion, contributor's basis $700.00 → tax basis $600.00"
+                "Tax basis of FL-0009: personal-use conversion, value $600.00, contributor's adjusted basis $700.00: §723 basis $700.00, depreciable basis $600.00, built-in loss $100.00"
                     .to_string(),
                 Some(Route::Asset(f.old))
             ),
+        ]
+    );
+    // A line an earlier version wrote: rule by its old name, no value.
+    let data = f._dir.0.join("books-data");
+    let mut w = ledger_store::JournalWriter::open(&data.join(ledger_store::JOURNAL_FILE)).unwrap();
+    w.append(
+        "asset.tax_basis_set",
+        serde_json::json!({"asset_id": f.monitor, "rule": "personal_use_conversion", "contributor_basis": "1500.00"}),
+    )
+    .unwrap();
+    drop(w);
+    let b = load(&f._dir.0, today());
+    let legacy: Vec<String> = b
+        .journal
+        .iter()
+        .filter(|l| l.line_type == "asset.tax_basis_set")
+        .filter_map(|l| describe(&b, l))
+        .map(|e| e.text)
+        .collect();
+    assert_eq!(
+        legacy,
+        [
+            "Tax basis of Monitor: personal-use conversion, contributor's adjusted basis $1,500.00: §723 basis $1,500.00, depreciable basis $1,200.00, built-in loss $300.00"
         ]
     );
 }
@@ -602,12 +645,13 @@ fn attention_asks_for_tax_basis() {
     );
 
     let mut s = Store::open(&data).unwrap();
-    s.set_asset_tax_basis(
+    s.set_asset_basis(
         f.monitor,
-        TaxBasis {
-            rule: TaxBasisRule::Carryover,
-            contributor_basis: Some(Decimal::new(90_000, 2)),
-        },
+        AssetBasis::contribution(
+            BasisRule::Carryover723,
+            Decimal::new(90_000, 2),
+            Decimal::new(120_000, 2),
+        ),
     )
     .unwrap();
     drop(s);
@@ -618,14 +662,27 @@ fn attention_asks_for_tax_basis() {
             .any(|a| a.title.starts_with("No tax basis"))
     );
     let r = b.asset_register(today()).unwrap();
-    assert_eq!(r.missing_tax_basis, 0);
+    assert_eq!(r.missing_basis, 0);
     assert!(
         !notices(&b, &r)
             .iter()
             .any(|n| n.text.contains("Tax basis not recorded"))
     );
     // $3,000.00 laptop + the monitor's $900.00 carryover.
-    assert_eq!(r.total_tax_basis, Decimal::new(390_000, 2));
+    assert_eq!(r.total_depreciable_basis, Decimal::new(390_000, 2));
+    // Its value is recorded, so nothing asks for it; its $300.00 built-in
+    // gain has no §704(c) method, so a method is asked for.
+    let items = attention::find(&b);
+    assert!(
+        !items
+            .iter()
+            .any(|a| a.title.starts_with("Confirm its value at contribution"))
+    );
+    let method = items
+        .iter()
+        .find(|a| a.title.starts_with("Choose a §704(c) method"))
+        .expect("asked for a method");
+    assert!(method.prompt.contains("books.set_asset_tax_basis"));
 }
 
 #[test]
@@ -763,7 +820,7 @@ proptest! {
             s.post_entry(e).unwrap();
             let id = s.register_asset(NewAsset {
                 description: format!("Asset {i}"),
-                purchase_date: date,
+                in_service_date: date,
                 cost: usd(*cents),
                 salvage_value: usd(cents * salvage_pct / 100),
                 useful_life_months: *months,
@@ -856,7 +913,7 @@ fn asset_x(tag: &str) -> (TempDir, PathBuf, Store, AssetId, (u64, u64)) {
     let x = s
         .register_asset(NewAsset {
             description: "Asset X".into(),
-            purchase_date: d(2026, 1, 1),
+            in_service_date: d(2026, 1, 1),
             cost: usd(1_200_000),
             salvage_value: usd(0),
             useful_life_months: 12,
@@ -1119,13 +1176,13 @@ proptest! {
         if disposed {
             prop_assert_eq!(
                 trail.posted(),
-                ledger_core::accumulated_depreciation(&a, NaiveDate::MAX).unwrap()
+                ledger_core::accumulated_scheduled_through(&a, NaiveDate::MAX).unwrap()
             );
             prop_assert_eq!(balance_on(&s, accum, NaiveDate::MAX), Decimal::ZERO);
         } else {
             prop_assert_eq!(trail.posted(), -balance_on(&s, accum, NaiveDate::MAX));
             let june = d(2026, 6, 30);
-            let owed = ledger_core::accumulated_depreciation(&a, june).unwrap()
+            let owed = ledger_core::accumulated_scheduled_through(&a, june).unwrap()
                 - balance_on(&s, expense, june);
             prop_assert_eq!(
                 ledger_gui::pages::assets::unposted(&b, x).unwrap(),

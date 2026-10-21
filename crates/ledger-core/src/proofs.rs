@@ -1675,6 +1675,50 @@ fn true_up_reaches_the_target() {
     kani::cover!(down > 0, "depreciation past the day, credited back");
 }
 
+/// `kernel::basis_figures` (rules.md B-25), for every rule and every
+/// cost, adjusted basis and value within the bounds: a purchase
+/// depreciates from cost with no §723 basis or built-in gain; a
+/// contribution's §723 basis is the adjusted basis and its built-in gain
+/// the value less it (negative exactly when the basis exceeds the value);
+/// carryover depreciates from the basis, personal use from the lesser of
+/// value and basis (at most each, equal to one); no overflow is reachable.
+#[kani::proof]
+fn basis_figures_laws() {
+    use crate::assets::BasisRule;
+    let r: u8 = kani::any();
+    kani::assume(r < 3);
+    let rule = match r {
+        0 => BasisRule::Purchase,
+        1 => BasisRule::Carryover723,
+        _ => BasisRule::PersonalUseConversion,
+    };
+    let (cost, adjusted, fmv) = (any_amount(), any_amount(), any_amount());
+    kani::assume(cost > 0 && adjusted >= 0 && fmv >= 0);
+    let f = kernel::basis_figures(rule, cost, adjusted, fmv).expect("no overflow");
+    match rule {
+        BasisRule::Purchase => {
+            assert_eq!(f.depreciable_basis, cost);
+            assert!(f.tax_basis_723.is_none() && f.built_in_gain_704c.is_none());
+        }
+        _ => {
+            assert_eq!(f.tax_basis_723, Some(adjusted));
+            let g = f.built_in_gain_704c.expect("a contribution's gain");
+            assert_eq!(g, fmv - adjusted);
+            assert_eq!(g < 0, adjusted > fmv);
+            if rule == BasisRule::Carryover723 {
+                assert_eq!(f.depreciable_basis, adjusted);
+            } else {
+                assert!(f.depreciable_basis <= adjusted && f.depreciable_basis <= fmv);
+                assert!(f.depreciable_basis == adjusted || f.depreciable_basis == fmv);
+            }
+        }
+    }
+    kani::cover!(
+        rule == BasisRule::PersonalUseConversion && fmv < adjusted,
+        "personal use worth less than its basis: a built-in loss"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The checker itself
 // ---------------------------------------------------------------------------

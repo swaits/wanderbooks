@@ -863,7 +863,7 @@ fn cash_flow_with_registered_asset_and_disposal() {
     let asset = ledger
         .register_asset(NewAsset {
             description: "Van".to_string(),
-            purchase_date: NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
+            in_service_date: NaiveDate::from_ymd_opt(2026, 1, 15).unwrap(),
             cost: usd(60_000),
             salvage_value: usd(0),
             useful_life_months: 60,

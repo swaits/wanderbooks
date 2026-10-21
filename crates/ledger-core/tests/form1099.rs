@@ -1035,7 +1035,7 @@ fn a_sale_to_a_contractor_does_not_lower_its_1099() {
     let depr = acct(&mut m.l, "6800", AccountType::Expense);
     m.l.register_asset(NewAsset {
         description: "Monitor".into(),
-        purchase_date: d(2024, 1, 1),
+        in_service_date: d(2024, 1, 1),
         cost: Money::new(dec("1000"), Currency::USD),
         salvage_value: Money::new(dec("0"), Currency::USD),
         useful_life_months: 36,

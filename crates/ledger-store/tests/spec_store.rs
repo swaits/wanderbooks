@@ -465,7 +465,7 @@ fn inv5_refused_disposal_writes_nothing() {
         .store
         .register_asset(NewAsset {
             description: "Laptop".into(),
-            purchase_date: date(2026, 1, 1),
+            in_service_date: date(2026, 1, 1),
             cost: usd(3_600),
             salvage_value: usd(0),
             useful_life_months: 36,

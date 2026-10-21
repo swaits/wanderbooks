@@ -44,6 +44,7 @@ pub mod schedules;
 pub mod settings;
 pub mod shares;
 pub mod tax;
+pub mod tax_capital;
 
 pub use account::{Account, AccountId, AccountType, ChartOfAccounts, Side};
 pub use arap::{
@@ -51,10 +52,11 @@ pub use arap::{
     Vendor, VendorId,
 };
 pub use assets::{
-    Asset, AssetCorrection, AssetId, AssetStatus, DepreciationMethod, DisposalAmounts, NewAsset,
-    PostedRun, RunAmount, ScheduleLine, TaxBasis, TaxBasisRule, accumulated_depreciation,
-    book_value, catch_up_room, check_disposal, depreciation_effects, depreciation_schedule,
-    disposal_amounts, life_end, run_amount, run_amounts,
+    Asset, AssetBasis, AssetCorrection, AssetId, AssetStatus, BasisRule, DepreciationMethod,
+    DepreciationPosting, DisposalAmounts, NewAsset, PostedRun, RunAmount, ScheduleLine,
+    Sec704cMethod, accumulated_scheduled_through, catch_up_room, check_disposal,
+    depreciation_effects, depreciation_schedule, disposal_amounts, life_end, run_amount,
+    run_amounts, scheduled_book_value,
 };
 pub use cashflow::{
     CashFlowFooting, CashFlowKind, CashFlowLine, CashFlowParams, CashFlowSection,

@@ -55,6 +55,7 @@ pub const KNOWN_FEATURES: &[&str] = &[
     VENDOR_1099_DECISIONS,
     MONTH_REPOSTING,
     SCHEDULE_CONVENTION,
+    ASSET_BASIS,
 ];
 
 /// Feature: `period.closed` closes to members with `"rounding":
@@ -106,6 +107,10 @@ pub const MONTH_REPOSTING: &str = "month_reposting";
 /// months (P3 defect 9, plan/served.md D-11).
 pub const SCHEDULE_CONVENTION: &str = "schedule_convention";
 
+/// Feature: `asset.basis_set`, a new event type: an asset's basis facts
+/// with the value at contribution and the §704(c) method (P3, defect 13).
+pub const ASSET_BASIS: &str = "asset_basis";
+
 /// The line type that declares the journal format.
 pub const FORMAT_SET: &str = "journal.format_set";
 
@@ -117,6 +122,7 @@ pub const EVENT_TYPES: &[&str] = &[
     "account.renumbered",
     "account.tax_set",
     "asset.acquisition_linked",
+    "asset.basis_set",
     "asset.corrected",
     "asset.depreciation_posted",
     "asset.described",

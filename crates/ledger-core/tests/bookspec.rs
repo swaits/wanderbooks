@@ -11,24 +11,27 @@
 //! due: a depreciation run, a disposal, a schedule run or registration),
 //! each accepted or refused as it says, with the parties, payee and
 //! payment method it is tagged with, and every change that posts no entry
-//! (a rename, a policy). The books are the engine's own store
-//! (`ledger_store::Store`, in a directory of their own), so every event
-//! goes through the command the books take it by, journaled, and the
-//! books must replay to what was kept (`Store::verify`). The queries the
+//! (a rename, a policy, an asset's correction). The books are the
+//! engine's own store (`ledger_store::Store`, in a directory of their
+//! own), so every event goes through the command the books take it by,
+//! journaled, and the books must replay to what was kept
+//! (`Store::verify`). The queries the
 //! core answers (`cash_flow`, `trial_balance`, `profit_and_loss`,
 //! `vendor_1099_paid`, `vendor_1099`, `entry`, `balances`,
-//! `members_equity`, `k1`, `party_part`, `party_totals`,
-//! `party_tin_last4`, `period`, `day`, `calendar_year`, `account_names`,
-//! `uncategorized_accounts`, `run`, `disposal`, `depreciation_schedule`,
-//! `schedule_plan`) are then checked value by value, and the commands it
-//! tries
-//! (`rename_account`, `add_account`, `set_tax_category`) accepted or
-//! refused on a copy of the books, each after the event it names (`after`)
-//! or the last; the formats appendix's (`iif_lines`, `iif_changes`) are
-//! checked by ledger-package (`the_bookspec_iif_example_matches_the_engine`),
-//! and a query no crate answers is refused. A key the shape doesn't have
-//! is refused too, never ignored.
+//! `members_equity`, `k1`, `k1_tax_basis`, `k1_reconciliation`,
+//! `party_part`, `party_totals`, `party_tin_last4`, `period`, `day`,
+//! `calendar_year`, `account_names`, `uncategorized_accounts`, `run`,
+//! `disposal`, `depreciation_schedule`, `schedule_plan`, `register_row`,
+//! `register_totals`, `asset_basis`) are then checked value by value, and
+//! the commands it tries (`rename_account`, `add_account`,
+//! `set_tax_category`) accepted or refused on a copy of the books, each
+//! after the event it names (`after`) or the last; the formats appendix's
+//! (`iif_lines`, `iif_changes`) are checked by ledger-package
+//! (`the_bookspec_iif_example_matches_the_engine`), and a query no crate
+//! answers is refused. A key the shape doesn't have is refused too, never
+//! ignored.
 
+use std::borrow::Borrow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -36,6 +39,7 @@ use chrono::NaiveDate;
 use ledger_core::calendar::{PeriodDefaults, period_defaults};
 use ledger_core::parties::{Basis, MoneyAccounts};
 use ledger_core::settings::{Company, Source};
+use ledger_core::tax_capital::TaxCapitalRow;
 use ledger_core::{
     AccountType, AssetId, CashFlowParams, CashFlowSection, CashFlowStatement, CloseTo, Currency,
     Dated1099, Decision1099, DocumentLine, EntryId, EntryStatus, ExemptReason, Form1099,
@@ -170,6 +174,32 @@ struct AssetSpec {
     cost_account: String,
     accumulated_account: String,
     expense_account: String,
+    /// The event whose entry put it on the books (its purchase or a
+    /// member's contribution), linked once that event is applied: its date
+    /// is the asset's acquired date (rules.md B-15 rule 7).
+    #[serde(default)]
+    acquired_by: Option<usize>,
+    /// How the company got it and the facts its tax figures follow from
+    /// (rules.md B-25), recorded as it is registered.
+    #[serde(default)]
+    basis: Option<BasisSpec>,
+}
+
+/// An asset's basis facts (rules.md B-25): `rule` `"purchase"`,
+/// `"carryover_723"` or `"personal_use_conversion"`; a contribution's
+/// `contributor_adjusted_basis` and `fmv_at_contribution`; its §704(c)
+/// method, if chosen (`"traditional"`, `"traditional_with_curative"`,
+/// `"remedial"`).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BasisSpec {
+    rule: String,
+    #[serde(default)]
+    contributor_adjusted_basis: Option<String>,
+    #[serde(default)]
+    fmv_at_contribution: Option<String>,
+    #[serde(default)]
+    sec704c_method: Option<String>,
 }
 
 /// A prepaid expense or deferred revenue recognized over `months` from
@@ -376,8 +406,9 @@ struct BillSpec {
 
 /// A change to the books that posts no entry, made right after event
 /// `after` (counting from 1) once the expectations asked after that event
-/// are checked: a rename (`rename`) or the tax-category policy
-/// (`require_tax_category`), exactly one of them.
+/// are checked: a rename (`rename`), the tax-category policy
+/// (`require_tax_category`) or an asset's correction (`correct_asset`),
+/// exactly one of them.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ChangeSpec {
@@ -388,6 +419,25 @@ struct ChangeSpec {
     /// "refuse" (rules.md B-32).
     #[serde(default)]
     require_tax_category: Option<String>,
+    #[serde(default)]
+    correct_asset: Option<CorrectSpec>,
+}
+
+/// A registered asset's economics corrected (a registration mistake), for
+/// `reason`: each figure given replaces the asset's; the rest stay.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CorrectSpec {
+    asset: String,
+    #[serde(default)]
+    cost: Option<String>,
+    #[serde(default)]
+    salvage: Option<String>,
+    #[serde(default)]
+    life_months: Option<u32>,
+    #[serde(default)]
+    in_service: Option<String>,
+    reason: String,
 }
 
 /// Rename the account `code` to `name` (rules.md B-31).
@@ -431,8 +481,9 @@ struct Expect {
     entry: Option<usize>,
     /// The `run_depreciation` event a `run` query asks about.
     event: Option<usize>,
-    /// The fixed asset (`setup.assets` id) a `disposal` or
-    /// `depreciation_schedule` query asks about.
+    /// The fixed asset (`setup.assets` id) a `disposal`,
+    /// `depreciation_schedule`, `register_row` or `asset_basis` query asks
+    /// about.
     asset: Option<String>,
     /// The schedule (its id) a `schedule_plan` query asks about.
     schedule: Option<String>,
@@ -792,6 +843,22 @@ fn add_parties(ex: &Example, store: &mut Store) -> BTreeMap<String, PartyId> {
     out
 }
 
+/// An asset's basis facts as the books record them.
+fn basis(b: &BasisSpec, what: &str) -> ledger_core::AssetBasis {
+    let amount = |s: &Option<String>| s.as_deref().map(|v| exact(v, what));
+    ledger_core::AssetBasis {
+        rule: ledger_core::BasisRule::parse(&b.rule)
+            .unwrap_or_else(|| panic!("{what}: basis rule {:?}", b.rule)),
+        contributor_adjusted_basis: amount(&b.contributor_adjusted_basis),
+        fmv_at_contribution: amount(&b.fmv_at_contribution),
+        sec704c_method: b.sec704c_method.as_deref().map(|m| {
+            ledger_core::Sec704cMethod::parse(m)
+                .unwrap_or_else(|| panic!("{what}: §704(c) method {m:?}"))
+        }),
+        source: None,
+    }
+}
+
 /// A schedule as the books register it.
 fn new_schedule(l: &Ledger, s: &ScheduleSpec, currency: Currency, what: &str) -> NewSchedule {
     let account = |code: &str| {
@@ -892,7 +959,7 @@ impl<'a> Books<'a> {
         for fa in &s.fixed_assets {
             let new = NewAsset {
                 description: format!("Fixed asset on {}", fa.cost_account),
-                purchase_date: first,
+                in_service_date: first,
                 cost: Money::new(Decimal::ONE, currency),
                 salvage_value: Money::new(Decimal::ZERO, currency),
                 useful_life_months: 12,
@@ -911,7 +978,7 @@ impl<'a> Books<'a> {
             assert_eq!(a.method, "straight_line", "{what}: method");
             let new = NewAsset {
                 description: a.description.clone(),
-                purchase_date: date(&a.in_service, &what),
+                in_service_date: date(&a.in_service, &what),
                 cost: Money::new(exact(&a.cost, &what), currency),
                 salvage_value: Money::new(exact(&a.salvage, &what), currency),
                 useful_life_months: a.life_months,
@@ -923,6 +990,15 @@ impl<'a> Books<'a> {
             assert!(
                 assets.insert(a.id.clone(), asset).is_none(),
                 "{what}: id used twice"
+            );
+            if let Some(b) = &a.basis {
+                took(store.set_asset_basis(asset, basis(b, &what)), &what);
+            }
+            assert!(
+                a.acquired_by.is_none_or(|n| n >= 1 && n <= ex.events.len()),
+                "{what}: acquired_by = {:?}: events count from 1, to {}",
+                a.acquired_by,
+                ex.events.len()
             );
         }
         let mut schedules = BTreeMap::new();
@@ -1190,6 +1266,17 @@ impl<'a> Books<'a> {
             assert_eq!(posted.len(), 1, "{what}: {kind} posts one entry");
         }
         self.posted.push(posted);
+        // The assets this event's entry put on the books.
+        for a in spec
+            .setup
+            .assets
+            .iter()
+            .filter(|a| a.acquired_by == Some(n))
+        {
+            let entry = self.entry_of(n, &format!("{what}: asset {}'s acquired_by", a.id));
+            let asset = self.asset(&a.id, &what);
+            took(self.store.set_asset_acquisition(asset, entry), &what);
+        }
         if !e.parties.is_empty() {
             let entry = self.entry_of(n, &what);
             let shares: Vec<PartyShare> = e
@@ -1391,12 +1478,30 @@ impl Books<'_> {
         let ex = &self.ex.id;
         let after = c.after;
         let what = format!("{ex} change after {after}");
-        match (&c.rename, &c.require_tax_category) {
-            (Some(r), None) => {
+        match (&c.rename, &c.require_tax_category, &c.correct_asset) {
+            (Some(r), None, None) => {
                 let account = self.id(&r.code);
                 took(self.store.rename_account(account, &r.name, None), &what);
             }
-            (None, Some(policy)) => {
+            (None, None, Some(f)) => {
+                let id = self.asset(&f.asset, &what);
+                let a = self.l().get_asset(id).expect("registered").clone();
+                let amount = |s: &Option<String>, was: Money| {
+                    s.as_deref()
+                        .map_or(was, |v| Money::new(exact(v, &what), self.currency))
+                };
+                let fix = ledger_core::AssetCorrection {
+                    cost: amount(&f.cost, a.cost),
+                    salvage_value: amount(&f.salvage, a.salvage_value),
+                    useful_life_months: f.life_months.unwrap_or(a.useful_life_months),
+                    in_service_date: f
+                        .in_service
+                        .as_deref()
+                        .map_or(a.in_service_date, |d| date(d, &what)),
+                };
+                took(self.store.correct_asset(id, fix, &f.reason), &what);
+            }
+            (None, Some(policy), None) => {
                 assert!(
                     matches!(policy.as_str(), "warn" | "refuse"),
                     "{what}: require_tax_category {policy:?}"
@@ -1411,7 +1516,7 @@ impl Books<'_> {
                     &what,
                 );
             }
-            _ => panic!("{what}: a change is one of rename or require_tax_category"),
+            _ => panic!("{what}: a change is one of rename, require_tax_category or correct_asset"),
         }
     }
 }
@@ -2201,8 +2306,8 @@ fn check_depreciation_schedule(b: &Books<'_>, x: &Expect) {
     for (key, want) in x.figures(&ex.id) {
         let want = exact(want, &format!("{what}: {key}"));
         let got = match key.as_str() {
-            "accumulated" => ledger_core::accumulated_depreciation(asset, as_of),
-            "book_value" => ledger_core::book_value(asset, as_of),
+            "accumulated" => ledger_core::accumulated_scheduled_through(asset, as_of),
+            "book_value" => ledger_core::scheduled_book_value(asset, as_of),
             month => {
                 month_key(month, &what);
                 Ok(lines
@@ -2253,6 +2358,254 @@ fn check_schedule_plan(b: &Books<'_>, x: &Expect) {
         };
         assert_eq!(got, want, "{what}: {key}");
     }
+}
+
+/// Check expectations whose values are named figures: each key one of
+/// `figures`' (an unknown one refused), its value the figure's text.
+fn named<K: Borrow<str> + Ord>(
+    ex: &Example,
+    x: &Expect,
+    what: &str,
+    figures: &BTreeMap<K, String>,
+) {
+    for (key, want) in x.figures(&ex.id) {
+        let got = figures
+            .get(key.as_str())
+            .unwrap_or_else(|| panic!("{what}: no figure {key:?}"));
+        assert_eq!(got, want, "{what}: {key}");
+    }
+}
+
+/// A decimal figure as an example writes it: two places at least, as the
+/// books keep money (exact; "0.00", "-14.20").
+fn figure(d: Decimal) -> String {
+    let mut d = d.normalize();
+    if d.scale() < 2 {
+        d.rescale(2);
+    }
+    d.to_string()
+}
+
+/// Check one `register_row` expectation: the asset's row of the fixed
+/// asset register as of `as_of` (rules.md B-15 rules 7 and 8, B-24):
+/// `acquired` and `in_service` (`YYYY-MM-DD`), `cost`,
+/// `accumulated_scheduled` (the schedule's), `accumulated_posted` (what
+/// the books carry), `unposted` (the one less the other), `book_value`
+/// (cost less posted); each 0.00 once disposed; the example names the
+/// figures it shows. An asset not on the register by `as_of` (acquired
+/// later) is refused.
+fn check_register_row(b: &Books<'_>, x: &Expect) {
+    let ex = b.ex;
+    let as_of = x.day(ex);
+    let name = x
+        .asset
+        .as_deref()
+        .unwrap_or_else(|| panic!("{}: register_row names its asset", ex.id));
+    let what = format!("{} register_row of {name} as of {as_of}", ex.id);
+    let id = b.asset(name, &what);
+    let r =
+        ledger_core::fixed_asset_register(b.l(), as_of).unwrap_or_else(|e| panic!("{what}: {e}"));
+    let row = r
+        .rows
+        .iter()
+        .find(|row| row.asset_id == id)
+        .unwrap_or_else(|| panic!("{what}: not on the register (acquired later)"));
+    let figures = BTreeMap::from([
+        ("acquired", row.acquired_date.to_string()),
+        ("in_service", row.in_service_date.to_string()),
+        ("cost", figure(row.cost)),
+        ("accumulated_scheduled", figure(row.accumulated_scheduled)),
+        ("accumulated_posted", figure(row.accumulated_posted)),
+        (
+            "unposted",
+            figure(row.accumulated_scheduled - row.accumulated_posted),
+        ),
+        ("book_value", figure(row.book_value)),
+    ]);
+    named(ex, x, &what, &figures);
+}
+
+/// Check one `register_totals` expectation: the fixed asset register's
+/// totals as of `as_of`, over the assets held (rules.md B-24, B-25):
+/// `total_cost`, `total_accumulated_scheduled`, `total_accumulated_posted`,
+/// `total_book_value`, `total_depreciable_basis`, `total_tax_basis_723`,
+/// `missing_basis` (how many held have none), and how it reconciles to
+/// the books: `unregistered_cost`, `unposted_depreciation`,
+/// `unattributed_accumulated`; the example names the figures it shows.
+fn check_register_totals(b: &Books<'_>, x: &Expect) {
+    let ex = b.ex;
+    let as_of = x.day(ex);
+    let what = format!("{} register_totals as of {as_of}", ex.id);
+    let r =
+        ledger_core::fixed_asset_register(b.l(), as_of).unwrap_or_else(|e| panic!("{what}: {e}"));
+    let figures = BTreeMap::from([
+        ("total_cost", figure(r.total_cost)),
+        (
+            "total_accumulated_scheduled",
+            figure(r.total_accumulated_scheduled),
+        ),
+        (
+            "total_accumulated_posted",
+            figure(r.total_accumulated_posted),
+        ),
+        ("total_book_value", figure(r.total_book_value)),
+        ("total_depreciable_basis", figure(r.total_depreciable_basis)),
+        ("total_tax_basis_723", figure(r.total_tax_basis_723)),
+        ("missing_basis", r.missing_basis.to_string()),
+        ("unregistered_cost", figure(r.unregistered_cost())),
+        ("unposted_depreciation", figure(r.unposted_depreciation())),
+        (
+            "unattributed_accumulated",
+            figure(r.unattributed_accumulated()),
+        ),
+    ]);
+    named(ex, x, &what, &figures);
+}
+
+/// Check one `asset_basis` expectation: the asset's basis facts and the
+/// tax figures they give (rules.md B-25): `rule`,
+/// `contributor_adjusted_basis`, `fmv_at_contribution`, `tax_basis_723`,
+/// `depreciable_basis`, `built_in_gain_704c` (a loss negative), each
+/// `"none"` where the asset has none (a purchase's §723 basis), and
+/// `sec704c_1c` (`"true"`: a built-in loss, which counts only for the
+/// contributing member, IRC §704(c)(1)(C)); the example names the figures
+/// it shows.
+fn check_asset_basis(b: &Books<'_>, x: &Expect) {
+    let ex = b.ex;
+    undated(ex, x);
+    let name = x
+        .asset
+        .as_deref()
+        .unwrap_or_else(|| panic!("{}: asset_basis names its asset", ex.id));
+    let what = format!("{} asset_basis of {name}", ex.id);
+    let a = b
+        .l()
+        .get_asset(b.asset(name, &what))
+        .expect("a registered asset");
+    let f = a
+        .basis_figures()
+        .unwrap_or_else(|e| panic!("{what}: {e}"))
+        .unwrap_or_else(|| panic!("{what}: no basis recorded"));
+    let opt = |d: Option<Decimal>| d.map_or("none".to_string(), figure);
+    let rule = a.basis.as_ref().expect("a basis recorded").rule;
+    let figures = BTreeMap::from([
+        ("rule", rule.key().to_string()),
+        (
+            "contributor_adjusted_basis",
+            opt(a.basis.as_ref().and_then(|b| b.contributor_adjusted_basis)),
+        ),
+        ("fmv_at_contribution", opt(a.fmv_at_contribution())),
+        ("tax_basis_723", opt(f.tax_basis_723)),
+        ("depreciable_basis", figure(f.depreciable_basis)),
+        ("built_in_gain_704c", opt(f.built_in_gain_704c)),
+        ("sec704c_1c", a.sec704c_1c().to_string()),
+    ]);
+    named(ex, x, &what, &figures);
+}
+
+/// The tax-basis capital worksheet for `[from, to]` (rules.md B-36), a
+/// row a member, as `k1` reads the book one: it needs the members and
+/// their shares, and `cash_accounts`.
+fn tax_capital_rows(b: &Books<'_>, x: &Expect, what: &str) -> Vec<TaxCapitalRow> {
+    let ex = b.ex;
+    let (from, to) = x.period(ex);
+    assert!(
+        !b.members.is_empty() && b.members.iter().all(|m| m.share > Decimal::ZERO),
+        "{what}: needs the members and their shares"
+    );
+    assert!(
+        !ex.setup.cash_accounts.is_empty(),
+        "{what}: the K-1 worksheet needs cash_accounts"
+    );
+    let cash = codes(b.l(), &ex.setup.cash_accounts, &ex.id);
+    ledger_core::tax_capital::tax_basis_capital(b.l(), from, to, &b.members, &cash)
+        .unwrap_or_else(|e| panic!("{what}: {e}"))
+        .rows
+}
+
+/// Check one `k1_tax_basis` expectation: each member's capital account
+/// for `[from, to]` on the tax basis, as Schedule K-1 Item L reports it
+/// (rules.md B-36), `"<member>.<line>"` for the lines `beginning`,
+/// `contributions_cash`, `contributions_property`, `net_income`, `other`,
+/// `distributions` and `ending`, beside `k1`'s book figures; a line the
+/// books can't know is `"open"`, with what they know so far as
+/// `"<member>.known_<line>"`. The example names the figures it shows.
+fn check_k1_tax_basis(b: &Books<'_>, x: &Expect) {
+    let ex = b.ex;
+    let what = format!("{} k1_tax_basis", ex.id);
+    let mut figures = BTreeMap::new();
+    for row in tax_capital_rows(b, x, &what) {
+        let m = &row.book.name;
+        figures.insert(
+            format!("{m}.contributions_cash"),
+            figure(row.contributions_cash),
+        );
+        for (line, tax) in [
+            ("beginning", &row.beginning),
+            ("contributions_property", &row.contributions_property),
+            ("net_income", &row.net_income),
+            ("other", &row.other),
+            ("distributions", &row.distributions),
+            ("ending", &row.ending),
+        ] {
+            figures.insert(
+                format!("{m}.{line}"),
+                tax.tax().map_or("open".to_string(), figure),
+            );
+            figures.insert(format!("{m}.known_{line}"), figure(tax.known));
+        }
+    }
+    named(ex, x, &what, &figures);
+}
+
+/// The causes `k1_reconciliation` reports, each member's every one.
+const RECONCILING_CAUSES: [&str; 5] = [
+    "beginning",
+    "built_in_gain_704c",
+    "property_without_basis",
+    "property_distributed",
+    "total",
+];
+
+/// Check one `k1_reconciliation` expectation: each member's book capital
+/// less tax-basis capital at the end of `[from, to]`, by cause (rules.md
+/// B-36), `"<member>.<cause>"` for `beginning`, `built_in_gain_704c`
+/// (their share of the §704(c) gain or loss at contribution),
+/// `property_without_basis`, `property_distributed` and `total`: the
+/// example names the members it shows, each with every cause.
+fn check_k1_reconciliation(b: &Books<'_>, x: &Expect) {
+    let ex = b.ex;
+    let what = format!("{} k1_reconciliation", ex.id);
+    let mut figures = BTreeMap::new();
+    for row in tax_capital_rows(b, x, &what) {
+        let r = &row.reconciliation;
+        let total = r
+            .total()
+            .unwrap_or_else(|| panic!("{what}: the total is too large"));
+        for (cause, v) in RECONCILING_CAUSES.into_iter().zip([
+            r.beginning,
+            r.built_in_gain_704c,
+            r.property_without_basis,
+            r.property_distributed,
+            total,
+        ]) {
+            figures.insert(format!("{}.{cause}", row.book.name), figure(v));
+        }
+    }
+    let named_members: BTreeSet<&str> = x
+        .figures(&ex.id)
+        .keys()
+        .map(|k| k.split_once('.').map_or(k.as_str(), |(m, _)| m))
+        .collect();
+    for m in named_members {
+        for cause in RECONCILING_CAUSES {
+            assert!(
+                x.figures(&ex.id).contains_key(&format!("{m}.{cause}")),
+                "{what}: {m} is shown with every cause: {m}.{cause} is missing"
+            );
+        }
+    }
+    named(ex, x, &what, &figures);
 }
 
 /// The commands an example may try: each on a copy of the books, so it
@@ -2474,7 +2827,12 @@ fn check(b: &Books<'_>, x: &Expect) -> Option<&'static str> {
     only(
         x.asset.is_some(),
         "asset",
-        &["disposal", "depreciation_schedule"],
+        &[
+            "disposal",
+            "depreciation_schedule",
+            "register_row",
+            "asset_basis",
+        ],
     );
     only(x.schedule.is_some(), "schedule", &["schedule_plan"]);
     only(
@@ -2535,6 +2893,11 @@ fn check(b: &Books<'_>, x: &Expect) -> Option<&'static str> {
         "disposal" => check_disposal(b, x),
         "depreciation_schedule" => check_depreciation_schedule(b, x),
         "schedule_plan" => check_schedule_plan(b, x),
+        "register_row" => check_register_row(b, x),
+        "register_totals" => check_register_totals(b, x),
+        "asset_basis" => check_asset_basis(b, x),
+        "k1_tax_basis" => check_k1_tax_basis(b, x),
+        "k1_reconciliation" => check_k1_reconciliation(b, x),
         "balances" => check_balances(ex, l, x),
         "members_equity" => check_members_equity(ex, l, &b.members, x),
         "k1" => check_k1(ex, l, &b.members, x),
@@ -2632,7 +2995,8 @@ fn every_bookspec_example_holds() {
     // Each query the examples use ran: the cash flow's six examples at
     // least, the as-of and 1099 examples', the members closes', the
     // formats appendix's, and P3's default period, rename, tax category,
-    // parties, 1099, depreciation and schedules examples'.
+    // parties, 1099, depreciation, schedules, asset basis and K-1 tax-basis
+    // examples'.
     for (q, at_least) in [
         ("cash_flow", 6),
         ("trial_balance", 2),
@@ -2642,7 +3006,7 @@ fn every_bookspec_example_holds() {
         ("entry", 8),
         ("balances", 4),
         ("members_equity", 10),
-        ("k1", 2),
+        ("k1", 3),
         ("party_part", 28),
         ("party_totals", 23),
         ("party_tin_last4", 5),
@@ -2660,6 +3024,11 @@ fn every_bookspec_example_holds() {
         ("disposal", 5),
         ("depreciation_schedule", 5),
         ("schedule_plan", 3),
+        ("register_row", 5),
+        ("register_totals", 1),
+        ("asset_basis", 6),
+        ("k1_tax_basis", 2),
+        ("k1_reconciliation", 1),
     ] {
         let n = checked.get(q).copied().unwrap_or(0);
         assert!(n >= at_least, "{q} ran {n} times, fewer than {at_least}");
@@ -3145,5 +3514,54 @@ fn a_schedule_month_off_by_a_cent_fails() {
             "\"2026-02-28\" = \"333.33\"",
             1,
         )
+    });
+}
+
+/// An asset is on the register from its acquired date: a row asked for
+/// before it is refused, never shown with figures.
+#[test]
+#[should_panic(expected = "not on the register (acquired later)")]
+fn a_register_row_before_the_asset_was_acquired_is_refused() {
+    run_edited("assets-acquired-before-in-service.toml", |t| {
+        t.replacen("as_of = \"2026-03-31\"", "as_of = \"2026-03-09\"", 1)
+    });
+}
+
+/// `acquired_by` names an event whose entry put the asset on the books:
+/// an event that posts no entry can't.
+#[test]
+#[should_panic(expected = "event 2 posted 0 entries")]
+fn an_asset_acquired_by_an_event_with_no_entry_is_refused() {
+    run_edited("assets-a-reversed-run-is-not-posted.toml", |t| {
+        t.replacen("acquired_by = 1", "acquired_by = 2", 1)
+            .replacen(
+                "[[events]]\nrun_depreciation = { asset = \"printer\", period = \"2026-01\" }",
+                "[[events]]\nrun_depreciation = { asset = \"printer\", period = \"2025-12\" }\nrefused = \"invalid_depreciation_period\"",
+                1,
+            )
+    });
+}
+
+/// A tax line the books can't know is "open", never a figure: an example
+/// giving the book figure for it fails.
+#[test]
+#[should_panic(expected = "k1_tax_basis: Tobin Harlow.net_income")]
+fn a_tax_line_the_books_cant_know_is_open() {
+    run_edited("partnership-k1-tax-basis-capital.toml", |t| {
+        t.replacen(
+            "\"Tobin Harlow.net_income\" = \"open\"",
+            "\"Tobin Harlow.net_income\" = \"-385.00\"",
+            1,
+        )
+    });
+}
+
+/// A member's reconciliation is shown whole: an example leaving out a
+/// cause fails, so a figure can't quietly go unchecked.
+#[test]
+#[should_panic(expected = "Tobin Harlow.property_distributed is missing")]
+fn a_members_reconciliation_shows_every_cause() {
+    run_edited("partnership-k1-tax-basis-capital.toml", |t| {
+        t.replacen(", \"Tobin Harlow.property_distributed\" = \"0.00\"", "", 1)
     });
 }

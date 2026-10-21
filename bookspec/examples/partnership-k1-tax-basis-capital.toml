@@ -1,0 +1,172 @@
+# P3 (D-41): the K-1 worksheet reports tax-basis capital beside book capital.
+id = "partnership-k1-tax-basis-capital"
+title = "Schedule K-1 Item L on the tax basis: property contributed at its adjusted basis"
+rule = "Each partner's capital account is reported on the tax basis: capital contributed is cash plus the adjusted tax basis of property contributed; the share of income is as figured for tax; distributions are cash plus the adjusted tax basis of property distributed. Book capital (property at fair market value) differs by the partner's share of the built-in gain or loss at contribution, and by every book-tax difference after; a figure the books cannot know (tax depreciation) is left to the preparer, never guessed."
+status = "AUTHORITY"
+sources = [
+  "Instructions for Form 1065 (2025), Item L, Tax-basis method: Capital contributed during the year; Current year net income (loss); Withdrawals and distributions",
+  "Instructions for Form 1065 (2020), Item L: 'you must use the tax basis method this year'",
+  "26 U.S.C. §723",
+  "Treas. Reg. §1.704-3(a)(3)(ii)",
+]
+tags = ["partnerships", "k1", "tax-basis", "capital"]
+
+[setup]
+currency = "USD"
+fiscal_year_start = "01-01"
+basis = "accrual"
+rounding = "largest-remainder"
+cash_accounts = ["1000"]
+
+[[setup.accounts]]
+code = "1000"
+name = "Bank"
+type = "asset"
+
+[[setup.accounts]]
+code = "1500"
+name = "Equipment"
+type = "asset"
+
+[[setup.accounts]]
+code = "1510"
+name = "Accumulated Depreciation"
+type = "asset"
+
+[[setup.accounts]]
+code = "3000"
+name = "Capital, Tobin Harlow"
+type = "equity"
+
+[[setup.accounts]]
+code = "3001"
+name = "Capital, Morgan Ellis"
+type = "equity"
+
+[[setup.accounts]]
+code = "4000"
+name = "Sales"
+type = "revenue"
+
+[[setup.accounts]]
+code = "6200"
+name = "Depreciation Expense"
+type = "expense"
+
+[[setup.members]]
+name = "Tobin Harlow"
+capital_account = "3000"
+share = "0.5"
+
+[[setup.members]]
+name = "Morgan Ellis"
+capital_account = "3001"
+share = "0.5"
+
+# Two devices the members contribute jointly from personal use, 24-month
+# lives: a laptop worth 1,440.00 (adjusted basis 1,688.40) and a camera
+# worth 1,300.00 (adjusted basis 1,080.00).
+[[setup.assets]]
+id = "laptop"
+description = "Laptop"
+cost = "1440.00"
+salvage = "0.00"
+life_months = 24
+in_service = "2026-01-01"
+method = "straight_line"
+cost_account = "1500"
+accumulated_account = "1510"
+expense_account = "6200"
+acquired_by = 2
+basis = { rule = "personal_use_conversion", contributor_adjusted_basis = "1688.40", fmv_at_contribution = "1440.00", sec704c_method = "traditional" }
+
+[[setup.assets]]
+id = "camera"
+description = "Camera"
+cost = "1300.00"
+salvage = "0.00"
+life_months = 24
+in_service = "2026-01-01"
+method = "straight_line"
+cost_account = "1500"
+accumulated_account = "1510"
+expense_account = "6200"
+acquired_by = 2
+basis = { rule = "personal_use_conversion", contributor_adjusted_basis = "1080.00", fmv_at_contribution = "1300.00", sec704c_method = "traditional" }
+
+[[events]]
+date = "2026-01-01"
+description = "Cash contributed"
+lines = [
+  { account = "1000", side = "debit", amount = "2000.00" },
+  { account = "3000", side = "credit", amount = "1000.00" },
+  { account = "3001", side = "credit", amount = "1000.00" },
+]
+
+[[events]]
+date = "2026-01-01"
+description = "Devices contributed jointly, at their values"
+lines = [
+  { account = "1500", side = "debit", amount = "1440.00" },
+  { account = "1500", side = "debit", amount = "1300.00" },
+  { account = "3000", side = "credit", amount = "1370.00" },
+  { account = "3001", side = "credit", amount = "1370.00" },
+]
+
+[[events]]
+date = "2026-02-01"
+description = "Sale"
+lines = [
+  { account = "1000", side = "debit", amount = "600.00" },
+  { account = "4000", side = "credit", amount = "600.00" },
+]
+
+# December's runs catch the year up (rules.md B-15): 1,440.00 x 12/24 =
+# 720.00 and 1,300.00 x 12/24 = 650.00, dated Dec 31.
+[[events]]
+run_depreciation = { asset = "laptop", period = "2026-12" }
+
+[[events]]
+run_depreciation = { asset = "camera", period = "2026-12" }
+
+[[events]]
+date = "2026-12-15"
+description = "Distributions"
+lines = [
+  { account = "3000", side = "debit", amount = "300.00" },
+  { account = "3001", side = "debit", amount = "300.00" },
+  { account = "1000", side = "credit", amount = "600.00" },
+]
+
+# Hand check, book, each: 1,000.00 cash + 1,370.00 property + (600.00 -
+# 720.00 - 650.00) / 2 = -385.00 - 300.00 = 1,685.00.
+[[expect]]
+query = "k1"
+from = "2026-01-01"
+to = "2026-12-31"
+values = { "Tobin Harlow.beginning" = "0.00", "Tobin Harlow.contributions_cash" = "1000.00", "Tobin Harlow.contributions_property" = "1370.00", "Tobin Harlow.net_income" = "-385.00", "Tobin Harlow.distributions" = "300.00", "Tobin Harlow.ending" = "1685.00" }
+
+# Tax, each: property at its §723 basis, (1,688.40 + 1,080.00) / 2 =
+# 1,384.20; income open (tax depreciation is the preparer's), known so far
+# -385.00; ending known so far 1,000.00 + 1,384.20 - 385.00 - 300.00 =
+# 1,699.20.
+[[expect]]
+query = "k1_tax_basis"
+from = "2026-01-01"
+to = "2026-12-31"
+values = { "Tobin Harlow.beginning" = "0.00", "Tobin Harlow.contributions_cash" = "1000.00", "Tobin Harlow.contributions_property" = "1384.20", "Tobin Harlow.net_income" = "open", "Tobin Harlow.known_net_income" = "-385.00", "Tobin Harlow.distributions" = "300.00", "Tobin Harlow.ending" = "open", "Tobin Harlow.known_ending" = "1699.20" }
+
+# Book less tax: the built-in gain share, ((1,440.00 - 1,688.40) +
+# (1,300.00 - 1,080.00)) / 2 = (-248.40 + 220.00) / 2 = -14.20 =
+# 1,685.00 - 1,699.20.
+[[expect]]
+query = "k1_reconciliation"
+from = "2026-01-01"
+to = "2026-12-31"
+values = { "Tobin Harlow.beginning" = "0.00", "Tobin Harlow.built_in_gain_704c" = "-14.20", "Tobin Harlow.property_without_basis" = "0.00", "Tobin Harlow.property_distributed" = "0.00", "Tobin Harlow.total" = "-14.20" }
+
+[[expect]]
+query = "k1_tax_basis"
+from = "2026-01-01"
+to = "2026-12-31"
+values = { "Morgan Ellis.contributions_property" = "1384.20", "Morgan Ellis.known_ending" = "1699.20" }

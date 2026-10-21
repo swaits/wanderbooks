@@ -1,0 +1,86 @@
+# P3 defect 13, named regression 1 (list_assets_book_value_is_what_the_books_carry).
+id = "assets-book-value-is-what-the-books-carry"
+title = "Book value is cost less the depreciation posted, never the schedule's"
+rule = "An asset's carrying amount is its cost less the accumulated depreciation the books have recorded for it; what the depreciation schedule says is due through a date is a second figure, reported beside it, and their difference is depreciation not yet posted."
+status = "AUTHORITY"
+sources = [
+  "ASC 360-10-35-4 (cost less salvage allocated over the periods the asset serves)",
+  "wanderbooks docs/spec/rules.md B-24 (the register reconciles to the general ledger)",
+]
+tags = ["fixed-assets", "depreciation", "posted-vs-scheduled"]
+
+[setup]
+currency = "USD"
+fiscal_year_start = "01-01"
+basis = "accrual"
+rounding = "half-away-from-zero"
+
+[[setup.accounts]]
+code = "1500"
+name = "Equipment"
+type = "asset"
+
+[[setup.accounts]]
+code = "1510"
+name = "Accumulated Depreciation"
+type = "asset"
+
+[[setup.accounts]]
+code = "3000"
+name = "Capital"
+type = "equity"
+
+[[setup.accounts]]
+code = "6200"
+name = "Depreciation Expense"
+type = "expense"
+
+# A laptop contributed 2026-05-15 at 1,440.00, in service that day, 36
+# months, no salvage: 40.00 a month.
+[[setup.assets]]
+id = "laptop"
+description = "Laptop"
+cost = "1440.00"
+salvage = "0.00"
+life_months = 36
+in_service = "2026-05-15"
+method = "straight_line"
+cost_account = "1500"
+accumulated_account = "1510"
+expense_account = "6200"
+acquired_by = 1
+
+[[events]]
+date = "2026-05-15"
+description = "Laptop contributed"
+lines = [
+  { account = "1500", side = "debit", amount = "1440.00" },
+  { account = "3000", side = "credit", amount = "1440.00" },
+]
+
+# May's run, dated the month's last day: 40.00 x 17/31 = 21.9355 -> 21.94.
+[[events]]
+run_depreciation = { asset = "laptop", period = "2026-05" }
+
+[[expect]]
+query = "run"
+event = 2
+
+[expect.values]
+amount = "21.94"
+caught_up = "0.00"
+
+# Hand check: through May 20, 6 days of May, 40.00 x 6/31 = 7.7419 ->
+# 7.74 is due; the run is dated May 31, so nothing is posted yet, and the
+# book value is the cost (before P3 the tool called 1,432.26 book value).
+[[expect]]
+query = "register_row"
+asset = "laptop"
+as_of = "2026-05-20"
+values = { accumulated_posted = "0.00", accumulated_scheduled = "7.74", unposted = "7.74", book_value = "1440.00" }
+
+[[expect]]
+query = "register_row"
+asset = "laptop"
+as_of = "2026-05-31"
+values = { accumulated_posted = "21.94", accumulated_scheduled = "21.94", unposted = "0.00", book_value = "1418.06" }

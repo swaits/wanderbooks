@@ -14,8 +14,8 @@ use ledger_core::payroll::{
 };
 use ledger_core::{
     AccountId, AccountType, Asset, AssetId, AssetStatus, Currency, DepreciationMethod, EntryId,
-    Ledger, LedgerError, Money, NewAsset, PayrollLine, Side, accumulated_depreciation, book_value,
-    depreciation_schedule, disposal_amounts,
+    Ledger, LedgerError, Money, NewAsset, PayrollLine, Side, accumulated_scheduled_through,
+    depreciation_schedule, disposal_amounts, scheduled_book_value,
 };
 use proptest::prelude::*;
 use rust_decimal::Decimal;
@@ -49,7 +49,7 @@ fn asset(cost: &str, salvage: &str, life: u32, purchase: NaiveDate) -> Asset {
     Asset {
         id: 1,
         description: "Test asset".to_string(),
-        purchase_date: purchase,
+        in_service_date: purchase,
         cost: usd(cost),
         salvage_value: usd(salvage),
         useful_life_months: life,
@@ -61,7 +61,7 @@ fn asset(cost: &str, salvage: &str, life: u32, purchase: NaiveDate) -> Asset {
         tag: None,
         serial: None,
         acquired_by: None,
-        tax: None,
+        basis: None,
     }
 }
 
@@ -130,7 +130,7 @@ fn fixture() -> (Ledger, Accts) {
 fn new_asset(a: &Accts) -> NewAsset {
     NewAsset {
         description: "Laptop".to_string(),
-        purchase_date: date(2026, 1, 1),
+        in_service_date: date(2026, 1, 1),
         cost: usd("12000.00"),
         salvage_value: usd("0.00"),
         useful_life_months: 12,
@@ -377,9 +377,12 @@ fn salvage_value_is_never_depreciated_b15() {
     let amounts: Vec<Decimal> = s.iter().map(|l| l.amount).collect();
     assert_eq!(amounts, vec![d("1000.00"); 4]);
     assert_eq!(s.last().unwrap().book_value, d("1000.00"));
-    assert_eq!(book_value(&a, date(2040, 1, 31)).unwrap(), d("1000.00"));
     assert_eq!(
-        accumulated_depreciation(&a, date(2040, 1, 31)).unwrap(),
+        scheduled_book_value(&a, date(2040, 1, 31)).unwrap(),
+        d("1000.00")
+    );
+    assert_eq!(
+        accumulated_scheduled_through(&a, date(2040, 1, 31)).unwrap(),
         d("4000.00")
     );
 }
@@ -418,10 +421,13 @@ fn nothing_depreciates_before_purchase() {
             .is_empty()
     );
     assert_eq!(
-        accumulated_depreciation(&a, date(2025, 12, 31)).unwrap(),
+        accumulated_scheduled_through(&a, date(2025, 12, 31)).unwrap(),
         d("0")
     );
-    assert_eq!(book_value(&a, date(2025, 12, 31)).unwrap(), d("12000.00"));
+    assert_eq!(
+        scheduled_book_value(&a, date(2025, 12, 31)).unwrap(),
+        d("12000.00")
+    );
 }
 
 /// Oracle: interface docs "accumulated through as_of" and "book value =
@@ -430,10 +436,13 @@ fn nothing_depreciates_before_purchase() {
 fn accumulated_and_book_value_mid_life() {
     let a = asset("12000.00", "0.00", 12, date(2026, 1, 1));
     assert_eq!(
-        accumulated_depreciation(&a, date(2026, 6, 30)).unwrap(),
+        accumulated_scheduled_through(&a, date(2026, 6, 30)).unwrap(),
         d("6000.00")
     );
-    assert_eq!(book_value(&a, date(2026, 6, 30)).unwrap(), d("6000.00"));
+    assert_eq!(
+        scheduled_book_value(&a, date(2026, 6, 30)).unwrap(),
+        d("6000.00")
+    );
 }
 
 // ------------------------------- defect 22: the final month, disposals
@@ -454,7 +463,10 @@ fn defect22_depreciation_through_mid_final_month_is_prorated_not_plugged() {
     assert_eq!(dec.amount, d("483.87"));
     assert_eq!(dec.accumulated, d("11483.87"));
     assert_eq!(dec.book_value, d("516.13"));
-    assert_eq!(book_value(&a, date(2026, 12, 15)).unwrap(), d("516.13"));
+    assert_eq!(
+        scheduled_book_value(&a, date(2026, 12, 15)).unwrap(),
+        d("516.13")
+    );
     // Through its last day, the whole of it.
     let s = depreciation_schedule(&a, date(2026, 12, 31)).unwrap();
     assert_eq!(
@@ -531,12 +543,12 @@ fn defect22_a_disposed_assets_schedule_stops_at_its_disposal_day() {
     );
     assert_eq!(jun.accumulated, before.accumulated);
     assert_eq!(
-        accumulated_depreciation(a, NaiveDate::MAX).unwrap(),
+        accumulated_scheduled_through(a, NaiveDate::MAX).unwrap(),
         d("5500.00")
     );
     // A through-date before the disposal is unchanged by it.
     assert_eq!(
-        accumulated_depreciation(a, date(2026, 5, 31)).unwrap(),
+        accumulated_scheduled_through(a, date(2026, 5, 31)).unwrap(),
         d("5000.00")
     );
 
@@ -680,12 +692,13 @@ fn disposal_refuses_negative_proceeds() {
 /// Oracle: LedgerError::DisposalBeforePurchase doc "disposal date must not
 /// precede the purchase date".
 #[test]
-fn disposal_refuses_date_before_purchase() {
+fn disposal_before_service_accrues_nothing() {
+    // The floor is the acquired date, the ledger's to check
+    // (Ledger::dispose_asset); the math alone has nothing accrued yet.
     let a = asset("12000.00", "0.00", 12, date(2026, 1, 1));
-    assert!(matches!(
-        disposal_amounts(&a, date(2025, 12, 31), usd("100.00")),
-        Err(LedgerError::DisposalBeforePurchase(_))
-    ));
+    let got = disposal_amounts(&a, date(2025, 12, 31), usd("100.00")).unwrap();
+    assert_eq!(got.accumulated, d("0"));
+    assert_eq!(got.gain_loss, d("-11900.00"));
 }
 
 // ------------------------------------------------- register / dispose
@@ -702,7 +715,7 @@ fn register_asset_records_inputs_under_next_id() {
     assert_eq!(id, expected_id);
     let got = l.get_asset(id).unwrap();
     assert_eq!(got.description, "Laptop");
-    assert_eq!(got.purchase_date, date(2026, 1, 1));
+    assert_eq!(got.in_service_date, date(2026, 1, 1));
     assert_eq!(got.cost, usd("12000.00"));
     assert_eq!(got.salvage_value, usd("0.00"));
     assert_eq!(got.useful_life_months, 12);
@@ -900,7 +913,7 @@ fn dispose_asset_refuses_bad_disposals_unchanged() {
     );
     assert!(matches!(
         l.dispose_asset(id, date(2025, 12, 1), usd("1.00")),
-        Err(LedgerError::DisposalBeforePurchase(_))
+        Err(LedgerError::DisposalBeforeAcquisition { .. })
     ));
     assert_eq!(snapshot(&l), before);
 }
@@ -1317,7 +1330,7 @@ proptest! {
         prop_assert_eq!(total, cost - salvage);
         let life = a.useful_life_months as usize;
         prop_assert!(s.len() == life || s.len() == life + 1, "len {} life {}", s.len(), life);
-        prop_assert_eq!(&s[0].period, &format!("{:04}-{:02}", a.purchase_date.year(), a.purchase_date.month()));
+        prop_assert_eq!(&s[0].period, &format!("{:04}-{:02}", a.in_service_date.year(), a.in_service_date.month()));
         let mut acc = Decimal::ZERO;
         let mut prev_bv = cost;
         for (i, l) in s.iter().enumerate() {
@@ -1336,7 +1349,7 @@ proptest! {
         prop_assert_eq!(s.last().unwrap().book_value, salvage);
     }
 
-    /// Oracle: accumulated_depreciation / book_value docs agree with the
+    /// Oracle: accumulated_scheduled_through / book_value docs agree with the
     /// schedule at each month end, a shorter schedule is a prefix of the full
     /// one, and nothing is depreciated before purchase.
     #[test]
@@ -1344,14 +1357,14 @@ proptest! {
         let full = depreciation_schedule(&a, date(2050, 12, 31)).unwrap();
         for (i, l) in full.iter().enumerate() {
             let end = period_end(&l.period);
-            prop_assert_eq!(accumulated_depreciation(&a, end).unwrap(), l.accumulated);
-            prop_assert_eq!(book_value(&a, end).unwrap(), l.book_value);
+            prop_assert_eq!(accumulated_scheduled_through(&a, end).unwrap(), l.accumulated);
+            prop_assert_eq!(scheduled_book_value(&a, end).unwrap(), l.book_value);
             let prefix = depreciation_schedule(&a, end).unwrap();
             prop_assert_eq!(&prefix[..], &full[..=i]);
         }
-        let before = a.purchase_date.pred_opt().unwrap();
-        prop_assert_eq!(accumulated_depreciation(&a, before).unwrap(), Decimal::ZERO);
-        prop_assert_eq!(book_value(&a, before).unwrap(), a.cost.amount);
+        let before = a.in_service_date.pred_opt().unwrap();
+        prop_assert_eq!(accumulated_scheduled_through(&a, before).unwrap(), Decimal::ZERO);
+        prop_assert_eq!(scheduled_book_value(&a, before).unwrap(), a.cost.amount);
     }
 
     /// Oracle: B-15 partial months by days + interface "the last month absorbs
@@ -1386,12 +1399,12 @@ proptest! {
         offset in 0u32..=200,
         proceeds in 0i64..=20_000_000,
     ) {
-        let when = month_end(a.purchase_date.checked_add_months(Months::new(offset)).unwrap());
+        let when = month_end(a.in_service_date.checked_add_months(Months::new(offset)).unwrap());
         let pr = Decimal::new(proceeds, 2);
         let got = disposal_amounts(&a, when, Money::new(pr, Currency::USD)).unwrap();
-        prop_assert_eq!(got.accumulated, accumulated_depreciation(&a, when).unwrap());
+        prop_assert_eq!(got.accumulated, accumulated_scheduled_through(&a, when).unwrap());
         prop_assert_eq!(got.book_value, a.cost.amount - got.accumulated);
-        prop_assert_eq!(got.book_value, book_value(&a, when).unwrap());
+        prop_assert_eq!(got.book_value, scheduled_book_value(&a, when).unwrap());
         prop_assert_eq!(got.gain_loss, pr - got.book_value);
         prop_assert!(got.book_value >= a.salvage_value.amount);
     }

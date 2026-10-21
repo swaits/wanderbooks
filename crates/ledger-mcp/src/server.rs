@@ -42,8 +42,7 @@ use chrono::NaiveDate;
 use ledger_config::Company;
 use ledger_core::{
     AccountId, AccountType, AssetStatus, Currency, DocumentLine, DocumentStatus, JournalEntry,
-    Ledger, Money, NewAsset, PeriodStatus, Side, accumulated_depreciation, book_value,
-    depreciation_schedule, reports,
+    Ledger, Money, NewAsset, PeriodStatus, Side, depreciation_schedule, reports,
 };
 use ledger_import::ReportMeta;
 use ledger_package::{csv_escape, form_1099_label, money, parse_date, tin_kind, vault_tin};
@@ -1438,26 +1437,143 @@ fn settings_problems(ledger: &Ledger, cfg: &Settings) -> Vec<String> {
     out
 }
 
-/// A tax basis record from a tool's rule name and contributor basis.
-fn parse_tax_basis(rule: &str, basis: Option<&str>) -> Result<ledger_core::TaxBasis, String> {
-    let rule = ledger_core::TaxBasisRule::parse(rule).ok_or_else(|| {
-        format!("tax basis rule {rule:?}: expected cost, carryover, or personal_use_conversion")
-    })?;
-    Ok(ledger_core::TaxBasis {
-        rule,
-        contributor_basis: basis.map(parse_amount).transpose()?,
-    })
+/// A parameter and its deprecated alias (one release): the value given,
+/// noting when it came by the alias; both given and different is refused.
+fn aliased<'a>(
+    name: &str,
+    value: Option<&'a str>,
+    alias: &str,
+    old: Option<&'a str>,
+    notes: &mut Vec<String>,
+) -> Result<Option<&'a str>, String> {
+    match (value, old) {
+        (Some(v), Some(o)) if v != o => Err(format!(
+            "{name} {v:?} and its old name {alias} {o:?} disagree: give {name} only"
+        )),
+        (Some(v), _) => Ok(Some(v)),
+        (None, Some(o)) => {
+            notes.push(format!("{alias} is now {name}"));
+            Ok(Some(o))
+        }
+        (None, None) => Ok(None),
+    }
 }
 
-/// An asset's tax basis for a tool's output.
-fn tax_out(a: &ledger_core::Asset) -> Option<TaxBasisOut> {
-    let t = a.tax?;
-    Some(TaxBasisOut {
-        rule: t.rule.key().to_string(),
-        contributor_basis: t.contributor_basis.map(money),
-        tax_basis: a.tax_basis().map(money),
-        built_in_gain: a.built_in_gain().map(money),
-    })
+/// A basis rule from a tool: its wire name, or its pre-P3 name (an alias
+/// for one release, noted).
+fn parse_basis_rule(rule: &str, notes: &mut Vec<String>) -> Result<ledger_core::BasisRule, String> {
+    if let Some(r) = ledger_core::BasisRule::parse(rule) {
+        return Ok(r);
+    }
+    match ledger_core::BasisRule::parse_legacy(rule) {
+        Some(r) => {
+            notes.push(format!("the rule {rule:?} is now {:?}", r.key()));
+            Ok(r)
+        }
+        None => Err(format!(
+            "basis rule {rule:?}: expected purchase, carryover_723, or personal_use_conversion"
+        )),
+    }
+}
+
+/// A basis record from a tool's facts, checked (AssetBasis::check). A
+/// contribution's value at contribution is required: it is a fact the
+/// human gives, never assumed from the cost.
+fn parse_asset_basis(
+    rule: &str,
+    adjusted: Option<&str>,
+    fmv: Option<&str>,
+    method: Option<&str>,
+    source: Option<&BasisSourceIn>,
+    notes: &mut Vec<String>,
+) -> Result<ledger_core::AssetBasis, String> {
+    let rule = parse_basis_rule(rule, notes)?;
+    if rule.is_contribution() && fmv.is_none() {
+        return Err(format!(
+            "a contribution ({}) needs fmv_at_contribution: its fair market value when contributed (ask the human; the books' amount in the contribution entry, if that is what it was worth)",
+            rule.key()
+        ));
+    }
+    let basis = ledger_core::AssetBasis {
+        rule,
+        contributor_adjusted_basis: adjusted.map(parse_amount).transpose()?,
+        fmv_at_contribution: fmv.map(parse_amount).transpose()?,
+        sec704c_method: method
+            .map(|m| {
+                ledger_core::Sec704cMethod::parse(m).ok_or_else(|| {
+                    format!(
+                        "sec704c_method {m:?}: expected traditional, traditional_with_curative, or remedial"
+                    )
+                })
+            })
+            .transpose()?,
+        source: source
+            .map(|s| -> Result<_, String> {
+                Ok(ledger_core::settings::Source {
+                    decided_by: s.decided_by.clone(),
+                    decided_on: match &s.decided_on {
+                        Some(d) => parse_date(d)?,
+                        None => today(),
+                    },
+                    citation: s.citation.clone(),
+                    note: s.note.clone(),
+                })
+            })
+            .transpose()?,
+    };
+    basis
+        .check()
+        .map_err(|why| format!("bad tax basis: {why}"))?;
+    Ok(basis)
+}
+
+/// An asset's basis facts and figures for a tool's output.
+fn basis_out(a: &ledger_core::Asset) -> Result<Option<AssetBasisOut>, String> {
+    let Some(b) = &a.basis else {
+        return Ok(None);
+    };
+    let Some(f) = a.basis_figures().map_err(|e| e.to_string())? else {
+        return Ok(None);
+    };
+    use ledger_core::BasisRule;
+    let loss = f
+        .built_in_gain_704c
+        .filter(|g| g.is_sign_negative() && !g.is_zero());
+    Ok(Some(AssetBasisOut {
+        rule: b.rule.key().to_string(),
+        contributor_adjusted_basis: b.contributor_adjusted_basis.map(money),
+        fmv_at_contribution: a.fmv_at_contribution().map(money),
+        fmv_recorded: a.fmv_is_recorded(),
+        tax_basis_723: f.tax_basis_723.map(money),
+        depreciable_basis: money(f.depreciable_basis),
+        built_in_gain_704c: f.built_in_gain_704c.map(money),
+        sec704c_1c_note: loss.map(|l| {
+            format!(
+                "a built-in loss of {}: it counts only for the contributing member(s); for the others the basis is treated as the value at contribution (IRC §704(c)(1)(C))",
+                money(-l)
+            )
+        }),
+        sec704c_method: b.sec704c_method.map(|m| m.key().to_string()),
+        source: b.source.as_ref().map(|s| BasisSourceOut {
+            decided_by: s.decided_by.clone(),
+            decided_on: s.decided_on.to_string(),
+            citation: s.citation.clone(),
+            note: s.note.clone(),
+        }),
+        sources: BasisSourcesOut {
+            tax_basis_723: b.rule.is_contribution().then(|| "IRC §723".to_string()),
+            depreciable_basis: match b.rule {
+                BasisRule::Purchase => "IRC §1012",
+                BasisRule::Carryover723 => "IRC §723",
+                BasisRule::PersonalUseConversion => "Treas. Reg. §1.168(i)-4(b)",
+            }
+            .to_string(),
+            built_in_gain_704c: b
+                .rule
+                .is_contribution()
+                .then(|| "Treas. Reg. §1.704-3(a)(3)(ii)".to_string()),
+        },
+    }))
 }
 
 /// An asset named by id or by tag (exactly one).
@@ -5493,7 +5609,7 @@ impl BooksServer {
     #[tool(
         name = "books.correct_asset",
         title = "Correct a fixed asset",
-        description = "Correct a registered fixed asset's cost, salvage value, useful life, or in-service date when it was registered wrong, with the reason; omitted fields keep their values. Refused once any depreciation for it is posted (correct with entries then). Its tag, serial, links, and tax basis record stay; correct the entry that put it on the books too, so the books and the register agree (books.export fixed_asset_register shows any difference). Journaled with the old figures.",
+        description = "Correct a registered fixed asset's cost, salvage value, useful life, or in-service date (never before its acquisition entry's date) when it was registered wrong, with the reason; omitted fields keep their values. Refused while the books carry depreciation for it (a run posted and not reversed: correct with entries then). Its tag, serial, links, and basis record stay (a contribution's value and built-in gain are as contributed); correct the entry that put it on the books too, so the books and the register agree (books.export fixed_asset_register shows any difference). Journaled with the old figures.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -5505,6 +5621,14 @@ impl BooksServer {
         params: Parameters<CorrectAssetParams>,
     ) -> Result<Json<AssetSummaryOne>, String> {
         let p = params.0;
+        let mut notes = Vec::new();
+        let in_service = aliased(
+            "in_service_date",
+            p.in_service_date.as_deref(),
+            "in_service",
+            p.in_service.as_deref(),
+            &mut notes,
+        )?;
         let mut store = self.lock()?;
         let id = resolve_asset_ref(&store, &p.asset)?;
         let a = store.ledger().get_asset(id).expect("resolved").clone();
@@ -5519,30 +5643,36 @@ impl BooksServer {
                 None => a.salvage_value,
             },
             useful_life_months: p.useful_life_months.unwrap_or(a.useful_life_months),
-            purchase_date: match &p.in_service {
+            in_service_date: match in_service {
                 Some(d) => parse_date(d)?,
-                None => a.purchase_date,
+                None => a.in_service_date,
             },
         };
         store
             .correct_asset(id, fix, &p.reason)
             .map_err(|e| e.to_string())?;
-        let a = store.ledger().get_asset(id).expect("resolved");
+        let ledger = store.ledger();
+        let a = ledger.get_asset(id).expect("resolved");
         Ok(Json(AssetSummaryOne {
             asset_id: id,
             tag: a.tag.clone(),
             cost: money(a.cost.amount),
             salvage_value: money(a.salvage_value.amount),
             useful_life_months: a.useful_life_months,
-            in_service: a.purchase_date.to_string(),
-            tax: tax_out(a),
+            in_service_date: a.in_service_date.to_string(),
+            acquired_date: ledger
+                .asset_acquired_date(id)
+                .expect("known asset")
+                .to_string(),
+            basis: basis_out(a)?,
+            notes,
         }))
     }
 
     #[tool(
         name = "books.set_asset_tax_basis",
         title = "Set an asset's tax basis",
-        description = "Record a fixed asset's federal tax basis beside its book value: rule cost (the company bought it: basis is its cost, IRC §1012), carryover (a member contributed business property: the member's adjusted basis, IRC §723), or personal_use_conversion (a member contributed personal-use property: the lesser of fair market value, which is the book cost, and the member's adjusted basis, Treas. Reg. §1.168(i)-4(b)). Contributions take the member's adjusted basis (what they paid, less any depreciation they took). Reports the tax basis and the built-in gain or loss (IRC §704(c)). Journaled; book figures don't change. Every asset should have one: the register and the CPA package show it.",
+        description = "Record how the company got a fixed asset and its tax figures beside book value. rule: purchase (basis is cost, IRC §1012); carryover_723 (a member's business property: their adjusted basis carries over, IRC §723); personal_use_conversion (a member's personal property: §723 basis likewise, depreciable basis the lesser of value and that basis, Treas. Reg. §1.168(i)-4(b)). A contribution needs contributor_adjusted_basis and fmv_at_contribution (ask the human; never assume the cost); built_in_gain_704c = value − §723 basis (Treas. Reg. §1.704-3(a)(3)(ii)), a loss counting only for the contributor. sec704c_method once chosen; basis_source: who says so. Journaled; book figures don't change.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -5552,16 +5682,35 @@ impl BooksServer {
     async fn set_asset_tax_basis(
         &self,
         params: Parameters<SetAssetTaxBasisParams>,
-    ) -> Result<Json<TaxBasisOut>, String> {
+    ) -> Result<Json<SetAssetTaxBasisOut>, String> {
         let p = params.0;
+        let mut notes = Vec::new();
+        let adjusted = aliased(
+            "contributor_adjusted_basis",
+            p.contributor_adjusted_basis.as_deref(),
+            "contributor_basis",
+            p.contributor_basis.as_deref(),
+            &mut notes,
+        )?;
+        let basis = parse_asset_basis(
+            &p.rule,
+            adjusted,
+            p.fmv_at_contribution.as_deref(),
+            p.sec704c_method.as_deref(),
+            p.basis_source.as_ref(),
+            &mut notes,
+        )?;
         let mut store = self.lock()?;
         let id = resolve_asset_ref(&store, &p.asset)?;
-        let tax = parse_tax_basis(&p.rule, p.contributor_basis.as_deref())?;
         store
-            .set_asset_tax_basis(id, tax)
+            .set_asset_basis(id, basis)
             .map_err(|e| e.to_string())?;
         let a = store.ledger().get_asset(id).expect("resolved");
-        Ok(Json(tax_out(a).expect("just set")))
+        Ok(Json(SetAssetTaxBasisOut {
+            asset_id: id,
+            basis: basis_out(a)?.ok_or("the basis just set has no figures")?,
+            notes,
+        }))
     }
 
     #[tool(
@@ -6087,7 +6236,7 @@ impl BooksServer {
     #[tool(
         name = "books.register_asset",
         title = "Register a fixed asset",
-        description = "Register a fixed asset (equipment, vehicles, buildings). Links three accounts: cost (asset), accumulated depreciation (asset, contra), depreciation expense. Depreciation is straight-line, book basis only — tax depreciation (MACRS, Section 179) stays with the CPA.",
+        description = "Register a fixed asset (equipment, vehicles, buildings). Links three accounts: cost (asset), accumulated depreciation (asset, contra), depreciation expense. in_service_date (ready and available for its use) starts depreciation; the acquisition_entry (its purchase or contribution, dated on or before that) gives the acquired date, which puts it on the register. Its tax basis (basis_rule and the contribution facts) as books.set_asset_tax_basis takes it. Depreciation is straight-line, book basis only — tax depreciation (MACRS, Section 179) stays with the CPA.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -6099,6 +6248,17 @@ impl BooksServer {
         params: Parameters<RegisterAssetParams>,
     ) -> Result<Json<RegisterAssetOut>, String> {
         let p = params.0;
+        let mut notes = Vec::new();
+        let in_service_date = parse_date(
+            aliased(
+                "in_service_date",
+                p.in_service_date.as_deref(),
+                "purchase_date",
+                p.purchase_date.as_deref(),
+                &mut notes,
+            )?
+            .ok_or("in_service_date is required: the day it was placed in service")?,
+        )?;
         let mut store = self.lock()?;
         let base = store.ledger().base_currency();
         let cost_account = resolve_account(&store, &p.cost_account)?;
@@ -6133,35 +6293,95 @@ impl BooksServer {
                     "entry {entry} can't be the acquisition: it must be posted and debit the cost account"
                 ));
             }
+            let reversed = (1..store.ledger().next_entry_id())
+                .filter_map(|id| store.ledger().get_entry(id))
+                .any(|x| x.reversal_of() == Some(entry));
+            if e.reversal_of().is_some() || reversed {
+                return Err(format!(
+                    "entry {entry} can't be the acquisition: it is a reversal or has been reversed (link the entry that stands)"
+                ));
+            }
+            if e.date() > in_service_date {
+                return Err(format!(
+                    "entry {entry} can't be the acquisition: it is dated {}, after the in-service date {in_service_date} (an asset is acquired before it serves: correct the in-service date, or the entry)",
+                    e.date()
+                ));
+            }
         }
         // Checked before registering, so a bad tax basis registers nothing
         // (found by the spec-blind MCP suite, 2026-10-15).
-        let tax = match &p.tax_basis_rule {
-            Some(rule) => {
-                let tax = parse_tax_basis(rule, p.contributor_basis.as_deref())?;
-                tax.check().map_err(|why| format!("bad tax basis: {why}"))?;
-                Some(tax)
-            }
-            None if p.contributor_basis.is_some() => {
-                return Err("contributor_basis needs tax_basis_rule".into());
+        let rule = aliased(
+            "basis_rule",
+            p.basis_rule.as_deref(),
+            "tax_basis_rule",
+            p.tax_basis_rule.as_deref(),
+            &mut notes,
+        )?;
+        let adjusted = aliased(
+            "contributor_adjusted_basis",
+            p.contributor_adjusted_basis.as_deref(),
+            "contributor_basis",
+            p.contributor_basis.as_deref(),
+            &mut notes,
+        )?;
+        let basis = match rule {
+            Some(rule) => Some(parse_asset_basis(
+                rule,
+                adjusted,
+                p.fmv_at_contribution.as_deref(),
+                p.sec704c_method.as_deref(),
+                p.basis_source.as_ref(),
+                &mut notes,
+            )?),
+            None if adjusted.is_some()
+                || p.fmv_at_contribution.is_some()
+                || p.sec704c_method.is_some()
+                || p.basis_source.is_some() =>
+            {
+                return Err("the basis facts need basis_rule".into());
             }
             None => None,
         };
-        let asset_id = store
-            .register_asset(NewAsset {
-                description: p.description,
-                purchase_date: parse_date(&p.purchase_date)?,
-                cost: Money::new(parse_amount(&p.cost)?, base),
-                salvage_value: Money::new(
-                    parse_amount(p.salvage_value.as_deref().unwrap_or("0"))?,
-                    base,
-                ),
-                useful_life_months: p.useful_life_months,
-                cost_account,
-                accum_depr_account,
-                expense_account,
-            })
-            .map_err(|e| e.to_string())?;
+        let new = NewAsset {
+            description: p.description,
+            in_service_date,
+            cost: Money::new(parse_amount(&p.cost)?, base),
+            salvage_value: Money::new(
+                parse_amount(p.salvage_value.as_deref().unwrap_or("0"))?,
+                base,
+            ),
+            useful_life_months: p.useful_life_months,
+            cost_account,
+            accum_depr_account,
+            expense_account,
+        };
+        // One registration is several commands: rehearse them all on a
+        // copy first, and ask for the journal feature the basis needs
+        // (B-27), so a refusal anywhere (the tag, the serial, the link, the
+        // basis, books waiting for their format upgrade) journals nothing.
+        {
+            let mut copy = store.ledger().clone();
+            let id = copy
+                .register_asset(new.clone())
+                .map_err(|e| e.to_string())?;
+            copy.set_asset_tag(id, &tag).map_err(|e| e.to_string())?;
+            if let Some(serial) = &p.serial {
+                copy.set_asset_serial(id, Some(serial))
+                    .map_err(|e| e.to_string())?;
+            }
+            if let Some(entry) = p.acquisition_entry {
+                copy.set_asset_acquisition(id, entry)
+                    .map_err(|e| e.to_string())?;
+            }
+            if let Some(basis) = &basis {
+                copy.set_asset_basis(id, basis.clone())
+                    .map_err(|e| e.to_string())?;
+                store
+                    .ensure_feature(ledger_store::format::ASSET_BASIS)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        let asset_id = store.register_asset(new).map_err(|e| e.to_string())?;
         store
             .set_asset_tag(asset_id, &tag)
             .map_err(|e| e.to_string())?;
@@ -6175,12 +6395,24 @@ impl BooksServer {
                 .set_asset_acquisition(asset_id, entry)
                 .map_err(|e| e.to_string())?;
         }
-        if let Some(tax) = tax {
+        if let Some(basis) = basis {
             store
-                .set_asset_tax_basis(asset_id, tax)
+                .set_asset_basis(asset_id, basis)
                 .map_err(|e| e.to_string())?;
         }
-        Ok(Json(RegisterAssetOut { asset_id, tag }))
+        let ledger = store.ledger();
+        let a = ledger.get_asset(asset_id).expect("registered");
+        Ok(Json(RegisterAssetOut {
+            asset_id,
+            tag,
+            in_service_date: a.in_service_date.to_string(),
+            acquired_date: ledger
+                .asset_acquired_date(asset_id)
+                .expect("registered")
+                .to_string(),
+            basis: basis_out(a)?,
+            notes,
+        }))
     }
 
     #[tool(
@@ -6234,45 +6466,72 @@ impl BooksServer {
     #[tool(
         name = "books.list_assets",
         title = "List fixed assets",
-        description = "List all registered fixed assets with accumulated depreciation by schedule and book value as of today (a disposed asset's through its disposal day). An asset whose schedule can't be computed lists with null figures and schedule_error.",
+        description = "List every registered fixed asset as of a date (as_of, default today): in-service and acquired dates, cost, and per asset accumulated_posted (what the books carry: runs posted, less reversals), accumulated_scheduled_through (what the schedule says is due by as_of), unposted_depreciation (the difference: run books.run_depreciation for it) and book_value (cost less posted: what the books carry); held says whether the books hold it on as_of. With its basis facts and tax figures. An asset whose figures can't be computed (one an earlier version took) lists with null figures and schedule_error.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
-    async fn list_assets(&self) -> Result<Json<ListAssetsOut>, String> {
+    async fn list_assets(
+        &self,
+        params: Parameters<ListAssetsParams>,
+    ) -> Result<Json<ListAssetsOut>, String> {
+        let p = params.0;
+        let as_of = match &p.as_of {
+            Some(d) => parse_date(d)?,
+            None => today(),
+        };
         let store = self.lock()?;
-        let today = today();
-        let assets = store
-            .ledger()
+        let ledger = store.ledger();
+        // The register's rows (one derivation, reports::register_row): an
+        // asset acquired by as_of has one; a later one has no figures yet.
+        let assets = ledger
             .registered_assets()
             .map(|a| {
-                // One asset whose schedule can't be computed (an earlier
-                // version's) lists with why, never failing the whole list.
-                let figures = accumulated_depreciation(a, today)
-                    .and_then(|acc| Ok((acc, book_value(a, today)?)));
-                let (accumulated, book_value, schedule_error) = match figures {
-                    Ok((acc, bv)) => (Some(money(acc)), Some(money(bv)), None),
-                    Err(e) => (None, None, Some(e.to_string())),
+                let acquired = ledger.asset_acquired_date(a.id).expect("registered");
+                let disposed =
+                    matches!(a.status, AssetStatus::Disposed { date, .. } if date <= as_of);
+                // One asset whose figures can't be computed (one an earlier
+                // version took) lists with why, never failing the whole
+                // list.
+                let row = ledger
+                    .accumulated_posted(a.id, as_of)
+                    .map(|posted| std::collections::BTreeMap::from([(a.id, posted)]))
+                    .and_then(|posted| reports::register_row(ledger, a, as_of, &posted));
+                let (row, schedule_error) = match row {
+                    Ok(row) => (row, None),
+                    Err(e) => (None, Some(e.to_string())),
                 };
-                AssetSummary {
+                let row = row.as_ref();
+                let figure =
+                    |f: fn(&ledger_core::AssetRegisterRow) -> Decimal| row.map(|r| money(f(r)));
+                Ok(AssetSummary {
                     asset_id: a.id,
                     tag: a.tag.clone(),
                     serial: a.serial.clone(),
                     acquisition_entry: a.acquired_by,
-                    tax: tax_out(a),
+                    basis: basis_out(a)?,
                     description: a.description.clone(),
-                    purchase_date: a.purchase_date.to_string(),
+                    in_service_date: a.in_service_date.to_string(),
+                    acquired_date: acquired.to_string(),
                     cost: money(a.cost.amount),
                     useful_life_months: a.useful_life_months,
                     status: match a.status {
                         AssetStatus::Active => "active".to_string(),
                         AssetStatus::Disposed { .. } => "disposed".to_string(),
                     },
-                    accumulated,
-                    book_value,
+                    held: acquired <= as_of && !disposed,
+                    accumulated_posted: figure(|r| r.accumulated_posted),
+                    accumulated_scheduled_through: figure(|r| r.accumulated_scheduled),
+                    unposted_depreciation: figure(|r| {
+                        r.accumulated_scheduled - r.accumulated_posted
+                    }),
+                    book_value: figure(|r| r.book_value),
                     schedule_error,
-                }
+                })
             })
-            .collect();
-        Ok(Json(ListAssetsOut { assets }))
+            .collect::<Result<_, String>>()?;
+        Ok(Json(ListAssetsOut {
+            as_of: as_of.to_string(),
+            assets,
+        }))
     }
 
     #[tool(
@@ -6322,11 +6581,11 @@ impl BooksServer {
             // failing the whole batch.
             if p.asset_id.is_none()
                 && let Some(asset) = store.ledger().get_asset(id)
-                && asset.purchase_date > period_end
+                && asset.in_service_date > period_end
             {
                 skipped.push(skip(format!(
                     "placed in service {}, after {}",
-                    asset.purchase_date, p.period
+                    asset.in_service_date, p.period
                 )));
                 continue;
             }
@@ -8715,8 +8974,9 @@ impl BooksServer {
     ///   2. With members, k1-members.csv has one row per [[company.members]]
     ///      member: name, party, share, capital account, TIN and type, and
     ///      the K-1 worksheet's capital figures (ledger_core::k1) for the
-    ///      fiscal year to date. The 1099 worksheet adds each payee's party,
-    ///      last four, TIN, and type.
+    ///      fiscal year to date; k1-tax-basis-capital.csv the same capital on
+    ///      the tax basis beside them (ledger_core::tax_capital). The 1099
+    ///      worksheet adds each payee's party, last four, TIN, and type.
     ///   3. A locked vault or a missing TIN never fails the package: the
     ///      row says why (vault_tin), the README lists it, and so does
     ///      tin_gaps (members, and 1099 payees that are reportable).
@@ -8725,7 +8985,7 @@ impl BooksServer {
     #[tool(
         name = "books.export_cpa_package",
         title = "CPA handoff package",
-        description = "Build the CPA handoff package as a zip: the profit and loss, balance sheet, cash flow (direct method, with its reconciliation and noncash schedules), statement of changes in members' equity (multi-member LLCs), tax summary, and trial balance, each as PDF and XLSX; the fixed asset register as PDF and XLSX when an asset was bought by as_of; the general ledger (by account) and general journal (entry by entry) as XLSX; the journal through as_of as IIF (imports into QuickBooks Desktop; plain ASCII within its limits: warnings says what is written differently from the books, and so does the README); the 1099 worksheet as CSV (payments from January 1 through as_of); with members, the K-1 worksheet (k1-members.csv: per member their party, share, capital account, TIN, and beginning capital, contributions in cash and in property, share of income, distributions, and ending capital for the fiscal year to date); every receipt behind the year's entries, filed on them or linked to them (receipts/, with an index.csv tying each file to its entry) and the company's documents (documents/), unless include_receipts is false; and a README with the journal's verified hash. By default (include_tins) the K-1 and 1099 worksheets carry every member's and payee's full TIN from the TIN vault; include_tins: false, last fours only. The zip is handed over: run its download command to save it in a folder (books served by `wanderbooks mcp`; over stdio it comes back inline). Never file it into the books. A locked vault or a missing TIN doesn't stop the package: tin_gaps lists each one (collect them with books.set_tin or books.set_w9 and export again). cash_accounts (e.g. [\"1000\"]) is required: the cash flow statement reconciles to them. as_of defaults to today; period reports cover the fiscal year to date.",
+        description = "Build the CPA handoff package as a zip: the profit and loss, balance sheet, cash flow (direct method, with its reconciliation and noncash schedules), statement of changes in members' equity (multi-member LLCs), tax summary, and trial balance, each as PDF and XLSX; the fixed asset register as PDF and XLSX when an asset was acquired by as_of; the general ledger (by account) and general journal (entry by entry) as XLSX; the journal through as_of as IIF (imports into QuickBooks Desktop; plain ASCII within its limits: warnings says what is written differently from the books, and so does the README); the 1099 worksheet as CSV (payments from January 1 through as_of); with members, the K-1 worksheet (k1-members.csv: per member their party, share, capital account, TIN, and beginning capital, contributions in cash and in property, share of income, distributions, and ending capital for the fiscal year to date) and its tax-basis capital beside the book figures (k1-tax-basis-capital.csv: Schedule K-1 Item L on the tax basis, property at its §723 basis, with the reconciliation; what only the CPA can supply, like tax depreciation, left open and named); every receipt behind the year's entries, filed on them or linked to them (receipts/, with an index.csv tying each file to its entry) and the company's documents (documents/), unless include_receipts is false; and a README with the journal's verified hash. By default (include_tins) the K-1 and 1099 worksheets carry every member's and payee's full TIN from the TIN vault; include_tins: false, last fours only. The zip is handed over: run its download command to save it in a folder (books served by `wanderbooks mcp`; over stdio it comes back inline). Never file it into the books. A locked vault or a missing TIN doesn't stop the package: tin_gaps lists each one (collect them with books.set_tin or books.set_w9 and export again). cash_accounts (e.g. [\"1000\"]) is required: the cash flow statement reconciles to them. as_of defaults to today; period reports cover the fiscal year to date.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -8921,68 +9181,109 @@ impl BooksServer {
             Some((d, p)) => format!("Disposed {d}, proceeds {}", money(p)),
             None => "Active".to_string(),
         };
+        let source = |row: &ledger_core::AssetRegisterRow| {
+            row.basis_source.as_ref().map(|s| {
+                let mut t = format!("{}, {}", s.decided_by, s.decided_on);
+                if let Some(c) = &s.citation {
+                    t.push_str(&format!(": {c}"));
+                }
+                t
+            })
+        };
         if format == "json" {
             return serde_json::to_string_pretty(&serde_json::json!({
                 "as_of": as_of.to_string(),
+                "tax_figures_are": "at contribution (or purchase): the CPA adjusts them for tax depreciation, and the §704(c) gain or loss as it is reduced after (Treas. Reg. §1.704-3(a)(3)(ii))",
                 "assets": r.rows.iter().map(|a| serde_json::json!({
                     "asset_id": a.asset_id,
                     "tag": a.tag,
                     "description": a.description,
                     "serial": a.serial,
-                    "in_service": a.in_service.to_string(),
+                    "acquired_date": a.acquired_date.to_string(),
+                    "in_service_date": a.in_service_date.to_string(),
                     "cost": money(a.cost),
                     "salvage": money(a.salvage),
                     "useful_life_months": a.useful_life_months,
-                    "accumulated": money(a.accumulated),
+                    "accumulated_scheduled": money(a.accumulated_scheduled),
+                    "accumulated_posted": money(a.accumulated_posted),
                     "book_value": money(a.book_value),
                     "status": status(a),
                     "proceeds": a.disposed.map(|(_, p)| money(p)),
-                    "tax_basis_rule": a.tax_rule.map(|r| r.key()),
-                    "contributor_basis": a.contributor_basis.map(money),
-                    "tax_basis": a.tax_basis.map(money),
-                    "built_in_gain": a.built_in_gain.map(money),
+                    "basis_rule": a.basis_rule.map(|r| r.key()),
+                    "contributor_adjusted_basis": a.contributor_adjusted_basis.map(money),
+                    "fmv_at_contribution": a.fmv_at_contribution.map(money),
+                    "fmv_recorded": a.fmv_recorded,
+                    "tax_basis_723": a.tax_basis_723.map(money),
+                    "depreciable_basis": a.depreciable_basis.map(money),
+                    "built_in_gain_704c": a.built_in_gain_704c.map(money),
+                    "sec704c_1c": a.sec704c_1c,
+                    "sec704c_method": a.sec704c_method.map(|m| m.key()),
+                    "basis_source": source(a),
                 })).collect::<Vec<_>>(),
-                "total_tax_basis": money(r.total_tax_basis),
-                "missing_tax_basis": r.missing_tax_basis,
                 "total_cost": money(r.total_cost),
-                "total_accumulated": money(r.total_accumulated),
+                "total_accumulated_scheduled": money(r.total_accumulated_scheduled),
+                "total_accumulated_posted": money(r.total_accumulated_posted),
                 "total_book_value": money(r.total_book_value),
+                "total_depreciable_basis": money(r.total_depreciable_basis),
+                "total_tax_basis_723": money(r.total_tax_basis_723),
+                "missing_basis": r.missing_basis,
                 "ledger_cost": money(r.ledger_cost),
                 "ledger_accumulated": money(r.ledger_accumulated),
                 "unposted_depreciation": money(r.unposted_depreciation()),
+                "unattributed_accumulated": money(r.unattributed_accumulated()),
                 "unregistered_cost": money(r.unregistered_cost()),
             }))
             .map_err(|e| e.to_string());
         }
         let mut csv = String::from(
-            "tag,description,serial,in_service,cost,salvage,useful_life_months,accumulated,book_value,status,proceeds,tax_basis_rule,contributor_basis,tax_basis,built_in_gain\n",
+            "tag,description,serial,acquired,in_service,cost,salvage,useful_life_months,accumulated_scheduled,accumulated_posted,book_value,status,proceeds,basis_rule,contributor_adjusted_basis,fmv_at_contribution,fmv_recorded,tax_basis_723,depreciable_basis,built_in_gain_704c,sec704c_method,basis_source\n",
         );
         for a in &r.rows {
-            csv.push_str(&format!(
-                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+            let cells = [
                 csv_escape(a.tag.as_deref().unwrap_or("")),
                 csv_escape(&a.description),
                 csv_escape(a.serial.as_deref().unwrap_or("")),
-                a.in_service,
+                a.acquired_date.to_string(),
+                a.in_service_date.to_string(),
                 money(a.cost),
                 money(a.salvage),
-                a.useful_life_months,
-                money(a.accumulated),
+                a.useful_life_months.to_string(),
+                money(a.accumulated_scheduled),
+                money(a.accumulated_posted),
                 money(a.book_value),
                 status(a),
                 a.disposed.map(|(_, p)| money(p)).unwrap_or_default(),
-                a.tax_rule.map(|r| r.key()).unwrap_or_default(),
-                a.contributor_basis.map(money).unwrap_or_default(),
-                a.tax_basis.map(money).unwrap_or_default(),
-                a.built_in_gain.map(money).unwrap_or_default(),
-            ));
+                a.basis_rule
+                    .map(|r| r.key())
+                    .unwrap_or_default()
+                    .to_string(),
+                a.contributor_adjusted_basis.map(money).unwrap_or_default(),
+                a.fmv_at_contribution.map(money).unwrap_or_default(),
+                if a.basis_rule.is_some_and(|r| r.is_contribution()) {
+                    a.fmv_recorded.to_string()
+                } else {
+                    String::new()
+                },
+                a.tax_basis_723.map(money).unwrap_or_default(),
+                a.depreciable_basis.map(money).unwrap_or_default(),
+                a.built_in_gain_704c.map(money).unwrap_or_default(),
+                a.sec704c_method
+                    .map(|m| m.key())
+                    .unwrap_or_default()
+                    .to_string(),
+                csv_escape(&source(a).unwrap_or_default()),
+            ];
+            csv.push_str(&cells.join(","));
+            csv.push('\n');
         }
         csv.push_str(&format!(
-            "TOTAL,,,,{},,,{},{},,,,,{},",
+            "TOTAL,,,,,{},,,{},{},{},,,,,,,{},{},,,",
             money(r.total_cost),
-            money(r.total_accumulated),
+            money(r.total_accumulated_scheduled),
+            money(r.total_accumulated_posted),
             money(r.total_book_value),
-            money(r.total_tax_basis)
+            money(r.total_tax_basis_723),
+            money(r.total_depreciable_basis)
         ));
         Ok(csv)
     }

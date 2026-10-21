@@ -1,20 +1,24 @@
-// The fixed asset register: every asset, its cost, depreciation, and book
-// value, then the totals and the reconciliation to the general ledger,
-// then each asset's federal tax basis beside its book cost, and the notes
-// that cite the tax basis rules.
+// The fixed asset register: every asset, its cost, depreciation scheduled
+// and posted, and book value, then the totals and the reconciliation to
+// the general ledger, then each asset's federal tax figures beside its
+// book cost, and the notes that cite the rules.
 //
 // Everything arrives as data in sys.inputs.data (JSON), laid out by
 // ledger-import::asset_register, with amounts already split into exact
 // parts. The template only typesets: no arithmetic, and no text is ever
 // parsed as markup.
 //
-// Shape: { company, title, period, footer, columns: [10 headings],
-//          tax_title, tax_columns: [7 headings], empty,
-//          lines: [{ tag, description, serial, in_service, cost, salvage,
-//                    life, accumulated, book_value, status, disposed,
-//                    rule, rule_mark, recorded, contributor_basis|null,
-//                    tax_basis|null, built_in_gain|null }],
-//          totals: [cost, accumulated, book_value], tax_total,
+// Shape: { company, title, period, footer, columns: [12 headings],
+//          tax_title, tax_columns: [9 headings], empty, fmv_mark,
+//          lines: [{ tag, description, serial, acquired, in_service, cost,
+//                    salvage, life, accumulated_scheduled,
+//                    accumulated_posted, book_value, status, disposed,
+//                    rule, rule_mark, recorded, fmv_at_contribution|null,
+//                    fmv_recorded, contributor_adjusted_basis|null,
+//                    tax_basis_723|null, depreciable_basis|null,
+//                    built_in_gain|null, method|null, source|null }],
+//          totals: [cost, scheduled, posted, book_value],
+//          tax_totals: [tax_basis_723, depreciable_basis],
 //          missing: text|null, notes: [{ mark, text }],
 //          reconciliation: [{ label, amount, difference }] }
 // where every amount is { digits: "1,234.56", negative }.
@@ -66,14 +70,14 @@
   [#open#sign#a.digits#close]
 }
 
-// Columns: 4-8 are numbers (right-aligned).
-#let numeric = (4, 5, 6, 7, 8)
+// Columns: 5-10 are numbers (right-aligned).
+#let numeric = (5, 6, 7, 8, 9, 10)
 #let ncols = d.columns.len()
 #let full(body, ..args) = table.cell(colspan: ncols, ..args, body)
 
 #table(
   // Number columns are fixed widths (headings wrap); text takes the rest.
-  columns: (auto, 1.4fr, auto, auto, 6.4em, 5.6em, 6em, 7.4em, 6.4em, 1fr),
+  columns: (auto, 1.4fr, auto, auto, auto, 6.2em, 5.6em, 5.6em, 7em, 7em, 6.2em, 1.2fr),
   stroke: none,
   inset: (x: 3.5pt, y: 3.4pt),
   align: (col, row) => (if col in numeric { right } else { left }) + (if row == 0 { bottom } else { horizon }),
@@ -95,11 +99,13 @@
           t(l.tag),
           t(l.description),
           t(l.serial),
+          t(l.acquired),
           t(l.in_service),
           a(l.cost),
           a(l.salvage),
           t(l.life),
-          a(l.accumulated),
+          a(l.accumulated_scheduled),
+          a(l.accumulated_posted),
           a(l.book_value),
           t(l.status),
         )
@@ -112,12 +118,13 @@
     let tot(x) = table.cell(stroke: s, text(weight: "bold", amount(x, currency: true)))
     let blank = table.cell(stroke: s, [])
     (
-      table.cell(stroke: s, colspan: 4, text(weight: "bold", "Total, assets held")),
+      table.cell(stroke: s, colspan: 5, text(weight: "bold", "Total, assets held")),
       tot(d.totals.at(0)),
       blank,
       blank,
       tot(d.totals.at(1)),
       tot(d.totals.at(2)),
+      tot(d.totals.at(3)),
       blank,
     )
   },
@@ -154,16 +161,19 @@
   )
 })
 
-// Federal tax basis, asset by asset, beside the book cost it may differ
-// from; each rule marked with the number of the note that cites it.
-#let tax_numeric = (3, 4, 5, 6)
+// Federal tax figures, asset by asset, beside the book cost they may
+// differ from; each rule marked with the number of the note that cites
+// it, a value read as the book cost marked too; under the description,
+// the §704(c) method and who gave the facts.
+#let tax_numeric = (3, 4, 5, 6, 7, 8)
 #let tcols = d.tax_columns.len()
 #let maybe(x) = if x == none { [] } else { amount(x) }
 #v(12pt)
 #text(weight: "semibold", d.tax_title)
 #v(2pt)
 #table(
-  columns: (auto, 1fr, auto, 7.4em, 7.4em, 7.4em, 7.4em),
+  // Each amount column wide enough for its heading's longest word.
+  columns: (auto, 1fr, auto, 6.2em, 8.6em, 7.6em, 6.4em, 7.2em, 7.6em),
   stroke: none,
   inset: (x: 3.5pt, y: 3.4pt),
   align: (col, row) => (if col in tax_numeric { right } else { left }) + (if row == 0 { bottom } else { horizon }),
@@ -190,13 +200,29 @@
         } else {
           text(fill: rgb("#9a5b00"), emph(l.rule))
         }
+        let fmv = if l.fmv_at_contribution == none {
+          []
+        } else if l.fmv_recorded {
+          amount(l.fmv_at_contribution)
+        } else {
+          [#super(d.fmv_mark)#amount(l.fmv_at_contribution)]
+        }
+        let about = (l.method, l.source).filter(x => x != none)
         (
           t(l.tag),
-          t(l.description),
+          t({
+            l.description
+            for x in about {
+              linebreak()
+              text(6.5pt, fill: quiet, x)
+            }
+          }),
           t(rule),
           t(amount(l.cost)),
-          t(maybe(l.contributor_basis)),
-          t(maybe(l.tax_basis)),
+          t(fmv),
+          t(maybe(l.contributor_adjusted_basis)),
+          t(maybe(l.tax_basis_723)),
+          t(maybe(l.depreciable_basis)),
           t(maybe(l.built_in_gain)),
         )
       })
@@ -206,8 +232,9 @@
     let s = (top: firm)
     let blank = table.cell(stroke: s, [])
     (
-      table.cell(stroke: s, colspan: 5, text(weight: "bold", "Total tax basis, assets held")),
-      table.cell(stroke: s, text(weight: "bold", amount(d.tax_total, currency: true))),
+      table.cell(stroke: s, colspan: 6, text(weight: "bold", "Total, assets held")),
+      table.cell(stroke: s, text(weight: "bold", amount(d.tax_totals.at(0), currency: true))),
+      table.cell(stroke: s, text(weight: "bold", amount(d.tax_totals.at(1), currency: true))),
       blank,
     )
   },

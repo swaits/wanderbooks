@@ -519,7 +519,7 @@ Report results also carry `as_of_status {drafts_open_on_or_before, unreconciled,
 - `cash_flow`: `reconciles`, `noncash_disclosures`, `operating_reconciliation`.
 - `vendor_1099`: instrument-aware; `include_tins` and `save_csv_to` dropped.
 - `set_vendor_1099` takes an explicit `not_reportable` plus a reason.
-- `register_asset`: `in_service_date` + `acquired_date`, with `purchase_date` kept as an alias for one release; basis fields.
+- `register_asset`: `in_service_date` (with `purchase_date` kept as an alias for one release) and basis fields; it reports `acquired_date`, which comes from the acquisition entry it is linked to (settled in design, 2026-10-20), so it takes none.
 - `list_assets`: `accumulated_posted` and `accumulated_scheduled_through`.
 - `list_schedules`: start, end, convention, next, remaining.
 - `parties`: last four from `party.tin_set`.
@@ -567,7 +567,7 @@ Every event may carry an additive `actor {principal, client_id, kind}`, which re
 | `open_item.raised` / `open_item.resolved` | P1 | `Conventions` |
 | `account.renamed {account_id, code, name, previous, reason}` (keyed by id, as `account.renumbered`: a code can change, an id can't; `code` is informational; the journal feature `account_renamed` is declared before the first) | P3 | chart |
 | `instrument.added {id, kind: bank\|business_card\|member_card\|member_cash_or_check\|platform, label, last4?, owner_party?, account?}` / `entry.instrument_set` | P3 | `Ledger` (1099) |
-| `asset.basis_set {asset, rule: purchase\|carryover_723\|personal_use_conversion, fmv_at_contribution?, contributor_adjusted_basis?, tax_basis_723, depreciable_basis, built_in_gain_704c, sec704c_method?}` (legacy `asset.tax_basis_set` still replays) | P3 | assets |
+| `asset.basis_set {asset_id, rule: purchase\|carryover_723\|personal_use_conversion, contributor_adjusted_basis, fmv_at_contribution, sec704c_method, source, tax_basis_723, depreciable_basis, built_in_gain_704c}` (the facts; the figures for readers, never recomputed at replay; a purchase's `depreciable_basis` null; the journal feature `asset_basis` declared before the first; legacy `asset.tax_basis_set` still replays) | P3 | assets |
 | `schedule.registered` + `convention` (absent = `monthly_even`) | P3 | schedules |
 | `vendor.1099_set` value `not_reportable{reason}`; legacy `null` replays as `undetermined` | P3 | vendors |
 | `period.closed` with `close_to: MembersCumulative{since_seq}` (old variants replay as before) | P3 | periods |
@@ -942,7 +942,7 @@ The first company keeps working between phases.
   - `depreciable_basis` = lesser of FMV and adjusted basis for personal-use conversion (Treas. Reg. §1.168(i)-4(b));
   - `built_in_gain_704c = fmv_at_contribution − tax_basis_723` (IRC §704(c), Treas. Reg. §1.704-3), with §704(c)(1)(C) noted when the result is negative;
   - `sec704c_method`.
-- `built_in_gain()` (`assets.rs:204`) is redefined to match.
+- `built_in_gain()` (`assets.rs:219`) is redefined to match.
 
 **Defect 14, party shares:** `resolved` uses the line sign convention (debit-positive) plus an explicit `direction`. Totals take `basis: cash|all`, default cash, with the basis labelled.
 

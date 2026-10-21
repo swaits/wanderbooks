@@ -1210,7 +1210,7 @@ fn a_loss_on_disposal_moves_out_of_operating_into_investing() {
         .unwrap();
     l.register_asset(ledger_core::NewAsset {
         description: "Laptop".to_string(),
-        purchase_date: d(1, 10),
+        in_service_date: d(1, 10),
         cost: usd(1_000),
         salvage_value: usd(0),
         useful_life_months: 10,

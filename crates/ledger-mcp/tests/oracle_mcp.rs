@@ -562,7 +562,7 @@ fn rich_books(s: &mut Store) -> Rich {
     let asset = s
         .register_asset(NewAsset {
             description: "Laptop".into(),
-            purchase_date: d("2025-03-20"),
+            in_service_date: d("2025-03-20"),
             cost: usd("3000.00"),
             salvage_value: usd("0.00"),
             useful_life_months: 36,
@@ -1905,7 +1905,7 @@ fn dispose_asset_previews_equal_the_store_and_gate_receipts_on_debits() {
     let reg = |s: &mut Store, desc: &str| {
         s.register_asset(NewAsset {
             description: desc.into(),
-            purchase_date: d("2025-01-01"),
+            in_service_date: d("2025-01-01"),
             cost: usd("1200.00"),
             salvage_value: usd("0.00"),
             useful_life_months: 12,
@@ -2030,7 +2030,7 @@ fn run_depreciation_catches_up_and_skips_what_has_nothing_due() {
     let reg = |s: &mut Store, desc: &str, date: &str, months: u32| {
         s.register_asset(NewAsset {
             description: desc.into(),
-            purchase_date: d(date),
+            in_service_date: d(date),
             cost: usd("600.00"),
             salvage_value: usd("0.00"),
             useful_life_months: months,

@@ -323,7 +323,7 @@ impl Mcp {
     /// Register a $1,200, 12-month laptop from 2026-01-01 with `extra` args
     /// (tag, serial, description).
     fn register(&mut self, extra: Value) -> Out {
-        let mut args = json!({"description": "Laptop", "purchase_date": "2026-01-01",
+        let mut args = json!({"description": "Laptop", "in_service_date": "2026-01-01",
             "cost": "1200.00", "salvage_value": "0.00", "useful_life_months": 12,
             "cost_account": "1500", "accum_depr_account": "1510", "expense_account": "6500"});
         for (k, v) in extra.as_object().unwrap() {
@@ -798,7 +798,7 @@ fn asset_labels_refuses_an_asset_without_a_tag() {
         let usd = |a: &str| Money::new(a.parse().unwrap(), Currency::USD);
         s.register_asset(NewAsset {
             description: "Old laptop".into(),
-            purchase_date: chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+            in_service_date: chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
             cost: usd("1200.00"),
             salvage_value: usd("0.00"),
             useful_life_months: 12,
@@ -909,7 +909,7 @@ fn export_fixed_asset_register_reconciles_to_the_books() {
 fn export_fixed_asset_register_as_of_leaves_out_later_assets() {
     let mut m = books("export-later");
     m.register_ok(json!({"tag": "EARLY-1"}));
-    m.register_ok(json!({"tag": "LATE-1", "purchase_date": "2026-06-01"}));
+    m.register_ok(json!({"tag": "LATE-1", "in_service_date": "2026-06-01"}));
     let r = m.read_only(
         "books.export",
         json!({"report": "fixed_asset_register", "format": "json", "as_of": "2026-03-31"}),
@@ -921,14 +921,14 @@ fn export_fixed_asset_register_as_of_leaves_out_later_assets() {
 
 // ------------------------------------------------- tax basis (rules.md B-25)
 //
-// From the `books.set_asset_tax_basis` description and
-// `SetAssetTaxBasisParams` / `TaxBasisOut` docs, `RegisterAssetParams`
-// (`tax_basis_rule`, `contributor_basis`), `AssetSummary::tax`, and the
-// fixed_asset_register export. Cost: the book cost (IRC §1012);
-// carryover: the member's adjusted basis (IRC §723);
-// personal_use_conversion: the lesser of fair market value (the book
-// cost) and the member's basis (Treas. Reg. §1.168(i)-4(b)); built-in
-// gain = fair market value less the member's basis (IRC §704(c)).
+// From the `books.set_asset_tax_basis` and `books.register_asset`
+// descriptions, `SetAssetTaxBasisParams` / `AssetBasisOut` /
+// `RegisterAssetParams` docs, and the fixed_asset_register export.
+// Purchase: the book cost (IRC §1012); carryover_723: the member's
+// adjusted basis (IRC §723); personal_use_conversion: §723 basis as for
+// carryover, depreciable basis the lesser of fair market value and that
+// basis (Treas. Reg. §1.168(i)-4(b)); built_in_gain_704c = value less the
+// §723 basis at contribution (Treas. Reg. §1.704-3(a)(3)(ii)).
 
 /// A decimal-string field, compared by value; `None` for null.
 fn dec(v: &Value, key: &str) -> Option<String> {
@@ -939,146 +939,252 @@ fn dec(v: &Value, key: &str) -> Option<String> {
     }
 }
 
-fn tax_basis_lines(m: &Mcp) -> usize {
+fn basis_lines(m: &Mcp) -> usize {
     m.journal_types()
         .iter()
-        .filter(|t| *t == "asset.tax_basis_set")
+        .filter(|t| *t == "asset.basis_set")
         .count()
 }
 
-/// books.set_asset_tax_basis by tag and by id; the output reports rule,
-/// contributor basis, tax basis, and built-in gain; each call journals.
+/// books.set_asset_tax_basis by tag and by id; the output names each
+/// figure for what it is, with its authority; each call journals an
+/// asset.basis_set; the old rule names are aliases, noted.
 #[test]
-fn set_asset_tax_basis_by_tag_or_id_reports_the_basis() {
+fn set_asset_tax_basis_by_tag_or_id_reports_each_figure() {
     let mut m = books("tax-set");
     let (a, t) = m.register_ok(json!({}));
-    assert_eq!(m.asset(a)["tax"], Value::Null, "not recorded yet");
+    assert_eq!(m.asset(a)["basis"], Value::Null, "not recorded yet");
 
-    // By tag (any case): carryover of the member's $900 basis.
+    // By tag (any case): the member's $900 basis in a $1,200 laptop from
+    // business use.
     let r = m.ok(
         "books.set_asset_tax_basis",
-        json!({"asset": t.to_ascii_lowercase(), "rule": "carryover", "contributor_basis": "900.00"}),
+        json!({"asset": t.to_ascii_lowercase(), "rule": "carryover_723",
+               "contributor_adjusted_basis": "900.00", "fmv_at_contribution": "1200.00",
+               "sec704c_method": "traditional",
+               "basis_source": {"decided_by": "Morgan Ellis", "decided_on": "2026-10-20",
+                                "citation": "entry 1"}}),
     );
-    assert_eq!(r["rule"], "carryover");
-    assert_eq!(dec(&r, "contributor_basis").as_deref(), Some("900"));
-    assert_eq!(dec(&r, "tax_basis").as_deref(), Some("900"));
+    assert_eq!(r["asset_id"], json!(a));
+    assert!(r.get("notes").is_none(), "{r}");
+    let b = &r["basis"];
+    assert_eq!(b["rule"], "carryover_723");
+    assert_eq!(dec(b, "contributor_adjusted_basis").as_deref(), Some("900"));
+    assert_eq!(dec(b, "fmv_at_contribution").as_deref(), Some("1200"));
+    assert_eq!(b["fmv_recorded"], true);
+    assert_eq!(dec(b, "tax_basis_723").as_deref(), Some("900"));
+    assert_eq!(dec(b, "depreciable_basis").as_deref(), Some("900"));
+    assert_eq!(dec(b, "built_in_gain_704c").as_deref(), Some("300"));
+    assert!(b.get("sec704c_1c_note").is_none(), "a gain has no note");
+    assert_eq!(b["sec704c_method"], "traditional");
+    assert_eq!(b["source"]["decided_by"], "Morgan Ellis");
+    assert_eq!(b["sources"]["tax_basis_723"], "IRC §723");
+    assert_eq!(b["sources"]["depreciable_basis"], "IRC §723");
     assert_eq!(
-        dec(&r, "built_in_gain").as_deref(),
-        Some("300"),
-        "1200 − 900"
+        b["sources"]["built_in_gain_704c"],
+        "Treas. Reg. §1.704-3(a)(3)(ii)"
     );
-    assert_eq!(tax_basis_lines(&m), 1);
-
-    // By id: personal-use conversion, member paid $2,000 for a $1,200 laptop.
-    let r = m.ok(
-        "books.set_asset_tax_basis",
-        json!({"asset": a.to_string(), "rule": "personal_use_conversion", "contributor_basis": "2000.00"}),
-    );
-    assert_eq!(r["rule"], "personal_use_conversion");
-    assert_eq!(dec(&r, "contributor_basis").as_deref(), Some("2000"));
-    assert_eq!(dec(&r, "tax_basis").as_deref(), Some("1200"), "the lesser");
+    assert_eq!(basis_lines(&m), 1);
     assert_eq!(
-        dec(&r, "built_in_gain").as_deref(),
-        Some("-800"),
-        "a built-in loss"
+        m.journal_types()
+            .iter()
+            .filter(|t| *t == "journal.format_set")
+            .count(),
+        1,
+        "the feature declared once"
     );
-    assert_eq!(tax_basis_lines(&m), 2);
 
-    // Boundary: value equals basis.
+    // By id: personal use, the member's $2,000 laptop worth $1,200.
     let r = m.ok(
         "books.set_asset_tax_basis",
-        json!({"asset": t, "rule": "personal_use_conversion", "contributor_basis": "1200.00"}),
+        json!({"asset": a.to_string(), "rule": "personal_use_conversion",
+               "contributor_adjusted_basis": "2000.00", "fmv_at_contribution": "1200.00"}),
     );
-    assert_eq!(dec(&r, "tax_basis").as_deref(), Some("1200"));
-    assert_eq!(dec(&r, "built_in_gain").as_deref(), Some("0"));
+    let b = &r["basis"];
+    assert_eq!(dec(b, "tax_basis_723").as_deref(), Some("2000"));
+    assert_eq!(
+        dec(b, "depreciable_basis").as_deref(),
+        Some("1200"),
+        "the lesser"
+    );
+    assert_eq!(dec(b, "built_in_gain_704c").as_deref(), Some("-800"));
+    assert!(
+        b["sec704c_1c_note"]
+            .as_str()
+            .unwrap()
+            .contains("IRC §704(c)(1)(C)"),
+        "{b}"
+    );
+    assert_eq!(
+        b["sources"]["depreciable_basis"],
+        "Treas. Reg. §1.168(i)-4(b)"
+    );
+    assert_eq!(b["sec704c_method"], Value::Null);
 
-    // Cost: the book cost, no contributor basis, no built-in gain.
+    // A purchase: the book cost, nothing contributed.
+    let r = m.ok(
+        "books.set_asset_tax_basis",
+        json!({"asset": t, "rule": "purchase"}),
+    );
+    let b = &r["basis"];
+    assert_eq!(b["rule"], "purchase");
+    assert_eq!(b["contributor_adjusted_basis"], Value::Null);
+    assert_eq!(b["tax_basis_723"], Value::Null);
+    assert_eq!(dec(b, "depreciable_basis").as_deref(), Some("1200"));
+    assert_eq!(b["built_in_gain_704c"], Value::Null);
+    assert_eq!(b["sources"]["depreciable_basis"], "IRC §1012");
+    assert_eq!(basis_lines(&m), 3);
+
+    // list_assets shows the latest record.
+    let basis = m.asset(a)["basis"].clone();
+    assert_eq!(basis["rule"], "purchase");
+}
+
+/// The old names (rule cost, carryover; contributor_basis) are aliases for
+/// one release, noted in the result; a name and its alias that disagree
+/// are refused.
+#[test]
+fn basis_rule_legacy_names_are_aliases() {
+    let mut m = books("tax-alias");
+    let (_, t) = m.register_ok(json!({}));
+    let r = m.ok(
+        "books.set_asset_tax_basis",
+        json!({"asset": t, "rule": "carryover", "contributor_basis": "900.00",
+               "fmv_at_contribution": "1200.00"}),
+    );
+    assert_eq!(r["basis"]["rule"], "carryover_723");
+    let notes = r["notes"].to_string();
+    assert!(
+        notes.contains("contributor_basis is now contributor_adjusted_basis"),
+        "{notes}"
+    );
+    assert!(
+        notes.contains("\\\"carryover\\\" is now \\\"carryover_723\\\""),
+        "{notes}"
+    );
     let r = m.ok(
         "books.set_asset_tax_basis",
         json!({"asset": t, "rule": "cost"}),
     );
-    assert_eq!(r["rule"], "cost");
-    assert_eq!(r["contributor_basis"], Value::Null);
-    assert_eq!(dec(&r, "tax_basis").as_deref(), Some("1200"));
-    assert_eq!(r["built_in_gain"], Value::Null);
-    assert_eq!(tax_basis_lines(&m), 4);
-
-    // list_assets shows the latest record.
-    let tax = m.asset(a)["tax"].clone();
-    assert_eq!(tax["rule"], "cost");
-    assert_eq!(dec(&tax, "tax_basis").as_deref(), Some("1200"));
+    assert_eq!(r["basis"]["rule"], "purchase");
+    let why = m.refuse(
+        "books.set_asset_tax_basis",
+        json!({"asset": t, "rule": "carryover_723", "contributor_adjusted_basis": "1.00",
+               "contributor_basis": "2.00", "fmv_at_contribution": "3.00"}),
+    );
+    assert!(why.contains("disagree"), "{why}");
+    let (_, t2) = m.register_ok(json!({"tax_basis_rule": "carryover",
+        "contributor_basis": "400.00", "fmv_at_contribution": "1200.00"}));
+    assert_eq!(m.assets().len(), 2);
+    let _ = t2;
 }
 
-/// Refusals: unknown asset, bad rule, cost with a basis, a contribution
-/// without one, negative, finer than cents, not a decimal string. Each
-/// leaves the journal byte-identical (the harness checks) and the record.
+/// A contribution's fair market value is a fact the human gives, never
+/// assumed from the cost (review R11): without it the call is refused.
+#[test]
+fn fmv_is_required_for_a_contribution() {
+    let mut m = books("tax-fmv");
+    let (_, t) = m.register_ok(json!({}));
+    for rule in ["carryover_723", "personal_use_conversion"] {
+        let why = m.refuse(
+            "books.set_asset_tax_basis",
+            json!({"asset": t, "rule": rule, "contributor_adjusted_basis": "900.00"}),
+        );
+        assert!(why.contains("fmv_at_contribution"), "{why}");
+        let out = m.register(json!({"basis_rule": rule, "contributor_adjusted_basis": "1.00"}));
+        assert!(out.refused(), "{out:?}");
+    }
+    assert_eq!(m.assets().len(), 1, "nothing registered");
+    assert_eq!(basis_lines(&m), 0);
+}
+
+/// Refusals: unknown asset, bad rule or method, a purchase with
+/// contribution facts, a contribution without its basis, negative, finer
+/// than cents, not a decimal string. Each leaves the journal byte-identical
+/// (the harness checks) and the record.
 #[test]
 fn set_asset_tax_basis_refusals_change_nothing() {
     let mut m = books("tax-refuse");
     let (a, t) = m.register_ok(json!({}));
     m.ok(
         "books.set_asset_tax_basis",
-        json!({"asset": t, "rule": "carryover", "contributor_basis": "500.00"}),
+        json!({"asset": t, "rule": "carryover_723", "contributor_adjusted_basis": "500.00",
+               "fmv_at_contribution": "1200.00"}),
     );
-    let before = m.asset(a)["tax"].clone();
+    let before = m.asset(a)["basis"].clone();
+    let c = |extra: Value| {
+        let mut v = json!({"asset": t, "rule": "carryover_723",
+                           "contributor_adjusted_basis": "500.00", "fmv_at_contribution": "1200.00"});
+        for (k, x) in extra.as_object().unwrap() {
+            v[k] = x.clone();
+        }
+        v
+    };
     for args in [
-        json!({"asset": "NOPE-1", "rule": "cost"}),
-        json!({"asset": "999", "rule": "cost"}),
+        json!({"asset": "NOPE-1", "rule": "purchase"}),
+        json!({"asset": "999", "rule": "purchase"}),
         json!({"asset": t, "rule": "fmv"}),
-        json!({"asset": t, "rule": "Cost"}),
+        json!({"asset": t, "rule": "Purchase"}),
         json!({"asset": t, "rule": ""}),
-        json!({"asset": t, "rule": "cost", "contributor_basis": "100.00"}),
-        json!({"asset": t, "rule": "carryover"}),
-        json!({"asset": t, "rule": "personal_use_conversion"}),
-        json!({"asset": t, "rule": "carryover", "contributor_basis": "-1.00"}),
-        json!({"asset": t, "rule": "carryover", "contributor_basis": "1.001"}),
-        json!({"asset": t, "rule": "carryover", "contributor_basis": "lots"}),
-        json!({"asset": t, "rule": "carryover", "contributor_basis": "1,000.00"}),
+        json!({"asset": t, "rule": "purchase", "contributor_adjusted_basis": "100.00"}),
+        json!({"asset": t, "rule": "purchase", "fmv_at_contribution": "100.00"}),
+        json!({"asset": t, "rule": "purchase", "sec704c_method": "traditional"}),
+        json!({"asset": t, "rule": "carryover_723", "fmv_at_contribution": "1.00"}),
+        c(json!({"contributor_adjusted_basis": "-1.00"})),
+        c(json!({"contributor_adjusted_basis": "1.001"})),
+        c(json!({"fmv_at_contribution": "lots"})),
+        c(json!({"fmv_at_contribution": "1,000.00"})),
+        c(json!({"sec704c_method": "ceiling"})),
+        c(json!({"basis_source": {"decided_by": " "}})),
     ] {
         m.refuse("books.set_asset_tax_basis", args);
     }
-    assert_eq!(m.asset(a)["tax"], before);
-    assert_eq!(tax_basis_lines(&m), 1);
+    assert_eq!(m.asset(a)["basis"], before);
+    assert_eq!(basis_lines(&m), 1);
 }
 
-/// register_asset with tax_basis_rule / contributor_basis records it at
-/// registration; without them, list_assets shows tax null.
+/// register_asset with basis_rule and its facts records it at
+/// registration; without, list_assets shows basis null.
 #[test]
-fn register_asset_records_a_tax_basis() {
+fn register_asset_records_a_basis() {
     let mut m = books("tax-register");
-    let (a, _) = m.register_ok(json!({"tax_basis_rule": "cost"}));
-    let (b, _) = m.register_ok(json!({"tax_basis_rule": "personal_use_conversion",
-                                      "contributor_basis": "1500.00"}));
-    let (c, _) = m.register_ok(json!({"tax_basis_rule": "carryover",
-                                      "contributor_basis": "400.00"}));
+    let (a, _) = m.register_ok(json!({"basis_rule": "purchase"}));
+    let (b, _) = m.register_ok(json!({"basis_rule": "personal_use_conversion",
+        "contributor_adjusted_basis": "1500.00", "fmv_at_contribution": "1200.00"}));
+    let (c, _) = m.register_ok(json!({"basis_rule": "carryover_723",
+        "contributor_adjusted_basis": "400.00", "fmv_at_contribution": "1200.00"}));
     let (n, _) = m.register_ok(json!({}));
-    let ta = m.asset(a)["tax"].clone();
-    assert_eq!(ta["rule"], "cost");
-    assert_eq!(ta["contributor_basis"], Value::Null);
-    assert_eq!(dec(&ta, "tax_basis").as_deref(), Some("1200"));
-    assert_eq!(ta["built_in_gain"], Value::Null);
-    let tb = m.asset(b)["tax"].clone();
-    assert_eq!(tb["rule"], "personal_use_conversion");
-    assert_eq!(dec(&tb, "contributor_basis").as_deref(), Some("1500"));
-    assert_eq!(dec(&tb, "tax_basis").as_deref(), Some("1200"));
-    assert_eq!(dec(&tb, "built_in_gain").as_deref(), Some("-300"));
-    let tc = m.asset(c)["tax"].clone();
-    assert_eq!(tc["rule"], "carryover");
-    assert_eq!(dec(&tc, "tax_basis").as_deref(), Some("400"));
-    assert_eq!(dec(&tc, "built_in_gain").as_deref(), Some("800"));
-    assert_eq!(m.asset(n)["tax"], Value::Null);
+    let ta = m.asset(a)["basis"].clone();
+    assert_eq!(ta["rule"], "purchase");
+    assert_eq!(dec(&ta, "depreciable_basis").as_deref(), Some("1200"));
+    let tb = m.asset(b)["basis"].clone();
+    assert_eq!(dec(&tb, "tax_basis_723").as_deref(), Some("1500"));
+    assert_eq!(dec(&tb, "depreciable_basis").as_deref(), Some("1200"));
+    assert_eq!(dec(&tb, "built_in_gain_704c").as_deref(), Some("-300"));
+    let tc = m.asset(c)["basis"].clone();
+    assert_eq!(dec(&tc, "depreciable_basis").as_deref(), Some("400"));
+    assert_eq!(dec(&tc, "built_in_gain_704c").as_deref(), Some("800"));
+    assert_eq!(m.asset(n)["basis"], Value::Null);
 }
 
-/// contributor_basis without tax_basis_rule, or a bad rule, is refused
-/// and registers nothing.
+/// A basis fact without basis_rule, a bad rule, or a record the engine
+/// refuses, given at registration, is a refused call: it registers
+/// nothing (server invariant 2).
 #[test]
-fn register_asset_refuses_a_bad_tax_basis() {
+fn register_asset_refuses_a_bad_basis_and_registers_nothing() {
     let mut m = books("tax-register-bad");
     m.register_ok(json!({}));
     for extra in [
-        json!({"contributor_basis": "500.00"}),
-        json!({"tax_basis_rule": "market_value"}),
-        json!({"tax_basis_rule": "carryover", "contributor_basis": "five"}),
+        json!({"contributor_adjusted_basis": "500.00"}),
+        json!({"fmv_at_contribution": "500.00"}),
+        json!({"basis_rule": "market_value"}),
+        json!({"basis_rule": "carryover_723", "contributor_adjusted_basis": "five",
+               "fmv_at_contribution": "1.00"}),
+        json!({"basis_rule": "carryover_723", "fmv_at_contribution": "1.00"}),
+        json!({"basis_rule": "purchase", "contributor_adjusted_basis": "100.00"}),
+        json!({"basis_rule": "carryover_723", "contributor_adjusted_basis": "-1.00",
+               "fmv_at_contribution": "1.00"}),
+        json!({"basis_rule": "purchase", "tax_basis_rule": "carryover"}),
     ] {
         let out = m.register(extra.clone());
         assert!(out.refused(), "{extra}: {out:?}");
@@ -1086,59 +1192,187 @@ fn register_asset_refuses_a_bad_tax_basis() {
     assert_eq!(m.assets().len(), 1, "nothing registered");
 }
 
-/// A record the engine refuses (Ledger::set_asset_tax_basis INVARIANTS
-/// 1–2) given at registration is a refused call, so (server invariant 2)
-/// it registers nothing either.
+// ------------------------------------------- the dates (rules.md B-15)
+
+/// purchase_date is an alias for in_service_date for one release, noted.
 #[test]
-fn register_asset_with_a_basis_the_engine_refuses_registers_nothing() {
-    let mut m = books("tax-register-engine");
-    for extra in [
-        json!({"tax_basis_rule": "carryover"}),
-        json!({"tax_basis_rule": "personal_use_conversion"}),
-        json!({"tax_basis_rule": "cost", "contributor_basis": "100.00"}),
-        json!({"tax_basis_rule": "carryover", "contributor_basis": "-1.00"}),
-        json!({"tax_basis_rule": "carryover", "contributor_basis": "1.001"}),
-    ] {
-        let out = m.register(extra.clone());
-        assert!(out.refused(), "{extra}: {out:?}");
-    }
-    assert!(m.assets().is_empty(), "nothing registered");
+fn purchase_date_is_an_alias_for_in_service_date() {
+    let mut m = books("alias-date");
+    let r = match m.register(json!({"in_service_date": null, "purchase_date": "2026-02-01"})) {
+        Out::Ok(v) => v,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(r["in_service_date"], "2026-02-01");
+    assert_eq!(r["acquired_date"], "2026-02-01");
+    assert!(
+        r["notes"]
+            .to_string()
+            .contains("purchase_date is now in_service_date"),
+        "{r}"
+    );
+    let a = m.asset(r["asset_id"].as_u64().unwrap());
+    assert_eq!(a["in_service_date"], "2026-02-01");
+    assert!(a.get("purchase_date").is_none(), "{a}");
 }
 
-/// Every object anywhere in `v` that has `key`.
-fn objects_with<'a>(v: &'a Value, key: &str, out: &mut Vec<&'a Value>) {
-    match v {
-        Value::Object(m) => {
-            if m.contains_key(key) {
-                out.push(v);
-            }
-            m.values().for_each(|c| objects_with(c, key, out));
-        }
-        Value::Array(a) => a.iter().for_each(|c| objects_with(c, key, out)),
-        _ => {}
-    }
+/// Both given with different dates: refused, nothing registered; neither:
+/// refused.
+#[test]
+fn purchase_date_and_a_different_in_service_date_are_refused() {
+    let mut m = books("alias-differ");
+    let out = m.register(json!({"in_service_date": "2026-01-01", "purchase_date": "2026-02-01"}));
+    assert!(out.refused(), "{out:?}");
+    let out = m.register(json!({"in_service_date": null}));
+    assert!(out.refused(), "{out:?}");
+    assert!(m.assets().is_empty());
+    m.register_ok(json!({"in_service_date": "2026-01-01", "purchase_date": "2026-01-01"}));
 }
 
-/// The fixed_asset_register export carries each asset's tax basis rule,
-/// contributor basis, tax basis, and built-in gain; JSON also the total
-/// tax basis of held assets that have one and how many held assets have
-/// none. A disposed asset is out of the totals.
+/// The acquired date is the acquisition entry's (an asset bought before it
+/// is in service); an entry dated after the in-service date is refused,
+/// registering nothing.
 #[test]
-fn export_fixed_asset_register_carries_tax_basis() {
-    let mut m = books("tax-export");
+fn acquired_date_comes_from_the_acquisition_entry() {
+    let mut m = books("acquired");
+    m.post(
+        "2026-01-10",
+        &[("1500", "debit", "1200.00"), ("1000", "credit", "1200.00")],
+    );
+    let entry = 1;
+    let r = match m.register(json!({"in_service_date": "2026-02-01", "acquisition_entry": entry})) {
+        Out::Ok(v) => v,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(r["acquired_date"], "2026-01-10");
+    assert_eq!(r["in_service_date"], "2026-02-01");
+    let a = m.asset(r["asset_id"].as_u64().unwrap());
+    assert_eq!(a["acquired_date"], "2026-01-10");
+    let why = match m.register(json!({"in_service_date": "2026-01-05", "acquisition_entry": entry}))
+    {
+        Out::Ok(v) => panic!("registered {v}"),
+        other => other.err_text(),
+    };
+    assert!(why.contains("after the in-service date"), "{why}");
+    assert_eq!(m.assets().len(), 1);
+    // correct_asset: never before the acquisition entry; in_service the
+    // old name of in_service_date.
+    let id = r["asset_id"].as_u64().unwrap();
+    let why = m.refuse(
+        "books.correct_asset",
+        json!({"asset": id.to_string(), "in_service_date": "2026-01-09", "reason": "typo"}),
+    );
+    assert!(why.contains("before it was acquired"), "{why}");
+    let c = m.ok(
+        "books.correct_asset",
+        json!({"asset": id.to_string(), "in_service": "2026-01-15", "reason": "typo"}),
+    );
+    assert_eq!(c["in_service_date"], "2026-01-15");
+    assert_eq!(c["acquired_date"], "2026-01-10");
+    assert!(
+        c["notes"]
+            .to_string()
+            .contains("in_service is now in_service_date")
+    );
+}
+
+// ------------------------------- posted and scheduled (rules.md B-24)
+
+/// Named regression 1 (the brief's reproduction 1, its figures made up): a
+/// $1,440.00 laptop, 36 months, in service 2026-05-15, nothing run. As of
+/// 2026-05-20 the schedule has 1,440/36 × 6/31 = 7.74 due, the books carry
+/// nothing: posted 0.00, scheduled 7.74, unposted 7.74, book value
+/// 1,440.00 (the tool called 1,432.26 book value before P3). May's run is
+/// dated 05-31: as of 05-20 still 0.00 posted; as of 05-31 posted =
+/// scheduled = 1,440/36 × 17/31 = 21.94.
+#[test]
+fn list_assets_book_value_is_what_the_books_carry() {
+    let mut m = books("book-value");
+    let (id, _) = m.register_ok(json!({"in_service_date": "2026-05-15", "cost": "1440.00",
+                                       "useful_life_months": 36}));
+    let at = |m: &mut Mcp, as_of: &str| -> Value {
+        let r = m.read_only("books.list_assets", json!({"as_of": as_of}));
+        assert_eq!(r["as_of"], as_of);
+        r["assets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["asset_id"] == json!(id))
+            .unwrap()
+            .clone()
+    };
+    let a = at(&mut m, "2026-05-20");
+    assert_eq!(a["held"], true);
+    assert_eq!(dec(&a, "accumulated_posted").as_deref(), Some("0"));
+    assert_eq!(
+        dec(&a, "accumulated_scheduled_through").as_deref(),
+        Some("7.74")
+    );
+    assert_eq!(dec(&a, "unposted_depreciation").as_deref(), Some("7.74"));
+    assert_eq!(dec(&a, "book_value").as_deref(), Some("1440"));
+    assert!(a.get("accumulated").is_none(), "{a}");
+    m.ok(
+        "books.run_depreciation",
+        json!({"period": "2026-05", "asset_id": id}),
+    );
+    let a = at(&mut m, "2026-05-20");
+    assert_eq!(dec(&a, "accumulated_posted").as_deref(), Some("0"));
+    let a = at(&mut m, "2026-05-31");
+    assert_eq!(dec(&a, "accumulated_posted").as_deref(), Some("21.94"));
+    assert_eq!(
+        dec(&a, "accumulated_scheduled_through").as_deref(),
+        Some("21.94")
+    );
+    assert_eq!(dec(&a, "unposted_depreciation").as_deref(), Some("0"));
+    assert_eq!(dec(&a, "book_value").as_deref(), Some("1418.06"));
+    // Before it was acquired: not held, no figures.
+    let a = at(&mut m, "2026-05-14");
+    assert_eq!(a["held"], false);
+    assert_eq!(a["book_value"], Value::Null);
+    assert_eq!(a["accumulated_posted"], Value::Null);
+}
+
+/// A run reversed is no longer posted (named regression 2, its posted
+/// figure): the books' accumulated depreciation and book value go back,
+/// the scheduled figure stays, and the difference is due again.
+#[test]
+fn a_reversed_run_is_not_posted() {
+    let mut m = books("reversed-run");
+    let (id, _) = m.register_ok(json!({}));
+    let run = m.ok(
+        "books.run_depreciation",
+        json!({"period": "2026-01", "asset_id": id}),
+    );
+    let entry = run["runs"][0]["entry_id"].as_u64().unwrap();
+    let at = |m: &mut Mcp| -> Value {
+        m.read_only("books.list_assets", json!({"as_of": "2026-01-31"}))["assets"][0].clone()
+    };
+    assert_eq!(
+        dec(&at(&mut m), "accumulated_posted").as_deref(),
+        Some("100")
+    );
+    m.ok(
+        "books.reverse_entry",
+        json!({"entry_id": entry, "date": "2026-01-31", "description": "undo", "confirmed": true}),
+    );
+    let a = at(&mut m);
+    assert_eq!(dec(&a, "accumulated_posted").as_deref(), Some("0"));
+    assert_eq!(
+        dec(&a, "accumulated_scheduled_through").as_deref(),
+        Some("100")
+    );
+    assert_eq!(dec(&a, "unposted_depreciation").as_deref(), Some("100"));
+    assert_eq!(dec(&a, "book_value").as_deref(), Some("1200"));
+}
+
+/// A disposed asset is not held: every figure 0.00 once it left the books.
+#[test]
+fn a_disposed_asset_has_left_the_books() {
+    let mut m = books("disposed-list");
     m.post(
         "2026-01-01",
         &[("1000", "debit", "9000.00"), ("3000", "credit", "9000.00")],
     );
-    m.register_ok(json!({"tag": "BOUGHT-1", "tax_basis_rule": "cost"}));
-    m.register_ok(json!({"tag": "CARRY-1", "tax_basis_rule": "carryover",
-                         "contributor_basis": "650.25"}));
-    m.register_ok(
-        json!({"tag": "CONV-1", "tax_basis_rule": "personal_use_conversion",
-                         "contributor_basis": "2000.00"}),
-    );
-    m.register_ok(json!({"tag": "NONE-1"}));
-    let (_, sold) = m.register_ok(json!({"tag": "SOLD-1", "tax_basis_rule": "cost"}));
+    let (id, sold) = m.register_ok(json!({}));
     let doc = m.file_bill_of_sale();
     m.ok(
         "books.dispose_asset",
@@ -1146,7 +1380,57 @@ fn export_fixed_asset_register_carries_tax_basis() {
                "proceeds_account": "1000", "gain_loss_account": "7100",
                "confirmed": true, "receipt_attachment_ids": [doc]}),
     );
+    let a = m.asset(id);
+    assert_eq!(a["status"], "disposed");
+    assert_eq!(a["held"], false);
+    for k in [
+        "accumulated_posted",
+        "accumulated_scheduled_through",
+        "unposted_depreciation",
+        "book_value",
+    ] {
+        assert_eq!(dec(&a, k).as_deref(), Some("0"), "{k}");
+    }
+}
 
+/// The fixed_asset_register export carries, per asset, its acquired and
+/// in-service dates, accumulated depreciation scheduled and posted, book
+/// value (cost less posted), and the basis facts and figures; JSON the
+/// totals and the three differences. A disposed asset is out of the
+/// totals. By hand, as of 2026-06-30: held with a basis, depreciable
+/// BOUGHT-1 1,200.00, CARRY-1 650.25 and CONV-1 1,200.00, together
+/// 3,050.25; §723 650.25 and 2,000.00, together 2,650.25; BOUGHT-1 ran
+/// January: posted 100.00 of 600.00 scheduled.
+#[test]
+fn export_fixed_asset_register_carries_posted_scheduled_and_704c() {
+    let mut m = books("tax-export");
+    m.post(
+        "2026-01-01",
+        &[("1000", "debit", "9000.00"), ("3000", "credit", "9000.00")],
+    );
+    let (bought, _) = m.register_ok(json!({"tag": "BOUGHT-1", "basis_rule": "purchase"}));
+    m.register_ok(json!({"tag": "CARRY-1", "basis_rule": "carryover_723",
+                         "contributor_adjusted_basis": "650.25", "fmv_at_contribution": "1200.00",
+                         "sec704c_method": "traditional"}));
+    m.register_ok(
+        json!({"tag": "CONV-1", "basis_rule": "personal_use_conversion",
+                         "contributor_adjusted_basis": "2000.00", "fmv_at_contribution": "1200.00",
+                         "basis_source": {"decided_by": "Tobin Harlow", "decided_on": "2026-10-20",
+                                          "citation": "entry 9"}}),
+    );
+    m.register_ok(json!({"tag": "NONE-1"}));
+    let (_, sold) = m.register_ok(json!({"tag": "SOLD-1", "basis_rule": "purchase"}));
+    m.ok(
+        "books.run_depreciation",
+        json!({"period": "2026-01", "asset_id": bought}),
+    );
+    let doc = m.file_bill_of_sale();
+    m.ok(
+        "books.dispose_asset",
+        json!({"tag": sold, "date": "2026-03-31", "proceeds": "100.00",
+               "proceeds_account": "1000", "gain_loss_account": "7100",
+               "confirmed": true, "receipt_attachment_ids": [doc]}),
+    );
     let export = |m: &mut Mcp, format: &str| -> String {
         m.read_only(
             "books.export",
@@ -1156,95 +1440,101 @@ fn export_fixed_asset_register_carries_tax_basis() {
             .unwrap()
             .to_string()
     };
-
-    // JSON.
     let j: Value = serde_json::from_str(&export(&mut m, "json")).unwrap();
-    let mut rows = Vec::new();
-    objects_with(&j, "tax_basis_rule", &mut rows);
+    let rows = j["assets"].as_array().unwrap();
     assert_eq!(rows.len(), 5, "{j}");
-    let row = |tag: &str| -> Value {
-        (*rows
-            .iter()
-            .find(|r| r["tag"] == tag)
-            .unwrap_or_else(|| panic!("{tag} row")))
-        .clone()
-    };
+    let row = |tag: &str| rows.iter().find(|r| r["tag"] == tag).unwrap().clone();
     let r = row("BOUGHT-1");
-    assert_eq!(r["tax_basis_rule"], "cost");
-    assert_eq!(r["contributor_basis"], Value::Null);
-    assert_eq!(dec(&r, "tax_basis").as_deref(), Some("1200"));
-    assert_eq!(r["built_in_gain"], Value::Null);
+    assert_eq!(r["basis_rule"], "purchase");
+    assert_eq!(dec(&r, "accumulated_scheduled").as_deref(), Some("600"));
+    assert_eq!(dec(&r, "accumulated_posted").as_deref(), Some("100"));
+    assert_eq!(dec(&r, "book_value").as_deref(), Some("1100"));
+    assert_eq!(dec(&r, "depreciable_basis").as_deref(), Some("1200"));
+    assert_eq!(r["acquired_date"], "2026-01-01");
+    assert_eq!(r["in_service_date"], "2026-01-01");
     let r = row("CARRY-1");
-    assert_eq!(r["tax_basis_rule"], "carryover");
-    assert_eq!(dec(&r, "contributor_basis").as_deref(), Some("650.25"));
-    assert_eq!(dec(&r, "tax_basis").as_deref(), Some("650.25"));
-    assert_eq!(dec(&r, "built_in_gain").as_deref(), Some("549.75"));
+    assert_eq!(dec(&r, "tax_basis_723").as_deref(), Some("650.25"));
+    assert_eq!(dec(&r, "built_in_gain_704c").as_deref(), Some("549.75"));
+    assert_eq!(r["sec704c_method"], "traditional");
+    assert_eq!(r["fmv_recorded"], true);
     let r = row("CONV-1");
-    assert_eq!(r["tax_basis_rule"], "personal_use_conversion");
-    assert_eq!(dec(&r, "contributor_basis").as_deref(), Some("2000"));
-    assert_eq!(dec(&r, "tax_basis").as_deref(), Some("1200"));
-    assert_eq!(dec(&r, "built_in_gain").as_deref(), Some("-800"));
-    let r = row("NONE-1");
-    assert_eq!(r["tax_basis_rule"], Value::Null);
-    assert_eq!(r["tax_basis"], Value::Null);
-    let r = row("SOLD-1");
-    assert_eq!(r["tax_basis_rule"], "cost");
-    // Held with a basis: 1200 + 650.25 + 1200; SOLD-1 out, NONE-1 missing.
-    assert_eq!(the_value(&j, "total_tax_basis"), "3050.25");
-    let mut missing = Vec::new();
-    find_key(&j, "missing_tax_basis", &mut missing);
-    assert_eq!(missing, vec![&json!(1)]);
+    assert_eq!(dec(&r, "depreciable_basis").as_deref(), Some("1200"));
+    assert_eq!(dec(&r, "built_in_gain_704c").as_deref(), Some("-800"));
+    assert_eq!(r["sec704c_1c"], true);
+    assert_eq!(r["basis_source"], "Tobin Harlow, 2026-10-20: entry 9");
+    assert_eq!(row("NONE-1")["basis_rule"], Value::Null);
+    assert_eq!(the_value(&j, "total_depreciable_basis"), "3050.25");
+    assert_eq!(the_value(&j, "total_tax_basis_723"), "2650.25");
+    assert_eq!(the_value(&j, "total_accumulated_posted"), "100");
+    assert_eq!(the_value(&j, "unattributed_accumulated"), "0");
+    assert_eq!(j["missing_basis"], json!(1));
+    assert!(
+        j["tax_figures_are"]
+            .as_str()
+            .unwrap()
+            .contains("at contribution")
+    );
 
-    // CSV: the four tax columns, by header.
+    // CSV: by header.
     let csv = export(&mut m, "csv");
     let mut lines = csv.lines();
     let header: Vec<String> = lines
         .next()
         .unwrap()
         .split(',')
-        .map(|h| h.trim().to_ascii_lowercase())
+        .map(str::to_string)
         .collect();
-    let col = |name: &str| {
-        header
-            .iter()
-            .position(|h| h == name)
-            .unwrap_or_else(|| panic!("{name} column in {header:?}"))
-    };
-    let (c_tag, c_rule, c_basis, c_tax, c_gain) = (
-        col("tag"),
-        col("tax_basis_rule"),
-        col("contributor_basis"),
-        col("tax_basis"),
-        col("built_in_gain"),
+    assert_eq!(
+        header,
+        [
+            "tag",
+            "description",
+            "serial",
+            "acquired",
+            "in_service",
+            "cost",
+            "salvage",
+            "useful_life_months",
+            "accumulated_scheduled",
+            "accumulated_posted",
+            "book_value",
+            "status",
+            "proceeds",
+            "basis_rule",
+            "contributor_adjusted_basis",
+            "fmv_at_contribution",
+            "fmv_recorded",
+            "tax_basis_723",
+            "depreciable_basis",
+            "built_in_gain_704c",
+            "sec704c_method",
+            "basis_source"
+        ]
     );
+    let col = |name: &str| header.iter().position(|h| h == name).unwrap();
     let body: Vec<Vec<String>> = lines
         .map(|l| l.split(',').map(str::to_string).collect())
         .collect();
     let csv_row = |tag: &str| {
         body.iter()
-            .find(|r| r.get(c_tag).map(String::as_str) == Some(tag))
+            .find(|r| r.first().map(String::as_str) == Some(tag))
             .unwrap_or_else(|| panic!("{tag} in {csv}"))
             .clone()
     };
     let r = csv_row("CARRY-1");
-    assert_eq!(r[c_rule], "carryover");
-    assert_eq!(canon(&r[c_basis]), "650.25");
-    assert_eq!(canon(&r[c_tax]), "650.25");
-    assert_eq!(canon(&r[c_gain]), "549.75");
-    let r = csv_row("CONV-1");
-    assert_eq!(r[c_rule], "personal_use_conversion");
-    assert_eq!(canon(&r[c_tax]), "1200");
-    assert_eq!(canon(&r[c_gain]), "-800");
+    assert_eq!(r[col("basis_rule")], "carryover_723");
+    assert_eq!(canon(&r[col("tax_basis_723")]), "650.25");
+    assert_eq!(canon(&r[col("built_in_gain_704c")]), "549.75");
+    assert_eq!(r[col("fmv_recorded")], "true");
     let r = csv_row("BOUGHT-1");
-    assert_eq!(r[c_rule], "cost");
-    assert_eq!(r[c_basis], "");
-    assert_eq!(canon(&r[c_tax]), "1200");
-    assert_eq!(r[c_gain], "");
-    let r = csv_row("NONE-1");
-    assert_eq!((r[c_rule].as_str(), r[c_tax].as_str()), ("", ""));
-    // The TOTAL row's tax basis column is the total tax basis.
+    assert_eq!(canon(&r[col("accumulated_posted")]), "100");
+    assert_eq!(canon(&r[col("book_value")]), "1100");
+    assert_eq!(r[col("contributor_adjusted_basis")], "");
     let total = csv_row("TOTAL");
-    assert_eq!(canon(&total[c_tax]), "3050.25");
+    assert_eq!(total.len(), header.len());
+    assert_eq!(canon(&total[col("depreciable_basis")]), "3050.25");
+    assert_eq!(canon(&total[col("tax_basis_723")]), "2650.25");
+    assert_eq!(canon(&total[col("accumulated_posted")]), "100");
 }
 
 // ------------------------------------- P3: defect 22 and runs, over MCP
@@ -1279,9 +1569,10 @@ fn dispose_args(x: u64, date: &str, proceeds: &str) -> Value {
 /// Defect 22, reproduction B over MCP: January through May run, then a
 /// disposal on 2026-06-15 for 7,000.00. Hand check: June held 15 of 30
 /// days, 500.00 (the final depreciation); accumulated 5,500.00, book value
-/// 6,500.00, gain 500.00. Afterwards books.asset_schedule ends there and
-/// books.list_assets says the same. Before P3 the schedule showed June
-/// 7,000.00, accumulated 12,000.00, book value 0.00.
+/// 6,500.00, gain 500.00. Afterwards books.asset_schedule ends there, and
+/// books.list_assets lists it as gone: not held, every figure 0.00 (it
+/// left the books with its disposal; rules.md B-15 rule 8). Before P3 the
+/// schedule showed June 7,000.00, accumulated 12,000.00, book value 0.00.
 #[test]
 fn a_disposed_asset_lists_what_it_depreciated_through_its_disposal() {
     let (mut m, x) = asset_x("disposed-figures");
@@ -1313,8 +1604,15 @@ fn a_disposed_asset_lists_what_it_depreciated_through_its_disposal() {
     assert_eq!(canon(jun["accumulated"].as_str().unwrap()), "5500");
     assert_eq!(canon(jun["book_value"].as_str().unwrap()), "6500");
     let listed = m.asset(x);
-    assert_eq!(canon(listed["accumulated"].as_str().unwrap()), "5500");
-    assert_eq!(canon(listed["book_value"].as_str().unwrap()), "6500");
+    assert_eq!(listed["held"], false);
+    for figure in [
+        "accumulated_posted",
+        "accumulated_scheduled_through",
+        "unposted_depreciation",
+        "book_value",
+    ] {
+        assert_eq!(canon(listed[figure].as_str().unwrap()), "0", "{figure}");
+    }
     assert_eq!(listed["schedule_error"], Value::Null);
 }
 

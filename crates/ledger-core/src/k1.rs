@@ -169,17 +169,9 @@ pub fn k1_detail(
     }
     let me = members_equity(ledger, start, end, members)?;
     let places = ledger.base_currency().allocation_places();
-    let receivables = ledger.role_account(&crate::RECEIVABLES);
     let closings = ledger.closing_entry_ids();
     let cancelled = crate::reports::cancelled_in_span(ledger, start, end);
-    let property_account = |id: AccountId| {
-        !cash.contains(&id)
-            && Some(id) != receivables
-            && ledger
-                .chart()
-                .get(id)
-                .is_some_and(|a| a.account_type == AccountType::Asset)
-    };
+    let property_account = |id: AccountId| is_property_account(ledger, cash, id);
     let sum = |e: &crate::JournalEntry, side: Side, account: AccountId| -> Decimal {
         e.lines()
             .iter()
@@ -272,6 +264,18 @@ pub fn k1_detail(
         })
         .collect();
     Ok(K1Detail { rows, lines })
+}
+
+/// Whether an account holds property (INVARIANT 3): an asset account that
+/// is neither cash (`cash`) nor receivables. The tax-basis capital
+/// worksheet (crate::tax_capital) reads property the same way.
+pub(crate) fn is_property_account(ledger: &Ledger, cash: &[AccountId], id: AccountId) -> bool {
+    !cash.contains(&id)
+        && Some(id) != ledger.role_account(&crate::RECEIVABLES)
+        && ledger
+            .chart()
+            .get(id)
+            .is_some_and(|a| a.account_type == AccountType::Asset)
 }
 
 /// One entry's property shared among the members' credits in it

@@ -7,12 +7,13 @@
 
 use chrono::NaiveDate;
 use ledger_core::{
-    AccountType, Currency, Ledger, Money, NewAsset, Side, accumulated_depreciation, book_value,
+    AccountType, Currency, Ledger, Money, NewAsset, Side, accumulated_scheduled_through,
     depreciation_schedule,
     reports::{
         balance_sheet, balance_sheet_as_of, profit_and_loss_for_period, trial_balance,
         unclosed_earnings,
     },
+    scheduled_book_value,
 };
 use proptest::prelude::*;
 use rust_decimal::Decimal;
@@ -290,7 +291,7 @@ proptest! {
         let ex = ledger.add_account("6100", "Depr", AccountType::Expense, None, false).unwrap();
         let id = ledger.register_asset(NewAsset {
             description: "prop".to_string(),
-            purchase_date: NaiveDate::from_ymd_opt(y, m, d).unwrap(),
+            in_service_date: NaiveDate::from_ymd_opt(y, m, d).unwrap(),
             cost: Money::new(cost, Currency::USD),
             salvage_value: Money::new(salvage, Currency::USD),
             useful_life_months: life,
@@ -299,7 +300,7 @@ proptest! {
             expense_account: ex,
         }).unwrap();
         let asset = ledger.get_asset(id).unwrap();
-        let far = asset.purchase_date.checked_add_months(chrono::Months::new(life + 24)).unwrap();
+        let far = asset.in_service_date.checked_add_months(chrono::Months::new(life + 24)).unwrap();
         let sched = depreciation_schedule(asset, far).unwrap();
         // The lifetime total is exactly cost minus salvage: never a penny off.
         let total: Decimal = sched.iter().map(|l| l.amount).sum();
@@ -314,8 +315,8 @@ proptest! {
         }
         // Book value at any date matches the schedule.
         if let Some(last) = sched.last() {
-            prop_assert_eq!(book_value(asset, far).unwrap(), last.book_value);
-            prop_assert_eq!(accumulated_depreciation(asset, far).unwrap(), last.accumulated);
+            prop_assert_eq!(scheduled_book_value(asset, far).unwrap(), last.book_value);
+            prop_assert_eq!(accumulated_scheduled_through(asset, far).unwrap(), last.accumulated);
         }
     }
 }
@@ -506,7 +507,7 @@ mod p3 {
         let id = ledger
             .register_asset(NewAsset {
                 description: "prop".to_string(),
-                purchase_date: start,
+                in_service_date: start,
                 cost: Money::new(Decimal::new(cost_cents as i64, 2), Currency::USD),
                 salvage_value: Money::new(Decimal::new(salvage_cents as i64, 2), Currency::USD),
                 useful_life_months: life,
@@ -631,7 +632,7 @@ proptest! {
         let mut prev = Decimal::ZERO;
         for day in days {
             let s = depreciation_schedule(a, day).unwrap();
-            let acc = accumulated_depreciation(a, day).unwrap();
+            let acc = accumulated_scheduled_through(a, day).unwrap();
             prop_assert_eq!(s.iter().map(|l| l.amount).sum::<Decimal>(), acc);
             prop_assert!(s.iter().all(|l| l.amount >= Decimal::ZERO));
             prop_assert!(acc >= prev, "{}: {} < {}", day, acc, prev);
@@ -673,10 +674,10 @@ proptest! {
         let full = depreciation_schedule(a, NaiveDate::MAX).unwrap();
         prop_assert_eq!(full.last().map_or(Decimal::ZERO, |l| l.accumulated), want.accumulated);
         prop_assert_eq!(
-            accumulated_depreciation(a, on + chrono::Days::new(later)).unwrap(),
+            accumulated_scheduled_through(a, on + chrono::Days::new(later)).unwrap(),
             want.accumulated
         );
-        prop_assert_eq!(book_value(a, on).unwrap(), want.book_value);
+        prop_assert_eq!(scheduled_book_value(a, on).unwrap(), want.book_value);
     }
 
     /// B-15 rule 3 (defect 22), against arithmetic written here: through
@@ -711,7 +712,7 @@ proptest! {
                 x / y + i128::from(2 * (x % y) >= y)
             };
             prop_assert_eq!(
-                accumulated_depreciation(a, through).unwrap(),
+                accumulated_scheduled_through(a, through).unwrap(),
                 Decimal::new(want as i64, 2),
                 "{} of {}", through, last_day
             );
@@ -879,6 +880,56 @@ proptest! {
             prop_assert_eq!((y, m), ym(k as u32), "the months in turn");
             let one = ledger_core::run_amount(a, y, m, &posted).unwrap();
             prop_assert_eq!(r, one, "{}-{:02}", y, m);
+        }
+    }
+}
+
+fn arb_basis_rule() -> impl Strategy<Value = ledger_core::BasisRule> {
+    prop_oneof![
+        Just(ledger_core::BasisRule::Purchase),
+        Just(ledger_core::BasisRule::Carryover723),
+        Just(ledger_core::BasisRule::PersonalUseConversion),
+    ]
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(5000))]
+
+    /// kernel::basis_figures INVARIANTS 1-4 on Decimal money (rules.md
+    /// B-25): a purchase depreciates from cost and has no §723 basis or
+    /// built-in gain; a contribution's §723 basis is the adjusted basis,
+    /// its built-in gain fair market value less that basis, negative
+    /// exactly when the basis exceeds the value; carryover depreciates
+    /// from the basis, personal use from the lesser (at most each, equal
+    /// to one).
+    #[test]
+    fn prop_basis_figures_laws(
+        rule in arb_basis_rule(),
+        cost in 1i64..=100_000_000_000,
+        adjusted in 0i64..=100_000_000_000,
+        fmv in 0i64..=100_000_000_000,
+    ) {
+        use ledger_core::BasisRule::*;
+        let (cost, adjusted, fmv) = (Decimal::new(cost, 2), Decimal::new(adjusted, 2), Decimal::new(fmv, 2));
+        let f = ledger_core::kernel::basis_figures(rule, cost, adjusted, fmv).unwrap();
+        match rule {
+            Purchase => {
+                prop_assert_eq!(f.depreciable_basis, cost);
+                prop_assert_eq!(f.tax_basis_723, None);
+                prop_assert_eq!(f.built_in_gain_704c, None);
+            }
+            Carryover723 | PersonalUseConversion => {
+                prop_assert_eq!(f.tax_basis_723, Some(adjusted));
+                let g = f.built_in_gain_704c.unwrap();
+                prop_assert_eq!(g, fmv - adjusted);
+                prop_assert_eq!(g < Decimal::ZERO, adjusted > fmv);
+                if rule == Carryover723 {
+                    prop_assert_eq!(f.depreciable_basis, adjusted);
+                } else {
+                    prop_assert!(f.depreciable_basis <= adjusted && f.depreciable_basis <= fmv);
+                    prop_assert!(f.depreciable_basis == adjusted || f.depreciable_basis == fmv);
+                }
+            }
         }
     }
 }

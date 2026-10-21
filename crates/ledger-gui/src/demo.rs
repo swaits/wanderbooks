@@ -489,7 +489,7 @@ pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
     )?;
     let asset = s.register_asset(NewAsset {
         description: "MacBook Pro 16\"".into(),
-        purchase_date: laptop_date,
+        in_service_date: laptop_date,
         cost: usd(laptop),
         salvage_value: usd(dec(400)),
         useful_life_months: 36,
@@ -501,13 +501,7 @@ pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
     s.set_asset_tag(asset, "JS-0001")?;
     s.set_asset_serial(asset, Some("C02FK3XJQ6L4"))?;
     // Bought by the company, so its federal tax basis is its cost.
-    s.set_asset_tax_basis(
-        asset,
-        ledger_core::TaxBasis {
-            rule: ledger_core::TaxBasisRule::Cost,
-            contributor_basis: None,
-        },
-    )?;
+    s.set_asset_basis(asset, ledger_core::AssetBasis::purchase())?;
 
     // Prepaid insurance, spread over a year.
     let ins_date = day(start + Months::new(2), 15);

@@ -270,6 +270,10 @@ pub struct Ledger {
     /// Every asset tag ever held ([`assets::tag_key`] → the asset that
     /// held it): a tag never moves to another asset.
     asset_tags: std::collections::BTreeMap<String, AssetId>,
+    /// Each asset's depreciation runs (`asset.depreciation_posted`), in
+    /// the order recorded: what the books carry for it
+    /// ([`Ledger::accumulated_posted`]).
+    asset_runs: std::collections::BTreeMap<AssetId, Vec<assets::DepreciationPosting>>,
     /// The party directory ([`crate::parties`]).
     parties: std::collections::BTreeMap<crate::PartyId, crate::Party>,
     next_party_id: crate::PartyId,
@@ -325,6 +329,7 @@ impl Ledger {
             bill_payments: HashMap::new(),
             roles: std::collections::BTreeMap::new(),
             asset_tags: std::collections::BTreeMap::new(),
+            asset_runs: std::collections::BTreeMap::new(),
             parties: std::collections::BTreeMap::new(),
             next_party_id: 1,
             entry_parties: HashMap::new(),
@@ -720,6 +725,7 @@ impl Ledger {
             ("bill_payments", self.bill_payments == other.bill_payments),
             ("roles", self.roles == other.roles),
             ("asset_tags", self.asset_tags == other.asset_tags),
+            ("asset_runs", self.asset_runs == other.asset_runs),
             ("parties", self.parties == other.parties),
             ("next_party_id", self.next_party_id == other.next_party_id),
             ("entry_parties", self.entry_parties == other.entry_parties),
@@ -1927,10 +1933,10 @@ impl Ledger {
         // its exclusive end) inside the calendar the books keep, so every
         // month of the life is a month the books can post.
         if strict {
-            crate::calendar::check(new.purchase_date)?;
+            crate::calendar::check(new.in_service_date)?;
         }
         let end = new
-            .purchase_date
+            .in_service_date
             .checked_add_months(Months::new(new.useful_life_months));
         if !end
             .is_some_and(|end| !strict || end.pred_opt().is_some_and(crate::calendar::in_calendar))
@@ -1981,7 +1987,7 @@ impl Ledger {
             Asset {
                 id,
                 description: new.description,
-                purchase_date: new.purchase_date,
+                in_service_date: new.in_service_date,
                 cost: new.cost,
                 salvage_value: new.salvage_value,
                 useful_life_months: new.useful_life_months,
@@ -1993,7 +1999,7 @@ impl Ledger {
                 tag: None,
                 serial: None,
                 acquired_by: None,
-                tax: None,
+                basis: None,
             },
         );
         Ok(id)
@@ -2092,19 +2098,25 @@ impl Ledger {
     }
 
     /// Link an asset to the posted entry that put it on the books: its
-    /// purchase, or a member's contribution of it.
+    /// purchase, or a member's contribution of it. The entry's date is the
+    /// asset's acquired date ([`Self::asset_acquired_date`]).
     ///
     /// ```text
     /// GOAL: from an asset, its source document and capital entry; from
-    ///       the entry, the asset.
-    /// SOURCE: DECISION (owner, 2026-10-15).
+    ///       the entry, the asset; and the day the company acquired it.
+    /// SOURCE: DECISION (owner, 2026-10-15); rules.md B-15 (P3, settled in
+    ///         design 2026-10-20: an asset's acquired date comes from the
+    ///         entry it is linked to).
     /// INVARIANTS:
     ///   1. The linked entry is posted, is not a reversal, has not been
     ///      reversed, and debits the asset's cost account.
-    ///   2. A refusal MUST leave the books unchanged.
+    ///   2. The linked entry is dated on or before the asset's in-service
+    ///      date, and on or before its disposal: the register then holds
+    ///      the asset exactly while the books carry its cost (B-24).
+    ///   3. A refusal MUST leave the books unchanged.
     /// SCENARIOS:
-    ///   1. IF the asset or entry is unknown, or the entry fails 1: SHOULD
-    ///      refuse with AcquisitionEntryMismatch (or UnknownAsset /
+    ///   1. IF the asset or entry is unknown, or the entry fails 1 or 2:
+    ///      SHOULD refuse with AcquisitionEntryMismatch (or UnknownAsset /
     ///      UnknownEntry).
     ///   2. IF a later correction reverses the linked entry: link the
     ///      replacement (a reversed link stays as history in the journal).
@@ -2115,6 +2127,19 @@ impl Ledger {
         entry: EntryId,
     ) -> Result<(), LedgerError> {
         self.check_asset_acquisition(id, entry)?;
+        self.assets.get_mut(&id).expect("checked").acquired_by = Some(entry);
+        Ok(())
+    }
+
+    /// [`Self::set_asset_acquisition`] with the checks every journaled
+    /// `asset.acquisition_linked` passed when it was written (INVARIANT 1,
+    /// without the dates of INVARIANT 2), for replay only (rules.md B-28).
+    pub fn replay_set_asset_acquisition(
+        &mut self,
+        id: AssetId,
+        entry: EntryId,
+    ) -> Result<(), LedgerError> {
+        self.check_asset_acquisition_journaled(id, entry)?;
         self.assets.get_mut(&id).expect("checked").acquired_by = Some(entry);
         Ok(())
     }
@@ -2149,8 +2174,67 @@ impl Ledger {
             .is_some_and(|e| self.entries.values().any(|x| x.reversal_of() == Some(e)))
     }
 
-    /// The validation behind [`Self::set_asset_acquisition`].
+    /// The day the company acquired an asset: its acquisition entry's date,
+    /// or its in-service date when no entry is linked (every asset
+    /// registered before P3 without a link), never later than the
+    /// in-service date. `None` for an unknown asset.
+    ///
+    /// ```text
+    /// GOAL: the register holds an asset from the day the books carry its
+    ///       cost, which can be before it serves (B-24).
+    /// SOURCE: rules.md B-15, B-24; P3, settled in design (2026-10-20):
+    ///         "an asset's acquired date comes from the entry it is linked
+    ///         to".
+    /// INVARIANTS:
+    ///   1. acquired = min(in_service_date, the linked entry's date); the
+    ///      in-service date with no link. One source of truth: no stored
+    ///      date to disagree with the entry.
+    /// ```
+    pub fn asset_acquired_date(&self, id: AssetId) -> Option<NaiveDate> {
+        let a = self.assets.get(&id)?;
+        Some(
+            a.acquired_by
+                .and_then(|e| self.entries.get(&e))
+                .map_or(a.in_service_date, |e| e.date().min(a.in_service_date)),
+        )
+    }
+
+    /// The validation behind [`Self::set_asset_acquisition`]: INVARIANTS 1
+    /// and 2.
     pub fn check_asset_acquisition(&self, id: AssetId, entry: EntryId) -> Result<(), LedgerError> {
+        self.check_asset_acquisition_journaled(id, entry)?;
+        let asset = self.assets.get(&id).expect("checked");
+        let date = self.entries.get(&entry).expect("checked").date();
+        let why = if date > asset.in_service_date {
+            Some(format!(
+                "it is dated {date}, after the asset's in-service date {} (an asset is acquired before it serves: correct the in-service date with books.correct_asset, or the entry)",
+                asset.in_service_date
+            ))
+        } else {
+            match &asset.status {
+                AssetStatus::Disposed { date: gone, .. } if date > *gone => Some(format!(
+                    "it is dated {date}, after the asset's disposal on {gone}"
+                )),
+                _ => None,
+            }
+        };
+        match why {
+            Some(why) => Err(LedgerError::AcquisitionEntryMismatch {
+                asset: id,
+                entry,
+                why,
+            }),
+            None => Ok(()),
+        }
+    }
+
+    /// INVARIANT 1 of [`Self::set_asset_acquisition`]: the checks every
+    /// journaled `asset.acquisition_linked` passed.
+    fn check_asset_acquisition_journaled(
+        &self,
+        id: AssetId,
+        entry: EntryId,
+    ) -> Result<(), LedgerError> {
         let asset = self.assets.get(&id).ok_or(LedgerError::UnknownAsset(id))?;
         let e = self
             .entries
@@ -2221,69 +2305,109 @@ impl Ledger {
         Ok(())
     }
 
-    /// Record an asset's federal tax basis: the rule, and for a member's
-    /// contribution the member's adjusted basis. Book figures don't change.
+    /// Record how the company got an asset and the facts its tax figures
+    /// follow from ([`assets::AssetBasis`]): the rule, and for a member's
+    /// contribution the member's adjusted basis, the fair market value at
+    /// contribution, the §704(c) method if chosen, and the source. Book
+    /// figures don't change.
     ///
     /// ```text
-    /// GOAL: the register carries tax basis beside book value, so book and
-    ///       tax never get confused and the CPA sees both.
+    /// GOAL: the register carries the tax figures beside book value, each
+    ///       named for what it is, so book and tax never get confused and
+    ///       the CPA sees both.
     /// SOURCE: docs/spec/rules.md B-25; docs/spec/sources/
-    ///         irs-partnership-basis.md.
+    ///         irs-partnership-basis.md; DECISION D-41 (owner, 2026-10-20).
     /// INVARIANTS:
-    ///   1. Cost takes no contributor basis; Carryover and
-    ///      PersonalUseConversion require one.
-    ///   2. A contributor basis is non-negative, in cents at most.
+    ///   1. The record passes AssetBasis::check: a purchase takes no
+    ///      contribution facts; a contribution needs the adjusted basis and
+    ///      the value at contribution, each non-negative, in cents, at
+    ///      most one quadrillion.
+    ///   2. Only facts are kept: the figures are derived when read
+    ///      (Asset::basis_figures), under the rule in force.
     ///   3. A refusal MUST leave the books unchanged.
     /// SCENARIOS:
-    ///   1. IF the asset is unknown, or 1 or 2 fails: SHOULD refuse with
+    ///   1. IF the asset is unknown, or 1 fails: SHOULD refuse with
     ///      UnknownAsset or InvalidTaxBasis.
     ///   2. IF set again: the new record replaces the old (the journal
     ///      keeps both).
     /// ```
-    pub fn set_asset_tax_basis(
+    pub fn set_asset_basis(
         &mut self,
         id: AssetId,
-        tax: assets::TaxBasis,
+        basis: assets::AssetBasis,
     ) -> Result<(), LedgerError> {
-        self.check_asset_tax_basis(id, tax)?;
-        self.assets.get_mut(&id).expect("checked").tax = Some(tax);
+        self.check_asset_basis(id, &basis)?;
+        self.assets.get_mut(&id).expect("checked").basis = Some(basis);
         Ok(())
     }
 
-    /// [`Self::set_asset_tax_basis`] with the checks every journaled
-    /// `asset.tax_basis_set` passed when it was written
-    /// (TaxBasis::check_journaled: no upper bound), for replay only
-    /// (rules.md B-28). Never for new work.
-    pub fn replay_set_asset_tax_basis(
+    /// The validation behind [`Self::set_asset_basis`].
+    pub fn check_asset_basis(
+        &self,
+        id: AssetId,
+        basis: &assets::AssetBasis,
+    ) -> Result<(), LedgerError> {
+        if !self.assets.contains_key(&id) {
+            return Err(LedgerError::UnknownAsset(id));
+        }
+        basis.check().map_err(LedgerError::InvalidTaxBasis)
+    }
+
+    /// [`Self::set_asset_basis`] with the checks every journaled
+    /// `asset.basis_set` passed (AssetBasis::check_journaled: the facts fit
+    /// the rule, none negative, no bound on size), for replay and the
+    /// projection's read-back only (rules.md B-28). The figures the line
+    /// carries are for its readers: replay never recomputes them, so a
+    /// later change to how a figure is derived never refuses books an
+    /// earlier version wrote. Never for new work.
+    pub fn replay_set_asset_basis(
         &mut self,
         id: AssetId,
-        tax: assets::TaxBasis,
+        basis: assets::AssetBasis,
     ) -> Result<(), LedgerError> {
         let asset = self
             .assets
             .get_mut(&id)
             .ok_or(LedgerError::UnknownAsset(id))?;
-        tax.check_journaled()
+        basis
+            .check_journaled()
             .map_err(LedgerError::InvalidTaxBasis)?;
-        asset.tax = Some(tax);
+        asset.basis = Some(basis);
         Ok(())
     }
 
-    /// The validation behind [`Self::set_asset_tax_basis`].
-    pub fn check_asset_tax_basis(
-        &self,
+    /// Replay a pre-P3 `asset.tax_basis_set` (rule and contributor basis,
+    /// no value at contribution, which reads as the book cost): the checks
+    /// it passed when written (AssetBasis::check_legacy_journaled), for
+    /// replay and the projection's read-back only (rules.md B-28). Never for
+    /// new work.
+    pub fn replay_set_asset_tax_basis(
+        &mut self,
         id: AssetId,
-        tax: assets::TaxBasis,
+        rule: assets::BasisRule,
+        contributor_basis: Option<Decimal>,
     ) -> Result<(), LedgerError> {
-        if !self.assets.contains_key(&id) {
-            return Err(LedgerError::UnknownAsset(id));
-        }
-        tax.check().map_err(LedgerError::InvalidTaxBasis)
+        let asset = self
+            .assets
+            .get_mut(&id)
+            .ok_or(LedgerError::UnknownAsset(id))?;
+        let basis = assets::AssetBasis {
+            rule,
+            contributor_adjusted_basis: contributor_basis,
+            fmv_at_contribution: None,
+            sec704c_method: None,
+            source: None,
+        };
+        basis
+            .check_legacy_journaled()
+            .map_err(LedgerError::InvalidTaxBasis)?;
+        asset.basis = Some(basis);
+        Ok(())
     }
 
     /// Correct a registered asset's economics (cost, salvage, useful life,
     /// in-service date) when it was registered wrong. Its accounts, tag,
-    /// serial, links, and tax basis record stay.
+    /// serial, links, and basis record stay.
     ///
     /// ```text
     /// GOAL: fix a registration mistake without re-registering (which would
@@ -2295,7 +2419,12 @@ impl Ledger {
     ///   2. Only an active asset is corrected; a store also refuses once any
     ///      depreciation for it is posted (the posted entries would disagree
     ///      with the schedule; correct with entries instead).
-    ///   3. A refusal MUST leave the books unchanged.
+    ///   3. The in-service date is never before the linked acquisition
+    ///      entry's date (set_asset_acquisition INVARIANT 2).
+    ///   4. A contribution's value at contribution and built-in gain stay
+    ///      as recorded: they were fixed when it was contributed (Treas.
+    ///      Reg. §1.704-3(a)(3)(ii)), whatever the book cost becomes.
+    ///   5. A refusal MUST leave the books unchanged.
     /// ```
     pub fn correct_asset(
         &mut self,
@@ -2328,16 +2457,31 @@ impl Ledger {
         a.cost = fix.cost;
         a.salvage_value = fix.salvage_value;
         a.useful_life_months = fix.useful_life_months;
-        a.purchase_date = fix.purchase_date;
+        a.in_service_date = fix.in_service_date;
     }
 
-    /// The validation behind [`Self::correct_asset`].
+    /// The validation behind [`Self::correct_asset`] (INVARIANTS 1-3).
     pub fn check_correct_asset(
         &self,
         id: AssetId,
         fix: &assets::AssetCorrection,
     ) -> Result<(), LedgerError> {
-        self.validate_new_asset(&self.corrected_asset(id, fix)?)
+        self.validate_new_asset(&self.corrected_asset(id, fix)?)?;
+        if let Some(linked) = self
+            .assets
+            .get(&id)
+            .and_then(|a| a.acquired_by)
+            .and_then(|e| self.entries.get(&e))
+            .map(|e| e.date())
+            && fix.in_service_date < linked
+        {
+            return Err(LedgerError::InServiceBeforeAcquisition {
+                asset: id,
+                in_service: fix.in_service_date.to_string(),
+                acquired: linked.to_string(),
+            });
+        }
+        Ok(())
     }
 
     /// The active asset `id` as `fix` would leave it, as a registration to
@@ -2353,7 +2497,7 @@ impl Ledger {
         }
         Ok(NewAsset {
             description: a.description.clone(),
-            purchase_date: fix.purchase_date,
+            in_service_date: fix.in_service_date,
             cost: fix.cost,
             salvage_value: fix.salvage_value,
             useful_life_months: fix.useful_life_months,
@@ -2379,6 +2523,232 @@ impl Ledger {
             .map(|n| format!("{prefix}-{n:04}"))
             .find(|t| !self.asset_tags.contains_key(&assets::tag_key(t)))
             .expect("some number is free")
+    }
+
+    /// Whether a depreciation run can be recorded, for a run a store
+    /// journals now: the asset is known; the period is a month, "YYYY-MM";
+    /// the amount is positive and in cents; and the entry is posted and
+    /// credits the asset's accumulated depreciation account by exactly the
+    /// amount.
+    ///
+    /// ```text
+    /// GOAL: a run the books record is the entry that posted it, no more
+    ///       and no less, so accumulated_posted is what the books carry.
+    /// SOURCE: rules.md B-24; B-28 (new commands are bounded; replay checks
+    ///         only what every journaled run passed:
+    ///         record_depreciation_run).
+    /// ```
+    pub fn check_depreciation_run(
+        &self,
+        asset: AssetId,
+        period: &str,
+        entry: EntryId,
+        amount: Decimal,
+    ) -> Result<(), LedgerError> {
+        let a = self
+            .assets
+            .get(&asset)
+            .ok_or(LedgerError::UnknownAsset(asset))?;
+        let bad = |why: String| LedgerError::InvalidDepreciationRun { asset, why };
+        let month_ok = period.len() == 7
+            && period.as_bytes()[4] == b'-'
+            && NaiveDate::parse_from_str(&format!("{period}-01"), "%Y-%m-%d").is_ok();
+        if !month_ok {
+            return Err(bad(format!("period {period:?} isn't a month (YYYY-MM)")));
+        }
+        if amount <= Decimal::ZERO || amount.normalize().scale() > 2 {
+            return Err(bad(format!(
+                "amount {amount} isn't a positive number of cents"
+            )));
+        }
+        let e = self
+            .entries
+            .get(&entry)
+            .ok_or(LedgerError::UnknownEntry(entry))?;
+        if e.status() != crate::EntryStatus::Posted {
+            return Err(bad(format!("entry {entry} isn't posted")));
+        }
+        let credited = kernel::net(
+            e.lines()
+                .iter()
+                .filter(|l| l.account == a.accum_depr_account)
+                .map(|l| (kernel::flip(l.side), l.amount.amount)),
+        )
+        .ok_or_else(|| bad("its entry's lines are too large".into()))?;
+        if credited != amount {
+            return Err(bad(format!(
+                "entry {entry} credits accumulated depreciation {credited}, not {amount}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Record a depreciation run (`asset.depreciation_posted`). Checks only
+    /// that the asset and the entry exist: every run an earlier version
+    /// journaled replays, whatever its period or amount (rules.md B-28; a
+    /// store checks new runs first, [`Self::check_depreciation_run`]).
+    pub fn record_depreciation_run(
+        &mut self,
+        asset: AssetId,
+        period: &str,
+        entry: EntryId,
+        amount: Decimal,
+    ) -> Result<(), LedgerError> {
+        if !self.assets.contains_key(&asset) {
+            return Err(LedgerError::UnknownAsset(asset));
+        }
+        if !self.entries.contains_key(&entry) {
+            return Err(LedgerError::UnknownEntry(entry));
+        }
+        self.asset_runs
+            .entry(asset)
+            .or_default()
+            .push(assets::DepreciationPosting {
+                period: period.to_string(),
+                entry,
+                amount,
+            });
+        Ok(())
+    }
+
+    /// An asset's depreciation runs, in the order recorded.
+    pub fn depreciation_runs(&self, asset: AssetId) -> &[assets::DepreciationPosting] {
+        self.asset_runs.get(&asset).map_or(&[], Vec::as_slice)
+    }
+
+    /// Each posted reversal's original: original entry → its reversal (an
+    /// entry is reversed at most once, B-10). Read once for many runs
+    /// ([`assets::depreciation_effects`], [`Self::accumulated_posted_all`]),
+    /// never per run: the viewer asks it of every asset.
+    pub(crate) fn posted_reversals(&self) -> HashMap<EntryId, EntryId> {
+        self.posted_entries()
+            .filter_map(|e| e.reversal_of().map(|orig| (orig, e.id())))
+            .collect()
+    }
+
+    /// An asset's runs as the catch-up rule reads them: (entry, amount),
+    /// in the order recorded ([`assets::depreciation_effects`]).
+    pub fn depreciation_run_entries(&self, asset: AssetId) -> Vec<(EntryId, Decimal)> {
+        self.depreciation_runs(asset)
+            .iter()
+            .map(|r| (r.entry, r.amount))
+            .collect()
+    }
+
+    /// What the books carry for an asset's depreciation, entry by entry,
+    /// each in its own month: every run and every reversal of one
+    /// ([`assets::depreciation_effects`] of its runs).
+    pub fn depreciation_effects_of(&self, asset: AssetId) -> Vec<assets::PostedRun> {
+        assets::depreciation_effects(self, &self.depreciation_run_entries(asset))
+    }
+
+    /// Accumulated depreciation the books carry for an asset on `as_of`:
+    /// what its runs carry through that day, entry by entry
+    /// ([`assets::depreciation_effects`]' reading, by day); zero once it
+    /// is disposed (the disposal entry cleared it).
+    ///
+    /// ```text
+    /// GOAL: book value is cost less what the books carry, never the
+    ///       schedule's figure.
+    /// SOURCE: rules.md B-24 (the register reconciles to the general
+    ///         ledger); B-8, B-9, B-10 (a reversal undoes what it reverses,
+    ///         and reversing the reversal reinstates it); B-15 (what the
+    ///         catch-up rule reads, the same entries).
+    /// INVARIANTS:
+    ///   1. Disposed on or before as_of: 0.
+    ///   2. Otherwise Σ, over the asset's runs and every entry of each
+    ///      one's reversal chain the books carry (assets::run_chain_entries:
+    ///      the run +amount, its reversal −amount, that reversal's
+    ///      reversal +amount, ...), of those dated on or before as_of. So
+    ///      it moves exactly as the trial balance does, even for a
+    ///      reversal dated before its run, and agrees with
+    ///      depreciation_effects summed through any month's end.
+    ///   3. NEVER panics: a sum past exact arithmetic is refused
+    ///      (TooLargeToCompute).
+    /// ```
+    pub fn accumulated_posted(
+        &self,
+        id: AssetId,
+        as_of: NaiveDate,
+    ) -> Result<Decimal, LedgerError> {
+        self.accumulated_posted_with(id, as_of, &self.posted_reversals())
+    }
+
+    /// [`Self::accumulated_posted`] for every registered asset, the
+    /// reversal links read once (for the register and the viewer).
+    pub fn accumulated_posted_all(
+        &self,
+        as_of: NaiveDate,
+    ) -> Result<std::collections::BTreeMap<AssetId, Decimal>, LedgerError> {
+        let reversals = self.posted_reversals();
+        self.assets
+            .keys()
+            .map(|&id| Ok((id, self.accumulated_posted_with(id, as_of, &reversals)?)))
+            .collect()
+    }
+
+    fn accumulated_posted_with(
+        &self,
+        id: AssetId,
+        as_of: NaiveDate,
+        reversals: &HashMap<EntryId, EntryId>,
+    ) -> Result<Decimal, LedgerError> {
+        let asset = self.assets.get(&id).ok_or(LedgerError::UnknownAsset(id))?;
+        if matches!(asset.status, AssetStatus::Disposed { date, .. } if date <= as_of) {
+            return Ok(Decimal::ZERO);
+        }
+        self.carried_between(id, NaiveDate::MIN, as_of, reversals)
+    }
+
+    /// Depreciation the books posted for an asset through entries dated in
+    /// `[from, to]` (its runs and their reversals, as
+    /// [`Self::accumulated_posted`] counts them, the disposal aside): the
+    /// period's depreciation expense from its runs.
+    pub fn depreciation_posted_between(
+        &self,
+        id: AssetId,
+        from: NaiveDate,
+        to: NaiveDate,
+    ) -> Result<Decimal, LedgerError> {
+        if !self.assets.contains_key(&id) {
+            return Err(LedgerError::UnknownAsset(id));
+        }
+        self.carried_between(id, from, to, &self.posted_reversals())
+    }
+
+    /// What the entries of the asset's runs' chains dated in `[from, to]`
+    /// carry, summed exactly.
+    fn carried_between(
+        &self,
+        id: AssetId,
+        from: NaiveDate,
+        to: NaiveDate,
+        reversals: &HashMap<EntryId, EntryId>,
+    ) -> Result<Decimal, LedgerError> {
+        let too_large =
+            || LedgerError::TooLargeToCompute(format!("asset {id}'s posted depreciation"));
+        assets::run_chain_entries(self, &self.depreciation_run_entries(id), reversals)
+            .into_iter()
+            .filter(|(d, _)| *d >= from && *d <= to)
+            .try_fold(Decimal::ZERO, |t, (_, a)| t.checked_add(a))
+            .ok_or_else(too_large)
+    }
+
+    /// The run the books carry for an asset's month, if any: the first one
+    /// recorded for `period` whose entry is in effect ([`Self::in_effect`]:
+    /// posted, and an even number of posted reversals after it). A month
+    /// whose run was reversed has none, so it can be run again; one whose
+    /// reversal was itself reversed has its run back. At most one run of a
+    /// month is in effect: a store refuses re-instating a run whose month
+    /// was run again.
+    pub fn live_depreciation_run(
+        &self,
+        id: AssetId,
+        period: &str,
+    ) -> Option<&assets::DepreciationPosting> {
+        self.depreciation_runs(id)
+            .iter()
+            .find(|run| run.period == period && self.in_effect(run.entry))
     }
 
     /// Mark an asset disposed. The disposal *entry* is posted through the
@@ -2439,11 +2809,22 @@ impl Ledger {
             });
         }
         let asset = self.assets.get(&id).ok_or(LedgerError::UnknownAsset(id))?;
-        // Activeness, proceeds sign, and date order; no depreciation is
-        // computed, so a journaled disposal replays even where the figure
-        // can't be (rules.md B-28).
-        assets::check_disposal(asset, date, proceeds)?;
+        // Activeness and the proceeds' sign; no depreciation is computed,
+        // so a journaled disposal replays even where the figure can't be
+        // (rules.md B-28).
+        assets::check_disposal(asset, proceeds)?;
         if strict {
+            // Never before the company acquired it. A command's bound, not
+            // replay's: the acquired date needs the link, which a
+            // projection read-back restores after the disposal (rules.md
+            // B-28).
+            let acquired = self.asset_acquired_date(id).expect("known asset");
+            if date < acquired {
+                return Err(LedgerError::DisposalBeforeAcquisition {
+                    date: date.to_string(),
+                    acquired: acquired.to_string(),
+                });
+            }
             // Proceeds are a line of the disposal entry, and its date one
             // the books keep (P0 review round 3, S1).
             if !kernel::Amount::in_line_range(proceeds.amount) {

@@ -124,11 +124,14 @@ the side gives the direction.
   1099-K; rules.md B-19); with the cards, what party money is, for
   `party_part` and `party_totals` (B-35 item 5: no `cash_accounts`, every
   asset account but receivables); the cash accounts are what the K-1
-  worksheet reads as money (`k1`) and an IIF file's bank accounts (B-34).
+  worksheet reads as money (`k1`, `k1_tax_basis`, `k1_reconciliation`)
+  and an IIF file's bank accounts (B-34).
 - `[[setup.fixed_assets]]` `{ cost_account, accumulated_account,
   expense_account }`: accounts that hold property and equipment (their
   cost and accumulated depreciation are investing; ASC 230-10-45-12(c),
-  45-13(c)).
+  45-13(c)), for an example no asset's own figures matter to. An asset
+  with its figures is a `[[setup.assets]]` entry (below), whose accounts
+  hold property and equipment too.
 - `[[setup.assets]]`: fixed assets registered before the first event,
   each named by its `id` in the events and queries that ask about it
   (rules.md B-15):
@@ -145,10 +148,24 @@ the side gives the direction.
   cost_account = "1500"
   accumulated_account = "1510"
   expense_account = "6200"
+  acquired_by = 2               # optional: the event whose entry put it
+                                # on the books (B-15 rule 7)
+  basis = { rule = "personal_use_conversion",
+            contributor_adjusted_basis = "1688.40",
+            fmv_at_contribution = "1440.00",
+            sec704c_method = "traditional" }   # optional (B-25)
   ```
 
   Registering an asset posts nothing: the entry that buys it is an event
-  of its own.
+  of its own. `acquired_by = N` links that entry, event N's, once the
+  event is applied: its date is the asset's acquired date, which puts it
+  on the register (before it, the in-service date does). `basis` records
+  how the company got it and the facts its tax figures follow from, as
+  the asset is registered: `rule` `"purchase"`, `"carryover_723"` or
+  `"personal_use_conversion"`; a contribution's
+  `contributor_adjusted_basis` and `fmv_at_contribution`; the §704(c)
+  method if chosen (`"traditional"`, `"traditional_with_curative"`,
+  `"remedial"`).
 - `[[setup.schedules]]`, and `register_schedule = { ... }` as an event: a
   prepaid expense or deferred revenue recognized over its months (rules.md
   B-16), named by its `id`:
@@ -172,8 +189,9 @@ the side gives the direction.
   distributions_account? }`: the members of a multi-member LLC. `share`
   is the member's share of income, an exact decimal fraction (`"0.5"`,
   `"0.3333"`); every member has one or none does, and the shares sum to
-  1. A close to the members, `members_equity` and `k1` need them.
-  `distributions_account`: the member's distributions account (B-13). A
+  1. A close to the members, `members_equity`, `k1`, `k1_tax_basis` and
+  `k1_reconciliation` need them. `distributions_account`: the member's
+  distributions account (B-13). A
   member whose `name` is a party's in `setup.parties` with the `member`
   role is that party, as the company's settings name them: an entry's
   parties' shares resolve with those members (B-35), and so does the
@@ -239,10 +257,14 @@ the side gives the direction.
 - `refused = "<reason>"` on a reversal or a command: the books refuse it,
   for that reason (below); it changes nothing, posts nothing, and the
   example goes on without it.
-- `[[changes]]` `{ after, rename?, require_tax_category? }`: a change
-  that posts no entry, exactly one of `rename = { code, name }` (rename
-  the account `code`, B-31) and `require_tax_category = "warn"` or
-  `"refuse"` (the policy, B-32; the books start at `warn`). It is made
+- `[[changes]]` `{ after, rename?, require_tax_category?, correct_asset?
+  }`: a change that posts no entry, exactly one of `rename = { code, name
+  }` (rename the account `code`, B-31), `require_tax_category = "warn"`
+  or `"refuse"` (the policy, B-32; the books start at `warn`) and
+  `correct_asset = { asset, cost?, salvage?, life_months?, in_service?,
+  reason }` (a registration mistake corrected: each figure given replaces
+  the asset's, the rest stay; refused while the books carry depreciation
+  for it). It is made
   right after event `after` (1 to the number of events), once the
   expectations asked after that event are checked, in the order listed.
 - `after = N` on an expectation: asked of the books after event N (before
@@ -276,6 +298,8 @@ answers is refused, never skipped.
 | `balances` | `as_of` | each account named by code, its balance on its normal side (a member's capital after a loss is negative); the example names the accounts it shows | `ledger-core` `tests/bookspec.rs` |
 | `members_equity` | `from`, `to` | the statement of changes in members' equity (rules.md B-13): `"<member>.beginning"`, `.contributions`, `.net_income`, `.distributions`, `.other`, `.ending`; the example names the figures it shows | `ledger-core` `tests/bookspec.rs` |
 | `k1` | `from`, `to` | the K-1 worksheet (B-13; Schedule K-1 Item L): `"<member>.beginning"`, `.contributions_cash`, `.contributions_property`, `.net_income`, `.distributions`, `.other`, `.ending`; the example names the figures it shows (`cash_accounts` required) | `ledger-core` `tests/bookspec.rs` |
+| `k1_tax_basis` | `from`, `to` | the K-1 worksheet on the tax basis (B-36; Schedule K-1 Item L, tax-basis method), beside `k1`'s book figures: `"<member>.beginning"`, `.contributions_cash`, `.contributions_property`, `.net_income`, `.other`, `.distributions`, `.ending`; a line the books can't know is `"open"`, with what they know so far as `"<member>.known_<line>"`; the example names the figures it shows (`cash_accounts` required) | `ledger-core` `tests/bookspec.rs` |
+| `k1_reconciliation` | `from`, `to` | each member's book capital less tax-basis capital at `to`, by cause (B-36): `"<member>.beginning"`, `.built_in_gain_704c`, `.property_without_basis`, `.property_distributed`, `.total`; the example names the members it shows, each with every cause (`cash_accounts` required) | `ledger-core` `tests/bookspec.rs` |
 | `vendor_1099_paid` | `from` (January 1 of `to`'s year), `to` | each payee's payments that count toward its 1099, by name: out of the cash and financing accounts (`cash_accounts` required), a card's or payment network's left out (B-19), every payee listed | `ledger-core` `tests/bookspec.rs` |
 | `vendor_1099` | `payee`; `from` (January 1 of `to`'s year), `to` | one payee's line of the 1099 worksheet (B-19): `status` (`reportable`, `under_threshold`, `not_reportable` or `undetermined`), `threshold`, `paid` (counts toward its 1099), `excluded_card` (a card's or payment network's: Form 1099-K), `undetermined` (through a financing account, its payment method not recorded), `not_reportable` (paid while decided not reportable), every one given | `ledger-core` `tests/bookspec.rs` |
 | `party_part` | `entry = N`, `party`, no dates | entry N's part for the party (B-35): `resolved`, signed as a line on the party's own account would be (paid or given positive, received negative), the entry's `direction` (`paid`, `received` or `neither`), and what of it moved as money (`cash`) and as property (`in_kind`), every one given | `ledger-core` `tests/bookspec.rs` |
@@ -289,6 +313,9 @@ answers is refused, never skipped.
 | `run` | `event = N`, no dates | what the `run_depreciation` event N posted: `amount` (zero when nothing was due, or the month had its run already), and `caught_up`, what of it is beyond the month's own depreciation (B-15); both listed | `ledger-core` `tests/bookspec.rs` |
 | `disposal` | `asset`, no dates | what the asset's disposal took (B-15), every figure listed: `final_depreciation` (posted in its own entry), `catch_up_depreciation` and `excess_depreciation` (charged, and credited back, in the disposal entry), `accumulated` (cleared), `book_value`, `gain_loss` (a gain positive) | `ledger-core` `tests/bookspec.rs` |
 | `depreciation_schedule` | `asset`, `as_of` | the asset's schedule through the day (B-15): each month named (`"YYYY-MM"`) its depreciation, `"0.00"` for a month it doesn't reach; `accumulated` and `book_value` through the day; the example names the figures it shows | `ledger-core` `tests/bookspec.rs` |
+| `register_row` | `asset`, `as_of` | the asset's row of the fixed asset register (B-15 rules 7 and 8, B-24): `acquired`, `in_service` (`YYYY-MM-DD`), `cost`, `accumulated_scheduled` (the schedule's), `accumulated_posted` (what the books carry), `unposted` (the one less the other), `book_value` (cost less posted), each `"0.00"` once disposed; the example names the figures it shows; an asset acquired after the day is refused | `ledger-core` `tests/bookspec.rs` |
+| `register_totals` | `as_of` | the register's totals over the assets held (B-24, B-25): `total_cost`, `total_accumulated_scheduled`, `total_accumulated_posted`, `total_book_value`, `total_depreciable_basis`, `total_tax_basis_723`, `missing_basis` (a count), and how it ties to the books: `unregistered_cost`, `unposted_depreciation`, `unattributed_accumulated`; the example names the figures it shows | `ledger-core` `tests/bookspec.rs` |
+| `asset_basis` | `asset`, no dates | the asset's basis facts and the tax figures they give (B-25): `rule`, `contributor_adjusted_basis`, `fmv_at_contribution`, `tax_basis_723`, `depreciable_basis`, `built_in_gain_704c` (a loss negative), each `"none"` where it has none, and `sec704c_1c` (`"true"` for a built-in loss, which counts only for the contributor); the example names the figures it shows | `ledger-core` `tests/bookspec.rs` |
 | `schedule_plan` | `schedule`, no dates | the schedule's plan (B-16): what it recognizes at each month end named (`"YYYY-MM-DD"`), `"0.00"` at one it doesn't post; `total`, all it recognizes; the example names the figures it shows | `ledger-core` `tests/bookspec.rs` |
 | `iif_lines` | `as_of` | formats appendix: the file's lines in order, each its fields joined by tabs, without the CR LF that ends each | `ledger-package` `the_bookspec_iif_example_matches_the_engine` |
 | `iif_changes` | `as_of` | formats appendix: each text the file writes differently from the books, in file order, as `[what, books' text, file's text]` (the example's header gives `what`) | `ledger-package` `the_bookspec_iif_example_matches_the_engine` |
@@ -297,7 +324,9 @@ A figure query is a table (`[expect.values]`, or `values = { ... }`); a
 format query, and `uncategorized_accounts`, an array (`values = [ ...
 ]`). `period`, `day` and `calendar_year` give dates and a year,
 `account_names` names, `party_part`'s `direction`, `vendor_1099`'s
-`status` and `party_tin_last4` words, not figures.
+`status` and `party_tin_last4` words, not figures; `register_row` gives
+dates beside its figures, `asset_basis` a rule's name, `"none"` and
+`"true"` or `"false"`, and a `k1_tax_basis` line `"open"`, beside them.
 
 A command is tried on a copy of the books, as the books' own command
 does it, and changes nothing checked after it. It shows no values: it is

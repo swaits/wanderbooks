@@ -461,4 +461,27 @@ proptest! {
             );
         }
     }
+
+    /// kernel::basis_figures at i64 (what Kani's basis_figures_laws
+    /// proved) and at Decimal agree, rule by rule.
+    #[test]
+    fn basis_figures_agree(
+        rule in prop_oneof![
+            Just(ledger_core::BasisRule::Purchase),
+            Just(ledger_core::BasisRule::Carryover723),
+            Just(ledger_core::BasisRule::PersonalUseConversion),
+        ],
+        cost in arb_cents(),
+        adjusted in arb_cents(),
+        fmv in arb_cents(),
+    ) {
+        let i = kernel::basis_figures(rule, cost, adjusted, fmv);
+        let d = kernel::basis_figures(rule, dec(cost), dec(adjusted), dec(fmv));
+        prop_assert_eq!(i.is_some(), d.is_some());
+        if let (Some(i), Some(d)) = (i, d) {
+            prop_assert_eq!(i.tax_basis_723.map(dec), d.tax_basis_723);
+            prop_assert_eq!(dec(i.depreciable_basis), d.depreciable_basis);
+            prop_assert_eq!(i.built_in_gain_704c.map(dec), d.built_in_gain_704c);
+        }
+    }
 }

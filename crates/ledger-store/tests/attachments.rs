@@ -302,7 +302,7 @@ fn every_subject(s: &mut Store, fx: &Fx) -> Vec<Subject> {
     let asset = s
         .register_asset(NewAsset {
             description: "Laptop".into(),
-            purchase_date: date(2026, 1, 5),
+            in_service_date: date(2026, 1, 5),
             cost: usd("3000.00"),
             salvage_value: usd("0"),
             useful_life_months: 36,

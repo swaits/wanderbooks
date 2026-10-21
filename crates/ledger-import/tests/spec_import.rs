@@ -4005,7 +4005,7 @@ fn cash_flow_adjustments_appear_only_when_there_are_some() {
     assert_eq!(section_lines(&plain, "Noncash")[0].label, "None");
     l.register_asset(ledger_core::NewAsset {
         description: "Laptop".into(),
-        purchase_date: d(2026, 1, 3),
+        in_service_date: d(2026, 1, 3),
         cost: usd(900),
         salvage_value: usd(0),
         useful_life_months: 36,
@@ -4488,56 +4488,87 @@ fn tax_summary_optional_sections() {
 
 /// A register as ledger_core::fixed_asset_register would return it: two
 /// assets held, one disposed (shown, in no total), and books that differ
-/// from the register on both counts. Tax basis: the laptop a member
-/// converted from personal use (worth less than their basis: tax basis is
-/// its value, a built-in loss), the desk with none recorded, the monitor
-/// a carryover with a built-in gain (disposed, in no total).
+/// from the register on all three counts. Tax figures: the laptop a
+/// member contributed from personal use (worth less than their basis:
+/// depreciable basis is its value, a built-in loss), the desk with none
+/// recorded, the monitor a carryover recorded before its value was asked
+/// (read as its cost) with a built-in gain (disposed, in no total).
+/// Hand-worked totals of the held: cost 2,500.00 + 1,200.00 = 3,700.00;
+/// scheduled 527.78 + 250.00 = 777.78; posted 500.00 + 250.00 = 750.00;
+/// book value 3,700.00 − 750.00 = 2,950.00; §723 basis 2,800.00;
+/// depreciable basis 2,500.00. The books: cost 4,000.00 (300.00
+/// unregistered), accumulated 700.00 (77.78 not yet posted, −50.00 not
+/// from runs).
 fn asset_register_fixture() -> ledger_core::AssetRegister {
     use ledger_core::AssetRegisterRow;
-    let row = |id, tag: Option<&str>, desc: &str, serial: Option<&str>, cost, acc, disposed| {
-        AssetRegisterRow {
-            asset_id: id,
-            tag: tag.map(Into::into),
-            description: desc.into(),
-            serial: serial.map(Into::into),
-            in_service: d(2026, 1, 15),
-            cost: cents(cost),
-            salvage: cents(10000),
-            useful_life_months: 36,
-            accumulated: cents(acc),
-            book_value: cents(cost - acc),
-            disposed,
-            tax_rule: None,
-            contributor_basis: None,
-            tax_basis: None,
-            built_in_gain: None,
-        }
-    };
-    let taxed = |mut r: AssetRegisterRow, rule, basis: Decimal, tax: Decimal| {
-        r.tax_rule = Some(rule);
-        r.contributor_basis = Some(basis);
-        r.tax_basis = Some(tax);
-        r.built_in_gain = Some(r.cost - basis);
+    let row =
+        |id, tag: Option<&str>, desc: &str, serial: Option<&str>, cost, sched, posted, disposed| {
+            AssetRegisterRow {
+                asset_id: id,
+                tag: tag.map(Into::into),
+                description: desc.into(),
+                serial: serial.map(Into::into),
+                acquired_date: d(2026, 1, 10),
+                in_service_date: d(2026, 1, 15),
+                cost: cents(cost),
+                salvage: cents(10000),
+                useful_life_months: 36,
+                accumulated_scheduled: cents(sched),
+                accumulated_posted: cents(posted),
+                book_value: cents(cost - posted),
+                disposed,
+                basis_rule: None,
+                contributor_adjusted_basis: None,
+                fmv_at_contribution: None,
+                fmv_recorded: false,
+                tax_basis_723: None,
+                depreciable_basis: None,
+                built_in_gain_704c: None,
+                sec704c_1c: false,
+                sec704c_method: None,
+                basis_source: None,
+            }
+        };
+    let taxed = |mut r: AssetRegisterRow, rule, basis: Decimal, fmv: Option<Decimal>| {
+        let v = fmv.unwrap_or(r.cost);
+        let f = ledger_core::kernel::basis_figures(rule, r.cost, basis, v).unwrap();
+        r.basis_rule = Some(rule);
+        r.contributor_adjusted_basis = Some(basis);
+        r.fmv_at_contribution = Some(v);
+        r.fmv_recorded = fmv.is_some();
+        r.tax_basis_723 = f.tax_basis_723;
+        r.depreciable_basis = Some(f.depreciable_basis);
+        r.built_in_gain_704c = f.built_in_gain_704c;
+        r.sec704c_1c = f.built_in_gain_704c.is_some_and(|g| g < Decimal::ZERO);
         r
     };
+    let mut laptop = taxed(
+        row(
+            1,
+            Some("FL-0001"),
+            "Framework Laptop 13",
+            Some("FRAN123"),
+            250000,
+            52778,
+            50000,
+            None,
+        ),
+        ledger_core::BasisRule::PersonalUseConversion,
+        cents(280000),
+        Some(cents(250000)),
+    );
+    laptop.sec704c_method = Some(ledger_core::Sec704cMethod::Traditional);
+    laptop.basis_source = Some(ledger_core::settings::Source {
+        decided_by: "Tobin Harlow".into(),
+        decided_on: d(2026, 10, 20),
+        citation: Some("entry 4".into()),
+        note: None,
+    });
     ledger_core::AssetRegister {
         as_of: d(2026, 10, 15),
         rows: vec![
-            taxed(
-                row(
-                    1,
-                    Some("FL-0001"),
-                    "Framework Laptop 13",
-                    Some("FRAN123"),
-                    250000,
-                    52778,
-                    None,
-                ),
-                ledger_core::TaxBasisRule::PersonalUseConversion,
-                cents(280000),
-                cents(250000),
-            ),
-            row(2, None, "Desk", None, 120000, 25000, None),
+            laptop,
+            row(2, None, "Desk", None, 120000, 25000, 25000, None),
             {
                 let mut r = row(
                     3,
@@ -4546,22 +4577,20 @@ fn asset_register_fixture() -> ledger_core::AssetRegister {
                     None,
                     40000,
                     0,
+                    0,
                     Some((d(2026, 9, 30), cents(4500))),
                 );
                 r.book_value = Decimal::ZERO;
-                taxed(
-                    r,
-                    ledger_core::TaxBasisRule::Carryover,
-                    cents(30000),
-                    cents(30000),
-                )
+                taxed(r, ledger_core::BasisRule::Carryover723, cents(30000), None)
             },
         ],
         total_cost: cents(370000),
-        total_accumulated: cents(77778),
-        total_book_value: cents(292222),
-        total_tax_basis: cents(250000),
-        missing_tax_basis: 1,
+        total_accumulated_scheduled: cents(77778),
+        total_accumulated_posted: cents(75000),
+        total_book_value: cents(295000),
+        total_depreciable_basis: cents(250000),
+        total_tax_basis_723: cents(280000),
+        missing_basis: 1,
         ledger_cost: cents(400000),
         ledger_accumulated: cents(70000),
     }
@@ -4581,10 +4610,11 @@ fn text_cell(cells: &BTreeMap<(u32, u32), Cell>, at: (u32, u32)) -> String {
     }
 }
 
-/// asset_register INVARIANTS 1-3 and 5, read back from the workbook's XML:
-/// header, headings, one row per asset in order (disposed marked), the
-/// register's own totals, and the reconciliation under Cost and
-/// Accumulated depreciation.
+/// asset_register INVARIANTS 1-3, 5 and 7-9, read back from the
+/// workbook's XML: header, headings, one row per asset in order (disposed
+/// marked) with its acquired and in-service dates, depreciation scheduled
+/// and posted, its tax figures, method and source; the register's own
+/// totals, and the reconciliation's three differences.
 #[test]
 fn asset_register_xlsx_cells() {
     let r = asset_register_fixture();
@@ -4593,75 +4623,99 @@ fn asset_register_xlsx_cells() {
     assert_eq!(text_cell(&c, (1, 0)), "Spec Test LLC");
     assert_eq!(text_cell(&c, (2, 0)), "Fixed Asset Register");
     assert_eq!(text_cell(&c, (3, 0)), "As of October 15, 2026");
-    let heads: Vec<String> = (0..14).map(|i| text_cell(&c, (5, i))).collect();
+    let heads: Vec<String> = (0..21).map(|i| text_cell(&c, (5, i))).collect();
     assert_eq!(
         heads,
         [
             "TAG",
             "DESCRIPTION",
             "SERIAL",
+            "ACQUIRED",
             "IN SERVICE",
             "COST",
             "SALVAGE",
             "LIFE (MONTHS)",
-            "ACCUMULATED DEPRECIATION",
+            "DEPRECIATION SCHEDULED",
+            "DEPRECIATION POSTED",
             "BOOK VALUE",
-            "TAX BASIS RULE",
-            "CONTRIBUTOR'S BASIS",
-            "TAX BASIS",
+            "BASIS RULE",
+            "VALUE AT CONTRIBUTION",
+            "CONTRIBUTOR'S ADJUSTED BASIS",
+            "§723 BASIS",
+            "DEPRECIABLE BASIS",
             "BUILT-IN GAIN (LOSS)",
+            "ALLOCATION METHOD",
+            "BASIS FACTS FROM",
+            "VALUE RECORDED",
             "STATUS"
         ]
     );
     assert_eq!(text_cell(&c, (6, 0)), "FL-0001");
     assert_eq!(text_cell(&c, (6, 1)), "Framework Laptop 13");
     assert_eq!(text_cell(&c, (6, 2)), "FRAN123");
-    assert_eq!(text_cell(&c, (6, 3)), "2026-01-15");
-    assert_eq!(number_cell(&c, (6, 4)), dec("2500.00"));
-    assert_eq!(number_cell(&c, (6, 5)), dec("100.00"));
-    assert_eq!(number_cell(&c, (6, 6)), dec("36"));
-    assert_eq!(number_cell(&c, (6, 7)), dec("527.78"));
-    assert_eq!(number_cell(&c, (6, 8)), dec("1972.22"));
-    // Tax basis (INVARIANT 7): rule in words with its citation, the
-    // contributor's basis, tax basis, built-in loss as a negative.
+    assert_eq!(text_cell(&c, (6, 3)), "2026-01-10");
+    assert_eq!(text_cell(&c, (6, 4)), "2026-01-15");
+    assert_eq!(number_cell(&c, (6, 5)), dec("2500.00"));
+    assert_eq!(number_cell(&c, (6, 6)), dec("100.00"));
+    assert_eq!(number_cell(&c, (6, 7)), dec("36"));
+    assert_eq!(number_cell(&c, (6, 8)), dec("527.78"));
+    assert_eq!(number_cell(&c, (6, 9)), dec("500.00"));
+    assert_eq!(number_cell(&c, (6, 10)), dec("2000.00"));
+    // Tax figures (INVARIANT 7): rule in words with its citation, value,
+    // adjusted basis, §723 basis, depreciable basis (the lesser), the
+    // built-in loss as a negative, the method, the source.
     assert_eq!(
-        text_cell(&c, (6, 9)),
+        text_cell(&c, (6, 11)),
         "Personal-use conversion (Treas. Reg. §1.168(i)-4(b))"
     );
-    assert_eq!(number_cell(&c, (6, 10)), dec("2800.00"));
-    assert_eq!(number_cell(&c, (6, 11)), dec("2500.00"));
-    assert_eq!(number_cell(&c, (6, 12)), dec("-300.00"));
-    assert_eq!(text_cell(&c, (6, 13)), "Active");
+    assert_eq!(number_cell(&c, (6, 12)), dec("2500.00"));
+    assert_eq!(number_cell(&c, (6, 13)), dec("2800.00"));
+    assert_eq!(number_cell(&c, (6, 14)), dec("2800.00"));
+    assert_eq!(number_cell(&c, (6, 15)), dec("2500.00"));
+    assert_eq!(number_cell(&c, (6, 16)), dec("-300.00"));
+    assert_eq!(
+        text_cell(&c, (6, 17)),
+        "Traditional (Treas. Reg. §1.704-3(b))"
+    );
+    assert_eq!(text_cell(&c, (6, 18)), "Tobin Harlow, 2026-10-20: entry 4");
+    assert_eq!(text_cell(&c, (6, 19)), "Yes");
+    assert_eq!(text_cell(&c, (6, 20)), "Active");
     // The desk: no tag, no serial, no tax basis recorded.
     assert_eq!(text_cell(&c, (7, 1)), "Desk");
-    assert_eq!(number_cell(&c, (7, 4)), dec("1200.00"));
-    assert_eq!(number_cell(&c, (7, 7)), dec("250.00"));
-    assert_eq!(number_cell(&c, (7, 8)), dec("950.00"));
-    assert_eq!(text_cell(&c, (7, 9)), "Not recorded");
-    for col in 10..=12 {
+    assert_eq!(number_cell(&c, (7, 5)), dec("1200.00"));
+    assert_eq!(number_cell(&c, (7, 8)), dec("250.00"));
+    assert_eq!(number_cell(&c, (7, 9)), dec("250.00"));
+    assert_eq!(number_cell(&c, (7, 10)), dec("950.00"));
+    assert_eq!(text_cell(&c, (7, 11)), "Not recorded");
+    for col in 12..=19 {
         assert!(
             !c.contains_key(&(7, col)),
-            "desk has no tax amount in {col}"
+            "desk has nothing in tax column {col}"
         );
     }
-    assert_eq!(text_cell(&c, (7, 13)), "Active");
+    assert_eq!(text_cell(&c, (7, 20)), "Active");
     assert_eq!(text_cell(&c, (8, 0)), "FL-0003");
-    assert_eq!(text_cell(&c, (8, 9)), "Carryover (IRC §723)");
-    assert_eq!(number_cell(&c, (8, 10)), dec("300.00"));
-    assert_eq!(number_cell(&c, (8, 11)), dec("300.00"));
-    assert_eq!(number_cell(&c, (8, 12)), dec("100.00"));
+    assert_eq!(text_cell(&c, (8, 11)), "Carryover (IRC §723)");
+    assert_eq!(number_cell(&c, (8, 12)), dec("400.00"));
+    assert_eq!(number_cell(&c, (8, 13)), dec("300.00"));
+    assert_eq!(number_cell(&c, (8, 14)), dec("300.00"));
+    assert_eq!(number_cell(&c, (8, 15)), dec("300.00"));
+    assert_eq!(number_cell(&c, (8, 16)), dec("100.00"));
+    assert_eq!(text_cell(&c, (8, 19)), "No: read as the book cost");
     assert_eq!(
-        text_cell(&c, (8, 13)),
+        text_cell(&c, (8, 20)),
         "Disposed 2026-09-30, proceeds 45.00"
     );
-    assert_eq!(number_cell(&c, (8, 8)), Decimal::ZERO);
+    assert_eq!(number_cell(&c, (8, 10)), Decimal::ZERO);
     // Totals: the register's (held assets only), not a re-sum of the rows.
     assert_eq!(text_cell(&c, (9, 0)), "Total, assets held");
-    assert_eq!(number_cell(&c, (9, 4)), dec("3700.00"));
-    assert_eq!(number_cell(&c, (9, 7)), dec("777.78"));
-    assert_eq!(number_cell(&c, (9, 8)), dec("2922.22"));
-    assert_eq!(number_cell(&c, (9, 11)), dec("2500.00"));
-    for col in [5, 10, 12] {
+    assert_eq!(number_cell(&c, (9, 5)), dec("3700.00"));
+    assert_eq!(number_cell(&c, (9, 8)), dec("777.78"));
+    assert_eq!(number_cell(&c, (9, 9)), dec("750.00"));
+    assert_eq!(number_cell(&c, (9, 10)), dec("2950.00"));
+    assert_eq!(number_cell(&c, (9, 14)), dec("2800.00"));
+    assert_eq!(number_cell(&c, (9, 15)), dec("2500.00"));
+    for col in [6, 7, 12, 13, 16] {
         assert!(!c.contains_key(&(9, col)), "no total in {col}");
     }
     // INVARIANT 8: the missing tax basis line.
@@ -4669,19 +4723,27 @@ fn asset_register_xlsx_cells() {
     // Reconciliation.
     assert_eq!(text_cell(&c, (12, 0)), "Reconciliation to the books");
     let recon = [
-        (13, "Cost per register", 4, "3700.00"),
-        (14, "Cost per books", 4, "4000.00"),
-        (15, "Difference (unregistered cost)", 4, "300.00"),
-        (17, "Accumulated depreciation per schedule", 7, "777.78"),
-        (18, "Accumulated depreciation per books", 7, "700.00"),
-        (19, "Difference (not yet posted)", 7, "77.78"),
+        (13, "Cost per register", 5, "3700.00"),
+        (14, "Cost per books", 5, "4000.00"),
+        (15, "Difference (unregistered cost)", 5, "300.00"),
+        (17, "Accumulated depreciation per schedule", 8, "777.78"),
+        (18, "Accumulated depreciation per books", 8, "700.00"),
+        (19, "Difference (not yet posted)", 8, "77.78"),
+        (
+            21,
+            "Accumulated depreciation from the assets' runs",
+            8,
+            "750.00",
+        ),
+        (22, "Accumulated depreciation per books", 8, "700.00"),
+        (23, "Difference (not from runs)", 8, "-50.00"),
     ];
     for (row, label, col, amt) in recon {
         assert_eq!(text_cell(&c, (row, 0)), label);
         assert_eq!(number_cell(&c, (row, col)), dec(amt), "{label}");
     }
     // INVARIANT 9: the notes, numbered as the PDF marks them.
-    assert_eq!(text_cell(&c, (21, 0)), "Notes");
+    assert_eq!(text_cell(&c, (25, 0)), "Notes");
     let notes = ledger_import::asset_register::notes();
     for (i, n) in notes.iter().enumerate() {
         let want = if n.mark.is_empty() {
@@ -4689,19 +4751,21 @@ fn asset_register_xlsx_cells() {
         } else {
             format!("{}. {}", n.mark, n.text)
         };
-        assert_eq!(text_cell(&c, (22 + i as u32, 0)), want);
+        assert_eq!(text_cell(&c, (26 + i as u32, 0)), want);
     }
     assert!(
-        text_cell(&c, (22, 0)).starts_with("Book value is the fair market value at contribution")
+        text_cell(&c, (26, 0))
+            .starts_with("Book value is cost less the depreciation the books carry")
     );
     for (row, start) in [
-        (23, "1. Cost: "),
-        (24, "2. Carryover (IRC §723): "),
+        (27, "1. Purchase (IRC §1012): "),
+        (28, "2. Carryover (IRC §723): "),
         (
-            25,
+            29,
             "3. Personal-use conversion (Treas. Reg. §1.168(i)-4(b)): ",
         ),
-        (26, "4. Built-in gain (loss): "),
+        (30, "4. Built-in gain (loss), IRC §704(c): "),
+        (31, "*. Value at contribution not recorded"),
     ] {
         assert!(text_cell(&c, (row, 0)).starts_with(start), "note {start:?}");
     }
@@ -4721,16 +4785,16 @@ fn asset_register_xlsx_headings_and_totals_rule() {
     let x = ledger_import::asset_register_xlsx(&asset_register_fixture(), &meta()).unwrap();
     let c = sheet_cells(&x);
     let styles = cell_styles(&x);
-    let right_aligned = [4, 5, 6, 7, 8, 10, 11, 12];
-    for col in 0..14 {
+    let right_aligned = [5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16];
+    for col in 0..21 {
         let right = styles[&(5, col)].halign.as_deref() == Some("right");
         assert_eq!(right, right_aligned.contains(&col), "heading column {col}");
     }
     assert_eq!(text_cell(&c, (9, 0)), "Total, assets held");
     assert!(!styles[&(9, 0)].top_border, "the label isn't ruled");
-    let total = &styles[&(9, 4)];
+    let total = &styles[&(9, 5)];
     assert!(total.top_border, "{total:?}");
-    for col in 1..14 {
+    for col in 1..21 {
         assert_eq!(
             styles.get(&(9, col)),
             Some(total),
@@ -4738,7 +4802,7 @@ fn asset_register_xlsx_headings_and_totals_rule() {
         );
     }
     for row in 6..=8 {
-        for col in 0..14 {
+        for col in 0..21 {
             let ruled = styles.get(&(row, col)).is_some_and(|s| s.top_border);
             assert!(!ruled, "asset row {row} column {col}");
         }
@@ -4753,15 +4817,18 @@ fn asset_register_xlsx_empty() {
         as_of: d(2026, 10, 15),
         rows: vec![],
         total_cost: Decimal::ZERO,
-        total_accumulated: Decimal::ZERO,
+        total_accumulated_scheduled: Decimal::ZERO,
+        total_accumulated_posted: Decimal::ZERO,
         total_book_value: Decimal::ZERO,
-        total_tax_basis: Decimal::ZERO,
-        missing_tax_basis: 0,
+        total_depreciable_basis: Decimal::ZERO,
+        total_tax_basis_723: Decimal::ZERO,
+        missing_basis: 0,
         ledger_cost: cents(99900),
         ledger_accumulated: Decimal::ZERO,
     };
     let c = sheet_cells(&ledger_import::asset_register_xlsx(&r, &meta()).unwrap());
-    assert_eq!(number_cell(&c, (7, 11)), Decimal::ZERO);
+    assert_eq!(number_cell(&c, (7, 14)), Decimal::ZERO);
+    assert_eq!(number_cell(&c, (7, 15)), Decimal::ZERO);
     assert!(
         !c.values()
             .any(|v| matches!(v, Cell::Text(t) if t.starts_with("Tax basis not recorded"))),
@@ -4769,7 +4836,7 @@ fn asset_register_xlsx_empty() {
     );
     assert_eq!(text_cell(&c, (6, 0)), "No fixed assets");
     assert_eq!(text_cell(&c, (7, 0)), "Total, assets held");
-    assert_eq!(number_cell(&c, (7, 4)), Decimal::ZERO);
+    assert_eq!(number_cell(&c, (7, 5)), Decimal::ZERO);
     assert_eq!(text_cell(&c, (12, 0)), "Difference (unregistered cost)");
-    assert_eq!(number_cell(&c, (12, 4)), dec("999.00"));
+    assert_eq!(number_cell(&c, (12, 5)), dec("999.00"));
 }

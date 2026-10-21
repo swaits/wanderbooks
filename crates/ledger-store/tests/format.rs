@@ -1280,7 +1280,7 @@ fn a_write_waiting_for_the_upgrade_journals_nothing() {
     let lathe = |s: &mut Store, what: &str| {
         s.register_asset(ledger_core::NewAsset {
             description: what.into(),
-            purchase_date: day(2026, 1, 1),
+            in_service_date: day(2026, 1, 1),
             cost: usd(1_200_000),
             salvage_value: usd(0),
             useful_life_months: 12,

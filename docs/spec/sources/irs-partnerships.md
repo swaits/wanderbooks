@@ -1,5 +1,5 @@
 # Partnerships: shares of income and capital accounts
-Governs `CloseTo::Members` and the members' equity statement. Partners' shares come from the partnership agreement (IRC §704(a)); a partner's capital account is one running balance of what they contributed, their allocations of income and loss, and what was distributed to them (Treas. Reg. §1.704-1(b)(2)(iv)(b)); when a partner's interest changes during the year, the distributive shares take the varying interests into account, period by period (IRC §706(d)(1), Treas. Reg. §1.706-4(a)); Form 1065 reports each partner's capital account on the tax basis (Schedule K-1 item L) and the changes in them (Schedule M-2). No authority prescribes how to round a share to the cent: that rule is the owner's decision (largest remainder, 2026-10-13), counted from the company's first close (D-10, 2026-10-16).
+Governs `CloseTo::Members`, the members' equity statement, and the K-1 worksheet's capital accounts on the tax basis (`ledger_core::tax_capital`, rules.md B-36). Partners' shares come from the partnership agreement (IRC §704(a)); a partner's capital account is one running balance of what they contributed, their allocations of income and loss, and what was distributed to them (Treas. Reg. §1.704-1(b)(2)(iv)(b)); when a partner's interest changes during the year, the distributive shares take the varying interests into account, period by period (IRC §706(d)(1), Treas. Reg. §1.706-4(a)); Form 1065 reports each partner's capital account on the tax basis (Schedule K-1 item L) and the changes in them (Schedule M-2). No authority prescribes how to round a share to the cent: that rule is the owner's decision (largest remainder, 2026-10-13), counted from the company's first close (D-10, 2026-10-16).
 
 ## 26 U.S.C. §704(a)-(b)
 Source: <https://www.law.cornell.edu/uscode/text/26/704>  
@@ -68,3 +68,55 @@ SHA-256 of the retrieved file (`i1065sk1.html`): `d7d6298286601fd95ab8e445c10fd6
 **Basis Limitations, its third paragraph of five** (where "based on the partnership's books and records" comes from: not Item L)
 
 > Although the partnership provides an analysis of the partner’s capital account in item L of Schedule K-1, that information is based on the partnership’s books and records and can’t be used to figure the partner’s adjusted basis.
+
+## Instructions for Form 1065 (2025): Item L, the tax-basis method
+Source: <https://www.irs.gov/instructions/i1065>  
+Retrieved: 2026-10-20  
+SHA-256 of the retrieved file (`i1065.html`): `3485e936c1f6532a3a8efda78d45db38c70892abe9c532704d605a4bc45714fe`
+
+Under "Item L. Partner’s Capital Account Analysis" (Specific Instructions, Schedule K-1 only):
+
+**Tax-basis method.**
+
+> Figure each partner’s capital account for the partnership’s tax year using the transactional approach, discussed below, for the tax-basis method.
+
+**How to report partnership events or transactions.** (first two sentences)
+
+> If you’re uncertain how to report a partnership event or transaction, you should account for the event or transaction in a manner generally consistent with figuring the partner’s adjusted tax basis in its partnership interest (without regard to partnership liabilities), taking into account the rules and principles of sections 705, 722, 733, and 742 and by reporting the amount on the line for other increase (decrease). The partner’s ending capital account as reported using the tax-basis method in item L might not equal the partner’s adjusted tax basis in its partnership interest.
+
+**Beginning capital account.**
+
+> Enter the partner’s ending capital account as determined for last year on the line for beginning capital account. If a partner joined the partnership through a contribution to the partnership this year, enter zero as the partner’s beginning capital account.
+
+**Capital contributed during the year.**
+
+> On the line “Capital contributed during the year,” enter the amount of cash plus the adjusted tax basis of all property contributed by the partner to the partnership during the year. The amount you enter on this line should be reduced by any liabilities assumed by the partnership in connection with, or liabilities to which the property is subject immediately before, the contribution. This amount might be negative.
+
+**Current year net income (loss).**
+
+> On the line “Current year net income (loss),” enter the partner’s distributive share of partnership income and gain (including tax-exempt income) as figured for tax purposes for the year, minus the partner’s distributive share of partnership loss and deductions (including nondeductible, noncapital expenditures) as figured for tax purposes for the year.
+
+**Other increase (decrease).** (first sentence)
+
+> On the line “Other increase (decrease),” enter the sum of all other increases or decreases that affected the partner’s capital account for tax purposes during the year and attach a statement explaining each adjustment.
+
+**Withdrawals and distributions.**
+
+> On the line “Withdrawals and distributions,” enter the amount of cash plus the adjusted tax basis of all property distributed by the partnership to the partner during the year. The amount you enter on this line should be reduced by any liabilities assumed by the partner in connection with, or liabilities to which the property is subject immediately before, the distribution. This amount might be negative.
+
+**Ending capital account.**
+
+> The sum of the amounts shown on the lines in item L above the line “Ending capital account” must equal the amount reported on the line “Ending capital account.” A partner’s ending capital account determined under the tax-basis method may be negative if the sum of a partner’s losses and distributions exceeds the sum of the partner’s contributions and share of income.
+
+Under "Item M. Did the Partner Contribute Property With a Built-in Gain or Loss?":
+
+> A property’s built-in gain is the amount by which the FMV of the property exceeds its adjusted tax basis at the time the property is contributed to the partnership. A property’s built-in loss is the amount by which the FMV of the property is less than its adjusted tax basis at the time the property is contributed to the partnership. Partnerships are required to keep track of this information; see Regulations section 1.704-3.
+
+## Instructions for Form 1065 (2020): the tax-basis method required
+Source: <https://www.irs.gov/pub/irs-prior/i1065--2020.pdf>  
+Retrieved: 2026-10-20  
+SHA-256 of the retrieved file (`i1065--2020.pdf`): `64a48b6e8a9d713eaf641ffdd9a5a09e9811692d84a4be2c45f458e69eb7491a`
+
+Under "Item L. Partner's Capital Account Analysis", from tax year 2020:
+
+> Tax basis method. Figure each partner's capital account for the partnership's tax year using the transactional approach, discussed below, for the tax basis method. If you reported the partner's capital account last year using any other method (for example, GAAP, section 704(b), or other), you must use the tax basis method this year.

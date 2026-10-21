@@ -1,0 +1,155 @@
+# P3 defect 13: four devices two members contribute from personal use, each at the
+# lower of its value and its basis.
+id = "assets-four-contributed-devices"
+title = "Each contributed device takes the lower of its value and its basis; gains and losses are per property"
+rule = "Each item of contributed property is its own: depreciable basis is the lesser of its fair market value and the contributor's adjusted basis; its built-in gain or loss is its own, and gains and losses of different properties are never netted."
+status = "AUTHORITY"
+sources = [
+  "Treas. Reg. §1.168(i)-4(b)(1)",
+  "Treas. Reg. §1.704-3(a)(2): section 704(c) applies 'on a property-by-property basis'",
+  "Treas. Reg. §1.704-3(a)(3)(ii)",
+  "26 U.S.C. §704(c)(1)(C)",
+]
+tags = ["fixed-assets", "tax-basis", "partnerships", "704c"]
+
+[setup]
+currency = "USD"
+fiscal_year_start = "01-01"
+basis = "accrual"
+rounding = "half-away-from-zero"
+
+[[setup.accounts]]
+code = "1500"
+name = "Equipment"
+type = "asset"
+
+[[setup.accounts]]
+code = "1510"
+name = "Accumulated Depreciation"
+type = "asset"
+
+[[setup.accounts]]
+code = "3000"
+name = "Capital, Tobin Harlow"
+type = "equity"
+
+[[setup.accounts]]
+code = "3001"
+name = "Capital, Morgan Ellis"
+type = "equity"
+
+[[setup.accounts]]
+code = "6200"
+name = "Depreciation Expense"
+type = "expense"
+
+[[setup.members]]
+name = "Tobin Harlow"
+capital_account = "3000"
+share = "0.5"
+
+[[setup.members]]
+name = "Morgan Ellis"
+capital_account = "3001"
+share = "0.5"
+
+# Four devices the two members contribute jointly from personal use, each
+# at its value. (Nothing rounds here.)
+[[setup.assets]]
+id = "laptop"
+description = "Laptop"
+cost = "1400.00"
+salvage = "0.00"
+life_months = 36
+in_service = "2026-01-01"
+method = "straight_line"
+cost_account = "1500"
+accumulated_account = "1510"
+expense_account = "6200"
+acquired_by = 1
+basis = { rule = "personal_use_conversion", contributor_adjusted_basis = "1750.40", fmv_at_contribution = "1400.00", sec704c_method = "traditional" }
+
+[[setup.assets]]
+id = "phone"
+description = "Phone"
+cost = "900.00"
+salvage = "0.00"
+life_months = 36
+in_service = "2026-01-01"
+method = "straight_line"
+cost_account = "1500"
+accumulated_account = "1510"
+expense_account = "6200"
+acquired_by = 1
+basis = { rule = "personal_use_conversion", contributor_adjusted_basis = "1129.99", fmv_at_contribution = "900.00", sec704c_method = "traditional" }
+
+[[setup.assets]]
+id = "camera"
+description = "Camera"
+cost = "1300.00"
+salvage = "0.00"
+life_months = 36
+in_service = "2026-01-01"
+method = "straight_line"
+cost_account = "1500"
+accumulated_account = "1510"
+expense_account = "6200"
+acquired_by = 1
+basis = { rule = "personal_use_conversion", contributor_adjusted_basis = "1080.00", fmv_at_contribution = "1300.00", sec704c_method = "traditional" }
+
+[[setup.assets]]
+id = "monitor"
+description = "Monitor"
+cost = "500.00"
+salvage = "0.00"
+life_months = 36
+in_service = "2026-01-01"
+method = "straight_line"
+cost_account = "1500"
+accumulated_account = "1510"
+expense_account = "6200"
+acquired_by = 1
+basis = { rule = "personal_use_conversion", contributor_adjusted_basis = "500.00", fmv_at_contribution = "500.00", sec704c_method = "traditional" }
+
+[[events]]
+date = "2026-01-01"
+description = "Four devices contributed jointly"
+lines = [
+  { account = "1500", side = "debit", amount = "1400.00" },
+  { account = "1500", side = "debit", amount = "900.00" },
+  { account = "1500", side = "debit", amount = "1300.00" },
+  { account = "1500", side = "debit", amount = "500.00" },
+  { account = "3000", side = "credit", amount = "2050.00" },
+  { account = "3001", side = "credit", amount = "2050.00" },
+]
+
+# Hand check, each device its own: the lesser of value and basis, and the
+# value less the basis.
+[[expect]]
+query = "asset_basis"
+asset = "laptop"
+values = { tax_basis_723 = "1750.40", depreciable_basis = "1400.00", built_in_gain_704c = "-350.40", sec704c_1c = "true" }
+
+[[expect]]
+query = "asset_basis"
+asset = "phone"
+values = { tax_basis_723 = "1129.99", depreciable_basis = "900.00", built_in_gain_704c = "-229.99", sec704c_1c = "true" }
+
+[[expect]]
+query = "asset_basis"
+asset = "camera"
+values = { tax_basis_723 = "1080.00", depreciable_basis = "1080.00", built_in_gain_704c = "220.00", sec704c_1c = "false" }
+
+[[expect]]
+query = "asset_basis"
+asset = "monitor"
+values = { tax_basis_723 = "500.00", depreciable_basis = "500.00", built_in_gain_704c = "0.00", sec704c_1c = "false" }
+
+# Totals: cost 1,400.00 + 900.00 + 1,300.00 + 500.00 = 4,100.00; §723
+# 1,750.40 + 1,129.99 + 1,080.00 + 500.00 = 4,460.39; depreciable
+# 1,400.00 + 900.00 + 1,080.00 + 500.00 = 3,880.00. The gains and losses
+# are each property's own: the register totals none of them.
+[[expect]]
+query = "register_totals"
+as_of = "2026-06-30"
+values = { total_cost = "4100.00", total_tax_basis_723 = "4460.39", total_depreciable_basis = "3880.00", missing_basis = "0" }

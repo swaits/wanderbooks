@@ -230,9 +230,9 @@ fn replayed_dates_outside_the_calendar_are_accepted() {
     let equipment = add("1500", AccountType::Asset);
     let accum = add("1501", AccountType::Asset);
     let depreciation = add("6100", AccountType::Expense);
-    let asset = |purchase_date: NaiveDate, useful_life_months: u32| ledger_core::NewAsset {
+    let asset = |in_service_date: NaiveDate, useful_life_months: u32| ledger_core::NewAsset {
         description: "Late".into(),
-        purchase_date,
+        in_service_date,
         cost: usd(Decimal::new(120000, 2)),
         salvage_value: usd(Decimal::ZERO),
         useful_life_months,
@@ -267,11 +267,11 @@ fn replayed_dates_outside_the_calendar_are_accepted() {
         .ledger
         .replay_register_asset(asset(d(2026, 1, 1), 12))
         .unwrap();
-    let fix = |purchase_date: NaiveDate| ledger_core::AssetCorrection {
+    let fix = |in_service_date: NaiveDate| ledger_core::AssetCorrection {
         cost: usd(Decimal::new(120000, 2)),
         salvage_value: usd(Decimal::ZERO),
         useful_life_months: 60,
-        purchase_date,
+        in_service_date,
     };
     assert_eq!(
         b.ledger.correct_asset(id, fix(d(9999, 1, 1))).unwrap_err(),
@@ -280,7 +280,10 @@ fn replayed_dates_outside_the_calendar_are_accepted() {
     b.ledger
         .replay_correct_asset(id, fix(d(9999, 1, 1)))
         .unwrap();
-    assert_eq!(b.ledger.get_asset(id).unwrap().purchase_date, d(9999, 1, 1));
+    assert_eq!(
+        b.ledger.get_asset(id).unwrap().in_service_date,
+        d(9999, 1, 1)
+    );
     // A disposal dated past the calendar.
     let proceeds = usd(Decimal::ZERO);
     assert_eq!(
@@ -467,18 +470,36 @@ fn amounts_larger_than_a_line_are_refused_everywhere() {
         ledger_core::payout_plan(&payout(MAX_LINE_AMOUNT, MAX_LINE_AMOUNT), b.ledger.chart())
             .is_ok()
     );
-    // A contributor's basis.
-    let basis = |b: Decimal| ledger_core::TaxBasis {
-        rule: ledger_core::TaxBasisRule::Carryover,
-        contributor_basis: Some(b),
+    // A contributor's basis and a value at contribution.
+    let basis = |b: Decimal, v: Decimal| {
+        ledger_core::AssetBasis::contribution(ledger_core::BasisRule::Carryover723, b, v)
     };
-    assert!(basis(big).check().is_err());
-    assert!(basis(MAX_LINE_AMOUNT).check().is_ok());
-    // On replay: every journaled basis passed check_journaled.
+    assert!(basis(big, Decimal::ONE).check().is_err());
+    assert!(basis(Decimal::ONE, big).check().is_err());
+    assert!(basis(MAX_LINE_AMOUNT, MAX_LINE_AMOUNT).check().is_ok());
+    // On replay: every journaled basis passed check_journaled (a pre-P3
+    // one check_legacy_journaled).
     let cents_max = Decimal::MAX.round_dp(2) / Decimal::ONE_HUNDRED;
-    assert!(basis(big.round_dp(2)).check_journaled().is_ok());
-    assert!(basis(cents_max.round_dp(2)).check_journaled().is_ok());
-    assert!(basis(-Decimal::ONE).check_journaled().is_err());
+    assert!(
+        basis(big.round_dp(2), big.round_dp(2))
+            .check_journaled()
+            .is_ok()
+    );
+    assert!(
+        basis(cents_max.round_dp(2), Decimal::ONE)
+            .check_journaled()
+            .is_ok()
+    );
+    assert!(
+        basis(-Decimal::ONE, Decimal::ONE)
+            .check_journaled()
+            .is_err()
+    );
+    let mut legacy = basis(big.round_dp(2), Decimal::ONE);
+    legacy.fmv_at_contribution = None;
+    assert!(legacy.check_legacy_journaled().is_ok());
+    legacy.contributor_adjusted_basis = Some(-Decimal::ONE);
+    assert!(legacy.check_legacy_journaled().is_err());
     // A party's share of an entry.
     let share = |a: Decimal| {
         vec![ledger_core::PartyShare {
@@ -508,16 +529,19 @@ fn replayed_bases_and_shares_past_the_limit_are_accepted() {
     // Decimal's largest is a whole number of cents, as every version
     // required of a basis and a share.
     let cents_max = Decimal::MAX;
-    let basis = ledger_core::TaxBasis {
-        rule: ledger_core::TaxBasisRule::Carryover,
-        contributor_basis: Some(cents_max),
+    let basis = ledger_core::AssetBasis {
+        rule: ledger_core::BasisRule::Carryover723,
+        contributor_adjusted_basis: Some(cents_max),
+        fmv_at_contribution: None,
+        sec704c_method: None,
+        source: None,
     };
     for _ in 0..2 {
         let id = b
             .ledger
             .register_asset(ledger_core::NewAsset {
                 description: "Laptop".into(),
-                purchase_date: d(2026, 1, 1),
+                in_service_date: d(2026, 1, 1),
                 cost: usd(Decimal::new(240000, 2)),
                 salvage_value: usd(Decimal::ZERO),
                 useful_life_months: 24,
@@ -526,12 +550,16 @@ fn replayed_bases_and_shares_past_the_limit_are_accepted() {
                 expense_account: depreciation,
             })
             .unwrap();
+        let mut new = basis.clone();
+        new.fmv_at_contribution = Some(Decimal::new(240000, 2));
         assert!(matches!(
-            b.ledger.set_asset_tax_basis(id, basis),
+            b.ledger.set_asset_basis(id, new),
             Err(LedgerError::InvalidTaxBasis(_))
         ));
-        b.ledger.replay_set_asset_tax_basis(id, basis).unwrap();
-        assert_eq!(b.ledger.get_asset(id).unwrap().tax, Some(basis));
+        b.ledger
+            .replay_set_asset_tax_basis(id, basis.rule, basis.contributor_adjusted_basis)
+            .unwrap();
+        assert_eq!(b.ledger.get_asset(id).unwrap().basis, Some(basis.clone()));
     }
     assert!(matches!(
         ledger_core::fixed_asset_register(&b.ledger, d(2026, 12, 31)),
@@ -630,7 +658,7 @@ fn disposal_proceeds_and_dates_are_bounded() {
     let depreciation = add("6100", AccountType::Expense);
     let laptop = || ledger_core::NewAsset {
         description: "Laptop".into(),
-        purchase_date: d(2026, 1, 1),
+        in_service_date: d(2026, 1, 1),
         cost: usd(Decimal::new(240000, 2)),
         salvage_value: usd(Decimal::ZERO),
         useful_life_months: 24,
@@ -672,8 +700,11 @@ fn disposal_proceeds_and_dates_are_bounded() {
         b.ledger.get_asset(old).unwrap().status,
         ledger_core::AssetStatus::Disposed { date, .. } if date == NaiveDate::MAX
     ));
-    // Replay keeps what every version checked: no disposal twice, none
-    // before the purchase, no negative proceeds.
+    // Replay keeps what every version checked: no disposal twice, no
+    // negative proceeds. The date floor (the acquired date, P3) is a
+    // command's: replay accepts a disposal before it, which every earlier
+    // version's commands refused anyway (rules.md B-28: replay accepts
+    // more, never less).
     assert_eq!(
         b.ledger
             .replay_dispose_asset(old, NaiveDate::MAX, usd(Decimal::ONE))
@@ -683,14 +714,17 @@ fn disposal_proceeds_and_dates_are_bounded() {
     let early = b.ledger.register_asset(laptop()).unwrap();
     assert!(matches!(
         b.ledger
-            .replay_dispose_asset(early, d(2025, 1, 1), usd(Decimal::ONE)),
-        Err(LedgerError::DisposalBeforePurchase(_))
-    ));
-    assert!(matches!(
-        b.ledger
             .replay_dispose_asset(early, d(2026, 2, 1), usd(-Decimal::ONE)),
         Err(LedgerError::NegativeProceeds(_))
     ));
+    assert!(matches!(
+        b.ledger
+            .dispose_asset(early, d(2025, 1, 1), usd(Decimal::ONE)),
+        Err(LedgerError::DisposalBeforeAcquisition { .. })
+    ));
+    b.ledger
+        .replay_dispose_asset(early, d(2025, 1, 1), usd(Decimal::ONE))
+        .unwrap();
 }
 
 /// The bounds are the line limit exactly: a new draft line (base or
@@ -808,12 +842,12 @@ fn new_asset(
     accounts: (AccountId, AccountId, AccountId),
     cost: &str,
     salvage: &str,
-    purchase_date: NaiveDate,
+    in_service_date: NaiveDate,
     life: u32,
 ) -> ledger_core::NewAsset {
     ledger_core::NewAsset {
         description: "Machine".into(),
-        purchase_date,
+        in_service_date,
         cost: usd(cost.parse().unwrap()),
         salvage_value: usd(salvage.parse().unwrap()),
         useful_life_months: life,

@@ -60,41 +60,80 @@ fn attachment_name(b: &Books, id: u64) -> String {
         .unwrap_or_else(|| format!("attachment {id}"))
 }
 
-/// "Tax basis of FL-0001: personal-use conversion, contributor's basis
-/// $2,000.00 → tax basis $1,700.00". The tax basis is ledger-core's
-/// (`Asset::tax_basis`) for the event's rule and basis on the asset's
-/// book cost, which never changes once registered.
-fn tax_basis_text(b: &Books, asset_id: Option<u64>, p: &Value) -> String {
+/// "Tax basis of FL-0001: personal-use conversion, value $1,440.00,
+/// contributor's adjusted basis $1,688.40: §723 basis $1,688.40,
+/// depreciable basis $1,440.00, built-in loss $248.40". The figures are
+/// ledger-core's (`Asset::basis_figures`) for the event's facts on the
+/// asset; a pre-P3 `asset.tax_basis_set` (`legacy`: its rule by its old
+/// name, no value) reads the value as the book cost, as it was recorded.
+fn tax_basis_text(b: &Books, asset_id: Option<u64>, p: &Value, legacy: bool) -> String {
     let asset = asset_id.and_then(|id| b.ledger.get_asset(id));
     let name = match (asset, asset_id) {
         (Some(a), _) => a.tag.clone().unwrap_or_else(|| a.description.clone()),
         (None, Some(id)) => format!("asset {id}"),
         (None, None) => "an asset".to_string(),
     };
-    let rule = ledger_core::TaxBasisRule::parse(s(p, "rule"));
-    let contributor: Option<rust_decimal::Decimal> = p
-        .get("contributor_basis")
-        .and_then(|v| v.as_str())
-        .and_then(|v| v.parse().ok());
+    let dec = |k: &str| -> Option<rust_decimal::Decimal> {
+        p.get(k)
+            .and_then(|v| v.as_str())
+            .and_then(|v| v.parse().ok())
+    };
+    let rule = if legacy {
+        ledger_core::BasisRule::parse_legacy(s(p, "rule"))
+    } else {
+        ledger_core::BasisRule::parse(s(p, "rule"))
+    };
     let Some(rule) = rule else {
         return format!("Tax basis of {name} recorded");
     };
-    let tax = asset.and_then(|a| {
+    let adjusted = dec(if legacy {
+        "contributor_basis"
+    } else {
+        "contributor_adjusted_basis"
+    });
+    let fmv = (!legacy).then(|| dec("fmv_at_contribution")).flatten();
+    let method = p
+        .get("sec704c_method")
+        .and_then(|v| v.as_str())
+        .and_then(ledger_core::Sec704cMethod::parse);
+    let figures = asset.and_then(|a| {
         let mut a = a.clone();
-        a.tax = Some(ledger_core::TaxBasis {
+        a.basis = Some(ledger_core::AssetBasis {
             rule,
-            contributor_basis: contributor,
+            contributor_adjusted_basis: adjusted,
+            fmv_at_contribution: fmv,
+            sec704c_method: method,
+            source: None,
         });
-        a.tax_basis()
+        a.basis_figures().ok().flatten()
     });
     let mut text = format!("Tax basis of {name}: {}", super::assets::rule_words(rule));
-    if let Some(c) = contributor {
-        text.push_str(&format!(", contributor's basis {}", fmt::dollars(c)));
+    if let Some(v) = fmv {
+        text.push_str(&format!(", value {}", fmt::dollars(v)));
     }
-    match (tax, contributor.is_some()) {
-        (Some(t), true) => text.push_str(&format!(" → tax basis {}", fmt::dollars(t))),
-        (Some(t), false) => text.push_str(&format!(", tax basis {}", fmt::dollars(t))),
-        (None, _) => {}
+    if let Some(c) = adjusted {
+        text.push_str(&format!(
+            ", contributor's adjusted basis {}",
+            fmt::dollars(c)
+        ));
+    }
+    if let Some(f) = figures {
+        let mut parts = Vec::new();
+        if let Some(t) = f.tax_basis_723 {
+            parts.push(format!("§723 basis {}", fmt::dollars(t)));
+        }
+        parts.push(format!(
+            "depreciable basis {}",
+            fmt::dollars(f.depreciable_basis)
+        ));
+        if let Some(g) = f.built_in_gain_704c {
+            let (label, amount) = super::assets::gain_or_loss(g);
+            parts.push(format!("{} {}", label.to_lowercase(), fmt::dollars(amount)));
+        }
+        text.push_str(&format!(": {}", parts.join(", ")));
+    }
+    if let Some(m) = method {
+        text.push_str(&format!("; §704(c) method {}", m.key().replace('_', " ")));
     }
     text
 }
@@ -785,7 +824,12 @@ pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
         }
         "asset.tax_basis_set" => ev(
             icon::SCALES,
-            tax_basis_text(b, asset_id, p),
+            tax_basis_text(b, asset_id, p, true),
+            asset_id.map(Route::Asset),
+        ),
+        "asset.basis_set" => ev(
+            icon::SCALES,
+            tax_basis_text(b, asset_id, p, false),
             asset_id.map(Route::Asset),
         ),
         "asset.corrected" => ev(

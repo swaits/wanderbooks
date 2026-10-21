@@ -651,6 +651,26 @@ pub fn find(b: &Books) -> Vec<Attention> {
             ),
         });
     }
+    // Accumulated depreciation no asset's runs account for: a hand entry,
+    // or a run reversed after its asset left the books.
+    let unattributed = register
+        .as_ref()
+        .map_or(Decimal::ZERO, |r| r.unattributed_accumulated());
+    if !unattributed.is_zero() {
+        out.push(Attention {
+            severity: Severity::Problem,
+            title: format!(
+                "{} of accumulated depreciation not from any asset's runs",
+                fmt::dollars(unattributed.abs())
+            ),
+            detail: "The accumulated depreciation accounts hold depreciation (or take it back) that no registered asset's depreciation run accounts for: an entry made by hand, or a run reversed after its asset was disposed.".into(),
+            target: Some(Route::Assets),
+            prompt: format!(
+                "In wanderbooks, the accumulated depreciation accounts differ by {} from what the assets' depreciation runs put there (books.export fixed_asset_register, unattributed_accumulated). Find the entries behind it in those accounts' registers and tell me how to fix them.",
+                fmt::dollars(unattributed)
+            ),
+        });
+    }
     let unregistered = register.map_or(Decimal::ZERO, |r| r.unregistered_cost());
     if !unregistered.is_zero() {
         let (title, why) = if unregistered > Decimal::ZERO {
@@ -681,16 +701,25 @@ pub fn find(b: &Books) -> Vec<Attention> {
             ),
         });
     }
-    for a in b.ledger.registered_assets().filter(|a| {
-        a.tag.is_none() && a.status == ledger_core::AssetStatus::Active && a.purchase_date <= today
-    }) {
+    let held = |a: &&ledger_core::Asset| {
+        a.status == ledger_core::AssetStatus::Active
+            && b.ledger
+                .asset_acquired_date(a.id)
+                .is_some_and(|d| d <= today)
+    };
+    for a in b
+        .ledger
+        .registered_assets()
+        .filter(held)
+        .filter(|a| a.tag.is_none())
+    {
         out.push(Attention {
             severity: Severity::Todo,
             title: format!("No tag: {}", a.description),
             detail: format!(
                 "Asset {}, in service {}. A tag is the label on the thing itself.",
                 a.id,
-                fmt::date(a.purchase_date)
+                fmt::date(a.in_service_date)
             ),
             target: Some(Route::Asset(a.id)),
             prompt: format!(
@@ -700,27 +729,62 @@ pub fn find(b: &Books) -> Vec<Attention> {
         });
     }
 
-    for a in b.ledger.registered_assets().filter(|a| {
-        a.tax_basis().is_none()
-            && a.status == ledger_core::AssetStatus::Active
-            && a.purchase_date <= today
-    }) {
+    for a in b.ledger.registered_assets().filter(held) {
         let name = a.tag.clone().unwrap_or_else(|| format!("asset {}", a.id));
-        out.push(Attention {
-            severity: Severity::Todo,
-            title: format!("No tax basis: {}", b.asset_label(a.id)),
-            detail: format!(
-                "Book cost {}, in service {}. The CPA needs its federal tax basis beside its book value.",
-                fmt::dollars(a.cost.amount),
-                fmt::date(a.purchase_date)
-            ),
-            target: Some(Route::Asset(a.id)),
-            prompt: format!(
-                "In wanderbooks, record the tax basis of {name} (\"{}\", book cost {}) with books.set_asset_tax_basis. Ask me how the company got it: bought (cost), contributed by a member from business use (carryover, IRC §723: the member's adjusted basis), or converted by a member from personal use (personal-use conversion, Treas. Reg. §1.168(i)-4(b): the member's adjusted basis; the tax basis is the lesser of that and its fair market value). Then show me the asset.",
-                a.description,
-                fmt::dollars(a.cost.amount)
-            ),
-        });
+        let Some(basis) = &a.basis else {
+            out.push(Attention {
+                severity: Severity::Todo,
+                title: format!("No tax basis: {}", b.asset_label(a.id)),
+                detail: format!(
+                    "Book cost {}, in service {}. The CPA needs its federal tax basis beside its book value.",
+                    fmt::dollars(a.cost.amount),
+                    fmt::date(a.in_service_date)
+                ),
+                target: Some(Route::Asset(a.id)),
+                prompt: format!(
+                    "In wanderbooks, record the tax basis of {name} (\"{}\", book cost {}) with books.set_asset_tax_basis. Ask me how the company got it: bought (purchase), contributed by a member from business use (carryover_723, IRC §723: the member's adjusted basis), or contributed by a member from personal use (personal_use_conversion, Treas. Reg. §1.168(i)-4(b): the member's adjusted basis, depreciated from the lesser of that and its fair market value); for a contribution, its fair market value when contributed, and who says so. Then show me the asset.",
+                    a.description,
+                    fmt::dollars(a.cost.amount)
+                ),
+            });
+            continue;
+        };
+        if !basis.rule.is_contribution() {
+            continue;
+        }
+        if !a.fmv_is_recorded() {
+            out.push(Attention {
+                severity: Severity::Todo,
+                title: format!("Confirm its value at contribution: {}", b.asset_label(a.id)),
+                detail: format!(
+                    "Its basis was recorded before the value at contribution was asked, so the books read it as the book cost, {}. The §704(c) built-in gain or loss rests on it.",
+                    fmt::dollars(a.cost.amount)
+                ),
+                target: Some(Route::Asset(a.id)),
+                prompt: format!(
+                    "In wanderbooks, {name} (\"{}\") was contributed with its value at contribution not recorded; the books read it as its book cost, {}. Ask me what it was worth when contributed, then record it with books.set_asset_tax_basis (rule {}, contributor_adjusted_basis {}, fmv_at_contribution, and basis_source: who says so, citing the contribution entry). Then show me the asset.",
+                    a.description,
+                    fmt::dollars(a.cost.amount),
+                    basis.rule.key(),
+                    basis
+                        .contributor_adjusted_basis
+                        .map(|v| v.to_string())
+                        .unwrap_or_default()
+                ),
+            });
+        }
+        if a.built_in_gain_704c().is_some_and(|g| !g.is_zero()) && basis.sec704c_method.is_none() {
+            out.push(Attention {
+                severity: Severity::Todo,
+                title: format!("Choose a §704(c) method with the CPA: {}", b.asset_label(a.id)),
+                detail: "It was contributed with a built-in gain or loss, and no §704(c) method (traditional, traditional with curative allocations, or remedial) is recorded for it.".into(),
+                target: Some(Route::Asset(a.id)),
+                prompt: format!(
+                    "In wanderbooks, {name} (\"{}\") has a §704(c) built-in gain or loss and no §704(c) method. Ask me which method the CPA and I chose (traditional, traditional_with_curative, or remedial: Treas. Reg. §1.704-3(b)-(d)), then record it with books.set_asset_tax_basis, keeping its other facts as they are. Then show me the asset.",
+                    a.description
+                ),
+            });
+        }
     }
 
     use ledger_store::DiskCheck;
@@ -861,7 +925,7 @@ mod tests {
         b.post(d(2026, 2, 1), cash, capital, 500_000);
         b.s.register_asset(NewAsset {
             description: "Laptop".into(),
-            purchase_date: d(2026, 2, 2),
+            in_service_date: d(2026, 2, 2),
             cost: Money::new(rust_decimal::Decimal::new(100_000, 2), Currency::USD),
             salvage_value: Money::new(rust_decimal::Decimal::ZERO, Currency::USD),
             useful_life_months: 36,

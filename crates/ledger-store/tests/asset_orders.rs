@@ -111,7 +111,7 @@ fn books(dir: &Path) -> u64 {
     }
     s.register_asset(NewAsset {
         description: "Asset".into(),
-        purchase_date: day(2026, 1, 16),
+        in_service_date: day(2026, 1, 16),
         cost: usd(300_000),
         salvage_value: usd(0),
         useful_life_months: 3,
@@ -219,7 +219,7 @@ fn check(store: &Store, asset: u64, ops: &[Op], verify: bool) {
     let a = store.ledger().get_asset(asset).unwrap().clone();
     let mut active = a.clone();
     active.status = AssetStatus::Active;
-    let sched = |on: NaiveDate| ledger_core::accumulated_depreciation(&active, on).unwrap();
+    let sched = |on: NaiveDate| ledger_core::accumulated_scheduled_through(&active, on).unwrap();
     // INVARIANT 3: one run in effect per month.
     let text = std::fs::read_to_string(store.data_dir().join(JOURNAL_FILE)).unwrap();
     let mut live: Vec<String> = Vec::new();
@@ -294,7 +294,7 @@ fn check_completion(dir: &Path, asset: u64, ops: &[Op]) {
     for e in ends() {
         let x = balance(&store, EXPENSE, e);
         assert!(
-            x <= ledger_core::accumulated_depreciation(&a, e).unwrap(),
+            x <= ledger_core::accumulated_scheduled_through(&a, e).unwrap(),
             "{ops:?} then every month: {x} on {e}"
         );
     }

@@ -1365,7 +1365,7 @@ mod refusals {
             Op::RegisterAsset(c, d, x, cost, m) => store
                 .register_asset(ledger_core::NewAsset {
                     description: "van".into(),
-                    purchase_date: day(0),
+                    in_service_date: day(0),
                     cost: usd(cost),
                     salvage_value: usd(0),
                     useful_life_months: m,
@@ -1448,7 +1448,7 @@ mod refusals {
             Op::GoodAsset(c, m) => store
                 .register_asset(ledger_core::NewAsset {
                     description: "machine".into(),
-                    purchase_date: day(0),
+                    in_service_date: day(0),
                     cost: usd(c),
                     salvage_value: usd(0),
                     useful_life_months: m,
@@ -1939,7 +1939,7 @@ fn every_figure_of(l: &ledger_core::Ledger) -> (usize, usize) {
     let dates: Vec<NaiveDate> = (1..l.next_entry_id())
         .filter_map(|id| l.get_entry(id))
         .map(|e| e.date())
-        .chain(l.registered_assets().map(|a| a.purchase_date))
+        .chain(l.registered_assets().map(|a| a.in_service_date))
         .chain(l.list_periods().iter().flat_map(|p| [p.start, p.end]))
         .chain(l.schedules().map(|s| s.start))
         .collect();
@@ -1995,7 +1995,7 @@ fn every_figure_of(l: &ledger_core::Ledger) -> (usize, usize) {
             }
             for a in l.registered_assets() {
                 tally(ledger_core::depreciation_schedule(a, d).map(|_| ()));
-                tally(ledger_core::book_value(a, d).map(|_| ()));
+                tally(ledger_core::scheduled_book_value(a, d).map(|_| ()));
                 tally(
                     ledger_core::disposal_amounts(
                         a,
@@ -2253,7 +2253,7 @@ fn scrapping_an_asset_for_nothing_disposes_it() {
     let asset = store
         .register_asset(ledger_core::NewAsset {
             description: "laptop".into(),
-            purchase_date: day(1, 1),
+            in_service_date: day(1, 1),
             cost: usd(1200),
             salvage_value: usd(0),
             useful_life_months: 12,
@@ -2442,7 +2442,7 @@ fn laptop(dir: &std::path::Path) -> (Store, u64, u64, u64) {
     let asset = store
         .register_asset(ledger_core::NewAsset {
             description: "laptop".into(),
-            purchase_date: day(1, 1),
+            in_service_date: day(1, 1),
             cost: usd(1200),
             salvage_value: usd(0),
             useful_life_months: 12,

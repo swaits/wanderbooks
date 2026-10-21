@@ -1156,20 +1156,21 @@ fn aging(
 fn asset_register(b: &Books, as_of: NaiveDate) -> Table {
     let mut t = Table::new(vec![
         "Cost".into(),
-        "Accumulated".into(),
+        "Scheduled".into(),
+        "Posted".into(),
         "Book value".into(),
-        "Contributor's basis".into(),
-        "Tax basis".into(),
-        "Built-in gain (loss)".into(),
+        // Short enough for the columns: the note says what each is.
+        "§723 basis".into(),
+        "Depr. basis".into(),
+        "Built-in gain".into(),
     ]);
     let r = match b.asset_register(as_of) {
         Ok(r) => r,
         Err(e) => return cant_compute(t, &e),
     };
-    let none3 = || vec![Cell::none(), Cell::none(), Cell::none()];
     if r.rows.is_empty() {
         t.note(format!(
-            "No fixed asset was in service by {}.",
+            "No fixed asset was acquired by {}.",
             fmt::date(as_of)
         ));
         return t;
@@ -1184,7 +1185,10 @@ fn asset_register(b: &Books, as_of: NaiveDate) -> Table {
         if let Some(s) = &x.serial {
             detail.push(format!("serial {s}"));
         }
-        detail.push(format!("in service {}", fmt::date(x.in_service)));
+        if x.acquired_date != x.in_service_date {
+            detail.push(format!("acquired {}", fmt::date(x.acquired_date)));
+        }
+        detail.push(format!("in service {}", fmt::date(x.in_service_date)));
         detail.push(fmt::count(x.useful_life_months as usize, "month", "months"));
         if !x.salvage.is_zero() {
             detail.push(format!("salvage {}", fmt::dollars(x.salvage)));
@@ -1197,6 +1201,22 @@ fn asset_register(b: &Books, as_of: NaiveDate) -> Table {
             ),
             None => "tax basis not recorded".into(),
         });
+        if let Some(v) = tax.fmv_at_contribution {
+            detail.push(if tax.fmv_recorded {
+                format!("value at contribution {}", fmt::dollars(v))
+            } else {
+                format!(
+                    "value at contribution {} (the book cost: not recorded)",
+                    fmt::dollars(v)
+                )
+            });
+        }
+        if let Some(m) = tax.sec704c_method {
+            detail.push(format!(
+                "§704(c) method: {}",
+                ledger_import::asset_register::method_cited(m)
+            ));
+        }
         let opt = |v: Option<Decimal>| Cell {
             value: v,
             drill: None,
@@ -1208,15 +1228,16 @@ fn asset_register(b: &Books, as_of: NaiveDate) -> Table {
                     super::assets::status_text(x.disposed),
                     fmt::dollars(x.cost)
                 ));
-                [none3(), none3()].concat()
+                vec![Cell::none(); 7]
             }
             None => vec![
                 Cell::of(x.cost),
-                Cell::of(x.accumulated),
+                Cell::of(x.accumulated_scheduled),
+                Cell::of(x.accumulated_posted),
                 Cell::of(x.book_value),
-                opt(tax.contributor_basis),
-                opt(tax.tax_basis),
-                opt(tax.built_in_gain),
+                opt(tax.tax_basis_723),
+                opt(tax.depreciable_basis),
+                opt(tax.built_in_gain_704c),
             ],
         };
         t.rows.push(Row {
@@ -1231,10 +1252,11 @@ fn asset_register(b: &Books, as_of: NaiveDate) -> Table {
         "Total held",
         vec![
             Cell::of(r.total_cost),
-            Cell::of(r.total_accumulated),
+            Cell::of(r.total_accumulated_scheduled),
+            Cell::of(r.total_accumulated_posted),
             Cell::of(r.total_book_value),
-            Cell::none(),
-            Cell::of(r.total_tax_basis),
+            Cell::of(r.total_tax_basis_723),
+            Cell::of(r.total_depreciable_basis),
             Cell::none(),
         ],
     );
@@ -1270,6 +1292,10 @@ fn asset_register(b: &Books, as_of: NaiveDate) -> Table {
                 value: Some(r.ledger_accumulated),
                 drill: accum_drill,
             },
+            Cell {
+                value: Some(r.ledger_accumulated),
+                drill: accum_drill,
+            },
             Cell::of(r.ledger_cost - r.ledger_accumulated),
             Cell::none(),
             Cell::none(),
@@ -1282,7 +1308,8 @@ fn asset_register(b: &Books, as_of: NaiveDate) -> Table {
         vec![
             Cell::of(-r.unregistered_cost()),
             Cell::of(r.unposted_depreciation()),
-            Cell::of(-r.unregistered_cost() - r.unposted_depreciation()),
+            Cell::of(-r.unattributed_accumulated()),
+            Cell::of(r.total_book_value - (r.ledger_cost - r.ledger_accumulated)),
             Cell::none(),
             Cell::none(),
             Cell::none(),
@@ -1292,7 +1319,7 @@ fn asset_register(b: &Books, as_of: NaiveDate) -> Table {
         t.note(n.text);
     }
     t.note(
-        "Cost is what the company paid or, for a member's contribution, its fair market value then; the tax basis follows its rule and can differ. Built-in gain (loss) is that value less the contributor's basis (IRC §704(c)). Tax depreciation starts from the tax basis — the CPA's.",
+        "Book value is cost less the depreciation posted (what the books carry); scheduled is what the schedule says is due by the date. Cost is what the company paid or, for a member's contribution, its fair market value then; the tax figures follow its rule and can differ: the §723 basis is the member's adjusted basis (IRC §723), the depreciable basis (Depr. basis) what tax depreciation starts from, and the built-in gain, a loss in parentheses, the value less the §723 basis (IRC §704(c)). The tax figures are at contribution or purchase; tax depreciation is the CPA's.",
     );
     t
 }
@@ -2389,10 +2416,11 @@ mod tests {
         }
     }
 
-    /// The fixed asset register report's tax columns are the register's:
-    /// each held asset's contributor's basis, tax basis, and built-in gain
-    /// (ledger-core's Asset::tax_basis and built_in_gain), the total its
-    /// total_tax_basis, and its rule (cited) in the detail.
+    /// The fixed asset register report's columns are the register's: each
+    /// held asset's cost, depreciation scheduled and posted, book value,
+    /// §723 basis, depreciable basis and built-in gain (ledger-core's
+    /// Asset::basis_figures), the totals its totals, and its rule (cited)
+    /// in the detail.
     #[test]
     fn asset_register_report_carries_tax_basis() {
         let today = NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
@@ -2407,21 +2435,23 @@ mod tests {
         .unwrap();
         let r = ledger_core::fixed_asset_register(&b.ledger, today).unwrap();
         assert!(!r.rows.is_empty(), "the demo has an asset");
-        assert_eq!(r.missing_tax_basis, 0, "the demo's asset has a tax basis");
+        assert_eq!(r.missing_basis, 0, "the demo's asset has a tax basis");
         let t = asset_register(&b, today);
         assert_eq!(
             t.columns,
             [
                 "Cost",
-                "Accumulated",
+                "Scheduled",
+                "Posted",
                 "Book value",
-                "Contributor's basis",
-                "Tax basis",
-                "Built-in gain (loss)"
+                "§723 basis",
+                "Depr. basis",
+                "Built-in gain"
             ]
         );
         for x in &r.rows {
             let a = b.ledger.get_asset(x.asset_id).unwrap();
+            let f = a.basis_figures().unwrap().unwrap();
             let row = t
                 .rows
                 .iter()
@@ -2432,22 +2462,25 @@ mod tests {
                 v,
                 [
                     Some(x.cost),
-                    Some(x.accumulated),
+                    Some(x.accumulated_scheduled),
+                    Some(x.accumulated_posted),
                     Some(x.book_value),
-                    a.tax.and_then(|t| t.contributor_basis),
-                    a.tax_basis(),
-                    a.built_in_gain(),
+                    f.tax_basis_723,
+                    Some(f.depreciable_basis),
+                    f.built_in_gain_704c,
                 ]
             );
-            assert!(row.detail.contains("tax basis: Cost"), "{}", row.detail);
+            assert_eq!(x.book_value, x.cost - x.accumulated_posted);
+            assert!(row.detail.contains("tax basis: Purchase"), "{}", row.detail);
         }
         let total = t.rows.iter().find(|row| row.label == "Total held").unwrap();
-        assert_eq!(total.cells[4].value, Some(r.total_tax_basis));
-        assert_eq!(total.cells[4].value, r.rows[0].tax_basis);
+        assert_eq!(total.cells[5].value, Some(r.total_depreciable_basis));
+        assert_eq!(total.cells[5].value, r.rows[0].depreciable_basis);
+        assert_eq!(total.cells[2].value, Some(r.total_accumulated_posted));
         assert!(
             t.rows
                 .iter()
-                .all(|row| row.cells.is_empty() || row.cells.len() == 6)
+                .all(|row| row.cells.is_empty() || row.cells.len() == 7)
         );
         assert!(
             t.rows
@@ -2527,7 +2560,7 @@ mod tests {
         b.post_as("Bank loan", d(2026, 3, 27), cash, loan, 250_000);
         b.s.register_asset(ledger_core::NewAsset {
             description: "Tablet".into(),
-            purchase_date: d(2026, 3, 27),
+            in_service_date: d(2026, 3, 27),
             cost: Money::new(Decimal::new(63_000, 2), ledger_core::Currency::USD),
             salvage_value: Money::new(Decimal::ZERO, ledger_core::Currency::USD),
             useful_life_months: 36,

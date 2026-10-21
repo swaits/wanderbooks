@@ -165,7 +165,7 @@ fn fixture(tag: &str) -> Fixture {
     let asset = s
         .register_asset(NewAsset {
             description: "Laptop".into(),
-            purchase_date: d(2026, 7, 6),
+            in_service_date: d(2026, 7, 6),
             cost: usd(200_000),
             salvage_value: usd(0),
             useful_life_months: 36,

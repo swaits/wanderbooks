@@ -166,10 +166,34 @@ pub enum LedgerError {
         why: String,
     },
 
-    /// An asset's tax basis record doesn't fit its rule (see
-    /// `Ledger::set_asset_tax_basis`).
+    /// An asset's basis record doesn't fit its rule (see
+    /// `Ledger::set_asset_basis`).
     #[error("bad tax basis: {0}")]
     InvalidTaxBasis(String),
+
+    /// An asset can't be in service before the company acquired it: its
+    /// in-service date is before its acquisition entry's date.
+    #[error(
+        "asset {asset} can't be in service on {in_service}, before it was acquired on {acquired} (its acquisition entry's date): correct the in-service date, or the entry"
+    )]
+    InServiceBeforeAcquisition {
+        /// The asset.
+        asset: u64,
+        /// The in-service date given.
+        in_service: String,
+        /// The acquisition entry's date.
+        acquired: String,
+    },
+
+    /// A depreciation run that doesn't fit its asset or entry (see
+    /// `Ledger::check_depreciation_run`).
+    #[error("bad depreciation run for asset {asset}: {why}")]
+    InvalidDepreciationRun {
+        /// The asset.
+        asset: u64,
+        /// Why not.
+        why: String,
+    },
 
     /// No party has this id.
     #[error("unknown party {0}")]
@@ -411,17 +435,24 @@ pub enum LedgerError {
     #[error("disposal proceeds must not be negative, got {0}")]
     NegativeProceeds(Decimal),
 
-    /// Disposal date must not precede the purchase date.
-    #[error("disposal date {0} is before the purchase date")]
-    DisposalBeforePurchase(String),
+    /// A disposal can't come before the company acquired the asset (its
+    /// acquisition entry's date, or its in-service date when none is
+    /// linked).
+    #[error("disposal date {date} is before the asset was acquired ({acquired})")]
+    DisposalBeforeAcquisition {
+        /// The disposal date given.
+        date: String,
+        /// The acquired date.
+        acquired: String,
+    },
 
     /// The three asset account links must be three distinct accounts.
     #[error("asset account links must be distinct; account id {0} is linked twice")]
     DuplicateAssetAccount(u64),
 
-    /// purchase_date + useful life overflows the date range: a new asset's
-    /// last day of depreciation is 9999-12-31 at the latest.
-    #[error("purchase date plus useful life overflows the calendar")]
+    /// in-service date + useful life overflows the date range: a new
+    /// asset's last day of depreciation is 9999-12-31 at the latest.
+    #[error("in-service date plus useful life overflows the calendar")]
     AssetDateOverflow,
 
     /// A depreciation run for a month that can't be run: not a month, or

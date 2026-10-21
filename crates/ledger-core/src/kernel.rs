@@ -48,8 +48,14 @@
 //!   times the monthly rate within one unit, the last the remainder;
 //! * a catch-up run brings the books to the schedule without ever carrying
 //!   more than it says at a month end already posted (B-15), and a
-//!   disposal trues what the books carry up or down to the schedule.
+//!   disposal trues what the books carry up or down to the schedule;
+//! * an asset's basis figures follow from its basis rule and facts: the
+//!   §723 basis is the contributor's adjusted basis, the depreciable basis
+//!   the cost, that basis, or the lesser of it and fair market value, and
+//!   the §704(c) built-in gain is fair market value less the §723 basis
+//!   (B-25).
 
+use crate::assets::BasisRule;
 use crate::{AccountType, Side};
 use rust_decimal::Decimal;
 
@@ -1402,6 +1408,72 @@ pub fn true_up<T: Amount>(target: T, posted: T) -> Option<(T, T)> {
     columns(target.checked_sub(posted)?)
 }
 
+/// An asset's three basis figures ([`basis_figures`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BasisFigures<T> {
+    /// The partnership's basis in contributed property, IRC §723: the
+    /// contributor's adjusted basis. `None` for a purchase.
+    pub tax_basis_723: Option<T>,
+    /// The basis tax depreciation starts from.
+    pub depreciable_basis: T,
+    /// Fair market value less the §723 basis at contribution, IRC §704(c):
+    /// positive a built-in gain, negative a built-in loss. `None` for a
+    /// purchase (not property contributed).
+    pub built_in_gain_704c: Option<T>,
+}
+
+/// An asset's basis figures from its rule and facts: `cost` the book cost
+/// (a purchase's basis), `adjusted` the contributing member's adjusted
+/// basis and `fmv` the fair market value at contribution (both ignored for
+/// a purchase).
+///
+/// ```text
+/// GOAL: the three tax figures of an asset, each named for what it is,
+///       from one function the register, the tools and the viewer share.
+/// SOURCE: docs/spec/rules.md B-25: IRC §1012(a) (cost); IRC §723 (the
+///         contributor's adjusted basis carries over); Treas. Reg.
+///         §1.168(i)-4(b)(1) (property converted from personal use: "the
+///         lesser of its fair market value or its adjusted depreciable
+///         basis"; DECISION D-41, owner 2026-10-20); Treas. Reg.
+///         §1.704-3(a)(3)(ii) (built-in gain: "the excess of the
+///         property's book value over the contributing partner's adjusted
+///         tax basis upon contribution", book value being fair market
+///         value at contribution, §1.704-3(a)(3)(i)).
+/// INVARIANTS:
+///   1. Purchase: depreciable = cost; no §723 basis, no built-in gain.
+///   2. Contribution: tax_basis_723 = adjusted; built_in_gain_704c =
+///      fmv − adjusted, negative exactly when adjusted > fmv (a built-in
+///      loss, IRC §704(c)(1)(C)).
+///   3. Carryover723: depreciable = adjusted.
+///   4. PersonalUseConversion: depreciable = min(fmv, adjusted), at most
+///      each of them and equal to one.
+///   5. NEVER wraps: None when a figure can't be represented.
+/// ```
+pub fn basis_figures<T: Amount>(
+    rule: BasisRule,
+    cost: T,
+    adjusted: T,
+    fmv: T,
+) -> Option<BasisFigures<T>> {
+    Some(match rule {
+        BasisRule::Purchase => BasisFigures {
+            tax_basis_723: None,
+            depreciable_basis: cost,
+            built_in_gain_704c: None,
+        },
+        BasisRule::Carryover723 => BasisFigures {
+            tax_basis_723: Some(adjusted),
+            depreciable_basis: adjusted,
+            built_in_gain_704c: Some(fmv.checked_sub(adjusted)?),
+        },
+        BasisRule::PersonalUseConversion => BasisFigures {
+            tax_basis_723: Some(adjusted),
+            depreciable_basis: if fmv < adjusted { fmv } else { adjusted },
+            built_in_gain_704c: Some(fmv.checked_sub(adjusted)?),
+        },
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1748,6 +1820,46 @@ mod tests {
         assert_eq!(true_up(5_500i64, 5_000), Some((500, 0)));
         assert_eq!(true_up(5_500i64, 6_000), Some((0, 500)));
         assert_eq!(true_up(5_500i64, 5_500), Some((0, 0)));
+    }
+
+    /// basis_figures INVARIANTS 1-4, by hand: a 1,440.00 laptop the member
+    /// holds at 1,688.40 (personal use): §723 1,688.40, depreciable
+    /// 1,440.00, built-in loss 248.40; as business property, depreciable
+    /// 1,688.40; a purchase at 900.00: depreciable 900.00 and nothing else.
+    #[test]
+    fn basis_figures_by_rule() {
+        let (fmv, adj) = (144_000i64, 168_840i64);
+        let p = basis_figures(BasisRule::PersonalUseConversion, fmv, adj, fmv).unwrap();
+        assert_eq!(
+            p,
+            BasisFigures {
+                tax_basis_723: Some(adj),
+                depreciable_basis: fmv,
+                built_in_gain_704c: Some(-24_840),
+            }
+        );
+        let c = basis_figures(BasisRule::Carryover723, fmv, adj, fmv).unwrap();
+        assert_eq!(c.depreciable_basis, adj);
+        assert_eq!(c.built_in_gain_704c, Some(-24_840));
+        // Value above basis: depreciable is the basis, a built-in gain.
+        let g = basis_figures(BasisRule::PersonalUseConversion, 1000, 400, 1000).unwrap();
+        assert_eq!(
+            (g.depreciable_basis, g.built_in_gain_704c),
+            (400, Some(600))
+        );
+        let b = basis_figures(BasisRule::Purchase, 90_000i64, 7, 8).unwrap();
+        assert_eq!(
+            b,
+            BasisFigures {
+                tax_basis_723: None,
+                depreciable_basis: 90_000,
+                built_in_gain_704c: None,
+            }
+        );
+        assert_eq!(
+            basis_figures(BasisRule::Carryover723, 0, i64::MAX, i64::MIN),
+            None
+        );
     }
 
     #[test]

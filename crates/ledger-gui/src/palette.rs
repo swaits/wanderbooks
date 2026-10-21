@@ -339,7 +339,7 @@ pub fn search(b: &Books, query: &str) -> Vec<Item> {
                 if !serial.is_empty() {
                     detail.push(format!("serial {serial}"));
                 }
-                detail.push(format!("in service {}", fmt::date(a.purchase_date)));
+                detail.push(format!("in service {}", fmt::date(a.in_service_date)));
                 out.push(Item {
                     icon: icon::PACKAGE,
                     title: b.asset_label(a.id),

@@ -10,6 +10,16 @@
 //! for replay. Depreciation itself is pure math — [`depreciation_schedule`]
 //! — and postings go through the normal entry machinery, so every
 //! accounting invariant holds.
+//!
+//! Two figures of accumulated depreciation, never confused (rules.md B-24):
+//! what the schedule says is due through a date
+//! ([`accumulated_scheduled_through`]) and what the books carry, the runs
+//! posted and not reversed ([`crate::Ledger::accumulated_posted`]). Book
+//! value is cost less the posted figure. Two dates: the in-service date starts depreciation; the
+//! acquired date (the acquisition entry's) puts the asset on the register.
+//! Three tax figures beside book value, each named for what it is
+//! ([`Asset::basis_figures`]): the §723 basis, the depreciable basis, and
+//! the §704(c) built-in gain or loss at contribution.
 
 use crate::money::Steps;
 use crate::{
@@ -51,14 +61,22 @@ pub enum AssetStatus {
 }
 
 /// A fixed asset on the books.
+///
+/// Its serde form is internal and frozen: the books an earlier version
+/// wrote are compared with it field for field
+/// (`ledger-store/tests/fixtures/old-books`), so the in-service date keeps
+/// the name `purchase_date` and the basis the name `tax` there.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Asset {
     /// Opaque handle.
     pub id: AssetId,
     /// What it is, e.g. "2023 Sprinter van".
     pub description: String,
-    /// Purchase date. Depreciation starts here.
-    pub purchase_date: NaiveDate,
+    /// The day it was placed in service: depreciation starts here (B-15).
+    /// The day the company acquired it is its acquisition entry's
+    /// ([`crate::Ledger::asset_acquired_date`]), never later than this.
+    #[serde(rename = "purchase_date")]
+    pub in_service_date: NaiveDate,
     /// Capitalized cost.
     pub cost: Money,
     /// Expected residual value at end of life.
@@ -84,14 +102,16 @@ pub struct Asset {
     pub serial: Option<String>,
     /// The posted entry that put it on the books (its purchase, or a
     /// member's contribution of it), if linked
-    /// ([`crate::Ledger::set_asset_acquisition`]).
+    /// ([`crate::Ledger::set_asset_acquisition`]). Its date is the asset's
+    /// acquired date.
     #[serde(default)]
     pub acquired_by: Option<crate::EntryId>,
-    /// Its federal tax basis, if recorded ([`crate::Ledger::set_asset_tax_basis`]).
-    /// Book cost is [`Asset::cost`]; tax basis can differ (a member's
-    /// contribution carries the member's basis, not its market value).
-    #[serde(default)]
-    pub tax: Option<TaxBasis>,
+    /// How the company got it and the facts its tax figures follow from,
+    /// if recorded ([`crate::Ledger::set_asset_basis`]). Book cost is
+    /// [`Asset::cost`]; the tax figures can differ (a member's contribution
+    /// carries the member's basis, not its market value).
+    #[serde(default, rename = "tax")]
+    pub basis: Option<AssetBasis>,
 }
 
 /// Corrected economics for a registered asset ([`crate::Ledger::correct_asset`]).
@@ -104,88 +124,255 @@ pub struct AssetCorrection {
     /// Useful life in months.
     pub useful_life_months: u32,
     /// In-service date (depreciation starts here).
-    pub purchase_date: NaiveDate,
+    pub in_service_date: NaiveDate,
 }
 
-/// Which rule sets an asset's federal tax basis.
+/// How the company got an asset, which sets its tax figures
+/// ([`crate::kernel::basis_figures`]).
+///
+/// Its wire names ([`Self::key`]) are `purchase`, `carryover_723` and
+/// `personal_use_conversion`. Books written before P3 named the first two
+/// `cost` and `carryover` ([`Self::parse_legacy`]); the serde names stay
+/// those (internal and frozen, see [`Asset`]).
 ///
 /// ```text
 /// SOURCE: docs/spec/sources/irs-partnership-basis.md: IRC §1012(a) (cost),
 ///         IRC §723 (property a partner contributes keeps the partner's
 ///         adjusted basis), Treas. Reg. §1.168(i)-4(b) (property converted
 ///         from personal use depreciates from the lesser of its fair market
-///         value and its adjusted basis), IRC §704(c)(1)(C) (built-in loss).
+///         value and its adjusted basis), IRC §704(c) (built-in gain and
+///         loss).
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TaxBasisRule {
-    /// Bought by the company: its cost (IRC §1012(a)), the book cost.
-    Cost,
-    /// Contributed by a member from business use: the member's adjusted
-    /// basis carries over (IRC §723).
-    Carryover,
-    /// Contributed by a member from personal use: depreciable basis is the
-    /// lesser of fair market value (the book cost) and the member's
-    /// adjusted basis (Treas. Reg. §1.168(i)-4(b), with IRC §723).
+pub enum BasisRule {
+    /// Bought by the company: its basis is its cost (IRC §1012(a)), the
+    /// book cost.
+    #[serde(rename = "cost")]
+    Purchase,
+    /// Contributed by a member from business use: the company's basis is
+    /// the member's adjusted basis (IRC §723), and depreciation starts from
+    /// it.
+    #[serde(rename = "carryover")]
+    Carryover723,
+    /// Contributed by a member from personal use: the §723 basis as for
+    /// carryover, and a depreciable basis of the lesser of fair market
+    /// value and that basis (Treas. Reg. §1.168(i)-4(b); DECISION D-41,
+    /// owner 2026-10-20, the CPA to confirm at year end).
+    #[serde(rename = "personal_use_conversion")]
     PersonalUseConversion,
 }
 
-impl TaxBasisRule {
-    /// Its wire name: `cost`, `carryover`, `personal_use_conversion`.
+impl BasisRule {
+    /// Every rule.
+    pub const ALL: [Self; 3] = [
+        Self::Purchase,
+        Self::Carryover723,
+        Self::PersonalUseConversion,
+    ];
+
+    /// Its wire name: `purchase`, `carryover_723`, `personal_use_conversion`.
     pub fn key(self) -> &'static str {
         match self {
-            TaxBasisRule::Cost => "cost",
-            TaxBasisRule::Carryover => "carryover",
-            TaxBasisRule::PersonalUseConversion => "personal_use_conversion",
+            BasisRule::Purchase => "purchase",
+            BasisRule::Carryover723 => "carryover_723",
+            BasisRule::PersonalUseConversion => "personal_use_conversion",
         }
     }
 
-    /// The rule named `key`.
+    /// The rule named `key` (a wire name).
     pub fn parse(key: &str) -> Option<Self> {
-        [Self::Cost, Self::Carryover, Self::PersonalUseConversion]
-            .into_iter()
-            .find(|r| r.key() == key)
+        Self::ALL.into_iter().find(|r| r.key() == key)
+    }
+
+    /// The rule a pre-P3 name means: `cost`, `carryover` or
+    /// `personal_use_conversion`. Only for replaying `asset.tax_basis_set`,
+    /// reading the projection, and the tools' aliases (one release).
+    pub fn parse_legacy(key: &str) -> Option<Self> {
+        match key {
+            "cost" => Some(Self::Purchase),
+            "carryover" => Some(Self::Carryover723),
+            "personal_use_conversion" => Some(Self::PersonalUseConversion),
+            _ => None,
+        }
+    }
+
+    /// Whether a member contributed it (§723 and §704(c) apply).
+    pub fn is_contribution(self) -> bool {
+        self != Self::Purchase
     }
 }
 
-/// An asset's federal tax basis: the rule and, for a member's
-/// contribution, the member's adjusted basis at the time.
+/// How the company allocates the tax items of a contributed property
+/// among the members, IRC §704(c): chosen property by property
+/// (Treas. Reg. §1.704-3(a)(2)).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TaxBasis {
-    /// The rule.
-    pub rule: TaxBasisRule,
-    /// The contributing member's adjusted basis at contribution (cost less
-    /// any depreciation they took). `None` for [`TaxBasisRule::Cost`].
-    pub contributor_basis: Option<Decimal>,
+#[serde(rename_all = "snake_case")]
+pub enum Sec704cMethod {
+    /// The traditional method, Treas. Reg. §1.704-3(b): tax items follow
+    /// the book allocation to the noncontributing members as far as the
+    /// property's tax items allow (the ceiling rule).
+    Traditional,
+    /// The traditional method with curative allocations, Treas. Reg.
+    /// §1.704-3(c): other tax items correct the ceiling rule's distortion.
+    TraditionalWithCurative,
+    /// The remedial allocation method, Treas. Reg. §1.704-3(d).
+    Remedial,
 }
 
-impl TaxBasis {
-    /// Whether the record fits its rule: Cost takes no contributor basis;
-    /// Carryover and PersonalUseConversion require a non-negative one in
-    /// cents at most, and no larger than a cost may be
-    /// (kernel::MAX_LINE_AMOUNT: the register sums them; P0 review round 3,
-    /// S1). Returns why not. Needs no asset, so a caller can check before
-    /// registering one. Replay checks only [`Self::check_journaled`].
+impl Sec704cMethod {
+    /// Every method.
+    pub const ALL: [Self; 3] = [
+        Self::Traditional,
+        Self::TraditionalWithCurative,
+        Self::Remedial,
+    ];
+
+    /// Its wire name: `traditional`, `traditional_with_curative`,
+    /// `remedial`.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Traditional => "traditional",
+            Self::TraditionalWithCurative => "traditional_with_curative",
+            Self::Remedial => "remedial",
+        }
+    }
+
+    /// The method named `key`.
+    pub fn parse(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|m| m.key() == key)
+    }
+
+    /// The paragraph of Treas. Reg. §1.704-3 that describes it.
+    pub fn citation(self) -> &'static str {
+        match self {
+            Self::Traditional => "Treas. Reg. §1.704-3(b)",
+            Self::TraditionalWithCurative => "Treas. Reg. §1.704-3(c)",
+            Self::Remedial => "Treas. Reg. §1.704-3(d)",
+        }
+    }
+}
+
+/// How the company got an asset and the facts its tax figures follow
+/// from (facts only: the figures are derived, [`Asset::basis_figures`]).
+///
+/// Its serde form keeps the pre-P3 shape for a record written then
+/// (`{rule, contributor_basis}`): the newer facts are left out when absent.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssetBasis {
+    /// The rule.
+    pub rule: BasisRule,
+    /// The contributing member's adjusted basis at contribution (cost plus
+    /// improvements, less depreciation allowed or allowable, IRC
+    /// §1016(a)). `None` for a purchase.
+    #[serde(rename = "contributor_basis")]
+    pub contributor_adjusted_basis: Option<Decimal>,
+    /// Fair market value at contribution. `None` for a purchase, and for a
+    /// contribution recorded before P3, whose value is read as the book
+    /// cost ([`Asset::fmv_at_contribution`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fmv_at_contribution: Option<Decimal>,
+    /// The §704(c) method chosen for it, if chosen (contributions only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sec704c_method: Option<Sec704cMethod>,
+    /// Who gave the facts, when, and on what (rules.md B-29).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<crate::settings::Source>,
+}
+
+impl AssetBasis {
+    /// A purchase's record.
+    pub fn purchase() -> Self {
+        Self {
+            rule: BasisRule::Purchase,
+            contributor_adjusted_basis: None,
+            fmv_at_contribution: None,
+            sec704c_method: None,
+            source: None,
+        }
+    }
+
+    /// A contribution's record: the member's adjusted basis and the value
+    /// at contribution.
+    pub fn contribution(rule: BasisRule, adjusted: Decimal, fmv: Decimal) -> Self {
+        Self {
+            rule,
+            contributor_adjusted_basis: Some(adjusted),
+            fmv_at_contribution: Some(fmv),
+            sec704c_method: None,
+            source: None,
+        }
+    }
+
+    /// Whether a new record fits its rule (for `asset.basis_set`): a
+    /// purchase takes no contributor basis, value or method; a
+    /// contribution needs the member's adjusted basis and the value at
+    /// contribution, each non-negative, in cents at most, and no larger
+    /// than a cost may be (kernel::MAX_LINE_AMOUNT); its source, if given,
+    /// passes Source::check. Returns why not. Needs no asset, so a caller
+    /// can check before registering one. Replay checks only
+    /// [`Self::check_journaled`].
     pub fn check(&self) -> Result<(), String> {
         self.check_journaled()?;
-        match self.contributor_basis {
-            Some(b) if b > crate::kernel::MAX_LINE_AMOUNT => {
-                Err("a basis is at most one quadrillion".into())
+        if let Some(source) = &self.source {
+            source.check().map_err(|why| format!("source: {why}"))?;
+        }
+        for (what, v) in [
+            ("an adjusted basis", self.contributor_adjusted_basis),
+            ("a fair market value", self.fmv_at_contribution),
+        ] {
+            match v {
+                Some(v) if v.normalize().scale() > 2 => {
+                    return Err(format!("{what} is in cents at most"));
+                }
+                Some(v) if v > crate::kernel::MAX_LINE_AMOUNT => {
+                    return Err(format!("{what} is at most one quadrillion"));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// The checks every journaled `asset.basis_set` passed, which replay
+    /// applies (rules.md B-28): the facts fit the rule and none is
+    /// negative. No bound on size or places.
+    pub fn check_journaled(&self) -> Result<(), String> {
+        if self.rule == BasisRule::Purchase {
+            if self.contributor_adjusted_basis.is_some()
+                || self.fmv_at_contribution.is_some()
+                || self.sec704c_method.is_some()
+            {
+                return Err("a purchase's basis is its cost: give no contributor basis, value at contribution or §704(c) method".into());
+            }
+            return Ok(());
+        }
+        match (self.contributor_adjusted_basis, self.fmv_at_contribution) {
+            (None, _) => {
+                Err("a contribution needs the contributing member's adjusted basis".into())
+            }
+            (_, None) => Err("a contribution needs its fair market value at contribution".into()),
+            (Some(b), _) if b.is_sign_negative() && !b.is_zero() => {
+                Err("a basis can't be negative".into())
+            }
+            (_, Some(v)) if v.is_sign_negative() && !v.is_zero() => {
+                Err("a value can't be negative".into())
             }
             _ => Ok(()),
         }
     }
 
     /// The checks every journaled `asset.tax_basis_set` passed when it was
-    /// written (the rule through 2026-10-16): [`Self::check`] without the
-    /// upper bound. Replay applies exactly these (rules.md B-28).
-    pub fn check_journaled(&self) -> Result<(), String> {
-        use TaxBasisRule::*;
-        match (self.rule, self.contributor_basis) {
-            (Cost, Some(_)) => {
+    /// written (the rule through 2026-10-16), for a record with no value
+    /// at contribution: a purchase takes no contributor basis; a
+    /// contribution needs one, non-negative, in cents at most. Replay of
+    /// that event applies exactly these (rules.md B-28).
+    pub fn check_legacy_journaled(&self) -> Result<(), String> {
+        use BasisRule::*;
+        match (self.rule, self.contributor_adjusted_basis) {
+            (Purchase, Some(_)) => {
                 Err("a purchase's tax basis is its cost; give no contributor basis".into())
             }
-            (Carryover | PersonalUseConversion, None) => {
+            (Carryover723 | PersonalUseConversion, None) => {
                 Err("a contribution needs the contributing member's adjusted basis".into())
             }
             (_, Some(b)) if b.is_sign_negative() && !b.is_zero() => {
@@ -198,34 +385,83 @@ impl TaxBasis {
 }
 
 impl Asset {
-    /// Its depreciable federal tax basis, by its rule, or `None` if not
-    /// recorded.
+    /// Its fair market value at contribution: the value recorded, or for a
+    /// contribution recorded before P3 (no value recorded), the book cost,
+    /// which is what that version assumed. `None` for a purchase or when
+    /// no basis is recorded.
+    pub fn fmv_at_contribution(&self) -> Option<Decimal> {
+        let b = self.basis.as_ref()?;
+        if !b.rule.is_contribution() {
+            return None;
+        }
+        Some(b.fmv_at_contribution.unwrap_or(self.cost.amount))
+    }
+
+    /// Whether its value at contribution was recorded as a fact (false for
+    /// a record from before P3, read as the book cost, and for a purchase).
+    pub fn fmv_is_recorded(&self) -> bool {
+        self.basis
+            .as_ref()
+            .is_some_and(|b| b.fmv_at_contribution.is_some())
+    }
+
+    /// Its three tax figures (kernel::basis_figures), or `None` when no
+    /// basis is recorded. The figures are at contribution (or purchase):
+    /// the CPA adjusts them for tax depreciation (IRC §1016(a)(2)), and
+    /// the §704(c) gain or loss as Treas. Reg. §1.704-3(a)(3)(ii) goes on
+    /// to reduce it.
     ///
     /// ```text
     /// INVARIANTS:
-    ///   1. Cost: the book cost.
-    ///   2. Carryover: the contributor's adjusted basis.
-    ///   3. PersonalUseConversion: min(book cost, contributor's basis); the
-    ///      book cost of a contribution is its fair market value.
+    ///   1. A purchase's depreciable basis is the book cost now.
+    ///   2. A contribution's figures follow its facts: the member's
+    ///      adjusted basis and the value at contribution (the book cost for
+    ///      a record from before P3, which reproduces that version's
+    ///      figures exactly).
+    ///   3. NEVER panics: a figure past exact arithmetic is refused
+    ///      (TooLargeToCompute).
     /// ```
-    pub fn tax_basis(&self) -> Option<Decimal> {
-        let t = self.tax?;
-        Some(match (t.rule, t.contributor_basis) {
-            (TaxBasisRule::Cost, _) => self.cost.amount,
-            (TaxBasisRule::Carryover, Some(b)) => b,
-            (TaxBasisRule::PersonalUseConversion, Some(b)) => b.min(self.cost.amount),
-            (_, None) => return None,
-        })
+    pub fn basis_figures(
+        &self,
+    ) -> Result<Option<crate::kernel::BasisFigures<Decimal>>, LedgerError> {
+        let Some(b) = &self.basis else {
+            return Ok(None);
+        };
+        let adjusted = b.contributor_adjusted_basis.unwrap_or(Decimal::ZERO);
+        let fmv = self.fmv_at_contribution().unwrap_or(Decimal::ZERO);
+        if b.rule.is_contribution() && b.contributor_adjusted_basis.is_none() {
+            // A contribution without its basis never passes a check; one
+            // can't be reported.
+            return Ok(None);
+        }
+        crate::kernel::basis_figures(b.rule, self.cost.amount, adjusted, fmv)
+            .map(Some)
+            .ok_or_else(|| {
+                LedgerError::TooLargeToCompute(format!("asset {}'s basis figures", self.id))
+            })
     }
 
-    /// Built-in gain (positive) or loss (negative) at contribution, for
-    /// IRC §704(c): fair market value (the book cost) less the contributor's
-    /// adjusted basis. `None` for a purchase or when not recorded. A
-    /// built-in loss counts only for the contributing member
-    /// (§704(c)(1)(C)).
-    pub fn built_in_gain(&self) -> Option<Decimal> {
-        let b = self.tax?.contributor_basis?;
-        Some(self.cost.amount - b)
+    /// Its §723 basis (a contribution: the member's adjusted basis), if
+    /// recorded.
+    pub fn tax_basis_723(&self) -> Option<Decimal> {
+        self.basis_figures().ok().flatten()?.tax_basis_723
+    }
+
+    /// Its depreciable tax basis, if recorded.
+    pub fn depreciable_basis(&self) -> Option<Decimal> {
+        Some(self.basis_figures().ok().flatten()?.depreciable_basis)
+    }
+
+    /// Its §704(c) built-in gain (+) or loss (−) at contribution, if a
+    /// contribution is recorded.
+    pub fn built_in_gain_704c(&self) -> Option<Decimal> {
+        self.basis_figures().ok().flatten()?.built_in_gain_704c
+    }
+
+    /// Whether it is contributed property with a built-in loss, which
+    /// counts only for the contributing member(s): IRC §704(c)(1)(C).
+    pub fn sec704c_1c(&self) -> bool {
+        self.built_in_gain_704c().is_some_and(|g| g < Decimal::ZERO)
     }
 }
 
@@ -300,8 +536,10 @@ pub fn tag_key(tag: &str) -> String {
 pub struct NewAsset {
     /// What it is.
     pub description: String,
-    /// Purchase date.
-    pub purchase_date: NaiveDate,
+    /// The day it was placed in service: depreciation starts here. The
+    /// acquired date is its acquisition entry's, linked after
+    /// (`Ledger::set_asset_acquisition`).
+    pub in_service_date: NaiveDate,
     /// Capitalized cost. Must be positive, in the ledger's base currency.
     pub cost: Money,
     /// Residual value. Non-negative, less than cost, base currency.
@@ -314,6 +552,21 @@ pub struct NewAsset {
     pub accum_depr_account: AccountId,
     /// Expense account for the charge.
     pub expense_account: AccountId,
+}
+
+/// One depreciation run the books recorded for an asset
+/// (`asset.depreciation_posted`): the month, the entry that posted it, and
+/// the amount that entry credited to accumulated depreciation. A run counts
+/// while its entry stands: a reversal takes it back, and a reversal of the
+/// reversal reinstates it ([`crate::Ledger::accumulated_posted`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DepreciationPosting {
+    /// The month run, "YYYY-MM" as journaled.
+    pub period: String,
+    /// The entry that posted it.
+    pub entry: crate::EntryId,
+    /// What it credited to accumulated depreciation.
+    pub amount: Decimal,
 }
 
 /// One month of a depreciation schedule.
@@ -331,15 +584,15 @@ pub struct ScheduleLine {
 
 /// The end of an asset's life, exclusive: its in-service date plus its
 /// life in months (chrono clamps a day past a month's end, so Jan 31 plus
-/// one month is Feb 28). The life is `[purchase_date, life_end)`.
+/// one month is Feb 28). The life is `[in_service_date, life_end)`.
 /// Refused (DateOutOfRange), never a panic, past chrono's last day: replay
 /// validation keeps every journaled asset's end a date, so this is for
 /// figures asked of a value no command took.
 pub fn life_end(asset: &Asset) -> Result<NaiveDate, LedgerError> {
     asset
-        .purchase_date
+        .in_service_date
         .checked_add_months(Months::new(asset.useful_life_months))
-        .ok_or(LedgerError::DateOutOfRange(asset.purchase_date))
+        .ok_or(LedgerError::DateOutOfRange(asset.in_service_date))
 }
 
 /// One month of a schedule, with its month as numbers (the line names it
@@ -350,7 +603,7 @@ struct MonthLine {
     line: ScheduleLine,
 }
 
-/// Straight-line depreciation schedule from the purchase month through
+/// Straight-line depreciation schedule from the in-service month through
 /// `through`, inclusive, and through the disposal day of a disposed asset:
 /// one line per month, the last prorated by days when the schedule stops
 /// mid-month.
@@ -365,8 +618,8 @@ struct MonthLine {
 ///         date prorates that month by days, as partial first and last
 ///         months do.
 /// INVARIANTS:
-///   1. The life is [purchase, purchase + life months), cut into calendar
-///      months (calendar::month_parts). Through day k of a month but the
+///   1. The life is [in service, in service + life months), cut into
+///      calendar months (calendar::month_parts). Through day k of a month but the
 ///      last, accumulated is (cost − salvage) / life × (the months held
 ///      before it, each as days held over days in the month, + k / days
 ///      in this month): the monthly rate by days.
@@ -426,7 +679,7 @@ fn schedule_months(asset: &Asset, through: NaiveDate) -> Result<Vec<MonthLine>, 
         AssetStatus::Active => through,
         AssetStatus::Disposed { date, .. } => through.min(*date),
     };
-    if stop < asset.purchase_date {
+    if stop < asset.in_service_date {
         return Ok(Vec::new());
     }
     let too_large =
@@ -443,7 +696,7 @@ fn schedule_months(asset: &Asset, through: NaiveDate) -> Result<Vec<MonthLine>, 
     let steps = Steps::of(depreciable, asset.cost.currency).ok_or_else(too_large)?;
     let mut out = Vec::new();
     let (mut before, mut charged) = (0i128, 0i128);
-    for p in crate::calendar::month_parts(asset.purchase_date, end) {
+    for p in crate::calendar::month_parts(asset.in_service_date, end) {
         if p.first > stop {
             break;
         }
@@ -486,21 +739,31 @@ fn schedule_months(asset: &Asset, through: NaiveDate) -> Result<Vec<MonthLine>, 
     Ok(out)
 }
 
-/// Accumulated depreciation through `as_of` (inclusive), exact to the
-/// minor unit ([`depreciation_schedule`]).
-pub fn accumulated_depreciation(asset: &Asset, as_of: NaiveDate) -> Result<Decimal, LedgerError> {
+/// Accumulated depreciation the schedule says is due through `as_of`
+/// (inclusive), exact to the minor unit ([`depreciation_schedule`]): the
+/// tools' `accumulated_scheduled_through`. What the books carry is
+/// [`crate::Ledger::accumulated_posted`]; the two agree once every month
+/// due is posted (rules.md B-24).
+pub fn accumulated_scheduled_through(
+    asset: &Asset,
+    as_of: NaiveDate,
+) -> Result<Decimal, LedgerError> {
     Ok(depreciation_schedule(asset, as_of)?
         .last()
         .map(|l| l.accumulated)
         .unwrap_or(Decimal::ZERO))
 }
 
-/// Book value (cost − accumulated depreciation) as of a date.
-pub fn book_value(asset: &Asset, as_of: NaiveDate) -> Result<Decimal, LedgerError> {
+/// Cost less the depreciation the *schedule* says is due through `as_of`:
+/// the schedule's own book value (as [`ScheduleLine::book_value`]), never
+/// what the books carry, which is cost less
+/// [`crate::Ledger::accumulated_posted`] (the register's and the tools'
+/// `book_value`, rules.md B-24).
+pub fn scheduled_book_value(asset: &Asset, as_of: NaiveDate) -> Result<Decimal, LedgerError> {
     asset
         .cost
         .amount
-        .checked_sub(accumulated_depreciation(asset, as_of)?)
+        .checked_sub(accumulated_scheduled_through(asset, as_of)?)
         .ok_or_else(|| LedgerError::TooLargeToCompute(format!("asset {}'s book value", asset.id)))
 }
 
@@ -542,23 +805,44 @@ pub struct PostedRun {
 ///   2. A run in effect sums to its amount; one reversed, to zero.
 /// ```
 pub fn depreciation_effects(ledger: &Ledger, runs: &[(EntryId, Decimal)]) -> Vec<PostedRun> {
+    run_chain_entries(ledger, runs, &ledger.posted_reversals())
+        .into_iter()
+        .map(|(d, amount)| PostedRun {
+            year: d.year(),
+            month: d.month(),
+            amount,
+        })
+        .collect()
+}
+
+/// Every entry of each run's reversal chain the books carry (posted), in
+/// order, with its date and what it adds to what the books carry for the
+/// asset: the run its amount, a reversal of it the amount taken away, a
+/// reversal of that reversal the amount back, and so on (`reversals`:
+/// each posted reversal's original, [`Ledger::posted_reversals`], read
+/// once for many runs). The one reading of what the books carry for an
+/// asset's depreciation: [`depreciation_effects`] by month, and
+/// [`Ledger::accumulated_posted`] by day.
+pub(crate) fn run_chain_entries(
+    ledger: &Ledger,
+    runs: &[(EntryId, Decimal)],
+    reversals: &std::collections::HashMap<EntryId, EntryId>,
+) -> Vec<(NaiveDate, Decimal)> {
     let mut out = Vec::new();
     for &(run, amount) in runs {
-        let chain = ledger.reversal_chain(run);
-        let from = chain.iter().position(|&e| e == run).unwrap_or(0);
-        for (i, e) in chain[from..].iter().enumerate() {
-            let Some(entry) = ledger
-                .get_entry(*e)
+        let (mut link, mut adds) = (Some(run), true);
+        // A chain has no more links than there are reversals: the bound
+        // is a guard, never reached.
+        for _ in 0..=reversals.len() {
+            let Some(id) = link else { break };
+            if let Some(e) = ledger
+                .get_entry(id)
                 .filter(|x| x.status() == EntryStatus::Posted)
-            else {
-                continue;
-            };
-            let d = entry.date();
-            out.push(PostedRun {
-                year: d.year(),
-                month: d.month(),
-                amount: if i % 2 == 0 { amount } else { -amount },
-            });
+            {
+                out.push((e.date(), if adds { amount } else { -amount }));
+            }
+            link = reversals.get(&id).copied();
+            adds = !adds;
         }
     }
     out
@@ -598,7 +882,7 @@ pub fn run_amounts(
     through: (i32, u32),
     posted: &[PostedRun],
 ) -> Result<Vec<(i32, u32, RunAmount)>, LedgerError> {
-    let first = (asset.purchase_date.year(), asset.purchase_date.month());
+    let first = (asset.in_service_date.year(), asset.in_service_date.month());
     if through < first {
         return Ok(Vec::new());
     }
@@ -763,10 +1047,10 @@ pub fn run_amount(
     posted: &[PostedRun],
 ) -> Result<RunAmount, LedgerError> {
     let period = format!("{year:04}-{month:02}");
-    if month_end_of(year, month)? < asset.purchase_date {
+    if month_end_of(year, month)? < asset.in_service_date {
         return Err(LedgerError::InvalidDepreciationPeriod(format!(
             "{period} ends before asset {} was placed in service on {}",
-            asset.id, asset.purchase_date
+            asset.id, asset.in_service_date
         )));
     }
     catch_up_room(asset, year, month, posted)
@@ -838,38 +1122,37 @@ pub struct DisposalAmounts {
     pub gain_loss: Decimal,
 }
 
-/// Whether an asset can be disposed of on `date` for `proceeds`: it is
-/// active, the proceeds aren't negative, and the date isn't before it was
-/// placed in service (a disposal on that date holds it one day, accrual
-/// being inclusive, B-15). The checks only: no depreciation is computed,
-/// so replaying a journaled disposal never depends on a figure (rules.md
-/// B-28).
-pub fn check_disposal(asset: &Asset, date: NaiveDate, proceeds: Money) -> Result<(), LedgerError> {
+/// Whether an asset can be disposed of for `proceeds`: it is active and
+/// the proceeds aren't negative. The checks every journaled
+/// disposal passed, so replaying one never depends on a figure (rules.md
+/// B-28). The date's floor, the day the company acquired the asset, needs
+/// its acquisition entry, so the ledger checks it for new disposals only
+/// (`Ledger::dispose_asset`): a disposal may fall on the in-service date
+/// (one day held, accrual being inclusive, B-15), or before it once the
+/// asset is acquired (nothing accrued yet).
+pub fn check_disposal(asset: &Asset, proceeds: Money) -> Result<(), LedgerError> {
     if asset.status != AssetStatus::Active {
         return Err(LedgerError::AssetAlreadyDisposed(asset.id));
     }
     if proceeds.amount < Decimal::ZERO {
         return Err(LedgerError::NegativeProceeds(proceeds.amount));
     }
-    if date < asset.purchase_date {
-        return Err(LedgerError::DisposalBeforePurchase(date.to_string()));
-    }
     Ok(())
 }
 
-/// Compute disposal amounts. Pure math; posting is the caller's job.
-/// A disposal may fall on the purchase date (one day held, accrual being
-/// inclusive, B-15 in docs/spec/rules.md); one before it is an error
-/// ([`check_disposal`]). Accumulated depreciation is the schedule through
-/// the disposal day, inclusive: what the schedule of the asset, once
-/// disposed, shows ([`depreciation_schedule`] INVARIANT 4).
+/// Compute disposal amounts by the schedule. Pure math; posting is the
+/// caller's job. The checks are [`check_disposal`]'s (the acquired-date
+/// floor is the ledger's, for new disposals). Accumulated depreciation is
+/// the schedule through the disposal day, inclusive: what the schedule of
+/// the asset, once disposed, shows ([`depreciation_schedule`] INVARIANT 4);
+/// nothing before the in-service date.
 pub fn disposal_amounts(
     asset: &Asset,
     date: NaiveDate,
     proceeds: Money,
 ) -> Result<DisposalAmounts, LedgerError> {
-    check_disposal(asset, date, proceeds)?;
-    let accumulated = accumulated_depreciation(asset, date)?;
+    check_disposal(asset, proceeds)?;
+    let accumulated = accumulated_scheduled_through(asset, date)?;
     let too_large = || LedgerError::TooLargeToCompute(format!("asset {}'s disposal", asset.id));
     let book = asset
         .cost

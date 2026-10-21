@@ -11,9 +11,8 @@ use crate::theme::{self, pal};
 use crate::widgets;
 use egui::{CornerRadius, RichText, Sense, Ui, vec2};
 use egui_phosphor::regular as icon;
-use ledger_core::AssetStatus;
-use ledger_core::PeriodStatus;
-use ledger_core::assets::{accumulated_depreciation, book_value};
+use ledger_core::assets::accumulated_scheduled_through;
+use ledger_core::{AssetStatus, PeriodStatus};
 use rust_decimal::Decimal;
 
 fn kv(ui: &mut Ui, k: &str, v: &str) {
@@ -356,18 +355,17 @@ fn assets(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
         },
         |ui| {
             for a in &assets {
-                // What the books carry (runs in effect), so this ties to the
-                // balance sheet; the schedule may run ahead of the books.
-                let acc: Decimal = b.asset_trail(a.id).posted();
-                let bv = a.cost.amount - acc;
-                let scheduled = accumulated_depreciation(a, b.today);
-                let _ = book_value;
-                let dep = a.cost.amount - a.salvage_value.amount;
-                let frac: f32 = if dep.is_zero() {
-                    1.0
-                } else {
-                    (acc / dep).try_into().unwrap_or(0.0)
+                // What the books carry (its runs, less reversals:
+                // Ledger::accumulated_posted; zero once disposed, when the
+                // asset left the books), so this ties to the balance
+                // sheet; the schedule may run ahead of the books.
+                let disposed = match &a.status {
+                    AssetStatus::Disposed { date, .. } if *date <= b.today => Some(*date),
+                    _ => None,
                 };
+                let acc = b.ledger.accumulated_posted(a.id, b.today);
+                let scheduled = accumulated_scheduled_through(a, b.today);
+                let dep = a.cost.amount - a.salvage_value.amount;
                 ui.horizontal_wrapped(|ui| {
                     if widgets::link(
                         ui,
@@ -379,8 +377,8 @@ fn assets(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                     }
                     ui.label(
                         RichText::new(format!(
-                            "bought {} · {} months · {}",
-                            fmt::date(a.purchase_date),
+                            "in service {} · {} months · {}",
+                            fmt::date(a.in_service_date),
                             a.useful_life_months,
                             match &a.status {
                                 AssetStatus::Active => "active".to_string(),
@@ -392,29 +390,51 @@ fn assets(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                         .color(p.muted),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(
-                            RichText::new(format!("book value {}", fmt::dollars(bv)))
-                                .font(theme::semibold(13.0)),
-                        );
+                        let text = match (&acc, disposed) {
+                            (_, Some(_)) => format!("book value {}", fmt::dollars(Decimal::ZERO)),
+                            (Ok(acc), None) => {
+                                format!("book value {}", fmt::dollars(a.cost.amount - *acc))
+                            }
+                            (Err(e), None) => format!("book value can't be computed: {e}"),
+                        };
+                        ui.label(RichText::new(text).font(theme::semibold(13.0)));
                     });
                 });
-                let note = match scheduled {
-                    Ok(s) if s > acc => {
-                        format!(" · {} more scheduled through today", fmt::dollars(s - acc))
-                    }
-                    Ok(_) => String::new(),
-                    // An earlier version's asset: said, never guessed.
-                    Err(_) => " · its schedule can't be computed".to_string(),
-                };
-                progress(
-                    ui,
-                    frac,
-                    &format!(
-                        "{} of {} depreciated{note}",
-                        fmt::dollars(acc),
-                        fmt::dollars(dep)
+                match (&acc, disposed) {
+                    (_, Some(date)) => progress(
+                        ui,
+                        1.0,
+                        &format!("disposed {}: it left the books", fmt::date(date)),
                     ),
-                );
+                    (Ok(acc), None) => {
+                        let frac: f32 = if dep.is_zero() {
+                            1.0
+                        } else {
+                            (*acc / dep).try_into().unwrap_or(0.0)
+                        };
+                        let note = match scheduled {
+                            Ok(s) if s > *acc => {
+                                format!(
+                                    " · {} more scheduled through today",
+                                    fmt::dollars(s - *acc)
+                                )
+                            }
+                            Ok(_) => String::new(),
+                            // An earlier version's asset: said, never guessed.
+                            Err(_) => " · its schedule can't be computed".to_string(),
+                        };
+                        progress(
+                            ui,
+                            frac,
+                            &format!(
+                                "{} of {} depreciated{note}",
+                                fmt::dollars(*acc),
+                                fmt::dollars(dep)
+                            ),
+                        );
+                    }
+                    (Err(_), None) => {}
+                }
                 ui.add_space(8.0);
             }
         },

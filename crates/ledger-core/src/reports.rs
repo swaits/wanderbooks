@@ -1166,30 +1166,53 @@ pub struct AssetRegisterRow {
     pub description: String,
     /// The manufacturer's serial number, if recorded.
     pub serial: Option<String>,
-    /// Placed in service (depreciation starts).
-    pub in_service: NaiveDate,
+    /// The day the company acquired it: its acquisition entry's date, or
+    /// the in-service date when none is linked
+    /// (`Ledger::asset_acquired_date`). On the register from this day.
+    pub acquired_date: NaiveDate,
+    /// Placed in service: depreciation starts.
+    pub in_service_date: NaiveDate,
     /// Capitalized cost.
     pub cost: Decimal,
     /// Salvage value.
     pub salvage: Decimal,
     /// Useful life in months.
     pub useful_life_months: u32,
-    /// Accumulated depreciation by its schedule through the date (zero once
-    /// disposed: it left the books with the asset).
-    pub accumulated: Decimal,
-    /// Cost less accumulated (zero once disposed).
+    /// Accumulated depreciation its schedule says is due through the date
+    /// (zero once disposed: it left the books with the asset).
+    pub accumulated_scheduled: Decimal,
+    /// Accumulated depreciation the books carry for it on the date: its
+    /// runs posted, less what reversals took back (`Ledger::
+    /// accumulated_posted`; zero once disposed).
+    pub accumulated_posted: Decimal,
+    /// What the books carry: cost less accumulated_posted (zero once
+    /// disposed).
     pub book_value: Decimal,
     /// Disposal date and proceeds, if disposed by the date.
     pub disposed: Option<(NaiveDate, Decimal)>,
-    /// The federal tax basis rule, if recorded.
-    pub tax_rule: Option<crate::TaxBasisRule>,
+    /// How the company got it (the basis rule), if recorded.
+    pub basis_rule: Option<crate::BasisRule>,
     /// The contributing member's adjusted basis (a contribution only).
-    pub contributor_basis: Option<Decimal>,
-    /// The depreciable federal tax basis (`Asset::tax_basis`), if recorded.
-    pub tax_basis: Option<Decimal>,
-    /// Built-in gain (+) or loss (−) at contribution, IRC §704(c)
-    /// (`Asset::built_in_gain`).
-    pub built_in_gain: Option<Decimal>,
+    pub contributor_adjusted_basis: Option<Decimal>,
+    /// Fair market value at contribution (a contribution only): recorded,
+    /// or the book cost for a record from before P3 (`fmv_recorded`
+    /// false).
+    pub fmv_at_contribution: Option<Decimal>,
+    /// Whether the value at contribution was recorded as a fact.
+    pub fmv_recorded: bool,
+    /// The §723 basis at contribution (Asset::basis_figures).
+    pub tax_basis_723: Option<Decimal>,
+    /// The depreciable tax basis at contribution or purchase.
+    pub depreciable_basis: Option<Decimal>,
+    /// The §704(c) built-in gain (+) or loss (−) at contribution.
+    pub built_in_gain_704c: Option<Decimal>,
+    /// A built-in loss: it counts only for the contributing member(s),
+    /// IRC §704(c)(1)(C).
+    pub sec704c_1c: bool,
+    /// The §704(c) method chosen for it, if chosen.
+    pub sec704c_method: Option<crate::Sec704cMethod>,
+    /// Who gave its basis facts, when, and on what.
+    pub basis_source: Option<crate::settings::Source>,
 }
 
 /// The fixed asset register as of a date, reconciled to the general ledger.
@@ -1197,20 +1220,24 @@ pub struct AssetRegisterRow {
 pub struct AssetRegister {
     /// The date.
     pub as_of: NaiveDate,
-    /// Every asset registered by the date, in registration order; disposed
+    /// Every asset acquired by the date, in registration order; disposed
     /// ones carry their disposal and no cost on the books.
     pub rows: Vec<AssetRegisterRow>,
     /// Total cost of the assets still held.
     pub total_cost: Decimal,
     /// Their accumulated depreciation by schedule.
-    pub total_accumulated: Decimal,
-    /// Their book value.
+    pub total_accumulated_scheduled: Decimal,
+    /// Their accumulated depreciation the books carry from runs.
+    pub total_accumulated_posted: Decimal,
+    /// Their book value: total cost less total_accumulated_posted.
     pub total_book_value: Decimal,
     /// The total depreciable tax basis of the assets still held that have
-    /// one recorded.
-    pub total_tax_basis: Decimal,
-    /// How many assets still held have no tax basis recorded.
-    pub missing_tax_basis: usize,
+    /// a basis recorded.
+    pub total_depreciable_basis: Decimal,
+    /// The total §723 basis of the contributed assets still held.
+    pub total_tax_basis_723: Decimal,
+    /// How many assets still held have no basis recorded.
+    pub missing_basis: usize,
     /// The general ledger's balance (debit positive) of the assets' cost
     /// accounts on the date.
     pub ledger_cost: Decimal,
@@ -1224,7 +1251,15 @@ impl AssetRegister {
     /// don't carry yet (run `run_depreciation`); negative if the books
     /// carry more.
     pub fn unposted_depreciation(&self) -> Decimal {
-        self.total_accumulated - self.ledger_accumulated
+        self.total_accumulated_scheduled - self.ledger_accumulated
+    }
+
+    /// Accumulated depreciation in the accounts that no held asset's runs
+    /// account for: zero when every depreciation in those accounts came
+    /// from a run; otherwise an entry made by hand (or a run reversed
+    /// after its asset left the books) is in them.
+    pub fn unattributed_accumulated(&self) -> Decimal {
+        self.ledger_accumulated - self.total_accumulated_posted
     }
 
     /// Cost in the ledger's cost accounts that no held asset accounts for
@@ -1235,31 +1270,106 @@ impl AssetRegister {
     }
 }
 
+/// One asset's register row as of `as_of` (fixed_asset_register
+/// INVARIANTS 1, 2 and 5), or `None` before it was acquired: the one
+/// derivation the register and books.list_assets share. `posted` is
+/// `Ledger::accumulated_posted_all(as_of)`.
+pub fn register_row(
+    ledger: &Ledger,
+    a: &crate::Asset,
+    as_of: NaiveDate,
+    posted: &std::collections::BTreeMap<crate::AssetId, Decimal>,
+) -> Result<Option<AssetRegisterRow>, LedgerError> {
+    use crate::AssetStatus;
+    let acquired = ledger
+        .asset_acquired_date(a.id)
+        .unwrap_or(a.in_service_date);
+    if acquired > as_of {
+        return Ok(None);
+    }
+    let disposed = match &a.status {
+        AssetStatus::Disposed { date, proceeds } if *date <= as_of => {
+            Some((*date, proceeds.amount))
+        }
+        _ => None,
+    };
+    let (sched, post) = if disposed.is_some() {
+        (Decimal::ZERO, Decimal::ZERO)
+    } else {
+        (
+            crate::assets::accumulated_scheduled_through(a, as_of)?,
+            posted.get(&a.id).copied().unwrap_or(Decimal::ZERO),
+        )
+    };
+    let figures = a.basis_figures()?;
+    let book_value = if disposed.is_some() {
+        Decimal::ZERO
+    } else {
+        a.cost
+            .amount
+            .checked_sub(post)
+            .ok_or_else(|| LedgerError::TooLargeToCompute(format!("asset {}'s book value", a.id)))?
+    };
+    Ok(Some(AssetRegisterRow {
+        asset_id: a.id,
+        tag: a.tag.clone(),
+        description: a.description.clone(),
+        serial: a.serial.clone(),
+        acquired_date: acquired,
+        in_service_date: a.in_service_date,
+        cost: a.cost.amount,
+        salvage: a.salvage_value.amount,
+        useful_life_months: a.useful_life_months,
+        accumulated_scheduled: sched,
+        accumulated_posted: post,
+        book_value,
+        disposed,
+        basis_rule: a.basis.as_ref().map(|b| b.rule),
+        contributor_adjusted_basis: a.basis.as_ref().and_then(|b| b.contributor_adjusted_basis),
+        fmv_at_contribution: a.fmv_at_contribution(),
+        fmv_recorded: a.fmv_is_recorded(),
+        tax_basis_723: figures.and_then(|f| f.tax_basis_723),
+        depreciable_basis: figures.map(|f| f.depreciable_basis),
+        built_in_gain_704c: figures.and_then(|f| f.built_in_gain_704c),
+        sec704c_1c: figures
+            .and_then(|f| f.built_in_gain_704c)
+            .is_some_and(|g| g < Decimal::ZERO),
+        sec704c_method: a.basis.as_ref().and_then(|b| b.sec704c_method),
+        basis_source: a.basis.as_ref().and_then(|b| b.source.clone()),
+    }))
+}
+
 /// The fixed asset register as of a date.
 ///
 /// ```text
 /// GOAL: one list of everything the company owns as a fixed asset: what,
-///       which label, cost, depreciation, book value, and whether the
-///       books agree.
-/// SOURCE: docs/spec/rules.md B-15 (depreciation); DECISION (owner,
-///         2026-10-15): a fully featured asset register.
+///       which label, cost, depreciation due and posted, book value, tax
+///       figures, and whether the books agree.
+/// SOURCE: docs/spec/rules.md B-15 (depreciation), B-24 (the register
+///         reconciles to the books), B-25 (tax figures beside book);
+///         DECISION (owner, 2026-10-15): a fully featured asset register.
 /// INVARIANTS:
-///   1. Rows: the assets registered on or before as_of, in registration
-///      order; an asset disposed on or before as_of shows its disposal,
-///      zero accumulated and book value, and counts in no total.
-///   2. accumulated is the asset's schedule through as_of
-///      (assets::accumulated_depreciation); book_value = cost −
-///      accumulated.
-///   3. Totals are the sums over the held assets, exactly; tax basis
-///      totals over those with one recorded, and missing_tax_basis counts
-///      the rest.
-///   5. Each row's tax fields are the asset's (Asset::tax_basis,
-///      Asset::built_in_gain), never re-derived here.
+///   1. Rows: the assets acquired on or before as_of
+///      (Ledger::asset_acquired_date), in registration order; an asset
+///      disposed on or before as_of shows its disposal, zero accumulated
+///      and book value, and counts in no total.
+///   2. accumulated_scheduled is the asset's schedule through as_of
+///      (assets::accumulated_scheduled_through); accumulated_posted is
+///      what the books carry (Ledger::accumulated_posted); book_value =
+///      cost − accumulated_posted: the books' figure, never the
+///      schedule's.
+///   3. Totals are the sums over the held assets, exactly; the
+///      depreciable basis total over those with a basis recorded (and
+///      missing_basis counts the rest); the §723 total over the
+///      contributions.
 ///   4. ledger_cost and ledger_accumulated are the general ledger's
 ///      balances on as_of of the distinct cost and accumulated
 ///      depreciation accounts of the registered assets, so
-///      unposted_depreciation and unregistered_cost are zero exactly when
-///      register and books agree.
+///      unregistered_cost, unposted_depreciation and
+///      unattributed_accumulated are zero exactly when register and books
+///      agree.
+///   5. Each row's tax fields are the asset's (Asset::basis_figures),
+///      never re-derived here.
 ///   6. NEVER panics: a contributor basis is as journaled, of any size
 ///      (rules.md B-28), and a total past exact arithmetic, or a schedule
 ///      that can't be computed, is refused (TooLargeToCompute,
@@ -1270,66 +1380,44 @@ pub fn fixed_asset_register(
     as_of: NaiveDate,
 ) -> Result<AssetRegister, LedgerError> {
     let too_large = |what: &str| LedgerError::TooLargeToCompute(format!("the register's {what}"));
-    use crate::AssetStatus;
+    let posted = ledger.accumulated_posted_all(as_of)?;
     let mut rows = Vec::new();
-    let (mut cost, mut accumulated) = (Decimal::ZERO, Decimal::ZERO);
-    let (mut tax_total, mut tax_missing) = (Decimal::ZERO, 0usize);
+    let (mut cost, mut scheduled, mut posted_total) = (Decimal::ZERO, Decimal::ZERO, Decimal::ZERO);
+    let (mut depreciable_total, mut total_723, mut missing) =
+        (Decimal::ZERO, Decimal::ZERO, 0usize);
     let mut cost_accounts = std::collections::BTreeSet::new();
     let mut accum_accounts = std::collections::BTreeSet::new();
-    for a in ledger
-        .registered_assets()
-        .filter(|a| a.purchase_date <= as_of)
-    {
+    for a in ledger.registered_assets() {
+        let Some(row) = register_row(ledger, a, as_of, &posted)? else {
+            continue;
+        };
         cost_accounts.insert(a.cost_account);
         accum_accounts.insert(a.accum_depr_account);
-        let disposed = match &a.status {
-            AssetStatus::Disposed { date, proceeds } if *date <= as_of => {
-                Some((*date, proceeds.amount))
-            }
-            _ => None,
-        };
-        let acc = if disposed.is_some() {
-            Decimal::ZERO
-        } else {
-            crate::assets::accumulated_depreciation(a, as_of)?
-        };
-        if disposed.is_none() {
+        if row.disposed.is_none() {
             cost = cost
-                .checked_add(a.cost.amount)
+                .checked_add(row.cost)
                 .ok_or_else(|| too_large("cost"))?;
-            accumulated = accumulated
-                .checked_add(acc)
+            scheduled = scheduled
+                .checked_add(row.accumulated_scheduled)
                 .ok_or_else(|| too_large("accumulated depreciation"))?;
-            match a.tax_basis() {
-                Some(t) => {
-                    tax_total = tax_total
-                        .checked_add(t)
-                        .ok_or_else(|| too_large("tax basis"))?
+            posted_total = posted_total
+                .checked_add(row.accumulated_posted)
+                .ok_or_else(|| too_large("posted depreciation"))?;
+            match row.depreciable_basis {
+                Some(b) => {
+                    depreciable_total = depreciable_total
+                        .checked_add(b)
+                        .ok_or_else(|| too_large("depreciable basis"))?;
+                    if let Some(b) = row.tax_basis_723 {
+                        total_723 = total_723
+                            .checked_add(b)
+                            .ok_or_else(|| too_large("§723 basis"))?;
+                    }
                 }
-                None => tax_missing += 1,
+                None => missing += 1,
             }
         }
-        rows.push(AssetRegisterRow {
-            asset_id: a.id,
-            tag: a.tag.clone(),
-            description: a.description.clone(),
-            serial: a.serial.clone(),
-            in_service: a.purchase_date,
-            cost: a.cost.amount,
-            salvage: a.salvage_value.amount,
-            useful_life_months: a.useful_life_months,
-            accumulated: acc,
-            book_value: if disposed.is_some() {
-                Decimal::ZERO
-            } else {
-                a.cost.amount - acc
-            },
-            disposed,
-            tax_rule: a.tax.map(|t| t.rule),
-            contributor_basis: a.tax.and_then(|t| t.contributor_basis),
-            tax_basis: a.tax_basis(),
-            built_in_gain: a.built_in_gain(),
-        });
+        rows.push(row);
     }
     let tb = trial_balance_as_of(ledger, as_of);
     let net = |id: crate::AccountId| -> Decimal {
@@ -1347,10 +1435,14 @@ pub fn fixed_asset_register(
         as_of,
         rows,
         total_cost: cost,
-        total_accumulated: accumulated,
-        total_book_value: cost - accumulated,
-        total_tax_basis: tax_total,
-        missing_tax_basis: tax_missing,
+        total_accumulated_scheduled: scheduled,
+        total_accumulated_posted: posted_total,
+        total_book_value: cost
+            .checked_sub(posted_total)
+            .ok_or_else(|| too_large("book value"))?,
+        total_depreciable_basis: depreciable_total,
+        total_tax_basis_723: total_723,
+        missing_basis: missing,
         ledger_cost: cost_accounts.iter().map(|&id| net(id)).sum(),
         ledger_accumulated: -accum_accounts.iter().map(|&id| net(id)).sum::<Decimal>(),
     })

@@ -72,7 +72,7 @@ impl Books {
         self.l
             .register_asset(NewAsset {
                 description: format!("Asset on {cost}"),
-                purchase_date: d(2026, 1, 1),
+                in_service_date: d(2026, 1, 1),
                 cost: Money::new(x(amount), Currency::USD),
                 salvage_value: Money::new(Decimal::ZERO, Currency::USD),
                 useful_life_months: 36,

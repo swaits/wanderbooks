@@ -30,3 +30,35 @@ definitions exactly.
   into retained earnings so the new period starts clean. (Future: R-FUTURE-2.)
 - **Current earnings** — Net income to date on an unclosed book. We fold it
   into equity so the accounting equation holds before close.
+- **Placed in service (in-service date)** — The day an asset is ready and
+  available for its use. Depreciation starts here (`Asset::in_service_date`;
+  journaled under its old name `purchase_date`).
+- **Acquired date** — The day the company got the asset: the date of the
+  entry that put it on the books (its purchase or a member's contribution),
+  never later than the in-service date. The register holds the asset from
+  here (`Ledger::asset_acquired_date`).
+- **Accumulated depreciation, posted and scheduled** — What the books carry
+  for an asset (its depreciation runs, less any reversed:
+  `Ledger::accumulated_posted`), and what its schedule says is due by a date
+  (`accumulated_depreciation`, `accumulated_scheduled_through` in the
+  tools). Book value is cost less the posted figure.
+- **§723 basis** — The company's tax basis in property a member contributed:
+  the member's adjusted basis at contribution (IRC §723).
+- **Adjusted basis** — Cost plus improvements, less depreciation allowed or
+  allowable (IRC §1016(a)).
+- **Depreciable basis** — What tax depreciation starts from: the cost for
+  something bought; the §723 basis for business property contributed; for
+  property contributed from personal use, the lesser of its fair market
+  value and the member's adjusted basis (Treas. Reg. §1.168(i)-4(b)).
+- **Built-in gain or loss (§704(c))** — Property's fair market value less
+  its §723 basis when contributed (Treas. Reg. §1.704-3(a)(3)(ii)). A
+  built-in loss counts only for the member who contributed it (IRC
+  §704(c)(1)(C)).
+- **§704(c) method** — How the tax items of contributed property are shared
+  among the members so the built-in gain or loss stays with its
+  contributor: traditional, traditional with curative allocations, or
+  remedial (Treas. Reg. §1.704-3(b)-(d)), chosen property by property.
+- **Tax-basis capital** — A member's capital account as Schedule K-1 Item L
+  reports it: cash plus the adjusted tax basis of property contributed,
+  plus their share of income as figured for tax, less cash and the adjusted
+  tax basis of property distributed (Form 1065 instructions, Item L).

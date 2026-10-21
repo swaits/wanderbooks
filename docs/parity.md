@@ -27,7 +27,7 @@ No other statuses.
 | Tax line mapping + tax summary | Accounts → Tax line mapping; Tax reports | partial | hand-verified fixture (50% meals, nondeductible, contra income); no golden file yet |
 | Reversing entries | Reverse transaction | done | linked via `reversal_of` |
 | Canonical report snapshots (JSON) | — (our oracle format) | done | `reports::snapshot` |
-| Fixed-asset register + straight-line depreciation | Fixed Asset register | done | `assets.rs`; golden-covered schedule; idempotent runs; disposal with gain/loss |
+| Fixed-asset register + straight-line depreciation | Fixed Asset register | done | `assets.rs`; golden-covered schedule; idempotent runs; disposal with gain/loss; posted (the books') vs scheduled, in-service vs acquired dates, the §723, depreciable and §704(c) figures (P3) |
 | Cash flow statement (direct, with the reconciliation schedule and noncash disclosures) | Reports → Cash Flow | done | R-FUTURE-3; rules.md B-14 (P3 defect 1) |
 | Foreign-currency lines (base + foreign stored) | Multi-currency accts | done | R-FUTURE-1 |
 | Period close (closing entry to Retained Earnings) | Close books | done | R-FUTURE-2 |

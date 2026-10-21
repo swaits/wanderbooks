@@ -277,8 +277,9 @@ pub struct DisposalPreview {
     pub period: String,
 }
 
-/// A depreciation run the books carry for an asset: its row in the
-/// projection, its entry in effect (not reversed).
+/// A depreciation run the books carry for an asset: one the ledger
+/// recorded (`Ledger::depreciation_runs`), its entry in effect (not
+/// reversed).
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct LiveRun {
     /// Its month, "YYYY-MM" as journaled.
@@ -1489,7 +1490,7 @@ impl Store {
             }
             // Reversing `entry` re-instates the run, adding it back in the
             // reversal's month.
-            if let Some((now, _)) = self.depreciation_posted_entry(asset_id, period)?
+            if let Some((now, _)) = self.depreciation_posted_entry(asset_id, period)
                 && now != top
             {
                 return refuse(format!(
@@ -1504,7 +1505,7 @@ impl Store {
                     asset,
                     date.year(),
                     date.month(),
-                    &self.depreciation_effects(asset_id)?,
+                    &self.depreciation_effects(asset_id),
                 )?
                 .amount;
                 if amount > room {
@@ -1534,7 +1535,8 @@ impl Store {
             json!({
                 "id": id,
                 "description": new.description,
-                "purchase_date": new.purchase_date.to_string(),
+                // The in-service date, as every asset.registered names it.
+                "purchase_date": new.in_service_date.to_string(),
                 "cost": { "amount": new.cost.amount.to_string(), "currency": new.cost.currency.code() },
                 "salvage_value": { "amount": new.salvage_value.amount.to_string(), "currency": new.salvage_value.currency.code() },
                 "useful_life_months": new.useful_life_months,
@@ -1738,8 +1740,9 @@ impl Store {
     }
 
     /// Correct a registered asset's cost, salvage, life, or in-service date
-    /// (see `Ledger::correct_asset`), with the reason. Refused once any
-    /// depreciation for it is posted. Journaled as `asset.corrected`, with
+    /// (see `Ledger::correct_asset`), with the reason. Refused while the
+    /// books carry any depreciation for it (a run posted and not reversed:
+    /// `Ledger::accumulated_posted`). Journaled as `asset.corrected`, with
     /// the figures it had.
     pub fn correct_asset(
         &mut self,
@@ -1751,7 +1754,11 @@ impl Store {
             return Err(StoreError::ReasonRequired);
         }
         self.ledger.check_correct_asset(id, &fix)?;
-        if !self.asset_depreciation_total(id)?.is_zero() {
+        if !self
+            .ledger
+            .accumulated_posted(id, chrono::NaiveDate::MAX)?
+            .is_zero()
+        {
             return Err(StoreError::AssetDepreciationPosted(id));
         }
         let a = self.ledger.get_asset(id).expect("checked").clone();
@@ -1764,13 +1771,14 @@ impl Store {
                 "cost": money(&fix.cost),
                 "salvage_value": money(&fix.salvage_value),
                 "useful_life_months": fix.useful_life_months,
-                "purchase_date": fix.purchase_date.to_string(),
+                // The in-service date, as every asset.corrected names it.
+                "purchase_date": fix.in_service_date.to_string(),
                 "reason": reason,
                 "previous": {
                     "cost": money(&a.cost),
                     "salvage_value": money(&a.salvage_value),
                     "useful_life_months": a.useful_life_months,
-                    "purchase_date": a.purchase_date.to_string(),
+                    "purchase_date": a.in_service_date.to_string(),
                 },
             }),
         )?;
@@ -1779,23 +1787,46 @@ impl Store {
         Ok(())
     }
 
-    /// Record an asset's federal tax basis (see
-    /// `Ledger::set_asset_tax_basis`). Journaled as `asset.tax_basis_set`.
-    pub fn set_asset_tax_basis(
+    /// Record how the company got an asset and the facts its tax figures
+    /// follow from (see `Ledger::set_asset_basis`). Journaled as
+    /// `asset.basis_set {asset_id, rule, contributor_adjusted_basis,
+    /// fmv_at_contribution, sec704c_method, source, tax_basis_723,
+    /// depreciable_basis, built_in_gain_704c}`: the facts, and for the
+    /// line's readers the figures as derived when written (null for a
+    /// purchase's depreciable basis: the cost, whatever it becomes).
+    /// Replay reads the facts and never recomputes the figures (rules.md
+    /// B-28). It needs the journal feature `asset_basis`: refused,
+    /// journaling nothing, in books that haven't declared it (books an
+    /// older version wrote, until their format upgrade: B-27).
+    pub fn set_asset_basis(
         &mut self,
         id: AssetId,
-        tax: ledger_core::TaxBasis,
+        basis: ledger_core::AssetBasis,
     ) -> Result<(), StoreError> {
-        self.ledger.check_asset_tax_basis(id, tax)?;
+        self.ledger.check_asset_basis(id, &basis)?;
+        let mut asset = self.ledger.get_asset(id).expect("checked").clone();
+        asset.basis = Some(basis.clone());
+        let figures = asset.basis_figures()?.expect("a checked basis has figures");
+        let dec = |d: Option<Decimal>| d.map(|d| d.to_string());
+        self.ensure_feature(crate::format::ASSET_BASIS)?;
         let line = self.append_journal(
-            "asset.tax_basis_set",
+            "asset.basis_set",
             json!({
                 "asset_id": id,
-                "rule": tax.rule.key(),
-                "contributor_basis": tax.contributor_basis.map(|b| b.to_string()),
+                "rule": basis.rule.key(),
+                "contributor_adjusted_basis": dec(basis.contributor_adjusted_basis),
+                "fmv_at_contribution": dec(basis.fmv_at_contribution),
+                "sec704c_method": basis.sec704c_method.map(|m| m.key()),
+                "source": basis.source,
+                "tax_basis_723": dec(figures.tax_basis_723),
+                "depreciable_basis": dec(basis
+                    .rule
+                    .is_contribution()
+                    .then_some(figures.depreciable_basis)),
+                "built_in_gain_704c": dec(figures.built_in_gain_704c),
             }),
         )?;
-        self.ledger.set_asset_tax_basis(id, tax)?;
+        self.ledger.set_asset_basis(id, basis)?;
         apply_line_to_sqlite(&self.conn, &line)?;
         Ok(())
     }
@@ -1854,114 +1885,48 @@ impl Store {
     }
 
     /// The depreciation runs the books carry for an asset: every run
-    /// journaled for it ([`Self::depreciation_runs_ever`]) whose entry is in
-    /// effect, in journal order. A reversed run is left out, so its month is
-    /// due again (P3 depreciation review R3); a reversed reversal counts
-    /// again, even after its month was run again and that run reversed (the
-    /// projection's row for the month names the latest run only, so it is
-    /// not read here: P3 review round 2).
-    fn live_runs(&self, asset_id: AssetId) -> Result<Vec<LiveRun>, StoreError> {
-        Ok(self
-            .depreciation_runs_ever(asset_id)?
-            .into_iter()
-            .filter(|(entry_id, _, _)| self.ledger.in_effect(*entry_id))
-            .map(|(entry_id, amount, period)| LiveRun {
-                period,
-                entry_id,
-                amount,
+    /// recorded for it (`asset.depreciation_posted`, its disposal's final
+    /// depreciation included: [`Ledger::depreciation_runs`]) whose entry is
+    /// in effect, in journal order. A reversed run is left out, so its
+    /// month is due again (P3 depreciation review R3); a reversed reversal
+    /// counts again, even after its month was run again and that run
+    /// reversed (P3 review round 2).
+    fn live_runs(&self, asset_id: AssetId) -> Vec<LiveRun> {
+        self.ledger
+            .depreciation_runs(asset_id)
+            .iter()
+            .filter(|r| self.ledger.in_effect(r.entry))
+            .map(|r| LiveRun {
+                period: r.period.clone(),
+                entry_id: r.entry,
+                amount: r.amount,
             })
-            .collect())
+            .collect()
     }
 
     /// The run the books carry for this asset and period, if any: (entry,
-    /// amount).
-    fn depreciation_posted_entry(
-        &self,
-        asset_id: AssetId,
-        period: &str,
-    ) -> Result<Option<(u64, Decimal)>, StoreError> {
-        Ok(self
-            .live_runs(asset_id)?
-            .into_iter()
-            .find(|r| r.period == period)
-            .map(|r| (r.entry_id, r.amount)))
+    /// amount) ([`Ledger::live_depreciation_run`]).
+    fn depreciation_posted_entry(&self, asset_id: AssetId, period: &str) -> Option<(u64, Decimal)> {
+        self.ledger
+            .live_depreciation_run(asset_id, period)
+            .map(|r| (r.entry, r.amount))
     }
 
     /// Whether this asset's period was ever run, reversed or not: running
     /// it again writes a second `asset.depreciation_posted` for it, which an
     /// older version would ignore (feature `month_reposting`).
-    fn depreciation_period_was_run(
-        &self,
-        asset_id: AssetId,
-        period: &str,
-    ) -> Result<bool, StoreError> {
-        Ok(self
-            .conn
-            .query_row(
-                "SELECT 1 FROM asset_depreciation WHERE asset_id = ? AND period = ?",
-                params![asset_id as i64, period],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some())
-    }
-
-    /// Every depreciation run journaled for an asset, reversed or not, in
-    /// journal order: each `asset.depreciation_posted` (its runs, and its
-    /// disposal's final depreciation) as (entry, amount, period). The
-    /// projection keeps a period's latest run only; the journal keeps each.
-    fn depreciation_runs_ever(
-        &self,
-        asset_id: AssetId,
-    ) -> Result<Vec<(EntryId, Decimal, String)>, StoreError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT payload FROM events WHERE type = 'asset.depreciation_posted' ORDER BY seq",
-        )?;
-        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
-        let mut out = Vec::new();
-        for row in rows {
-            let p: Value = serde_json::from_str(&row?)?;
-            if get_u64(&p, "asset_id")? != asset_id {
-                continue;
-            }
-            let amount = get_str(&p, "amount")?;
-            let amount = amount
-                .parse()
-                .map_err(|_| StoreError::JournalCorrupt(format!("bad amount {amount}")))?;
-            out.push((
-                get_u64(&p, "entry_id")?,
-                amount,
-                get_str(&p, "period")?.to_string(),
-            ));
-        }
-        Ok(out)
+    fn depreciation_period_was_run(&self, asset_id: AssetId, period: &str) -> bool {
+        self.ledger
+            .depreciation_runs(asset_id)
+            .iter()
+            .any(|r| r.period == period)
     }
 
     /// What the books carry for an asset's depreciation, entry by entry,
     /// each in its own month: every run and every reversal of one
     /// (ledger_core::depreciation_effects), as the catch-up rule reads it.
-    fn depreciation_effects(
-        &self,
-        asset_id: AssetId,
-    ) -> Result<Vec<ledger_core::PostedRun>, StoreError> {
-        let runs: Vec<(EntryId, Decimal)> = self
-            .depreciation_runs_ever(asset_id)?
-            .into_iter()
-            .map(|(e, a, _)| (e, a))
-            .collect();
-        Ok(ledger_core::depreciation_effects(&self.ledger, &runs))
-    }
-
-    /// Sum of the depreciation the books carry for an asset (its runs in
-    /// effect). Summed in Rust with exact Decimal math: amounts are TEXT in
-    /// SQLite, so SQLite must not sum them (REAL would lose pennies).
-    fn asset_depreciation_total(&self, asset_id: AssetId) -> Result<Decimal, StoreError> {
-        self.live_runs(asset_id)?
-            .iter()
-            .try_fold(Decimal::ZERO, |t, r| t.checked_add(r.amount))
-            .ok_or_else(|| {
-                StoreError::JournalCorrupt(format!("asset {asset_id}'s depreciation is too large"))
-            })
+    fn depreciation_effects(&self, asset_id: AssetId) -> Vec<ledger_core::PostedRun> {
+        self.ledger.depreciation_effects_of(asset_id)
     }
 
     /// Post one month's depreciation for one asset: what is due through the
@@ -2018,7 +1983,7 @@ impl Store {
                 .find(|l| l.period == period)
                 .map_or(Decimal::ZERO, |l| l.amount))
         };
-        if let Some((entry_id, amount)) = self.depreciation_posted_entry(asset_id, period)? {
+        if let Some((entry_id, amount)) = self.depreciation_posted_entry(asset_id, period) {
             return Ok(DepreciationRun {
                 asset_id,
                 period: period.to_string(),
@@ -2033,7 +1998,7 @@ impl Store {
             return Err(LedgerError::AssetAlreadyDisposed(asset_id).into());
         }
         let due =
-            ledger_core::run_amount(&asset, year, month, &self.depreciation_effects(asset_id)?)?;
+            ledger_core::run_amount(&asset, year, month, &self.depreciation_effects(asset_id))?;
         if due.amount.is_zero() {
             let last = ledger_core::life_end(&asset)?
                 .pred_opt()
@@ -2066,16 +2031,18 @@ impl Store {
         let description = format!("Depreciation — {} — {period}", asset.description);
         let money = Money::new(amount, self.base_currency);
         // Every refusal before the first journaled line: the entry on a
-        // copy, then the journal feature a period run again needs. A
-        // refusal after the entry posted would leave it without the line
-        // that makes it the period's run.
+        // copy (and that it is the period's run, no more and no less:
+        // Ledger::check_depreciation_run), then the journal feature a
+        // period run again needs. A refusal after the entry posted would
+        // leave it without the line that makes it the period's run.
         self.rehearse(|l| {
             let e = l.try_create_entry(period_end, &description)?;
             l.add_line(e, asset.expense_account, Side::Debit, money)?;
             l.add_line(e, asset.accum_depr_account, Side::Credit, money)?;
-            l.post_entry(e)
+            l.post_entry(e)?;
+            l.check_depreciation_run(asset_id, period, e, amount)
         })?;
-        if self.depreciation_period_was_run(asset_id, period)? {
+        if self.depreciation_period_was_run(asset_id, period) {
             self.ensure_feature(crate::format::MONTH_REPOSTING)?;
         }
         let entry_id = self.create_entry(period_end, &description)?;
@@ -2091,6 +2058,8 @@ impl Store {
                 "amount": amount.to_string(),
             }),
         )?;
+        self.ledger
+            .record_depreciation_run(asset_id, period, entry_id, amount)?;
         apply_line_to_sqlite(&self.conn, &dline)?;
         Ok(DepreciationRun {
             asset_id,
@@ -2202,8 +2171,9 @@ impl Store {
         let month = (date.year(), date.month());
         let month_end = ledger_core::schedules::month_end(date);
         let (mut later, mut late) = (Vec::new(), Vec::new());
-        for (run, amount, period) in self.depreciation_runs_ever(asset_id)? {
-            if period_month(&period) > month && self.ledger.in_effect(run) {
+        for r in self.ledger.depreciation_runs(asset_id) {
+            let (run, amount, period) = (r.entry, r.amount, &r.period);
+            if period_month(period) > month && self.ledger.in_effect(run) {
                 later.push(format!("{period} (entry {run})"));
                 continue;
             }
@@ -2321,19 +2291,27 @@ impl Store {
             }
             .into());
         }
-        if date < asset.purchase_date {
-            return Err(LedgerError::DisposalBeforePurchase(date.to_string()).into());
+        let acquired = self
+            .ledger
+            .asset_acquired_date(asset_id)
+            .expect("known asset");
+        if date < acquired {
+            return Err(LedgerError::DisposalBeforeAcquisition {
+                date: date.to_string(),
+                acquired: acquired.to_string(),
+            }
+            .into());
         }
         let period = date.format("%Y-%m").to_string();
         self.check_nothing_after_disposal(asset_id, date)?;
-        let runs = self.live_runs(asset_id)?;
+        let runs = self.live_runs(asset_id);
         let too_large =
             || StoreError::JournalCorrupt(format!("asset {asset_id}'s depreciation is too large"));
         let posted = runs
             .iter()
             .try_fold(Decimal::ZERO, |t, r| t.checked_add(r.amount))
             .ok_or_else(too_large)?;
-        let target = ledger_core::accumulated_depreciation(asset, date)?;
+        let target = ledger_core::accumulated_scheduled_through(asset, date)?;
         let (up, down) = ledger_core::kernel::true_up(target, posted).ok_or_else(too_large)?;
         let in_month = runs.iter().any(|r| r.period == period);
         let (final_depreciation, catch_up_depreciation) = if in_month {
@@ -2449,8 +2427,16 @@ impl Store {
         if asset.status != AssetStatus::Active {
             return Err(LedgerError::AssetAlreadyDisposed(asset_id).into());
         }
-        if date < asset.purchase_date {
-            return Err(LedgerError::DisposalBeforePurchase(date.to_string()).into());
+        let acquired = self
+            .ledger
+            .asset_acquired_date(asset_id)
+            .expect("known asset");
+        if date < acquired {
+            return Err(LedgerError::DisposalBeforeAcquisition {
+                date: date.to_string(),
+                acquired: acquired.to_string(),
+            }
+            .into());
         }
         let base = self.base_currency;
 
@@ -2488,14 +2474,24 @@ impl Store {
             ),
         );
         // Several commands make one disposal: rehearse them all together,
-        // so a refusal anywhere leaves nothing journaled.
+        // so a refusal anywhere leaves nothing journaled (the final
+        // depreciation's entry checked as the period's run, no more and no
+        // less: Ledger::check_depreciation_run).
         self.rehearse(|l| {
-            for (description, lines) in depreciation.iter().chain([&disposal]) {
+            for (i, (description, lines)) in depreciation.iter().chain([&disposal]).enumerate() {
                 let e = l.try_create_entry(date, description)?;
                 for (account, side, amount) in lines {
                     l.add_line(e, *account, *side, Money::new(*amount, base))?;
                 }
                 l.post_entry(e)?;
+                if i == 0 && depreciation.is_some() {
+                    l.check_depreciation_run(
+                        asset_id,
+                        &preview.period,
+                        e,
+                        preview.final_depreciation,
+                    )?;
+                }
             }
             l.dispose_asset(asset_id, date, proceeds)
         })?;
@@ -2518,7 +2514,7 @@ impl Store {
         // depreciation would be in the disposal entry): its line again,
         // which needs a journal feature, asked for (and refused in books
         // that haven't declared it) before the first line is journaled.
-        if depreciation.is_some() && self.depreciation_period_was_run(asset_id, &preview.period)? {
+        if depreciation.is_some() && self.depreciation_period_was_run(asset_id, &preview.period) {
             self.ensure_feature(crate::format::MONTH_REPOSTING)?;
         }
         if let Some((description, lines)) = &depreciation {
@@ -2535,6 +2531,12 @@ impl Store {
                     "entry_id": eid,
                     "amount": preview.final_depreciation.to_string(),
                 }),
+            )?;
+            self.ledger.record_depreciation_run(
+                asset_id,
+                &preview.period,
+                eid,
+                preview.final_depreciation,
             )?;
             apply_line_to_sqlite(&self.conn, &dline)?;
         }
@@ -4741,7 +4743,11 @@ impl Store {
         // The live ledger equals the replay (checked above, in full); the
         // SQLite read-back's asset register, classes, and payroll runs
         // must equal it too (the accounting snapshot ignores them).
-        let assets_of = |l: &Ledger| l.registered_assets().cloned().collect::<Vec<_>>();
+        let assets_of = |l: &Ledger| {
+            l.registered_assets()
+                .map(|a| (a.clone(), l.depreciation_runs(a.id).to_vec()))
+                .collect::<Vec<_>>()
+        };
         if assets_of(&replayed) != assets_of(&c) {
             return Err(StoreError::VerifyMismatch(
                 "asset register diverged between journal, live ledger, and sqlite projection"
@@ -5058,7 +5064,7 @@ impl Store {
             };
             let got = ledger.replay_register_asset(NewAsset {
                 description,
-                purchase_date: parse_date(&purchase_date)?,
+                in_service_date: parse_date(&purchase_date)?,
                 cost: parse_amt(&cost_amount, &cost_currency)?,
                 salvage_value: parse_amt(&salvage_amount, &salvage_currency)?,
                 useful_life_months: life_months as u32,
@@ -5103,20 +5109,56 @@ impl Store {
             let (id, serial) = row?;
             ledger.set_asset_serial(id as u64, Some(&serial))?;
         }
+        // Basis records: a pre-P3 one (no value at contribution) as its
+        // event replays, a newer one with its facts.
         let mut xstmt = self.conn.prepare(
-            "SELECT id, tax_rule, contributor_basis FROM assets WHERE tax_rule IS NOT NULL ORDER BY id",
+            "SELECT id, tax_rule, contributor_basis, fmv_at_contribution, sec704c_method, basis_source_json FROM assets WHERE tax_rule IS NOT NULL ORDER BY id",
         )?;
         let taxes = xstmt.query_map([], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, Option<String>>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, Option<String>>(5)?,
             ))
         })?;
         for row in taxes {
-            let (id, rule, basis) = row?;
-            let tax = tax_basis_from_journal(&json!({"rule": rule, "contributor_basis": basis}))?;
-            ledger.replay_set_asset_tax_basis(id as u64, tax)?;
+            let (id, rule, basis, fmv, method, source) = row?;
+            let corrupt = |what: &str| StoreError::JournalCorrupt(format!("assets.{what}"));
+            let dec = |v: Option<String>, what: &str| {
+                v.map(|s| s.parse::<Decimal>().map_err(|_| corrupt(what)))
+                    .transpose()
+            };
+            let fmv = dec(fmv, "fmv_at_contribution")?;
+            if fmv.is_none()
+                && method.is_none()
+                && source.is_none()
+                && let Some(legacy) = ledger_core::BasisRule::parse_legacy(&rule)
+            {
+                ledger.replay_set_asset_tax_basis(
+                    id as u64,
+                    legacy,
+                    dec(basis, "contributor_basis")?,
+                )?;
+                continue;
+            }
+            let basis = ledger_core::AssetBasis {
+                rule: ledger_core::BasisRule::parse(&rule).ok_or_else(|| corrupt("tax_rule"))?,
+                contributor_adjusted_basis: dec(basis, "contributor_basis")?,
+                fmv_at_contribution: fmv,
+                sec704c_method: method
+                    .map(|m| {
+                        ledger_core::Sec704cMethod::parse(&m)
+                            .ok_or_else(|| corrupt("sec704c_method"))
+                    })
+                    .transpose()?,
+                source: source
+                    .map(|j| serde_json::from_str(&j).map_err(|_| corrupt("basis_source_json")))
+                    .transpose()?,
+            };
+            ledger.replay_set_asset_basis(id as u64, basis)?;
         }
         let mut qstmt = self.conn.prepare(
             "SELECT id, acquisition_entry FROM assets WHERE acquisition_entry IS NOT NULL ORDER BY id",
@@ -5125,6 +5167,26 @@ impl Store {
         for row in links {
             let (id, entry) = row?;
             ledger.restore_asset_acquisition(id as u64, entry as u64)?;
+        }
+        // Depreciation runs, each asset's in the order they were posted
+        // (entry order, as replay records them).
+        let mut dstmt = self.conn.prepare(
+            "SELECT asset_id, period, entry_id, amount FROM asset_depreciation ORDER BY asset_id, entry_id",
+        )?;
+        let runs = dstmt.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })?;
+        for row in runs {
+            let (asset, period, entry, amount) = row?;
+            let amount = amount.parse::<Decimal>().map_err(|_| {
+                StoreError::JournalCorrupt(format!("asset_depreciation amount {amount}"))
+            })?;
+            ledger.record_depreciation_run(asset as u64, &period, entry as u64, amount)?;
         }
         // Payroll runs: id order; lines in insertion order. Amounts are
         // TEXT in SQLite, so they parse here with exact Decimal math.
@@ -5725,7 +5787,8 @@ pub(crate) fn replay_line_into_ledger(
             let want = get_u64(p, "id")?;
             let got = ledger.replay_register_asset(NewAsset {
                 description: get_str(p, "description")?.to_string(),
-                purchase_date: parse_date(get_str(p, "purchase_date")?)?,
+                // `purchase_date` has always meant the in-service date.
+                in_service_date: parse_date(get_str(p, "purchase_date")?)?,
                 cost: parse_money(p, "cost")?,
                 salvage_value: parse_money(p, "salvage_value")?,
                 useful_life_months: get_u64(p, "useful_life_months")? as u32,
@@ -5824,19 +5887,24 @@ pub(crate) fn replay_line_into_ledger(
                     cost: parse_money(p, "cost")?,
                     salvage_value: parse_money(p, "salvage_value")?,
                     useful_life_months: get_u64(p, "useful_life_months")? as u32,
-                    purchase_date: parse_date(get_str(p, "purchase_date")?)?,
+                    in_service_date: parse_date(get_str(p, "purchase_date")?)?,
                 },
             )?;
         }
         "asset.tax_basis_set" => {
-            let tax = tax_basis_from_journal(p)?;
-            ledger.replay_set_asset_tax_basis(get_u64(p, "asset_id")?, tax)?;
+            let (rule, contributor_basis) = tax_basis_from_journal(p)?;
+            ledger.replay_set_asset_tax_basis(get_u64(p, "asset_id")?, rule, contributor_basis)?;
+        }
+        "asset.basis_set" => {
+            let basis = asset_basis_from_journal(line, p)?;
+            ledger.replay_set_asset_basis(get_u64(p, "asset_id")?, basis)?;
         }
         "asset.described" => {
             ledger.set_asset_description(get_u64(p, "asset_id")?, get_str(p, "description")?)?;
         }
         "asset.acquisition_linked" => {
-            ledger.set_asset_acquisition(get_u64(p, "asset_id")?, get_u64(p, "entry_id")?)?;
+            ledger
+                .replay_set_asset_acquisition(get_u64(p, "asset_id")?, get_u64(p, "entry_id")?)?;
         }
         "asset.serial_set" => {
             let serial =
@@ -5850,7 +5918,19 @@ pub(crate) fn replay_line_into_ledger(
         }
         "asset.depreciation_posted" => {
             // The entry itself was journaled as entry.created/entry.posted;
-            // this line is idempotency bookkeeping for the projection.
+            // this line says it was the asset's run for the month, which is
+            // what the books carry for the asset (Ledger::accumulated_posted).
+            // Replay checks only that it is well formed and names an asset
+            // and entry that exist (rules.md B-28).
+            let amount = get_str(p, "amount")?.parse::<Decimal>().map_err(|_| {
+                StoreError::JournalCorrupt("asset.depreciation_posted amount".into())
+            })?;
+            ledger.record_depreciation_run(
+                get_u64(p, "asset_id")?,
+                get_str(p, "period")?,
+                get_u64(p, "entry_id")?,
+                amount,
+            )?;
         }
         "asset.disposed" => {
             let id = get_u64(p, "asset_id")?;
@@ -6143,21 +6223,69 @@ fn apply_document_payment(
 /// written before targets existed).
 /// An `asset.tax_basis_set` payload's rule and contributor basis, strictly:
 /// an unknown rule or a basis that isn't a decimal string is corrupt.
-fn tax_basis_from_journal(p: &Value) -> Result<ledger_core::TaxBasis, StoreError> {
+/// A pre-P3 `asset.tax_basis_set`: the rule by its pre-P3 name (`cost`,
+/// `carryover`, `personal_use_conversion`) and the contributor basis.
+fn tax_basis_from_journal(
+    p: &Value,
+) -> Result<(ledger_core::BasisRule, Option<Decimal>), StoreError> {
     let corrupt = |what: &str| StoreError::JournalCorrupt(format!("asset.tax_basis_set {what}"));
     let rule =
-        ledger_core::TaxBasisRule::parse(get_str(p, "rule")?).ok_or_else(|| corrupt("rule"))?;
-    let contributor_basis = match p.get("contributor_basis") {
-        None | Some(Value::Null) => None,
-        Some(v) => Some(
-            v.as_str()
-                .and_then(|s| s.parse::<Decimal>().ok())
-                .ok_or_else(|| corrupt("contributor_basis"))?,
-        ),
-    };
-    Ok(ledger_core::TaxBasis {
+        ledger_core::BasisRule::parse_legacy(get_str(p, "rule")?).ok_or_else(|| corrupt("rule"))?;
+    Ok((
         rule,
-        contributor_basis,
+        optional_decimal(p, "contributor_basis").map_err(|_| corrupt("contributor_basis"))?,
+    ))
+}
+
+/// An optional decimal string: absent or null is None; anything else must
+/// parse.
+fn optional_decimal(p: &Value, key: &str) -> Result<Option<Decimal>, ()> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v
+            .as_str()
+            .and_then(|s| s.parse::<Decimal>().ok())
+            .map(Some)
+            .ok_or(()),
+    }
+}
+
+/// An `asset.basis_set`'s facts. A rule or §704(c) method this version
+/// doesn't know was written by a newer one: NewerJournal, never corrupt
+/// (rules.md B-27). The figures the line carries are type-checked and
+/// otherwise left to its readers: replay never recomputes them (B-28).
+fn asset_basis_from_journal(
+    line: &JournalLine,
+    p: &Value,
+) -> Result<ledger_core::AssetBasis, StoreError> {
+    let corrupt = |what: &str| StoreError::JournalCorrupt(format!("asset.basis_set {what}"));
+    let key = get_str(p, "rule")?;
+    let rule = ledger_core::BasisRule::parse(key)
+        .ok_or_else(|| crate::format::newer_content(line, format!("the basis rule {key:?}")))?;
+    let sec704c_method = match p.get("sec704c_method") {
+        None | Some(Value::Null) => None,
+        Some(v) => {
+            let key = v.as_str().ok_or_else(|| corrupt("sec704c_method"))?;
+            Some(ledger_core::Sec704cMethod::parse(key).ok_or_else(|| {
+                crate::format::newer_content(line, format!("the §704(c) method {key:?}"))
+            })?)
+        }
+    };
+    let source = match p.get("source") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(serde_json::from_value(v.clone()).map_err(|_| corrupt("source"))?),
+    };
+    for figure in ["tax_basis_723", "depreciable_basis", "built_in_gain_704c"] {
+        optional_decimal(p, figure).map_err(|_| corrupt(figure))?;
+    }
+    Ok(ledger_core::AssetBasis {
+        rule,
+        contributor_adjusted_basis: optional_decimal(p, "contributor_adjusted_basis")
+            .map_err(|_| corrupt("contributor_adjusted_basis"))?,
+        fmv_at_contribution: optional_decimal(p, "fmv_at_contribution")
+            .map_err(|_| corrupt("fmv_at_contribution"))?,
+        sec704c_method,
+        source,
     })
 }
 
@@ -6544,11 +6672,33 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
             )?;
         }
         "asset.tax_basis_set" => {
+            // A pre-P3 record: its rule by its pre-P3 name, no value at
+            // contribution, method or source.
             conn.execute(
-                "UPDATE assets SET tax_rule = ?, contributor_basis = ? WHERE id = ?",
+                "UPDATE assets SET tax_rule = ?, contributor_basis = ?, fmv_at_contribution = NULL, sec704c_method = NULL, basis_source_json = NULL WHERE id = ?",
                 params![
                     get_str(p, "rule")?,
                     p.get("contributor_basis").and_then(|v| v.as_str()),
+                    get_u64(p, "asset_id")? as i64
+                ],
+            )?;
+        }
+        "asset.basis_set" => {
+            // The facts, the rule by its wire name (tax_rule holds either
+            // set: the names differ but for personal_use_conversion, which
+            // means the same in both).
+            let source = match p.get("source") {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(v.to_string()),
+            };
+            conn.execute(
+                "UPDATE assets SET tax_rule = ?, contributor_basis = ?, fmv_at_contribution = ?, sec704c_method = ?, basis_source_json = ? WHERE id = ?",
+                params![
+                    get_str(p, "rule")?,
+                    p.get("contributor_adjusted_basis").and_then(|v| v.as_str()),
+                    p.get("fmv_at_contribution").and_then(|v| v.as_str()),
+                    p.get("sec704c_method").and_then(|v| v.as_str()),
+                    source,
                     get_u64(p, "asset_id")? as i64
                 ],
             )?;
@@ -6766,13 +6916,12 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
             )?;
         }
         "asset.depreciation_posted" => {
-            // A period run again after its run was reversed takes the row
-            // (feature month_reposting); a period whose run stands keeps
-            // it, as before.
+            // Every run, a period run again after its run was reversed
+            // (feature month_reposting) beside the first: keyed by its
+            // entry too (schema v13), as the ledger records them and the
+            // projection's read-back restores them.
             conn.execute(
-                "INSERT INTO asset_depreciation(asset_id, period, entry_id, amount) VALUES (?,?,?,?) \
-                 ON CONFLICT(asset_id, period) DO UPDATE SET entry_id = excluded.entry_id, amount = excluded.amount \
-                 WHERE EXISTS (SELECT 1 FROM entries r WHERE r.reversal_of = asset_depreciation.entry_id)",
+                "INSERT OR IGNORE INTO asset_depreciation(asset_id, period, entry_id, amount) VALUES (?,?,?,?)",
                 params![
                     get_u64(p, "asset_id")? as i64,
                     get_str(p, "period")?,

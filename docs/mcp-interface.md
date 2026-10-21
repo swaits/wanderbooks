@@ -595,11 +595,23 @@ the lifetime total is exactly (cost − salvage), rounded to the currency's
 minor unit. A new asset's cost and salvage are in the minor unit, and its
 life's last day is 9999-12-31 at the latest.
 
-- `books.register_asset { description, purchase_date, cost, salvage_value?,
-  useful_life_months, cost_account, accum_depr_account, expense_account,
-  tag?, serial? }` → `{ asset_id, tag }`. Accounts resolved by id or code.
-  Without `tag`, the next free `PREFIX-0001` (`[books] asset_tag_prefix`,
-  else the company name's initials without LLC/Inc; "FA" when none).
+- `books.register_asset { description, in_service_date, cost,
+  salvage_value?, useful_life_months, cost_account, accum_depr_account,
+  expense_account, tag?, serial?, acquisition_entry?, basis_rule?,
+  contributor_adjusted_basis?, fmv_at_contribution?, sec704c_method?,
+  basis_source? }` → `{ asset_id, tag, in_service_date, acquired_date,
+  basis?, notes? }`. Accounts resolved by id or code. Without `tag`, the
+  next free `PREFIX-0001` (`[books] asset_tag_prefix`, else the company
+  name's initials without LLC/Inc; "FA" when none). `in_service_date` (the
+  day it is ready and available for its use) starts depreciation (P3,
+  defect 13; B-15); `purchase_date` is its alias for one release (both
+  given and different: refused; the alias noted in `notes`). The
+  `acquisition_entry` (posted, debiting the cost account, dated on or
+  before the in-service date) gives `acquired_date`, which puts the asset
+  on the register; with none, the acquired date is the in-service date.
+  The basis facts are `books.set_asset_tax_basis`'s (`tax_basis_rule` and
+  `contributor_basis`, with the old rule names, are aliases for one
+  release); a bad one registers nothing.
 - `books.label_asset { asset, tag?, serial?, clear_serial? }` → `{ asset_id,
   tag, serial }`: set or change the tag (unique ignoring case, never reused
   by another asset even after a retag or disposal) or the manufacturer's
@@ -614,11 +626,55 @@ life's last day is 9999-12-31 at the latest.
   a disposed asset's ends on its disposal day. A schedule an earlier
   version's asset can't compute is a tool error saying why, never a
   panic.
-- `books.list_assets {}` → assets with status, accumulated depreciation
-  by schedule and book value as of today (a disposed asset's through its
-  disposal day); `accumulated` and `book_value` are null, with
-  `schedule_error` saying why, for an asset whose schedule can't be
-  computed (one bad asset never fails the list).
+- `books.list_assets { as_of? }` → `{ as_of, assets }` (default today, the
+  company's time zone): per asset `in_service_date`, `acquired_date`,
+  `cost`, `status`, `held` (acquired by `as_of` and not disposed),
+  `accumulated_posted` (what the books carry: its depreciation runs, less
+  reversals, a reversal of a reversal reinstating),
+  `accumulated_scheduled_through` (what the schedule says is due by
+  `as_of`), `unposted_depreciation` (the difference: run
+  `books.run_depreciation`), `book_value` (cost less posted: what the
+  books carry), and `basis` (as `books.set_asset_tax_basis` reports it).
+  Disposed by `as_of`: every figure 0.00; acquired after `as_of`: the
+  figures null. The rows are the register's (`fixed_asset_register`). An
+  asset whose figures can't be computed (one an earlier version took)
+  lists with them null and `schedule_error` saying why: one bad asset
+  never fails the list.
+  Before P3, `accumulated` was the schedule's figure and `book_value`
+  cost less it.
+- `books.set_asset_tax_basis { asset, rule, contributor_adjusted_basis?,
+  fmv_at_contribution?, sec704c_method?, basis_source? }` → `{ asset_id, basis:
+  { rule, contributor_adjusted_basis, fmv_at_contribution, fmv_recorded,
+  tax_basis_723, depreciable_basis, built_in_gain_704c, sec704c_1c_note?,
+  sec704c_method, source?, sources }, notes? }`. `rule`: `purchase` (the
+  company bought it: depreciable basis is its cost, IRC §1012),
+  `carryover_723` (a member contributed business property: the company's
+  §723 basis is the member's adjusted basis, depreciated from), or
+  `personal_use_conversion` (a member contributed personal-use property:
+  the §723 basis as for carryover, depreciable basis the lesser of fair
+  market value and that basis, Treas. Reg. §1.168(i)-4(b); D-41). A
+  contribution needs `contributor_adjusted_basis` (cost plus improvements,
+  less depreciation allowed or allowable, IRC §1016(a)) and
+  `fmv_at_contribution` (a fact the human gives: never assumed from the
+  cost); `built_in_gain_704c` = value − §723 basis at contribution (Treas.
+  Reg. §1.704-3(a)(3)(ii)), with the IRC §704(c)(1)(C) note when it is a
+  loss. `sec704c_method`: `traditional`, `traditional_with_curative`,
+  `remedial` (Treas. Reg. §1.704-3(b)-(d)). `basis_source` `{ decided_by,
+  decided_on?, citation?, note? }`: who gave the facts. `sources` names
+  each figure's authority. The figures are at contribution or purchase;
+  tax depreciation and what remains of a built-in gain later are the
+  CPA's. The old names (`cost`, `carryover`, `contributor_basis`) are
+  aliases for one release, noted. Journaled as `asset.basis_set` (the
+  journal feature `asset_basis`: books an older version wrote refuse it,
+  `format_upgrade_pending`, until the owner's format upgrade); a record
+  written before P3 (`asset.tax_basis_set`) reads its value as the book
+  cost (`fmv_recorded: false`).
+- `books.correct_asset { asset, cost?, salvage_value?, useful_life_months?,
+  in_service_date?, reason }` → `{ asset_id, tag, cost, salvage_value,
+  useful_life_months, in_service_date, acquired_date, basis, notes? }`.
+  Refused while the books carry depreciation for it (a run posted and not
+  reversed), and for an in-service date before its acquisition entry's
+  date; `in_service` is the alias of `in_service_date` for one release.
 - `books.run_depreciation { period: "YYYY-MM", asset_id? }`
   → `runs: [{ asset_id, description, period, amount, caught_up, entry_id,
   already_posted }]` and `skipped: [{ asset_id, description, reason }]`.
@@ -635,7 +691,8 @@ life's last day is 9999-12-31 at the latest.
   run-all's assets not yet in service and any whose schedule can't be
   computed. A run before the in-service date is refused.
 - `books.dispose_asset { asset_id | tag, date, proceeds, proceeds_account,
-  gain_loss_account, buyer?, confirmed?, receipt_attachment_ids? }` →
+  gain_loss_account, buyer?, confirmed?, receipt_attachment_ids? }` (the
+  date never before the acquired date) →
   without confirmation: `{ status: "preview", accumulated, book_value,
   proceeds, gain_loss, final_depreciation, excess_depreciation,
   catch_up_depreciation, lines, receipt_required }` and posts nothing;
@@ -658,12 +715,23 @@ life's last day is 9999-12-31 at the latest.
   posts (`party_required`); a retirement with no proceeds and no buyer is
   marked as having no counterparty.
 - `books.export { report: "fixed_asset_register", format: json | csv,
-  as_of? }`: every asset registered by the date (tag, serial, cost,
-  depreciation by schedule, book value, disposal), totals, and the
-  general ledger's balances of the assets' cost and accumulated
-  depreciation accounts, with `unposted_depreciation` and
-  `unregistered_cost` (zero when register and books agree;
-  `ledger_core::fixed_asset_register`).
+  as_of? }`: every asset acquired by the date (tag, serial, acquired and
+  in-service dates, cost, accumulated depreciation scheduled and posted,
+  book value as cost less posted, disposal, the basis facts and figures:
+  rule, contributor's adjusted basis, value at contribution and whether
+  it was recorded, §723 basis, depreciable basis, §704(c) built-in gain,
+  method, who gave the facts), totals (`total_accumulated_scheduled`,
+  `total_accumulated_posted`, `total_book_value`, `total_tax_basis_723`,
+  `total_depreciable_basis`, `missing_basis`), and the general ledger's
+  balances of the assets' cost and accumulated depreciation accounts, with
+  `unposted_depreciation` (scheduled less books), `unattributed_accumulated`
+  (books less the runs: an entry made by hand) and `unregistered_cost`
+  (zero when register and books agree; `ledger_core::fixed_asset_register`).
+  CSV columns: `tag, description, serial, acquired, in_service, cost,
+  salvage, useful_life_months, accumulated_scheduled, accumulated_posted,
+  book_value, status, proceeds, basis_rule, contributor_adjusted_basis,
+  fmv_at_contribution, fmv_recorded, tax_basis_723, depreciable_basis,
+  built_in_gain_704c, sec704c_method, basis_source`, then a TOTAL row.
 - `books.show { asset }` opens an asset in the viewer; `page: "assets"`
   and `report: "fixed_asset_register"` open the register.
 
@@ -1918,7 +1986,20 @@ entries.
   year cancel: neither is a contribution or a distribution. A member's
   party is the party with the member's name (not a display name) and the
   member role, as the viewer's capital statement finds it; with none, the
-  member's TIN is a gap.
+  member's TIN is a gap. **Tax-basis capital** (`k1-tax-basis-capital.csv`,
+  P3, D-41, rules.md B-36; Form 1065 instructions, Item L, the tax-basis
+  method): per member, `member, item, book, tax_basis, book_less_tax,
+  status, note` for each Item L line (beginning; capital contributed,
+  cash and property; current year net income (loss); other increase
+  (decrease); withdrawals and distributions; ending), the property at its
+  §723 basis (`ledger_core::tax_capital`), then the reconciliation of book
+  to tax capital by cause (the §704(c) built-in gain or loss share,
+  property without a tax basis in the books, property distributed). A
+  line the books can't know (tax depreciation of the fixed assets in
+  service, a disposal's tax gain, the basis of property distributed or of
+  contributed property no asset holds) has `tax_basis` blank, status
+  `open: the CPA's`, and a note with what the books know so far and the
+  book amount the CPA's figure replaces; never a guessed number.
   **1099 worksheet** (`1099-worksheet-<year>.csv`, `as_of`'s calendar
   year) is `books.vendor_1099`'s CSV (above) for the package's cash and
   financing accounts: the payments from January 1 through `as_of` (the

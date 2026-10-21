@@ -2,11 +2,14 @@
 //! asset, reconciled to the books) and one asset completely (its label,
 //! its schedule month by month, the entries and documents behind it).
 //! Every number comes from `ledger-core` (`fixed_asset_register`,
-//! `depreciation_schedule`, `Asset::tax_basis`, `Asset::built_in_gain`);
-//! what is posted comes from the journal. Book value and federal tax
-//! basis sit side by side and are never confused: book cost is what was
-//! paid or, for a member's contribution, its fair market value; tax basis
-//! follows its rule (docs/spec/rules.md B-25).
+//! `depreciation_schedule`, `Asset::basis_figures`), what is posted too
+//! (`Ledger::accumulated_posted`, its runs). Book value is what the books
+//! carry (cost less the depreciation posted), never the schedule's figure,
+//! which sits beside it as "scheduled" (B-24). Book value and the federal
+//! tax figures sit side by side and are never confused: book cost is what
+//! was paid or, for a member's contribution, its fair market value; the
+//! §723 basis, the depreciable basis and the §704(c) built-in gain follow
+//! the basis rule (docs/spec/rules.md B-25).
 
 use super::page;
 use crate::app::Shell;
@@ -18,7 +21,9 @@ use crate::widgets;
 use chrono::{Datelike, NaiveDate};
 use egui::{Color32, CornerRadius, Margin, RichText, Sense, Ui, vec2};
 use egui_phosphor::regular as icon;
-use ledger_core::{Asset, AssetId, AssetRegister, AssetRegisterRow, AssetStatus, TaxBasisRule};
+use ledger_core::{
+    Asset, AssetId, AssetRegister, AssetRegisterRow, AssetStatus, BasisRule, Sec704cMethod,
+};
 use rust_decimal::Decimal;
 
 /// The register's date (None: today), kept across navigation.
@@ -52,8 +57,9 @@ pub struct Notice {
 ///   2. unposted_depreciation() < 0, unregistered_cost() != 0: a problem
 ///      each, with the exact amount.
 ///   3. Both zero: one note that the register agrees with the books.
-///   4. missing_tax_basis > 0: a problem, last, from
-///      [`missing_tax_notice`].
+///   4. unattributed_accumulated() != 0: a problem (accumulated
+///      depreciation no asset's runs account for), with the exact amount.
+///   5. missing_basis > 0: a problem, last, from [`missing_tax_notice`].
 /// ```
 pub fn notices(b: &Books, r: &AssetRegister) -> Vec<Notice> {
     let mut out = Vec::new();
@@ -125,7 +131,17 @@ pub fn notices(b: &Books, r: &AssetRegister) -> Vec<Notice> {
             ),
         });
     }
-    if unposted.is_zero() && unregistered.is_zero() {
+    let unattributed = r.unattributed_accumulated();
+    if !unattributed.is_zero() {
+        out.push(Notice {
+            problem: true,
+            text: format!(
+                "{} of accumulated depreciation in the books isn't from any asset's depreciation runs — ask the bookkeeper to find the entries behind it.",
+                fmt::dollars(unattributed)
+            ),
+        });
+    }
+    if unposted.is_zero() && unregistered.is_zero() && unattributed.is_zero() {
         out.push(Notice {
             problem: false,
             text: format!(
@@ -134,7 +150,7 @@ pub fn notices(b: &Books, r: &AssetRegister) -> Vec<Notice> {
             ),
         });
     }
-    if let Some(text) = missing_tax_notice(r.missing_tax_basis) {
+    if let Some(text) = missing_tax_notice(r.missing_basis) {
         out.push(Notice {
             problem: true,
             text,
@@ -148,123 +164,152 @@ pub fn notices(b: &Books, r: &AssetRegister) -> Vec<Notice> {
 pub fn missing_tax_notice(missing: usize) -> Option<String> {
     (missing > 0).then(|| {
         format!(
-            "Tax basis not recorded for {} — ask the bookkeeper to record {} (books.set_asset_tax_basis): bought by the company, contributed by a member from business use, or converted from personal use.",
+            "Tax basis not recorded for {} — ask the bookkeeper to record {} (books.set_asset_tax_basis): bought by the company, contributed by a member from business use, or contributed from personal use.",
             fmt::count(missing, "asset", "assets"),
             if missing == 1 { "it" } else { "each" }
         )
     })
 }
 
-/// A tax basis rule for a sentence: "cost", "carryover", "personal-use
+/// A basis rule for a sentence: "purchase", "carryover", "personal-use
 /// conversion".
-pub fn rule_words(r: TaxBasisRule) -> &'static str {
+pub fn rule_words(r: BasisRule) -> &'static str {
     match r {
-        TaxBasisRule::Cost => "cost",
-        TaxBasisRule::Carryover => "carryover",
-        TaxBasisRule::PersonalUseConversion => "personal-use conversion",
+        BasisRule::Purchase => "purchase",
+        BasisRule::Carryover723 => "carryover",
+        BasisRule::PersonalUseConversion => "personal-use conversion",
     }
 }
 
 /// What a rule means, in plain words, with the law it comes from.
-pub fn rule_explained(r: TaxBasisRule) -> &'static str {
+pub fn rule_explained(r: BasisRule) -> &'static str {
     match r {
-        TaxBasisRule::Cost => {
+        BasisRule::Purchase => {
             "Bought by the company: its tax basis is what it paid (IRC §1012(a))."
         }
-        TaxBasisRule::Carryover => {
-            "Contributed by a member from business use: it keeps the member's adjusted basis — what they paid less any depreciation they took (IRC §723)."
+        BasisRule::Carryover723 => {
+            "Contributed by a member from business use: the company's basis is the member's adjusted basis — cost plus improvements, less depreciation allowed or allowable (IRC §723, §1016(a)) — and tax depreciation starts from it."
         }
-        TaxBasisRule::PersonalUseConversion => {
-            "Contributed by a member from personal use: it depreciates from the lesser of its fair market value and the member's adjusted basis (Treas. Reg. §1.168(i)-4(b))."
+        BasisRule::PersonalUseConversion => {
+            "Contributed by a member from personal use: the company's basis is the member's adjusted basis (IRC §723); tax depreciation starts from the lesser of its fair market value and that basis (Treas. Reg. §1.168(i)-4(b))."
         }
     }
 }
 
-/// Book value against tax basis, in one sentence, for an asset under
-/// `rule` (or none recorded).
-pub fn book_vs_tax(rule: Option<TaxBasisRule>) -> &'static str {
+/// Book value against the tax figures, in one sentence, for an asset
+/// under `rule` (or none recorded).
+pub fn book_vs_tax(rule: Option<BasisRule>) -> &'static str {
     match rule {
-        Some(TaxBasisRule::Cost) => {
+        Some(BasisRule::Purchase) => {
             "Book cost and tax basis are both what the company paid; tax depreciation starts from the tax basis — the CPA's."
         }
         _ => {
-            "Book value is the fair market value at contribution; tax depreciation starts from the tax basis — the CPA's."
+            "Book value is the fair market value at contribution; the tax figures are at contribution, and tax depreciation starts from the depreciable basis — the CPA's."
         }
     }
 }
 
-/// An asset's federal tax basis as the viewer shows it: every figure is
-/// ledger-core's (`Asset::tax_basis`, `Asset::built_in_gain`), never
-/// re-derived.
+/// An asset's basis facts and tax figures as the viewer shows them: every
+/// figure is ledger-core's (`Asset::basis_figures`), never re-derived.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TaxFacts {
     /// The rule, if recorded.
-    pub rule: Option<TaxBasisRule>,
+    pub rule: Option<BasisRule>,
     /// The contributing member's adjusted basis (a contribution only).
-    pub contributor_basis: Option<Decimal>,
+    pub contributor_adjusted_basis: Option<Decimal>,
+    /// The value at contribution (a contribution only).
+    pub fmv_at_contribution: Option<Decimal>,
+    /// Whether that value was recorded (false: read as the book cost).
+    pub fmv_recorded: bool,
+    /// The §723 basis (a contribution only).
+    pub tax_basis_723: Option<Decimal>,
     /// The depreciable tax basis, if recorded.
-    pub tax_basis: Option<Decimal>,
+    pub depreciable_basis: Option<Decimal>,
     /// Built-in gain (+) or loss (−) at contribution, if any.
-    pub built_in_gain: Option<Decimal>,
+    pub built_in_gain_704c: Option<Decimal>,
+    /// The §704(c) method, if chosen.
+    pub sec704c_method: Option<Sec704cMethod>,
 }
 
 impl TaxFacts {
     /// An asset's.
     pub fn of(a: &Asset) -> Self {
+        let f = a.basis_figures().ok().flatten();
         TaxFacts {
-            rule: a.tax.map(|t| t.rule),
-            contributor_basis: a.tax.and_then(|t| t.contributor_basis),
-            tax_basis: a.tax_basis(),
-            built_in_gain: a.built_in_gain(),
+            rule: a.basis.as_ref().map(|b| b.rule),
+            contributor_adjusted_basis: a.basis.as_ref().and_then(|b| b.contributor_adjusted_basis),
+            fmv_at_contribution: a.fmv_at_contribution(),
+            fmv_recorded: a.fmv_is_recorded(),
+            tax_basis_723: f.and_then(|f| f.tax_basis_723),
+            depreciable_basis: f.map(|f| f.depreciable_basis),
+            built_in_gain_704c: f.and_then(|f| f.built_in_gain_704c),
+            sec704c_method: a.basis.as_ref().and_then(|b| b.sec704c_method),
         }
     }
 
     /// A register row's.
     pub fn of_row(x: &AssetRegisterRow) -> Self {
         TaxFacts {
-            rule: x.tax_rule,
-            contributor_basis: x.contributor_basis,
-            tax_basis: x.tax_basis,
-            built_in_gain: x.built_in_gain,
+            rule: x.basis_rule,
+            contributor_adjusted_basis: x.contributor_adjusted_basis,
+            fmv_at_contribution: x.fmv_at_contribution,
+            fmv_recorded: x.fmv_recorded,
+            tax_basis_723: x.tax_basis_723,
+            depreciable_basis: x.depreciable_basis,
+            built_in_gain_704c: x.built_in_gain_704c,
+            sec704c_method: x.sec704c_method,
         }
     }
 
-    /// "Carryover · contributor's basis $900.00", or "Tax basis not
-    /// recorded": the line under an asset in the register.
+    /// "Carryover · §723 basis $900.00", or "Tax basis not recorded": the
+    /// line under an asset in the register.
     pub fn summary(&self) -> String {
         match self.rule {
             None => "Tax basis not recorded".into(),
             Some(r) => {
                 let mut s = ledger_import::asset_register::rule_label(r).to_string();
-                if let Some(b) = self.contributor_basis {
-                    s.push_str(&format!(" · contributor's basis {}", fmt::dollars(b)));
+                if let Some(b) = self.tax_basis_723 {
+                    s.push_str(&format!(" · §723 basis {}", fmt::dollars(b)));
                 }
                 s
             }
         }
     }
 
-    /// Everything, with the rule's citation, for a tooltip: "Tax basis
-    /// $900.00: Carryover (IRC §723); contributor's basis $1,000.00;
-    /// built-in gain $100.00." or "Tax basis not recorded."
+    /// Everything, with the rule's citation, for a tooltip: "Depreciable
+    /// basis $900.00: Carryover (IRC §723); §723 basis $1,000.00; value at
+    /// contribution $1,100.00; built-in gain $100.00." or "Tax basis not
+    /// recorded."
     pub fn detail(&self) -> String {
-        let (Some(r), Some(t)) = (self.rule, self.tax_basis) else {
+        let (Some(r), Some(t)) = (self.rule, self.depreciable_basis) else {
             return "Tax basis not recorded.".into();
         };
         let mut s = format!(
-            "Tax basis {}: {}",
+            "Depreciable basis {}: {}",
             fmt::dollars(t),
             ledger_import::asset_register::rule_cited(r)
         );
-        if let Some(b) = self.contributor_basis {
-            s.push_str(&format!("; contributor's basis {}", fmt::dollars(b)));
+        if let Some(b) = self.tax_basis_723 {
+            s.push_str(&format!("; §723 basis {}", fmt::dollars(b)));
         }
-        if let Some(g) = self.built_in_gain {
+        if let Some(v) = self.fmv_at_contribution {
+            s.push_str(&format!("; value at contribution {}", fmt::dollars(v)));
+            if !self.fmv_recorded {
+                s.push_str(" (the book cost: not recorded)");
+            }
+        }
+        if let Some(g) = self.built_in_gain_704c {
             let (label, amount) = gain_or_loss(g);
             s.push_str(&format!(
                 "; {} {}",
                 label.to_lowercase(),
                 fmt::dollars(amount)
+            ));
+        }
+        if let Some(m) = self.sec704c_method {
+            s.push_str(&format!(
+                "; §704(c) method {}",
+                ledger_import::asset_register::method_cited(m)
             ));
         }
         s.push('.');
@@ -481,26 +526,31 @@ pub fn show_register(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                     None,
                 ),
                 1 => (
-                    "Accumulated depreciation",
-                    r.total_accumulated,
-                    "Their book depreciation by schedule through the date.",
-                    None,
+                    "Depreciation posted",
+                    r.total_accumulated_posted,
+                    "The book depreciation the books carry for them on the date: their depreciation runs, less any reversed.",
+                    (r.total_accumulated_scheduled != r.total_accumulated_posted).then(|| {
+                        (
+                            format!("{} scheduled", fmt::dollars(r.total_accumulated_scheduled)),
+                            p.muted,
+                        )
+                    }),
                 ),
                 2 => (
                     "Book value",
                     r.total_book_value,
-                    "Cost less accumulated depreciation.",
+                    "Cost less the depreciation posted: what the books carry.",
                     None,
                 ),
                 _ => (
-                    "Tax basis",
-                    r.total_tax_basis,
-                    "The federal tax basis of the assets held that have one recorded: what tax depreciation (the CPA's) starts from.",
-                    (r.missing_tax_basis > 0).then(|| {
+                    "Depreciable tax basis",
+                    r.total_depreciable_basis,
+                    "The federal depreciable basis of the assets held that have one recorded, at contribution or purchase: what tax depreciation (the CPA's) starts from.",
+                    (r.missing_basis > 0).then(|| {
                         (
                             format!(
                                 "{} not recorded",
-                                fmt::count(r.missing_tax_basis, "asset", "assets")
+                                fmt::count(r.missing_basis, "asset", "assets")
                             ),
                             p.warning,
                         )
@@ -528,13 +578,15 @@ pub fn show_register(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                 widgets::empty(
                     ui,
                     icon::PACKAGE,
-                    "Nothing in service yet",
-                    &format!("No asset was in service by {}.", fmt::date(as_of)),
+                    "Nothing acquired yet",
+                    &format!("No asset was acquired by {}.", fmt::date(as_of)),
                 );
                 return;
             }
             let amt = widgets::AMOUNT_MIN + 24.0;
-            let fixed = 110.0 + 104.0 + amt * 5.0 + 190.0;
+            // The depreciable basis's heading is the longest.
+            let wide = amt + 36.0;
+            let fixed = 110.0 + 104.0 + amt * 4.0 + wide + 190.0;
             let w = ui.available_width().max(fixed + 200.0);
             widgets::min_width(ui, "asset_register", w, |ui| {
                 let head = |t: &str, cw: f32, right: bool| (t.to_string(), cw, right, p.muted);
@@ -546,10 +598,10 @@ pub fn show_register(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                         head("Description", 0.0, false),
                         head("In service", 104.0, false),
                         head("Cost", amt, true),
-                        head("Accumulated", amt, true),
+                        head("Posted", amt, true),
                         head("Book value", amt, true),
-                        head("Tax basis", amt, true),
-                        head("Built-in gain", amt, true),
+                        head("Scheduled", amt, true),
+                        head("Depreciable basis", wide, true),
                         head("Status", 190.0, false),
                     ],
                     None,
@@ -572,7 +624,16 @@ pub fn show_register(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                         Some(s) => format!("Serial {s} · {}", tax.summary()),
                         None => tax.summary(),
                     };
-                    let (tax_text, tax_color) = match tax.tax_basis {
+                    let dates = if x.acquired_date != x.in_service_date {
+                        format!(
+                            "Acquired {}, in service {}.",
+                            fmt::date(x.acquired_date),
+                            fmt::date(x.in_service_date)
+                        )
+                    } else {
+                        format!("Acquired and in service {}.", fmt::date(x.in_service_date))
+                    };
+                    let (tax_text, tax_color) = match tax.depreciable_basis {
                         _ if disposed => (String::new(), text),
                         Some(t) => (fmt::money(t), text),
                         None => ("not recorded".to_string(), p.warning),
@@ -588,17 +649,12 @@ pub fn show_register(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                                 if x.tag.is_some() { text } else { p.warning },
                             ),
                             (x.description.clone(), 0.0, false, text),
-                            (fmt::date(x.in_service), 104.0, false, text),
+                            (fmt::date(x.in_service_date), 104.0, false, text),
                             (money(x.cost), amt, true, text),
-                            (money(x.accumulated), amt, true, text),
+                            (money(x.accumulated_posted), amt, true, text),
                             (money(x.book_value), amt, true, text),
-                            (tax_text, amt, true, tax_color),
-                            (
-                                x.built_in_gain.map(money).unwrap_or_default(),
-                                amt,
-                                true,
-                                text,
-                            ),
+                            (money(x.accumulated_scheduled), amt, true, p.muted),
+                            (tax_text, wide, true, tax_color),
                             (status_text(x.disposed), 190.0, false, p.muted),
                         ],
                         Some((sub.as_str(), p.faint)),
@@ -607,12 +663,12 @@ pub fn show_register(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                     );
                     let resp = resp.on_hover_text(if disposed {
                         format!(
-                            "Open this asset (it cost {}; it left the books when disposed). {}",
+                            "Open this asset (it cost {}; it left the books when disposed). {dates} {}",
                             fmt::dollars(x.cost),
                             tax.detail()
                         )
                     } else {
-                        format!("Open this asset. {}", tax.detail())
+                        format!("Open this asset. {dates} {}", tax.detail())
                     });
                     resp.context_menu(|ui| {
                         if let Some(t) = &x.tag {
@@ -622,8 +678,8 @@ pub fn show_register(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                             widgets::copy_item(ui, "Copy serial number", s);
                         }
                         widgets::copy_item(ui, "Copy book value", &x.book_value.to_string());
-                        if let Some(t) = x.tax_basis {
-                            widgets::copy_item(ui, "Copy tax basis", &t.to_string());
+                        if let Some(t) = x.depreciable_basis {
+                            widgets::copy_item(ui, "Copy depreciable basis", &t.to_string());
                         }
                     });
                     if resp.clicked() {
@@ -639,10 +695,15 @@ pub fn show_register(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                         (String::new(), 0.0, false, p.text),
                         (String::new(), 104.0, false, p.text),
                         (fmt::money(r.total_cost), amt, true, p.text),
-                        (fmt::money(r.total_accumulated), amt, true, p.text),
+                        (fmt::money(r.total_accumulated_posted), amt, true, p.text),
                         (fmt::money(r.total_book_value), amt, true, p.text),
-                        (fmt::money(r.total_tax_basis), amt, true, p.text),
-                        (String::new(), amt, true, p.text),
+                        (
+                            fmt::money(r.total_accumulated_scheduled),
+                            amt,
+                            true,
+                            p.muted,
+                        ),
+                        (fmt::money(r.total_depreciable_basis), wide, true, p.text),
                         (String::new(), 190.0, false, p.text),
                     ],
                     None,
@@ -655,7 +716,7 @@ pub fn show_register(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
         ui.add(
             egui::Label::new(
                 RichText::new(
-                    "Cost is what the company paid or, for a member's contribution, its fair market value then; the tax basis follows its rule (under each asset) and can differ. Tax depreciation starts from the tax basis — the CPA's.",
+                    "Book value is cost less the depreciation posted (what the books carry); scheduled is what the schedule says is due by the date. Cost is what the company paid or, for a member's contribution, its fair market value then; the tax figures follow its rule (under each asset), at contribution or purchase, and can differ. Tax depreciation starts from the depreciable basis — the CPA's.",
                 )
                 .font(theme::regular(11.5))
                 .color(p.faint),
@@ -722,7 +783,7 @@ fn reconciliation(ui: &mut Ui, b: &Books, r: &AssetRegister, shell: &mut Shell<'
                 line(
                     ui,
                     "Accumulated depreciation by schedule",
-                    r.total_accumulated,
+                    r.total_accumulated_scheduled,
                     false,
                     p.text,
                 );
@@ -740,6 +801,22 @@ fn reconciliation(ui: &mut Ui, b: &Books, r: &AssetRegister, shell: &mut Shell<'
                         .is_ok_and(|due| due.amount <= Decimal::ZERO);
                 let color = if accruing { p.muted } else { diff_color(d) };
                 line(ui, "Difference (not yet posted)", d, true, color);
+                ui.add_space(8.0);
+                line(
+                    ui,
+                    "Accumulated depreciation from the assets' runs",
+                    r.total_accumulated_posted,
+                    false,
+                    p.text,
+                );
+                let u = r.unattributed_accumulated();
+                line(
+                    ui,
+                    "Difference (in the books, not from runs)",
+                    u,
+                    true,
+                    diff_color(u),
+                );
             });
             ui.add_space(8.0);
             ui.horizontal_wrapped(|ui| {
@@ -1011,7 +1088,7 @@ pub fn show_asset(ui: &mut Ui, b: &Books, id: AssetId, shell: &mut Shell<'_>) {
                     |_| {},
                     |ui| {
                         let end = a
-                            .purchase_date
+                            .in_service_date
                             .checked_add_months(chrono::Months::new(a.useful_life_months))
                             .and_then(|d| d.pred_opt());
                         facts(ui, |ui, k| {
@@ -1024,8 +1101,15 @@ pub fn show_asset(ui: &mut Ui, b: &Books, id: AssetId, shell: &mut Shell<'_>) {
                                 };
                                 widgets::copyable(ui, rt, &d.to_string());
                             };
+                            if let Some(acquired) = b.ledger.asset_acquired_date(a.id)
+                                && acquired != a.in_service_date
+                            {
+                                k(ui, "Acquired");
+                                ui.label(fmt::date(acquired));
+                                ui.end_row();
+                            }
                             k(ui, "In service");
-                            ui.label(fmt::date(a.purchase_date));
+                            ui.label(fmt::date(a.in_service_date));
                             ui.end_row();
                             k(ui, "Cost");
                             money(ui, a.cost.amount, false);
@@ -1047,8 +1131,11 @@ pub fn show_asset(ui: &mut Ui, b: &Books, id: AssetId, shell: &mut Shell<'_>) {
                             ui.end_row();
                             match &today {
                                 Ok(Some(r)) => {
-                                    k(ui, &format!("Accumulated, {}", fmt::date_short(b.today)));
-                                    money(ui, r.accumulated, false);
+                                    k(ui, &format!("Posted, {}", fmt::date_short(b.today)));
+                                    money(ui, r.accumulated_posted, false);
+                                    ui.end_row();
+                                    k(ui, &format!("Scheduled, {}", fmt::date_short(b.today)));
+                                    money(ui, r.accumulated_scheduled, false);
                                     ui.end_row();
                                     k(ui, "Book value today");
                                     money(ui, r.book_value, true);
@@ -1061,9 +1148,6 @@ pub fn show_asset(ui: &mut Ui, b: &Books, id: AssetId, shell: &mut Shell<'_>) {
                                     ui.end_row();
                                 }
                             }
-                            k(ui, "Posted in the books");
-                            money(ui, trail.posted(), false);
-                            ui.end_row();
                             if let AssetStatus::Disposed { date, proceeds } = &a.status {
                                 k(ui, "Disposed");
                                 ui.label(fmt::date(*date));
@@ -1146,7 +1230,9 @@ pub fn show_asset(ui: &mut Ui, b: &Books, id: AssetId, shell: &mut Shell<'_>) {
                             head("Month", 100.0, false),
                             head("Amount", amt, true),
                             head("Accumulated", amt, true),
-                            head("Book value", amt, true),
+                            // The schedule's cost less accumulated, never
+                            // what the books carry (that is above).
+                            head("Remaining", amt, true),
                             head("", 24.0, false),
                             head("In the books", 0.0, false),
                         ],
@@ -1372,29 +1458,67 @@ fn tax_card(ui: &mut Ui, a: &Asset) {
                 k(ui, "Book cost");
                 money(ui, a.cost.amount, false);
                 ui.end_row();
-                if let Some(c) = t.contributor_basis {
-                    k(ui, "Contributor's basis");
+                if let Some(v) = t.fmv_at_contribution {
+                    k(ui, "Value at contribution");
+                    ui.horizontal(|ui| {
+                        money(ui, v, false);
+                        if !t.fmv_recorded {
+                            ui.label(
+                                RichText::new(
+                                    "from book cost, recorded before the value was asked",
+                                )
+                                .font(theme::regular(12.0))
+                                .color(p.warning),
+                            );
+                        }
+                    });
+                    ui.end_row();
+                }
+                if let Some(c) = t.contributor_adjusted_basis {
+                    k(ui, "Contributor's adjusted basis");
                     money(ui, c, false);
                     ui.end_row();
                 }
-                if let Some(tb) = t.tax_basis {
-                    k(ui, "Tax basis");
+                if let Some(b) = t.tax_basis_723 {
+                    k(ui, "§723 basis");
+                    money(ui, b, false);
+                    ui.end_row();
+                }
+                if let Some(tb) = t.depreciable_basis {
+                    k(ui, "Depreciable basis");
                     money(ui, tb, true);
                     ui.end_row();
                 }
-                if let Some(g) = t.built_in_gain {
+                if let Some(g) = t.built_in_gain_704c {
                     let (label, amount) = gain_or_loss(g);
-                    k(ui, label);
+                    k(ui, &format!("{label} §704(c)"));
                     money(ui, amount, false);
+                    ui.end_row();
+                }
+                if rule.is_contribution() {
+                    k(ui, "§704(c) method");
+                    match t.sec704c_method {
+                        Some(m) => {
+                            ui.label(ledger_import::asset_register::method_cited(m));
+                        }
+                        None => {
+                            ui.label(RichText::new("not chosen").color(p.warning));
+                        }
+                    }
+                    ui.end_row();
+                }
+                if let Some(src) = a.basis.as_ref().and_then(|b| b.source.as_ref()) {
+                    k(ui, "Facts from");
+                    ui.label(ledger_import::asset_register::source_text(src));
                     ui.end_row();
                 }
             });
             ui.add_space(6.0);
             let mut why = rule_explained(rule).to_string();
-            if t.built_in_gain.is_some_and(|g| g < Decimal::ZERO) {
-                why.push_str(" A built-in loss is taken into account only for the contributing member (IRC §704(c)(1)(C)).");
-            } else if t.built_in_gain.is_some_and(|g| g > Decimal::ZERO) {
-                why.push_str(" IRC §704(c) has the partnership take the built-in gain into account for the contributing member.");
+            if t.built_in_gain_704c.is_some_and(|g| g < Decimal::ZERO) {
+                why.push_str(" A built-in loss counts only for the contributing member; for the others the basis is treated as the value at contribution (IRC §704(c)(1)(C)).");
+            } else if t.built_in_gain_704c.is_some_and(|g| g > Decimal::ZERO) {
+                why.push_str(" IRC §704(c) has the company take the built-in gain into account for the contributing member.");
             }
             for line in [why.as_str(), book_vs_tax(Some(rule))] {
                 ui.add(
@@ -1451,7 +1575,7 @@ mod tests {
             .map(|(cost, months)| {
                 b.s.register_asset(NewAsset {
                     description: format!("Thing {months}"),
-                    purchase_date: d(2026, 1, 1),
+                    in_service_date: d(2026, 1, 1),
                     cost: Money::new(cents(cost), Currency::USD),
                     salvage_value: Money::new(Decimal::ZERO, Currency::USD),
                     useful_life_months: months,
@@ -1501,17 +1625,26 @@ mod tests {
         assert_eq!(none.color, positive);
     }
 
-    /// One asset's page shows its own book value today, not another's.
+    /// One asset's page shows its own book value today, not another's:
+    /// what the books carry (cost less posted: nothing is posted, so its
+    /// cost), with the schedule's figure beside it, never as book value.
     #[test]
     fn an_assets_page_shows_its_own_book_value() {
         for i in 0..2 {
             let (_dir, books, ids) = two_assets(&format!("asset-page-{i}"));
             let a = books.ledger.get_asset(ids[i]).unwrap().clone();
-            let want = ledger_core::book_value(&a, today()).unwrap();
+            let scheduled = ledger_core::accumulated_scheduled_through(&a, today()).unwrap();
+            assert!(scheduled > Decimal::ZERO, "the schedule has run ahead");
             let (texts, _) = render(books, Route::Asset(ids[i]), |_| {});
             assert_eq!(
                 beside(&texts, "Book value today").text,
-                fmt::dollars(want),
+                fmt::dollars(a.cost.amount),
+                "asset {i}"
+            );
+            let label = format!("Scheduled, {}", fmt::date_short(today()));
+            assert_eq!(
+                beside(&texts, &label).text,
+                fmt::dollars(scheduled),
                 "asset {i}"
             );
         }

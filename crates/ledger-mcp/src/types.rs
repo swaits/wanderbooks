@@ -2213,8 +2213,16 @@ pub struct ExportOut {
 pub struct RegisterAssetParams {
     /// What it is, e.g. "2023 Sprinter van".
     pub description: String,
-    /// Purchase date, YYYY-MM-DD. Depreciation starts here.
-    pub purchase_date: String,
+    /// The day it was placed in service (ready and available for its use),
+    /// YYYY-MM-DD: depreciation starts here. Required (or its alias
+    /// purchase_date).
+    #[serde(default)]
+    pub in_service_date: Option<String>,
+    /// Deprecated alias of in_service_date (it always meant the in-service
+    /// date), accepted for one release. Giving both with different dates is
+    /// refused.
+    #[serde(default)]
+    pub purchase_date: Option<String>,
     /// Capitalized cost, decimal string, e.g. "60000.00".
     pub cost: String,
     /// Expected residual value, decimal string. Defaults to "0".
@@ -2234,14 +2242,54 @@ pub struct RegisterAssetParams {
     /// The manufacturer's serial number, if known.
     pub serial: Option<String>,
     /// The posted entry that put it on the books (its purchase, or a
-    /// member's contribution of it); it must debit the cost account.
+    /// member's contribution of it): it must debit the cost account and be
+    /// dated on or before the in-service date. Its date is the asset's
+    /// acquired date, which puts it on the register.
     pub acquisition_entry: Option<u64>,
-    /// The federal tax basis rule (see books.set_asset_tax_basis): cost,
-    /// carryover, or personal_use_conversion. Omit to record it later.
+    /// How the company got it (see books.set_asset_tax_basis): purchase,
+    /// carryover_723, or personal_use_conversion. Omit to record it later.
+    #[serde(default)]
+    pub basis_rule: Option<String>,
+    /// Deprecated alias of basis_rule, with the old names (cost,
+    /// carryover, personal_use_conversion), for one release.
+    #[serde(default)]
     pub tax_basis_rule: Option<String>,
-    /// The contributing member's adjusted basis, for carryover and
-    /// personal_use_conversion.
+    /// The contributing member's adjusted basis at contribution, for
+    /// carryover_723 and personal_use_conversion.
+    #[serde(default)]
+    pub contributor_adjusted_basis: Option<String>,
+    /// Deprecated alias of contributor_adjusted_basis, for one release.
+    #[serde(default)]
     pub contributor_basis: Option<String>,
+    /// Fair market value at contribution, for carryover_723 and
+    /// personal_use_conversion (required: ask the human).
+    #[serde(default)]
+    pub fmv_at_contribution: Option<String>,
+    /// The §704(c) method chosen for a contribution: traditional,
+    /// traditional_with_curative, or remedial.
+    #[serde(default)]
+    pub sec704c_method: Option<String>,
+    /// Who gave the basis facts, when, and on what (e.g. the entry that
+    /// records the value).
+    #[serde(default)]
+    pub basis_source: Option<BasisSourceIn>,
+}
+
+/// Who gave an asset's basis facts, and when: the shape every tool that
+/// records a decision takes (books.set_setting's source).
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct BasisSourceIn {
+    /// Who gave them: a person's name, as the human says.
+    pub decided_by: String,
+    /// When, YYYY-MM-DD. Default: today.
+    #[serde(default)]
+    pub decided_on: Option<String>,
+    /// The document or entry they rest on, if any ("entry 14").
+    #[serde(default)]
+    pub citation: Option<String>,
+    /// Anything else worth keeping with them.
+    #[serde(default)]
+    pub note: Option<String>,
 }
 
 /// Parameters for `books.correct_asset`.
@@ -2255,7 +2303,12 @@ pub struct CorrectAssetParams {
     pub salvage_value: Option<String>,
     /// Corrected useful life in months. Omit to keep it.
     pub useful_life_months: Option<u32>,
-    /// Corrected in-service date, YYYY-MM-DD. Omit to keep it.
+    /// Corrected in-service date, YYYY-MM-DD (never before its acquisition
+    /// entry's date). Omit to keep it.
+    #[serde(default)]
+    pub in_service_date: Option<String>,
+    /// Deprecated alias of in_service_date, for one release.
+    #[serde(default)]
     pub in_service: Option<String>,
     /// Why (required): what was wrong.
     pub reason: String,
@@ -2275,10 +2328,16 @@ pub struct AssetSummaryOne {
     /// Useful life in months.
     pub useful_life_months: u32,
     /// In-service date, YYYY-MM-DD.
-    pub in_service: String,
-    /// Its federal tax basis (follows the corrected cost under
-    /// personal_use_conversion and cost).
-    pub tax: Option<TaxBasisOut>,
+    pub in_service_date: String,
+    /// Acquired date (its acquisition entry's), YYYY-MM-DD.
+    pub acquired_date: String,
+    /// Its basis facts and tax figures (a purchase's depreciable basis
+    /// follows the corrected cost; a contribution's figures stay as
+    /// contributed).
+    pub basis: Option<AssetBasisOut>,
+    /// Anything the call did beyond the correction (an alias used).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }
 
 /// Parameters for `books.set_asset_tax_basis`.
@@ -2286,31 +2345,119 @@ pub struct AssetSummaryOne {
 pub struct SetAssetTaxBasisParams {
     /// The asset: its id or tag.
     pub asset: String,
-    /// "cost" (the company bought it: basis is its cost), "carryover" (a
-    /// member contributed business property: the member's adjusted basis,
-    /// IRC §723), or "personal_use_conversion" (a member contributed
-    /// personal-use property: the lesser of fair market value and the
-    /// member's adjusted basis, Treas. Reg. §1.168(i)-4(b)).
+    /// How the company got it: "purchase" (bought: basis is cost, IRC
+    /// §1012), "carryover_723" (a member contributed business property:
+    /// the member's adjusted basis carries over, IRC §723), or
+    /// "personal_use_conversion" (a member contributed personal-use
+    /// property: §723 basis as for carryover, depreciable basis the lesser
+    /// of fair market value and that basis, Treas. Reg. §1.168(i)-4(b)).
+    /// The old names cost and carryover are aliases for one release.
     pub rule: String,
     /// The contributing member's adjusted basis at contribution, decimal
-    /// string (what they paid, less any depreciation they took). Required
-    /// for carryover and personal_use_conversion; omit for cost.
+    /// string: cost plus improvements, less depreciation allowed or
+    /// allowable (IRC §1016(a)). Required for a contribution; omit for a
+    /// purchase.
+    #[serde(default)]
+    pub contributor_adjusted_basis: Option<String>,
+    /// Deprecated alias of contributor_adjusted_basis, for one release.
+    #[serde(default)]
     pub contributor_basis: Option<String>,
+    /// Fair market value at contribution, decimal string. Required for a
+    /// contribution: ask the human (the books' amount in the contribution
+    /// entry, when that is what it was worth).
+    #[serde(default)]
+    pub fmv_at_contribution: Option<String>,
+    /// The §704(c) method chosen for a contribution: traditional,
+    /// traditional_with_curative, or remedial (Treas. Reg. §1.704-3(b)-(d)).
+    #[serde(default)]
+    pub sec704c_method: Option<String>,
+    /// Who gave the facts, when, and on what (e.g. the contribution
+    /// entry).
+    #[serde(default)]
+    pub basis_source: Option<BasisSourceIn>,
 }
 
-/// An asset's federal tax basis, as tools report it.
+/// Where each basis figure's rule comes from.
 #[derive(Debug, Serialize, JsonSchema)]
-pub struct TaxBasisOut {
-    /// The rule: cost, carryover, or personal_use_conversion.
+pub struct BasisSourcesOut {
+    /// The §723 basis's: "IRC §723" (contributions).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tax_basis_723: Option<String>,
+    /// The depreciable basis's: "IRC §1012" (purchase), "IRC §723"
+    /// (carryover), or "Treas. Reg. §1.168(i)-4(b)" (personal use).
+    pub depreciable_basis: String,
+    /// The built-in gain's: "Treas. Reg. §1.704-3(a)(3)(ii)"
+    /// (contributions).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub built_in_gain_704c: Option<String>,
+}
+
+/// Who gave an asset's basis facts, as tools show it.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct BasisSourceOut {
+    /// Who gave them.
+    pub decided_by: String,
+    /// When, YYYY-MM-DD.
+    pub decided_on: String,
+    /// What they rest on, if anything.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub citation: Option<String>,
+    /// Anything kept with them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// An asset's basis facts and tax figures, as tools report them. The
+/// figures are at contribution (or purchase): the CPA adjusts them for tax
+/// depreciation and, for the §704(c) gain or loss, as it is reduced after.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct AssetBasisOut {
+    /// How the company got it: purchase, carryover_723, or
+    /// personal_use_conversion.
     pub rule: String,
-    /// The contributing member's adjusted basis, decimal string, if a
-    /// contribution.
-    pub contributor_basis: Option<String>,
-    /// The depreciable federal tax basis, decimal string.
-    pub tax_basis: Option<String>,
-    /// Built-in gain (+) or loss (−) at contribution (fair market value less
-    /// the contributor's basis), IRC §704(c), decimal string.
-    pub built_in_gain: Option<String>,
+    /// The contributing member's adjusted basis at contribution, decimal
+    /// string (a contribution).
+    pub contributor_adjusted_basis: Option<String>,
+    /// Fair market value at contribution, decimal string (a contribution):
+    /// recorded, or the book cost for a record made before the value was
+    /// a fact (fmv_recorded false).
+    pub fmv_at_contribution: Option<String>,
+    /// Whether fmv_at_contribution was recorded as a fact.
+    pub fmv_recorded: bool,
+    /// The company's basis in contributed property at contribution (IRC
+    /// §723: the member's adjusted basis), decimal string.
+    pub tax_basis_723: Option<String>,
+    /// The basis tax depreciation starts from, decimal string.
+    pub depreciable_basis: String,
+    /// Fair market value less the §723 basis at contribution, IRC §704(c)
+    /// (positive a built-in gain, negative a built-in loss), decimal string.
+    /// What remains later is the CPA's (Treas. Reg. §1.704-3(a)(3)(ii)).
+    pub built_in_gain_704c: Option<String>,
+    /// For a built-in loss: it counts only for the contributing member(s);
+    /// for the others the basis is treated as the value (IRC
+    /// §704(c)(1)(C)).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sec704c_1c_note: Option<String>,
+    /// The §704(c) method chosen: traditional, traditional_with_curative,
+    /// or remedial; null until chosen.
+    pub sec704c_method: Option<String>,
+    /// Who gave the facts, when, and on what.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<BasisSourceOut>,
+    /// The authority for each figure.
+    pub sources: BasisSourcesOut,
+}
+
+/// Result of `books.set_asset_tax_basis`.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SetAssetTaxBasisOut {
+    /// The asset.
+    pub asset_id: u64,
+    /// Its basis facts and figures now.
+    pub basis: AssetBasisOut,
+    /// Anything to know (an alias used).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }
 
 /// Result of `books.register_asset`.
@@ -2320,6 +2467,17 @@ pub struct RegisterAssetOut {
     pub asset_id: u64,
     /// Its tag (given or generated).
     pub tag: String,
+    /// In-service date, YYYY-MM-DD.
+    pub in_service_date: String,
+    /// Acquired date, YYYY-MM-DD: the acquisition entry's, or the
+    /// in-service date with none linked.
+    pub acquired_date: String,
+    /// Its basis facts and figures, if given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub basis: Option<AssetBasisOut>,
+    /// Anything to know (an alias used).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }
 
 /// Parameters for `books.label_asset`.
@@ -2389,7 +2547,9 @@ pub struct ScheduleLineOut {
     pub amount: String,
     /// Accumulated depreciation through this month, decimal string.
     pub accumulated: String,
-    /// Book value after this month, decimal string.
+    /// Cost less the schedule's accumulated through this month, decimal
+    /// string: the schedule's figure; what the books carry is
+    /// books.list_assets' book_value.
     pub book_value: String,
 }
 
@@ -2424,7 +2584,7 @@ pub struct AssetScheduleOut {
     pub schedule: Vec<ScheduleLineOut>,
 }
 
-/// One asset in `books.list_assets`.
+/// One asset in `books.list_assets`, as of the date asked.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct AssetSummary {
     /// Asset id.
@@ -2435,36 +2595,58 @@ pub struct AssetSummary {
     pub serial: Option<String>,
     /// The entry that acquired it, if linked.
     pub acquisition_entry: Option<u64>,
-    /// Its federal tax basis, if recorded.
-    pub tax: Option<TaxBasisOut>,
+    /// Its basis facts and tax figures, if recorded.
+    pub basis: Option<AssetBasisOut>,
     /// Asset description.
     pub description: String,
-    /// Purchase date, YYYY-MM-DD.
-    pub purchase_date: String,
+    /// In-service date, YYYY-MM-DD: depreciation starts here.
+    pub in_service_date: String,
+    /// Acquired date, YYYY-MM-DD: on the books from here.
+    pub acquired_date: String,
     /// Cost, decimal string.
     pub cost: String,
     /// Useful life in months.
     pub useful_life_months: u32,
     /// "active" or "disposed".
     pub status: String,
-    /// Accumulated depreciation by its schedule through today (a disposed
-    /// asset's through its disposal day), decimal string. Null when the
-    /// schedule can't be computed (see `schedule_error`).
-    pub accumulated: Option<String>,
-    /// Book value today (cost less `accumulated`), decimal string. Null
-    /// when the schedule can't be computed.
+    /// Whether the books hold it on as_of: acquired by then and not yet
+    /// disposed.
+    pub held: bool,
+    /// Accumulated depreciation the books carry on as_of (runs posted, less
+    /// reversals), decimal string; "0.00" once disposed; null before it
+    /// was acquired.
+    pub accumulated_posted: Option<String>,
+    /// Accumulated depreciation the schedule says is due through as_of,
+    /// decimal string; "0.00" once disposed; null before it was acquired.
+    pub accumulated_scheduled_through: Option<String>,
+    /// Scheduled less posted: run books.run_depreciation for it. Decimal
+    /// string; null before it was acquired.
+    pub unposted_depreciation: Option<String>,
+    /// What the books carry: cost less accumulated_posted ("0.00" once
+    /// disposed), decimal string; null before it was acquired.
     pub book_value: Option<String>,
-    /// Why `accumulated` and `book_value` are null, when they are: an
-    /// asset an earlier version took whose schedule the books can't
-    /// compute. It lists, and the rest of the register with it.
+    /// Why the figures are null for an asset acquired by as_of: one an
+    /// earlier version took whose schedule the books can't compute. It
+    /// lists, and the rest of the register with it.
     pub schedule_error: Option<String>,
 }
 
 /// Result of `books.list_assets`.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ListAssetsOut {
+    /// The date the figures are as of, YYYY-MM-DD.
+    pub as_of: String,
     /// All registered assets.
     pub assets: Vec<AssetSummary>,
+}
+
+/// Parameters for `books.list_assets`.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct ListAssetsParams {
+    /// The date the figures are as of, YYYY-MM-DD. Default: today (the
+    /// company's time zone).
+    #[serde(default)]
+    pub as_of: Option<String>,
 }
 
 /// Parameters for `books.run_depreciation`.

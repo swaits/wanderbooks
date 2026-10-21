@@ -326,15 +326,18 @@ CREATE TABLE IF NOT EXISTS entry_approvals(
 "#,
     r#"
 -- v13: 1099 decisions and payment methods (plan P3, defects 12, 18 and
--- 23; D-40). Each 1099 decision recorded with who decided (journal
--- feature vendor_1099_decisions), line by line: the date it takes effect
--- (NULL: from the beginning), nec, misc, not_reportable or NULL
--- (undetermined), and for not_reportable its kind and reason. A decision
--- from the beginning also sets vendors.form_1099, as every decision
--- written before these did. Payment methods (feature payment_instruments)
--- and the method each entry was paid with. Rows only come from lines
--- written under the features, so books written before them project the
--- same as before.
+-- 23; D-40), and assets' basis facts with their depreciation runs keyed
+-- by entry (plan P3, defect 13; D-41). One migration: none of P3 had
+-- shipped when they met.
+--
+-- Each 1099 decision recorded with who decided (journal feature
+-- vendor_1099_decisions), line by line: the date it takes effect (NULL:
+-- from the beginning), nec, misc, not_reportable or NULL (undetermined),
+-- and for not_reportable its kind and reason. A decision from the
+-- beginning also sets vendors.form_1099, as every decision written before
+-- these did. Payment methods (feature payment_instruments) and the method
+-- each entry was paid with. Rows only come from lines written under the
+-- features, so books written before them project the same as before.
 CREATE TABLE IF NOT EXISTS vendor_1099_decisions(
   seq INTEGER PRIMARY KEY,
   vendor_id INTEGER NOT NULL,
@@ -356,5 +359,27 @@ CREATE TABLE IF NOT EXISTS entry_instruments(
   entry_id INTEGER PRIMARY KEY,
   instrument_id INTEGER NOT NULL
 );
+--
+-- An asset's basis facts beyond the rule and contributor basis
+-- (asset.basis_set): the fair market value at contribution (TEXT, exact
+-- decimal), the §704(c) method, and who gave the facts (JSON). tax_rule
+-- keeps the rule as journaled, by its pre-P3 name or its wire name.
+-- Depreciation runs keyed by their entry too: the journal can hold a
+-- second run for a month whose first was reversed, and the projection
+-- keeps every run, as replay does.
+ALTER TABLE assets ADD COLUMN fmv_at_contribution TEXT;
+ALTER TABLE assets ADD COLUMN sec704c_method TEXT;
+ALTER TABLE assets ADD COLUMN basis_source_json TEXT;
+CREATE TABLE asset_depreciation_v13(
+  asset_id INTEGER NOT NULL,
+  period TEXT NOT NULL,
+  entry_id INTEGER NOT NULL,
+  amount TEXT NOT NULL,
+  PRIMARY KEY (asset_id, period, entry_id)
+);
+INSERT INTO asset_depreciation_v13(asset_id, period, entry_id, amount)
+  SELECT asset_id, period, entry_id, amount FROM asset_depreciation;
+DROP TABLE asset_depreciation;
+ALTER TABLE asset_depreciation_v13 RENAME TO asset_depreciation;
 "#,
 ];

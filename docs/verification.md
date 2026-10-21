@@ -419,6 +419,22 @@ months); an exhaustive test walks the kernel itself over every
 1-to-3-month span of two calendar years, and the bridge and the exact
 unit tests check the rest.
 
+### An asset's basis figures (P3, defect 13)
+
+The register's tax figures beside book value (rules.md B-25) come from
+one kernel function, `kernel::basis_figures`, for every rule:
+
+27. **Each figure follows from the rule and the facts, and none
+    overflows**: a purchase depreciates from its cost and has no §723 basis
+    or built-in gain; a contribution's §723 basis is the member's adjusted
+    basis and its built-in gain the value less it (a loss exactly when the
+    basis exceeds the value); carryover property depreciates from the
+    basis, personal-use property from the lesser of value and basis (at
+    most each, equal to one). · Kani `basis_figures_laws` (every rule,
+    costs, bases and values within the bounds) · bridge `basis_figures_agree`
+    (the `Decimal` instantiation agrees, rule by rule) · property
+    `prop_basis_figures_laws`
+
 ## What the proofs found
 
 The engine already had 190+ tests, property tests, mutation testing,

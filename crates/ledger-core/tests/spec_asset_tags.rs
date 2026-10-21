@@ -9,7 +9,7 @@
 //! `AssetRegister`, and `docs/spec/rules.md` B-15 and B-24. Depreciation
 //! amounts are worked by hand (straight line, whole months) or, for
 //! mid-month dates, taken from the already-tested building block
-//! `accumulated_depreciation`. Nothing is read back from the code under
+//! `accumulated_scheduled_through`. Nothing is read back from the code under
 //! test and then asserted.
 
 use std::collections::BTreeMap;
@@ -21,7 +21,7 @@ use ledger_core::assets::{
 };
 use ledger_core::{
     AccountId, AccountType, AssetId, Currency, Ledger, LedgerError, Money, NewAsset, Side,
-    accumulated_depreciation, fixed_asset_register,
+    accumulated_scheduled_through, fixed_asset_register,
 };
 use proptest::prelude::*;
 use rust_decimal::Decimal;
@@ -102,7 +102,7 @@ fn post(l: &mut Ledger, on: NaiveDate, lines: &[(AccountId, Side, &str)]) {
 fn equipment(a: &Accts, description: &str, cost: &str, life: u32, on: NaiveDate) -> NewAsset {
     NewAsset {
         description: description.to_string(),
-        purchase_date: on,
+        in_service_date: on,
         cost: usd(cost),
         salvage_value: usd("0.00"),
         useful_life_months: life,
@@ -715,6 +715,22 @@ fn depreciate(l: &mut Ledger, a: &Accts, accum: AccountId, on: NaiveDate, amt: &
     );
 }
 
+/// One asset's depreciation run for the month of `on`, as a store posts
+/// and records it: Dr depreciation expense / Cr its accumulated
+/// depreciation, then the run (Ledger::record_depreciation_run).
+fn run(l: &mut Ledger, a: &Accts, asset: AssetId, on: NaiveDate, amt: &str) {
+    let accum = l.get_asset(asset).unwrap().accum_depr_account;
+    let e = l.try_create_entry(on, "depreciation").unwrap();
+    l.add_line(e, a.depr_expense, Side::Debit, usd(amt))
+        .unwrap();
+    l.add_line(e, accum, Side::Credit, usd(amt)).unwrap();
+    l.post_entry(e).unwrap();
+    let period = on.format("%Y-%m").to_string();
+    l.check_depreciation_run(asset, &period, e, d(amt)).unwrap();
+    l.record_depreciation_run(asset, &period, e, d(amt))
+        .unwrap();
+}
+
 /// Buy equipment for cash: Dr cost account / Cr 1000.
 fn buy(l: &mut Ledger, a: &Accts, account: AccountId, on: NaiveDate, amt: &str) {
     post(
@@ -747,7 +763,8 @@ fn register_fixture() -> (Ledger, Accts, AssetId, AssetId) {
         .register_asset(equipment(&a, "Server", "2400.00", 24, date(2026, 1, 1)))
         .unwrap();
     for m in 1..=3 {
-        depreciate(&mut l, &a, a.accum, month_end(m), "1100.00");
+        run(&mut l, &a, laptop, month_end(m), "1000.00");
+        run(&mut l, &a, server, month_end(m), "100.00");
     }
     (l, a, laptop, server)
 }
@@ -755,22 +772,27 @@ fn register_fixture() -> (Ledger, Accts, AssetId, AssetId) {
 /// INVARIANT 3: totals are the sums over held (not disposed) rows.
 fn assert_totals_are_sums(r: &ledger_core::AssetRegister) {
     let held = r.rows.iter().filter(|x| x.disposed.is_none());
-    let (mut c, mut acc, mut bv) = (Decimal::ZERO, Decimal::ZERO, Decimal::ZERO);
+    let (mut c, mut acc, mut posted, mut bv) =
+        (Decimal::ZERO, Decimal::ZERO, Decimal::ZERO, Decimal::ZERO);
     for x in held {
         c += x.cost;
-        acc += x.accumulated;
+        acc += x.accumulated_scheduled;
+        posted += x.accumulated_posted;
         bv += x.book_value;
     }
     assert_eq!(r.total_cost, c);
-    assert_eq!(r.total_accumulated, acc);
+    assert_eq!(r.total_accumulated_scheduled, acc);
+    assert_eq!(r.total_accumulated_posted, posted);
     assert_eq!(r.total_book_value, bv);
     for x in &r.rows {
         // INVARIANT 2 (held) / INVARIANT 1 (disposed).
         if x.disposed.is_some() {
-            assert_eq!(x.accumulated, Decimal::ZERO);
+            assert_eq!(x.accumulated_scheduled, Decimal::ZERO);
+            assert_eq!(x.accumulated_posted, Decimal::ZERO);
             assert_eq!(x.book_value, Decimal::ZERO);
         } else {
-            assert_eq!(x.book_value, x.cost - x.accumulated);
+            // Book value is what the books carry: cost less posted.
+            assert_eq!(x.book_value, x.cost - x.accumulated_posted);
         }
     }
 }
@@ -790,42 +812,52 @@ fn register_agrees_with_the_books_when_depreciation_is_posted() {
     assert_eq!(x.tag.as_deref(), Some("FL-0001"));
     assert_eq!(x.serial.as_deref(), Some("C02XG0FDJGH5"));
     assert_eq!(x.description, "Laptop");
-    assert_eq!(x.in_service, date(2026, 1, 1));
+    assert_eq!(x.in_service_date, date(2026, 1, 1));
     assert_eq!(x.cost, d("12000.00"));
     assert_eq!(x.salvage, d("0.00"));
     assert_eq!(x.useful_life_months, 12);
-    assert_eq!(x.accumulated, d("3000.00"));
+    assert_eq!(x.accumulated_scheduled, d("3000.00"));
+    assert_eq!(x.accumulated_posted, d("3000.00"));
     assert_eq!(x.book_value, d("9000.00"));
     assert_eq!(x.disposed, None);
     let y = &r.rows[1];
     assert_eq!(y.tag, None);
     assert_eq!(y.serial, None);
-    assert_eq!(y.accumulated, d("300.00"));
+    assert_eq!(y.accumulated_scheduled, d("300.00"));
+    assert_eq!(y.accumulated_posted, d("300.00"));
     assert_eq!(y.book_value, d("2100.00"));
     assert_eq!(r.total_cost, d("14400.00"));
-    assert_eq!(r.total_accumulated, d("3300.00"));
+    assert_eq!(r.total_accumulated_scheduled, d("3300.00"));
+    assert_eq!(r.total_accumulated_posted, d("3300.00"));
     assert_eq!(r.total_book_value, d("11100.00"));
     // INVARIANT 4: the GL, each shared account counted once.
     assert_eq!(r.ledger_cost, d("14400.00"));
     assert_eq!(r.ledger_accumulated, d("3300.00"));
     assert_eq!(r.unposted_depreciation(), Decimal::ZERO);
+    assert_eq!(r.unattributed_accumulated(), Decimal::ZERO);
     assert_eq!(r.unregistered_cost(), Decimal::ZERO);
     assert_totals_are_sums(&r);
 }
 
-/// unposted_depreciation: due by schedule but not in the books.
+/// unposted_depreciation: due by schedule but not in the books. Book
+/// value stays what the books carry (cost less March's posted figure),
+/// never the schedule's April figure.
 #[test]
 fn register_shows_unposted_depreciation() {
     let (l, _, _, _) = register_fixture();
     let r = fixed_asset_register(&l, date(2026, 4, 30)).unwrap();
-    assert_eq!(r.total_accumulated, d("4400.00"));
+    assert_eq!(r.total_accumulated_scheduled, d("4400.00"));
+    assert_eq!(r.total_accumulated_posted, d("3300.00"));
+    assert_eq!(r.total_book_value, d("11100.00"));
     assert_eq!(r.ledger_accumulated, d("3300.00"));
     assert_eq!(r.unposted_depreciation(), d("1100.00"));
     assert_eq!(r.unregistered_cost(), Decimal::ZERO);
     assert_totals_are_sums(&r);
 }
 
-/// Negative unposted_depreciation when the books carry more.
+/// Negative unposted_depreciation when the books carry more; a hand
+/// entry no asset's run accounts for is unattributed, and no asset's book
+/// value takes it.
 #[test]
 fn register_shows_overposted_depreciation_as_negative() {
     let (mut l, a, _, _) = register_fixture();
@@ -833,6 +865,8 @@ fn register_shows_overposted_depreciation_as_negative() {
     let r = fixed_asset_register(&l, date(2026, 3, 31)).unwrap();
     assert_eq!(r.ledger_accumulated, d("3350.00"));
     assert_eq!(r.unposted_depreciation(), d("-50.00"));
+    assert_eq!(r.unattributed_accumulated(), d("50.00"));
+    assert_eq!(r.total_book_value, d("11100.00"));
 }
 
 /// The GL balances are on as_of: later postings don't count.
@@ -840,25 +874,27 @@ fn register_shows_overposted_depreciation_as_negative() {
 fn register_ledger_balances_are_as_of_the_date() {
     let (l, _, _, _) = register_fixture();
     let r = fixed_asset_register(&l, date(2026, 2, 28)).unwrap();
-    assert_eq!(r.total_accumulated, d("2200.00"));
+    assert_eq!(r.total_accumulated_scheduled, d("2200.00"));
+    assert_eq!(r.total_accumulated_posted, d("2200.00"));
     assert_eq!(r.ledger_accumulated, d("2200.00"));
     assert_eq!(r.ledger_cost, d("14400.00"));
     assert_eq!(r.unposted_depreciation(), Decimal::ZERO);
 }
 
-/// INVARIANT 2 mid-month: accumulated is accumulated_depreciation through
-/// as_of.
+/// INVARIANT 2 mid-month: accumulated_scheduled is accumulated_scheduled_through
+/// through as_of; book value stays cost less what is posted.
 #[test]
 fn register_accumulated_mid_month_follows_the_schedule() {
     let (l, _, laptop, server) = register_fixture();
     let on = date(2026, 5, 17);
     let r = fixed_asset_register(&l, on).unwrap();
-    let la = accumulated_depreciation(l.get_asset(laptop).unwrap(), on).unwrap();
-    let sa = accumulated_depreciation(l.get_asset(server).unwrap(), on).unwrap();
-    assert_eq!(r.rows[0].accumulated, la);
-    assert_eq!(r.rows[1].accumulated, sa);
-    assert_eq!(r.rows[0].book_value, d("12000.00") - la);
-    assert_eq!(r.total_accumulated, la + sa);
+    let la = accumulated_scheduled_through(l.get_asset(laptop).unwrap(), on).unwrap();
+    let sa = accumulated_scheduled_through(l.get_asset(server).unwrap(), on).unwrap();
+    assert_eq!(r.rows[0].accumulated_scheduled, la);
+    assert_eq!(r.rows[1].accumulated_scheduled, sa);
+    assert_eq!(r.rows[0].accumulated_posted, d("3000.00"));
+    assert_eq!(r.rows[0].book_value, d("9000.00"));
+    assert_eq!(r.total_accumulated_scheduled, la + sa);
     assert_totals_are_sums(&r);
 }
 
@@ -881,7 +917,8 @@ fn register_shows_unregistered_cost() {
     assert_eq!(r2.unposted_depreciation(), d("100.00"));
 }
 
-/// INVARIANT 1: only assets registered (placed in service) by as_of.
+/// INVARIANT 1: only assets acquired by as_of (with no acquisition entry
+/// linked, the in-service date).
 #[test]
 fn register_leaves_out_assets_not_yet_in_service() {
     let (mut l, a, laptop, server) = register_fixture();
@@ -897,14 +934,14 @@ fn register_leaves_out_assets_not_yet_in_service() {
     let ids: Vec<AssetId> = r.rows.iter().map(|x| x.asset_id).collect();
     assert_eq!(ids, vec![laptop, server, chair]);
     assert_eq!(
-        r.rows[2].accumulated,
-        accumulated_depreciation(l.get_asset(chair).unwrap(), date(2026, 6, 1)).unwrap()
+        r.rows[2].accumulated_scheduled,
+        accumulated_scheduled_through(l.get_asset(chair).unwrap(), date(2026, 6, 1)).unwrap()
     );
     // Before anything: empty and zero.
     let r = fixed_asset_register(&l, date(2025, 12, 31)).unwrap();
     assert!(r.rows.is_empty());
     assert_eq!(r.total_cost, Decimal::ZERO);
-    assert_eq!(r.total_accumulated, Decimal::ZERO);
+    assert_eq!(r.total_accumulated_scheduled, Decimal::ZERO);
     assert_eq!(r.total_book_value, Decimal::ZERO);
 }
 
@@ -912,8 +949,14 @@ fn register_leaves_out_assets_not_yet_in_service() {
 /// depreciation: book value 1,800, gain 200. Entry: Dr 1000 2,000,
 /// Dr 1510 600, Cr 1500 2,400, Cr 4900 200.
 fn dispose_server(l: &mut Ledger, a: &Accts, server: AssetId) {
+    let laptop = l
+        .registered_assets()
+        .find(|x| x.description == "Laptop")
+        .unwrap()
+        .id;
     for m in 4..=6 {
-        depreciate(l, a, a.accum, month_end(m), "1100.00");
+        run(l, a, laptop, month_end(m), "1000.00");
+        run(l, a, server, month_end(m), "100.00");
     }
     l.dispose_asset(server, date(2026, 6, 30), usd("2000.00"))
         .unwrap();
@@ -938,18 +981,22 @@ fn register_shows_a_disposed_asset_outside_the_totals() {
     assert_eq!(r.rows.len(), 2, "a disposed asset still has a row");
     let s = r.rows.iter().find(|x| x.asset_id == server).unwrap();
     assert_eq!(s.disposed, Some((date(2026, 6, 30), d("2000.00"))));
-    assert_eq!(s.accumulated, Decimal::ZERO);
+    assert_eq!(s.accumulated_scheduled, Decimal::ZERO);
+    assert_eq!(s.accumulated_posted, Decimal::ZERO);
     assert_eq!(s.book_value, Decimal::ZERO);
     assert_eq!(s.tag.as_deref(), Some("FL-0002"));
     assert_eq!(s.cost, d("2400.00"));
     let lp = r.rows.iter().find(|x| x.asset_id == laptop).unwrap();
-    assert_eq!(lp.accumulated, d("6000.00"));
+    assert_eq!(lp.accumulated_scheduled, d("6000.00"));
+    assert_eq!(lp.accumulated_posted, d("6000.00"));
     assert_eq!(r.total_cost, d("12000.00"));
-    assert_eq!(r.total_accumulated, d("6000.00"));
+    assert_eq!(r.total_accumulated_scheduled, d("6000.00"));
+    assert_eq!(r.total_accumulated_posted, d("6000.00"));
     assert_eq!(r.total_book_value, d("6000.00"));
     assert_eq!(r.ledger_cost, d("12000.00"));
     assert_eq!(r.ledger_accumulated, d("6000.00"));
     assert_eq!(r.unposted_depreciation(), Decimal::ZERO);
+    assert_eq!(r.unattributed_accumulated(), Decimal::ZERO);
     assert_eq!(r.unregistered_cost(), Decimal::ZERO);
     assert_totals_are_sums(&r);
 }
@@ -962,10 +1009,11 @@ fn register_before_the_disposal_date_shows_the_asset_held() {
     let r = fixed_asset_register(&l, date(2026, 5, 31)).unwrap();
     let s = r.rows.iter().find(|x| x.asset_id == server).unwrap();
     assert_eq!(s.disposed, None);
-    assert_eq!(s.accumulated, d("500.00"));
+    assert_eq!(s.accumulated_scheduled, d("500.00"));
+    assert_eq!(s.accumulated_posted, d("500.00"));
     assert_eq!(s.book_value, d("1900.00"));
     assert_eq!(r.total_cost, d("14400.00"));
-    assert_eq!(r.total_accumulated, d("5500.00"));
+    assert_eq!(r.total_accumulated_scheduled, d("5500.00"));
     assert_eq!(r.ledger_cost, d("14400.00"));
     assert_eq!(r.ledger_accumulated, d("5500.00"));
     assert_eq!(r.unposted_depreciation(), Decimal::ZERO);
@@ -977,27 +1025,29 @@ fn register_before_the_disposal_date_shows_the_asset_held() {
 fn register_sums_the_gl_over_distinct_asset_accounts() {
     let (mut l, a, _, _) = register_fixture();
     buy(&mut l, &a, a.vehicles, date(2026, 1, 1), "36000.00");
-    l.register_asset(NewAsset {
-        description: "Van".to_string(),
-        purchase_date: date(2026, 1, 1),
-        cost: usd("36000.00"),
-        salvage_value: usd("6000.00"),
-        useful_life_months: 60,
-        cost_account: a.vehicles,
-        accum_depr_account: a.vehicles_accum,
-        expense_account: a.depr_expense,
-    })
-    .unwrap();
+    let van = l
+        .register_asset(NewAsset {
+            description: "Van".to_string(),
+            in_service_date: date(2026, 1, 1),
+            cost: usd("36000.00"),
+            salvage_value: usd("6000.00"),
+            useful_life_months: 60,
+            cost_account: a.vehicles,
+            accum_depr_account: a.vehicles_accum,
+            expense_account: a.depr_expense,
+        })
+        .unwrap();
     // (36,000 − 6,000) / 60 = 500/month; Jan–Mar posted.
     for m in 1..=3 {
-        depreciate(&mut l, &a, a.vehicles_accum, month_end(m), "500.00");
+        run(&mut l, &a, van, month_end(m), "500.00");
     }
     let r = fixed_asset_register(&l, date(2026, 3, 31)).unwrap();
     assert_eq!(r.rows[2].salvage, d("6000.00"));
-    assert_eq!(r.rows[2].accumulated, d("1500.00"));
+    assert_eq!(r.rows[2].accumulated_scheduled, d("1500.00"));
+    assert_eq!(r.rows[2].accumulated_posted, d("1500.00"));
     assert_eq!(r.rows[2].book_value, d("34500.00"));
     assert_eq!(r.total_cost, d("50400.00"));
-    assert_eq!(r.total_accumulated, d("4800.00"));
+    assert_eq!(r.total_accumulated_scheduled, d("4800.00"));
     assert_eq!(r.total_book_value, d("45600.00"));
     assert_eq!(r.ledger_cost, d("50400.00"));
     assert_eq!(r.ledger_accumulated, d("4800.00"));
@@ -1031,13 +1081,15 @@ fn register_of_no_assets_is_empty() {
 }
 
 /// Defect 22 in the register (INVARIANT 2): an asset disposed of later in
-/// the same month as `as_of` is held on `as_of`, its accumulated
-/// depreciation prorated by days through `as_of`, never plugged to the
-/// whole. Hand check: the 12,000.00 laptop (12 months from 2026-01-01),
-/// disposed of 2026-06-20; on 2026-06-10, five months of 1,000.00 and
-/// June's 10/30: 5,333.33, book value 6,666.67. Before P3 the disposed
+/// the same month as `as_of` is held on `as_of`, its scheduled
+/// accumulated depreciation prorated by days through `as_of`, never
+/// plugged to the whole. Hand check: the 12,000.00 laptop (12 months from
+/// 2026-01-01), disposed of 2026-06-20; on 2026-06-10, five months of
+/// 1,000.00 and June's 10/30: 5,333.33 scheduled. Before P3 the disposed
 /// schedule ended in a plug, so the register showed 12,000.00 and 0.00.
-/// The same in the life's final month: on 2026-12-15, 11,483.87.
+/// The same in the life's final month: on 2026-12-15, 11,483.87. Book
+/// value is cost less what the books carry (defect 13, rules.md B-15 rule
+/// 8): the fixture's runs, January to March, 3,000.00, so 9,000.00.
 #[test]
 fn register_as_of_a_day_before_a_same_month_disposal_is_prorated() {
     let (mut l, _, laptop, _) = register_fixture();
@@ -1045,19 +1097,21 @@ fn register_as_of_a_day_before_a_same_month_disposal_is_prorated() {
         .unwrap();
     let r = fixed_asset_register(&l, date(2026, 6, 10)).unwrap();
     assert_eq!(r.rows[0].disposed, None);
-    assert_eq!(r.rows[0].accumulated, d("5333.33"));
-    assert_eq!(r.rows[0].book_value, d("6666.67"));
+    assert_eq!(r.rows[0].accumulated_scheduled, d("5333.33"));
+    // Book value is what the books carry: January to March's runs.
+    assert_eq!(r.rows[0].accumulated_posted, d("3000.00"));
+    assert_eq!(r.rows[0].book_value, d("9000.00"));
     assert_totals_are_sums(&r);
     // On the disposal day it is gone: no figures, in no total.
     let r = fixed_asset_register(&l, date(2026, 6, 20)).unwrap();
-    assert_eq!(r.rows[0].accumulated, Decimal::ZERO);
+    assert_eq!(r.rows[0].accumulated_scheduled, Decimal::ZERO);
     assert!(r.rows[0].disposed.is_some());
 
     let (l, _, laptop, _) = register_fixture();
     let r = fixed_asset_register(&l, date(2026, 12, 15)).unwrap();
     let row = r.rows.iter().find(|x| x.asset_id == laptop).unwrap();
     assert_eq!(
-        (row.accumulated, row.book_value),
-        (d("11483.87"), d("516.13"))
+        (row.accumulated_scheduled, row.book_value),
+        (d("11483.87"), d("9000.00"))
     );
 }

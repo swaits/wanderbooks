@@ -754,16 +754,47 @@ The rule, exactly (P3, defect 22; the engineer settled it from ASC
    reversed on a day before its own (a correction comes after what it
    corrects, B-9: a run of March reversed on Jan 31 would leave January
    and February with negative depreciation; commands only, journals
-   replay as written). The viewer and the store read every run the
-   journal holds, not a month's latest (a run re-instated after its month
-   was run again and that run reversed is the month's run).
+   replay as written). The viewer and the store read every run the books
+   recorded (`Ledger::depreciation_runs`: each `asset.depreciation_posted`,
+   as replay records it), not a month's latest (a run re-instated after its
+   month was run again and that run reversed is the month's run).
+7. Two dates (P3, defect 13). Depreciation starts on the day the asset is
+   placed in service, never the day it was bought: ASC 360-10-35-4
+   spreads cost over the periods the asset serves, and an asset serves no
+   period before it is in service. (For tax, Pub. 946's "ready and
+   available for a specific use", `sources/irs-partnership-basis.md`, is
+   the CPA's.) The register holds an asset from the day the company
+   acquired it: the date of the entry it is linked to (its purchase or
+   contribution), never later than the in-service date, or the in-service
+   date when no entry is linked (settled in design, 2026-10-20: "an
+   asset's acquired date comes from the entry it is linked to"; one
+   source of truth, so the register and the general ledger can't
+   disagree, B-24). A new link to an entry dated after the in-service date
+   or the disposal is refused, as is a new in-service date before the
+   linked entry's date; a disposal can't come before the acquired date (a
+   command's bound; replay accepts what earlier versions did, B-28), and
+   one before the in-service date takes no depreciation.
+8. Posted and scheduled. What the schedule says is due through a date
+   (`assets::accumulated_scheduled_through`, the tools'
+   `accumulated_scheduled_through`) and what the books carry
+   (`Ledger::accumulated_posted`: the runs read entry by entry as rule 6
+   reads them, each on its own day: a run adds its amount, a reversal of
+   it takes it away, a reversal of that reversal adds it back, B-8, B-9;
+   zero once the asset is disposed, its disposal entry having cleared it)
+   are two figures, never one: book value is cost less the posted figure
+   (`assets::scheduled_book_value` is the schedule's own, for the
+   schedule only).
 
 **Enforced:** `assets::depreciation_schedule`, `assets::run_amount`,
 `assets::catch_up_room`, `assets::depreciation_effects`,
 `kernel::prorated_through`, `kernel::catch_up`, `kernel::true_up`,
 `calendar::month_parts`, `Store::run_depreciation`,
 `Store::dispose_preview` (`check_nothing_after_disposal`),
-`Store::check_reverse_entry`. **Checked:**
+`Store::check_reverse_entry`, `Ledger::asset_acquired_date`,
+`set_asset_acquisition` (`replay_set_asset_acquisition` for replay),
+`check_correct_asset`, `dispose_asset` (strict: the acquired date),
+`record_depreciation_run` / `check_depreciation_run`,
+`accumulated_posted`, `live_depreciation_run`. **Checked:**
 `schedule_sums_exactly_to_depreciable_amount`,
 `salvage_value_is_never_depreciated`, `prop_depreciation_schedule_exact`,
 `defect22_depreciation_through_mid_final_month_is_prorated_not_plugged`,
@@ -804,7 +835,14 @@ The rule, exactly (P3, defect 22; the engineer settled it from ASC
 Lean `Prorate.kernel_parts_total`, `Prorate.kernel_parts_nonneg`,
 `Prorate.part_near`, `Prorate.cum_near`, `Prorate.chargeMid_eq_cum`,
 `Prorate.chargeLast_eq_cum`, `Prorate.chargeLast_start`,
-`Prorate.chargeLast_mono`, `Prorate.cum_mono` (`docs/verification.md`).
+`Prorate.chargeLast_mono`, `Prorate.cum_mono` (`docs/verification.md`);
+`ledger-core` `tests/spec_asset_basis.rs` (the in-service and acquired
+dates, `accumulated_posted` and its edges,
+`a_reinstated_run_counts_and_is_live`); `ledger-store`
+`tests/asset_tags.rs` (`runs_replay_reload_and_verify_catches_a_tampered_run`,
+`the_viewer_and_writer_agree_on_a_bad_depreciation_posted_payload`);
+`ledger-mcp` `tests/spec_assets.rs` (`a_reversed_run_is_not_posted`,
+`list_assets_book_value_is_what_the_books_carry`).
 
 ## B-16 Prepaid expenses and deferred revenue are recognized over the period benefited or earned
 
@@ -1189,44 +1227,96 @@ Each fixed asset may carry a tag, the label stuck on the thing itself
 `- _ . /`), and the manufacturer's serial number. Tags are unique ignoring
 case and are never reused by another asset, even after a retag or a
 disposal, so an old label can never point at the wrong thing. Both are
-journaled. The fixed asset register lists every asset as of a date and
-reconciles to the general ledger's cost and accumulated depreciation
-accounts.
+journaled. The fixed asset register lists every asset acquired by a date
+(B-15) and reconciles to the general ledger's cost and accumulated
+depreciation accounts: cost per register and per books
+(`unregistered_cost`), accumulated depreciation by schedule and per
+books (`unposted_depreciation`: run depreciation for it), and from the
+assets' runs and per books (`unattributed_accumulated`: an entry made by
+hand). Book value on the register is cost less the depreciation posted,
+the books' figure, never the schedule's (P3, defect 13).
 
 **Enforced:** `Ledger::set_asset_tag` / `check_asset_tag_for`,
 `assets::check_asset_tag`, `assets::check_serial`. **Checked:**
 `ledger-core` `tests/spec_asset_tags.rs`; `ledger-store`
 `tests/asset_tags.rs`; `ledger-mcp` `tests/spec_assets.rs`.
 
-## B-25 Tax basis beside book value
+## B-25 Tax figures beside book value: the §723 basis, the depreciable basis, the §704(c) built-in gain
 
 **Status:** AUTHORITY (`sources/irs-partnership-basis.md`); DECISION
-(the owner, 2026-10-15: the register carries tax basis)
+(the owner, 2026-10-15: the register carries tax basis); DECISION D-41
+(the owner, 2026-10-20: the depreciable basis of property a member
+contributed from personal use is the lesser of its fair market value and
+the member's adjusted basis, the CPA to confirm at year end; the
+§704(c) method is traditional, recorded as a choice the CPA confirms;
+the contributed property's values on the contribution date are the
+books' recorded amounts)
 
-Book value and tax basis are different numbers for the same asset. The
+Book value and tax figures are different numbers for the same asset. The
 book value of a member's contribution is its fair market value (Treas.
-Reg. §1.704-1(b)(2)(iv)(d)(1), cited). Its federal tax basis follows the
-rule that applies: property the company buys has a cost basis ("The basis
-of property shall be the cost of such property", IRC §1012(a)); property a
-member contributes keeps "the adjusted basis of such property to the
-contributing partner at the time of the contribution" (IRC §723,
-carryover); property a member converts from personal use depreciates from
-"the lesser of its fair market value or its adjusted depreciable basis"
-(Treas. Reg. §1.168(i)-4(b)(1)). The difference between fair market value
-and the contributor's adjusted basis is the built-in gain (positive) or
-loss (negative) that IRC §704(c) makes the partnership account for; a
-built-in loss counts only for the contributing member (§704(c)(1)(C)).
-wanderbooks records the rule, the contributor's adjusted basis, the
-resulting tax basis, and the built-in gain or loss; tax depreciation
-(MACRS, conventions, elections) stays with the CPA (`sources/irs-depreciation.md`).
+Reg. §1.704-1(b)(2)(iv)(d)(1), cited; Treas. Reg. §1.704-3(a)(3)(i):
+"book value is equal to fair market value at the time of contribution").
+Three tax figures, each named for what it is, follow from the rule and
+the facts recorded (`asset.basis_set`: the rule, the contributing
+member's adjusted basis, the fair market value at contribution, the
+§704(c) method if chosen, and who gave them, B-29):
 
-**Enforced:** `Ledger::set_asset_tax_basis` / `check_asset_tax_basis`
-(cost takes no contributor basis, a contribution requires one,
-non-negative, in cents), `Asset::tax_basis`, `Asset::built_in_gain`,
-`reports::fixed_asset_register` (per-row tax fields, `total_tax_basis`,
-`missing_tax_basis`). **Checked:** `ledger-core` `tests/spec_tax_basis.rs`;
-`ledger-store` `tests/asset_tags.rs` (`asset.tax_basis_set` journaling,
-replay, v9 migration, corrupt payloads); `ledger-mcp` `tests/spec_assets.rs`.
+- **Purchase** (`purchase`): "The basis of property shall be the cost of
+  such property" (IRC §1012(a)); depreciable basis is the cost. Not
+  §704(c) property: no §723 basis and no built-in gain.
+- **§723 basis** of contributed property: "the adjusted basis of such
+  property to the contributing partner at the time of the contribution"
+  (IRC §723; Pub. 541: "the partnership's basis for determining
+  depreciation, depletion, gain, or loss"). Adjusted basis is cost plus
+  improvements, less depreciation allowed but not less than allowable
+  (IRC §1016(a)(1)-(2)). wanderbooks does not model §721(b) gain (an
+  investment-company partnership only), so the §723 basis is the
+  member's adjusted basis.
+- **Depreciable basis:** for business property contributed
+  (`carryover_723`), the §723 basis; for property a member contributed
+  from personal use (`personal_use_conversion`), "the lesser of its fair
+  market value or its adjusted depreciable basis" (Treas. Reg.
+  §1.168(i)-4(b)(1); Pub. 946, "Property changed from personal use";
+  D-41).
+- **§704(c) built-in gain or loss at contribution:** fair market value
+  less the §723 basis ("the excess of the property's book value over the
+  contributing partner's adjusted tax basis upon contribution", Treas.
+  Reg. §1.704-3(a)(3)(ii)); fixed at contribution, so correcting the book
+  cost later never moves it. A built-in loss counts only for the
+  contributing member (IRC §704(c)(1)(C)). The §704(c) method
+  (traditional, traditional with curative allocations, remedial: Treas.
+  Reg. §1.704-3(b)-(d)) is chosen property by property (§1.704-3(a)(2)).
+
+The figures are at contribution (or purchase): tax depreciation reduces
+the basis afterwards (§1016(a)(2)) and the built-in gain or loss "is
+thereafter reduced" (§1.704-3(a)(3)(ii)); both are the CPA's (MACRS,
+conventions, elections: `sources/irs-depreciation.md`). The facts are
+kept, never the figures: the figures are derived when read, under the
+rule in force, so a later change to a rule changes the reports without
+refusing a line an earlier version wrote (B-28). A record made before
+P3 (`asset.tax_basis_set`, with the old names `cost` and `carryover`)
+has no fair market value recorded: it reads as the book cost, which
+reproduces that version's figures exactly, and Needs attention asks for
+the value. wanderbooks' book depreciation is GAAP straight line, not
+§704(b) book depreciation, which must keep the tax depreciation's ratio
+(Treas. Reg. §1.704-1(b)(2)(iv)(g)(3), cited): neither is the other.
+
+**Enforced:** `kernel::basis_figures` (Kani `basis_figures_laws`),
+`AssetBasis::check` (a purchase takes no contribution facts; a
+contribution needs the adjusted basis and the fair market value, each
+non-negative, in cents, at most one quadrillion) and its replay pairs
+`check_journaled` and `check_legacy_journaled`, `Ledger::set_asset_basis`
+/ `check_asset_basis` / `replay_set_asset_basis` /
+`replay_set_asset_tax_basis`, `Asset::basis_figures`,
+`reports::fixed_asset_register` (per-row tax fields,
+`total_tax_basis_723`, `total_depreciable_basis`, `missing_basis`);
+`ledger-store` `Store::set_asset_basis` (the journal feature
+`asset_basis`); `ledger-mcp` `books.set_asset_tax_basis` and
+`books.register_asset` (a contribution's fair market value is required,
+never assumed). **Checked:** `ledger-core` `tests/spec_asset_basis.rs`,
+`tests/kernel_bridge.rs` (`basis_figures_agree`), `tests/properties.rs`
+(`prop_basis_figures_laws`); `ledger-store` `tests/asset_tags.rs`;
+`ledger-mcp` `tests/spec_assets.rs`.
 
 ## B-26 Parties: one directory, no full TIN in the books
 
@@ -1426,15 +1516,18 @@ decided, a `not_reportable` decision, its reason or the date it takes
 effect, and `vendor.w9_flag_set`: defects 18 and 23, D-40, B-19),
 `schedule_convention` (a daily schedule's `schedule.registered` carries
 `convention: daily`; an older version would read it as equal months,
-B-16) and `month_reposting` (a schedule month or a depreciation period
+B-16), `month_reposting` (a schedule month or a depreciation period
 posted again after a reversal un-posted it; an older version would refuse
 the second `schedule.posted`, and its projection ignore the second
-`asset.depreciation_posted`, B-15). A command asks for the feature it
-needs (`Store::ensure_feature`) before its first journaled line, and only
-when the line it is about to write uses it, so a write refused for
-waiting on the upgrade journals nothing, never an entry without the line
-that says what it is (`a_write_waiting_for_the_upgrade_journals_nothing`),
-and a write that needs nothing new is never refused. A tool journaling
+`asset.depreciation_posted`, B-15) and `asset_basis` (an
+`asset.basis_set`, a new event type: an asset's basis facts with the
+value at contribution and the §704(c) method, B-25). A command asks for
+the feature it needs (`Store::ensure_feature`) before its first journaled
+line, and only when the line it is about to write uses it, so a write
+refused for waiting on the upgrade journals nothing, never an entry
+without the line that says what it is
+(`a_write_waiting_for_the_upgrade_journals_nothing`), and a write that
+needs nothing new is never refused. A tool journaling
 several commands as one asks before the first of them, never between
 them (a refusal there would leave the tool's work half done):
 `books.set_w9` asks for `vendor_1099_decisions` before the W-9 when the
@@ -1570,9 +1663,9 @@ document line, a payment, a payroll run and disposal proceeds carry no
 upper bound beyond what their own rules always said (positive, cents,
 balanced, and so on); a schedule's months are 1 to 600 and an asset's
 life ends on a date chrono holds. The checks split in two: the
-command's (`Ledger::add_line`, `register_asset`, `TaxBasis::check`,
+command's (`Ledger::add_line`, `register_asset`, `AssetBasis::check`,
 `shares::check_shares`, ...) and replay's (`replay_add_line`,
-`replay_register_asset`, `TaxBasis::check_journaled`,
+`replay_register_asset`, `AssetBasis::check_journaled`, `AssetBasis::check_legacy_journaled`,
 `shares::check_shares_journaled`, ...), and every bound has its pair of
 tests: the command refuses past it; replay of an old line past it is
 accepted. What an earlier version left beside its journal is kept for it
@@ -1602,17 +1695,17 @@ books open, never a panic.
 `schedules::validate_schedule`, `validate_recurring`,
 `periods::validate_period_range`, `arap::validate_lines`,
 `validate_due_date`, `payroll::check_payroll_ranges`, `payout_plan`,
-`shares::check_shares`, `TaxBasis::check`, `reconciliation_report`; for
+`shares::check_shares`, `AssetBasis::check`, `reconciliation_report`; for
 replay, `replay_add_line`, `replay_add_line_fx`,
 `replay_register_asset`, `replay_correct_asset`,
-`replay_dispose_asset`, `replay_set_asset_tax_basis`,
+`replay_dispose_asset`, `replay_set_asset_tax_basis`, `replay_set_asset_basis`,
 `replay_set_entry_parties`, `replay_register_recurring`,
 `replay_register_schedule` (`validate_schedule_shape`),
 `replay_create_period` (`validate_period_order`), `replay_invoice`,
 `replay_bill`, `replay_invoice_payment`, `replay_bill_payment`,
 `replay_payroll_run`, `validate_new_asset_journaled`,
 `validate_recurring_journaled`, `check_shares_journaled`,
-`TaxBasis::check_journaled`; derived: `Invoice::total`/`balance`,
+`AssetBasis::check_journaled`, `AssetBasis::check_legacy_journaled`; derived: `Invoice::total`/`balance`,
 `Bill::total`/`balance`, `AgingRow::total`, `ar_aging`, `ap_aging`,
 `PayrollLine::net_pay`, `payroll_entry_plan`, `parties::entry_flow`,
 `shares::share_target`, `shares::resolve`, `fixed_asset_register`,
@@ -2298,3 +2391,47 @@ distributions declared or of depreciated property, the properties), Kani
 `reverseTarget_involutive`, `capitalTarget_odd`, `partyTarget_odd`,
 `sumOver_movement_reversal`; `ledger-store` `tests/party_creditors.rs`;
 `ledger-mcp` `tests/spec_party_totals.rs`; `ledger-gui` `tests/parties.rs`.
+
+## B-36 The K-1 worksheet reports tax-basis capital beside book capital
+
+**Status:** AUTHORITY (`sources/irs-partnerships.md`: Instructions for
+Form 1065 (2025), Item L, "Tax-basis method"; required from tax year
+2020: Instructions for Form 1065 (2020), Item L, "you must use the tax
+basis method this year"); DECISION D-41 (the owner, 2026-10-20: "the
+K-1 worksheet reports tax-basis capital ... the contributed property at
+its §723 carryover basis, beside the book figures")
+
+Schedule K-1 Item L reports each member's capital account on the tax
+basis, by the transactional approach: beginning capital (last year's
+ending), "the amount of cash plus the adjusted tax basis of all property
+contributed", the member's share of income "as figured for tax
+purposes", other increases and decreases "for tax purposes", and "the
+amount of cash plus the adjusted tax basis of all property distributed".
+The K-1 worksheet shows, per member, each Item L line on the book basis
+(the members' equity roll-forward, B-13) beside the tax basis, and how
+book capital reconciles to tax capital:
+
+- Property contributed enters at its §723 basis (B-25): the member's
+  share of the property's book value less their share of its built-in
+  gain or loss at contribution, shared within the entry as its book value
+  is (B-13). Property contributed with no basis in the books (no
+  registered asset linked to the entry holds a contribution basis for it)
+  is open.
+- What the books can't know is never guessed: the tax depreciation of
+  every fixed asset in service (MACRS, and for contributed property the
+  §704(c) method's allocation: the CPA's, B-15), the tax gain on a
+  disposal, the adjusted tax basis of property distributed, the tax
+  treatment of a change in book capital the books can't explain, and
+  last year's tax ending when an earlier year left a figure open. Each
+  such line is left blank and marked open, with what the books know so
+  far and the book amount the CPA's figure replaces.
+- The reconciliation: book ending less tax ending (as far as the books
+  know it) = beginning (book less tax) + the built-in gain or loss share
+  + property without a basis (at book) − property distributed (at book),
+  exactly.
+
+**Enforced:** `ledger_core::tax_capital::tax_basis_capital`;
+`ledger-package` `k1_tax` (`k1-tax-basis-capital.csv` in the CPA
+package). **Checked:** `ledger-core` `tests/tax_capital.rs`;
+`ledger-package` `tests/package.rs`
+(`the_k1_worksheet_reports_tax_basis_capital`).

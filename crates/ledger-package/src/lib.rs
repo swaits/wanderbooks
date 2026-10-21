@@ -25,6 +25,7 @@
 
 mod books;
 mod iif;
+mod k1_tax;
 mod package;
 mod reports;
 mod text;
@@ -33,6 +34,7 @@ mod vendor_1099;
 
 pub use books::PackageBooks;
 pub use iif::export_iif;
+pub use k1_tax::{open_text, tax_basis_csv};
 pub use package::{Package, PackageRequest, build_package, package_file_name};
 pub use reports::{
     Settings, as_of_date, bs_statement, cash_flow_for, cash_flow_statement, member_capitals,

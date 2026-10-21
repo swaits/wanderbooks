@@ -39,7 +39,7 @@ pub fn export_iif(
     use ledger_import::{QbAccountType as Qb, iif_accounts, journal_to_iif};
     let fixed: std::collections::HashSet<AccountId> = ledger
         .registered_assets()
-        .filter(|a| a.purchase_date <= as_of)
+        .filter(|a| ledger.asset_acquired_date(a.id).is_some_and(|d| d <= as_of))
         .flat_map(|a| [a.cost_account, a.accum_depr_account])
         .collect();
     let receivables = ledger.role_account(&ledger_core::RECEIVABLES);

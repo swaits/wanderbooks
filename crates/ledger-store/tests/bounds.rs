@@ -199,7 +199,7 @@ fn disposal_proceeds_larger_than_a_line_are_refused() {
     let id = s
         .register_asset(ledger_core::NewAsset {
             description: "Laptop".into(),
-            purchase_date: d(2026, 1, 1),
+            in_service_date: d(2026, 1, 1),
             cost: usd(Decimal::new(240000, 2)),
             salvage_value: usd(Decimal::ZERO),
             useful_life_months: 24,

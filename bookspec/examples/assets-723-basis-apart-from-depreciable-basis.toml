@@ -1,0 +1,72 @@
+# P3 defect 13, named regression 4
+# (personal_use_contribution_keeps_its_723_basis_apart_from_depreciable_basis).
+id = "assets-723-basis-apart-from-depreciable-basis"
+title = "Property contributed from personal use: the §723 basis apart from the depreciable basis"
+rule = "The partnership's basis in property a partner contributes is the partner's adjusted basis (IRC §723). Its depreciable basis, for property converted from personal use, is the lesser of fair market value and that adjusted basis at conversion (CHOICE recorded by the owner as D-41, the CPA to confirm). The §704(c) built-in gain or loss is fair market value less the §723 basis at contribution; a built-in loss counts only for the contributing partner (IRC §704(c)(1)(C))."
+status = "AUTHORITY"
+sources = [
+  "26 U.S.C. §723",
+  "Treas. Reg. §1.168(i)-4(b)(1): 'the lesser of its fair market value or its adjusted depreciable basis'",
+  "IRS Pub. 946 (2025), Property changed from personal use",
+  "Treas. Reg. §1.704-3(a)(3)(ii)",
+  "26 U.S.C. §704(c)(1)(C)",
+]
+tags = ["fixed-assets", "tax-basis", "partnerships", "704c"]
+
+[setup]
+currency = "USD"
+fiscal_year_start = "01-01"
+basis = "accrual"
+rounding = "half-away-from-zero"
+
+[[setup.accounts]]
+code = "1500"
+name = "Equipment"
+type = "asset"
+
+[[setup.accounts]]
+code = "1510"
+name = "Accumulated Depreciation"
+type = "asset"
+
+[[setup.accounts]]
+code = "3000"
+name = "Capital"
+type = "equity"
+
+[[setup.accounts]]
+code = "6200"
+name = "Depreciation Expense"
+type = "expense"
+
+# A laptop a member contributes from personal use: worth 1,440.00, held by
+# the member at an adjusted basis of 1,688.40. (Nothing rounds here.)
+[[setup.assets]]
+id = "laptop"
+description = "Laptop"
+cost = "1440.00"
+salvage = "0.00"
+life_months = 36
+in_service = "2026-01-01"
+method = "straight_line"
+cost_account = "1500"
+accumulated_account = "1510"
+expense_account = "6200"
+acquired_by = 1
+basis = { rule = "personal_use_conversion", contributor_adjusted_basis = "1688.40", fmv_at_contribution = "1440.00" }
+
+[[events]]
+date = "2026-01-01"
+description = "Laptop contributed at its value"
+lines = [
+  { account = "1500", side = "debit", amount = "1440.00" },
+  { account = "3000", side = "credit", amount = "1440.00" },
+]
+
+# Hand check: §723 basis 1,688.40 (the member's adjusted basis).
+# Depreciable: the lesser of 1,440.00 and 1,688.40 = 1,440.00. Built-in
+# gain: 1,440.00 - 1,688.40 = -248.40, a loss (§704(c)(1)(C)).
+[[expect]]
+query = "asset_basis"
+asset = "laptop"
+values = { tax_basis_723 = "1688.40", depreciable_basis = "1440.00", built_in_gain_704c = "-248.40", sec704c_1c = "true" }

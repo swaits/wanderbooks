@@ -23,9 +23,11 @@
 //!      share, capital account, TIN and type (or last four without a TIN
 //!      source), and the K-1 worksheet's capital figures (ledger_core::k1)
 //!      for the fiscal year to date; the members' total row with more than
-//!      one. The 1099 worksheet is books.vendor_1099's CSV
-//!      (crate::vendor_1099_csv), each payee's TIN and type added with a
-//!      TIN source.
+//!      one. Beside it, k1-tax-basis-capital.csv: each member's capital
+//!      on the tax basis (Item L), line by line beside the book figures,
+//!      with the reconciliation (crate::k1_tax). The 1099 worksheet is
+//!      books.vendor_1099's CSV (crate::vendor_1099_csv), each payee's
+//!      TIN and type added with a TIN source.
 //!   3. A TIN the source can't give never fails the package: the row says
 //!      why, and so do the README and tin_gaps (members, and 1099 payees
 //!      a 1099 is or may be due for).
@@ -182,6 +184,7 @@ pub fn build_package<B: PackageBooks + ?Sized>(
         ),
     ];
     let mut k1_csv: Option<(String, Vec<u8>)> = None;
+    let mut k1_tax: Option<(String, Vec<u8>)> = None;
     if !company.members.is_empty() {
         let capitals = member_capitals(ledger, &company.members)?;
         let me =
@@ -325,6 +328,33 @@ pub fn build_package<B: PackageBooks + ?Sized>(
                 ),
             },
         );
+        // The K-1 worksheet on the tax basis (Item L's tax-basis method,
+        // D-41), beside the book figures: a row per member or none.
+        let names: Vec<String> = company.members.iter().map(|m| m.name.clone()).collect();
+        k1_tax = Some(
+            match ledger_core::tax_capital::tax_basis_capital(ledger, fy, as_of, &capitals, &cash)
+                .map_err(|e| e.to_string())
+                .and_then(|tc| {
+                    if tc.rows.len() == names.len() {
+                        Ok(tc)
+                    } else {
+                        Err(format!(
+                            "the tax-basis worksheet has {} rows for {} members",
+                            tc.rows.len(),
+                            names.len()
+                        ))
+                    }
+                }) {
+                Ok(tc) => (
+                    crate::k1_tax::FILE_NAME.into(),
+                    crate::k1_tax::tax_basis_csv(ledger, &names, &tc).into_bytes(),
+                ),
+                Err(e) => (
+                    "k1-tax-basis-capital-NOT-INCLUDED.txt".into(),
+                    format!("{e}\n").into_bytes(),
+                ),
+            },
+        );
     }
     statements.push((
         "tax-summary",
@@ -342,9 +372,12 @@ pub fn build_package<B: PackageBooks + ?Sized>(
         files.push((format!("{name}.pdf"), pdf(st)?));
         files.push((format!("{name}.xlsx"), xlsx(XlsxReport::Statement(st))?));
     }
-    // The fixed asset register, when an asset was bought by as_of (one
-    // bought later is not in it, so neither is an empty register).
-    if ledger.registered_assets().any(|a| a.purchase_date <= as_of) {
+    // The fixed asset register, when an asset was acquired by as_of (one
+    // acquired later is not in it, so neither is an empty register).
+    if ledger
+        .registered_assets()
+        .any(|a| ledger.asset_acquired_date(a.id).is_some_and(|d| d <= as_of))
+    {
         let r = ledger_core::fixed_asset_register(ledger, as_of).map_err(|e| e.to_string())?;
         files.push((
             "fixed-asset-register.pdf".into(),
@@ -513,6 +546,12 @@ pub fn build_package<B: PackageBooks + ?Sized>(
     if let Some(k1) = k1_csv {
         files.push(k1);
     }
+    let k1_tax_included = k1_tax
+        .as_ref()
+        .is_some_and(|(name, _)| name == crate::k1_tax::FILE_NAME);
+    if let Some(k1) = k1_tax {
+        files.push(k1);
+    }
     let seq = books.journal_seq();
     // The journal through as_of for QuickBooks, closes left out, and what
     // it writes differently (INVARIANT 8).
@@ -601,6 +640,11 @@ pub fn build_package<B: PackageBooks + ?Sized>(
                     ""
                 }
             );
+            k.push_str(if k1_tax_included {
+                "k1-tax-basis-capital.csv: each member's capital account on the tax basis, as Item L reports it (Form 1065 instructions: the tax-basis method), line by line beside the book figures: cash contributed, property at its adjusted basis (IRC §723), the share of income as figured for tax, distributions at tax basis, and the reconciliation from book to tax capital (the §704(c) built-in gain or loss of contributed property). A line the books can't know (tax depreciation, a basis the books don't hold) is left blank, marked open, and says what the books know so far and what is needed.\n"
+            } else {
+                "k1-tax-basis-capital-NOT-INCLUDED.txt: why the tax-basis capital worksheet isn't here.\n"
+            });
             let members = &company.members;
             for (i, m) in members.iter().enumerate() {
                 if let Some(j) = &m.files_jointly_with

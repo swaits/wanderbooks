@@ -1,0 +1,95 @@
+# P3 defect 13, named regression 2 (a_reversed_depreciation_run_is_not_posted), its
+# posted figure; a reversal of the reversal reinstates the run.
+id = "assets-a-reversed-run-is-not-posted"
+title = "A reversed depreciation run is no longer posted; reversing the reversal reinstates it"
+rule = "The accumulated depreciation the books carry for an asset counts each run while its entry stands: a reversal takes the run back from the reversal's date, and a reversal of that reversal puts it back from its own date."
+status = "AUTHORITY"
+sources = [
+  "wanderbooks docs/spec/rules.md B-8, B-9 (a correction is an opposite entry; reversing the reversal reinstates the original)",
+  "wanderbooks docs/spec/rules.md B-24",
+]
+tags = ["fixed-assets", "depreciation", "reversal"]
+
+[setup]
+currency = "USD"
+fiscal_year_start = "01-01"
+basis = "accrual"
+rounding = "half-away-from-zero"
+
+[[setup.accounts]]
+code = "1000"
+name = "Bank"
+type = "asset"
+
+[[setup.accounts]]
+code = "1500"
+name = "Equipment"
+type = "asset"
+
+[[setup.accounts]]
+code = "1510"
+name = "Accumulated Depreciation"
+type = "asset"
+
+[[setup.accounts]]
+code = "6200"
+name = "Depreciation Expense"
+type = "expense"
+
+# 1,200.00, no salvage, 12 months from 2026-01-01: 100.00 a month.
+[[setup.assets]]
+id = "printer"
+description = "Printer"
+cost = "1200.00"
+salvage = "0.00"
+life_months = 12
+in_service = "2026-01-01"
+method = "straight_line"
+cost_account = "1500"
+accumulated_account = "1510"
+expense_account = "6200"
+acquired_by = 1
+
+[[events]]
+date = "2026-01-01"
+description = "Printer bought"
+lines = [
+  { account = "1500", side = "debit", amount = "1200.00" },
+  { account = "1000", side = "credit", amount = "1200.00" },
+]
+
+# January's run: 100.00, dated Jan 31.
+[[events]]
+run_depreciation = { asset = "printer", period = "2026-01" }
+
+[[events]]
+date = "2026-02-01"
+description = "Reversal of the January run"
+reverses = 2
+
+[[events]]
+date = "2026-02-02"
+description = "Reversal of the reversal"
+reverses = 3
+
+# Hand check: on Jan 31 the books carry January's run, 100.00; on Feb 1 its
+# reversal takes it back, 0.00, while the schedule through Feb 1 is
+# 100.00 + 100.00 x 1/28 = 103.57 (all of it unposted); on Feb 2 the
+# reversal of the reversal puts the run back, 100.00.
+[[expect]]
+query = "register_row"
+asset = "printer"
+as_of = "2026-01-31"
+values = { accumulated_posted = "100.00", book_value = "1100.00" }
+
+[[expect]]
+query = "register_row"
+asset = "printer"
+as_of = "2026-02-01"
+values = { accumulated_posted = "0.00", accumulated_scheduled = "103.57", unposted = "103.57", book_value = "1200.00" }
+
+[[expect]]
+query = "register_row"
+asset = "printer"
+as_of = "2026-02-02"
+values = { accumulated_posted = "100.00", book_value = "1100.00" }

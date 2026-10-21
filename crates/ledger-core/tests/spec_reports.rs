@@ -1523,7 +1523,7 @@ fn cf_fixed_asset_purchase_depreciation_and_disposal() {
     );
     co.l.register_asset(NewAsset {
         description: "Laptop".into(),
-        purchase_date: d(2026, 2, 1),
+        in_service_date: d(2026, 2, 1),
         cost: usd(120000),
         salvage_value: usd(0),
         useful_life_months: 12,

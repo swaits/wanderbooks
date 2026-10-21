@@ -46,7 +46,7 @@ fn depreciation_reaches_chronos_last_month() {
     let id = l
         .replay_register_asset(NewAsset {
             description: "edge".into(),
-            purchase_date: d(y, 1, 15),
+            in_service_date: d(y, 1, 15),
             cost: usd(Decimal::new(120000, 2)),
             salvage_value: usd(Decimal::ZERO),
             useful_life_months: 11,
@@ -83,11 +83,11 @@ fn depreciation_reaches_chronos_last_month() {
     assert_eq!(want, Decimal::new(118592, 2));
     assert_eq!(dec.last().unwrap().accumulated, want);
     assert_eq!(
-        ledger_core::accumulated_depreciation(a, NaiveDate::MAX).unwrap(),
+        ledger_core::accumulated_scheduled_through(a, NaiveDate::MAX).unwrap(),
         Decimal::new(120000, 2)
     );
     assert_eq!(
-        ledger_core::book_value(a, NaiveDate::MAX).unwrap(),
+        ledger_core::scheduled_book_value(a, NaiveDate::MAX).unwrap(),
         Decimal::ZERO
     );
 }
@@ -111,7 +111,7 @@ fn a_life_past_9999_trues_up_to_the_cent() {
         let id = l
             .replay_register_asset(NewAsset {
                 description: "far".into(),
-                purchase_date: start,
+                in_service_date: start,
                 cost: usd(Decimal::new(100_000, 2)),
                 salvage_value: usd(Decimal::new(1, 2)),
                 useful_life_months: months,
@@ -172,7 +172,7 @@ fn february_is_prorated_by_chronos_calendar_in_every_year() {
         let id = l
             .replay_register_asset(NewAsset {
                 description: format!("{year}"),
-                purchase_date: d(year, 2, 1),
+                in_service_date: d(year, 2, 1),
                 cost: usd(Decimal::from(2900)),
                 salvage_value: usd(Decimal::ZERO),
                 useful_life_months: 2,

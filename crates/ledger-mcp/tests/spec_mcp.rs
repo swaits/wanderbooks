@@ -1013,7 +1013,7 @@ fn happy_path(name: &str) -> Mcp {
     );
     m.ok(
         "books.set_asset_tax_basis",
-        json!({"asset": "LAPTOP-1", "rule": "personal_use_conversion", "contributor_basis": "3200.00"}),
+        json!({"asset": "LAPTOP-1", "rule": "personal_use_conversion", "contributor_basis": "3200.00", "fmv_at_contribution": "3000.00"}),
     );
     m.ok(
         "books.correct_asset",

@@ -3,7 +3,7 @@
 use chrono::NaiveDate;
 use ledger_core::{
     AccountType, AssetStatus, Currency, DepreciationMethod, Ledger, Money, NewAsset,
-    accumulated_depreciation, book_value, depreciation_schedule, disposal_amounts,
+    accumulated_scheduled_through, depreciation_schedule, disposal_amounts, scheduled_book_value,
 };
 use rust_decimal::Decimal;
 
@@ -53,7 +53,7 @@ fn van_asset(
     ledger
         .register_asset(NewAsset {
             description: "Sprinter van".to_string(),
-            purchase_date: date(2026, 1, 15),
+            in_service_date: date(2026, 1, 15),
             cost: usd(&dollars.to_string()),
             salvage_value: usd("0"),
             useful_life_months: 60,
@@ -112,7 +112,7 @@ fn salvage_value_is_never_depreciated() {
     let id = ledger
         .register_asset(NewAsset {
             description: "Machine".to_string(),
-            purchase_date: date(2026, 3, 1),
+            in_service_date: date(2026, 3, 1),
             cost: usd("50000"),
             salvage_value: usd("5000"),
             useful_life_months: 36,
@@ -133,11 +133,11 @@ fn book_value_tracks_accumulated() {
     let (mut ledger, cost, accum, expense) = test_ledger();
     let id = van_asset(&mut ledger, 60_000, cost, accum, expense);
     let asset = ledger.get_asset(id).unwrap();
-    let acc = accumulated_depreciation(asset, date(2026, 12, 31)).unwrap();
+    let acc = accumulated_scheduled_through(asset, date(2026, 12, 31)).unwrap();
     // Jan 2026 prorated 17/31 of 1000 = 548.39, then 11 full months of 1000.
     assert_eq!(acc, Decimal::new(54839, 2) + Decimal::from(11_000));
     assert_eq!(
-        book_value(asset, date(2026, 12, 31)).unwrap(),
+        scheduled_book_value(asset, date(2026, 12, 31)).unwrap(),
         Decimal::from(60_000) - acc
     );
 }
@@ -174,7 +174,7 @@ fn registration_validation() {
         .unwrap();
     let base = NewAsset {
         description: "X".to_string(),
-        purchase_date: date(2026, 1, 1),
+        in_service_date: date(2026, 1, 1),
         cost: usd("1000"),
         salvage_value: usd("0"),
         useful_life_months: 12,
@@ -222,7 +222,7 @@ fn registration_rejects_date_overflow() {
     let err = ledger
         .register_asset(NewAsset {
             description: "Time machine".to_string(),
-            purchase_date: NaiveDate::MAX,
+            in_service_date: NaiveDate::MAX,
             cost: usd("1000"),
             salvage_value: usd("0"),
             useful_life_months: 12,
@@ -240,7 +240,7 @@ fn registration_rejects_date_overflow() {
     // could still reach (P0 review round 3, S1).
     let new = |date: NaiveDate, months: u32| NewAsset {
         description: "Late machine".to_string(),
-        purchase_date: date,
+        in_service_date: date,
         cost: usd("1000"),
         salvage_value: usd("0"),
         useful_life_months: months,
@@ -270,7 +270,7 @@ fn schedule_through_purchase_date_covers_one_day() {
     let id = ledger
         .register_asset(NewAsset {
             description: "X".to_string(),
-            purchase_date: date(2026, 1, 15),
+            in_service_date: date(2026, 1, 15),
             cost: usd("62000"),
             salvage_value: usd("0"),
             useful_life_months: 62,
@@ -335,7 +335,7 @@ fn registration_rejects_wrong_typed_accounts() {
     let (mut ledger, cost, accum, expense) = test_ledger();
     let base = || NewAsset {
         description: "X".to_string(),
-        purchase_date: date(2026, 1, 15),
+        in_service_date: date(2026, 1, 15),
         cost: usd("1000"),
         salvage_value: usd("0"),
         useful_life_months: 12,
@@ -415,7 +415,7 @@ fn one_month_useful_life_is_valid() {
     let id = ledger
         .register_asset(NewAsset {
             description: "Cheap tool".to_string(),
-            purchase_date: date(2026, 3, 10),
+            in_service_date: date(2026, 3, 10),
             cost: usd("300"),
             salvage_value: usd("0"),
             useful_life_months: 1,
@@ -445,11 +445,12 @@ fn disposal_on_the_purchase_date_is_allowed() {
     assert_eq!(d.accumulated, Decimal::new(3226, 2));
     assert_eq!(d.book_value, Decimal::new(5_996_774, 2));
     assert_eq!(d.gain_loss, Decimal::new(3226, 2));
-    // The day before purchase is not a disposal.
-    assert!(matches!(
-        disposal_amounts(&asset, date(2026, 1, 14), usd("60000")),
-        Err(ledger_core::LedgerError::DisposalBeforePurchase(_))
-    ));
+    // The day before it is in service nothing has accrued (whether the
+    // company held it by then is its acquisition entry's: the ledger
+    // checks that floor, Ledger::dispose_asset).
+    let d = disposal_amounts(&asset, date(2026, 1, 14), usd("60000")).unwrap();
+    assert_eq!(d.accumulated, Decimal::ZERO);
+    assert_eq!(d.book_value, asset.cost.amount);
 }
 
 /// An asset links to the posted entry that acquired it, if that entry

@@ -25,7 +25,7 @@ promise.
 | Differential: GnuCash | another implementation, adjudicated (3) | `tests/oracle_gnucash.rs`, `oracle/gnucash/` | `just oracle` | ~2 min | weekly |
 | Formal proofs | Kani (bounded) and Lean (unbounded) | `src/proofs.rs`, `verify/lean/` | `just prove` | ~15-20 min (bounded by `entry_flows_of_a_reversal_mirror`, ~14 min; all 29 harnesses ~43 min of CPU, run in parallel) | weekly |
 | Fuzzing | crash, hang, broken books (4); for `fuzz_store_replay` (validly chained journals with fuzz-chosen events): books that open must verify, and the viewer must accept exactly what the writer does | `fuzz/fuzz_targets/`, corpora in `fuzz/corpus/` | `just fuzz <target> <secs>` | 10 min each | weekly |
-| Miri | undefined behavior in our use of dependencies (4) | the core's unit, bridge, invariant tests | `just miri` | ~2 min | on demand |
+| Miri | undefined behavior in our use of dependencies (4) | the core's unit, bridge, invariant tests (the exhaustive calendar walk aside) | `just miri` | ~4 min | on demand |
 | Golden | `tests/golden/fixture_company.json` (5) | `invariants.rs` | `just check` | <1s | every change |
 | Benchmarks | a baseline (6) | `ledger-core/benches/books.rs`, `ledger-store/benches/store.rs` | `just bench` | ~2 min | none (no budget, by decision) |
 | Mutation | can the tests fail? | `ledger-core` (2026-10-13: 1,011 caught + 13 timeouts of 1,024 viable, 0 missed) | `just mutants` | ~3 h | weekly |
@@ -1553,6 +1553,92 @@ version's journal format (rules.md B-27). Mutation testing waits for P12
 (`consent_now`, `upgrade_format`, `offer_upgrades`, `offer_upgrade`,
 `upgrade`, `book_line`, `upgraded_lines`, `upgrade_explained`,
 `ASKED_UPGRADES`). None run.
+
+## P3: asset basis and tax-basis capital (2026-10-20)
+
+Defect 13 (assets: posted vs scheduled, the in-service and acquired dates,
+the contributed property's bases) and D-41's K-1 worksheet on the tax
+basis. Mutation runs wait for P12 (D-33); none was run.
+
+- **Named regressions** (the brief's reproductions, anonymized):
+  `list_assets_book_value_is_what_the_books_carry` and
+  `a_reversed_run_is_not_posted` (`ledger-mcp/tests/spec_assets.rs`),
+  `an_asset_bought_before_it_is_in_service_is_on_the_register_from_acquisition`,
+  `personal_use_contribution_keeps_its_723_basis_apart_from_depreciable_basis`,
+  `built_in_gain_is_fixed_at_contribution_not_book_cost`
+  (`ledger-core/tests/spec_asset_basis.rs`, which replaces
+  `spec_tax_basis.rs`). Each is also a bookspec example
+  (`bookspec/examples/assets-*.toml`).
+- **ledger-core:** `spec_asset_basis.rs` (every `AssetBasis::check`
+  refusal and its replay pairs, the figure table for each rule, legacy
+  records giving the figures they gave, the four-contributed-devices
+  shape, the acquired date from the link and its refusals, the disposal
+  floor, `accumulated_posted` and its edges: a run dated after `as_of`, a
+  reversal dated after it, a reversal dated before its run, a reinstated
+  run, disposal on and after `as_of`, `check_depreciation_run` and
+  `record_depreciation_run`); `tax_capital.rs` (tax-basis capital per
+  member with a cash contribution, a contribution of property, a
+  distribution and a year of depreciation; next year's beginning; cash-only
+  books; property without a basis; property distributed; the roll-forward
+  and reconciliation over spans); `properties.rs`
+  `prop_basis_figures_laws` (5,000 cases); `kernel_bridge.rs`
+  `basis_figures_agree`; Kani `basis_figures_laws` (`src/proofs.rs`, 83
+  checks, its cover satisfied); `spec_asset_tags.rs` (the register's
+  posted and scheduled figures, runs recorded as a store records them).
+- **ledger-store:** `asset_tags.rs` (`asset.basis_set` journaled under the
+  feature `asset_basis` (new books declare it as they are created),
+  replayed, reloaded from the database and rebuilt, and in the viewer; a
+  line whose figures disagree with today's formula still replays; an
+  unknown rule or method is newer, a malformed figure corrupt; pre-P3
+  `asset.tax_basis_set` lines give the figures they gave; P2's v12
+  database left as it is while this version builds its v13 file, runs
+  keyed by entry (`a_p2_database_is_left_and_v13_built_from_the_journal`);
+  v9 and v10 databases under this version's name rebuilt). The old books
+  (`books_an_earlier_version_wrote_open_to_its_figures`) open to exactly
+  their figures.
+- **ledger-mcp:** `spec_assets.rs` (the aliases `purchase_date`,
+  `in_service`, `tax_basis_rule`, `contributor_basis` and the old rule
+  names, noted, and refused when they disagree; the acquired date from the
+  acquisition entry; a value at contribution required; every refusal
+  changing nothing; list_assets as of a date, disposed and not yet
+  acquired; the register export's columns and totals).
+- **ledger-package:** `package.rs`
+  `the_k1_worksheet_reports_tax_basis_capital` (the CSV line by line).
+- **bookspec:** the one loader (`ledger-core/tests/bookspec.rs`) runs the
+  assets' examples in the shared shape: `setup.assets` with `acquired_by`
+  and `basis`, a `[[changes]]` `correct_asset`, and the queries
+  `register_row`, `register_totals`, `asset_basis`, `k1_tax_basis` and
+  `k1_reconciliation` (keyed `"<member>.<line>"`, beside `k1`'s book
+  figures); refused: a register row before the asset was acquired
+  (`a_register_row_before_the_asset_was_acquired_is_refused`), an
+  `acquired_by` naming an event with no entry
+  (`an_asset_acquired_by_an_event_with_no_entry_is_refused`), a figure for
+  a tax line the books can't know (`a_tax_line_the_books_cant_know_is_open`)
+  and a member's reconciliation leaving a cause out
+  (`a_members_reconciliation_shows_every_cause`).
+- **ledger-import:** `asset_register.rs` (`pdf_shows_723_and_depreciable_basis`
+  and the other PDF checks) and `spec_import.rs` (XLSX columns, totals,
+  reconciliation and notes).
+- **ledger-gui:** `tests/assets.rs` (`basis_figures_are_ledger_cores`,
+  `journal_text_names_each_basis_figure`, the "Confirm its value" and
+  "Choose a §704(c) method" items); `pages/assets.rs`
+  (`an_assets_page_shows_its_own_book_value`: cost less posted, the
+  schedule beside it); `pages/reports.rs`
+  (`asset_register_report_carries_tax_basis`).
+
+**For P12 (mutation targets):** `kernel::basis_figures` (min for max, the
+sign of the gain, purchase to a contribution); `Ledger::accumulated_posted`
+and `assets::run_chain_entries` (`<=` for `<` on the entry and reversal
+dates, the disposed → 0 branch, the alternating sign); `live_depreciation_run`'s
+reversal test; `check_depreciation_run`'s arms; the register filter
+`acquired <= as_of` and `asset_acquired_date`'s min; `AssetBasis::check`,
+`check_journaled` and `check_legacy_journaled` arms; the acquisition and
+in-service date refusals; the disposal floor; the MCP `aliased` logic
+(both given and differing); `asset_basis_from_journal` (newer vs corrupt);
+the projection loader's two key sets; `tax_capital::share` and
+`entry_property` (the mismatch branch, the unknown sum), the open-item
+conditions (`in_service`, the disposal window), and the reconciliation's
+signs.
 
 ## Benchmarks (baseline 2026-10-13)
 

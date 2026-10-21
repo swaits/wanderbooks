@@ -61,7 +61,7 @@ fn van(store: &mut Store, dollars: u64, cost_acct: u64, accum_acct: u64, expense
     store
         .register_asset(NewAsset {
             description: "Sprinter van".to_string(),
-            purchase_date: date(2026, 1, 15),
+            in_service_date: date(2026, 1, 15),
             cost: usd(&dollars.to_string()),
             salvage_value: usd("0"),
             useful_life_months: 60,
@@ -230,7 +230,7 @@ fn rejected_asset_registration_journals_nothing() {
     let (cost, accum, expense, _, _) = asset_accounts(&mut store);
     let bad = NewAsset {
         description: "Bad".to_string(),
-        purchase_date: date(2026, 1, 1),
+        in_service_date: date(2026, 1, 1),
         cost: usd("1000"),
         salvage_value: usd("1000"), // salvage >= cost: invalid
         useful_life_months: 12,
@@ -255,7 +255,7 @@ fn asset_x(store: &mut Store, cost: u64, accum: u64, expense: u64) -> u64 {
     store
         .register_asset(NewAsset {
             description: "Asset X".to_string(),
-            purchase_date: date(2026, 1, 1),
+            in_service_date: date(2026, 1, 1),
             cost: usd("12000.00"),
             salvage_value: usd("0"),
             useful_life_months: 12,
@@ -313,7 +313,7 @@ fn defect22_a_disposal_in_the_final_month_posts_depreciation_by_days() {
     // The books' accumulated equals the disposed schedule's.
     let a = store.ledger().get_asset(x).unwrap();
     assert_eq!(
-        ledger_core::accumulated_depreciation(a, NaiveDate::MAX).unwrap(),
+        ledger_core::accumulated_scheduled_through(a, NaiveDate::MAX).unwrap(),
         dec("11322.58")
     );
     store.verify().unwrap();
@@ -552,7 +552,7 @@ fn run_depreciation_posts_nothing_for_a_month_that_rounds_to_nothing() {
     let tiny = store
         .register_asset(NewAsset {
             description: "Cable".to_string(),
-            purchase_date: date(2026, 1, 1),
+            in_service_date: date(2026, 1, 1),
             cost: usd("0.01"),
             salvage_value: usd("0"),
             useful_life_months: 3,
@@ -587,7 +587,7 @@ fn jpy_depreciation_runs_post_whole_yen() {
     let id = store
         .register_asset(NewAsset {
             description: "Lathe".to_string(),
-            purchase_date: date(2026, 1, 1),
+            in_service_date: date(2026, 1, 1),
             cost: yen("100000"),
             salvage_value: yen("0"),
             useful_life_months: 12,

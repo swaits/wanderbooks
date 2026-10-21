@@ -677,6 +677,7 @@ fn string_for(name: &str, node: &Value, p: &Places) -> BoxedStrategy<Value> {
         "ss_",
         "medicare",
         "deductions",
+        "fmv",
     ];
     if n.contains("period") && !n.contains("period_") {
         likely.extend(pick(period_like));
@@ -992,11 +993,13 @@ fn inputs_that_once_panicked_are_refused_or_answered() {
             json!({"description": "y", "purchase_date": "2026-01-01", "cost": "100.00",
                    "useful_life_months": 12, "cost_account": "1500",
                    "accum_depr_account": "1501", "expense_account": "6100",
-                   "tax_basis_rule": "carryover", "contributor_basis": MAX}),
+                   "tax_basis_rule": "carryover", "contributor_basis": MAX,
+                   "fmv_at_contribution": MAX}),
         ),
         (
             "books.set_asset_tax_basis",
-            json!({"asset": "1", "rule": "carryover", "contributor_basis": MAX}),
+            json!({"asset": "1", "rule": "carryover", "contributor_basis": MAX,
+                   "fmv_at_contribution": MAX}),
         ),
         (
             "books.export",

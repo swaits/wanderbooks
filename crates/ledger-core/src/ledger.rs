@@ -2225,10 +2225,10 @@ impl Ledger {
     ///   6. IF a journaled MembersCumulative names a start other than the
     ///      one the books derive: SHOULD refuse (InvalidMembers)
     ///      BECAUSE replay would split differently from the journal.
-    ///   7. IF 50/50 members closed −399.23 in January (A −199.62, B
-    ///      −199.61), February closed to retained earnings, and March closes
-    ///      −399.23 to the members: SHOULD give A −199.61, B −199.62, so
-    ///      each has −399.23 (the count skips February's close).
+    ///   7. IF 50/50 members closed −287.53 in January (A −143.77, B
+    ///      −143.76), February closed to retained earnings, and March closes
+    ///      −287.53 to the members: SHOULD give A −143.76, B −143.77, so
+    ///      each has −287.53 (the count skips February's close).
     /// ```
     pub fn close_period_to(
         &mut self,

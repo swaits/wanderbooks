@@ -205,50 +205,50 @@ const THIRDS: [&str; 3] = ["0.3333", "0.3333", "0.3334"];
 // The regression (audit F52, 2026-10-16, anonymized)
 // ---------------------------------------------------------------------------
 
-/// Regression (P3 defect 17; audit F52's −399.23, anonymized): members A
-/// and B at half each. January's net loss of 399.23 closes to them: exact
-/// −199.615 each, so A −199.62, B −199.61 (the tie to the member listed
+/// Regression (P3 defect 17; audit F52's −287.53, anonymized): members A
+/// and B at half each. January's net loss of 287.53 closes to them: exact
+/// −143.765 each, so A −143.77, B −143.76 (the tie to the member listed
 /// first). February's 10.00 loss closes to retained earnings. March's
-/// 399.23 loss closes to them again. The run rule (2026-10-13 to P3)
+/// 287.53 loss closes to them again. The run rule (2026-10-13 to P3)
 /// started over at March, handing A the tied cent a second time: A
-/// −399.24, B −399.22 for an exact −399.23 each. Now February's close is
-/// skipped and March continues January's count: the running −798.46 splits
-/// −399.23 each, less January's −199.62 / −199.61, so March gives A
-/// −199.61 and B −199.62. The March entry: Cr 6000 399.23, Dr 3000 199.61,
-/// Dr 3001 199.62.
+/// −287.54, B −287.52 for an exact −287.53 each. Now February's close is
+/// skipped and March continues January's count: the running −575.06 splits
+/// −287.53 each, less January's −143.77 / −143.76, so March gives A
+/// −143.76 and B −143.77. The March entry: Cr 6000 287.53, Dr 3000 143.76,
+/// Dr 3001 143.77.
 #[test]
 fn the_audit_odd_cent_never_piles_up_across_closes() {
     type Rule = fn(Vec<MemberClose>) -> CloseTo;
     let (run, cumulative): (Rule, Rule) = (CloseTo::MembersRun, CloseTo::Members);
     for (rule, a, b) in [
-        (run, "-399.24", "-399.22"),
-        (cumulative, "-399.23", "-399.23"),
+        (run, "-287.54", "-287.52"),
+        (cumulative, "-287.53", "-287.53"),
     ] {
         let mut co = company(Currency::USD, 2);
         let to = rule(co.members(&[0, 1], &HALF));
-        let jan = co.month(1, "-399.23", &to);
+        let jan = co.month(1, "-287.53", &to);
         let jan_entry = co.l.get_period(jan).unwrap().closing_entry.unwrap();
         assert_eq!(
             co.lines(jan_entry),
             [
-                line("6000", Side::Credit, "399.23"),
-                line("3000", Side::Debit, "199.62"),
-                line("3001", Side::Debit, "199.61"),
+                line("6000", Side::Credit, "287.53"),
+                line("3000", Side::Debit, "143.77"),
+                line("3001", Side::Debit, "143.76"),
             ]
         );
         co.month(2, "-10.00", &CloseTo::RetainedEarnings { sweep: vec![] });
-        let mar = co.month(3, "-399.23", &to);
+        let mar = co.month(3, "-287.53", &to);
         assert_eq!(co.capitals(), decs(&[a, b]));
         let retained = co.l.chart().find_by_code("3999").unwrap().id;
         assert_eq!(co.l.account_balance(retained).unwrap(), dec("-10.00"));
-        if a == "-399.23" {
+        if a == "-287.53" {
             let mar_entry = co.l.get_period(mar).unwrap().closing_entry.unwrap();
             assert_eq!(
                 co.lines(mar_entry),
                 [
-                    line("6000", Side::Credit, "399.23"),
-                    line("3000", Side::Debit, "199.61"),
-                    line("3001", Side::Debit, "199.62"),
+                    line("6000", Side::Credit, "287.53"),
+                    line("3000", Side::Debit, "143.76"),
+                    line("3001", Side::Debit, "143.77"),
                 ]
             );
             let (since, split) = co.l.member_close_split(mar).unwrap();
@@ -257,8 +257,8 @@ fn the_audit_odd_cent_never_piles_up_across_closes() {
             assert_eq!(
                 rows,
                 [
-                    (dec("-199.61"), dec("-399.23"), dec("-399.23")),
-                    (dec("-199.62"), dec("-399.23"), dec("-399.23")),
+                    (dec("-143.76"), dec("-287.53"), dec("-287.53")),
+                    (dec("-143.77"), dec("-287.53"), dec("-287.53")),
                 ]
             );
         }

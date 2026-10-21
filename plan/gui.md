@@ -37,7 +37,7 @@ journal with its verification status.
    hash-chained journal and the blob store and builds its own in-memory
    view (`ledger_store::Snapshot`). Changes happen through the agent (MCP).
    Where the GUI finds something to fix, it offers a ready-to-paste prompt
-   for the agent ("Attach the receipt for entry 12 — Anthropic, $5.82").
+   for the agent ("Attach the receipt for entry 12 — Anthropic, $7.40").
 5. **Live.** It follows the journal: a change made by the agent appears
    within a second, highlighted as new.
 6. **Numbers are typography.** Tabular figures everywhere (Inter with

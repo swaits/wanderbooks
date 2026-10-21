@@ -602,10 +602,10 @@ Defect 17 (rules.md B-13; D-10, D-38), built without its mutation run
 worked by hand in the test's comment.
 
 **The named regression.** `the_audit_odd_cent_never_piles_up_across_closes`
-(`ledger-core` `tests/odd_cent.rs`): audit F52's −399.23 at 50/50,
+(`ledger-core` `tests/odd_cent.rs`): an audit finding's −287.53 at 50/50,
 anonymized, with a close to retained earnings between two members closes.
-The run rule left A −399.24 / B −399.22; the rule since P3 gives −399.23
-each (March: Dr 3000 199.61, Dr 3001 199.62). Its bookspec example is
+The run rule left A −287.54 / B −287.52; the rule since P3 gives −287.53
+each (March: Dr 3000 143.76, Dr 3001 143.77). Its bookspec example is
 `bookspec/examples/members-close.odd-cent-across-closes.toml`; it and the
 other `members-close.*` examples are checked with every example by
 `ledger-core` `tests/bookspec.rs` (`every_bookspec_example_holds`).

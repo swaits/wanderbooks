@@ -61,7 +61,7 @@ fn attachment_name(b: &Books, id: u64) -> String {
 }
 
 /// "Tax basis of FL-0001: personal-use conversion, contributor's basis
-/// $1,917.21 → tax basis $1,650.00". The tax basis is ledger-core's
+/// $2,000.00 → tax basis $1,700.00". The tax basis is ledger-core's
 /// (`Asset::tax_basis`) for the event's rule and basis on the asset's
 /// book cost, which never changes once registered.
 fn tax_basis_text(b: &Books, asset_id: Option<u64>, p: &Value) -> String {

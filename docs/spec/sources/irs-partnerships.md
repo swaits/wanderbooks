@@ -1,5 +1,5 @@
 # Partnerships: shares of income and capital accounts
-Governs `CloseTo::Members` and the members' equity statement. Partners' shares come from the partnership agreement (IRC §704(a)); Form 1065 reports each partner's capital account (Schedule K-1 item L) and the changes in them (Schedule M-2). No authority prescribes how to round a share to the cent: that rule is the owner's decision (largest remainder, 2026-10-13).
+Governs `CloseTo::Members` and the members' equity statement. Partners' shares come from the partnership agreement (IRC §704(a)); a partner's capital account is one running balance of what they contributed, their allocations of income and loss, and what was distributed to them (Treas. Reg. §1.704-1(b)(2)(iv)(b)); when a partner's interest changes during the year, the distributive shares take the varying interests into account, period by period (IRC §706(d)(1), Treas. Reg. §1.706-4(a)); Form 1065 reports each partner's capital account on the tax basis (Schedule K-1 item L) and the changes in them (Schedule M-2). No authority prescribes how to round a share to the cent: that rule is the owner's decision (largest remainder, 2026-10-13), counted from the company's first close (D-10, 2026-10-16).
 
 ## 26 U.S.C. §704(a)-(b)
 Source: <https://www.law.cornell.edu/uscode/text/26/704>  
@@ -24,3 +24,47 @@ SHA-256 of the retrieved file (`i1065.txt`): `364ec05f6a688447def50169604ec0aa97
 **Rounding on the return (not in the books)**
 
 > The partnership may enter decimal points and cents when preparing its return. However, it should round off cents to whole dollars on its return, forms, and schedules to make completing its return easier. The partnership must either round off all amounts on the return to whole dollars, or use cents for all amounts. To round, drop amounts under 50 cents and increase amounts from 50 to 99 cents to the next dollar. For example, $8.40 rounds to $8 and $8.50 rounds to $9. If two or more amounts are added to figure the amount to enter on a line, include cents when adding the amounts and round off only the total.
+
+## Treas. Reg. §1.704-1(b)(2)(iv)(b): what a capital account carries
+Source: <https://www.ecfr.gov/api/renderer/v1/content/enhanced/current/title-26?part=1&section=1.704-1>  
+Retrieved: 2026-10-20  
+SHA-256 of the retrieved file (`ecfr17041.html`): `0eafa6f27d7df3a3cc93ebad7cbdc0c37a49b055c53a43d5e5e8efa29f80beeb`
+
+> (b) Basic rules. Except as otherwise provided in this paragraph (b)(2)(iv), the partners' capital accounts will be considered to be determined and maintained in accordance with the rules of this paragraph (b)(2)(iv) if, and only if, each partner's capital account is increased by (1) the amount of money contributed by him to the partnership, (2) the fair market value of property contributed by him to the partnership (net of liabilities that the partnership is considered to assume or take subject to), and (3) allocations to him of partnership income and gain (or items thereof), including income and gain exempt from tax and income and gain described in paragraph (b)(2)(iv)(g) of this section, but excluding income and gain described in paragraph (b)(4)(i) of this section; and is decreased by (4) the amount of money distributed to him by the partnership, (5) the fair market value of property distributed to him by the partnership (net of liabilities that such partner is considered to assume or take subject to), (6) allocations to him of expenditures of the partnership described in section 705 (a)(2)(B), and (7) allocations of partnership loss and deduction (or item thereof), including loss and deduction described in paragraph (b)(2)(iv)(g) of this section, but excluding items described in (6) above and loss or deduction described in paragraphs (b)(4)(i) or (b)(4)(iii) of this section; and is otherwise adjusted in accordance with the additional rules set forth in this paragraph (b)(2)(iv). For purposes of this paragraph, a partner who has more than one interest in a partnership shall have a single capital account that reflects all such interests, regardless of the class of interests owned by such partner (e.g., general or limited) and regardless of the time or manner in which such interests were acquired.
+
+## 26 U.S.C. §706(d)(1): a change in a partner's interest
+Source: <https://www.law.cornell.edu/uscode/text/26/706>  
+Retrieved: 2026-10-20  
+SHA-256 of the retrieved file (`usc706.html`): `d716b72177fb0f8e7ae0f5b98faf63d6e40c444f7e9368443060042b761fd53c`
+
+> (d) Determination of distributive share when partner’s interest changes (1) In general Except as provided in paragraphs (2) and (3), if during any taxable year of the partnership there is a change in any partner’s interest in the partnership, each partner’s distributive share of any item of income, gain, loss, deduction, or credit of the partnership for such taxable year shall be determined by the use of any method prescribed by the Secretary by regulations which takes into account the varying interests of the partners in the partnership during such taxable year.
+
+## Treas. Reg. §1.706-4(a): varying interests, segment by segment
+Source: <https://www.ecfr.gov/api/renderer/v1/content/enhanced/current/title-26?part=1&section=1.706-4>  
+Retrieved: 2026-10-20  
+SHA-256 of the retrieved file (`ecfr17064.html`): `e7b07463190db6a610dee37660efefdd73be81b21efd81517dc714dcd72c4277`
+
+**§1.706-4(a)(1)**
+
+> (1) Variations subject to this section. Except as provided in paragraph (a)(2) of this section, this section provides rules for determining the partners' distributive shares of partnership items when a partner's interest in a partnership varies during the taxable year as a result of the disposition of a partial or entire interest in a partnership as described in § 1.706-1(c)(2) and (3), or with respect to a partner whose interest in a partnership is reduced as described in § 1.706-1(c)(3), including by the entry of a new partner (collectively, a “variation”).
+
+**§1.706-4(a)(2), its last sentence**
+
+> In all cases, all partnership items for each taxable year must be allocated among the partners, and no partnership items may be duplicated, regardless of the particular provision of section 706 (or other Code section) which applies, and regardless of the method or convention adopted by the partnership.
+
+**§1.706-4(a)(3)(vii), its first three sentences**
+
+> (vii) Seventh, apportion the partnership's items for the year among its segments. The partnership shall determine the items of income, gain, loss, deduction, and credit of the partnership for each segment. In general, a partnership shall treat each segment as though the segment were a separate distributive share period.
+
+## Partner's Instructions for Schedule K-1 (Form 1065) (2025)
+Source: <https://www.irs.gov/instructions/i1065sk1>  
+Retrieved: 2026-10-20  
+SHA-256 of the retrieved file (`i1065sk1.html`): `d7d6298286601fd95ab8e445c10fd62499ea1e37f8e5c3531f8e1783862d8d03`
+
+**Item L, its first paragraph** (the partner's capital account, on the tax basis; the K-1 worksheet carries the book capital account, which the CPA converts)
+
+> The partnership must report your beginning capital account and ending capital account for the year using the tax-basis method, including the amount of capital you contributed to the partnership during the year, your share of the partnership’s current-year net income or loss as computed for tax purposes, any withdrawals and distributions made to you by the partnership, and any other increases or decreases to your capital account determined in a manner generally consistent with figuring the partner’s adjusted tax basis in its partnership interest (without regard to partnership liabilities), taking into account the rules and principles of sections 705, 722, 733, and 742. See the Instructions for Form 1065 for more details.
+
+**Basis Limitations, its third paragraph of five** (where "based on the partnership's books and records" comes from: not Item L)
+
+> Although the partnership provides an analysis of the partner’s capital account in item L of Schedule K-1, that information is based on the partnership’s books and records and can’t be used to figure the partner’s adjusted basis.

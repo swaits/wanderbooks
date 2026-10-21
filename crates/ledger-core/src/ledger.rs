@@ -2127,6 +2127,7 @@ impl Ledger {
                 closing_entry: None,
                 close_seq: None,
                 member_close: None,
+                members_closed: None,
             },
         );
         Ok(id)
@@ -2173,9 +2174,17 @@ impl Ledger {
     ///    - `RetainedEarnings`: account `3999`, created if missing.
     ///    - `Account`: one equity account (a sole proprietor's capital).
     ///    - `Members`: each member's capital account gets their share of
-    ///      the net, to the cent (odd cents by largest remainder; closes
-    ///      journaled before 2026-10-13 replay with the last member
-    ///      absorbing them), and their own distribution account.
+    ///      everything closed to these members and shares so far, to the
+    ///      currency's minor unit (odd units by largest remainder, ties to
+    ///      the member listed first), less what earlier closes gave them
+    ///      (rules.md B-13; D-10), and their own distribution account. The
+    ///      count starts at the first members close, or at the first since
+    ///      the members or shares last changed (`Ledger::members_regime`);
+    ///      closes to anything else are skipped. A close that posts an
+    ///      entry may carry a one-time true-up of rounding by closes made
+    ///      under an earlier rule (the journaled `MembersRun`,
+    ///      `MembersPerClose` and `MembersLastAbsorbs`, which replay as
+    ///      they were made).
     /// 3. Marks the period closed.
     ///
     /// Returns the closing entry's id, or `None` if there was nothing to
@@ -2191,12 +2200,20 @@ impl Ledger {
     ///      balance as of the period's last day.
     ///   2. The closing entry MUST balance, be dated the period's last day, and
     ///      credit equity with exactly the net income through that day (split
-    ///      among members by share, to the cent, by largest remainder).
+    ///      among members by share, to the currency's minor unit, by largest
+    ///      remainder, cumulatively).
     ///   3. Entries dated after the period MUST stay untouched (their income
     ///      belongs to their own period).
     ///   4. A sweep account (draws, distributions, dividends) MUST end at zero,
     ///      its balance moved into its target.
     ///   5. NEVER post a closing entry when there is nothing to close.
+    ///   6. After a members close that posts, each member's total from the
+    ///      count's closes MUST be one largest-remainder split of everything
+    ///      they closed: under one minor unit from their exact share. A
+    ///      members close that posts nothing credits no one (any true-up
+    ///      waits for the next close that posts).
+    ///   7. NEVER changes a posted close: earlier closes replay under the
+    ///      rule they were journaled with.
     /// SCENARIOS:
     ///   1. IF the period is unknown or already closed: SHOULD refuse.
     ///   2. IF a draft is dated inside it: SHOULD refuse (DraftsInPeriod).
@@ -2205,6 +2222,13 @@ impl Ledger {
     ///      member shares aren't positive and summing to 1: SHOULD refuse.
     ///   5. IF closing to retained earnings and 3999 exists but isn't a
     ///      postable equity account: SHOULD refuse (ControlAccountMismatch).
+    ///   6. IF a journaled MembersCumulative names a start other than the
+    ///      one the books derive: SHOULD refuse (InvalidMembers)
+    ///      BECAUSE replay would split differently from the journal.
+    ///   7. IF 50/50 members closed −399.23 in January (A −199.62, B
+    ///      −199.61), February closed to retained earnings, and March closes
+    ///      −399.23 to the members: SHOULD give A −199.61, B −199.62, so
+    ///      each has −399.23 (the count skips February's close).
     /// ```
     pub fn close_period_to(
         &mut self,
@@ -2223,11 +2247,13 @@ impl Ledger {
         self.preview_close_period_to(id, to)?;
         let period = self.periods.get(&id).expect("previewed").clone();
         let (closings, net) = self.income_closings(period.end);
+        let close_seq = self.next_close_seq();
 
         // (account, amount to credit; negative debits): the net to its
         // targets, and each sweep account's balance into its target.
         let mut equity: Vec<(AccountId, Decimal)> = Vec::new();
         let mut sweep_lines: Vec<(AccountId, AccountId, Decimal)> = Vec::new();
+        let mut members_closed = None;
         let mut sweep = |from: AccountId, into: AccountId, this: &Self| {
             // An equity balance (credit-normal) is −movement; zeroing it
             // moves exactly that much into the target.
@@ -2259,30 +2285,27 @@ impl Ledger {
                     sweep(*a, *into, self);
                 }
             }
-            periods::CloseTo::Members(members)
-            | periods::CloseTo::MembersPerClose(members)
-            | periods::CloseTo::MembersLastAbsorbs(members) => {
-                let shares: Vec<Decimal> = members.iter().map(|m| m.share).collect();
-                let parts = match to {
-                    periods::CloseTo::MembersLastAbsorbs(_) => {
-                        periods::allocate_last_absorbs(net, &shares)
-                    }
-                    periods::CloseTo::MembersPerClose(_) => periods::allocate(net, &shares),
-                    _ => {
-                        // Cumulative: what the run gives each member with
-                        // this close, less what it gave them before.
-                        let before = self.member_close_run(&member_key(members));
-                        let after = periods::allocate(before + net, &shares);
-                        let prior = periods::allocate(before, &shares);
-                        after.iter().zip(&prior).map(|(a, p)| a - p).collect()
-                    }
-                };
-                for (m, part) in members.iter().zip(parts) {
-                    equity.push((m.capital, part));
+            _ => {
+                let members = to.members().expect("every other target is members");
+                // The sweeps first: whether an entry posts decides whether
+                // the parts may carry a true-up. Their lines still follow
+                // the parts in the entry.
+                for m in members {
                     if let Some(d) = m.distributions {
                         sweep(d, m.capital, self);
                     }
                 }
+                let posts = !closings.is_empty() || !sweep_lines.is_empty();
+                let (parts, rule) = self.members_split(to, net, posts, close_seq)?;
+                for (m, part) in members.iter().zip(&parts) {
+                    equity.push((m.capital, *part));
+                }
+                members_closed = Some(periods::MembersClosed {
+                    members: member_key(members),
+                    net,
+                    parts,
+                    rule,
+                });
             }
         }
 
@@ -2314,24 +2337,199 @@ impl Ledger {
             Some(entry)
         };
 
-        let close_seq = self
-            .periods
-            .values()
-            .filter(|p| p.status == PeriodStatus::Closed)
-            .count() as u64
-            + 1;
         let p = self.periods.get_mut(&id).expect("period exists");
         p.status = PeriodStatus::Closed;
         p.closing_entry = closing_entry;
         p.close_seq = Some(close_seq);
         p.member_close = match to {
-            periods::CloseTo::Members(members) => Some(periods::MemberCloseRecord {
+            periods::CloseTo::MembersRun(members) => Some(periods::MemberCloseRecord {
                 members: member_key(members),
                 net,
             }),
             _ => None,
         };
+        p.members_closed = members_closed;
         Ok(closing_entry)
+    }
+
+    /// The number the next close takes ([`Period::close_seq`]): one more
+    /// than the closes so far.
+    fn next_close_seq(&self) -> u64 {
+        self.periods
+            .values()
+            .filter(|p| p.status == PeriodStatus::Closed)
+            .count() as u64
+            + 1
+    }
+
+    /// What a members close (`to`, closing `net`; `posts` when its entry
+    /// posts; numbered `close_seq`) credits each member, in `to`'s order,
+    /// and the rule it is made under: the rule journaled for replayed
+    /// closes, else the cumulative rule (rules.md B-13): each member's
+    /// split of the count's running total, to the base currency's minor
+    /// unit, less what the count's earlier closes gave them. A close that
+    /// posts nothing credits nothing, so a true-up of earlier rounding
+    /// rides only on an entry that posts (INVARIANT 5 stays true).
+    fn members_split(
+        &self,
+        to: &periods::CloseTo,
+        net: Decimal,
+        posts: bool,
+        close_seq: u64,
+    ) -> Result<(Vec<Decimal>, periods::MemberRule), LedgerError> {
+        use periods::{CloseTo, MemberRule};
+        let members = to.members().expect("a members close");
+        let shares: Vec<Decimal> = members.iter().map(|m| m.share).collect();
+        Ok(match to {
+            CloseTo::MembersLastAbsorbs(_) => (
+                periods::allocate_last_absorbs(net, &shares),
+                MemberRule::LastAbsorbs,
+            ),
+            CloseTo::MembersPerClose(_) => (periods::allocate(net, &shares), MemberRule::PerClose),
+            CloseTo::MembersRun(_) => {
+                // The run rule: what the run gives each member with this
+                // close, less what it gave them before.
+                let before = self.member_close_run(&member_key(members));
+                let after = periods::allocate(before + net, &shares);
+                let prior = periods::allocate(before, &shares);
+                let parts = after.iter().zip(&prior).map(|(a, p)| a - p).collect();
+                (parts, MemberRule::Run)
+            }
+            _ => {
+                let key = member_key(members);
+                let regime = self.members_regime(&key, None);
+                let since_seq = regime.since_seq.unwrap_or(close_seq);
+                let parts = if posts {
+                    regime.allocate(
+                        &key,
+                        regime.closed + net,
+                        &regime.given,
+                        self.base_currency.allocation_places(),
+                    )?
+                } else {
+                    vec![Decimal::ZERO; members.len()]
+                };
+                (parts, MemberRule::Cumulative { since_seq })
+            }
+        })
+    }
+
+    /// The members regime a close with `members` ((capital account, share)
+    /// pairs) belongs to (rules.md B-13), counting only closes whose
+    /// period ends on or before `through` (all when `None`): walking the
+    /// closes newest first by [`Period::close_seq`], members closes under
+    /// any rule with the same SET of (capital, share) pairs (order and
+    /// distribution accounts ignored; 0.5 is 0.50), skipping closes to
+    /// anything else (they allocate nothing to members), and stopping at
+    /// the first members close with another set. A change of members or
+    /// shares starts a new count (26 U.S.C. §706(d)(1); Treas. Reg.
+    /// §1.706-4(a)(3)(vii): each segment its own distributive share
+    /// period); income closed under the old shares is never re-split.
+    ///
+    /// The date filter keeps a prefix of the closes in close order because
+    /// period ends rise with close order: a close is refused while a later
+    /// period is closed (CloseOutOfOrder) or when its end lies in a closed
+    /// period (`preview_close_period_to`), pinned by
+    /// `period_ends_rise_with_close_order`.
+    ///
+    /// As of a day no count with `members` holds yet, the earnings not
+    /// closed by then go to the count the next members close begins, when
+    /// it is these members': its first close's order is the regime's
+    /// [`Regime::order`], so their tied units go as they will once it
+    /// counts them, and a reorder of the members in the settings since
+    /// moves no cent on those days either.
+    pub(crate) fn members_regime(
+        &self,
+        members: &[(AccountId, Decimal)],
+        through: Option<NaiveDate>,
+    ) -> Regime {
+        let mut regime = self.regime_where(members, |p| through.is_none_or(|d| p.end <= d));
+        if let Some(day) = through
+            && regime.order.is_empty()
+        {
+            let next = self
+                .periods
+                .values()
+                .filter(|p| p.status == PeriodStatus::Closed && p.end > day)
+                .filter_map(|p| Some((p.close_seq, p.members_closed.as_ref()?)))
+                .min_by_key(|&(seq, _)| seq);
+            if let Some((_, m)) = next
+                && same_member_set(&m.members, members)
+            {
+                regime.order.clone_from(&m.members);
+            }
+        }
+        regime
+    }
+
+    /// [`Self::members_regime`] over the closed periods `include` keeps.
+    fn regime_where(
+        &self,
+        members: &[(AccountId, Decimal)],
+        include: impl Fn(&Period) -> bool,
+    ) -> Regime {
+        let mut closed: Vec<&Period> = self
+            .periods
+            .values()
+            .filter(|p| p.status == PeriodStatus::Closed && include(p))
+            .collect();
+        closed.sort_by_key(|p| std::cmp::Reverse(p.close_seq));
+        let mut regime = Regime {
+            since_seq: None,
+            closed: Decimal::ZERO,
+            given: vec![Decimal::ZERO; members.len()],
+            order: Vec::new(),
+        };
+        for p in closed {
+            let Some(m) = &p.members_closed else {
+                continue;
+            };
+            if !same_member_set(&m.members, members) {
+                break;
+            }
+            regime.since_seq = p.close_seq;
+            regime.order.clone_from(&m.members);
+            regime.closed += m.net;
+            for ((capital, _), part) in m.members.iter().zip(&m.parts) {
+                if let Some(i) = members.iter().position(|(c, _)| c == capital) {
+                    regime.given[i] += *part;
+                }
+            }
+        }
+        regime
+    }
+
+    /// A closed members period's split under the cumulative rule
+    /// (books.close_period's `members`): the close its count starts at,
+    /// and per member, in the close's order, what this close credited
+    /// them, their running total from the count's closes through it, and
+    /// their exact share of everything the count closed through it. `None`
+    /// for a period not closed to members, or closed under an earlier
+    /// rule.
+    pub fn member_close_split(&self, id: PeriodId) -> Option<(u64, Vec<periods::MemberSplit>)> {
+        let p = self.periods.get(&id)?;
+        let m = p.members_closed.as_ref()?;
+        let periods::MemberRule::Cumulative { since_seq } = m.rule else {
+            return None;
+        };
+        let seq = p.close_seq?;
+        let regime = self.regime_where(&m.members, |q| q.close_seq <= Some(seq));
+        let split = m
+            .members
+            .iter()
+            .zip(&m.parts)
+            .zip(&regime.given)
+            .map(
+                |((&(capital, share), &part), &running)| periods::MemberSplit {
+                    capital,
+                    share,
+                    part,
+                    running,
+                    exact: share * regime.closed,
+                },
+            )
+            .collect();
+        Some((since_seq, split))
     }
 
     /// The net closed by the run of cumulative members closes, with exactly
@@ -2408,9 +2606,13 @@ impl Ledger {
                 accounts.push(*into);
                 accounts.extend(sweep);
             }
-            periods::CloseTo::Members(members)
-            | periods::CloseTo::MembersPerClose(members)
-            | periods::CloseTo::MembersLastAbsorbs(members) => {
+            _ => {
+                let members = to.members().expect("every other target is members");
+                if let periods::CloseTo::MembersCumulative { since_seq: 0, .. } = to {
+                    return Err(LedgerError::InvalidMembers(
+                        "a count of members closes starts at close 1 or later, not 0".into(),
+                    ));
+                }
                 let total: Decimal = members.iter().map(|m| m.share).sum();
                 if members.is_empty()
                     || total != Decimal::ONE
@@ -2467,7 +2669,9 @@ impl Ledger {
     /// [`Self::close_period_to`] would succeed — the period exists and is
     /// open, no draft entries are dated inside it, no later period is
     /// closed, the closing date isn't inside another closed period, and the
-    /// target is valid — and returns the id the closing entry will receive,
+    /// target is valid (for members: their split computes exactly, and a
+    /// journaled start is the one the books derive) — and returns the id
+    /// the closing entry will receive,
     /// or `None` when the close posts no entry. Stores call this before
     /// journaling so a failed close leaves no journal line behind.
     pub fn preview_close_period_to(
@@ -2510,20 +2714,36 @@ impl Ledger {
         // An entry posts exactly when there is income to close or a sweep
         // account with a balance. Account creation (Retained Earnings) does
         // not consume entry ids.
-        let (closings, _) = self.income_closings(period.end);
+        let (closings, net) = self.income_closings(period.end);
         let sweeps: Vec<AccountId> = match to {
             periods::CloseTo::RetainedEarnings { sweep }
             | periods::CloseTo::Account { sweep, .. } => sweep.clone(),
-            periods::CloseTo::Members(members)
-            | periods::CloseTo::MembersPerClose(members)
-            | periods::CloseTo::MembersLastAbsorbs(members) => {
-                members.iter().filter_map(|m| m.distributions).collect()
-            }
+            _ => to
+                .members()
+                .expect("every other target is members")
+                .iter()
+                .filter_map(|m| m.distributions)
+                .collect(),
         };
         let any = !closings.is_empty()
             || sweeps
                 .iter()
                 .any(|a| !self.movement_through(*a, period.end).is_zero());
+        if to.members().is_some() {
+            // The journaled start must be the derived one, and the split
+            // must be computable: a close this refuses journals nothing.
+            let (_, rule) = self.members_split(to, net, any, self.next_close_seq())?;
+            if let (
+                periods::CloseTo::MembersCumulative { since_seq, .. },
+                periods::MemberRule::Cumulative { since_seq: derived },
+            ) = (to, rule)
+                && *since_seq != derived
+            {
+                return Err(LedgerError::InvalidMembers(format!(
+                    "this close was journaled counting the members' closes from close {since_seq}, but the books count them from close {derived}"
+                )));
+            }
+        }
         Ok(any.then_some(self.next_entry_id))
     }
 
@@ -5267,7 +5487,80 @@ fn check_line_size(amount: Decimal) -> Result<(), LedgerError> {
 }
 
 /// A members close's (capital account, share) list, in order: what a run
-/// of cumulative closes must share.
+/// of run-rule closes must share in that order, and a count of cumulative
+/// closes as a set ([`same_member_set`]).
 fn member_key(members: &[periods::MemberClose]) -> Vec<(AccountId, Decimal)> {
     members.iter().map(|m| (m.capital, m.share)).collect()
+}
+
+/// Two members closes' (capital account, share) lists name the same
+/// members with the same shares, in any order (rules.md B-13: a reorder of
+/// the members is not a change of members). Shares compare by value, so
+/// 0.5 is 0.50.
+fn same_member_set(a: &[(AccountId, Decimal)], b: &[(AccountId, Decimal)]) -> bool {
+    let sorted = |v: &[(AccountId, Decimal)]| {
+        let mut v = v.to_vec();
+        v.sort_unstable();
+        v
+    };
+    a.len() == b.len() && sorted(a) == sorted(b)
+}
+
+/// A members regime ([`Ledger::members_regime`]): the members closes with
+/// one set of members and shares since the last close with another.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Regime {
+    /// The close the count starts at (its [`Period::close_seq`]); `None`
+    /// when no members close with this set is counted yet.
+    pub since_seq: Option<u64>,
+    /// The net those closes closed, together (negative for a loss).
+    pub closed: Decimal,
+    /// What those closes credited each member, in the order asked for, by
+    /// capital account.
+    pub given: Vec<Decimal>,
+    /// The members as the count's first close listed them: the order its
+    /// tied odd units go in. As of a day before any close of a count, the
+    /// count the next members close begins, when it is these members'
+    /// ([`Ledger::members_regime`]). Empty when there is none.
+    pub order: Vec<(AccountId, Decimal)>,
+}
+
+impl Regime {
+    /// [`periods::allocate_cumulative`] of `total` among `members` against
+    /// `given` (both in `members`' order), the tied odd units to the member
+    /// the count's first close listed first ([`Regime::order`]; `members`'
+    /// own order when no close has begun the count), the parts back in `members`'
+    /// order. So a count's ties go to the same member whatever order later
+    /// closes, statements or the settings list the members in, and a
+    /// reorder of the members moves no cent (rules.md B-13, D-38).
+    pub(crate) fn allocate(
+        &self,
+        members: &[(AccountId, Decimal)],
+        total: Decimal,
+        given: &[Decimal],
+        places: u32,
+    ) -> Result<Vec<Decimal>, LedgerError> {
+        let order = if self.order.is_empty() {
+            members
+        } else {
+            &self.order
+        };
+        let index: Vec<usize> = order
+            .iter()
+            .map(|(capital, _)| {
+                members
+                    .iter()
+                    .position(|(c, _)| c == capital)
+                    .expect("a count's members are the members asked for")
+            })
+            .collect();
+        let shares: Vec<Decimal> = index.iter().map(|&i| members[i].1).collect();
+        let given: Vec<Decimal> = index.iter().map(|&i| given[i]).collect();
+        let split = periods::allocate_cumulative(total, &shares, &given, places)?;
+        let mut parts = vec![Decimal::ZERO; members.len()];
+        for (&i, part) in index.iter().zip(split) {
+            parts[i] = part;
+        }
+        Ok(parts)
+    }
 }

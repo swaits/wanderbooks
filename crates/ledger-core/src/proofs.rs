@@ -543,6 +543,176 @@ fn apportion_is_fair() {
     );
 }
 
+/// `kernel::apportion_cumulative` is `kernel::apportion` less what was
+/// given: it succeeds exactly when `apportion` would on the same inputs and
+/// the running total is in line range (the parts, unit and `given` are,
+/// here), and then each part is apportion's less its `given`, so each
+/// running total (given + part) is apportion's. With `apportion_is_exact`,
+/// the parts sum to the running total less what was given, and each
+/// running total is nothing or one unit above its rounded-down part (one
+/// of them may also take the sub-unit fraction). A refusal leaves the
+/// parts as they were.
+#[kani::proof]
+#[kani::unwind(5)]
+fn apportion_cumulative_is_exact() {
+    let (n, before, rems, unit, _, whole) = any_apportionment();
+    let given: [i64; AP] = core::array::from_fn(|_| any_amount());
+    let mut reference = before;
+    let apportioned = kernel::apportion(whole, &mut reference[..n], &rems[..n], unit);
+    let mut parts = before;
+    let ok = kernel::apportion_cumulative(whole, &mut parts[..n], &rems[..n], unit, &given[..n]);
+    assert_eq!(ok.is_some(), apportioned.is_some() && whole.in_line_range());
+    let mut against = false;
+    for i in 0..n {
+        if ok.is_some() {
+            assert_eq!(parts[i] + given[i], reference[i]);
+            against |= parts[i] < 0;
+        } else {
+            assert_eq!(parts[i], before[i]);
+        }
+    }
+    kani::cover!(
+        ok.is_some() && n == AP && against && whole > given[0] + given[1] + given[2],
+        "a true-up against the net's sign"
+    );
+}
+
+/// Bound on the amounts the drift harnesses explore (symbolic multiply and
+/// divide are costly for the solver; Lean's `allocW_drift` and
+/// `cumulative_drift` carry any weights and any amounts).
+const DRIFT: i64 = 1 << 12;
+
+/// **Bounded drift** (rules.md B-13) for members with these integer
+/// weights (shares w_i / W, W their sum): a cumulative members close,
+/// modelled as `periods::allocate_cumulative` runs it at whole minor units
+/// (unit 1), hands out exactly its net, and leaves every member's running
+/// total, given + part, within one unit of their exact share of
+/// everything closed, whatever earlier closes gave them (any `given`
+/// summing to what they closed: legacy rounding included). Scaled by W:
+/// |(given_i + part_i)·W − T·w_i| < W.
+fn drift_is_under_a_unit(weights: &[i64]) {
+    let n = weights.len();
+    let mut total_weight = 0i64;
+    for w in weights {
+        total_weight += w;
+    }
+    let closed: i64 = kani::any();
+    let net: i64 = kani::any();
+    kani::assume((-DRIFT..=DRIFT).contains(&closed) && (-DRIFT..=DRIFT).contains(&net));
+    // What earlier closes gave: anything, as long as it adds up.
+    let mut given = [0i64; AP];
+    let mut others = 0i64;
+    for g in given.iter_mut().take(n - 1) {
+        *g = kani::any();
+        kani::assume((-DRIFT..=DRIFT).contains(g));
+        others += *g;
+    }
+    given[n - 1] = closed - others;
+    // allocate_cumulative: |T| split by exact share, rounded toward zero,
+    // the remainders ranked; a loss runs on |T| against given negated.
+    let total = closed + net;
+    let magnitude = total.abs();
+    let loss = total < 0;
+    let mut parts = [0i64; AP];
+    let mut rems = [0i64; AP];
+    let mut against = [0i64; AP];
+    for i in 0..n {
+        parts[i] = magnitude * weights[i] / total_weight;
+        rems[i] = magnitude * weights[i] % total_weight;
+        against[i] = if loss { -given[i] } else { given[i] };
+    }
+    kernel::apportion_cumulative(magnitude, &mut parts[..n], &rems[..n], 1, &against[..n])
+        .expect("exact shares are fewer units short than there are members");
+    let mut sum = 0i64;
+    for i in 0..n {
+        if loss {
+            parts[i] = -parts[i];
+        }
+        sum += parts[i];
+        let drift = (given[i] + parts[i]) * total_weight - total * weights[i];
+        assert!(-total_weight < drift && drift < total_weight);
+    }
+    assert_eq!(sum, net);
+    kani::cover!(
+        loss && given[0] * total_weight != closed * weights[0],
+        "a loss, after an earlier split off the exact share"
+    );
+}
+
+/// [`drift_is_under_a_unit`] for two members at half each: every odd cent
+/// a tie.
+#[kani::proof]
+#[kani::unwind(4)]
+fn cumulative_close_never_drifts_a_unit_at_halves() {
+    drift_is_under_a_unit(&[1, 1]);
+}
+
+/// [`drift_is_under_a_unit`] for three members at 20% / 30% / 50%:
+/// remainders that differ.
+#[kani::proof]
+#[kani::unwind(4)]
+fn cumulative_close_never_drifts_a_unit_at_tenths() {
+    drift_is_under_a_unit(&[2, 3, 5]);
+}
+
+/// [`drift_is_under_a_unit`] for three members at 33.33% / 33.33% /
+/// 33.34%, the nearest decimal shares to a third each.
+#[kani::proof]
+#[kani::unwind(4)]
+fn cumulative_close_never_drifts_a_unit_at_near_thirds() {
+    drift_is_under_a_unit(&[3333, 3333, 3334]);
+}
+
+/// A cumulative members close balances: the nominal accounts' closing
+/// lines and each member's part of the running split (any earlier split
+/// of what was closed before) net to zero, whatever the true-up.
+#[kani::proof]
+#[kani::unwind(6)]
+fn cumulative_closing_entry_balances() {
+    const NOMINAL: usize = 3;
+    let nominal: [i64; NOMINAL] = core::array::from_fn(|_| {
+        let a = any_amount();
+        kani::assume((-(1 << 38)..=1 << 38).contains(&a));
+        a
+    });
+    let mut entry = [(Side::Debit, 0i64); NOMINAL + 2];
+    let mut len = 0;
+    for &m in &nominal {
+        if let Some(line) = kernel::closing_line(m) {
+            entry[len] = line;
+            len += 1;
+        }
+    }
+    let net = kernel::net(entry[..len].iter().copied()).expect("no overflow");
+    // Two members at half each; earlier closes gave them any split of
+    // what they closed.
+    let closed: i64 = kani::any();
+    kani::assume((-(1 << 38)..=1 << 38).contains(&closed));
+    let first = any_amount();
+    let given = [first, closed - first];
+    let total = closed + net;
+    let (magnitude, loss) = (total.abs(), total < 0);
+    let mut parts = [magnitude / 2, magnitude / 2];
+    let rems = [magnitude % 2, magnitude % 2];
+    let against = if loss { [-given[0], -given[1]] } else { given };
+    if kernel::apportion_cumulative(magnitude, &mut parts, &rems, 1, &against).is_none() {
+        // Only an earlier split out of line range is refused here.
+        assert!(!given[1].in_line_range());
+        return;
+    }
+    let mut true_up = false;
+    for p in parts {
+        let p = if loss { -p } else { p };
+        if let Some(line) = kernel::credit_line(p) {
+            entry[len] = line;
+            len += 1;
+            true_up |= net != 0 && (p > 0) != (net > 0);
+        }
+    }
+    assert_eq!(wide_net(&entry[..len]), 0);
+    kani::cover!(true_up, "a true-up line on a member");
+}
+
 // ---------------------------------------------------------------------------
 // The checker itself
 // ---------------------------------------------------------------------------

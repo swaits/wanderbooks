@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc a0b16d56ce3a210978ce651702fc7c5596cfb0c7d64cd5d611d50be203ad9ec0 # shrinks to months = [(0, 0, 0, 16009, 50271), (0, 0, 0, 3114, 37245)], kinds = [Open, Reversed, Members, Members, Members, Members, Members, Members, Members, Members, Members, Members], split = 1
+cc 10fbfe6e4565f45a6d1d71fd7b7645ae57d9c720d7de39d603a93a61f90622cb # shrinks to months = [(0, 0, 0, 20832, 1771), (0, 0, 0, 25554, 22500), (0, 0, 0, 69131, 5447), (0, 0, 0, 12460, 27233), (0, 0, 0, 57651, 18336), (0, 0, 0, 12444, 27), (0, 0, 0, 0, 0)], kinds = [Members, Members, Members, Members, Retained, Members, Members, Members, Members, Members, Members, Members], split = 1
+cc 477dcd5ca8c61a8af904ba1b3186d03816172fc4287df775f424503268ac17a9 # shrinks to months = [(0, 0, 0, 1730, 13639), (0, 0, 0, 5261, 12342), (0, 0, 0, 4627, 5345), (0, 0, 0, 5564, 3560), (0, 0, 0, 24083, 44249), (0, 0, 0, 5576, 93)], kinds = [Members, Members, Members, Members, Retained, Reversed, Members, Members, Members, Members, Members, Members], split = 1

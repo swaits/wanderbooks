@@ -1,0 +1,113 @@
+id = "members-close.statement-before-and-after-a-close"
+title = "A member's capital on a day is the same before and after its month closes"
+rule = "The statement of members' equity MUST split earnings not yet closed the way the next close to the members will (each member's split of everything closed plus those earnings, less their split of what was closed), so a member's capital as of a day MUST NOT change when a period ending on or before it is closed."
+status = "CHOICE"
+sources = ["Treas. Reg. §1.704-1(b)(2)(iv)(b)"]
+tags = ["partnership", "close", "rounding", "statement", "book", "us"]
+
+# Two members at 50/50; January's cent is closed to them, February's is
+# earned but not yet closed (event 3), then closed (event 4).
+#
+# By hand, from the rule:
+#   January's close: 0.01 is 0.005 each; the tied cent to A (listed first):
+#     A 0.01, B 0.00.
+#   As of Feb 28, February not yet closed: closed 0.01, unclosed 0.01. The
+#     split of everything, 0.02, is 0.01 / 0.01; of the closed part, 0.01 /
+#     0.00; so the unclosed cent is B's: A 0.01 + 0.00, B 0.00 + 0.01.
+#     (Splitting February's cent on its own would give it to A: A 0.02,
+#     B 0.00, and the close would then move it to B.)
+#   February's close gives the running 0.02, 0.01 each, less 0.01 / 0.00:
+#     B 0.01. As of Feb 28: A 0.01, B 0.01, as before the close.
+
+[setup]
+currency = "USD"
+fiscal_year_start = "01-01"
+basis = "accrual"
+rounding = "largest-remainder"
+
+[[setup.accounts]]
+code = "1000"
+name = "Cash"
+type = "asset"
+
+[[setup.accounts]]
+code = "3000"
+name = "Capital, A"
+type = "equity"
+
+[[setup.accounts]]
+code = "3001"
+name = "Capital, B"
+type = "equity"
+
+[[setup.accounts]]
+code = "4000"
+name = "Sales"
+type = "revenue"
+
+[[setup.members]]
+name = "A"
+capital_account = "3000"
+share = "0.5"
+
+[[setup.members]]
+name = "B"
+capital_account = "3001"
+share = "0.5"
+
+[[events]]                      # event 1
+date = "2026-01-10"
+description = "January's sale"
+lines = [
+  { account = "1000", side = "debit", amount = "0.01" },
+  { account = "4000", side = "credit", amount = "0.01" },
+]
+
+[[events]]                      # event 2
+date = "2026-01-31"
+description = "Close January to the members"
+close = { start = "2026-01-01", to = "members" }
+
+[[events]]                      # event 3
+date = "2026-02-10"
+description = "February's sale"
+lines = [
+  { account = "1000", side = "debit", amount = "0.01" },
+  { account = "4000", side = "credit", amount = "0.01" },
+]
+
+[[events]]                      # event 4
+date = "2026-02-28"
+description = "Close February to the members"
+close = { start = "2026-02-01", to = "members" }
+
+[[expect]]
+query = "members_equity"
+from = "2026-01-01"
+to = "2026-02-28"
+after = 3                       # the books before February's close
+
+[expect.values]
+"A.ending" = "0.01"
+"B.ending" = "0.01"
+"A.net_income" = "0.01"
+"B.net_income" = "0.01"
+
+[[expect]]
+query = "members_equity"
+from = "2026-01-01"
+to = "2026-02-28"               # after every event: February closed
+
+[expect.values]
+"A.ending" = "0.01"
+"B.ending" = "0.01"
+"A.net_income" = "0.01"
+"B.net_income" = "0.01"
+
+[[expect]]
+query = "entry"
+entry = 4
+
+[expect.values]
+"4000.debit" = "0.01"
+"3001.credit" = "0.01"

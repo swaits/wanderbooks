@@ -405,11 +405,13 @@ pub struct CapitalLine {
 ///      is empty, the liability accounts whose name says "due to" or
 ///      "owed to" (DECISION: a name is a guess; the setting is the books'
 ///      word). owed_to_member: this member's part of it by the members'
-///      shares (ledger_core::periods::allocate over every member, so the
-///      parts sum to the balance).
+///      shares, to the base currency's minor unit (ledger_core::periods::
+///      allocate_cumulative over every member with nothing given, ties to
+///      the member listed first, so the parts sum to the balance).
 ///   6. None when the party isn't a member, a [[company.members]]
 ///      account isn't in the chart, or k1_detail refuses (shares not
-///      summing to 1, accounts not distinct equity accounts).
+///      summing to 1, accounts not distinct equity accounts), or the
+///      split of what is owed can't be computed exactly (TooLargeToCompute).
 /// ```
 #[derive(Clone, Debug, PartialEq)]
 pub struct CapitalStatement {
@@ -1746,7 +1748,13 @@ impl Books {
             .map(|&a| self.balance_on(a, span.1))
             .sum();
         let shares: Vec<Decimal> = members.iter().map(|x| x.share).collect();
-        let owed_to_member = ledger_core::periods::allocate(due_to_members, &shares)[i];
+        let owed_to_member = ledger_core::periods::allocate_cumulative(
+            due_to_members,
+            &shares,
+            &vec![Decimal::ZERO; shares.len()],
+            l.base_currency().allocation_places(),
+        )
+        .ok()?[i];
         Some(CapitalStatement {
             party,
             capital: m.capital,

@@ -583,6 +583,29 @@ impl Store {
         Ok(())
     }
 
+    /// Declare a journal feature (crate::format::KNOWN_FEATURES) before the
+    /// first event that needs it: a field or value on a known event type
+    /// that an older version would otherwise misread silently. Declared
+    /// with the format in force (at least 2) and every feature already in
+    /// force; nothing is journaled when it is already declared. Books that
+    /// never use the feature stay readable by older versions.
+    ///
+    /// ```text
+    /// GOAL: an older wanderbooks stops at the declaration (NewerJournal)
+    ///       instead of misreading a line it thinks it knows.
+    /// SOURCE: rules.md B-27; plan/served.md 5.1 (format gate).
+    /// ```
+    fn ensure_feature(&mut self, feature: &str) -> Result<(), StoreError> {
+        if self.format.features.iter().any(|f| f == feature) {
+            return Ok(());
+        }
+        let format = self.format.format.max(crate::meta::FORMAT);
+        let mut features = self.format.features.clone();
+        features.push(feature.to_string());
+        let features: Vec<&str> = features.iter().map(String::as_str).collect();
+        self.declare_journal_format(format, &features)
+    }
+
     /// Change settings (`settings.set`): all or nothing, each value
     /// canonical, the result whole (ledger_core::settings). Returns the
     /// changes made; none (journaling nothing) when every change is the
@@ -1798,6 +1821,11 @@ impl Store {
             // ensure then no-ops and replay stays deterministic.
             self.ensure_control_account(&ledger_core::RETAINED_EARNINGS)?;
         }
+        if matches!(to, CloseTo::Members(_) | CloseTo::MembersCumulative { .. }) {
+            // A close counted from its regime's start: an older version
+            // would replay it under the run rule (format gate, B-27).
+            self.ensure_feature(crate::format::MEMBERS_CUMULATIVE)?;
+        }
         let mut next = self.ledger.clone();
         let closing_entry = next.close_period_to(id, to)?;
         let entry_detail = match closing_entry {
@@ -1818,9 +1846,8 @@ impl Store {
             CloseTo::RetainedEarnings { sweep } if sweep.is_empty() => json!("retained_earnings"),
             CloseTo::RetainedEarnings { sweep } => json!({"retained_earnings": {"sweep": sweep}}),
             CloseTo::Account { into, sweep } => json!({"account": {"into": into, "sweep": sweep}}),
-            CloseTo::Members(members)
-            | CloseTo::MembersPerClose(members)
-            | CloseTo::MembersLastAbsorbs(members) => {
+            _ => {
+                let members = to.members().expect("every other target is members");
                 let mut v = json!({
                     "members": members
                         .iter()
@@ -1835,7 +1862,18 @@ impl Store {
                 // journaled before 2026-10-13 carry none (the last member
                 // absorbed it).
                 match to {
-                    CloseTo::Members(_) => v["rounding"] = json!("cumulative"),
+                    CloseTo::Members(_) | CloseTo::MembersCumulative { .. } => {
+                        let rule = next
+                            .get_period(id)
+                            .and_then(|p| p.members_closed.as_ref())
+                            .map(|m| m.rule);
+                        let Some(ledger_core::MemberRule::Cumulative { since_seq }) = rule else {
+                            unreachable!("a members close records its cumulative rule")
+                        };
+                        v["rounding"] = json!("cumulative_since");
+                        v["since_seq"] = json!(since_seq);
+                    }
+                    CloseTo::MembersRun(_) => v["rounding"] = json!("cumulative"),
                     CloseTo::MembersPerClose(_) => v["rounding"] = json!("largest_remainder"),
                     _ => {}
                 }
@@ -4739,7 +4777,7 @@ pub(crate) fn replay_line_into_ledger(
             // Deterministic: the close re-derives the closing entry from
             // the replayed state and the journaled target (absent: Retained
             // Earnings), so it must match the journal's id and every line.
-            let to = close_to_from_journal(p.get("close_to"))?;
+            let to = close_to_from_journal(line, p.get("close_to"))?;
             let got = ledger.close_period_to(id, &to)?;
             if got != want {
                 return Err(StoreError::ReplayMismatch(format!(
@@ -5021,7 +5059,10 @@ fn tax_basis_from_journal(p: &Value) -> Result<ledger_core::TaxBasis, StoreError
     })
 }
 
-fn close_to_from_journal(v: Option<&Value>) -> Result<CloseTo, StoreError> {
+/// A journaled close's target. A rounding rule only a newer version
+/// writes (an unknown name, or a value that isn't a name) is newer, never
+/// corrupt (rules.md B-27).
+fn close_to_from_journal(line: &JournalLine, v: Option<&Value>) -> Result<CloseTo, StoreError> {
     let corrupt = |what: &str| StoreError::JournalCorrupt(format!("close_to: {what}"));
     let ids = |v: &Value| -> Result<Vec<AccountId>, StoreError> {
         v.as_array()
@@ -5062,12 +5103,39 @@ fn close_to_from_journal(v: Option<&Value>) -> Result<CloseTo, StoreError> {
         .collect::<Result<_, StoreError>>()?;
     // The rounding rule the close was made under: absent before
     // 2026-10-13, when the last member absorbed it; "largest_remainder"
-    // per close, then "cumulative" over a run of closes.
-    match v.get("rounding").and_then(|r| r.as_str()) {
-        None => Ok(CloseTo::MembersLastAbsorbs(members)),
-        Some("largest_remainder") => Ok(CloseTo::MembersPerClose(members)),
-        Some("cumulative") => Ok(CloseTo::Members(members)),
-        Some(_) => Err(corrupt("unknown rounding")),
+    // per close, then "cumulative" over a run of closes, then (P3)
+    // "cumulative_since" the close numbered since_seq.
+    let rounding = match v.get("rounding") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(r)) => Some(r.as_str()),
+        Some(other) => {
+            return Err(crate::format::newer_content(
+                line,
+                format!("a members close's rounding {other}"),
+            ));
+        }
+    };
+    let since_seq = v.get("since_seq");
+    let older = |to: CloseTo| match since_seq {
+        // Only "cumulative_since" counts from a close.
+        Some(_) => Err(corrupt("since_seq beside another rounding")),
+        None => Ok(to),
+    };
+    match rounding {
+        None => older(CloseTo::MembersLastAbsorbs(members)),
+        Some("largest_remainder") => older(CloseTo::MembersPerClose(members)),
+        Some("cumulative") => older(CloseTo::MembersRun(members)),
+        Some("cumulative_since") => Ok(CloseTo::MembersCumulative {
+            members,
+            since_seq: since_seq
+                .and_then(Value::as_u64)
+                .filter(|&s| s >= 1)
+                .ok_or_else(|| corrupt("since_seq"))?,
+        }),
+        Some(other) => Err(crate::format::newer_content(
+            line,
+            format!("a members close's rounding {other:?}"),
+        )),
     }
 }
 

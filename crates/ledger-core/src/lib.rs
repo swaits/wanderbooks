@@ -69,7 +69,8 @@ pub use parties::{Party, PartyField, PartyId, Role, TinFacts, TinType, W4Facts, 
 pub use payouts::{Payout, PayoutAdjustment, PayoutLine, PayoutTotals, payout_plan};
 pub use payroll::{PayrollLine, PayrollRun, PayrollRunId};
 pub use periods::{
-    CloseTo, MemberClose, MemberCloseRecord, Period, PeriodId, PeriodStatus, RETAINED_EARNINGS_CODE,
+    CloseTo, MemberClose, MemberCloseRecord, MemberRule, MemberSplit, MembersClosed, Period,
+    PeriodId, PeriodStatus, RETAINED_EARNINGS_CODE,
 };
 pub use reports::{
     AssetRegister, AssetRegisterRow, BalanceSheet, BalanceSheetStatement, CashFlowLine,

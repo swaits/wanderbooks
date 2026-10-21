@@ -5957,7 +5957,7 @@ impl BooksServer {
     #[tool(
         name = "books.close_period",
         title = "Close a period",
-        description = "Close an accounting period. The closing entry, dated at period end, zeroes revenue and expense balances as of that date into Retained Earnings, or, for a multi-member LLC (members in the settings), into each member's capital account by share. Periods close in order. Without confirmed=true, returns the exact closing entry it would post and closes nothing. With confirmed=true, posts it and marks the period closed. Closed periods reject new entries.",
+        description = "Close an accounting period. The closing entry, dated at period end, zeroes revenue and expense balances into Retained Earnings or, for a multi-member LLC (members in the settings), into each member's capital account by share, cumulatively: each close gives a member their share of everything closed to the members so far, less what earlier closes gave them (odd cents by largest remainder), so no member is ever a cent off their exact share; a close may carry a one-time correction of earlier rounding. Periods close in order. Without confirmed=true, returns the exact closing entry and members' split, closing nothing; with confirmed=true, posts it and closes the period to new entries.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -5992,6 +5992,34 @@ impl BooksServer {
                 })
                 .collect()
         };
+        // The members' split, from the closed ledger (rules.md B-13).
+        let split = |ledger: &Ledger| -> Option<MembersCloseOut> {
+            let (since_close, parts) = ledger.member_close_split(p.period_id)?;
+            let names = self.member_capitals(ledger).unwrap_or_default();
+            let members = parts
+                .iter()
+                .map(|m| MemberCloseOut {
+                    name: names
+                        .iter()
+                        .find(|c| c.capital_account == m.capital)
+                        .map(|c| c.name.clone())
+                        .unwrap_or_default(),
+                    capital_account: ledger
+                        .chart()
+                        .get(m.capital)
+                        .map(|a| a.code.clone())
+                        .unwrap_or_default(),
+                    share: ledger_package::share_text(m.share),
+                    this_close: money(m.part),
+                    running: money(m.running),
+                    exact: money(m.exact.normalize()),
+                })
+                .collect();
+            Some(MembersCloseOut {
+                since_close,
+                members,
+            })
+        };
         if !p.confirmed {
             // Preview: run the real close on a copy of the ledger, so the
             // preview is exactly what confirming would post.
@@ -6004,6 +6032,7 @@ impl BooksServer {
                 period_id: p.period_id,
                 closing_entry: None,
                 lines: describe(&scratch, closing),
+                members: split(&scratch),
             }));
         }
         let closing = store
@@ -6015,13 +6044,14 @@ impl BooksServer {
             period_id: p.period_id,
             closing_entry: closing,
             lines,
+            members: split(store.ledger()),
         }))
     }
 
     #[tool(
         name = "books.list_periods",
         title = "List periods",
-        description = "List all accounting periods with their status.",
+        description = "List all accounting periods with their status, and for a period closed to the members, the rounding rule it was closed under.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn list_periods(&self) -> Result<Json<ListPeriodsOut>, String> {
@@ -6040,6 +6070,14 @@ impl BooksServer {
                     PeriodStatus::Closed => "closed".to_string(),
                 },
                 closing_entry: p.closing_entry,
+                close_rule: p.members_closed.as_ref().map(|m| match m.rule {
+                    ledger_core::MemberRule::Cumulative { since_seq } => {
+                        format!("members_cumulative_since:{since_seq}")
+                    }
+                    ledger_core::MemberRule::Run => "members_run".to_string(),
+                    ledger_core::MemberRule::PerClose => "members_per_close".to_string(),
+                    ledger_core::MemberRule::LastAbsorbs => "members_last_absorbs".to_string(),
+                }),
             })
             .collect();
         Ok(Json(ListPeriodsOut { periods }))

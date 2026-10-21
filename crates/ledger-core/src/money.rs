@@ -57,6 +57,18 @@ impl Currency {
         }
     }
 
+    /// The decimal places a share of an amount in this currency is split
+    /// to (members' shares of earnings, periods::allocate_cumulative): its
+    /// minor units (cents, whole yen, thousandths of a dinar), or, for a
+    /// code ISO 4217 gives none (gold, SDRs), the most a line may carry
+    /// (kernel::MAX_LINE_SCALE). Every posted amount is then a whole number
+    /// of the unit split to, so no member's running share is ever a unit
+    /// from exact (rules.md B-13); split to cents, a finer amount's
+    /// leftover fraction would all go to one member.
+    pub fn allocation_places(&self) -> u32 {
+        self.minor_units().unwrap_or(crate::kernel::MAX_LINE_SCALE)
+    }
+
     /// The three-letter code, e.g. `"USD"`.
     pub fn code(&self) -> &str {
         std::str::from_utf8(&self.0).expect("currency codes are ASCII by construction")

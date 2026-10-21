@@ -1134,7 +1134,10 @@ posting.
   financing_accounts?, investing_accounts? }` → `{ content, content_encoding? }`.
   - Reports: `profit_and_loss`, `balance_sheet`, `cash_flow` (needs
     `cash_accounts`), `trial_balance`, `members_equity` (statement of
-    changes in members' equity; members from `wanderbooks.toml`),
+    changes in members' equity; members from `wanderbooks.toml`; earnings
+    not yet closed are split the way the next members close will split
+    them, so a member's capital on a day never changes when its month is
+    closed: rules.md B-13, D-38),
     `general_ledger` (by account: beginning balance, postings with running
     balance and split, ending balance), `general_journal` (alias
     `journal`: every entry, line by line, in date order).
@@ -1258,15 +1261,37 @@ R-FUTURE-3 and rides the engine roadmap, not the MCP layer.
 - `books.create_period { name, start, end }` → `{ period_id }`.
   Dates are YYYY-MM-DD, inclusive.
 - `books.close_period { period_id, confirmed? }` → without confirmation:
-  `{ status: "preview", lines: [...] }`: the exact closing entry (the close
-  run on a copy of the ledger), posting nothing; with `confirmed: true`:
-  posts it and marks the period closed. The entry zeroes revenue and
-  expense balances as of the period end; the net goes to `3999` Retained
-  Earnings, or, with `[[company.members]]` in `wanderbooks.toml`, to each
-  member's capital account by share. Periods close in order. Closed periods
-  reject new entries.
+  `{ status: "preview", period_id, closing_entry: null, lines: [...],
+  members }`: the exact closing entry (the close run on a copy of the
+  ledger), posting nothing; with `confirmed: true`: `{ status: "closed",
+  period_id, closing_entry, lines, members }`, posting it and marking the
+  period closed. The entry zeroes revenue and expense balances as of the
+  period end; the net goes to `3999` Retained Earnings, or, with
+  `[[company.members]]` in the settings, to each member's capital account
+  by share, cumulatively (rules.md B-13; D-10): each close gives a member
+  their share of everything closed to these members and shares so far, to
+  the currency's minor unit (odd units by largest remainder, ties to the
+  member listed first when the count began), less what earlier closes gave
+  them, so no member is ever a minor unit from their exact share. A close
+  may carry a one-time true-up of rounding by closes made under an earlier
+  rule, which can run against the period's result by a cent. `members`
+  (null for a close not to the members) is `{ since_close, members: [{
+  name, capital_account, share, this_close, running, exact }] }`: the
+  close the count starts at (the first members close with these members
+  and shares; 1 is the books' first close of all), and per member, in the
+  settings' order, their capital account's code, share ("0.50"), what this
+  close credits them (negative: debits), what the count's closes have
+  credited them in all, and their exact share of everything the count
+  closed (unrounded, e.g. "0.005"). The preview's `members` is exactly what
+  confirming posts. Periods close in order. Closed periods reject new
+  entries.
 - `books.list_periods {}` → `{ periods: [{ id, name, start, end, status,
-  closing_entry }] }`.
+  closing_entry, close_rule }] }`. `close_rule` says which rounding rule a
+  period closed to the members was closed under:
+  `"members_cumulative_since:N"` (the rule since P3, counted from close N),
+  `"members_run"` (2026-10-13 to P3), `"members_per_close"` (2026-10-13) or
+  `"members_last_absorbs"` (before 2026-10-13); null for an open period or
+  one closed to anything else.
 
 ## Tools — bank reconciliation
 

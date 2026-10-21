@@ -1295,7 +1295,7 @@ The owner decisions of 2026-10-16 (at the top of this document) replace the form
 |---|---|---|
 | D-5 | Company EIN | (a) A journaled `company.ein` with sensitivity `identity`: printed on every 1099, masked in `books.start`, full in packages. |
 | D-9 | Attestation bar default | (a) Receipts and month-end: reasoning effort ≥ high. Annual and CPA handoff: adversarial verification with ≥ 2 independent verifier agents. No model allow-list. The CPA package refuses without a counted full audit unless given a reason (`policy.cpa_package_requires_audit = refuse`). |
-| D-10 | Odd-cent cumulative apportionment start | (a) From inception, so the next close carries any historical true-up of a cent or two; lifetime drift stays under one cent. |
+| D-10 | Odd-cent cumulative apportionment start | (a) From inception, so the next close carries any historical true-up of a cent or two; lifetime drift stays under one cent while members and shares are unchanged (a change of members or shares starts a new count, §706(d); P3 review R-8). |
 | D-11 | Default proration for new prepaid schedules | (a) Daily, matching depreciation; existing schedules stay `monthly_even`. |
 | D-12 | Legacy reversals already posted without their own evidence | (a) During the re-audit, link the original's receipts with `inherit_evidence`, so the audit is fully clean. |
 | D-13 | The first company timezone | (a) `company.timezone = America/Denver`. |

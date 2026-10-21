@@ -26,8 +26,21 @@ use serde_json::{Value, json};
 /// The newest journal format this version reads and writes.
 pub const SUPPORTED_JOURNAL_FORMAT: u32 = 2;
 
-/// Optional journal features this version reads (none yet).
-pub const KNOWN_FEATURES: &[&str] = &[];
+/// Optional journal features this version reads. Each is a field or value
+/// on an event type an older version knows, which that version would
+/// misread silently; a writer declares the feature (`journal.format_set`)
+/// before its first such line, so the older version stops there instead
+/// (rules.md B-27). Books that never use one stay readable by versions
+/// before it.
+pub const KNOWN_FEATURES: &[&str] = &[MEMBERS_CUMULATIVE];
+
+/// Feature: `period.closed` closes to members with `"rounding":
+/// "cumulative_since"` and `since_seq`, the count of members closes
+/// starting at the first since the members or shares last changed (P3
+/// defect 17, rules.md B-13). An older version would call the rounding
+/// unknown, or (before the format gate) replay the close under the run
+/// rule, which can split it differently.
+pub const MEMBERS_CUMULATIVE: &str = "members_cumulative";
 
 /// The line type that declares the journal format.
 pub const FORMAT_SET: &str = "journal.format_set";
@@ -188,6 +201,12 @@ impl JournalFormat {
 /// Read a `journal.format_set` line, refusing a format or feature this
 /// version doesn't read.
 pub(crate) fn declared(line: &JournalLine) -> Result<JournalFormat, StoreError> {
+    declared_knowing(line, KNOWN_FEATURES)
+}
+
+/// [`declared`] by a version that knows the features `known`: what an
+/// older version, which knew fewer, does with the same line.
+fn declared_knowing(line: &JournalLine, known: &[&str]) -> Result<JournalFormat, StoreError> {
     let p = &line.payload;
     let format = p
         .get("format")
@@ -216,7 +235,7 @@ pub(crate) fn declared(line: &JournalLine) -> Result<JournalFormat, StoreError> 
     let unknown: Vec<&str> = features
         .iter()
         .map(String::as_str)
-        .filter(|f| !KNOWN_FEATURES.contains(f))
+        .filter(|f| !known.contains(f))
         .collect();
     if !unknown.is_empty() {
         return Err(newer(
@@ -483,6 +502,32 @@ mod tests {
                 f.admit(&line(FORMAT_SET, bad)),
                 Err(StoreError::JournalCorrupt(_))
             ));
+        }
+    }
+
+    /// P3 defect 17's feature (members_cumulative): this version reads it;
+    /// a version before it (KNOWN_FEATURES empty, as through P2) stops at
+    /// its declaration with NewerJournal, never replaying a close counted
+    /// from its regime's start under the run rule.
+    #[test]
+    fn an_older_reader_stops_at_the_members_cumulative_feature() {
+        assert!(KNOWN_FEATURES.contains(&MEMBERS_CUMULATIVE));
+        let l = line(
+            FORMAT_SET,
+            json!({"format": 2, "features": [MEMBERS_CUMULATIVE]}),
+        );
+        assert_eq!(
+            declared(&l).unwrap(),
+            JournalFormat {
+                format: 2,
+                features: vec![MEMBERS_CUMULATIVE.to_string()]
+            }
+        );
+        match declared_knowing(&l, &[]) {
+            Err(StoreError::NewerJournal { need, .. }) => {
+                assert_eq!(need, "journal features members_cumulative")
+            }
+            other => panic!("expected NewerJournal, got {other:?}"),
         }
     }
 }

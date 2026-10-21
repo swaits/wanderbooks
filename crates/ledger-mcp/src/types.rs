@@ -2162,6 +2162,46 @@ pub struct ClosePeriodOut {
     pub closing_entry: Option<u64>,
     /// Human-readable summary of the closing lines.
     pub lines: Vec<String>,
+    /// For a close to the members: how it splits among them (the same in
+    /// the preview and once confirmed).
+    #[serde(default)]
+    pub members: Option<MembersCloseOut>,
+}
+
+/// How a close splits the net among the members: cumulatively, each
+/// member's share of everything closed to these members and shares since
+/// `since_close`, to the minor unit, less what earlier closes gave them.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MembersCloseOut {
+    /// The close the count starts at: the first members close with these
+    /// members and shares (1 is the books' first close of all).
+    pub since_close: u64,
+    /// Each member, in the settings' order.
+    pub members: Vec<MemberCloseOut>,
+}
+
+/// One member's part of a close (`books.close_period`).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MemberCloseOut {
+    /// The member's name, as in the settings.
+    pub name: String,
+    /// Their capital account's code.
+    pub capital_account: String,
+    /// Their share, as a decimal fraction ("0.50").
+    pub share: String,
+    /// What this close credits their capital (negative: debits), a true-up
+    /// of earlier rounding included. It can run against the period's
+    /// result by a cent.
+    pub this_close: String,
+    /// What the count's closes have credited them in all, this one
+    /// included.
+    pub running: String,
+    /// Their exact share of everything the count has closed (share ×
+    /// total, unrounded): `running` is within one minor unit of it once a
+    /// close of the count has posted under the cumulative rule (before
+    /// that, a close that posted nothing still carries the rounding of
+    /// closes made under an earlier rule).
+    pub exact: String,
 }
 
 /// One period in `books.list_periods`.
@@ -2179,6 +2219,13 @@ pub struct PeriodOut {
     pub status: String,
     /// Closing entry id, if closed with one.
     pub closing_entry: Option<u64>,
+    /// For a period closed to the members, the rounding rule it was closed
+    /// under: "members_cumulative_since:N" (counted from close N, the rule
+    /// since P3), "members_run" (2026-10-13 to P3), "members_per_close"
+    /// (2026-10-13) or "members_last_absorbs" (before 2026-10-13). Absent
+    /// (null) otherwise.
+    #[serde(default)]
+    pub close_rule: Option<String>,
 }
 
 /// Output of `books.list_periods`.

@@ -206,34 +206,109 @@ closed period).
 
 ## B-13 Partners share income by the partnership agreement; capital accounts carry it
 
-**Status:** AUTHORITY (shares); DECISION (cent rounding)
+**Status:** AUTHORITY (shares; capital accounts; a count ends where the
+members or shares change: §706(d)(1), Treas. Reg. §1.706-4(a)); DECISION
+(cent rounding, the owner 2026-10-13); DECISION (counted from the company's
+first close, D-10, 2026-10-16); DECISION (the statement splits unclosed
+earnings the same running way, D-38, 2026-10-20)
 
 - 26 U.S.C. §704(a) (`sources/irs-partnerships.md`): "A partner's
   distributive share of income, gain, loss, deduction, or credit shall,
   except as otherwise provided in this chapter, be determined by the
   partnership agreement."
+- Treas. Reg. §1.704-1(b)(2)(iv)(b) (`sources/irs-partnerships.md`): each
+  partner's capital account "is increased by … (3) allocations to him of
+  partnership income and gain" and "is decreased by … (7) allocations of
+  partnership loss and deduction", beside the money and property
+  contributed and distributed. A capital account is one running balance of
+  contributions, allocations and distributions: the closes are the
+  allocations.
 - Form 1065 Schedule M-2: "Show what caused changes during the tax year in
-  the partners' tax-basis capital accounts."
+  the partners' tax-basis capital accounts." Schedule K-1 Item L reports
+  each partner's capital account "using the tax-basis method"; that
+  analysis "is based on the partnership's books and records" (the Partner's
+  Instructions' Basis Limitations section, `sources/irs-partnerships.md`;
+  not Item L, which an earlier version of this rule spliced in). The K-1
+  worksheet is the book capital analysis, which the CPA converts for
+  Item L.
 - **No authority** says how to round a share to the cent. Largest
-  remainder, ties to the earlier member: DECISION (the owner, 2026-10-13).
-  Closes made before then replay with the last member absorbing it.
-- Rounding never piles up: a run of members closes (same members and
-  shares, back to back) splits cumulatively, each close giving a member
-  their allocation of the run's total so far less their allocation before
-  it, so each member's total from the run is within a cent of their exact
-  share (follows from the running capital account below; found
-  2026-10-13: closing each month on its own gave every tied cent to the
-  earlier member). Journaled as `"rounding": "cumulative"`; closes
-  journaled `"largest_remainder"` replay one at a time.
-- A capital account is one running balance: Form 1065 Schedule K-1
-  instructions, Item L: "The partnership must report your beginning
-  capital account and ending capital account for the year", "based on the
-  partnership's books and records." So a statement of members' equity
-  splits undistributed earnings cumulatively, as of each date (beginning
-  as of the day before the period, ending as of its last day), never one
-  period at a time: a member's ending on one statement is their beginning
-  on the next, to the cent, and a member's period income is the
-  roll-forward's remainder (their share within a rounding cent).
+  remainder, ties to the member listed first: DECISION (the owner,
+  2026-10-13). Closes made before then replay with the last member
+  absorbing it.
+- **Members closes split cumulatively, counted from the company's first
+  close** (P3 defect 17; D-10). A *count* is the members closes with one
+  set of (capital account, share) pairs, from the first such close since
+  the last members close with another set: closes to retained earnings or
+  to one account are skipped (they allocate nothing to the members), and
+  neither the members' order nor their distribution accounts matter. Each
+  close gives member *i* allocate(C + net)*ᵢ* − given*ᵢ*: their split of
+  everything the count has closed (C before it, plus its own net), to the
+  base currency's minor unit (cents, whole yen, thousandths of a dinar;
+  B-3; for a code ISO 4217 gives none, such as gold, the finest a line
+  carries, `kernel::MAX_LINE_SCALE` places, so every amount is still whole
+  units), less what the count's earlier closes gave them under whatever
+  rule they were made. A tied odd unit goes to the member the count's
+  first close listed first, whatever order later closes list the members
+  in, so a reorder of the members moves no cent; the statement below
+  breaks ties the same way, on a day before a count's first close in the
+  order of the count the next members close begins. Therefore each close hands out
+  exactly its net; after every close that posts, each member's total from
+  the count is one split of the count's total, under one minor unit from
+  their exact share; and rounding by closes made under earlier rules is
+  trued up by the first close that posts (D-10: from inception; listed in
+  the close's `members`). The true-up is under a unit per member for each
+  break in an earlier run and each per-close close; a last-absorbs close
+  rounded each member but the last to within half a unit, and the last
+  absorbed up to half a unit for each of the others (a unit with three
+  members, more with four or more).
+  - A change of members or shares starts a new count (26 U.S.C.
+    §706(d)(1): a year's distributive shares are determined by a method
+    "which takes into account the varying interests of the partners in the
+    partnership during such taxable year"; Treas. Reg. §1.706-4(a)(3)(vii):
+    the partnership "shall treat each segment as though the segment were a
+    separate distributive share period"). Income closed under
+    the old shares is never split again under the new ones. So the bound
+    holds per count: across k changes a member's total can be up to one
+    unit per count from the sum of their exact shares (the D-10 lifetime
+    bound holds while members and shares are unchanged).
+  - A true-up rides only on a close that posts an entry (income to close,
+    or a distribution to sweep): a close that posts nothing credits no one,
+    and the true-up waits for the next close that posts (close INVARIANT
+    5: never post a closing entry when there is nothing to close).
+  - The bound's precondition: every amount is a whole number of minor
+    units (B-3: every posted line is), and every product |total| × share
+    is exact. A product Decimal would round (a share of many decimal places
+    times a large total) is refused, never split
+    (`periods::allocate_cumulative` INVARIANT 4). Replaying a journal from
+    before B-3, a sub-unit fraction can make the bound two units.
+  - A year's income per member is the difference of two running totals,
+    each under a unit from exact, so under two units from share × the
+    year's income; the return is in whole dollars ("Rounding on the
+    return", `sources/irs-partnerships.md`).
+  - A period closes at the shares in force at the close: a share change
+    inside a period isn't split at its date (§706(d) and §1.706-4 would);
+    close the period at the change.
+  - Journaled `"rounding": "cumulative_since"` with `"since_seq": N`, the
+    close the count starts at, under the journal feature
+    `members_cumulative` (B-27); replay derives N again and refuses a close
+    journaled with another. Closes journaled `"cumulative"` (the run rule of
+    2026-10-13 to P3: a back-to-back run with the same members in the same
+    order, restarted by any other close, so a tied cent could go to the
+    same member at every restart), `"largest_remainder"` (each close on its
+    own) and none (the last member absorbs) replay under their own rules,
+    never changed (B-8).
+- A capital account is one running balance (§1.704-1(b)(2)(iv)(b)). So the
+  statement of members' equity, the K-1 worksheet and the viewer split
+  undistributed earnings U as of each date the way the count's next close
+  would split them: allocate(C(d) + U(d)) − allocate(C(d)), C(d) being what
+  the count's closes dated on or before d closed (D-38; P3 review R-1). A
+  member's capital on a date never moves when a period ending on or before
+  it is later closed; a true-up of rounding by closes made under an earlier
+  rule shows only once a close posts it, dated at that close. A
+  statement's beginning is as of the day before its period, its ending as
+  of its last day: a member's ending on one statement is their beginning on
+  the next, to the unit, and a member's period income is the roll-forward's
+  remainder (their share within a rounding unit at each end).
 - A correction undoes what it corrects (B-9): an entry and its reversal
   both in a statement's span are neither contributions nor
   distributions (`reports::cancelled_in_span`; the K-1 worksheet reads
@@ -247,15 +322,39 @@ closed period).
   members credited in one entry in proportion to their credits
   (`k1` INVARIANTS 3, 4, 6).
 
-**Enforced:** `CloseTo::Members`, `periods::allocate`,
-`kernel::apportion`, `members_equity`. **Checked:** Kani
-`apportion_is_exact`, `apportion_is_fair`; Lean `runPart_telescopes`,
-`closePart_total`; properties `prop_split_*`,
-`each_members_capital_chains_across_statements`,
-`each_member_stays_within_a_cent_of_their_share`;
-`a_run_of_closes_never_piles_up_rounding`,
-`members_closes_replay_under_the_rule_they_were_journaled_with`;
-`closes_journaled_under_the_old_rule_replay_with_it`.
+**Enforced:** `CloseTo::Members`, `CloseTo::MembersCumulative`,
+`Ledger::members_regime`, `Regime::allocate`,
+`periods::allocate_cumulative`, `kernel::apportion_cumulative`,
+`periods::allocate`, `kernel::apportion`, `members_equity`,
+`Store::close_period_to` (the feature declaration), the store's
+`close_to_from_journal`. **Checked:** Kani `apportion_is_exact`,
+`apportion_is_fair`, `apportion_cumulative_is_exact`,
+`cumulative_close_never_drifts_a_unit_at_halves`, `_at_tenths`,
+`_at_near_thirds`,
+`cumulative_closing_entry_balances`; Lean `runPart_telescopes`,
+`closePart_total`, `trueUp_total`, `trueUp_running`,
+`closePart_eq_trueUp`, `cumulative_drift`, `statement_after_close`,
+`statement_unmoved_by_close`, `Apportion.rem_pos_of_rank_lt`,
+`apportion_drift`, `allocW_sum`, `allocW_drift`,
+`allocW_cumulative_drift`, `allocW_cumulative_total`; properties
+`prop_split_*`, `each_members_capital_chains_across_statements`,
+`each_member_stays_within_a_cent_of_their_share`,
+`members_capital_never_drifts_a_cent_from_their_share`,
+`each_members_capital_chains_and_holds_through_closes`,
+`period_ends_rise_with_close_order`, `apportion_cumulative_agrees`,
+`allocate_cumulative_agrees_with_the_integer_model`;
+`the_audit_odd_cent_never_piles_up_across_closes` and the rest of
+`ledger-core` `tests/odd_cent.rs`; `a_run_of_closes_never_piles_up_rounding`,
+`a_different_close_ends_a_legacy_run`,
+`a_different_close_no_longer_restarts_the_count`,
+`members_closes_replay_under_the_rule_they_were_journaled_with`,
+`ledger-store` `tests/member_closes.rs` and the old-books fixture
+`x_member_closes`; `closes_journaled_under_the_old_rule_replay_with_it`;
+`ledger-mcp` `close_period_shows_each_members_running_split`,
+`old_books_name_each_closes_rule_and_true_up_at_the_next_close`;
+`ledger-gui` `a_members_page_shows_the_same_capital_before_and_after_a_close`,
+`a_yen_members_page_splits_in_whole_yen`; the bookspec examples
+`members-close.*`.
 
 ## B-14 Statements: P&L for a period; cash flow by the indirect method
 
@@ -715,6 +814,13 @@ newlines. A writer never declares a format it couldn't read back, or
 lowers the format in force. Opening the books checks every complete line
 before it changes anything: a cut-off last line is set aside only when the
 lines before it pass, so an older version never alters newer books.
+
+A feature (`ledger_store::format::KNOWN_FEATURES`) is a field or value on
+an event type an older version knows but would misread; the writer declares
+it with the format in force (at least 2) just before the first line that
+needs it, so books that never use it stay readable by versions before it:
+`members_cumulative` (P3, B-13: a members close counted from its count's
+first close, `"rounding": "cumulative_since"`).
 
 **Enforced:** `ledger_store::format` (`JournalFormat::admit`, `declared`,
 `gate`, `settle`, `declaration`), `journal::ENVELOPE_KEYS`,

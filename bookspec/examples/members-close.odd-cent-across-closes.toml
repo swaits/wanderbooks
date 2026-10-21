@@ -1,0 +1,129 @@
+id = "members-close.odd-cent-across-closes"
+title = "An odd cent split cumulatively across closes, a close to retained earnings between"
+rule = "Each close to the members MUST give each member their largest-remainder split of everything closed to the same members and shares so far, to the minor unit, less what earlier closes gave them; a close to retained earnings allocates nothing to the members and MUST NOT restart the count."
+status = "CHOICE"
+sources = ["26 U.S.C. §704(a)", "Treas. Reg. §1.704-1(b)(2)(iv)(b)"]
+tags = ["partnership", "close", "rounding", "book", "us"]
+
+# The regression this example comes from (wanderbooks P3 defect 17, audit
+# F52, anonymized): a net loss of 399.23 at 50/50, closed in January and
+# again in March, with February closed to retained earnings. Restarting the
+# count at March gave A the tied cent twice (A −399.24, B −399.22).
+#
+# By hand, from the rule:
+#   January: −399.23 × 0.5 = −199.615 each; rounded toward zero, −199.61
+#     each, one cent short; the remainders tie (0.005), so the cent goes to
+#     the member listed first: A −199.62, B −199.61.
+#   February: 10.00 to retained earnings; the members' count skips it.
+#   March: the count's running total is −798.46, −399.23 each exactly;
+#     less January's −199.62 / −199.61, March gives A −199.61, B −199.62.
+#   Each member ends at −399.23, their exact share.
+
+[setup]
+currency = "USD"
+fiscal_year_start = "01-01"
+basis = "accrual"
+rounding = "largest-remainder"  # odd cents to the largest remainders, ties
+                                # to the member listed first, cumulatively
+
+[[setup.accounts]]
+code = "1000"
+name = "Cash"
+type = "asset"
+
+[[setup.accounts]]
+code = "3000"
+name = "Capital, A"
+type = "equity"
+
+[[setup.accounts]]
+code = "3001"
+name = "Capital, B"
+type = "equity"
+
+[[setup.accounts]]
+code = "3999"
+name = "Retained earnings"
+type = "equity"
+
+[[setup.accounts]]
+code = "6000"
+name = "Fees"
+type = "expense"
+
+[[setup.members]]
+name = "A"
+capital_account = "3000"
+share = "0.5"
+
+[[setup.members]]
+name = "B"
+capital_account = "3001"
+share = "0.5"
+
+[[events]]                      # event 1
+date = "2026-01-15"
+description = "January's fees"
+lines = [
+  { account = "6000", side = "debit", amount = "399.23" },
+  { account = "1000", side = "credit", amount = "399.23" },
+]
+
+[[events]]                      # event 2: the closing entry
+date = "2026-01-31"
+description = "Close January to the members"
+close = { start = "2026-01-01", to = "members" }
+
+[[events]]                      # event 3
+date = "2026-02-15"
+description = "February's fees"
+lines = [
+  { account = "6000", side = "debit", amount = "10.00" },
+  { account = "1000", side = "credit", amount = "10.00" },
+]
+
+[[events]]                      # event 4
+date = "2026-02-28"
+description = "Close February to retained earnings"
+close = { start = "2026-02-01", to = "retained_earnings" }
+
+[[events]]                      # event 5
+date = "2026-03-15"
+description = "March's fees"
+lines = [
+  { account = "6000", side = "debit", amount = "399.23" },
+  { account = "1000", side = "credit", amount = "399.23" },
+]
+
+[[events]]                      # event 6
+date = "2026-03-31"
+description = "Close March to the members"
+close = { start = "2026-03-01", to = "members" }
+
+[[expect]]
+query = "entry"
+entry = 2
+
+[expect.values]
+"6000.credit" = "399.23"
+"3000.debit" = "199.62"
+"3001.debit" = "199.61"
+
+[[expect]]
+query = "entry"
+entry = 6
+
+[expect.values]
+"6000.credit" = "399.23"
+"3000.debit" = "199.61"
+"3001.debit" = "199.62"
+
+[[expect]]
+query = "balances"
+as_of = "2026-03-31"
+
+[expect.values]
+"3000" = "-399.23"
+"3001" = "-399.23"
+"3999" = "-10.00"
+"1000" = "-808.46"

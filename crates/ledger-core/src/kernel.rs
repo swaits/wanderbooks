@@ -26,7 +26,10 @@
 //!   columns differ by the net of all movements (B-6);
 //! * a closing line zeroes the account it closes (B-11);
 //! * an allocation's parts sum to the whole, to the last unit, by largest
-//!   remainder (B-13).
+//!   remainder (B-13);
+//! * a cumulative allocation hands out exactly the new amount, and leaves
+//!   each running total one allocation of everything allocated, so it never
+//!   drifts a unit from its exact share (B-13).
 
 use crate::{AccountType, Side};
 use rust_decimal::Decimal;
@@ -352,6 +355,60 @@ pub fn apportion<T: Amount>(whole: T, parts: &mut [T], remainders: &[T], unit: T
     Some(())
 }
 
+/// Cumulative apportionment: what one close gives each part when the
+/// running `total` is apportioned afresh ([`apportion`]) and what earlier
+/// closes gave each part (`given`) is taken back. `parts` and
+/// `remainders` are the rounded-down shares of `total` and what rounding
+/// took from each, as for [`apportion`].
+///
+/// ```text
+/// GOAL: members' running totals that never drift a unit from their
+///       exact shares, whatever earlier closes did.
+/// SOURCE: docs/spec/rules.md B-13 (shares: 26 U.S.C. §704(a); capital
+///         accounts carry the allocations: Treas. Reg.
+///         §1.704-1(b)(2)(iv)(b); cent rounding: DECISION, owner
+///         2026-10-13; counted from the first close: D-10, 2026-10-16).
+/// INVARIANTS:
+///   1. MUST make the parts sum to `total − Σ given` exactly.
+///   2. MUST leave given[i] + parts[i] equal to what `apportion(total, …)`
+///      gives part i: a running total is one apportionment, so it carries
+///      one apportionment's rounding, never a sum of them.
+///   3. On None, `parts` MUST be unchanged.
+/// SCENARIOS:
+///   1. IF the lengths differ, the unit isn't positive, `total`, the
+///      unit, a part or a `given` is out of line range, or apportion
+///      refuses: SHOULD return None, leaving `parts` unchanged
+///      BECAUSE in range, the subtraction can't overflow, so a refusal is
+///      known before anything changes.
+///   2. IF 0.03 was closed as A 0.03 / B 0 and the running total is now
+///      0.04 (50/50, floors 0.02 / 0.02): SHOULD give A −0.01, B +0.02
+///      BECAUSE 0.04 apportions 0.02 each.
+/// ```
+///
+/// Allocation-free, with no bulk copy (docs/verification.md, "Trusting
+/// the checker"), so the model checker can prove it outright.
+pub fn apportion_cumulative<T: Amount>(
+    total: T,
+    parts: &mut [T],
+    remainders: &[T],
+    unit: T,
+    given: &[T],
+) -> Option<()> {
+    if parts.len() != given.len() || !total.in_line_range() || !unit.in_line_range() {
+        return None;
+    }
+    if parts.iter().chain(given).any(|a| !a.in_line_range()) {
+        return None;
+    }
+    apportion(total, parts, remainders, unit)?;
+    // Each part is now under three line ranges and each `given` within
+    // one: the subtraction can't fail (Kani apportion_cumulative_is_exact).
+    for (part, &g) in parts.iter_mut().zip(given) {
+        *part = part.checked_sub(g)?;
+    }
+    Some(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -421,6 +478,51 @@ mod tests {
         let mut none: [i64; 0] = [];
         assert_eq!(apportion(0, &mut none, &[], 0), None);
         assert_eq!(apportion(0, &mut none, &[], -1), None);
+    }
+
+    /// apportion_cumulative scenario 1: mismatched lengths, a bad unit, an
+    /// input out of line range, or a shortfall apportion refuses: None,
+    /// and the parts untouched.
+    #[test]
+    fn apportion_cumulative_refuses_mismatched_or_out_of_range_inputs() {
+        let big = (1i64 << 40) + 1;
+        for (total, parts, rems, unit, given) in [
+            (4i64, [2i64, 2], [0i64, 0], 1i64, &[0i64][..]),
+            (4, [2, 2], [0, 0], 0, &[0, 0][..]),
+            (4, [2, 2], [0, 0], big, &[0, 0][..]),
+            (big, [2, 2], [0, 0], 1, &[0, 0][..]),
+            (4, [big, 2], [0, 0], 1, &[0, 0][..]),
+            (4, [2, 2], [0, 0], 1, &[big, 0][..]),
+            // Three units short of two parts: not rounding.
+            (7, [2, 2], [0, 0], 1, &[0, 0][..]),
+        ] {
+            let mut p = parts;
+            assert_eq!(
+                apportion_cumulative(total, &mut p, &rems, unit, given),
+                None,
+                "{total} {parts:?} {unit} {given:?}"
+            );
+            assert_eq!(p, parts);
+        }
+        // Remainders that don't pair with the parts: apportion's refusal.
+        let mut p = [2i64, 2];
+        assert_eq!(apportion_cumulative(4, &mut p, &[0], 1, &[0, 0]), None);
+        assert_eq!(p, [2, 2]);
+    }
+
+    /// apportion_cumulative scenario 2 (cents, i64): three cents closed
+    /// one at a time gave A all three; the fourth cent's close apportions
+    /// the running 4 cents (2 / 2) and takes back what A and B had.
+    #[test]
+    fn apportion_cumulative_trues_up_a_legacy_split() {
+        let mut parts = [2i64, 2];
+        apportion_cumulative(4, &mut parts, &[0, 0], 1, &[3, 0]).unwrap();
+        assert_eq!(parts, [-1, 2]);
+        // A running total of 5: floors 2 / 2 with equal remainders, so the
+        // tied unit goes to the first (3 / 2), less what each had (3 / 1).
+        let mut parts = [2i64, 2];
+        apportion_cumulative(5, &mut parts, &[5, 5], 1, &[3, 1]).unwrap();
+        assert_eq!(parts, [0, 1]);
     }
 
     /// With no parts, only a zero whole is fully apportioned.

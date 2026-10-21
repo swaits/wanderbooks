@@ -9,6 +9,9 @@
 #   cargo run --bin older -- OUT      (x_older_rules, with its JournalWriter)
 #   cargo run --bin expect -- OUT     (expected.json beside each journal)
 # and copy each journal.jsonl, blobs/ and expected.json into old-books/.
+# x_member_closes was written later, the same way, by main 00226a4c
+# (2026-10-20, before P3's odd cent): `cargo run --bin members -- OUT`
+# (members closes under every rounding rule main wrote; P3 review R-2).
 [package]
 name = "writer"
 version = "0.1.0"
@@ -22,3 +25,5 @@ rust_decimal = "=1.43.0"
 serde_json = "1"
 
 [workspace]
+# main's crates (wb-main) keep their own workspace.
+exclude = ["wb-main"]

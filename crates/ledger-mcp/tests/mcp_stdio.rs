@@ -1690,6 +1690,243 @@ fn mcp_partnership_from_template_over_stdio() {
     );
 }
 
+/// Contract (rules.md B-13, D-10; docs/mcp-interface.md close_period and
+/// list_periods): a close to the members shows each member's running
+/// split, the same in the preview as once confirmed, and the periods say
+/// which rule they closed under. Two members at 50% each, hand-computed:
+/// January's cent is 0.005 each exactly, the tie to Ann (listed first):
+/// Ann 0.01, Bo 0.00. February's cent makes the running 0.02, 0.01 each,
+/// so February gives Bo 0.01. After a restart, both closes count from
+/// close 1, the books verify, and the statement of members' equity shows
+/// 0.01 each.
+#[test]
+fn close_period_shows_each_members_running_split() {
+    let dir = test_dir("members-split");
+    let mut scratch = Mcp::spawn(&dir.join("scratch"));
+    init(&mut scratch);
+    let t = scratch.call(
+        "books.chart_template",
+        json!({"entity_type": "multi-member LLC", "owners": ["Ann", "Bo"]}),
+    );
+    let settings = t["settings_toml"].as_str().unwrap().to_string();
+    let toml = dir.join("wanderbooks.toml");
+    std::fs::write(
+        &toml,
+        format!("{settings}\n[books]\nreceipt_threshold = \"10000\"\n"),
+    )
+    .unwrap();
+    let spawn = || {
+        let mut mcp = Mcp::spawn_with(
+            &dir.join("books-data"),
+            &[std::ffi::OsStr::new("--books-toml"), toml.as_os_str()],
+        );
+        init(&mut mcp);
+        mcp
+    };
+    let mut mcp = spawn();
+    mcp.call("books.import_chart_csv", json!({"csv_text": t["csv"]}));
+    let sale = |mcp: &mut Mcp, date: &str| {
+        let e = mcp.call(
+            "books.draft_entry",
+            json!({"date": date, "description": "a cent"}),
+        );
+        let id = e["entry_id"].as_u64().unwrap();
+        for (account, side) in [("1000", "debit"), ("4000", "credit")] {
+            mcp.call(
+                "books.add_line",
+                json!({"entry_id": id, "account": account, "side": side, "amount": "0.01"}),
+            );
+        }
+        mcp.call(
+            "books.post_entry",
+            json!({"entry_id": id, "confirmed": true}),
+        );
+    };
+    let member = |name: &str, code: &str, this: &str, running: &str, exact: &str| {
+        json!({"name": name, "capital_account": code, "share": "0.50",
+               "this_close": this, "running": running, "exact": exact})
+    };
+
+    sale(&mut mcp, "2026-01-10");
+    let jan = mcp.call(
+        "books.create_period",
+        json!({"name": "2026-01", "start": "2026-01-01", "end": "2026-01-31"}),
+    );
+    let preview = mcp.call(
+        "books.close_period",
+        json!({"period_id": jan["period_id"], "confirmed": false}),
+    );
+    assert_eq!(
+        preview["members"],
+        json!({"since_close": 1, "members": [
+            member("Ann", "3000", "0.01", "0.01", "0.005"),
+            member("Bo", "3001", "0.00", "0.00", "0.005"),
+        ]})
+    );
+    assert_eq!(
+        preview["lines"],
+        json!(["Debit 4000 0.01", "Credit 3000 0.01"])
+    );
+    let closed = mcp.call(
+        "books.close_period",
+        json!({"period_id": jan["period_id"], "confirmed": true}),
+    );
+    assert_eq!(closed["members"], preview["members"]);
+    assert_eq!(closed["lines"], preview["lines"]);
+
+    sale(&mut mcp, "2026-02-10");
+    let feb = mcp.call(
+        "books.create_period",
+        json!({"name": "2026-02", "start": "2026-02-01", "end": "2026-02-28"}),
+    );
+    let closed = mcp.call(
+        "books.close_period",
+        json!({"period_id": feb["period_id"], "confirmed": true}),
+    );
+    assert_eq!(
+        closed["members"],
+        json!({"since_close": 1, "members": [
+            member("Ann", "3000", "0.00", "0.01", "0.01"),
+            member("Bo", "3001", "0.01", "0.01", "0.01"),
+        ]})
+    );
+    assert_eq!(
+        closed["lines"],
+        json!(["Debit 4000 0.01", "Credit 3001 0.01"])
+    );
+    drop(mcp);
+
+    let mut mcp = spawn();
+    assert_eq!(mcp.call("books.verify", json!({}))["status"], "ok");
+    let periods = mcp.call("books.list_periods", json!({}));
+    let rules: Vec<&Value> = periods["periods"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| &p["close_rule"])
+        .collect();
+    assert_eq!(
+        rules,
+        [
+            &json!("members_cumulative_since:1"),
+            &json!("members_cumulative_since:1")
+        ]
+    );
+    let me = mcp.call(
+        "books.export",
+        json!({"format": "json", "report": "members_equity", "start": "2026-01-01", "end": "2026-02-28"}),
+    );
+    let me: Value = serde_json::from_str(me["content"].as_str().unwrap()).unwrap();
+    assert_eq!(me["members"][0]["ending"], "0.01");
+    assert_eq!(me["members"][1]["ending"], "0.01");
+}
+
+/// Contract (rules.md B-13, D-10; docs/mcp-interface.md list_periods and
+/// close_period) on books an earlier version wrote: ledger-store's
+/// old-books fixture x_member_closes (two members at 50%, A with a
+/// distributions account; three closes untagged, three
+/// "largest_remainder", then "cumulative" broken by a close to retained
+/// earnings), opened by the server. list_periods names each close's rule;
+/// December's first close under the rule since P3 counts from close 1
+/// and carries the true-up, the same in the preview as once confirmed.
+/// By hand (the fixture's writer): the members closed 0.12, A 0.07 and B
+/// 0.05 of it (exact 0.06 each). December earns 0.02: the running 0.14
+/// splits 0.07 each, less 0.07 / 0.05 given, so Ann gets 0.00 and Bo
+/// 0.02, both at their exact 0.07.
+#[test]
+fn old_books_name_each_closes_rule_and_true_up_at_the_next_close() {
+    let dir = test_dir("members-old");
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../ledger-store/tests/fixtures/old-books/x_member_closes/journal.jsonl");
+    let books = dir.join("books-data");
+    std::fs::create_dir_all(&books).unwrap();
+    std::fs::copy(&fixture, books.join("journal.jsonl")).unwrap();
+    let toml = dir.join("wanderbooks.toml");
+    std::fs::write(
+        &toml,
+        "[company]\ntax_form = \"1065\"\n\n\
+         [[company.members]]\nname = \"Ann\"\nshare = \"50%\"\ncapital_account = \"3000\"\n\
+         distribution_account = \"3100\"\n\n\
+         [[company.members]]\nname = \"Bo\"\nshare = \"50%\"\ncapital_account = \"3001\"\n\n\
+         [books]\nreceipt_threshold = \"10000\"\n",
+    )
+    .unwrap();
+    let mut mcp = Mcp::spawn_with(
+        &books,
+        &[std::ffi::OsStr::new("--books-toml"), toml.as_os_str()],
+    );
+    init(&mut mcp);
+    let rules = |mcp: &mut Mcp| -> Vec<Value> {
+        mcp.call("books.list_periods", json!({}))["periods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["close_rule"].clone())
+            .collect()
+    };
+    let old = [
+        "members_last_absorbs",
+        "members_last_absorbs",
+        "members_last_absorbs",
+        "members_per_close",
+        "members_per_close",
+        "members_per_close",
+        "members_run",
+        "members_run",
+    ];
+    let mut want: Vec<Value> = old.iter().map(|r| json!(r)).collect();
+    want.extend([Value::Null, json!("members_run"), json!("members_run")]);
+    assert_eq!(rules(&mut mcp), want);
+
+    let e = mcp.call(
+        "books.draft_entry",
+        json!({"date": "2026-12-10", "description": "two cents"}),
+    );
+    let id = e["entry_id"].as_u64().unwrap();
+    for (account, side) in [("1000", "debit"), ("4000", "credit")] {
+        mcp.call(
+            "books.add_line",
+            json!({"entry_id": id, "account": account, "side": side, "amount": "0.02"}),
+        );
+    }
+    mcp.call(
+        "books.post_entry",
+        json!({"entry_id": id, "confirmed": true}),
+    );
+    let dec = mcp.call(
+        "books.create_period",
+        json!({"name": "2026-12", "start": "2026-12-01", "end": "2026-12-31"}),
+    );
+    let preview = mcp.call(
+        "books.close_period",
+        json!({"period_id": dec["period_id"], "confirmed": false}),
+    );
+    let member = |name: &str, code: &str, this: &str| {
+        json!({"name": name, "capital_account": code, "share": "0.50",
+               "this_close": this, "running": "0.07", "exact": "0.07"})
+    };
+    assert_eq!(
+        preview["members"],
+        json!({"since_close": 1, "members": [
+            member("Ann", "3000", "0.00"),
+            member("Bo", "3001", "0.02"),
+        ]})
+    );
+    assert_eq!(
+        preview["lines"],
+        json!(["Debit 4000 0.02", "Credit 3001 0.02"])
+    );
+    let closed = mcp.call(
+        "books.close_period",
+        json!({"period_id": dec["period_id"], "confirmed": true}),
+    );
+    assert_eq!(closed["members"], preview["members"]);
+    assert_eq!(closed["lines"], preview["lines"]);
+    want.push(json!("members_cumulative_since:1"));
+    assert_eq!(rules(&mut mcp), want);
+    assert_eq!(mcp.call("books.verify", json!({}))["status"], "ok");
+}
+
 #[test]
 fn mcp_schedules_and_recurring_over_stdio() {
     let dir = test_dir("schedules");

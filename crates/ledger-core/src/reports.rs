@@ -4,7 +4,6 @@
 //! (`docs/oracle.md`) diffs: the same fixture books through two engines must
 //! produce byte-identical [`snapshot`] output.
 
-use crate::periods::allocate;
 use crate::{AccountType, Class, ClassId, JournalEntry, JournalLine, Ledger, LedgerError};
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
@@ -842,32 +841,45 @@ pub fn cancelled_in_span(
 /// distributions (debits). Earnings are partnership earnings: net income
 /// for the period, and earnings from before it not yet distributed (retained
 /// earnings plus unclosed income), are allocated by share. Allocation is to
-/// the cent, odd cents by largest remainder, so every row's total is exact
-/// and the ending total equals balance-sheet equity.
+/// the currency's minor unit, odd units by largest remainder, the same
+/// running way the members closes split them, so every row's total is
+/// exact and the ending total equals balance-sheet equity.
 ///
 /// ```text
 /// GOAL: each member's capital roll-forward for a partnership over a
 ///       period: beginning, contributions, allocated net income, distributions,
 ///       ending; with a total.
-/// SOURCE: docs/spec/rules.md B-13 (26 U.S.C. §704(a); Form 1065 Schedule
-///         M-2), B-11; R-9c.
+/// SOURCE: docs/spec/rules.md B-13 (26 U.S.C. §704(a); Treas. Reg.
+///         §1.704-1(b)(2)(iv)(b); Form 1065 Schedule M-2; D-38), B-11;
+///         R-9c.
 /// INVARIANTS:
 ///   1. Each row MUST roll forward exactly: beginning + contributions +
 ///      income - distributions + other = ending.
 ///   2. The total ending MUST equal balance-sheet equity at `end`.
-///   3. Undistributed earnings MUST be split by share, to the cent, by
-///      largest remainder (DECISION, owner 2026-10-13), cumulatively as
-///      of each date: a member's beginning is their capital and share as
-///      of the day before `start`, their ending as of `end`.
+///   3. Undistributed earnings U MUST be split by share, to the base
+///      currency's minor unit, by largest remainder (DECISION, owner
+///      2026-10-13), as of each date d, the way the next members close
+///      would split them: allocate(C + U) − allocate(C), where C is what
+///      the members regime's closes dated on or before d closed
+///      (Ledger::members_regime; D-38, P3 review R-1). A member's
+///      beginning is their capital and share as of the day before
+///      `start`, their ending as of `end`. Tied units, "other"'s
+///      included, go to the member the count's first close listed first
+///      (Regime::allocate; on a day before it, the count the next members
+///      close begins), so the order `members` lists them in moves no unit
+///      once a close has begun the count.
 ///   3a. A member's ending on one statement MUST equal their beginning on
-///      the next, exactly (a capital account is one running balance: Form
-///      1065 Schedule K-1 instructions, Item L, "beginning capital account
-///      and ending capital account ... based on the partnership's books").
+///      the next, exactly (a capital account is one running balance of
+///      contributions, allocations and distributions: Treas. Reg.
+///      §1.704-1(b)(2)(iv)(b)).
 ///   3b. A member's income is the roll-forward's remainder: their share of
-///      the period's income, off by less than two cents (under one cent of
-///      rounding at each end of the cumulative split); the members'
-///      incomes MUST sum to the period's net income. (Earnings a close has
-///      already moved into capital were rounded by that close, B-13.)
+///      the period's income, off by less than two minor units (under one
+///      at each end of the cumulative split); the members' incomes MUST
+///      sum to the period's net income.
+///   3c. A member's capital as of a date MUST NOT change when a period
+///      ending on or before it is later closed to the members, except by a
+///      true-up of rounding by closes made under an earlier rule, which
+///      shows only once a close posts it (D-38; R-1).
 ///   4. NEVER hide an unexplained change: it goes in "other".
 ///   5. An entry dated `start` is period activity, not beginning capital.
 ///   6. An entry and its reversal both dated in the span cancel
@@ -981,8 +993,8 @@ pub fn members_equity(
     // earnings not yet distributed. Each member's share of it is allocated
     // cumulatively, as of a date, so a member's capital on a date never
     // depends on which statement shows it: one statement's ending is the
-    // next one's beginning, to the cent (a capital account is one running
-    // balance: Form 1065 Schedule K-1 instructions, Item L).
+    // next one's beginning, to the minor unit (a capital account is one
+    // running balance: Treas. Reg. §1.704-1(b)(2)(iv)(b)).
     let capital_through = |id: crate::AccountId, through: NaiveDate| -> Decimal {
         let mut m = Decimal::ZERO;
         for e in ledger.posted_entries().filter(|e| e.date() <= through) {
@@ -1003,19 +1015,45 @@ pub fn members_equity(
                     .map_or(Decimal::ZERO, |d| capital_through(d, end))
         })
         .collect();
-    let begin_alloc = allocate(
+    // As of a date, a member's share of the earnings not yet in capital is
+    // what the next members close would give them of it: their split of
+    // everything closed to these members and shares (the regime's closes
+    // through that date) plus it, less their split of the closed part
+    // alone. Closing a period moves earnings from here into capital
+    // without changing the sum, so a member's capital on a date is the
+    // same before and after its period closes (D-38); a true-up of
+    // rounding by closes made under an earlier rule shows only once a
+    // close posts it (P3 review R-1).
+    let places = ledger.base_currency().allocation_places();
+    let key: Vec<(crate::AccountId, Decimal)> = members
+        .iter()
+        .map(|m| (m.capital_account, m.share))
+        .collect();
+    let nothing = vec![Decimal::ZERO; members.len()];
+    let unclosed_share = |undistributed: Decimal, regime: &crate::ledger::Regime| {
+        let closed = regime.allocate(&key, regime.closed, &nothing, places)?;
+        regime.allocate(&key, regime.closed + undistributed, &closed, places)
+    };
+    let end_regime = ledger.members_regime(&key, Some(end));
+    let begin_alloc = unclosed_share(
         begin_bs.total_equity - capital.iter().sum::<Decimal>(),
-        &shares,
-    );
-    let end_alloc = allocate(
+        &ledger.members_regime(&key, Some(day_before)),
+    )?;
+    let end_alloc = unclosed_share(
         end_bs.total_equity - capital_end.iter().sum::<Decimal>(),
-        &shares,
-    );
+        &end_regime,
+    )?;
     let explained = flow.iter().map(|(c, d)| c - d).sum::<Decimal>() + pnl.net_income();
-    let other_alloc = allocate(
+    // "Other" is split anew on each statement, its tied unit to the member
+    // the count as of `end` lists first, as the ending's are: a reorder of
+    // the members in the settings moves no cent between their other (and
+    // so their income) either.
+    let other_alloc = end_regime.allocate(
+        &key,
         end_bs.total_equity - begin_bs.total_equity - explained,
-        &shares,
-    );
+        &nothing,
+        places,
+    )?;
 
     let mut cols = Vec::with_capacity(members.len());
     for (i, m) in members.iter().enumerate() {

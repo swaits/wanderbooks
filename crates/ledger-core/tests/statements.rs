@@ -667,9 +667,13 @@ fn a_partnership_closes_into_members_capital() {
             cents("733.33")
         )
     );
+    // February's 100.01 isn't closed yet: each member's share of it is
+    // what February's close will give them (D-38): the running split of
+    // 666.67 + 100.01 = 766.68 is 383.34 each, less January's 333.34 /
+    // 333.33, so Alice 50.00 and Bob 50.01. Bob ends 733.33 − 100 + 50.01.
     let feb_me = members_equity(&l, d(2, 1), d(2, 28), &members).unwrap();
     assert_eq!(feb_me.members[0].beginning, cents("933.34"));
-    assert_eq!(feb_me.members[1].ending, cents("683.33"));
+    assert_eq!(feb_me.members[1].ending, cents("683.34"));
     assert_eq!(
         feb_me.total.ending,
         balance_sheet_as_of(&l, d(2, 28)).unwrap().total_equity
@@ -1595,6 +1599,14 @@ mod cumulative_closes {
             (cents("0.02"), cents("0.01")),
             "cumulative: within a cent of half of 0.03 each"
         );
+        // An unbroken run splits the same under the run rule of
+        // 2026-10-13 (journaled "cumulative"), which still replays.
+        let (l, caps) = three_cent_months(|c| CloseTo::MembersRun(half(c)));
+        assert_eq!(
+            (bal(&l, caps[0]), bal(&l, caps[1])),
+            (cents("0.02"), cents("0.01")),
+            "the run rule"
+        );
     }
 
     proptest::proptest! {
@@ -1645,11 +1657,34 @@ mod cumulative_closes {
         }
     }
 
-    /// A run is closes with the same members and shares, back to back: a
-    /// close to anything else (or with other shares) ends it, and the next
-    /// members close starts afresh.
+    /// Under the run rule of 2026-10-13 (CloseTo::MembersRun, journaled
+    /// "cumulative"; only replay makes it now), a run is closes with the
+    /// same members and shares, back to back: a close to anything else ends
+    /// it, and the next members close starts afresh, so a tied cent can go
+    /// to the same member again (P3 defect 17). Closes journaled under it
+    /// still replay that way.
     #[test]
-    fn a_different_close_ends_the_run() {
+    fn a_different_close_ends_a_legacy_run() {
+        let (a, b) = cent_months_around_a_retained_earnings_close(CloseTo::MembersRun);
+        assert_eq!((a, b), (cents("0.02"), cents("0")));
+    }
+
+    /// The rule since P3 (rules.md B-13, D-10): a close to retained
+    /// earnings allocates nothing to the members and is skipped, so March's
+    /// members close continues January's count: the running 0.02 splits
+    /// 0.01 / 0.01, and March gives B the cent.
+    #[test]
+    fn a_different_close_no_longer_restarts_the_count() {
+        let (a, b) = cent_months_around_a_retained_earnings_close(CloseTo::Members);
+        assert_eq!((a, b), (cents("0.01"), cents("0.01")));
+    }
+
+    /// A cent in each of January, February and March, 50/50; January and
+    /// March close to the members with `to`, February to retained
+    /// earnings. The members' capital balances after March.
+    fn cent_months_around_a_retained_earnings_close(
+        to: fn(Vec<MemberClose>) -> CloseTo,
+    ) -> (Decimal, Decimal) {
         let mut l = Ledger::new(Currency::USD);
         let mut add = |code: &str, t| l.add_account(code, code, t, None, false).unwrap();
         let cash = add("1000", AccountType::Asset);
@@ -1684,15 +1719,16 @@ mod cumulative_closes {
             l.close_period_to(p, to).unwrap();
         };
         // Month 1 to members (A gets the cent), month 2 to retained
-        // earnings (ends the run), month 3 to members again: a new run, so
-        // A gets that cent too.
+        // earnings, month 3 to members again.
         cent(&mut l, 1);
-        close(&mut l, 1, &CloseTo::Members(half(&caps)));
+        close(&mut l, 1, &to(half(&caps)));
         cent(&mut l, 2);
         close(&mut l, 2, &CloseTo::RetainedEarnings { sweep: vec![] });
         cent(&mut l, 3);
-        close(&mut l, 3, &CloseTo::Members(half(&caps)));
-        assert_eq!(l.account_balance(caps[0]).unwrap(), cents("0.02"));
-        assert_eq!(l.account_balance(caps[1]).unwrap(), cents("0"));
+        close(&mut l, 3, &to(half(&caps)));
+        (
+            l.account_balance(caps[0]).unwrap(),
+            l.account_balance(caps[1]).unwrap(),
+        )
     }
 }

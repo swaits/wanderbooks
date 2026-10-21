@@ -319,7 +319,8 @@ theorem plugLast_keeps (whole : Int) (ps : List Int) :
 
 /-! ## Cumulative member closes
 
-A run of members closes (`CloseTo::Members`, rules.md B-13) gives each
+A run of members closes under the run rule of 2026-10-13 to P3
+(`CloseTo::MembersRun`, journaled `"cumulative"`; rules.md B-13) gives each
 member, at each close, their allocation of the run's total so far minus
 their allocation of the total before it. `alloc` is any allocation of an
 amount to members (member `i` gets `alloc x i`), such as
@@ -365,6 +366,86 @@ theorem closePart_total (alloc : Int → Nat → Int) (members : List Nat)
   have h := sum_map_sub (alloc (before + net)) (alloc before) members
   unfold closePart
   rw [h, sums, sums]
+  omega
+
+/-! ## Members closes counted from a count's start (P3)
+
+The rule since P3 (`CloseTo::Members`, rules.md B-13; D-10): a close gives
+member `i` their allocation of everything the count has closed (`closed`
+before it, plus its `net`), less what the count's earlier closes gave them
+(`given i`), whatever rule those closes were made under
+(`periods::allocate_cumulative`, `kernel::apportion_cumulative`). The run
+rule of 2026-10-13 (`CloseTo::MembersRun`, `closePart`) is the special case
+where the earlier closes gave exactly the allocation. -/
+
+/-- What a cumulative close gives member `i`. -/
+def trueUp (alloc : Int → Nat → Int) (closed net : Int) (given : Nat → Int) (i : Nat) : Int :=
+  alloc (closed + net) i - given i
+
+/-- **A cumulative close hands out exactly its net**, whatever rule the
+earlier closes used, as long as they handed out what they closed. -/
+theorem trueUp_total (alloc : Int → Nat → Int) (members : List Nat)
+    (sums : ∀ x, (members.map (alloc x)).sum = x) (closed net : Int) (given : Nat → Int)
+    (hg : (members.map given).sum = closed) :
+    (members.map (trueUp alloc closed net given)).sum = net := by
+  have h := sum_map_sub (alloc (closed + net)) given members
+  unfold trueUp
+  rw [h, sums, hg]
+  omega
+
+/-- **A running total is one allocation**: after the close, what the count
+has given member `i` is their allocation of everything it closed, so its
+rounding is one allocation's, never a sum of them. -/
+theorem trueUp_running (alloc : Int → Nat → Int) (closed net : Int) (given : Nat → Int)
+    (i : Nat) : given i + trueUp alloc closed net given i = alloc (closed + net) i := by
+  unfold trueUp
+  omega
+
+/-- The run rule is the special case `given = alloc closed`. -/
+theorem closePart_eq_trueUp (alloc : Int → Nat → Int) (before net : Int) (i : Nat) :
+    closePart alloc before net i = trueUp alloc before net (alloc before) i := rfl
+
+/-- **Bounded drift, for any history**: when every allocation is under one
+unit from exact (scaled by `W`, the shares being `w i / W`), so is every
+member's running total after a cumulative close, whatever the earlier
+closes gave (`Apportion.allocW_drift` supplies the hypothesis). -/
+theorem cumulative_drift (alloc : Int → Nat → Int) (w : Nat → Int) (W : Int)
+    (hd : ∀ x i, -W < alloc x i * W - x * w i ∧ alloc x i * W - x * w i < W)
+    (closed net : Int) (given : Nat → Int) (i : Nat) :
+    -W < (given i + trueUp alloc closed net given i) * W - (closed + net) * w i ∧
+    (given i + trueUp alloc closed net given i) * W - (closed + net) * w i < W := by
+  rw [trueUp_running]
+  exact hd _ _
+
+/-- The statement of members' equity's share of the earnings `U` not yet
+closed, as of a day: what the count's next close would give of them, its
+allocation of `closed + U` less its allocation of `closed` (D-38; P3 review
+R-1: never the true-up a close hasn't posted). -/
+def unclosedShare (alloc : Int → Nat → Int) (closed U : Int) (i : Nat) : Int :=
+  alloc (closed + U) i - alloc closed i
+
+/-- **Closing a period moves a member's capital on a day by exactly the
+true-up the close posts** (D-38, R-1): before, their capital `cap` plus
+their share of the unclosed `U`; after closing `net` of it, `cap` plus the
+close's part plus their share of the rest. The difference is
+`alloc closed i - given i`. -/
+theorem statement_after_close (alloc : Int → Nat → Int) (cap closed net U : Int)
+    (given : Nat → Int) (i : Nat) :
+    cap + trueUp alloc closed net given i + unclosedShare alloc (closed + net) (U - net) i
+      = cap + unclosedShare alloc closed U i + (alloc closed i - given i) := by
+  unfold trueUp unclosedShare
+  rw [show closed + net + (U - net) = closed + U by omega]
+  omega
+
+/-- **A member's capital on a day never moves when its period is closed**
+(D-38), once the count's closes gave what the cumulative rule gives
+(`given = alloc closed`: every count the rule began, and every count after
+its first close that posts). -/
+theorem statement_unmoved_by_close (alloc : Int → Nat → Int) (cap closed net U : Int)
+    (i : Nat) :
+    cap + trueUp alloc closed net (alloc closed) i + unclosedShare alloc (closed + net) (U - net) i
+      = cap + unclosedShare alloc closed U i := by
+  rw [statement_after_close]
   omega
 
 end Wanderbooks

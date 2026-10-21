@@ -595,6 +595,111 @@ scratch (`ledger-store` `backup.rs` and `root.rs`, `ledger-core`
 `admin.rs`, `ledger-host` `commands.rs`, `ledger-cli`). The survivor lists
 are kept with the run's output, outside the repository.
 
+## P3: odd cents (2026-10-20)
+
+Defect 17 (rules.md B-13; D-10, D-38), built without its mutation run
+(D-33); what P12 must cover is listed at the end. Every expected figure is
+worked by hand in the test's comment.
+
+**The named regression.** `the_audit_odd_cent_never_piles_up_across_closes`
+(`ledger-core` `tests/odd_cent.rs`): audit F52's −399.23 at 50/50,
+anonymized, with a close to retained earnings between two members closes.
+The run rule left A −399.24 / B −399.22; the rule since P3 gives −399.23
+each (March: Dr 3000 199.61, Dr 3001 199.62). Its bookspec example is
+`bookspec/examples/members-close.odd-cent-across-closes.toml`.
+
+**Core** (`ledger-core` `tests/odd_cent.rs`): a true-up from inception
+(`members_closes_true_up_from_inception`); a close that posts nothing
+(`a_close_that_posts_nothing_carries_no_true_up`) and one that posts only a
+sweep (`a_true_up_rides_on_a_distribution_sweep`, P3 review R-3); a reorder
+(`reordering_members_keeps_counting_from_the_first_close`); a share change
+and a return to the old shares (`a_share_change_starts_a_new_count`); a
+member joining mid-year (`a_member_joining_mid_year_starts_a_new_count`,
+R-8); a journaled start other than the derived one
+(`a_journaled_start_other_than_the_derived_one_is_refused`); whole yen and
+thousandths of a dinar (`a_yen_book_closes_to_members_in_whole_yen`,
+`a_dinar_book_closes_to_members_in_thousandths`); the statement on a date
+before and after its period closes
+(`a_members_capital_on_a_date_does_not_change_when_its_period_closes`); a
+pending true-up that shows only once posted
+(`a_pending_true_up_shows_only_once_posted`, R-1); three members at 33.33%
+/ 33.33% / 33.34% over twelve months, the statement checked against the
+same entries never closed on every day of the year and the K-1 worksheet
+at every month end (`three_members_at_a_third_each_over_twelve_months`).
+Added by the P3 review: a gold book splits to the finest unit a line
+carries, not cents (`a_gold_book_splits_to_the_finest_unit_a_line_carries`);
+the K-1 worksheet shares contributed property in whole yen
+(`a_yen_books_k1_shares_property_in_whole_yen`, and `share_property`'s unit
+test in `k1.rs`); a reorder of the members in the settings moves no cent on
+a day before the count's first close, nor in "other"
+(`a_reorder_moves_no_cent_before_the_counts_first_close`). Each fails on
+the code before the review's fix.
+Properties (512 cases each): `members_capital_never_drifts_a_cent_from_their_share`
+(a legacy prefix under the three earlier rules, then months closed to the
+members in either order, to retained earnings or not at all; a close that
+posts nothing changes no capital, R-3),
+`each_members_capital_chains_and_holds_through_closes`,
+`period_ends_rise_with_close_order` (R-10.6). In `statements.rs`:
+`a_different_close_ends_a_legacy_run` (the run rule, still replayed) and
+`a_different_close_no_longer_restarts_the_count`, the run rule's arm of
+`a_run_of_closes_never_piles_up_rounding`, and February in
+`a_partnership_closes_into_members_capital` (Bob 683.33 → 683.34: his share
+of February's unclosed income is what its close will give, D-38). Unit
+tests in `kernel.rs` (`apportion_cumulative_refuses_mismatched_or_out_of_range_inputs`,
+`apportion_cumulative_trues_up_a_legacy_split`) and `periods.rs`
+(`allocate_cumulative_*`: whole yen, a dinar, a loss, a 28-place share
+refused, R-5). Bridges (`tests/kernel_bridge.rs`):
+`apportion_cumulative_agrees`,
+`allocate_cumulative_agrees_with_the_integer_model`.
+
+**Store** (`ledger-store`): `members_closes_replay_under_the_rule_they_were_journaled_with`
+(each rule; with a close to retained earnings between, the rule since P3
+ends 0.01 / 0.01 and the run rule 0.02 / 0.00); `tests/member_closes.rs`:
+`the_first_cumulative_close_declares_its_feature`,
+`an_unknown_rounding_is_newer_not_corrupt` (R-9),
+`a_count_that_starts_later_journals_its_start` (a share change: since_seq
+2 journaled and replayed; added by the P3 review),
+`a_close_journaled_with_another_start_refuses_to_open`,
+`the_first_close_after_the_upgrade_trues_up_the_old_rules`, on the new
+old-books fixture `x_member_closes` (written by main 00226a4c's Store API:
+three untagged closes, three `"largest_remainder"`, `"cumulative"` broken by
+a close to retained earnings; it opens to main's figures in
+`books_an_earlier_version_wrote_open_to_its_figures`, R-2); `format.rs`
+`an_older_reader_stops_at_the_members_cumulative_feature`.
+
+**MCP and viewer**: `ledger-mcp` `close_period_shows_each_members_running_split`
+(`tests/mcp_stdio.rs`: the preview's `members` is the confirmed one; after
+a restart, `list_periods`' `close_rule` and the statement of members'
+equity); `old_books_name_each_closes_rule_and_true_up_at_the_next_close`
+(the old-books fixture `x_member_closes` through the server: every
+`close_rule` an earlier rule gives, and December's true-up, the preview the
+confirmed close); `ledger-gui` `a_members_page_shows_the_same_capital_before_and_after_a_close`
+and `a_yen_members_page_splits_in_whole_yen` (what is owed to each member
+and their property, in whole yen) (`tests/odd_cent.rs`).
+
+**Proofs**: docs/verification.md (the three P3 laws).
+
+**For P12** (nothing run here, D-33): `kernel::apportion_cumulative` (the
+length and range guards; `checked_sub` for `checked_add`; the subtraction
+skipped); `periods::allocate_cumulative` (the sign; `given` not negated for
+a loss; `places` ignored; the exactness filter, zero products included);
+`Ledger::members_regime` and `regime_where` (skip versus break at a close
+to anything else; the order-free compare made ordered; the date filter
+`<=` for `<`; `given` added to the wrong member; the count's order; the
+next count's order as of a day before it begins);
+`Regime::allocate` (the order); `Ledger::members_split` and
+`close_period_to_steps` (the start check; the `posts` gate; the recorded
+rule; the sweeps before the parts); `member_close_run` (it reads only
+run-rule records); `member_close_split`; `reports::members_equity`
+(`allocate(C)` replaced by `given`, R-1; `places`; "other"'s order);
+`k1::share_property` and the viewer's `owed_to_member` (`places`); the store's
+`close_to_from_journal` and `close_period_to` (the tag mapping; `since_seq`'s
+parse; a tag that isn't text; the feature declaration);
+`format::declared_knowing`; the MCP's `close_period` and `list_periods`
+fields; `Currency::allocation_places`. P3's accept counts `ledger-core` and
+`ledger-import` (R-6); the store and MCP mutants above are for the whole
+pass.
+
 ## Benchmarks (baseline 2026-10-13)
 
 No budget, by decision (the owner, 2026-10-13: the books do little work
@@ -638,12 +743,12 @@ accounting question), CHANGE (a source says otherwise; work pending).
 | 4 | Closing a period with nothing to close still locks it | CONVENTION | A close is a lock (B-12); a dormant month must still lock and count for close-in-order |
 | 5 | Draws and distributions are closed into capital at period end | CONFIRMED | OpenStax 5.1: dividends "are closed to the permanent account"; drawing accounts close to owner's capital. Monthly closes mean the year's K-1 Item L withdrawals sum across months |
 | 6 | Reconciliation balances | CONFIRMED | Signed by the account's normal side (a card reads as owed), as statements show it; `reconciling_a_card_reads_its_normal_side_...` |
-| 7 | A member's ending on one equity statement may differ by a cent from the next statement's beginning | CHANGED 2026-10-13 | A capital account is one running balance (Form 1065 K-1 instructions, Item L). Undistributed earnings now split cumulatively as of each date, so each member's capital chains exactly (`each_members_capital_chains_across_statements`; it fails on the old code); rules.md B-13 |
+| 7 | A member's ending on one equity statement may differ by a cent from the next statement's beginning | CHANGED 2026-10-13; CHANGED P3 | A capital account is one running balance (Treas. Reg. §1.704-1(b)(2)(iv)(b); the Item L quote this row once gave was misread, P3 review R-4). Undistributed earnings now split cumulatively as of each date, so each member's capital chains exactly (`each_members_capital_chains_across_statements`; it fails on the old code); since P3 the split is what the count's next close would give, so a date's capital never moves when its month is closed (D-38; `each_members_capital_chains_and_holds_through_closes`); rules.md B-13 |
 | 8 | Cash flow nets one line per account; investing comes only from registered assets | CHANGED 2026-10-13 | ASC 230-10-45-7: gross receipts and payments "more relevant" than net; 45-8 limits netting to quick-turnover items. Financing and investing are now gross; loans made and investments bought are investing (230-10-20, 45-13) via `[books] investing_accounts`. Owner-advanced expenses: PwC 6.9.3.1 constructive treatment via `[books] financing_accounts` (rules.md B-14) |
 | 9 | An asset's life ends at purchase + life months, that day not held; day-count proration | CONVENTION | Exactly N months of service; day proration and the mid-month convention are both accepted book policies (ASC 360-10-35-4, read 2026-10-14: any systematic and rational allocation) |
 | 10 | A payroll entry has one line per account total | CONFIRMED | The per-employee detail the IRS requires ("Amounts and dates of all wage ... payments", Employment Tax Recordkeeping) is kept in the run; a summary entry is standard |
 | 11 | A period with exactly the dates of an existing one is allowed | DESIGN | Nothing governs duplicate periods; harmless (the second close locks only). Refusing exact duplicates is an option |
-| 12 | Each close into members' capital rounds on its own (ties to the earlier member) | CHANGED 2026-10-13 | Twelve monthly 50/50 closes could leave one member several cents ahead. A run of members closes now splits cumulatively (rules.md B-13; Lean `runPart_telescopes`; property `each_member_stays_within_a_cent_of_their_share` fails on the per-close rule); journaled `"cumulative"`, older closes replay as booked |
+| 12 | Each close into members' capital rounds on its own (ties to the earlier member) | CHANGED 2026-10-13; CHANGED P3 | Twelve monthly 50/50 closes could leave one member several cents ahead. A run of members closes split cumulatively from 2026-10-13 (Lean `runPart_telescopes`; property `each_member_stays_within_a_cent_of_their_share` fails on the per-close rule), but any other close restarted the run. Since P3 a count of members closes runs from the company's first close (D-10), skipping closes to anything else and ignoring the members' order, so no member is ever a cent from their share (`the_audit_odd_cent_never_piles_up_across_closes` fails on the run rule; Kani `cumulative_close_never_drifts_a_unit_at_*`, Lean `allocW_cumulative_drift`); journaled `"cumulative_since"`, older closes replay as booked (rules.md B-13) |
 
 Questions are settled from the sources, not by any one company's CPA
 (wanderbooks is general software). Where the standards leave a real

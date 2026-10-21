@@ -1,0 +1,288 @@
+id = "members-close.thirds-over-twelve-months"
+title = "Three members at a third each, twelve monthly closes"
+rule = "Each monthly close to the members MUST give each member their largest-remainder split of everything closed so far, to the minor unit, less what earlier closes gave them, so after every close each member's total is less than one minor unit from their exact share."
+status = "CHOICE"
+sources = ["26 U.S.C. §704(a)", "Treas. Reg. §1.704-1(b)(2)(iv)(b)"]
+tags = ["partnership", "close", "rounding", "book", "us"]
+
+# A third each can't be written as decimal shares summing to one, so the
+# members hold 33.33%, 33.33% and 33.34%. Twelve months, each closed to
+# them: 100.00, 0.01, 0.02, 33.33, -0.05, 0.10, 1.00, 0.07, 0.01, 12.34,
+# -5.00, 0.02 (141.85 in all).
+#
+# By hand, from the rule (the running total, its exact shares, the floors
+# to the cent, then the left-over cents to the largest remainders):
+#   January, 100.00: 33.33 / 33.33 / 33.34 exactly.
+#   February, running 100.01: 33.333333 / 33.333333 / 33.343334; floors
+#     33.33 / 33.33 / 33.34 leave a cent for the largest remainder, C's
+#     .003334: 33.33 / 33.33 / 33.35, so February gives C 0.01.
+#   March, running 100.03: 33.339999 / 33.339999 / 33.350002; floors 33.33
+#     / 33.33 / 33.35 leave two cents for A's and B's .009999: 33.34 /
+#     33.34 / 33.35, so March gives A 0.01 and B 0.01.
+#   November, running 141.83: 47.271939 / 47.271939 / 47.286122; floors
+#     47.27 / 47.27 / 47.28 leave a cent for C's .006122: 47.27 / 47.27 /
+#     47.29.
+#   December, running 141.85: 47.278605 / 47.278605 / 47.29279; floors
+#     47.27 / 47.27 / 47.29 leave two cents for A's and B's .008605: 47.28
+#     / 47.28 / 47.29, so December gives A 0.01 and B 0.01.
+
+[setup]
+currency = "USD"
+fiscal_year_start = "01-01"
+basis = "accrual"
+rounding = "largest-remainder"
+
+[[setup.accounts]]
+code = "1000"
+name = "Cash"
+type = "asset"
+
+[[setup.accounts]]
+code = "3000"
+name = "Capital, A"
+type = "equity"
+
+[[setup.accounts]]
+code = "3001"
+name = "Capital, B"
+type = "equity"
+
+[[setup.accounts]]
+code = "3002"
+name = "Capital, C"
+type = "equity"
+
+[[setup.accounts]]
+code = "4000"
+name = "Sales"
+type = "revenue"
+
+[[setup.accounts]]
+code = "6000"
+name = "Fees"
+type = "expense"
+
+[[setup.members]]
+name = "A"
+capital_account = "3000"
+share = "0.3333"
+
+[[setup.members]]
+name = "B"
+capital_account = "3001"
+share = "0.3333"
+
+[[setup.members]]
+name = "C"
+capital_account = "3002"
+share = "0.3334"
+
+[[events]]                      # event 1
+date = "2026-01-10"
+description = "January's sales"
+lines = [
+  { account = "1000", side = "debit", amount = "100.00" },
+  { account = "4000", side = "credit", amount = "100.00" },
+]
+
+[[events]]                      # event 2
+date = "2026-01-31"
+description = "Close January to the members"
+close = { start = "2026-01-01", to = "members" }
+
+[[events]]                      # event 3
+date = "2026-02-10"
+description = "February's sales"
+lines = [
+  { account = "1000", side = "debit", amount = "0.01" },
+  { account = "4000", side = "credit", amount = "0.01" },
+]
+
+[[events]]                      # event 4
+date = "2026-02-28"
+description = "Close February to the members"
+close = { start = "2026-02-01", to = "members" }
+
+[[events]]                      # event 5
+date = "2026-03-10"
+description = "March's sales"
+lines = [
+  { account = "1000", side = "debit", amount = "0.02" },
+  { account = "4000", side = "credit", amount = "0.02" },
+]
+
+[[events]]                      # event 6
+date = "2026-03-31"
+description = "Close March to the members"
+close = { start = "2026-03-01", to = "members" }
+
+[[events]]                      # event 7
+date = "2026-04-10"
+description = "April's sales"
+lines = [
+  { account = "1000", side = "debit", amount = "33.33" },
+  { account = "4000", side = "credit", amount = "33.33" },
+]
+
+[[events]]                      # event 8
+date = "2026-04-30"
+description = "Close April to the members"
+close = { start = "2026-04-01", to = "members" }
+
+[[events]]                      # event 9
+date = "2026-05-10"
+description = "May's fees"
+lines = [
+  { account = "6000", side = "debit", amount = "0.05" },
+  { account = "1000", side = "credit", amount = "0.05" },
+]
+
+[[events]]                      # event 10
+date = "2026-05-31"
+description = "Close May to the members"
+close = { start = "2026-05-01", to = "members" }
+
+[[events]]                      # event 11
+date = "2026-06-10"
+description = "June's sales"
+lines = [
+  { account = "1000", side = "debit", amount = "0.10" },
+  { account = "4000", side = "credit", amount = "0.10" },
+]
+
+[[events]]                      # event 12
+date = "2026-06-30"
+description = "Close June to the members"
+close = { start = "2026-06-01", to = "members" }
+
+[[events]]                      # event 13
+date = "2026-07-10"
+description = "July's sales"
+lines = [
+  { account = "1000", side = "debit", amount = "1.00" },
+  { account = "4000", side = "credit", amount = "1.00" },
+]
+
+[[events]]                      # event 14
+date = "2026-07-31"
+description = "Close July to the members"
+close = { start = "2026-07-01", to = "members" }
+
+[[events]]                      # event 15
+date = "2026-08-10"
+description = "August's sales"
+lines = [
+  { account = "1000", side = "debit", amount = "0.07" },
+  { account = "4000", side = "credit", amount = "0.07" },
+]
+
+[[events]]                      # event 16
+date = "2026-08-31"
+description = "Close August to the members"
+close = { start = "2026-08-01", to = "members" }
+
+[[events]]                      # event 17
+date = "2026-09-10"
+description = "September's sales"
+lines = [
+  { account = "1000", side = "debit", amount = "0.01" },
+  { account = "4000", side = "credit", amount = "0.01" },
+]
+
+[[events]]                      # event 18
+date = "2026-09-30"
+description = "Close September to the members"
+close = { start = "2026-09-01", to = "members" }
+
+[[events]]                      # event 19
+date = "2026-10-10"
+description = "October's sales"
+lines = [
+  { account = "1000", side = "debit", amount = "12.34" },
+  { account = "4000", side = "credit", amount = "12.34" },
+]
+
+[[events]]                      # event 20
+date = "2026-10-31"
+description = "Close October to the members"
+close = { start = "2026-10-01", to = "members" }
+
+[[events]]                      # event 21
+date = "2026-11-10"
+description = "November's fees"
+lines = [
+  { account = "6000", side = "debit", amount = "5.00" },
+  { account = "1000", side = "credit", amount = "5.00" },
+]
+
+[[events]]                      # event 22
+date = "2026-11-30"
+description = "Close November to the members"
+close = { start = "2026-11-01", to = "members" }
+
+[[events]]                      # event 23
+date = "2026-12-10"
+description = "December's sales"
+lines = [
+  { account = "1000", side = "debit", amount = "0.02" },
+  { account = "4000", side = "credit", amount = "0.02" },
+]
+
+[[events]]                      # event 24
+date = "2026-12-31"
+description = "Close December to the members"
+close = { start = "2026-12-01", to = "members" }
+
+[[expect]]
+query = "entry"
+entry = 2
+
+[expect.values]
+"4000.debit" = "100.00"
+"3000.credit" = "33.33"
+"3001.credit" = "33.33"
+"3002.credit" = "33.34"
+
+[[expect]]
+query = "entry"
+entry = 4
+
+[expect.values]
+"4000.debit" = "0.01"
+"3002.credit" = "0.01"
+
+[[expect]]
+query = "entry"
+entry = 6
+
+[expect.values]
+"4000.debit" = "0.02"
+"3000.credit" = "0.01"
+"3001.credit" = "0.01"
+
+[[expect]]
+query = "entry"
+entry = 24
+
+[expect.values]
+"4000.debit" = "0.02"
+"3000.credit" = "0.01"
+"3001.credit" = "0.01"
+
+[[expect]]
+query = "balances"
+as_of = "2026-11-30"
+
+[expect.values]
+"3000" = "47.27"
+"3001" = "47.27"
+"3002" = "47.29"
+
+[[expect]]
+query = "balances"
+as_of = "2026-12-31"
+
+[expect.values]
+"3000" = "47.28"
+"3001" = "47.28"
+"3002" = "47.29"

@@ -32,7 +32,8 @@
 //!      with the MacBook read as cash.)
 //!   4. Within one entry, the property (at most the members' credits in
 //!      it) is shared among the members credited in proportion to their
-//!      credits, to the cent, leftover cents by largest remainder
+//!      credits, to the base currency's minor unit (cents, whole yen),
+//!      leftover units by largest remainder
 //!      (kernel::apportion, ties to the earlier member): each takes at
 //!      most its own credit, and the split depends on the order the
 //!      members are given only for a tied leftover cent (never on line
@@ -167,6 +168,7 @@ pub fn k1_detail(
         ));
     }
     let me = members_equity(ledger, start, end, members)?;
+    let places = ledger.base_currency().allocation_places();
     let receivables = ledger.role_account(&crate::RECEIVABLES);
     let closings = ledger.closing_entry_ids();
     let cancelled = crate::reports::cancelled_in_span(ledger, start, end);
@@ -219,7 +221,7 @@ pub fn k1_detail(
             .iter()
             .map(|m| sum(e, Side::Credit, m.capital_account))
             .collect();
-        let takes = share_property(pool, &credits)?;
+        let takes = share_property(pool, &credits, places)?;
         for (i, m) in members.iter().enumerate() {
             let (credit, take) = (credits[i], takes[i]);
             if !(credit - take).is_zero() {
@@ -274,11 +276,16 @@ pub fn k1_detail(
 
 /// One entry's property shared among the members' credits in it
 /// (INVARIANT 4): at most their total credit, in proportion to each
-/// credit, rounded toward zero to the cent, the leftover cents by largest
-/// remainder. Each part is at most its own credit.
+/// credit, rounded toward zero to `places` (the base currency's
+/// Currency::allocation_places: cents, whole yen), the leftover units by
+/// largest remainder. Each part is at most its own credit.
 /// Refused when whole × credit is beyond exact arithmetic (credits near
 /// the line limit; P0 review round 3, S1).
-fn share_property(pool: Decimal, credits: &[Decimal]) -> Result<Vec<Decimal>, LedgerError> {
+fn share_property(
+    pool: Decimal,
+    credits: &[Decimal],
+    places: u32,
+) -> Result<Vec<Decimal>, LedgerError> {
     use rust_decimal::RoundingStrategy::ToZero;
     let too_large =
         || LedgerError::TooLargeToCompute("a member's share of contributed property".into());
@@ -291,7 +298,7 @@ fn share_property(pool: Decimal, credits: &[Decimal]) -> Result<Vec<Decimal>, Le
         return Ok(vec![Decimal::ZERO; credits.len()]);
     }
     // whole × credit is exact; ÷ total is exact whenever the share is a
-    // whole number of cents, so truncating never loses a cent it is owed.
+    // whole number of units, so truncating never loses a unit it is owed.
     let exact: Vec<Decimal> = credits
         .iter()
         .map(|c| whole.checked_mul(*c).and_then(|x| x.checked_div(total)))
@@ -299,11 +306,11 @@ fn share_property(pool: Decimal, credits: &[Decimal]) -> Result<Vec<Decimal>, Le
         .ok_or_else(too_large)?;
     let mut parts: Vec<Decimal> = exact
         .iter()
-        .map(|x| x.round_dp_with_strategy(2, ToZero))
+        .map(|x| x.round_dp_with_strategy(places, ToZero))
         .collect();
     let remainders: Vec<Decimal> = exact.iter().zip(&parts).map(|(x, p)| x - p).collect();
-    crate::kernel::apportion(whole, &mut parts, &remainders, Decimal::new(1, 2))
-        .expect("each part is short by under a cent, so the shortfall is under a cent per member");
+    crate::kernel::apportion(whole, &mut parts, &remainders, Decimal::new(1, places))
+        .expect("each part is short by under a unit, so the shortfall is under a unit per member");
     Ok(parts)
 }
 
@@ -840,20 +847,20 @@ mod tests {
         flipped.reverse();
         assert_eq!(split(&bk, &flipped), vec![each, each]);
         assert_eq!(
-            share_property(d("401"), &[d("750"), d("250")]).unwrap(),
+            share_property(d("401"), &[d("750"), d("250")], 2).unwrap(),
             vec![d("300.75"), d("100.25")]
         );
         assert_eq!(
-            share_property(d("0.01"), &[d("5"), d("5")]).unwrap(),
+            share_property(d("0.01"), &[d("5"), d("5")], 2).unwrap(),
             vec![d("0.01"), d("0.00")]
         );
         // More property than credit (part financed): at most the credits.
         assert_eq!(
-            share_property(d("900"), &[d("300"), d("100")]).unwrap(),
+            share_property(d("900"), &[d("300"), d("100")], 2).unwrap(),
             vec![d("300"), d("100")]
         );
         assert_eq!(
-            share_property(d("50"), &[d("0"), d("0")]).unwrap(),
+            share_property(d("50"), &[d("0"), d("0")], 2).unwrap(),
             vec![d("0"), d("0")]
         );
         // Credits near the line limit: whole x credit is past exact
@@ -861,17 +868,28 @@ mod tests {
         // round 3, S1); at a quarter of it, it still splits exactly.
         let near = d("900000000000000");
         assert!(matches!(
-            share_property(near, &[near, near]),
+            share_property(near, &[near, near], 2),
             Err(LedgerError::TooLargeToCompute(_))
         ));
         assert!(matches!(
-            share_property(near, &[Decimal::MAX, Decimal::MAX]),
+            share_property(near, &[Decimal::MAX, Decimal::MAX], 2),
             Err(LedgerError::TooLargeToCompute(_))
         ));
         let quarter = d("250000000000");
         assert_eq!(
-            share_property(quarter, &[quarter, quarter]).unwrap(),
+            share_property(quarter, &[quarter, quarter], 2).unwrap(),
             vec![d("125000000000"), d("125000000000")]
+        );
+        // To the base currency's minor unit (allocation_places): in whole
+        // yen, 101 of property by credits of 51 each is 50.5 each, the
+        // tied yen to the first; to cents it would be 50.50 each.
+        assert_eq!(
+            share_property(d("101"), &[d("51"), d("51")], 0).unwrap(),
+            vec![d("51"), d("50")]
+        );
+        assert_eq!(
+            share_property(d("101"), &[d("51"), d("51")], 2).unwrap(),
+            vec![d("50.50"), d("50.50")]
         );
     }
 

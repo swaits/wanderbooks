@@ -22,6 +22,8 @@ workspace = true
 [dev-dependencies]
 criterion = "0.8.2"
 proptest = "1"
+# bookspec examples are TOML (tests/bookspec.rs).
+toml = "1"
 
 [[bench]]
 name = "books"

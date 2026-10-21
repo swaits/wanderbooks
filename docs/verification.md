@@ -142,9 +142,57 @@ sequence of commands, of any length**:
     of cumulative closes is their allocation of everything the run closed
     (so its rounding is one allocation's, never a sum of them), and each
     close hands out exactly its net, for any allocation whose parts sum to
-    the whole (rules.md B-13).
+    the whole (rules.md B-13). Since P3 this is the run rule closes
+    journaled `"cumulative"` replay under (`CloseTo::MembersRun`).
     - Lean `runPart_telescopes`, `closePart_total` · property
       `each_member_stays_within_a_cent_of_their_share`
+
+The P3 odd cent (defect 17; rules.md B-13; D-10, D-38) adds three laws;
+their numbers are assigned when P3 lands:
+
+- **A cumulative members close hands out exactly its net, and leaves each
+  member's running total one allocation of everything the count closed**,
+  whatever rule the count's earlier closes were made under, as long as
+  they handed out what they closed. The run rule is the special case where
+  they gave exactly the allocation. A refusal leaves the parts as they
+  were.
+  - Kani `apportion_cumulative_is_exact`,
+    `cumulative_closing_entry_balances` (the closing entry nets to zero
+    whatever the true-up)
+  - Lean `trueUp_total`, `trueUp_running`, `closePart_eq_trueUp`,
+    `Apportion.allocW_sum`, `Apportion.allocW_cumulative_total`
+  - properties `apportion_cumulative_agrees`,
+    `allocate_cumulative_agrees_with_the_integer_model`
+- **Bounded drift: no member's running total is ever a minor unit from
+  their exact share.** With shares w_i / W (exact decimals) and every
+  amount a whole number of minor units (B-3), after every cumulative
+  close |(given_i + part_i)·W − T·w_i| < W, whatever earlier closes gave.
+  The precondition is the code's: `periods::allocate_cumulative` refuses a
+  product Decimal would round, so the remainders it ranks are exact, and
+  they sum to whole units (the Lean hypothesis of `rem_pos_of_rank_lt`).
+  - Kani `cumulative_close_never_drifts_a_unit_at_halves`, `_at_tenths`
+    and `_at_near_thirds` (two members at 50/50, three at 20/30/50%, three
+    at 33.33/33.33/33.34%; every running total, net and earlier split to
+    2^12 units)
+  - Lean `Apportion.rem_pos_of_rank_lt` (a member given a unit had a
+    positive remainder), `Apportion.apportion_drift` (one apportionment
+    is within a unit), `Apportion.allocW_drift` (the model of
+    `allocate_cumulative`, gain or loss), `cumulative_drift` (any
+    allocation within a unit stays so under the true-up),
+    `Apportion.allocW_cumulative_drift` (the two together): any number of
+    members, any amounts
+  - property `members_capital_never_drifts_a_cent_from_their_share`
+- **A member's capital on a day never moves when its period is closed.**
+  The statement of members' equity gives each member, of the earnings not
+  yet closed, what the count's next close would give them; closing moves
+  those earnings into capital without changing the sum. When the count's
+  earlier closes gave something else (closes under an earlier rule), the
+  figure moves by exactly the true-up the close posts, never before.
+  - Lean `statement_after_close`, `statement_unmoved_by_close`
+  - property `each_members_capital_chains_and_holds_through_closes`;
+    `three_members_at_a_third_each_over_twelve_months` (every day of a
+    year, closed and never closed), the viewer's
+    `a_members_page_shows_the_same_capital_before_and_after_a_close`
 
 ## What the proofs found
 
@@ -243,6 +291,31 @@ import roots in P2 slice 5), files with full
 TINs kept out of the books (B-26), and the agent text lint. Out of scope
 for proof today: the format gate and the walk are I/O, and the model in
 `verify/lean` stops at the ledger.
+
+### P3: the odd cent (2026-10-20)
+
+The cumulative members close (rules.md B-13) adds a kernel function,
+`kernel::apportion_cumulative`, which Kani proves exact and refusal-safe
+for up to three parts and checks against the integer model of
+`periods::allocate_cumulative` for bounded drift; Lean proves the drift
+bound and the true-up laws for any number of members and any amounts. Not
+proved: the regime query (`Ledger::members_regime`: which closes count),
+the Decimal exactness check in `allocate_cumulative`, and the journal's
+`since_seq`. They are checked by the tests in `ledger-core`
+`tests/odd_cent.rs`, `ledger-store` `tests/member_closes.rs` and the
+old-books fixture `x_member_closes` (docs/testing.md, "P3: odd cents").
+Kani times, each harness alone on a busy laptop (Kani 0.68, 2026-10-20):
+`apportion_cumulative_is_exact` 257 s, `cumulative_close_never_drifts_a_unit_at_halves`
+17 s, `_at_tenths` 320 s, `_at_near_thirds` 449 s,
+`cumulative_closing_entry_balances` 202 s (`apportion_is_exact`, for
+scale: 121 s). Two shapes were too slow and were changed, not weakened in
+what they prove: restating apportion's postconditions on the cumulative
+parts directly ran past ten minutes, so `apportion_cumulative_is_exact`
+proves the parts are apportion's less `given` on the same inputs (the
+solver shares the two runs' formulas) and `apportion_is_exact` supplies
+the rest; and the drift bound with symbolic weights ran past ten minutes,
+so it is checked at three fixed sets of shares (the brief's fallback),
+Lean carrying any weights.
 
 ## Running it
 

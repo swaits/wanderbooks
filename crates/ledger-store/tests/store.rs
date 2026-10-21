@@ -2087,16 +2087,64 @@ fn store_add(store: &mut Store, code: &str, t: AccountType) -> ledger_core::Acco
 }
 
 /// Contract (rules.md B-13): each members close journals its rounding rule
-/// and replays under it: "cumulative" for new closes, "largest_remainder"
-/// for the per-close rule of earlier on 2026-10-13. Three one-cent months,
-/// 50/50: cumulative ends A 0.02 / B 0.01, per close A 0.03 / B 0.00.
+/// and replays under it: "cumulative_since" with the close its count starts
+/// at for new closes (P3), "cumulative" for the run rule of 2026-10-13 to
+/// P3, "largest_remainder" for the per-close rule of earlier on 2026-10-13.
+/// Three one-cent months, 50/50: both cumulative rules end A 0.02 / B
+/// 0.01, per close A 0.03 / B 0.00. With February closed to retained
+/// earnings instead, the two cumulative rules differ: cumulative_since
+/// skips it (the running 0.02 splits A 0.01 / B 0.01), the run rule
+/// restarts at March (A gets both cents: A 0.02 / B 0.00).
 #[test]
 fn members_closes_replay_under_the_rule_they_were_journaled_with() {
-    for (cumulative, rule, a, b) in [
-        (true, "\"rounding\":\"cumulative\"", "0.02", "0.01"),
-        (false, "\"rounding\":\"largest_remainder\"", "0.03", "0.00"),
+    use ledger_core::{CloseTo, MemberClose};
+    type Rule = fn(Vec<MemberClose>) -> CloseTo;
+    let since: Rule = CloseTo::Members;
+    let run: Rule = CloseTo::MembersRun;
+    let per: Rule = CloseTo::MembersPerClose;
+    for (name, to, re_february, rule, a, b) in [
+        (
+            "since",
+            since,
+            false,
+            "\"rounding\":\"cumulative_since\"",
+            "0.02",
+            "0.01",
+        ),
+        (
+            "run",
+            run,
+            false,
+            "\"rounding\":\"cumulative\"",
+            "0.02",
+            "0.01",
+        ),
+        (
+            "per",
+            per,
+            false,
+            "\"rounding\":\"largest_remainder\"",
+            "0.03",
+            "0.00",
+        ),
+        (
+            "since-re",
+            since,
+            true,
+            "\"rounding\":\"cumulative_since\"",
+            "0.01",
+            "0.01",
+        ),
+        (
+            "run-re",
+            run,
+            true,
+            "\"rounding\":\"cumulative\"",
+            "0.02",
+            "0.00",
+        ),
     ] {
-        let dir = test_dir(&format!("close-rule-{cumulative}"));
+        let dir = test_dir(&format!("close-rule-{name}"));
         let mut store = Store::create(&dir, Currency::USD).unwrap();
         let cash = store
             .add_account("1000", "Cash", AccountType::Asset, None, false)
@@ -2112,19 +2160,14 @@ fn members_closes_replay_under_the_rule_they_were_journaled_with() {
         let rev = store
             .add_account("4000", "Sales", AccountType::Revenue, None, false)
             .unwrap();
-        let members: Vec<ledger_core::MemberClose> = caps
+        let members: Vec<MemberClose> = caps
             .iter()
-            .map(|&capital| ledger_core::MemberClose {
+            .map(|&capital| MemberClose {
                 capital,
                 share: Decimal::new(5, 1),
                 distributions: None,
             })
             .collect();
-        let to = if cumulative {
-            ledger_core::CloseTo::Members(members)
-        } else {
-            ledger_core::CloseTo::MembersPerClose(members)
-        };
         let cent = Money::new(Decimal::new(1, 2), Currency::USD);
         for m in 1..=3u32 {
             let day = |d| NaiveDate::from_ymd_opt(2026, m, d).unwrap();
@@ -2139,16 +2182,26 @@ fn members_closes_replay_under_the_rule_they_were_journaled_with() {
             let p = store
                 .create_period(&format!("2026-{m:02}"), day(1), end)
                 .unwrap();
-            store.close_period_to(p, &to).unwrap();
+            if re_february && m == 2 {
+                store.close_period(p).unwrap();
+            } else {
+                store.close_period_to(p, &to(members.clone())).unwrap();
+            }
         }
         let journal = std::fs::read_to_string(dir.join(ledger_store::JOURNAL_FILE)).unwrap();
-        assert_eq!(journal.matches(rule).count(), 3, "{rule}");
+        let closes = if re_february { 2 } else { 3 };
+        assert_eq!(journal.matches(rule).count(), closes, "{name}");
+        if rule.contains("cumulative_since") {
+            // Every count starts at the first close: February's close to
+            // retained earnings is skipped, not a restart.
+            assert_eq!(journal.matches("\"since_seq\":1").count(), closes, "{name}");
+        }
         drop(store);
         let store = Store::open(&dir).unwrap();
         store.verify().unwrap();
         let bal = |id| store.ledger().account_balance(id).unwrap();
-        assert_eq!(bal(caps[0]), a.parse::<Decimal>().unwrap(), "{rule}");
-        assert_eq!(bal(caps[1]), b.parse::<Decimal>().unwrap(), "{rule}");
+        assert_eq!(bal(caps[0]), a.parse::<Decimal>().unwrap(), "{name}");
+        assert_eq!(bal(caps[1]), b.parse::<Decimal>().unwrap(), "{name}");
     }
 }
 

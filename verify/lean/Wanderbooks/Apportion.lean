@@ -1,3 +1,5 @@
+import Wanderbooks.Closing
+
 /-!
 # Apportioning: the parts sum to the whole, for any number of parts
 
@@ -237,5 +239,271 @@ theorem apportion_sum_of_shortfall (parts r : Nat → Int) (n : Nat) (unit whole
   have := Int.mul_ediv_add_emod s unit
   rw [Int.mul_comm] at this
   exact this.symm
+
+/-! ## Bounded drift
+
+With exact shares there is no sub-unit fraction: every amount is a whole
+number of minor units (B-3) and every product `|T| × share` is exact
+(`periods::allocate_cumulative` INVARIANT 4), so the remainders, scaled to
+whole numbers below `m`, sum to whole units of `m`. Then a part that gets
+a unit had a positive remainder, and every apportioned part is under one
+unit from its exact share (rules.md B-13). -/
+
+/-- Values in `[0, m)` that are zero wherever `p` fails sum to at most
+`(m - 1)` per element where `p` holds. -/
+theorem sum_le_count_mul (r : Nat → Int) (p : Nat → Bool) (m : Int) : ∀ (l : List Nat),
+    (∀ j ∈ l, 0 ≤ r j ∧ r j < m) → (∀ j ∈ l, p j = false → r j = 0) →
+    (l.map r).sum ≤ ((l.filter p).length : Int) * (m - 1)
+  | [], _, _ => by simp
+  | a :: t, hr, hz => by
+    have ih := sum_le_count_mul r p m t (fun j hj => hr j (List.mem_cons_of_mem a hj))
+      (fun j hj => hz j (List.mem_cons_of_mem a hj))
+    have ha := hr a (List.mem_cons_self ..)
+    simp only [List.map_cons, List.sum_cons, List.filter_cons]
+    cases hp : p a
+    · have := hz a (List.mem_cons_self ..) hp
+      simp only [Bool.false_eq_true, ↓reduceIte]
+      omega
+    · simp only [↓reduceIte, List.length_cons]
+      have e : (((t.filter p).length + 1 : Nat) : Int) * (m - 1)
+          = ((t.filter p).length : Int) * (m - 1) + (m - 1) := by
+        rw [Int.natCast_add, Int.add_mul, Int.natCast_one, Int.one_mul]
+      rw [e]
+      omega
+
+/-- With remainders in `[0, m)` summing to exactly `u · m` (no sub-unit
+fraction), every part ranked below `u` (so given a unit) has a positive
+remainder. -/
+theorem rem_pos_of_rank_lt (r : Nat → Int) (n u : Nat) (m : Int)
+    (hr : ∀ i < n, 0 ≤ r i ∧ r i < m)
+    (hs : ((List.range n).map r).sum = u * m)
+    {i : Nat} (hi : i < n) (hk : rank r n i < u) : 0 < r i := by
+  apply Classical.byContradiction
+  intro hneg
+  have hri : r i = 0 := by have := hr i hi; omega
+  -- Every part not ahead of `i` has a remainder no larger than `i`'s: 0.
+  have hz : ∀ j ∈ List.range n, ahead r j i = false → r j = 0 := by
+    intro j hj hna
+    have hj' := List.mem_range.mp hj
+    have hrj := hr j hj'
+    by_cases e : j = i
+    · subst e
+      exact hri
+    · rcases ahead_total r e with h | h
+      · rw [h] at hna
+        exact absurd hna (by decide)
+      · simp only [ahead, Bool.or_eq_true, Bool.and_eq_true, decide_eq_true_eq] at h
+        omega
+  have hle := sum_le_count_mul r (fun j => ahead r j i) m (List.range n)
+    (fun j hj => hr j (List.mem_range.mp hj)) hz
+  have hm : 0 < m := by have := hr i hi; omega
+  have hrank : ((List.range n).filter (fun j => ahead r j i)).length = rank r n i := rfl
+  rw [hrank, hs] at hle
+  have h1 : (rank r n i : Int) * (m - 1) ≤ ((u : Int) - 1) * (m - 1) :=
+    Int.mul_le_mul_of_nonneg_right (by omega) (by omega)
+  have h2 : ((u : Int) - 1) * (m - 1) = (u : Int) * m - u - m + 1 := by
+    simp only [Int.sub_mul, Int.mul_sub, Int.one_mul, Int.mul_one]
+    omega
+  omega
+
+/-- **Bounded drift of one apportionment** (rules.md B-13): scaled by `m`,
+each apportioned part (rounded down, plus its unit if any) is within one
+unit of its exact share `parts i + r i / m`, when there is no sub-unit
+fraction. -/
+theorem apportion_drift (parts r : Nat → Int) (n u : Nat) (m : Int)
+    (hr : ∀ i < n, 0 ≤ r i ∧ r i < m)
+    (hs : ((List.range n).map r).sum = u * m) {i : Nat} (hi : i < n) :
+    -m < (parts i + add r n u 1 0 i) * m - (parts i * m + r i) ∧
+    (parts i + add r n u 1 0 i) * m - (parts i * m + r i) < m := by
+  have hri := hr i hi
+  unfold add
+  rw [ite_self, Int.add_zero]
+  by_cases hk : rank r n i < u
+  · have hpos := rem_pos_of_rank_lt r n u m hr hs hi hk
+    simp only [hk, ↓reduceIte]
+    rw [Int.add_mul, Int.one_mul]
+    omega
+  · simp only [hk, ↓reduceIte, Int.add_zero]
+    omega
+
+/-- Σ c · f = c · Σ f. -/
+theorem sum_map_mul_left (c : Int) (f : Nat → Int) : ∀ (l : List Nat),
+    (l.map (fun j => c * f j)).sum = c * (l.map f).sum
+  | [] => by simp
+  | a :: t => by simp [sum_map_mul_left c f t, Int.mul_add]
+
+/-- Σ -f = -Σ f. -/
+theorem sum_map_neg (f : Nat → Int) : ∀ (l : List Nat),
+    (l.map (fun j => -f j)).sum = -(l.map f).sum
+  | [] => by simp
+  | a :: t => by simp [sum_map_neg f t]; omega
+
+/-- Values at most `c` sum to at most `c` per element. -/
+theorem sum_le_length_mul (f : Nat → Int) (c : Int) : ∀ (l : List Nat),
+    (∀ j ∈ l, f j ≤ c) → (l.map f).sum ≤ (l.length : Int) * c
+  | [], _ => by simp
+  | a :: t, h => by
+    have ih := sum_le_length_mul f c t (fun j hj => h j (List.mem_cons_of_mem a hj))
+    have ha := h a (List.mem_cons_self ..)
+    simp only [List.map_cons, List.sum_cons, List.length_cons]
+    rw [Int.natCast_add, Int.add_mul, Int.natCast_one, Int.one_mul]
+    omega
+
+/-- Nonnegative values have a nonnegative sum. -/
+theorem sum_nonneg (f : Nat → Int) : ∀ (l : List Nat), (∀ j ∈ l, 0 ≤ f j) → 0 ≤ (l.map f).sum
+  | [], _ => by simp
+  | a :: t, h => by
+    have ih := sum_nonneg f t (fun j hj => h j (List.mem_cons_of_mem a hj))
+    have ha := h a (List.mem_cons_self ..)
+    simp only [List.map_cons, List.sum_cons]
+    omega
+
+/-- Member `i`'s share of `x` rounded down to the unit: `x · w i / W`
+(`periods::allocate_cumulative`'s floor; shares `w i / W`). -/
+def floorW (w : Nat → Int) (W x : Int) (i : Nat) : Int := x * w i / W
+
+/-- What rounding down took from it, scaled by `W`: `x · w i % W` (it
+ranks the members as the Decimal remainder does). -/
+def remW (w : Nat → Int) (W x : Int) (i : Nat) : Int := x * w i % W
+
+/-- The whole units the floors fall short of `x`. -/
+def shortW (w : Nat → Int) (W : Int) (n : Nat) (x : Int) : Nat :=
+  (x - ((List.range n).map (floorW w W x)).sum).toNat
+
+/-- The model of `periods::allocate_cumulative`'s split of a gain (`x ≥
+0`) at whole minor units: each floor, plus a unit to each of the members
+with the largest remainders (ties to the earlier member). -/
+def allocNat (w : Nat → Int) (W : Int) (n : Nat) (x : Int) (i : Nat) : Int :=
+  floorW w W x i + add (remW w W x) n (shortW w W n x) 1 0 i
+
+/-- With the sign: a loss splits as the negation of the same gain
+(`allocate_cumulative` scenario 3). -/
+def allocW (w : Nat → Int) (W : Int) (n : Nat) (x : Int) (i : Nat) : Int :=
+  if x < 0 then -allocNat w W n (-x) i else allocNat w W n x i
+
+/-- The floors and remainders of a gain, with shares `w i / W` summing to
+one: the remainders sum to whole units, `W · (x − Σ floors)`, each in
+`[0, W)`, and the floors fall short by fewer units than there are
+members. -/
+theorem remW_facts (w : Nat → Int) (W : Int) (n : Nat) (x : Int) (hW : 0 < W)
+    (hsum : ((List.range n).map w).sum = W) (hn : 0 < n) :
+    (∀ i < n, 0 ≤ remW w W x i ∧ remW w W x i < W) ∧
+    ((List.range n).map (remW w W x)).sum = (shortW w W n x : Int) * W ∧
+    x - ((List.range n).map (floorW w W x)).sum = (shortW w W n x : Int) ∧
+    shortW w W n x ≤ n := by
+  have hW0 : W ≠ 0 := by omega
+  have bounds : ∀ i < n, 0 ≤ remW w W x i ∧ remW w W x i < W := fun i _ =>
+    ⟨Int.emod_nonneg _ hW0, Int.emod_lt_of_pos _ hW⟩
+  -- x · w i = W · floor + rem, summed: x · W = W · Σ floors + Σ rems.
+  have each : ∀ i, x * w i = W * floorW w W x i + remW w W x i := fun i =>
+    (Int.mul_ediv_add_emod (x * w i) W).symm
+  have total : x * W = W * ((List.range n).map (floorW w W x)).sum
+      + ((List.range n).map (remW w W x)).sum := by
+    have h1 : ((List.range n).map (fun j => x * w j)).sum = x * W := by
+      rw [sum_map_mul_left, hsum]
+    have h2 : ((List.range n).map (fun j => x * w j)).sum
+        = ((List.range n).map (fun j => W * floorW w W x j + remW w W x j)).sum := by
+      congr 1
+      apply List.map_congr_left
+      intro i _
+      exact each i
+    rw [← h1, h2, sum_map_add (fun j => W * floorW w W x j) (remW w W x), sum_map_mul_left]
+  let d := x - ((List.range n).map (floorW w W x)).sum
+  have hd : ((List.range n).map (remW w W x)).sum = W * d := by
+    show _ = W * (x - _)
+    rw [Int.mul_sub, Int.mul_comm W x]
+    omega
+  have rems_nonneg := sum_nonneg (remW w W x) (List.range n)
+    (fun j hj => (bounds j (List.mem_range.mp hj)).1)
+  have rems_lt := sum_le_length_mul (remW w W x) (W - 1) (List.range n)
+    (fun j hj => by have := (bounds j (List.mem_range.mp hj)).2; omega)
+  rw [List.length_range] at rems_lt
+  have d_nonneg : 0 ≤ d := by
+    apply Classical.byContradiction
+    intro h
+    have : W * d < 0 := Int.mul_neg_of_pos_of_neg hW (by omega)
+    omega
+  have d_lt : d < n := by
+    apply Classical.byContradiction
+    intro h
+    have h1 : (n : Int) * W ≤ d * W := Int.mul_le_mul_of_nonneg_right (by omega) (by omega)
+    have h2 : (n : Int) * (W - 1) = n * W - n := by
+      rw [Int.mul_sub, Int.mul_one]
+    rw [Int.mul_comm W d] at hd
+    omega
+  have hshort : (shortW w W n x : Int) = d := Int.toNat_of_nonneg d_nonneg
+  refine ⟨bounds, ?_, hshort.symm, ?_⟩
+  · rw [hshort, hd, Int.mul_comm]
+  · have : ((shortW w W n x : Nat) : Int) < n := by rw [hshort]; exact d_lt
+    omega
+
+/-- **The split of a gain sums to it**, exactly. -/
+theorem allocNat_sum (w : Nat → Int) (W : Int) (n : Nat) (x : Int) (hW : 0 < W)
+    (hsum : ((List.range n).map w).sum = W) (hn : 0 < n) :
+    ((List.range n).map (allocNat w W n x)).sum = x := by
+  obtain ⟨_, _, hx, hu⟩ := remW_facts w W n x hW hsum hn
+  apply apportion_sum (floorW w W x) (remW w W x) n (shortW w W n x) 1 0 x hn hu
+  rw [hx]
+  omega
+
+/-- **`allocate_cumulative`'s split sums to the amount**, gain or loss. -/
+theorem allocW_sum (w : Nat → Int) (W : Int) (n : Nat) (x : Int) (hW : 0 < W)
+    (hsum : ((List.range n).map w).sum = W) (hn : 0 < n) :
+    ((List.range n).map (allocW w W n x)).sum = x := by
+  unfold allocW
+  by_cases hx : x < 0
+  · simp only [hx, ↓reduceIte]
+    rw [sum_map_neg, allocNat_sum w W n (-x) hW hsum hn]
+    omega
+  · simp only [hx, ↓reduceIte]
+    exact allocNat_sum w W n x hW hsum hn
+
+/-- **Bounded drift** (rules.md B-13): each member's part of an amount is
+under one minor unit from their exact share, `|allocW x i · W − x · w i| <
+W`, gain or loss. -/
+theorem allocW_drift (w : Nat → Int) (W : Int) (n : Nat) (x : Int) (hW : 0 < W)
+    (hsum : ((List.range n).map w).sum = W) (hn : 0 < n) {i : Nat} (hi : i < n) :
+    -W < allocW w W n x i * W - x * w i ∧ allocW w W n x i * W - x * w i < W := by
+  have gain : ∀ y, 0 ≤ y →
+      -W < allocNat w W n y i * W - y * w i ∧ allocNat w W n y i * W - y * w i < W := by
+    intro y _
+    obtain ⟨hr, hs, _, _⟩ := remW_facts w W n y hW hsum hn
+    have h := apportion_drift (floorW w W y) (remW w W y) n (shortW w W n y) W hr hs hi
+    have e : floorW w W y i * W + remW w W y i = y * w i := by
+      rw [Int.mul_comm]
+      exact Int.mul_ediv_add_emod (y * w i) W
+    rw [e] at h
+    exact h
+  unfold allocW
+  by_cases hx : x < 0
+  · simp only [hx, ↓reduceIte]
+    have h := gain (-x) (by omega)
+    simp only [Int.neg_mul] at h ⊢
+    omega
+  · simp only [hx, ↓reduceIte]
+    exact gain x (by omega)
+
+/-- **No member's running total is ever a minor unit from their exact
+share**, after a cumulative close, whatever earlier closes gave them
+(rules.md B-13; D-10): `Closing.trueUp` with `allocate_cumulative`'s
+split (Kani `cumulative_close_never_drifts_a_unit_at_*` check the code on
+small amounts). -/
+theorem allocW_cumulative_drift (w : Nat → Int) (W : Int) (n : Nat) (hW : 0 < W)
+    (hsum : ((List.range n).map w).sum = W) (hn : 0 < n) (closed net : Int)
+    (given : Nat → Int) {i : Nat} (hi : i < n) :
+    -W < (given i + trueUp (allocW w W n) closed net given i) * W - (closed + net) * w i ∧
+    (given i + trueUp (allocW w W n) closed net given i) * W - (closed + net) * w i < W := by
+  rw [trueUp_running]
+  exact allocW_drift w W n (closed + net) hW hsum hn hi
+
+/-- **A cumulative close hands out exactly its net** with
+`allocate_cumulative`'s split, gain or loss, whatever the earlier closes
+gave, as long as they gave what they closed. -/
+theorem allocW_cumulative_total (w : Nat → Int) (W : Int) (n : Nat) (hW : 0 < W)
+    (hsum : ((List.range n).map w).sum = W) (hn : 0 < n) (closed net : Int)
+    (given : Nat → Int) (hg : ((List.range n).map given).sum = closed) :
+    ((List.range n).map (trueUp (allocW w W n) closed net given)).sum = net :=
+  trueUp_total (allocW w W n) (List.range n) (fun x => allocW_sum w W n x hW hsum hn)
+    closed net given hg
 
 end Wanderbooks.Apportion

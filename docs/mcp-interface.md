@@ -131,7 +131,8 @@ settings-and-conventions section says how to use them.
   state ("needs_onboarding" or "active"), settings_source, rules: {
   evidence, parties, approval_rules }, settings_summary: [{ key, value,
   set_by, seq }], conventions: [{ id, kind, title, summary }], open_items:
-  [{ id, title, due }], truncated?, handbook_sections, format_upgrade?: {
+  [{ id, title, due }], projects: [{ id, name, status, kind? }],
+  truncated?, handbook_sections, format_upgrade?: {
   guard, format, adds, how }, next_steps: [{ tool, args?, why }],
   isolation }`. The connect text names it as the first call.
   `format_upgrade` is there only for books waiting for a format upgrade
@@ -141,6 +142,8 @@ settings-and-conventions section says how to use them.
   `isolation` is `same_user (advisory)` (D-32): the books are hidden from
   agents in the owner's own account, not locked against them. Lists cut
   to fit say so in `truncated` ("conventions: 4 more (books.conventions)").
+  `projects` lists the active and paused projects by name, at most 20
+  ("projects: N more (books.projects)" past that).
   `next_steps`, in order: the format upgrade's (when waiting);
   `books.import_settings` (books that still read a settings file); the
   onboarding step (`books.handbook {section: "contract"}`, when the chart
@@ -192,9 +195,15 @@ as it is made.
   failing midway could leave a partial draft, as for any draft built line
   by line).
 - `books.record_decision { subject, decision_md, decided_by: [..],
-  decided_on, evidence_attachment?, supersedes?, citation? }` → `{ id }`;
-  `books.decisions { include_superseded? }`. A decision supersedes at most
-  one live decision; its evidence is a document still in the books.
+  decided_on, evidence_attachment?, supersedes?, citation?, projects? }` →
+  `{ id }`; `books.decisions { include_superseded?, project? }`. A decision
+  supersedes at most one live decision; its evidence is a document still
+  in the books. `projects` (ids or names, each once, resolved before
+  anything is written) names the projects it is about (rules.md B-37); a
+  decision without them journals the bytes it always did, and one with
+  them needs the journal feature `projects`. `books.decisions` gives each
+  decision's `projects: [{ id, name }]` (left out when none); `project`
+  filters to the decisions naming one.
 - `books.raise_item { title, detail_md?, due?, decided_by, ... }` → `{ id }`,
   `books.resolve_item { id, resolution, decided_by, ... }`,
   `books.open_items { include_resolved? }`.
@@ -379,11 +388,12 @@ that changes anything also has a `destructiveHint`, true for these 29:
 `books.set_tin` (both overwrite a vault record), `books.purge_tin`,
 `books.create_invoice`, `books.create_bill`, `books.receive_payment`,
 `books.pay_bill`, `books.run_payroll`, `books.remit_payroll_taxes`; and an
-`idempotentHint` on the ten that a repeat with the same arguments leaves
+`idempotentHint` on the eleven that a repeat with the same arguments leaves
 the journal and the vault as they were: `books.verify`,
 `books.run_depreciation`, `books.run_schedules`, `books.run_recurring`,
 `books.set_party_roles`, `books.set_setting`, `books.import_settings`,
-`books.set_vendor_1099`, `books.set_entry_instrument` and
+`books.set_vendor_1099`, `books.set_entry_instrument`,
+`books.update_project` and
 `books.back_up_now` (a setter such as `books.update_party`,
 `books.set_fx_rate` or `books.set_tin` journals a line, and `books.set_tin`
 seals a new vault record, every time, so none carries it;
@@ -835,12 +845,14 @@ through the policy.
 ## Tools — the viewer
 
 - `books.show { entry_id | account | report | attachment_id | asset |
-  party | reconciliation | search | page, start?, end?, columns?, compare? }`
+  party | project | reconciliation | search | page, start?, end?, columns?,
+  compare? }`
   → `{ shown, viewer_open, note }`. Asks the human's viewer (`ledger-gui`)
   to open an
   entry, an account register or a report (for start/end dates if given),
   a stored file, an asset, a party (by id or name, resolved as in "Tools
-  — parties"), a reconciliation (by id: its account's page, with its
+  — parties"), a project (by id or name: viewer target `{show:
+  "project", class_id}`; page `projects` its list), a reconciliation (by id: its account's page, with its
   statements and reconciliations; viewer target `{show:
   "reconciliation", id}`), a transactions search, or a page (`parties`
   among them). Exactly one target; entries, accounts, attachments,
@@ -1270,11 +1282,12 @@ texts are at most 500 characters, no control characters.
   after `books.purge_tin` (P3 defect 11: it read W-9 facts only, so a
   member's showed as missing).
 - `books.party { party, year?, basis? }` → `{ party, year, totals,
-  entries, invoices, bills, payroll }`: the facts; the calendar year's
+  entries, invoices, bills, payroll, projects }`: the facts; the calendar year's
   totals (default this year); every entry it is on (drafts included,
   newest first); its invoices and bills (`{ id, date, due_date, total,
   paid, balance, status, entry_id }`); and the payroll lines naming it
-  (`{ run_id, date, entry_id, gross_pay, net_pay }`).
+  (`{ run_id, date, entry_id, gross_pay, net_pay }`); and the projects for
+  or with it, by name (`{ id, name }`, rules.md B-37).
 - `basis` (both): `"cash"` (the default) or `"all"`; any other word is
   refused (`basis is "cash" or "all"`). Echoed in the output. Not the
   books' accounting method (`books.accounting_basis`).
@@ -1480,7 +1493,8 @@ and the CPA package carries them.
 
 A stored file (a receipt or a document) links to any number of subjects;
 a subject is `{ kind, id? }`: `entry` (id), `account` (code or id),
-`asset` (tag or id), `party` (id or name), `invoice`, `bill`, `period`,
+`asset` (tag or id), `party` (id or name), `project` (id or name: its
+contract, spec, pitch; journal feature `projects`), `invoice`, `bill`, `period`,
 `payroll_run`, `schedule`, `reconciliation` (ids), or `company` (no id).
 Every subject is checked to exist. In outputs a subject is `{ kind, id?,
 label }` (`id` absent for the company; for an account, its id, with the
@@ -1504,7 +1518,9 @@ the receipt policy counts it.
 - `link_to: [subject]` on `books.attach_receipt` and `books.file_document`
   links the new file in the same call, each link its own
   `attachment.linked`. All or nothing: every subject is checked (exists,
-  named once, not the entry it is filed on) before anything is filed.
+  named once, not the entry it is filed on, its journal feature declared:
+  a `project` needs `projects`) before anything is filed, so a refusal
+  leaves no file filed without its links.
 
 ## Tools — receipts & documents
 
@@ -2019,13 +2035,90 @@ entries.
 - `books.list_payroll_runs` → `{ runs: [{ id, date, employee_count,
   total_gross, entry_id }] }`.
 
-## Tools — classes (divisional tracking)
+## Tools — projects (classes)
 
-- `books.add_class { name }` → `{ id }`. E.g. "Rondo", "Coach vs Coach".
-- `books.list_classes` → `{ classes: [{ id, name }] }`.
-- `books.add_line` gains optional `class` (name or id): tags the new line.
-  Shared costs are split explicitly across lines at entry time.
-- `books.profit_and_loss` gains optional `class` filter.
+A project is a class with its facts (`docs/spec/rules.md` B-37): the
+same id, the same name, so `books.add_line`'s `class`, the P&L `class`
+filter and `books.profit_and_loss_by_class` take projects. A `project`
+reference is an id or a name (ignoring capitals in any script and
+surrounding space; in a link's subject a JSON number is always an id); a
+number that is one project's id and another's name, which only old books
+can hold, is refused, naming what to pass instead. Names are unique,
+ignoring capitals and surrounding space, and never digits only (they
+would read as an id). A change that keeps a project's own name never
+checks it again, so old books holding a duplicate name can change either
+project's facts; a rename onto another project's name is refused. Every project write but a name alone needs the journal feature
+`projects` (B-27): books waiting for their format upgrade (D-39) can add
+a project by name only, and every other project write (facts, a link to
+a project, a decision naming one) is refused with `format_upgrade_pending`
+until the owner upgrades them.
+
+- `books.add_project { name, description?, status?, kind?, party?,
+  started_on?, ended_on?, links?, notes? }` (books:write) → the project: `{ id,
+  name, status, kind, description, party: { party_id, label }?,
+  started_on, ended_on, links, notes }`. `status`: `active` (default),
+  `paused`, `finished`, `abandoned`. `kind`: `internal` (the company's own
+  product), `client` (work for a customer), `on_spec` (work done hoping
+  to be paid), `other`; null when not recorded. `party`: who it is for or
+  with (id or name). `ended_on` only when finished or abandoned, never
+  before `started_on`. `links`: up to 8 web addresses, one line each, no
+  spaces, none twice (never opened). Text fields: one line (name, links,
+  at most 200 characters) or long text (description, notes, at most
+  2,000), never a full TIN. A name alone journals `class.added`; facts add
+  `project.set` (the whole record).
+- `books.update_project { project, name?, description?, status?, kind?,
+  party?, started_on?, ended_on?, links?, notes? }` (books:write;
+  idempotentHint) → the
+  project. Only the fields given change; `""` clears description, kind,
+  party, started_on, ended_on or notes; `links` replaces the list (`[]`
+  clears it). At least one field. Every field is checked before anything
+  is written; then the whole record is journaled as `project.set`, and a
+  record with nothing new journals nothing. A rename changes the label
+  every report prints, nothing else (not destructive, as a party's name).
+- `books.projects { status? }` (books:read) → `{ through, projects: [{ ...project,
+  to_date: { through, revenue, expenses, net, unrecovered_cost } }] }`: every
+  project (every class), by name ignoring capitals; `to_date` counts every
+  posted revenue and expense line tagged to it through today in the
+  company's time zone, closing entries left out; `unrecovered_cost` only
+  for an on-spec project (else null): expenses less revenue, never below
+  zero.
+- `books.project { project, start?, end? }` (books:read; omitted dates: the fiscal
+  year to date, B-30, as every period report) → `{ project, period: {
+  start, end, revenue, expenses, net, by_account: [{ code, name, type
+  ("revenue" | "expense"), amount }], by_month: [{ month ("YYYY-MM"),
+  start, end, revenue, expenses, net }] }, to_date (as above, through
+  end), entries: [{ entry_id, date, description, status, project_amount,
+  total, reversal_of?, receipts: [attachment_id] }], documents: [as
+  books.list_receipts], decisions: [as books.decisions] }`. The figures
+  are `ledger_core::project_figures`'s, the viewer's: only revenue and
+  expense lines count (a tagged asset purchase is listed with its entries,
+  its project amount zero); `by_month` holds the period's last 240 months
+  at most. `to_date` always counts every tagged line through `end`,
+  whatever the project's dates: job-to-date beside the period. The on-spec
+  `unrecovered_cost` is the "if repaid" figure, never a receivable (ASC
+  450-30-25-1). Entries are newest first, drafts included; decisions
+  oldest first, superseded ones too.
+- `books.add_class { name }` → `{ id }`: a project with only its name;
+  refuses a name another project has.
+- `books.list_classes` → `{ classes: [{ id, name }] }` in id order.
+- `books.add_line` takes optional `class` (a project: name or id): tags the
+  new line. Shared costs are split explicitly across lines at entry time.
+  Its result gains `note` when the project is finished or abandoned
+  ("project X is finished (ended 2026-09-30): tag a late cost or invoice
+  to it only if it belongs to it"): tagged anyway.
+- `books.profit_and_loss` takes optional `class` (a project: name or id)
+  to filter to.
+- `books.record_payout` lines and adjustments take optional `class` (a
+  project); its result gains `notes`, one per finished or abandoned
+  project tagged, as `books.add_line`'s `note`.
+- An invoice or a bill takes no project yet: `books.create_invoice` and
+  `books.create_bill` post their entry at once with untagged lines, and
+  only a draft's lines take a class (`books.add_line`'s `class`). Link the document to the
+  project (`books.link_attachment` subject kind `project`); when its lines
+  must count in the project's figures, book it as a hand-built entry
+  (`books.draft_entry` + `books.add_line` class) instead, which then is
+  no invoice or bill in the agings (an open item: tagged document
+  lines).
 - `books.profit_and_loss_by_class { start?, end?, class? }` (omitted dates:
   the fiscal year to date, as every period report) → per-class revenue,
   expenses, net income, plus an unclassified row (only that class's row

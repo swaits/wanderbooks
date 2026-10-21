@@ -609,6 +609,7 @@ fn decisions_and_open_items() {
         evidence_attachment: evidence,
         supersedes,
         citation: Some("Treas. Reg. 1.263(a)-1(f)".into()),
+        projects: vec![],
     };
     assert_eq!(s.record_decision(&decision(None, Some(doc))).unwrap(), 1);
     assert_eq!(s.record_decision(&decision(Some(1), None)).unwrap(), 2);
@@ -756,6 +757,7 @@ fn run_op(s: &mut Store, op: &Op) {
                 evidence_attachment: None,
                 supersedes: *sup,
                 citation: None,
+                projects: vec![],
             })
             .map(|_| ()),
         Op::Raise => s
@@ -978,6 +980,7 @@ fn write_p1_fixture() {
         evidence_attachment: Some(doc),
         supersedes: None,
         citation: Some("Treas. Reg. 1.263(a)-1(f)".into()),
+        projects: vec![],
     })
     .unwrap();
     s.record_decision(&NewDecision {
@@ -988,6 +991,7 @@ fn write_p1_fixture() {
         evidence_attachment: None,
         supersedes: Some(1),
         citation: None,
+        projects: vec![],
     })
     .unwrap();
     s.raise_open_item(&NewOpenItem {

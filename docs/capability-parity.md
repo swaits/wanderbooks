@@ -35,6 +35,11 @@ Statuses: `covered` (built and tested), `partial` (built, known gaps listed),
 - Row 10 (`books.digest`) has no sheet equivalent — the sheet can't tell you
   what changed. This is parity *plus*: the new system is more reviewable
   than the old one, which is the point of the exercise.
+- Projects (rules.md B-37) have no sheet equivalent either: a class with
+  its facts, created and changed by the agent (`books.add_project`,
+  `books.update_project`), read by the viewer's Projects pages and by
+  `books.projects` / `books.project` (D-28: the agent writes, the viewer
+  reads).
 - Row 12 is deliberately excluded. Email filing is a mail problem, not a
   books problem; it stays where it is.
 

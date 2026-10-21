@@ -13,6 +13,7 @@
 
 use chrono::{Datelike, NaiveDate};
 use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
 use ledger_core::parties::{EntryFlow, entry_flow, money_accounts};
 use ledger_core::{AccountType, Currency, Money, PartyShare, Role, Share, Side};
 use ledger_gui::books::{Books, PartyPeriod, share_of_what_for};
@@ -275,4 +276,123 @@ fn the_page_state_a_test_sets_is_the_apps() {
         h.state_mut().state_mut().parties.period,
         PartyPeriod::Year(2025)
     );
+}
+
+/// The sidebar link named `name` (the leftmost node of that name).
+fn sidebar_link(h: &Harness<'_, App>, name: &str) -> egui::Rect {
+    h.get_all_by_role_and_label(egui::accesskit::Role::Button, name)
+        .map(|n| n.rect())
+        .min_by(|a, b| a.left().total_cmp(&b.left()))
+        .unwrap_or_else(|| panic!("no {name} link"))
+}
+
+/// A short window (owner, 2026-10-21: the links went under the status
+/// box): scrolled to its end, the last link stops above the box.
+#[test]
+fn sidebar_links_never_draw_under_the_status_box() {
+    let f = fixture("sidebar-short");
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1440.0, 500.0))
+        .build_eframe(|cc| App::with_books(&cc.egui_ctx, f.books, false, Route::Overview));
+    h.run_steps(4);
+    h.get_all_by_role_and_label(egui::accesskit::Role::Button, "Journal")
+        .min_by(|a, b| a.rect().left().total_cmp(&b.rect().left()))
+        .unwrap()
+        .scroll_to_me();
+    h.run_steps(4);
+    let journal = sidebar_link(&h, "Journal");
+    let status = h.get_by_label_contains("files verified").rect();
+    assert!(
+        journal.bottom() <= status.top(),
+        "Journal ends at {} under the status box at {}",
+        journal.bottom(),
+        status.top()
+    );
+}
+
+/// The rail's equivalent: its last link stops above its footer.
+#[test]
+fn rail_links_never_draw_under_its_footer() {
+    let f = fixture("rail-short");
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(900.0, 420.0))
+        .build_eframe(|cc| App::with_books(&cc.egui_ctx, f.books, false, Route::Overview));
+    h.run_steps(4);
+    h.get_all_by_role_and_label(egui::accesskit::Role::Button, "Journal")
+        .min_by(|a, b| a.rect().left().total_cmp(&b.rect().left()))
+        .unwrap()
+        .scroll_to_me();
+    h.run_steps(4);
+    let journal = sidebar_link(&h, "Journal");
+    assert!(journal.right() <= 60.0, "the rail is drawn: {journal:?}");
+    let footer = h
+        .ctx
+        .data(|d| d.get_temp::<f32>(egui::Id::new("rail_footer_h")))
+        .expect("the rail's footer was measured");
+    // The rail's frame keeps 16 points under its footer.
+    let footer_top = 420.0 - 16.0 - footer;
+    assert!(
+        journal.bottom() <= footer_top,
+        "Journal ends at {} under the footer at {footer_top}",
+        journal.bottom()
+    );
+}
+
+/// A window too short for the links and the status box together keeps
+/// one link whole above the box (the box gives way, off the bottom),
+/// sidebar and rail alike.
+#[test]
+fn a_very_short_window_keeps_one_link() {
+    for (w, h_px, tag) in [(1440.0, 220.0, "sidebar-tiny"), (900.0, 200.0, "rail-tiny")] {
+        let f = fixture(tag);
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(w, h_px))
+            .build_eframe(|cc| App::with_books(&cc.egui_ctx, f.books, false, Route::Overview));
+        h.run_steps(4);
+        let first = sidebar_link(&h, "Overview");
+        assert!(
+            first.height() >= 31.0 && first.bottom() <= h_px,
+            "{tag}: Overview at {first:?}"
+        );
+        if let Some(status) = h.query_by_label_contains("files verified") {
+            assert!(
+                first.bottom() <= status.rect().top(),
+                "{tag}: Overview ends at {} under the status box at {}",
+                first.bottom(),
+                status.rect().top()
+            );
+        }
+        let key = if w < 1000.0 {
+            "rail_footer_h"
+        } else {
+            "sidebar_footer_h"
+        };
+        let footer = h
+            .ctx
+            .data(|d| d.get_temp::<f32>(egui::Id::new(key)))
+            .expect("the footer was measured");
+        assert!(footer > 0.0, "{tag}");
+    }
+}
+
+/// At the usual height every section's link shows and nothing scrolls.
+#[test]
+fn a_normal_window_shows_every_link_unscrolled() {
+    let f = fixture("sidebar-normal");
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1440.0, 920.0))
+        .build_eframe(|cc| App::with_books(&cc.egui_ctx, f.books, false, Route::Overview));
+    h.run_steps(4);
+    let first = sidebar_link(&h, "Overview");
+    for s in ledger_gui::nav::Section::ALL {
+        sidebar_link(&h, s.title());
+    }
+    let status = h.get_by_label_contains("files verified").rect();
+    assert!(sidebar_link(&h, "Journal").bottom() <= status.top());
+    h.get_all_by_role_and_label(egui::accesskit::Role::Button, "Journal")
+        .min_by(|a, b| a.rect().left().total_cmp(&b.rect().left()))
+        .unwrap()
+        .scroll_to_me();
+    h.run_steps(4);
+    assert_eq!(sidebar_link(&h, "Overview"), first, "the links scrolled");
 }

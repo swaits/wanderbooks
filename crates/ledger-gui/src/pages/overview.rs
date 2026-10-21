@@ -397,6 +397,7 @@ fn income_vs_spending(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                 .map(|m| BarGroup {
                     label: m.start.format("%b").to_string(),
                     values: vec![m.revenue, m.expenses, m.net()],
+                    year: None,
                 })
                 .collect();
             let clicked = charts::bar_chart(

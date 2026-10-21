@@ -64,7 +64,7 @@ pub use cashflow::{
     OperatingReconciliation, ReconcilingKind, ReconcilingLine, RoleList, RoleProblem, cash_flow,
     role_problems,
 };
-pub use classes::{Class, ClassId};
+pub use classes::{Class, ClassId, ProjectFacts, ProjectKind, ProjectStatus};
 pub use error::LedgerError;
 pub use form1099::{
     Dated1099, Decision1099, ExemptReason, Form1099, Payment1099, PaymentAccounts, Status1099,
@@ -88,9 +88,10 @@ pub use periods::{
 pub use reports::{
     AssetRegister, AssetRegisterRow, BalanceSheet, BalanceSheetStatement, ClassProfitAndLoss,
     GeneralLedger, LedgerAccount, LedgerPosting, MemberCapital, MemberEquityColumn,
-    MembersEquityStatement, ProfitAndLoss, ProfitAndLossStatement, StatementLine, TrialBalance,
-    TrialBalanceLine, balance_sheet_as_of, fixed_asset_register, general_ledger, members_equity,
-    profit_and_loss_for_period, trial_balance_as_of,
+    MembersEquityStatement, ProfitAndLoss, ProfitAndLossStatement, ProjectFigures, ProjectToDate,
+    StatementLine, TrialBalance, TrialBalanceLine, balance_sheet_as_of, fixed_asset_register,
+    general_ledger, members_equity, profit_and_loss_for_period, project_entries, project_figures,
+    project_to_date, trial_balance_as_of,
 };
 pub use schedules::{
     AmortizationSchedule, Frequency, NewRecurring, NewSchedule, RecurringEntry, RecurringId,

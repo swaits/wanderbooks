@@ -18,10 +18,15 @@ use ledger_core::reports::profit_and_loss_for_period;
 use rust_decimal::Decimal;
 use std::collections::BTreeMap;
 
-fn pct(part: Decimal, whole: Decimal) -> Option<Decimal> {
+pub(crate) fn pct(part: Decimal, whole: Decimal) -> Option<Decimal> {
     part.checked_div(whole)?
         .checked_mul(Decimal::from(100))
-        .map(|x| x.round_dp(1))
+        .map(|x| {
+            // One place always, so 100% prints as "100.0", as 64.0 does.
+            let mut x = x.round_dp(1);
+            x.rescale(1);
+            x
+        })
 }
 
 pub fn show(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
@@ -74,6 +79,7 @@ pub fn show(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                     .map(|m| BarGroup {
                         label: m.start.format("%b").to_string(),
                         values: vec![m.revenue, m.expenses, m.net()],
+                        year: None,
                     })
                     .collect();
                 if let Some(i) = charts::bar_chart(
@@ -160,10 +166,14 @@ pub fn show(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
         );
         ui.add_space(16.0);
         spending_changes(ui, b, shell);
+        let mut go = None;
         columns(ui, 980.0, &[1.0, 1.0], |i, ui| match i {
             0 => by_customer(ui, b),
-            _ => by_class(ui, b),
+            _ => by_class(ui, b, &mut go),
         });
+        if let Some(r) = go {
+            shell.go(r);
+        }
     });
 }
 
@@ -359,46 +369,52 @@ fn rows_total(by: &BTreeMap<String, Decimal>) -> Option<Decimal> {
         .try_fold(Decimal::ZERO, |t, v| t.checked_add(*v))
 }
 
-fn by_class(ui: &mut Ui, b: &Books) {
+/// Each project's net income this year, a bar each; a bar opens its
+/// project.
+fn by_class(ui: &mut Ui, b: &Books, go: &mut Option<Route>) {
     let p = pal(ui.ctx());
     let (ys, ye) = b.fiscal_ytd();
     let classes = b.ledger.list_classes();
     widgets::titled_card(
         ui,
-        "Net income by class, this year",
+        "Net income by project, this year",
         |_| {},
         |ui| {
             if classes.is_empty() {
                 widgets::empty(
                     ui,
-                    icon::TAG,
-                    "No classes",
-                    "Tag lines with classes (departments, products) to see profit by each.",
+                    icon::BRIEFCASE,
+                    "No projects",
+                    "Tag lines with a project to see profit by each.",
                 );
                 return;
             }
-            let mut rows: Vec<(String, Decimal)> = classes
+            let mut rows: Vec<(ledger_core::ClassId, String, Decimal)> = classes
                 .iter()
                 .filter_map(|c| {
                     let pl = profit_and_loss_for_period(&b.ledger, ys, ye, Some(c.id)).ok()?;
                     let net = pl.total_revenue - pl.total_expenses;
                     (!pl.total_revenue.is_zero() || !pl.total_expenses.is_zero())
-                        .then(|| (c.name.clone(), net))
+                        .then(|| (c.id, c.name.clone(), net))
                 })
                 .collect();
-            rows.sort_by_key(|r| std::cmp::Reverse(r.1));
+            rows.sort_by_key(|r| std::cmp::Reverse(r.2));
             if rows.is_empty() {
                 widgets::empty(
                     ui,
-                    icon::TAG,
-                    "No classified income or spending this year",
+                    icon::BRIEFCASE,
+                    "No project income or spending this year",
                     "",
                 );
                 return;
             }
-            charts::hbars(ui, &rows, p.series[0]);
+            let ids: Vec<ledger_core::ClassId> = rows.iter().map(|r| r.0).collect();
+            let bars: Vec<(String, Decimal)> = rows.into_iter().map(|r| (r.1, r.2)).collect();
+            if let Some(i) = charts::hbars_signed(ui, &bars, p.series[0], p.negative) {
+                *go = Some(Route::Project(ids[i]));
+            }
             ui.label(
-                RichText::new("Only lines tagged with a class count here.")
+                RichText::new("Only lines tagged with a project count here.")
                     .font(theme::regular(12.0))
                     .color(p.faint),
             );
@@ -418,6 +434,9 @@ mod tests {
         assert_eq!(pct(cents(2_500), cents(20_000)), Some(Decimal::new(125, 1)));
         assert_eq!(pct(cents(1), cents(3)), Some(Decimal::new(333, 1)));
         assert_eq!(pct(cents(1), Decimal::ZERO), None);
+        // One place whatever the value.
+        assert_eq!(pct(cents(500), cents(500)).unwrap().to_string(), "100.0");
+        assert_eq!(pct(cents(-100), cents(200)).unwrap().to_string(), "-50.0");
         assert_eq!(pct(Decimal::MAX, Decimal::new(1, 2)), None);
     }
 
@@ -440,6 +459,6 @@ mod tests {
         let (_dir, books) = b.books();
         let (texts, _) = render(books, Route::Profit, |_| {});
         find(&texts, "Invoiced by customer, this year");
-        find(&texts, "Acme is 100% of invoiced income.");
+        find(&texts, "Acme is 100.0% of invoiced income.");
     }
 }

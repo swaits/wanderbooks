@@ -149,10 +149,22 @@ pub fn pnl_by_interval(
     end: NaiveDate,
     interval: Interval,
 ) -> Result<Vec<IntervalPnl>, LedgerError> {
+    pnl_by_interval_for(ledger, start, end, interval, None)
+}
+
+/// [`pnl_by_interval`] for one class (project): only the lines tagged
+/// with it count (`None`: every line).
+pub fn pnl_by_interval_for(
+    ledger: &Ledger,
+    start: NaiveDate,
+    end: NaiveDate,
+    interval: Interval,
+    class: Option<crate::ClassId>,
+) -> Result<Vec<IntervalPnl>, LedgerError> {
     intervals(start, end, interval)
         .into_iter()
         .map(|(s, e)| {
-            let pl = profit_and_loss_for_period(ledger, s, e, None)?;
+            let pl = profit_and_loss_for_period(ledger, s, e, class)?;
             Ok(IntervalPnl {
                 start: s,
                 end: e,

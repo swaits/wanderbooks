@@ -249,3 +249,28 @@ consideration" it expects (55-37B); an agent recognizes only its fee or
 commission (55-38).
 → B-17: an app seller is the principal for its app, so its revenue is
 the gross price; the platform's commission is an expense.
+
+## 450-30-25-1 (Gain contingencies)
+
+Added 2026-10-21 for B-37 from the paragraph's text as Deloitte's DART
+roadmaps quote it (originally FAS 5 ¶17(a)); not re-read in the ASC
+basic view: check it there at the next reading. A contingency that might
+result in a gain "usually should not be reflected in the financial
+statements because to do so might be to recognize revenue before its
+realization."
+→ B-37 item 4: a payment hoped for from work done on spec is recorded
+neither as a receivable nor as income until it is received; the
+unrecovered cost is a figure, never an asset.
+
+## 340-40-25-5 (Costs to fulfill a contract)
+
+Added 2026-10-21 for B-37 as the DART revenue roadmap sets it out; not
+re-read in the ASC basic view: check it there at the next reading. Costs
+incurred to fulfill a contract (one not in another Topic's scope) are an
+asset only if all three criteria are met: they relate directly to a
+contract or an anticipated contract the entity can specifically
+identify; they generate or enhance resources used in satisfying
+performance obligations in the future; and they "are expected to be
+recovered."
+→ B-37 item 4 (with B-22): on-spec work has no contract it is expected
+to recover its costs from, so its costs are expensed as incurred.

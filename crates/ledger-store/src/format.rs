@@ -59,6 +59,7 @@ pub const KNOWN_FEATURES: &[&str] = &[
     TAX_CATEGORIES_GAIN_EXEMPT,
     DISPOSAL_BEFORE_SERVICE,
     DEPRECIATION_CATCH_UP,
+    PROJECTS,
 ];
 
 /// Feature: `period.closed` closes to members with `"rounding":
@@ -147,6 +148,13 @@ pub const SCHEDULE_CONVENTION: &str = "schedule_convention";
 /// with the value at contribution and the §704(c) method (P3, defect 13).
 pub const ASSET_BASIS: &str = "asset_basis";
 
+/// Feature: projects (rules.md B-37): `project.set`, a new event type (a
+/// class's project facts); `attachment.linked` to the subject kind
+/// `project` (an older version would call it corrupt); and
+/// `decision.recorded` with `projects` (an older version would drop them
+/// silently).
+pub const PROJECTS: &str = "projects";
+
 /// The line type that declares the journal format.
 pub const FORMAT_SET: &str = "journal.format_set";
 
@@ -209,6 +217,7 @@ pub const EVENT_TYPES: &[&str] = &[
     "payroll.taxes_remitted",
     "period.closed",
     "period.created",
+    "project.set",
     "receipt.attached",
     "receipt.linked",
     "receipt.unlinked",

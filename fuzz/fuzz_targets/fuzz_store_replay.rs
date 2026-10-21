@@ -40,6 +40,7 @@ const TYPES: &[&str] = &[
     "entry.party_set", "party.added", "party.role_set", "party.tin_set", "party.updated",
     "party.w4_set", "party.w9_set", "payroll.taxes_remitted", "reconciliation.completed",
     "reconciliation.voided", "role.assigned", "statement.recorded", "statement.voided",
+    "project.set",
 ];
 
 const FIELDS: &[&str] = &[
@@ -59,6 +60,7 @@ const FIELDS: &[&str] = &[
     "reason_kind", "effective", "instrument_id", "label", "last4", "owner_party_id",
     "rule", "contributor_adjusted_basis", "fmv_at_contribution", "sec704c_method",
     "tax_basis_723", "depreciable_basis", "built_in_gain_704c", "on", "convention",
+    "status", "party_id", "started_on", "ended_on", "links", "notes", "projects",
 ];
 
 /// A value replay might plausibly see: small ids, amounts as decimal

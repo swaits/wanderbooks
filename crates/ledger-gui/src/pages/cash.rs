@@ -135,6 +135,7 @@ pub fn show(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                             .map(|(s, _, i, o)| BarGroup {
                                 label: s.format("%b").to_string(),
                                 values: vec![*i, *o],
+                                year: None,
                             })
                             .collect();
                         charts::bar_chart(

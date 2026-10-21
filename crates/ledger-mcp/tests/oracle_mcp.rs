@@ -3259,6 +3259,16 @@ fn references_resolve_unless_truly_ambiguous() {
     let dir = test_dir("refs");
     let s = Store::create(&data_dir(&dir), Currency::USD).unwrap();
     drop(s);
+    // Classes as an earlier version could write them (a name of digits
+    // only can't be added now): 1 "placeholder-name", 2 named "1", 3
+    // named "3".
+    let mut w = ledger_store::JournalWriter::open(&data_dir(&dir).join(ledger_store::JOURNAL_FILE))
+        .unwrap();
+    for (i, n) in ["placeholder-name", "1", "3"].iter().enumerate() {
+        w.append("class.added", json!({"id": i + 1, "name": n}))
+            .unwrap();
+    }
+    drop(w);
     let mut m = Mcp::start(&dir, "1000000.00");
     // An account whose code is its own id.
     let first = m.ok(
@@ -3286,24 +3296,16 @@ fn references_resolve_unless_truly_ambiguous() {
         json!({"entry_id": e, "account": first.to_string(), "side": "debit", "amount": "5.00"}),
     );
 
-    // A class named by its own id.
-    let c = m.ok("books.add_class", json!({"name": "placeholder-name"}))["id"]
-        .as_u64()
-        .unwrap();
-    let c2 = m.ok("books.add_class", json!({"name": c.to_string()}))["id"]
-        .as_u64()
-        .unwrap();
+    // Class 2 is named "1", class 1's id.
+    let c = 1u64;
     // "c" is class c's id and class c2's name: ambiguous.
     m.refuse(
         "books.add_line",
         json!({"entry_id": e, "account": "4000", "side": "credit", "amount": "5.00",
                "class": c.to_string()}),
     );
-    // c2 named by its own id: only one class is meant.
-    let c3 = m.ok("books.add_class", json!({"name": (c2 + 1).to_string()}))["id"]
-        .as_u64()
-        .unwrap();
-    assert_eq!(c3, c2 + 1, "classes number in order");
+    // c3 named by its own id: only one class is meant.
+    let c3 = 3u64;
     m.ok(
         "books.add_line",
         json!({"entry_id": e, "account": "4000", "side": "credit", "amount": "5.00",

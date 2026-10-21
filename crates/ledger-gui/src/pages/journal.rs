@@ -479,7 +479,26 @@ pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
                     .map_or(Route::Company, Route::Party),
             ),
         ),
-        "class.added" => ev(icon::TAG, format!("Added class {}", s(p, "name")), None),
+        "class.added" => ev(
+            icon::BRIEFCASE,
+            format!("Added project {}", s(p, "name")),
+            u32::try_from(id).ok().map(Route::Project),
+        ),
+        "project.set" => {
+            let status = ledger_core::ProjectStatus::parse(s(p, "status"))
+                .map_or("", |x| x.words())
+                .to_lowercase();
+            let kind = match p.get("kind").and_then(|v| v.as_str()) {
+                Some(k) => ledger_core::ProjectKind::parse(k)
+                    .map_or(k.to_string(), |x| x.words().to_lowercase()),
+                None => "kind not recorded".into(),
+            };
+            ev(
+                icon::BRIEFCASE,
+                format!("Project {}: {status}, {kind}", s(p, "name")),
+                u32::try_from(id).ok().map(Route::Project),
+            )
+        }
         "party.added" => {
             let roles: Vec<String> = p
                 .get("roles")
@@ -1114,8 +1133,8 @@ pub fn describe_any(b: &Books, line: &JournalLine) -> Event {
                 .get("class_id")
                 .and_then(|v| v.as_u64())
                 .and_then(|c| b.ledger.get_class(c as u32))
-                .map(|c| c.name.clone())
-                .unwrap_or_else(|| "no class".into());
+                .map(|c| format!("project {}", c.name))
+                .unwrap_or_else(|| "no project".into());
             Event {
                 icon: icon::TAG,
                 text: format!(

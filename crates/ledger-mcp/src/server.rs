@@ -785,6 +785,7 @@ impl BooksServer {
             + Self::files_router()
             + Self::backup_router()
             + Self::instruments_router()
+            + Self::projects_router()
     }
 
     /// The settings in force for this request (reloaded at its start, in
@@ -1903,7 +1904,7 @@ fn resource_list() -> Vec<Resource> {
 }
 
 /// The subject kinds, for messages.
-const SUBJECT_KINDS: &str = "entry, account, asset, party, invoice, bill, period, payroll_run, schedule, reconciliation, company";
+const SUBJECT_KINDS: &str = "entry, account, asset, party, project, invoice, bill, period, payroll_run, schedule, reconciliation, company";
 
 /// Resolve a tool's subject: its kind, and its id resolved the way the
 /// other tools resolve references (an account by code or id, an asset by
@@ -1932,6 +1933,11 @@ fn resolve_subject(store: &Store, s: &SubjectParam) -> Result<ledger_store::Subj
         "account" => Subject::Account(resolve_account(store, &t)?),
         "asset" => Subject::Asset(resolve_asset_ref(store, &t)?),
         "party" => Subject::Party(resolve_party(store, &t)?),
+        // A JSON number is an id, never a name.
+        "project" => match &s.id {
+            Some(RefId::Number(n)) => Subject::Project(*n),
+            _ => Subject::Project(u64::from(resolve_class(store, &t)?)),
+        },
         k => {
             let id = t
                 .parse::<u64>()
@@ -1962,6 +1968,10 @@ fn subject_out(store: &Store, sub: ledger_store::Subject) -> SubjectOut {
             None => format!("asset {i} {}", a.description),
         }),
         S::Party(i) => l.get_party(i).map(|p| format!("party {i} {}", p.label())),
+        S::Project(i) => u32::try_from(i)
+            .ok()
+            .and_then(|c| l.get_class(c))
+            .map(|c| format!("project {i} {}", c.name)),
         S::Period(i) => l
             .list_periods()
             .iter()
@@ -2031,7 +2041,8 @@ fn receipt_out(store: &Store, a: ledger_store::Attachment) -> Result<ReceiptOut,
 }
 
 /// Check every `link_to` subject before anything is filed: each resolves,
-/// none twice, none the entry the file is filed on (all or nothing).
+/// its journal feature is declared, none twice, none the entry the file is
+/// filed on (all or nothing).
 fn check_link_to(
     store: &Store,
     filed_on: Option<u64>,
@@ -2040,6 +2051,12 @@ fn check_link_to(
     let mut out: Vec<ledger_store::Subject> = Vec::new();
     for s in link_to {
         let sub = resolve_subject(store, s)?;
+        // A link to a subject kind an older version doesn't know needs its
+        // journal feature, asked here, before the file is filed: a refusal
+        // leaves nothing half-filed (rules.md B-27).
+        if let Some(f) = Store::subject_feature(sub) {
+            store.ensure_feature(f).map_err(|e| e.to_string())?;
+        }
         if out.contains(&sub) {
             return Err(format!("link_to names {} twice", sub.describe()));
         }
@@ -2590,21 +2607,31 @@ fn party_bills<'a>(ledger: &'a Ledger, party: &ledger_core::Party) -> Vec<&'a le
         .collect()
 }
 
-/// Resolve a class by id or name; a number that is one class's id and
-/// another's name is refused (INVARIANT 6).
+/// Resolve a class (a project) by id or name, trimmed, the name ignoring
+/// capitals as the duplicate check does; a number that is one class's id
+/// and another's name is refused (INVARIANT 6). New names can't be digits
+/// only, so only old books can hold such a pair.
 fn resolve_class(store: &Store, class: &str) -> Result<u32, String> {
+    let class = class.trim();
     let by_id = class
         .parse::<u32>()
         .ok()
         .filter(|id| store.ledger().get_class(*id).is_some());
     let by_name = store.ledger().find_class_by_name(class).map(|c| c.id);
     match (by_id, by_name) {
-        (Some(i), Some(n)) if i != n => Err(format!(
-            "class {class:?} is ambiguous: it is class {i}'s id and class {n}'s name; pass the id"
-        )),
+        (Some(i), Some(n)) if i != n => {
+            let name = store
+                .ledger()
+                .get_class(i)
+                .map(|c| c.name.clone())
+                .unwrap_or_default();
+            Err(format!(
+                "project {class:?} is ambiguous: it is project {i}'s id and project {n}'s name; pass {n} for project {n}, or {name:?} (project {i}'s name) for project {i}"
+            ))
+        }
         (Some(i), _) | (None, Some(i)) => Ok(i),
         (None, None) => Err(format!(
-            "unknown class {class:?}: use an id or name from books.list_classes"
+            "unknown project {class:?}: use an id or name from books.projects"
         )),
     }
 }
@@ -2923,6 +2950,8 @@ mod files;
 mod instruments;
 #[path = "tools/kept.rs"]
 mod kept;
+#[path = "tools/projects.rs"]
+mod projects;
 pub use kept::SettingKeyOut;
 
 #[tool_router(router = core_router)]
@@ -3106,7 +3135,7 @@ impl BooksServer {
         name = "books.profit_and_loss",
         title = "Profit and loss",
         description = described(
-            "Profit and loss for a period: revenue, expenses, net income. Pass class (name or id) to filter to one division.",
+            "Profit and loss for a period: revenue, expenses, net income. Pass class (a project: name or id; see books.projects) to filter to one project.",
             ledger_core::calendar::PeriodKind::Statement
         ),
         annotations(read_only_hint = true, open_world_hint = false)
@@ -3297,7 +3326,7 @@ impl BooksServer {
     #[tool(
         name = "books.add_line",
         title = "Add a line to a draft",
-        description = "Add one line to a draft entry. Amount is a decimal string, never a float. The entry must balance before posting. For foreign-currency lines, pass foreign_currency, foreign_amount, and fx_rate (foreign -> base); the base amount is computed as foreign_amount * fx_rate. Pass class (name or id) to tag the line for divisional tracking.",
+        description = "Add one line to a draft entry. Amount is a decimal string, never a float. The entry must balance before posting. For foreign-currency lines, pass foreign_currency, foreign_amount, and fx_rate (foreign -> base); the base amount is computed as foreign_amount * fx_rate. Pass class (a project: name or id) to tag the line; see books.projects.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -3356,7 +3385,8 @@ impl BooksServer {
                 .set_line_class(p.entry_id, line_index, Some(class_id))
                 .map_err(|e| e.to_string())?;
         }
-        Ok(Json(AddLineOut { ok: true }))
+        let note = class_id.and_then(|c| projects::late_tag_note(store.ledger(), c));
+        Ok(Json(AddLineOut { ok: true, note }))
     }
 
     #[tool(
@@ -3611,7 +3641,7 @@ impl BooksServer {
     #[tool(
         name = "books.attach_receipt",
         title = "Attach a receipt",
-        description = "Attach a receipt to an entry, or file it unlinked and link later with books.link_receipt. The bytes: upload_id (books.begin_upload), or content_base64 with its sha256 for a file of at most 256 KiB. Files are content-addressed and deduplicated. link_to links it to more subjects in the same call (another entry it also supports, an asset, a party, ...: see books.link_attachment); every subject is checked first, so one bad subject files nothing. A file holding a full TIN is refused: one the server read or wrote with TINs, or text with a TIN the vault keeps or an SSN or EIN printed 3-2-4 or 2-7 with hyphens.",
+        description = "Attach a receipt to an entry, or file it unlinked and link later with books.link_receipt. The bytes: upload_id (books.begin_upload), or content_base64 with its sha256 for a file of at most 256 KiB. Files are content-addressed and deduplicated. link_to links it to more subjects in the same call (another entry it also supports, an asset, a party, a project, ...: see books.link_attachment); every subject is checked first, so one bad subject files nothing. A file holding a full TIN is refused: one the server read or wrote with TINs, or text with a TIN the vault keeps or an SSN or EIN printed 3-2-4 or 2-7 with hyphens.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -3666,7 +3696,7 @@ impl BooksServer {
     #[tool(
         name = "books.file_document",
         title = "File a document",
-        description = "File a document: category formation, legal, tax, accounting, statement (a bank or card statement: then books.record_statement), contract, photo, warranty, import_source (a bank export), or other. link_to links it to subjects in the same call (an account, an asset, a party, the company: see books.link_attachment), all checked first. The bytes: upload_id (books.begin_upload), or content_base64 with its sha256 (at most 256 KiB). Never a W-9 (books.set_w9 w9_upload_id puts it in the vault). A file holding a full TIN is refused: one the server read or wrote with TINs, or text with a TIN the vault keeps or an SSN or EIN printed 3-2-4 or 2-7 with hyphens.",
+        description = "File a document: category formation, legal, tax, accounting, statement (a bank or card statement: then books.record_statement), contract, photo, warranty, import_source (a bank export), or other. link_to links it to subjects in the same call (an account, an asset, a party, a project, the company: see books.link_attachment), all checked first. The bytes: upload_id (books.begin_upload), or content_base64 with its sha256 (at most 256 KiB). Never a W-9 (books.set_w9 w9_upload_id puts it in the vault). A file holding a full TIN is refused: one the server read or wrote with TINs, or text with a TIN the vault keeps or an SSN or EIN printed 3-2-4 or 2-7 with hyphens.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -3828,7 +3858,7 @@ impl BooksServer {
     #[tool(
         name = "books.link_attachment",
         title = "Link a file to a subject",
-        description = "Link a stored receipt or document to a subject, so one file is evidence wherever it applies without filing it again. subject: {kind, id}: entry (id), account (code or id: its statements, the agreement that opened it), asset (tag or id: photos, warranty, manual), party (id or name: contracts, correspondence), invoice, bill, period (its close package), payroll_run, schedule (the prepaid contract), reconciliation, or company (no id: formation documents). A file linked to an entry counts as one of its receipts. Journaled as attachment.linked. Returns the attachment's links.",
+        description = "Link a stored receipt or document to a subject, so one file is evidence wherever it applies without filing it again. subject: {kind, id}: entry (id), account (code or id: its statements, the agreement that opened it), asset (tag or id: photos, warranty, manual), party (id or name: contracts, correspondence), project (id or name: its contract, spec, pitch), invoice, bill, period (its close package), payroll_run, schedule (the prepaid contract), reconciliation, or company (no id: formation documents). A file linked to an entry counts as one of its receipts. Journaled as attachment.linked. Returns the attachment's links.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -4181,7 +4211,7 @@ impl BooksServer {
     #[tool(
         name = "books.show",
         title = "Show in the viewer",
-        description = "Show something in the human's viewer (the read-only desktop app): an entry (with its lines, receipt, and history), an account's register (optionally for start/end dates), a report (optionally for start/end dates, split into month/quarter/year columns, compared with the prior period or prior year), a stored receipt or document, a fixed asset (by tag or id), a party (by id or name: who they are and everything the company did with them), a reconciliation (by id: its account with its statements and reconciliations), a search of the transactions, or a page. Give exactly one target; work out dates yourself (\"last quarter\" means its first and last day). Use it whenever the human asks to see something, and after posting so they can look at what you did. Changes nothing in the books.",
+        description = "Show something in the human's viewer (the read-only desktop app): an entry (with its lines, receipt, and history), an account's register (optionally for start/end dates), a report (optionally for start/end dates, split into month/quarter/year columns, compared with the prior period or prior year), a stored receipt or document, a fixed asset (by tag or id), a party (by id or name: who they are and everything the company did with them), a project (by id or name), a reconciliation (by id: its account with its statements and reconciliations), a search of the transactions, or a page. Give exactly one target; work out dates yourself (\"last quarter\" means its first and last day). Use it whenever the human asks to see something, and after posting so they can look at what you did. Changes nothing in the books.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn show(&self, params: Parameters<ShowParams>) -> Result<Json<ShowOut>, String> {
@@ -4196,6 +4226,7 @@ impl BooksServer {
             p.attachment_id.is_some(),
             p.asset.is_some(),
             p.party.is_some(),
+            p.project.is_some(),
             p.reconciliation.is_some(),
             p.search.is_some(),
             p.page.is_some(),
@@ -4205,7 +4236,7 @@ impl BooksServer {
         .count();
         if given != 1 {
             return Err(
-                "give exactly one of entry_id, account, report, attachment_id, asset, party, reconciliation, search, page"
+                "give exactly one of entry_id, account, report, attachment_id, asset, party, project, reconciliation, search, page"
                     .into(),
             );
         }
@@ -4251,7 +4282,7 @@ impl BooksServer {
             "ap_aging",
             "fixed_asset_register",
         ];
-        const PAGES: [&str; 11] = [
+        const PAGES: [&str; 12] = [
             "overview",
             "cash",
             "profit",
@@ -4260,6 +4291,7 @@ impl BooksServer {
             "accounts",
             "assets",
             "parties",
+            "projects",
             "documents",
             "company",
             "journal",
@@ -4284,6 +4316,13 @@ impl BooksServer {
             (
                 ViewerTarget::Party { party_id: id },
                 format!("party {id}, {}", party.label()),
+            )
+        } else if let Some(r) = &p.project {
+            let id = resolve_class(&store, r)?;
+            let c = ledger.get_class(id).expect("resolved");
+            (
+                ViewerTarget::Project { class_id: id },
+                format!("project {id}, {}", c.name),
             )
         } else if let Some(id) = p.reconciliation {
             let r = store
@@ -5084,6 +5123,7 @@ impl BooksServer {
             .create_entry(parse_date(&p.date)?, &p.description)
             .map_err(|e| e.to_string())?;
         let mut described = Vec::new();
+        let mut tagged: Vec<u32> = Vec::new();
         for (index, (account, side, amount, class)) in plan.into_iter().enumerate() {
             store
                 .add_line(entry_id, account, side, Money::new(amount, currency))
@@ -5092,6 +5132,9 @@ impl BooksServer {
                 store
                     .set_line_class(entry_id, index, Some(class))
                     .map_err(|e| e.to_string())?;
+                if !tagged.contains(&class) {
+                    tagged.push(class);
+                }
             }
             let code = store
                 .ledger()
@@ -5109,6 +5152,10 @@ impl BooksServer {
             adjustments: money(totals.adjustments),
             deposit: money(totals.deposit),
             lines: described,
+            notes: tagged
+                .into_iter()
+                .filter_map(|c| projects::late_tag_note(store.ledger(), c))
+                .collect(),
             next: "Attach the payout statement (books.attach_receipt), then preview and post with books.post_entry.".to_string(),
         }))
     }
@@ -8215,7 +8262,7 @@ impl BooksServer {
         name = "books.party",
         title = "Get a party",
         description = described(
-            "One party, by id or name: its facts and roles, vendor and customer record ids, the year's totals (paid to it and received from it on the basis asked, cash by default or all with property in kind, the basis echoed; invoiced, billed, the 1099 amount for a vendor, payroll gross and net), what it is owed and owes now (open bills and invoices), every entry it is on (tagged with it or its vendor record, its invoices and their payments, and their reversals), its invoices and bills, and the payroll lines naming it. Totals come from the journal: the output's schema says exactly how.",
+            "One party, by id or name: its facts and roles, vendor and customer record ids, the year's totals (paid to it and received from it on the basis asked, cash by default or all with property in kind, the basis echoed; invoiced, billed, the 1099 amount for a vendor, payroll gross and net), what it is owed and owes now (open bills and invoices), every entry it is on (tagged with it or its vendor record, its invoices and their payments, and their reversals), its invoices and bills, its projects, and the payroll lines naming it. Totals come from the journal: the output's schema says exactly how.",
             ledger_core::calendar::PeriodKind::CalendarYear
         ),
         annotations(read_only_hint = true, open_world_hint = false)
@@ -8346,6 +8393,11 @@ impl BooksServer {
                 })
                 .collect::<Result<_, _>>()?,
             payroll,
+            projects: ledger
+                .projects_of_party(id)
+                .into_iter()
+                .map(|c| projects::project_ref(ledger, c))
+                .collect(),
         }))
     }
 
@@ -8876,7 +8928,7 @@ impl BooksServer {
     #[tool(
         name = "books.add_class",
         title = "Add a class",
-        description = "Add a tracking class for divisional P&L (e.g. an app, website, or channel). Tag journal lines with it via books.add_line's class param, then report per division.",
+        description = "Add a class: a project with only its name (books.add_project records its facts too; books.update_project adds them later). Names are unique, ignoring capitals. Tag journal lines with it via books.add_line's class param.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -8896,7 +8948,7 @@ impl BooksServer {
     #[tool(
         name = "books.list_classes",
         title = "List classes",
-        description = "List tracking classes in id order.",
+        description = "List classes (projects) in id order; books.projects gives their facts and figures.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn list_classes(&self) -> Result<Json<ListClassesOut>, String> {
@@ -8916,7 +8968,7 @@ impl BooksServer {
         name = "books.profit_and_loss_by_class",
         title = "Profit and loss by class",
         description = described(
-            "P&L broken down by tracking class for a period, plus an unclassified row for untagged lines.",
+            "P&L broken down by class (a project: see books.projects) for a period, plus an unclassified row for untagged lines.",
             ledger_core::calendar::PeriodKind::Statement
         ),
         annotations(read_only_hint = true, open_world_hint = false)
@@ -10639,7 +10691,7 @@ mod tests {
         const D: Hints = (Some(false), Some(true), None);
         const WI: Hints = (Some(false), Some(false), Some(true));
         const DI: Hints = (Some(false), Some(true), Some(true));
-        let table: [(&str, Hints); 115] = [
+        let table: [(&str, Hints); 119] = [
             ("books.handbook", R),
             ("books.start", R),
             ("books.set_setting", DI),
@@ -10750,6 +10802,10 @@ mod tests {
             ("books.list_payroll_runs", R),
             ("books.add_class", W),
             ("books.list_classes", R),
+            ("books.add_project", W),
+            ("books.update_project", WI),
+            ("books.projects", R),
+            ("books.project", R),
             ("books.profit_and_loss_by_class", R),
             ("books.export_cpa_package", W),
             ("books.access_log", R),
@@ -11384,6 +11440,11 @@ mod tests {
             ),
             (
                 "books.profit_and_loss_by_class",
+                PeriodKind::Statement,
+                &[("start", START_DOC), ("end", END_DOC)][..],
+            ),
+            (
+                "books.project",
                 PeriodKind::Statement,
                 &[("start", START_DOC), ("end", END_DOC)][..],
             ),

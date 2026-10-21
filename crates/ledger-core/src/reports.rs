@@ -504,6 +504,163 @@ pub fn profit_and_loss_for_period(
     })
 }
 
+/// A project's figures (rules.md B-37 item 3): the period's statement and
+/// months, and its figures to date.
+#[derive(Clone, Debug)]
+pub struct ProjectFigures {
+    /// The period's profit and loss, only the lines tagged to it.
+    pub period: ProfitAndLossStatement,
+    /// The period by calendar month: its last [`PROJECT_MONTHS`] at most.
+    pub months: Vec<crate::analysis::IntervalPnl>,
+    /// Every tagged line through the period's end.
+    pub to_date: ProjectToDate,
+}
+
+/// A project's figures to date: every posted revenue and expense line
+/// tagged to it through `through`, whatever its dates (rules.md B-37).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectToDate {
+    /// The last day counted.
+    pub through: NaiveDate,
+    /// Its tagged revenue.
+    pub revenue: Decimal,
+    /// Its tagged expenses.
+    pub expenses: Decimal,
+    /// On spec only: expenses less revenue, never below zero (the "if
+    /// repaid" figure, never a receivable). `None` for any other kind.
+    pub unrecovered_cost: Option<Decimal>,
+}
+
+impl ProjectToDate {
+    /// Revenue less expenses.
+    pub fn net(&self) -> Decimal {
+        self.revenue - self.expenses
+    }
+}
+
+/// The most months [`ProjectFigures::months`] holds: the period's last.
+pub const PROJECT_MONTHS: u32 = 240;
+
+/// A project's figures for `[start, end]`, by month, and to date.
+///
+/// ```text
+/// GOAL: what a project earned and cost, from one function the tools, the
+///       viewer and bookspec share, so their figures never drift.
+/// SOURCE: docs/spec/rules.md B-37 item 3 (job costing), B-11, B-14.
+/// INVARIANTS:
+///   1. MUST be profit_and_loss_for_period with the project's class: only
+///      revenue and expense lines tagged to it, closing entries left out.
+///   2. The months partition the period (their nets sum to its net)
+///      when it spans at most PROJECT_MONTHS months; a longer one's
+///      months are its last PROJECT_MONTHS.
+///   3. to_date counts every tagged line through `end`, from the first
+///      day the books keep, whatever the project's own dates.
+/// SCENARIOS:
+///   1. IF the class doesn't exist: SHOULD refuse (UnknownClass).
+///   2. IF `start` is after `end`: SHOULD refuse.
+/// ```
+pub fn project_figures(
+    ledger: &Ledger,
+    id: ClassId,
+    start: NaiveDate,
+    end: NaiveDate,
+) -> Result<ProjectFigures, LedgerError> {
+    if ledger.get_class(id).is_none() {
+        return Err(LedgerError::UnknownClass(id));
+    }
+    let period = profit_and_loss_for_period(ledger, start, end, Some(id))?;
+    // The last PROJECT_MONTHS months at most: a span across the calendar
+    // is a hundred thousand months, each a statement.
+    let months_from = chrono::Datelike::with_day(&end, 1)
+        .and_then(|m| m.checked_sub_months(chrono::Months::new(PROJECT_MONTHS - 1)))
+        .map_or(start, |m| m.max(start));
+    let months = crate::analysis::pnl_by_interval_for(
+        ledger,
+        months_from,
+        end,
+        crate::analysis::Interval::Month,
+        Some(id),
+    )?;
+    let to_date = project_to_date(ledger, id, end)?;
+    Ok(ProjectFigures {
+        period,
+        months,
+        to_date,
+    })
+}
+
+/// A project's figures to date: every posted revenue and expense line
+/// tagged to it through `through` (closing entries left out), and for an
+/// on-spec project its unrecovered cost (kernel::unrecovered_cost).
+pub fn project_to_date(
+    ledger: &Ledger,
+    id: ClassId,
+    through: NaiveDate,
+) -> Result<ProjectToDate, LedgerError> {
+    let facts = ledger
+        .project_facts(id)
+        .ok_or(LedgerError::UnknownClass(id))?;
+    let start = crate::calendar::FIRST_DAY.min(through);
+    let pl = profit_and_loss_for_period(ledger, start, through, Some(id))?;
+    let unrecovered_cost = match facts.kind {
+        Some(crate::classes::ProjectKind::OnSpec) => Some(
+            crate::kernel::unrecovered_cost(pl.total_revenue, pl.total_expenses)
+                .ok_or(LedgerError::AmountOutOfRange)?,
+        ),
+        _ => None,
+    };
+    Ok(ProjectToDate {
+        through,
+        revenue: pl.total_revenue,
+        expenses: pl.total_expenses,
+        unrecovered_cost,
+    })
+}
+
+/// Every entry with a line tagged to the project (drafts included),
+/// newest first (by date, then id), with its project amount: its tagged
+/// revenue lines less its tagged expense lines, each on its normal side.
+/// A tagged balance-sheet line counts zero (rules.md B-37 item 3).
+pub fn project_entries(ledger: &Ledger, id: ClassId) -> Vec<(crate::EntryId, Decimal)> {
+    let mut out: Vec<(NaiveDate, crate::EntryId, Decimal)> = Vec::new();
+    for eid in 1..ledger.next_entry_id() {
+        let Some(entry) = ledger.get_entry(eid) else {
+            continue;
+        };
+        let mut tagged = false;
+        let mut amount = Decimal::ZERO;
+        for line in entry.lines().iter().filter(|l| l.class_id == Some(id)) {
+            tagged = true;
+            let Some(account) = ledger.chart().get(line.account) else {
+                continue;
+            };
+            let debit = matches!(line.side, crate::Side::Debit);
+            match account.account_type {
+                AccountType::Revenue => {
+                    amount += if debit {
+                        -line.amount.amount
+                    } else {
+                        line.amount.amount
+                    }
+                }
+                AccountType::Expense => {
+                    amount -= if debit {
+                        line.amount.amount
+                    } else {
+                        -line.amount.amount
+                    }
+                }
+                _ => {}
+            }
+        }
+        if tagged {
+            out.push((entry.date(), eid, amount));
+        }
+    }
+    out.sort_by_key(|a| std::cmp::Reverse((a.0, a.1)));
+    out.into_iter().map(|(_, e, a)| (e, a)).collect()
+}
+
 /// Balance sheet as of `as_of`: every posted entry dated on or before it.
 /// Revenue and expense not yet closed to retained earnings appear as
 /// current earnings inside equity, so the accounting equation holds on

@@ -136,6 +136,9 @@ fn the_viewer_never_writes_into_the_books() {
         .map(|a| a.id)
         .unwrap();
     let party = books.ledger.parties().next().map(|p| p.id).unwrap();
+    // Every project's page too (visiting_project_pages_changes_nothing).
+    let projects: Vec<u32> = books.ledger.list_classes().iter().map(|c| c.id).collect();
+    assert!(!projects.is_empty(), "the demo has projects");
     drop(books);
 
     // Follow live for a moment.
@@ -178,12 +181,16 @@ fn the_viewer_never_writes_into_the_books() {
         Route::Asset(asset),
         Route::Parties,
         Route::Party(party),
+        Route::Projects,
         Route::Document(doc),
         Route::JournalEvent(event),
         Route::Documents,
         Route::Company,
         Route::Journal,
     ];
+    let routes = routes
+        .into_iter()
+        .chain(projects.iter().map(|&c| Route::Project(c)));
     for route in routes {
         let books = data::load_once(&source).unwrap();
         let mut harness = Harness::builder()

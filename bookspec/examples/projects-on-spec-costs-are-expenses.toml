@@ -1,0 +1,138 @@
+# Work on spec: its costs are expenses when incurred, and the hoped-for
+# payment is income only when received; until then it is no receivable.
+#
+# wanderbooks: rules.md B-37 item 4; regression tests
+# `unrecovered_cost_only_for_on_spec_and_never_negative` (ledger-core),
+# `on_spec_project_shows_unrecovered_cost_and_others_null` (ledger-mcp).
+#
+# Expected values worked by hand: 1,400.00 + 60.00 = 1,460.00 of costs,
+# nothing receivable (1100 stays 0.00). Repaid 1,000.00: 460.00 still
+# unrecovered. Repaid 700.00 more: 1,700.00 in, 240.00 net, nothing
+# unrecovered (never below zero).
+#
+# Both sources are quoted through Deloitte's DART roadmaps and not yet
+# re-read in the ASC basic view (wanderbooks docs/spec/sources/fasb-asc.md):
+# an open item.
+
+id = "projects-on-spec-costs-are-expenses"
+title = "On-spec costs are expenses; a repayment is income when received"
+rule = "The costs of work done on spec MUST be expensed as incurred, and a payment hoped for MUST NOT be recorded, as a receivable or as income, until it is received; a project's unrecovered cost MUST be its tagged expenses less its tagged revenue to date, never below zero."
+status = "AUTHORITY"
+sources = [
+  "ASC 450-30-25-1: a contingency that might result in a gain usually is not reflected in the financial statements, since that might recognize revenue before its realization (originally FAS 5 ¶17(a))",
+  "ASC 340-40-25-5: costs to fulfill an anticipated contract are an asset only if, among other criteria, they are expected to be recovered (here recovery is uncertain: expensed; wanderbooks docs/spec/rules.md B-22)",
+]
+tags = ["projects", "on-spec", "gain-contingency", "accrual"]
+
+[setup]
+currency = "USD"
+fiscal_year_start = "01-01"
+basis = "accrual"
+rounding = "half-even"
+
+[[setup.accounts]]
+code = "1000"
+name = "Cash"
+type = "asset"
+[[setup.accounts]]
+code = "1100"
+name = "Accounts Receivable"
+type = "asset"
+[[setup.accounts]]
+code = "4000"
+name = "Revenue"
+type = "revenue"
+[[setup.accounts]]
+code = "6000"
+name = "Contractors"
+type = "expense"
+[[setup.accounts]]
+code = "6100"
+name = "Hosting"
+type = "expense"
+
+[[setup.projects]]
+name = "Harbor app"
+kind = "on_spec"
+
+[[events]]
+date = "2026-04-02"
+description = "Prototype build"
+lines = [
+  { account = "6000", side = "debit", amount = "1400.00", project = "Harbor app" },
+  { account = "1000", side = "credit", amount = "1400.00" },
+]
+[[events]]
+date = "2026-04-20"
+description = "Hosting for the prototype"
+lines = [
+  { account = "6100", side = "debit", amount = "60.00", project = "Harbor app" },
+  { account = "1000", side = "credit", amount = "60.00" },
+]
+[[events]]
+date = "2026-06-15"
+description = "Harbor repays part of the prototype"
+lines = [
+  { account = "1000", side = "debit", amount = "1000.00" },
+  { account = "4000", side = "credit", amount = "1000.00", project = "Harbor app" },
+]
+[[events]]
+date = "2026-07-01"
+description = "Harbor pays the rest, and more"
+lines = [
+  { account = "1000", side = "debit", amount = "700.00" },
+  { account = "4000", side = "credit", amount = "700.00", project = "Harbor app" },
+]
+
+[[expect]]
+query = "project"
+after = 2
+project = "Harbor app"
+from = "2026-01-01"
+to = "2026-04-30"
+[expect.values]
+revenue = "0.00"
+expenses = "1460.00"
+net = "-1460.00"
+"to_date.revenue" = "0.00"
+"to_date.expenses" = "1460.00"
+"to_date.net" = "-1460.00"
+unrecovered_cost = "1460.00"
+
+[[expect]]
+query = "balances"
+after = 2
+as_of = "2026-04-30"
+[expect.values]
+"1100" = "0.00"
+"6000" = "1400.00"
+"6100" = "60.00"
+
+[[expect]]
+query = "project"
+after = 3
+project = "Harbor app"
+from = "2026-01-01"
+to = "2026-06-30"
+[expect.values]
+revenue = "1000.00"
+expenses = "1460.00"
+net = "-460.00"
+"to_date.revenue" = "1000.00"
+"to_date.expenses" = "1460.00"
+"to_date.net" = "-460.00"
+unrecovered_cost = "460.00"
+
+[[expect]]
+query = "project"
+project = "Harbor app"
+from = "2026-01-01"
+to = "2026-12-31"
+[expect.values]
+revenue = "1700.00"
+expenses = "1460.00"
+net = "240.00"
+"to_date.revenue" = "1700.00"
+"to_date.expenses" = "1460.00"
+"to_date.net" = "240.00"
+unrecovered_cost = "0.00"

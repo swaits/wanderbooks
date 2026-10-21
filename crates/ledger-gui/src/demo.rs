@@ -242,8 +242,25 @@ pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
         Some("depreciation"),
     )?;
     let bank_fees = acct(&mut s, "6900", "Bank Fees", Expense, None)?;
-    let client_class = s.add_class("Client work")?;
-    let template_class = s.add_class("Templates")?;
+    // The projects (classes with their facts, rules.md B-37).
+    let client_class = s.add_project(
+        "Client work",
+        &ledger_core::ProjectFacts {
+            description: Some("Design work for the studio's clients".into()),
+            kind: Some(ledger_core::ProjectKind::Client),
+            ..Default::default()
+        },
+    )?;
+    let template_class = s.add_project(
+        "Templates",
+        &ledger_core::ProjectFacts {
+            description: Some("Notion and Figma templates sold on Gumroad".into()),
+            kind: Some(ledger_core::ProjectKind::Internal),
+            started_on: Some(start),
+            links: vec!["https://juniper.example/templates".into()],
+            ..Default::default()
+        },
+    )?;
 
     // Each vendor's 1099 decision, as the owner made it when they were
     // first paid; the card is a payment method, so what was charged to it
@@ -282,6 +299,21 @@ pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
     .iter()
     .map(|n| s.add_customer(n))
     .collect::<Result<_, _>>()?;
+    // Work on spec for a customer, hoping they adopt it: its costs are
+    // expenses, and nothing is receivable (rules.md B-37 item 4).
+    let tidepool_started = start + Months::new(13);
+    let tidepool = s.add_project(
+        "Tidepool app",
+        &ledger_core::ProjectFacts {
+            description: Some(
+                "An events app built for Tidepool Records ahead of a contract".into(),
+            ),
+            kind: Some(ledger_core::ProjectKind::OnSpec),
+            party: s.ledger().party_of_customer(customers[3]),
+            started_on: Some(tidepool_started),
+            ..Default::default()
+        },
+    )?;
 
     // The party directory: who they are, beyond the vendor and customer
     // records (roles, W-9 facts with only the TIN's last four, sites).
@@ -827,7 +859,12 @@ pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
                         ),
                     )),
                     Some(riley),
-                    Some(client_class),
+                    // The second milestone builds the Tidepool app.
+                    Some(if month_index == 13 {
+                        tidepool
+                    } else {
+                        client_class
+                    }),
                 )?;
             }
         }
@@ -962,6 +999,33 @@ pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
     )?;
     s.link_attachment(contract_doc, Subject::Party(sam_party))?;
     s.link_attachment(contract_doc, Subject::Company)?;
+    // The Tidepool app's pitch, linked to it, and the decision to build it
+    // on spec.
+    let (pitch, _, _) = s.file_document(
+        "other",
+        "Tidepool app pitch.pdf",
+        "application/pdf",
+        &receipt_pdf(
+            "Tidepool app pitch",
+            &[
+                "Juniper Studio LLC for Tidepool Records".into(),
+                "An events app: shows, tickets, a mailing list".into(),
+                format!("Sent {}", tidepool_started.format("%B %-d, %Y")),
+            ],
+        ),
+        Some("The pitch"),
+    )?;
+    s.link_attachment(pitch, Subject::Project(u64::from(tidepool)))?;
+    s.record_decision(&ledger_core::conventions::NewDecision {
+        subject: "The Tidepool app".into(),
+        decision_md: "Build the Tidepool app on spec; bill only if they adopt it.".into(),
+        decided_by: vec!["Alex Rivera".into()],
+        decided_on: tidepool_started,
+        evidence_attachment: Some(pitch),
+        supersedes: None,
+        citation: None,
+        projects: vec![tidepool],
+    })?;
 
     // Statements and reconciliations: savings reconciled through last
     // month; checking through the month before (its first reconciliation

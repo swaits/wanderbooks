@@ -775,6 +775,16 @@ fn happy_path(name: &str) -> Mcp {
     // Classes, parties, 1099.
     m.ok("books.add_class", json!({"name": "Rondo"}));
     m.ok("books.list_classes", json!({}));
+    m.ok(
+        "books.add_project",
+        json!({"name": "Harbor app", "kind": "on_spec", "started_on": "2026-01-05"}),
+    );
+    m.ok(
+        "books.update_project",
+        json!({"project": "Rondo", "kind": "internal", "description": "The Rondo app"}),
+    );
+    m.ok("books.projects", json!({}));
+    m.ok("books.project", json!({"project": "Rondo"}));
     let vendor = m.ok("books.add_vendor", json!({"name": "Landlord"}))["id"]
         .as_u64()
         .unwrap();
@@ -2194,15 +2204,12 @@ fn inv6_ambiguous_vendor_reference_refused() {
 fn inv6_ambiguous_class_reference_refused() {
     let dir = test_dir("inv6-class");
     let toml = books_toml(&dir, "1000000.00", "");
+    old_classes(&dir, &["Alpha", "1"]);
     let mut m = Mcp::start(&dir, &toml);
     m.accounts(BASE_CHART);
-    let alpha = m.ok("books.add_class", json!({"name": "Alpha"}))["id"]
-        .as_u64()
-        .unwrap();
-    let named = m.ok("books.add_class", json!({"name": alpha.to_string()}))["id"]
-        .as_u64()
-        .unwrap();
-    assert_ne!(alpha, named);
+    let (alpha, named) = (1u64, 2u64);
+    // No new name of digits only.
+    m.refuse("books.add_class", json!({"name": "3"}));
     let e = m.draft("2026-06-01", "classy", &[]);
     // add_line with an ambiguous class is refused too, but writes the
     // line first: see add_line_bad_class_leaves_journal_unchanged.
@@ -2220,6 +2227,19 @@ fn inv6_ambiguous_class_reference_refused() {
     m.ok("books.profit_and_loss", json!({"class": "Alpha"}));
 }
 
+/// Books an earlier version wrote holding these classes, in id order: a
+/// name of digits only can't be added now (it would read as an id), so
+/// only old books hold the id/name pairs invariant 6 refuses.
+fn old_classes(dir: &Path, names: &[&str]) {
+    let books = dir.join("books-data");
+    drop(ledger_store::Store::create(&books, ledger_core::Currency::USD).unwrap());
+    let mut w = ledger_store::JournalWriter::open(&books.join(ledger_store::JOURNAL_FILE)).unwrap();
+    for (i, n) in names.iter().enumerate() {
+        w.append("class.added", json!({"id": i + 1, "name": n}))
+            .unwrap();
+    }
+}
+
 /// Invariant 2: a refused add_line leaves the journal unchanged, here when
 /// the line's class doesn't resolve (unknown, or ambiguous per invariant
 /// 6).
@@ -2227,10 +2247,9 @@ fn inv6_ambiguous_class_reference_refused() {
 fn add_line_bad_class_leaves_journal_unchanged() {
     let dir = test_dir("bug-class");
     let toml = books_toml(&dir, "25.00", "");
+    old_classes(&dir, &["Alpha", "1"]);
     let mut m = Mcp::start(&dir, &toml);
     m.accounts(BASE_CHART);
-    m.ok("books.add_class", json!({"name": "Alpha"}));
-    m.ok("books.add_class", json!({"name": "1"}));
     let e = m.draft("2026-06-01", "classy", &[]);
     for class in ["Nope", "99", "1"] {
         // Mcp::tool asserts the journal is unchanged on refusal.
@@ -2251,10 +2270,9 @@ fn add_line_bad_class_leaves_journal_unchanged() {
 fn profit_and_loss_by_class_validates_class() {
     let dir = test_dir("bug-pnl-class");
     let toml = books_toml(&dir, "1000000.00", "");
+    old_classes(&dir, &["Alpha", "1"]);
     let mut m = Mcp::start(&dir, &toml);
     m.accounts(BASE_CHART);
-    m.ok("books.add_class", json!({"name": "Alpha"}));
-    m.ok("books.add_class", json!({"name": "1"}));
     m.refuse("books.profit_and_loss_by_class", json!({"class": "Nope"}));
     m.refuse("books.profit_and_loss_by_class", json!({"class": "1"}));
 }

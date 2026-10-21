@@ -22,6 +22,7 @@ pub struct PageState {
     pub accounts: pages::accounts::State,
     pub assets: pages::assets::State,
     pub parties: pages::parties::State,
+    pub projects: pages::projects::State,
     pub documents: pages::documents::State,
     pub journal: pages::journal::State,
 }
@@ -412,6 +413,7 @@ impl App {
                 "accounts" => Route::Accounts,
                 "assets" => Route::Assets,
                 "parties" => Route::Parties,
+                "projects" => Route::Projects,
                 "documents" => Route::Documents,
                 "company" => Route::Company,
                 "journal" => Route::Journal,
@@ -493,6 +495,12 @@ impl App {
                     return;
                 }
                 Route::Party(party_id)
+            }
+            T::Project { class_id } => {
+                if b.ledger.get_class(class_id).is_none() {
+                    return;
+                }
+                Route::Project(class_id)
             }
             T::Reconciliation { id } => {
                 // Its own page: statement, balance, the lines it cleared.
@@ -601,8 +609,16 @@ impl App {
                 let current = self.nav.current.section();
                 let attention = books.as_ref().map(|b| b.attention.len()).unwrap_or(0);
                 // Short windows: the links scroll above the status box
-                // instead of the box drawing over them.
-                let links_h = (ui.available_height() - SIDEBAR_FOOTER).max(64.0);
+                // instead of the box drawing over them. The box's height
+                // is the one it was drawn at last frame.
+                let footer_id = egui::Id::new("sidebar_footer_h");
+                let footer_h = ui
+                    .ctx()
+                    .data(|d| d.get_temp::<f32>(footer_id))
+                    .unwrap_or(SIDEBAR_FOOTER);
+                // At least one link always shows; below that the footer
+                // gives way (footer_layout).
+                let links_h = (ui.available_height() - footer_h - FOOTER_GAP).max(32.0);
                 egui::ScrollArea::vertical()
                     .id_salt("sidebar_links")
                     .max_height(links_h)
@@ -613,6 +629,10 @@ impl App {
                                 vec2(ui.available_width(), 32.0),
                                 Sense::click(),
                             );
+                            // Named for assistive tech (and the tests).
+                            resp.widget_info(|| {
+                                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, s.title())
+                            });
                             if on {
                                 ui.painter()
                                     .rect_filled(rect, CornerRadius::same(8), p.surface);
@@ -668,7 +688,7 @@ impl App {
                             }
                         }
                     });
-                ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
+                let footer = footer_layout(ui, footer_h, Align::Min, |ui| {
                     self.scheme_menu(ui, false);
                     if let Some(b) = &books {
                         ui.add_space(2.0);
@@ -685,6 +705,7 @@ impl App {
                         );
                     }
                 });
+                remember_footer(ui, footer_id, footer.response.rect.height(), footer_h);
             });
     }
 
@@ -722,7 +743,12 @@ impl App {
                 ui.add_space(18.0);
                 let current = self.nav.current.section();
                 let attention = books.as_ref().map(|b| b.attention.len()).unwrap_or(0);
-                let links_h = (ui.available_height() - RAIL_FOOTER).max(72.0);
+                let footer_id = egui::Id::new("rail_footer_h");
+                let footer_h = ui
+                    .ctx()
+                    .data(|d| d.get_temp::<f32>(footer_id))
+                    .unwrap_or(RAIL_FOOTER);
+                let links_h = (ui.available_height() - footer_h - FOOTER_GAP).max(36.0);
                 egui::ScrollArea::vertical()
                     .id_salt("rail_links")
                     .max_height(links_h)
@@ -733,6 +759,9 @@ impl App {
                                 vec2(ui.available_width(), 36.0),
                                 Sense::click(),
                             );
+                            resp.widget_info(|| {
+                                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, s.title())
+                            });
                             if on {
                                 ui.painter()
                                     .rect_filled(rect, CornerRadius::same(8), p.surface);
@@ -768,7 +797,7 @@ impl App {
                             }
                         }
                     });
-                ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
+                let footer = footer_layout(ui, footer_h, Align::Center, |ui| {
                     self.scheme_menu(ui, true);
                     if let Some(b) = &books {
                         self.menu.ui(ui, b, true);
@@ -814,6 +843,7 @@ impl App {
                         resp.on_hover_text(tip);
                     }
                 });
+                remember_footer(ui, footer_id, footer.response.rect.height(), footer_h);
             });
     }
 
@@ -948,9 +978,40 @@ impl App {
 /// Width of the icon rail.
 const RAIL_W: f32 = 60.0;
 /// Height kept clear under the sidebar's links for the status box and the
-/// theme toggle; the rail's equivalent.
+/// theme toggle before the footer is first measured; the rail's
+/// equivalent. After the first frame the footer's drawn height is used
+/// ([`remember_footer`]).
 const SIDEBAR_FOOTER: f32 = 172.0;
 const RAIL_FOOTER: f32 = 84.0;
+
+/// Space kept between the last link and the footer.
+const FOOTER_GAP: f32 = 8.0;
+
+/// Keep the footer's drawn height for the next frame's links, and draw
+/// again at once when it changed (the first frame, a check appearing).
+/// The sidebar's footer, bottom up: on the panel's floor when it fits
+/// under the links, else right under them, running off the bottom of the
+/// window, so it gives way and never draws over a link.
+fn footer_layout<R>(
+    ui: &mut Ui,
+    footer_h: f32,
+    align: Align,
+    add: impl FnOnce(&mut Ui) -> R,
+) -> egui::InnerResponse<R> {
+    if ui.available_height() >= footer_h {
+        ui.with_layout(Layout::bottom_up(align), add)
+    } else {
+        let w = ui.available_width();
+        ui.allocate_ui_with_layout(vec2(w, footer_h), Layout::bottom_up(align), add)
+    }
+}
+
+fn remember_footer(ui: &Ui, id: egui::Id, drawn: f32, used: f32) {
+    if (drawn - used).abs() > 0.5 {
+        ui.ctx().data_mut(|d| d.insert_temp(id, drawn));
+        ui.ctx().request_repaint();
+    }
+}
 
 fn live_status(ui: &mut Ui, b: &Books, since_update: f64, live: bool) {
     let p = pal(ui.ctx());

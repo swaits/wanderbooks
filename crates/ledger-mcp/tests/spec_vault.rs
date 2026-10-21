@@ -2071,6 +2071,7 @@ fn idempotent_tools_change_nothing_when_repeated() {
         ("6300", "Insurance", "expense"),
     ]);
     m.add_party("Dana Employee", &["employee"]);
+    m.ok("books.add_project", json!({"name": "Harbor"}));
     let entry = m.post(
         "2026-02-01",
         json!({}),
@@ -2192,6 +2193,10 @@ fn idempotent_tools_change_nothing_when_repeated() {
         (
             "books.set_fx_rate",
             json!({"currency": "EUR", "date": "2026-01-02", "rate": "1.10"}),
+        ),
+        (
+            "books.update_project",
+            json!({"project": "Harbor", "kind": "client", "status": "paused"}),
         ),
     ];
     let list = m.rpc("tools/list", json!({}));

@@ -385,6 +385,16 @@ pub(crate) fn row(
             Sense::hover()
         },
     );
+    if click {
+        // Named by its main cell, for assistive tech (and the tests).
+        let name = cells
+            .iter()
+            .find(|c| c.1 == 0.0)
+            .or(cells.first())
+            .map(|c| c.0.clone())
+            .unwrap_or_default();
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &name));
+    }
     if click && resp.hovered() {
         ui.painter().rect_filled(r, CornerRadius::same(4), p.hover);
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);

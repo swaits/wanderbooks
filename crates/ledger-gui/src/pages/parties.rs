@@ -322,7 +322,7 @@ fn paid_cell(paid: Decimal, p: &theme::Palette) -> (String, egui::Color32) {
 }
 
 /// A filter chip.
-fn chip(ui: &mut Ui, text: &str, on: bool) -> bool {
+pub(crate) fn chip(ui: &mut Ui, text: &str, on: bool) -> bool {
     let p = pal(ui.ctx());
     ui.add(
         egui::Button::new(
@@ -642,7 +642,7 @@ pub fn show_party(ui: &mut Ui, b: &Books, id: PartyId, shell: &mut Shell<'_>) {
             );
         });
         ui.add_space(4.0);
-        widgets::copyable(
+        widgets::copyable_truncated(
             ui,
             RichText::new(party.label()).font(theme::bold(26.0)),
             party.label(),
@@ -654,7 +654,7 @@ pub fn show_party(ui: &mut Ui, b: &Books, id: PartyId, shell: &mut Shell<'_>) {
                         .font(theme::regular(12.5))
                         .color(p.muted),
                 );
-                widgets::copyable(ui, RichText::new(&party.name), &party.name);
+                widgets::copyable_truncated(ui, RichText::new(&party.name), &party.name);
             });
         }
         ui.add_space(6.0);
@@ -841,6 +841,11 @@ pub fn show_party(ui: &mut Ui, b: &Books, id: PartyId, shell: &mut Shell<'_>) {
             }
         });
 
+        let projects = b.ledger.projects_of_party(id);
+        if !projects.is_empty() {
+            projects_card(ui, b, &projects, &mut go);
+            ui.add_space(14.0);
+        }
         entries_card(ui, b, &info, &mut go);
         ui.add_space(14.0);
         if !info.invoices.is_empty() || !info.bills.is_empty() {
@@ -879,26 +884,9 @@ pub fn show_party(ui: &mut Ui, b: &Books, id: PartyId, shell: &mut Shell<'_>) {
                 for &i in &info.events {
                     let line = &b.journal[i];
                     let ev = super::journal::describe_any(b, line);
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(ev.icon).color(p.muted));
-                        if widgets::link_truncated(
-                            ui,
-                            RichText::new(&ev.text).font(theme::regular(12.5)),
-                        )
-                        .clicked()
-                        {
-                            go = Some(Route::JournalEvent(line.seq));
-                        }
-                        ui.label(
-                            RichText::new(format!(
-                                "event {} · {}",
-                                line.seq,
-                                fmt::timestamp(&line.ts)
-                            ))
-                            .font(theme::regular(11.0))
-                            .color(p.faint),
-                        );
-                    });
+                    if widgets::history_row(ui, ev.icon, &ev.text, line.seq, &line.ts).clicked() {
+                        go = Some(Route::JournalEvent(line.seq));
+                    }
                 }
             },
         );
@@ -919,14 +907,14 @@ fn facts_card(ui: &mut Ui, b: &Books, party: &Party, go: &mut Option<Route>) {
             facts(ui, |ui, k| {
                 let text = |ui: &mut Ui, v: &Option<String>| match v {
                     Some(t) => {
-                        widgets::copyable(ui, RichText::new(t), t);
+                        widgets::copyable_truncated(ui, RichText::new(t), t);
                     }
                     None => {
                         ui.label(RichText::new("not recorded").color(p.faint));
                     }
                 };
                 k(ui, "Name");
-                widgets::copyable(ui, RichText::new(&party.name), &party.name);
+                widgets::copyable_truncated(ui, RichText::new(&party.name), &party.name);
                 ui.end_row();
                 k(ui, "Display name");
                 text(ui, &party.display_name);
@@ -1219,6 +1207,59 @@ fn records_card(ui: &mut Ui, b: &Books, party: &Party, info: &PartyInfo, go: &mu
                     *go = Some(Route::Reports(ReportKind::Vendor1099));
                 }
             }
+        },
+    );
+}
+
+/// The projects for or with the party (rules.md B-37), by name: status
+/// and net to date; a row opens its project.
+fn projects_card(ui: &mut Ui, b: &Books, ids: &[ledger_core::ClassId], go: &mut Option<Route>) {
+    let p = pal(ui.ctx());
+    widgets::titled_card(
+        ui,
+        "Projects",
+        |ui| {
+            widgets::pill(ui, &ids.len().to_string(), p.muted, p.hover);
+        },
+        |ui| {
+            let amt = widgets::AMOUNT_MIN + 24.0;
+            let w = ui.available_width().max(100.0 + amt + 180.0);
+            widgets::min_width(ui, "party_projects", w, |ui| {
+                for &id in ids {
+                    let name = b.project_label(id);
+                    let f = b.ledger.project_facts(id).unwrap_or_default();
+                    let net = ledger_core::project_to_date(&b.ledger, id, b.today)
+                        .ok()
+                        .map(|t| t.net());
+                    let (net_t, net_c) = match net {
+                        Some(n) if n.is_zero() => ("—".to_string(), p.faint),
+                        Some(n) if n < Decimal::ZERO => (fmt::accounting(n), p.negative),
+                        Some(n) => (fmt::accounting(n), p.text),
+                        None => (fmt::CANT_COMPUTE.to_string(), p.faint),
+                    };
+                    let sub = format!("{} · net to date", super::projects::kind_words(f.kind));
+                    let resp = row(
+                        ui,
+                        w,
+                        &[
+                            (name, 0.0, false, p.text),
+                            (
+                                f.status.words().to_string(),
+                                100.0,
+                                false,
+                                super::projects::status_colors(f.status, &p).0,
+                            ),
+                            (net_t, amt, true, net_c),
+                        ],
+                        Some((sub.as_str(), p.faint)),
+                        false,
+                        true,
+                    );
+                    if resp.on_hover_text("Open this project").clicked() {
+                        *go = Some(Route::Project(id));
+                    }
+                }
+            });
         },
     );
 }
@@ -1608,15 +1649,12 @@ fn months_card(ui: &mut Ui, b: &Books, id: PartyId, span: (NaiveDate, NaiveDate)
             let groups: Vec<crate::charts::BarGroup> = shown
                 .iter()
                 .map(|m| crate::charts::BarGroup {
-                    label: if multi_year && m.month.month() == 1 {
-                        m.month.format("%b %y").to_string()
-                    } else {
-                        m.month.format("%b").to_string()
-                    },
+                    label: m.month.format("%b").to_string(),
                     values: vec![m.paid, m.received],
+                    year: multi_year.then(|| m.month.year()),
                 })
                 .collect();
-            crate::charts::bar_chart(
+            crate::charts::bar_chart_view(
                 ui,
                 &groups,
                 &[("Paid out", p.series[2]), ("Received in", p.series[1])],

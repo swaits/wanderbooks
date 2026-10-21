@@ -70,6 +70,10 @@ pub enum Route {
     Parties,
     /// One party.
     Party(PartyId),
+    /// The projects (classes with their facts).
+    Projects,
+    /// One project.
+    Project(ledger_core::ClassId),
     Documents,
     Document(u64),
     Company,
@@ -89,6 +93,7 @@ impl Route {
             Route::Accounts | Route::Account(_) | Route::Reconciliation(_) => Section::Accounts,
             Route::Assets | Route::Asset(_) => Section::Assets,
             Route::Parties | Route::Party(_) => Section::Parties,
+            Route::Projects | Route::Project(_) => Section::Projects,
             Route::Documents | Route::Document(_) => Section::Documents,
             Route::Company => Section::Company,
             Route::Journal | Route::JournalEvent(_) => Section::Journal,
@@ -106,13 +111,14 @@ pub enum Section {
     Accounts,
     Assets,
     Parties,
+    Projects,
     Documents,
     Company,
     Journal,
 }
 
 impl Section {
-    pub const ALL: [Section; 11] = [
+    pub const ALL: [Section; 12] = [
         Section::Overview,
         Section::Cash,
         Section::Profit,
@@ -121,6 +127,7 @@ impl Section {
         Section::Accounts,
         Section::Assets,
         Section::Parties,
+        Section::Projects,
         Section::Documents,
         Section::Company,
         Section::Journal,
@@ -136,6 +143,7 @@ impl Section {
             Section::Accounts => "Accounts",
             Section::Assets => "Assets",
             Section::Parties => "Parties",
+            Section::Projects => "Projects",
             Section::Documents => "Documents",
             Section::Company => "Company",
             Section::Journal => "Journal",
@@ -153,6 +161,7 @@ impl Section {
             Section::Accounts => i::TREE_STRUCTURE,
             Section::Assets => i::PACKAGE,
             Section::Parties => i::ADDRESS_BOOK,
+            Section::Projects => i::BRIEFCASE,
             Section::Documents => i::FILES,
             Section::Company => i::BUILDINGS,
             Section::Journal => i::SCROLL,
@@ -169,6 +178,7 @@ impl Section {
             Section::Accounts => Route::Accounts,
             Section::Assets => Route::Assets,
             Section::Parties => Route::Parties,
+            Section::Projects => Route::Projects,
             Section::Documents => Route::Documents,
             Section::Company => Route::Company,
             Section::Journal => Route::Journal,

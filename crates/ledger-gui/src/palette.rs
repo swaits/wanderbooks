@@ -244,6 +244,10 @@ pub fn fuzzy(hay: &str, query: &str) -> Option<i32> {
 ///      "reconciliation reconciled", its account's code and name, and its
 ///      statement date (as shown and as YYYY-MM-DD); it opens
 ///      Route::Reconciliation(its id), voided ones too, saying so.
+/// INVARIANTS (projects):
+///   9. A project is listed when the query fuzzily matches its name and
+///      description; a query found whole in its name (ignoring case) adds
+///      500. It opens Route::Project(its id).
 /// ```
 pub fn search(b: &Books, query: &str) -> Vec<Item> {
     let q = query.trim();
@@ -381,6 +385,22 @@ pub fn search(b: &Books, query: &str) -> Vec<Item> {
                 });
             }
         }
+        for c in b.ledger.list_classes() {
+            let f = b.ledger.project_facts(c.id).unwrap_or_default();
+            let desc = f.description.as_deref().unwrap_or("");
+            let hay = format!("{} {desc}", c.name);
+            if let Some(score) = fuzzy(&hay, q) {
+                let whole = c.name.to_lowercase().contains(&q.to_lowercase());
+                let kind = f.kind.map_or("Kind not recorded", |k| k.words());
+                out.push(Item {
+                    icon: icon::BRIEFCASE,
+                    title: c.name.clone(),
+                    detail: format!("{kind} · {}", f.status.words()),
+                    route: Route::Project(c.id),
+                    score: score + if whole { 500 } else { 0 },
+                });
+            }
+        }
         for st in &b.statements {
             let file = b
                 .attachment(st.attachment_id)
@@ -514,6 +534,7 @@ pub fn describe(b: &Books, r: &Route) -> String {
             .unwrap_or_default(),
         Route::Asset(id) => b.asset_label(*id),
         Route::Party(id) => b.party_label(*id),
+        Route::Project(id) => b.project_label(*id),
         Route::Reconciliation(id) => b.subject_label(ledger_store::Subject::Reconciliation(*id)),
         Route::JournalEvent(seq) => format!("Event {seq}"),
         _ => String::new(),

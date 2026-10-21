@@ -950,6 +950,9 @@ impl Store {
             return Err(StoreError::AttachmentWithdrawn(a));
         }
         self.ensure_format()?;
+        if !d.projects.is_empty() {
+            self.ensure_feature(crate::format::PROJECTS)?;
+        }
         let line =
             self.append_journal("decision.recorded", crate::meta::decision_recorded(id, &d))?;
         self.ledger.apply_decision(id, d, line.seq)?;
@@ -3365,21 +3368,102 @@ impl Store {
     // Classes
     // ------------------------------------------------------------------
 
-    /// Add a class (division) for line-level P&L tracking. Journaled as
-    /// `class.added`.
+    /// Add a class (division) for line-level P&L tracking: a project with
+    /// only its name. Journaled as `class.added`.
     pub fn add_class(&mut self, name: &str) -> Result<ClassId, StoreError> {
+        // Rehearsed on a copy: the name rules (blank, length, a name
+        // another class has) refuse here, so the journal write can't be
+        // followed by a failed mutation.
         self.rehearse(|l| l.add_class(name))?;
-        // The engine's only failure mode is an empty name; replicate it so
-        // the journal write cannot be followed by a failed mutation.
-        if name.trim().is_empty() {
-            return Err(LedgerError::EmptyClassName.into());
-        }
+        self.append_class(name)
+    }
+
+    /// `class.added` for a name already rehearsed.
+    fn append_class(&mut self, name: &str) -> Result<ClassId, StoreError> {
+        let name = name.trim();
         let id = self.ledger.next_class_id();
         let line = self.append_journal("class.added", json!({ "id": id, "name": name }))?;
         let live = self.ledger.add_class(name)?;
         debug_assert_eq!(live, id, "id allocator diverged from journal");
         apply_line_to_sqlite(&self.conn, &line)?;
         Ok(live)
+    }
+
+    /// Add a project (rules.md B-37): `class.added`, then `project.set`
+    /// when `facts` say more than the defaults. Returns its id.
+    ///
+    /// ```text
+    /// GOAL: a project in one command, journaled as two events only when
+    ///       it has facts, so a name-only project is a plain class.
+    /// SOURCE: docs/spec/rules.md B-37 item 1; B-27 (journal feature
+    ///         `projects`).
+    /// INVARIANTS:
+    ///   1. A refusal journals nothing: the whole record is rehearsed, and
+    ///      the feature asked for, before the first line.
+    ///   2. Facts equal to the defaults journal `class.added` alone (books
+    ///      waiting for their format upgrade can still add one).
+    /// ```
+    pub fn add_project(
+        &mut self,
+        name: &str,
+        facts: &ledger_core::ProjectFacts,
+    ) -> Result<ClassId, StoreError> {
+        self.rehearse(|l| {
+            let id = l.add_class(name)?;
+            if !facts.is_default() {
+                l.set_project(id, name, facts.clone())?;
+            }
+            Ok(())
+        })?;
+        let with_facts = !facts.is_default();
+        if with_facts {
+            self.ensure_feature(crate::format::PROJECTS)?;
+        }
+        let id = self.append_class(name)?;
+        if with_facts {
+            let (name, facts) = self.ledger.check_set_project(id, name, facts)?;
+            self.append_project(id, name, facts)?;
+        }
+        Ok(id)
+    }
+
+    /// Set a project's whole record (`project.set`): its name and facts.
+    /// Unchanged (the same name and facts once checked): journals nothing
+    /// and returns false.
+    pub fn set_project(
+        &mut self,
+        id: ClassId,
+        name: &str,
+        facts: &ledger_core::ProjectFacts,
+    ) -> Result<bool, StoreError> {
+        let (name, facts) = self.ledger.check_set_project(id, name, facts)?;
+        let same_name = self.ledger.get_class(id).is_some_and(|c| c.name == name);
+        if same_name && self.ledger.project_facts(id).as_ref() == Some(&facts) {
+            return Ok(false);
+        }
+        self.ensure_feature(crate::format::PROJECTS)?;
+        self.append_project(id, name, facts)?;
+        Ok(true)
+    }
+
+    /// `project.set` for a record already checked.
+    fn append_project(
+        &mut self,
+        id: ClassId,
+        name: String,
+        facts: ledger_core::ProjectFacts,
+    ) -> Result<(), StoreError> {
+        let line =
+            self.append_journal("project.set", crate::meta::project_set(id, &name, &facts))?;
+        self.ledger.set_project(id, &name, facts)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
+    /// A class's project facts (the defaults for a class with none);
+    /// `None` for no such class.
+    pub fn project_facts(&self, id: ClassId) -> Option<ledger_core::ProjectFacts> {
+        self.ledger.project_facts(id)
     }
 
     /// All classes, in id order.
@@ -4157,6 +4241,17 @@ impl Store {
     // Attachment links, statements, reconciliations
     // ------------------------------------------------------------------
 
+    /// The journal feature a link to `subject` needs, if any: a subject
+    /// kind an older version doesn't know (a project, rules.md B-37).
+    /// Callers filing a file with links ask it before filing, so a refusal
+    /// leaves nothing half-filed.
+    pub fn subject_feature(subject: Subject) -> Option<&'static str> {
+        match subject {
+            Subject::Project(_) => Some(crate::format::PROJECTS),
+            _ => None,
+        }
+    }
+
     /// Whether `subject` exists in the books (what [`Store::link_attachment`]
     /// checks, so callers can validate several subjects before linking any).
     pub fn subject_exists(&self, subject: Subject) -> Result<bool, StoreError> {
@@ -4166,6 +4261,7 @@ impl Store {
             Subject::Account(i) => l.chart().get(i).is_some(),
             Subject::Asset(i) => l.get_asset(i).is_some(),
             Subject::Party(i) => l.get_party(i).is_some(),
+            Subject::Project(i) => u32::try_from(i).ok().and_then(|c| l.get_class(c)).is_some(),
             Subject::Invoice(i) => l.get_invoice(i).is_some(),
             Subject::Bill(i) => l.get_bill(i).is_some(),
             Subject::Period(i) => l.list_periods().iter().any(|p| p.id == i),
@@ -4227,8 +4323,8 @@ impl Store {
     }
 
     /// Link a stored attachment to a subject: another entry, an account, an
-    /// asset, a party, an invoice, a bill, a period, a payroll run, a
-    /// schedule, a reconciliation, or the company.
+    /// asset, a party, a project, an invoice, a bill, a period, a payroll
+    /// run, a schedule, a reconciliation, or the company.
     ///
     /// ```text
     /// GOAL: one file, linked wherever it's evidence, without refiling.
@@ -4261,6 +4357,9 @@ impl Store {
             || self.attachment_links(attachment_id)?.contains(&subject)
         {
             return Err(StoreError::AlreadyLinked(attachment_id, subject.describe()));
+        }
+        if let Some(f) = Self::subject_feature(subject) {
+            self.ensure_feature(f)?;
         }
         let line = self.append_journal(
             "attachment.linked",
@@ -6105,6 +6204,10 @@ fn replay_line(
         "class.added" => {
             ledger.replay_class(get_u64(p, "id")? as u32, get_str(p, "name")?.to_string())?;
         }
+        "project.set" => {
+            let (id, name, facts) = crate::meta::project_set_of(line)?;
+            ledger.replay_set_project(id, name, facts)?;
+        }
         "entry.line_class_set" => {
             // Journaled while the entry was a draft, so at replay time the
             // draft exists and takes the class. Missing/null class_id
@@ -7140,6 +7243,14 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
                 params![get_u64(p, "id")? as i64, get_str(p, "name")?],
             )?;
         }
+        "project.set" => {
+            // Facts live in the ledger (as parties'); the projection keeps
+            // the name, so verify's class check stays exact after a rename.
+            conn.execute(
+                "UPDATE classes SET name = ? WHERE id = ?",
+                params![get_str(p, "name")?, get_u64(p, "id")? as i64],
+            )?;
+        }
         "entry.line_class_set" => {
             // Journaled while the entry is a draft, so the projection
             // usually has no lines row yet (drafts never touch the
@@ -7440,6 +7551,9 @@ pub enum Subject {
     Schedule(u64),
     /// A reconciliation (its statement).
     Reconciliation(u64),
+    /// A project (its contract, spec, pitch, correspondence; rules.md
+    /// B-37). Journal feature `projects`.
+    Project(u64),
     /// The company itself (formation documents).
     Company,
 }
@@ -7458,6 +7572,7 @@ impl Subject {
             Subject::PayrollRun(_) => "payroll_run",
             Subject::Schedule(_) => "schedule",
             Subject::Reconciliation(_) => "reconciliation",
+            Subject::Project(_) => "project",
             Subject::Company => "company",
         }
     }
@@ -7474,7 +7589,8 @@ impl Subject {
             | Subject::Period(i)
             | Subject::PayrollRun(i)
             | Subject::Schedule(i)
-            | Subject::Reconciliation(i) => i,
+            | Subject::Reconciliation(i)
+            | Subject::Project(i) => i,
             Subject::Company => 0,
         }
     }
@@ -7492,6 +7608,7 @@ impl Subject {
             "payroll_run" => Subject::PayrollRun(id),
             "schedule" => Subject::Schedule(id),
             "reconciliation" => Subject::Reconciliation(id),
+            "project" => Subject::Project(id),
             "company" => Subject::Company,
             _ => return None,
         })

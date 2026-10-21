@@ -23,7 +23,7 @@ promise.
 | Model-based stateful | the Lean state machine, transcribed (3) | `tests/model.rs` | `just check` | ~3s | every change |
 | Differential: Decimal vs i64 | the kernel at two types (3) | `kernel_bridge.rs` | `just check` | <1s | every change |
 | Differential: GnuCash | another implementation, adjudicated (3) | `tests/oracle_gnucash.rs`, `oracle/gnucash/` | `just oracle` | ~2 min | weekly |
-| Formal proofs | Kani (bounded) and Lean (unbounded) | `src/proofs.rs`, `verify/lean/` | `just prove` (47 harnesses and Lean), `just prove-slow` (the 8 in the justfile's `kani_slow`, each under its own 30-minute cap) | prove ~5 min and prove-slow ~8 min at four jobs on a quiet laptop (each ~25 min under heavy load; docs/verification.md, "Running it") | weekly (CI runs both) |
+| Formal proofs | Kani (bounded) and Lean (unbounded) | `src/proofs.rs`, `verify/lean/` | `just prove` (48 harnesses and Lean), `just prove-slow` (the 8 in the justfile's `kani_slow`, each under its own 30-minute cap) | prove ~5 min and prove-slow ~8 min at four jobs on a quiet laptop (each ~25 min under heavy load; docs/verification.md, "Running it") | weekly (CI runs both) |
 | Fuzzing | crash, hang, broken books (4); for `fuzz_store_replay` (validly chained journals with fuzz-chosen events): books that open must verify, and the viewer must accept exactly what the writer does | `fuzz/fuzz_targets/`, corpora in `fuzz/corpus/` | `just fuzz <target> <secs>` | 10 min each | weekly |
 | Miri | undefined behavior in our use of dependencies (4) | the core's unit, bridge, invariant tests (the exhaustive calendar walk aside) | `just miri` | ~4 min | on demand |
 | Golden | `tests/golden/fixture_company.json` (5) | `invariants.rs` | `just check` | <1s | every change |
@@ -1754,6 +1754,145 @@ before); the bookspec loader's exact-spelling filters and `check_k1`'s
 `cash_accounts` check; `documented_tools` (its own sample checks it).
 The earlier P3 sections' lists stand (one name corrected:
 `Ledger::depreciation_runs`, which was `depreciation_runs_ever`).
+
+## P3: projects (2026-10-21)
+
+The owner's ask: "a Projects page that treats a class as a project ...
+Projects are entities too", a company rule to link things to projects
+(the convention `link-to-projects`), and the sidebar's links drawn under
+the status box in a short window (rules.md B-37). Mutation runs wait for
+P12 (D-33); none was run.
+
+- **ledger-core:** `tests/spec_projects.rs`
+  (`project_facts_default_for_a_bare_class`,
+  `set_project_checks_every_field`,
+  `set_project_renames_the_class_and_moves_no_figure`,
+  `add_class_refuses_a_duplicate_name`,
+  `replay_set_project_takes_what_the_text_rules_would_refuse`,
+  `project_figures_are_its_tagged_lines`,
+  `project_to_date_ignores_the_start_and_the_projects_dates`,
+  `a_tagged_balance_sheet_line_counts_nothing`,
+  `closing_entries_are_left_out_of_project_figures`,
+  `a_reversal_nets_a_project_to_zero`,
+  `unrecovered_cost_only_for_on_spec_and_never_negative`,
+  `projects_of_party_lists_them_by_name`,
+  `check_decision_refuses_an_unknown_or_repeated_project`,
+  `differs_from_names_projects`,
+  `names_compare_one_way_for_the_duplicate_check_and_the_lookup`,
+  `old_books_duplicates_resolve_to_the_lowest_id_and_change_freely`,
+  `an_unchanged_name_is_kept_exactly_and_not_checked_again`,
+  `a_name_of_digits_only_is_refused`,
+  `a_link_is_read_as_a_web_address_for_a_full_tin`); `properties.rs`
+  `prop_project_nets_partition_the_pnl` (random tags on both lines of
+  random entries, a random period: the projects plus the untagged lines
+  are the P&L, and each project's months sum to its period) and
+  `prop_project_entries_sum_to_the_net_to_date` (project_entries' own
+  signs: the posted entries' project amounts are the net to date, with
+  refunds, reimbursements, tagged cash lines and drafts beside them);
+  Kani `unrecovered_cost_laws` (`src/proofs.rs`, docs/verification.md law
+  32, run by `just prove`: never above
+  max(expenses, 0) when revenue isn't negative; the earlier "never above
+  expenses" fails it, checked).
+- **ledger-store:** `tests/projects.rs`
+  (`add_project_journals_class_added_then_project_set`,
+  `a_name_only_project_journals_class_added_alone`,
+  `project_writes_wait_for_the_upgrade_and_journal_nothing`,
+  `update_with_nothing_new_journals_nothing`,
+  `project_set_replays_verifies_and_reloads`,
+  `an_unknown_status_or_kind_is_newer_a_malformed_record_corrupt`,
+  `a_decision_without_projects_writes_the_bytes_it_always_did`,
+  `attachments_link_to_a_project_and_unlink`,
+  `old_books_open_to_their_figures_with_projects_known` (each fixture's
+  report snapshot and verify against its expected.json),
+  `format_2_books_without_the_feature_wait_for_it_alone` (the live
+  books after install: format 2, every earlier feature, not `projects`),
+  `old_books_with_a_duplicate_name_change_either_project`,
+  `a_fact_only_change_never_renames_an_untrimmed_old_name`, and the proptest
+  `prop_project_set_round_trips`); `tests/format.rs`
+  `p3_features_wait_for_the_upgrade_and_are_declared_once` gains
+  `projects` and a `project.set`.
+- **ledger-mcp:** `tests/spec_projects.rs`
+  (`add_project_then_project_returns_its_facts_and_figures`,
+  `a_name_only_project_journals_only_class_added`,
+  `update_project_checks_every_field_before_writing`,
+  `update_project_with_nothing_new_journals_nothing`,
+  `project_figures_match_profit_and_loss_by_class`,
+  `project_to_date_counts_lines_before_the_period`,
+  `on_spec_project_shows_unrecovered_cost_and_others_null`,
+  `project_lists_entries_documents_decisions_and_party`,
+  `link_attachment_to_a_project_by_name_and_id`,
+  `file_document_with_a_bad_project_files_nothing`,
+  `record_decision_names_projects_and_decisions_filter_by_project`,
+  `party_lists_its_projects`, `start_lists_active_and_paused_projects`,
+  `show_project_sends_its_target`,
+  `project_writes_wait_for_the_format_upgrade`,
+  `add_line_notes_a_finished_project`,
+  `record_payout_notes_a_finished_project`,
+  `a_name_resolves_as_the_duplicate_check_compares`,
+  `old_books_duplicates_take_fact_only_changes`,
+  `a_digit_name_that_shadows_an_id_says_what_to_pass`); `hostile_args.rs`
+  `a_project_over_the_whole_calendar_answers_quickly` and
+  `books.projects` among the read-only calls; `spec_vault.rs`'s idempotent
+  list gains `books.update_project`; the unit tables (`annotations_complete`,
+  scopes' table) list 119 tools, `period_tools_describe_the_one_default`
+  checks the period tools' wording, and `mcp_stdio.rs`'s `tools/list`
+  shows 116; `every_tool_is_documented_and_every_documented_tool_exists`
+  holds with the four new tools (on the rebase onto the surface review it
+  caught `books.list_classes` written mid-line and a `books.set_line_class`
+  the doc named, which is no tool). `ledger-store` `tests/format.rs`
+  `the_replay_fuzzer_writes_every_event_type` caught `project.set`
+  missing from `fuzz_store_replay`'s types; it and the project fields are
+  in them now.
+- **ledger-gui:** `tests/projects.rs`
+  (`projects_page_lists_every_project_alphabetically`,
+  `project_figures_are_ledger_cores`, `unrecovered_cost_shows_only_on_spec`,
+  `a_project_row_opens_the_project`, `an_entry_row_opens_the_entry`,
+  `a_document_opens_the_document`, `the_party_link_opens_the_party`,
+  `profit_by_project_bar_opens_the_project`,
+  `party_page_lists_its_projects`, `entry_line_project_opens_the_project`,
+  `journal_describes_project_set`, `show_project_target_opens_its_page`,
+  `a_long_link_stays_in_its_card` (200 characters, 1440 and 900 wide),
+  `a_long_name_keeps_the_page_in_the_window` (with spaces and without),
+  `a_long_party_name_keeps_to_its_card`,
+  `a_month_bar_opens_nothing_and_margin_keeps_one_place`,
+  `an_entry_without_receipts_says_nothing_of_them`; with `SHOT_DIR` set
+  the edge pages are saved as PNGs); `charts.rs`
+  `a_crowded_chart_keeps_its_years` and
+  `a_view_only_chart_shows_figures_and_takes_no_click`;
+  `old_books.rs` `old_books_classes_read_as_projects` and every project
+  page over the old books; `read_only.rs` renders the Projects list and
+  every project page over read-only books (what the brief called
+  `visiting_project_pages_changes_nothing`); `breadcrumbs.rs` a project's
+  crumbs. The sidebar: `edges.rs`
+  `sidebar_links_never_draw_under_the_status_box` (1440x500, scrolled to
+  the end: Journal ends above the status box),
+  `rail_links_never_draw_under_its_footer` (900x420) and
+  `a_normal_window_shows_every_link_unscrolled` (1440x920); both short
+  ones fail on the code before the fix (checked by putting it back);
+  `a_very_short_window_keeps_one_link` (1440x220, 900x200: a link stays
+  whole above the footer, which gives way off the bottom). The
+  sidebar links, painted table rows and bars now carry accessible names,
+  which the tests find them by. Shots before and after:
+  `~/.cache/wanderbooks/shots-p3-projects/` (`before-*`, `after-*`,
+  `final-*`, and the project pages light, dark, 1100 and 900 wide).
+- **bookspec:** `setup.projects`, a line's `project`, and the query
+  `project`; examples `projects-net-is-its-tagged-lines` and
+  `projects-on-spec-costs-are-expenses`; refused:
+  `a_project_named_twice_is_refused`,
+  `a_line_naming_an_unknown_project_is_refused`,
+  `a_project_query_leaving_a_value_out_is_refused`.
+
+**For P12 (mutation targets):** `check_set_project`'s arms (ended_on with
+active/paused, `<` vs `<=` on the dates, the duplicate name's
+self-exception, case folding) and `ProjectFacts::check` (the link limit,
+whitespace, duplicates); `kernel::unrecovered_cost` (`max`, the sign);
+`project_figures`' class filter, its 240-month window and the
+closing-entry exclusion; `project_entries`' normal-side sign and the
+balance-sheet zero; `project_set_of` (newer vs corrupt);
+`Store::add_project`'s "facts beyond the default" test (one line vs two);
+`set_project`'s unchanged short-cut; `subject_feature`; `check_link_to`'s
+feature check; the decision `projects` omit-when-empty;
+`late_tag_note`'s `is_over`; `remember_footer`'s threshold.
 
 ## Benchmarks (baseline 2026-10-13)
 

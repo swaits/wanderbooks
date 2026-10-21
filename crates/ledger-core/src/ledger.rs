@@ -237,6 +237,9 @@ pub struct Ledger {
     payroll_runs: HashMap<PayrollRunId, PayrollRun>,
     /// Classes for divisional P&L tracking.
     classes: HashMap<ClassId, Class>,
+    /// The project facts set for classes (rules.md B-37); a class not here
+    /// has the defaults.
+    projects: std::collections::BTreeMap<ClassId, crate::classes::ProjectFacts>,
     next_account_id: AccountId,
     next_entry_id: EntryId,
     next_asset_id: AssetId,
@@ -307,6 +310,7 @@ impl Ledger {
             fx_rates: HashMap::new(),
             payroll_runs: HashMap::new(),
             classes: HashMap::new(),
+            projects: std::collections::BTreeMap::new(),
             next_account_id: 1,
             next_entry_id: 1,
             next_asset_id: 1,
@@ -670,6 +674,7 @@ impl Ledger {
             ("fx_rates", self.fx_rates == other.fx_rates),
             ("payroll_runs", self.payroll_runs == other.payroll_runs),
             ("classes", self.classes == other.classes),
+            ("projects", self.projects == other.projects),
             (
                 "next_account_id",
                 self.next_account_id == other.next_account_id,
@@ -6170,6 +6175,14 @@ impl Ledger {
     ) -> Result<(u64, crate::conventions::NewDecision), LedgerError> {
         let bad = LedgerError::InvalidConvention;
         let d = crate::conventions::check_decision(d).map_err(bad)?;
+        for (i, p) in d.projects.iter().enumerate() {
+            if !self.classes.contains_key(p) {
+                return Err(LedgerError::UnknownClass(*p));
+            }
+            if d.projects[..i].contains(p) {
+                return Err(bad(format!("project {p} is named twice")));
+            }
+        }
         if let Some(old) = d.supersedes {
             match self.conventions.decision(old) {
                 None => {
@@ -6478,21 +6491,77 @@ impl Ledger {
     // Classes
     // ------------------------------------------------------------------
 
-    /// Add a class (division) for line-level P&L tracking. Returns its id.
+    /// Add a class (division) for line-level P&L tracking: a project with
+    /// only its name (rules.md B-37). Returns its id.
+    ///
+    /// ```text
+    /// GOAL: a new class under a name no other class has.
+    /// SOURCE: docs/spec/rules.md B-37 item 1.
+    /// SCENARIOS:
+    ///   1. IF the name is blank: SHOULD refuse (EmptyClassName).
+    ///   2. IF it is longer than a line, holds a control character or a
+    ///      full TIN: SHOULD refuse.
+    ///   3. IF another class has it, ignoring capitals and surrounding
+    ///      space: SHOULD refuse (DuplicateClassName). Replay never checks
+    ///      (replay_class), so old books holding a duplicate still open.
+    ///   4. IF it is digits only: SHOULD refuse (it would read as an id).
+    /// ```
     pub fn add_class(&mut self, name: &str) -> Result<ClassId, LedgerError> {
+        let name = self.check_class_name(name, None)?;
+        let id = self.next_class_id;
+        self.next_class_id += 1;
+        self.classes.insert(id, Class { id, name });
+        Ok(id)
+    }
+
+    /// A class name, trimmed, if a class (other than `except`) may take it.
+    ///
+    /// ```text
+    /// GOAL: one rule for every name a command gives a class.
+    /// SOURCE: docs/spec/rules.md B-37 item 1; B-26 (no full TIN).
+    /// SCENARIOS:
+    ///   1. IF `except` is a class and the name is its own, exactly: SHOULD
+    ///      keep it as stored, unchecked, so a fact-only change never
+    ///      renames (an earlier version stored names untrimmed) and never
+    ///      refuses a name the books already hold.
+    ///   2. IF it is the class's own name up to capitals and surrounding
+    ///      space: SHOULD check its text but not its uniqueness, so old
+    ///      books holding a duplicate (replay never checks) can still
+    ///      change either class.
+    ///   3. IF it is digits only: SHOULD refuse, since a project is named
+    ///      by id or name and such a name would read as an id.
+    ///   4. IF another class has it, ignoring capitals and surrounding
+    ///      space: SHOULD refuse (DuplicateClassName).
+    /// ```
+    fn check_class_name(&self, name: &str, except: Option<ClassId>) -> Result<String, LedgerError> {
+        let current = except.and_then(|id| self.classes.get(&id));
+        if let Some(c) = current
+            && c.name == name
+        {
+            return Ok(c.name.clone());
+        }
         if name.trim().is_empty() {
             return Err(LedgerError::EmptyClassName);
         }
-        let id = self.next_class_id;
-        self.next_class_id += 1;
-        self.classes.insert(
-            id,
-            Class {
-                id,
-                name: name.to_string(),
-            },
-        );
-        Ok(id)
+        let name = crate::settings::line_text("project name", name, crate::settings::MAX_TEXT)
+            .map_err(LedgerError::InvalidProject)?;
+        let folded = fold_class_name(&name);
+        if current.is_some_and(|c| fold_class_name(&c.name) == folded) {
+            return Ok(name);
+        }
+        if name.chars().all(|c| c.is_ascii_digit()) {
+            return Err(LedgerError::InvalidProject(format!(
+                "project name {name:?} is digits only, so it would read as a project id: add a word (\"Job {name}\")"
+            )));
+        }
+        if self
+            .classes
+            .values()
+            .any(|c| Some(c.id) != except && fold_class_name(&c.name) == folded)
+        {
+            return Err(LedgerError::DuplicateClassName(name));
+        }
+        Ok(name)
     }
 
     /// Look up a class.
@@ -6509,11 +6578,15 @@ impl Ledger {
             .collect()
     }
 
-    /// Find a class by name, case-insensitive.
+    /// Find a class by name, ignoring capitals (in any script) and
+    /// surrounding space: the fold the duplicate check uses. Among old
+    /// books' duplicates (replay never checks), the lowest id.
     pub fn find_class_by_name(&self, name: &str) -> Option<&Class> {
+        let folded = fold_class_name(name);
         self.classes
             .values()
-            .find(|c| c.name.eq_ignore_ascii_case(name))
+            .filter(|c| fold_class_name(&c.name) == folded)
+            .min_by_key(|c| c.id)
     }
 
     /// Tag a draft entry's line with a class, or clear it with `None`.
@@ -6563,6 +6636,120 @@ impl Ledger {
         self.classes.insert(id, Class { id, name });
         Ok(())
     }
+
+    /// A class's project facts: the ones set, or the defaults for a class
+    /// that has none (every class an earlier version wrote). `None` for no
+    /// such class.
+    pub fn project_facts(&self, id: ClassId) -> Option<crate::classes::ProjectFacts> {
+        self.classes.get(&id)?;
+        Some(self.projects.get(&id).cloned().unwrap_or_default())
+    }
+
+    /// The projects for or with a party, by name (ignoring capitals).
+    pub fn projects_of_party(&self, party: crate::PartyId) -> Vec<ClassId> {
+        let mut ids: Vec<ClassId> = self
+            .projects
+            .iter()
+            .filter(|(_, f)| f.party == Some(party))
+            .map(|(id, _)| *id)
+            .filter(|id| self.classes.contains_key(id))
+            .collect();
+        ids.sort_by_key(|id| {
+            let c = &self.classes[id];
+            (c.name.to_lowercase(), c.id)
+        });
+        ids
+    }
+
+    /// Check a whole project record before it is journaled: returns the
+    /// trimmed name and the normalized facts. Changes nothing.
+    ///
+    /// ```text
+    /// GOAL: refuse any project record the books can't take, before a
+    ///       line is written.
+    /// SOURCE: docs/spec/rules.md B-37 item 1 (and B-26: no full TIN).
+    /// SCENARIOS:
+    ///   1. IF the class doesn't exist: SHOULD refuse (UnknownClass).
+    ///   2. IF the name is blank, too long, or another class has it
+    ///      (ignoring capitals; the class itself excepted): SHOULD refuse.
+    ///   3. IF a fact breaks its rule (ProjectFacts::check): SHOULD refuse.
+    ///   4. IF the party is not in the directory: SHOULD refuse.
+    /// ```
+    pub fn check_set_project(
+        &self,
+        id: ClassId,
+        name: &str,
+        facts: &crate::classes::ProjectFacts,
+    ) -> Result<(String, crate::classes::ProjectFacts), LedgerError> {
+        if !self.classes.contains_key(&id) {
+            return Err(LedgerError::UnknownClass(id));
+        }
+        let name = self.check_class_name(name, Some(id))?;
+        let facts = facts.check().map_err(LedgerError::InvalidProject)?;
+        if let Some(p) = facts.party
+            && self.get_party(p).is_none()
+        {
+            return Err(LedgerError::InvalidProject(format!(
+                "party {p} is not in the directory: books.parties lists them"
+            )));
+        }
+        Ok((name, facts))
+    }
+
+    /// Apply a project record after [`Ledger::check_set_project`]: rename
+    /// the class, keep the facts.
+    pub fn set_project(
+        &mut self,
+        id: ClassId,
+        name: &str,
+        facts: crate::classes::ProjectFacts,
+    ) -> Result<(), LedgerError> {
+        let (name, facts) = self.check_set_project(id, name, &facts)?;
+        self.put_project(id, name, facts);
+        Ok(())
+    }
+
+    /// Replay a journaled project record: only what replay can't do
+    /// without (the class and the party exist), never the text rules, so a
+    /// rule tightened later never breaks old books (as
+    /// `AssetBasis::check_journaled`, rules.md B-25).
+    #[doc(hidden)]
+    pub fn replay_set_project(
+        &mut self,
+        id: ClassId,
+        name: String,
+        facts: crate::classes::ProjectFacts,
+    ) -> Result<(), LedgerError> {
+        if !self.classes.contains_key(&id) {
+            return Err(LedgerError::UnknownClass(id));
+        }
+        if let Some(p) = facts.party
+            && self.get_party(p).is_none()
+        {
+            return Err(LedgerError::InvalidProject(format!(
+                "party {p} is not in the directory"
+            )));
+        }
+        self.put_project(id, name, facts);
+        Ok(())
+    }
+
+    fn put_project(&mut self, id: ClassId, name: String, facts: crate::classes::ProjectFacts) {
+        if let Some(c) = self.classes.get_mut(&id) {
+            c.name = name;
+        }
+        if facts.is_default() {
+            self.projects.remove(&id);
+        } else {
+            self.projects.insert(id, facts);
+        }
+    }
+}
+
+/// A class name as names compare (rules.md B-37 item 1): trimmed, in
+/// lower case (Unicode's, so `Éclair` and `éCLAIR` are one name).
+fn fold_class_name(name: &str) -> String {
+    name.trim().to_lowercase()
 }
 
 /// Refuse an amount finer than its currency's minor unit (rules.md B-3).

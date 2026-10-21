@@ -1056,6 +1056,14 @@ impl Books {
             .unwrap_or_else(|| format!("party {id}"))
     }
 
+    /// A project's name ("project 3" for none such).
+    pub fn project_label(&self, id: ledger_core::ClassId) -> String {
+        self.ledger
+            .get_class(id)
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| format!("project {id}"))
+    }
+
     /// Whether a party files a 1099: it has a 1099 role (contractor,
     /// landlord), or its vendor record has been decided for one (from any
     /// date: its W-9 matters for those payments).
@@ -1352,6 +1360,12 @@ impl Books {
             Subject::Account(a) => self.account_label(a),
             Subject::Asset(a) => self.asset_label(a),
             Subject::Party(p) => self.party_label(p),
+            Subject::Project(c) => format!(
+                "Project {}",
+                u32::try_from(c)
+                    .ok()
+                    .map_or_else(|| c.to_string(), |c| self.project_label(c))
+            ),
             Subject::Invoice(i) => format!("Invoice {i}"),
             Subject::Bill(i) => format!("Bill {i}"),
             Subject::Period(i) => l
@@ -1390,6 +1404,7 @@ impl Books {
             Subject::Account(a) => Route::Account(a),
             Subject::Asset(a) => Route::Asset(a),
             Subject::Party(p) => Route::Party(p),
+            Subject::Project(c) => Route::Project(u32::try_from(c).ok()?),
             Subject::Invoice(i) => Route::Entry(l.get_invoice(i)?.entry_id),
             Subject::Bill(i) => Route::Entry(l.get_bill(i)?.entry_id),
             Subject::PayrollRun(i) => Route::Entry(l.get_payroll_run(i)?.entry_id),

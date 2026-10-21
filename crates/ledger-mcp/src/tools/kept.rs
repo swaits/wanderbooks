@@ -185,6 +185,20 @@ pub struct OpenItemBriefOut {
     pub due: Option<String>,
 }
 
+/// A project, in brief.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ProjectBriefOut {
+    /// Its id (a class id).
+    pub id: u32,
+    /// Its name.
+    pub name: String,
+    /// active or paused.
+    pub status: String,
+    /// Its kind, if recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+}
+
 /// A handbook section.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct SectionOut {
@@ -241,9 +255,12 @@ pub struct StartOut {
     pub conventions: Vec<ConventionBriefOut>,
     /// What is open, oldest first.
     pub open_items: Vec<OpenItemBriefOut>,
+    /// The projects under way (active and paused), by name, at most 20
+    /// (books.projects lists every one with its figures).
+    pub projects: Vec<ProjectBriefOut>,
     /// Lists cut short to fit: what was left out, e.g. "conventions: 4
-    /// more" (the full lists are in books.conventions and
-    /// books.open_items).
+    /// more" (the full lists are in books.conventions,
+    /// books.open_items and books.projects).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub truncated: Vec<String>,
     /// The handbook's sections (books.handbook {section}).
@@ -459,6 +476,9 @@ pub struct RecordDecisionParams {
     /// The rule or document it rests on, if any.
     #[serde(default)]
     pub citation: Option<String>,
+    /// The projects it is about (ids or names), if any.
+    #[serde(default)]
+    pub projects: Vec<String>,
 }
 
 /// A decision.
@@ -486,6 +506,9 @@ pub struct DecisionOut {
     /// What it rests on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub citation: Option<String>,
+    /// The projects it is about.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub projects: Vec<ProjectRefOut>,
     /// The journal line.
     pub seq: u64,
 }
@@ -496,6 +519,9 @@ pub struct DecisionsParams {
     /// Include decisions a later one replaced.
     #[serde(default)]
     pub include_superseded: bool,
+    /// Only the decisions naming this project (id or name).
+    #[serde(default)]
+    pub project: Option<String>,
 }
 
 /// Result of `books.decisions`.
@@ -681,7 +707,7 @@ fn convention_out(c: &ledger_core::conventions::Convention) -> ConventionOut {
     }
 }
 
-fn decision_out(d: &ledger_core::conventions::Decision) -> DecisionOut {
+pub(super) fn decision_out(ledger: &Ledger, d: &ledger_core::conventions::Decision) -> DecisionOut {
     DecisionOut {
         id: d.id,
         subject: d.new.subject.clone(),
@@ -692,6 +718,12 @@ fn decision_out(d: &ledger_core::conventions::Decision) -> DecisionOut {
         supersedes: d.new.supersedes,
         superseded_by: d.superseded_by,
         citation: d.new.citation.clone(),
+        projects: d
+            .new
+            .projects
+            .iter()
+            .map(|&p| super::projects::project_ref(ledger, p))
+            .collect(),
         seq: d.seq,
     }
 }
@@ -789,6 +821,28 @@ impl BooksServer {
                 due: i.new.due.map(|d| d.to_string()),
             })
             .collect();
+        // The projects under way, by name (rules.md B-37): at most 20.
+        const START_PROJECTS: usize = 20;
+        let mut projects: Vec<ProjectBriefOut> = ledger
+            .list_classes()
+            .into_iter()
+            .filter_map(|c| {
+                let f = ledger.project_facts(c.id)?;
+                matches!(
+                    f.status,
+                    ledger_core::ProjectStatus::Active | ledger_core::ProjectStatus::Paused
+                )
+                .then(|| ProjectBriefOut {
+                    id: c.id,
+                    name: c.name.clone(),
+                    status: f.status.key().to_string(),
+                    kind: f.kind.map(|k| k.key().to_string()),
+                })
+            })
+            .collect();
+        projects.sort_by_key(|a| (a.name.to_lowercase(), a.id));
+        let mut p_cut = projects.len().saturating_sub(START_PROJECTS);
+        projects.truncate(START_PROJECTS);
         let journaled = cfg.journaled;
         let focus = focus.unwrap_or("daily");
         let step = |tool: &str, args: Option<serde_json::Value>, why: &str| NextStepOut {
@@ -919,6 +973,7 @@ impl BooksServer {
             settings_summary: Vec::new(),
             conventions: Vec::new(),
             open_items: Vec::new(),
+            projects: Vec::new(),
             truncated: Vec::new(),
             handbook_sections: handbook::SECTIONS
                 .iter()
@@ -942,6 +997,20 @@ impl BooksServer {
         out.settings_summary = std::mem::take(&mut settings_summary);
         out.conventions = std::mem::take(&mut conventions);
         out.open_items = std::mem::take(&mut open_items);
+        out.projects = std::mem::take(&mut projects);
+        let cut_note = |c: usize, i: usize, s: usize, p: usize| -> Vec<String> {
+            [
+                ("conventions", c, "books.conventions"),
+                ("open_items", i, "books.open_items"),
+                ("settings_summary", s, "books.settings"),
+                ("projects", p, "books.projects"),
+            ]
+            .into_iter()
+            .filter(|(_, n, _)| *n > 0)
+            .map(|(what, n, tool)| format!("{what}: {n} more ({tool})"))
+            .collect()
+        };
+        out.truncated = cut_note(0, 0, 0, p_cut);
         if size(&out) > START_MAX {
             for c in &mut out.conventions {
                 c.summary.clear();
@@ -955,6 +1024,9 @@ impl BooksServer {
             } else if out.open_items.len() > 10 {
                 out.open_items.pop();
                 i_cut += 1;
+            } else if out.projects.len() > 5 {
+                out.projects.pop();
+                p_cut += 1;
             } else if !out.settings_summary.is_empty() {
                 out.settings_summary.pop();
                 s_cut += 1;
@@ -964,18 +1036,13 @@ impl BooksServer {
             } else if !out.open_items.is_empty() {
                 out.open_items.pop();
                 i_cut += 1;
+            } else if !out.projects.is_empty() {
+                out.projects.pop();
+                p_cut += 1;
             } else {
                 break;
             }
-            out.truncated = [
-                ("conventions", c_cut, "books.conventions"),
-                ("open_items", i_cut, "books.open_items"),
-                ("settings_summary", s_cut, "books.settings"),
-            ]
-            .into_iter()
-            .filter(|(_, n, _)| *n > 0)
-            .map(|(what, n, tool)| format!("{what}: {n} more ({tool})"))
-            .collect();
+            out.truncated = cut_note(c_cut, i_cut, s_cut, p_cut);
         }
         out
     }
@@ -1004,7 +1071,7 @@ impl BooksServer {
     #[tool(
         name = "books.start",
         title = "Start here",
-        description = "Call first in every session. The books in brief: company, today in its time zone, fiscal year, the journal's head, whether they need onboarding, where settings come from, the rules in force (receipts, parties, approvals), every setting with who set it, this company's conventions (how it keeps its books: posting templates, policies, close steps), open items, the handbook's sections, a format upgrade the books wait for (only the owner can agree to it: tell them), and next steps. Read-only; at most 8 KB.",
+        description = "Call first in every session. The books in brief: company, today in its time zone, fiscal year, the journal's head, whether they need onboarding, where settings come from, the rules in force (receipts, parties, approvals), every setting with who set it, this company's conventions (how it keeps its books: posting templates, policies, close steps), open items, the projects under way, the handbook's sections, a format upgrade the books wait for (only the owner can agree to it: tell them), and next steps. Read-only; at most 8 KB.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(super) async fn start(
@@ -1337,7 +1404,7 @@ impl BooksServer {
     #[tool(
         name = "books.record_decision",
         title = "Record a decision",
-        description = "Record a decision the owners made about the books (a policy, a treatment, a cutover), with who decided, when, and the document behind it if one is filed. A decision that replaces an earlier one names it in supersedes. No signatures or memos needed: the record is the decision with its source.",
+        description = "Record a decision the owners made about the books (a policy, a treatment, a cutover), with who decided, when, and the document behind it if one is filed. A decision that replaces an earlier one names it in supersedes. No signatures or memos needed: the record is the decision with its source. projects names the projects it is about.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -1349,6 +1416,13 @@ impl BooksServer {
         params: Parameters<RecordDecisionParams>,
     ) -> Result<Json<IdOut>, String> {
         let p = params.0;
+        let mut store = self.lock()?;
+        // The projects resolved before anything is written.
+        let projects = p
+            .projects
+            .iter()
+            .map(|r| resolve_class(&store, r.trim()))
+            .collect::<Result<Vec<_>, _>>()?;
         let d = NewDecision {
             subject: p.subject,
             decision_md: p.decision_md,
@@ -1357,8 +1431,8 @@ impl BooksServer {
             evidence_attachment: p.evidence_attachment,
             supersedes: p.supersedes,
             citation: p.citation,
+            projects,
         };
-        let mut store = self.lock()?;
         let id = store.record_decision(&d).map_err(bad)?;
         Ok(Json(IdOut { id }))
     }
@@ -1366,7 +1440,7 @@ impl BooksServer {
     #[tool(
         name = "books.decisions",
         title = "Decisions",
-        description = "The owners' decisions about the books, oldest first, each with who decided, when, what it rests on, and what replaced it.",
+        description = "The owners' decisions about the books, oldest first, each with who decided, when, what it rests on, the projects it is about, and what replaced it. project filters to the decisions naming one.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn decisions(
@@ -1374,13 +1448,20 @@ impl BooksServer {
         params: Parameters<DecisionsParams>,
     ) -> Result<Json<DecisionsOut>, String> {
         let store = self.lock()?;
+        let project = params
+            .0
+            .project
+            .as_deref()
+            .map(|r| resolve_class(&store, r.trim()))
+            .transpose()?;
+        let ledger = store.ledger();
         Ok(Json(DecisionsOut {
-            decisions: store
-                .ledger()
+            decisions: ledger
                 .conventions()
                 .decisions()
                 .filter(|d| params.0.include_superseded || d.superseded_by.is_none())
-                .map(decision_out)
+                .filter(|d| project.is_none_or(|p| d.new.projects.contains(&p)))
+                .map(|d| decision_out(ledger, d))
                 .collect(),
         }))
     }

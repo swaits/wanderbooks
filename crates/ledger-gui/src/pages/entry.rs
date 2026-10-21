@@ -239,13 +239,19 @@ pub fn detail(ui: &mut Ui, b: &Books, e: &EntryInfo, shell: &mut Shell<'_>) {
                                     if r.clicked() {
                                         shell.go(Route::Account(line.account));
                                     }
-                                    if let Some(c) = line.class_id.and_then(|c| class_names.get(&c))
-                                    {
-                                        ui.label(
+                                    if let Some((cid, c)) = line
+                                        .class_id
+                                        .and_then(|c| class_names.get(&c).map(|n| (c, n)))
+                                        && widgets::link(
+                                            ui,
                                             RichText::new(format!("{} {c}", icon::TAG))
                                                 .font(theme::regular(11.5))
                                                 .color(p.muted),
-                                        );
+                                        )
+                                        .on_hover_text("Open this project")
+                                        .clicked()
+                                    {
+                                        shell.go(Route::Project(cid));
                                     }
                                     if let (Some(cur), Some(fa)) =
                                         (&line.foreign_currency, line.foreign_amount)

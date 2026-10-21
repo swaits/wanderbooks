@@ -198,11 +198,13 @@ fn routes(b: &Books) -> Vec<Route> {
         Route::Accounts,
         Route::Assets,
         Route::Parties,
+        Route::Projects,
         Route::Documents,
         Route::Company,
         Route::Journal,
     ];
     out.extend(ReportKind::ALL.map(Route::Reports));
+    out.extend(b.ledger.list_classes().iter().map(|c| Route::Project(c.id)));
     out.extend((1..=b.ledger.next_entry_id()).map(Route::Entry));
     out.extend(b.ledger.chart().all().map(|a| Route::Account(a.id)));
     out.extend(b.ledger.registered_assets().map(|a| Route::Asset(a.id)));
@@ -534,4 +536,98 @@ fn an_older_books_dirs_config_json_sets_its_receipt_rule() {
     )
     .unwrap();
     assert_ne!(load(&t).receipt_threshold, rust_decimal::Decimal::ZERO);
+}
+
+/// rules.md B-37: the classes an earlier version wrote read as projects
+/// with the default facts (active, kind not recorded), listed by name,
+/// their figures ledger-core's.
+#[test]
+fn old_books_classes_read_as_projects() {
+    let mut seen = 0;
+    // Copies of their own: the shards above copy the same fixtures under
+    // the fixtures' names, side by side.
+    let root =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../ledger-store/tests/fixtures/old-books");
+    let mut fixtures: Vec<PathBuf> = std::fs::read_dir(&root)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.is_dir())
+        .collect();
+    fixtures.sort();
+    let copies = fixtures.iter().map(|f| {
+        let name = f.file_name().unwrap().to_string_lossy().to_string();
+        let t = temp(&format!("projects-{name}"));
+        copy_books(f, &t.0.join("books-data"));
+        write_settings(&t.0);
+        (name, t)
+    });
+    for (name, dir) in copies {
+        let b = data::load_once(&ledger_gui::Source {
+            data_dir: dir.0.join("books-data"),
+            today: Some(d(2026, 10, 12)),
+        })
+        .unwrap();
+        let listed = ledger_gui::pages::projects::listed(&b);
+        assert_eq!(listed.len(), b.ledger.list_classes().len(), "{name}");
+        for p in &listed {
+            seen += 1;
+            assert_eq!(p.facts, ledger_core::ProjectFacts::default(), "{name}");
+            assert_eq!(
+                p.to_date,
+                ledger_core::project_to_date(&b.ledger, p.id, b.today).ok(),
+                "{name}"
+            );
+        }
+        let names: Vec<String> = listed.iter().map(|p| p.name.to_lowercase()).collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted, "{name}: alphabetical");
+    }
+    // No fixture holds a class: books with the lines an earlier version
+    // wrote for one (class.added, a line tagged with it), and nothing more.
+    let t = temp("old-class");
+    let data = t.0.join("books-data");
+    let mut store = ledger_store::Store::create(&data, ledger_core::Currency::USD).unwrap();
+    let cash = store
+        .add_account("1000", "Cash", ledger_core::AccountType::Asset, None, false)
+        .unwrap();
+    let rev = store
+        .add_account(
+            "4000",
+            "Sales",
+            ledger_core::AccountType::Revenue,
+            None,
+            false,
+        )
+        .unwrap();
+    let class = store.add_class("Harbor app").unwrap();
+    let e = store.create_entry(d(2026, 3, 1), "sale").unwrap();
+    let usd =
+        |c| ledger_core::Money::new(rust_decimal::Decimal::new(c, 2), ledger_core::Currency::USD);
+    store
+        .add_line(e, cash, ledger_core::Side::Debit, usd(5000))
+        .unwrap();
+    store
+        .add_line(e, rev, ledger_core::Side::Credit, usd(5000))
+        .unwrap();
+    store.set_line_class(e, 1, Some(class)).unwrap();
+    store.post_entry(e).unwrap();
+    let journal = std::fs::read_to_string(data.join(ledger_store::JOURNAL_FILE)).unwrap();
+    assert!(!journal.contains("project.set"), "nothing new was written");
+    drop(store);
+    write_settings(&t.0);
+    let b = data::load_once(&ledger_gui::Source {
+        data_dir: data,
+        today: Some(d(2026, 10, 12)),
+    })
+    .unwrap();
+    let listed = ledger_gui::pages::projects::listed(&b);
+    assert_eq!(listed.len(), 1);
+    seen += 1;
+    assert_eq!(listed[0].name, "Harbor app");
+    assert_eq!(listed[0].facts, ledger_core::ProjectFacts::default());
+    let t = listed[0].to_date.as_ref().unwrap();
+    assert_eq!(t.revenue, rust_decimal::Decimal::new(5000, 2));
+    assert_eq!(t.unrecovered_cost, None);
+    assert!(seen > 0);
 }

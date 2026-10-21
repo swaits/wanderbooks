@@ -933,3 +933,122 @@ proptest! {
         }
     }
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// rules.md B-37 item 3: for any tags and any period, the projects'
+    /// figures plus the untagged lines' are the period's profit and loss
+    /// (no line counted twice or lost), each through
+    /// ledger_core::project_figures.
+    #[test]
+    fn prop_project_nets_partition_the_pnl(
+        entries in prop::collection::vec(
+            (0u32..120, 1i64..1_000_000, any::<bool>(), 0u32..4, 0u32..4),
+            1..20,
+        ),
+        from in 0u32..120,
+        len in 0u32..120,
+    ) {
+        let base = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        let mut l = Ledger::new(Currency::USD);
+        let cash = l.add_account("1000", "Cash", AccountType::Asset, None, false).unwrap();
+        let rev = l.add_account("4000", "Revenue", AccountType::Revenue, None, false).unwrap();
+        let exp = l.add_account("6000", "Costs", AccountType::Expense, None, false).unwrap();
+        let classes: Vec<u32> = (0..3).map(|i| l.add_class(&format!("P{i}")).unwrap()).collect();
+        for (day, c, income, tag_a, tag_b) in entries {
+            let e = l.create_entry(base + chrono::Days::new(u64::from(day)), "e");
+            let amt = Money::new(Decimal::new(c, 2), Currency::USD);
+            let (dr, cr) = if income { (cash, rev) } else { (exp, cash) };
+            l.add_line(e, dr, Side::Debit, amt).unwrap();
+            l.add_line(e, cr, Side::Credit, amt).unwrap();
+            // 3 means untagged; both lines may carry any project.
+            for (i, t) in [tag_a, tag_b].into_iter().enumerate() {
+                if let Some(&k) = classes.get(t as usize) {
+                    l.set_line_class(e, i, Some(k)).unwrap();
+                }
+            }
+            l.post_entry(e).unwrap();
+        }
+        let start = base + chrono::Days::new(u64::from(from));
+        let end = start + chrono::Days::new(u64::from(len));
+        let all = profit_and_loss_for_period(&l, start, end, None).unwrap();
+        let mut rev_sum = Decimal::ZERO;
+        let mut exp_sum = Decimal::ZERO;
+        for &k in &classes {
+            let f = ledger_core::project_figures(&l, k, start, end).unwrap();
+            rev_sum += f.period.total_revenue;
+            exp_sum += f.period.total_expenses;
+            let months: Decimal = f.months.iter().map(|m| m.net()).sum();
+            prop_assert_eq!(months, f.period.net_income());
+        }
+        // The untagged lines: every line with no class.
+        let mut untagged_rev = Decimal::ZERO;
+        let mut untagged_exp = Decimal::ZERO;
+        for e in l.posted_entries() {
+            if e.date() < start || e.date() > end {
+                continue;
+            }
+            for line in e.lines().iter().filter(|x| x.class_id.is_none()) {
+                let a = line.amount.amount;
+                if line.account == rev {
+                    untagged_rev += if line.side == Side::Credit { a } else { -a };
+                } else if line.account == exp {
+                    untagged_exp += if line.side == Side::Debit { a } else { -a };
+                }
+            }
+        }
+        prop_assert_eq!(rev_sum + untagged_rev, all.total_revenue);
+        prop_assert_eq!(exp_sum + untagged_exp, all.total_expenses);
+    }
+
+    /// rules.md B-37 item 3: project_entries codes its own signs, so the
+    /// posted entries' project amounts must sum to project_to_date's net
+    /// (with no entry dated after the day), whatever the tags, the sides,
+    /// a tagged balance-sheet line, or drafts beside them.
+    #[test]
+    fn prop_project_entries_sum_to_the_net_to_date(
+        entries in prop::collection::vec(
+            (0u32..120, 1i64..1_000_000, 0u32..3, any::<bool>(), 0u32..3, 0u32..3, any::<bool>()),
+            1..20,
+        ),
+    ) {
+        let base = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        let mut l = Ledger::new(Currency::USD);
+        let cash = l.add_account("1000", "Cash", AccountType::Asset, None, false).unwrap();
+        let rev = l.add_account("4000", "Revenue", AccountType::Revenue, None, false).unwrap();
+        let exp = l.add_account("6000", "Costs", AccountType::Expense, None, false).unwrap();
+        let classes: Vec<u32> = (0..2).map(|i| l.add_class(&format!("P{i}")).unwrap()).collect();
+        let accounts = [cash, rev, exp];
+        for (day, c, other, debit_first, tag_a, tag_b, post) in entries {
+            let e = l.create_entry(base + chrono::Days::new(u64::from(day)), "e");
+            let amt = Money::new(Decimal::new(c, 2), Currency::USD);
+            // Cash against any account, on either side: a refund debits
+            // revenue, a reimbursement credits an expense.
+            let other = accounts[other as usize];
+            let (dr, cr) = if debit_first { (other, cash) } else { (cash, other) };
+            l.add_line(e, dr, Side::Debit, amt).unwrap();
+            l.add_line(e, cr, Side::Credit, amt).unwrap();
+            for (i, t) in [tag_a, tag_b].into_iter().enumerate() {
+                if let Some(&k) = classes.get(t as usize) {
+                    l.set_line_class(e, i, Some(k)).unwrap();
+                }
+            }
+            if post {
+                l.post_entry(e).unwrap();
+            }
+        }
+        let through = base + chrono::Days::new(200);
+        for &k in &classes {
+            let posted: Decimal = ledger_core::project_entries(&l, k)
+                .into_iter()
+                .filter(|(e, _)| {
+                    l.get_entry(*e).unwrap().status() == ledger_core::EntryStatus::Posted
+                })
+                .map(|(_, a)| a)
+                .sum();
+            let t = ledger_core::project_to_date(&l, k, through).unwrap();
+            prop_assert_eq!(posted, t.net());
+        }
+    }
+}

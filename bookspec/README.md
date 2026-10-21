@@ -227,6 +227,15 @@ the side gives the direction.
   once. A business card's
   liability is a card account (B-35 item 5): while none is recorded, a
   liability whose name says "card", not "gift card", is.
+- `[[setup.projects]]` `{ name, kind?, status?, party? }`: a project
+  (rules.md B-37), added with its facts, each name once: `kind`
+  `internal`, `client`, `on_spec` or `other`; `status` `active` (the
+  default), `paused`, `finished` or `abandoned`; `party` a
+  `setup.parties` name.
+- `project = "<name>"` on a line of `lines`: the line is tagged with
+  that project (a `setup.projects` name), as the books' command tags it,
+  after the line is added. Not on a reversal, which carries its
+  original's tags.
 - `payee` on an event: the payee (by name, one of `setup.payees`) the
   entry paid. Only on an entry (`lines`): a reversal takes its
   original's, a bill names its vendor, a close and a command have none.
@@ -329,6 +338,7 @@ answers is refused, never skipped.
 | `register_row` | `asset`, `as_of` | the asset's row of the fixed asset register (B-15 rules 7 and 8, B-24): `acquired`, `in_service` (`YYYY-MM-DD`), `cost`, `accumulated_scheduled` (the schedule's), `accumulated_posted` (what the books carry), `unposted` (the one less the other), `book_value` (cost less posted), each `"0.00"` once disposed; the example names the figures it shows; an asset acquired after the day is refused | `ledger-core` `tests/bookspec.rs` |
 | `register_totals` | `as_of` | the register's totals over the assets held (B-24, B-25): `total_cost`, `total_accumulated_scheduled`, `total_accumulated_posted`, `total_book_value`, `total_depreciable_basis`, `total_tax_basis_723`, `missing_basis` (a count), and how it ties to the books: `unregistered_cost`, `unposted_depreciation`, `unattributed_accumulated`; the example names the figures it shows | `ledger-core` `tests/bookspec.rs` |
 | `asset_basis` | `asset`, no dates | the asset's basis facts and the tax figures they give (B-25): `rule`, `contributor_adjusted_basis`, `fmv_at_contribution`, `tax_basis_723`, `depreciable_basis`, `built_in_gain_704c` (a loss negative), each `"none"` where it has none, and `sec704c_1c` (`"true"` for a built-in loss, which counts only for the contributor); the example names the figures it shows | `ledger-core` `tests/bookspec.rs` |
+| `project` | `project`, `from`, `to` | the project's figures (B-37), every one given: `revenue`, `expenses` and `net` for the period (the revenue and expense lines tagged to it, closes left out), `to_date.revenue`, `to_date.expenses` and `to_date.net` (every tagged line through `to`), and `unrecovered_cost` (expenses less revenue to date, never below zero; `"none"` unless it is on spec) | `ledger-core` `tests/bookspec.rs`; `ledger-mcp` `project_figures_match_profit_and_loss_by_class` |
 | `schedule_plan` | `schedule`, no dates | the schedule's plan (B-16): what it recognizes at each month end named (`"YYYY-MM-DD"`), `"0.00"` at one it doesn't post; `total`, all it recognizes; the example names the figures it shows | `ledger-core` `tests/bookspec.rs` |
 | `iif_lines` | `as_of` | formats appendix: the file's lines in order, each its fields joined by tabs, without the CR LF that ends each | `ledger-package` `the_bookspec_iif_example_matches_the_engine` |
 | `iif_changes` | `as_of` | formats appendix: each text the file writes differently from the books, in file order, as `[what, books' text, file's text]` (the example's header gives `what`) | `ledger-package` `the_bookspec_iif_example_matches_the_engine` |
@@ -338,7 +348,8 @@ format query, and `uncategorized_accounts`, an array (`values = [ ...
 ]`). `period`, `day` and `calendar_year` give dates and a year,
 `account_names` names, `party_part`'s `direction`, `vendor_1099`'s
 `status` and `party_tin_last4` words, not figures; `register_row` gives
-dates beside its figures, `asset_basis` a rule's name, `"none"` and
+dates beside its figures, `project` gives `"none"` as the unrecovered cost of a
+project that isn't on spec, `asset_basis` a rule's name, `"none"` and
 `"true"` or `"false"`, and a `k1_tax_basis` line `"open"`, beside them.
 
 A command is tried on a copy of the books, as the books' own command

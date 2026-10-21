@@ -1366,6 +1366,7 @@ fn reads_of_old_books() -> Vec<(&'static str, Value)> {
         ("books.list_receipts", json!({})),
         ("books.list_vendors", json!({})),
         ("books.list_classes", json!({})),
+        ("books.projects", json!({})),
         ("books.parties", json!({})),
         ("books.statements", json!({})),
         ("books.reconciliations", json!({})),
@@ -1714,4 +1715,21 @@ fn hostile_renames_ranges_and_categories_are_answered() {
             .any(|a| a["code"] == "1000" && a["name"].as_str().unwrap() == long)
     );
     reopens(m, &p, "P3's hostile inputs");
+}
+
+/// books.project over the whole calendar answers, its months the last 240
+/// (each month is a statement: a hundred thousand of them would not).
+#[test]
+fn a_project_over_the_whole_calendar_answers_quickly() {
+    let p = places("project-wide");
+    let mut m = Mcp::start(&p);
+    fixture(&mut m, &p);
+    m.ok("books.add_project", json!({"name": "Harbor"}));
+    let t = std::time::Instant::now();
+    let p = m.ok(
+        "books.project",
+        json!({"project": "Harbor", "start": "0001-01-01", "end": "9999-12-31"}),
+    );
+    assert_eq!(p["period"]["by_month"].as_array().unwrap().len(), 240);
+    assert!(t.elapsed() < std::time::Duration::from_secs(30));
 }

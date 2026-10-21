@@ -1491,6 +1491,27 @@ pub fn basis_figures<T: Amount>(
     })
 }
 
+/// A project's unrecovered cost from its tagged revenue and expenses to
+/// date: what it would take to be repaid in full (rules.md B-37 item 4).
+///
+/// ```text
+/// GOAL: the "if repaid" figure of work done on spec, from one function
+///       the tools, the viewer and bookspec share.
+/// SOURCE: docs/spec/rules.md B-37 item 4 (ASC 450-30-25-1: a hoped-for
+///         payment is a gain contingency, never recorded before it is
+///         received; so this is a figure, never a receivable).
+/// INVARIANTS:
+///   1. Never below zero.
+///   2. expenses - revenue when expenses >= revenue; zero otherwise.
+///   3. Never above max(expenses, 0) when revenue >= 0 (expenses can be
+///      negative: a reimbursement credited to the expense above its cost).
+///   4. NEVER wraps: None when the difference can't be represented.
+/// ```
+pub fn unrecovered_cost<T: Amount>(revenue: T, expenses: T) -> Option<T> {
+    let gap = expenses.checked_sub(revenue)?;
+    Some(if gap > T::ZERO { gap } else { T::ZERO })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

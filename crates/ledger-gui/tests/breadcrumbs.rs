@@ -49,6 +49,7 @@ fn crumbs_link_every_level_but_the_last() {
     let entry = b.entries.first().unwrap().id;
     let mut routes = vec![
         Route::Party(party),
+        Route::Project(b.ledger.list_classes()[0].id),
         Route::Reconciliation(rec.id),
         Route::Entry(entry),
         Route::Reports(ReportKind::ProfitAndLoss),
@@ -112,7 +113,11 @@ fn clicking_a_crumb_goes_there() {
     h.get_all_by_label(&account).next().unwrap().click();
     h.run_steps(3);
     assert_eq!(h.state().route(), &Route::Account(rec.account_id));
-    h.get_by_label("Accounts").click();
+    // The crumb, not the sidebar's link of the same name (left of it).
+    h.get_all_by_label("Accounts")
+        .max_by(|a, b| a.rect().left().total_cmp(&b.rect().left()))
+        .unwrap()
+        .click();
     h.run_steps(3);
     assert_eq!(h.state().route(), &Route::Accounts);
 }

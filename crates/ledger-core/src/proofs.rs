@@ -1785,6 +1785,28 @@ fn basis_figures_laws() {
     );
 }
 
+/// `kernel::unrecovered_cost` (rules.md B-37 item 4), for every revenue
+/// and expense a line could carry: never below zero; the shortfall when
+/// expenses exceed revenue, else zero; never above max(expenses, 0) when
+/// revenue isn't negative (expenses may be negative: a reimbursement
+/// credited to the expense above its cost).
+#[kani::proof]
+fn unrecovered_cost_laws() {
+    let (revenue, expenses) = (any_amount(), any_amount());
+    let u = kernel::unrecovered_cost(revenue, expenses).expect("no overflow");
+    assert!(u >= 0);
+    if expenses >= revenue {
+        assert_eq!(u, expenses - revenue);
+    } else {
+        assert_eq!(u, 0);
+    }
+    if revenue >= 0 {
+        assert!(u <= expenses.max(0));
+    }
+    kani::cover!(u > 0, "costs not yet repaid");
+    kani::cover!(u == 0 && revenue > expenses, "repaid, and more");
+}
+
 // ---------------------------------------------------------------------------
 // The checker itself
 // ---------------------------------------------------------------------------

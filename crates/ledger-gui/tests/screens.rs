@@ -89,6 +89,22 @@ fn screenshots() {
         .rev()
         .find(|a| loaded.links_of(a.id).len() > 1)
         .map_or(last_doc, |a| a.id);
+    // A project by name (SHOT_PROJECT: an id): the on-spec one, and the
+    // client work, else the first.
+    let project_named = |name: &str| {
+        loaded
+            .ledger
+            .list_classes()
+            .into_iter()
+            .find(|c| c.name == name)
+            .or_else(|| loaded.ledger.list_classes().into_iter().next())
+            .map_or(1, |c| c.id)
+    };
+    let project = std::env::var("SHOT_PROJECT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or_else(|| project_named("Tidepool app"));
+    let project_client = project_named("Client work");
     drop(loaded);
     let routes: Vec<(&str, Route)> = vec![
         ("overview", Route::Overview),
@@ -122,6 +138,9 @@ fn screenshots() {
         ("asset", Route::Asset(first_asset)),
         ("parties", Route::Parties),
         ("party", Route::Party(party)),
+        ("projects", Route::Projects),
+        ("project", Route::Project(project)),
+        ("project-client", Route::Project(project_client)),
         ("document", Route::Document(last_doc)),
         ("document-linked", Route::Document(linked_doc)),
         ("reconciliation", Route::Reconciliation(reconciliation)),

@@ -273,6 +273,8 @@ pub struct NewDecision {
     pub supersedes: Option<u64>,
     /// The rule or document it rests on, if any.
     pub citation: Option<String>,
+    /// The projects (classes) it is about, if any (rules.md B-37).
+    pub projects: Vec<crate::ClassId>,
 }
 
 /// A decision as the journal holds it.
@@ -794,6 +796,7 @@ pub fn check_decision(d: &NewDecision) -> Result<NewDecision, String> {
             .as_deref()
             .map(|c| long_text("citation", c, MAX_LONG_TEXT))
             .transpose()?,
+        projects: d.projects.clone(),
     })
 }
 
@@ -982,6 +985,7 @@ mod tests {
             evidence_attachment: None,
             supersedes: None,
             citation: None,
+            projects: vec![],
         };
         assert!(c.apply_decision(2, d.clone(), 1).is_err());
         c.apply_decision(1, d.clone(), 1).unwrap();

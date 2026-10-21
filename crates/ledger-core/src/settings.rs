@@ -602,6 +602,20 @@ pub fn decimal(s: &str) -> Option<Decimal> {
 /// a hyphen or any other dash, a dot, or a space (or a dash with spaces
 /// around it); full-width digits count as digits.
 pub fn holds_printed_tin(text: &str) -> bool {
+    printed_tin(text, false)
+}
+
+/// [`holds_printed_tin`] for a web address: the printed SSN (3-2-4) and
+/// EIN (2-7) forms count as there, but a bare run of nine digits joined
+/// to a letter or to the URL punctuation `/ = ? & #` does not: it is an
+/// id in a path or query (an app store listing's `id284882215`), not a
+/// TIN someone wrote down (rules.md B-26).
+pub fn holds_printed_tin_in_link(text: &str) -> bool {
+    printed_tin(text, true)
+}
+
+/// [`holds_printed_tin`], with a link's bare runs let through when `link`.
+fn printed_tin(text: &str, link: bool) -> bool {
     // Full-width digits read as the digits they are.
     let c: Vec<char> = text
         .chars()
@@ -645,11 +659,20 @@ pub fn holds_printed_tin(text: &str) -> bool {
         }
         Some(i)
     };
+    let url_joined = |i: Option<usize>| {
+        i.and_then(|i| c.get(i))
+            .is_some_and(|ch| ch.is_alphabetic() || matches!(ch, '/' | '=' | '?' | '&' | '#'))
+    };
     (0..c.len()).any(|at| {
         (at == 0 || !digit(at - 1))
-            && [&[9][..], &[3, 2, 4][..], &[2, 7][..]]
-                .iter()
-                .any(|g| groups_at(at, g).is_some_and(|end| !digit(end)))
+            && [&[9][..], &[3, 2, 4][..], &[2, 7][..]].iter().any(|g| {
+                groups_at(at, g).is_some_and(|end| {
+                    !digit(end)
+                        && !(link
+                            && g.len() == 1
+                            && (url_joined(at.checked_sub(1)) || url_joined(Some(end))))
+                })
+            })
     })
 }
 

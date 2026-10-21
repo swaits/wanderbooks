@@ -63,7 +63,7 @@ pub fn report_columns(
 #[serde(tag = "show", rename_all = "snake_case")]
 pub enum ViewerTarget {
     /// A top-level page: overview, cash, profit, transactions, reports,
-    /// accounts, assets, parties, documents, company, journal.
+    /// accounts, assets, parties, projects, documents, company, journal.
     Page {
         /// Page name.
         page: String,
@@ -119,6 +119,12 @@ pub enum ViewerTarget {
     Party {
         /// Party id.
         party_id: u64,
+    },
+    /// One project (a class with its facts): its figures, entries,
+    /// documents and decisions.
+    Project {
+        /// Class id.
+        class_id: u32,
     },
     /// One reconciliation: its account, with the account's statements and
     /// reconciliations.

@@ -50,7 +50,7 @@ fn provenance(ui: &mut Ui, by: &str, on: chrono::NaiveDate) {
 
 /// How the books are kept, as the owners decided: conventions, decisions,
 /// and what is open (each only when there is something to show).
-fn kept_cards(ui: &mut Ui, b: &Books) {
+fn kept_cards(ui: &mut Ui, b: &Books, go: &mut Option<Route>) {
     let p = pal(ui.ctx());
     let kept = b.ledger.conventions();
     let conventions: Vec<_> = kept.conventions().filter(|c| c.retired.is_none()).collect();
@@ -95,6 +95,27 @@ fn kept_cards(ui: &mut Ui, b: &Books) {
                         RichText::new(&d.new.decision_md).font(theme::regular(12.5)),
                         &d.new.decision_md,
                     );
+                    if !d.new.projects.is_empty() {
+                        ui.horizontal_wrapped(|ui| {
+                            for &c in &d.new.projects {
+                                if widgets::link(
+                                    ui,
+                                    RichText::new(format!(
+                                        "{} {}",
+                                        icon::BRIEFCASE,
+                                        b.project_label(c)
+                                    ))
+                                    .font(theme::regular(12.0))
+                                    .color(p.accent),
+                                )
+                                .on_hover_text("Open this project")
+                                .clicked()
+                                {
+                                    *go = Some(Route::Project(c));
+                                }
+                            }
+                        });
+                    }
                     provenance(ui, &d.new.decided_by.join(" and "), d.new.decided_on);
                     ui.add_space(6.0);
                 }
@@ -132,6 +153,7 @@ fn kept_cards(ui: &mut Ui, b: &Books) {
 
 pub fn show(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
     let p = pal(ui.ctx());
+    let mut kept_go: Option<Route> = None;
     page(ui, "company", |ui| {
         let c = &b.settings.company;
         widgets::page_header(
@@ -192,7 +214,7 @@ pub fn show(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                         );
                     },
                 );
-                kept_cards(ui, b);
+                kept_cards(ui, b, &mut kept_go);
             }
             _ => {
                 widgets::titled_card(
@@ -332,6 +354,9 @@ pub fn show(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
         recurring(ui, b);
         parties(ui, b, shell);
     });
+    if let Some(r) = kept_go {
+        shell.go(r);
+    }
 }
 
 fn assets(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {

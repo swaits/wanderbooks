@@ -371,6 +371,7 @@ pub fn subject_icon(s: Subject) -> &'static str {
         Subject::Account(_) => icon::TREE_STRUCTURE,
         Subject::Asset(_) => icon::PACKAGE,
         Subject::Party(_) => icon::ADDRESS_BOOK,
+        Subject::Project(_) => icon::BRIEFCASE,
         Subject::Invoice(_) | Subject::Bill(_) => icon::FILE_TEXT,
         Subject::Period(_) => icon::CALENDAR_BLANK,
         Subject::PayrollRun(_) => icon::USERS,

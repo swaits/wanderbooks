@@ -990,6 +990,7 @@ mod painted {
             Route::Reports(ReportKind::BalanceSheet),
             Route::Accounts,
             Route::Parties,
+            Route::Projects,
             Route::Journal,
         ];
         // A page a thread: each checks every scheme.

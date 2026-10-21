@@ -111,11 +111,29 @@ struct Setup {
     /// The ways the company (or a member, for it) pays (rules.md B-19).
     #[serde(default)]
     instruments: Vec<InstrumentSpec>,
+    /// The projects (rules.md B-37), each added with its facts.
+    #[serde(default)]
+    projects: Vec<ProjectSpec>,
     /// The day the books are asked on, in the company's time zone: what
     /// an omitted date means (rules.md B-30). A query that omits a date
     /// needs it.
     #[serde(default)]
     today: Option<String>,
+}
+
+/// A project (rules.md B-37): its name (once each), and its kind
+/// (`internal`, `client`, `on_spec`, `other`), status and party (a
+/// `setup.parties` name), if given.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectSpec {
+    name: String,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    party: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -454,6 +472,9 @@ struct LineSpec {
     account: String,
     side: String,
     amount: String,
+    /// The project (a `setup.projects` name) the line is tagged with.
+    #[serde(default)]
+    project: Option<String>,
 }
 
 /// A close of the period from `start` through the event's date, to
@@ -490,6 +511,9 @@ struct Expect {
     /// The party a `party_part`, `party_totals` or `party_tin_last4`
     /// query asks about (in `setup.parties`).
     party: Option<String>,
+    /// The project (in `setup.projects`) a `project` query asks about.
+    #[serde(default)]
+    project: Option<String>,
     /// `party_totals`' basis: `"cash"` or `"all"` (rules.md B-35 item 4).
     basis: Option<String>,
     /// The payee a `vendor_1099` query asks about (in `setup.payees`).
@@ -711,6 +735,8 @@ struct Books<'a> {
     instruments: BTreeMap<String, InstrumentId>,
     /// The fixed assets of `setup.assets`, by id.
     assets: BTreeMap<String, AssetId>,
+    /// The projects of `setup.projects`, by name.
+    projects: BTreeMap<String, ledger_core::ClassId>,
     /// The schedules of `setup.schedules` and `register_schedule` events,
     /// by id.
     schedules: BTreeMap<String, ScheduleId>,
@@ -1100,6 +1126,31 @@ impl<'a> Books<'a> {
             };
             took(store.set_vendor_1099(v, &dated, Some(false)), &what);
         }
+        let mut projects = BTreeMap::new();
+        for p in &s.projects {
+            let what = format!("{}: project {}", ex.id, p.name);
+            let facts = ledger_core::ProjectFacts {
+                kind: p.kind.as_deref().map(|k| {
+                    ledger_core::ProjectKind::parse(k)
+                        .unwrap_or_else(|| panic!("{what}: kind {k:?}"))
+                }),
+                status: p.status.as_deref().map_or(Default::default(), |k| {
+                    ledger_core::ProjectStatus::parse(k)
+                        .unwrap_or_else(|| panic!("{what}: status {k:?}"))
+                }),
+                party: p.party.as_ref().map(|n| {
+                    *parties
+                        .get(n)
+                        .unwrap_or_else(|| panic!("{what}: party {n:?} not in setup.parties"))
+                }),
+                ..Default::default()
+            };
+            let id = took(store.add_project(&p.name, &facts), &what);
+            assert!(
+                projects.insert(p.name.clone(), id).is_none(),
+                "{what}: named twice"
+            );
+        }
         let mut instruments = BTreeMap::new();
         for i in &s.instruments {
             let what = format!("{} instrument {}", ex.id, i.label);
@@ -1133,6 +1184,7 @@ impl<'a> Books<'a> {
             payees,
             instruments,
             assets,
+            projects,
             schedules,
             posted: Vec::new(),
             runs: BTreeMap::new(),
@@ -1344,7 +1396,7 @@ impl<'a> Books<'a> {
         match kind {
             "lines" => {
                 let entry = self.store.create_entry(day(), description)?;
-                for line in &e.lines {
+                for (i, line) in e.lines.iter().enumerate() {
                     let side = match line.side.as_str() {
                         "debit" => Side::Debit,
                         "credit" => Side::Credit,
@@ -1353,6 +1405,13 @@ impl<'a> Books<'a> {
                     let amount = Money::new(money(&line.amount), self.currency);
                     let account = self.id(&line.account);
                     self.store.add_line(entry, account, side, amount)?;
+                    // Tagged as books.add_line tags it: after the line.
+                    if let Some(p) = &line.project {
+                        let class = *self.projects.get(p).unwrap_or_else(|| {
+                            panic!("{what}: project {p:?} not in setup.projects")
+                        });
+                        self.store.set_line_class(entry, i, Some(class))?;
+                    }
                 }
                 self.store.post_entry(entry)
             }
@@ -2004,6 +2063,57 @@ fn check_party_totals(b: &Books<'_>, x: &Expect) {
         "{}",
         what("received")
     );
+}
+
+/// Check one `project` expectation (rules.md B-37): the project's
+/// `revenue`, `expenses` and `net` for the period (B-30 resolving omitted
+/// dates), the same `to_date` (every tagged line through `to`), and its
+/// `unrecovered_cost` (`"none"` unless it is on spec); every one given.
+/// Through ledger_core::project_figures, as the tools and the viewer.
+fn check_project(b: &Books<'_>, x: &Expect) {
+    let (ex, l) = (b.ex, b.l());
+    let name = x
+        .project
+        .as_ref()
+        .unwrap_or_else(|| panic!("{}: a project query names its project", ex.id));
+    let id = *b
+        .projects
+        .get(name)
+        .unwrap_or_else(|| panic!("{}: project {name:?} not in setup.projects", ex.id));
+    let (from, to) = x.period(ex);
+    let f =
+        ledger_core::project_figures(l, id, from, to).unwrap_or_else(|e| panic!("{}: {e}", ex.id));
+    let keys: BTreeSet<String> = [
+        "revenue",
+        "expenses",
+        "net",
+        "to_date.revenue",
+        "to_date.expenses",
+        "to_date.net",
+        "unrecovered_cost",
+    ]
+    .iter()
+    .map(|k| k.to_string())
+    .collect();
+    exactly(ex, x, &keys);
+    let what = |k: &str| format!("{} project {name:?} [{from} .. {to}]: {k}", ex.id);
+    for (key, want) in x.figures(&ex.id) {
+        let got = match key.as_str() {
+            "revenue" => Some(f.period.total_revenue),
+            "expenses" => Some(f.period.total_expenses),
+            "net" => Some(f.period.net_income()),
+            "to_date.revenue" => Some(f.to_date.revenue),
+            "to_date.expenses" => Some(f.to_date.expenses),
+            "to_date.net" => Some(f.to_date.net()),
+            _ => f.to_date.unrecovered_cost,
+        };
+        match (want.as_str(), got) {
+            ("none", None) => {}
+            ("none", Some(g)) => panic!("{}: {g}, expected none", what(key)),
+            (w, Some(g)) => assert_eq!(g, exact(w, &what(key)), "{}", what(key)),
+            (w, None) => panic!("{}: none, expected {w}", what(key)),
+        }
+    }
 }
 
 /// Check one `party_tin_last4` expectation: the last four of the party's
@@ -2919,6 +3029,7 @@ fn check(b: &Books<'_>, x: &Expect) -> Option<&'static str> {
         "party_part" => check_party_part(b, x),
         "party_totals" => check_party_totals(b, x),
         "party_tin_last4" => check_party_tin_last4(b, x),
+        "project" => check_project(b, x),
         q => {
             let &(_, by) = FORMAT_QUERIES
                 .iter()
@@ -3044,6 +3155,7 @@ fn every_bookspec_example_holds() {
         ("asset_basis", 6),
         ("k1_tax_basis", 2),
         ("k1_reconciliation", 1),
+        ("project", 6),
     ] {
         let n = checked.get(q).copied().unwrap_or(0);
         assert!(n >= at_least, "{q} ran {n} times, fewer than {at_least}");
@@ -3609,5 +3721,33 @@ fn a_tax_line_the_books_cant_know_is_open() {
 fn a_members_reconciliation_shows_every_cause() {
     run_edited("partnership-k1-tax-basis-capital.toml", |t| {
         t.replacen(", \"Tobin Harlow.property_distributed\" = \"0.00\"", "", 1)
+    });
+}
+
+/// A project named twice in `setup.projects` is refused (names are
+/// unique, rules.md B-37).
+#[test]
+#[should_panic(expected = "a project named")]
+fn a_project_named_twice_is_refused() {
+    run_edited("projects-net-is-its-tagged-lines.toml", |t| {
+        t.replacen("name = \"Beta\"", "name = \"alpha\"", 1)
+    });
+}
+
+/// A line naming a project the setup doesn't have is refused.
+#[test]
+#[should_panic(expected = "not in setup.projects")]
+fn a_line_naming_an_unknown_project_is_refused() {
+    run_edited("projects-net-is-its-tagged-lines.toml", |t| {
+        t.replacen("project = \"Beta\" }", "project = \"Gamma\" }", 1)
+    });
+}
+
+/// A project query lists every value it covers.
+#[test]
+#[should_panic(expected = "lists exactly what it covers")]
+fn a_project_query_leaving_a_value_out_is_refused() {
+    run_edited("projects-on-spec-costs-are-expenses.toml", |t| {
+        t.replacen("unrecovered_cost = \"1460.00\"\n", "", 1)
     });
 }

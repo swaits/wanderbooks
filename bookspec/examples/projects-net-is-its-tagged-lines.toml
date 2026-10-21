@@ -1,0 +1,162 @@
+# A project's figures are the revenue and expense lines tagged to it.
+#
+# wanderbooks: rules.md B-37 (projects); regression tests
+# `project_figures_are_its_tagged_lines` (ledger-core tests/spec_projects.rs),
+# `project_figures_match_profit_and_loss_by_class` (ledger-mcp
+# tests/spec_projects.rs).
+#
+# Expected values worked by hand: Alpha earns 5,000.00 and costs 1,800.00
+# (contractor) + 120.00 (its part of the tool) = 1,920.00; the contractor
+# billed twice in March is reversed, so March nets to zero. Beta costs
+# 80.00; its test devices (an asset) count nothing. Rent is no project's.
+# The projects and the untagged rent add up to the books' net income:
+# 3,080.00 - 80.00 - 1,500.00 = 1,500.00.
+
+id = "projects-net-is-its-tagged-lines"
+title = "A project's net is its tagged revenue less its tagged expenses"
+rule = "A project's revenue and expenses for a period MUST be the revenue and expense lines tagged to it, dated in the period, closing entries left out; a tagged balance-sheet line MUST count nothing; a shared cost counts only as split across lines; and the projects with the untagged lines MUST add up to the period's net income."
+status = "CONVENTION"
+sources = [
+  "Job-order costing: a job cost sheet accumulates the revenue and the direct costs identified with one job (management-accounting convention; no overhead is allocated here: wanderbooks docs/spec/rules.md B-37)",
+  "wanderbooks docs/spec/rules.md B-11 and B-14: a period's net income is its revenue less its expenses, closing entries left out",
+]
+tags = ["projects", "classes", "job-costing", "accrual"]
+
+[setup]
+currency = "USD"
+fiscal_year_start = "01-01"
+basis = "accrual"
+rounding = "half-even"
+
+[[setup.accounts]]
+code = "1000"
+name = "Cash"
+type = "asset"
+[[setup.accounts]]
+code = "1200"
+name = "Equipment"
+type = "asset"
+[[setup.accounts]]
+code = "4000"
+name = "Revenue"
+type = "revenue"
+[[setup.accounts]]
+code = "6000"
+name = "Contractors"
+type = "expense"
+[[setup.accounts]]
+code = "6100"
+name = "Software"
+type = "expense"
+[[setup.accounts]]
+code = "6200"
+name = "Rent"
+type = "expense"
+
+[[setup.projects]]
+name = "Alpha"
+kind = "client"
+[[setup.projects]]
+name = "Beta"
+kind = "internal"
+
+[[events]]
+date = "2026-02-03"
+description = "Alpha milestone paid"
+lines = [
+  { account = "1000", side = "debit", amount = "5000.00" },
+  { account = "4000", side = "credit", amount = "5000.00", project = "Alpha" },
+]
+[[events]]
+date = "2026-02-10"
+description = "Contractor for Alpha"
+lines = [
+  { account = "6000", side = "debit", amount = "1800.00", project = "Alpha" },
+  { account = "1000", side = "credit", amount = "1800.00" },
+]
+[[events]]
+date = "2026-02-15"
+description = "Design tool, split by use"
+lines = [
+  { account = "6100", side = "debit", amount = "120.00", project = "Alpha" },
+  { account = "6100", side = "debit", amount = "80.00", project = "Beta" },
+  { account = "1000", side = "credit", amount = "200.00" },
+]
+[[events]]
+date = "2026-02-28"
+description = "Studio rent"
+lines = [
+  { account = "6200", side = "debit", amount = "1500.00" },
+  { account = "1000", side = "credit", amount = "1500.00" },
+]
+[[events]]
+date = "2026-03-05"
+description = "Test devices for Beta"
+lines = [
+  { account = "1200", side = "debit", amount = "900.00", project = "Beta" },
+  { account = "1000", side = "credit", amount = "900.00" },
+]
+[[events]]
+date = "2026-03-12"
+description = "Contractor for Alpha, billed twice"
+lines = [
+  { account = "6000", side = "debit", amount = "1800.00", project = "Alpha" },
+  { account = "1000", side = "credit", amount = "1800.00" },
+]
+[[events]]
+date = "2026-03-13"
+description = "Reverse entry 6"
+reverses = 6
+
+[[expect]]
+query = "project"
+project = "Alpha"
+from = "2026-01-01"
+to = "2026-12-31"
+[expect.values]
+revenue = "5000.00"
+expenses = "1920.00"
+net = "3080.00"
+"to_date.revenue" = "5000.00"
+"to_date.expenses" = "1920.00"
+"to_date.net" = "3080.00"
+unrecovered_cost = "none"
+
+[[expect]]
+query = "project"
+project = "Alpha"
+from = "2026-03-01"
+to = "2026-03-31"
+[expect.values]
+revenue = "0.00"
+expenses = "0.00"
+net = "0.00"
+"to_date.revenue" = "5000.00"
+"to_date.expenses" = "1920.00"
+"to_date.net" = "3080.00"
+unrecovered_cost = "none"
+
+[[expect]]
+query = "project"
+project = "Beta"
+from = "2026-01-01"
+to = "2026-12-31"
+[expect.values]
+revenue = "0.00"
+expenses = "80.00"
+net = "-80.00"
+"to_date.revenue" = "0.00"
+"to_date.expenses" = "80.00"
+"to_date.net" = "-80.00"
+unrecovered_cost = "none"
+
+[[expect]]
+query = "profit_and_loss"
+from = "2026-01-01"
+to = "2026-12-31"
+[expect.values]
+"4000" = "5000.00"
+"6000" = "1800.00"
+"6100" = "200.00"
+"6200" = "1500.00"
+net_income = "1500.00"

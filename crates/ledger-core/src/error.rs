@@ -654,13 +654,22 @@ pub enum LedgerError {
     #[error("unknown payroll run id {0}")]
     UnknownPayrollRun(u64),
 
-    /// Class names must not be empty.
-    #[error("class name must not be empty")]
+    /// Class (project) names must not be blank.
+    #[error("a project (class) name is blank")]
     EmptyClassName,
 
     /// The referenced class does not exist.
     #[error("unknown class id {0}")]
     UnknownClass(u32),
+
+    /// Another class (project) already has this name, ignoring capitals
+    /// (rules.md B-37).
+    #[error("a project named {0:?} already exists: names are unique, ignoring capitals")]
+    DuplicateClassName(String),
+
+    /// A project's facts the books can't take (rules.md B-37): the reason.
+    #[error("{0}")]
+    InvalidProject(String),
 
     /// A setting change the books can't honor (crate::settings): an
     /// unknown key, a value its key refuses, or settings that wouldn't

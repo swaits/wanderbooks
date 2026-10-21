@@ -450,6 +450,21 @@ one kernel function, `kernel::basis_figures`, for every rule:
     (the `Decimal` instantiation agrees, rule by rule) · property
     `prop_basis_figures_laws`
 
+### A project's unrecovered cost (P3, projects)
+
+The "if repaid" figure of work done on spec (rules.md B-37 item 4) is
+one kernel function, `kernel::unrecovered_cost`:
+
+32. **Never below zero, the shortfall exactly, and no overflow**: the
+    result is at least zero; it is expenses less revenue when expenses
+    are at least revenue, and zero otherwise; with revenue not negative
+    it is never above the expenses or zero, whichever is larger
+    (expenses can be negative: a reimbursement credited to the expense
+    above its cost). · Kani `unrecovered_cost_laws` (every
+    revenue and expense a line could carry) · ledger-core
+    `unrecovered_cost_only_for_on_spec_and_never_negative`. No Lean model:
+    the function is one subtraction and a `max`.
+
 ## What the proofs found
 
 The engine already had 190+ tests, property tests, mutation testing,
@@ -606,7 +621,7 @@ Lean carrying any weights.
 
 ```sh
 mise install   # once: Kani, Lean, and the rest, pinned in mise.toml
-just prove       # 47 Kani harnesses and Lean
+just prove       # 48 Kani harnesses and Lean
 just prove-slow  # the other 8: the justfile's kani_slow
 just prove-all   # both
 ```
@@ -705,4 +720,5 @@ each harness's whole run, its compile of about 50 s included):
 | `catch_ups_is_every_suffixs_catch_up` | 29 | prove | 35 |
 | `true_up_reaches_the_target` | 30 | prove | 0 |
 | `basis_figures_laws` | 31 | prove | 0 |
+| `unrecovered_cost_laws` | 32 | prove | 0 |
 | `kani_symbolic_copy_canary` | (the checker: "Trusting the checker") | prove | 3 |

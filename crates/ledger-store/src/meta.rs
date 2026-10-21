@@ -17,6 +17,7 @@ use crate::error::StoreError;
 use chrono::NaiveDate;
 use ledger_core::conventions::{Approval, ConventionKind, NewConvention, NewDecision, NewOpenItem};
 use ledger_core::settings::{Change, Source};
+use ledger_core::{ClassId, ProjectFacts, ProjectKind, ProjectStatus};
 use serde_json::{Map, Value, json};
 
 /// The journal format these events need: an older reader stops at the
@@ -170,7 +171,9 @@ pub fn convention_retired_of(p: &Value) -> Result<(String, String, Source), Stor
 }
 
 /// `decision.recorded {id, subject, decision_md, decided_by, decided_on,
-/// evidence_attachment?, supersedes?, citation?}`.
+/// evidence_attachment?, supersedes?, citation?, projects?}`: `projects`
+/// only when it names any (journal feature `projects`), so a decision
+/// without them writes the bytes it always did.
 pub fn decision_recorded(id: u64, d: &NewDecision) -> Value {
     let mut o = Map::new();
     o.insert("id".into(), json!(id));
@@ -181,6 +184,9 @@ pub fn decision_recorded(id: u64, d: &NewDecision) -> Value {
     put(&mut o, "evidence_attachment", d.evidence_attachment);
     put(&mut o, "supersedes", d.supersedes);
     put(&mut o, "citation", d.citation.clone());
+    if !d.projects.is_empty() {
+        o.insert("projects".into(), json!(d.projects));
+    }
     Value::Object(o)
 }
 
@@ -196,6 +202,17 @@ pub fn decision_recorded_of(p: &Value) -> Result<(u64, NewDecision), StoreError>
                 .collect::<Option<Vec<_>>>()
         })
         .ok_or_else(|| corrupt(E, "decided_by"))?;
+    let projects = match p.get("projects") {
+        None | Some(Value::Null) => vec![],
+        Some(v) => v
+            .as_array()
+            .and_then(|a| {
+                a.iter()
+                    .map(|x| x.as_u64().and_then(|n| ClassId::try_from(n).ok()))
+                    .collect::<Option<Vec<_>>>()
+            })
+            .ok_or_else(|| corrupt(E, "projects"))?,
+    };
     Ok((
         u64_of(p, E, "id")?,
         NewDecision {
@@ -206,6 +223,74 @@ pub fn decision_recorded_of(p: &Value) -> Result<(u64, NewDecision), StoreError>
             evidence_attachment: opt_u64(p, E, "evidence_attachment")?,
             supersedes: opt_u64(p, E, "supersedes")?,
             citation: opt_str(p, E, "citation")?,
+            projects,
+        },
+    ))
+}
+
+/// `project.set {id, name, status, kind?, description?, party_id?,
+/// started_on?, ended_on?, links?, notes?}`: a class's whole project
+/// record (rules.md B-37; journal feature `projects`). Every optional key
+/// is left out when empty, so the payload is canonical.
+pub fn project_set(id: ClassId, name: &str, f: &ProjectFacts) -> Value {
+    let mut o = Map::new();
+    o.insert("id".into(), json!(id));
+    o.insert("name".into(), json!(name));
+    o.insert("status".into(), json!(f.status.key()));
+    put(&mut o, "kind", f.kind.map(ProjectKind::key));
+    put(&mut o, "description", f.description.clone());
+    put(&mut o, "party_id", f.party);
+    put(&mut o, "started_on", f.started_on.map(|d| d.to_string()));
+    put(&mut o, "ended_on", f.ended_on.map(|d| d.to_string()));
+    if !f.links.is_empty() {
+        o.insert("links".into(), json!(f.links));
+    }
+    put(&mut o, "notes", f.notes.clone());
+    Value::Object(o)
+}
+
+/// Read a `project.set`: `(id, name, facts)`. A missing or mistyped key is
+/// corrupt; a status or kind this version doesn't know is newer (a newer
+/// version wrote it, rules.md B-27).
+pub fn project_set_of(
+    line: &crate::journal::JournalLine,
+) -> Result<(ClassId, String, ProjectFacts), StoreError> {
+    const E: &str = "project.set";
+    let p = &line.payload;
+    let id = ClassId::try_from(u64_of(p, E, "id")?).map_err(|_| corrupt(E, "id"))?;
+    let name = str_of(p, E, "name")?;
+    let key = str_of(p, E, "status")?;
+    let status = ProjectStatus::parse(&key)
+        .ok_or_else(|| crate::format::newer_content(line, format!("the project status {key:?}")))?;
+    let kind = match opt_str(p, E, "kind")? {
+        None => None,
+        Some(k) => Some(ProjectKind::parse(&k).ok_or_else(|| {
+            crate::format::newer_content(line, format!("the project kind {k:?}"))
+        })?),
+    };
+    let links = match p.get("links") {
+        None | Some(Value::Null) => vec![],
+        Some(v) => v
+            .as_array()
+            .and_then(|a| {
+                a.iter()
+                    .map(|x| x.as_str().map(str::to_string))
+                    .collect::<Option<Vec<_>>>()
+            })
+            .ok_or_else(|| corrupt(E, "links"))?,
+    };
+    Ok((
+        id,
+        name,
+        ProjectFacts {
+            description: opt_str(p, E, "description")?,
+            status,
+            kind,
+            party: opt_u64(p, E, "party_id")?,
+            started_on: opt_date(p, E, "started_on")?,
+            ended_on: opt_date(p, E, "ended_on")?,
+            links,
+            notes: opt_str(p, E, "notes")?,
         },
     ))
 }
@@ -328,6 +413,7 @@ mod tests {
             evidence_attachment: Some(7),
             supersedes: None,
             citation: None,
+            projects: vec![],
         };
         assert_eq!(
             decision_recorded_of(&decision_recorded(3, &d)).unwrap(),

@@ -334,7 +334,7 @@ pub struct PayoutLineParam {
     pub account: String,
     /// Positive decimal string.
     pub amount: String,
-    /// Optional class (name or id), e.g. the app or product line.
+    /// Optional class (a project: name or id; see books.projects).
     pub class: Option<String>,
 }
 
@@ -349,7 +349,7 @@ pub struct PayoutAdjustmentParam {
     pub side: String,
     /// Positive decimal string.
     pub amount: String,
-    /// Optional class (name or id).
+    /// Optional class (a project: name or id; see books.projects).
     pub class: Option<String>,
 }
 
@@ -391,6 +391,10 @@ pub struct RecordPayoutOut {
     pub deposit: String,
     /// The entry's lines, e.g. "Debit 1000 1265.01".
     pub lines: Vec<String>,
+    /// A note for each finished or abandoned project a line was tagged
+    /// to, as books.add_line gives; left out when none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
     /// What to do next.
     pub next: String,
 }
@@ -707,13 +711,15 @@ pub struct ShowParams {
     pub asset: Option<String>,
     /// A party, by id or name (as `books.party`).
     pub party: Option<String>,
+    /// A project, by id or name (as `books.project`).
+    pub project: Option<String>,
     /// A reconciliation (id from `books.reconciliations`): its account's
     /// page, with the reconciliation and its statement.
     pub reconciliation: Option<u64>,
     /// Search the transactions list (description, account, vendor, amount).
     pub search: Option<String>,
     /// A page: overview, cash, profit, transactions, reports, accounts,
-    /// assets, parties, documents, company, journal.
+    /// assets, parties, projects, documents, company, journal.
     pub page: Option<String>,
     /// For an account or a report over a period: its first day (see
     /// [`show_start_doc`]).
@@ -1032,7 +1038,8 @@ pub struct ProfitAndLossParams {
     /// Period end ([`END_DOC`]).
     #[schemars(description = END_DOC)]
     pub end: Option<String>,
-    /// Optional class name or id to filter to one division.
+    /// Optional class (a project: name or id; see books.projects) to
+    /// filter to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub class: Option<String>,
 }
@@ -1511,8 +1518,9 @@ pub struct AddLineParams {
     /// and foreign_amount. The base amount is foreign_amount * fx_rate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fx_rate: Option<String>,
-    /// Optional class name or id to tag this line for divisional tracking.
-    /// Applied after the line is added; only valid on draft entries.
+    /// Optional class (a project: name or id, see books.projects) to tag
+    /// this line with. Applied after the line is added; only valid on
+    /// draft entries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub class: Option<String>,
 }
@@ -1522,6 +1530,10 @@ pub struct AddLineParams {
 pub struct AddLineOut {
     /// True when the line was added.
     pub ok: bool,
+    /// Something to know about the line: it is tagged to a finished or
+    /// abandoned project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// One line of a posting preview.
@@ -3303,6 +3315,256 @@ pub struct ListClassesOut {
     pub classes: Vec<ClassOut>,
 }
 
+// ---------------------------------------------------------------------------
+// Projects (a class with its facts, rules.md B-37)
+// ---------------------------------------------------------------------------
+//
+// A `project` reference is a class's id or its name (ignoring capitals),
+// as `books.add_line`'s class takes it.
+
+/// Parameters for `books.add_project`.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct AddProjectParams {
+    /// Its name: one line, unique ignoring capitals, never a full TIN.
+    pub name: String,
+    /// What the project is (its scope of work).
+    #[serde(default)]
+    pub description: Option<String>,
+    /// active (default), paused, finished, or abandoned.
+    #[serde(default)]
+    pub status: Option<String>,
+    /// internal (the company's own product), client (work for a
+    /// customer), on_spec (work done hoping to be paid), or other.
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// Who it is for or with: a party's id or name.
+    #[serde(default)]
+    pub party: Option<String>,
+    /// When it started, YYYY-MM-DD.
+    #[serde(default)]
+    pub started_on: Option<String>,
+    /// When it ended, YYYY-MM-DD (finished or abandoned only).
+    #[serde(default)]
+    pub ended_on: Option<String>,
+    /// Web addresses (its site, store listing, repository): at most 8.
+    #[serde(default)]
+    pub links: Vec<String>,
+    /// Anything else.
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+
+/// Parameters for `books.update_project`. Give at least one field to
+/// change; "" clears description, kind, party, started_on, ended_on or
+/// notes.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct UpdateProjectParams {
+    /// The project: id or name.
+    pub project: String,
+    /// A new name (not blank, not another project's).
+    #[serde(default)]
+    pub name: Option<String>,
+    /// What the project is; "" clears it.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// active, paused, finished, or abandoned.
+    #[serde(default)]
+    pub status: Option<String>,
+    /// internal, client, on_spec, or other; "" clears it (not recorded).
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// Who it is for or with (party id or name); "" clears it.
+    #[serde(default)]
+    pub party: Option<String>,
+    /// When it started, YYYY-MM-DD; "" clears it.
+    #[serde(default)]
+    pub started_on: Option<String>,
+    /// When it ended, YYYY-MM-DD (finished or abandoned only); "" clears it.
+    #[serde(default)]
+    pub ended_on: Option<String>,
+    /// Replaces its links; [] clears them.
+    #[serde(default)]
+    pub links: Option<Vec<String>>,
+    /// Notes; "" clears them.
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+
+/// A party named by a project.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct PartyRefOut {
+    /// Party id.
+    pub party_id: u64,
+    /// Its name as shown.
+    pub label: String,
+}
+
+/// A project: a class with its facts.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ProjectOut {
+    /// Its id (the class id: books.add_line's class takes it).
+    pub id: u32,
+    /// Its name.
+    pub name: String,
+    /// active, paused, finished, or abandoned.
+    pub status: String,
+    /// internal, client, on_spec, or other; null: not recorded.
+    pub kind: Option<String>,
+    /// What it is.
+    pub description: Option<String>,
+    /// Who it is for or with.
+    pub party: Option<PartyRefOut>,
+    /// When it started, YYYY-MM-DD.
+    pub started_on: Option<String>,
+    /// When it ended, YYYY-MM-DD.
+    pub ended_on: Option<String>,
+    /// Its web addresses (never opened by the books).
+    pub links: Vec<String>,
+    /// Notes.
+    pub notes: Option<String>,
+}
+
+/// A project's figures to date: every posted revenue and expense line
+/// tagged to it through `through`, closing entries left out, whatever its
+/// dates.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ToDateOut {
+    /// The last day counted, YYYY-MM-DD.
+    pub through: String,
+    /// Tagged revenue, decimal string.
+    pub revenue: String,
+    /// Tagged expenses, decimal string.
+    pub expenses: String,
+    /// Revenue less expenses, decimal string.
+    pub net: String,
+    /// On spec only: expenses less revenue, never below zero (what it
+    /// would take to be repaid in full; a figure, never a receivable).
+    /// Null for any other kind.
+    pub unrecovered_cost: Option<String>,
+}
+
+/// Parameters for `books.projects`.
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+pub struct ProjectsParams {
+    /// Only projects with this status: active, paused, finished, abandoned.
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+/// One project in `books.projects`.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ProjectRowOut {
+    /// Its facts.
+    #[serde(flatten)]
+    pub project: ProjectOut,
+    /// Its figures to date.
+    pub to_date: ToDateOut,
+}
+
+/// Result of `books.projects`.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ProjectsOut {
+    /// The day the figures run through (today in the company's time zone).
+    pub through: String,
+    /// The projects, by name (ignoring capitals).
+    pub projects: Vec<ProjectRowOut>,
+}
+
+/// Parameters for `books.project`.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct ProjectParams {
+    /// The project: id or name.
+    pub project: String,
+    /// Period start ([`START_DOC`]).
+    #[schemars(description = START_DOC)]
+    pub start: Option<String>,
+    /// Period end ([`END_DOC`]).
+    #[schemars(description = END_DOC)]
+    pub end: Option<String>,
+}
+
+/// One account's tagged amount in a project's period.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ProjectAccountOut {
+    /// Account code.
+    pub code: String,
+    /// Account name.
+    pub name: String,
+    /// "revenue" or "expense".
+    #[serde(rename = "type")]
+    pub account_type: String,
+    /// On the account's normal side, decimal string.
+    pub amount: String,
+}
+
+/// One month of a project's period.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ProjectMonthOut {
+    /// YYYY-MM.
+    pub month: String,
+    /// Its first day in the period, YYYY-MM-DD.
+    pub start: String,
+    /// Its last day in the period, YYYY-MM-DD.
+    pub end: String,
+    /// Tagged revenue, decimal string.
+    pub revenue: String,
+    /// Tagged expenses, decimal string.
+    pub expenses: String,
+    /// Revenue less expenses, decimal string.
+    pub net: String,
+}
+
+/// A project's figures for the period asked.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ProjectPeriodOut {
+    /// First day, YYYY-MM-DD.
+    pub start: String,
+    /// Last day, YYYY-MM-DD.
+    pub end: String,
+    /// Tagged revenue, decimal string.
+    pub revenue: String,
+    /// Tagged expenses, decimal string.
+    pub expenses: String,
+    /// Revenue less expenses, decimal string.
+    pub net: String,
+    /// Revenue accounts, then expense accounts, by code.
+    pub by_account: Vec<ProjectAccountOut>,
+    /// By calendar month (the period's last 240 months at most).
+    pub by_month: Vec<ProjectMonthOut>,
+}
+
+/// An entry with a line tagged to a project.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ProjectEntryOut {
+    /// Entry id.
+    pub entry_id: u64,
+    /// Entry date, YYYY-MM-DD.
+    pub date: String,
+    /// Description.
+    pub description: String,
+    /// "draft" or "posted".
+    pub status: String,
+    /// Its tagged revenue less its tagged expenses, decimal string (a
+    /// tagged balance-sheet line counts zero).
+    pub project_amount: String,
+    /// The entry's total debits, decimal string.
+    pub total: Option<String>,
+    /// Id of the reversed entry, for reversals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reversal_of: Option<u64>,
+    /// Its receipts (attachment ids: filed on it or linked to it).
+    pub receipts: Vec<u64>,
+}
+
+/// A project named by a decision, a party or a list.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ProjectRefOut {
+    /// Project (class) id.
+    pub id: u32,
+    /// Its name.
+    pub name: String,
+}
+
 /// One class's P&L for `books.profit_and_loss_by_class`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ClassPnlOut {
@@ -4008,6 +4270,8 @@ pub struct PartyDetailOut {
     pub bills: Vec<PartyDocumentOut>,
     /// Payroll lines naming it, by run.
     pub payroll: Vec<PartyPayrollOut>,
+    /// The projects for or with it, by name.
+    pub projects: Vec<ProjectRefOut>,
 }
 
 // ---------------------------------------------------------------------------
@@ -4027,12 +4291,12 @@ pub enum RefId {
 /// What an attachment is linked to.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct SubjectParam {
-    /// entry, account, asset, party, invoice, bill, period, payroll_run,
-    /// schedule, reconciliation, or company.
+    /// entry, account, asset, party, project, invoice, bill, period,
+    /// payroll_run, schedule, reconciliation, or company.
     pub kind: String,
     /// Which one: an entry, invoice, bill, period, payroll run, schedule,
     /// or reconciliation id; an account's code (or id); an asset's tag (or
-    /// id); a party's id or name. Omitted for the company.
+    /// id); a party's or a project's id or name. Omitted for the company.
     pub id: Option<RefId>,
 }
 
@@ -4210,7 +4474,7 @@ pub struct ReconciliationsOut {
 /// Parameters for `books.handbook`.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct HandbookParams {
-    /// The section to read: contract, entries, drafts-and-reversals, evidence-and-receipts, attachments, files-in-out, reconciliation, fixed-assets, prepaid-and-recurring, revenue-and-payouts, parties-and-tins, 1099, cpa-handoff, settings-and-conventions, viewer, backups, format-upgrade, rules-that-change, control-roles, tracing-figures, or "all" for the whole handbook in order. Omit for the index.
+    /// The section to read: contract, entries, drafts-and-reversals, evidence-and-receipts, attachments, files-in-out, reconciliation, fixed-assets, prepaid-and-recurring, revenue-and-payouts, projects, parties-and-tins, 1099, cpa-handoff, settings-and-conventions, viewer, backups, format-upgrade, rules-that-change, control-roles, tracing-figures, or "all" for the whole handbook in order. Omit for the index.
     #[serde(default)]
     pub section: Option<String>,
 }

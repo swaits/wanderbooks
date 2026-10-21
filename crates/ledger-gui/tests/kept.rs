@@ -116,6 +116,7 @@ fn the_company_page_shows_how_the_books_are_kept() {
             evidence_attachment: None,
             supersedes: None,
             citation: None,
+            projects: vec![],
         })
         .unwrap();
     s.record_decision(&NewDecision {
@@ -126,6 +127,7 @@ fn the_company_page_shows_how_the_books_are_kept() {
         evidence_attachment: None,
         supersedes: Some(first),
         citation: None,
+        projects: vec![],
     })
     .unwrap();
     s.raise_open_item(&item("Mail the IRS letter", Some(d(2026, 10, 16))))

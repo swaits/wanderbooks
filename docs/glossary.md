@@ -62,3 +62,14 @@ definitions exactly.
   reports it: cash plus the adjusted tax basis of property contributed,
   plus their share of income as figured for tax, less cash and the adjusted
   tax basis of property distributed (Form 1065 instructions, Item L).
+- **Project** — A class with its facts (rules.md B-37): what it is, where it
+  stands (active, paused, finished, abandoned), what kind of work it is
+  (internal product, client work, on spec, other), who it is for, its
+  dates and links. Its figures are the revenue and expense lines tagged to
+  it (job costing).
+- **On spec** — Work done hoping to be paid. Its costs are expenses as they
+  are spent; the hoped-for payment is a gain contingency, recorded neither
+  as a receivable nor as income until it arrives (ASC 450-30-25-1).
+- **Unrecovered cost** — An on-spec project's expenses less its revenue to
+  date, never below zero: what it would take to be repaid in full. A
+  figure, never an asset.

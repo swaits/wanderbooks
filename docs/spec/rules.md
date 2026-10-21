@@ -1374,7 +1374,16 @@ Treas. Reg. §301.6109-4(a)); no party field may hold a nine-digit number,
 and the full TIN lives only in the encrypted vault, outside the journal
 (DECISION). W-9 facts need a 1099 role (contractor, landlord); W-4 facts
 need the employee role; payroll lines that name their employee name a
-party with that role.
+party with that role. A project's text (its name, description, links and
+notes: B-37) holds no full TIN either (`settings::line_text`,
+`long_text`). A link is a web address, so its rule reads it as one
+(`settings::holds_printed_tin_in_link`, DECISION of this rule, so store
+listings can be kept): the printed SSN (3-2-4) and EIN (2-7) forms and a
+bare nine digits standing alone are refused, but nine digits joined to a
+letter or to `/ = ? & #` are an id in a path or query (an app store
+listing's `.../id284882215`) and are kept. A project's name keeps the
+plain rule: a nine-digit job or PO number is written by its last four,
+as everywhere else in the books.
 
 The full TIN, when the books need it for the 1099 worksheet, lives in the
 TIN vault (`vault/` in the books dir, git-ignored; encrypted under a key
@@ -1570,9 +1579,13 @@ B-16; and a `settings.set` naming `books.schedule_convention`, a key an
 earlier version refuses), `month_reposting` (a schedule month or a depreciation period
 posted again after a reversal un-posted it; an older version would refuse
 the second `schedule.posted`, and its projection ignore the second
-`asset.depreciation_posted`, B-15) and `asset_basis` (an
+`asset.depreciation_posted`, B-15), `asset_basis` (an
 `asset.basis_set`, a new event type: an asset's basis facts with the
-value at contribution and the §704(c) method, B-25). A command asks for
+value at contribution and the §704(c) method, B-25) and `projects` (a
+`project.set`, a new event type: a class's project facts; an
+`attachment.linked` to the subject kind `project`, which an older version
+would call corrupt; a `decision.recorded` with `projects`, which an older
+version would drop silently: B-37). A command asks for
 the feature it needs (`Store::ensure_feature`) before its first journaled
 line, and only when the line it is about to write uses it, so a write
 refused for waiting on the upgrade journals nothing, never an entry
@@ -2525,3 +2538,78 @@ package). **Checked:** `ledger-core` `tests/tax_capital.rs`;
 (`the_k1_worksheet_reports_tax_basis_capital`), `tests/p3_seams.rs`
 (`depreciation_is_one_figure_everywhere`,
 `the_cpa_package_as_of_each_date_is_the_tools_figures`).
+
+## B-37 A project is a class with its facts; its figures are its tagged lines
+
+**Status:** DECISION (the owner, 2026-10-21: "a Projects page that treats
+a class as a project ... Projects are entities too and can have name,
+description, whatever other metadata you think they should have"; the
+convention `link-to-projects` in the books: "whenever applicable, we link
+things to [projects]"); CONVENTION (job costing, item 3); AUTHORITY (on
+spec, item 4: ASC 450-30-25-1; ASC 340-40-25-5 with B-22;
+`sources/fasb-asc.md`, both quoted through Deloitte's DART roadmaps and
+not yet re-read in the ASC basic view: an open item)
+
+1. **A project is a class.** Same id and name; every class is one (a
+   class an earlier version wrote has the default facts: active, kind not
+   recorded). Its facts, the few a job cost sheet carries: a
+   description (its scope of work), a status (`active`, `paused`,
+   `finished`, `abandoned`), a kind (`internal`: the company's own
+   product; `client`: work for a customer; `on_spec`: work done hoping to
+   be paid; `other`; or not recorded), a party (who it is for or with),
+   the dates it started and ended (an end only when finished or
+   abandoned, never before the start; informational: no figure filters by
+   them), up to eight links (web addresses, never opened) and notes. Names
+   are one line, unique ignoring capitals (in any script) and surrounding
+   space, and never digits only (a project is named by id or name, so such
+   a name would read as an id); no field holds a full TIN (B-26). A
+   change that keeps a project's own name never checks the name again, so
+   old books (replay never checks names) holding a duplicate can still
+   change either project, and a fact-only change never renames. Journaled as `class.added`, then the whole
+   record as `project.set` when there is more than a name (journal feature
+   `projects`, B-27). Replay checks only what it can't do without (the
+   class and the party exist), never the text rules, so a rule tightened
+   later never breaks books already kept. No budget, estimate, contract
+   value or percent complete: each is a document linked to the project, a
+   revenue-recognition question the books don't face, or the CPA's.
+2. **Links.** A line is tagged with a project (its class); a receipt or
+   document is linked to a project (attachment subject `project`); a
+   decision names the projects it is about. Whether to link is the
+   company's convention; how is this rule.
+3. **Figures (job costing).** For a period: the revenue and expense lines
+   tagged to it, dated in the period, closing entries left out (B-11),
+   each on its normal side; net is revenue less expenses. To date: every
+   such line through the day, from the first day the books keep, whatever
+   the project's dates. A tagged balance-sheet line counts nothing (an
+   asset bought for it counts as it is depreciated or expensed, tagged
+   then). No cost is allocated: a shared cost counts only as split across
+   lines when it is entered. The projects with the untagged lines
+   partition the P&L. By month, the period's last 240 months at most.
+4. **On spec.** Work done hoping to be paid: its costs are expenses when
+   incurred (B-22; ASC 340-40-25-5 makes a cost of an anticipated
+   contract an asset only if, among its criteria, it is expected to be
+   recovered, which on spec it isn't). The hoped-for payment is a gain
+   contingency: no receivable and no income until received (ASC
+   450-30-25-1). A repayment is revenue tagged to the project (a
+   reimbursement credited to the expense it repays, tagged, comes to the
+   same). Its unrecovered cost, "if repaid", is expenses less revenue to
+   date, never below zero: a figure, never an asset.
+5. **Status.** Finished and abandoned projects still take lines (a late
+   cost, a final invoice); `books.add_line` and `books.record_payout` say
+   so when one is tagged.
+6. Omitted dates mean what B-30 says (`books.project`'s period); to date
+   is always stated as such, beside it.
+
+**Enforced:** `ledger_core::classes::{ProjectFacts, ProjectStatus,
+ProjectKind}`, `Ledger::{check_set_project, set_project,
+replay_set_project, projects_of_party}`, `reports::{project_figures,
+project_to_date, project_entries}`, `kernel::unrecovered_cost`;
+`Store::{add_project, set_project, subject_feature}` (feature
+`projects`); `books.add_project`, `books.update_project`,
+`books.projects`, `books.project`; the viewer's Projects pages.
+**Checked:** `ledger-core` `tests/spec_projects.rs`, `ledger-store`
+`tests/projects.rs`, `ledger-mcp` `tests/spec_projects.rs`, `ledger-gui`
+`tests/projects.rs`; bookspec `projects-net-is-its-tagged-lines` and
+`projects-on-spec-costs-are-expenses`; Kani `unrecovered_cost_laws`;
+proptests `prop_project_nets_partition_the_pnl`,
+`prop_project_set_round_trips`.

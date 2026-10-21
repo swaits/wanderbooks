@@ -73,6 +73,37 @@ pub fn pill(ui: &mut Ui, text: &str, fg: Color32, bg: Color32) -> Response {
         .response
 }
 
+/// One journal event on a History card: its icon, its text as a link
+/// (cut with an ellipsis), then its number and time, which keep their
+/// room, so a long name in the text never widens the card. Returns the
+/// link's response.
+pub fn history_row(ui: &mut Ui, icon: &str, text: &str, seq: u64, ts: &str) -> Response {
+    let p = pal(ui.ctx());
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(icon).color(p.muted));
+        let meta = format!("event {seq} · {}", crate::fmt::timestamp(ts));
+        let meta_w = ui
+            .painter()
+            .layout_no_wrap(meta.clone(), theme::regular(11.0), p.faint)
+            .size()
+            .x;
+        let w = (ui.available_width() - meta_w - ui.spacing().item_spacing.x).max(40.0);
+        let link = ui
+            .scope(|ui| {
+                ui.set_max_width(w);
+                link_truncated(ui, RichText::new(text).font(theme::regular(12.5)))
+            })
+            .inner;
+        ui.label(
+            RichText::new(meta)
+                .font(theme::regular(11.0))
+                .color(p.faint),
+        );
+        link
+    })
+    .inner
+}
+
 /// Text that looks like plain text until you hover it, then like a link.
 pub fn link(ui: &mut Ui, text: RichText) -> Response {
     link_label(ui, egui::Label::new(text))
@@ -276,11 +307,31 @@ pub fn recently_copied(ui: &Ui, id: egui::Id) -> bool {
 /// A value that copies itself when clicked: a pointer and a copy icon on
 /// hover, a check for a moment after.
 pub fn copyable(ui: &mut Ui, text: RichText, value: &str) -> Response {
+    copyable_label(ui, text, value, false)
+}
+
+/// [`copyable`] on one line, cut with an ellipsis where the space ends
+/// (the copy icon's slot kept), the full text on hover: for text of any
+/// length with no spaces to wrap at, a long name or a web address.
+pub fn copyable_truncated(ui: &mut Ui, text: RichText, value: &str) -> Response {
+    copyable_label(ui, text, value, true)
+}
+
+fn copyable_label(ui: &mut Ui, text: RichText, value: &str, truncate: bool) -> Response {
     let id = ui.id().with(("copy", value));
     let p = pal(ui.ctx());
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
-        let r = ui.add(egui::Label::new(text).sense(Sense::click()));
+        let r = if truncate {
+            let w = (ui.available_width() - 18.0).max(24.0);
+            ui.scope(|ui| {
+                ui.set_max_width(w);
+                ui.add(egui::Label::new(text).truncate().sense(Sense::click()))
+            })
+            .inner
+        } else {
+            ui.add(egui::Label::new(text).sense(Sense::click()))
+        };
         let recent = recently_copied(ui, id);
         let (slot, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
         if r.hovered() || recent {

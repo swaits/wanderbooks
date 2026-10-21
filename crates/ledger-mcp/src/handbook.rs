@@ -71,6 +71,7 @@ pub const SECTIONS: &[(&str, &str)] = &[
         "revenue-and-payouts",
         include_str!("../handbook/revenue-and-payouts.md"),
     ),
+    ("projects", include_str!("../handbook/projects.md")),
     (
         "parties-and-tins",
         include_str!("../handbook/parties-and-tins.md"),

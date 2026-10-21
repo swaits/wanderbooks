@@ -897,7 +897,7 @@ fn read_journal_and_format_gives_every_line_and_the_format() {
 /// declaration as newer, never at the line, and never calls it corrupt.
 #[test]
 fn p3_features_wait_for_the_upgrade_and_are_declared_once() {
-    for f in ["account_renamed", "require_tax_category"] {
+    for f in ["account_renamed", "require_tax_category", "projects"] {
         assert!(KNOWN_FEATURES.contains(&f), "{f}");
     }
     let dir = test_dir("p3-features");
@@ -927,11 +927,20 @@ fn p3_features_wait_for_the_upgrade_and_are_declared_once() {
         store.change_settings(&[policy()], &source).map(|_| ()),
         "the journal feature require_tax_category",
     );
+    let facts = ledger_core::ProjectFacts {
+        kind: Some(ledger_core::ProjectKind::OnSpec),
+        ..Default::default()
+    };
+    waits(
+        store.add_project("Harbor", &facts).map(|_| ()),
+        "the journal feature projects",
+    );
     assert_eq!(store.head(), head, "refused whole");
     assert!(store.upgrade_format().unwrap().is_some());
     store.rename_account(1, "Business Checking", None).unwrap();
     store.rename_account(1, "Checking", None).unwrap();
     store.change_settings(&[policy()], &source).unwrap();
+    store.add_project("Harbor", &facts).unwrap();
     assert_eq!(*store.journal_format(), ledger_store::format::current());
     drop(store);
     let text = std::fs::read_to_string(dir.join(JOURNAL_FILE)).unwrap();
@@ -942,7 +951,12 @@ fn p3_features_wait_for_the_upgrade_and_are_declared_once() {
     let kinds: Vec<(&str, serde_json::Value)> = lines
         .iter()
         .map(|l| (l["type"].as_str().unwrap(), l["payload"].clone()))
-        .filter(|(t, _)| matches!(*t, FORMAT_SET | "account.renamed" | "settings.set"))
+        .filter(|(t, _)| {
+            matches!(
+                *t,
+                FORMAT_SET | "account.renamed" | "settings.set" | "project.set"
+            )
+        })
         .collect();
     let current = ledger_store::format::current();
     assert_eq!(kinds[0].0, FORMAT_SET);
@@ -953,7 +967,8 @@ fn p3_features_wait_for_the_upgrade_and_are_declared_once() {
     assert_eq!(kinds[1].0, "account.renamed");
     assert_eq!(kinds[2].0, "account.renamed");
     assert_eq!(kinds[3].0, "settings.set");
-    assert_eq!(kinds.len(), 4);
+    assert_eq!(kinds[4].0, "project.set");
+    assert_eq!(kinds.len(), 5);
     // An earlier reader knows no feature (P2: KNOWN_FEATURES was empty),
     // so the gate stops it at the declaration, before the rename: the
     // gate's refusal of a feature it doesn't know is pinned by

@@ -236,6 +236,10 @@ fn tooltip(
 pub struct BarGroup {
     pub label: String,
     pub values: Vec<Decimal>,
+    /// The group's year, when the chart spans more than one: the first
+    /// label drawn, and each drawn in a new year, gains it ("Jan 26"),
+    /// whichever labels a crowded chart leaves out.
+    pub year: Option<i32>,
 }
 
 /// Grouped bars (e.g. income and spending per month), with a legend.
@@ -245,6 +249,22 @@ pub fn bar_chart(
     groups: &[BarGroup],
     series: &[(&str, Color32)],
     height: f32,
+) -> Option<usize> {
+    bars(ui, groups, series, height, true)
+}
+
+/// [`bar_chart`] that opens nothing: hovering shows each group's figures,
+/// and the pointer stays an arrow, since no page shows those figures.
+pub fn bar_chart_view(ui: &mut Ui, groups: &[BarGroup], series: &[(&str, Color32)], height: f32) {
+    bars(ui, groups, series, height, false);
+}
+
+fn bars(
+    ui: &mut Ui,
+    groups: &[BarGroup],
+    series: &[(&str, Color32)],
+    height: f32,
+    clickable: bool,
 ) -> Option<usize> {
     let p = pal(ui.ctx());
     ui.horizontal(|ui| {
@@ -259,7 +279,12 @@ pub fn bar_chart(
             ui.add_space(8.0);
         }
     });
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::click());
+    let sense = if clickable {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), height), sense);
     let painter = ui.painter_at(rect);
     if groups.is_empty() {
         return None;
@@ -293,7 +318,12 @@ pub fn bar_chart(
     let bw = ((gw * 0.7) / n).min(28.0);
     let mut clicked = None;
     let hover = resp.hover_pos();
+    let mut drawn_year: Option<i32> = None;
     for (gi, g) in groups.iter().enumerate() {
+        let full = match g.year {
+            Some(y) => format!("{} {:02}", g.label, y.rem_euclid(100)),
+            None => g.label.clone(),
+        };
         let gx = plot.left() + gw * gi as f32;
         let grect = Rect::from_min_max(pos2(gx, plot.top()), pos2(gx + gw, plot.bottom()));
         let hovered = hover.is_some_and(|h| grect.contains(h));
@@ -325,10 +355,12 @@ pub fn bar_chart(
         // the latest so it's always labeled.
         let every = (34.0 / gw).ceil().max(1.0) as usize;
         if (groups.len() - 1 - gi).is_multiple_of(every) {
+            let new_year = g.year.is_some() && g.year != drawn_year;
+            drawn_year = g.year.or(drawn_year);
             painter.text(
                 pos2(gx + gw / 2.0, plot.bottom() + 6.0),
                 Align2::CENTER_TOP,
-                &g.label,
+                if new_year { &full } else { &g.label },
                 theme::regular(11.0),
                 p.faint,
             );
@@ -342,7 +374,7 @@ pub fn bar_chart(
             tooltip(
                 &painter,
                 pos2(gx + gw / 2.0, plot.top()),
-                &g.label,
+                &full,
                 &lines.join("\n"),
                 p.surface,
                 p.border,
@@ -350,10 +382,12 @@ pub fn bar_chart(
                 p.muted,
                 rect,
             );
-            if resp.clicked() {
-                clicked = Some(gi);
+            if clickable {
+                if resp.clicked() {
+                    clicked = Some(gi);
+                }
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
     }
     clicked
@@ -362,6 +396,17 @@ pub fn bar_chart(
 /// Ranked horizontal bars with labels and exact amounts. Returns the
 /// clicked row.
 pub fn hbars(ui: &mut Ui, rows: &[(String, Decimal)], color: Color32) -> Option<usize> {
+    hbars_signed(ui, rows, color, color)
+}
+
+/// [`hbars`] with a row below zero (a loss) drawn in `negative`, its
+/// amount too, so the longest bar can't read as the best.
+pub fn hbars_signed(
+    ui: &mut Ui,
+    rows: &[(String, Decimal)],
+    color: Color32,
+    negative: Color32,
+) -> Option<usize> {
     let p = pal(ui.ctx());
     let max = rows
         .iter()
@@ -371,13 +416,21 @@ pub fn hbars(ui: &mut Ui, rows: &[(String, Decimal)], color: Color32) -> Option<
     let mut clicked = None;
     for (i, (label, v)) in rows.iter().enumerate() {
         let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
         let painter = ui.painter_at(rect);
         if resp.hovered() {
             painter.rect_filled(rect, CornerRadius::same(6), p.hover);
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
+        let below = *v < Decimal::ZERO;
+        let fill = if below { negative } else { color };
+        let amount_color = if below && negative != color {
+            negative
+        } else {
+            p.text
+        };
         let amount = fmt::dollars(*v);
-        let ag = painter.layout_no_wrap(amount, theme::regular(13.0), p.text);
+        let ag = painter.layout_no_wrap(amount, theme::regular(13.0), amount_color);
         let label_w = (rect.width() * 0.38).min(220.0);
         let lg = painter.layout(label.clone(), theme::regular(13.0), p.text, label_w);
         painter.galley(
@@ -392,14 +445,14 @@ pub fn hbars(ui: &mut Ui, rows: &[(String, Decimal)], color: Color32) -> Option<
             pos2(bar_left, rect.center().y - 6.0),
             vec2(w.max(2.0), 12.0),
         );
-        painter.rect_filled(bar, CornerRadius::same(3), color);
+        painter.rect_filled(bar, CornerRadius::same(3), fill);
         painter.galley(
             pos2(
                 rect.right() - ag.size().x - 6.0,
                 rect.center().y - ag.size().y / 2.0,
             ),
             ag,
-            p.text,
+            amount_color,
         );
         if resp.clicked() {
             clicked = Some(i);
@@ -490,5 +543,90 @@ mod tests {
                 texts.iter().map(|(t, _, _)| t).collect::<Vec<_>>()
             );
         }
+    }
+
+    /// Months from November 2024 through October 2026, as the project and
+    /// party charts give them.
+    fn two_years() -> Vec<BarGroup> {
+        (0..24)
+            .map(|i| {
+                let m = d(2024, 11, 1) + chrono::Months::new(i);
+                BarGroup {
+                    label: m.format("%b").to_string(),
+                    values: vec![Decimal::new(i64::from(i) * 100, 2)],
+                    year: Some(chrono::Datelike::year(&m)),
+                }
+            })
+            .collect()
+    }
+
+    /// A crowded chart over two years drops every other label, January's
+    /// too, yet the first label drawn and the first drawn in each new year
+    /// carry the year, so no month name stands for two months unread.
+    #[test]
+    fn a_crowded_chart_keeps_its_years() {
+        for width in [380.0, 800.0] {
+            let groups = two_years();
+            let mut h = Harness::builder()
+                .with_size(egui::vec2(width, 300.0))
+                .build_ui(move |ui| {
+                    bar_chart_view(ui, &groups, &[("Net", Color32::GRAY)], 200.0);
+                });
+            crate::theme::install_fonts(&h.ctx);
+            crate::theme::apply(&h.ctx, false);
+            h.run();
+            let mut labels: Vec<(String, f32)> = painted(h.output())
+                .into_iter()
+                .filter(|(t, _, _)| {
+                    t.len() <= 6 && t.chars().next().is_some_and(char::is_alphabetic)
+                })
+                .filter(|(t, _, _)| t != "Net")
+                .map(|(t, p, _)| (t, p.x))
+                .collect();
+            labels.sort_by(|a, b| a.1.total_cmp(&b.1));
+            let names: Vec<&str> = labels.iter().map(|l| l.0.as_str()).collect();
+            assert!(names.len() < 24, "{width}: crowded, so thinned: {names:?}");
+            let tagged = |n: &&str| n.ends_with(char::is_numeric);
+            assert!(tagged(&names[0]), "{width}: {names:?}");
+            for year in [" 25", " 26"] {
+                assert_eq!(
+                    names.iter().filter(|n| n.ends_with(year)).count(),
+                    1,
+                    "{width}: {names:?}"
+                );
+            }
+            // 2026's tag sits on the first label drawn in 2026.
+            let at = names.iter().position(|n| n.ends_with(" 26")).unwrap();
+            assert!(
+                ["Jan", "Feb", "Mar"].contains(&&names[at][..3]) && !names[at - 1].ends_with(" 26"),
+                "{width}: {names:?}"
+            );
+        }
+    }
+
+    /// A chart with nothing to open takes no click: hovering shows its
+    /// figures, and the pointer stays an arrow.
+    #[test]
+    fn a_view_only_chart_shows_figures_and_takes_no_click() {
+        let groups = two_years();
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(800.0, 300.0))
+            .build_ui(move |ui| {
+                bar_chart_view(ui, &groups, &[("Net", Color32::GRAY)], 200.0);
+            });
+        crate::theme::install_fonts(&h.ctx);
+        crate::theme::apply(&h.ctx, false);
+        h.run();
+        h.hover_at(egui::pos2(780.0, 120.0));
+        h.run();
+        let texts = painted(h.output());
+        assert!(
+            texts.iter().any(|(t, _, _)| t == "Oct 26"),
+            "the tooltip names its month and year"
+        );
+        assert_ne!(
+            h.output().platform_output.cursor_icon,
+            egui::CursorIcon::PointingHand
+        );
     }
 }

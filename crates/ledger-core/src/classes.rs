@@ -8,7 +8,12 @@
 //!
 //! Classes are master data, journaled like accounts. Tagging a line happens
 //! on drafts only; posted entries are immutable, so their classes are frozen.
+//!
+//! A class is also a project: the class with its facts ([`ProjectFacts`]:
+//! what it is, where it stands, who it is for; rules.md B-37). Every class
+//! is one; a class an earlier version wrote has the default facts.
 
+use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
 /// Opaque class handle. Created by [`crate::Ledger`]; never forged.
@@ -21,6 +26,254 @@ pub struct Class {
     pub id: ClassId,
     /// Human name, e.g. `"Retail"` or `"Wholesale"`.
     pub name: String,
+}
+
+/// Where a project stands (rules.md B-37).
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+)]
+pub enum ProjectStatus {
+    /// Under way (the default: every class an earlier version wrote).
+    #[default]
+    Active,
+    /// Set aside for now, expected to resume.
+    Paused,
+    /// Done: its work is delivered or shipped.
+    Finished,
+    /// Dropped before it was done.
+    Abandoned,
+}
+
+impl ProjectStatus {
+    /// Every status, in display order.
+    pub const ALL: [ProjectStatus; 4] = [
+        ProjectStatus::Active,
+        ProjectStatus::Paused,
+        ProjectStatus::Finished,
+        ProjectStatus::Abandoned,
+    ];
+
+    /// The key the journal and the tools use.
+    pub fn key(self) -> &'static str {
+        match self {
+            ProjectStatus::Active => "active",
+            ProjectStatus::Paused => "paused",
+            ProjectStatus::Finished => "finished",
+            ProjectStatus::Abandoned => "abandoned",
+        }
+    }
+
+    /// The status a key names, if any.
+    pub fn parse(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|s| s.key() == key)
+    }
+
+    /// Whether the project is over (finished or abandoned): only then may
+    /// it have an end date.
+    pub fn is_over(self) -> bool {
+        matches!(self, ProjectStatus::Finished | ProjectStatus::Abandoned)
+    }
+
+    /// The status in words, for the viewer.
+    pub fn words(self) -> &'static str {
+        match self {
+            ProjectStatus::Active => "Active",
+            ProjectStatus::Paused => "Paused",
+            ProjectStatus::Finished => "Finished",
+            ProjectStatus::Abandoned => "Abandoned",
+        }
+    }
+}
+
+/// What kind of work a project is (rules.md B-37): it decides the
+/// accounting questions its costs raise.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum ProjectKind {
+    /// The company's own product.
+    Internal,
+    /// Work for a customer.
+    Client,
+    /// Work done hoping to be paid: its costs are expenses, and a
+    /// repayment is income only when received (ASC 450-30-25-1).
+    OnSpec,
+    /// Anything else.
+    Other,
+}
+
+impl ProjectKind {
+    /// Every kind, in display order.
+    pub const ALL: [ProjectKind; 4] = [
+        ProjectKind::Internal,
+        ProjectKind::Client,
+        ProjectKind::OnSpec,
+        ProjectKind::Other,
+    ];
+
+    /// The key the journal and the tools use.
+    pub fn key(self) -> &'static str {
+        match self {
+            ProjectKind::Internal => "internal",
+            ProjectKind::Client => "client",
+            ProjectKind::OnSpec => "on_spec",
+            ProjectKind::Other => "other",
+        }
+    }
+
+    /// The kind a key names, if any.
+    pub fn parse(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.key() == key)
+    }
+
+    /// The kind in words, for the viewer.
+    pub fn words(self) -> &'static str {
+        match self {
+            ProjectKind::Internal => "Internal product",
+            ProjectKind::Client => "Client work",
+            ProjectKind::OnSpec => "On spec",
+            ProjectKind::Other => "Other",
+        }
+    }
+}
+
+/// The most links a project keeps.
+pub const MAX_LINKS: usize = 8;
+
+/// One link: one line of text ([`crate::settings::line_text`]'s length
+/// and control-character rules) with no full TIN as a web address holds
+/// one ([`crate::settings::holds_printed_tin_in_link`]: a printed SSN or
+/// EIN is refused, a store listing's `id284882215` is not; rules.md B-26).
+fn link_text(l: &str) -> Result<String, String> {
+    use crate::settings::{MAX_TEXT, holds_printed_tin_in_link, line_text};
+    // line_text's TIN rule is a plain text's, so it sees the link with
+    // its digits masked; the link's own rule runs on the link itself.
+    let masked: String = l
+        .chars()
+        .map(|c| if c.is_numeric() { 'x' } else { c })
+        .collect();
+    line_text("link", &masked, MAX_TEXT)?;
+    let t = l.trim();
+    if holds_printed_tin_in_link(t) {
+        return Err(
+            "link holds a number that reads as a full SSN or EIN (printed 3-2-4 or 2-7, or nine digits standing alone): a full TIN goes only into the vault (books.set_tin)"
+                .to_string(),
+        );
+    }
+    Ok(t.to_string())
+}
+
+/// A project's facts: what a class is, beyond its name.
+///
+/// ```text
+/// GOAL: say what a project is, where it stands and who it is for, in
+///       the few facts a job cost sheet carries, without a project
+///       manager's sprawl (no budgets, estimates or percent complete).
+/// SOURCE: docs/spec/rules.md B-37; DECISION (owner, 2026-10-21: "Projects
+///         are entities too and can have name, description, whatever
+///         other metadata"); job-order costing (a job cost sheet: the
+///         job, its customer, its dates).
+/// INVARIANTS:
+///   1. No field holds a full taxpayer identification number
+///      (settings::line_text / long_text, rules.md B-26).
+///   2. ended_on only when the project is finished or abandoned, and
+///      never before started_on.
+///   3. The party, if any, is in the directory (archived allowed).
+///   4. Links: at most MAX_LINKS, each one line without whitespace, none
+///      twice, in the order given.
+///   5. The dates are informational: no figure filters by them.
+/// ```
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectFacts {
+    /// The scope of work: what the project is.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Where it stands.
+    #[serde(default)]
+    pub status: ProjectStatus,
+    /// What kind of work it is; `None`: not recorded.
+    #[serde(default)]
+    pub kind: Option<ProjectKind>,
+    /// Who it is for or with, if anyone.
+    #[serde(default)]
+    pub party: Option<crate::PartyId>,
+    /// When it started.
+    #[serde(default)]
+    pub started_on: Option<NaiveDate>,
+    /// When it ended (finished or abandoned only).
+    #[serde(default)]
+    pub ended_on: Option<NaiveDate>,
+    /// Web addresses: its site, its store listing, its repository.
+    #[serde(default)]
+    pub links: Vec<String>,
+    /// Anything else.
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+
+impl ProjectFacts {
+    /// Check the facts' form (INVARIANTS 1, 2 and 4; the party is the
+    /// ledger's to check) and return them normalized: text trimmed.
+    pub fn check(&self) -> Result<ProjectFacts, String> {
+        use crate::settings::{MAX_LONG_TEXT, long_text};
+        let description = self
+            .description
+            .as_deref()
+            .map(|t| long_text("description", t, MAX_LONG_TEXT))
+            .transpose()?;
+        let notes = self
+            .notes
+            .as_deref()
+            .map(|t| long_text("notes", t, MAX_LONG_TEXT))
+            .transpose()?;
+        for (what, d) in [("started_on", self.started_on), ("ended_on", self.ended_on)] {
+            if let Some(d) = d {
+                crate::calendar::check(d).map_err(|e| format!("{what}: {e}"))?;
+            }
+        }
+        if let Some(end) = self.ended_on {
+            if !self.status.is_over() {
+                return Err(format!(
+                    "ended_on is for a finished or abandoned project; this one is {}: set status to finished or abandoned, or clear ended_on",
+                    self.status.key()
+                ));
+            }
+            if let Some(start) = self.started_on
+                && end < start
+            {
+                return Err(format!("ended_on {end} is before started_on {start}"));
+            }
+        }
+        if self.links.len() > MAX_LINKS {
+            return Err(format!("a project keeps at most {MAX_LINKS} links"));
+        }
+        let mut links: Vec<String> = Vec::with_capacity(self.links.len());
+        for l in &self.links {
+            let l = link_text(l)?;
+            if l.chars().any(char::is_whitespace) {
+                return Err(format!(
+                    "link {l:?} holds a space: one web address per link"
+                ));
+            }
+            if links.iter().any(|o| o == &l) {
+                return Err(format!("link {l:?} is given twice"));
+            }
+            links.push(l);
+        }
+        Ok(ProjectFacts {
+            description,
+            status: self.status,
+            kind: self.kind,
+            party: self.party,
+            started_on: self.started_on,
+            ended_on: self.ended_on,
+            links,
+            notes,
+        })
+    }
+
+    /// Whether these are the defaults: a project with only its name.
+    pub fn is_default(&self) -> bool {
+        *self == ProjectFacts::default()
+    }
 }
 
 #[cfg(test)]

@@ -40,7 +40,14 @@ fn books(tag: &str) -> DataDir {
     let dir = std::env::temp_dir().join(format!("ledger-gui-gate-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let data = dir.join("books-data");
-    let mut store = Store::create(&data, Currency::USD).unwrap();
+    // In journal format 1, as before the format gate (this version's own
+    // books declare their format as they are made).
+    let mut store = Store::create_in_format(
+        &data,
+        Currency::USD,
+        &ledger_store::JournalFormat::default(),
+    )
+    .unwrap();
     store
         .add_account("1000", "Checking", AccountType::Asset, None, false)
         .unwrap();

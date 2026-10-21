@@ -284,7 +284,7 @@ since `asset_long_life` alone takes three minutes a run):
 | Law | Test |
 |---|---|
 | Replay is pure: after any sequence of settings, convention, decision, open-item, template and approval commands, valid or refused, the live store, the store reopened from its journal and the viewer's snapshot hold the same settings and conventions, and the store verifies (database row for row) | `ledger-store` `tests/settings.rs` `settings_replay_is_pure` (proptest, 512 cases per check; 2,000 by hand, release, passed) |
-| The first such change declares journal format 2, once; a change to what is set journals nothing; refused changes journal nothing | `the_first_change_declares_format_2`, `refused_changes_journal_nothing` |
+| Settings need journal format 2: books this version made declared it as they were created, so a change journals only itself; a change to what is set journals nothing; books in format 1 refuse a change (nothing journaled) until their format upgrade, then make it after the one declaration; refused changes journal nothing | `a_change_needs_journal_format_2`, `refused_changes_journal_nothing` |
 | Approval rules block nothing until enforced; then an entry a rule covers posts only once its approver approved it as it stands | `approval_rules_off_by_default`; `ledger-mcp` `spec_kept.rs` `approval_rules_through_the_server` |
 | A template drafts exactly, odd cents by largest remainder, its slots named by each draft, all or nothing | `templates_draft_exactly_or_not_at_all`, `template_slots_take_the_account_each_draft_names`, `templates_draft_through_the_server`, core `splits_are_exact` |
 | Books written under P1 open to the same record forever | `books_written_under_p1_open_to_their_record` (fixture `old-books/p1_record`, also in every old-books test of the store, the viewer and the server) |
@@ -1100,7 +1100,7 @@ no mutation run (D-33): the targets are listed for P12 below.
   `books_written_under_p3_keep_their_names` (fixture `old-books/p3_rename`,
   written once by `write_p3_rename_fixture`, `--ignored`; its figures are
   also in `books_an_earlier_version_wrote_open_to_its_figures`).
-- `ledger-store` `tests/format.rs`: `p3_features_are_declared_once_before_the_first_line_that_needs_them`,
+- `ledger-store` `tests/format.rs`: `p3_features_wait_for_the_upgrade_and_are_declared_once`,
   `an_unknown_feature_before_a_rename_is_newer_at_the_declaration`.
 
 **Properties:** `prop_period_defaults_resolve` (`ledger-core`, 5,000
@@ -1260,7 +1260,7 @@ no mutation run here; what P12 must cover is at the end.
 | Properties: a reversal's target, parts and flow are the original's negated; parts sum to the target, each with its sign; a sole party's money part is the flow as before P3; tin_last4 is every source present | `a_reversal_is_the_exact_opposite`, `a_sole_partys_money_part_is_the_flow_as_before`, `tin_last4_is_every_source_present` (`PROPTEST_CASES`, default 256; 5,000 run clean) | B-35, B-9 |
 | Decimal and i64 agree on party_target and reverse_target | `kernel_bridge.rs` `party_target_agrees` | the bridge |
 | Kani: the direction is the sign, the target is odd, reverse_target an involution | `proofs.rs` `party_target_direction_is_its_sign`, `party_target_is_odd`, `reverse_target_is_an_involution` | the kernel spec |
-| The journal: party.creditor_set after its feature, declared once; refusals journal nothing; books without creditors never change; corrupt lines refused | `ledger-store/tests/party_creditors.rs` | the format gate |
+| The journal: party.creditor_set one line each, under the feature the books declared when created; in books an older version wrote, refused (FormatUpgradePending, nothing journaled) until the format upgrade; refusals journal nothing; books without creditors never change, in either format; corrupt lines refused | `ledger-store/tests/party_creditors.rs` | the format gate |
 | Over the MCP: get_entry's direction, cash, in_kind; party totals by basis, echoed, others refused; basis all equals members' equity; creditor_of round trips and a card fee isn't a payment; the post_entry preview's parts are what it posts | `ledger-mcp/tests/spec_party_totals.rs` | the tool docs |
 | Defect 11 over the MCP: a member's TIN last four in the directory, a W-9's, none, after a purge | `ledger-mcp/tests/spec_vault.rs` `defect11_the_directory_shows_a_members_tin_last4` | B-26 |
 | The viewer shows the tools' numbers, labelled cash basis, with the in-kind line; its what-for reads a reversal as `parties::flow` does | `ledger-gui/tests/parties.rs` `the_party_page_shows_the_basis_and_in_kind`, `a_reversed_member_card_payment_is_nothing_on_the_issuers_page` | `activity_with`, `flow` |
@@ -1312,8 +1312,8 @@ mutation run (D-33); the list P12 must cover is at the end.
 | The bucket table, all 16 cases; splitting and netting exact | `payment_bucket_is_the_table_in_all_16_cases`, `buckets_net_money_moved_between_the_companys_sources`, Kani `payment_bucket_is_the_table`, `payment_split_is_exact`, `net_buckets_keeps_the_total`, bridge `payment_buckets_agree` |
 | Properties | `no_instruments_no_financing_is_the_old_report` (the regression: with cash named and no methods or financing, the old figure exactly), `buckets_partition_each_payment`, `a_reversal_nets_every_bucket_to_zero`, `the_worksheet_ties_to_the_ledger` (paid + excluded + undetermined + not reportable + receipts for something else = every payment line in the year, dated decisions, sales and receipts included; the payment lists sum to their columns) |
 | Payment methods: refusals, the reversal chain | `a_payment_method_is_refused_unless_sound`, `a_payment_method_tags_the_whole_reversal_chain`, unit tests in `instruments.rs` |
-| W-9 flag kept apart from the decision (brief 1.5, R8) | `set_vendor_1099_keeps_the_w9_flag_when_omitted`, `set_w9_keeps_the_1099_decision_and_its_source`, `set_w9_declares_the_w9_flags_feature_before_its_first_line` (`spec_1099.rs`), `marking_a_w9_keeps_who_decided_the_1099` (`ledger-store` `tests/form1099.rs`) |
-| Journal: features declared once before their first line; replay and projection exact; refusals and no-ops journal nothing; newer values newer; old books as they always meant | `ledger-store` `tests/form1099.rs` (`each_feature_is_declared_once_before_its_first_line`, `decisions_and_methods_replay_and_project`, `refusals_and_no_ops_journal_nothing`, `an_unknown_1099_value_is_newer_not_corrupt`, `books_written_before_decisions_read_as_they_always_meant`), unit tests in `ledger-store` `form1099.rs`, the op model (`refused_commands_never_reach_the_journal` with `SetVendor1099`, `SetW9Flag`, `AddInstrument`, `SetEntryInstrument`; an accepted command journals or changes nothing), `books_an_earlier_version_wrote_open_to_its_figures` (fixture `p2_vendor_1099`) |
+| W-9 flag kept apart from the decision (brief 1.5, R8) | `set_vendor_1099_keeps_the_w9_flag_when_omitted`, `set_w9_keeps_the_1099_decision_and_its_source`, `set_w9_asks_for_the_w9_flags_feature_before_its_first_line` (`spec_1099.rs`: refused whole in P2's books until their upgrade), `marking_a_w9_keeps_who_decided_the_1099` (`ledger-store` `tests/form1099.rs`) |
+| Journal: lines written only under their features (refused, nothing journaled, in books an older version wrote until the format upgrade; never declared on the way); replay and projection exact; refusals and no-ops journal nothing; newer values newer; old books as they always meant | `ledger-store` `tests/form1099.rs` (`each_feature_waits_for_the_upgrade_and_is_never_declared_on_the_way`, `decisions_and_methods_replay_and_project`, `refusals_and_no_ops_journal_nothing`, `an_unknown_1099_value_is_newer_not_corrupt`, `books_written_before_decisions_read_as_they_always_meant`), unit tests in `ledger-store` `form1099.rs`, the op model (`refused_commands_never_reach_the_journal` with `SetVendor1099`, `SetW9Flag`, `AddInstrument`, `SetEntryInstrument`; an accepted command journals or changes nothing), `books_an_earlier_version_wrote_open_to_its_figures` (fixture `p2_vendor_1099`) |
 | Records change no entry (verification 13a) | `decision_and_method_records_change_no_entry` |
 | The quieter untagged note (R7) | `the_untagged_note_counts_only_money_out` (`ledger-package`) |
 | One builder: the package CSV is the worksheet CSV for the package's accounts; README wording | `ledger-package` `tests/package.rs` (the zip's CSV equals `vendor_1099_csv` for the request's accounts, else the settings', through as_of: `payments_to_a_vendor_come_from_the_packages_accounts`, `one_list_of_cash_accounts_per_package`, `the_1099_worksheet_stops_at_as_of`; the README line pinned); over the MCP, the package's CSV is `books.vendor_1099`'s for the same `cash_accounts`, `financing_accounts` and `through` (`ledger-mcp` `oracle_mcp.rs` `cpa_package_holds_the_year_and_its_evidence`) |
@@ -1357,7 +1357,7 @@ must cover is at the end.
 | Party totals and the 1099 worksheet never contradict: paid less received is the worksheet's paid + excluded_card + undetermined + not_reportable plus its other receipts, for a vendor named alone, whatever the methods, refunds and reversals | property `party_totals_are_the_1099s_buckets` (`ledger-core` `tests/form1099.rs`; `PROPTEST_CASES`, default 256; 2,000 run clean; dropping a bucket from the sum fails at once) | B-35 item 9, by hand |
 | The same, one year by hand: a member's check, a member's card, a member's payment of unknown method, a company card charge and a company check to one contractor, then the member reimbursed | `bookspec/examples/1099-and-party-totals-for-a-members-payment.toml` | B-35 item 9; Treas. Reg. §1.6041-1(e)(1), (a)(1)(iv) |
 | The CPA package's 1099 worksheet is `books.vendor_1099`'s CSV for the package's accounts (the request's, else the settings', R18) through its as_of, byte for byte; without `through` the files differ; a `through` outside the year and an unknown account are refused | `ledger-mcp` `oracle_mcp.rs` `cpa_package_holds_the_year_and_its_evidence`; `ledger-package` `tests/package.rs` `payments_to_a_vendor_come_from_the_packages_accounts`, `one_list_of_cash_accounts_per_package`, `the_1099_worksheet_stops_at_as_of` | B-33; mcp-interface.md |
-| A feature is declared before a command's first line: `books.update_party` with a field and the first creditor journals the declaration, then the field, then the creditor | `ledger-mcp` `tests/spec_party_totals.rs` `update_party_declares_the_creditor_feature_before_its_first_line` | B-27 |
+| A feature is asked for before a command's first line: `books.update_party` with a field and the first creditor, in P2's books waiting for their format upgrade, is refused whole (nothing journaled, never the field without the creditor); once upgraded, as in books this version made, it journals the field, then the creditor, declaring nothing | `ledger-mcp` `tests/spec_party_totals.rs` `update_party_asks_for_the_creditor_feature_before_its_first_line` | B-27 |
 | One bookspec loader for every example, the parties' and the 1099s' with them: `setup.parties`, `setup.members` (`distributions_account`), `setup.payees` (a party's vendor record), `setup.status_changes`, `setup.instruments`, events' `parties` and `instrument`, and the queries `vendor_1099`, `k1`, `party_part`, `party_totals`, `party_tin_last4`; refused: a party or payment method not in the setup, a reversal naming parties, party totals without a basis, a 1099 line leaving a figure out, a wrong direction or status | `ledger-core` `tests/bookspec.rs` (`every_bookspec_example_holds`, `a_party_not_in_the_setup_is_refused`, `a_party_parts_direction_is_checked`, `a_reversal_naming_parties_is_refused`, `party_totals_without_a_basis_are_refused`, `a_vendor_1099_line_leaving_a_figure_out_is_refused`, `a_vendor_1099_status_is_checked`, `a_payment_method_not_in_the_setup_is_refused`) | bookspec/README.md |
 
 **For P12 (mutation targets, none run, D-33):** `parties::card_accounts`
@@ -1385,7 +1385,7 @@ a bookspec example (`bookspec/examples/`, P13, D-34).
 | A disposal inside a month already run takes back the days after it (R2: excess 500.00, book value 6,500.00) | `defect22_a_disposal_inside_a_posted_month_takes_back_the_extra_days` (store and `ledger-mcp` `spec_assets.rs`) |
 | A month skipped is caught up in the month the run is made; a later run for it posts nothing (settled in design, P3) | core `a_skipped_month_is_caught_up_in_the_month_run`, store `a_skipped_month_is_caught_up_in_the_month_run`, MCP `a_skipped_month_is_caught_up_and_said` |
 | A reversed run is un-posted and runs again (feature month_reposting); re-instating a run whose month ran again is refused; a disposal, and a run its disposal took as final, can't be reversed; a reversed run before a disposal leaves nothing behind (R3) | store `a_reversed_depreciation_month_can_be_run_again`, `a_disposal_entry_cannot_be_reversed`, `a_reversed_run_before_a_disposal_leaves_nothing_behind`; core `a_reversed_schedule_month_is_due_again` |
-| What the books carry is read entry by entry, each in its own month: a run reversed after its month ended isn't run twice (its month posts nothing; the reversal's month catches it up), for depreciation; a schedule month reversed after it ended is left for a human, listed with why (P3 review) | store `a_run_reversed_after_its_month_is_caught_up_in_the_reversals_month`; GUI `a_run_reversed_after_its_month_leaves_the_reversals_month_due`; core `schedules.rs` `a_schedule_month_reversed_after_it_ended_is_left_for_a_human`; store `format.rs` `a_schedule_month_posted_again_declares_month_reposting_and_replays` |
+| What the books carry is read entry by entry, each in its own month: a run reversed after its month ended isn't run twice (its month posts nothing; the reversal's month catches it up), for depreciation; a schedule month reversed after it ended is left for a human, listed with why (P3 review) | store `a_run_reversed_after_its_month_is_caught_up_in_the_reversals_month`; GUI `a_run_reversed_after_its_month_leaves_the_reversals_month_due`; core `schedules.rs` `a_schedule_month_reversed_after_it_ended_is_left_for_a_human`; store `format.rs` `a_schedule_month_posted_again_waits_for_month_reposting_and_replays` |
 | Re-instating a run (reversing its reversal) never carries the books past the schedule, nor past cost less salvage (P3 review) | store `reinstating_a_run_a_later_run_caught_up_is_refused` |
 | What the books carry is each run and each reversal in its own month, alternately adding and taking away (P3 review) | core `spec_assets_payroll.rs` `depreciation_effects_read_each_entry_in_its_month` |
 | A schedule month that rounds to nothing is never a posting: left out of a daily plan, never due in an equal-months one (P3 review; no test held it before) | core `schedules.rs` `a_month_that_rounds_to_nothing_is_never_a_posting` |
@@ -1399,7 +1399,7 @@ a bookspec example (`bookspec/examples/`, P13, D-34).
 | An equal-months schedule starts on the 1st (D-37); a daily one's last day is in the calendar | `an_equal_months_schedule_starts_on_the_first`, `spec_bounds.rs` `a_daily_schedule_whose_last_day_passes_9999_is_refused` |
 | chrono's month-end clamping is pinned for daily plans (Jan 29, 30, 31; Feb 29) | `schedules.rs` unit `daily_plans_pin_month_end_clamping` |
 | A new asset's cost and salvage are in the minor unit (replay takes finer ones, computed); a life ending 9999-12-31 is taken, a day later refused | `spec_bounds.rs` `an_asset_cost_finer_than_a_cent_is_refused`, `a_life_ending_on_9999_12_31_is_accepted`, `a_life_ending_after_it_is_refused` |
-| The first daily schedule declares feature schedule_convention; an older reader stops there; monthly_even declares nothing; an unknown convention is newer, never corrupt | `ledger-store` `tests/format.rs` `the_first_daily_schedule_declares_its_feature_and_an_older_reader_stops_there`, `a_monthly_even_schedule_declares_no_feature`, `an_unknown_schedule_convention_is_newer_not_corrupt`; `format.rs` unit `an_older_reader_stops_at_p3s_features` |
+| A daily schedule needs feature schedule_convention (books an older version wrote wait for the upgrade); an older reader stops at its declaration; monthly_even needs none; an unknown convention is newer, never corrupt | `ledger-store` `tests/format.rs` `a_daily_schedule_waits_for_its_feature_and_an_older_reader_stops_there`, `a_monthly_even_schedule_declares_no_feature`, `an_unknown_schedule_convention_is_newer_not_corrupt`; `format.rs` unit `an_older_reader_stops_at_p3s_features` |
 | Accumulated depreciation never falls, never exceeds cost − salvage, is 0 before service and the whole from the last day (sampled days: the first and final months, two between, a dozen month ends; R9) | property `prop_depreciation_is_monotone_and_bounded` (500 cases) |
 | No posted month moves but a half-cent tie's cent (old Decimal arithmetic as the oracle) | property `prop_month_end_schedules_match_the_legacy_arithmetic_except_half_cent_ties` (500 cases) |
 | A daily plan sums exactly, lands on month ends, each amount > 0; from the 1st, `months` postings within a cent of total/months | property `prop_daily_plan_sums_exactly_and_lands_on_month_ends` (2,000 cases) |
@@ -1410,7 +1410,7 @@ a bookspec example (`bookspec/examples/`, P13, D-34).
 | A depreciation run's or schedule month's reversal can't be dated before the entry it reverses (P3 review round 2: a run of March reversed on Jan 31, then a disposal on Feb 15, ended February with a 1,000.00 debit in accumulated depreciation) | store `a_reversal_dated_before_the_entry_it_reverses_is_refused` |
 | A disposal waits only until what the runs carry at its month's end is what they carry now, so a late change undone after its month closed lets it through (P3 review round 2; round 1 refused it for ever) | store `a_disposal_is_taken_once_a_late_change_is_undone_after_its_month_closed` |
 | Depreciation still due when the disposal's month has a run is charged in the disposal entry, never as a second run of the month (P3 review round 2; no store test held it) | store `a_disposal_whose_month_has_run_charges_what_is_still_due_in_its_entry` |
-| A command that needs a journal feature decides and declares it before its first journaled line: a refused feature journals nothing (the format-upgrade gate) | store `format.rs` `a_refused_journal_feature_journals_nothing` |
+| A command that needs a journal feature asks for it before its first journaled line: in books waiting for the format upgrade it is refused and journals nothing, and after the upgrade it is taken | store `format.rs` `a_write_waiting_for_the_upgrade_journals_nothing` |
 | What a viewer's one pass says a run of each month posts is run_amount's for that month | property `prop_run_amounts_are_each_months_run_amount` (500 cases); Kani `catch_ups_is_every_suffixs_catch_up` |
 | The kernel on i64 and i32 (Kani's) is the kernel on i128 and Decimal (the engine's) | `kernel_bridge.rs` `prorate_agrees_at_i64_and_i128`, `prorated_through_agrees_at_i32_and_i128`, `catch_up_and_true_up_agree` |
 | The charge never falls and is continuous at month ends, over every 1-to-3-month span from every day of a common and a leap year | `kernel.rs` unit `the_charge_never_falls_and_is_continuous_over_real_calendars` (exhaustive) |
@@ -1449,6 +1449,110 @@ projection upsert, `period_month`; `format.rs` `KNOWN_FEATURES`,
 `ledger-gui` `books.rs` `disposal_true_up`, `pages/assets.rs` `unposted`
 and `schedule`'s disposed months. Equivalent mutants foreseen:
 none (`r >= step - r` against `>` is killed by `half_a_unit_rounds_up`).
+
+## P3: the format upgrade (2026-10-20)
+
+D-39 and plan/served.md 3.9 (`format_upgrade_pending`): books an older
+wanderbooks wrote wait for the owner's go-ahead before they move to this
+version's journal format (rules.md B-27). Mutation testing waits for P12
+(D-33); the targets are listed at the end.
+
+- `ledger-store` `format.rs` unit tests: this version's format is the
+  newest with every known feature; books wait exactly when behind (a
+  synthetic version with features covers what main can't yet: features
+  missing one at a time, all added at once, a format ahead never
+  "behind"); a write needs what the books declared, and the refusal
+  names the guard, says nothing changed, and that only the owner can
+  agree; a reader that doesn't know a declared feature still refuses it
+  as newer.
+- `ledger-store` `tests/format_upgrade.rs`: new books declare the format
+  as they are created; older books open without a byte changing, a change
+  needing format 2 (settings, a convention, an open item) is refused
+  journaling nothing while a change needing nothing new is made, the
+  upgrade is one line with the whole format, again nothing, the figures
+  unchanged; every old-books fixture (30) upgrades, verifies as it did and
+  replays to its expected.json in the writer, reopened, and the viewer; a
+  declared newer feature is still refused as newer. `tests/settings.rs`
+  (`a_change_needs_journal_format_2`, the lazy declaration it replaces),
+  `tests/root.rs` (an adoption's copy moves to this version's format; the
+  source keeps its own), `tests/format.rs` (its books are format 1, as
+  before the gate).
+- `ledger-store` `tests/schema_files.rs` (each projection schema in a file
+  of its own, the lead's decision of 2026-10-21): a P2-shaped books dir
+  (`tests/fixtures/p2-books`, its `wanderbooks.db` at schema 12, written by
+  `write_the_p2_fixture` while this code's schema was P2's) used as it is
+  at its schema and left byte for byte, and whole, past it; a legacy file
+  one schema older than this version's, on every version, left byte for
+  byte and whole for its schema while this version's is built from the
+  journal and kept up, the report and the viewer naming the one in use; a
+  newer schema's file, under its own name or the legacy one, left alone,
+  never refused; this version's own damaged (not a database, or holding
+  another schema) kept aside and rebuilt, a damaged legacy one left; new
+  books' file named for its schema. Checked by breaking it (the legacy
+  file always taken, the schema check dropped): three tests fail. The
+  store's other tests use `db_file()`, this version's file.
+- `ledger-store` `backup.rs`: `the_archive_proves_to_hold_the_book_as_it_is_keys_and_all`
+  (a changed or extra key, a changed vault record, books that moved on, a
+  journal changed under the recorded head: each refused; the scratch
+  folder always removed).
+- `ledger-mcp` `local.rs`: `format_upgrade_waits_for_consent` (listed as
+  waiting; no passphrase set, a wrong one or none refused before anything
+  is done, no backup, no line, still served; with it, the backup is the
+  archive's latest commit, holding the journal as it was and the key; one
+  line, the whole format; on the backup record; again, nothing; new books
+  wait for nothing, and asking for their upgrade makes not even a backup
+  repository), `no_upgrade_without_a_backup` (a backup refused: nothing
+  upgraded, still waiting, recorded) and
+  `no_upgrade_unless_the_backup_just_made_is_proven` (an archive whose
+  head names another branch takes the commit where no clone finds it:
+  what is proven isn't what was made, nothing upgraded, both recorded;
+  put right, the latest commit, which already holds the books, is proven
+  and the upgrade made). Each checked by breaking the code it guards (the
+  proof skipped, the made-is-proven check dropped, the early return for
+  books that wait for nothing removed): the test fails, then passes once
+  restored.
+- `ledger-cli` `tests/format_upgrade.rs` (the plan's
+  `format_upgrade_waits_for_consent`, from end to end through the one
+  executable): a command not at a terminal says the books wait; `books
+  list` and `doctor` say so; `books.start` names it and puts the handbook's
+  format-upgrade section first; `books.set_setting` refused with the
+  guard, journaling nothing, while adding an account works; no tool's name
+  could consent, and no call moved the format; `books upgrade` refused off
+  a terminal; the lease intent with a wrong passphrase refused; at a
+  terminal an empty passphrase declines, and `books list` asks at each of
+  two opens, while one whose output goes to a file only notes it on the
+  terminal and asks nothing, its output its own; with the passphrase, the
+  backup (journal as it was, the key)
+  then one line, the agent's same session then sets the setting and
+  verifies; asked again, nothing.
+- `ledger-gui` `tests/format_upgrade.rs`: the dialog at open and at the
+  next open, "Not now" leaving the standing notice (whose button, and the
+  Books menu, ask again), the viewer writing nothing; nothing sent without
+  a passphrase, the one typed handed to the owner as typed, a refusal said
+  in the dialog, which stays, the right one closing it; books in this
+  version's format and older books dirs never asked; an upgrade whose
+  worker dies without an answer is said in the dialog, which can then be
+  closed (never left at work, holding the window). Screenshots looked
+  at (`SHOT_DIR=... cargo test -p ledger-gui --test format_upgrade
+  screenshots`): the dialog over the overview, at work, refused, the
+  notice, the menu item, done.
+- Unit tests in `admin.rs` (the passphrase never in Debug; the request's
+  shape), `ledger-host` `lease.rs` (`a_consent_never_shows_its_passphrase`:
+  the lease intent's Debug, and the line's, name no passphrase), and
+  `owner_menu.rs`'s fake owner takes the new call.
+
+**For P12:** `ledger-store` `format.rs` (`current`, `upgrade_to`, `adds`,
+`require_format`, `require_feature`), `store.rs` (`create_in_format`,
+`ensure_format`, `ensure_feature`, `upgrade_format`), `root.rs`
+(adoption's upgrade and its verify), `backup.rs` (`prove_archive`,
+`held_files`); `ledger-mcp` `backup.rs` (`upgrade_format`,
+`UpgradeFailed::parts`), `local.rs` (`upgrade_format`, the List's
+`format_upgrade`, `waiting`), `server.rs` (`with_store_mut`),
+`tools/kept.rs` (the first next step, `format_upgrade`), `admin.rs`;
+`ledger-host` `host.rs` (`consent`, `consented`), `commands.rs`
+(`consent_now`, `upgrade_format`, `offer_upgrades`, `offer_upgrade`,
+`upgrade`, `book_line`, `upgraded_lines`, `upgrade_explained`,
+`ASKED_UPGRADES`). None run.
 
 ## Benchmarks (baseline 2026-10-13)
 

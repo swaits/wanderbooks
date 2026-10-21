@@ -1083,6 +1083,9 @@ impl eframe::App for App {
                     });
                     return;
                 };
+                // Books waiting for a format upgrade: said above every page
+                // until it is done (owner.rs INVARIANT 5).
+                self.owner_menu.notice(ui, &books);
                 let mut shell = Shell {
                     receipts: &mut self.receipts,
                     state: &mut self.state,

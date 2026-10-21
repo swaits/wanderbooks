@@ -110,23 +110,26 @@ fn assert_every_reader_agrees(dir: &std::path::Path, s: &Store) {
     assert!(snap.ledger().differs_from(s.ledger()).is_empty());
 }
 
-/// The first change declares journal format 2 before it (format gate), and
-/// only once; a change to what is already set journals nothing.
+/// Settings need journal format 2 (format gate): books this version made
+/// declared it as they were created, so the first change journals only
+/// itself; a change to what is already set journals nothing. Books an
+/// older version wrote in format 1 refuse the change, journaling nothing,
+/// until their format upgrade (the owner's go-ahead, D-39); then it is
+/// made, after the one declaration.
 #[test]
-fn the_first_change_declares_format_2() {
+fn a_change_needs_journal_format_2() {
     let (dir, mut s) = books("format");
-    assert_eq!(s.journal_format().format, 1);
+    assert_eq!(s.journal_format().format, 2);
     let before = s.head().0;
     s.change_settings(&[set("company.name", json!("Acme LLC"))], &src("A"))
         .unwrap();
-    assert_eq!(s.journal_format().format, 2);
-    assert_eq!(s.head().0, before + 2, "a declaration, then the change");
+    assert_eq!(s.head().0, before + 1, "the change alone");
     s.change_settings(
         &[set("company.timezone", json!("America/Denver"))],
         &src("A"),
     )
     .unwrap();
-    assert_eq!(s.head().0, before + 3, "declared once");
+    assert_eq!(s.head().0, before + 2);
     let at = s.head().0;
     let made = s
         .change_settings(&[set("company.name", json!(" Acme LLC "))], &src("A"))
@@ -134,7 +137,29 @@ fn the_first_change_declares_format_2() {
     assert!(made.is_empty());
     assert_eq!(s.head().0, at, "nothing to change, nothing journaled");
     let r = s.ledger().settings().get("company.name").unwrap();
-    assert_eq!((r.seq, r.source.decided_by.as_str()), (before + 2, "A"));
+    assert_eq!((r.seq, r.source.decided_by.as_str()), (before + 1, "A"));
+    // Books in format 1, as an older version wrote them.
+    let old = test_dir("format-old");
+    let mut o =
+        Store::create_in_format(&old, Currency::USD, &ledger_store::JournalFormat::default())
+            .unwrap();
+    let at = o.head().0;
+    for refused in [
+        o.change_settings(&[set("company.name", json!("Acme LLC"))], &src("A")),
+        o.adopt_settings(&[], &src("A")),
+    ] {
+        assert!(
+            matches!(refused, Err(StoreError::FormatUpgradePending { .. })),
+            "{refused:?}"
+        );
+    }
+    assert_eq!(o.head().0, at, "refused: nothing journaled");
+    assert!(!o.ledger().settings().is_journaled());
+    o.upgrade_format().unwrap().expect("upgraded");
+    o.change_settings(&[set("company.name", json!("Acme LLC"))], &src("A"))
+        .unwrap();
+    assert_eq!(o.head().0, at + 2, "the declaration, then the change");
+    assert_every_reader_agrees(&old, &o);
     drop(s);
     let s = Store::open(&dir).unwrap();
     assert_eq!(s.journal_format().format, 2);
@@ -1070,19 +1095,19 @@ fn an_empty_import_still_moves_the_books_in() {
     let at = s.head().0;
     assert!(s.change_settings(&[], &src("A")).unwrap().is_empty());
     assert_eq!(s.head().0, at, "an ordinary empty change: nothing");
-    assert_eq!(s.journal_format().format, 1);
+    assert_eq!(s.journal_format().format, 2, "declared at creation");
     assert!(!s.ledger().settings().is_journaled());
     assert!(s.adopt_settings(&[], &src("A")).unwrap().is_empty());
-    assert_eq!(s.head().0, at + 2, "a declaration, then the move");
+    assert_eq!(s.head().0, at + 1, "the move alone");
     assert!(s.ledger().settings().is_journaled());
-    assert_eq!(s.ledger().settings().last_seq(), Some(at + 2));
+    assert_eq!(s.ledger().settings().last_seq(), Some(at + 1));
     for again in [
         s.adopt_settings(&[], &src("A")).unwrap(),
         s.change_settings(&[], &src("A")).unwrap(),
     ] {
         assert!(again.is_empty());
     }
-    assert_eq!(s.head().0, at + 2, "moved in once");
+    assert_eq!(s.head().0, at + 1, "moved in once");
     drop(s);
     let s = Store::open(&dir).unwrap();
     assert!(s.ledger().settings().is_journaled());

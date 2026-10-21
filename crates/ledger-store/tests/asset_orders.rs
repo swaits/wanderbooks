@@ -33,7 +33,7 @@
 
 use chrono::NaiveDate;
 use ledger_core::{AccountType, AssetStatus, Currency, Money, NewAsset};
-use ledger_store::{DB_FILE, JOURNAL_FILE, Store};
+use ledger_store::{JOURNAL_FILE, Store, db_file};
 use proptest::prelude::*;
 use rust_decimal::Decimal;
 use std::path::{Path, PathBuf};
@@ -309,10 +309,10 @@ fn check_completion(dir: &Path, asset: u64, ops: &[Op]) {
 
 /// Copy the books (journal and projection) to `to`, closed.
 fn copy_books(from: &Path, to: &Path) {
-    for f in [JOURNAL_FILE, DB_FILE] {
-        let src = from.join(f);
+    for f in [JOURNAL_FILE.to_string(), db_file()] {
+        let src = from.join(&f);
         if src.exists() {
-            std::fs::copy(&src, to.join(f)).unwrap();
+            std::fs::copy(&src, to.join(&f)).unwrap();
         }
     }
 }

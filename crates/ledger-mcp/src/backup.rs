@@ -9,7 +9,9 @@
 //!       and the owner (and agent) can see that it did, or why not.
 //! SOURCE: plan 3.7 (triggers, "ops/backup.jsonl", books.backup, Needs
 //!         attention for a target more than 24 h behind, drills), D-30 (a
-//!         git repository and a folder), D-31 (plain git).
+//!         git repository and a folder), D-31 (plain git), 3.9 and D-39
+//!         (a verified local backup with the keys before a format
+//!         upgrade).
 //! INVARIANTS:
 //!   1. A backup is committed under the store's lock (ledger_store::backup
 //!      INVARIANT 1; its stored files staged before, outside it) and
@@ -41,6 +43,11 @@
 //!      theirs): it is paused for them, and said, until another is named.
 //!   8. A damaged backup record never keeps the books shut: it is set
 //!      aside and a new one begun.
+//!   9. A format upgrade (plan 3.9, D-39) is made only after the books are
+//!      committed to their archive and the archive proven to hold them
+//!      exactly as they are (journal, stored files, vault and keys), all
+//!      under the store's lock, so nothing is written in between; a backup
+//!      that can't be made or proven upgrades nothing. Both are records.
 //! ```
 
 use crate::server::SharedStore;
@@ -72,6 +79,76 @@ pub struct Backups {
     log: Mutex<ChainLog>,
     /// One run at a time.
     running: tokio::sync::Mutex<()>,
+}
+
+/// What a format upgrade did ([`Backups::upgrade_format`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Upgraded {
+    /// The upgrade; None when the books were already in this version's
+    /// format (nothing was done).
+    pub upgrade: Option<ledger_store::FormatUpgrade>,
+    /// The verified backup made first (None when nothing was upgraded).
+    pub backup: Option<UpgradeBackup>,
+    /// The books' head now.
+    pub head: (u64, String),
+}
+
+/// The backup a format upgrade made first: the books as they were.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpgradeBackup {
+    /// Whether it was committed now (false: the last backup already held
+    /// the books as they were).
+    pub made: bool,
+    /// Its commit in the books' archive.
+    pub commit: String,
+    /// The head it holds: the books before the upgrade.
+    pub head: (u64, String),
+}
+
+/// Why a format upgrade wasn't made: nothing was upgraded.
+struct UpgradeFailed {
+    /// The backup committed on the way, if one was.
+    made: Option<backup::Made>,
+    /// Why, in words.
+    why: String,
+}
+
+impl UpgradeFailed {
+    /// The backup couldn't be made.
+    fn backup(e: BackupError) -> Self {
+        Self {
+            made: None,
+            why: format!(
+                "the backup the upgrade makes first couldn't be made ({e}): nothing was upgraded"
+            ),
+        }
+    }
+
+    /// The backup `made` (now, or earlier) didn't prove whole.
+    fn proof(made: Option<backup::Made>, e: BackupError) -> Self {
+        Self {
+            made,
+            why: format!(
+                "the backup the upgrade makes first didn't prove whole ({e}): nothing was upgraded"
+            ),
+        }
+    }
+
+    /// Proven, and the books refused the upgrade.
+    fn store(made: Option<backup::Made>, e: ledger_store::StoreError) -> Self {
+        Self {
+            made,
+            why: format!("{e}: nothing was upgraded"),
+        }
+    }
+
+    /// The books server stopped, or the books are closing.
+    fn stopped(why: String) -> Self {
+        Self {
+            made: None,
+            why: format!("{why}: nothing was upgraded"),
+        }
+    }
 }
 
 /// One target's standing (INVARIANT 3).
@@ -343,6 +420,129 @@ impl Backups {
             }
         }
         Ok(self.status().await)
+    }
+
+    /// The format upgrade, after a verified local backup with the keys
+    /// (plan/served.md 3.9, D-39; INVARIANT 9). The caller has the owner's
+    /// go-ahead (the passphrase, checked by the server).
+    ///
+    /// Under the store's lock, so nothing is written between the backup
+    /// and the upgrade: the books committed to their archive (made
+    /// whatever targets the settings name, or none), the archive cloned
+    /// and proven to hold the books exactly as they are, journal, stored
+    /// files, vault and keys ([`backup::prove_archive`]); only then this
+    /// version's journal format declared (ledger_store
+    /// `Store::upgrade_format`). Books already in it: nothing is done.
+    /// Both the backup and the upgrade are records of `ops/backup.jsonl`;
+    /// the targets take them at the next backup, the books having moved.
+    pub async fn upgrade_format(&self) -> Result<Upgraded, String> {
+        let _one = self.running.lock().await;
+        let (store, dir, book) = (self.store.clone(), self.dir.clone(), self.book.clone());
+        let done = tokio::task::spawn_blocking(move || {
+            // Books that wait for nothing are left as they are: not even
+            // their archive is made or staged (asked again under the lock
+            // below; only an upgrade moves the format, one at a time).
+            match store.with_store(|s| (s.journal_format().upgrade().is_none(), s.head())) {
+                Ok((true, head)) => {
+                    return Ok(Upgraded {
+                        upgrade: None,
+                        backup: None,
+                        head,
+                    });
+                }
+                Ok((false, _)) => {}
+                Err(why) => return Err(UpgradeFailed::stopped(why)),
+            }
+            // Stored files staged ahead, outside the lock (as a backup's).
+            let git = Git::find();
+            if let Ok(git) = &git {
+                let _ = backup::stage_blobs(git, &dir);
+            }
+            store
+                .with_store_mut(|s| -> Result<Upgraded, UpgradeFailed> {
+                    let head = s.head();
+                    let Some(waiting) = s.journal_format().upgrade() else {
+                        return Ok(Upgraded {
+                            upgrade: None,
+                            backup: None,
+                            head,
+                        });
+                    };
+                    let git = git.map_err(UpgradeFailed::backup)?;
+                    let made = backup::commit(&git, &dir, &book, head.clone())
+                        .map_err(UpgradeFailed::backup)?;
+                    let scratch = ledger_store::ops::ops_dir(&dir).join("upgrade-check");
+                    let _ = std::fs::remove_dir_all(&scratch);
+                    let proven = backup::prove_archive(&git, &dir, &head, &scratch)
+                        .and_then(|p| match &made {
+                            // The commit proven is the one just made.
+                            Some(m) if m.commit != p.commit => Err(BackupError::Damaged(
+                                "the backup it proved isn't the one it made".into(),
+                            )),
+                            _ => Ok(p),
+                        })
+                        .map_err(|e| UpgradeFailed::proof(made.clone(), e))?;
+                    let commit = proven.commit;
+                    let upgrade = match s.upgrade_format() {
+                        Ok(upgrade) => upgrade,
+                        // Journaled, and what follows the line failed (its
+                        // database row, a full disk): the books are in this
+                        // version's format all the same, and are never told
+                        // otherwise (the database catches up as the books
+                        // next open).
+                        Err(e) if s.journal_format().upgrade().is_none() => {
+                            eprintln!(
+                                "wanderbooks server: the format upgrade was journaled, then: {}",
+                                hide(&e.to_string(), &dir)
+                            );
+                            Some(waiting)
+                        }
+                        Err(e) => return Err(UpgradeFailed::store(made.clone(), e)),
+                    };
+                    Ok(Upgraded {
+                        upgrade,
+                        backup: Some(UpgradeBackup {
+                            made: made.is_some(),
+                            commit,
+                            head,
+                        }),
+                        head: s.head(),
+                    })
+                })
+                .map_err(UpgradeFailed::stopped)
+                .and_then(|r| r)
+        })
+        .await
+        .unwrap_or_else(|_| Err(UpgradeFailed::stopped("the upgrade stopped".into())));
+        match done {
+            Ok(u) => {
+                if let (Some(b), Some(up)) = (&u.backup, &u.upgrade) {
+                    if b.made {
+                        self.record(
+                            json!({"kind": "commit", "why": "format_upgrade", "ok": true,
+                            "commit": b.commit, "head": {"seq": b.head.0, "hash": b.head.1}}),
+                        );
+                    }
+                    self.record(json!({"kind": "format_upgrade", "ok": true,
+                        "backup": {"commit": b.commit, "head": {"seq": b.head.0, "hash": b.head.1}},
+                        "from": {"format": up.from.format, "features": up.from.features},
+                        "to": {"format": up.to.format, "features": up.to.features},
+                        "head": {"seq": u.head.0, "hash": u.head.1}}));
+                }
+                Ok(u)
+            }
+            Err(failed) => {
+                if let Some(m) = &failed.made {
+                    self.record(
+                        json!({"kind": "commit", "why": "format_upgrade", "ok": true,
+                        "commit": m.commit, "head": {"seq": m.head.0, "hash": m.head.1}}),
+                    );
+                }
+                let why = hide(&failed.why, &self.dir);
+                self.record(json!({"kind": "format_upgrade", "ok": false, "error": why}));
+                Err(why)
+            }
+        }
     }
 
     /// Whether a drill is due (INVARIANT 5).

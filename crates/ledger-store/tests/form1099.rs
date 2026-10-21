@@ -1,8 +1,9 @@
 //! 1099 decisions and payment methods in the journal (plan P3, defects
-//! 12, 18 and 23; D-40): declared as features before their first line,
-//! replayed and projected exactly, refused without a trace, and books
-//! written before them read as they always meant. Every name is
-//! fictional.
+//! 12, 18 and 23; D-40): written only in books that declare their
+//! features (this version's from creation, an older version's after the
+//! format upgrade), replayed and projected exactly, refused without a
+//! trace, and books written before them read as they always meant. Every
+//! name is fictional.
 //!
 //! ```text
 //! GOAL: the decision ("no 1099" included) and how each payment was made
@@ -17,9 +18,11 @@ use ledger_core::{
     AccountType, Currency, Dated1099, Decision1099, ExemptReason, Form1099, InstrumentKind, Money,
     Side,
 };
-use ledger_store::format::{FORMAT_SET, PAYMENT_INSTRUMENTS, VENDOR_1099_DECISIONS};
+use ledger_store::format::{FORMAT_SET, PAYMENT_INSTRUMENTS, VENDOR_1099_DECISIONS, current};
 use ledger_store::journal::read_and_verify_journal;
-use ledger_store::{DB_FILE, JOURNAL_FILE, JournalWriter, Snapshot, Store, StoreError};
+use ledger_store::{
+    JOURNAL_FILE, JournalFormat, JournalWriter, Snapshot, Store, StoreError, db_file,
+};
 use rust_decimal::Decimal;
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -76,7 +79,13 @@ struct Books {
 }
 
 fn books(dir: &Path) -> Books {
-    let mut store = Store::create(dir, Currency::USD).unwrap();
+    books_in(dir, &current())
+}
+
+/// [`books`] in the journal format `format`: format 1
+/// ([`JournalFormat::default`]) is books an older version wrote.
+fn books_in(dir: &Path, format: &JournalFormat) -> Books {
+    let mut store = Store::create_in_format(dir, Currency::USD, format).unwrap();
     store
         .add_account("1000", "Bank", AccountType::Asset, None, false)
         .unwrap();
@@ -130,26 +139,57 @@ fn types(dir: &Path) -> Vec<(String, serde_json::Value)> {
         .collect()
 }
 
-/// B-27: the first line that needs a feature comes after a declaration of
-/// it (with every feature already in force), once. A version that doesn't
-/// know the feature stops at the declaration (`tests/format.rs`
+/// B-27: a line that needs a feature is written only in books that
+/// declare it, and a command never declares one on the way. Books an
+/// older version wrote (format 1) refuse a decision and a payment method
+/// while they wait for their format upgrade, journaling nothing; the
+/// upgrade is one declaration of every feature; after it, as in books this
+/// version made (which declared them when created), each command journals
+/// its own lines and nothing else. A version that doesn't know a feature
+/// stops at the declaration (`tests/format.rs`
 /// old_reader_gets_newer_journal, for any feature it doesn't know).
 #[test]
-fn each_feature_is_declared_once_before_its_first_line() {
+fn each_feature_waits_for_the_upgrade_and_is_never_declared_on_the_way() {
     let dir = test_dir("declare");
-    let mut b = books(&dir);
-    let before = types(&dir).len();
+    let mut b = books_in(&dir, &JournalFormat::default());
+    let was = std::fs::read(dir.join(JOURNAL_FILE)).unwrap();
     assert!(
         !types(&dir).iter().any(|(t, _)| t == FORMAT_SET),
-        "books without either feature declare nothing"
+        "books an older version wrote declare nothing"
     );
-    b.store
-        .set_vendor_1099(
-            b.harbor,
-            &from_beginning(Decision1099::Files(Form1099::Nec)),
+    let nec = from_beginning(Decision1099::Files(Form1099::Nec));
+    fn waits<T: std::fmt::Debug>(r: Result<T, StoreError>, feature: &str) {
+        assert!(
+            matches!(&r, Err(StoreError::FormatUpgradePending { need }) if need.contains(feature)),
+            "{feature}: {r:?}"
+        );
+    }
+    waits(
+        b.store.set_vendor_1099(b.harbor, &nec, None),
+        VENDOR_1099_DECISIONS,
+    );
+    waits(
+        b.store.set_vendor_w9_flag(b.harbor, true),
+        VENDOR_1099_DECISIONS,
+    );
+    waits(
+        b.store.add_instrument(
+            InstrumentKind::MemberCard,
+            "Riley's Visa",
+            Some("4242"),
             None,
-        )
-        .unwrap();
+            b.due,
+        ),
+        PAYMENT_INSTRUMENTS,
+    );
+    assert_eq!(
+        std::fs::read(dir.join(JOURNAL_FILE)).unwrap(),
+        was,
+        "nothing journaled"
+    );
+    let before = types(&dir).len();
+    assert!(b.store.upgrade_format().unwrap().is_some());
+    b.store.set_vendor_1099(b.harbor, &nec, None).unwrap();
     b.store.set_vendor_w9_flag(b.harbor, true).unwrap();
     let card = b
         .store
@@ -171,26 +211,48 @@ fn each_feature_is_declared_once_before_its_first_line() {
             b.due,
         )
         .unwrap();
-    let added: Vec<String> = types(&dir)[before..]
-        .iter()
-        .map(|(t, p)| match t.as_str() {
-            FORMAT_SET => format!("{t} {}", p["features"]),
-            _ => t.clone(),
-        })
-        .collect();
+    let j = types(&dir);
+    let added: Vec<&str> = j[before..].iter().map(|(t, _)| t.as_str()).collect();
     assert_eq!(
         added,
         [
-            format!("{FORMAT_SET} [\"{VENDOR_1099_DECISIONS}\"]"),
-            "vendor.1099_set".to_string(),
-            "vendor.w9_flag_set".to_string(),
-            format!("{FORMAT_SET} [\"{PAYMENT_INSTRUMENTS}\",\"{VENDOR_1099_DECISIONS}\"]"),
-            "instrument.added".to_string(),
-            "entry.instrument_set".to_string(),
-            "instrument.added".to_string(),
+            FORMAT_SET,
+            "vendor.1099_set",
+            "vendor.w9_flag_set",
+            "instrument.added",
+            "entry.instrument_set",
+            "instrument.added",
         ]
     );
-    assert_eq!(b.store.journal_format().format, 2);
+    let declared = &j[before].1["features"];
+    for feature in [VENDOR_1099_DECISIONS, PAYMENT_INSTRUMENTS] {
+        assert!(
+            declared.as_array().unwrap().contains(&json!(feature)),
+            "the upgrade declares {feature}"
+        );
+    }
+    assert_eq!(b.store.journal_format(), &current());
+    b.store.verify().unwrap();
+
+    // Books this version made: declared at creation, so the same commands
+    // journal only their own lines.
+    let dir = test_dir("declare-new");
+    let mut b = books(&dir);
+    let before = types(&dir).len();
+    b.store.set_vendor_1099(b.harbor, &nec, None).unwrap();
+    b.store
+        .add_instrument(
+            InstrumentKind::MemberCashOrCheck,
+            "Riley's checks",
+            None,
+            None,
+            b.due,
+        )
+        .unwrap();
+    let j = types(&dir);
+    let added: Vec<&str> = j[before..].iter().map(|(t, _)| t.as_str()).collect();
+    assert_eq!(added, ["vendor.1099_set", "instrument.added"]);
+    assert_eq!(j.iter().filter(|(t, _)| t == FORMAT_SET).count(), 1);
 }
 
 /// Every record replays and projects exactly: reopening gives back the
@@ -252,14 +314,14 @@ fn decisions_and_methods_replay_and_project() {
     assert!(live.differs_from(store.ledger()).is_empty());
     store.verify().unwrap();
     drop(store);
-    std::fs::remove_file(dir.join(DB_FILE)).unwrap();
+    std::fs::remove_file(dir.join(db_file())).unwrap();
     let store = Store::open(&dir).unwrap();
     store.verify().unwrap();
     assert!(live.differs_from(store.ledger()).is_empty());
     drop(store);
     let snap = Snapshot::load(&dir).unwrap();
     assert!(live.differs_from(snap.ledger()).is_empty());
-    let conn = rusqlite::Connection::open(dir.join(DB_FILE)).unwrap();
+    let conn = rusqlite::Connection::open(dir.join(db_file())).unwrap();
     let decisions: Vec<DecisionRow> = conn
         .prepare("SELECT effective, form_1099, reason_kind, source_json FROM vendor_1099_decisions ORDER BY seq")
         .unwrap()
@@ -478,7 +540,7 @@ fn an_unknown_1099_value_is_newer_not_corrupt() {
         .unwrap();
         let seq = w.append(t, payload).unwrap().seq;
         drop(w);
-        std::fs::remove_file(dir.join(DB_FILE)).unwrap();
+        std::fs::remove_file(dir.join(db_file())).unwrap();
         match (Store::open(&dir), need) {
             (
                 Err(StoreError::NewerJournal {
@@ -502,7 +564,7 @@ fn an_unknown_1099_value_is_newer_not_corrupt() {
 #[test]
 fn books_written_before_decisions_read_as_they_always_meant() {
     let dir = test_dir("legacy");
-    let b = books(&dir);
+    let b = books_in(&dir, &JournalFormat::default());
     let (harbor, paid) = (b.harbor, b.paid);
     drop(b);
     let mut w = JournalWriter::open(&dir.join(JOURNAL_FILE)).unwrap();
@@ -519,7 +581,7 @@ fn books_written_before_decisions_read_as_they_always_meant() {
         w.append("vendor.1099_set", p).unwrap();
     }
     drop(w);
-    std::fs::remove_file(dir.join(DB_FILE)).unwrap();
+    std::fs::remove_file(dir.join(db_file())).unwrap();
     let journal = std::fs::read(dir.join(JOURNAL_FILE)).unwrap();
     let store = Store::open(&dir).unwrap();
     store.verify().unwrap();
@@ -543,7 +605,7 @@ fn books_written_before_decisions_read_as_they_always_meant() {
     assert_eq!(store.journal_format().features, Vec::<String>::new());
     drop(store);
     assert_eq!(std::fs::read(dir.join(JOURNAL_FILE)).unwrap(), journal);
-    let conn = rusqlite::Connection::open(dir.join(DB_FILE)).unwrap();
+    let conn = rusqlite::Connection::open(dir.join(db_file())).unwrap();
     let forms: Vec<(i64, Option<String>, bool)> = conn
         .prepare("SELECT id, form_1099, tin_on_file FROM vendors ORDER BY id")
         .unwrap()

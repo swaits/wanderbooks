@@ -340,7 +340,7 @@ impl Mcp {
                     walk(&p, out);
                 } else if name.ends_with("-wal") || name.ends_with("-shm") {
                     continue;
-                } else if name == ledger_store::DB_FILE {
+                } else if ledger_store::is_database_file(&name) {
                     out.insert(p.clone(), db_digest(&p));
                 } else {
                     let bytes = std::fs::read(&p).unwrap_or_default();

@@ -396,9 +396,12 @@ fn a_skipped_month_is_caught_up_in_the_month_run() {
 }
 
 /// P3 depreciation review R3: a run reversed within its month is
-/// un-posted, so its month is due again; running it again declares journal
-/// feature month_reposting first (an older version would ignore the second
-/// line for the month).
+/// un-posted, so its month is due again; running it again needs journal
+/// feature month_reposting (an older version would ignore the second line
+/// for the month), which new books declare as they are created, so it
+/// journals no declaration of its own (books an older version wrote wait
+/// for their format upgrade: format.rs
+/// a_write_waiting_for_the_upgrade_journals_nothing).
 #[test]
 fn a_reversed_depreciation_month_can_be_run_again() {
     let (dir, mut store) = open_store();
@@ -409,14 +412,28 @@ fn a_reversed_depreciation_month_can_be_run_again() {
     store
         .reverse_entry(jan_entry, date(2026, 1, 31), "posted to the wrong asset")
         .unwrap();
-    assert!(store.journal_format().features.is_empty());
+    assert!(
+        store
+            .journal_format()
+            .has_feature(ledger_store::format::MONTH_REPOSTING)
+    );
+    let declarations = |dir: &std::path::Path| {
+        std::fs::read_to_string(dir.join(ledger_store::JOURNAL_FILE))
+            .unwrap()
+            .lines()
+            .filter(|l| l.contains("journal.format_set"))
+            .count()
+    };
+    let before = declarations(dir.path());
     let again = store.run_depreciation(x, "2026-01").unwrap();
     assert!(!again.already_posted);
     assert_eq!(again.amount, dec("1000.00"));
     assert_ne!(again.entry_id, Some(jan_entry));
+    assert_eq!(*store.journal_format(), ledger_store::format::current());
     assert_eq!(
-        store.journal_format().features,
-        vec![ledger_store::format::MONTH_REPOSTING.to_string()]
+        declarations(dir.path()),
+        before,
+        "no declaration of its own"
     );
     // Idempotent again: the new run is the month's.
     let twice = store.run_depreciation(x, "2026-01").unwrap();
@@ -430,7 +447,7 @@ fn a_reversed_depreciation_month_can_be_run_again() {
     // Reopened (the projection rebuilt from the journal, then caught up),
     // the same.
     drop(store);
-    std::fs::remove_file(dir.path().join(ledger_store::DB_FILE)).unwrap();
+    std::fs::remove_file(dir.path().join(ledger_store::db_file())).unwrap();
     let store = Store::open(dir.path()).unwrap();
     store.verify().unwrap();
     let mut store = store;
@@ -631,7 +648,7 @@ fn a_run_reversed_after_its_month_is_caught_up_in_the_reversals_month() {
     );
     assert_eq!(balance(&store, accum, date(2026, 1, 31)), dec("-1000.00"));
     assert_eq!(balance(&store, accum, date(2026, 2, 28)), dec("-2000.00"));
-    assert!(store.journal_format().features.is_empty());
+    assert_eq!(*store.journal_format(), ledger_store::format::current());
     store.verify().unwrap();
 }
 
@@ -854,7 +871,7 @@ fn a_run_reinstated_after_its_rerun_was_reversed_still_counts() {
     store.verify().unwrap();
     // The same after the projection is rebuilt from the journal.
     drop(store);
-    std::fs::remove_file(dir.path().join(ledger_store::DB_FILE)).unwrap();
+    std::fs::remove_file(dir.path().join(ledger_store::db_file())).unwrap();
     Store::open(dir.path()).unwrap().verify().unwrap();
 }
 
@@ -1069,7 +1086,7 @@ fn a_disposal_whose_month_has_run_charges_what_is_still_due_in_its_entry() {
         .filter(|l| l.contains("asset.depreciation_posted") && l.contains("\"2026-06\""))
         .count();
     assert_eq!(junes, 1, "June keeps one run");
-    assert!(store.journal_format().features.is_empty());
+    assert_eq!(*store.journal_format(), ledger_store::format::current());
     let on = date(2026, 6, 30);
     assert_eq!(balance(&store, accum, on), Decimal::ZERO);
     assert_eq!(balance(&store, expense, on), dec("5500.00"));

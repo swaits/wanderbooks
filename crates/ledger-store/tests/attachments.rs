@@ -17,7 +17,7 @@ use ledger_core::arap::DocumentLine;
 use ledger_core::{AccountId, AccountType, Currency, EntryId, Money, NewAsset, Side};
 use ledger_store::journal::read_and_verify_journal;
 use ledger_store::store::{Reconciliation, Statement, Subject};
-use ledger_store::{Attachment, DB_FILE, JOURNAL_FILE, Store, StoreError};
+use ledger_store::{Attachment, JOURNAL_FILE, Store, StoreError, db_file};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -137,7 +137,7 @@ fn refused_nothing_journaled<T: std::fmt::Debug>(
 
 fn delete_db(dir: &Path) {
     for suffix in ["", "-wal", "-shm", "-journal"] {
-        let _ = std::fs::remove_file(dir.join(format!("{DB_FILE}{suffix}")));
+        let _ = std::fs::remove_file(dir.join(format!("{}{suffix}", db_file())));
     }
 }
 

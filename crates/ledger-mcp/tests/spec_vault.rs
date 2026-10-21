@@ -1378,8 +1378,8 @@ fn no_full_tin_leaves_the_vault_except_the_worksheet_when_asked() {
         );
         seen.push(f.file_name().unwrap().to_string_lossy().into_owned());
     }
-    for must in ["journal.jsonl", "wanderbooks.db"] {
-        assert!(seen.iter().any(|s| s == must), "{must} scanned: {seen:?}");
+    for must in ["journal.jsonl".to_string(), ledger_store::db_file()] {
+        assert!(seen.contains(&must), "{must} scanned: {seen:?}");
     }
     // The vault holds them encrypted only.
     let vault_files = files_under(&m.vault());

@@ -16,7 +16,7 @@ fn print_usage() {
     eprintln!("usage: wanderbooks setup [--root PATH] [--home DIR]");
     eprintln!("       wanderbooks gui [BOOK | --root PATH --book ID | --data-dir PATH ...]");
     eprintln!(
-        "       wanderbooks books list | create ID | adopt DATA-DIR --id ID | restore BACKUP | back-up ID | put-aside ID DATA-DIR [PATH...]"
+        "       wanderbooks books list | create ID | adopt DATA-DIR --id ID | restore BACKUP | back-up ID | upgrade ID | put-aside ID DATA-DIR [PATH...]"
     );
     eprintln!("       wanderbooks connect claude|codex --book ID");
     eprintln!(
@@ -31,7 +31,9 @@ fn print_usage() {
     eprintln!();
     eprintln!("  setup      make the books' private folder (only your account can open it)");
     eprintln!("  gui        open the live, read-only view of the books (a book of the data root)");
-    eprintln!("  books      list, start, adopt, restore or back up books (`books --help`)");
+    eprintln!(
+        "  books      list, start, adopt, restore, back up or upgrade books (`books --help`)"
+    );
     eprintln!("  connect    let Claude Code or Codex reach the books");
     eprintln!("  token      make, list or revoke an agent's token for books (`token --help`)");
     eprintln!("  mcp        an agent's way to the books, over stdio (what `connect` registers)");
@@ -112,6 +114,10 @@ impl ledger_gui::owner::Owner for ViewerOwner {
         };
         ledger_host::commands::connect_agent(&self.0, agent, book)
     }
+
+    fn upgrade_format(&self, book: &str, passphrase: &str) -> Result<Vec<String>, String> {
+        ledger_host::commands::upgrade_format(&self.0, book, passphrase)
+    }
 }
 
 /// `wanderbooks gui`: the viewer, in this process. For books of the data
@@ -142,9 +148,10 @@ fn run_gui(args: Vec<String>) -> i32 {
         let root = value("--root").map(PathBuf::from);
         let book = value("--book");
         if known && ledger_gui::book_in_root(root.as_deref(), book.as_deref()).is_ok() {
+            // The viewer asks about a format upgrade in its own window.
             let common = ledger_host::commands::Common {
                 root,
-                knobs: Default::default(),
+                ..Default::default()
             };
             ledger_gui::owner::set_owner(std::sync::Arc::new(ViewerOwner(common.clone())));
             ledger_host::commands::hold_for_viewer(&common, book);

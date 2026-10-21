@@ -3831,6 +3831,7 @@ name = "ledger-cli"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "chrono",
  "ledger-core",
  "ledger-gui",
  "ledger-host",
@@ -3902,6 +3903,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "zeroize",
  "zip 9.0.2",
 ]
 

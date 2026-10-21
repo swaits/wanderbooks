@@ -5,8 +5,9 @@
 //!
 //! Usage: `ledger-mcp [--data-dir PATH] [--config PATH] [--books-toml PATH]`
 //!
-//! The data dir holds `journal.jsonl` (the source of truth), `wanderbooks.db`
-//! (the disposable SQLite projection), `blobs/` (content-addressed receipts),
+//! The data dir holds `journal.jsonl` (the source of truth),
+//! `wanderbooks.v{N}.db` (the disposable SQLite projection, a file for each
+//! schema: ledger_store::db_file_for), `blobs/` (content-addressed receipts),
 //! and optionally `config.json`. If no store exists, one is created with the
 //! configured base currency. Company settings (name, fiscal year start,
 //! receipt threshold) come from the books dir's `wanderbooks.toml`, by

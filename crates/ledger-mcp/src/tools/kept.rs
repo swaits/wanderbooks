@@ -194,6 +194,19 @@ pub struct SectionOut {
     pub title: String,
 }
 
+/// A format upgrade the books wait for.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct FormatUpgradeOut {
+    /// The guard: format_upgrade_pending (what a refused change says).
+    pub guard: String,
+    /// The journal format the books are in.
+    pub format: u32,
+    /// What the upgrade adds, in words.
+    pub adds: Vec<String>,
+    /// Who can give the go-ahead, and how.
+    pub how: String,
+}
+
 /// Something to do next.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct NextStepOut {
@@ -235,6 +248,12 @@ pub struct StartOut {
     pub truncated: Vec<String>,
     /// The handbook's sections (books.handbook {section}).
     pub handbook_sections: Vec<SectionOut>,
+    /// The format upgrade these books wait for, if they do (plan 3.9,
+    /// D-39): an older version wrote them, so they work on their old
+    /// journal format, and whatever needs the new one is refused, until
+    /// the owner gives the go-ahead. No tool can: tell the human.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format_upgrade: Option<FormatUpgradeOut>,
     /// What to do next, in order.
     pub next_steps: Vec<NextStepOut>,
     /// How the books are kept from agents: "same_user (advisory)", hidden
@@ -778,6 +797,17 @@ impl BooksServer {
             why: why.into(),
         };
         let mut next_steps = Vec::new();
+        // Books an older version wrote wait for the owner's go-ahead to
+        // upgrade their format: first, at every start until it is given
+        // (D-39). Only the owner can give it.
+        let upgrade = store.journal_format().upgrade();
+        if upgrade.is_some() {
+            next_steps.push(step(
+                "books.handbook",
+                Some(serde_json::json!({"section": "format-upgrade"})),
+                "Tell the human first: these books wait for a format upgrade, which only the owner can agree to (in the app, which asks when it opens the books, or `wanderbooks books upgrade` at a terminal, with the owner passphrase; a verified backup is made first). Until then they work on their old format and refuse what needs the new one (format_upgrade_pending). No tool can upgrade them.",
+            ));
+        }
         // Books that read a settings file move it in before anything else
         // changes a setting (books.set_setting refuses until then).
         if !journaled {
@@ -897,6 +927,12 @@ impl BooksServer {
                     title: handbook::title(md).to_string(),
                 })
                 .collect(),
+            format_upgrade: upgrade.map(|u| FormatUpgradeOut {
+                guard: ledger_store::error::FORMAT_UPGRADE_PENDING.to_string(),
+                format: u.from.format,
+                adds: u.adds(),
+                how: "only the owner, with the owner passphrase: in the app (it asks when it opens the books) or `wanderbooks books upgrade ID` at a terminal; a verified backup with the keys is made first. No tool can.".to_string(),
+            }),
             next_steps,
             isolation: "same_user (advisory)".to_string(),
         };
@@ -968,7 +1004,7 @@ impl BooksServer {
     #[tool(
         name = "books.start",
         title = "Start here",
-        description = "Call first in every session. The books in brief: company, today in its time zone, fiscal year, the journal's head, whether they need onboarding, where settings come from, the rules in force (receipts, parties, approvals), every setting with who set it, this company's conventions (how it keeps its books: posting templates, policies, close steps), open items, the handbook's sections, and next steps. Read-only; at most 8 KB.",
+        description = "Call first in every session. The books in brief: company, today in its time zone, fiscal year, the journal's head, whether they need onboarding, where settings come from, the rules in force (receipts, parties, approvals), every setting with who set it, this company's conventions (how it keeps its books: posting templates, policies, close steps), open items, the handbook's sections, a format upgrade the books wait for (only the owner can agree to it: tell them), and next steps. Read-only; at most 8 KB.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(super) async fn start(

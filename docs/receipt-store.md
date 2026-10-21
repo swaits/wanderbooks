@@ -133,8 +133,12 @@ the MCP server's reads, and the future GUI all hit SQLite — and SQLite is
 **disposable by design**: `rebuild` drops it and replays the journal.
 Suspected corruption is fixed by rebuild, never by forensics.
 
-- **Location.** `$WANDERBOOKS_DATA/wanderbooks.db`, falling back to
-  `~/.local/share/wanderbooks/wanderbooks.db`. The journal lives next to it
+- **Location.** `$WANDERBOOKS_DATA/wanderbooks.v{N}.db`, falling back to
+  `~/.local/share/wanderbooks/wanderbooks.v{N}.db`, N the schema: each
+  schema keeps a file of its own, and a version never migrates, writes or
+  deletes another schema's (`ledger_store::db_file_for`; the legacy
+  `wanderbooks.db` is used only while it holds this version's schema;
+  rules.md B-27). The journal lives next to it
   at `$WANDERBOOKS_DATA/journal.jsonl`; blobs under
   `$WANDERBOOKS_DATA/blobs/`. WAL mode on, `synchronous=FULL`,
   `integrity_check` on startup.

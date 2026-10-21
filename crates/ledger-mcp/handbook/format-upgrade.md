@@ -1,0 +1,7 @@
+# The format upgrade
+
+- A new version of wanderbooks can keep the books in a newer journal format than the version that wrote them. Books an older version wrote wait for a format upgrade: books.start says so (format_upgrade) and puts it first among its next steps, in every session until it is done.
+- Until then they work on their old format: everything that needs nothing new works as before, and whatever would need the new format is refused with format_upgrade_pending, changing nothing. Never retry it, work around it, or post it another way.
+- Only the owner can agree to the upgrade, with the owner passphrase: in the app, which asks each time it opens the books, or with `wanderbooks books upgrade ID` in a terminal. No tool can, and you never ask for, take or type the passphrase. Tell the human, in plain words: the books wait for their go-ahead, what was refused, and that saying no keeps the books working as they are.
+- Before it upgrades, the server makes a backup of the books, their vault and keys included, and proves it whole; a backup that can't be made or proven upgrades nothing. Then the books move to the new format in one step, on the record.
+- After the upgrade an older version of wanderbooks can't open these books; the backup made first keeps them as they were. Going back is the owner's choice, never yours.

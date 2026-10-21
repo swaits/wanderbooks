@@ -186,7 +186,7 @@ fn a_snapshot_checks_the_writers_database_and_files() {
     assert_eq!(snap.check_disk(), DiskCheck::Matches);
     assert_eq!(snap.verify_blobs(), (1, vec![]));
     // Someone edits the database behind the journal's back.
-    let conn = rusqlite::Connection::open(dir.join(ledger_store::DB_FILE)).unwrap();
+    let conn = rusqlite::Connection::open(dir.join(ledger_store::db_file())).unwrap();
     conn.execute(
         "UPDATE accounts SET name = 'Petty cash' WHERE code = '1000'",
         [],

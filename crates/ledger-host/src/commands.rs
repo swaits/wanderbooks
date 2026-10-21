@@ -1,8 +1,9 @@
 //! The owner's commands: `wanderbooks serve`, `close`, `books` (list,
-//! create, adopt, restore, back-up), `token`, `connect`, `doctor` and
-//! `passphrase` (plan 3.3, 3.7, 3.9, 5.5), and the same work for the
+//! create, adopt, restore, back-up, upgrade), `token`, `connect`, `doctor`
+//! and `passphrase` (plan 3.3, 3.7, 3.9, 5.5), and the same work for the
 //! viewer's Books menu (`new_books`, `back_up_now`, `plan_restore`,
-//! `carry_out_restore`, `connect_agent`, `close_books`, `hold_for_viewer`).
+//! `carry_out_restore`, `connect_agent`, `close_books`, `hold_for_viewer`,
+//! `upgrade_format`).
 //!
 //! ```text
 //! GOAL: from a terminal, or the viewer's menu, the owner holds the books
@@ -29,6 +30,14 @@
 //!      bridge reads its token from this keyring).
 //!   5. The viewer's hold lets go only when the owner closes the books;
 //!      books that stop, or won't open, are tried again.
+//!   6. Books waiting for a format upgrade (plan 3.9, D-39): the owner's
+//!      commands that open the books (`serve`, `books`, `token`,
+//!      `connect`) ask for the go-ahead once each time they run, at a
+//!      terminal that shows the question (input and output a terminal, in
+//!      the foreground: the question, then the owner passphrase, which only
+//!      the server checks); elsewhere they only say so, on stderr. Only a passphrase typed
+//!      at a terminal (or in the viewer) is sent, through the lease
+//!      socket's consent_format_upgrade; declining changes nothing.
 //! ```
 
 use crate::knobs::{FLAG, Knobs};
@@ -45,6 +54,14 @@ const LIST_WAIT: Duration = Duration::from_secs(30);
 /// How long `close` waits to see the books closed.
 const CLOSE_WAIT: Duration = Duration::from_secs(120);
 
+/// How long the owner's go-ahead for a format upgrade may take: the whole
+/// books are backed up and proven first.
+const UPGRADE_WAIT: Duration = Duration::from_secs(60 * 60);
+/// How long a command waits to learn whether books wait for a format
+/// upgrade before it gets on with its own work: a server slow to list
+/// them (frozen, or busy) delays the command no more than this.
+const OFFER_WAIT: Duration = Duration::from_secs(5);
+
 /// Common flags: `--root DIR` and the test knobs.
 #[derive(Default, Clone)]
 pub struct Common {
@@ -53,7 +70,15 @@ pub struct Common {
     pub root: Option<PathBuf>,
     /// The test knobs.
     pub knobs: Knobs,
+    /// Ask about books waiting for a format upgrade when the books open
+    /// (INVARIANT 6): the owner's own commands; never the viewer's work
+    /// (its window asks) nor the agent's file commands.
+    pub ask_upgrades: bool,
 }
+
+/// Whether this process asked about waiting format upgrades already: once
+/// each time a command runs (INVARIANT 6).
+static ASKED_UPGRADES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 impl Common {
     /// Take a common flag (`Ok(true)`), or leave the argument.
@@ -138,6 +163,12 @@ fn with_server_in(common: &Common, request: Request) -> Result<(Response, PathBu
             HoldError::Failed(why) => why,
         })?;
         let run_dir = opener.run_dir().to_path_buf();
+        // The books are open: asked about a format upgrade first
+        // (INVARIANT 6).
+        if common.ask_upgrades && !ASKED_UPGRADES.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            let run = run_dir.clone();
+            let _ = tokio::task::spawn_blocking(move || offer_upgrades(&run)).await;
+        }
         let socket = run_dir.join(ledger_mcp::local::ADMIN_SOCKET);
         // A list is quick; a create or an adoption takes what it takes.
         let wait = matches!(request, Request::List | Request::TokenList).then_some(LIST_WAIT);
@@ -270,6 +301,13 @@ pub fn serve(
                     "The books are open. Press Ctrl-C to let go of them: they close when nothing else holds them."
                 );
                 said_open = true;
+                // Asked about a format upgrade as they open (INVARIANT 6).
+                // A prompt is answered before Ctrl-C lets go: never left
+                // with the terminal's echo off.
+                if !ASKED_UPGRADES.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    let run = opener.run_dir().to_path_buf();
+                    let _ = tokio::task::spawn_blocking(move || offer_upgrades(&run)).await;
+                }
             } else {
                 println!("The books are open again.");
             }
@@ -398,6 +436,7 @@ fn books_usage(prog: &str) {
     );
     eprintln!("       {prog} restore BACKUP [--id ID] [--replace] [--yes]");
     eprintln!("       {prog} back-up ID [--new-disk]");
+    eprintln!("       {prog} upgrade ID");
     eprintln!(
         "       {prog} put-aside ID DATA-DIR [--vault DIR --vault-key FILE] [PATH...] [--yes]"
     );
@@ -409,6 +448,9 @@ fn books_usage(prog: &str) {
     );
     eprintln!(
         "  restore bring back a backup (a git repository's address, or BOOK.git in the backup folder), proven whole first: as new books, or replacing books (kept in legacy/)"
+    );
+    eprintln!(
+        "  upgrade give the go-ahead, with the owner passphrase, for books an older wanderbooks wrote to move to this version's journal format (a verified backup with the vault and keys first)"
     );
     eprintln!(
         "  put-aside move the old copies of adopted books (their data folder, their vault and its key, and other paths given: settings file, git history) whole into the legacy folder, once the books hold everything they do, byte for byte; nothing is deleted"
@@ -464,6 +506,9 @@ pub fn books(
         }
     }
     let words: Vec<&str> = words.iter().map(String::as_str).collect();
+    // The owner's command: asked about a format upgrade as the books open
+    // (INVARIANT 6), unless it is the upgrade itself.
+    common.ask_upgrades = !matches!(words.as_slice(), ["upgrade", ..]);
     let answer = match words.as_slice() {
         ["list"] => with_server(&common, Request::List),
         ["create", new] => with_server(
@@ -494,6 +539,7 @@ pub fn books(
             );
         }
         ["restore", source] => return restore(&common, source, id, replace, yes),
+        ["upgrade", book] => return upgrade(&common, book),
         ["put-aside", book, source, also @ ..] => {
             let also: Vec<PathBuf> = also.iter().map(PathBuf::from).collect();
             let old = ledger_store::root::OldCopies {
@@ -531,10 +577,7 @@ pub fn books(
         }
         Ok(Response::Books(books)) => {
             for b in books {
-                match b.problem {
-                    None => println!("{}  open", b.id),
-                    Some(why) => println!("{}  didn't open: {why}", b.id),
-                }
+                println!("{}", book_line(&b));
             }
             Ok(())
         }
@@ -562,6 +605,33 @@ pub fn books(
     }
 }
 
+/// One book, as `books list` and `doctor` show it.
+fn book_line(b: &admin::BookStatus) -> String {
+    match (&b.problem, &b.format_upgrade) {
+        (Some(why), _) => format!("{}  didn't open: {why}", b.id),
+        (None, Some(_)) => format!(
+            "{}  open, waiting for a format upgrade (`wanderbooks books upgrade {}`)",
+            b.id, b.id
+        ),
+        (None, None) => format!("{}  open", b.id),
+    }
+}
+
+/// The projection database a book uses, and the other schemas' files
+/// beside it (left as they are for the versions that wrote them, never
+/// deleted), as `doctor` says them; None when it didn't open.
+fn database_line(b: &admin::BookStatus) -> Option<String> {
+    let database = b.database.as_ref()?;
+    Some(if b.other_databases.is_empty() {
+        format!("database: {database}")
+    } else {
+        format!(
+            "database: {database} (also there, left for the versions that use them: {})",
+            b.other_databases.join(", ")
+        )
+    })
+}
+
 /// Back the books `book` up now (the server does it): what came of it, a
 /// line each; Err when it couldn't be done, or a target didn't take it.
 pub fn back_up_now(common: &Common, book: &str, new_disk: bool) -> Result<Vec<String>, String> {
@@ -582,6 +652,258 @@ pub fn back_up_now(common: &Common, book: &str, new_disk: bool) -> Result<Vec<St
         }
         Response::Refused(why) => Err(why),
         other => Err(format!("the books server answered oddly: {other:?}")),
+    }
+}
+
+/// What a format upgrade the books `book` wait for means, a line each
+/// (plan 3.9, D-39): said before the owner is asked.
+pub fn upgrade_explained(book: &str, waiting: &admin::FormatWaiting) -> Vec<String> {
+    vec![
+        format!(
+            "The books \"{book}\" wait for a format upgrade: an older version of wanderbooks wrote them, in journal format {}. The upgrade adds {}.",
+            waiting.format,
+            waiting.adds.join(", ")
+        ),
+        "Until you agree they work on their old format: everything that needs nothing new works, and what needs the new format is refused.".into(),
+        "Upgrading first makes a backup of the books, their vault and keys included, and proves it whole; then it moves them to the new format, in one step. After that an older version of wanderbooks can't open them.".into(),
+    ]
+}
+
+/// What a format upgrade did, a line each.
+pub fn upgraded_lines(u: &admin::FormatUpgraded) -> Vec<String> {
+    if u.added.is_empty() {
+        return vec![format!(
+            "The books \"{}\" are already in this version's journal format: nothing was changed.",
+            u.id
+        )];
+    }
+    let mut lines = Vec::new();
+    if let Some(b) = &u.backup {
+        lines.push(format!(
+            "Backed up first, and proven whole with the vault and keys: the books as they were, through event {} (backup {}).",
+            b.head.0,
+            short_hash(&b.commit)
+        ));
+    }
+    lines.push(format!(
+        "Upgraded the books \"{}\" to this version's journal format ({}): now at event {} ({}).",
+        u.id,
+        u.added.join(", "),
+        u.head.0,
+        short_hash(&u.head.1)
+    ));
+    lines
+}
+
+/// Hand the owner's go-ahead for the books `book`'s format upgrade, with
+/// the passphrase they typed, to the books' host (the lease socket's
+/// consent_format_upgrade; INVARIANT 6), whose server checks it and does
+/// it: what came of it, a line each. The books must be open.
+fn consent_now(run: &Path, book: &str, passphrase: &str) -> Result<Vec<String>, String> {
+    let asked = crate::opener::ask_once_within(
+        run,
+        Ask::Intent(Intent::ConsentFormatUpgrade {
+            book: book.to_string(),
+            passphrase: Some(admin::Passphrase(passphrase.to_string())),
+        }),
+        UPGRADE_WAIT,
+    )
+    .map_err(|why| {
+        format!(
+            "{why}, so it may or may not have been done: `wanderbooks books list` says whether the books still wait for it"
+        )
+    })?;
+    match asked {
+        Some(HostMsg::Done { detail }) => Ok(detail
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()),
+        // Refused: nothing was done (the server says so too).
+        Some(HostMsg::Refused(why)) => Err(format!("not upgraded: {why}")),
+        Some(HostMsg::Uncertain(why)) => Err(why),
+        // Sent, and the host gone without an answer (closed, or killed):
+        // its server may have done it all the same.
+        None => Err(
+            "the books' host gave no answer, so it may or may not have been done: `wanderbooks books list` says whether the books still wait for it"
+                .into(),
+        ),
+        Some(other) => Err(format!("the books' host answered oddly: {other:?}")),
+    }
+}
+
+/// The owner's go-ahead for the books `book`'s format upgrade, with the
+/// owner passphrase they typed (the viewer's dialog, `books upgrade`): the
+/// books held open meanwhile. What came of it, a line each; or why not,
+/// which says whether it may have been done all the same.
+pub fn upgrade_format(
+    common: &Common,
+    book: &str,
+    passphrase: &str,
+) -> Result<Vec<String>, String> {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+    let (book, passphrase) = (
+        book.to_string(),
+        zeroize::Zeroizing::new(passphrase.to_string()),
+    );
+    let outcome = rt.block_on(async {
+        // Nothing is sent until the books are open.
+        let not_sent = |why: String| format!("not upgraded: {why}");
+        let mut opener =
+            Opener::new(common.root.as_deref(), common.knobs, Kind::Cli, None).map_err(not_sent)?;
+        let lease = open(&mut opener).await.map_err(|e| match e {
+            HoldError::ClosedByOwner => {
+                "not upgraded: the books were closed just now (Close the books): nothing was done"
+                    .to_string()
+            }
+            HoldError::Failed(why) => not_sent(why),
+        })?;
+        let run = opener.run_dir().to_path_buf();
+        let asked = tokio::task::spawn_blocking(move || consent_now(&run, &book, &passphrase))
+            .await
+            .map_err(|e| e.to_string())?;
+        drop(lease);
+        asked
+    });
+    rt.shutdown_timeout(Duration::from_secs(1));
+    outcome
+}
+
+/// Ask the owner about every book waiting for a format upgrade (INVARIANT
+/// 6), the books open: at a terminal, the go-ahead (then the owner
+/// passphrase); elsewhere only a note.
+fn offer_upgrades(run: &Path) {
+    let socket = run.join(ledger_mcp::local::ADMIN_SOCKET);
+    let Ok(Response::Books(books)) = admin::call_within(&socket, Request::List, Some(OFFER_WAIT))
+    else {
+        return;
+    };
+    for b in books {
+        if let Some(waiting) = &b.format_upgrade {
+            offer_upgrade(run, &b.id, waiting);
+        }
+    }
+}
+
+/// [`offer_upgrades`] for the books `book`. The question comes unasked for,
+/// into a command run for something else, so it is asked only where it is
+/// seen and answered: at a terminal, the command's output going to it, and
+/// run in the foreground (a command whose output goes to a file or a pipe,
+/// or a job in the background, would wait unseen for an answer, and mix
+/// the question into its output).
+fn offer_upgrade(run: &Path, book: &str, waiting: &admin::FormatWaiting) {
+    // SAFETY: isatty, tcgetpgrp and getpgrp have no preconditions.
+    let seen = unsafe { libc::isatty(1) == 1 && libc::tcgetpgrp(0) == libc::getpgrp() };
+    if !(seen && can_type_a_passphrase()) {
+        eprintln!(
+            "note: the books \"{book}\" wait for a format upgrade (to {}): until the owner agrees, with `wanderbooks books upgrade {book}` at a terminal or in the app, they work on their old format.",
+            waiting.adds.join(", ")
+        );
+        return;
+    }
+    for line in upgrade_explained(book, waiting) {
+        println!("{line}");
+    }
+    let not_now = || {
+        println!(
+            "Not now: the books keep working as they are, and you'll be asked again the next time they open (or run `wanderbooks books upgrade {book}`)."
+        );
+    };
+    if !matches!(confirmed("Upgrade them now?", false), Ok(true)) {
+        not_now();
+        return;
+    }
+    let passphrase = match ask_owner_passphrase() {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            not_now();
+            return;
+        }
+        Err(why) => {
+            eprintln!("error: {why}");
+            return;
+        }
+    };
+    match consent_now(run, book, &passphrase) {
+        Ok(lines) => {
+            for line in lines {
+                println!("{line}");
+            }
+        }
+        Err(why) => eprintln!("error: {why}"),
+    }
+}
+
+/// The owner passphrase, typed at the terminal for a format upgrade; None
+/// when nothing was typed (no go-ahead). Never echoed or repeated.
+fn ask_owner_passphrase() -> Result<Option<zeroize::Zeroizing<String>>, String> {
+    let typed = rpassword::prompt_password(
+        "The owner passphrase, to give the go-ahead (Enter alone: not now): ",
+    )
+    .map(zeroize::Zeroizing::new)
+    .map_err(|e| format!("nothing was read ({})", e.kind()))?;
+    Ok((!typed.is_empty()).then_some(typed))
+}
+
+/// `wanderbooks books upgrade ID` (INVARIANT 6): the owner's go-ahead for
+/// the books' format upgrade, at a terminal.
+fn upgrade(common: &Common, book: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let fail = |why: String| -> Result<(), Box<dyn std::error::Error>> {
+        eprintln!("error: {why}");
+        Err(exit(1))
+    };
+    let book = match ledger_store::root::BookId::parse(book) {
+        Ok(id) => id.to_string(),
+        Err(e) => return fail(e.to_string()),
+    };
+    let listed = match with_server(common, Request::List) {
+        Ok(Response::Books(books)) => books,
+        Ok(Response::Refused(why)) | Err(why) => return fail(why),
+        Ok(other) => return fail(format!("the books server answered oddly: {other:?}")),
+    };
+    let Some(status) = listed.into_iter().find(|b| b.id == book) else {
+        return fail(format!(
+            "there are no books called \"{book}\": `wanderbooks books list` lists them"
+        ));
+    };
+    if let Some(why) = status.problem {
+        return fail(format!("the books \"{book}\" didn't open: {why}"));
+    }
+    let Some(waiting) = status.format_upgrade else {
+        println!(
+            "The books \"{book}\" are already in this version's journal format: nothing to do."
+        );
+        return Ok(());
+    };
+    for line in upgrade_explained(&book, &waiting) {
+        println!("{line}");
+    }
+    if !can_type_a_passphrase() {
+        return fail(format!(
+            "the go-ahead is the owner's, with the owner passphrase typed at a terminal: run `wanderbooks books upgrade {book}` in one (or agree in the app)"
+        ));
+    }
+    let passphrase = match ask_owner_passphrase() {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            println!(
+                "Not upgraded: the books keep working as they are, and you'll be asked again."
+            );
+            return Ok(());
+        }
+        Err(why) => return fail(why),
+    };
+    match upgrade_format(common, &book, &passphrase) {
+        Ok(lines) => {
+            for line in lines {
+                println!("{line}");
+            }
+            Ok(())
+        }
+        Err(why) => fail(why),
     }
 }
 
@@ -745,6 +1067,8 @@ pub fn connect(
         eprintln!("usage: {prog} claude|codex --book ID");
         return Err(exit(2));
     };
+    // The owner's command (INVARIANT 6).
+    common.ask_upgrades = true;
     match connect_agent(&common, agent, &book) {
         Ok(lines) => {
             for line in lines {
@@ -1474,6 +1798,11 @@ fn adopted_lines(a: &admin::Adopted) -> Vec<String> {
     if a.key_copied {
         lines.push(format!("TIN vault: {} records and its key.", a.vault_files));
     }
+    if a.format_upgraded {
+        lines.push(
+            "The copy is in this version's journal format (the original keeps its own).".into(),
+        );
+    }
     if a.settings_imported > 0 {
         lines.push(format!("{} settings moved in.", a.settings_imported));
     }
@@ -1573,9 +1902,9 @@ pub fn doctor(
                 }
                 if let Ok(admin::Response::Books(books)) = listed {
                     for b in books {
-                        match b.problem {
-                            None => println!("  {}  open", b.id),
-                            Some(why) => println!("  {}  didn't open: {why}", b.id),
+                        println!("  {}", book_line(&b));
+                        if let Some(line) = database_line(&b) {
+                            println!("    {line}");
                         }
                     }
                     // Agents' tokens: how many each book has.
@@ -1691,6 +2020,8 @@ pub fn token(
             _ => words.push(arg),
         }
     }
+    // The owner's command (INVARIANT 6).
+    common.ask_upgrades = true;
     let fail = |why: String| -> Box<dyn std::error::Error> {
         eprintln!("error: {why}");
         exit(1)
@@ -2456,6 +2787,7 @@ mod tests {
             settings_imported: 0,
             settings_ignored: false,
             source_lock_created: false,
+            format_upgraded: false,
             problem: None,
         }
     }
@@ -2493,6 +2825,7 @@ mod tests {
             vault_files: 3,
             key_copied: true,
             settings_imported: 6,
+            format_upgraded: true,
             ..adopted()
         });
         assert_eq!(
@@ -2500,6 +2833,7 @@ mod tests {
             [
                 "Adopted as \"old\": 5 stored files copied, 4 of them checked against the books, 1 the books don't name (kept), 2 unfinished or hidden files left behind.",
                 "TIN vault: 3 records and its key.",
+                "The copy is in this version's journal format (the original keeps its own).",
                 "6 settings moved in.",
                 "Head: event 4 (0123456789ab).",
             ]
@@ -2510,6 +2844,101 @@ mod tests {
             ..adopted()
         });
         assert!(empty.contains(&"TIN vault: 0 records and its key.".to_string()));
+    }
+
+    /// What the owner is told of a format upgrade: what they wait for,
+    /// what was done (the backup first, then the format), and that books
+    /// already in this version's format had nothing done.
+    #[test]
+    fn a_format_upgrade_is_told_in_plain_words() {
+        let waiting = admin::FormatWaiting {
+            format: 1,
+            features: Vec::new(),
+            adds: vec!["journal format 2".into()],
+        };
+        let told = upgrade_explained("acme", &waiting).join(" ");
+        for says in [
+            "\"acme\" wait for a format upgrade",
+            "in journal format 1",
+            "The upgrade adds journal format 2.",
+            "Until you agree they work on their old format",
+            "vault and keys included",
+            "an older version of wanderbooks can't open them",
+        ] {
+            assert!(told.contains(says), "{says}: {told}");
+        }
+        let status =
+            |problem: Option<&str>, waiting: Option<admin::FormatWaiting>| admin::BookStatus {
+                id: "acme".into(),
+                open: problem.is_none(),
+                problem: problem.map(str::to_string),
+                format_upgrade: waiting,
+                database: None,
+                other_databases: Vec::new(),
+            };
+        assert_eq!(book_line(&status(None, None)), "acme  open");
+        assert_eq!(
+            book_line(&status(None, Some(waiting.clone()))),
+            "acme  open, waiting for a format upgrade (`wanderbooks books upgrade acme`)"
+        );
+        assert_eq!(
+            book_line(&status(Some("damaged"), Some(waiting))),
+            "acme  didn't open: damaged"
+        );
+        let done = admin::FormatUpgraded {
+            id: "acme".into(),
+            added: vec!["journal format 2".into()],
+            backup: Some(admin::UpgradeBackup {
+                commit: "0123456789abcdef".repeat(2),
+                head: (7, "a".repeat(64)),
+            }),
+            head: (8, "b".repeat(64)),
+        };
+        assert_eq!(
+            upgraded_lines(&done),
+            [
+                "Backed up first, and proven whole with the vault and keys: the books as they were, through event 7 (backup 0123456789ab).",
+                "Upgraded the books \"acme\" to this version's journal format (journal format 2): now at event 8 (bbbbbbbbbbbb).",
+            ]
+        );
+        assert_eq!(
+            upgraded_lines(&admin::FormatUpgraded {
+                added: Vec::new(),
+                backup: None,
+                ..done
+            }),
+            [
+                "The books \"acme\" are already in this version's journal format: nothing was changed."
+            ]
+        );
+    }
+
+    /// `doctor` names the database file a book uses, and any other
+    /// schema's beside it as left alone; nothing for books that didn't
+    /// open.
+    #[test]
+    fn doctor_names_the_database_in_use_and_the_others_left_alone() {
+        let mut b = admin::BookStatus {
+            id: "acme".into(),
+            open: true,
+            problem: None,
+            format_upgrade: None,
+            database: Some("wanderbooks.v13.db".into()),
+            other_databases: Vec::new(),
+        };
+        assert_eq!(
+            database_line(&b).as_deref(),
+            Some("database: wanderbooks.v13.db")
+        );
+        b.other_databases = vec!["wanderbooks.db".into(), "wanderbooks.v14.db".into()];
+        assert_eq!(
+            database_line(&b).as_deref(),
+            Some(
+                "database: wanderbooks.v13.db (also there, left for the versions that use them: wanderbooks.db, wanderbooks.v14.db)"
+            )
+        );
+        b.database = None;
+        assert_eq!(database_line(&b), None);
     }
 
     #[test]

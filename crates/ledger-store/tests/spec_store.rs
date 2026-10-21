@@ -10,7 +10,7 @@
 use chrono::NaiveDate;
 use ledger_core::{AccountId, AccountType, Currency, EntryId, Money, NewAsset, Side};
 use ledger_store::journal::repair_torn_tail;
-use ledger_store::{BlobStore, DB_FILE, JOURNAL_FILE, Snapshot, Store, StoreError};
+use ledger_store::{BlobStore, JOURNAL_FILE, Snapshot, Store, StoreError, db_file};
 use rust_decimal::Decimal;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -156,7 +156,7 @@ fn file_names(dir: &Path) -> Vec<String> {
 
 fn remove_db(dir: &Path) {
     for suffix in ["", "-wal", "-shm"] {
-        let _ = std::fs::remove_file(dir.join(format!("{DB_FILE}{suffix}")));
+        let _ = std::fs::remove_file(dir.join(format!("{}{suffix}", db_file())));
     }
 }
 
@@ -764,7 +764,7 @@ fn open_rebuilds_a_missing_database() {
     drop(b);
     remove_db(&dir);
     let s = Store::open(&dir).unwrap();
-    assert!(dir.join(DB_FILE).exists());
+    assert!(dir.join(db_file()).exists());
     assert_eq!(s.ledger(), &live);
     assert_eq!(
         s.events_since(0, 1_000_000).unwrap().len(),
@@ -788,7 +788,7 @@ fn open_keeps_a_corrupt_database_aside_and_rebuilds() {
         .take(8192)
         .copied()
         .collect();
-    std::fs::write(dir.join(DB_FILE), &garbage).unwrap();
+    std::fs::write(dir.join(db_file()), &garbage).unwrap();
     let journal_before = jbytes(&dir);
     let s = Store::open(&dir).unwrap();
     assert_eq!(s.ledger(), &live);
@@ -796,7 +796,7 @@ fn open_keeps_a_corrupt_database_aside_and_rebuilds() {
     // Kept aside: some other file in the directory holds the garbage.
     let kept = tree(&dir)
         .into_iter()
-        .any(|(p, bytes)| p != Path::new(DB_FILE) && bytes == garbage);
+        .any(|(p, bytes)| p != Path::new(&db_file()) && bytes == garbage);
     assert!(
         kept,
         "corrupt db not kept aside; files: {:?}",
@@ -815,8 +815,8 @@ fn open_keeps_a_corrupt_database_aside_and_rebuilds() {
 fn open_catches_up_a_database_behind_the_journal() {
     let dir = test_dir("open-behind");
     drop(books(&dir));
-    let old_db = std::fs::read(dir.join(DB_FILE)).unwrap();
-    let old_wal = std::fs::read(dir.join(format!("{DB_FILE}-wal"))).ok();
+    let old_db = std::fs::read(dir.join(db_file())).unwrap();
+    let old_wal = std::fs::read(dir.join(format!("{}-wal", db_file()))).ok();
     let mut s = Store::open(&dir).unwrap();
     s.add_account("6300", "Meals", AccountType::Expense, None, false)
         .unwrap();
@@ -826,9 +826,9 @@ fn open_catches_up_a_database_behind_the_journal() {
     let live = s.ledger().clone();
     drop(s);
     remove_db(&dir);
-    std::fs::write(dir.join(DB_FILE), &old_db).unwrap();
+    std::fs::write(dir.join(db_file()), &old_db).unwrap();
     if let Some(w) = old_wal {
-        std::fs::write(dir.join(format!("{DB_FILE}-wal")), w).unwrap();
+        std::fs::write(dir.join(format!("{}-wal", db_file())), w).unwrap();
     }
     let s = Store::open(&dir).unwrap();
     assert_eq!(s.ledger(), &live);
@@ -1395,7 +1395,7 @@ fn verify_detects_projection_divergence() {
         .attach_receipt(Some(b.e1), "r.pdf", "application/pdf", b"d", None)
         .unwrap();
     {
-        let c = rusqlite::Connection::open(dir.join(DB_FILE)).unwrap();
+        let c = rusqlite::Connection::open(dir.join(db_file())).unwrap();
         let n = c.execute("DELETE FROM attachments", []).unwrap();
         assert_eq!(n, 1);
     }
@@ -1448,7 +1448,7 @@ fn heal_rebuilds_a_diverged_projection() {
         .attach_receipt(Some(b.e1), "r.pdf", "application/pdf", b"h", None)
         .unwrap();
     {
-        let c = rusqlite::Connection::open(dir.join(DB_FILE)).unwrap();
+        let c = rusqlite::Connection::open(dir.join(db_file())).unwrap();
         c.execute("DELETE FROM attachments", []).unwrap();
     }
     let journal = jbytes(&dir);

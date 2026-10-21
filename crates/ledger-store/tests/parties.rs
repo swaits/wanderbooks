@@ -16,7 +16,7 @@ use ledger_core::{
     PayrollLine, PayrollRun, Role, Side, W4Facts, W9Facts,
 };
 use ledger_store::journal::read_and_verify_journal;
-use ledger_store::{DB_FILE, JOURNAL_FILE, JournalWriter, Store};
+use ledger_store::{JOURNAL_FILE, JournalWriter, Store, db_file};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -192,7 +192,7 @@ fn view(l: &Ledger) -> View {
 
 fn delete_db(dir: &Path) {
     for suffix in ["", "-wal", "-shm", "-journal"] {
-        let _ = std::fs::remove_file(dir.join(format!("{DB_FILE}{suffix}")));
+        let _ = std::fs::remove_file(dir.join(format!("{}{suffix}", db_file())));
     }
 }
 

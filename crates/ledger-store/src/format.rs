@@ -20,10 +20,16 @@
 //! can't read, and say whether that line is intact.
 //!
 //! A line an earlier version can't read is announced by a feature
-//! ([`KNOWN_FEATURES`]): the writer declares it (`journal.format_set`,
-//! the features in force and the new one) just before the first line that
-//! needs it, so the earlier reader stops at the declaration, and books
-//! that never use the feature stay readable by it.
+//! ([`KNOWN_FEATURES`]): the books declare it (`journal.format_set`)
+//! before the first line that needs it, so the earlier reader stops at the
+//! declaration.
+//!
+//! The other way round, books an older version wrote are in an older
+//! format: this version reads them as they are, and writes nothing that
+//! needs a format or feature they haven't declared until the owner says
+//! go (the format upgrade, rules.md B-27, plan/served.md 3.9, D-39:
+//! [`JournalFormat::upgrade`], [`current`]). New books declare this
+//! version's whole format as they are created.
 
 use crate::error::StoreError;
 use crate::journal::{JournalLine, ReadLine};
@@ -35,11 +41,11 @@ pub const SUPPORTED_JOURNAL_FORMAT: u32 = 2;
 /// Optional journal features this version reads. Each marks lines an
 /// older version can't read: a new event type (which it would refuse as
 /// unknown), or a field or value on an event type it knows (which it
-/// would misread silently). A writer declares the feature
-/// (`journal.format_set`) before its first such line
-/// ([`crate::Store`]'s `ensure_feature`), so the older version stops
-/// there instead (rules.md B-27). Books that never use one stay readable
-/// by versions before it.
+/// would misread silently). The books declare it (`journal.format_set`)
+/// before their first such line, so the older version stops there instead
+/// (rules.md B-27). Every one is declared at once: by new books as they
+/// are created, and by older books at their format upgrade ([`current`]);
+/// until then a write that needs one is refused.
 pub const KNOWN_FEATURES: &[&str] = &[
     MEMBERS_CUMULATIVE,
     FEATURE_ACCOUNT_RENAMED,
@@ -59,16 +65,15 @@ pub const KNOWN_FEATURES: &[&str] = &[
 /// rule, which can split it differently.
 pub const MEMBERS_CUMULATIVE: &str = "members_cumulative";
 
-/// The feature declared before the first `account.renamed` (P3, defect
-/// 15).
+/// Feature: `account.renamed`, a new event type (P3, defect 15).
 pub const FEATURE_ACCOUNT_RENAMED: &str = "account_renamed";
 
-/// The feature declared before the first `settings.set` naming
-/// `policy.require_tax_category` (P3, defect 8).
+/// Feature: a `settings.set` naming `policy.require_tax_category`, a key
+/// an earlier version doesn't know (P3, defect 8).
 pub const FEATURE_REQUIRE_TAX_CATEGORY: &str = "require_tax_category";
 
-/// The feature a `settings.set` naming `key` needs declared first: a key
-/// an earlier version doesn't know.
+/// The feature a `settings.set` naming `key` needs the books to have
+/// declared: a key an earlier version doesn't know.
 pub(crate) fn setting_feature(key: &str) -> Option<&'static str> {
     match key {
         "policy.require_tax_category" => Some(FEATURE_REQUIRE_TAX_CATEGORY),
@@ -259,6 +264,122 @@ impl JournalFormat {
         features.sort_unstable();
         features.dedup();
         Ok(json!({ "format": format, "features": features }))
+    }
+}
+
+/// The journal format this version writes: the newest format it reads,
+/// with every feature it knows, sorted. New books declare it as they are
+/// created ([`crate::Store::create`]), and books in an older format move
+/// to it in one step at their format upgrade
+/// ([`crate::Store::upgrade_format`]).
+pub fn current() -> JournalFormat {
+    let mut features: Vec<String> = KNOWN_FEATURES.iter().map(|f| f.to_string()).collect();
+    features.sort_unstable();
+    features.dedup();
+    JournalFormat {
+        format: SUPPORTED_JOURNAL_FORMAT,
+        features,
+    }
+}
+
+/// A format upgrade books wait for: from the format they are in to this
+/// version's ([`current`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FormatUpgrade {
+    /// The format the books are in.
+    pub from: JournalFormat,
+    /// The format the upgrade declares: this version's.
+    pub to: JournalFormat,
+}
+
+impl FormatUpgrade {
+    /// What the upgrade adds, in words: a newer format number, then each
+    /// feature not yet declared.
+    pub fn adds(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if self.to.format > self.from.format {
+            out.push(format!("journal format {}", self.to.format));
+        }
+        out.extend(
+            self.to
+                .features
+                .iter()
+                .filter(|f| !self.from.has_feature(f))
+                .map(|f| format!("the journal feature {f}")),
+        );
+        out
+    }
+}
+
+impl JournalFormat {
+    /// Whether the books declared the feature `feature`.
+    pub fn has_feature(&self, feature: &str) -> bool {
+        self.features.iter().any(|f| f == feature)
+    }
+
+    /// Refuse a write that needs journal format `format` (or a later one)
+    /// in books that haven't declared it: they wait for their format
+    /// upgrade (FormatUpgradePending; [`crate::Store`]'s writes ask this
+    /// before they journal anything).
+    pub fn require_format(&self, format: u32) -> Result<(), StoreError> {
+        if self.format >= format {
+            Ok(())
+        } else {
+            Err(StoreError::FormatUpgradePending {
+                need: format!("journal format {format}"),
+            })
+        }
+    }
+
+    /// Refuse a write that needs the feature `feature` in books that
+    /// haven't declared it ([`Self::require_format`]'s kin).
+    pub fn require_feature(&self, feature: &str) -> Result<(), StoreError> {
+        if self.has_feature(feature) {
+            Ok(())
+        } else {
+            Err(StoreError::FormatUpgradePending {
+                need: format!("the journal feature {feature}"),
+            })
+        }
+    }
+
+    /// The format upgrade books in this format wait for, if any (rules.md
+    /// B-27, plan/served.md 3.9, D-39).
+    ///
+    /// ```text
+    /// GOAL: books an older version wrote are never moved to a newer
+    ///       format, which that version can't open, without the owner's
+    ///       go-ahead, and whether they wait for one is a fact of their
+    ///       journal alone.
+    /// SOURCE: plan/served.md 3.9 ("Format changes are the server's gate,
+    ///         not the updater's": a server that would write a newer
+    ///         journal format than a book has opens it on its old format
+    ///         until the owner consents); D-39 (asked at every open until
+    ///         given).
+    /// INVARIANTS:
+    ///   1. Some exactly when this version writes a higher format number,
+    ///      or knows a feature the books haven't declared.
+    ///   2. Its `to` is this version's format (current()): every feature
+    ///      it knows, so a book's format moves exactly once per version.
+    /// SCENARIOS:
+    ///   1. IF the books declared nothing (format 1, written before the
+    ///      format gate): SHOULD wait for the upgrade to format 2.
+    ///   2. IF they declared this version's format and every feature it
+    ///      knows: SHOULD wait for none.
+    ///   3. IF they declared this format without a feature this version
+    ///      knows: SHOULD wait for one that adds it.
+    /// ```
+    pub fn upgrade(&self) -> Option<FormatUpgrade> {
+        self.upgrade_to(current())
+    }
+
+    /// [`Self::upgrade`] for a version whose format is `to`.
+    fn upgrade_to(&self, to: JournalFormat) -> Option<FormatUpgrade> {
+        let behind = self.format < to.format || to.features.iter().any(|f| !self.has_feature(f));
+        behind.then(|| FormatUpgrade {
+            from: self.clone(),
+            to,
+        })
     }
 }
 
@@ -567,6 +688,136 @@ mod tests {
                 .declaration(2, &[SCHEDULE_CONVENTION, MONTH_REPOSTING])
                 .unwrap(),
             json!({"format": 2, "features": ["month_reposting", "schedule_convention"]})
+        );
+    }
+
+    /// This version's format: the newest it reads, every feature it
+    /// knows, each once, sorted (what new books and an upgrade declare).
+    #[test]
+    fn this_versions_format_is_the_newest_with_every_known_feature() {
+        let c = current();
+        assert_eq!(c.format, SUPPORTED_JOURNAL_FORMAT);
+        let mut known: Vec<String> = KNOWN_FEATURES.iter().map(|f| f.to_string()).collect();
+        known.sort();
+        known.dedup();
+        assert_eq!(c.features, known);
+        // What it declares reads back as itself.
+        let features: Vec<&str> = c.features.iter().map(String::as_str).collect();
+        let payload = JournalFormat::default()
+            .declaration(c.format, &features)
+            .unwrap();
+        assert_eq!(declared(&line(FORMAT_SET, payload)).unwrap(), c);
+        assert_eq!(c.upgrade(), None, "this version's books wait for nothing");
+    }
+
+    /// Books wait for an upgrade exactly when this version writes a higher
+    /// format number or knows a feature they haven't declared; the upgrade
+    /// is always to this version's whole format (SCENARIOS 1 to 3).
+    #[test]
+    fn books_wait_for_an_upgrade_exactly_when_behind() {
+        let at = |format: u32, features: &[&str]| JournalFormat {
+            format,
+            features: features.iter().map(|f| f.to_string()).collect(),
+        };
+        // Format 1 (nothing declared): waits for this version's format.
+        let old = JournalFormat::default();
+        let up = old.upgrade().expect("format 1 books wait for format 2");
+        assert_eq!((up.from.clone(), up.to.clone()), (old, current()));
+        assert_eq!(
+            up.adds()[0],
+            format!("journal format {SUPPORTED_JOURNAL_FORMAT}")
+        );
+        // A version that knows features: each one missing makes books wait,
+        // and the upgrade adds all of them at once.
+        let to = at(2, &["a", "b"]);
+        for (books, adds) in [
+            (
+                at(1, &[]),
+                vec![
+                    "journal format 2",
+                    "the journal feature a",
+                    "the journal feature b",
+                ],
+            ),
+            (
+                at(2, &[]),
+                vec!["the journal feature a", "the journal feature b"],
+            ),
+            (at(2, &["b"]), vec!["the journal feature a"]),
+            (at(2, &["a"]), vec!["the journal feature b"]),
+        ] {
+            let up = books.upgrade_to(to.clone()).expect("behind");
+            assert_eq!(up.to, to, "the whole format, at once");
+            assert_eq!(up.adds(), adds, "{books:?}");
+        }
+        assert_eq!(at(2, &["a", "b"]).upgrade_to(to.clone()), None);
+        assert_eq!(
+            at(2, &["b", "a"]).upgrade_to(to.clone()),
+            None,
+            "in any order"
+        );
+        // Nothing ahead of this version counts as behind (it never opens).
+        assert_eq!(at(3, &["a", "b"]).upgrade_to(to), None);
+    }
+
+    /// A write that needs a format or feature the books haven't declared
+    /// is refused as waiting for the upgrade, saying what it needs; one
+    /// the books declared passes.
+    #[test]
+    fn a_write_needs_what_the_books_declared() {
+        let at = |format: u32, features: &[&str]| JournalFormat {
+            format,
+            features: features.iter().map(|f| f.to_string()).collect(),
+        };
+        let need = |r: Result<(), StoreError>| match r {
+            Err(StoreError::FormatUpgradePending { need }) => need,
+            other => panic!("expected FormatUpgradePending, got {other:?}"),
+        };
+        assert_eq!(need(at(1, &[]).require_format(2)), "journal format 2");
+        at(2, &[]).require_format(2).unwrap();
+        at(2, &[]).require_format(1).unwrap();
+        assert_eq!(
+            need(at(2, &["a"]).require_feature("b")),
+            "the journal feature b"
+        );
+        at(2, &["a", "b"]).require_feature("b").unwrap();
+        // The refusal names the guard, says nothing changed, and that only
+        // the owner can agree, and how.
+        let text = StoreError::FormatUpgradePending {
+            need: "journal format 2".into(),
+        }
+        .to_string();
+        for says in [
+            "format_upgrade_pending:",
+            "needs journal format 2",
+            "Nothing was changed",
+            "Only the owner can give it",
+            "owner passphrase",
+            "wanderbooks books upgrade",
+            "no tool can",
+        ] {
+            assert!(text.contains(says), "{says}: {text}");
+        }
+    }
+
+    /// An upgrade never weakens the gate: a version that knows fewer
+    /// features than the books declared still stops at the declaration,
+    /// as newer, and one that knows them reads it.
+    #[test]
+    fn a_reader_that_doesnt_know_a_declared_feature_still_refuses_it_as_newer() {
+        let l = line(FORMAT_SET, json!({"format": 2, "features": ["a"]}));
+        match declared_knowing(&l, &[]) {
+            Err(StoreError::NewerJournal { need, .. }) => {
+                assert_eq!(need, "journal features a")
+            }
+            other => panic!("expected NewerJournal, got {other:?}"),
+        }
+        assert_eq!(
+            declared_knowing(&l, &["a"]).unwrap(),
+            JournalFormat {
+                format: 2,
+                features: vec!["a".into()]
+            }
         );
     }
 

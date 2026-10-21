@@ -82,6 +82,18 @@ pub enum StoreError {
     #[error("{0}")]
     FormatRefused(String),
 
+    /// A write that needs a journal format or feature these books haven't
+    /// declared: they were written by an older version, and wait for the
+    /// owner's go-ahead to move to this version's format (the format
+    /// upgrade: plan/served.md 3.9, D-39). Nothing was written; everything
+    /// that needs nothing new still works.
+    #[error("{}", format_upgrade_text(need))]
+    FormatUpgradePending {
+        /// What the write needs: "journal format 2", "the journal
+        /// feature x".
+        need: String,
+    },
+
     /// Replay produced different ids than the journal recorded.
     #[error("replay mismatch: {0}")]
     ReplayMismatch(String),
@@ -135,6 +147,24 @@ pub enum StoreError {
     /// The requested base currency differs from the store's.
     #[error("base currency mismatch: store is {0}, requested {1}")]
     CurrencyMismatch(String, String),
+}
+
+/// The guard code a refusal for books waiting for their format upgrade
+/// carries (plan/served.md 3.9: `format_upgrade_pending`).
+pub const FORMAT_UPGRADE_PENDING: &str = "format_upgrade_pending";
+
+/// What [`StoreError::FormatUpgradePending`] says: what the write needs,
+/// that nothing was changed, that only the owner can give the go-ahead
+/// (and where), and that the rest still works.
+fn format_upgrade_text(need: &str) -> String {
+    format!(
+        "{FORMAT_UPGRADE_PENDING}: this needs {need}, and these books are still in the journal \
+         format an older version of wanderbooks wrote: they are waiting for the owner's \
+         go-ahead to upgrade to this version's format. Nothing was changed. Only the owner can \
+         give it, with the owner passphrase: in the app (it asks when it opens the books) or \
+         with `wanderbooks books upgrade ID` at a terminal; no tool can. Until then everything \
+         that needs nothing new works as before"
+    )
 }
 
 /// What [`StoreError::NewerJournal`] says. Only a line whose own hash was

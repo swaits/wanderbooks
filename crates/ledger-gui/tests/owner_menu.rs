@@ -74,6 +74,10 @@ impl Owner for Fake {
         self.said(format!("connect {agent:?} {book}"));
         Ok(vec!["Claude Code reaches the books.".into()])
     }
+    fn upgrade_format(&self, book: &str, _passphrase: &str) -> Result<Vec<String>, String> {
+        self.said(format!("upgrade {book}"));
+        Err("not in these tests".into())
+    }
 }
 
 /// One test at a time: they share the one owner and its record of calls.

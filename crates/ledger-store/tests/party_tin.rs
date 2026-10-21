@@ -8,7 +8,7 @@
 use chrono::NaiveDate;
 use ledger_core::{Currency, Role, TinFacts, TinType, W9Facts};
 use ledger_store::journal::read_and_verify_journal;
-use ledger_store::{DB_FILE, JOURNAL_FILE, JournalWriter, Store};
+use ledger_store::{JOURNAL_FILE, JournalWriter, Store, db_file};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
@@ -72,7 +72,7 @@ fn w9(last4: &str) -> W9Facts {
 
 fn delete_db(dir: &Path) {
     for suffix in ["", "-wal", "-shm", "-journal"] {
-        let _ = std::fs::remove_file(dir.join(format!("{DB_FILE}{suffix}")));
+        let _ = std::fs::remove_file(dir.join(format!("{}{suffix}", db_file())));
     }
 }
 

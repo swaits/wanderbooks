@@ -356,7 +356,25 @@ const CHART: &[(&str, &str, &str)] = &[
 
 /// Books with the chart; cash is 1000, financing 2100.
 fn books(name: &str) -> Mcp {
+    books_in(name, false)
+}
+
+/// [`books`], as P2 left them when `p2`: journal format 2 with none of
+/// P3's features, books an older version wrote, waiting for their format
+/// upgrade (rules.md B-27).
+fn books_in(name: &str, p2: bool) -> Mcp {
     let dir = test_dir(name);
+    if p2 {
+        ledger_store::Store::create_in_format(
+            &dir.join("books-data"),
+            ledger_core::Currency::USD,
+            &ledger_store::JournalFormat {
+                format: 2,
+                features: Vec::new(),
+            },
+        )
+        .unwrap();
+    }
     let toml = books_toml(&dir, "Spec Co", "financing_accounts = [\"2100\"]\n");
     let mut m = Mcp::start(&dir, &toml);
     m.accounts(CHART);
@@ -365,6 +383,23 @@ fn books(name: &str) -> Mcp {
 }
 
 impl Mcp {
+    /// The owner's go-ahead, as the app gives it (ledger-gui owner.rs,
+    /// after the passphrase and a verified backup; no tool can): the
+    /// server stopped, the books moved to this version's format, and
+    /// served again.
+    fn upgraded(mut self) -> Mcp {
+        let dir = self.books_dir.take().expect("books_dir");
+        drop(self);
+        ledger_store::Store::open(&dir.join("books-data"))
+            .unwrap()
+            .upgrade_format()
+            .unwrap()
+            .expect("P2's books wait for the upgrade");
+        let mut m = Mcp::start(&dir, &dir.join("wanderbooks.toml"));
+        m.books_dir = Some(dir);
+        m
+    }
+
     /// The same books, served again (a restart).
     fn restart(mut self) -> Mcp {
         let dir = self.books_dir.take().expect("books_dir");
@@ -553,7 +588,11 @@ fn set_vendor_1099_says_what_a_decision_needs() {
         assert!(why.contains(needle), "{args}: {why}");
     }
     assert_eq!(m.count("vendor.1099_set"), 0);
-    assert_eq!(m.count("journal.format_set"), 0, "nothing declared either");
+    assert_eq!(
+        m.count("journal.format_set"),
+        1,
+        "nothing declared either: only the books' own format, from their creation"
+    );
 }
 
 /// P3 brief 1.5 and review R8: tin_on_file omitted keeps the W-9 flag;
@@ -646,30 +685,37 @@ fn a_members_method_off_the_financing_accounts_warns() {
     assert!(out["warnings"].as_array().unwrap().is_empty(), "{out}");
 }
 
-/// B-27 and the format-upgrade gate (D-39): books.set_w9 on books that
-/// never used the vendor_1099_decisions feature journals the W-9 and then
-/// the vendor's W-9 flag, a line of that feature, so the feature is
-/// declared before the command's first line, never between its lines
-/// (where a refused upgrade would leave the W-9 recorded and the flag
-/// not).
+/// B-27 and the format-upgrade gate (D-39): books.set_w9 journals the W-9
+/// and then the vendor's W-9 flag, a line of the vendor_1099_decisions
+/// feature, so it asks for the feature before the command's first line,
+/// never between its lines. In books waiting for their format upgrade
+/// (P2's) the whole command is refused, journaling nothing (never the W-9
+/// recorded and the flag not); once the owner upgrades them, as in books
+/// this version made, it journals the W-9, then the flag, and declares
+/// nothing.
 #[test]
-fn set_w9_declares_the_w9_flags_feature_before_its_first_line() {
-    let mut m = books("set-w9-feature");
+fn set_w9_asks_for_the_w9_flags_feature_before_its_first_line() {
+    let w9 = json!({"party": "Harbor Design LLC", "received_on": "2026-03-02",
+                    "entity_type": "LLC (partnership)", "tin_last4": "4321", "kept_at": "CPA portal"});
+    let mut m = books_in("set-w9-feature", true);
     m.add_party("Harbor Design LLC", &["contractor"]);
     m.ok("books.add_vendor", json!({"name": "Harbor Design LLC"}));
-    let before = m.journal_types().len();
-    m.ok(
-        "books.set_w9",
-        json!({"party": "Harbor Design LLC", "received_on": "2026-03-02",
-               "entity_type": "LLC (partnership)", "tin_last4": "4321", "kept_at": "CPA portal"}),
+    let why = m.refuse("books.set_w9", w9.clone());
+    assert!(
+        why.starts_with("format_upgrade_pending:") && why.contains("vendor_1099_decisions"),
+        "{why}"
     );
-    let added = m.journal_types()[before..].to_vec();
-    assert_eq!(
-        added,
-        ["journal.format_set", "party.w9_set", "vendor.w9_flag_set"],
-        "the declaration comes first"
-    );
-    assert_eq!(decision(&mut m, "Harbor Design LLC")["tin_on_file"], true);
+    assert_eq!(m.count("party.w9_set"), 0, "nothing half done");
+    let mut fresh = books("set-w9-feature-new");
+    fresh.add_party("Harbor Design LLC", &["contractor"]);
+    fresh.ok("books.add_vendor", json!({"name": "Harbor Design LLC"}));
+    for mut m in [m.upgraded(), fresh] {
+        let before = m.journal_types().len();
+        m.ok("books.set_w9", w9.clone());
+        let added = m.journal_types()[before..].to_vec();
+        assert_eq!(added, ["party.w9_set", "vendor.w9_flag_set"]);
+        assert_eq!(decision(&mut m, "Harbor Design LLC")["tin_on_file"], true);
+    }
 }
 
 /// Defect 12 end to end, restarting between steps (P3 brief 8.2): payment

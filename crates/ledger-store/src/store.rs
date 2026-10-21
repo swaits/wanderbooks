@@ -52,8 +52,101 @@ use std::path::{Path, PathBuf};
 
 /// File names inside the data directory.
 pub const JOURNAL_FILE: &str = "journal.jsonl";
-/// File names inside the data directory.
-pub const DB_FILE: &str = "wanderbooks.db";
+
+/// The projection database's one file before each schema had a file of
+/// its own (every version through P2, whose schema was 12). This version
+/// uses it only when it already holds this version's schema, so books that
+/// need no migration aren't rebuilt for nothing; otherwise it is left as
+/// it is, byte for byte, for the version that wrote it ([`db_file_for`]).
+pub const LEGACY_DB_FILE: &str = "wanderbooks.db";
+
+/// The projection database's file for schema `schema`:
+/// `wanderbooks.v{schema}.db`.
+///
+/// ```text
+/// GOAL: going back to an older version always finds the books it can
+///       open (plan/served.md 3.9: before consent, the way back is always
+///       there), however far this version's projection has moved.
+/// SOURCE: plan/served.md 3.9, the lead's decision (2026-10-21: each
+///         schema in a file of its own); rules.md B-27.
+/// INVARIANTS:
+///   1. A version opens or creates only its own schema's file (or the
+///      legacy file when that already holds its schema); a missing one is
+///      built from the journal.
+///   2. It never migrates, writes or deletes a file of another schema,
+///      older or newer: each is left byte for byte for its own version.
+///   3. The name depends only on the schema number, so versions agree on
+///      it whatever number each was given.
+/// ```
+pub fn db_file_for(schema: u32) -> String {
+    format!("wanderbooks.v{schema}.db")
+}
+
+/// This version's own projection file: [`db_file_for`] its schema
+/// ([`crate::schema::SCHEMA_VERSION`]).
+pub fn db_file() -> String {
+    db_file_for(crate::schema::SCHEMA_VERSION)
+}
+
+/// Whether `name` is a projection database's file, of any schema (the
+/// legacy one included): what [`Store::other_databases`] lists.
+pub fn is_database_file(name: &str) -> bool {
+    name == LEGACY_DB_FILE
+        || name
+            .strip_prefix("wanderbooks.v")
+            .and_then(|rest| rest.strip_suffix(".db"))
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// The projection database this version uses for the books in `data_dir`
+/// ([`db_file_for`] INVARIANT 1): its own schema's file if there is one;
+/// else the legacy file if that already holds this version's schema; else
+/// its own schema's file, to be built from the journal. Read only: a file
+/// of another schema is looked at, never opened for writing.
+pub fn database_in_use(data_dir: &Path) -> PathBuf {
+    let own = data_dir.join(db_file());
+    if std::fs::symlink_metadata(&own).is_ok() {
+        return own;
+    }
+    let legacy = data_dir.join(LEGACY_DB_FILE);
+    if schema_of(&legacy) == Some(crate::schema::SCHEMA_VERSION) {
+        legacy
+    } else {
+        own
+    }
+}
+
+/// The schema a projection file says it holds, read without writing a
+/// byte of it (an immutable read when no writer has it open; None when it
+/// isn't there, isn't a database, or says none).
+pub(crate) fn schema_of(path: &Path) -> Option<u32> {
+    use rusqlite::OpenFlags;
+    if !path.is_file() {
+        return None;
+    }
+    let conn = if path.with_extension("db-wal").exists() {
+        Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+    } else {
+        Connection::open_with_flags(
+            crate::snapshot::immutable_uri(path),
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_URI,
+        )
+    }
+    .ok()?;
+    conn.query_row(
+        "SELECT value FROM meta WHERE key='schema_version'",
+        [],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()?
+    .parse()
+    .ok()
+}
 
 /// The lock file a writer holds while the books are open. Readers (the
 /// viewer's [`crate::Snapshot`]) never take it.
@@ -250,10 +343,6 @@ pub struct Store {
     base_currency: Currency,
     /// The journal format in force (the format gate's record).
     format: JournalFormat,
-    /// Refuse every journal feature not yet in force
-    /// ([`Self::refuse_new_features`]): a stand-in for a format-upgrade
-    /// gate that refuses until the owner consents.
-    refuse_features: bool,
 }
 
 /// One filing of bytes into the blob store and journal.
@@ -275,24 +364,44 @@ impl Store {
     /// Create a new store. Fails if one already exists.
     ///
     /// ```text
-    /// GOAL: start empty books in a data directory.
-    /// SOURCE: docs/receipt-store.md "Line format" (genesis prev); R-11.
+    /// GOAL: start empty books in a data directory, in this version's
+    ///       journal format.
+    /// SOURCE: docs/receipt-store.md "Line format" (genesis prev); R-11;
+    ///         plan/served.md 3.9 and D-39 (books this version makes wait
+    ///         for no format upgrade).
     /// INVARIANTS:
     ///   1. The journal's first line MUST be `store.created` with the base
     ///      currency, chained from the genesis hash (64 zeros).
     ///   2. The writer lock MUST be held from creation on.
+    ///   3. The second line declares this version's journal format, every
+    ///      feature it knows (format::current()): the new books wait for
+    ///      no format upgrade.
     /// SCENARIOS:
     ///   1. IF a journal already exists there: SHOULD refuse
     ///      - NEVER overwrite or append to existing books.
     /// ```
     pub fn create(data_dir: &Path, base_currency: Currency) -> Result<Self, StoreError> {
+        Self::create_in_format(data_dir, base_currency, &crate::format::current())
+    }
+
+    /// [`Self::create`], declaring the journal format `format` (format 1,
+    /// [`JournalFormat::default`], declares nothing): books as an older
+    /// version made them, for tests of their format upgrade. Everything
+    /// else creates books with [`Self::create`].
+    #[doc(hidden)]
+    pub fn create_in_format(
+        data_dir: &Path,
+        base_currency: Currency,
+        format: &JournalFormat,
+    ) -> Result<Self, StoreError> {
         let journal_path = data_dir.join(JOURNAL_FILE);
         if journal_path.exists() {
             return Err(StoreError::AlreadyExists(data_dir.display().to_string()));
         }
         std::fs::create_dir_all(data_dir)?;
         let lock = lock_books(data_dir)?;
-        let db_path = data_dir.join(DB_FILE);
+        // New books: this version's own schema's file (db_file_for).
+        let db_path = data_dir.join(db_file());
         let conn = Self::open_conn(&db_path)?;
         Self::migrate(&conn)?;
         Self::write_meta(&conn, "base_currency", base_currency.code())?;
@@ -307,13 +416,16 @@ impl Store {
             ledger: Ledger::new(base_currency),
             base_currency,
             format: JournalFormat::default(),
-            refuse_features: false,
         };
         let line = store.journal.append(
             "store.created",
             json!({ "base_currency": base_currency.code() }),
         )?;
         apply_line_to_sqlite(&store.conn, &line)?;
+        if *format != JournalFormat::default() {
+            let features: Vec<&str> = format.features.iter().map(String::as_str).collect();
+            store.declare_journal_format(format.format, &features)?;
+        }
         Ok(store)
     }
 
@@ -352,6 +464,13 @@ impl Store {
     ///      for forensics and rebuild from the journal
     ///      BECAUSE the database is derived; the journal is the record.
     ///   7. IF the database is behind the journal: SHOULD apply the rest.
+    ///   8. The database is this version's own schema's file, or the
+    ///      legacy one when that already holds this version's schema
+    ///      ([`database_in_use`]); a file of any other schema, older or
+    ///      newer, is left byte for byte, never migrated, refused or
+    ///      deleted; this version's own missing: SHOULD build it from the
+    ///      journal (SCENARIO 5). One named as this version's that holds
+    ///      another schema is damaged (SCENARIO 6).
     /// ```
     pub fn open(data_dir: &Path) -> Result<Self, StoreError> {
         let journal_path = data_dir.join(JOURNAL_FILE);
@@ -385,12 +504,17 @@ impl Store {
             None
         };
         let journal = JournalWriter::from_lines(&journal_path, &lines)?;
-        let db_path = data_dir.join(DB_FILE);
+        // This version's own schema's file (SCENARIO 8): another schema's
+        // is never opened for writing.
+        let db_path = database_in_use(data_dir);
         let mut fresh_db = !db_path.exists();
+        let schema = crate::schema::SCHEMA_VERSION;
         let damage = if fresh_db {
             None
         } else if !Self::db_file_healthy(&db_path) {
             Some("failed integrity_check".to_string())
+        } else if let Some(other) = schema_of(&db_path).filter(|v| *v != schema) {
+            Some(format!("holds schema {other}, not this version's {schema}"))
         } else {
             match Self::db_currency(&db_path) {
                 Some(c) if c == base_currency => None,
@@ -433,7 +557,6 @@ impl Store {
             ledger,
             base_currency,
             format,
-            refuse_features: false,
         };
         store.catch_up(&lines)?;
         if let Some(t) = torn {
@@ -579,9 +702,35 @@ impl Store {
         &self.format
     }
 
+    /// The projection database's file this version uses, by name
+    /// ([`database_in_use`]): what `books.verify` and `wanderbooks doctor`
+    /// say.
+    pub fn database_file(&self) -> String {
+        file_name_of(&self.db_path)
+    }
+
+    /// The other projection files beside it (other schemas', the legacy
+    /// one if unused), by name, sorted: listed, never deleted
+    /// ([`db_file_for`] INVARIANT 2).
+    pub fn other_databases(&self) -> Vec<String> {
+        let in_use = self.database_file();
+        let mut out: Vec<String> = std::fs::read_dir(&self.data_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| is_database_file(n) && *n != in_use)
+            .collect();
+        out.sort();
+        out
+    }
+
     /// Declare the journal format: journal a `journal.format_set` line.
     /// A writer declares the format before the first event that needs it,
-    /// so an older reader stops at the declaration and says it is too old.
+    /// so an older reader stops at the declaration and says it is too old:
+    /// new books as they are created ([`Self::create`]), older books at
+    /// their format upgrade ([`Self::upgrade_format`]), never a tool.
     ///
     /// ```text
     /// GOAL: books that tell every reader which format they are in.
@@ -613,74 +762,92 @@ impl Store {
     // items, approvals (journal format 2, crate::meta)
     // ------------------------------------------------------------------
 
-    /// Declare journal format 2 before the first event that needs it, so
-    /// an older reader stops at the declaration (plan/served.md 5.1).
-    fn ensure_format(&mut self) -> Result<(), StoreError> {
-        if self.format.format < crate::meta::FORMAT {
-            let features = self.format.features.clone();
-            let features: Vec<&str> = features.iter().map(String::as_str).collect();
-            self.declare_journal_format(crate::meta::FORMAT, &features)?;
-        }
-        Ok(())
+    /// Refuse an event that needs journal format 2 in books that haven't
+    /// declared it: books an older version wrote, waiting for their format
+    /// upgrade (the owner's go-ahead, [`Self::upgrade_format`]). Books this
+    /// version made declared it when they were created.
+    fn ensure_format(&self) -> Result<(), StoreError> {
+        self.format.require_format(crate::meta::FORMAT)
     }
 
-    /// Declare a journal feature (crate::format::KNOWN_FEATURES) before the
-    /// first line that needs it: a new event type, or a field or value on
-    /// a known event type that an older version would otherwise misread
-    /// silently. Declared with the format in force (at least format 2,
-    /// crate::meta::FORMAT) and every feature already in force, so an
-    /// older reader stops at the declaration (rules.md B-27); nothing is
-    /// journaled when it is already declared. Books that never use the
-    /// feature stay readable by older versions.
+    /// Refuse a write that needs the journal feature `feature`
+    /// (crate::format::KNOWN_FEATURES: a field or value on an event type an
+    /// older version knows, which that version would misread silently)
+    /// unless the books declared it. Books this version made declared it
+    /// when they were created; older books declare it only at their format
+    /// upgrade, with every other feature this version knows, never one at
+    /// a time and never without the owner's go-ahead
+    /// ([`Self::upgrade_format`]). Ask it only for a write that uses the
+    /// feature (the line about to be journaled holds the new field or
+    /// value): a write that doesn't is never refused, since declining the
+    /// upgrade keeps everything else working (D-39).
     ///
-    /// Each command here that writes a feature's line declares it first.
-    /// A caller that journals several commands as one (a tool drafting an
+    /// Each command here that writes a feature's line asks for it first. A
+    /// caller that journals several commands as one (a tool drafting an
     /// entry and tagging it) calls this before the first of them, once
-    /// every check has passed: a declaration never lands after another
-    /// line of the same command (where a refusal to upgrade the format
-    /// would leave the command half done), and a refused command leaves
-    /// none.
+    /// every check has passed: a refusal never lands after another line of
+    /// the same command (which would leave the command half done), and a
+    /// refused command leaves none.
     ///
     /// ```text
     /// GOAL: an older wanderbooks stops at the declaration (NewerJournal)
-    ///       instead of misreading, or failing on, a line it can't read.
-    /// SOURCE: rules.md B-27; plan/served.md 5.1 (format gate).
+    ///       instead of misreading a line it thinks it knows, and books
+    ///       move past what their owner's older version reads only when
+    ///       the owner says so.
+    /// SOURCE: rules.md B-27; plan/served.md 5.1 (format gate), 3.9 and
+    ///         D-39 (the format upgrade).
+    /// SCENARIOS:
+    ///   1. IF the books declared it: SHOULD pass.
+    ///   2. IF not: SHOULD refuse (FormatUpgradePending), journaling
+    ///      nothing.
     /// ```
-    pub fn ensure_feature(&mut self, feature: &str) -> Result<(), StoreError> {
-        self.ensure_features(&[feature])
+    pub fn ensure_feature(&self, feature: &str) -> Result<(), StoreError> {
+        debug_assert!(
+            crate::format::KNOWN_FEATURES.contains(&feature),
+            "{feature} isn't a feature this version knows"
+        );
+        self.format.require_feature(feature)
     }
 
-    /// [`Self::ensure_feature`] for several at once: one declaration
-    /// naming every one not yet in force, or none when all are.
-    fn ensure_features(&mut self, needed: &[&str]) -> Result<(), StoreError> {
-        let mut features: Vec<String> = self.format.features.clone();
-        let before = features.len();
-        for f in needed {
-            if !features.iter().any(|g| g == f) {
-                features.push(f.to_string());
-            }
-        }
-        if features.len() == before {
-            return Ok(());
-        }
-        if self.refuse_features {
-            return Err(StoreError::FormatRefused(format!(
-                "journal features {:?}: these books take no new feature now",
-                &features[before..]
-            )));
-        }
-        let format = self.format.format.max(crate::meta::FORMAT);
-        let features: Vec<&str> = features.iter().map(String::as_str).collect();
-        self.declare_journal_format(format, &features)
+    /// The format upgrade (plan/served.md 3.9, D-39): declare this
+    /// version's journal format, with every feature it knows, in one
+    /// `journal.format_set`, for books an older version wrote. What was
+    /// upgraded; None (journaling nothing) when the books already are in
+    /// this version's format. The books' figures don't change: only what
+    /// may be written from here on.
+    ///
+    /// Only the owner's go-ahead comes here: the books server, after the
+    /// owner passphrase and a verified backup with the keys (ledger-mcp
+    /// local.rs and backup.rs); and an adoption, whose copy is new books
+    /// of this version while the original keeps its own format (root.rs).
+    /// No tool does.
+    ///
+    /// ```text
+    /// GOAL: older books move to this version's format at once, on the
+    ///       record, exactly once.
+    /// SOURCE: plan/served.md 3.9 ("Format changes are the server's
+    ///         gate"); D-39; rules.md B-27.
+    /// INVARIANTS:
+    ///   1. One journal line declares the whole format: the format moves
+    ///      exactly once, never feature by feature.
+    ///   2. Books already in this version's format: nothing is journaled.
+    ///   3. The ledger is unchanged: every report reads as before.
+    /// ```
+    pub fn upgrade_format(&mut self) -> Result<Option<crate::format::FormatUpgrade>, StoreError> {
+        let Some(upgrade) = self.format.upgrade() else {
+            return Ok(None);
+        };
+        let features: Vec<&str> = upgrade.to.features.iter().map(String::as_str).collect();
+        self.declare_journal_format(upgrade.to.format, &features)?;
+        debug_assert_eq!(self.format, upgrade.to);
+        Ok(Some(upgrade))
     }
 
-    /// Refuse (`refuse: true`) or take again every journal feature not yet
-    /// in force, as a format-upgrade gate does that waits for the owner's
-    /// consent: what a command does when [`Self::ensure_feature`] refuses
-    /// (it journals nothing). Not saved: the books open taking features.
-    #[doc(hidden)]
-    pub fn refuse_new_features(&mut self, refuse: bool) {
-        self.refuse_features = refuse;
+    /// [`Self::ensure_feature`] for each feature a write needs: refused
+    /// (FormatUpgradePending, journaling nothing) unless the books declared
+    /// every one.
+    fn ensure_features(&self, needed: &[&str]) -> Result<(), StoreError> {
+        needed.iter().try_for_each(|f| self.ensure_feature(f))
     }
 
     /// Change settings (`settings.set`): all or nothing, each value
@@ -719,9 +886,10 @@ impl Store {
         if changes.is_empty() && !(adopt && !self.ledger.settings().is_journaled()) {
             return Ok(changes);
         }
-        // A key an older version doesn't know needs its feature declared
-        // first (crate::format::setting_feature), in the one declaration
-        // that also brings the books to format 2.
+        // A key an older version doesn't know needs its feature
+        // (crate::format::setting_feature), and every settings.set format
+        // 2: refused, journaling nothing, in books that haven't declared
+        // them (their format upgrade does).
         let needed: Vec<&str> = changes
             .iter()
             .filter_map(|c| crate::format::setting_feature(&c.key))
@@ -1451,10 +1619,12 @@ impl Store {
     /// Name a party the creditor of a liability account the company owes
     /// it itself on, or stop (`on` false): ledger_core's
     /// `Ledger::set_party_creditor`. Journaled as `party.creditor_set
-    /// {id, account_id, on}`, after the journal declares the feature it
-    /// needs ([`crate::format::PARTY_CREDITORS`]) the first time, so an
-    /// older wanderbooks stops there and says it is too old instead of
-    /// misreading the books.
+    /// {id, account_id, on}`, which needs the journal feature
+    /// [`crate::format::PARTY_CREDITORS`], so an older wanderbooks stops at
+    /// the declaration and says it is too old instead of misreading the
+    /// books. Books that haven't declared it (an older version's, until
+    /// their format upgrade) refuse it, FormatUpgradePending, journaling
+    /// nothing.
     pub fn set_party_creditor(
         &mut self,
         id: ledger_core::PartyId,
@@ -1820,8 +1990,10 @@ impl Store {
     ///   3. Nothing due (the month rounds to nothing, a later run caught it
     ///      up, the life is over and posted) journals nothing: an entry
     ///      can't carry a zero line (P3 depreciation review R10).
-    ///   4. A period run before and reversed is run again only after
-    ///      journal feature month_reposting is declared.
+    ///   4. A period run before and reversed is run again only in books
+    ///      that declare journal feature month_reposting (books an older
+    ///      version wrote: after their format upgrade); refused before
+    ///      anything is journaled otherwise.
     /// SCENARIOS:
     ///   1. IF the asset is unknown or disposed, the period malformed, or
     ///      it ends before the asset was placed in service: SHOULD refuse.
@@ -2344,8 +2516,8 @@ impl Store {
         )?;
         // The disposal month's run was reversed (else the final
         // depreciation would be in the disposal entry): its line again,
-        // which needs a journal feature, declared (or refused) before the
-        // first line is journaled.
+        // which needs a journal feature, asked for (and refused in books
+        // that haven't declared it) before the first line is journaled.
         if depreciation.is_some() && self.depreciation_period_was_run(asset_id, &preview.period)? {
             self.ensure_feature(crate::format::MONTH_REPOSTING)?;
         }
@@ -2447,16 +2619,18 @@ impl Store {
         // Rehearsed whole: a doomed close journals nothing, not even the
         // Retained Earnings account creation below.
         self.rehearse(|l| l.close_period_to(id, to))?;
+        if matches!(to, CloseTo::Members(_) | CloseTo::MembersCumulative { .. }) {
+            // A close counted from its regime's start: an older version
+            // would replay it under the run rule (format gate, B-27).
+            // Refused before anything is journaled until the books
+            // declare it.
+            self.ensure_feature(crate::format::MEMBERS_CUMULATIVE)?;
+        }
         if matches!(to, CloseTo::RetainedEarnings { .. }) {
             // Retained Earnings must exist before the close so its creation
             // (if needed) is journaled as account.added; the close's own
             // ensure then no-ops and replay stays deterministic.
             self.ensure_control_account(&ledger_core::RETAINED_EARNINGS)?;
-        }
-        if matches!(to, CloseTo::Members(_) | CloseTo::MembersCumulative { .. }) {
-            // A close counted from its regime's start: an older version
-            // would replay it under the run rule (format gate, B-27).
-            self.ensure_feature(crate::format::MEMBERS_CUMULATIVE)?;
         }
         let mut next = self.ledger.clone();
         let closing_entry = next.close_period_to(id, to)?;
@@ -3315,10 +3489,11 @@ impl Store {
     }
 
     /// Register an amortization schedule. Journaled as `schedule.registered`,
-    /// with its `convention` (`daily` or `monthly_even`). The first daily
-    /// schedule declares journal feature `schedule_convention` before its
-    /// line: an older version reads every schedule as equal months, and
-    /// would refuse a daily one's postings as wrong (rather than as newer).
+    /// with its `convention` (`daily` or `monthly_even`). A daily schedule
+    /// needs journal feature `schedule_convention` (refused, journaling
+    /// nothing, in books that haven't declared it): an older version reads
+    /// every schedule as equal months, and would refuse a daily one's
+    /// postings as wrong (rather than as newer).
     pub fn register_schedule(
         &mut self,
         new: ledger_core::NewSchedule,
@@ -3352,8 +3527,9 @@ impl Store {
     /// Post one month of a schedule. Journaled as `schedule.posted` with the
     /// whole entry, so a month is never half-posted or posted twice; replay
     /// re-derives the entry and checks it line by line. A month a reversal
-    /// un-posted posts again only after journal feature `month_reposting` is
-    /// declared: an older version would refuse it as posted twice.
+    /// un-posted posts again only in books that declare journal feature
+    /// `month_reposting` (refused, journaling nothing, otherwise): an older
+    /// version would refuse it as posted twice.
     pub fn post_schedule_month(
         &mut self,
         id: ledger_core::ScheduleId,
@@ -3535,10 +3711,9 @@ impl Store {
     /// Give an account a new name (see `Ledger::rename_account`), with an
     /// optional reason. Journaled as `account.renamed`, keyed by the
     /// account's id (a code can change; an id can't), with its code, the
-    /// new name, the name it had and the reason. The first rename declares
-    /// the journal feature `account_renamed`
-    /// ([`crate::format::FEATURE_ACCOUNT_RENAMED`]), so an earlier version
-    /// stops at the declaration.
+    /// new name, the name it had and the reason. It needs the journal
+    /// feature `account_renamed` ([`crate::format::FEATURE_ACCOUNT_RENAMED`]),
+    /// so an earlier version stops at the declaration.
     ///
     /// ```text
     /// GOAL: rename an account, keeping the name it had in the journal.
@@ -3549,8 +3724,9 @@ impl Store {
     ///   1. Only the account's name changes (Ledger::rename_account
     ///      INVARIANT 1): every entry, line, hash and earlier journal line
     ///      stays as it was.
-    ///   2. Rehearsed and checked first: a refusal journals nothing, not
-    ///      even the feature's declaration.
+    ///   2. Rehearsed and checked first: a refusal journals nothing (and
+    ///      books that haven't declared `account_renamed` refuse it,
+    ///      FormatUpgradePending, until their format upgrade).
     /// ```
     pub fn rename_account(
         &mut self,
@@ -3659,7 +3835,9 @@ impl Store {
     ///   2. IF the core refuses it: SHOULD refuse, journaling nothing.
     ///   3. IF it changes no decision: SHOULD journal nothing but a
     ///      changed W-9 flag (Store::set_vendor_w9_flag).
-    ///   4. Otherwise: SHOULD declare the feature once, then journal it.
+    ///   4. Otherwise: SHOULD journal it, in books that declare the feature
+    ///      (refused, FormatUpgradePending, journaling nothing, in books
+    ///      that don't).
     /// ```
     pub fn set_vendor_1099(
         &mut self,
@@ -4638,6 +4816,8 @@ impl Store {
                 .map(|l| sha256_hex(l.to_canonical().as_bytes()))
                 .unwrap_or_else(|| GENESIS_PREV.to_string()),
             healed,
+            database: self.database_file(),
+            other_databases: self.other_databases(),
         })
     }
 
@@ -6960,6 +7140,19 @@ pub struct VerifyReport {
     pub head: String,
     /// Why the projection was rebuilt, if it was.
     pub healed: Option<String>,
+    /// The projection database's file verified: this version's
+    /// ([`Store::database_file`]).
+    pub database: String,
+    /// Other schemas' projection files beside it, left as they are
+    /// ([`Store::other_databases`]).
+    pub other_databases: Vec<String>,
+}
+
+/// A path's last part, as text.
+fn file_name_of(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 /// A projection of `lines` into a private in-memory database, built with

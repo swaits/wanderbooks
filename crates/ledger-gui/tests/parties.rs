@@ -649,15 +649,16 @@ fn journal_text_for_a_creditor() {
         )),
         "{texts:#?}"
     );
-    // Declared with the feature already in force (the fixture's 1099
-    // decisions'), sorted.
-    assert!(
-        texts
-            .iter()
-            .any(|(t, _)| t
-                == "Journal format 2 declared, with party_creditors, vendor_1099_decisions"),
-        "{texts:#?}"
+    // Declared when the books were created: this version's format, with
+    // every feature it knows (party_creditors among them), sorted.
+    let current = ledger_store::format::current();
+    assert!(current.features.iter().any(|f| f == "party_creditors"));
+    let declared = format!(
+        "Journal format {} declared, with {}",
+        current.format,
+        current.features.join(", ")
     );
+    assert!(texts.iter().any(|(t, _)| *t == declared), "{texts:#?}");
     let mut h = Harness::builder()
         .with_size(egui::vec2(1440.0, 1400.0))
         .build_eframe(|cc| App::with_books(&cc.egui_ctx, b, false, Route::Party(bank)));

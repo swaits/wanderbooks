@@ -665,7 +665,9 @@ impl Root {
     /// built in a staging folder: every stored file re-hashed against its
     /// name, the copy opened (its database rebuilt from the journal) with
     /// the source's head, every file it names present, verified end to
-    /// end, given its settings if the source keeps none (and verified
+    /// end, moved to this version's journal format if the source's is
+    /// older (the copy is new books of this version; the source keeps its
+    /// own), given its settings if the source keeps none (and verified
     /// again), synced, and only then renamed into place.
     pub fn adopt(
         &self,
@@ -781,15 +783,22 @@ impl Root {
             }
             store.verify_and_heal()?;
             let blobs_verified = store.verify_blobs()?;
+            // The copy is new books of this version, in its journal format
+            // (the original, left as it was, keeps its own): it waits for
+            // no format upgrade, and its settings can move in.
+            let format_upgraded = store.upgrade_format()?.is_some();
             let (settings_imported, settings_ignored) = match (&options.settings, keeps_settings) {
                 (Some((changes, source)), false) => {
                     let n = store.adopt_settings(changes, source)?.len();
-                    store.verify_and_heal()?;
                     (n, false)
                 }
                 (Some(_), true) => (0, true),
                 (None, _) => (0, false),
             };
+            // Verified again for what was written on the way in.
+            if store.head() != head {
+                store.verify_and_heal()?;
+            }
             let final_head = store.head();
             drop(store);
             sync_dir(&staging)?;
@@ -806,6 +815,7 @@ impl Root {
                 settings_imported,
                 settings_ignored,
                 source_lock_created,
+                format_upgraded,
             })
         })();
         let renamed = built.and_then(|report| {
@@ -1660,9 +1670,9 @@ pub struct AdoptReport {
     pub id: BookId,
     /// The source's head, `(seq, hash)`, verified before copying.
     pub source_head: (u64, String),
-    /// The adopted books' head: the source's, plus (when settings were
-    /// moved in) their `settings.set`, after the journal format they need
-    /// if the source's is older.
+    /// The adopted books' head: the source's, plus this version's journal
+    /// format if the source's is older (`format_upgraded`), plus (when
+    /// settings were moved in) their `settings.set`.
     pub head: (u64, String),
     /// Stored files copied, each re-hashed against its name.
     pub blob_files: u64,
@@ -1686,6 +1696,9 @@ pub struct AdoptReport {
     pub settings_ignored: bool,
     /// The source had no lock file, so taking its lock made one.
     pub source_lock_created: bool,
+    /// The copy was moved to this version's journal format (the source's
+    /// was older; the source keeps its own).
+    pub format_upgraded: bool,
 }
 
 /// The source's writer lock: its lock file opened read-only (so a

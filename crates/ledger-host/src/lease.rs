@@ -19,7 +19,9 @@
 //!   2. Exactly two intents exist: close and consent_format_upgrade; any
 //!      other request is refused.
 //!   3. consent_format_upgrade carries the owner passphrase; without one
-//!      it is refused before anything is done.
+//!      it is refused before anything is done. With one, the host hands it
+//!      to the books server, which checks it and upgrades (host.rs
+//!      INVARIANT 12; plan 3.9, D-39).
 //!   4. Before the host ends a lease it sends the reason; a lease that
 //!      ends with no reason means the host is gone.
 //!   5. Each side accepts its own protocol version and the one before.
@@ -114,9 +116,9 @@ pub enum Intent {
     ConsentFormatUpgrade {
         /// Which.
         book: String,
-        /// The owner passphrase (INVARIANT 3).
+        /// The owner passphrase (INVARIANT 3): Debug never shows it.
         #[serde(default)]
-        passphrase: Option<String>,
+        passphrase: Option<ledger_mcp::admin::Passphrase>,
     },
 }
 
@@ -124,10 +126,11 @@ impl Intent {
     /// Refuse an intent that needs the passphrase and has none
     /// (INVARIANT 3).
     pub fn check_passphrase(&self) -> Result<(), String> {
-        let missing = |p: &Option<String>| p.as_deref().is_none_or(|p| p.is_empty());
+        let missing =
+            |p: &Option<ledger_mcp::admin::Passphrase>| p.as_ref().is_none_or(|p| p.0.is_empty());
         match self {
             Intent::ConsentFormatUpgrade { passphrase, .. } if missing(passphrase) => Err(
-                "consenting to a format upgrade needs the owner passphrase, typed in the app"
+                "consenting to a format upgrade needs the owner passphrase, typed in the app or at a terminal"
                     .into(),
             ),
             _ => Ok(()),
@@ -296,12 +299,29 @@ mod tests {
     fn only_consent_needs_the_passphrase() {
         let consent = |p: Option<&str>| Intent::ConsentFormatUpgrade {
             book: "acme".into(),
-            passphrase: p.map(str::to_string),
+            passphrase: p.map(|p| ledger_mcp::admin::Passphrase(p.to_string())),
         };
         assert!(consent(None).check_passphrase().is_err());
         assert!(consent(Some("")).check_passphrase().is_err());
         assert!(consent(Some("pw")).check_passphrase().is_ok());
         assert!(Intent::Close.check_passphrase().is_ok());
+    }
+
+    /// INVARIANT 3: the passphrase a consent carries is sent as written,
+    /// and never shown by Debug, of the intent or the line that carried it
+    /// (an error or a log line that prints either names no passphrase).
+    #[test]
+    fn a_consent_never_shows_its_passphrase() {
+        let text = r#"{"proto":1,"intent":{"consent_format_upgrade":{"book":"acme","passphrase":"correct horse battery"}}}"#;
+        let hello = parse_hello(text).unwrap();
+        let Ask::Intent(intent) = &hello.ask else {
+            panic!("{hello:?}")
+        };
+        for shown in [format!("{hello:?}"), format!("{intent:?}")] {
+            assert!(!shown.contains("horse"), "{shown}");
+            assert!(shown.contains("acme"), "{shown}");
+        }
+        assert_eq!(line(&hello).trim_end(), text, "sent as written");
     }
 
     #[test]

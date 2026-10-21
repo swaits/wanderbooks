@@ -43,11 +43,11 @@ pub mod uploads;
 
 pub use blob::BlobStore;
 pub use error::StoreError;
-pub use format::{JournalFormat, SUPPORTED_JOURNAL_FORMAT};
+pub use format::{FormatUpgrade, JournalFormat, SUPPORTED_JOURNAL_FORMAT};
 pub use journal::{GENESIS_PREV, JournalLine, JournalWriter};
 pub use snapshot::{DiskCheck, Snapshot};
 pub use store::{
-    Attachment, DB_FILE, DepreciationRun, DisposalPreview, EntryRow, EventRow, JOURNAL_FILE,
+    Attachment, DepreciationRun, DisposalPreview, EntryRow, EventRow, JOURNAL_FILE, LEGACY_DB_FILE,
     LOCK_FILE, MAX_RECURRING_RUN, PayrollLineInput, Reconciliation, Statement, Store, Subject,
-    VerifyReport,
+    VerifyReport, database_in_use, db_file, db_file_for, is_database_file,
 };

@@ -176,6 +176,41 @@ impl SharedStore {
         Ok(f(store))
     }
 
+    /// Run `f` on the store under its lock, writing: the owner's format
+    /// upgrade, after its backup (backup.rs). Blocking. Refused once the
+    /// books are closing or the server stopped (INVARIANTS 2, 3), counted
+    /// as a request while it runs, and one that panics stops the server
+    /// (INVARIANT 1).
+    pub fn with_store_mut<R>(
+        self: &Arc<Self>,
+        f: impl FnOnce(&mut Store) -> R,
+    ) -> Result<R, String> {
+        if self.stopped() {
+            return Err(STOPPED.to_string());
+        }
+        // Counted before the closing check, as a tool's request is.
+        let _running = Running::new(self);
+        if self.closing() {
+            return Err("the books are closing".into());
+        }
+        let mut store = self.store.blocking_lock();
+        if self.stopped() {
+            return Err(STOPPED.to_string());
+        }
+        let store = store.as_mut().ok_or(STOPPED)?;
+        /// Stops the server if `f` panics while it holds the store.
+        struct StopOnPanic<'a>(&'a SharedStore);
+        impl Drop for StopOnPanic<'_> {
+            fn drop(&mut self) {
+                if std::thread::panicking() {
+                    self.0.stop();
+                }
+            }
+        }
+        let _stop = StopOnPanic(self);
+        Ok(f(store))
+    }
+
     /// Run `f` on the store if no one holds it now (books just opened):
     /// never waits, so never blocks a runtime's thread.
     pub fn try_with_store<R>(&self, f: impl FnOnce(&Store) -> R) -> Option<R> {
@@ -3078,10 +3113,10 @@ impl BooksServer {
                 ));
             }
         }
-        // A payment method exists only under the payment_instruments
-        // feature (books.add_instrument declared it), so tagging the draft
-        // with one below declares nothing after the draft's first line
-        // (B-27).
+        // A payment method exists only in books that declare the
+        // payment_instruments feature (books.add_instrument needs it), so
+        // tagging the draft with one below can't be refused for the format
+        // after the draft's first line (B-27).
         let id = store
             .create_entry(date, &p.description)
             .map_err(|e| e.to_string())?;
@@ -4301,8 +4336,10 @@ impl BooksServer {
             format!("journal hash chain ({} events)", report.events),
             "fresh replay matches the live ledger (every statement, assets, classes, payroll)"
                 .to_string(),
-            "SQLite database matches a fresh projection of the journal, every table, row for row"
-                .to_string(),
+            format!(
+                "SQLite database ({}) matches a fresh projection of the journal, every table, row for row",
+                report.database
+            ),
         ];
         if let Some(n) = blobs {
             checked.push(format!("{n} stored files match their SHA-256"));
@@ -4318,6 +4355,8 @@ impl BooksServer {
             head: report.head,
             healed: report.healed,
             blobs_verified: blobs,
+            database: report.database,
+            other_databases: report.other_databases,
             checked,
         }))
     }
@@ -7169,10 +7208,10 @@ impl BooksServer {
                 .set_party_creditor(id, *a, *on)
                 .map_err(|e| e.to_string())?;
         }
-        // The creditor lines' journal feature, declared before this
-        // command's first line, never between its lines (rules.md B-27: a
-        // refused format upgrade must not leave the name changed and the
-        // creditors not).
+        // The creditor lines' journal feature, asked for before this
+        // command's first line, never between its lines (rules.md B-27:
+        // books waiting for their format upgrade must not be left with the
+        // name changed and the creditors not).
         if !creditor.is_empty() {
             store
                 .ensure_feature(ledger_store::format::PARTY_CREDITORS)
@@ -7473,9 +7512,9 @@ impl BooksServer {
         };
         let on_file = facts.is_some();
         // The vendor record's W-9 flag follows (below): its feature is
-        // declared before this command's first line, never after it
-        // (B-27: a refusal to upgrade the format must not leave the W-9
-        // recorded and the flag not).
+        // asked for before this command's first line, never after it
+        // (B-27: books waiting for their format upgrade must not be left
+        // with the W-9 recorded and the flag not).
         let vendor = store.ledger().get_party(id).and_then(|p| p.vendor);
         if vendor
             .and_then(|v| store.ledger().get_vendor(v))
@@ -10487,6 +10526,13 @@ mod tests {
         out.push(("NewerJournal".into(), newer(true).to_string()));
         out.push(("NewerJournal unverified".into(), newer(false).to_string()));
         out.push((
+            "FormatUpgradePending".into(),
+            ledger_store::StoreError::FormatUpgradePending {
+                need: "journal format 2".into(),
+            }
+            .to_string(),
+        ));
+        out.push((
             "RuleNotKnown".into(),
             ledger_core::form1099::default_threshold(9999)
                 .unwrap_err()
@@ -11139,7 +11185,8 @@ mod tests {
             let server = BooksServer::new(store(&books), ReceiptPolicy::default());
             rt.block_on(async {
                 let seq: Body = |s| s.lock().map(|st| st.journal_seq());
-                assert_eq!(run(&server, seq).await.unwrap(), Ok(1), "{how}");
+                // New books: store.created, then their journal format.
+                assert_eq!(run(&server, seq).await.unwrap(), Ok(2), "{how}");
                 let died = run(&server, body).await.unwrap_err();
                 assert_eq!(died.message, STOPPED, "{how}");
                 // Every later request is refused, before it runs.

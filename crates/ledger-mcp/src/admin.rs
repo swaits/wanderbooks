@@ -1,6 +1,7 @@
 //! The admin socket's messages (`run/admin.sock`, plan 3.1, 3.3, 3.9): how
 //! the command line asks the books server to list, create, adopt and
-//! restore books, and to make, list and revoke agents' tokens.
+//! restore books, to make, list and revoke agents' tokens, and how the
+//! host hands it the owner's go-ahead for a format upgrade.
 //!
 //! ```text
 //! GOAL: the command line makes and adopts books without ever touching
@@ -26,6 +27,9 @@
 //!   6. A token's text is in exactly one answer, TokenCreated, to the
 //!      request that made it; nothing else carries it (auth.rs
 //!      INVARIANT 1).
+//!   7. A format upgrade is asked with the owner passphrase, which the
+//!      server checks before anything is done (plan 3.9, D-39); no answer
+//!      carries it, and Debug never shows it.
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -140,6 +144,16 @@ pub enum Request {
     },
     /// The live tokens.
     TokenList,
+    /// The owner's go-ahead for the format upgrade of books waiting for
+    /// one (plan 3.9, D-39): a verified backup with the keys, then this
+    /// version's journal format declared. The host sends it, for the
+    /// lease socket's `consent_format_upgrade`.
+    UpgradeFormat {
+        /// The books.
+        id: String,
+        /// The owner passphrase, checked by the server (INVARIANT 7).
+        passphrase: Passphrase,
+    },
     /// End a token.
     TokenRevoke {
         /// Its books.
@@ -161,6 +175,73 @@ impl std::fmt::Debug for TokenText {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("TokenText(…)")
     }
+}
+
+/// The owner passphrase in a request (and in the lease socket's consent,
+/// which the host hands on as this): Debug never shows it (INVARIANT 7),
+/// and it is wiped from memory when dropped, as the command line wipes
+/// what is typed.
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Passphrase(pub String);
+
+impl std::fmt::Debug for Passphrase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Passphrase(…)")
+    }
+}
+
+impl Drop for Passphrase {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
+    }
+}
+
+/// A format upgrade books wait for (plan 3.9, D-39): written by an older
+/// version, they open on their old format until the owner says go.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FormatWaiting {
+    /// The journal format they are in.
+    pub format: u32,
+    /// The features they declared.
+    pub features: Vec<String>,
+    /// What the upgrade adds, in words ("journal format 2").
+    pub adds: Vec<String>,
+}
+
+impl From<&ledger_store::FormatUpgrade> for FormatWaiting {
+    fn from(u: &ledger_store::FormatUpgrade) -> Self {
+        Self {
+            format: u.from.format,
+            features: u.from.features.clone(),
+            adds: u.adds(),
+        }
+    }
+}
+
+/// What a format upgrade did.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FormatUpgraded {
+    /// The books.
+    pub id: String,
+    /// What it added, in words; empty when the books were already in this
+    /// version's format (nothing was done).
+    pub added: Vec<String>,
+    /// The verified backup made first: the books as they were.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup: Option<UpgradeBackup>,
+    /// The books' head now.
+    pub head: (u64, String),
+}
+
+/// The backup a format upgrade made first, proven to hold the books as
+/// they were, their vault and keys too.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpgradeBackup {
+    /// Its commit in the books' own backup repository.
+    pub commit: String,
+    /// The head it holds.
+    pub head: (u64, String),
 }
 
 /// A token, as listed (never its text).
@@ -200,6 +281,17 @@ pub struct BookStatus {
     /// Why it couldn't be opened, if it couldn't.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub problem: Option<String>,
+    /// The format upgrade it waits for, if it does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format_upgrade: Option<FormatWaiting>,
+    /// The projection database's file in use (a name, no folder), if it
+    /// opened (ledger_store::db_file_for).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub database: Option<String>,
+    /// Other schemas' projection files beside it, left as they are for the
+    /// versions that wrote them (never deleted).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub other_databases: Vec<String>,
 }
 
 /// A setting an adoption would move in.
@@ -259,6 +351,10 @@ pub struct Adopted {
     pub settings_ignored: bool,
     /// The source had no lock file, so one was made beside its journal.
     pub source_lock_created: bool,
+    /// The copy was moved to this version's journal format (the source's
+    /// is older, and keeps its own).
+    #[serde(default)]
+    pub format_upgraded: bool,
     /// Why the adopted books didn't open, if they didn't (they are kept;
     /// closing the books and opening them again tries again).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -359,6 +455,8 @@ pub enum Response {
     Tokens(Vec<TokenInfo>),
     /// A token ended.
     TokenRevoked(TokenInfo),
+    /// A format upgrade made (or none needed).
+    FormatUpgraded(FormatUpgraded),
     /// Refused, with why (no path in the data root: INVARIANT 3).
     Refused(String),
 }
@@ -408,6 +506,9 @@ pub fn call_within(
         }
         Request::TokenCreate { .. } | Request::TokenRevoke { .. } => {
             Some("`wanderbooks token list` shows the tokens there are")
+        }
+        Request::UpgradeFormat { .. } => {
+            Some("`wanderbooks books list` says whether the books still wait for it")
         }
     };
     let unknown = move |why: String| match look {
@@ -555,11 +656,37 @@ mod tests {
     #[test]
     fn answers_round_trip() {
         for r in [
-            Response::Books(vec![BookStatus {
-                id: "acme".into(),
-                open: false,
-                problem: Some("damaged".into()),
-            }]),
+            Response::Books(vec![
+                BookStatus {
+                    id: "acme".into(),
+                    open: false,
+                    problem: Some("damaged".into()),
+                    format_upgrade: None,
+                    database: None,
+                    other_databases: Vec::new(),
+                },
+                BookStatus {
+                    id: "beta".into(),
+                    open: true,
+                    problem: None,
+                    format_upgrade: Some(FormatWaiting {
+                        format: 1,
+                        features: Vec::new(),
+                        adds: vec!["journal format 2".into()],
+                    }),
+                    database: Some("wanderbooks.v13.db".into()),
+                    other_databases: vec!["wanderbooks.db".into()],
+                },
+            ]),
+            Response::FormatUpgraded(FormatUpgraded {
+                id: "beta".into(),
+                added: vec!["journal format 2".into()],
+                backup: Some(UpgradeBackup {
+                    commit: "c".repeat(40),
+                    head: (7, "ab".into()),
+                }),
+                head: (8, "cd".into()),
+            }),
             Response::Created {
                 id: "acme".into(),
                 problem: None,
@@ -596,6 +723,42 @@ mod tests {
             let text = serde_json::to_string(&r).unwrap();
             assert_eq!(serde_json::from_str::<Response>(&text).unwrap(), r);
         }
+    }
+
+    /// INVARIANT 7: the go-ahead for a format upgrade carries the owner
+    /// passphrase as written, and Debug never shows it; a book listed by
+    /// an earlier server (no format_upgrade) reads as waiting for none.
+    #[test]
+    fn an_upgrade_request_carries_the_passphrase_and_never_shows_it() {
+        let r: Envelope = serde_json::from_value(json!({"proto": 1, "op": "upgrade_format",
+            "id": "acme", "passphrase": "correct horse battery"}))
+        .unwrap();
+        assert_eq!(
+            r.request,
+            Request::UpgradeFormat {
+                id: "acme".into(),
+                passphrase: Passphrase("correct horse battery".into()),
+            }
+        );
+        let shown = format!("{r:?}");
+        assert!(!shown.contains("horse"), "{shown}");
+        assert!(shown.contains("Passphrase(…)"), "{shown}");
+        assert!(
+            serde_json::from_value::<Envelope>(
+                json!({"proto": 1, "op": "upgrade_format", "id": "acme"})
+            )
+            .is_err(),
+            "an upgrade names the passphrase"
+        );
+        let listed: BookStatus =
+            serde_json::from_value(json!({"id": "acme", "open": true})).unwrap();
+        assert_eq!(listed.format_upgrade, None);
+        let up = ledger_store::FormatUpgrade {
+            from: ledger_store::JournalFormat::default(),
+            to: ledger_store::format::current(),
+        };
+        let waiting = FormatWaiting::from(&up);
+        assert_eq!((waiting.format, waiting.adds), (1, up.adds()));
     }
 
     #[test]

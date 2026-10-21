@@ -1945,6 +1945,30 @@ fn old_books_name_each_closes_rule_and_true_up_at_the_next_close() {
         preview["lines"],
         json!(["Debit 4000 0.02", "Credit 3001 0.02"])
     );
+    // Books an older version wrote: the close counted from its regime's
+    // start waits for the owner's go-ahead (D-39), which no tool gives.
+    let refused = mcp.call_err(
+        "books.close_period",
+        json!({"period_id": dec["period_id"], "confirmed": true}),
+    );
+    assert!(
+        refused.starts_with("format_upgrade_pending:") && refused.contains("members_cumulative"),
+        "{refused}"
+    );
+    // The owner's go-ahead, as the app gives it (ledger-gui owner.rs, after
+    // the passphrase and a verified backup): the books move to this
+    // version's format.
+    drop(mcp);
+    ledger_store::Store::open(&books)
+        .unwrap()
+        .upgrade_format()
+        .unwrap()
+        .expect("old books wait for the upgrade");
+    let mut mcp = Mcp::spawn_with(
+        &books,
+        &[std::ffi::OsStr::new("--books-toml"), toml.as_os_str()],
+    );
+    init(&mut mcp);
     let closed = mcp.call(
         "books.close_period",
         json!({"period_id": dec["period_id"], "confirmed": true}),
@@ -3124,11 +3148,9 @@ fn rename_account_end_to_end_defect_15() {
     );
     let after = mcp.call("books.verify", json!({"blobs": false}));
     assert_eq!(after["status"], "ok");
-    assert_eq!(
-        after["events"],
-        json!(events + 2),
-        "the feature and the rename"
-    );
+    // New books declare account_renamed (with the rest of this version's
+    // format) as they are created: the rename journals only itself.
+    assert_eq!(after["events"], json!(events + 1), "the rename");
     let chart = mcp.call("books.chart", json!({}));
     let acct = chart["accounts"]
         .as_array()

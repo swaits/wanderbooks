@@ -677,6 +677,14 @@ pub struct VerifyOut {
     pub healed: Option<String>,
     /// Stored files re-hashed, when checked.
     pub blobs_verified: Option<u64>,
+    /// The books' database file verified (a file for each schema, named for
+    /// it: "wanderbooks.v13.db", or the older "wanderbooks.db" when it holds
+    /// this version's schema).
+    pub database: String,
+    /// Other schemas' database files beside it: left as they are for the
+    /// versions that use them, never deleted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub other_databases: Vec<String>,
     /// What was checked, in words.
     pub checked: Vec<String>,
 }
@@ -4012,7 +4020,7 @@ pub struct ReconciliationsOut {
 /// Parameters for `books.handbook`.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct HandbookParams {
-    /// The section to read: contract, entries, drafts-and-reversals, evidence-and-receipts, attachments, files-in-out, reconciliation, fixed-assets, prepaid-and-recurring, revenue-and-payouts, parties-and-tins, 1099, cpa-handoff, settings-and-conventions, viewer, backups, rules-that-change, control-roles, tracing-figures, or "all" for the whole handbook in order. Omit for the index.
+    /// The section to read: contract, entries, drafts-and-reversals, evidence-and-receipts, attachments, files-in-out, reconciliation, fixed-assets, prepaid-and-recurring, revenue-and-payouts, parties-and-tins, 1099, cpa-handoff, settings-and-conventions, viewer, backups, format-upgrade, rules-that-change, control-roles, tracing-figures, or "all" for the whole handbook in order. Omit for the index.
     #[serde(default)]
     pub section: Option<String>,
 }

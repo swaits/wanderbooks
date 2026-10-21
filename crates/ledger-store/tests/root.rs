@@ -45,7 +45,14 @@ fn set(key: &str, value: serde_json::Value) -> Change {
 /// Books with accounts, a posted entry with its receipt, a filed document,
 /// and (with `settings`) settings of their own: what adoption must carry.
 fn source_books(dir: &Path, settings: bool) -> Store {
-    let mut s = Store::create(dir, Currency::USD).unwrap();
+    // As an earlier version wrote them: journal format 1, or 2 once they
+    // keep their own settings (this version's own books declare their
+    // format as they are made).
+    let format = ledger_store::JournalFormat {
+        format: if settings { 2 } else { 1 },
+        features: Vec::new(),
+    };
+    let mut s = Store::create_in_format(dir, Currency::USD, &format).unwrap();
     if settings {
         s.adopt_settings(&[set("company.name", json!("Adopted LLC"))], &src("Owner"))
             .unwrap();
@@ -299,6 +306,9 @@ fn adopted_books_are_the_same_books_and_the_source_is_untouched() {
     let source = source_books(&data, true);
     let source_head = source.head();
     let source_ledger = source.ledger().clone();
+    // Format 2 with no feature, as P2 wrote them: this version knows
+    // features they haven't declared, so they wait for the upgrade.
+    assert!(source.journal_format().upgrade().is_some());
     drop(source);
     // A vault and a key beside them, as the old layout kept them.
     let vault = old.path().join("vault");
@@ -322,9 +332,14 @@ fn adopted_books_are_the_same_books_and_the_source_is_untouched() {
         )
         .unwrap();
     assert_eq!(report.source_head, source_head);
+    // Books with settings gain no event but the copy's move to this
+    // version's format (new books of this version; the source keeps its
+    // own): one journal.format_set.
+    assert!(report.format_upgraded);
     assert_eq!(
-        report.head, source_head,
-        "books with settings gain no event"
+        report.head.0,
+        source_head.0 + 1,
+        "books with settings gain only the format"
     );
     assert_eq!(report.blob_files, 2);
     assert_eq!(report.blobs_verified, 2);
@@ -405,6 +420,9 @@ fn books_without_settings_need_them_and_get_them_on_the_way_in() {
         .unwrap();
     assert_eq!(report.source_head, head);
     assert_eq!(report.settings_imported, 1);
+    // The copy is new books of this version: in its journal format (the
+    // source, format 1, keeps its own).
+    assert!(report.format_upgraded);
     // What was added: the journal format the settings need, declared
     // first (older books), then the settings.
     let journal = std::fs::read_to_string(root.book_dir(&id("acme")).join(JOURNAL_FILE)).unwrap();
@@ -437,6 +455,7 @@ fn books_without_settings_need_them_and_get_them_on_the_way_in() {
     assert_eq!(added.last().map(String::as_str), Some("settings.set"));
     assert_eq!(report.head.0, head.0 + added.len() as u64);
     let adopted = Store::open(&root.book_dir(&id("acme"))).unwrap();
+    assert_eq!(adopted.journal_format(), &ledger_store::format::current());
     assert!(adopted.ledger().settings().is_journaled());
     assert_eq!(
         adopted.ledger().settings().company("USD").name,
@@ -881,6 +900,9 @@ fn settings_given_for_books_that_keep_their_own_are_reported_unused() {
     let old = tmp("adopt-ignored-src");
     let s = source_books(old.path(), true);
     let head = s.head();
+    // Format 2 already: moved to this version's only if it knows features
+    // these books haven't declared.
+    let waits = s.journal_format().upgrade().is_some();
     drop(s);
     let report = root
         .adopt(
@@ -893,7 +915,14 @@ fn settings_given_for_books_that_keep_their_own_are_reported_unused() {
         )
         .unwrap();
     assert!(report.settings_ignored);
-    assert_eq!((report.head, report.settings_imported), (head, 0));
+    assert_eq!(report.format_upgraded, waits);
+    assert_eq!(
+        (report.head.0, report.settings_imported),
+        (head.0 + u64::from(waits), 0)
+    );
+    if !waits {
+        assert_eq!(report.head, head);
+    }
 }
 
 #[test]

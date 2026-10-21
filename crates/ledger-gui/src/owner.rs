@@ -1,7 +1,8 @@
 //! The viewer's Books menu (plan P2 "Viewer menu", D-19, D-32): the
 //! owner's own actions on the books, handed to the books server (back up
-//! now, restore, new books, close the books) or to the owner's agent
-//! (connect). The viewer itself still never writes the books.
+//! now, restore, new books, close the books, the format upgrade) or to the
+//! owner's agent (connect). The viewer itself still never writes the
+//! books.
 //!
 //! ```text
 //! GOAL: the owner backs up, restores, starts new books, closes the books
@@ -10,7 +11,9 @@
 //!         "New books…", "Close the books", "Connect Claude Code" and
 //!         "Connect Codex"; "Nothing in the viewer writes a book"); D-32
 //!         (no confinement: the viewer asks the server itself, as the
-//!         command line does).
+//!         command line does); plan 3.9 and D-39 (the format upgrade: the
+//!         go-ahead asked at every open until given, with the owner
+//!         passphrase, and a standing notice).
 //! INVARIANTS:
 //!   1. Every action goes through the [`Owner`] the program gives the
 //!      viewer (the books server, or the agent's own command): nothing
@@ -20,6 +23,12 @@
 //!      would do), and done only for that backup, at that head.
 //!   4. Without an owner (the viewer on its own, older books dirs, the
 //!      demo) the menu isn't there.
+//!   5. Books waiting for a format upgrade show a standing notice above
+//!      every page, and the go-ahead is asked once each time the viewer
+//!      opens them: the owner passphrase, typed here and handed to the
+//!      owner's `upgrade_format` (the server checks it; nothing here
+//!      does). "Not now" changes nothing; a refusal (a wrong passphrase)
+//!      is said in the dialog, which stays.
 //! ```
 
 use crate::books::Books;
@@ -83,6 +92,9 @@ pub trait Owner: Send + Sync {
     fn restore(&self, plan: &RestorePlan) -> Result<Vec<String>, String>;
     /// Let `agent` reach the books `book`.
     fn connect(&self, agent: Agent, book: &str) -> Result<Vec<String>, String>;
+    /// The owner's go-ahead for the books `book`'s format upgrade, with the
+    /// owner passphrase they typed (the server checks it).
+    fn upgrade_format(&self, book: &str, passphrase: &str) -> Result<Vec<String>, String>;
 }
 
 static OWNER: OnceLock<Arc<dyn Owner>> = OnceLock::new();
@@ -117,6 +129,48 @@ enum Dialog {
     Restore(Box<RestoreForm>),
     /// "Close the books": asked first.
     Close,
+    /// The format upgrade: the go-ahead, with the owner passphrase.
+    Upgrade(Box<UpgradeForm>),
+}
+
+/// The format upgrade's dialog (INVARIANT 5).
+struct UpgradeForm {
+    /// What the books wait for.
+    upgrade: ledger_store::FormatUpgrade,
+    /// The owner passphrase, as typed (cleared once handed over).
+    passphrase: String,
+    /// The upgrade under way.
+    working: Option<Receiver<Outcome>>,
+    /// Why the last try was refused.
+    problem: Option<String>,
+}
+
+impl UpgradeForm {
+    fn new(upgrade: ledger_store::FormatUpgrade) -> Self {
+        Self {
+            upgrade,
+            passphrase: String::new(),
+            working: None,
+            problem: None,
+        }
+    }
+}
+
+impl Drop for UpgradeForm {
+    /// What was typed and not handed over is wiped from memory, as the
+    /// command line wipes what is typed at a terminal.
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.passphrase);
+    }
+}
+
+/// Wakes the window when dropped: a worker's last act, however it ends.
+struct Wake(egui::Context);
+
+impl Drop for Wake {
+    fn drop(&mut self) {
+        self.0.request_repaint();
+    }
 }
 
 /// A restore's check under way, and what it was asked: the backup, the
@@ -147,21 +201,90 @@ pub struct OwnerMenu {
     dialog: Dialog,
     job: Option<(String, Receiver<Outcome>)>,
     done: Option<(String, Outcome)>,
+    /// The books whose format upgrade was asked for since the viewer
+    /// opened them (INVARIANT 5: once each open).
+    asked_upgrade: Option<String>,
 }
 
 impl OwnerMenu {
+    /// The id of the books shown, if they are books of a data root: found
+    /// once for each load.
+    fn book_of(&mut self, books: &Arc<Books>) -> Option<String> {
+        let key = Arc::as_ptr(books) as usize;
+        if self.book.as_ref().is_none_or(|(k, _)| *k != key) {
+            self.book = Some((key, book_id(books)));
+        }
+        self.book.as_ref().and_then(|(_, id)| id.clone())
+    }
+
+    /// The standing notice of a format upgrade the books wait for, above
+    /// the page, and the go-ahead asked for once each open (INVARIANT 5).
+    pub fn notice(&mut self, ui: &mut Ui, books: &Arc<Books>) {
+        if owner().is_none() {
+            return;
+        }
+        let Some(book) = self.book_of(books) else {
+            return;
+        };
+        let Some(upgrade) = books.format_upgrade.clone() else {
+            return;
+        };
+        if self.asked_upgrade.as_deref() != Some(book.as_str())
+            && matches!(self.dialog, Dialog::None)
+            && self.job.is_none()
+        {
+            self.asked_upgrade = Some(book);
+            self.dialog = Dialog::Upgrade(Box::new(UpgradeForm::new(upgrade.clone())));
+        }
+        let p = crate::theme::pal(ui.ctx());
+        egui::Frame::new()
+            .fill(p.warning_soft)
+            .inner_margin(egui::Margin::symmetric(20, 10))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        RichText::new(format!(
+                            "{} These books wait for a format upgrade.",
+                            icon::WARNING
+                        ))
+                        .font(crate::theme::semibold(13.0))
+                        .color(p.warning),
+                    );
+                    ui.label(
+                        RichText::new(
+                            "An older version of wanderbooks wrote them. They work on their old format until you agree; what needs the new one is refused.",
+                        )
+                        .font(crate::theme::regular(13.0))
+                        .color(p.text),
+                    );
+                    let open = matches!(self.dialog, Dialog::None) && self.job.is_none();
+                    if ui
+                        .add_enabled(open, egui::Button::new("Upgrade…"))
+                        .on_hover_text("Give the go-ahead, with your owner passphrase: a verified backup is made first")
+                        .clicked()
+                    {
+                        self.dialog = Dialog::Upgrade(Box::new(UpgradeForm::new(upgrade)));
+                    }
+                });
+            });
+    }
+
     /// The menu button and a note of the last outcome; its dialogs.
     pub fn ui(&mut self, ui: &mut Ui, books: &Arc<Books>, compact: bool) {
         let Some(owner) = owner() else {
             return;
         };
-        let key = Arc::as_ptr(books) as usize;
-        if self.book.as_ref().is_none_or(|(k, _)| *k != key) {
-            self.book = Some((key, book_id(books)));
-        }
-        let Some(book) = self.book.as_ref().and_then(|(_, id)| id.clone()) else {
+        let Some(book) = self.book_of(books) else {
             return;
         };
+        // Upgraded elsewhere meanwhile (at a terminal): nothing to ask.
+        if books.format_upgrade.is_none()
+            && let Dialog::Upgrade(form) = &self.dialog
+            && form.working.is_none()
+        {
+            self.dialog = Dialog::None;
+        }
         let p = crate::theme::pal(ui.ctx());
         if let Some((what, rx)) = &self.job
             && let Ok(done) = rx.try_recv()
@@ -228,6 +351,16 @@ impl OwnerMenu {
                             ));
                         }
                     }
+                    if let Some(upgrade) = &books.format_upgrade {
+                        ui.separator();
+                        if ui
+                            .button(format!("{} Upgrade the books' format…", icon::ARROW_FAT_UP))
+                            .on_hover_text("These books wait for a format upgrade: give the go-ahead, with your owner passphrase")
+                            .clicked()
+                        {
+                            self.dialog = Dialog::Upgrade(Box::new(UpgradeForm::new(upgrade.clone())));
+                        }
+                    }
                     ui.separator();
                     if ui
                         .button(format!("{} Close the books", icon::POWER))
@@ -242,7 +375,7 @@ impl OwnerMenu {
         if let Some((what, work)) = start {
             self.start(ui.ctx(), what, work);
         }
-        self.dialogs(ui.ctx(), &owner);
+        self.dialogs(ui.ctx(), &owner, &book);
         let said = if self.job.is_some() {
             Some(("Working…".to_string(), p.muted))
         } else {
@@ -278,12 +411,38 @@ impl OwnerMenu {
         self.done = None;
     }
 
-    /// The open dialog, if any.
-    fn dialogs(&mut self, ctx: &egui::Context, owner: &Arc<dyn Owner>) {
+    /// The open dialog, if any, for the books `book`.
+    fn dialogs(&mut self, ctx: &egui::Context, owner: &Arc<dyn Owner>, book: &str) {
         let mut close = false;
         let mut run: Option<(String, Box<dyn FnOnce() -> Outcome + Send>)> = None;
         match &mut self.dialog {
             Dialog::None => {}
+            Dialog::Upgrade(form) => {
+                let done = form.working.as_ref().and_then(|rx| match rx.try_recv() {
+                    Ok(done) => Some(done),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                    // Its worker ended without a word (it died): the
+                    // dialog, which holds the whole window, isn't left at
+                    // work for good.
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err(
+                        "it ended without an answer, so it may or may not have been done: if these books still wait, try again"
+                            .into(),
+                    )),
+                });
+                if let Some(done) = done {
+                    form.working = None;
+                    match done {
+                        Ok(lines) => {
+                            self.done = Some(("Format upgrade".into(), Ok(lines)));
+                            close = true;
+                        }
+                        Err(why) => form.problem = Some(why),
+                    }
+                }
+                if !close {
+                    upgrade_dialog(ctx, form, owner, book, &mut close);
+                }
+            }
             Dialog::Close => {
                 egui::Modal::new(egui::Id::new("owner-close")).show(ctx, |ui| {
                     ui.heading("Close the books?");
@@ -433,4 +592,75 @@ impl OwnerMenu {
             self.start(ctx, what, work);
         }
     }
+}
+
+/// The format upgrade's dialog (INVARIANT 5): what it is, the owner
+/// passphrase, and the go-ahead or not now.
+fn upgrade_dialog(
+    ctx: &egui::Context,
+    form: &mut UpgradeForm,
+    owner: &Arc<dyn Owner>,
+    book: &str,
+    close: &mut bool,
+) {
+    let p = crate::theme::pal(ctx);
+    egui::Modal::new(egui::Id::new("owner-upgrade")).show(ctx, |ui| {
+        ui.set_max_width(520.0);
+        ui.heading("Upgrade these books' format?");
+        ui.add_space(4.0);
+        ui.label(format!(
+            "An older version of wanderbooks wrote these books, in journal format {}. The upgrade adds {}.",
+            form.upgrade.from.format,
+            form.upgrade.adds().join(", ")
+        ));
+        ui.label("Until you agree they work as they are: everything that needs nothing new works, and what needs the new format is refused.");
+        ui.label("Upgrading first makes a backup of the books, their vault and keys included, and proves it whole; then it moves them to the new format, in one step. After that an older version of wanderbooks can't open them.");
+        ui.add_space(6.0);
+        let working = form.working.is_some();
+        ui.label("Your owner passphrase:");
+        let field = ui.add_enabled(
+            !working,
+            egui::TextEdit::singleline(&mut form.passphrase)
+                .password(true)
+                .desired_width(f32::INFINITY),
+        );
+        if let Some(why) = &form.problem {
+            ui.colored_label(p.warning, why);
+        }
+        let go = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        ui.horizontal(|ui| {
+            let ready = !working && !form.passphrase.is_empty();
+            if (ui
+                .add_enabled(ready, egui::Button::new("Upgrade"))
+                .clicked()
+                || (go && ready))
+                && form.working.is_none()
+            {
+                // Handed over, and gone from the form (wiped once used).
+                let passphrase = zeroize::Zeroizing::new(std::mem::take(&mut form.passphrase));
+                let (o, b) = (owner.clone(), book.to_string());
+                let (tx, rx) = channel();
+                let ctx = ui.ctx().clone();
+                std::thread::spawn(move || {
+                    // The window is woken however this ends (a panic
+                    // too), once the answer, or its absence, can be seen.
+                    let _wake = Wake(ctx);
+                    let (tx, passphrase) = (tx, passphrase);
+                    let _ = tx.send(o.upgrade_format(&b, &passphrase));
+                });
+                form.working = Some(rx);
+                form.problem = None;
+            }
+            if ui
+                .add_enabled(!working, egui::Button::new("Not now"))
+                .on_hover_text("They keep working as they are; you'll be asked again the next time they open")
+                .clicked()
+            {
+                *close = true;
+            }
+            if working {
+                ui.label("Backing up, then upgrading…");
+            }
+        });
+    });
 }

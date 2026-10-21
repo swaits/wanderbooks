@@ -129,8 +129,13 @@ settings-and-conventions section says how to use them.
   state ("needs_onboarding" or "active"), settings_source, rules: {
   evidence, parties, approval_rules }, settings_summary: [{ key, value,
   set_by, seq }], conventions: [{ id, kind, title, summary }], open_items:
-  [{ id, title, due }], truncated, handbook_sections, next_steps: [{ tool,
-  args?, why }], isolation }`. The connect text names it as the first call.
+  [{ id, title, due }], truncated, handbook_sections, format_upgrade?: {
+  guard, format, adds, how }, next_steps: [{ tool, args?, why }],
+  isolation }`. The connect text names it as the first call.
+  `format_upgrade` is there only for books waiting for a format upgrade
+  (below); its next step comes first, before anything else, at every
+  start until it is done: `books.handbook {section: "format-upgrade"}`,
+  "Tell the human first: …".
   `isolation` is `same_user (advisory)` (D-32): the books are hidden from
   agents in the owner's own account, not locked against them. Lists cut
   to fit say so in `truncated` ("conventions: 4 more (books.conventions)").
@@ -138,6 +143,25 @@ settings-and-conventions section says how to use them.
   company's close steps, `audit` `books.verify`. Not built yet (P5):
   `book.id`, `book.url`, `head.last_handoff`, the `agent` input, and
   loading it up front under tool search. Also `books://start`.
+**The format upgrade** (plan 3.9, D-39, rules.md B-27). Books an older
+wanderbooks wrote are in an older journal format: they are served on it,
+and every tool that needs nothing new works as before. A tool whose
+change needs the newer format (on main: settings, conventions, decisions,
+open items and approvals need journal format 2; later formats add
+features) is refused before anything is journaled, its error beginning
+`format_upgrade_pending:` and saying that only the owner can give the
+go-ahead, with the owner passphrase, in the app or with `wanderbooks
+books upgrade ID` at a terminal, and that no tool can. No tool consents:
+none is offered, and the server takes the go-ahead only on its admin
+socket, from the host's lease intent `consent_format_upgrade` (the app's
+dialog, `books upgrade`), with the passphrase it checks. Before the
+upgrade the server commits the books to their own backup repository and
+proves the copy holds them exactly (journal, stored files, vault, keys);
+then one `journal.format_set` declares the whole format, and the same
+session's next call can make the change. Books this version creates are
+in its format from their second line, and an adoption's copy moves to it
+as it is made.
+
 - `books.conventions { kind?, include_retired? }` → every convention with
   its full text, structure, revision and source (`books://conventions`).
   `books.set_convention { id, kind, title, body_md, structured?,
@@ -746,11 +770,14 @@ through the policy.
 ## Tools — integrity
 
 - `books.verify { blobs? }` → `{ status: "ok" | "healed", events, head,
-  healed?, blobs_verified?, checked }`. Verifies the journal's hash chain,
+  healed?, blobs_verified?, database, other_databases?, checked }`
+  (`database`: the projection file verified, one for each schema,
+  `wanderbooks.v{N}.db`; `other_databases`: other schemas' files beside it,
+  left for the versions that use them). Verifies the journal's hash chain,
   replays it against the live ledger, and compares every table of the
   SQLite database row for row against a fresh projection of the journal.
   A drifted database is rebuilt from the journal (the old file kept as
-  `wanderbooks.mismatch.<time>`). With `blobs` (default true), re-hashes
+  `wanderbooks.v{N}.mismatch.<time>`). With `blobs` (default true), re-hashes
   every stored file. The server runs the same check, and heals the same
   way, every time it starts.
 
@@ -906,8 +933,9 @@ first entry's).
   year (and its entries) whose payments the change reaches in a closed
   period or after that year's 1099s were due (January 31 of the next
   year): tell the human, a filed 1099 may need correcting. Journaled as
-  `vendor.1099_set` (a W-9 flag alone as `vendor.w9_flag_set`), after a
-  `journal.format_set` declaring the `vendor_1099_decisions` feature once.
+  `vendor.1099_set` (a W-9 flag alone as `vendor.w9_flag_set`), under the
+  journal feature `vendor_1099_decisions` (books an older version wrote
+  refuse it, `format_upgrade_pending`, until their format upgrade: B-27).
 - `books.add_instrument { kind, label, last4?, owner_party?, account }` →
   `{ id, kind, card_or_network, label, last4?, owner_party?, account_id,
   account, warnings }`. `kind`: `bank` (the company's checks, ACH, wires,
@@ -1120,10 +1148,12 @@ the name; `roles` include vendor and customer when it has those records.
 party itself on: the card it issued, the loan it made, what the members
 advanced (each member). `books.update_party { creditor_of: [codes] }`
 replaces the list (`[]` clears it), journaled as `party.creditor_set {id,
-account_id, on}`, one line per account added or dropped (the journal's
-feature `party_creditors` is declared before the first); refused,
-journaling nothing, for an account that isn't a liability, is a
-placeholder, or is payables or a payroll withholding (owed to many).
+account_id, on}`, one line per account added or dropped, under the
+journal feature `party_creditors` (books an older version wrote refuse
+the whole change, `format_upgrade_pending`, until their format upgrade:
+B-27); refused, journaling nothing, for an account that isn't a
+liability, is a placeholder, or is payables or a payroll withholding
+(owed to many).
 
 **Each party's part of an entry** (`books.get_entry`, the
 `books.post_entry` preview, `books.set_entry_party`: `parties: [{ party_id,
@@ -1569,9 +1599,10 @@ posting.
   one that isn't one line of at most 200 characters (kept trimmed); a
   `reason` is one to 2,000 characters with no full TIN. Journaled as
   `account.renamed { account_id, code, name, previous, reason }`, keyed
-  by id (a code can change; an id can't); the first rename declares the
-  journal feature `account_renamed` (rules.md B-27), so an earlier
-  version stops at the declaration. `notes` always says that QuickBooks
+  by id (a code can change; an id can't), under the journal feature
+  `account_renamed` (rules.md B-27; books an older version wrote refuse
+  it, `format_upgrade_pending`, until their format upgrade), so an
+  earlier version stops at the declaration. `notes` always says that QuickBooks
   matches accounts by name (tell a CPA who imported an earlier IIF), says
   when sub-accounts' full names change with it, when the new name moves
   the account into or out of the cash accounts (`books.cash_accounts`
@@ -1600,8 +1631,10 @@ posting.
 - `policy.require_tax_category` (`books.set_setting`): `warn` (unset) or
   `refuse` (rules.md B-32). The accounts invoices, bills and payroll
   create (Revenue 4000, General Expenses 6999, 6100, 6110) are never
-  refused; their results' `warnings` name them. The first change naming
-  the key declares the journal feature `require_tax_category`.
+  refused; their results' `warnings` name them. A change naming the key
+  needs the journal feature `require_tax_category`: books an older
+  version wrote refuse it (`format_upgrade_pending`) until the owner's
+  format upgrade (rules.md B-27).
 
 ## Tools — import
 

@@ -85,12 +85,15 @@ const SETTINGS: &str = "[company]\nname = \"Old Books Co\"\nfiscal_year_start = 
 
 /// [`SETTINGS`] journaled into the books in `dir`, as the server adopts a
 /// settings file, unless they already keep their own (P1's books): the
-/// viewer reads settings only from the journal (plan 3.6).
+/// viewer reads settings only from the journal (plan 3.6). As adoption
+/// does, the books move to this version's journal format first (an
+/// adopted copy is new books of this version).
 fn write_settings(dir: &Path) {
     let mut store = ledger_store::Store::open(&dir.join("books-data")).unwrap();
     if store.ledger().settings().is_journaled() {
         return;
     }
+    store.upgrade_format().unwrap();
     let import =
         ledger_config::codec::import(SETTINGS, None, store.ledger().settings(), "USD").unwrap();
     store

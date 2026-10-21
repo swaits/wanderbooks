@@ -24,6 +24,7 @@ ledger-gui = { path = "../ledger-gui", optional = true }
 
 [dev-dependencies]
 base64 = "0.22"
+chrono = "0.4"
 libc = "0.2"
 reqwest = "0.13"
 rmcp = { version = "3", features = ["client", "transport-streamable-http-client-reqwest"] }

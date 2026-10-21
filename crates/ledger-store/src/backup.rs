@@ -966,6 +966,90 @@ pub fn drill(
     checked
 }
 
+/// Prove the book's own archive holds the book in `book_dir` exactly as it
+/// is now, its journal's head `head` (INVARIANT 3, and more): the archive
+/// cloned into `scratch` (a new folder, removed after) and proven whole as
+/// a restore proves a backup, its head `head`, its journal the book's byte
+/// for byte, and its TIN vault and keys the book's, file for file and byte
+/// for byte. What the format upgrade asks of the backup it makes first
+/// (plan/served.md 3.9: "a verified local backup that includes the
+/// keys"). The caller holds the store's lock, so the book can't move
+/// while it is compared.
+pub fn prove_archive(
+    git: &Git,
+    book_dir: &Path,
+    head: &(u64, String),
+    scratch: &Path,
+) -> Result<Proven, BackupError> {
+    let archive = book_dir.join(ARCHIVE_DIR);
+    let source = archive.display().to_string();
+    let proven = verify(git, &source, scratch).and_then(|v| {
+        if v.head != *head {
+            return Err(BackupError::Damaged(format!(
+                "it holds the books through event {}, and they are at event {}",
+                v.head.0, head.0
+            )));
+        }
+        if std::fs::read(book_dir.join(crate::JOURNAL_FILE))?
+            != std::fs::read(v.tree.join(crate::JOURNAL_FILE))?
+        {
+            return Err(BackupError::Damaged(
+                "its journal isn't the books' own, byte for byte".into(),
+            ));
+        }
+        for kept in [crate::root::VAULT_DIR, crate::root::KEYS_DIR] {
+            if held_files(book_dir, kept)? != held_files(&v.tree, kept)? {
+                return Err(BackupError::Damaged(format!(
+                    "its {} isn't the books' own, file for file",
+                    if kept == crate::root::KEYS_DIR {
+                        "keys folder"
+                    } else {
+                        "TIN vault"
+                    }
+                )));
+            }
+        }
+        let git_dir = format!("--git-dir={}", v.tree.join(".git").display());
+        let commit = git.run("rev-parse", &[os(&git_dir), os("rev-parse"), os("HEAD")])?;
+        Ok(Proven {
+            head: v.head,
+            blobs: v.blobs,
+            commit,
+        })
+    });
+    let _ = std::fs::remove_dir_all(scratch);
+    proven
+}
+
+/// The book's archive proven to hold the book as it is ([`prove_archive`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Proven {
+    /// The journal's head it holds: the book's.
+    pub head: (u64, String),
+    /// Stored files re-hashed.
+    pub blobs: u64,
+    /// The commit proven: the archive's latest.
+    pub commit: String,
+}
+
+/// Every file under `rel` in `base`, by its path there, with its bytes
+/// (none when `rel` isn't there).
+fn held_files(base: &Path, rel: &str) -> Result<Vec<(String, Vec<u8>)>, BackupError> {
+    if std::fs::symlink_metadata(base.join(rel)).is_err() {
+        return Ok(Vec::new());
+    }
+    let mut names = Vec::new();
+    files_under(base, Path::new(rel), &mut names)?;
+    names.sort();
+    names
+        .into_iter()
+        .map(|n| {
+            let bytes = std::fs::read(base.join(&n))?;
+            Ok((n, bytes))
+        })
+        .collect()
+}
+
 /// Whether the journal at `backup` is a byte prefix of the one at `live`
 /// (a drill: the backup holds the book's history, nothing else).
 pub fn is_prefix(live: &Path, backup: &Path) -> std::io::Result<bool> {
@@ -1469,6 +1553,59 @@ mod tests {
             Target::Remote("ssh://h/b".into()).source("acme"),
             "ssh://h/b"
         );
+    }
+
+    /// The backup a format upgrade makes first (plan 3.9): the archive
+    /// proves to hold the book exactly as it is, its keys and vault file
+    /// for file; a key, a vault record or the journal that differs from
+    /// the archive's latest, or a head it doesn't hold, is refused; and
+    /// the scratch folder goes either way.
+    #[test]
+    fn the_archive_proves_to_hold_the_book_as_it_is_keys_and_all() {
+        let git = Git::find().expect("git is installed");
+        let dir = tempfile::tempdir().unwrap();
+        let b = dir.path().join("book");
+        let mut s = book(&b);
+        let keys = b.join(crate::root::KEYS_DIR);
+        std::fs::create_dir(&keys).unwrap();
+        std::fs::write(keys.join(crate::root::LEGACY_KEY_FILE), b"ab".repeat(32)).unwrap();
+        let vault = b.join(crate::root::VAULT_DIR);
+        std::fs::create_dir(&vault).unwrap();
+        std::fs::write(vault.join("tin-1.bin"), b"sealed").unwrap();
+        let made = commit(&git, &b, "acme", s.head()).unwrap().unwrap();
+        let scratch = dir.path().join("check");
+        let proven = prove_archive(&git, &b, &s.head(), &scratch).unwrap();
+        assert_eq!(proven.head, s.head());
+        assert_eq!(proven.commit, made.commit);
+        assert_eq!(proven.blobs, 1);
+        assert!(!scratch.exists(), "the scratch folder is removed");
+        let refused = |b: &Path, head: &(u64, String)| {
+            let e = prove_archive(&git, b, head, &scratch).unwrap_err();
+            assert!(!scratch.exists());
+            e.to_string()
+        };
+        // A key that isn't the one backed up.
+        std::fs::write(keys.join(crate::root::LEGACY_KEY_FILE), b"cd".repeat(32)).unwrap();
+        assert!(refused(&b, &s.head()).contains("keys folder"));
+        std::fs::write(keys.join(crate::root::LEGACY_KEY_FILE), b"ab".repeat(32)).unwrap();
+        // A key the backup lacks.
+        std::fs::write(keys.join("other.key"), b"x").unwrap();
+        assert!(refused(&b, &s.head()).contains("keys folder"));
+        std::fs::remove_file(keys.join("other.key")).unwrap();
+        // A vault record that isn't the one backed up.
+        std::fs::write(vault.join("tin-1.bin"), b"sealed again").unwrap();
+        assert!(refused(&b, &s.head()).contains("TIN vault"));
+        std::fs::write(vault.join("tin-1.bin"), b"sealed").unwrap();
+        assert!(prove_archive(&git, &b, &s.head(), &scratch).is_ok());
+        // The books moved on since the backup.
+        s.add_account("6000", "Fees", AccountType::Expense, None, false)
+            .unwrap();
+        let e = refused(&b, &s.head());
+        assert!(e.contains("they are at event"), "{e}");
+        // The head it holds, but the journal on disk changed under it.
+        let old_head = made.head.clone();
+        let e = refused(&b, &old_head);
+        assert!(e.contains("byte for byte"), "{e}");
     }
 
     #[test]

@@ -2724,6 +2724,7 @@ fn the_viewers_hold_new_books_and_close_the_books() {
     let common = Common {
         root: Some(home.root()),
         knobs: ledger_host::knobs::Knobs::parse(KNOBS).unwrap(),
+        ..Default::default()
     };
     let hold = hold_for_viewer(&common, Some("acme".into()));
     assert!(

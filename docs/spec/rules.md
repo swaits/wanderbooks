@@ -331,7 +331,7 @@ earnings the same running way, D-38, 2026-10-20)
 `Ledger::members_regime`, `Regime::allocate`,
 `periods::allocate_cumulative`, `kernel::apportion_cumulative`,
 `periods::allocate`, `kernel::apportion`, `members_equity`,
-`Store::close_period_to` (the feature declaration), the store's
+`Store::close_period_to` (the feature it needs, B-27), the store's
 `close_to_from_journal`. **Checked:** Kani `apportion_is_exact`,
 `apportion_is_fair`, `apportion_cumulative_is_exact`,
 `cumulative_close_never_drifts_a_unit_at_halves`, `_at_tenths`,
@@ -860,7 +860,7 @@ B-16 cites them (P3 depreciation review R7).
 `a_reversal_dated_before_the_entry_it_reverses_is_refused`,
 `a_schedule_month_reversed_after_it_ended_is_left_for_a_human`,
 `a_month_that_rounds_to_nothing_is_never_a_posting`,
-`a_schedule_month_posted_again_declares_month_reposting_and_replays`,
+`a_schedule_month_posted_again_waits_for_month_reposting_and_replays`,
 `daily_plans_pin_month_end_clamping`,
 `prop_daily_plan_sums_exactly_and_lands_on_month_ends`,
 `prop_monthly_even_plan_is_unchanged`; `ledger-mcp`
@@ -1366,7 +1366,9 @@ unit tests in `tin_files.rs`.
 **Status:** DECISION (the owner, 2026-10-16; `plan/served.md` 5.1 and P0);
 DECISION (P0 review, 2026-10-16: a line's own hash is checked before the
 line is called newer; the envelope and its hash are frozen across
-formats)
+formats); DECISION (the owner, 2026-10-20, D-39, and `plan/served.md`
+3.9: older books move to a newer format only with the owner's go-ahead,
+asked at every open until given)
 
 Every journal line has a type, and a version of wanderbooks reads a fixed
 set of them (`ledger_store::format::EVENT_TYPES`). A newer version may
@@ -1410,19 +1412,14 @@ lines before it pass, so an older version never alters newer books.
 A line an earlier version can't read is announced by a journal feature
 (`ledger_store::format::KNOWN_FEATURES`): a new event type, or a field or
 value on an event type an earlier version knows but would misread. The
-writer declares it once, in the `journal.format_set` just before the
-first line that needs it, with the format in force (at least 2) and the
-features already in force (`Store::ensure_feature`): an earlier reader
-stops at the declaration, and books that never use the feature stay
-readable by it. A tool journaling several commands as one declares the
-feature before the first of them, never between them (a refused format
-upgrade would leave the tool's work half done): `books.set_w9` declares
-`vendor_1099_decisions` before the W-9 when the vendor's W-9 flag follows
-it. P3's: `members_cumulative` (B-13: a members close counted from its
-count's first close, `"rounding": "cumulative_since"`), `account_renamed`
-(before the first `account.renamed`, B-31), `require_tax_category`
-(before the first `settings.set` naming `policy.require_tax_category`,
-B-32), `party_creditors` (`party.creditor_set`: defect 24, B-35),
+books declare it in a `journal.format_set` before the first line that
+needs it, so an earlier reader stops at the declaration; this version
+declares every feature it knows at once (below), never one at a time on
+the way. P3's: `members_cumulative` (B-13: a members close counted from
+its count's first close, `"rounding": "cumulative_since"`),
+`account_renamed` (an `account.renamed`, B-31), `require_tax_category` (a
+`settings.set` naming `policy.require_tax_category`, B-32),
+`party_creditors` (`party.creditor_set`: defect 24, B-35),
 `payment_instruments` (`instrument.added`, `entry.instrument_set`:
 defect 12, B-19), `vendor_1099_decisions` (`vendor.1099_set` with who
 decided, a `not_reportable` decision, its reason or the date it takes
@@ -1432,21 +1429,75 @@ effect, and `vendor.w9_flag_set`: defects 18 and 23, D-40, B-19),
 B-16) and `month_reposting` (a schedule month or a depreciation period
 posted again after a reversal un-posted it; an older version would refuse
 the second `schedule.posted`, and its projection ignore the second
-`asset.depreciation_posted`, B-15). A value
-in a line of a known type that only a newer version writes (a 1099
-decision or reason kind, a payment method's kind) is newer, never
-corrupt. A command decides whether it needs a feature, and declares it,
-before its first journaled line, so a feature refused (a format upgrade
-awaiting the owner's consent) journals nothing, never an entry without
-the line that says what it is
-(`a_refused_journal_feature_journals_nothing`). A later piece asks the
-owner's go-ahead before the first such declaration (plan D-39).
+`asset.depreciation_posted`, B-15). A command asks for the feature it
+needs (`Store::ensure_feature`) before its first journaled line, and only
+when the line it is about to write uses it, so a write refused for
+waiting on the upgrade journals nothing, never an entry without the line
+that says what it is (`a_write_waiting_for_the_upgrade_journals_nothing`),
+and a write that needs nothing new is never refused. A tool journaling
+several commands as one asks before the first of them, never between
+them (a refusal there would leave the tool's work half done):
+`books.set_w9` asks for `vendor_1099_decisions` before the W-9 when the
+vendor's W-9 flag follows it. A value in a line of a known type that only
+a newer version writes (a 1099 decision or reason kind, a payment
+method's kind) is newer, never corrupt.
+
+**The other way round: the format upgrade.** This version's format is
+the newest it reads with every feature it knows (`format::current`). Books
+it creates declare it in their second line, so they wait for nothing.
+Books an older version wrote declare less (format 1, written before the
+gate, declares nothing): they *wait for a format upgrade*, which is a fact
+of their journal alone (`JournalFormat::upgrade`). They open and replay as
+they are, byte for byte; everything that needs nothing new is written as
+ever; a write that would need the newer format or a feature they haven't
+declared is refused before anything is journaled
+(`StoreError::FormatUpgradePending`, guard `format_upgrade_pending`), never
+declared on the way. Only the owner's go-ahead moves them, with the owner
+passphrase (the server checks it, Argon2id): in the app, which asks at
+every open until it is given, or with `wanderbooks books upgrade ID` at a
+terminal, whose commands that open the books also ask; never an agent, and
+no tool. Before the upgrade the server commits the books to their own
+backup repository and proves the copy holds them exactly as they are
+(journal, stored files, vault and keys, byte for byte), all under the
+books' lock; a backup that can't be made or proven upgrades nothing. The
+upgrade is then one `journal.format_set` declaring the whole format, so a
+book's format moves exactly once per version; books already in it are left
+alone. An adoption's copy is new books of this version and moves to its
+format as it is made (the original keeps its own). The upgrade never
+weakens the gate: books declaring a feature this version doesn't know are
+newer, as above.
+
+**Each projection schema in a file of its own** (the lead's decision,
+2026-10-21, for 3.9's "before consent, the way back is always there"). The
+books' SQLite projection is derived from the journal, and its schema moves
+with the version (`schema::SCHEMA_VERSION`), but an older version refuses a
+database of a newer schema (`SchemaTooNew`). So each schema keeps its own
+file, `wanderbooks.v{N}.db` (`store::db_file_for`): a version opens or
+creates only its own; its own missing, it is built from the journal; the
+legacy `wanderbooks.db` (every version through P2, schema 12) is used only
+while it already holds this version's schema, so books needing no
+migration aren't rebuilt for nothing; a file of any other schema, older or
+newer, is never migrated, written, refused or deleted, and stays byte for
+byte for the version that wrote it (going back finds it as it left it, or
+builds its own). A file named for this version's schema that holds another
+is damaged, kept aside and rebuilt, as a corrupt one is. `books.verify`
+(`database`, `other_databases`) and `wanderbooks doctor` say which file is
+in use and which others are there; none is deleted for being stale.
 
 **Enforced:** `ledger_store::format` (`JournalFormat::admit`, `declared`,
-`gate`, `settle`, `declaration`), `journal::ENVELOPE_KEYS`,
+`gate`, `settle`, `declaration`, `current`, `JournalFormat::upgrade`,
+`require_format`, `require_feature`), `journal::ENVELOPE_KEYS`,
 `JournalLine::parse`, `journal::read_journal_and_format`,
-`Snapshot::read_new`, `Store::open`, `Store::declare_journal_format`,
-`StoreError::NewerJournal` (its `verified` flag picks the message).
+`Snapshot::read_new`, `Store::open`, `Store::create`, `store::db_file_for`,
+`store::database_in_use` (and `Snapshot::check_disk`, which checks the file
+it names), `Store::database_file`, `Store::other_databases`,
+`Store::declare_journal_format`, `Store::upgrade_format`,
+`Store::ensure_feature`, `Root::adopt`, `StoreError::NewerJournal` (its
+`verified` flag picks the message), `StoreError::FormatUpgradePending`,
+`ledger_store::backup::prove_archive`, ledger-mcp `Backups::upgrade_format`
+and `local.rs` (the passphrase), ledger-host `host.rs` (the lease intent,
+handed to the server) and `commands.rs` (`books upgrade`, asking at open),
+ledger-gui `owner.rs` (the notice and the dialog).
 **Checked:** `ledger-store` `tests/format.rs` (`old_reader_gets_newer_journal`,
 `a_damaged_line_that_looks_newer_is_corrupt_when_the_next_line_checks_it`,
 `an_unreadable_last_line_is_reported_as_newer_or_damaged`,
@@ -1460,7 +1511,23 @@ owner's go-ahead before the first such declaration (plan D-39).
 `damaged_journals_are_still_corrupt`) and the unit tests in `format.rs`;
 `ledger-gui` `tests/newer_journal.rs`; `ledger-mcp` `tests/startup.rs`;
 the `fuzz_store_replay` target (the writer and the viewer agree on newer
-versus bad).
+versus bad). The upgrade: `ledger-store` `tests/format_upgrade.rs` (new
+books in this version's format, a change waiting for the upgrade, every
+old-books fixture upgrading to its figures, a newer feature still
+refused), the unit tests in `format.rs` and `backup.rs`
+(`the_archive_proves_to_hold_the_book_as_it_is_keys_and_all`),
+`tests/settings.rs` (`a_change_needs_journal_format_2`), `tests/root.rs`
+(adoption), `tests/schema_files.rs` (a P2-shaped books dir, its
+`wanderbooks.db` used at its schema and left byte for byte past it; an
+older schema's file left byte for byte and whole while this version's is
+built and kept up; a newer schema's file left alone, not refused; a damaged
+file of this version's schema rebuilt; new books' file named for their
+schema); `ledger-mcp` `local.rs` (`format_upgrade_waits_for_consent`,
+`no_upgrade_without_a_backup`,
+`no_upgrade_unless_the_backup_just_made_is_proven`); `ledger-host`
+`lease.rs` (`a_consent_never_shows_its_passphrase`); `ledger-cli`
+`tests/format_upgrade.rs`
+(from end to end); `ledger-gui` `tests/format_upgrade.rs`.
 
 ## B-28 What new commands take: four-digit years, amounts a line can carry
 
@@ -1508,7 +1575,11 @@ command's (`Ledger::add_line`, `register_asset`, `TaxBasis::check`,
 `replay_register_asset`, `TaxBasis::check_journaled`,
 `shares::check_shares_journaled`, ...), and every bound has its pair of
 tests: the command refuses past it; replay of an old line past it is
-accepted.
+accepted. What an earlier version left beside its journal is kept for it
+the same way: its projection database, in its own schema's file, is never
+migrated or written by a later version (B-27, "each projection schema in a
+file of its own"), so the earlier version, gone back to, opens its books
+as it left them.
 
 **Derived figures refuse, never panic.** Because replay accepts what
 the commands now refuse, every figure the books derive is computed with
@@ -1759,8 +1830,8 @@ by name, so a CPA who imported an earlier IIF is told.
 `check_rename_reason`,
 `replay_rename_account` (only that the account exists),
 `ChartOfAccounts::set_name`, `Ledger::add_control_account`;
-`Store::rename_account` (journal feature `account_renamed`, declared
-before the first rename, B-27); `books.rename_account` (scope
+`Store::rename_account` (journal feature `account_renamed`, which the
+books declare before their first rename, B-27); `books.rename_account` (scope
 `books:post`, like renumbering). **Checked:** `ledger-core`
 `tests/spec_ledger.rs` (`rename_account_*`), `tests/model.rs`
 (`Cmd::Rename`); `ledger-store` `tests/store.rs`
@@ -1823,8 +1894,8 @@ included, and an account's header flag never changes).
 `check_tax_category_kept` (commands only, never `set_account_tax`, which
 replay calls); `settings::TaxCategoryPolicy`, `Settings::require_tax_category`;
 `Store::add_account_with_tax`, `add_account`, `set_account_tax`
-(journal feature `require_tax_category`, declared before the first
-`settings.set` naming the key); `ledger-mcp` `books.add_account`,
+(journal feature `require_tax_category`, which the books declare before
+their first `settings.set` naming the key, B-27); `ledger-mcp` `books.add_account`,
 `books.import_chart_csv`, `books.digest`; `ledger-gui` Needs attention
 (Info under warn, Todo under refuse). **Checked:** `ledger-core`
 `tests/tax.rs`; `ledger-store` `tests/store.rs`
@@ -2214,7 +2285,7 @@ not the books' accounting method (`books.accounting_basis`).
 `shares::{target, split, resolve}`, `parties::{flow, money_accounts,
 card_accounts, MoneyAccounts::for_parties, activity_with, Activity::totals,
 Basis}`, `Ledger::set_party_creditor`, `Store::set_party_creditor` (the
-`party_creditors` journal feature, declared before its first line);
+`party_creditors` journal feature, asked for before its first line);
 `ledger-mcp` `books.get_entry` (`resolved`, `direction`, `cash`,
 `in_kind`), `books.party` and `books.parties` (`basis`), `books.update_party`
 (`creditor_of`); the viewer's party pages and entry page.

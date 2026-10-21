@@ -10,7 +10,7 @@ use ledger_core::{
     members_equity,
 };
 use ledger_store::journal::read_and_verify_journal;
-use ledger_store::{JOURNAL_FILE, JournalWriter, Snapshot, Store, StoreError};
+use ledger_store::{JOURNAL_FILE, JournalFormat, JournalWriter, Snapshot, Store, StoreError};
 use rust_decimal::Decimal;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -67,6 +67,25 @@ struct Books {
 
 fn books(dir: &Path) -> Books {
     let mut store = Store::create(dir, Currency::USD).unwrap();
+    let mut add = |code: &str, t| store.add_account(code, code, t, None, false).unwrap();
+    let cash = add("1000", AccountType::Asset);
+    let caps = [
+        add("3000", AccountType::Equity),
+        add("3001", AccountType::Equity),
+    ];
+    let sales = add("4000", AccountType::Revenue);
+    Books {
+        store,
+        cash,
+        caps,
+        sales,
+    }
+}
+
+/// [`books`] as a version before the format gate made them: format 1,
+/// nothing declared (D-39).
+fn old_books(dir: &Path) -> Books {
+    let mut store = Store::create_in_format(dir, Currency::USD, &JournalFormat::default()).unwrap();
     let mut add = |code: &str, t| store.add_account(code, code, t, None, false).unwrap();
     let cash = add("1000", AccountType::Asset);
     let caps = [
@@ -147,11 +166,14 @@ fn three_cumulative_closes(dir: &Path) -> Books {
     b
 }
 
-/// Contract (rules.md B-27; P3 defect 17): the first members close counted
-/// from its regime's start declares the `members_cumulative` feature, on
-/// the line just before it and once only, so an older version stops at the
-/// declaration (it would replay the close under the run rule). Books that
-/// never close to the members never declare it.
+/// Contract (rules.md B-27; P3 defect 17; D-39): a members close counted
+/// from its regime's start needs the `members_cumulative` feature, so an
+/// older version stops at its declaration (it would replay the close under
+/// the run rule). New books declare it on their second line, with the rest
+/// of this version's format, and never again; books an older version made
+/// (format 1) refuse a members close, journaling nothing, until the
+/// owner's format upgrade declares it, and close to retained earnings as
+/// ever.
 #[test]
 fn the_first_cumulative_close_declares_its_feature() {
     let dir = test_dir("declares");
@@ -169,12 +191,13 @@ fn the_first_cumulative_close_declares_its_feature() {
         .filter(|(_, (t, p))| t == "journal.format_set" && declares(p))
         .map(|(i, _)| i)
         .collect();
-    let first_close = lines
-        .iter()
-        .position(|(t, p)| t == "period.closed" && p["close_to"]["rounding"] == "cumulative_since")
-        .unwrap();
-    assert_eq!(declarations, [first_close - 1]);
-    assert_eq!(lines[first_close - 1].1["format"], 2);
+    // Line 2: this version's whole format, as the books were created.
+    assert_eq!(declarations, [1]);
+    assert_eq!(lines[1].1["format"], 2);
+    assert_eq!(
+        lines[1].1["features"],
+        json!(ledger_store::format::current().features)
+    );
     assert_eq!(
         lines
             .iter()
@@ -193,17 +216,47 @@ fn the_first_cumulative_close_declares_its_feature() {
         .count();
     assert_eq!(again, 1);
 
-    // Books that close only to retained earnings never declare it.
-    let dir = test_dir("declares-not");
-    let mut b = books(&dir);
+    // Books an older version made: a members close waits for the upgrade,
+    // a close to retained earnings doesn't.
+    let dir = test_dir("declares-old");
+    let mut b = old_books(&dir);
     earn_and_close(
         &mut b,
         1,
         "0.01",
         &CloseTo::RetainedEarnings { sweep: vec![] },
     );
-    drop(b);
+    let e = b.store.create_entry(d(2, 10), "sale").unwrap();
+    let money = Money::new(dec("0.01"), Currency::USD);
+    b.store.add_line(e, b.cash, Side::Debit, money).unwrap();
+    b.store.add_line(e, b.sales, Side::Credit, money).unwrap();
+    b.store.post_entry(e).unwrap();
+    let p = b
+        .store
+        .create_period("2026-02", d(2, 1), month_end(2))
+        .unwrap();
+    let head = b.store.head();
+    let to = CloseTo::Members(half(&b.caps));
+    match b.store.close_period_to(p, &to) {
+        Err(StoreError::FormatUpgradePending { need }) => {
+            assert_eq!(need, "the journal feature members_cumulative")
+        }
+        other => panic!("expected FormatUpgradePending, got {other:?}"),
+    }
+    assert_eq!(b.store.head(), head, "refused whole");
     assert!(!journal(&dir).iter().any(|(_, p)| declares(p)));
+    // The owner's go-ahead: the whole format at once, then the close.
+    assert!(b.store.upgrade_format().unwrap().is_some());
+    b.store.close_period_to(p, &to).unwrap().unwrap();
+    drop(b);
+    let lines = journal(&dir);
+    let n = lines.len();
+    assert_eq!(lines[n - 1].0, "period.closed");
+    assert_eq!(lines[n - 2].0, "journal.format_set");
+    assert_eq!(
+        lines[n - 2].1["features"],
+        json!(ledger_store::format::current().features)
+    );
 }
 
 /// A change to a journaled close's target.
@@ -457,6 +510,18 @@ fn the_first_close_after_the_upgrade_trues_up_the_old_rules() {
             distributions: None,
         },
     ];
+    // Books an earlier version wrote: the close counted from its regime's
+    // start waits for the owner's go-ahead (D-39), journaling nothing; the
+    // upgrade declares this version's whole format.
+    let head = store.head();
+    match store.close_period_to(dec_period, &CloseTo::Members(members.clone())) {
+        Err(StoreError::FormatUpgradePending { need }) => {
+            assert_eq!(need, "the journal feature members_cumulative")
+        }
+        other => panic!("expected FormatUpgradePending, got {other:?}"),
+    }
+    assert_eq!(store.head(), head, "refused whole");
+    assert!(store.upgrade_format().unwrap().is_some());
     let closing = store
         .close_period_to(dec_period, &CloseTo::Members(members))
         .unwrap()
@@ -504,14 +569,18 @@ fn the_first_close_after_the_upgrade_trues_up_the_old_rules() {
         capital_on(store.ledger(), d(12, 31)),
         [dec("99.08"), dec("100.07")]
     );
-    // One declaration, just before the close.
+    // One declaration, the upgrade's, just before the close: this
+    // version's whole format.
     drop(store);
     let lines = journal(&dir);
     let n = lines.len();
     assert_eq!(lines[n - 1].0, "period.closed");
     assert_eq!(lines[n - 1].1["close_to"]["since_seq"], 1);
     assert_eq!(lines[n - 2].0, "journal.format_set");
-    assert_eq!(lines[n - 2].1["features"], json!(["members_cumulative"]));
+    assert_eq!(
+        lines[n - 2].1["features"],
+        json!(ledger_store::format::current().features)
+    );
     // Reopened, and in the viewer: the same.
     let store = Store::open(&dir).unwrap();
     store.verify().unwrap();

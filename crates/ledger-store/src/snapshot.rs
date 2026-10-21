@@ -19,7 +19,7 @@ use crate::error::StoreError;
 use crate::format::JournalFormat;
 use crate::journal::{GENESIS_PREV, JournalLine};
 use crate::store::{
-    Attachment, BLOBS_DIR, DB_FILE, JOURNAL_FILE, Reconciliation, Statement, Store, Subject,
+    Attachment, BLOBS_DIR, JOURNAL_FILE, Reconciliation, Statement, Store, Subject,
     apply_line_to_sqlite, compare_projections, projection_rows, query_attachment_links,
     query_attachments, query_reconciliations, query_statements, read_attachment_bytes,
     replay_line_into_ledger,
@@ -292,7 +292,8 @@ impl Snapshot {
     /// by the concurrency test, 2026-10-13, as a false "differs").
     pub fn check_disk(&self) -> DiskCheck {
         use rusqlite::OpenFlags;
-        let path = self.data_dir.join(DB_FILE);
+        // The file this version's writer keeps (store::database_in_use).
+        let path = crate::store::database_in_use(&self.data_dir);
         if !path.exists() {
             return DiskCheck::Missing;
         }
@@ -374,7 +375,7 @@ impl Snapshot {
 
 /// `file:` URI for `path`, read-only and immutable (sqlite.org/uri.html):
 /// every byte outside the unreserved set is percent-encoded.
-fn immutable_uri(path: &Path) -> String {
+pub(crate) fn immutable_uri(path: &Path) -> String {
     let mut out = String::from("file:");
     for b in path.to_string_lossy().bytes() {
         if b.is_ascii_alphanumeric() || b"/-_.~".contains(&b) {

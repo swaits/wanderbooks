@@ -324,6 +324,9 @@ pub struct Books {
     pub statements: Vec<Statement>,
     /// Reconciliations, voided ones included, by date then id.
     pub reconciliations: Vec<Reconciliation>,
+    /// The format upgrade the books wait for, if they do (plan 3.9, D-39):
+    /// read from their journal, as the server reads it.
+    pub format_upgrade: Option<ledger_store::FormatUpgrade>,
 }
 
 /// A span of dates a party's money is summed over (the party page's and
@@ -838,6 +841,7 @@ impl Books {
             links,
             statements,
             reconciliations,
+            format_upgrade: snap.journal_format().upgrade(),
         };
         books.parties = books.party_infos();
         books.kpis = books.compute_kpis();

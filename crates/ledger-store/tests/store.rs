@@ -304,7 +304,7 @@ fn missing_database_heals_on_open() {
     let dir = test_dir("healopen");
     let store = build_books(&dir);
     drop(store);
-    std::fs::remove_file(dir.join(ledger_store::DB_FILE)).unwrap();
+    std::fs::remove_file(dir.join(ledger_store::db_file())).unwrap();
     // No database at all: open rebuilds the projection from the journal.
     let store = Store::open(&dir).unwrap();
     let tb = ledger_core::reports::trial_balance(store.ledger());
@@ -426,7 +426,7 @@ fn corrupt_projection_is_quarantined_and_rebuilt() {
         let _store = build_books(&dir);
     }
     // Corrupt the SQLite file with garbage.
-    let db_path = dir.join(ledger_store::DB_FILE);
+    let db_path = dir.join(ledger_store::db_file());
     std::fs::write(&db_path, b"this is not a sqlite database at all").unwrap();
     // Reopen heals from the journal instead of failing.
     let store = Store::open(&dir).unwrap();
@@ -435,9 +435,11 @@ fn corrupt_projection_is_quarantined_and_rebuilt() {
         .unwrap()
         .filter_map(|e| e.ok())
         .filter(|e| {
+            // Kept beside it under its own name: wanderbooks.v{N}.corrupt.*
+            let stem = ledger_store::db_file().trim_end_matches(".db").to_string();
             e.file_name()
                 .to_string_lossy()
-                .starts_with("wanderbooks.corrupt.")
+                .starts_with(&format!("{stem}.corrupt."))
         })
         .collect();
     assert_eq!(quarantined.len(), 1);
@@ -838,11 +840,11 @@ fn vendor_1099_tags_replay_and_project() {
     // Reopen (replay), then rebuild the projection from scratch.
     for rebuild in [false, true] {
         if rebuild {
-            std::fs::remove_file(dir.join(ledger_store::DB_FILE)).unwrap();
+            std::fs::remove_file(dir.join(ledger_store::db_file())).unwrap();
         }
         let store = Store::open(&dir).unwrap();
         assert_eq!(report(store.ledger()), before);
-        let conn = rusqlite::Connection::open(dir.join(ledger_store::DB_FILE)).unwrap();
+        let conn = rusqlite::Connection::open(dir.join(ledger_store::db_file())).unwrap();
         let tagged: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM entry_vendors WHERE vendor_id = ?",
@@ -885,7 +887,7 @@ fn the_whole_projection_is_checked_and_healed() {
     store.verify().unwrap();
     drop(store);
     // Drift no accounting report would notice: a receipt quietly unlinked.
-    let db = dir.join(ledger_store::DB_FILE);
+    let db = dir.join(ledger_store::db_file());
     let conn = rusqlite::Connection::open(&db).unwrap();
     conn.execute("UPDATE attachments SET entry_id = NULL", [])
         .unwrap();
@@ -1781,7 +1783,7 @@ fn books_written_under_older_rules_still_open() {
     .unwrap();
     drop(w);
     // Opening rebuilds from the journal; it must accept all of it.
-    let _ = std::fs::remove_file(dir.join(ledger_store::DB_FILE));
+    let _ = std::fs::remove_file(dir.join(ledger_store::db_file()));
     let store = Store::open(&dir).expect("older books still open");
     store.verify().unwrap();
     assert_eq!(store.journal_format().format, 1);
@@ -2570,12 +2572,12 @@ fn the_viewer_tells_behind_from_ahead() {
     // Behind: a database restored from before that write.
     drop(store);
     let mut store = Store::open(&dir).unwrap();
-    let before_write = std::fs::read(dir.join(ledger_store::DB_FILE)).unwrap();
+    let before_write = std::fs::read(dir.join(ledger_store::db_file())).unwrap();
     store.add_vendor("Supplier").unwrap();
     drop(store);
-    std::fs::write(dir.join(ledger_store::DB_FILE), &before_write).unwrap();
-    let _ = std::fs::remove_file(dir.join("wanderbooks.db-wal"));
-    let _ = std::fs::remove_file(dir.join("wanderbooks.db-shm"));
+    std::fs::write(dir.join(ledger_store::db_file()), &before_write).unwrap();
+    let _ = std::fs::remove_file(dir.join(format!("{}-wal", ledger_store::db_file())));
+    let _ = std::fs::remove_file(dir.join(format!("{}-shm", ledger_store::db_file())));
     let snap = Snapshot::load(&dir).unwrap();
     match snap.check_disk() {
         DiskCheck::Behind { applied, journal } => assert!(applied < journal),
@@ -2590,7 +2592,7 @@ fn the_table_check_counts_missing_and_unexpected_rows() {
     let dir = test_dir("table-counts");
     let store = build_books(&dir);
     drop(store);
-    let conn = rusqlite::Connection::open(dir.join(ledger_store::DB_FILE)).unwrap();
+    let conn = rusqlite::Connection::open(dir.join(ledger_store::db_file())).unwrap();
     // The events table mirrors the journal and isn't read back into the
     // ledger, so only the table check sees this.
     conn.execute(
@@ -2636,7 +2638,7 @@ fn a_database_with_the_wrong_currency_is_rebuilt() {
     let store = build_books(&dir);
     let before = ledger_core::reports::snapshot(store.ledger()).unwrap();
     drop(store);
-    let conn = rusqlite::Connection::open(dir.join(ledger_store::DB_FILE)).unwrap();
+    let conn = rusqlite::Connection::open(dir.join(ledger_store::db_file())).unwrap();
     conn.execute(
         "UPDATE meta SET value = 'EUR' WHERE key = 'base_currency'",
         [],
@@ -2780,7 +2782,7 @@ fn the_database_tracks_what_an_invoice_has_been_paid() {
         )
         .unwrap();
     let row = |dir: &std::path::Path| -> (String, String) {
-        let conn = rusqlite::Connection::open(dir.join(ledger_store::DB_FILE)).unwrap();
+        let conn = rusqlite::Connection::open(dir.join(ledger_store::db_file())).unwrap();
         conn.query_row(
             "SELECT amount_paid, status FROM invoices WHERE id = ?",
             [inv as i64],
@@ -2807,7 +2809,7 @@ fn rechain(dir: &std::path::Path, change: impl Fn(&mut Vec<ledger_store::Journal
     let mut lines = ledger_store::journal::read_and_verify_journal(&path).unwrap();
     change(&mut lines);
     std::fs::remove_file(&path).unwrap();
-    let _ = std::fs::remove_file(dir.join(ledger_store::DB_FILE));
+    let _ = std::fs::remove_file(dir.join(ledger_store::db_file()));
     let mut w = JournalWriter::open(&path).unwrap();
     for l in lines {
         w.append(&l.line_type, l.payload).unwrap();
@@ -2850,7 +2852,7 @@ fn replay_refuses_a_journaled_entry_it_does_not_rederive() {
     // A projection missing a table.
     let dir = test_dir("missing-table");
     drop(build_books(&dir));
-    let conn = rusqlite::Connection::open(dir.join(ledger_store::DB_FILE)).unwrap();
+    let conn = rusqlite::Connection::open(dir.join(ledger_store::db_file())).unwrap();
     conn.execute("DROP TABLE events", []).unwrap();
     drop(conn);
     let store = Store::open(&dir);
@@ -2930,7 +2932,7 @@ fn a_database_with_damaged_pages_is_rebuilt() {
     }
     let before = ledger_core::reports::snapshot(store.ledger()).unwrap();
     drop(store);
-    let db = dir.join(ledger_store::DB_FILE);
+    let db = dir.join(ledger_store::db_file());
     let mut bytes = std::fs::read(&db).unwrap();
     // Scramble only the last pages (the customers just added); the header,
     // schema, and settings at the front still read.
@@ -2967,7 +2969,7 @@ fn a_database_with_damaged_pages_is_rebuilt() {
 /// `meta`), as text, with `accounts.name` blanked: what a rename may
 /// change is that one column.
 fn projection_but_names(dir: &std::path::Path) -> Vec<(String, Vec<String>)> {
-    let conn = rusqlite::Connection::open(dir.join(ledger_store::DB_FILE)).unwrap();
+    let conn = rusqlite::Connection::open(dir.join(ledger_store::db_file())).unwrap();
     let mut tables: Vec<String> = conn
         .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
         .unwrap()
@@ -3065,28 +3067,29 @@ fn rename_account_changes_only_the_name_defect_15() {
         .rename_account(rent, " Office Rent ", Some("owner asked 2026-10-21"))
         .unwrap();
     let after = std::fs::read_to_string(&journal).unwrap();
-    // Every earlier line kept, byte for byte; two lines appended: the
-    // feature's declaration, then the rename.
+    // Every earlier line kept, byte for byte; one line appended, the
+    // rename (its feature, account_renamed, the books declared as they
+    // were created, with the rest of this version's format).
     assert!(after.starts_with(&text));
+    assert!(
+        store
+            .journal_format()
+            .has_feature(ledger_store::format::FEATURE_ACCOUNT_RENAMED)
+    );
     let added: Vec<serde_json::Value> = after[text.len()..]
         .lines()
         .map(|l| serde_json::from_str(l).unwrap())
         .collect();
-    assert_eq!(added.len(), 2);
-    assert_eq!(added[0]["type"], "journal.format_set");
+    assert_eq!(added.len(), 1);
+    assert_eq!(added[0]["type"], "account.renamed");
     assert_eq!(
         added[0]["payload"],
-        serde_json::json!({"format": 2, "features": ["account_renamed"]})
-    );
-    assert_eq!(added[1]["type"], "account.renamed");
-    assert_eq!(
-        added[1]["payload"],
         serde_json::json!({
             "account_id": rent, "code": "6000", "name": "Office Rent",
             "previous": "Rent Expense", "reason": "owner asked 2026-10-21"
         })
     );
-    assert_eq!(store.head().0, seq + 2);
+    assert_eq!(store.head().0, seq + 1);
     assert_eq!(
         store.ledger().chart().get(rent).unwrap().name,
         "Office Rent"
@@ -3096,7 +3099,7 @@ fn rename_account_changes_only_the_name_defect_15() {
     // The one column a rename changes, read from the projection itself
     // (projection_but_names blanks it).
     let db_name = |dir: &std::path::Path| -> String {
-        rusqlite::Connection::open(dir.join(ledger_store::DB_FILE))
+        rusqlite::Connection::open(dir.join(ledger_store::db_file()))
             .unwrap()
             .query_row(
                 "SELECT name FROM accounts WHERE id = ?",
@@ -3120,7 +3123,7 @@ fn rename_account_changes_only_the_name_defect_15() {
     assert_eq!(reopened.ledger().chart().get(rent).unwrap().name, "Rent");
     assert_eq!(figures_but_names(reopened.ledger()), figures);
     drop(reopened);
-    let _ = std::fs::remove_file(dir.join(ledger_store::DB_FILE));
+    let _ = std::fs::remove_file(dir.join(ledger_store::db_file()));
     let rebuilt = Store::open(&dir).unwrap();
     assert_eq!(rebuilt.ledger().chart().get(rent).unwrap().name, "Rent");
     assert_eq!(projection_but_names(&dir), rows);
@@ -3159,7 +3162,7 @@ fn a_journaled_rename_replays_past_the_command_rules() {
         )
         .unwrap();
         drop(w);
-        let _ = std::fs::remove_file(dir.join(ledger_store::DB_FILE));
+        let _ = std::fs::remove_file(dir.join(ledger_store::db_file()));
         let store = Store::open(&dir);
         assert_eq!(store.is_ok(), opens, "{name:?}");
         let store = store.unwrap();
@@ -3181,7 +3184,7 @@ fn a_journaled_rename_replays_past_the_command_rules() {
     )
     .unwrap();
     drop(w);
-    let _ = std::fs::remove_file(dir.join(ledger_store::DB_FILE));
+    let _ = std::fs::remove_file(dir.join(ledger_store::db_file()));
     assert!(Store::open(&dir).is_err());
 }
 
@@ -3207,8 +3210,9 @@ fn tax_policy(store: &mut Store, value: Option<&str>) {
 /// expense account that isn't a header is refused without one, journaling
 /// nothing, and created with one as account.added then account.tax_set;
 /// a needed category can't be cleared; the accounts the engine creates
-/// for a control role are never refused. The first setting of the key
-/// declares the feature require_tax_category, once.
+/// for a control role are never refused. Setting the key needs the feature
+/// require_tax_category, which new books declared as they were created:
+/// the setting journals only itself.
 #[test]
 fn the_tax_category_policy_refuses_only_what_it_says() {
     let dir = test_dir("tax-policy");
@@ -3224,12 +3228,8 @@ fn the_tax_category_policy_refuses_only_what_it_says() {
         .lines()
         .map(|l| serde_json::from_str(l).unwrap())
         .collect();
-    assert_eq!(new[0]["type"], "journal.format_set");
-    assert_eq!(
-        new[0]["payload"],
-        serde_json::json!({"format": 2, "features": ["require_tax_category"]})
-    );
-    assert_eq!(new.last().unwrap()["type"], "settings.set");
+    assert_eq!(new.len(), 1);
+    assert_eq!(new[0]["type"], "settings.set");
     for (code, t, header, tax, refused) in [
         ("6160", AccountType::Expense, false, None, true),
         ("4100", AccountType::Revenue, false, None, true),
@@ -3375,7 +3375,7 @@ fn a_journaled_clear_replays_under_refuse() {
     )
     .unwrap();
     drop(w);
-    let _ = std::fs::remove_file(dir.join(ledger_store::DB_FILE));
+    let _ = std::fs::remove_file(dir.join(ledger_store::db_file()));
     let store = Store::open(&dir).unwrap();
     store.verify().unwrap();
     assert!(
@@ -3646,7 +3646,7 @@ fn books_written_under_p3_keep_their_names() {
         ]
     );
     drop(store);
-    let _ = std::fs::remove_file(dir.join(ledger_store::DB_FILE));
+    let _ = std::fs::remove_file(dir.join(ledger_store::db_file()));
     let rebuilt = Store::open(&dir).unwrap();
     assert_eq!(chart_of(rebuilt.ledger()), want);
     drop(rebuilt);
@@ -3683,10 +3683,10 @@ fn a_new_accounts_name_is_journaled_trimmed() {
     assert_eq!(store.ledger().chart().get(id).unwrap().name, "Hosting");
     let live = store.ledger().clone();
     drop(store);
-    let _ = std::fs::remove_file(dir.join(ledger_store::DB_FILE));
+    let _ = std::fs::remove_file(dir.join(ledger_store::db_file()));
     let reopened = Store::open(&dir).unwrap();
     assert!(live.differs_from(reopened.ledger()).is_empty());
-    let conn = rusqlite::Connection::open(dir.join(ledger_store::DB_FILE)).unwrap();
+    let conn = rusqlite::Connection::open(dir.join(ledger_store::db_file())).unwrap();
     let name: String = conn
         .query_row("SELECT name FROM accounts WHERE id = ?", [id as i64], |r| {
             r.get(0)

@@ -20,8 +20,8 @@ use ledger_core::{AccountType, Currency, Money, Side};
 use ledger_store::format::{EVENT_TYPES, FORMAT_SET, KNOWN_FEATURES};
 use ledger_store::journal::{canonical_json, sha256_hex};
 use ledger_store::{
-    DB_FILE, JOURNAL_FILE, JournalFormat, JournalWriter, SUPPORTED_JOURNAL_FORMAT, Snapshot, Store,
-    StoreError,
+    JOURNAL_FILE, JournalFormat, JournalWriter, SUPPORTED_JOURNAL_FORMAT, Snapshot, Store,
+    StoreError, db_file,
 };
 use rust_decimal::Decimal;
 use serde_json::json;
@@ -57,9 +57,11 @@ fn test_dir(name: &str) -> TestDir {
     TestDir(dir)
 }
 
-/// Books with one posted entry, closed again.
+/// Books with one posted entry, closed again: in journal format 1, as
+/// every version before the format gate wrote them (this version's own
+/// declare its format as they are created).
 fn books(dir: &Path) {
-    let mut store = Store::create(dir, Currency::USD).unwrap();
+    let mut store = Store::create_in_format(dir, Currency::USD, &JournalFormat::default()).unwrap();
     let cash = store
         .add_account("1000", "Cash", AccountType::Asset, None, false)
         .unwrap();
@@ -177,12 +179,12 @@ fn old_reader_gets_newer_journal() {
                 ),
             ],
         )[0];
-        std::fs::remove_file(dir.join(DB_FILE)).unwrap();
+        std::fs::remove_file(dir.join(db_file())).unwrap();
         let journal = std::fs::read(dir.join(JOURNAL_FILE)).unwrap();
 
         assert_newer(Store::open(&dir), seq, line_type, need, true);
         assert!(
-            !dir.join(DB_FILE).exists(),
+            !dir.join(db_file()).exists(),
             "a refused open rebuilt the database"
         );
         assert_eq!(std::fs::read(dir.join(JOURNAL_FILE)).unwrap(), journal);
@@ -746,7 +748,7 @@ fn a_bad_complete_line_before_a_torn_tail_leaves_the_journal_as_it_was() {
         append_raw(dir, b"{\"seq\":");
         let path = dir.join(JOURNAL_FILE);
         let before = std::fs::read(&path).unwrap();
-        let had_db = dir.join(ledger_store::DB_FILE).exists();
+        let had_db = dir.join(ledger_store::db_file()).exists();
         assert!(Store::open(dir).is_err(), "{}", dir.display());
         assert_eq!(std::fs::read(&path).unwrap(), before, "{}", dir.display());
         let set_aside: Vec<_> = std::fs::read_dir(dir)
@@ -756,7 +758,7 @@ fn a_bad_complete_line_before_a_torn_tail_leaves_the_journal_as_it_was() {
             .collect();
         assert!(set_aside.is_empty(), "{set_aside:?}");
         assert_eq!(
-            dir.join(ledger_store::DB_FILE).exists(),
+            dir.join(ledger_store::db_file()).exists(),
             had_db,
             "no database made for books that can't open"
         );
@@ -885,16 +887,16 @@ fn read_journal_and_format_gives_every_line_and_the_format() {
 }
 
 /// P3's journal extensions (rules.md B-27; plan D-39): each is announced
-/// by a feature this version knows, declared once, just before the first
-/// line that needs it, with the features in force kept: `account_renamed`
-/// before the first `account.renamed`, `require_tax_category` before the
-/// first `settings.set` naming `policy.require_tax_category`. A reader
-/// whose features don't include it (every earlier version: none) stops at
-/// the declaration as newer, never at the line, and never calls it
-/// corrupt; books that never use either stay format 1 or 2 with no
-/// feature.
+/// by a feature this version knows, `account_renamed` for an
+/// `account.renamed`, `require_tax_category` for a `settings.set` naming
+/// `policy.require_tax_category`. Books an older version made (books():
+/// format 1, nothing declared) refuse both, journaling nothing, until the
+/// owner's format upgrade declares this version's whole format at once;
+/// then both are taken, under that one declaration. A reader whose
+/// features don't include them (every earlier version: none) stops at the
+/// declaration as newer, never at the line, and never calls it corrupt.
 #[test]
-fn p3_features_are_declared_once_before_the_first_line_that_needs_them() {
+fn p3_features_wait_for_the_upgrade_and_are_declared_once() {
     for f in ["account_renamed", "require_tax_category"] {
         assert!(KNOWN_FEATURES.contains(&f), "{f}");
     }
@@ -902,26 +904,35 @@ fn p3_features_are_declared_once_before_the_first_line_that_needs_them() {
     books(&dir);
     let mut store = Store::open(&dir).unwrap();
     assert!(store.journal_format().features.is_empty());
+    let policy = || ledger_core::settings::Change {
+        key: "policy.require_tax_category".into(),
+        value: Some(json!("refuse")),
+    };
+    let source = ledger_core::settings::Source {
+        decided_by: "Owner".into(),
+        decided_on: NaiveDate::from_ymd_opt(2026, 10, 20).unwrap(),
+        citation: None,
+        note: None,
+    };
+    let head = store.head();
+    let waits = |r: Result<(), StoreError>, need: &str| match r {
+        Err(StoreError::FormatUpgradePending { need: n }) => assert_eq!(n, need),
+        other => panic!("expected FormatUpgradePending, got {other:?}"),
+    };
+    waits(
+        store.rename_account(1, "Business Checking", None),
+        "the journal feature account_renamed",
+    );
+    waits(
+        store.change_settings(&[policy()], &source).map(|_| ()),
+        "the journal feature require_tax_category",
+    );
+    assert_eq!(store.head(), head, "refused whole");
+    assert!(store.upgrade_format().unwrap().is_some());
     store.rename_account(1, "Business Checking", None).unwrap();
     store.rename_account(1, "Checking", None).unwrap();
-    store
-        .change_settings(
-            &[ledger_core::settings::Change {
-                key: "policy.require_tax_category".into(),
-                value: Some(json!("refuse")),
-            }],
-            &ledger_core::settings::Source {
-                decided_by: "Owner".into(),
-                decided_on: NaiveDate::from_ymd_opt(2026, 10, 20).unwrap(),
-                citation: None,
-                note: None,
-            },
-        )
-        .unwrap();
-    assert_eq!(
-        store.journal_format().features,
-        ["account_renamed", "require_tax_category"]
-    );
+    store.change_settings(&[policy()], &source).unwrap();
+    assert_eq!(*store.journal_format(), ledger_store::format::current());
     drop(store);
     let text = std::fs::read_to_string(dir.join(JOURNAL_FILE)).unwrap();
     let lines: Vec<serde_json::Value> = text
@@ -933,23 +944,19 @@ fn p3_features_are_declared_once_before_the_first_line_that_needs_them() {
         .map(|l| (l["type"].as_str().unwrap(), l["payload"].clone()))
         .filter(|(t, _)| matches!(*t, FORMAT_SET | "account.renamed" | "settings.set"))
         .collect();
+    let current = ledger_store::format::current();
     assert_eq!(kinds[0].0, FORMAT_SET);
     assert_eq!(
         kinds[0].1,
-        json!({"format": 2, "features": ["account_renamed"]})
+        json!({"format": current.format, "features": current.features})
     );
     assert_eq!(kinds[1].0, "account.renamed");
     assert_eq!(kinds[2].0, "account.renamed");
-    assert_eq!(kinds[3].0, FORMAT_SET);
-    assert_eq!(
-        kinds[3].1,
-        json!({"format": 2, "features": ["account_renamed", "require_tax_category"]})
-    );
-    assert_eq!(kinds[4].0, "settings.set");
-    assert_eq!(kinds.len(), 5);
+    assert_eq!(kinds[3].0, "settings.set");
+    assert_eq!(kinds.len(), 4);
     // An earlier reader knows no feature (P2: KNOWN_FEATURES was empty),
-    // so the gate stops it at the first declaration, before the rename:
-    // the gate's refusal of a feature it doesn't know is pinned by
+    // so the gate stops it at the declaration, before the rename: the
+    // gate's refusal of a feature it doesn't know is pinned by
     // an_unknown_feature_before_a_rename_is_newer_at_the_declaration.
     // This version opens them, in the writer and the viewer.
     let store = Store::open(&dir).unwrap();
@@ -980,7 +987,7 @@ fn an_unknown_feature_before_a_rename_is_newer_at_the_declaration() {
             ),
         ],
     );
-    let _ = std::fs::remove_file(dir.join(DB_FILE));
+    let _ = std::fs::remove_file(dir.join(db_file()));
     match Store::open(&dir) {
         Err(StoreError::NewerJournal { seq, need, .. }) => {
             assert_eq!(seq, seqs[0]);
@@ -1034,33 +1041,41 @@ fn lines(dir: &Path) -> Vec<serde_json::Value> {
         .collect()
 }
 
-/// P3 (defect 9; rules.md B-27): the first daily schedule declares journal
-/// feature schedule_convention, on the line before its schedule.registered,
-/// which carries convention "daily". A version before P3 knew no features,
-/// so it stops at that declaration (NewerJournal; format.rs's
-/// an_older_reader_stops_at_p3s_features), never reading the schedule as
-/// equal months. This version reads it back, posts by the day, and
-/// verifies; a second daily schedule declares nothing more.
+/// P3 (defect 9; rules.md B-27, D-39): a daily schedule's
+/// schedule.registered, which carries convention "daily", needs journal
+/// feature schedule_convention. Books an older version made (books():
+/// format 1) refuse one, journaling nothing, until the owner's format
+/// upgrade, whose one declaration is on the line before it. A version
+/// before P3 knew no features, so it stops at that declaration
+/// (NewerJournal; format.rs's an_older_reader_stops_at_p3s_features),
+/// never reading the schedule as equal months. This version reads it back,
+/// posts by the day, and verifies; a second daily schedule declares
+/// nothing more.
 #[test]
-fn the_first_daily_schedule_declares_its_feature_and_an_older_reader_stops_there() {
+fn a_daily_schedule_waits_for_its_feature_and_an_older_reader_stops_there() {
     let dir = test_dir("daily-feature");
     let accounts = schedule_books(&dir);
     let mut store = Store::open(&dir).unwrap();
-    let id = store
-        .register_schedule(insurance(
-            accounts,
-            day(2026, 3, 15),
-            ledger_core::ScheduleConvention::Daily,
-        ))
-        .unwrap();
+    let daily = |start| insurance(accounts, start, ledger_core::ScheduleConvention::Daily);
+    let head = store.head();
+    match store.register_schedule(daily(day(2026, 3, 15))) {
+        Err(StoreError::FormatUpgradePending { need }) => {
+            assert_eq!(need, "the journal feature schedule_convention")
+        }
+        other => panic!("expected FormatUpgradePending, got {other:?}"),
+    }
+    assert_eq!(store.head(), head, "refused whole");
+    store.upgrade_format().unwrap();
+    let id = store.register_schedule(daily(day(2026, 3, 15))).unwrap();
     let journal = lines(&dir);
     let n = journal.len();
     assert_eq!(journal[n - 1]["type"], "schedule.registered");
     assert_eq!(journal[n - 1]["payload"]["convention"], "daily");
     assert_eq!(journal[n - 2]["type"], FORMAT_SET);
+    let current = ledger_store::format::current();
     assert_eq!(
         journal[n - 2]["payload"],
-        json!({"format": 2, "features": ["schedule_convention"]})
+        json!({"format": current.format, "features": current.features})
     );
     store.run_schedules(day(2026, 5, 31)).unwrap();
     store
@@ -1152,7 +1167,7 @@ fn an_unknown_schedule_convention_is_newer_not_corrupt() {
         &dir,
         &[("schedule.registered", registered(json!("weekly")))],
     )[0];
-    std::fs::remove_file(dir.join(DB_FILE)).unwrap();
+    std::fs::remove_file(dir.join(db_file())).unwrap();
     for got in [Store::open(&dir).err(), Snapshot::load(&dir).err()] {
         match got {
             Some(StoreError::NewerJournal { seq: s, need, .. }) => {
@@ -1166,20 +1181,21 @@ fn an_unknown_schedule_convention_is_newer_not_corrupt() {
     let accounts2 = schedule_books(&dir);
     assert_eq!(accounts2, accounts);
     append(&dir, &[("schedule.registered", registered(json!(7)))]);
-    std::fs::remove_file(dir.join(DB_FILE)).unwrap();
+    std::fs::remove_file(dir.join(db_file())).unwrap();
     assert_corrupt(Store::open(&dir));
 }
 
 /// P3 (R3; rules.md B-27): a schedule month reversed within its month is
-/// posted again only after journal feature month_reposting is declared
+/// posted again only in books that declare journal feature month_reposting
 /// (an older version would refuse the second schedule.posted as posted
-/// twice), and the books replay to the same ledger. A month reversed after
-/// it ended is left by the run, listed with why (it would count twice until
-/// the reversal), and declares nothing. Hand check: equal months of 100.00
+/// twice): books an older version made wait for the format upgrade, and
+/// the books replay to the same ledger. A month reversed after it ended is
+/// left by the run, listed with why (it would count twice until the
+/// reversal), and journals nothing. Hand check: equal months of 100.00
 /// from 2026-03-01; March posted, reversed on Mar 31, run again: one
 /// March, 100.00; April posted, reversed on May 2: April held.
 #[test]
-fn a_schedule_month_posted_again_declares_month_reposting_and_replays() {
+fn a_schedule_month_posted_again_waits_for_month_reposting_and_replays() {
     let dir = test_dir("schedule-repost");
     let accounts = schedule_books(&dir);
     let mut store = Store::open(&dir).unwrap();
@@ -1194,12 +1210,22 @@ fn a_schedule_month_posted_again_declares_month_reposting_and_replays() {
     store
         .reverse_entry(mar, day(2026, 3, 31), "posted early")
         .unwrap();
+    // Books an older version made (books(): format 1) wait for the
+    // upgrade before March posts again; the owner's go-ahead declares it.
     assert!(store.journal_format().features.is_empty());
+    let head = store.head();
+    assert!(matches!(
+        store.run_schedules(day(2026, 3, 31)),
+        Err(StoreError::FormatUpgradePending { need }) if need == "the journal feature month_reposting"
+    ));
+    assert_eq!(store.head(), head, "refused whole");
+    store.upgrade_format().unwrap();
     let posted = store.run_schedules(day(2026, 3, 31)).unwrap();
     assert_eq!(posted.len(), 1);
-    assert_eq!(
-        store.journal_format().features,
-        vec![ledger_store::format::MONTH_REPOSTING.to_string()]
+    assert!(
+        store
+            .journal_format()
+            .has_feature(ledger_store::format::MONTH_REPOSTING)
     );
     let apr = store.post_schedule_month(id, day(2026, 4, 30)).unwrap();
     store
@@ -1228,18 +1254,19 @@ fn a_schedule_month_posted_again_declares_month_reposting_and_replays() {
     );
 }
 
-/// P3 review round 2 (the format-upgrade gate refuses a feature until the
-/// owner consents): every command that needs a journal feature decides it,
-/// and is refused, before its first journaled line, so a refused feature
-/// journals nothing: never a depreciation entry without the
+/// P3 review round 2, and the format-upgrade gate (D-39): in books an
+/// older version wrote, every command that needs a journal feature is
+/// refused (FormatUpgradePending) before its first journaled line, so the
+/// refusal journals nothing: never a depreciation entry without the
 /// `asset.depreciation_posted` that makes it the period's run, nor a
 /// disposal's final depreciation without its line. Each command: a period
 /// run again after its run was reversed (month_reposting), a disposal whose
 /// month's run was reversed (its final depreciation, month_reposting), a
 /// daily schedule (schedule_convention), and a schedule month posted again
-/// (month_reposting). Taken again, each journals and the books verify.
+/// (month_reposting). After the owner's upgrade each journals, and the
+/// books verify.
 #[test]
-fn a_refused_journal_feature_journals_nothing() {
+fn a_write_waiting_for_the_upgrade_journals_nothing() {
     let dir = test_dir("feature-refused");
     let accounts = schedule_books(&dir);
     let mut store = Store::open(&dir).unwrap();
@@ -1292,12 +1319,15 @@ fn a_refused_journal_feature_journals_nothing() {
     store
         .reverse_entry(jan, day(2026, 1, 31), "doubted")
         .unwrap();
+    // Books as an older version made them (format 1, books()): nothing
+    // declared, and everything above needs nothing new.
     assert!(store.journal_format().features.is_empty());
 
-    store.refuse_new_features(true);
     let head = store.head();
     let refused = |r: Result<(), StoreError>, what: &str| match r {
-        Err(StoreError::FormatRefused(why)) => assert!(why.contains("feature"), "{what}: {why}"),
+        Err(StoreError::FormatUpgradePending { need }) => {
+            assert!(need.starts_with("the journal feature "), "{what}: {need}")
+        }
         other => panic!("{what}: {other:?}"),
     };
     refused(
@@ -1333,7 +1363,7 @@ fn a_refused_journal_feature_journals_nothing() {
     });
     store.verify().unwrap();
 
-    store.refuse_new_features(false);
+    assert!(store.upgrade_format().unwrap().is_some());
     assert!(
         store
             .run_depreciation(asset, "2026-01")
@@ -1347,9 +1377,6 @@ fn a_refused_journal_feature_journals_nothing() {
     store
         .dispose_asset(sold, day(2026, 3, 15), usd(900_000), cash, gain)
         .unwrap();
-    assert_eq!(
-        store.journal_format().features,
-        vec![ledger_store::format::MONTH_REPOSTING.to_string()]
-    );
+    assert_eq!(*store.journal_format(), ledger_store::format::current());
     store.verify().unwrap();
 }

@@ -41,6 +41,12 @@
 //!      however long that takes.
 //!  11. The owner's close while restarting is refused (the restart is
 //!      already under way; close again once it is done).
+//!  12. The owner's go-ahead for a format upgrade (consent_format_upgrade,
+//!      its passphrase given) is handed to the open server's admin socket,
+//!      which checks the passphrase and does it (plan 3.9, D-39); the host
+//!      reads no books, and answers with what the server said, or that it
+//!      may or may not have been done. Refused while the books open or
+//!      close; the host keeps serving leases meanwhile.
 //! ```
 
 use crate::knobs::{FLAG, Knobs};
@@ -550,15 +556,17 @@ impl Host {
                                 },
                             });
                         }
-                        Event::Intent(intent, answer) => {
-                            let (msg, closes) = self.intent(intent);
-                            let _ = answer.send(msg);
-                            if let Some(reason) = closes {
-                                self.begin_close(reason);
-                                idle_at = None;
-                                if self.server_pid.is_none() {
-                                    return self.finish(connections, Ending::Closed).await;
-                                }
+                        Event::Intent(Intent::ConsentFormatUpgrade { book, passphrase }, answer) => {
+                            self.consent(book, passphrase.unwrap_or_default(), answer);
+                        }
+                        Event::Intent(Intent::Close, answer) => {
+                            let _ = answer.send(HostMsg::Done {
+                                detail: Some("the books are closing".into()),
+                            });
+                            self.begin_close(Reason::ClosedByOwner);
+                            idle_at = None;
+                            if self.server_pid.is_none() {
+                                return self.finish(connections, Ending::Closed).await;
                             }
                         }
                         Event::ServerReady => {
@@ -682,20 +690,39 @@ impl Host {
         Ok(())
     }
 
-    /// An owner intent: the answer, and whether it closes the books.
-    fn intent(&mut self, intent: Intent) -> (HostMsg, Option<Reason>) {
-        match intent {
-            Intent::Close => (
-                HostMsg::Done {
-                    detail: Some("the books are closing".into()),
-                },
-                Some(Reason::ClosedByOwner),
-            ),
-            Intent::ConsentFormatUpgrade { .. } => (
-                HostMsg::Refused("no books are waiting for a format upgrade".into()),
-                None,
-            ),
+    /// The owner's go-ahead for a format upgrade (INVARIANT 12): handed to
+    /// the server's admin socket, off the loop (a backup comes first, and
+    /// may take a while); `answer` gets what came of it.
+    fn consent(
+        &self,
+        book: String,
+        passphrase: ledger_mcp::admin::Passphrase,
+        answer: oneshot::Sender<HostMsg>,
+    ) {
+        if !matches!(self.phase, Phase::Open) {
+            let _ = answer.send(HostMsg::Refused(
+                "the books are closing: nothing was done".into(),
+            ));
+            return;
         }
+        if !self.ready {
+            let _ = answer.send(HostMsg::Refused(
+                "the books are still opening: nothing was done; try again once they are open"
+                    .into(),
+            ));
+            return;
+        }
+        let socket = self.run.join(ledger_mcp::local::ADMIN_SOCKET);
+        tokio::spawn(async move {
+            let msg = tokio::task::spawn_blocking(move || consented(&socket, book, passphrase))
+                .await
+            .unwrap_or_else(|_| {
+                HostMsg::Uncertain(
+                    "the books' host stopped asking the books server, so it may or may not have been done: `wanderbooks books list` says whether the books still wait for it".into(),
+                )
+            });
+            let _ = answer.send(msg);
+        });
     }
 
     /// Tell every lease why it ends, and end it (INVARIANT 5).
@@ -734,6 +761,30 @@ impl Host {
         connections.close();
         let _ = tokio::time::timeout(Duration::from_secs(2), connections.wait()).await;
         Ok(ending)
+    }
+}
+
+/// Ask the server on `socket` to upgrade the books `book` with the
+/// owner's passphrase (INVARIANT 12): what came of it, in the lease
+/// socket's words.
+fn consented(socket: &Path, book: String, passphrase: ledger_mcp::admin::Passphrase) -> HostMsg {
+    use ledger_mcp::admin::{CallError, Request, Response};
+    match ledger_mcp::admin::call(
+        socket,
+        Request::UpgradeFormat {
+            id: book,
+            passphrase,
+        },
+    ) {
+        Ok(Response::FormatUpgraded(u)) => HostMsg::Done {
+            detail: Some(crate::commands::upgraded_lines(&u).join("\n")),
+        },
+        Ok(Response::Refused(why)) => HostMsg::Refused(why),
+        Ok(_) => HostMsg::Uncertain(
+            "the books server answered oddly, so it may or may not have been done: `wanderbooks books list` says whether the books still wait for it".into(),
+        ),
+        Err(CallError::NotSent(why)) => HostMsg::Refused(format!("{why}: nothing was done")),
+        Err(CallError::Unknown(why)) => HostMsg::Uncertain(why),
     }
 }
 

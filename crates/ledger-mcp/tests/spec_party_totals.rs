@@ -361,7 +361,25 @@ const CHART: &[(&str, &str, &str)] = &[
 /// financing 2100; the chart; both members and the card's issuer in the
 /// directory.
 fn books(name: &str) -> Mcp {
+    books_in(name, false)
+}
+
+/// [`books`], as P2 left them when `p2`: journal format 2 with none of
+/// P3's features, books an older version wrote, waiting for their format
+/// upgrade (rules.md B-27).
+fn books_in(name: &str, p2: bool) -> Mcp {
     let dir = test_dir(name);
+    if p2 {
+        ledger_store::Store::create_in_format(
+            &dir.join("books-data"),
+            ledger_core::Currency::USD,
+            &ledger_store::JournalFormat {
+                format: 2,
+                features: Vec::new(),
+            },
+        )
+        .unwrap();
+    }
     let toml = books_toml(
         &dir,
         "Fernhill Labs LLC",
@@ -376,6 +394,25 @@ fn books(name: &str) -> Mcp {
     m.add_party("Harbor Bank", &["financial_institution"]);
     m.books_dir = Some(dir);
     m
+}
+
+impl Mcp {
+    /// The owner's go-ahead, as the app gives it (ledger-gui owner.rs,
+    /// after the passphrase and a verified backup; no tool can): the
+    /// server stopped, the books moved to this version's format, and
+    /// served again.
+    fn upgraded(mut self) -> Mcp {
+        let dir = self.books_dir.take().expect("books_dir");
+        drop(self);
+        ledger_store::Store::open(&dir.join("books-data"))
+            .unwrap()
+            .upgrade_format()
+            .unwrap()
+            .expect("P2's books wait for the upgrade");
+        let mut m = Mcp::start(&dir, &dir.join("wanderbooks.toml"));
+        m.books_dir = Some(dir);
+        m
+    }
 }
 
 /// A party's part of an entry as books.get_entry gives it: (resolved,
@@ -560,7 +597,8 @@ fn defect14_party_totals_take_a_basis() {
 
 /// Defect 24 over the MCP: `books.update_party` `creditor_of` names the
 /// liabilities the company owes a party itself on (journaled as
-/// party.creditor_set, the journal's feature declared first), replaces
+/// party.creditor_set, under the journal feature the books declared when
+/// they were created, so nothing is declared on the way), replaces
 /// the list, refuses what isn't a liability with nothing journaled; and a
 /// fee on the issuer's own card then reads neither, so the issuer is paid
 /// what the card payment paid, once.
@@ -595,8 +633,8 @@ fn defect24_creditor_of_round_trips_and_a_card_fee_is_not_a_payment() {
     assert_eq!(m.count("party.creditor_set"), 1);
     assert_eq!(
         m.count("journal.format_set"),
-        before + 1,
-        "the feature declared once"
+        before,
+        "nothing declared on the way"
     );
     // The same list again changes nothing.
     let journal = m.journal();
@@ -633,31 +671,40 @@ fn defect24_creditor_of_round_trips_and_a_card_fee_is_not_a_payment() {
     );
     assert_eq!(p["creditor_of"], json!([]));
     assert_eq!(m.count("party.creditor_set"), 4);
-    assert_eq!(m.count("journal.format_set"), before + 1);
+    assert_eq!(m.count("journal.format_set"), before);
     let p = m.read_only("books.party", json!({"party": "Tobin Harlow"}));
     assert_eq!(p["party"]["creditor_of"], json!(["2100"]));
     assert_eq!(m.ok("books.verify", json!({}))["status"], "ok");
 }
 
-/// rules.md B-27: `books.update_party` declares the `party_creditors`
-/// feature before the first line it writes, never between them: a name
-/// change with the first creditor is journaled as the declaration, then
-/// the name, then the creditor (a refused format upgrade then leaves
-/// nothing half done).
+/// rules.md B-27: `books.update_party` asks for the `party_creditors`
+/// feature before the first line it writes, never between them. In books
+/// waiting for their format upgrade (P2's), a name change with the first
+/// creditor is refused whole, journaling nothing (never the notes changed
+/// and the creditor not); once the owner upgrades them, as in books this
+/// version made, it journals the change, then the creditor, and declares
+/// nothing.
 #[test]
-fn update_party_declares_the_creditor_feature_before_its_first_line() {
-    let mut m = books("feature-first");
-    let start = m.journal_types().len();
-    let p = m.ok(
-        "books.update_party",
-        json!({"party": "Harbor Bank", "notes": "the card's issuer", "creditor_of": ["2050"]}),
+fn update_party_asks_for_the_creditor_feature_before_its_first_line() {
+    let change =
+        json!({"party": "Harbor Bank", "notes": "the card's issuer", "creditor_of": ["2050"]});
+    let mut m = books_in("feature-first", true);
+    let why = m.refuse("books.update_party", change.clone());
+    assert!(
+        why.starts_with("format_upgrade_pending:") && why.contains("party_creditors"),
+        "{why}"
     );
-    assert_eq!(p["creditor_of"], json!(["2050"]));
-    assert_eq!(
-        m.journal_types()[start..].to_vec(),
-        ["journal.format_set", "party.updated", "party.creditor_set"],
-    );
-    assert_eq!(m.ok("books.verify", json!({}))["status"], "ok");
+    assert_eq!(m.count("party.updated"), 0, "nothing half done");
+    for mut m in [m.upgraded(), books("feature-first-new")] {
+        let start = m.journal_types().len();
+        let p = m.ok("books.update_party", change.clone());
+        assert_eq!(p["creditor_of"], json!(["2050"]));
+        assert_eq!(
+            m.journal_types()[start..].to_vec(),
+            ["party.updated", "party.creditor_set"],
+        );
+        assert_eq!(m.ok("books.verify", json!({}))["status"], "ok");
+    }
 }
 
 /// What `books.post_entry` previews is what it posts: each party's

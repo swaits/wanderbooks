@@ -136,6 +136,13 @@ enum Book {
         exports: ledger_store::exports::Exports,
         /// Its backups (backup.rs).
         backups: Arc<crate::backup::Backups>,
+        /// The format upgrade it waits for, if any (plan 3.9, D-39): read
+        /// from its journal as it opened, and cleared by the upgrade (only
+        /// the upgrade moves an open book's format).
+        waiting: Arc<Mutex<Option<ledger_store::FormatUpgrade>>>,
+        /// Its projection database's file, and other schemas' beside it,
+        /// by name, as it opened (`wanderbooks doctor` says them).
+        database: (String, Vec<String>),
     },
     /// Not opened, with why (INVARIANT 3).
     Failed(String),
@@ -289,6 +296,8 @@ impl Books {
         }
         let mut live = Live::own();
         live.sync(store.ledger().settings(), store.base_currency().code());
+        let waiting = Arc::new(Mutex::new(store.journal_format().upgrade()));
+        let database = (store.database_file(), store.other_databases());
         let layout = Layout::Root(self.root.path().to_path_buf());
         let access = Arc::new(
             AccessLog::open(store.data_dir())
@@ -347,6 +356,8 @@ impl Books {
             uploads,
             exports,
             backups,
+            waiting,
+            database,
         })
     }
 
@@ -385,6 +396,22 @@ impl Books {
                         problem: match book {
                             Book::Open { .. } => None,
                             Book::Failed(why) => Some(why.clone()),
+                        },
+                        format_upgrade: match book {
+                            Book::Open { waiting, .. } => waiting
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .as_ref()
+                                .map(admin::FormatWaiting::from),
+                            Book::Failed(_) => None,
+                        },
+                        database: match book {
+                            Book::Open { database, .. } => Some(database.0.clone()),
+                            Book::Failed(_) => None,
+                        },
+                        other_databases: match book {
+                            Book::Open { database, .. } => database.1.clone(),
+                            Book::Failed(_) => Vec::new(),
                         },
                     })
                     .collect(),
@@ -490,6 +517,7 @@ impl Books {
                 confirmed,
                 expect_head,
             } => self.restore(id, source, replace, confirmed, expect_head),
+            Request::UpgradeFormat { id, passphrase } => self.upgrade_format(id, &passphrase),
             Request::BackUpNow { id, new_disk } => {
                 let id = match BookId::parse(&id) {
                     Ok(id) => id,
@@ -655,6 +683,7 @@ impl Books {
                             settings_imported: r.settings_imported,
                             settings_ignored: r.settings_ignored,
                             source_lock_created: r.source_lock_created,
+                            format_upgraded: r.format_upgraded,
                             problem,
                         })
                     }
@@ -666,6 +695,74 @@ impl Books {
 }
 
 impl Books {
+    /// The owner's go-ahead for a format upgrade (plan 3.9, D-39; admin
+    /// INVARIANT 7): the owner passphrase checked (Argon2id, as the human
+    /// pages check it) before anything is done; then a verified backup
+    /// with the keys and the upgrade, under the books' lock
+    /// (backup::Backups::upgrade_format). Books already in this version's
+    /// format: nothing is done, and the answer says so.
+    fn upgrade_format(&self, id: String, passphrase: &admin::Passphrase) -> Response {
+        let id = match BookId::parse(&id) {
+            Ok(id) => id,
+            Err(e) => return Response::Refused(self.hide(e.to_string())),
+        };
+        let (backups, waiting) = match self.held().get(id.as_str()) {
+            Some(Book::Open {
+                backups, waiting, ..
+            }) => (backups.clone(), waiting.clone()),
+            Some(Book::Failed(why)) => {
+                return Response::Refused(format!("those books didn't open: {why}"));
+            }
+            None => {
+                return Response::Refused(format!(
+                    "there are no books called {:?}: `wanderbooks books list` lists them",
+                    id.as_str()
+                ));
+            }
+        };
+        let auth = match self.root.auth_dir() {
+            Ok(dir) => dir,
+            Err(e) => return Response::Refused(self.hide(e.to_string())),
+        };
+        match ledger_store::passphrase::verify(&auth, &passphrase.0) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Response::Refused(
+                    "that isn't the owner passphrase: nothing was changed".into(),
+                );
+            }
+            Err(e) => {
+                return Response::Refused(format!(
+                    "{}: nothing was changed",
+                    self.hide(e.to_string())
+                ));
+            }
+        }
+        let rt = tokio::runtime::Handle::current();
+        match rt.block_on(backups.upgrade_format()) {
+            Ok(done) => {
+                // The books are in this version's format now (or were).
+                *waiting.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                if let Some(up) = &done.upgrade {
+                    eprintln!(
+                        "wanderbooks server: the books {id} were upgraded to this version's journal format ({}), after a verified backup",
+                        up.adds().join(", ")
+                    );
+                }
+                Response::FormatUpgraded(admin::FormatUpgraded {
+                    id: id.to_string(),
+                    added: done.upgrade.map(|u| u.adds()).unwrap_or_default(),
+                    backup: done.backup.map(|b| admin::UpgradeBackup {
+                        commit: b.commit,
+                        head: b.head,
+                    }),
+                    head: done.head,
+                })
+            }
+            Err(why) => Response::Refused(self.hide(why)),
+        }
+    }
+
     /// Restore a backup (admin INVARIANT 4; ledger_store::root INVARIANT
     /// 7): a preview, or the books restored and opened. Books it replaces
     /// are let go first, and opened again if the restore fails.
@@ -2975,5 +3072,319 @@ mod tests {
             "{status}: {said}"
         );
         assert_eq!(bound(&books).len(), MAX_SESSIONS);
+    }
+
+    /// The owner passphrase the upgrade tests set.
+    const PASS: &str = "correct horse battery";
+
+    /// Books `id` as an older version wrote them (journal format 1), with
+    /// a chart, an entry and a vault key, held by the server.
+    fn old_books(books: &Books, id: &str) -> PathBuf {
+        let id = BookId::parse(id).unwrap();
+        let dir = books.root.book_dir(&id);
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+            .unwrap();
+        let mut s =
+            Store::create_in_format(&dir, ledger_core::Currency::USD, &Default::default()).unwrap();
+        let cash = s
+            .add_account("1000", "Cash", ledger_core::AccountType::Asset, None, false)
+            .unwrap();
+        let cap = s
+            .add_account(
+                "3000",
+                "Capital",
+                ledger_core::AccountType::Equity,
+                None,
+                false,
+            )
+            .unwrap();
+        let e = s
+            .create_entry(chrono::NaiveDate::from_ymd_opt(2026, 3, 1).unwrap(), "In")
+            .unwrap();
+        let m =
+            ledger_core::Money::new(rust_decimal::Decimal::from(500), ledger_core::Currency::USD);
+        s.add_line(e, cash, ledger_core::Side::Debit, m).unwrap();
+        s.add_line(e, cap, ledger_core::Side::Credit, m).unwrap();
+        s.post_entry(e).unwrap();
+        drop(s);
+        let keys = dir.join(ledger_store::root::KEYS_DIR);
+        std::fs::create_dir(&keys).unwrap();
+        std::fs::write(
+            keys.join(ledger_store::root::LEGACY_KEY_FILE),
+            "ab".repeat(32),
+        )
+        .unwrap();
+        books.hold(&id, books.open(&id));
+        dir
+    }
+
+    /// The books `id` as listed.
+    fn listed(books: &Books, id: &str) -> admin::BookStatus {
+        match books.admin(Request::List) {
+            Response::Books(list) => list.into_iter().find(|b| b.id == id).unwrap(),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// Ask for the upgrade of `id` with `pass`, off the runtime (as the
+    /// admin socket does).
+    async fn upgrade(books: &Arc<Books>, id: &str, pass: &str) -> Response {
+        let (books, id, pass) = (books.clone(), id.to_string(), pass.to_string());
+        tokio::task::spawn_blocking(move || {
+            books.admin(Request::UpgradeFormat {
+                id,
+                passphrase: admin::Passphrase(pass),
+            })
+        })
+        .await
+        .unwrap()
+    }
+
+    /// git, on the books' own archive: what it said.
+    fn archive_git(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .arg(format!("--git-dir={}", dir.join("archive.git").display()))
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        String::from_utf8(out.stdout).unwrap()
+    }
+
+    /// plan/served.md 3.9's `format_upgrade_waits_for_consent`, the
+    /// server's part: books an older version wrote are served on their old
+    /// format and listed as waiting; the go-ahead is refused without the
+    /// owner passphrase (checked before anything is done: no backup, no
+    /// line), and the books stay served as they were; with it, a backup of
+    /// the books as they were, their keys in it, is committed and proven,
+    /// then the whole format is declared in one line; asked again, nothing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn format_upgrade_waits_for_consent() {
+        let home = tempfile::tempdir().unwrap();
+        let books = books_in(home.path());
+        let dir = old_books(&books, "acme");
+        let journal = || std::fs::read(dir.join(ledger_store::JOURNAL_FILE)).unwrap();
+        let before = journal();
+        let waiting = listed(&books, "acme").format_upgrade.expect("it waits");
+        // The database file it uses: this version's schema's own.
+        assert_eq!(
+            listed(&books, "acme").database.as_deref(),
+            Some(ledger_store::db_file().as_str())
+        );
+        // Format 1 waits for this version's whole format: format 2 and
+        // every feature it knows.
+        let adds = ledger_store::JournalFormat::default()
+            .upgrade()
+            .unwrap()
+            .adds();
+        assert_eq!(adds[0], "journal format 2");
+        assert_eq!(waiting.format, 1);
+        assert_eq!(waiting.adds, adds);
+        // No passphrase set yet, then a wrong one, then none: refused,
+        // nothing done.
+        match upgrade(&books, "acme", PASS).await {
+            Response::Refused(why) => {
+                assert!(why.contains("no owner passphrase is set yet"), "{why}");
+                assert!(why.contains("nothing was changed"), "{why}");
+            }
+            other => panic!("{other:?}"),
+        }
+        let auth = books.root.auth_dir().unwrap();
+        ledger_store::passphrase::set(&auth, PASS, None).unwrap();
+        for wrong in ["not the passphrase at all", ""] {
+            match upgrade(&books, "acme", wrong).await {
+                Response::Refused(why) => {
+                    assert_eq!(why, "that isn't the owner passphrase: nothing was changed")
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        assert_eq!(journal(), before);
+        assert!(
+            !dir.join("archive.git").exists(),
+            "no backup before consent"
+        );
+        assert!(listed(&books, "acme").format_upgrade.is_some());
+        assert_eq!(books.held()["acme"].problem(), None, "still served");
+        // Books that don't exist, or didn't open.
+        assert!(matches!(
+            upgrade(&books, "nobody", PASS).await,
+            Response::Refused(_)
+        ));
+        // The go-ahead.
+        let done = match upgrade(&books, "acme", PASS).await {
+            Response::FormatUpgraded(u) => u,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(done.id, "acme");
+        assert_eq!(done.added, adds);
+        let backup = done.backup.clone().expect("backed up first");
+        let after = journal();
+        assert!(after.starts_with(&before));
+        let added: Vec<serde_json::Value> = String::from_utf8(after[before.len()..].to_vec())
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(added.len(), 1, "one line");
+        assert_eq!(added[0]["type"], "journal.format_set");
+        let c = ledger_store::format::current();
+        assert_eq!(
+            added[0]["payload"],
+            serde_json::json!({"format": c.format, "features": c.features})
+        );
+        assert_eq!(done.head.0, backup.head.0 + 1);
+        // The backup: the books as they were, keys and all, the latest
+        // commit of their archive.
+        assert_eq!(
+            archive_git(&dir, &["rev-parse", "HEAD"]).trim(),
+            backup.commit
+        );
+        assert_eq!(
+            archive_git(&dir, &["show", &format!("{}:journal.jsonl", backup.commit)]).as_bytes(),
+            before.as_slice()
+        );
+        assert_eq!(
+            archive_git(
+                &dir,
+                &["show", &format!("{}:keys/legacy.key", backup.commit)]
+            ),
+            "ab".repeat(32)
+        );
+        // Both on the backup record.
+        let record =
+            std::fs::read_to_string(ledger_store::ops::ops_dir(&dir).join(crate::backup::LOG_FILE))
+                .unwrap();
+        assert!(record.contains(r#""kind":"format_upgrade""#), "{record}");
+        assert!(record.contains(&backup.commit), "{record}");
+        assert!(
+            !ledger_store::ops::ops_dir(&dir)
+                .join("upgrade-check")
+                .exists()
+        );
+        // Waiting for nothing now; asked again, nothing is done.
+        assert_eq!(listed(&books, "acme").format_upgrade, None);
+        match upgrade(&books, "acme", PASS).await {
+            Response::FormatUpgraded(u) => {
+                assert!(u.added.is_empty() && u.backup.is_none(), "{u:?}");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(journal(), after);
+        // Books this version made wait for nothing, and asking for their
+        // upgrade changes nothing of them: not even a backup repository.
+        create(&books, "beta");
+        assert_eq!(listed(&books, "beta").format_upgrade, None);
+        let beta = books.root.book_dir(&BookId::parse("beta").unwrap());
+        match upgrade(&books, "beta", PASS).await {
+            Response::FormatUpgraded(u) => {
+                assert!(u.added.is_empty() && u.backup.is_none(), "{u:?}");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(!beta.join("archive.git").exists(), "nothing was changed");
+    }
+
+    /// The backup is trusted only once proven, and only the one just made:
+    /// an archive whose head names a branch other than the one a backup's
+    /// clone takes (a damaged archive) takes the new commit where no
+    /// clone finds it, so what is proven isn't what was made: nothing is
+    /// upgraded, and it is recorded. Once the archive is right, its latest
+    /// commit (which already holds the books) is proven and the upgrade
+    /// made.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn no_upgrade_unless_the_backup_just_made_is_proven() {
+        let home = tempfile::tempdir().unwrap();
+        let books = books_in(home.path());
+        let dir = old_books(&books, "acme");
+        ledger_store::passphrase::set(&books.root.auth_dir().unwrap(), PASS, None).unwrap();
+        let store = match &books.held()["acme"] {
+            Book::Open { store, .. } => store.clone(),
+            Book::Failed(why) => panic!("{why}"),
+        };
+        let (d, s) = (dir.clone(), store.clone());
+        let first = tokio::task::spawn_blocking(move || {
+            let git = ledger_store::backup::Git::find().unwrap();
+            let head = s.with_store(|s| s.head()).unwrap();
+            ledger_store::backup::commit(&git, &d, "acme", head).unwrap()
+        })
+        .await
+        .unwrap()
+        .expect("a first backup");
+        archive_git(&dir, &["symbolic-ref", "HEAD", "refs/heads/elsewhere"]);
+        // A second later: the commit made now, of the same files, isn't
+        // byte for byte the first (git dates commits to the second).
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        let before = std::fs::read(dir.join(ledger_store::JOURNAL_FILE)).unwrap();
+        match upgrade(&books, "acme", PASS).await {
+            Response::Refused(why) => {
+                assert!(why.contains("didn't prove whole"), "{why}");
+                assert!(why.contains("nothing was upgraded"), "{why}");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            std::fs::read(dir.join(ledger_store::JOURNAL_FILE)).unwrap(),
+            before
+        );
+        assert!(listed(&books, "acme").format_upgrade.is_some());
+        let record = || {
+            std::fs::read_to_string(ledger_store::ops::ops_dir(&dir).join(crate::backup::LOG_FILE))
+                .unwrap()
+        };
+        assert!(
+            record().contains(r#""why":"format_upgrade""#),
+            "the commit made: {}",
+            record()
+        );
+        assert!(record().contains(r#""ok":false"#), "{}", record());
+        // The archive put right: its latest commit holds the books.
+        archive_git(&dir, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+        match upgrade(&books, "acme", PASS).await {
+            Response::FormatUpgraded(u) => {
+                let b = u.backup.clone().expect("proven");
+                assert_eq!(b.commit, first.commit, "{u:?}");
+                assert_eq!(b.head, first.head);
+                assert_eq!(u.head.0, first.head.0 + 1);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(listed(&books, "acme").format_upgrade, None);
+    }
+
+    /// A backup that can't be made upgrades nothing: the books stay on
+    /// their old format, served and waiting, and the failure is recorded.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn no_upgrade_without_a_backup() {
+        let home = tempfile::tempdir().unwrap();
+        let books = books_in(home.path());
+        let dir = old_books(&books, "acme");
+        ledger_store::passphrase::set(&books.root.auth_dir().unwrap(), PASS, None).unwrap();
+        // A file no book keeps: the backup refuses it.
+        std::fs::write(dir.join(".gitattributes"), "* -text\n").unwrap();
+        let before = std::fs::read(dir.join(ledger_store::JOURNAL_FILE)).unwrap();
+        match upgrade(&books, "acme", PASS).await {
+            Response::Refused(why) => {
+                assert!(why.contains("couldn't be made"), "{why}");
+                assert!(why.contains("nothing was upgraded"), "{why}");
+                assert!(!why.contains(&home.path().display().to_string()), "{why}");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            std::fs::read(dir.join(ledger_store::JOURNAL_FILE)).unwrap(),
+            before
+        );
+        assert!(listed(&books, "acme").format_upgrade.is_some());
+        let record =
+            std::fs::read_to_string(ledger_store::ops::ops_dir(&dir).join(crate::backup::LOG_FILE))
+                .unwrap();
+        assert!(
+            record.contains(r#""kind":"format_upgrade","ok":false"#)
+                || (record.contains(r#""kind":"format_upgrade""#)
+                    && record.contains(r#""ok":false"#)),
+            "{record}"
+        );
     }
 }

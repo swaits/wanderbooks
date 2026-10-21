@@ -5,7 +5,9 @@
 //! written before tags existed, refusals journaling nothing, and corrupt
 //! `asset.serial_set` lines refused on open; and tax basis (B-25:
 //! `asset.tax_basis_set` {asset_id, rule, contributor_basis | null}, the
-//! v10 migration, corrupt payloads).
+//! v10 schema, corrupt payloads). A database at an older schema under this
+//! version's file name is rebuilt, never migrated (each schema keeps a file
+//! of its own: rules.md B-27, tests/schema_files.rs).
 //!
 //! Expectations come from the doc comments on `Store::set_asset_tag`,
 //! `Store::set_asset_serial`, `Store::open`, `Store::verify`,
@@ -14,7 +16,7 @@
 use chrono::NaiveDate;
 use ledger_core::{AccountType, AssetId, Currency, LedgerError, Money, NewAsset};
 use ledger_store::journal::read_and_verify_journal;
-use ledger_store::{DB_FILE, JOURNAL_FILE, JournalWriter, Store, StoreError};
+use ledger_store::{JOURNAL_FILE, JournalWriter, Store, StoreError, db_file};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
@@ -245,7 +247,7 @@ fn tags_and_serials_replay_on_reopen() {
 
     for rebuild in [false, true] {
         if rebuild {
-            std::fs::remove_file(dir.join(DB_FILE)).unwrap();
+            std::fs::remove_file(dir.join(db_file())).unwrap();
         }
         let s = Store::open(&dir).unwrap();
         s.verify().unwrap();
@@ -327,7 +329,7 @@ fn verify_passes_after_many_retags_and_serial_changes() {
 fn books_written_before_tags_open_and_verify() {
     let (dir, s, _, x, y) = fixture("older");
     drop(s);
-    let _ = std::fs::remove_file(dir.join(DB_FILE));
+    let _ = std::fs::remove_file(dir.join(db_file()));
     let mut s = Store::open(&dir).expect("older books still open");
     s.verify().unwrap();
     assert_eq!(tag_of(&s, x), None);
@@ -356,7 +358,7 @@ fn an_older_asset_registered_line_still_replays() {
     )
     .unwrap();
     drop(w);
-    let _ = std::fs::remove_file(dir.join(DB_FILE));
+    let _ = std::fs::remove_file(dir.join(db_file()));
     let mut s = Store::open(&dir).expect("older books still open");
     s.verify().unwrap();
     let old = y + 1;
@@ -372,12 +374,23 @@ fn an_older_asset_registered_line_still_replays() {
     assert_eq!(tag_of(&s, old).as_deref(), Some("FL-0001"));
 }
 
+/// Whether this version's database was kept aside (and rebuilt) as the
+/// books opened: `wanderbooks.v{N}.corrupt.*` beside it.
+fn kept_aside(dir: &Path) -> bool {
+    let stem = db_file().trim_end_matches(".db").to_string();
+    std::fs::read_dir(dir).unwrap().flatten().any(|e| {
+        e.file_name()
+            .to_string_lossy()
+            .starts_with(&format!("{stem}.corrupt."))
+    })
+}
+
 /// Downgrade the database to schema v8 (no assets.tag / assets.serial, no
 /// asset_tags_log, and none of v10's tax basis columns), as an older
 /// wanderbooks left it.
 fn downgrade_db_to_v8(dir: &Path) {
     downgrade_db_to_v9(dir);
-    let conn = rusqlite::Connection::open(dir.join(DB_FILE)).unwrap();
+    let conn = rusqlite::Connection::open(dir.join(db_file())).unwrap();
     conn.execute_batch(
         "ALTER TABLE assets DROP COLUMN tag;
          ALTER TABLE assets DROP COLUMN serial;
@@ -388,13 +401,17 @@ fn downgrade_db_to_v8(dir: &Path) {
     .unwrap();
 }
 
-/// An existing v8 database migrates to v9 on open and verifies.
+/// A database at schema v8 under this version's own file name (what an
+/// older wanderbooks once migrated in place) is never migrated now: each
+/// schema keeps a file of its own (rules.md B-27), so this one is damaged,
+/// kept aside and rebuilt from the journal as the books open, and verifies.
 #[test]
 fn a_v8_database_migrates_and_verifies() {
     let (dir, s, _, x, y) = fixture("v8");
     drop(s);
     downgrade_db_to_v8(&dir);
     let mut s = Store::open(&dir).expect("a v8 database opens");
+    assert!(kept_aside(&dir), "rebuilt, not migrated");
     s.verify().unwrap();
     s.set_asset_tag(x, "FL-0001").unwrap();
     s.set_asset_serial(y, Some("SN-Y")).unwrap();
@@ -406,8 +423,8 @@ fn a_v8_database_migrates_and_verifies() {
     assert_eq!(serial_of(&s, y).as_deref(), Some("SN-Y"));
 }
 
-/// A v8 database behind a journal that has tag lines (Store::open SCENARIO
-/// 7: apply the rest) migrates, applies them, and verifies.
+/// A v8 database behind a journal that has tag lines is rebuilt from the
+/// whole journal, the tag lines with it (as above), and verifies.
 #[test]
 fn a_v8_database_behind_a_journal_with_tags_catches_up() {
     let (dir, s, _, x, _) = fixture("v8-behind");
@@ -423,6 +440,7 @@ fn a_v8_database_behind_a_journal_with_tags_catches_up() {
         .unwrap();
     drop(w);
     let s = Store::open(&dir).expect("opens and catches up");
+    assert!(kept_aside(&dir), "rebuilt, not migrated");
     s.verify().unwrap();
     assert_eq!(tag_of(&s, x).as_deref(), Some("FL-0001"));
     assert_eq!(serial_of(&s, x).as_deref(), Some("SN-1"));
@@ -449,7 +467,7 @@ fn an_asset_serial_set_line_with_a_non_string_serial_is_corrupt() {
             Ok(_) => panic!("serial {bad}: a corrupt asset.serial_set line opened"),
         }
         // Rebuilding from the journal alone refuses it too.
-        let _ = std::fs::remove_file(dir.join(DB_FILE));
+        let _ = std::fs::remove_file(dir.join(db_file()));
         assert!(Store::open(&dir).is_err(), "serial {bad}: rebuild opened");
     }
 }
@@ -497,7 +515,7 @@ fn the_acquisition_link_replays_and_verifies() {
     assert_eq!(s.ledger().get_asset(x).unwrap().acquired_by, Some(e));
     s.verify().unwrap();
     drop(s);
-    std::fs::remove_file(dir.join(DB_FILE)).unwrap();
+    std::fs::remove_file(dir.join(db_file())).unwrap();
     let s = Store::open(&dir).unwrap();
     assert_eq!(s.ledger().get_asset(x).unwrap().acquired_by, Some(e));
     s.verify().unwrap();
@@ -542,7 +560,7 @@ fn a_description_change_replays_and_verifies() {
     assert_eq!(p["description"], "Laptop, contributed jointly");
     s.verify().unwrap();
     drop(s);
-    std::fs::remove_file(dir.join(DB_FILE)).unwrap();
+    std::fs::remove_file(dir.join(db_file())).unwrap();
     let s = Store::open(&dir).unwrap();
     assert_eq!(
         s.ledger().get_asset(x).unwrap().description,
@@ -673,7 +691,7 @@ fn tax_basis_replays_on_reopen() {
     drop(s);
     for rebuild in [false, true] {
         if rebuild {
-            std::fs::remove_file(dir.join(DB_FILE)).unwrap();
+            std::fs::remove_file(dir.join(db_file())).unwrap();
         }
         let s = Store::open(&dir).unwrap();
         s.verify().unwrap();
@@ -694,7 +712,7 @@ fn tax_basis_replays_on_reopen() {
 /// Downgrade the database to schema v10 (none of v11's attachment links,
 /// statements, reconciliations, or payroll_lines.employee_id).
 fn downgrade_db_to_v10(dir: &Path) {
-    let conn = rusqlite::Connection::open(dir.join(DB_FILE)).unwrap();
+    let conn = rusqlite::Connection::open(dir.join(db_file())).unwrap();
     conn.execute_batch(
         "DROP TABLE attachment_links;
          DROP TABLE statements;
@@ -706,7 +724,8 @@ fn downgrade_db_to_v10(dir: &Path) {
     .unwrap();
 }
 
-/// An existing v10 database migrates on open and verifies.
+/// A database at schema v10 under this version's own file name is rebuilt
+/// from the journal as the books open (as the v8 one above), and verifies.
 #[test]
 fn a_v10_database_migrates_and_verifies() {
     let (dir, mut s, _, x, _) = fixture("v10");
@@ -714,6 +733,7 @@ fn a_v10_database_migrates_and_verifies() {
     drop(s);
     downgrade_db_to_v10(&dir);
     let s = Store::open(&dir).expect("a v10 database opens");
+    assert!(kept_aside(&dir), "rebuilt, not migrated");
     s.verify().unwrap();
     assert_eq!(tag_of(&s, x).as_deref(), Some("FL-0001"));
 }
@@ -722,7 +742,7 @@ fn a_v10_database_migrates_and_verifies() {
 /// assets.contributor_basis), as an older wanderbooks left it.
 fn downgrade_db_to_v9(dir: &Path) {
     downgrade_db_to_v10(dir);
-    let conn = rusqlite::Connection::open(dir.join(DB_FILE)).unwrap();
+    let conn = rusqlite::Connection::open(dir.join(db_file())).unwrap();
     conn.execute_batch(
         "ALTER TABLE assets DROP COLUMN tax_rule;
          ALTER TABLE assets DROP COLUMN contributor_basis;
@@ -731,7 +751,8 @@ fn downgrade_db_to_v9(dir: &Path) {
     .unwrap();
 }
 
-/// An existing v9 database migrates on open, verifies, and takes tax bases.
+/// A database at schema v9 under this version's own file name is rebuilt
+/// as the books open (as the v8 one above), verifies, and takes tax bases.
 #[test]
 fn a_v9_database_migrates_and_verifies() {
     use ledger_core::TaxBasisRule::*;
@@ -740,6 +761,7 @@ fn a_v9_database_migrates_and_verifies() {
     drop(s);
     downgrade_db_to_v9(&dir);
     let mut s = Store::open(&dir).expect("a v9 database opens");
+    assert!(kept_aside(&dir), "rebuilt, not migrated");
     s.verify().unwrap();
     assert_eq!(tag_of(&s, x).as_deref(), Some("FL-0001"));
     assert_eq!(tax_of(&s, x), None);
@@ -752,8 +774,8 @@ fn a_v9_database_migrates_and_verifies() {
     assert_eq!(tax_of(&s, y), Some(tax(Carryover, Some("640.00"))));
 }
 
-/// A v9 database behind a journal with a tax basis line migrates, applies
-/// it (Store::open SCENARIO 7), and verifies.
+/// A v9 database behind a journal with a tax basis line is rebuilt from
+/// the whole journal, that line with it, and verifies.
 #[test]
 fn a_v9_database_behind_a_journal_with_tax_basis_catches_up() {
     use ledger_core::TaxBasisRule::*;
@@ -768,6 +790,7 @@ fn a_v9_database_behind_a_journal_with_tax_basis_catches_up() {
     .unwrap();
     drop(w);
     let s = Store::open(&dir).expect("opens and catches up");
+    assert!(kept_aside(&dir), "rebuilt, not migrated");
     s.verify().unwrap();
     assert_eq!(tax_of(&s, x), Some(tax(Carryover, Some("300.00"))));
 }
@@ -799,7 +822,7 @@ fn an_asset_tax_basis_set_line_with_a_bad_payload_is_corrupt() {
             Err(other) => panic!("{bad}: expected JournalCorrupt, got {other:?}"),
             Ok(_) => panic!("{bad}: a corrupt asset.tax_basis_set line opened"),
         }
-        let _ = std::fs::remove_file(dir.join(DB_FILE));
+        let _ = std::fs::remove_file(dir.join(db_file()));
         match Store::open(&dir) {
             Err(StoreError::JournalCorrupt(_)) => {}
             Err(other) => panic!("{bad} rebuild: expected JournalCorrupt, got {other:?}"),
@@ -835,7 +858,7 @@ fn an_asset_is_corrected_until_depreciation_is_posted() {
     assert_eq!(p["previous"]["cost"]["amount"], "1200.00");
     s.verify().unwrap();
     drop(s);
-    std::fs::remove_file(dir.join(DB_FILE)).unwrap();
+    std::fs::remove_file(dir.join(db_file())).unwrap();
     let mut s = Store::open(&dir).unwrap();
     assert_eq!(
         s.ledger().get_asset(x).unwrap().cost.amount.to_string(),

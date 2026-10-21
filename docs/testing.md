@@ -1579,8 +1579,14 @@ basis. Mutation runs wait for P12 (D-33); none was run.
   `record_depreciation_run`); `tax_capital.rs` (tax-basis capital per
   member with a cash contribution, a contribution of property, a
   distribution and a year of depreciation; next year's beginning; cash-only
-  books; property without a basis; property distributed; the roll-forward
-  and reconciliation over spans); `properties.rs`
+  books, whose tax income is still the return's; property without a basis;
+  property distributed; the roll-forward and reconciliation over spans;
+  and, from the P3 review, four devices and a prepaid plan by hand (two
+  worth less than basis, one more, one equal; the plan at book with its
+  note; the gain property's disposal flagged with its built-in gain),
+  property subject to a liability (negative tax property), and three
+  members with unequal shares, one contributing nothing);
+  `spec_asset_basis.rs` `a_duplicated_run_line_is_carried_once`; `properties.rs`
   `prop_basis_figures_laws` (5,000 cases); `kernel_bridge.rs`
   `basis_figures_agree`; Kani `basis_figures_laws` (`src/proofs.rs`, 83
   checks, its cover satisfied); `spec_asset_tags.rs` (the register's
@@ -1591,8 +1597,11 @@ basis. Mutation runs wait for P12 (D-33); none was run.
   line whose figures disagree with today's formula still replays; an
   unknown rule or method is newer, a malformed figure corrupt; pre-P3
   `asset.tax_basis_set` lines give the figures they gave; P2's v12
-  database left as it is while this version builds its v13 file, runs
-  keyed by entry (`a_p2_database_is_left_and_v13_built_from_the_journal`);
+  database left as it is while this version builds its v14 file, runs
+  keyed by entry (`a_p2_database_is_left_and_this_versions_built_from_the_journal`);
+  a v13 file as it shipped before the basis columns left too and v14
+  built (`a_v13_file_built_before_the_basis_columns_is_left_and_rebuilt`;
+  `schema_files.rs` `a_shipped_migration_never_changes`);
   v9 and v10 databases under this version's name rebuilt). The old books
   (`books_an_earlier_version_wrote_open_to_its_figures`) open to exactly
   their figures.

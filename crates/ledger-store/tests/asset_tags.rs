@@ -18,7 +18,7 @@
 use chrono::NaiveDate;
 use ledger_core::{AccountType, AssetId, Currency, LedgerError, Money, NewAsset};
 use ledger_store::journal::read_and_verify_journal;
-use ledger_store::{JOURNAL_FILE, JournalWriter, Store, StoreError, db_file};
+use ledger_store::{JOURNAL_FILE, JournalWriter, Store, StoreError, db_file, db_file_for};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
@@ -887,6 +887,49 @@ fn downgrade_db_to_v12(db: &Path) {
     .unwrap();
 }
 
+/// A database at v13 exactly as it shipped on main before the assets'
+/// basis columns (P3 review, 2026-10-21: those columns were first written
+/// into v13 itself, so a v13 file built by the earlier commits opened as
+/// current and failed to load, "no such column"): its file is another
+/// schema's, left byte for byte, and this version builds its own from the
+/// journal, with every run, and verifies.
+#[test]
+fn a_v13_file_built_before_the_basis_columns_is_left_and_rebuilt() {
+    use ledger_core::BasisRule::*;
+    let (dir, mut s, _, x, y) = fixture("v13-shipped");
+    s.run_depreciation(x, "2026-01").unwrap();
+    s.set_asset_basis(y, contribution(Carryover723, "640.00", "1200.00"))
+        .unwrap();
+    drop(s);
+    let v13 = dir.join(db_file_for(13));
+    std::fs::rename(dir.join(db_file()), &v13).unwrap();
+    let conn = rusqlite::Connection::open(&v13).unwrap();
+    conn.execute_batch(
+        "ALTER TABLE assets DROP COLUMN fmv_at_contribution;
+         ALTER TABLE assets DROP COLUMN sec704c_method;
+         ALTER TABLE assets DROP COLUMN basis_source_json;
+         CREATE TABLE asset_depreciation_v12(asset_id INTEGER NOT NULL, period TEXT NOT NULL,
+           entry_id INTEGER NOT NULL, amount TEXT NOT NULL, PRIMARY KEY (asset_id, period));
+         INSERT INTO asset_depreciation_v12 SELECT asset_id, period, entry_id, amount FROM asset_depreciation;
+         DROP TABLE asset_depreciation;
+         ALTER TABLE asset_depreciation_v12 RENAME TO asset_depreciation;
+         UPDATE meta SET value = '13' WHERE key = 'schema_version';",
+    )
+    .unwrap();
+    drop(conn);
+    let shipped = std::fs::read(&v13).unwrap();
+    let s = Store::open(&dir).expect("books with a shipped v13 file open");
+    assert_eq!(s.database_file(), db_file());
+    s.verify().unwrap();
+    assert_eq!(s.ledger().depreciation_runs(x).len(), 1);
+    assert_eq!(
+        basis_of(&s, y),
+        Some(contribution(Carryover723, "640.00", "1200.00"))
+    );
+    drop(s);
+    assert_eq!(std::fs::read(&v13).unwrap(), shipped, "left byte for byte");
+}
+
 /// Downgrade the database to schema v10 (none of v11's attachment links,
 /// statements, reconciliations, or payroll_lines.employee_id).
 fn downgrade_db_to_v10(dir: &Path) {
@@ -909,12 +952,12 @@ fn downgrade_db_to_v10(dir: &Path) {
 }
 
 /// P2's database (`wanderbooks.db`, schema v12) is left as it is, byte
-/// for byte: this version builds its own v13 file from the journal, its
+/// for byte: this version builds its own file from the journal, its
 /// runs table keyed by entry with every run kept and the new columns
 /// empty, and it verifies; a basis set after then reloads from it (each
 /// schema in a file of its own: rules.md B-27).
 #[test]
-fn a_p2_database_is_left_and_v13_built_from_the_journal() {
+fn a_p2_database_is_left_and_this_versions_built_from_the_journal() {
     use ledger_core::BasisRule::*;
     let (dir, mut s, _, x, y) = fixture("v12");
     s.run_depreciation(x, "2026-01").unwrap();
@@ -1212,4 +1255,36 @@ fn the_viewer_and_writer_agree_on_a_bad_depreciation_posted_payload() {
             assert_eq!(viewer.unwrap(), 1);
         }
     }
+}
+
+/// B-27: books an older version wrote (format 1, declaring nothing) refuse
+/// a basis while they wait for the owner's format upgrade, a purchase's
+/// too, journaling nothing; the feature is never declared on the way (P3
+/// review, 2026-10-21).
+#[test]
+fn a_basis_in_books_pending_their_upgrade_is_refused_and_journals_nothing() {
+    use ledger_core::BasisRule::*;
+    let dir = test_dir("basis-pending");
+    let mut s = Store::create_in_format(
+        &dir,
+        Currency::USD,
+        &ledger_store::format::JournalFormat::default(),
+    )
+    .unwrap();
+    let a = accounts(&mut s);
+    let x = laptop(&mut s, &a, "Laptop A");
+    let was = std::fs::read(dir.join(JOURNAL_FILE)).unwrap();
+    for b in [
+        ledger_core::AssetBasis::purchase(),
+        contribution(Carryover723, "640.00", "1200.00"),
+    ] {
+        match s.set_asset_basis(x, b) {
+            Err(StoreError::FormatUpgradePending { need }) => {
+                assert!(need.contains(ledger_store::format::ASSET_BASIS), "{need:?}")
+            }
+            other => panic!("expected FormatUpgradePending, got {other:?}"),
+        }
+    }
+    assert_eq!(std::fs::read(dir.join(JOURNAL_FILE)).unwrap(), was);
+    assert_eq!(basis_of(&s, x), None);
 }

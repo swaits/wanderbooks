@@ -2241,6 +2241,7 @@ fn the_k1_worksheet_reports_tax_basis_capital() {
         "member,item,book,tax_basis,book_less_tax,status,note"
     );
     assert_eq!(lines.len(), 1 + 2 * 12, "{csv}");
+    let income_note = "the member's share of net income (loss) as figured for tax purposes, from the return (-385.00 on the books; every book-tax difference, Schedule M-1, is the CPA's)";
     let depreciation_note = "tax depreciation of the fixed assets in service (MACRS, IRC §168), in place of the book depreciation posted (1370.00 in the span, 1370.00 of it on contributed property, whose tax depreciation each property's §704(c) method allocates, Treas. Reg. §1.704-3)";
     for member in ["Tobin Example", "Mo Example"] {
         for want in [
@@ -2250,14 +2251,14 @@ fn the_k1_worksheet_reports_tax_basis_capital() {
                 "{member},Capital contributed: property,1370.00,1384.20,-14.20,tax basis,at the property's adjusted basis (IRC §723); book: its fair market value"
             ),
             format!(
-                "{member},Current year net income (loss),-385.00,,,open: the CPA's,\"known so far -385.00; needs {depreciation_note}\""
+                "{member},Current year net income (loss),-385.00,,,open: the CPA's,\"known so far -385.00; needs {income_note}; {depreciation_note}\""
             ),
             format!("{member},Other increase (decrease),0.00,0.00,0.00,tax basis,"),
             format!(
                 "{member},Withdrawals and distributions,300.00,300.00,0.00,tax basis,\"cash, plus the adjusted tax basis of property distributed\""
             ),
             format!(
-                "{member},Ending capital,1685.00,,,open: the CPA's,\"known so far 1699.20; needs {depreciation_note}\""
+                "{member},Ending capital,1685.00,,,open: the CPA's,\"known so far 1699.20; needs {income_note}; {depreciation_note}\""
             ),
             format!(
                 "{member},\"Reconciliation: beginning capital, book less tax\",,,0.00,reconciliation,"

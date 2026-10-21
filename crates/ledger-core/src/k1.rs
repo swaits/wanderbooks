@@ -724,8 +724,8 @@ mod tests {
     }
 
     /// INVARIANT 3, by hand: a contract the members hand over (Dr 1300
-    /// Prepaid 25 / Cr 3000 12.50, Cr 3001 12.50, the AppleCare+ with the
-    /// MacBook) is property, 12.50 each. Members paying a 3,000 annual
+    /// Prepaid 36 / Cr 3000 18.00, Cr 3001 18.00, a service plan with a
+    /// laptop) is property, 18.00 each. Members paying a 3,000 annual
     /// service for the company go through 2100: Dr 1300 / Cr 2100 3,000,
     /// then Dr 2100 / Cr 3000 1,500, Cr 3001 1,500: 1,500 cash each.
     #[test]
@@ -737,13 +737,13 @@ mod tests {
             1,
             5,
             &[
-                (prepaid, Side::Debit, "25"),
-                (a, Side::Credit, "12.50"),
-                (b, Side::Credit, "12.50"),
+                (prepaid, Side::Debit, "36"),
+                (a, Side::Credit, "18.00"),
+                (b, Side::Credit, "18.00"),
             ],
         );
         let ms = members(&bk);
-        let handed = (d("0"), d("12.50"), d("0"));
+        let handed = (d("0"), d("18.00"), d("0"));
         assert_eq!(split(&bk, &ms), vec![handed, handed]);
         let due =
             bk.l.add_account(
@@ -770,7 +770,7 @@ mod tests {
                 (b, Side::Credit, "1500"),
             ],
         );
-        let each = (d("1500"), d("12.50"), d("0"));
+        let each = (d("1500"), d("18.00"), d("0"));
         assert_eq!(split(&bk, &ms), vec![each, each]);
     }
 

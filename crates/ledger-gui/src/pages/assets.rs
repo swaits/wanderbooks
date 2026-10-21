@@ -203,8 +203,11 @@ pub fn book_vs_tax(rule: Option<BasisRule>) -> &'static str {
         Some(BasisRule::Purchase) => {
             "Book cost and tax basis are both what the company paid; tax depreciation starts from the tax basis — the CPA's."
         }
-        _ => {
-            "Book value is the fair market value at contribution; the tax figures are at contribution, and tax depreciation starts from the depreciable basis — the CPA's."
+        Some(BasisRule::Carryover723 | BasisRule::PersonalUseConversion) => {
+            "Book cost is the fair market value at contribution, and book value that cost less the depreciation posted; the tax figures are at contribution, and tax depreciation starts from the depreciable basis — the CPA's."
+        }
+        None => {
+            "No tax basis is recorded: book value is cost less the depreciation posted; the tax figures follow once the basis is recorded."
         }
     }
 }
@@ -1433,7 +1436,7 @@ fn tax_card(ui: &mut Ui, a: &Asset) {
                 ui.add(
                     egui::Label::new(
                         RichText::new(
-                            "Ask the bookkeeper to record it (books.set_asset_tax_basis): was it bought by the company, contributed by a member from business use, or converted from personal use? Book value is the fair market value at contribution; tax depreciation starts from the tax basis — the CPA's.",
+                            "Ask the bookkeeper to record it (books.set_asset_tax_basis): was it bought by the company, contributed by a member from business use, or converted from personal use? For a contribution, book cost is the fair market value at contribution; tax depreciation starts from the depreciable basis — the CPA's.",
                         )
                         .font(theme::regular(12.5))
                         .color(p.muted),

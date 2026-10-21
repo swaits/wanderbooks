@@ -234,8 +234,8 @@ earnings the same running way, D-38, 2026-10-20)
   analysis "is based on the partnership's books and records" (the Partner's
   Instructions' Basis Limitations section, `sources/irs-partnerships.md`;
   not Item L, which an earlier version of this rule spliced in). The K-1
-  worksheet is the book capital analysis, which the CPA converts for
-  Item L.
+  worksheet carries the book capital analysis, and beside it the tax-basis
+  capital as far as the books know it (B-36).
 - **No authority** says how to round a share to the cent. Largest
   remainder, ties to the member listed first: DECISION (the owner,
   2026-10-13). Closes made before then replay with the last member
@@ -2467,20 +2467,29 @@ book capital reconciles to tax capital:
   gain or loss at contribution, shared within the entry as its book value
   is (B-13). Property contributed with no basis in the books (no
   registered asset linked to the entry holds a contribution basis for it)
-  is open.
-- What the books can't know is never guessed: the tax depreciation of
-  every fixed asset in service (MACRS, and for contributed property the
-  §704(c) method's allocation: the CPA's, B-15), the tax gain on a
-  disposal, the adjusted tax basis of property distributed, the tax
-  treatment of a change in book capital the books can't explain, and
-  last year's tax ending when an earlier year left a figure open. Each
-  such line is left blank and marked open, with what the books know so
-  far and the book amount the CPA's figure replaces. The book
-  depreciation the tax figure replaces is the period's depreciation
-  expense, the P&L's: each asset's runs and what its disposal entry posts
-  to its expense account (B-15 rule 8; before the seam review the runs
-  alone, so a disposal that credited back part of a month's run stated
-  more than the P&L).
+  is open. Property contributed to a prepaid account (the balance
+  account of a prepaid-expense schedule: a service contract the member
+  handed over, B-13) with no fixed asset for it enters at its book
+  amount, with a note: a contract's carryover basis is what the books
+  recorded for it (DECISION, P3 review 2026-10-21; the CPA to confirm).
+- What the books can't know is never guessed. The share of net income
+  "as figured for tax purposes" is the return's, always: the books are
+  kept on their own basis, and every book-tax difference (Schedule M-1)
+  is the CPA's; so is the ending, and the beginning of any year after
+  the first (Item L: "the partner's ending capital account as
+  determined for last year"). The line names the differences the books
+  do see: the tax depreciation of every fixed asset in service (MACRS,
+  and for contributed property the §704(c) method's allocation: the
+  CPA's, B-15), and the tax gain on a disposal, with a contributed
+  property's built-in gain or loss at contribution, which that gain must
+  take account of (IRC §704(c)(1)(A)). Also open: the adjusted tax basis
+  of property distributed, and the tax treatment of a change in book
+  capital the books can't explain. Each such line is left blank and
+  marked open, with what the books know so far and the book amount the
+  CPA's figure replaces.
+  The book depreciation the tax figure replaces is the period's
+  depreciation expense, the P&L's: each asset's runs and what its
+  disposal entry posts to its expense account (B-15 rule 8).
 - The reconciliation: book ending less tax ending (as far as the books
   know it) = beginning (book less tax) + the built-in gain or loss share
   + property without a basis (at book) − property distributed (at book),

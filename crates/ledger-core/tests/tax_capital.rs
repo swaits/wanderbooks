@@ -14,10 +14,10 @@ use std::str::FromStr;
 
 use chrono::NaiveDate;
 use ledger_core::reports::MemberCapital;
-use ledger_core::tax_capital::{Open, Reconciliation, tax_basis_capital};
+use ledger_core::tax_capital::{Note, Open, Reconciliation, tax_basis_capital};
 use ledger_core::{
     AccountId, AccountType, AssetBasis, AssetId, BasisRule, Currency, EntryId, Ledger, Money,
-    NewAsset, Sec704cMethod, Side,
+    NewAsset, NewSchedule, ScheduleConvention, ScheduleKind, Sec704cMethod, Side,
 };
 use rust_decimal::Decimal;
 
@@ -243,12 +243,16 @@ fn tax_basis_capital_per_member() {
         assert_eq!(row.contributions_property.tax(), Some(d("1384.20")));
         assert_eq!(row.net_income.tax(), None, "tax depreciation is the CPA's");
         assert_eq!(row.net_income.known, d("-385.00"));
-        assert_eq!(row.net_income.open, vec![depreciation.clone()]);
+        let income = Open::TaxNetIncome { book: d("-385.00") };
+        assert_eq!(
+            row.net_income.open,
+            vec![income.clone(), depreciation.clone()]
+        );
         assert_eq!(row.other.tax(), Some(d("0")));
         assert_eq!(row.distributions.tax(), Some(d("300.00")));
         assert_eq!(row.ending.tax(), None);
         assert_eq!(row.ending.known, d("1699.20"));
-        assert_eq!(row.ending.open, vec![depreciation.clone()]);
+        assert_eq!(row.ending.open, vec![income, depreciation.clone()]);
         // Book less tax, by cause.
         assert_eq!(
             row.reconciliation,
@@ -292,9 +296,10 @@ fn next_years_beginning_carries_what_is_known_and_says_what_isnt() {
 }
 
 /// Cash only, no fixed assets: every line is the tax figure, equal to the
-/// book figure.
+/// book figure, but net income (and so the ending), which is the return's
+/// whatever the books hold (Item L: "as figured for tax purposes").
 #[test]
-fn cash_only_books_are_complete() {
+fn cash_only_books_leave_only_the_tax_income_open() {
     let mut b = books();
     let (cash, tobin, morgan, revenue) = (b.cash, b.tobin, b.morgan, b.revenue);
     post(
@@ -323,9 +328,17 @@ fn cash_only_books_are_complete() {
     )
     .unwrap();
     assert!(tc.open.is_empty());
-    for row in &tc.rows {
-        assert_eq!(row.ending.tax(), Some(row.book.ending));
-        assert!(row.ending.open.is_empty());
+    for (row, income) in tc.rows.iter().zip(["50.01", "50.00"]) {
+        let income = vec![Open::TaxNetIncome { book: d(income) }];
+        assert_eq!(row.beginning.tax(), Some(d("0")));
+        assert_eq!(row.contributions_cash, d("250.00"));
+        assert_eq!(row.contributions_property.tax(), Some(d("0")));
+        assert_eq!(row.distributions.tax(), Some(d("0")));
+        assert_eq!(row.net_income.tax(), None, "the return's, never the books'");
+        assert_eq!(row.net_income.open, income);
+        assert_eq!(row.ending.tax(), None);
+        assert_eq!(row.ending.known, row.book.ending);
+        assert_eq!(row.ending.open, income);
         assert_eq!(row.reconciliation, Reconciliation::default());
     }
 }
@@ -343,9 +356,9 @@ fn property_without_a_basis_is_open_never_guessed() {
         &mut b.l,
         date(2026, 1, 5),
         &[
-            (prepaid, Side::Debit, "25.00"),
-            (tobin, Side::Credit, "12.50"),
-            (morgan, Side::Credit, "12.50"),
+            (prepaid, Side::Debit, "36.00"),
+            (tobin, Side::Credit, "18.00"),
+            (morgan, Side::Credit, "18.00"),
         ],
     );
     let tool = post(
@@ -379,14 +392,14 @@ fn property_without_a_basis_is_open_never_guessed() {
     )
     .unwrap();
     let (t, m) = (&tc.rows[0], &tc.rows[1]);
-    assert_eq!(t.book.contributions_property, d("412.50"));
+    assert_eq!(t.book.contributions_property, d("418.00"));
     assert_eq!(t.contributions_property.known, d("0"));
     assert_eq!(
         t.contributions_property.open,
         vec![
             Open::PropertyBasis {
                 entry: contract,
-                book: d("12.50")
+                book: d("18.00")
             },
             Open::PropertyBasis {
                 entry: tool,
@@ -394,9 +407,9 @@ fn property_without_a_basis_is_open_never_guessed() {
             },
         ]
     );
-    assert_eq!(t.reconciliation.property_without_basis, d("412.50"));
+    assert_eq!(t.reconciliation.property_without_basis, d("418.00"));
     assert_eq!(m.contributions_property.known, d("0"));
-    assert_eq!(m.reconciliation.property_without_basis, d("12.50"));
+    assert_eq!(m.reconciliation.property_without_basis, d("18.00"));
     for row in &tc.rows {
         assert_eq!(
             row.reconciliation.total(),
@@ -491,4 +504,233 @@ fn every_span_rolls_forward_and_reconciles() {
             );
         }
     }
+}
+
+/// A contributed asset with `rule`, in service 2026-01-01 over 24 months.
+fn contributed(
+    b: &mut Books,
+    rule: BasisRule,
+    fmv: &str,
+    adjusted: &str,
+    entry: EntryId,
+) -> AssetId {
+    let id =
+        b.l.register_asset(NewAsset {
+            description: format!("Device {fmv}"),
+            in_service_date: date(2026, 1, 1),
+            cost: usd(fmv),
+            salvage_value: usd("0.00"),
+            useful_life_months: 24,
+            cost_account: b.equipment,
+            accum_depr_account: b.accum,
+            expense_account: b.depreciation,
+        })
+        .unwrap();
+    b.l.set_asset_acquisition(id, entry).unwrap();
+    b.l.set_asset_basis(id, AssetBasis::contribution(rule, d(adjusted), d(fmv)))
+        .unwrap();
+    id
+}
+
+/// Four devices and a prepaid service plan two members hand over jointly
+/// from personal use, in one entry (P3 review, by hand; invented figures):
+/// - D1 worth 1,200.00, basis 1,500.00; D2 worth 800.00, basis 1,100.00
+///   (both worth less than basis); D3 worth 1,000.00, basis 700.00 (worth
+///   more); D4 worth 600.00, basis 600.00 (equal); the plan 40.00, a
+///   prepaid-expense schedule's account. Dr 1500 3,600.00, Dr 1300 40.00
+///   / Cr 3000 1,820.00, Cr 3001 1,820.00.
+/// - Depreciable basis, the lower of value and basis: 1,200.00 + 800.00 +
+///   700.00 + 600.00 = 3,300.00. §723: 1,500.00 + 1,100.00 + 700.00 +
+///   600.00 = 3,900.00. Built-in: −300.00, −300.00, +300.00, 0.00 =
+///   −300.00, never netted per property (D1 and D2 §704(c)(1)(C)).
+/// - Item L property, each: book 1,820.00; tax (3,900.00 + 40.00) / 2 =
+///   1,970.00 = 1,820.00 − (−300.00 / 2), the plan at its book 20.00 each
+///   with a note, never open.
+/// - D3 sold 2026-06-30 for 1,100.00: its tax gain is the CPA's, flagged
+///   with its built-in gain 300.00 (§704(c)(1)(A)).
+#[test]
+fn four_devices_and_a_plan_by_hand() {
+    let mut b = books();
+    let (equipment, prepaid, tobin, morgan, cash) =
+        (b.equipment, b.prepaid, b.tobin, b.morgan, b.cash);
+    let plan_expense =
+        b.l.add_account("6300", "Service plans", AccountType::Expense, None, false)
+            .unwrap();
+    b.l.register_schedule(NewSchedule {
+        description: "Service plan".into(),
+        kind: ScheduleKind::PrepaidExpense,
+        total: usd("40.00"),
+        start: date(2026, 1, 1),
+        months: 12,
+        balance_account: prepaid,
+        pl_account: plan_expense,
+        convention: ScheduleConvention::Daily,
+    })
+    .unwrap();
+    let e = post(
+        &mut b.l,
+        date(2026, 1, 1),
+        &[
+            (equipment, Side::Debit, "1200.00"),
+            (equipment, Side::Debit, "800.00"),
+            (equipment, Side::Debit, "1000.00"),
+            (equipment, Side::Debit, "600.00"),
+            (prepaid, Side::Debit, "40.00"),
+            (tobin, Side::Credit, "1820.00"),
+            (morgan, Side::Credit, "1820.00"),
+        ],
+    );
+    let p = BasisRule::PersonalUseConversion;
+    let ids = [
+        contributed(&mut b, p, "1200.00", "1500.00", e),
+        contributed(&mut b, p, "800.00", "1100.00", e),
+        contributed(&mut b, p, "1000.00", "700.00", e),
+        contributed(&mut b, p, "600.00", "600.00", e),
+    ];
+    let a = |i: usize| b.l.get_asset(ids[i]).unwrap();
+    let want = [
+        ("1200.00", "1500.00", "-300.00", true),
+        ("800.00", "1100.00", "-300.00", true),
+        ("700.00", "700.00", "300.00", false),
+        ("600.00", "600.00", "0.00", false),
+    ];
+    for (i, (dep, t723, big, loss)) in want.into_iter().enumerate() {
+        assert_eq!(a(i).depreciable_basis(), Some(d(dep)), "D{}", i + 1);
+        assert_eq!(a(i).tax_basis_723(), Some(d(t723)), "D{}", i + 1);
+        assert_eq!(a(i).built_in_gain_704c(), Some(d(big)), "D{}", i + 1);
+        assert_eq!(a(i).sec704c_1c(), loss, "D{}", i + 1);
+    }
+    b.l.dispose_asset(ids[2], date(2026, 6, 30), usd("1100.00"))
+        .unwrap();
+    let tc = tax_basis_capital(
+        &b.l,
+        date(2026, 1, 1),
+        date(2026, 12, 31),
+        &members(&b),
+        &[cash],
+    )
+    .unwrap();
+    assert!(tc.open.contains(&Open::Disposal {
+        asset: ids[2],
+        proceeds: d("1100.00"),
+        built_in_gain_704c: Some(d("300.00")),
+    }));
+    for row in &tc.rows {
+        assert_eq!(row.book.contributions_property, d("1820.00"));
+        assert_eq!(row.contributions_property.tax(), Some(d("1970.00")));
+        assert_eq!(
+            row.contributions_property.notes,
+            vec![Note::PrepaidAtBook {
+                entry: e,
+                book: d("20.00")
+            }]
+        );
+        assert_eq!(row.reconciliation.built_in_gain_704c, d("-150.00"));
+        assert_eq!(row.reconciliation.property_without_basis, d("0"));
+        assert_eq!(
+            row.reconciliation.total(),
+            Some(row.book.ending - row.ending.known)
+        );
+    }
+}
+
+/// Property contributed subject to a liability (Item L: "reduced by any
+/// liabilities ... to which the property is subject"), by hand: worth
+/// 500.00, basis 200.00, a 300.00 loan on it; Dr 1500 500.00 / Cr 2200
+/// 300.00, Cr 3000 200.00. Book property 200.00 (value net of the loan);
+/// tax 200.00 − 300.00 = −100.00 ("This amount might be negative"); the
+/// other member nothing.
+#[test]
+fn property_subject_to_a_liability_enters_net_of_it() {
+    let mut b = books();
+    let (equipment, tobin, cash) = (b.equipment, b.tobin, b.cash);
+    let loan =
+        b.l.add_account("2200", "Loan", AccountType::Liability, None, false)
+            .unwrap();
+    let e = post(
+        &mut b.l,
+        date(2026, 1, 1),
+        &[
+            (equipment, Side::Debit, "500.00"),
+            (loan, Side::Credit, "300.00"),
+            (tobin, Side::Credit, "200.00"),
+        ],
+    );
+    contributed(&mut b, BasisRule::Carryover723, "500.00", "200.00", e);
+    let tc = tax_basis_capital(
+        &b.l,
+        date(2026, 1, 1),
+        date(2026, 12, 31),
+        &members(&b),
+        &[cash],
+    )
+    .unwrap();
+    let (t, m) = (&tc.rows[0], &tc.rows[1]);
+    assert_eq!(t.book.contributions_property, d("200.00"));
+    assert_eq!(t.contributions_property.tax(), Some(d("-100.00")));
+    assert_eq!(t.reconciliation.built_in_gain_704c, d("300.00"));
+    assert_eq!(m.contributions_property.tax(), Some(d("0")));
+    assert_eq!(m.reconciliation, Reconciliation::default());
+}
+
+/// Three members with unequal shares, one contributing nothing, by hand:
+/// a 1,000.00 machine (basis 400.00, business use) handed over 600.00 by
+/// the first and 400.00 by the second; its 600.00 built-in gain is shared
+/// as its value is, 360.00 and 240.00, so tax property 240.00 and 160.00
+/// (the basis, 0.6 and 0.4); the third member has every line 0.00.
+#[test]
+fn unequal_contributors_and_a_member_with_none() {
+    let mut b = books();
+    let (equipment, tobin, morgan, cash) = (b.equipment, b.tobin, b.morgan, b.cash);
+    let third =
+        b.l.add_account(
+            "3002",
+            "Capital, Avery Quinn",
+            AccountType::Equity,
+            None,
+            false,
+        )
+        .unwrap();
+    let e = post(
+        &mut b.l,
+        date(2026, 1, 1),
+        &[
+            (equipment, Side::Debit, "1000.00"),
+            (tobin, Side::Credit, "600.00"),
+            (morgan, Side::Credit, "400.00"),
+        ],
+    );
+    contributed(&mut b, BasisRule::Carryover723, "1000.00", "400.00", e);
+    let [t, m] = members(&b);
+    let ms = [
+        MemberCapital {
+            share: d("0.5"),
+            ..t
+        },
+        MemberCapital {
+            share: d("0.3"),
+            ..m
+        },
+        MemberCapital {
+            name: "Avery Quinn".into(),
+            capital_account: third,
+            distribution_account: None,
+            share: d("0.2"),
+        },
+    ];
+    let tc = tax_basis_capital(&b.l, date(2026, 1, 1), date(2026, 12, 31), &ms, &[cash]).unwrap();
+    let want = [
+        ("600.00", "240.00", "360.00"),
+        ("400.00", "160.00", "240.00"),
+    ];
+    for (row, (book, tax, big)) in tc.rows.iter().zip(want) {
+        assert_eq!(row.book.contributions_property, d(book));
+        assert_eq!(row.contributions_property.tax(), Some(d(tax)));
+        assert_eq!(row.reconciliation.built_in_gain_704c, d(big));
+    }
+    let none = &tc.rows[2];
+    assert_eq!(none.book.ending, d("0"));
+    assert_eq!(none.contributions_property.tax(), Some(d("0")));
+    assert_eq!(none.ending.known, d("0"));
+    assert_eq!(none.reconciliation, Reconciliation::default());
 }

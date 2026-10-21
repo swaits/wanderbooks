@@ -363,6 +363,9 @@ fn assets(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                     AssetStatus::Disposed { date, .. } if *date <= b.today => Some(*date),
                     _ => None,
                 };
+                // Not on the books until its acquired date: no book value
+                // yet (the register leaves it out the same way).
+                let later = b.ledger.asset_acquired_date(a.id).filter(|d| *d > b.today);
                 let acc = b.ledger.accumulated_posted(a.id, b.today);
                 let scheduled = accumulated_scheduled_through(a, b.today);
                 let dep = a.cost.amount - a.salvage_value.amount;
@@ -391,6 +394,10 @@ fn assets(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let text = match (&acc, disposed) {
+                            _ if later.is_some() => format!(
+                                "not on the books until {}",
+                                fmt::date(later.expect("checked"))
+                            ),
                             (_, Some(_)) => format!("book value {}", fmt::dollars(Decimal::ZERO)),
                             (Ok(acc), None) => {
                                 format!("book value {}", fmt::dollars(a.cost.amount - *acc))

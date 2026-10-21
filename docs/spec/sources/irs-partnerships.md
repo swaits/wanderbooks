@@ -61,7 +61,7 @@ Source: <https://www.irs.gov/instructions/i1065sk1>
 Retrieved: 2026-10-20  
 SHA-256 of the retrieved file (`i1065sk1.html`): `d7d6298286601fd95ab8e445c10fd62499ea1e37f8e5c3531f8e1783862d8d03`
 
-**Item L, its first paragraph** (the partner's capital account, on the tax basis; the K-1 worksheet carries the book capital account, which the CPA converts)
+**Item L, its first paragraph** (the partner's capital account, on the tax basis; the K-1 worksheet carries the book capital account and, beside it, the tax-basis one as far as the books know it, rules.md B-36)
 
 > The partnership must report your beginning capital account and ending capital account for the year using the tax-basis method, including the amount of capital you contributed to the partnership during the year, your share of the partnership’s current-year net income or loss as computed for tax purposes, any withdrawals and distributions made to you by the partnership, and any other increases or decreases to your capital account determined in a manner generally consistent with figuring the partner’s adjusted tax basis in its partnership interest (without regard to partnership liabilities), taking into account the rules and principles of sections 705, 722, 733, and 742. See the Instructions for Form 1065 for more details.
 

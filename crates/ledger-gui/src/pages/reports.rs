@@ -1148,17 +1148,20 @@ fn aging(
 
 /// The fixed asset register on `as_of`: ledger-core's
 /// `fixed_asset_register`, laid out, with its reconciliation to the
-/// general ledger and what that says (the Assets page's notices). Each
-/// asset's federal tax basis sits beside its book figures: contributor's
-/// basis, tax basis, and built-in gain (loss), the register row's own,
-/// with its rule (and citation) in the detail; the tax basis total is the
+/// general ledger and what that says (the Assets page's notices). The
+/// book figures in the Assets page's order (cost, posted, book value =
+/// cost less posted, then the schedule's figure); beside them each
+/// asset's tax figures at contribution, the register row's own: §723
+/// basis, depreciable basis and §704(c) built-in gain (loss), with its
+/// rule (and citation), value at contribution, method and, for a built-in
+/// loss, the IRC §704(c)(1)(C) note in the detail; the totals are the
 /// register's.
 fn asset_register(b: &Books, as_of: NaiveDate) -> Table {
     let mut t = Table::new(vec![
         "Cost".into(),
-        "Scheduled".into(),
         "Posted".into(),
         "Book value".into(),
+        "Scheduled".into(),
         // Short enough for the columns: the note says what each is.
         "§723 basis".into(),
         "Depr. basis".into(),
@@ -1217,6 +1220,12 @@ fn asset_register(b: &Books, as_of: NaiveDate) -> Table {
                 ledger_import::asset_register::method_cited(m)
             ));
         }
+        if tax.built_in_gain_704c.is_some_and(|g| g < Decimal::ZERO) {
+            detail.push(
+                "a built-in loss counts only for the contributing member (IRC §704(c)(1)(C))"
+                    .into(),
+            );
+        }
         let opt = |v: Option<Decimal>| Cell {
             value: v,
             drill: None,
@@ -1232,9 +1241,9 @@ fn asset_register(b: &Books, as_of: NaiveDate) -> Table {
             }
             None => vec![
                 Cell::of(x.cost),
-                Cell::of(x.accumulated_scheduled),
                 Cell::of(x.accumulated_posted),
                 Cell::of(x.book_value),
+                Cell::of(x.accumulated_scheduled),
                 opt(tax.tax_basis_723),
                 opt(tax.depreciable_basis),
                 opt(tax.built_in_gain_704c),
@@ -1252,9 +1261,9 @@ fn asset_register(b: &Books, as_of: NaiveDate) -> Table {
         "Total held",
         vec![
             Cell::of(r.total_cost),
-            Cell::of(r.total_accumulated_scheduled),
             Cell::of(r.total_accumulated_posted),
             Cell::of(r.total_book_value),
+            Cell::of(r.total_accumulated_scheduled),
             Cell::of(r.total_tax_basis_723),
             Cell::of(r.total_depreciable_basis),
             Cell::none(),
@@ -1292,11 +1301,11 @@ fn asset_register(b: &Books, as_of: NaiveDate) -> Table {
                 value: Some(r.ledger_accumulated),
                 drill: accum_drill,
             },
+            Cell::of(r.ledger_cost - r.ledger_accumulated),
             Cell {
                 value: Some(r.ledger_accumulated),
                 drill: accum_drill,
             },
-            Cell::of(r.ledger_cost - r.ledger_accumulated),
             Cell::none(),
             Cell::none(),
             Cell::none(),
@@ -1307,9 +1316,9 @@ fn asset_register(b: &Books, as_of: NaiveDate) -> Table {
         "Register less books",
         vec![
             Cell::of(-r.unregistered_cost()),
-            Cell::of(r.unposted_depreciation()),
             Cell::of(-r.unattributed_accumulated()),
             Cell::of(r.total_book_value - (r.ledger_cost - r.ledger_accumulated)),
+            Cell::of(r.unposted_depreciation()),
             Cell::none(),
             Cell::none(),
             Cell::none(),
@@ -2441,9 +2450,9 @@ mod tests {
             t.columns,
             [
                 "Cost",
-                "Scheduled",
                 "Posted",
                 "Book value",
+                "Scheduled",
                 "§723 basis",
                 "Depr. basis",
                 "Built-in gain"
@@ -2462,9 +2471,9 @@ mod tests {
                 v,
                 [
                     Some(x.cost),
-                    Some(x.accumulated_scheduled),
                     Some(x.accumulated_posted),
                     Some(x.book_value),
+                    Some(x.accumulated_scheduled),
                     f.tax_basis_723,
                     Some(f.depreciable_basis),
                     f.built_in_gain_704c,
@@ -2476,7 +2485,9 @@ mod tests {
         let total = t.rows.iter().find(|row| row.label == "Total held").unwrap();
         assert_eq!(total.cells[5].value, Some(r.total_depreciable_basis));
         assert_eq!(total.cells[5].value, r.rows[0].depreciable_basis);
-        assert_eq!(total.cells[2].value, Some(r.total_accumulated_posted));
+        assert_eq!(total.cells[1].value, Some(r.total_accumulated_posted));
+        assert_eq!(total.cells[2].value, Some(r.total_book_value));
+        assert_eq!(total.cells[3].value, Some(r.total_accumulated_scheduled));
         assert!(
             t.rows
                 .iter()

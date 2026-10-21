@@ -65,7 +65,10 @@ fn attachment_name(b: &Books, id: u64) -> String {
 /// depreciable basis $1,440.00, built-in loss $248.40". The figures are
 /// ledger-core's (`Asset::basis_figures`) for the event's facts on the
 /// asset; a pre-P3 `asset.tax_basis_set` (`legacy`: its rule by its old
-/// name, no value) reads the value as the book cost, as it was recorded.
+/// name, no value) reads the value as the asset's book cost today, which
+/// is the cost it was recorded against unless the cost was corrected since
+/// (a correction moves a pre-P3 record's built-in gain, and the line shows
+/// today's figure).
 fn tax_basis_text(b: &Books, asset_id: Option<u64>, p: &Value, legacy: bool) -> String {
     let asset = asset_id.and_then(|id| b.ledger.get_asset(id));
     let name = match (asset, asset_id) {

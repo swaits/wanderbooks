@@ -26,7 +26,7 @@
 
 use crate::text::{csv_escape, money};
 use ledger_core::Ledger;
-use ledger_core::tax_capital::{Open, TaxCapital, TaxLine};
+use ledger_core::tax_capital::{Note, Open, TaxCapital, TaxLine};
 use rust_decimal::Decimal;
 
 /// The file's name in the package.
@@ -73,13 +73,38 @@ pub fn open_text(ledger: &Ledger, o: &Open) -> String {
         Open::Disposal {
             asset: id,
             proceeds,
-        } => format!(
-            "the tax gain or loss on {}'s disposal (proceeds {}), from its adjusted tax basis",
-            asset(*id),
-            money(*proceeds)
+            built_in_gain_704c,
+        } => match built_in_gain_704c {
+            Some(g) if !g.is_zero() => format!(
+                "the tax gain or loss on {}'s disposal (proceeds {}), from its adjusted tax basis; it is contributed property with a built-in {} of {} at contribution, which the gain or loss must take account of, allocated to the contributing member(s) (IRC §704(c)(1)(A); Treas. Reg. §1.704-3)",
+                asset(*id),
+                money(*proceeds),
+                if *g < Decimal::ZERO { "loss" } else { "gain" },
+                money(g.abs())
+            ),
+            _ => format!(
+                "the tax gain or loss on {}'s disposal (proceeds {}), from its adjusted tax basis",
+                asset(*id),
+                money(*proceeds)
+            ),
+        },
+        Open::TaxNetIncome { book } => format!(
+            "the member's share of net income (loss) as figured for tax purposes, from the return ({} on the books; every book-tax difference, Schedule M-1, is the CPA's)",
+            money(*book)
         ),
         Open::OtherChange { book } => format!(
             "the tax treatment of a {} change in book capital the books can't explain",
+            money(*book)
+        ),
+    }
+}
+
+/// What a note says: a figure taken on a stated rule, for the CPA to
+/// confirm.
+pub fn note_text(n: &Note) -> String {
+    match n {
+        Note::PrepaidAtBook { entry, book } => format!(
+            "{} of it is a prepaid contract handed over in entry {entry}, taken at its book amount as its basis (IRC §723 carryover; the CPA to confirm)",
             money(*book)
         ),
     }
@@ -101,13 +126,18 @@ pub fn tax_basis_csv(ledger: &Ledger, names: &[String], tc: &TaxCapital) -> Stri
     };
     for (row, name) in tc.rows.iter().zip(names) {
         let line = |book: Decimal, tax: &TaxLine, note: &str| -> [String; 5] {
+            let note: String = std::iter::once(note.to_string())
+                .filter(|n| !n.is_empty())
+                .chain(tax.notes.iter().map(note_text))
+                .collect::<Vec<_>>()
+                .join("; ");
             match tax.tax() {
                 Some(t) => [
                     money(book),
                     money(t),
                     money(book - t),
                     "tax basis".into(),
-                    note.into(),
+                    note,
                 ],
                 None => {
                     let needs: Vec<String> =
@@ -118,9 +148,14 @@ pub fn tax_basis_csv(ledger: &Ledger, names: &[String], tc: &TaxCapital) -> Stri
                         String::new(),
                         "open: the CPA's".into(),
                         format!(
-                            "known so far {}; needs {}",
+                            "known so far {}; needs {}{}",
                             money(tax.known),
-                            needs.join("; ")
+                            needs.join("; "),
+                            if note.is_empty() {
+                                String::new()
+                            } else {
+                                format!("; {note}")
+                            }
                         ),
                     ]
                 }
@@ -130,6 +165,7 @@ pub fn tax_basis_csv(ledger: &Ledger, names: &[String], tc: &TaxCapital) -> Stri
         let cash = TaxLine {
             known: row.contributions_cash,
             open: Vec::new(),
+            notes: Vec::new(),
         };
         push(
             name,
@@ -153,11 +189,7 @@ pub fn tax_basis_csv(ledger: &Ledger, names: &[String], tc: &TaxCapital) -> Stri
         push(
             name,
             "Current year net income (loss)",
-            line(
-                b.net_income,
-                &row.net_income,
-                "the book figure: the books know of no difference from it (any other, Schedule M-1, is the CPA's)",
-            ),
+            line(b.net_income, &row.net_income, ""),
         );
         push(
             name,
@@ -230,4 +262,51 @@ pub fn tax_basis_csv(ledger: &Ledger, names: &[String], tc: &TaxCapital) -> Stri
         );
     }
     w
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    fn d(s: &str) -> Decimal {
+        Decimal::from_str(s).unwrap()
+    }
+
+    /// A disposal of contributed property names its built-in gain or loss
+    /// at contribution and §704(c)(1)(A); a purchase's doesn't. A prepaid
+    /// taken at book says so, for the CPA to confirm.
+    #[test]
+    fn disposal_and_prepaid_texts_say_what_the_cpa_needs() {
+        let l = Ledger::new(ledger_core::Currency::USD);
+        let sold = |g: Option<&str>| {
+            open_text(
+                &l,
+                &Open::Disposal {
+                    asset: 7,
+                    proceeds: d("1100.00"),
+                    built_in_gain_704c: g.map(d),
+                },
+            )
+        };
+        let gain = sold(Some("300.00"));
+        assert!(gain.contains("built-in gain of 300.00"), "{gain}");
+        assert!(gain.contains("IRC §704(c)(1)(A)"), "{gain}");
+        let loss = sold(Some("-300.00"));
+        assert!(loss.contains("built-in loss of 300.00"), "{loss}");
+        for none in [sold(None), sold(Some("0"))] {
+            assert!(!none.contains("§704(c)"), "{none}");
+            assert!(
+                none.contains("asset 7's disposal (proceeds 1100.00)"),
+                "{none}"
+            );
+        }
+        let n = note_text(&Note::PrepaidAtBook {
+            entry: 3,
+            book: d("20.00"),
+        });
+        assert!(n.contains("20.00") && n.contains("entry 3") && n.contains("the CPA to confirm"));
+        let i = open_text(&l, &Open::TaxNetIncome { book: d("-5.00") });
+        assert!(i.contains("from the return (-5.00 on the books"), "{i}");
+    }
 }

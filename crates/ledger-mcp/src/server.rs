@@ -1438,16 +1438,19 @@ fn settings_problems(ledger: &Ledger, cfg: &Settings) -> Vec<String> {
 }
 
 /// A parameter and its deprecated alias (one release): the value given,
-/// noting when it came by the alias; both given and different is refused.
+/// noting when it came by the alias; both given and meaning different
+/// values (by `same`: an amount, a day or a rule however written) is
+/// refused.
 fn aliased<'a>(
     name: &str,
     value: Option<&'a str>,
     alias: &str,
     old: Option<&'a str>,
     notes: &mut Vec<String>,
+    same: fn(&str, &str) -> bool,
 ) -> Result<Option<&'a str>, String> {
     match (value, old) {
-        (Some(v), Some(o)) if v != o => Err(format!(
+        (Some(v), Some(o)) if !same(v, o) => Err(format!(
             "{name} {v:?} and its old name {alias} {o:?} disagree: give {name} only"
         )),
         (Some(v), _) => Ok(Some(v)),
@@ -1456,6 +1459,35 @@ fn aliased<'a>(
             Ok(Some(o))
         }
         (None, None) => Ok(None),
+    }
+}
+
+/// Two amounts given for one figure mean the same (`"100"` and
+/// `"100.00"`); text that isn't an amount compares as text.
+fn same_amount(a: &str, b: &str) -> bool {
+    match (a.trim().parse::<Decimal>(), b.trim().parse::<Decimal>()) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => a == b,
+    }
+}
+
+/// Two days given for one date mean the same.
+fn same_day(a: &str, b: &str) -> bool {
+    match (parse_date(a), parse_date(b)) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => a == b,
+    }
+}
+
+/// Two basis rules mean the same, by wire or pre-P3 name
+/// (`"carryover"` and `"carryover_723"`).
+fn same_rule(a: &str, b: &str) -> bool {
+    let rule = |r: &str| {
+        ledger_core::BasisRule::parse(r).or_else(|| ledger_core::BasisRule::parse_legacy(r))
+    };
+    match (rule(a), rule(b)) {
+        (Some(x), Some(y)) => x == y,
+        _ => a == b,
     }
 }
 
@@ -5609,7 +5641,7 @@ impl BooksServer {
     #[tool(
         name = "books.correct_asset",
         title = "Correct a fixed asset",
-        description = "Correct a registered fixed asset's cost, salvage value, useful life, or in-service date (never before its acquisition entry's date) when it was registered wrong, with the reason; omitted fields keep their values. Refused while the books carry depreciation for it (a run posted and not reversed: correct with entries then). Its tag, serial, links, and basis record stay (a contribution's value and built-in gain are as contributed); correct the entry that put it on the books too, so the books and the register agree (books.export fixed_asset_register shows any difference). Journaled with the old figures.",
+        description = "Correct a registered fixed asset's cost, salvage value, useful life, or in-service date (never before its acquisition entry's date) when it was registered wrong, with the reason; omitted fields keep their values. Refused while the books carry depreciation for it (a run posted and not reversed: correct with entries then). Its tag, serial, links and basis record stay (a recorded value at contribution never moves; a pre-P3 basis reads it as the book cost, so its built-in gain moves, noted); correct the entry that put it on the books too (books.export fixed_asset_register shows any difference). Journaled with the old figures.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -5628,6 +5660,7 @@ impl BooksServer {
             "in_service",
             p.in_service.as_deref(),
             &mut notes,
+            same_day,
         )?;
         let mut store = self.lock()?;
         let id = resolve_asset_ref(&store, &p.asset)?;
@@ -5648,11 +5681,19 @@ impl BooksServer {
                 None => a.in_service_date,
             },
         };
+        let before = a.built_in_gain_704c();
         store
             .correct_asset(id, fix, &p.reason)
             .map_err(|e| e.to_string())?;
         let ledger = store.ledger();
         let a = ledger.get_asset(id).expect("resolved");
+        if a.built_in_gain_704c() != before {
+            notes.push(format!(
+                "its basis was recorded before P3 with no value at contribution, which reads as the book cost, so its §704(c) built-in gain moved with the cost ({} to {}): record the value at contribution with books.set_asset_tax_basis",
+                before.map_or("none".into(), money),
+                a.built_in_gain_704c().map_or("none".into(), money)
+            ));
+        }
         Ok(Json(AssetSummaryOne {
             asset_id: id,
             tag: a.tag.clone(),
@@ -5691,6 +5732,7 @@ impl BooksServer {
             "contributor_basis",
             p.contributor_basis.as_deref(),
             &mut notes,
+            same_amount,
         )?;
         let basis = parse_asset_basis(
             &p.rule,
@@ -6256,6 +6298,7 @@ impl BooksServer {
                 "purchase_date",
                 p.purchase_date.as_deref(),
                 &mut notes,
+                same_day,
             )?
             .ok_or("in_service_date is required: the day it was placed in service")?,
         )?;
@@ -6316,6 +6359,7 @@ impl BooksServer {
             "tax_basis_rule",
             p.tax_basis_rule.as_deref(),
             &mut notes,
+            same_rule,
         )?;
         let adjusted = aliased(
             "contributor_adjusted_basis",
@@ -6323,6 +6367,7 @@ impl BooksServer {
             "contributor_basis",
             p.contributor_basis.as_deref(),
             &mut notes,
+            same_amount,
         )?;
         let basis = match rule {
             Some(rule) => Some(parse_asset_basis(
@@ -9235,7 +9280,7 @@ impl BooksServer {
             .map_err(|e| e.to_string());
         }
         let mut csv = String::from(
-            "tag,description,serial,acquired,in_service,cost,salvage,useful_life_months,accumulated_scheduled,accumulated_posted,book_value,status,proceeds,basis_rule,contributor_adjusted_basis,fmv_at_contribution,fmv_recorded,tax_basis_723,depreciable_basis,built_in_gain_704c,sec704c_method,basis_source\n",
+            "tag,description,serial,acquired,in_service,cost,salvage,useful_life_months,accumulated_scheduled,accumulated_posted,book_value,status,proceeds,basis_rule,contributor_adjusted_basis,fmv_at_contribution,fmv_recorded,tax_basis_723,depreciable_basis,built_in_gain_704c,sec704c_1c,sec704c_method,basis_source\n",
         );
         for a in &r.rows {
             let cells = [
@@ -9266,6 +9311,11 @@ impl BooksServer {
                 a.tax_basis_723.map(money).unwrap_or_default(),
                 a.depreciable_basis.map(money).unwrap_or_default(),
                 a.built_in_gain_704c.map(money).unwrap_or_default(),
+                // IRC §704(c)(1)(C): a built-in loss counts only for the
+                // contributor; blank for a purchase or no basis.
+                a.built_in_gain_704c
+                    .map(|g| (g < Decimal::ZERO).to_string())
+                    .unwrap_or_default(),
                 a.sec704c_method
                     .map(|m| m.key())
                     .unwrap_or_default()
@@ -9276,7 +9326,7 @@ impl BooksServer {
             csv.push('\n');
         }
         csv.push_str(&format!(
-            "TOTAL,,,,,{},,,{},{},{},,,,,,,{},{},,,",
+            "TOTAL,,,,,{},,,{},{},{},,,,,,,{},{},,,,",
             money(r.total_cost),
             money(r.total_accumulated_scheduled),
             money(r.total_accumulated_posted),

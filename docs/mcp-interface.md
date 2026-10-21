@@ -605,7 +605,7 @@ life's last day is 9999-12-31 at the latest.
   name's initials without LLC/Inc; "FA" when none). `in_service_date` (the
   day it is ready and available for its use) starts depreciation (P3,
   defect 13; B-15); `purchase_date` is its alias for one release (both
-  given and different: refused; the alias noted in `notes`). The
+  given and meaning different days: refused; the alias noted in `notes`). The
   `acquisition_entry` (posted, debiting the cost account, dated on or
   before the in-service date) gives `acquired_date`, which puts the asset
   on the register; with none, the acquired date is the in-service date.
@@ -632,11 +632,16 @@ life's last day is 9999-12-31 at the latest.
   `accumulated_posted` (what the books carry: its depreciation runs, less
   reversals, a reversal of a reversal reinstating),
   `accumulated_scheduled_through` (what the schedule says is due by
-  `as_of`), `unposted_depreciation` (the difference: run
-  `books.run_depreciation`), `book_value` (cost less posted: what the
-  books carry), and `basis` (as `books.set_asset_tax_basis` reports it).
-  Disposed by `as_of`: every figure 0.00; acquired after `as_of`: the
-  figures null. The rows are the register's (`fixed_asset_register`). An
+  `as_of`), `unposted_depreciation` (the difference for this asset, its
+  schedule less its runs: run `books.run_depreciation`; the register's
+  total `unposted_depreciation` compares the schedules with the general
+  ledger instead, so a hand entry in accumulated depreciation shows there,
+  as `unattributed_accumulated`, not here), `book_value` (cost less
+  posted: what the books carry), and `basis` (as
+  `books.set_asset_tax_basis` reports it). `cost` is always the
+  capitalized cost; `held` says whether the books carry it. Disposed by
+  `as_of`: every other figure 0.00; acquired after `as_of`: those figures
+  null. The rows are the register's (`fixed_asset_register`). An
   asset whose figures can't be computed (one an earlier version took)
   lists with them null and `schedule_error` saying why: one bad asset
   never fails the list.
@@ -675,6 +680,9 @@ life's last day is 9999-12-31 at the latest.
   Refused while the books carry depreciation for it (a run posted and not
   reversed), and for an in-service date before its acquisition entry's
   date; `in_service` is the alias of `in_service_date` for one release.
+  A recorded value at contribution, and so the built-in gain, never
+  moves; a basis recorded before P3 has none and reads it as the book
+  cost, so a cost correction moves its built-in gain, and `notes` says so.
 - `books.run_depreciation { period: "YYYY-MM", asset_id? }`
   → `runs: [{ asset_id, description, period, amount, caught_up, entry_id,
   already_posted }]` and `skipped: [{ asset_id, description, reason }]`.
@@ -731,7 +739,9 @@ life's last day is 9999-12-31 at the latest.
   salvage, useful_life_months, accumulated_scheduled, accumulated_posted,
   book_value, status, proceeds, basis_rule, contributor_adjusted_basis,
   fmv_at_contribution, fmv_recorded, tax_basis_723, depreciable_basis,
-  built_in_gain_704c, sec704c_method, basis_source`, then a TOTAL row.
+  built_in_gain_704c, sec704c_1c, sec704c_method, basis_source`, then a
+  TOTAL row; `sec704c_1c` is `true` for a built-in loss (IRC
+  §704(c)(1)(C)), blank without a contribution basis.
 - `books.show { asset }` opens an asset in the viewer; `page: "assets"`
   and `report: "fixed_asset_register"` open the register.
 

@@ -1021,6 +1021,22 @@ fn the_registers_book_value_is_what_the_books_carry() {
     let _ = id;
 }
 
+/// A second line for the same run (asset, period and entry: a journal
+/// edited by hand) is the run already recorded, as the projection keys it:
+/// its entry is carried once (P3 review, 2026-10-21: replay counted it
+/// twice, 200.00, and a reload once).
+#[test]
+fn a_duplicated_run_line_is_carried_once() {
+    let (mut l, _, id, e) = one_run();
+    l.record_depreciation_run(id, "2026-01", e, d("100.00"))
+        .unwrap();
+    assert_eq!(l.depreciation_runs(id).len(), 1);
+    assert_eq!(
+        l.accumulated_posted(id, date(2026, 1, 31)).unwrap(),
+        d("100.00")
+    );
+}
+
 /// check_depreciation_run: a month, a positive amount in cents, a posted
 /// entry crediting the asset's accumulated depreciation by exactly that;
 /// record_depreciation_run (replay) needs only the asset and entry.

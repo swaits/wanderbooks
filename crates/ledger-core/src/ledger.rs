@@ -2586,7 +2586,11 @@ impl Ledger {
     /// Record a depreciation run (`asset.depreciation_posted`). Checks only
     /// that the asset and the entry exist: every run an earlier version
     /// journaled replays, whatever its period or amount (rules.md B-28; a
-    /// store checks new runs first, [`Self::check_depreciation_run`]).
+    /// store checks new runs first, [`Self::check_depreciation_run`]). A
+    /// second line for the same asset, period and entry (a journal edited
+    /// by hand; a store never writes one) is the run already recorded: one
+    /// entry is carried once, as the projection keys it (P3 review,
+    /// 2026-10-21: replay counted it twice, the reload once).
     pub fn record_depreciation_run(
         &mut self,
         asset: AssetId,
@@ -2600,14 +2604,15 @@ impl Ledger {
         if !self.entries.contains_key(&entry) {
             return Err(LedgerError::UnknownEntry(entry));
         }
-        self.asset_runs
-            .entry(asset)
-            .or_default()
-            .push(assets::DepreciationPosting {
-                period: period.to_string(),
-                entry,
-                amount,
-            });
+        let runs = self.asset_runs.entry(asset).or_default();
+        if runs.iter().any(|r| r.entry == entry && r.period == period) {
+            return Ok(());
+        }
+        runs.push(assets::DepreciationPosting {
+            period: period.to_string(),
+            entry,
+            amount,
+        });
         Ok(())
     }
 

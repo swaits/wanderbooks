@@ -641,7 +641,7 @@ pub fn build_package<B: PackageBooks + ?Sized>(
                 }
             );
             k.push_str(if k1_tax_included {
-                "k1-tax-basis-capital.csv: each member's capital account on the tax basis, as Item L reports it (Form 1065 instructions: the tax-basis method), line by line beside the book figures: cash contributed, property at its adjusted basis (IRC §723), the share of income as figured for tax, distributions at tax basis, and the reconciliation from book to tax capital (the §704(c) built-in gain or loss of contributed property). A line the books can't know (tax depreciation, a basis the books don't hold) is left blank, marked open, and says what the books know so far and what is needed.\n"
+                "k1-tax-basis-capital.csv: each member's capital account on the tax basis, as Item L reports it (Form 1065 instructions: the tax-basis method), line by line beside the book figures: cash contributed, property at its adjusted basis (IRC §723; a prepaid contract handed over at its book amount, the CPA to confirm), distributions at tax basis, and the reconciliation from book to tax capital (the §704(c) built-in gain or loss of contributed property). A line the books can't know is left blank, marked open, and says what the books know so far and what is needed: the share of income as figured for tax (always the return's), so the ending too; tax depreciation; the tax gain on a disposal (with a contributed property's built-in gain or loss); a basis the books don't hold.\n"
             } else {
                 "k1-tax-basis-capital-NOT-INCLUDED.txt: why the tax-basis capital worksheet isn't here.\n"
             });

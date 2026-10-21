@@ -31,20 +31,29 @@
 //!      `known`, the part the books have, and `open`, each missing item
 //!      with the book amount it replaces. A line with no open item is the
 //!      tax figure.
-//!      - Net income: tax depreciation of every fixed asset in service
-//!        in the span (MACRS, and for contributed property the §704(c)
-//!        method's allocation) is the CPA's, as is the tax gain on a
-//!        disposal; `known` is the book share, the open items say so.
+//!      - Net income: always the return's (Item L: "as figured for tax
+//!        purposes"); the books are kept on their own basis and can't
+//!        know a book-tax difference (Schedule M-1). `known` is the book
+//!        share; the open items name the differences the books do see:
+//!        tax depreciation of every fixed asset in service in the span
+//!        (MACRS, and for contributed property the §704(c) method's
+//!        allocation), and the tax gain on a disposal, with the
+//!        property's built-in gain or loss at contribution (§704(c)(1)(A)).
 //!      - Property distributed: its adjusted tax basis is the CPA's.
 //!      - A change in book capital the books can't explain ("other").
 //!      - Beginning capital from earlier years whose tax figures were open.
 //!   4. Each row: ending.known = beginning.known + contributions_cash +
 //!      contributions_property.known + net_income.known + other.known −
 //!      distributions.known, exactly; ending.open is every open item of
-//!      the row.
+//!      the row, and so is always open (net income is).
 //!   5. Reconciliation: book ending − tax ending.known = (book beginning −
 //!      tax beginning.known) + built-in gain share + property without a
 //!      basis (book) − property distributed (book), exactly.
+//!   6. Property contributed to a prepaid account (a prepaid-expense
+//!      schedule's balance account) with no fixed asset for it is taken
+//!      at its book amount, with a note (Note::PrepaidAtBook), never open:
+//!      a service contract's §723 basis is what the books recorded (the
+//!      CPA to confirm).
 //! SCENARIOS:
 //!   1. IF two members jointly contribute a laptop worth 1,440.00 whose
 //!      adjusted basis is 1,688.40, and nothing else happens:
@@ -55,6 +64,9 @@
 //!      - SHOULD leave the tax net income open, with the book depreciation
 //!        posted in the span
 //!      BECAUSE tax depreciation is the CPA's (rules.md B-15, B-25).
+//!   3. IF nothing but cash comes in and goes out:
+//!      - SHOULD still leave the tax net income open, the book share known
+//!      BECAUSE income "as figured for tax purposes" is the return's.
 //! ```
 
 use crate::k1::{K1Kind, K1Row, k1_detail};
@@ -158,17 +170,49 @@ pub enum Open {
         contributed_book: Decimal,
     },
     /// A fixed asset disposed in the span: its tax gain or loss (from its
-    /// adjusted tax basis) is the CPA's.
+    /// adjusted tax basis) is the CPA's. For contributed property, the gain
+    /// or loss is shared so as to take account of its built-in gain or loss
+    /// (IRC §704(c)(1)(A)), which goes to the contributing member(s).
     Disposal {
         /// The asset.
         asset: AssetId,
         /// The proceeds.
         proceeds: Decimal,
+        /// Its §704(c) built-in gain (+) or loss (−) at contribution, when
+        /// it is contributed property with a basis recorded; `None` for a
+        /// purchase or no basis.
+        built_in_gain_704c: Option<Decimal>,
+    },
+    /// The member's share of net income (loss) as figured for tax purposes
+    /// (Item L): the return's, never the books'. The books are kept on
+    /// their own basis; every difference between book and tax income
+    /// (Schedule M-1) is the CPA's. `book` is the member's book share.
+    TaxNetIncome {
+        /// The member's share of book net income (loss).
+        book: Decimal,
     },
     /// A change in book capital the books can't explain (the statement of
     /// members' equity's "other"): its tax treatment is the CPA's.
     OtherChange {
         /// The book amount.
+        book: Decimal,
+    },
+}
+
+/// A figure the worksheet takes on a stated rule, for the CPA to confirm
+/// (INVARIANT 6).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Note {
+    /// Property contributed in `entry` to a prepaid account (the balance
+    /// account of a prepaid-expense schedule: a service contract the
+    /// member handed over, B-13) with no fixed asset for it: its §723
+    /// basis is taken as its book amount, this member's share `book`
+    /// (DECISION, P3 review 2026-10-21: the contract's carryover basis is
+    /// what the books recorded for it; the CPA to confirm).
+    PrepaidAtBook {
+        /// The contribution entry.
+        entry: EntryId,
+        /// This member's share of the prepaid, at book and at basis.
         book: Decimal,
     },
 }
@@ -181,6 +225,9 @@ pub struct TaxLine {
     /// What the CPA must still settle; empty when `known` is the tax
     /// figure.
     pub open: Vec<Open>,
+    /// Figures taken on a stated rule, for the CPA to confirm (INVARIANT
+    /// 6); they never make a line open.
+    pub notes: Vec<Note>,
 }
 
 impl TaxLine {
@@ -188,6 +235,7 @@ impl TaxLine {
         Self {
             known,
             open: Vec::new(),
+            notes: Vec::new(),
         }
     }
 
@@ -319,6 +367,8 @@ fn share(whole: Decimal, weights: &[Decimal]) -> Result<Vec<Decimal>, LedgerErro
 struct EntryProperty {
     /// Σ built-in gain of the linked assets with a contribution basis.
     built_in_gain: Decimal,
+    /// The property debited to prepaid accounts (INVARIANT 6), at book.
+    prepaid: Decimal,
     /// The property's book amount with no basis in the books.
     without_basis: Decimal,
     /// The linked assets' values exceed the entry's property (linked,
@@ -339,6 +389,24 @@ fn entry_property(
         })
         .try_fold(Decimal::ZERO, |t, l| t.checked_add(l.amount.amount))
         .ok_or_else(too_large)?;
+    // Prepaid accounts: those a prepaid-expense schedule amortizes, and no
+    // registered asset carries its cost in (INVARIANT 6).
+    let prepaid_account = |id: AccountId| {
+        ledger.schedules().any(|s| {
+            s.kind == crate::schedules::ScheduleKind::PrepaidExpense && s.balance_account == id
+        }) && !ledger.registered_assets().any(|a| a.cost_account == id)
+    };
+    let prepaid = entry
+        .lines()
+        .iter()
+        .filter(|l| {
+            l.side == Side::Debit
+                && crate::k1::is_property_account(ledger, cash, l.account)
+                && prepaid_account(l.account)
+        })
+        .try_fold(Decimal::ZERO, |t, l| t.checked_add(l.amount.amount))
+        .ok_or_else(too_large)?;
+    let pool = pool - prepaid;
     let (mut linked, mut big, mut unknown) = (Decimal::ZERO, Decimal::ZERO, Decimal::ZERO);
     for a in ledger
         .registered_assets()
@@ -359,6 +427,7 @@ fn entry_property(
     if linked > pool {
         return Ok(EntryProperty {
             built_in_gain: Decimal::ZERO,
+            prepaid,
             without_basis: pool,
             mismatch: Some((linked, pool)),
         });
@@ -366,6 +435,7 @@ fn entry_property(
     let rest = pool - linked;
     Ok(EntryProperty {
         built_in_gain: big,
+        prepaid,
         without_basis: unknown.checked_add(rest).ok_or_else(too_large)?,
         mismatch: None,
     })
@@ -385,6 +455,7 @@ fn span(
     let mut without = vec![Decimal::ZERO; n];
     let mut distributed = vec![Decimal::ZERO; n];
     let mut prop_open: Vec<Vec<Open>> = vec![Vec::new(); n];
+    let mut prop_notes: Vec<Vec<Note>> = vec![Vec::new(); n];
     let mut dist_open: Vec<Vec<Open>> = vec![Vec::new(); n];
     // Entries in journal order, each once.
     let mut entries: Vec<EntryId> = Vec::new();
@@ -412,7 +483,14 @@ fn span(
             let p = entry_property(ledger, e, cash)?;
             let g = share(p.built_in_gain, &takes)?;
             let w = share(p.without_basis, &takes)?;
+            let pp = share(p.prepaid, &takes)?;
             for i in (0..n).filter(|&i| !takes[i].is_zero()) {
+                if !pp[i].is_zero() {
+                    prop_notes[i].push(Note::PrepaidAtBook {
+                        entry: id,
+                        book: pp[i],
+                    });
+                }
                 big[i] = big[i].checked_add(g[i]).ok_or_else(too_large)?;
                 without[i] = without[i].checked_add(w[i]).ok_or_else(too_large)?;
                 if let Some((linked, property)) = p.mismatch {
@@ -495,6 +573,7 @@ fn span(
             open.push(Open::Disposal {
                 asset: a.id,
                 proceeds: proceeds.amount,
+                built_in_gain_704c: a.basis_figures()?.and_then(|f| f.built_in_gain_704c),
             });
         }
     }
@@ -508,6 +587,7 @@ fn span(
                 } else {
                     vec![Open::PriorYears]
                 },
+                notes: Vec::new(),
             },
             None => TaxLine::complete(book.beginning),
         };
@@ -518,10 +598,16 @@ fn span(
                 .and_then(|x| x.checked_sub(without[i]))
                 .ok_or_else(too_large)?,
             open: std::mem::take(&mut prop_open[i]),
+            notes: std::mem::take(&mut prop_notes[i]),
         };
         let net_income = TaxLine {
             known: book.net_income,
-            open: open.clone(),
+            open: std::iter::once(Open::TaxNetIncome {
+                book: book.net_income,
+            })
+            .chain(open.iter().cloned())
+            .collect(),
+            notes: Vec::new(),
         };
         let other = TaxLine {
             known: book.other,
@@ -530,6 +616,7 @@ fn span(
             } else {
                 vec![Open::OtherChange { book: book.other }]
             },
+            notes: Vec::new(),
         };
         let distributions = TaxLine {
             known: book
@@ -537,6 +624,7 @@ fn span(
                 .checked_sub(distributed[i])
                 .ok_or_else(too_large)?,
             open: std::mem::take(&mut dist_open[i]),
+            notes: Vec::new(),
         };
         let known = beginning
             .known
@@ -558,6 +646,7 @@ fn span(
             .iter()
             .flat_map(|l| l.open.iter().cloned())
             .collect(),
+            notes: Vec::new(),
         };
         let reconciliation = Reconciliation {
             beginning: book
@@ -601,8 +690,8 @@ mod tests {
             vec![d("-510.69"), d("-510.68")]
         );
         assert_eq!(
-            share(d("25"), &[d("525"), d("525")]).unwrap(),
-            vec![d("12.50"), d("12.50")]
+            share(d("36"), &[d("525"), d("525")]).unwrap(),
+            vec![d("18.00"), d("18.00")]
         );
         assert_eq!(
             share(d("10"), &[d("0"), d("0")]).unwrap(),

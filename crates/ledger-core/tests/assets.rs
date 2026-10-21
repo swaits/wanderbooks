@@ -463,11 +463,11 @@ fn acquisition_links_only_to_a_live_entry_debiting_the_cost_account() {
     let capital = ledger
         .add_account("3000", "Capital", AccountType::Equity, None, false)
         .unwrap();
-    let id = van_asset(&mut ledger, 1650, cost, accum, expense);
+    let id = van_asset(&mut ledger, 1480, cost, accum, expense);
     let post = |l: &mut Ledger, dr: u64, cr: u64| {
         let e = l.create_entry(date(2026, 1, 15), "contribution");
-        l.add_line(e, dr, Side::Debit, usd("1650")).unwrap();
-        l.add_line(e, cr, Side::Credit, usd("1650")).unwrap();
+        l.add_line(e, dr, Side::Debit, usd("1480")).unwrap();
+        l.add_line(e, cr, Side::Credit, usd("1480")).unwrap();
         l.post_entry(e).unwrap();
         e
     };

@@ -1079,6 +1079,34 @@ fn basis_rule_legacy_names_are_aliases() {
     let _ = t2;
 }
 
+/// A name and its alias that mean the same, however written, agree (P3
+/// review, 2026-10-21: they were compared as text, so "100" and "100.00",
+/// or carryover and carryover_723, were refused as disagreeing).
+#[test]
+fn a_name_and_its_alias_that_mean_the_same_agree() {
+    let mut m = books("alias-same");
+    let (_, t) = m.register_ok(json!({}));
+    let r = m.ok(
+        "books.set_asset_tax_basis",
+        json!({"asset": t, "rule": "carryover_723", "contributor_adjusted_basis": "900",
+               "contributor_basis": "900.00", "fmv_at_contribution": "1200.00"}),
+    );
+    assert_eq!(r["basis"]["contributor_adjusted_basis"], "900.00", "{r}");
+    m.register_ok(
+        json!({"basis_rule": "carryover_723", "tax_basis_rule": "carryover",
+        "contributor_adjusted_basis": "400.00", "contributor_basis": "400",
+        "fmv_at_contribution": "1200.00"}),
+    );
+    m.register_ok(json!({"basis_rule": "purchase", "tax_basis_rule": "cost"}));
+    assert_eq!(m.assets().len(), 3);
+    let why = m.refuse(
+        "books.set_asset_tax_basis",
+        json!({"asset": t, "rule": "carryover_723", "contributor_adjusted_basis": "900.00",
+               "contributor_basis": "900.01", "fmv_at_contribution": "1200.00"}),
+    );
+    assert!(why.contains("disagree"), "{why}");
+}
+
 /// A contribution's fair market value is a fact the human gives, never
 /// assumed from the cost (review R11): without it the call is refused.
 #[test]
@@ -1507,6 +1535,7 @@ fn export_fixed_asset_register_carries_posted_scheduled_and_704c() {
             "tax_basis_723",
             "depreciable_basis",
             "built_in_gain_704c",
+            "sec704c_1c",
             "sec704c_method",
             "basis_source"
         ]
@@ -1526,7 +1555,14 @@ fn export_fixed_asset_register_carries_posted_scheduled_and_704c() {
     assert_eq!(canon(&r[col("tax_basis_723")]), "650.25");
     assert_eq!(canon(&r[col("built_in_gain_704c")]), "549.75");
     assert_eq!(r[col("fmv_recorded")], "true");
+    assert_eq!(r[col("sec704c_1c")], "false", "a built-in gain");
+    assert_eq!(
+        csv_row("CONV-1")[col("sec704c_1c")],
+        "true",
+        "a built-in loss"
+    );
     let r = csv_row("BOUGHT-1");
+    assert_eq!(r[col("sec704c_1c")], "", "a purchase");
     assert_eq!(canon(&r[col("accumulated_posted")]), "100");
     assert_eq!(canon(&r[col("book_value")]), "1100");
     assert_eq!(r[col("contributor_adjusted_basis")], "");
@@ -1730,4 +1766,55 @@ fn a_skipped_month_is_caught_up_and_said() {
         json!({"entry_id": entry, "date": "2026-04-02", "description": "undo"}),
     );
     assert!(err.contains("can't be reversed"), "{err}");
+}
+
+/// A basis recorded before P3 has no value at contribution and reads it as
+/// the book cost, so correcting the cost moves its built-in gain: the
+/// result says so (P3 review, 2026-10-21: the tool text said the built-in
+/// gain was "as contributed" whatever the record). By hand: cost 1,200.00,
+/// basis 400.00, gain 800.00; cost corrected to 1,100.00, gain 700.00.
+#[test]
+fn correcting_a_legacy_contributions_cost_says_its_built_in_gain_moved() {
+    let mut m = books("legacy-correct");
+    let (id, t) = m.register_ok(json!({}));
+    let dir = m.books_dir.take().unwrap();
+    let data = m.data.clone();
+    drop(m);
+    let mut w = ledger_store::JournalWriter::open(&data.join("journal.jsonl")).unwrap();
+    w.append(
+        "asset.tax_basis_set",
+        json!({"asset_id": id, "rule": "carryover", "contributor_basis": "400.00"}),
+    )
+    .unwrap();
+    drop(w);
+    let toml = dir.join("wanderbooks.toml");
+    let mut m = Mcp::start(&dir, &toml);
+    m.books_dir = Some(dir);
+    assert_eq!(m.asset(id)["basis"]["built_in_gain_704c"], "800.00");
+    let r = m.ok(
+        "books.correct_asset",
+        json!({"asset": t, "cost": "1100.00", "reason": "invoice misread"}),
+    );
+    assert_eq!(r["basis"]["built_in_gain_704c"], "700.00", "{r}");
+    let notes = r["notes"].to_string();
+    assert!(
+        notes.contains("moved with the cost (800.00 to 700.00)"),
+        "{notes}"
+    );
+    // A recorded value never moves, and says nothing.
+    m.ok(
+        "books.set_asset_tax_basis",
+        json!({"asset": t, "rule": "carryover_723", "contributor_adjusted_basis": "400.00",
+               "fmv_at_contribution": "1100.00"}),
+    );
+    let r = m.ok(
+        "books.correct_asset",
+        json!({"asset": t, "cost": "1000.00", "reason": "invoice misread again"}),
+    );
+    assert_eq!(r["basis"]["built_in_gain_704c"], "700.00", "{r}");
+    assert!(
+        r.get("notes")
+            .is_none_or(|n| n.as_array().is_some_and(|a| a.is_empty())),
+        "{r}"
+    );
 }

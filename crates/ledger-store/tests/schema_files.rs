@@ -369,3 +369,36 @@ fn new_books_get_their_schemas_own_file() {
         assert_eq!(ledger_store::is_database_file(name), is, "{name}");
     }
 }
+
+/// A shipped migration's text never changes (P3 review, 2026-10-21: the
+/// assets' v13 columns were first added to the v13 already on main, so a
+/// v13 file built before them would open without them). Each schema's
+/// file is built once by these scripts; a change is a new migration. The
+/// SHA-256 of each shipped one, v1 to v13 (append the next as it ships).
+#[test]
+fn a_shipped_migration_never_changes() {
+    use sha2::{Digest, Sha256};
+    const SHIPPED: [&str; 13] = [
+        "8b253dded247d8518a7454b1c894a147ac211ee32ea2671dca2c586c5184c046",
+        "9fc19f844ed33b8f08eee8437ee3eb038e854737d5febe79ce3ac80abeb18614",
+        "215af9a7a54cda382f721488fedb34f68eb36399730de1b23371d44eb16fd79d",
+        "7923eb31ab8a08f20b8d7df017814095861478cb796af14994dbb85dbe558c20",
+        "95caa91ee3327b5590ad1ddefa76bad189950091cfcd140121f978e0af258e8a",
+        "74181a819beb4349808b9a095fbcda0073890fa6f54bc3fa5535c5a6644e35c6",
+        "df008d2a7cf832173908d1e33f795b88d272eae9cd23a5ebebe7207871d7076f",
+        "d0cd600ef4aa7bc2301e682bace23f3ce311b5f991e5d7bff447a9520ca8e89f",
+        "b2e54e8cf47b7f55f42f3fd4876fce5183e229aea08059518a50cbbffdca2db2",
+        "8881527992c586f69644276db921e640fb6548ee1d2f7c313a46c53e1e63430e",
+        "cc18b31e929b5889c0d09190b3211ccefd9d73df8e1e05c93f9e460097e1553a",
+        "dd2a93d760350f2edd9462f4a52888c0645040582739d3a93b17a3195238d501",
+        "9aa8a0ea7ea15315a4e38281e3a6d4e14beb26333991ebb2824d9c8cc5a51941",
+    ];
+    for (i, want) in SHIPPED.iter().enumerate() {
+        let got: String = Sha256::digest(MIGRATIONS[i].as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(&got, want, "migration v{} changed after it shipped", i + 1);
+    }
+    assert_eq!(MIGRATIONS.len() as u32, SCHEMA_VERSION);
+}

@@ -561,9 +561,8 @@ fn replayed_bases_and_shares_past_the_limit_are_accepted() {
     ));
     b.ledger.replay_set_entry_parties(e, &shares).unwrap();
     assert_eq!(b.ledger.entry_parties(e), &shares);
-    let money = ledger_core::parties::money_accounts(&b.ledger, &[b.cash]);
-    let why = ledger_core::shares::resolve(b.ledger.get_entry(e).unwrap(), &shares, &money, &[])
-        .unwrap_err();
+    let money = ledger_core::parties::money_accounts(&b.ledger, &[b.cash], &[]);
+    let why = ledger_core::shares::resolve(&b.ledger, e, &shares, &money, &[]).unwrap_err();
     assert!(why.contains("too large to compute"), "{why}");
     // Replay still checks what every version checked.
     assert_eq!(

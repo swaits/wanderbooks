@@ -564,7 +564,7 @@ pub fn show_list(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
         ui.add(
             egui::Label::new(
                 RichText::new(format!(
-                    "{period_label}: Paid out is what each party's posted entries moved out of cash, cards, and what's owed back to whoever paid for the company; Received in is what came back in; Net is paid out less received (a plus means more came in). Entries counts the posted ones in the period. The 1099 amount, on each party's page, is the 1099 worksheet's."
+                    "{period_label}, cash basis: Paid out is the money each party's posted entries paid it, from cash, a card, or a member or lender paying for the company; Received in is the money that came in from it; Net is paid out less received (a plus means more came in). Property contributed or distributed in kind is on each party's page. Entries counts the posted ones in the period. The 1099 amount, on each party's page, is the 1099 worksheet's."
                 ))
                 .font(theme::regular(11.5))
                 .color(p.faint),
@@ -575,6 +575,21 @@ pub fn show_list(ui: &mut Ui, b: &Books, shell: &mut Shell<'_>) {
             shell.go(Route::Party(id));
         }
     });
+}
+
+/// The party's totals with property in kind (basis all, rules.md B-35
+/// item 4), when it gave or took any in the period: "With property
+/// contributed or distributed: paid $X, received $Y". None when nothing
+/// moved in kind (the cash totals are then the whole story).
+pub fn in_kind_text(flow: &crate::books::PartyFlow) -> Option<String> {
+    if flow.paid_in_kind.is_zero() && flow.received_in_kind.is_zero() {
+        return None;
+    }
+    Some(format!(
+        "With property contributed or distributed: paid {}, received {}",
+        fmt::dollars(flow.paid + flow.paid_in_kind),
+        fmt::dollars(flow.received + flow.received_in_kind)
+    ))
 }
 
 /// A number tile on a party's page: label, amount, how it's computed,
@@ -673,14 +688,14 @@ pub fn show_party(ui: &mut Ui, b: &Books, id: PartyId, shell: &mut Shell<'_>) {
         tiles.push((
             "Paid out".into(),
             Some(flow.paid),
-            format!("{label}, {span_words}: what this party's posted entries moved out of cash, cards, and what's owed back to whoever paid for the company (net of refunds and reversals of payments)."),
-            Some((label.clone(), p.muted)),
+            format!("{label}, {span_words}, cash basis: the money this party's posted entries paid it, from cash, a card, or a member or lender paying for the company (net of reversals of payments; a refund is received in). A bill counts once it is paid."),
+            Some((format!("{label} · cash basis"), p.muted)),
         ));
         tiles.push((
             "Received in".into(),
             Some(flow.received),
-            format!("{label}, {span_words}: what this party's posted entries brought into cash and those accounts (net of reversals)."),
-            Some((label.clone(), p.muted)),
+            format!("{label}, {span_words}, cash basis: the money this party's posted entries brought in (net of reversals)."),
+            Some((format!("{label} · cash basis"), p.muted)),
         ));
         let net = flow.net();
         tiles.push((
@@ -771,6 +786,21 @@ pub fn show_party(ui: &mut Ui, b: &Books, id: PartyId, shell: &mut Shell<'_>) {
                 r.context_menu(|ui| widgets::copy_item(ui, "Copy amount", &v.to_string()));
             }
         });
+        // Basis all (rules.md B-35 item 4): property in kind, when any.
+        if let Some(text) = in_kind_text(&flow) {
+            ui.add_space(6.0);
+            ui.add(
+                egui::Label::new(
+                    RichText::new(text)
+                        .font(theme::regular(12.5))
+                        .color(p.muted),
+                )
+                .wrap(),
+            )
+            .on_hover_text(
+                "Basis all (books.party basis \"all\"): the money above plus property contributed or distributed in kind, as the statement of members' equity counts it.",
+            );
+        }
 
         // A member's page is their capital account statement too.
         if let Some(st) = b.capital_statement(id, span) {
@@ -939,6 +969,23 @@ fn facts_card(ui: &mut Ui, b: &Books, party: &Party, go: &mut Option<Route>) {
                     }
                 }
                 ui.end_row();
+                if !party.creditor_of.is_empty() {
+                    k(ui, "Owed on");
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        for &a in &party.creditor_of {
+                            if widgets::link(ui, RichText::new(b.account_name(a)).color(p.accent))
+                                .on_hover_text(
+                                    "What the company owes this party itself on (its card, its loan, what the members advanced): a charge or fee credited to it never counts as paying them.",
+                                )
+                                .clicked()
+                            {
+                                *go = Some(Route::Account(a));
+                            }
+                        }
+                    });
+                    ui.end_row();
+                }
                 if let Some(v) = party.vendor {
                     k(ui, "Vendor record");
                     if widgets::link(ui, RichText::new(format!("vendor {v}")).color(p.accent))
@@ -1229,7 +1276,7 @@ fn entries_card(ui: &mut Ui, b: &Books, info: &PartyInfo, go: &mut Option<Route>
                             .collect();
                         sub = format!(
                             "Their share, {} of {}, with {} · {sub}",
-                            super::entry::share_text(mine),
+                            super::entry::share_text(mine, true, e.reversal_of),
                             fmt::dollars_or(e.amount),
                             others.join(" & ")
                         );

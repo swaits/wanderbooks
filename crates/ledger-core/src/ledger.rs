@@ -2358,6 +2358,14 @@ impl Ledger {
             .collect()
     }
 
+    /// Whether `entry` is a period's closing entry ([`Self::closing_entry_ids`]
+    /// without building the set: O(periods)).
+    pub fn is_closing_entry(&self, entry: EntryId) -> bool {
+        self.periods
+            .values()
+            .any(|p| p.closing_entry == Some(entry))
+    }
+
     /// All periods, in creation order.
     pub fn list_periods(&self) -> Vec<&Period> {
         let mut ids: Vec<PeriodId> = self.periods.keys().copied().collect();
@@ -3272,6 +3280,7 @@ impl Ledger {
                         tin: None,
                         vendor: None,
                         customer: None,
+                        creditor_of: std::collections::BTreeSet::new(),
                     },
                 );
                 id
@@ -3397,6 +3406,7 @@ impl Ledger {
                 tin: None,
                 vendor: None,
                 customer: None,
+                creditor_of: std::collections::BTreeSet::new(),
             },
         );
         Ok(id)
@@ -3651,6 +3661,95 @@ impl Ledger {
             }
         }
         Ok(())
+    }
+
+    /// Name a party the creditor of a liability account the company owes
+    /// it itself on (`on`), or stop (`!on`): the card it issued, the loan
+    /// it made, what the members advanced (each member).
+    ///
+    /// ```text
+    /// GOAL: the books know whose each card, loan and advance is, so a
+    ///       credit to it never counts as paying that party (a fee on its
+    ///       own card, interest on its own loan, a distribution still owed
+    ///       to a member: a promise, not a payment).
+    /// SOURCE: crate::parties INVARIANT 5; rules.md B-35 (DECISION, owner,
+    ///         2026-10-20: "a liability credit never counts as paying that
+    ///         liability's own creditor").
+    /// SCENARIOS:
+    ///   1. IF the party or the account is unknown: SHOULD refuse.
+    ///   2. IF the account isn't a liability, is a placeholder, or is
+    ///      payables or a payroll withholding (owed to many, through their
+    ///      own records): SHOULD refuse, changing nothing.
+    ///   3. Naming it twice, or stopping one never named, changes nothing.
+    ///   4. Several parties may be one account's creditors (both members,
+    ///      for what the members advanced).
+    /// ```
+    pub fn set_party_creditor(
+        &mut self,
+        id: crate::PartyId,
+        account: AccountId,
+        on: bool,
+    ) -> Result<(), LedgerError> {
+        self.check_set_party_creditor(id, account, on)?;
+        let p = self.parties.get_mut(&id).expect("checked");
+        if on {
+            p.creditor_of.insert(account);
+        } else {
+            p.creditor_of.remove(&account);
+        }
+        Ok(())
+    }
+
+    /// The validation behind [`Self::set_party_creditor`].
+    pub fn check_set_party_creditor(
+        &self,
+        id: crate::PartyId,
+        account: AccountId,
+        on: bool,
+    ) -> Result<(), LedgerError> {
+        if !self.parties.contains_key(&id) {
+            return Err(LedgerError::UnknownParty(id));
+        }
+        let a = self
+            .chart
+            .get(account)
+            .ok_or(LedgerError::UnknownAccount(account))?;
+        if !on {
+            return Ok(());
+        }
+        if a.account_type != AccountType::Liability {
+            return Err(LedgerError::InvalidParty(format!(
+                "account {} isn't a liability: a party is the creditor only of what the company owes it (a card, a loan, what the members advanced)",
+                a.code
+            )));
+        }
+        if a.placeholder {
+            return Err(LedgerError::InvalidParty(format!(
+                "account {} is a placeholder: name the creditor of the account under it that is posted to",
+                a.code
+            )));
+        }
+        let many = PAYROLL[2..]
+            .iter()
+            .chain([&PAYABLES])
+            .any(|c| self.role_account(c) == Some(account));
+        if many {
+            return Err(LedgerError::InvalidParty(format!(
+                "account {} is owed to many parties through their own records (bills, payroll): it has no one creditor",
+                a.code
+            )));
+        }
+        Ok(())
+    }
+
+    /// The parties named the creditor of `account`, by id
+    /// ([`Self::set_party_creditor`]).
+    pub fn creditors_of(&self, account: AccountId) -> Vec<crate::PartyId> {
+        self.parties
+            .values()
+            .filter(|p| p.creditor_of.contains(&account))
+            .map(|p| p.id)
+            .collect()
     }
 
     /// Record (or clear) a party's W-4 facts.

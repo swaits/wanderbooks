@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 816160434c103e96360af20c33f0f16533f84b4c6599ea517ce6b1569139411f # shrinks to lines = [(0, Debit, 1), (1, Credit, 1)], who = Vendor, owed = []
+cc 38876dbe146abc3025abf7a96f9addc1de590a95de893435df024c709cb0672e # shrinks to steps = [(true, 0, false)]

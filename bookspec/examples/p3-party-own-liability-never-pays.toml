@@ -1,0 +1,240 @@
+# P3 defect 24 and wanderbooks rules.md B-35 item 6: a credit to a
+# liability the company owes a party itself never counts as paying that
+# party. Regression test: ledger-core tests/spec_party_totals.rs
+# defect24_a_credit_to_a_partys_own_liability_never_pays_it. The shape:
+# bookspec/README.md.
+
+id = "p3-party-own-liability-never-pays"
+title = "A credit to what the company owes a party itself never pays it"
+rule = """
+A party may be named the creditor of the liabilities the company owes it
+itself: a card's issuer, a loan's lender, each member for what the
+members advanced. For an entry naming it, a credit to one is a promise,
+not a payment: a fee on the issuer's own card, equipment bought on the
+seller's own note, a distribution credited to what the members are owed.
+It counts when it is paid. Property a member contributes subject to a
+loan counts at its value net of the loan, in kind.
+"""
+status = "AUTHORITY"
+sources = [
+  "Helvering v. Price, 309 U.S. 409, 412-413 (1940): a promise to pay, even a secured one, is not payment (wanderbooks docs/spec/sources/helvering-v-price-1940.md)",
+  "Treas. Reg. §1.704-1(b)(2)(iv)(b)(2): property contributed, net of liabilities the partnership takes it subject to (docs/spec/sources/irs-capital-accounts.md)",
+  "DECISION (owner, 2026-10-20): a liability credit never counts as paying that liability's own creditor (rules.md B-35)",
+]
+tags = ["parties", "creditors", "cards", "notes", "distributions", "members"]
+
+[setup]
+currency = "USD"
+fiscal_year_start = "01-01"
+basis = "accrual"
+rounding = "half-even"
+cash_accounts = ["1000"]
+financing_accounts = ["2100", "2500"]
+
+[[setup.accounts]]
+code = "1000"
+name = "Checking"
+type = "asset"
+
+[[setup.accounts]]
+code = "1500"
+name = "Equipment"
+type = "asset"
+
+[[setup.accounts]]
+code = "2050"
+name = "Business Card"
+type = "liability"
+
+[[setup.accounts]]
+code = "2100"
+name = "Due to Members"
+type = "liability"
+
+[[setup.accounts]]
+code = "2500"
+name = "Note Payable"
+type = "liability"
+
+[[setup.accounts]]
+code = "3000"
+name = "Capital — Tobin Harlow"
+type = "equity"
+
+[[setup.accounts]]
+code = "3001"
+name = "Capital — Morgan Ellis"
+type = "equity"
+
+[[setup.accounts]]
+code = "6400"
+name = "Bank Fees"
+type = "expense"
+
+[[setup.parties]]
+name = "Harbor Bank"
+roles = ["financial_institution"]
+creditor_of = ["2050"]
+
+[[setup.parties]]
+name = "Lakeside Supply"
+roles = []
+creditor_of = ["2500"]
+
+[[setup.parties]]
+name = "Tobin Harlow"
+roles = ["member"]
+creditor_of = ["2100"]
+
+[[setup.parties]]
+name = "Morgan Ellis"
+roles = ["member"]
+creditor_of = ["2100"]
+
+[[setup.members]]
+name = "Tobin Harlow"
+share = "0.5"
+capital_account = "3000"
+
+[[setup.members]]
+name = "Morgan Ellis"
+share = "0.5"
+capital_account = "3001"
+
+# 1. The issuer's fee on its own card: neither.
+[[events]]
+date = "2026-05-01"
+description = "Card fee"
+parties = [{ party = "Harbor Bank" }]
+lines = [
+  { account = "6400", side = "debit", amount = "25.00" },
+  { account = "2050", side = "credit", amount = "25.00" },
+]
+
+# 2. The card paid off: paid to the issuer.
+[[events]]
+date = "2026-05-20"
+description = "Card payment"
+parties = [{ party = "Harbor Bank" }]
+lines = [
+  { account = "2050", side = "debit", amount = "125.00" },
+  { account = "1000", side = "credit", amount = "125.00" },
+]
+
+# 3. A distribution to Tobin credited to what the members are owed:
+# still owed, counts as nothing.
+[[events]]
+date = "2026-06-30"
+description = "Distribution declared"
+parties = [{ party = "Tobin Harlow" }]
+lines = [
+  { account = "3000", side = "debit", amount = "200.00" },
+  { account = "2100", side = "credit", amount = "200.00" },
+]
+
+# 4. It is paid: paid, money.
+[[events]]
+date = "2026-07-15"
+description = "Distribution paid"
+parties = [{ party = "Tobin Harlow" }]
+lines = [
+  { account = "2100", side = "debit", amount = "200.00" },
+  { account = "1000", side = "credit", amount = "200.00" },
+]
+
+# 5. Equipment on the seller's own note: neither.
+[[events]]
+date = "2026-08-01"
+description = "Equipment on a note"
+parties = [{ party = "Lakeside Supply" }]
+lines = [
+  { account = "1500", side = "debit", amount = "900.00" },
+  { account = "2500", side = "credit", amount = "900.00" },
+]
+
+# 6. A payment on the note: paid.
+[[events]]
+date = "2026-09-01"
+description = "Note payment"
+parties = [{ party = "Lakeside Supply" }]
+lines = [
+  { account = "2500", side = "debit", amount = "300.00" },
+  { account = "1000", side = "credit", amount = "300.00" },
+]
+
+# 7. Equipment worth 1,000.00 Morgan contributes subject to 200.00 owed
+# on the note: 800.00 received, in kind (before P3: "paid 200.00").
+[[events]]
+date = "2026-09-15"
+description = "Equipment contributed with its loan"
+parties = [{ party = "Morgan Ellis" }]
+lines = [
+  { account = "1500", side = "debit", amount = "1000.00" },
+  { account = "2500", side = "credit", amount = "200.00" },
+  { account = "3001", side = "credit", amount = "800.00" },
+]
+
+[[expect]]
+query = "party_part"
+entry = 1
+party = "Harbor Bank"
+values = { resolved = "-25.00", direction = "neither", cash = "0.00", in_kind = "0.00" }
+
+# Before naming the issuer the card's creditor: 150.00.
+[[expect]]
+query = "party_totals"
+party = "Harbor Bank"
+basis = "all"
+from = "2026-01-01"
+to = "2026-12-31"
+values = { paid = "125.00", received = "0.00" }
+
+[[expect]]
+query = "party_part"
+entry = 3
+party = "Tobin Harlow"
+values = { resolved = "200.00", direction = "neither", cash = "0.00", in_kind = "0.00" }
+
+[[expect]]
+query = "party_totals"
+party = "Tobin Harlow"
+basis = "all"
+from = "2026-01-01"
+to = "2026-12-31"
+values = { paid = "200.00", received = "0.00" }
+
+[[expect]]
+query = "party_part"
+entry = 5
+party = "Lakeside Supply"
+values = { resolved = "-900.00", direction = "neither", cash = "0.00", in_kind = "0.00" }
+
+[[expect]]
+query = "party_totals"
+party = "Lakeside Supply"
+basis = "all"
+from = "2026-01-01"
+to = "2026-12-31"
+values = { paid = "300.00", received = "0.00" }
+
+[[expect]]
+query = "party_part"
+entry = 7
+party = "Morgan Ellis"
+values = { resolved = "-800.00", direction = "received", cash = "0.00", in_kind = "-800.00" }
+
+[[expect]]
+query = "party_totals"
+party = "Morgan Ellis"
+basis = "cash"
+from = "2026-01-01"
+to = "2026-12-31"
+values = { paid = "0.00", received = "0.00" }
+
+[[expect]]
+query = "party_totals"
+party = "Morgan Ellis"
+basis = "all"
+from = "2026-01-01"
+to = "2026-12-31"
+values = { paid = "0.00", received = "800.00" }

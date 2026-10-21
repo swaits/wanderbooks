@@ -483,6 +483,21 @@ pub fn describe(b: &Books, line: &JournalLine) -> Option<Event> {
             };
             ev(icon::USER_GEAR, text, pid.map(Route::Party))
         }
+        "party.creditor_set" => {
+            let pid = p.get("id").and_then(|v| v.as_u64());
+            let name = party_name(b, pid);
+            let account = p
+                .get("account_id")
+                .and_then(|v| v.as_u64())
+                .map(|a| b.account_name(a))
+                .unwrap_or_else(|| "an account".to_string());
+            let text = if p.get("on").and_then(|v| v.as_bool()).unwrap_or(true) {
+                format!("{name} is now owed on {account}")
+            } else {
+                format!("{name} is no longer owed on {account}")
+            };
+            ev(icon::USER_GEAR, text, pid.map(Route::Party))
+        }
         "party.w9_set" => {
             let pid = p.get("id").and_then(|v| v.as_u64());
             let name = party_name(b, pid);

@@ -55,16 +55,11 @@ pub fn cash_accounts(ledger: &Ledger, configured: &[String]) -> Vec<AccountId> {
         .collect()
 }
 
-/// The card accounts: liabilities whose names contain "card".
+/// The card accounts: liabilities whose names contain "card"
+/// (`ledger_core::parties::card_accounts`, the same rule party money
+/// reads, so the two never disagree on what a card is).
 pub fn card_accounts(ledger: &Ledger) -> Vec<AccountId> {
-    ledger
-        .chart()
-        .all()
-        .filter(|a| {
-            a.account_type == AccountType::Liability && a.name.to_lowercase().contains("card")
-        })
-        .map(|a| a.id)
-        .collect()
+    ledger_core::parties::card_accounts(ledger)
 }
 
 /// The accounts the books reconcile monthly (INVARIANT 1).

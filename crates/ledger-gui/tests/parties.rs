@@ -8,7 +8,7 @@ use egui_kittest::Harness;
 use ledger_core::arap::DocumentLine;
 use ledger_core::{
     AccountType, Currency, EntryId, Form1099, Money, PartyField, PartyId, PayrollLine, Role, Side,
-    TinFacts, TinType, W4Facts, W9Facts, vendor_1099_report,
+    TinFacts, TinType, W4Facts, W9Facts,
 };
 use ledger_gui::books::Books;
 use ledger_gui::nav::{Route, Section};
@@ -258,6 +258,9 @@ fn fixture(tag: &str) -> Fixture {
     let e = pay(&mut s, d(2026, 1, 20), "Old Co", cash, 12_300);
     s.set_entry_party(e, Some(old)).unwrap();
     s.update_party(old, PartyField::Archived(true)).unwrap();
+    // What the members advanced is money (rules.md B-35 item 5): Due to
+    // Shareholders is a financing account.
+    journal_settings(&mut s, "[books]\nfinancing_accounts = [\"2100\"]\n");
     drop(s);
     let oracle = Store::open(&data).unwrap().ledger().clone();
     Fixture {
@@ -297,8 +300,20 @@ fn each_partys_totals_are_the_books_numbers() {
     assert_eq!(sam.open_bills, bill.balance().ok());
     assert_eq!(sam.open_bills, Some(cents(30_000)));
     assert_eq!(sam.bills, vec![1]);
-    // The 1099 amount is ledger-core's worksheet line, exactly.
-    let r = vendor_1099_report(o, 2026, None).unwrap();
+    // The 1099 amount is ledger-core's worksheet line, exactly, over the
+    // viewer's payment accounts (every asset account, no cash accounts
+    // being set; the financing account).
+    let owed = o.chart().find_by_code("2100").unwrap().id;
+    let r = ledger_core::vendor_1099_report_with(
+        o,
+        2026,
+        None,
+        &ledger_core::PaymentAccounts {
+            cash: vec![],
+            financing: vec![owed],
+        },
+    )
+    .unwrap();
     let line = r
         .vendors
         .iter()
@@ -306,8 +321,9 @@ fn each_partys_totals_are_the_books_numbers() {
         .unwrap();
     assert_eq!(sam.form_1099.as_ref(), Some(line));
     assert_eq!(sam.threshold_1099, Some(r.threshold));
-    // (Cash only: card and owner-paid aren't in it.)
-    assert_eq!(line.paid, cents(150_000));
+    // (Cash and what the owner paid for the company: the card isn't in
+    // it.)
+    assert_eq!(line.paid, cents(180_000));
     // Every entry tagged, drafts included, newest first.
     assert!(sam.entries.contains(&f.bill_entry));
     assert!(sam.entries.contains(&f.reversal));
@@ -561,6 +577,57 @@ fn journal_text_for_party_events() {
     }
 }
 
+/// party.creditor_set and the journal feature it declares read as words
+/// in the journal, and the party's page lists what it is owed on.
+#[test]
+fn journal_text_for_a_creditor() {
+    use egui_kittest::kittest::Queryable;
+    let f = fixture("creditor");
+    let mut s = Store::open(&f.dir.0.join("books-data")).unwrap();
+    let bank = s
+        .add_party("Harbor Bank", &[Role::FinancialInstitution])
+        .unwrap();
+    let card = s.ledger().chart().find_by_code("2050").unwrap().id;
+    s.set_party_creditor(bank, card, true).unwrap();
+    s.set_party_creditor(bank, card, false).unwrap();
+    s.set_party_creditor(bank, card, true).unwrap();
+    drop(s);
+    let b = load(&f.dir.0);
+    let texts: Vec<(String, Option<Route>)> = b
+        .journal
+        .iter()
+        .filter(|l| l.line_type == "party.creditor_set" || l.line_type == "journal.format_set")
+        .filter_map(|l| describe(&b, l))
+        .map(|e| (e.text, e.route))
+        .collect();
+    assert!(
+        texts.contains(&(
+            "Harbor Bank is now owed on Business Card".to_string(),
+            Some(Route::Party(bank))
+        )),
+        "{texts:#?}"
+    );
+    assert!(
+        texts.contains(&(
+            "Harbor Bank is no longer owed on Business Card".to_string(),
+            Some(Route::Party(bank))
+        )),
+        "{texts:#?}"
+    );
+    assert!(
+        texts
+            .iter()
+            .any(|(t, _)| t == "Journal format 2 declared, with party_creditors"),
+        "{texts:#?}"
+    );
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1440.0, 1400.0))
+        .build_eframe(|cc| App::with_books(&cc.egui_ctx, b, false, Route::Party(bank)));
+    h.run_steps(3);
+    h.get_by_label("Owed on");
+    h.get_by_label("Business Card");
+}
+
 #[test]
 fn w9_text_never_shows_more_than_the_last_four() {
     let f = fixture("w9text");
@@ -787,7 +854,7 @@ fn party_money_by_period_and_what_for() {
         for period in b.party_periods(Some(p.id)) {
             let span = b.party_span(period);
             let fl = b.party_flow(p.id, span, true);
-            let a = ledger_core::parties::activity(o, p.id, span, &b.cash_accounts);
+            let a = ledger_core::parties::activity(o, p.id, span, &b.money);
             assert_eq!((fl.paid, fl.received), (a.paid, a.received));
             assert_eq!(
                 fl.what_for.iter().map(|x| x.1).sum::<Decimal>(),
@@ -824,7 +891,7 @@ fn party_money_by_period_and_what_for() {
     let (line, _) = b.party_1099(f.sam, 2025).unwrap();
     assert_eq!(line.paid, cents(50_000));
     let (line, _) = b.party_1099(f.sam, 2026).unwrap();
-    assert_eq!(line.paid, cents(150_000));
+    assert_eq!(line.paid, cents(180_000));
 }
 
 #[test]
@@ -1156,9 +1223,19 @@ fn entries_list_every_party_with_its_resolved_share() {
         vec![(m.tobin, Some(cents(5_000))), (m.mo, Some(cents(5_000)))]
     );
     assert_eq!(e.party.as_deref(), Some("Tobin Harlow & Morgan Ellis"));
-    // Property: net zero, shares of the total.
+    // Property (rules.md B-35): what moved each member's capital, signed
+    // as their own account shows it: received, in kind (before P3 it read
+    // +600.00, the sign of a payment).
     let e = b.entry(m.property).unwrap();
-    assert_eq!(e.parties[1].resolved, Some(cents(60_000)));
+    assert_eq!(e.parties[1].resolved, Some(cents(-60_000)));
+    assert_eq!(
+        e.parties[1].direction,
+        Some(ledger_core::shares::Direction::Received)
+    );
+    assert_eq!(
+        (e.parties[1].cash, e.parties[1].in_kind),
+        (Some(Decimal::ZERO), Some(cents(-60_000)))
+    );
     // The journal says who, for parties_set.
     let line = b
         .journal
@@ -1257,6 +1334,185 @@ fn a_members_page_is_their_capital_statement() {
     h.get_by_label("Contributions of property (at fair market value)");
 }
 
+/// member_books with the laptop's contribution reversed and made again
+/// (after the closed first half), so the pages have a reversal to say:
+/// the books and the reversal's id.
+fn reversed_laptop(tag: &str) -> (MemberBooks, EntryId) {
+    let m = member_books(tag);
+    let mut s = Store::open(&m.dir.0.join("books-data")).unwrap();
+    let undo = s
+        .reverse_entry(m.property, d(2026, 7, 2), "Reversed")
+        .unwrap();
+    drop(s);
+    let again = post_more(
+        &m,
+        d(2026, 7, 3),
+        &[
+            ("1500", Side::Debit, 120_000),
+            ("3000", Side::Credit, 60_000),
+            ("3001", Side::Credit, 60_000),
+        ],
+    );
+    let mut s = Store::open(&m.dir.0.join("books-data")).unwrap();
+    s.set_entry_parties(
+        again,
+        &[
+            ledger_core::PartyShare::whole(m.tobin),
+            ledger_core::PartyShare::whole(m.mo),
+        ],
+    )
+    .unwrap();
+    drop(s);
+    (m, undo)
+}
+
+/// A harness showing `route` over the books in `dir`.
+fn show(dir: &Path, route: Route) -> Harness<'static, App> {
+    let b = load(dir);
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1440.0, 1400.0))
+        .build_eframe(|cc| App::with_books(&cc.egui_ctx, b, false, route));
+    h.run_steps(3);
+    h
+}
+
+/// The viewer shows the tools' numbers (rules.md B-35): a member's party
+/// flow is books.party's activity on both bases, labelled cash basis, with
+/// the in-kind line under it; the entry page says each part in words, a
+/// property contribution "received $600.00, in kind" and its reversal
+/// "paid $600.00, in kind (reversal of #n)".
+#[test]
+fn the_party_page_shows_the_basis_and_in_kind() {
+    use egui_kittest::kittest::Queryable;
+    let (m, undo) = reversed_laptop("basis");
+    let b = load(&m.dir.0);
+    let span = b.party_span(ledger_gui::books::PartyPeriod::ThisYear);
+    for who in [m.tobin, m.mo] {
+        let flow = b.party_flow(who, span, true);
+        let server =
+            ledger_core::parties::activity_with(&b.ledger, who, span, &b.money, &b.members);
+        assert_eq!(
+            (flow.paid, flow.received),
+            server.totals(ledger_core::parties::Basis::Cash)
+        );
+        assert_eq!(
+            (
+                flow.paid + flow.paid_in_kind,
+                flow.received + flow.received_in_kind
+            ),
+            server.totals(ledger_core::parties::Basis::All)
+        );
+        // Cash: half the reimbursement and their distribution; in kind:
+        // the laptop (600.00 − 600.00 + 600.00).
+        assert_eq!((flow.paid, flow.received), (cents(25_000), Decimal::ZERO));
+        assert_eq!(
+            (flow.paid_in_kind, flow.received_in_kind),
+            (Decimal::ZERO, cents(60_000))
+        );
+        assert_eq!(
+            flow.what_for.iter().map(|x| x.1).sum::<Decimal>(),
+            flow.net()
+        );
+        // What for is what the money paid for: the laptop, contributed in
+        // kind, reversed and contributed again, isn't in it (it read
+        // "Equipment 600.00" and "+400.00" of capital).
+        let equip = b.ledger.chart().find_by_code("1500").unwrap().id;
+        let due = b.ledger.chart().find_by_code("2100").unwrap().id;
+        let capital = b.member(who).unwrap().capital;
+        assert_eq!(
+            flow.what_for,
+            vec![(capital, cents(20_000)), (due, cents(5_000))],
+            "no {equip} line"
+        );
+    }
+    let flow = b.party_flow(m.tobin, span, true);
+    assert_eq!(
+        ledger_gui::pages::parties::in_kind_text(&flow).as_deref(),
+        Some("With property contributed or distributed: paid $250.00, received $600.00")
+    );
+    let h = show(&m.dir.0, Route::Party(m.tobin));
+    h.get_by_label("With property contributed or distributed: paid $250.00, received $600.00");
+    assert!(h.query_all_by_label_contains("cash basis").next().is_some());
+    let h = show(&m.dir.0, Route::Entry(m.property));
+    h.get_by_label_contains("Tobin Harlow · received $600.00, in kind (derived)");
+    let h = show(&m.dir.0, Route::Entry(undo));
+    h.get_by_label_contains(&format!(
+        "Morgan Ellis · paid $600.00, in kind (derived, reversal of #{})",
+        m.property
+    ));
+}
+
+/// The viewer's what-for reads a reversal as parties::flow does, the
+/// opposite of its original (rules.md B-35 item 3; design §1.4): a member
+/// paying the card from their own funds (Dr card / Cr 2100), tagged with
+/// the issuer, then reversed, is nothing on the issuer's page, paid or
+/// what for. Its lines alone read as a second payment.
+#[test]
+fn a_reversed_member_card_payment_is_nothing_on_the_issuers_page() {
+    let m = member_books("card-reversed");
+    let mut s = Store::open(&m.dir.0.join("books-data")).unwrap();
+    s.add_account("2050", "Business Card", AccountType::Liability, None, false)
+        .unwrap();
+    let issuer = s
+        .add_party("Harbor Bank", &[Role::FinancialInstitution])
+        .unwrap();
+    drop(s);
+    member_settings(
+        &m.dir.0,
+        "cash_accounts = [\"1000\"]\nfinancing_accounts = [\"2100\"]\n",
+    );
+    let paid = post_more(
+        &m,
+        d(2026, 7, 10),
+        &[
+            ("2050", Side::Debit, 10_000),
+            ("2100", Side::Credit, 10_000),
+        ],
+    );
+    let mut s = Store::open(&m.dir.0.join("books-data")).unwrap();
+    s.set_entry_party(paid, Some(issuer)).unwrap();
+    drop(s);
+    let b = load(&m.dir.0);
+    let span = (d(2026, 1, 1), d(2026, 12, 31));
+    let flow = b.party_flow(issuer, span, true);
+    let card = b.ledger.chart().find_by_code("2050").unwrap().id;
+    assert_eq!((flow.paid, flow.received), (cents(10_000), Decimal::ZERO));
+    assert_eq!(flow.what_for, vec![(card, cents(10_000))]);
+    let mut s = Store::open(&m.dir.0.join("books-data")).unwrap();
+    s.reverse_entry(paid, d(2026, 7, 11), "Reversed").unwrap();
+    drop(s);
+    let b = load(&m.dir.0);
+    let flow = b.party_flow(issuer, span, true);
+    assert_eq!((flow.paid, flow.received), (Decimal::ZERO, Decimal::ZERO));
+    assert_eq!(flow.what_for, vec![], "the breakdown nets to nothing");
+}
+
+/// Screenshots of the party pages and the entry pages B-35 changed, for
+/// eyes: set `SHOT_DIR`.
+#[test]
+fn party_basis_screenshots() {
+    let Ok(out) = std::env::var("SHOT_DIR") else {
+        return;
+    };
+    let out = PathBuf::from(out);
+    std::fs::create_dir_all(&out).unwrap();
+    let (m, undo) = reversed_laptop("basis-shots");
+    for (name, route) in [
+        ("party-member", Route::Party(m.tobin)),
+        ("parties", Route::Parties),
+        ("entry-property", Route::Entry(m.property)),
+        ("entry-reversal", Route::Entry(undo)),
+        ("entry-reimbursement", Route::Entry(m.reimburse)),
+    ] {
+        let mut h = show(&m.dir.0, route);
+        h.run_steps(3);
+        h.render()
+            .unwrap()
+            .save(out.join(format!("{name}.png")))
+            .unwrap();
+    }
+}
+
 /// The viewer's statement is the K-1 worksheet's row, field for field,
 /// over any span (CapitalStatement INVARIANT 1): ledger_core::k1 called
 /// here with the members and cash accounts as the CPA package builds them.
@@ -1286,7 +1542,7 @@ fn the_capital_statement_is_the_k1_worksheet_row() {
             }
         });
         let cash: Vec<_> = if fallback {
-            let mut all: Vec<_> = ledger_core::parties::money_accounts(&b.ledger, &[])
+            let mut all: Vec<_> = ledger_core::parties::money_accounts(&b.ledger, &[], &[])
                 .cash
                 .into_iter()
                 .collect();
@@ -1521,7 +1777,7 @@ fn party_money_is_the_servers_without_cash_accounts_and_after_today() {
         &oracle,
         apple,
         (d(2026, 1, 1), d(2026, 12, 31)),
-        &[],
+        &ledger_core::parties::money_accounts(&oracle, &[], &[]),
         &[],
     );
     assert_eq!(

@@ -173,11 +173,10 @@ pub fn vendor_1099_worksheet(
     let mut lines = Vec::new();
     for v in r.vendors {
         let party_id = ledger.party_of_vendor(v.vendor_id);
-        let tin_last4 = party_id.and_then(|id| ledger.get_party(id)).and_then(|p| {
-            p.w9.as_ref()
-                .map(|f| f.tin_last4.clone())
-                .or_else(|| p.tin.as_ref().map(|t| t.last4.clone()))
-        });
+        let tin_last4 = party_id
+            .and_then(|id| ledger.get_party(id))
+            .and_then(|p| p.tin_last4())
+            .map(str::to_string);
         let mut line = Vendor1099WorksheetLine {
             vendor_id: v.vendor_id,
             name: v.name,

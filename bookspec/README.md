@@ -79,9 +79,10 @@ listed first; rules.md B-13). An example that closes to the members
 declares `largest-remainder`, the rule a members close splits by.
 
 Required everywhere: the top-level keys, `[setup]` with its four keys and
-its accounts, the events, and at least one `[[expect]]` with values: a
-figure query's are exact decimal strings (`"2340.00"`, `"-12.50"`; never a
-float), a format query's are text (below). Amounts on lines are positive;
+its accounts, the events (`events = []`, before `[setup]`, when nothing is
+posted), and at least one `[[expect]]` with values: a figure query's are
+exact decimal strings (`"2340.00"`, `"-12.50"`; never a float), a format
+query's are text (below). Amounts on lines are positive;
 the side gives the direction.
 
 ### Optional keys, for the rules that need them
@@ -99,26 +100,55 @@ the side gives the direction.
 - `today` (in `[setup]`): the day the books are asked on, `YYYY-MM-DD`,
   in the company's time zone: what an omitted date means (B-30). A query
   that omits a date needs it.
-- `cash_accounts`, `financing_accounts`, `investing_accounts`: arrays of
-  account codes, the statement of cash flows' account roles (ASC
-  230-10-45-10 to 45-15). The cash and financing accounts are also what a
-  payee is paid from, for `vendor_1099_paid` (a payment card is neither:
-  its charges go on Form 1099-K; rules.md B-19), and the cash accounts
-  are an IIF file's bank accounts (B-34).
+- `cash_accounts`, `financing_accounts`, `investing_accounts` (in
+  `[setup]`): arrays of account codes, the statement of cash flows'
+  account roles (ASC 230-10-45-10 to 45-15). The cash and financing
+  accounts are also what a payee is paid from, for `vendor_1099_paid` (a
+  payment card is neither: its charges go on Form 1099-K; rules.md B-19);
+  with the cards, what party money is, for
+  `party_part` and `party_totals` (B-35 item 5: no `cash_accounts`, every
+  asset account but receivables); the cash accounts are what the K-1
+  worksheet reads as money (`k1`) and an IIF file's bank accounts (B-34).
 - `[[setup.fixed_assets]]` `{ cost_account, accumulated_account,
   expense_account }`: accounts that hold property and equipment (their
   cost and accumulated depreciation are investing; ASC 230-10-45-12(c),
   45-13(c)).
-- `[[setup.members]]` `{ name, capital_account, share? }`: the members of
-  a multi-member LLC. `share` is the member's share of income, an exact
-  decimal fraction (`"0.5"`, `"0.3333"`); every member has one or none
-  does, and the shares sum to 1. A close to the members and
-  `members_equity` need them.
+- `[[setup.parties]]` `{ name, roles, creditor_of?, tin_last4?,
+  w9_tin_last4?, tin_purged? }`: the company's directory (B-26). `roles`
+  are role keys (`member`, `vendor`, `customer`, `contractor`,
+  `landlord`, `employee`, `financial_institution`, `payout_platform`,
+  `tax_agency`, `government_agency`); `vendor` or `customer` (one at
+  most) gives the party its record. `creditor_of`: the liabilities, by
+  code, the company owes the party itself (a card's issuer, a lender,
+  each member for what the members advanced: B-35 item 6). `tin_last4`:
+  its TIN facts' last four (an SSN's); `w9_tin_last4`: its W-9's (a 1099
+  role's); `tin_purged = true`: the vault's copy purged, the facts kept.
+  Never a full TIN. Each name once.
+- `[[setup.members]]` `{ name, capital_account, share?,
+  distributions_account? }`: the members of a multi-member LLC. `share`
+  is the member's share of income, an exact decimal fraction (`"0.5"`,
+  `"0.3333"`); every member has one or none does, and the shares sum to
+  1. A close to the members, `members_equity` and `k1` need them.
+  `distributions_account`: the member's distributions account (B-13). A
+  member whose `name` is a party's in `setup.parties` with the `member`
+  role is that party, as the company's settings name them: an entry's
+  parties' shares resolve with those members (B-35), and so does the
+  1099 worksheet.
 - `[[setup.payees]]` `{ name, form }`: a payee marked for an information
-  return, `form` `"1099-NEC"` or `"1099-MISC"`; each name once.
+  return from the beginning, `form` `"1099-NEC"` or `"1099-MISC"`; each
+  name once. A payee in `setup.parties` with the `vendor` role is that
+  party's vendor record; any other is a vendor record of its own.
 - `payee` on an event: the payee (by name, one of `setup.payees`) the
   entry paid. Not on a reversal, which takes its original's, nor on a
   close.
+- `parties = [{ party, amount? }, { party, percent? }, ...]` on an event:
+  the parties (by name, in `setup.parties`) the entry is with, each with
+  its share: an `amount` (an exact decimal string), a `percent`, or
+  neither (derived from the entry: all of it for one party, the members'
+  capital lines or income shares for several: B-35). An entry naming a
+  party with a vendor record is tagged with that payee too; with
+  `payee` as well, the payee's party is one of the parties.
+  Not on a reversal, which takes its original's.
 - `close = { start, to, rounding? }` as an event: closes the period from
   `start` through the event's `date` (rules.md B-11, B-13), `to`
   `"members"` (split by share, in the order listed) or
@@ -150,8 +180,9 @@ A query over a period takes `from` and `to`; a query as of a day takes
 `as_of`; the other is refused. A date left out is resolved by the one
 rule (rules.md B-30) on `setup.today`: an omitted `to` is today, an
 omitted `from` the first day of the fiscal year that holds `to`, an
-omitted `as_of` today (`vendor_1099_paid` and the format queries give
-theirs). A query no crate answers is refused, never skipped.
+omitted `as_of` today (`vendor_1099_paid`, `party_totals` and the
+format queries give theirs). A query no crate
+answers is refused, never skipped.
 
 | query | dates | values | checked by |
 |---|---|---|---|
@@ -161,7 +192,11 @@ theirs). A query no crate answers is refused, never skipped.
 | `entry` | `entry = N`, no dates | entry N's lines, `"<code>.debit"` and `"<code>.credit"` each the sum of that account's lines on that side, every line of the entry named | `ledger-core` `tests/bookspec.rs` |
 | `balances` | `as_of` | each account named by code, its balance on its normal side (a member's capital after a loss is negative); the example names the accounts it shows | `ledger-core` `tests/bookspec.rs` |
 | `members_equity` | `from`, `to` | the statement of changes in members' equity (rules.md B-13): `"<member>.beginning"`, `.contributions`, `.net_income`, `.distributions`, `.other`, `.ending`; the example names the figures it shows | `ledger-core` `tests/bookspec.rs` |
-| `vendor_1099_paid` | `from` (January 1 of `to`'s year), `to` | each payee's payments by name, out of the cash and financing accounts (`cash_accounts` required), every payee listed | `ledger-core` `tests/bookspec.rs` |
+| `k1` | `from`, `to` | the K-1 worksheet (B-13; Schedule K-1 Item L): `"<member>.beginning"`, `.contributions_cash`, `.contributions_property`, `.net_income`, `.distributions`, `.other`, `.ending`; the example names the figures it shows (`cash_accounts` required) | `ledger-core` `tests/bookspec.rs` |
+| `vendor_1099_paid` | `from` (January 1 of `to`'s year), `to` | each payee's payments that count toward its 1099, by name: out of the cash and financing accounts (`cash_accounts` required), a card's or payment network's left out (B-19), every payee listed | `ledger-core` `tests/bookspec.rs` |
+| `party_part` | `entry = N`, `party`, no dates | entry N's part for the party (B-35): `resolved`, signed as a line on the party's own account would be (paid or given positive, received negative), the entry's `direction` (`paid`, `received` or `neither`), and what of it moved as money (`cash`) and as property (`in_kind`), every one given | `ledger-core` `tests/bookspec.rs` |
+| `party_totals` | `party`, `basis` (`cash` or `all`), `from`, `to` | what was `paid` to the party and `received` from it over the period (B-35 item 4: basis `cash` money, `all` money and property in kind; each entry on its first original's side), both given | `ledger-core` `tests/bookspec.rs` |
+| `party_tin_last4` | `party`, no dates | `tin_last4`: the party's TIN facts' last four, else its W-9's, `""` for none (B-26) | `ledger-core` `tests/bookspec.rs` |
 | `period` | `from`, `to`, either or both left out | the dates a period report asked with those dates covers, by the one rule (B-30): `from`, `to` (`YYYY-MM-DD`); or `refused` | `ledger-core` `tests/bookspec.rs` |
 | `day` | `as_of`, or left out | the day a report as of a day is made as of: `as_of` | `ledger-core` `tests/bookspec.rs` |
 | `calendar_year` | none | the year a calendar-year count (1099s, party totals) asked without one counts: `year` | `ledger-core` `tests/bookspec.rs` |
@@ -172,8 +207,9 @@ theirs). A query no crate answers is refused, never skipped.
 
 A figure query is a table (`[expect.values]`, or `values = { ... }`); a
 format query, and `uncategorized_accounts`, an array (`values = [ ...
-]`). `period`, `day` and `calendar_year` give dates and a year, and
-`account_names` names, not figures.
+]`). `period`, `day` and `calendar_year` give dates and a year,
+`account_names` names, `party_part`'s `direction` and
+`party_tin_last4` words, not figures.
 
 A command is tried on a copy of the books, as the books' own command
 does it, and changes nothing checked after it. It shows no values: it is

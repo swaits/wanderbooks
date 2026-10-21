@@ -1,0 +1,134 @@
+# P3 defect 24 (found in design; wanderbooks plan/served.md P3 "Settled in
+# design"): party totals treated every liability but payables and payroll
+# as money, so an accrual through another liability counted when it was
+# booked and again when it was settled. Regression test: ledger-core
+# tests/spec_party_totals.rs
+# defect24_an_accrual_through_another_liability_counts_once. The shape:
+# bookspec/README.md.
+
+id = "p3-party-accrual-counts-once"
+title = "An accrual through a liability that isn't money counts once, when it is settled"
+rule = """
+Money is cash, the company's cards, the members' financing and loans.
+Every other liability (accrued expenses, deferred revenue) is a promise:
+an entry through it moves nothing with the party until it is settled in
+money.
+"""
+status = "CHOICE"
+sources = [
+  "Helvering v. Price, 309 U.S. 409, 412-413 (1940): a promise to pay is not payment (wanderbooks docs/spec/sources/helvering-v-price-1940.md)",
+  "DECISION (owner, 2026-10-20): money is cash, cards, the members' financing and loans (wanderbooks rules.md B-35 item 5)",
+]
+tags = ["parties", "accruals", "deferred-revenue", "money"]
+
+[setup]
+currency = "USD"
+fiscal_year_start = "01-01"
+basis = "accrual"
+rounding = "half-even"
+cash_accounts = ["1000"]
+financing_accounts = ["2100"]
+
+[[setup.accounts]]
+code = "1000"
+name = "Checking"
+type = "asset"
+
+[[setup.accounts]]
+code = "2100"
+name = "Due to Members"
+type = "liability"
+
+[[setup.accounts]]
+code = "2200"
+name = "Accrued Expenses"
+type = "liability"
+
+[[setup.accounts]]
+code = "2400"
+name = "Deferred Revenue"
+type = "liability"
+
+[[setup.accounts]]
+code = "4000"
+name = "Revenue"
+type = "revenue"
+
+[[setup.accounts]]
+code = "6050"
+name = "Domain & Hosting"
+type = "expense"
+
+[[setup.parties]]
+name = "Northwind Filings"
+roles = ["vendor"]
+
+[[setup.parties]]
+name = "Riley Chen"
+roles = ["customer"]
+
+[[events]]
+date = "2026-03-31"
+description = "Hosting accrued"
+parties = [{ party = "Northwind Filings" }]
+lines = [
+  { account = "6050", side = "debit", amount = "300.00" },
+  { account = "2200", side = "credit", amount = "300.00" },
+]
+
+[[events]]
+date = "2026-04-15"
+description = "Hosting paid"
+parties = [{ party = "Northwind Filings" }]
+lines = [
+  { account = "2200", side = "debit", amount = "300.00" },
+  { account = "1000", side = "credit", amount = "300.00" },
+]
+
+[[events]]
+date = "2026-01-02"
+description = "A year paid ahead"
+parties = [{ party = "Riley Chen" }]
+lines = [
+  { account = "1000", side = "debit", amount = "1200.00" },
+  { account = "2400", side = "credit", amount = "1200.00" },
+]
+
+[[events]]
+date = "2026-01-31"
+description = "January earned"
+parties = [{ party = "Riley Chen" }]
+lines = [
+  { account = "2400", side = "debit", amount = "100.00" },
+  { account = "4000", side = "credit", amount = "100.00" },
+]
+
+[[expect]]
+query = "party_part"
+entry = 1
+party = "Northwind Filings"
+values = { resolved = "300.00", direction = "neither", cash = "0.00", in_kind = "0.00" }
+
+# Before P3: 600.00.
+[[expect]]
+query = "party_totals"
+party = "Northwind Filings"
+basis = "all"
+from = "2026-01-01"
+to = "2026-12-31"
+values = { paid = "300.00", received = "0.00" }
+
+[[expect]]
+query = "party_part"
+entry = 4
+party = "Riley Chen"
+values = { resolved = "100.00", direction = "neither", cash = "0.00", in_kind = "0.00" }
+
+# Before P3: 1,300.00.
+[[expect]]
+query = "party_totals"
+party = "Riley Chen"
+basis = "all"
+from = "2026-01-01"
+to = "2026-12-31"
+values = { paid = "0.00", received = "1200.00" }

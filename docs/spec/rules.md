@@ -762,8 +762,11 @@ An entry naming several parties (a payment shared between a contractor
 and a member; `ledger_core::shares`) counts only the vendor's share
 toward its 1099: what was paid to the payee (§6041(a)), not what the
 entry moved for others. The share is resolved (`shares::resolve`)
-against the entry's flow, the same target the MCP server checks shares
-against, then scaled to the 1099 payment: the share unchanged when the
+against the entry's target (B-35: its money, or, when it moved none, its
+parties' own-account movement; a reversal's is its original's negated),
+the same target the MCP server checks shares against, then scaled to the
+1099 payment (a ratio, so B-35's signs change no 1099 figure: a reversal
+negates both the payment and the target): the share unchanged when the
 payment equals the target (the usual case, an expense paid from cash or
 by a member), else payment × share ÷ target, rounded to the nearest cent,
 half away from zero (so a part charged to a card scales out, 1099-K). A
@@ -1010,7 +1013,13 @@ happen to end in a known last four is refused the same way (filed as a
 PDF instead).
 A locked vault or a missing TIN never fails
 the package: it says which TINs are missing. `books.purge_tin` deletes a
-party's vault records and journals that it did.
+party's vault records and journals that it did. Wherever the books show a
+party's last four (the directory, `books.party`, the 1099 and K-1
+worksheets, the purge preview) it is the TIN facts', else the W-9
+facts' (`Party::tin_last4`; the two never disagree; exactly four digits
+or nothing, however the facts were built), kept after a purge
+(P3 defect 11: the directory read W-9 facts only, so a member's read as
+missing).
 
 **Enforced:** `crate::parties` (has_full_tin, check_text, W9Facts::check,
 W4Facts::check), `Ledger::add_party`, `update_party`, `set_party_role`,
@@ -1089,9 +1098,10 @@ features already in force (`Store::ensure_feature`): an earlier reader
 stops at the declaration, and books that never use the feature stay
 readable by it. P3's: `members_cumulative` (B-13: a members close counted
 from its count's first close, `"rounding": "cumulative_since"`),
-`account_renamed` (before the first `account.renamed`, B-31) and
+`account_renamed` (before the first `account.renamed`, B-31),
 `require_tax_category` (before the first `settings.set` naming
-`policy.require_tax_category`, B-32). A later piece asks the owner's
+`policy.require_tax_category`, B-32) and `party_creditors` (before the
+first `party.creditor_set`, B-35). A later piece asks the owner's
 go-ahead before the first such declaration (plan D-39).
 
 **Enforced:** `ledger_store::format` (`JournalFormat::admit`, `declared`,
@@ -1646,3 +1656,184 @@ appendix: the file line by line and its changes, derived by hand);
 `iif_without_as_of_is_as_of_today_and_ties_to_the_trial_balance`),
 `mcp_stdio.rs` (`mcp_import_export_over_stdio`,
 `the_default_period_never_shortens_the_iif_or_the_package`).
+
+## B-35 A party's part of an entry, and a party's totals
+
+**Status:** CONVENTION (the sign: B-2's, a line on the party's own
+account); DECISION (the owner, 2026-10-15: `entry_flow`, money paid down
+counted once; the owner, 2026-10-20, P3 design settled with each review's
+recommendation: a member's entry counts what moved their capital, money
+is cash, cards, the members' financing and loans, and a liability credit
+never counts as paying that liability's own creditor); AUTHORITY for what
+a member's capital counts (Treas. Reg. §1.704-1(b)(2)(iv)(b), (c);
+Form 1065 Schedule K-1 instructions, Item L:
+`sources/irs-capital-accounts.md`) and for a promise not being payment
+(Helvering v. Price, 309 U.S. 409 (1940):
+`sources/helvering-v-price-1940.md`). Not ASC 230's cash (see item 8) and
+not the books' accounting method (`books.accounting_basis`).
+
+1. **Sign.** A party's part of an entry is signed as a line on the
+   party's own account would be (debit-positive, B-2): positive, the
+   company paid it or gave it value; negative, the company received from
+   it. A bill is negative (owed to the vendor), an invoice positive.
+2. **Direction, cash, in kind.** Every part carries its direction (paid,
+   received, neither) and what of it moved as money (cash) and as property
+   (in kind); what is neither is a promise still to be settled (a bill, an
+   invoice, a fee on the party's own card, a distribution still owed) or
+   moves nothing with anyone (a close), and counts in no total. A part's
+   cash and in kind have its sign and together never exceed it; what of a
+   paid part is neither (a distribution partly still owed) is a promise,
+   counted when it is paid.
+3. **What the shares split** (`shares::target`), in order:
+   1. A period's closing entry: its parties' own-account movement (the
+      members' equity, when only members are named), else its total
+      debits; neither (B-11, B-13: a close allocates income, it moves
+      nothing with anyone).
+   2. A reversal: its original's target, negated, paid and received
+      swapped, from the root original down (B-9: "a mistake is corrected
+      by an opposite entry"); never re-read from its own lines, because
+      `entry_flow` isn't odd when one liability pays down another (a
+      member paying the card from their own funds, reversed, read as a
+      second payment: P3 design §1.4).
+   3. Every party named has the member role in the directory and the
+      entry moves equity other than retained earnings (E): E, a
+      contribution received (E < 0) or a distribution paid (E > 0).
+      - Of a contribution, in kind is the property in it, at most |E|:
+        what asset accounts that are neither cash nor receivables took in
+        (the K-1 worksheet's test, k1 INVARIANT 3), so property
+        contributed subject to a loan is the member's net property
+        (§1.704-1(b)(2)(iv)(b)(2)). The rest is cash, as the K-1 counts
+        it: money, or what the member paid for the company (an expense
+        booked straight to capital, a debt to them converted,
+        §1.704-1(b)(2)(iv)(c)(1)).
+      - Of a distribution, cash is the money it paid (case 4's net, at
+        most E: §1.704-1(b)(2)(iv)(b)(4)) and in kind the property it
+        gave up, at most what is left, as the books carry it (the
+        statement's figure; (b)(5) counts its fair market value, which
+        stays with the CPA). The rest, credited to a liability that
+        isn't money for the entry (distributions payable, or what the
+        members advanced once they are named its creditors), is still
+        owed: it counts as nothing until it is paid (Helvering v. Price;
+        before the P3 review a distribution declared to distributions
+        payable counted when declared and again when paid, and a
+        distribution of money with depreciated property read the money
+        as property).
+      Read from journaled facts only (roles, the chart, creditors), so a
+      member leaving `[[company.members]]` never changes a posted entry;
+      the settings' members matter only to a derived split among several,
+      which the server journals as amounts when the entry posts.
+   4. Money moved (`parties::entry_flow` net, item 5's accounts less the
+      liabilities owed to a party named): the net, paid (+) or received
+      (−), all of it cash.
+   5. Otherwise its parties' own-account movement (payables, receivables,
+      a liability owed to a party named), else the total debits; neither.
+   The parts split the target as `shares` INVARIANTS 7-12 say: a
+   reversal's parts are exactly its original's negated, and a member's in
+   kind is shared as the K-1 worksheet shares property (in proportion,
+   leftover cents by largest remainder, ties to the member listed first).
+4. **Totals: `basis` cash (the default) or all, always labelled.** Cash
+   counts each part's cash; all adds what moved in kind (Item L counts
+   money and property alike). Each part counts on its root original's
+   side, so a reversal nets what it reverses, and reversing the reversal
+   brings it back. A bill or invoice counts on neither basis (a promise is
+   not payment: Helvering v. Price); `billed`, `invoiced`, `owed` and
+   `receivable` report those. An entry that counts nothing is never
+   unresolved (its target is found before its split). For a member, over
+   the entries that name only members and move their capital, plus the
+   payments of distributions declared to them: basis all's received and
+   paid are the statement of members' equity's contributions and
+   distributions for the same dates, and basis cash's received is the
+   K-1 worksheet's cash contributions, when
+   - each such entry names exactly the members whose capital it moves
+     (derived from their capital lines, or amounts equal to them) and
+     moves every one of them the same way (capital moved from one member
+     to another moves nothing with the company: neither, though the
+     statement shows a distribution and a contribution);
+   - no distribution declared in the span is still unpaid at its end (the
+     statement counts it when declared, party totals when paid); and
+   - no reversal in the span undoes an entry outside it (the statement
+     then counts the reversal by its side; party totals net it on the
+     original's side).
+
+   Over any span at all, even one a reversal straddles, received less
+   paid still agrees with contributions less distributions, given the
+   first two conditions (the property
+   `member_totals_are_the_members_equity_statement` checks every span).
+5. **Money** (P3 defect 24): the cash accounts (`[books] cash_accounts`;
+   every asset account but receivables when none are set), the cards
+   (liability accounts whose names say "card" but not "gift card", the
+   rule the reconciliation reminders read, until payment instruments name
+   them), and `[books] financing_accounts` (what the members advanced,
+   loans). Every other liability (payables, the payroll withholdings, an
+   accrued expense, deferred revenue, gift cards the company sold) is a
+   promise: counted when it is settled, never also when it is booked
+   (before P3 an accrual through any liability but payables and payroll
+   counted twice). So a card account whose name doesn't say "card" is
+   not money until it is listed in `financing_accounts` or an instrument
+   names it, and with `financing_accounts` unset what the members
+   advanced is not money either: a purchase through either then counts
+   for no one until it is paid off (the handbook tells the agent to list
+   them).
+6. **A party's own liabilities.** A party may be named the creditor of
+   the liabilities the company owes it itself (`creditor_of`: a card's
+   issuer, a loan's lender, each member for what the members advanced;
+   `party.creditor_set`, a journal feature). For an entry naming it, a
+   credit to one never counts as paying it (a fee on its card, interest on
+   its loan, equipment on the seller's note: neither, until paid; a
+   distribution credited to the members' financing: still owed), and a
+   debit to one is what the money paid for (a card payment, a
+   reimbursement: paid, as before).
+7. **Known limits**, stated in the tools' text: an entry that both repays
+   a member and distributes to them counts the distribution only; money a
+   member lends under their own name through the members' financing and
+   later converts to capital counts both times (received as a loan, then
+   as a contribution), as does a distribution declared through it while
+   the members aren't named its creditors (paid when declared, and again
+   when paid); an entry naming a payee together with the creditor of the
+   liability that paid it (a vendor and the member who paid it through
+   the members' financing) reads neither for both; an expense a member
+   paid that is booked straight to capital and tagged with the vendor
+   reads neither (the vendor isn't counted as paid; tagged with the
+   member, it is the member's cash contribution). Record them apart, and
+   a member's payment for the company through the members' financing,
+   tagged with the payee: the house conventions already do.
+8. **How party totals relate to the cash flow statement** (B-14, D-42,
+   P3 defect 1). The statement reports the company's cash, ASC 230's: a
+   member paying a vendor for the company is cash borrowed from the member
+   and spent, on that date (a financing inflow and an operating or
+   investing outflow); paying the member back is a financing outflow;
+   property a member contributes, and a debt to them converted to
+   capital, are noncash (disclosed). Party totals report what moved with
+   each party: the vendor is paid when the member pays it (the same date
+   and amount as the statement's outflow); the member is paid back when
+   the statement shows the financing outflow; and a member's capital
+   counts when it moves, a conversion as the cash contribution the K-1
+   calls it (the money they paid for the company), property in kind; a
+   distribution counts when it is paid, as on the statement. Where both
+   show a payment they agree on its amount and date. The statement shows
+   more than party totals do in two places: the financing inflow from a
+   member who pays a vendor is in no party's totals (the entry names the
+   vendor; the member's totals show only the repayment), and an expense
+   booked straight to capital and tagged with the vendor isn't counted
+   as paid to the vendor (item 7). "Cash" in party totals is money
+   through the company's cash accounts, cards and financing (and, on a
+   member's contribution, the K-1's cash), not the statement's ASC 230
+   cash.
+
+**Enforced:** `kernel::party_target`, `kernel::reverse_target`,
+`shares::{target, split, resolve}`, `parties::{flow, money_accounts,
+card_accounts, MoneyAccounts::for_parties, activity_with, Activity::totals,
+Basis}`, `Ledger::set_party_creditor`, `Store::set_party_creditor` (the
+`party_creditors` journal feature, declared before its first line);
+`ledger-mcp` `books.get_entry` (`resolved`, `direction`, `cash`,
+`in_kind`), `books.party` and `books.parties` (`basis`), `books.update_party`
+(`creditor_of`); the viewer's party pages and entry page.
+**Checked:** `ledger-core` `tests/spec_party_totals.rs` (the audit's
+table, the members' equity and K-1 identities over every span, the
+reversed card payment, accruals, a gift card, a party's own liabilities,
+distributions declared or of depreciated property, the properties), Kani
+`party_target_direction_is_its_sign`, `party_target_is_odd`,
+`reverse_target_is_an_involution`, bridge `party_target_agrees`; Lean
+`reverseTarget_involutive`, `capitalTarget_odd`, `partyTarget_odd`,
+`sumOver_movement_reversal`; `ledger-store` `tests/party_creditors.rs`;
+`ledger-mcp` `tests/spec_party_totals.rs`; `ledger-gui` `tests/parties.rs`.

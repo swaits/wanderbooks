@@ -26,6 +26,12 @@
 //!   3. Names are unique, ignoring case and surrounding space, among parties
 //!      not archived.
 //!   4. Every vendor and customer record links to exactly one party.
+//!   5. A party's `creditor_of` names only liability accounts that are
+//!      not placeholders, payables or payroll withholdings: what the
+//!      company owes that party itself on (a card's issuer, a loan's
+//!      lender, a member for what the members advanced). A credit to one
+//!      never counts as paying that party (rules.md B-35; DECISION, owner,
+//!      2026-10-20).
 //! ```
 
 use chrono::NaiveDate;
@@ -247,12 +253,54 @@ pub struct Party {
     /// Its customer record, if the company invoices it.
     #[serde(default)]
     pub customer: Option<crate::CustomerId>,
+    /// The liability accounts the company owes this party itself on: the
+    /// card it issued, the loan it made, what the members advanced (each
+    /// member). INVARIANT 5.
+    #[serde(default)]
+    pub creditor_of: BTreeSet<crate::AccountId>,
 }
 
 impl Party {
     /// The name to show: the display name, else the name.
     pub fn label(&self) -> &str {
         self.display_name.as_deref().unwrap_or(&self.name)
+    }
+
+    /// The last four digits of its TIN, when the books know them: its TIN
+    /// facts' (`books.set_tin`), else its W-9 facts'.
+    ///
+    /// ```text
+    /// GOAL: one answer to "which TIN is on file for them?" wherever the
+    ///       books show a last four (defect 11: the directory showed a
+    ///       member's as missing because it read W-9 facts only).
+    /// SOURCE: rules.md B-26 (Treas. Reg. §301.6109-4(a): a truncated TIN
+    ///         shows its last four); INVARIANT 2a (DECISION, owner,
+    ///         2026-10-15: the two never disagree, so either answers).
+    /// SCENARIOS:
+    ///   1. A member with TIN facts and no W-9: the TIN facts' last four.
+    ///   2. A contractor with W-9 facts only: the W-9's.
+    ///   3. Both on file: the same four (2a), the TIN facts'.
+    ///   4. Neither: None.
+    ///   5. A TIN purged from the vault keeps its facts' last four
+    ///      (books.purge_tin drops only the vault record): still shown.
+    ///   6. NEVER more than four digits: facts whose last four isn't
+    ///      exactly four digits (built by hand, not through the checking
+    ///      setters) show nothing from that source.
+    /// ```
+    pub fn tin_last4(&self) -> Option<&str> {
+        // Exactly four digits or nothing, however the facts were built
+        // (the setters check it; this never shows more, B-26).
+        let four = |s: &str| s.len() == 4 && s.chars().all(|c| c.is_ascii_digit());
+        self.tin
+            .as_ref()
+            .map(|t| t.last4.as_str())
+            .filter(|s| four(s))
+            .or_else(|| {
+                self.w9
+                    .as_ref()
+                    .map(|w| w.tin_last4.as_str())
+                    .filter(|s| four(s))
+            })
     }
 
     /// Its roles: the ones set by hand, plus vendor and customer when it
@@ -522,26 +570,91 @@ pub enum PartyField {
     Archived(bool),
 }
 
+/// Which of a party's totals to report (rules.md B-35 item 4). Not the
+/// books' accounting method (`books.accounting_basis`): party totals count
+/// what moved, whichever method the books keep.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Basis {
+    /// Money: through the company's cash accounts, a card, the members'
+    /// financing or a loan; on a member's capital, what the K-1 counts as
+    /// cash. The default.
+    #[default]
+    Cash,
+    /// Money and property contributed or distributed in kind: for a
+    /// member, what the statement of members' equity counts.
+    All,
+}
+
+impl Basis {
+    /// Every basis, the default first.
+    pub const ALL: [Basis; 2] = [Basis::Cash, Basis::All];
+
+    /// Its wire name: `cash` or `all`.
+    pub fn key(self) -> &'static str {
+        match self {
+            Basis::Cash => "cash",
+            Basis::All => "all",
+        }
+    }
+
+    /// The basis named `key` (surrounding space ignored); None for any
+    /// other word.
+    pub fn parse(key: &str) -> Option<Basis> {
+        Basis::ALL.into_iter().find(|b| b.key() == key.trim())
+    }
+}
+
 /// What the books did with one party over a span of dates
-/// ([`activity`]).
+/// ([`activity_with`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Activity {
     /// The party's entries, drafts included, by id.
     pub entries: BTreeSet<crate::EntryId>,
-    /// Paid to it in the span (net of refunds and reversals of payments).
+    /// Paid to it in money in the span (basis cash), net of reversals of
+    /// payments (a refund recorded as its own entry is received from it).
     pub paid: rust_decimal::Decimal,
-    /// Received from it in the span (net of reversals of receipts).
+    /// Received from it in money in the span (basis cash), net of
+    /// reversals of receipts.
     pub received: rust_decimal::Decimal,
-    /// Posted entries in the span naming it among several parties whose
-    /// shares don't resolve against the entry and the members given
-    /// ([`crate::shares::resolve`]): counted in neither total.
+    /// Given to it as property in the span (a distribution in kind), net
+    /// of reversals: basis all adds it to `paid`.
+    pub paid_in_kind: rust_decimal::Decimal,
+    /// Received from it as property in the span (a contribution in kind),
+    /// net of reversals: basis all adds it to `received`.
+    pub received_in_kind: rust_decimal::Decimal,
+    /// Posted entries in the span naming it whose shares don't resolve
+    /// against the entry and the members given ([`crate::shares::resolve`]),
+    /// or whose part is past exact arithmetic: counted in no total.
     pub unresolved: BTreeSet<crate::EntryId>,
 }
 
-/// The accounts [`entry_flow`] reads money from: the cash accounts (every
-/// asset account but receivables when `cash` is empty), and the
-/// liabilities other than payables and the payroll withholdings (cards,
-/// what members paid for the company and are owed back, loans).
+impl Activity {
+    /// (paid, received) on `basis`: cash is `paid` and `received`; all
+    /// adds what moved in kind. [`activity_with`] admits an entry only when
+    /// every one of these sums stays exact, so this never overflows for an
+    /// activity it made.
+    pub fn totals(&self, basis: Basis) -> (rust_decimal::Decimal, rust_decimal::Decimal) {
+        match basis {
+            Basis::Cash => (self.paid, self.received),
+            Basis::All => (
+                self.paid
+                    .checked_add(self.paid_in_kind)
+                    .expect("activity_with keeps the all-basis sums exact"),
+                self.received
+                    .checked_add(self.received_in_kind)
+                    .expect("activity_with keeps the all-basis sums exact"),
+            ),
+        }
+    }
+}
+
+/// The accounts [`entry_flow`] reads money from (rules.md B-35, defect
+/// 24): the cash accounts (every asset account but receivables when none
+/// are given), and the money liabilities: the cards ([`card_accounts`]),
+/// what the members advanced and loans (`books.financing_accounts`).
+/// Never payables, the payroll withholdings, or any other liability (an
+/// accrued expense, deferred revenue): an accrual is a promise, counted
+/// when it is settled, never also when it is booked.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MoneyAccounts {
     /// Cash: bank, savings, cash on hand.
@@ -550,27 +663,108 @@ pub struct MoneyAccounts {
     pub liabilities: std::collections::HashSet<crate::AccountId>,
 }
 
-/// The [`MoneyAccounts`] of `ledger`, with `cash` the books' cash accounts.
-pub fn money_accounts(ledger: &crate::Ledger, cash: &[crate::AccountId]) -> MoneyAccounts {
+impl MoneyAccounts {
+    /// These accounts less every liability owed to one of `parties`
+    /// ([`Party::creditor_of`]): for an entry naming them, a credit to
+    /// what the company owes a party itself never counts as paying it (a
+    /// fee charged on its own card, interest added to its own loan,
+    /// equipment bought on its own note, a distribution still owed to a
+    /// member), and a debit to it is what the money paid for (rules.md
+    /// B-35; DECISION, owner, 2026-10-20).
+    pub fn for_parties(
+        &self,
+        ledger: &crate::Ledger,
+        parties: &[PartyId],
+    ) -> std::borrow::Cow<'_, MoneyAccounts> {
+        let owed: Vec<crate::AccountId> = parties
+            .iter()
+            .filter_map(|p| ledger.get_party(*p))
+            .flat_map(|p| p.creditor_of.iter().copied())
+            .filter(|a| self.liabilities.contains(a))
+            .collect();
+        if owed.is_empty() {
+            return std::borrow::Cow::Borrowed(self);
+        }
+        let mut out = self.clone();
+        for a in owed {
+            out.liabilities.remove(&a);
+        }
+        std::borrow::Cow::Owned(out)
+    }
+}
+
+/// The company's cards: the liability accounts whose names say "card"
+/// (ignoring case), but not "gift card" (gift cards the company sold are
+/// deferred revenue it owes its customers, a promise, not a card it pays
+/// with), the rule the monthly reconciliation reminders read
+/// (`ledger_store::reconcilable`), so the two never disagree on what a
+/// card is. CONVENTION until payment instruments name the card accounts
+/// (plan/served.md P3 defect 12).
+pub fn card_accounts(ledger: &crate::Ledger) -> Vec<crate::AccountId> {
+    ledger
+        .chart()
+        .all()
+        .filter(|a| {
+            let name = a.name.to_lowercase();
+            a.account_type == crate::AccountType::Liability
+                && name.contains("card")
+                && !name.contains("gift")
+        })
+        .map(|a| a.id)
+        .collect()
+}
+
+/// The [`MoneyAccounts`] of `ledger`: `cash` the books' cash accounts
+/// (every asset account but receivables when empty), `financing` the
+/// books' financing liabilities (`books.financing_accounts`: what the
+/// members advanced, loans), with the cards ([`card_accounts`]).
+pub fn money_accounts(
+    ledger: &crate::Ledger,
+    cash: &[crate::AccountId],
+    financing: &[crate::AccountId],
+) -> MoneyAccounts {
     use crate::AccountType;
     let not_money: std::collections::HashSet<crate::AccountId> = crate::PAYROLL[2..]
         .iter()
         .chain([&crate::PAYABLES, &crate::RECEIVABLES])
         .filter_map(|c| ledger.role_account(c))
         .collect();
+    let cards = card_accounts(ledger);
     let mut out = MoneyAccounts::default();
     for a in ledger.chart().all().filter(|a| !not_money.contains(&a.id)) {
         match a.account_type {
             AccountType::Asset if cash.is_empty() || cash.contains(&a.id) => {
                 out.cash.insert(a.id);
             }
-            AccountType::Liability => {
+            AccountType::Liability if cards.contains(&a.id) || financing.contains(&a.id) => {
                 out.liabilities.insert(a.id);
             }
             _ => {}
         }
     }
     out
+}
+
+/// The original a reversal chain starts from, and how many reversals lie
+/// between it and `entry` (zero when `entry` reverses nothing): followed
+/// up `reversal_of`, O(depth). Ids strictly fall along the chain (a
+/// reversal is made after its original), so the walk always ends.
+pub fn root_original<'a>(
+    ledger: &'a crate::Ledger,
+    entry: &'a crate::JournalEntry,
+) -> (&'a crate::JournalEntry, usize) {
+    let mut root = entry;
+    let mut depth = 0;
+    while let Some(o) = root.reversal_of() {
+        match ledger.get_entry(o) {
+            Some(orig) if orig.id() < root.id() => {
+                root = orig;
+                depth += 1;
+            }
+            _ => break,
+        }
+    }
+    (root, depth)
 }
 
 /// What one entry moved with its counterparty ([`entry_flow`]).
@@ -630,6 +824,12 @@ pub struct EntryFlow {
 ///   7. A member paying the card bill from their own funds (Dr 2050 / Cr
 ///      2100), or a loan paying it off (Dr 2050 / Cr loan): net is the
 ///      amount, what for is the card, as if paid from the bank.
+///   8. An accrual through a liability that isn't money (Dr expense / Cr
+///      accrued expenses): zero; its settlement (Dr accrued / Cr 1000) is
+///      the payment (defect 24: counted once, not twice).
+/// Line-level: not odd for one liability paying down another (a
+/// reversal of SCENARIO 7 reads as another payment, `across` again), so a
+/// party's figures read a reversal through [`flow`], never its lines.
 /// ```
 pub fn entry_flow(
     entry: &crate::JournalEntry,
@@ -743,64 +943,119 @@ pub fn entry_flow(
     })
 }
 
-/// One party's entries, and the money paid to and received from it in
+/// The money an entry moved with the parties it names, and what for,
+/// read as party figures read it: a reversal's is exactly its original's
+/// negated (B-9), never re-read from its own lines; and a liability owed
+/// to a party named is not money for the entry
+/// ([`MoneyAccounts::for_parties`]).
+///
+/// ```text
+/// GOAL: what a party's entry paid for, right for reversals too.
+/// SOURCE: rules.md B-9 ("a mistake is corrected by an opposite entry"),
+///         B-35.
+/// INVARIANTS:
+///   1. An entry reversing none: entry_flow of its lines, with
+///      money.for_parties(the parties of `shares`).
+///   2. flow(reversal) = −flow(its original): net and every what_for
+///      negated, accounts in the same order; a reversal of a reversal
+///      gives the original's back. Found up reversal_of (root_original),
+///      O(depth).
+/// SCENARIOS:
+///   1. A member pays the card from their own funds (Dr 2050 / Cr 2100,
+///      tagged with the issuer): +100.00, for 2050. Its reversal (Dr 2100
+///      / Cr 2050) is −100.00, though entry_flow reads its lines as
+///      another +100.00 (the across term isn't odd).
+/// ```
+pub fn flow(
+    ledger: &crate::Ledger,
+    id: crate::EntryId,
+    shares: &[crate::PartyShare],
+    money: &MoneyAccounts,
+) -> Result<EntryFlow, crate::LedgerError> {
+    let entry = ledger
+        .get_entry(id)
+        .ok_or(crate::LedgerError::UnknownEntry(id))?;
+    let (root, depth) = root_original(ledger, entry);
+    let named: Vec<PartyId> = shares.iter().map(|s| s.party).collect();
+    let f = entry_flow(root, &money.for_parties(ledger, &named))?;
+    if depth % 2 == 0 {
+        return Ok(f);
+    }
+    // Every figure a flow holds is nonzero or a plain zero, and a
+    // Decimal's negation is exact.
+    let neg = |v: rust_decimal::Decimal| {
+        if v.is_zero() {
+            rust_decimal::Decimal::ZERO
+        } else {
+            -v
+        }
+    };
+    Ok(EntryFlow {
+        net: neg(f.net),
+        what_for: f.what_for.into_iter().map(|(a, v)| (a, neg(v))).collect(),
+    })
+}
+
+/// One party's entries, and what was paid to and received from it in
 /// `start..=end`, with no members ([`activity_with`] with none: an entry
 /// naming several parties then needs explicit shares to count).
 pub fn activity(
     ledger: &crate::Ledger,
     party: PartyId,
     span: (NaiveDate, NaiveDate),
-    cash: &[crate::AccountId],
+    money: &MoneyAccounts,
 ) -> Activity {
-    activity_with(ledger, party, span, cash, &[])
+    activity_with(ledger, party, span, money, &[])
 }
 
-/// One party's entries, and its share of the money paid to and received
-/// from the entries' parties in `start..=end`.
+/// One party's entries, and its part of what was paid to and received
+/// from the entries' parties in `start..=end`, on both bases.
 ///
 /// ```text
-/// GOAL: one answer to "what did we pay them this year?" for the MCP
-///       server and the viewer alike, right when an entry was with
-///       several parties.
-/// SOURCE: docs/parties-and-attachments.md (Parties, Shares); DECISION
-///         (owner, 2026-10-15).
+/// GOAL: one answer to "what did we pay them this year, and what did we
+///       get from them?" for the MCP server and the viewer alike, right
+///       when an entry was with several parties, for property as well as
+///       money, and for reversals.
+/// SOURCE: docs/parties-and-attachments.md (Parties, Shares); rules.md
+///         B-35 (DECISION, owner, 2026-10-15 and 2026-10-20).
 /// INVARIANTS:
 ///   1. entries: every entry Ledger::entry_parties names the party in
 ///      (hand tags, vendor tags, bills and their payments, invoices and
 ///      their payments, and reversals of any of these carry it).
-///   2. Each posted entry dated in the span whose entry_flow net is not
-///      zero counts the party's resolved share of it
-///      (crate::shares::resolve with `members`; the whole net for a sole
-///      party): positive is a payment, negative a receipt. A reversal
-///      counts on its root original's side (the first entry of
-///      Ledger::reversal_chain), so a reversal subtracts and a reversal
-///      of that reversal adds back, on the same side.
-///   3. An entry moving no money (net zero, like property contributed)
-///      counts nothing. An entry whose shares don't resolve counts
-///      nothing and is listed in `unresolved`.
-///   4. Over all the parties an entry names, the shares counted sum to its
-///      net exactly (crate::shares INVARIANT 6).
-///   5. A card charge counts as paid (the company paid them, by card); a
-///      bill doesn't until it is paid. Not the 1099 amount: that is
+///   2. Each posted entry dated in the span counts the party's part of it
+///      (crate::shares::resolve with `money` and `members`): its cash in
+///      paid or received, its in_kind in paid_in_kind or received_in_kind,
+///      by the direction of the entry's root original (Target::counts_as),
+///      so a reversal subtracts on its original's side, and a reversal of
+///      that reversal adds back there.
+///   3. An entry whose target is direction neither at its root (a bill,
+///      an invoice, a close, an accrual, a fee on the party's own card),
+///      or whose part counts nothing (a distribution still owed), counts
+///      nothing and is never unresolved: its target is found before its
+///      split.
+///   4. An entry whose target or split is refused (shares that don't fit,
+///      a sum past exact arithmetic), or whose part would take any total,
+///      on either basis, past exact arithmetic, counts nothing and is
+///      listed in `unresolved`.
+///   5. Over all the parties an entry names, the parts counted sum to its
+///      target's cash and in_kind exactly (crate::shares INVARIANT 6).
+///   6. A card charge counts as paid (the company paid them, by card); a
+///      bill doesn't until it is paid; a member's property contribution is
+///      received in kind. Not the 1099 amount: that is
 ///      form1099::vendor_1099_report_with.
 /// ```
 pub fn activity_with(
     ledger: &crate::Ledger,
     party: PartyId,
     (start, end): (NaiveDate, NaiveDate),
-    cash: &[crate::AccountId],
+    money: &MoneyAccounts,
     members: &[crate::PartyMember],
 ) -> Activity {
-    use rust_decimal::Decimal;
+    use crate::kernel::Direction;
     let entries: BTreeSet<crate::EntryId> = (0..ledger.next_entry_id())
         .filter(|&id| ledger.entry_names_party(id, party))
         .collect();
-    let money = money_accounts(ledger, cash);
-    // A posted entry's lines are in a line's range, so its flow computes;
-    // one that doesn't counts nothing and is listed as unresolved.
-    let net_out = |e: &crate::JournalEntry| entry_flow(e, &money).map(|f| f.net);
-    let (mut paid, mut received) = (Decimal::ZERO, Decimal::ZERO);
-    let mut unresolved = BTreeSet::new();
+    let mut a = Activity::default();
     for &id in &entries {
         let Some(e) = ledger.get_entry(id) else {
             continue;
@@ -808,43 +1063,52 @@ pub fn activity_with(
         if e.status() != crate::EntryStatus::Posted || e.date() < start || e.date() > end {
             continue;
         }
-        let Ok(net) = net_out(e) else {
-            unresolved.insert(id);
+        let shares = ledger.entry_parties(id);
+        // The target first: an entry that counts nothing is never
+        // unresolved for shares that don't fit it (rules.md B-35 item 4).
+        let Ok(t) = crate::shares::target(ledger, id, shares, money) else {
+            a.unresolved.insert(id);
             continue;
         };
-        if net.is_zero() {
+        if t.counts_as == Direction::Neither || (t.cash.is_zero() && t.in_kind.is_zero()) {
             continue;
         }
-        let share = match crate::shares::resolve(e, ledger.entry_parties(id), &money, members) {
-            Ok(parts) => parts
-                .into_iter()
-                .find(|(p, _)| *p == party)
-                .map(|(_, v)| v)
-                .unwrap_or_default(),
-            Err(_) => {
-                unresolved.insert(id);
-                continue;
+        let Ok(parts) = crate::shares::split(e, shares, &t, members) else {
+            a.unresolved.insert(id);
+            continue;
+        };
+        let Some(p) = parts.iter().find(|p| p.party == party) else {
+            continue;
+        };
+        // Paid adds, received subtracts (a receipt is negative), each on
+        // the root original's side; every total, the all-basis sums
+        // included, stays exact or the entry counts nothing.
+        let next = match t.counts_as {
+            Direction::Paid => a
+                .paid
+                .checked_add(p.cash)
+                .zip(a.paid_in_kind.checked_add(p.in_kind))
+                .map(|(c, k)| (c, k, a.received, a.received_in_kind)),
+            _ => a
+                .received
+                .checked_sub(p.cash)
+                .zip(a.received_in_kind.checked_sub(p.in_kind))
+                .map(|(c, k)| (a.paid, a.paid_in_kind, c, k)),
+        };
+        match next.filter(|(pc, pk, rc, rk)| {
+            pc.checked_add(*pk).is_some() && rc.checked_add(*rk).is_some()
+        }) {
+            Some((pc, pk, rc, rk)) => {
+                a.paid = pc;
+                a.paid_in_kind = pk;
+                a.received = rc;
+                a.received_in_kind = rk;
             }
-        };
-        let side = match e.reversal_of() {
-            Some(_) => ledger
-                .reversal_chain(id)
-                .first()
-                .and_then(|&root| ledger.get_entry(root))
-                .map_or(Ok(net), net_out)
-                .unwrap_or(net),
-            None => net,
-        };
-        if side > Decimal::ZERO {
-            paid += share;
-        } else {
-            received -= share;
+            None => {
+                a.unresolved.insert(id);
+            }
         }
     }
-    Activity {
-        entries,
-        paid,
-        received,
-        unresolved,
-    }
+    a.entries = entries;
+    a
 }

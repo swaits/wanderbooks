@@ -223,10 +223,11 @@ fn vendor_part(payment: Decimal, share: Decimal, target: Decimal) -> Result<Deci
 ///         their share; DECISION, owner, 2026-10-15).
 /// DEFINITIONS:
 ///   payment(e): credits minus debits to `sources` on entry e.
-///   money: crate::parties::money_accounts(ledger, sources.cash), what the
-///     shares resolve against (the MCP server checks them with the same).
-///   target(e): crate::shares::share_target(e, money): the entry_flow net,
-///     else the total debits.
+///   money: crate::parties::money_accounts(ledger, sources.cash,
+///     sources.financing), what the shares resolve against (the MCP server
+///     checks them with the same).
+///   target(e): crate::shares::target(e, money).amount: what the shares
+///     split (rules.md B-35); a reversal's is its original's negated.
 /// INVARIANTS:
 ///   1. Only posted entries dated in `year` (and, given `through`, on or
 ///      before it) and tagged with a vendor (Ledger::entry_vendor) count,
@@ -277,7 +278,7 @@ pub fn vendor_1099_report_with_members(
         Some(t) => t,
         None => default_threshold(year)?,
     };
-    let money = crate::parties::money_accounts(ledger, &sources.cash);
+    let money = crate::parties::money_accounts(ledger, &sources.cash, &sources.financing);
     let mut paid: std::collections::HashMap<VendorId, Decimal> = Default::default();
     let mut unresolved = Vec::new();
     for entry in ledger.posted_entries() {
@@ -293,12 +294,10 @@ pub fn vendor_1099_report_with_members(
             cash
         } else {
             let party = ledger.party_of_vendor(vendor);
-            match crate::shares::resolve(entry, shares, &money, members) {
-                Ok(parts) => {
-                    match parts.into_iter().find(|(p, _)| Some(*p) == party) {
-                        Some((_, share)) => {
-                            vendor_part(cash, share, crate::shares::share_target(entry, &money)?)?
-                        }
+            match crate::shares::resolve(ledger, entry.id(), shares, &money, members) {
+                Ok(resolved) => {
+                    match resolved.parts.iter().find(|p| Some(p.party) == party) {
+                        Some(share) => vendor_part(cash, share.amount, resolved.target.amount)?,
                         // Tagged by hand with a vendor none of the parties
                         // is: nothing to scale by, so the whole payment.
                         None => {

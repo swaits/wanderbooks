@@ -67,13 +67,16 @@ pub struct EntryInfo {
 /// One party an entry names, with its share.
 ///
 /// ```text
-/// SOURCE: ledger_core::shares (resolve), with Books::money_cash_accounts
-///         and Books::members, as the server's books.get_entry resolves
-///         them.
+/// SOURCE: ledger_core::shares (resolve), with Books::money and
+///         Books::members, as the server's books.get_entry resolves them.
 /// INVARIANTS:
-///   1. resolved: the party's part from ledger_core::shares::resolve, None
-///      when the entry's shares don't resolve; over an entry's parties the
-///      resolved parts sum to what it moved exactly.
+///   1. resolved: the party's part from ledger_core::shares::resolve
+///      (signed as a line on its own account: positive paid to it,
+///      negative received from it), None when the entry's shares don't
+///      resolve; over an entry's parties the resolved parts sum to the
+///      target exactly.
+///   2. direction, cash, in_kind: the target's direction and the part's
+///      money and property, None exactly when resolved is.
 /// ```
 #[derive(Clone, Debug, PartialEq)]
 pub struct EntryParty {
@@ -81,6 +84,9 @@ pub struct EntryParty {
     pub label: String,
     pub share: ledger_core::Share,
     pub resolved: Option<Decimal>,
+    pub direction: Option<ledger_core::shares::Direction>,
+    pub cash: Option<Decimal>,
+    pub in_kind: Option<Decimal>,
 }
 
 /// One fixed asset's trail through the journal and the entries.
@@ -133,13 +139,14 @@ impl AssetTrail {
 ///     year 1099s are counted in, and books.party's year: a posted entry,
 ///     invoice, or bill dated later this year counts).
 ///   Money: Books::activity (ledger_core::parties::activity_with with
-///     Books::money_cash_accounts and Books::members: a party's share of
-///     an entry naming several; the same numbers books.party reports).
+///     Books::money and Books::members: a party's share of an entry naming
+///     several; the same numbers books.party reports).
 /// INVARIANTS:
 ///   1. entries: every entry that is the party's, drafts included, in
 ///      Books::entries order (newest first).
-///   2. paid_ytd = activity's paid − received over the year, exactly.
-///      Positive: paid to them, net; negative: received from them, net.
+///   2. paid_ytd = activity's paid − received over the year, exactly, on
+///      basis cash (books.party's default). Positive: paid to them, net;
+///      negative: received from them, net.
 ///   3. invoiced_ytd = Σ Invoice::total() over its customer record's
 ///      invoices dated in the year; billed_ytd the same for its vendor
 ///      record's bills.
@@ -242,6 +249,11 @@ pub struct Books {
     pub members: Vec<ledger_core::PartyMember>,
     /// `[books] financing_accounts`, resolved (empty when not set).
     pub financing_accounts: Vec<AccountId>,
+    /// The money accounts every party number reads
+    /// (ledger_core::parties::money_accounts over money_cash_accounts and
+    /// financing_accounts, with the cards), exactly as the server's
+    /// books.party and books.get_entry read them.
+    pub money: ledger_core::parties::MoneyAccounts,
     /// The cash accounts every number the server also reports reads
     /// money with: `[books] cash_accounts`, resolved; when that is empty,
     /// core's fallback (ledger_core::parties::money_accounts: every asset
@@ -301,26 +313,26 @@ pub enum PartyPeriod {
 /// ```text
 /// GOAL: answer "how much did we spend with them, and how much did we
 ///       get back?" (owner, 2026-10-15) with the books' own numbers.
-/// SOURCE: ledger_core::parties::activity_with (paid, received) and
-///         ledger_core::parties::entry_flow (what for), with
-///         Books::money_cash_accounts and Books::members, as PartyInfo
-///         uses them.
+/// SOURCE: ledger_core::parties::activity_with (paid, received, in kind)
+///         and ledger_core::parties::flow (what for), with Books::money
+///         and Books::members, as PartyInfo uses them; rules.md B-35.
 /// INVARIANTS:
-///   1. paid, received: Books::activity(party, span)'s, exactly.
+///   1. paid, received: Books::activity(party, span)'s, exactly: basis
+///      cash (money), books.party's default. paid_in_kind and
+///      received_in_kind: its property given and taken in kind, so basis
+///      all is paid + paid_in_kind and received + received_in_kind.
 ///   2. net() = paid − received.
 ///   3. what_for: over the party's posted entries dated in the span, the
-///      sum by account of each entry_flow's what_for (a liability paid
-///      down, like a reimbursement, appears as what the money paid for),
-///      for an entry naming several parties this party's part of it: a
-///      member's own capital and distributions lines when they come to
-///      its resolved share exactly, else the what_for apportioned to the
-///      share (share_of_what_for; nothing when the shares don't resolve),
-///      the accounts whose sum is zero left out, largest magnitude first
-///      (then by account id). Positive: what money paid for; negative:
-///      where money received came from (or, on payables and
-///      receivables, what is still owed).
-///   4. Σ what_for = net(), exactly: each entry_flow's what_for sums to
-///      its net (a reversal reverses both).
+///      sum by account of each entry's breakdown for the party
+///      (Books::party_what_for: parties::flow's what_for, its share of it
+///      for an entry naming several, made to sum to the party's cash part
+///      of the entry), the accounts whose sum is zero left out, largest
+///      magnitude first (then by account id). Positive: what money paid
+///      for; negative: where money received came from (or, on payables
+///      and receivables, what is still owed).
+///   4. Σ what_for = net(), exactly: each entry's breakdown sums to the
+///      party's cash part of it, and activity sums those parts (a
+///      reversal's are its original's negated).
 ///   5. entries: how many of the party's entries are posted and dated
 ///      in the span.
 /// ```
@@ -328,6 +340,8 @@ pub enum PartyPeriod {
 pub struct PartyFlow {
     pub paid: Decimal,
     pub received: Decimal,
+    pub paid_in_kind: Decimal,
+    pub received_in_kind: Decimal,
     pub what_for: Vec<(AccountId, Decimal)>,
     pub entries: usize,
 }
@@ -571,17 +585,22 @@ impl Books {
         let money_cash_accounts = {
             let configured = codes(&settings.cash_accounts);
             if configured.is_empty() {
-                let mut all: Vec<AccountId> = ledger_core::parties::money_accounts(&ledger, &[])
-                    .cash
-                    .into_iter()
-                    .collect();
+                let mut all: Vec<AccountId> =
+                    ledger_core::parties::money_accounts(&ledger, &[], &[])
+                        .cash
+                        .into_iter()
+                        .collect();
                 all.sort_unstable();
                 all
             } else {
                 configured
             }
         };
-        let share_money = ledger_core::parties::money_accounts(&ledger, &money_cash_accounts);
+        let share_money = ledger_core::parties::money_accounts(
+            &ledger,
+            &money_cash_accounts,
+            &financing_accounts,
+        );
         let investing_accounts = codes(&settings.investing_accounts);
         let card_accounts = ledger_store::reconcilable::card_accounts(&ledger);
 
@@ -675,7 +694,8 @@ impl Books {
             // vendor tags, bills, invoices, their payments, reversals).
             let party_id = ledger.entry_party(id);
             let shares = ledger.entry_parties(id);
-            let resolved = ledger_core::shares::resolve(e, shares, &share_money, &members).ok();
+            let resolved =
+                ledger_core::shares::resolve(&ledger, id, shares, &share_money, &members).ok();
             let parties: Vec<EntryParty> = shares
                 .iter()
                 .enumerate()
@@ -686,7 +706,10 @@ impl Books {
                         .map(|p| p.label().to_string())
                         .unwrap_or_else(|| format!("party {}", s.party)),
                     share: s.share,
-                    resolved: resolved.as_ref().map(|r| r[i].1),
+                    resolved: resolved.as_ref().map(|r| r.parts[i].amount),
+                    direction: resolved.as_ref().map(|r| r.target.direction),
+                    cash: resolved.as_ref().map(|r| r.parts[i].cash),
+                    in_kind: resolved.as_ref().map(|r| r.parts[i].in_kind),
                 })
                 .collect();
             let party = if parties.is_empty() {
@@ -766,6 +789,7 @@ impl Books {
             cash_accounts,
             members,
             financing_accounts,
+            money: share_money,
             money_cash_accounts,
             investing_accounts,
             card_accounts,
@@ -1505,17 +1529,14 @@ impl Books {
             .collect();
         let mut what_for = Vec::new();
         if with_breakdown {
-            let money = ledger_core::parties::money_accounts(l, &self.cash_accounts);
             let mut by: BTreeMap<AccountId, Decimal> = BTreeMap::new();
             for e in &posted {
-                // A posted entry's flow computes (its lines are in a line's
-                // range); one that doesn't, activity counts as unresolved
-                // and counts nothing, so neither does what it was for.
-                let Ok(flow) = ledger_core::parties::entry_flow(e, &money) else {
+                // An entry activity counts as unresolved counts nothing, so
+                // neither does what it was for.
+                if a.unresolved.contains(&e.id()) {
                     continue;
-                };
-                let parts = self.party_what_for(e, party, &flow);
-                for (account, amount) in parts {
+                }
+                for (account, amount) in self.party_what_for(e, party) {
                     *by.entry(account).or_default() += amount;
                 }
             }
@@ -1525,26 +1546,22 @@ impl Books {
         PartyFlow {
             paid: a.paid,
             received: a.received,
+            paid_in_kind: a.paid_in_kind,
+            received_in_kind: a.received_in_kind,
             what_for,
             entries: posted.len(),
         }
     }
 
-    /// ledger_core::parties::activity_with over `span`, with
-    /// Books::money_cash_accounts and the members: the one source of a
-    /// party's money, the server's own (books.party, books.parties).
+    /// ledger_core::parties::activity_with over `span`, with Books::money
+    /// and the members: the one source of a party's money, the server's own
+    /// (books.party, books.parties).
     pub fn activity(
         &self,
         party: PartyId,
         span: (NaiveDate, NaiveDate),
     ) -> ledger_core::parties::Activity {
-        ledger_core::parties::activity_with(
-            &self.ledger,
-            party,
-            span,
-            &self.money_cash_accounts,
-            &self.members,
-        )
+        ledger_core::parties::activity_with(&self.ledger, party, span, &self.money, &self.members)
     }
 
     /// The books dir: the folder holding `books-data/` (and `vault/`).
@@ -1629,51 +1646,86 @@ impl Books {
     }
 
     /// One entry's what-for, for one party (see [`PartyFlow`] INVARIANT
-    /// 3): its fraction of the entry's entry_flow what_for, summing to its
-    /// money share exactly (zero when the entry moves no money, like a
-    /// bill or a contribution of property).
+    /// 3): its share of the entry's money breakdown (ledger_core::parties::
+    /// flow's what_for: a reversal's is its original's negated), summing
+    /// to its cash part of the entry exactly (nothing counted when the
+    /// entry's shares don't resolve).
     ///
     /// ```text
-    /// The fraction: 1 for an entry with one party; else its resolved
-    ///   share over what the shares split (the net, or the entry's total
-    ///   debits when the net is zero).
-    /// A member's own capital and distribution lines are theirs in full;
-    ///   another member's are never theirs. Every other line is scaled by
-    ///   the fraction (to the cent, toward zero), and the first scaled line
-    ///   takes the leftover so the parts sum to the money share.
+    /// The fraction: the party's resolved part over the target (the sum of
+    ///   every party's part): 1 for an entry with one party.
+    /// A member's own capital and distribution lines are theirs in full
+    ///   when the entry names several; another member's are never theirs.
+    ///   Every other line is scaled by the fraction (to the cent, toward
+    ///   zero), and the first scaled line takes what is left over so the
+    ///   breakdown sums to the party's cash part: a bill (no cash part)
+    ///   sums to zero, and a member's entry that counts only what moved
+    ///   their capital (a reimbursement with a distribution) leaves out the
+    ///   money that wasn't theirs.
+    /// What moved in kind isn't what money paid for: when the party's part
+    ///   has property in it (rules.md B-35), the property lines (asset
+    ///   accounts neither cash nor receivables, the K-1 worksheet's test)
+    ///   stay out, so a property contribution, and its reversal, show
+    ///   nothing, and a distribution of money and equipment shows the
+    ///   money alone.
     /// ```
     pub fn party_what_for(
         &self,
         e: &ledger_core::JournalEntry,
         party: PartyId,
-        flow: &ledger_core::parties::EntryFlow,
     ) -> Vec<(AccountId, Decimal)> {
         use rust_decimal::RoundingStrategy::ToZero;
-        let parties = self.ledger.entry_parties(e.id()).len();
-        if parties <= 1 {
-            return flow.what_for.clone();
-        }
-        let resolved = self.party_share(e, party);
-        // Posted lines are in a line's range, so these sums and products
-        // compute; one past exact arithmetic counts nothing, as an entry
-        // whose shares don't resolve.
-        let target = if flow.net.is_zero() {
-            match ledger_config::ReceiptPolicy::entry_debits(e) {
-                Ok(t) => t,
-                Err(_) => return Vec::new(),
-            }
-        } else {
-            flow.net
-        };
-        let Some(fraction) = resolved.checked_div(target) else {
+        let Some(info) = self
+            .entry_index
+            .get(&e.id())
+            .and_then(|&i| self.entries.get(i))
+        else {
             return Vec::new();
         };
-        let money_share = if flow.net.is_zero() {
-            Decimal::ZERO
-        } else {
-            resolved
+        let Some(me) = info.parties.iter().find(|p| p.id == party) else {
+            return Vec::new();
         };
-        let me = self.member(party).copied();
+        let (Some(resolved), Some(cash)) = (me.resolved, me.cash) else {
+            return Vec::new();
+        };
+        let in_kind = me.in_kind.is_some_and(|k| !k.is_zero());
+        let receivables = self.ledger.role_account(&ledger_core::RECEIVABLES);
+        let property = |a: AccountId| {
+            !self.money.cash.contains(&a)
+                && Some(a) != receivables
+                && self
+                    .ledger
+                    .chart()
+                    .get(a)
+                    .is_some_and(|x| x.account_type == AccountType::Asset)
+        };
+        let shares = self.ledger.entry_parties(e.id());
+        // A posted entry's flow computes (its lines are in a line's range);
+        // one past exact arithmetic counts nothing.
+        let Ok(flow) = ledger_core::parties::flow(&self.ledger, e.id(), shares, &self.money) else {
+            return Vec::new();
+        };
+        let Some(target) = info
+            .parties
+            .iter()
+            .try_fold(Decimal::ZERO, |t, p| t.checked_add(p.resolved?))
+        else {
+            return Vec::new();
+        };
+        let fraction = if info.parties.len() <= 1 {
+            Decimal::ONE
+        } else {
+            match resolved.checked_div(target) {
+                Some(f) => f,
+                None => return Vec::new(),
+            }
+        };
+        let several = info.parties.len() > 1;
+        let me = if several {
+            self.member(party).copied()
+        } else {
+            None
+        };
         let member_line = |a: AccountId| {
             self.members
                 .iter()
@@ -1682,9 +1734,12 @@ impl Books {
         let mut own: Vec<(AccountId, Decimal)> = Vec::new();
         let mut scaled: Vec<(AccountId, Decimal)> = Vec::new();
         for &(a, v) in &flow.what_for {
+            if in_kind && property(a) {
+                continue;
+            }
             if me.is_some_and(|m| m.capital == a || m.distributions == Some(a)) {
                 own.push((a, v));
-            } else if !member_line(a) {
+            } else if !several || !member_line(a) {
                 let Some(part) = v.checked_mul(fraction) else {
                     return Vec::new();
                 };
@@ -1695,12 +1750,12 @@ impl Books {
             .iter()
             .chain(&scaled)
             .try_fold(Decimal::ZERO, |t, (_, v)| t.checked_add(*v))
-            .and_then(|have| money_share.checked_sub(have))
+            .and_then(|have| cash.checked_sub(have))
         else {
             return Vec::new();
         };
         if !left.is_zero() {
-            match scaled.first_mut() {
+            match scaled.first_mut().or(own.first_mut()) {
                 Some(first) => first.1 += left,
                 None => own.push((e.lines()[0].account, left)),
             }
@@ -1709,17 +1764,6 @@ impl Books {
             .chain(scaled)
             .filter(|(_, v)| !v.is_zero())
             .collect()
-    }
-
-    /// A party's resolved share of an entry's flow (its entry_flow net
-    /// for a sole party; zero when the shares don't resolve or it isn't
-    /// named).
-    pub fn party_share(&self, e: &ledger_core::JournalEntry, party: PartyId) -> Decimal {
-        self.entries
-            .get(self.entry_index.get(&e.id()).copied().unwrap_or(usize::MAX))
-            .and_then(|info| info.parties.iter().find(|p| p.id == party))
-            .and_then(|p| p.resolved)
-            .unwrap_or_default()
     }
 
     /// A member's capital statement over `span` (see

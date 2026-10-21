@@ -256,6 +256,32 @@ their numbers are assigned when P3 lands:
     year, closed and never closed), the viewer's
     `a_members_page_shows_the_same_capital_before_and_after_a_close`
 
+### Parties
+
+19. **A party's part of an entry is signed as its own account would be,
+    with a direction that is its sign**: paid exactly when what counts is
+    positive, received when negative, neither exactly when nothing counts;
+    the money and property in it each carry the whole's sign and never
+    exceed it; a money target is all cash; a contribution counts all of
+    itself; a distribution counts no more money than it paid and no more
+    property than it gave, the rest still owed (rules.md B-35).
+    - Kani `party_target_direction_is_its_sign` · bridge
+      `party_target_agrees`
+20. **A reversal is the exact opposite of what it reverses**: the target
+    is odd (negating the lines' capital movement, money and own-account
+    movement gives the original's reverse, but for the debits fallback and
+    a member's entry whose cash isn't exactly its money: an expense booked
+    straight to capital, a debt converted, a distribution still owed; the
+    engine never reads those off a reversal's lines: its reversal arm
+    takes the original's target), reversing twice gives the original
+    back, and a reversal's movement over any accounts is the original's
+    negated (B-9).
+    - Kani `party_target_is_odd`, `reverse_target_is_an_involution` ·
+      Lean `partyTarget_odd`, `capitalTarget_odd` (with `cashIsMoney`
+      shown satisfiable), `reverseTarget_involutive`,
+      `sumOver_movement_reversal` · property
+      `a_reversal_is_the_exact_opposite`
+
 ## What the proofs found
 
 The engine already had 190+ tests, property tests, mutation testing,

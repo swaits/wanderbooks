@@ -132,6 +132,7 @@ fn bare_party(name: &str) -> Party {
         tin: None,
         vendor: None,
         customer: None,
+        creditor_of: BTreeSet::new(),
     }
 }
 
@@ -1401,14 +1402,14 @@ fn entry_flow_takes_across_in_order_until_used_up() {
     use ledger_core::parties::{entry_flow, money_accounts};
     use ledger_core::{AccountType, Currency, Ledger, Money, Side};
     let mut l = Ledger::new(Currency::USD);
-    let mut acct = |code: &str, t| l.add_account(code, code, t, None, false).unwrap();
-    let bank = acct("1000", AccountType::Asset);
-    let card_a = acct("2050", AccountType::Liability);
-    let card_b = acct("2060", AccountType::Liability);
-    let members = acct("2100", AccountType::Liability);
-    let capital = acct("3000", AccountType::Equity);
-    let fees = acct("6000", AccountType::Expense);
-    let money = money_accounts(&l, &[bank]);
+    let mut acct = |code: &str, name: &str, t| l.add_account(code, name, t, None, false).unwrap();
+    let bank = acct("1000", "Bank", AccountType::Asset);
+    let card_a = acct("2050", "Card A", AccountType::Liability);
+    let card_b = acct("2060", "Card B", AccountType::Liability);
+    let members = acct("2100", "Due to Members", AccountType::Liability);
+    let capital = acct("3000", "Capital", AccountType::Equity);
+    let fees = acct("6000", "Fees", AccountType::Expense);
+    let money = money_accounts(&l, &[bank], &[members]);
     let e = l.create_entry(NaiveDate::from_ymd_opt(2026, 5, 1).unwrap(), "x");
     for (a, side, amt) in [
         (card_a, Side::Debit, "30.00"),
@@ -1437,11 +1438,15 @@ fn entry_flow_takes_across_in_order_until_used_up() {
     );
 }
 
-/// Oracle: shares::share_target: an entry moving no money splits over its
-/// total debits, whatever its credits (a draft not yet balanced).
+/// Oracle: shares::target DEFINITIONS, case 3 (rules.md B-35): members
+/// named on an entry moving no money split what moved equity, E (here
+/// −4.00 of a draft not yet balanced), received, in kind (the equipment's
+/// 10.00, at most |E|); case 5: with a party named who isn't a member,
+/// the total debits, direction neither, counting nothing.
 #[test]
-fn a_share_target_without_money_is_the_debits() {
+fn a_share_target_without_money_is_the_capital_or_the_debits() {
     use ledger_core::parties::money_accounts;
+    use ledger_core::shares::{Direction, Target, target};
     use ledger_core::{AccountType, Currency, Ledger, Money, Side};
     let mut l = Ledger::new(Currency::USD);
     let bank = l
@@ -1453,7 +1458,9 @@ fn a_share_target_without_money_is_the_debits() {
     let capital = l
         .add_account("3000", "Capital", AccountType::Equity, None, false)
         .unwrap();
-    let money = money_accounts(&l, &[bank]);
+    let member = l.add_party("Tobin Harlow", &[Role::Member]).unwrap();
+    let vendor = l.add_party("Riley Chen", &[Role::Contractor]).unwrap();
+    let money = money_accounts(&l, &[bank], &[]);
     let e = l.create_entry(NaiveDate::from_ymd_opt(2026, 5, 1).unwrap(), "x");
     l.add_line(e, equip, Side::Debit, Money::new(d("10.00"), Currency::USD))
         .unwrap();
@@ -1465,8 +1472,25 @@ fn a_share_target_without_money_is_the_debits() {
     )
     .unwrap();
     assert_eq!(
-        ledger_core::shares::share_target(l.get_entry(e).unwrap(), &money),
-        Ok(d("10.00"))
+        target(&l, e, &[PartyShare::whole(member)], &money),
+        Ok(Target {
+            amount: d("-4.00"),
+            direction: Direction::Received,
+            cash: Decimal::ZERO,
+            in_kind: d("-4.00"),
+            counts_as: Direction::Received,
+        })
+    );
+    let both = [PartyShare::whole(member), PartyShare::whole(vendor)];
+    assert_eq!(
+        target(&l, e, &both, &money),
+        Ok(Target {
+            amount: d("10.00"),
+            direction: Direction::Neither,
+            cash: Decimal::ZERO,
+            in_kind: Decimal::ZERO,
+            counts_as: Direction::Neither,
+        })
     );
 }
 
@@ -1484,7 +1508,7 @@ fn derived_member_shares_net_their_capital_lines() {
     let cap_b = acct("3001", AccountType::Equity);
     let a = l.add_party("A", &[Role::Member]).unwrap();
     let b = l.add_party("B", &[Role::Member]).unwrap();
-    let money = money_accounts(&l, &[bank]);
+    let money = money_accounts(&l, &[bank], &[]);
     let member = |party, capital| ledger_core::PartyMember {
         party,
         share: d("0.5"),
@@ -1506,9 +1530,13 @@ fn derived_member_shares_net_their_capital_lines() {
         s.share = ledger_core::Share::Derived;
         s
     });
+    let r = ledger_core::shares::resolve(&l, e, &shares, &money, &members).unwrap();
     assert_eq!(
-        ledger_core::shares::resolve(l.get_entry(e).unwrap(), &shares, &money, &members),
-        Ok(vec![(a, d("-70.00")), (b, d("-30.00"))])
+        r.parts
+            .iter()
+            .map(|p| (p.party, p.amount))
+            .collect::<Vec<_>>(),
+        vec![(a, d("-70.00")), (b, d("-30.00"))]
     );
 }
 
@@ -1520,16 +1548,17 @@ fn entry_flow_scenarios() {
     use ledger_core::{AccountType, Currency, Ledger, Money, Side};
     use rust_decimal::Decimal;
     let mut l = Ledger::new(Currency::USD);
-    let mut acct = |code: &str, t| l.add_account(code, code, t, None, false).unwrap();
-    let bank = acct("1000", AccountType::Asset);
-    let savings = acct("1010", AccountType::Asset);
-    let equip = acct("1500", AccountType::Asset);
-    let card = acct("2050", AccountType::Liability);
-    let members = acct("2100", AccountType::Liability);
-    let loan = acct("2500", AccountType::Liability);
-    let capital = acct("3000", AccountType::Equity);
-    let exp = acct("6000", AccountType::Expense);
-    let money = money_accounts(&l, &[bank, savings]);
+    let mut acct = |code: &str, name: &str, t| l.add_account(code, name, t, None, false).unwrap();
+    let bank = acct("1000", "Bank", AccountType::Asset);
+    let savings = acct("1010", "Savings", AccountType::Asset);
+    let equip = acct("1500", "Equipment", AccountType::Asset);
+    let card = acct("2050", "Business Card", AccountType::Liability);
+    let members = acct("2100", "Due to Members", AccountType::Liability);
+    let loan = acct("2500", "Loan", AccountType::Liability);
+    let accrued = acct("2200", "Accrued Expenses", AccountType::Liability);
+    let capital = acct("3000", "Capital", AccountType::Equity);
+    let exp = acct("6000", "Expenses", AccountType::Expense);
+    let money = money_accounts(&l, &[bank, savings], &[members, loan]);
     let d = chrono::NaiveDate::from_ymd_opt(2026, 5, 1).unwrap();
     let mut case = |lines: &[(u64, Side, &str)]| {
         let e = l.create_entry(d, "x");
@@ -1619,6 +1648,13 @@ fn entry_flow_scenarios() {
         (card, C, "50.00"),
     ]);
     assert_eq!(f.net, dec("350.00"));
+    // 8 (defect 24). An accrual through a liability that isn't money
+    // moves none; its settlement is the payment, counted once.
+    let f = case(&[(exp, D, "40.00"), (accrued, C, "40.00")]);
+    assert_eq!(f.net, Decimal::ZERO);
+    let f = case(&[(accrued, D, "40.00"), (bank, C, "40.00")]);
+    assert_eq!(f.net, dec("40.00"));
+    assert_eq!(f.what_for, vec![(accrued, dec("40.00"))]);
 }
 
 // ------------------------------------------------------- party shares
@@ -1729,23 +1765,31 @@ mod shares {
             .collect()
     }
 
+    /// The money accounts: the bank, and 2100 as the members' financing
+    /// (`books.financing_accounts`).
+    fn money(b: &Books) -> ledger_core::parties::MoneyAccounts {
+        money_accounts(&b.l, &[b.bank], &[b.due])
+    }
+
     fn resolved(b: &Books, e: EntryId) -> Result<Vec<(PartyId, Decimal)>, String> {
-        let money = money_accounts(&b.l, &[b.bank]);
-        resolve(
-            b.l.get_entry(e).unwrap(),
-            b.l.entry_parties(e),
-            &money,
-            &b.members,
-        )
+        resolve(&b.l, e, b.l.entry_parties(e), &money(b), &b.members)
+            .map(|r| r.parts.iter().map(|p| (p.party, p.amount)).collect())
     }
 
     fn year() -> (chrono::NaiveDate, chrono::NaiveDate) {
         (date(2026, 1, 1), date(2026, 12, 31))
     }
 
+    /// (paid, received) on basis cash.
     fn paid_received(b: &Books, p: PartyId) -> (Decimal, Decimal) {
-        let a = activity_with(&b.l, p, year(), &[b.bank], &b.members);
+        let a = activity_with(&b.l, p, year(), &money(b), &b.members);
         (a.paid, a.received)
+    }
+
+    /// (paid, received) on basis all.
+    fn paid_received_all(b: &Books, p: PartyId) -> (Decimal, Decimal) {
+        activity_with(&b.l, p, year(), &money(b), &b.members)
+            .totals(ledger_core::parties::Basis::All)
     }
 
     /// SCENARIO 1: a reimbursement to both members, derived, 50/50.
@@ -1793,8 +1837,11 @@ mod shares {
         assert_eq!(paid_received(&b, b.mo), (Decimal::ZERO, d("100.00")));
     }
 
-    /// SCENARIO 3: property contributed moves no money; the shares are of
-    /// the total, and activity counts nothing.
+    /// SCENARIO 3 (defect 14, rules.md B-35): property contributed moves
+    /// no money; each member's part is what moved their capital, signed
+    /// as their own account shows it: received, in kind. Basis cash
+    /// counts nothing; basis all counts it. (Before P3 this read +500.00
+    /// each, the sign of a payment.)
     #[test]
     fn property_contribution_resolves_against_the_total() {
         let mut b = books();
@@ -1810,14 +1857,52 @@ mod shares {
             .unwrap();
         assert_eq!(
             resolved(&b, e).unwrap(),
-            vec![(b.tobin, d("500.00")), (b.mo, d("500.00"))]
+            vec![(b.tobin, d("-500.00")), (b.mo, d("-500.00"))]
+        );
+        let r = resolve(&b.l, e, b.l.entry_parties(e), &money(&b), &b.members).unwrap();
+        assert_eq!(r.target.direction, ledger_core::shares::Direction::Received);
+        assert!(
+            r.parts
+                .iter()
+                .all(|p| p.cash.is_zero() && p.in_kind == d("-500.00"))
         );
         assert_eq!(paid_received(&b, b.tobin), (Decimal::ZERO, Decimal::ZERO));
+        assert_eq!(paid_received_all(&b, b.tobin), (Decimal::ZERO, d("500.00")));
+        assert_eq!(paid_received_all(&b, b.mo), (Decimal::ZERO, d("500.00")));
     }
 
-    /// Capital lines that don't account for the whole flow are refused.
+    /// INVARIANT 10: capital lines that don't account for the whole
+    /// movement of equity (here another equity account's line) are
+    /// refused, and the entry is listed as unresolved.
     #[test]
-    fn capital_lines_short_of_the_flow_are_refused() {
+    fn capital_lines_short_of_the_target_are_refused() {
+        let mut b = books();
+        let other =
+            b.l.add_account("3500", "Opening Equity", AccountType::Equity, None, false)
+                .unwrap();
+        let e = post(
+            &mut b.l,
+            &[
+                (b.bank, Side::Debit, "300.00"),
+                (b.cap_s, Side::Credit, "200.00"),
+                (other, Side::Credit, "100.00"),
+            ],
+        );
+        b.l.set_entry_parties(e, &derived(&[b.tobin, b.mo]))
+            .unwrap();
+        assert!(resolved(&b, e).is_err());
+        let a = activity_with(&b.l, b.tobin, year(), &money(&b), &b.members);
+        assert!(a.unresolved.contains(&e));
+        assert_eq!((a.paid, a.received), (Decimal::ZERO, Decimal::ZERO));
+    }
+
+    /// rules.md B-35 item 3 (capital first): a members' entry counts what
+    /// moved their capital, not other money on it: 300.00 in, 200.00 of it
+    /// Tobin's capital and 100.00 an expense refunded, is Tobin's 200.00
+    /// received (cash) and nothing of Morgan's. (Before P3 the 300.00 net
+    /// was the target and the capital lines fell short of it: refused.)
+    #[test]
+    fn a_members_entry_counts_what_moved_their_capital() {
         let mut b = books();
         let e = post(
             &mut b.l,
@@ -1829,10 +1914,12 @@ mod shares {
         );
         b.l.set_entry_parties(e, &derived(&[b.tobin, b.mo]))
             .unwrap();
-        assert!(resolved(&b, e).is_err());
-        let a = activity_with(&b.l, b.tobin, year(), &[b.bank], &b.members);
-        assert!(a.unresolved.contains(&e));
-        assert_eq!((a.paid, a.received), (Decimal::ZERO, Decimal::ZERO));
+        assert_eq!(
+            resolved(&b, e).unwrap(),
+            vec![(b.tobin, d("-200.00")), (b.mo, Decimal::ZERO)]
+        );
+        assert_eq!(paid_received(&b, b.tobin), (Decimal::ZERO, d("200.00")));
+        assert_eq!(paid_received(&b, b.mo), (Decimal::ZERO, Decimal::ZERO));
     }
 
     /// SCENARIO 4: percent rounding, remainder to the first party.
@@ -1907,8 +1994,7 @@ mod shares {
         // With no members passed (plain activity), two members can't derive.
         b.l.set_entry_parties(e, &derived(&[b.tobin, b.mo]))
             .unwrap();
-        let money = money_accounts(&b.l, &[b.bank]);
-        assert!(resolve(b.l.get_entry(e).unwrap(), b.l.entry_parties(e), &money, &[]).is_err());
+        assert!(resolve(&b.l, e, b.l.entry_parties(e), &money(&b), &[]).is_err());
         // A sole party needs no members.
         b.l.set_entry_parties(e, &derived(&[b.acme])).unwrap();
         assert_eq!(resolved(&b, e).unwrap(), vec![(b.acme, d("10.00"))]);
@@ -2147,7 +2233,7 @@ mod shares {
             ],
         );
         b.l.set_entry_party(e, Some(b.acme)).unwrap();
-        let a = ledger_core::parties::activity(&b.l, b.acme, year(), &[b.bank]);
+        let a = ledger_core::parties::activity(&b.l, b.acme, year(), &money(&b));
         assert_eq!(a.paid, d("12.34"));
         assert!(a.entries.contains(&e));
     }
@@ -2168,14 +2254,14 @@ mod shares {
         b.l.set_entry_party(a, Some(b.acme)).unwrap();
         let r1 = b.l.reverse_entry(a, date(2026, 5, 2), "undo").unwrap();
         let r2 = b.l.reverse_entry(r1, date(2026, 5, 3), "redo").unwrap();
-        let act = ledger_core::parties::activity(&b.l, b.acme, year(), &[b.bank]);
+        let act = ledger_core::parties::activity(&b.l, b.acme, year(), &money(&b));
         assert_eq!(act.entries, std::collections::BTreeSet::from([a, r1, r2]));
         assert_eq!((act.paid, act.received), (d("100.00"), Decimal::ZERO));
         // A third level takes it back out again, still on the paid side.
         let _r3 =
             b.l.reverse_entry(r2, date(2026, 5, 4), "undo again")
                 .unwrap();
-        let act = ledger_core::parties::activity(&b.l, b.acme, year(), &[b.bank]);
+        let act = ledger_core::parties::activity(&b.l, b.acme, year(), &money(&b));
         assert_eq!((act.paid, act.received), (Decimal::ZERO, Decimal::ZERO));
     }
 
@@ -2255,8 +2341,8 @@ mod shares {
             b.l.set_entry_parties(e, &derived(&[b.tobin, b.mo])).unwrap();
             let r = resolved(&b, e).unwrap();
             prop_assert_eq!(r, vec![(b.tobin, -a), (b.mo, -c)]);
-            let sa = activity_with(&b.l, b.tobin, year(), &[b.bank], &b.members);
-            let sk = activity_with(&b.l, b.mo, year(), &[b.bank], &b.members);
+            let sa = activity_with(&b.l, b.tobin, year(), &money(&b), &b.members);
+            let sk = activity_with(&b.l, b.mo, year(), &money(&b), &b.members);
             prop_assert_eq!(sa.received + sk.received, total);
         }
     }

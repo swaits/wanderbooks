@@ -1092,6 +1092,144 @@ fn constructive_mirrors() {
 }
 
 // ---------------------------------------------------------------------------
+// A party's part of an entry (rules.md B-35)
+// ---------------------------------------------------------------------------
+
+/// The inputs `kernel::party_target` reads, any in range: a capital
+/// movement (when every party named is a member) with the property beside
+/// it, the money net, the own-account movement, and the debits (a
+/// magnitude).
+fn any_party_inputs() -> (Option<(i64, i64)>, i64, i64, i64) {
+    let capital = if kani::any() {
+        let property = any_amount();
+        kani::assume(property >= 0);
+        Some((any_amount(), property))
+    } else {
+        None
+    };
+    let debits = any_amount();
+    kani::assume(debits >= 0);
+    (capital, any_amount(), any_amount(), debits)
+}
+
+/// B-35 items 1-4: the direction is the sign of what counts (paid above
+/// zero, received below), neither exactly when nothing counts; cash and
+/// in kind each carry the whole's sign and together never exceed it; a
+/// money target is all cash; a contribution counts all of itself; a
+/// distribution's cash is never more than the money it paid, nor its in
+/// kind more than the property it gave (the rest is still owed).
+#[kani::proof]
+fn party_target_direction_is_its_sign() {
+    let (capital, net, own, debits) = any_party_inputs();
+    let t = kernel::party_target(capital, net, own, debits).expect("in range");
+    let sign = |a: i64| a.signum();
+    assert!(t.cash == 0 || sign(t.cash) == sign(t.amount));
+    assert!(t.in_kind == 0 || sign(t.in_kind) == sign(t.amount));
+    assert!(t.cash.abs() + t.in_kind.abs() <= t.amount.abs());
+    match t.direction {
+        kernel::Direction::Neither => {
+            assert!(t.cash == 0 && t.in_kind == 0);
+        }
+        kernel::Direction::Paid => {
+            assert!(t.amount > 0 && t.cash + t.in_kind > 0);
+        }
+        kernel::Direction::Received => {
+            assert!(t.amount < 0 && t.cash + t.in_kind < 0);
+        }
+    }
+    let capital_case = matches!(capital, Some((e, _)) if e != 0);
+    if !capital_case && net != 0 {
+        assert!(t.amount == net && t.cash == net && t.in_kind == 0);
+    }
+    if let Some((e, property)) = capital {
+        if e < 0 {
+            // A contribution counts all of itself, money or property.
+            assert_eq!(t.cash + t.in_kind, e);
+            assert!(-t.in_kind <= property);
+        }
+        if e > 0 {
+            // A distribution: what it paid, then what it gave; no more.
+            assert!(t.cash <= net.max(0) && t.in_kind <= property);
+        }
+    }
+    kani::cover!(
+        t.direction == kernel::Direction::Paid && t.in_kind != 0 && t.cash != 0,
+        "a distribution partly in kind"
+    );
+    kani::cover!(
+        capital_case && t.direction == kernel::Direction::Neither,
+        "a distribution all still owed"
+    );
+    kani::cover!(
+        t.direction == kernel::Direction::Paid && t.cash + t.in_kind < t.amount,
+        "a distribution partly still owed"
+    );
+}
+
+/// B-35 item 3 and B-9: the target is odd. Negating the lines negates the
+/// capital movement, the money net and the own-account movement, and the
+/// property comes from the other side, so it keeps its size: the result
+/// is the original's reverse_target, whenever it isn't the debits fallback
+/// (a sign means nothing there) and a member's entry counts exactly its
+/// money as cash (not an expense booked straight to capital, a debt
+/// converted, or a distribution still owed). The reversal arm, not the
+/// lines, gives every reversal its target, so these exceptions never reach
+/// one.
+#[kani::proof]
+fn party_target_is_odd() {
+    let (capital, net, own, debits) = any_party_inputs();
+    if let Some((e, property)) = capital
+        && e != 0
+    {
+        // The money the member's entry moved their way, signed as the
+        // distribution side reads it, is exactly what isn't property.
+        let side_net = if e > 0 { net } else { -net };
+        let whole = e.abs();
+        kani::assume(side_net.max(0).min(whole) == whole - property.min(whole));
+    }
+    let t = kernel::party_target(capital, net, own, debits).expect("in range");
+    let negated = capital.map(|(e, p)| (-e, p));
+    let n = kernel::party_target(negated, -net, -own, debits).expect("in range");
+    let fallback = !matches!(capital, Some((e, _)) if e != 0) && net == 0 && own == 0;
+    if !fallback {
+        assert_eq!(Some(n), kernel::reverse_target(t));
+    }
+    kani::cover!(!fallback && capital.is_some(), "a member's entry, negated");
+    kani::cover!(
+        matches!(capital, Some((e, p)) if e > 0 && p > 0 && net > 0 && net < e),
+        "a distribution of money and property, negated"
+    );
+}
+
+/// B-9: reversing a reversal gives the original back, and reverse_target
+/// never panics: past the range it refuses.
+#[kani::proof]
+fn reverse_target_is_an_involution() {
+    let direction = match kani::any::<u8>() {
+        0 => kernel::Direction::Paid,
+        1 => kernel::Direction::Received,
+        _ => kernel::Direction::Neither,
+    };
+    let t = kernel::PartyTarget {
+        amount: kani::any::<i64>(),
+        direction,
+        cash: kani::any::<i64>(),
+        in_kind: kani::any::<i64>(),
+    };
+    match kernel::reverse_target(t) {
+        Some(r) => {
+            assert_eq!(r.direction, t.direction.flip());
+            assert_eq!(r.amount, -t.amount);
+            assert_eq!(kernel::reverse_target(r), Some(t));
+        }
+        None => {
+            assert!(t.amount == i64::MIN || t.cash == i64::MIN || t.in_kind == i64::MIN);
+        }
+    }
+    kani::cover!(t.amount == i64::MIN, "the range's edge");
+}
+
+// ---------------------------------------------------------------------------
 // The checker itself
 // ---------------------------------------------------------------------------
 

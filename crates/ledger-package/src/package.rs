@@ -263,7 +263,11 @@ pub fn build_package<B: PackageBooks + ?Sized>(
                             }
                             None => {
                                 cells.push(
-                                    facts.as_ref().map(|f| f.last4.clone()).unwrap_or_default(),
+                                    party
+                                        .and_then(|id| ledger.get_party(id))
+                                        .and_then(|p| p.tin_last4())
+                                        .unwrap_or_default()
+                                        .to_string(),
                                 );
                                 cells.push(
                                     facts
@@ -396,11 +400,10 @@ pub fn build_package<B: PackageBooks + ?Sized>(
                 // The payee's full TIN from the source (INVARIANT 2).
                 if let Some(tins) = tins {
                     let party = ledger.party_of_vendor(v.vendor_id);
-                    let last4 = party.and_then(|id| ledger.get_party(id)).and_then(|p| {
-                        p.w9.as_ref()
-                            .map(|f| f.tin_last4.clone())
-                            .or_else(|| p.tin.as_ref().map(|t| t.last4.clone()))
-                    });
+                    let last4 = party
+                        .and_then(|id| ledger.get_party(id))
+                        .and_then(|p| p.tin_last4())
+                        .map(str::to_string);
                     let got = match party {
                         None => Err("TIN not in the vault: no party for this vendor".into()),
                         Some(id) => tins(id),

@@ -94,8 +94,9 @@ pub fn detail(ui: &mut Ui, b: &Books, e: &EntryInfo, shell: &mut Shell<'_>) {
                 };
                 ui.add_space(4.0);
                 let mut text = format!("{} {}", super::parties::party_icon(party), party.label());
-                if several {
-                    text.push_str(&format!(" · {}", share_text(share)));
+                let what = share_text(share, several, e.reversal_of);
+                if !what.is_empty() {
+                    text.push_str(&format!(" · {what}"));
                 }
                 if widgets::link(ui, RichText::new(text).color(p.accent))
                     .on_hover_text(format!(
@@ -511,23 +512,71 @@ pub fn render(ui: &mut Ui, b: &Books, a: &Attachment, shell: &mut Shell<'_>, wid
     }
 }
 
-/// One party's share of an entry, in words: "$50.00 (derived)", "$70.00",
-/// "$33.34 (33.333%)", or the share alone when it doesn't resolve.
-pub fn share_text(s: &crate::books::EntryParty) -> String {
-    let how = match s.share {
-        ledger_core::Share::Amount(_) => None,
-        ledger_core::Share::Percent(p) => Some(format!("{}%", p.normalize())),
-        ledger_core::Share::Derived => Some("derived".to_string()),
+/// A party's part of an entry in words (rules.md B-35): which way it
+/// went and how much ("paid $64.00", "received $740.00, in kind"), what of
+/// it is still owed, the share it came from when the entry names several
+/// ("(50%)", "(derived)"), and a reversal said as one ("paid $1,480.00
+/// (reversal of #12)"), so a property contribution and its reversal never
+/// read alike. A part that moved nothing with the party (a bill, a close)
+/// says so. Empty for a sole party whose part doesn't resolve.
+pub fn share_text(
+    s: &crate::books::EntryParty,
+    several: bool,
+    reversal_of: Option<ledger_core::EntryId>,
+) -> String {
+    use ledger_core::shares::Direction;
+    let how = if several {
+        match s.share {
+            ledger_core::Share::Amount(_) => None,
+            ledger_core::Share::Percent(p) => Some(format!("{}%", p.normalize())),
+            ledger_core::Share::Derived => Some("derived".to_string()),
+        }
+    } else {
+        None
     };
-    match (s.resolved, how) {
-        (Some(v), Some(h)) => format!("{} ({h})", fmt::dollars(v.abs())),
-        (Some(v), None) => fmt::dollars(v.abs()),
-        (None, Some(h)) => h,
-        (None, None) => match s.share {
+    let mut t = match (s.resolved, s.direction) {
+        (Some(v), Some(d)) => {
+            let amount = fmt::dollars(v.abs());
+            let mut t = match d {
+                Direction::Paid => format!("paid {amount}"),
+                Direction::Received => format!("received {amount}"),
+                Direction::Neither => format!("{amount}, no money moved"),
+            };
+            let cash = s.cash.unwrap_or_default();
+            let in_kind = s.in_kind.unwrap_or_default();
+            if !in_kind.is_zero() {
+                if in_kind == v {
+                    t.push_str(", in kind");
+                } else {
+                    t.push_str(&format!(", {} in kind", fmt::dollars(in_kind.abs())));
+                }
+            }
+            let owed = v - cash - in_kind;
+            if d != Direction::Neither && !owed.is_zero() {
+                t.push_str(&format!(", {} still owed", fmt::dollars(owed.abs())));
+            }
+            t
+        }
+        _ if several => match s.share {
             ledger_core::Share::Amount(a) => fmt::dollars(a),
             _ => String::new(),
         },
+        _ => String::new(),
+    };
+    let mut notes: Vec<String> = how.into_iter().collect();
+    if s.resolved.is_some()
+        && let Some(o) = reversal_of
+    {
+        notes.push(format!("reversal of #{o}"));
     }
+    if !notes.is_empty() {
+        if t.is_empty() {
+            t = notes.join(", ");
+        } else {
+            t.push_str(&format!(" ({})", notes.join(", ")));
+        }
+    }
+    t
 }
 
 #[cfg(test)]

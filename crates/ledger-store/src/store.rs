@@ -1238,6 +1238,30 @@ impl Store {
         Ok(())
     }
 
+    /// Name a party the creditor of a liability account the company owes
+    /// it itself on, or stop (`on` false): ledger_core's
+    /// `Ledger::set_party_creditor`. Journaled as `party.creditor_set
+    /// {id, account_id, on}`, after the journal declares the feature it
+    /// needs ([`crate::format::PARTY_CREDITORS`]) the first time, so an
+    /// older wanderbooks stops there and says it is too old instead of
+    /// misreading the books.
+    pub fn set_party_creditor(
+        &mut self,
+        id: ledger_core::PartyId,
+        account: AccountId,
+        on: bool,
+    ) -> Result<(), StoreError> {
+        self.ledger.check_set_party_creditor(id, account, on)?;
+        self.ensure_feature(crate::format::PARTY_CREDITORS)?;
+        let line = self.append_journal(
+            "party.creditor_set",
+            json!({"id": id, "account_id": account, "on": on}),
+        )?;
+        self.ledger.set_party_creditor(id, account, on)?;
+        apply_line_to_sqlite(&self.conn, &line)?;
+        Ok(())
+    }
+
     /// Record or clear a party's W-9 facts. Journaled as `party.w9_set`.
     pub fn set_party_w9(
         &mut self,
@@ -4844,6 +4868,13 @@ pub(crate) fn replay_line_into_ledger(
                 .ok_or_else(|| StoreError::JournalCorrupt("party.role_set on".into()))?;
             ledger.set_party_role(get_u64(p, "id")?, role, on)?;
         }
+        "party.creditor_set" => {
+            let on = p
+                .get("on")
+                .and_then(|v| v.as_bool())
+                .ok_or_else(|| StoreError::JournalCorrupt("party.creditor_set on".into()))?;
+            ledger.set_party_creditor(get_u64(p, "id")?, get_u64(p, "account_id")?, on)?;
+        }
         "party.w9_set" => {
             let facts: Option<ledger_core::W9Facts> = serde_json::from_value(p["facts"].clone())
                 .map_err(|_| StoreError::JournalCorrupt("party.w9_set facts".into()))?;
@@ -5569,8 +5600,8 @@ fn apply_line_rows(conn: &Connection, line: &JournalLine) -> Result<(), StoreErr
             )?;
         }
         "role.assigned" | "party.added" | "party.updated" | "party.role_set" | "party.w9_set"
-        | "party.w4_set" | "party.tin_set" | "entry.party_set" | "entry.parties_set"
-        | "entry.no_party" => {
+        | "party.w4_set" | "party.tin_set" | "party.creditor_set" | "entry.party_set"
+        | "entry.parties_set" | "entry.no_party" => {
             // Control roles and the party directory live in the ledger
             // (rebuilt by replay); the events mirror below keeps the
             // history.

@@ -1027,14 +1027,31 @@ fn party_totals_for_a_customer_a_member_and_a_prepaid() {
     assert_eq!(t["received"], "2000.00", "a contribution");
     assert_eq!(t["paid"], "500.00", "a distribution");
 
-    // A prepaid bought with a member's card: an asset, paid by a liability.
-    m.add_party("Insurer", &[]);
-    m.post(
-        "2026-04-01",
-        json!({"party": "Insurer"}),
-        &[("1300", "debit", "1200.00"), ("2100", "credit", "1200.00")],
+    // A prepaid bought with a member's card: an asset, paid through what
+    // the members advanced. That is money when it is a financing account
+    // (rules.md B-35 item 5, P3 defect 24); unlisted, Due to Members is a
+    // promise like any other liability, counted when the member is paid
+    // back.
+    let prepaid = |m: &mut Mcp| {
+        m.add_party("Insurer", &[]);
+        m.post(
+            "2026-04-01",
+            json!({"party": "Insurer"}),
+            &[("1300", "debit", "1200.00"), ("2100", "credit", "1200.00")],
+        );
+        m.party("Insurer", 2026)["totals"].clone()
+    };
+    let t = prepaid(&mut m);
+    assert_eq!(
+        (t["paid"].clone(), t["received"].clone()),
+        (json!("0.00"), json!("0.00"))
     );
-    let t = m.party("Insurer", 2026)["totals"].clone();
+    let dir = test_dir("totals-financing");
+    let toml = books_toml(&dir, "Spec Co", "financing_accounts = [\"2100\"]\n");
+    let mut f = Mcp::start(&dir, &toml);
+    f.accounts(CHART);
+    f.books_dir = Some(dir);
+    let t = prepaid(&mut f);
     assert_eq!(t["paid"], "1200.00");
     assert_eq!(t["received"], "0.00");
 }

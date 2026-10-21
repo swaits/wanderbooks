@@ -1,0 +1,86 @@
+# P3 defect 11 (audit finding F28): the directory showed a member's TIN as
+# missing because it read W-9 facts only. Regression tests: ledger-core
+# tests/spec_party_totals.rs
+# defect11_a_partys_tin_last4_is_its_tin_facts_else_its_w9s; ledger-mcp
+# tests/spec_vault.rs defect11_the_directory_shows_a_members_tin_last4.
+# The shape: bookspec/README.md.
+
+id = "p3-party-tin-last4"
+title = "A party's TIN last four is its TIN facts', else its W-9's"
+rule = """
+The books keep a taxpayer identification number truncated to its last
+four digits. A party's last four is its TIN facts' (a member's SSN for
+the K-1), else its W-9 facts'; the two never disagree. A TIN purged from
+the vault keeps its last four in the books. A party with neither has
+none.
+"""
+status = "AUTHORITY"
+sources = [
+  "Treas. Reg. §301.6109-4(a): a truncated TIN shows the last four digits (wanderbooks docs/spec/sources/irs-truncated-tin.md)",
+  "DECISION (owner, 2026-10-15): a party's TIN facts and W-9 facts never disagree (wanderbooks ledger-core parties INVARIANT 2a)",
+]
+tags = ["parties", "tin", "w9", "k1"]
+# Nothing is posted: the facts are the directory's.
+events = []
+
+[setup]
+currency = "USD"
+fiscal_year_start = "01-01"
+basis = "accrual"
+rounding = "half-even"
+
+[[setup.accounts]]
+code = "1000"
+name = "Checking"
+type = "asset"
+
+[[setup.parties]]
+name = "Tobin Harlow"
+roles = ["member"]
+tin_last4 = "4321"
+
+[[setup.parties]]
+name = "Riley Chen"
+roles = ["contractor"]
+w9_tin_last4 = "8765"
+
+[[setup.parties]]
+name = "Morgan Ellis"
+roles = ["member", "contractor"]
+tin_last4 = "1111"
+w9_tin_last4 = "1111"
+
+[[setup.parties]]
+name = "Lakeside Supply"
+roles = []
+
+[[setup.parties]]
+name = "Avery Quinn"
+roles = ["member"]
+tin_last4 = "2468"
+tin_purged = true
+
+[[expect]]
+query = "party_tin_last4"
+party = "Tobin Harlow"
+values = { tin_last4 = "4321" }
+
+[[expect]]
+query = "party_tin_last4"
+party = "Riley Chen"
+values = { tin_last4 = "8765" }
+
+[[expect]]
+query = "party_tin_last4"
+party = "Morgan Ellis"
+values = { tin_last4 = "1111" }
+
+[[expect]]
+query = "party_tin_last4"
+party = "Lakeside Supply"
+values = { tin_last4 = "" }
+
+[[expect]]
+query = "party_tin_last4"
+party = "Avery Quinn"
+values = { tin_last4 = "2468" }

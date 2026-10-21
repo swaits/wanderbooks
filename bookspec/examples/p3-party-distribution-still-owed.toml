@@ -1,0 +1,200 @@
+# P3 defect 24 in a member's entry (found in review, 2026-10-21): a
+# distribution declared to a liability that isn't money counted as paid
+# when declared and again when paid. A distribution's cash is the money it
+# paid, its in kind the property it gave; the rest is still owed. Regression
+# tests: ledger-core tests/spec_party_totals.rs
+# defect24_a_distribution_declared_to_a_payable_counts_once_when_paid and
+# a_distribution_of_money_and_depreciated_property_splits_by_what_moved.
+# The shape: bookspec/README.md.
+
+id = "p3-party-distribution-still-owed"
+title = "A distribution counts the money it paid and the property it gave; what is still owed counts when paid"
+rule = """
+An entry naming only members that moves their capital counts what moved
+it. Of a distribution, the cash is the money it paid (through the cash
+accounts, a card, the members' financing or a loan), the in kind the
+property it gave up (at what the books carried it), and the rest, credited
+to a liability that isn't money for the entry (distributions payable, or
+what the members are owed when they are named its creditors), is a
+promise: it counts nothing until it is paid, then once, as paid. The
+statement of members' equity counts a distribution when it is declared,
+so party totals catch up with it when it is paid.
+"""
+status = "AUTHORITY"
+sources = [
+  "Helvering v. Price, 309 U.S. 409, 412-413 (1940): a promise to pay is not payment (wanderbooks docs/spec/sources/helvering-v-price-1940.md)",
+  "Treas. Reg. §1.704-1(b)(2)(iv)(b)(4)-(5): a partner's capital account falls by the money and the property distributed (docs/spec/sources/irs-capital-accounts.md)",
+  "DECISION (owner, 2026-10-20): a member's entry counts what moved their capital; money is cash, cards, the members' financing and loans (rules.md B-35)",
+]
+tags = ["parties", "members", "distributions", "promises", "in-kind", "money"]
+
+[setup]
+currency = "USD"
+fiscal_year_start = "01-01"
+basis = "accrual"
+rounding = "half-even"
+cash_accounts = ["1000"]
+
+[[setup.accounts]]
+code = "1000"
+name = "Checking"
+type = "asset"
+
+[[setup.accounts]]
+code = "1500"
+name = "Equipment"
+type = "asset"
+
+[[setup.accounts]]
+code = "1510"
+name = "Accumulated Depreciation — Equipment"
+type = "asset"
+
+[[setup.accounts]]
+code = "2150"
+name = "Distributions Payable"
+type = "liability"
+
+[[setup.accounts]]
+code = "3000"
+name = "Capital — Tobin Harlow"
+type = "equity"
+
+[[setup.accounts]]
+code = "3001"
+name = "Capital — Morgan Ellis"
+type = "equity"
+
+[[setup.accounts]]
+code = "3100"
+name = "Distributions — Tobin Harlow"
+type = "equity"
+
+[[setup.parties]]
+name = "Tobin Harlow"
+roles = ["member"]
+
+[[setup.parties]]
+name = "Morgan Ellis"
+roles = ["member"]
+
+[[setup.members]]
+name = "Tobin Harlow"
+share = "0.5"
+capital_account = "3000"
+distributions_account = "3100"
+
+[[setup.members]]
+name = "Morgan Ellis"
+share = "0.5"
+capital_account = "3001"
+
+# 1. A distribution declared to Tobin: still owed, counts nothing.
+[[events]]
+date = "2026-06-30"
+description = "Distribution declared"
+parties = [{ party = "Tobin Harlow" }]
+lines = [
+  { account = "3100", side = "debit", amount = "200.00" },
+  { account = "2150", side = "credit", amount = "200.00" },
+]
+
+# 2. It is paid: paid, money, once.
+[[events]]
+date = "2026-07-15"
+description = "Distribution paid"
+parties = [{ party = "Tobin Harlow" }]
+lines = [
+  { account = "2150", side = "debit", amount = "200.00" },
+  { account = "1000", side = "credit", amount = "200.00" },
+]
+
+# 3. Declared and partly paid at once: the money now, the rest when paid.
+[[events]]
+date = "2026-08-31"
+description = "Distribution, part paid"
+parties = [{ party = "Tobin Harlow" }]
+lines = [
+  { account = "3100", side = "debit", amount = "300.00" },
+  { account = "1000", side = "credit", amount = "100.00" },
+  { account = "2150", side = "credit", amount = "200.00" },
+]
+
+# 4. Equipment carried at 1,000.00 less 300.00 depreciated, with 100.00 in
+# cash, distributed to Morgan: 100.00 cash, 700.00 in kind.
+[[events]]
+date = "2026-09-01"
+description = "Equipment and cash distributed"
+parties = [{ party = "Morgan Ellis" }]
+lines = [
+  { account = "3001", side = "debit", amount = "800.00" },
+  { account = "1510", side = "debit", amount = "300.00" },
+  { account = "1500", side = "credit", amount = "1000.00" },
+  { account = "1000", side = "credit", amount = "100.00" },
+]
+
+[[expect]]
+query = "party_part"
+entry = 1
+party = "Tobin Harlow"
+values = { resolved = "200.00", direction = "neither", cash = "0.00", in_kind = "0.00" }
+
+[[expect]]
+query = "party_part"
+entry = 3
+party = "Tobin Harlow"
+values = { resolved = "300.00", direction = "paid", cash = "100.00", in_kind = "0.00" }
+
+[[expect]]
+query = "party_part"
+entry = 4
+party = "Morgan Ellis"
+values = { resolved = "800.00", direction = "paid", cash = "100.00", in_kind = "700.00" }
+
+# Before the review: 700.00 (event 1's 200.00 and the 200.00 still owed
+# on event 3 counted as paid, and event 2 paid the first again).
+[[expect]]
+query = "party_totals"
+party = "Tobin Harlow"
+basis = "cash"
+from = "2026-01-01"
+to = "2026-12-31"
+values = { paid = "300.00", received = "0.00" }
+
+# Through June: declared, not yet paid. The statement counts it already.
+[[expect]]
+query = "party_totals"
+party = "Tobin Harlow"
+basis = "all"
+from = "2026-01-01"
+to = "2026-06-30"
+values = { paid = "0.00", received = "0.00" }
+
+[[expect]]
+query = "members_equity"
+from = "2026-01-01"
+to = "2026-06-30"
+values = { "Tobin Harlow.contributions" = "0.00", "Tobin Harlow.distributions" = "200.00" }
+
+# Before the review: 0.00 cash, 800.00 in kind.
+[[expect]]
+query = "party_totals"
+party = "Morgan Ellis"
+basis = "cash"
+from = "2026-01-01"
+to = "2026-12-31"
+values = { paid = "100.00", received = "0.00" }
+
+[[expect]]
+query = "party_totals"
+party = "Morgan Ellis"
+basis = "all"
+from = "2026-01-01"
+to = "2026-12-31"
+values = { paid = "800.00", received = "0.00" }
+
+[[expect]]
+query = "members_equity"
+from = "2026-01-01"
+to = "2026-12-31"
+values = { "Morgan Ellis.contributions" = "0.00", "Morgan Ellis.distributions" = "800.00" }

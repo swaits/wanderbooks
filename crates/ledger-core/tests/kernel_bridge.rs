@@ -315,4 +315,37 @@ proptest! {
         prop_assert_eq!(fi.into_iter().map(dec).collect::<Vec<_>>(), fd);
         prop_assert_eq!(ti.into_iter().map(dec).collect::<Vec<_>>(), td);
     }
+
+    /// rules.md B-35: a party's target, and a reversal's, are the same on
+    /// i64 cents and on Decimal.
+    #[test]
+    fn party_target_agrees(
+        capital in prop::option::of((arb_cents(), 0i64..MAX_CENTS)),
+        net in arb_cents(),
+        own in arb_cents(),
+        debits in 0i64..MAX_CENTS,
+    ) {
+        let as_dec = |t: kernel::PartyTarget<i64>| kernel::PartyTarget {
+            amount: dec(t.amount),
+            direction: t.direction,
+            cash: dec(t.cash),
+            in_kind: dec(t.in_kind),
+        };
+        let ti = kernel::party_target(capital, net, own, debits);
+        let td = kernel::party_target(
+            capital.map(|(e, p)| (dec(e), dec(p))),
+            dec(net),
+            dec(own),
+            dec(debits),
+        );
+        prop_assert_eq!(ti.map(as_dec), td);
+        // Never a negative zero on Decimal (party_target INVARIANT 6).
+        for t in td.iter().chain(td.and_then(kernel::reverse_target).iter()) {
+            for v in [t.amount, t.cash, t.in_kind] {
+                prop_assert!(!(v.is_zero() && v.is_sign_negative()), "{t:?}");
+            }
+        }
+        let ri = ti.and_then(kernel::reverse_target);
+        prop_assert_eq!(ri.map(as_dec), td.and_then(kernel::reverse_target));
+    }
 }

@@ -36,7 +36,10 @@
 //!   to zero, and a reversal's parts are the original's negated (B-14);
 //! * what a member or lender paid or received for the company, with no
 //!   cash account moving, is split among the kinds it settled, netting to
-//!   zero, and mirrored by a reversal (B-14 rule 11).
+//!   zero, and mirrored by a reversal (B-14 rule 11);
+//! * a party's part of an entry is signed as a line on the party's own
+//!   account would be, a reversal's is its original's negated, and what of
+//!   it counts as money or as property never exceeds it (B-35).
 
 use crate::{AccountType, Side};
 use rust_decimal::Decimal;
@@ -640,6 +643,224 @@ pub fn exchanged<T: Amount>(debits: T, credits: T, inflow: T, outflow: T) -> Opt
     let d = debits.checked_sub(outflow)?;
     let c = credits.checked_sub(inflow)?;
     Some(d.min(c).max(T::ZERO))
+}
+
+/// Which way an entry moved value with its parties (rules.md B-35).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Direction {
+    /// The company paid the party, or gave it value: a line on the
+    /// party's own account would be a debit.
+    Paid,
+    /// The company received from the party: a line on its own account
+    /// would be a credit.
+    Received,
+    /// Neither: nothing moved with the party yet (a bill, an invoice, a
+    /// fee charged on its own card, a distribution still owed), or the
+    /// entry moved nothing with anyone (a close, a reclassification).
+    /// Counted in no total.
+    Neither,
+}
+
+impl Direction {
+    /// The other way: paid and received swap; neither stays neither.
+    pub fn flip(self) -> Self {
+        match self {
+            Direction::Paid => Direction::Received,
+            Direction::Received => Direction::Paid,
+            Direction::Neither => Direction::Neither,
+        }
+    }
+
+    /// The direction of a signed amount: paid above zero, received below,
+    /// neither at zero.
+    pub fn of<T: Amount>(amount: T) -> Self {
+        if amount > T::ZERO {
+            Direction::Paid
+        } else if amount < T::ZERO {
+            Direction::Received
+        } else {
+            Direction::Neither
+        }
+    }
+
+    /// Its wire name: `paid`, `received`, or `neither`.
+    pub fn key(self) -> &'static str {
+        match self {
+            Direction::Paid => "paid",
+            Direction::Received => "received",
+            Direction::Neither => "neither",
+        }
+    }
+}
+
+/// What an entry's parties split, and what of it counts in their totals
+/// (rules.md B-35).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PartyTarget<T> {
+    /// The whole, signed as a line on the parties' own account would be
+    /// (debit-positive): positive, the company paid or gave; negative, it
+    /// received.
+    pub amount: T,
+    /// Which way value moved.
+    pub direction: Direction,
+    /// The part of `amount` that moved as money (of a member's
+    /// contribution, what the K-1 worksheet counts as cash; of a
+    /// distribution, the money it paid): counted on both bases.
+    pub cash: T,
+    /// The part of `amount` that moved as property: counted on basis
+    /// "all" only.
+    pub in_kind: T,
+}
+
+/// The magnitude of `a`, or `None` past the type's range.
+fn magnitude<T: Amount>(a: T) -> Option<T> {
+    if a < T::ZERO {
+        a.checked_neg()
+    } else {
+        Some(a)
+    }
+}
+
+/// The magnitude `m` with the sign of `like`, never a negative zero (a
+/// zero `m` is the plain zero, whatever sign arithmetic left on it).
+fn with_sign<T: Amount>(like: T, m: T) -> Option<T> {
+    if m == T::ZERO {
+        Some(T::ZERO)
+    } else if like < T::ZERO {
+        m.checked_neg()
+    } else {
+        Some(m)
+    }
+}
+
+/// The smaller of `a` and `b`.
+fn least<T: Amount>(a: T, b: T) -> T {
+    if a < b { a } else { b }
+}
+
+/// What an entry's parties split and what of it counts (rules.md B-35
+/// item 3, every case but a close and a reversal, which the caller
+/// handles: a close is its parties' own-account movement with direction
+/// neither, a reversal is [`reverse_target`] of its original's).
+///
+/// ```text
+/// GOAL: one signed whole for an entry's parties, debit-positive as a line
+///       on their own account, with its direction and what of it moved as
+///       money or as property, so a property contribution and its
+///       reversal never read alike, and a promise is never counted as if
+///       it were paid.
+/// SOURCE: rules.md B-35 (B-2 signs; DECISION, owner, 2026-10-20: a
+///         member's entry counts what moved their capital, money is cash,
+///         cards, the members' financing and loans, and a liability credit
+///         never counts as paying that liability's own creditor; Helvering
+///         v. Price: a promise to pay is not payment).
+/// INPUTS (each signed debit-positive over the entry's lines):
+///   capital: Some((e, property)) when every party named is a member: e
+///     the movement of equity other than retained earnings; property what
+///     property accounts took in (their debits, when e < 0) or gave up
+///     (their credits, when e > 0).
+///   net: the money paid (+) or received (−) (parties::entry_flow, a
+///     named party's own liabilities not counted as money).
+///   own: the movement of the parties' own accounts (payables,
+///     receivables, liabilities owed to a party named).
+///   debits: the entry's total debits.
+/// INVARIANTS:
+///   1. capital with e < 0 (a contribution): amount = e; |in_kind| =
+///      min(|e|, property⁺); cash the rest (what the K-1 worksheet counts
+///      as cash: money, or what the member paid for the company).
+///   2. capital with e > 0 (a distribution): amount = e; cash = min(e,
+///      net⁺), the money it paid; in_kind = min(e − cash, property⁺), the
+///      property it gave; the rest (credited to a liability that isn't
+///      money for the entry: a distribution declared, still owed) counts
+///      as nothing until it is paid.
+///   3. In 1 and 2, direction is the sign of e, or neither when nothing
+///      counts.
+///   4. Else net ≠ 0: amount = cash = net, in_kind = 0, direction its
+///      sign.
+///   5. Else amount = own when it isn't zero, else debits; neither.
+///   6. cash and in_kind each have amount's sign or are zero (never a
+///      negative zero), |cash| + |in_kind| ≤ |amount|, and direction is
+///      neither exactly when both are zero.
+///   7. Odd, but for the debits fallback and a member's entry whose cash
+///      isn't exactly its money (an expense booked straight to capital, a
+///      debt converted, a distribution still owed): negating e, net and
+///      own (property comes from the other side of the lines, so it keeps
+///      its size) gives reverse_target of the result.
+/// ```
+///
+/// `None` past the type's range.
+pub fn party_target<T: Amount>(
+    capital: Option<(T, T)>,
+    net: T,
+    own: T,
+    debits: T,
+) -> Option<PartyTarget<T>> {
+    if let Some((e, property)) = capital
+        && e != T::ZERO
+    {
+        let whole = magnitude(e)?;
+        let property = if property > T::ZERO {
+            property
+        } else {
+            T::ZERO
+        };
+        let (cash, in_kind) = if e < T::ZERO {
+            let in_kind = least(property, whole);
+            (whole.checked_sub(in_kind)?, in_kind)
+        } else {
+            let paid = if net > T::ZERO {
+                least(net, whole)
+            } else {
+                T::ZERO
+            };
+            (paid, least(property, whole.checked_sub(paid)?))
+        };
+        let counted = cash.checked_add(in_kind)?;
+        return Some(PartyTarget {
+            amount: e,
+            direction: if counted == T::ZERO {
+                Direction::Neither
+            } else {
+                Direction::of(e)
+            },
+            cash: with_sign(e, cash)?,
+            in_kind: with_sign(e, in_kind)?,
+        });
+    }
+    if net != T::ZERO {
+        return Some(PartyTarget {
+            amount: net,
+            direction: Direction::of(net),
+            cash: net,
+            in_kind: T::ZERO,
+        });
+    }
+    Some(PartyTarget {
+        amount: if own != T::ZERO { own } else { debits },
+        direction: Direction::Neither,
+        cash: T::ZERO,
+        in_kind: T::ZERO,
+    })
+}
+
+/// A reversal's target from its original's (rules.md B-35 item 3; B-9: a
+/// correction is the opposite entry): every amount negated (never to a
+/// negative zero), paid and received swapped. An involution. `None` past
+/// the type's range.
+pub fn reverse_target<T: Amount>(t: PartyTarget<T>) -> Option<PartyTarget<T>> {
+    let neg = |a: T| {
+        if a == T::ZERO {
+            Some(T::ZERO)
+        } else {
+            a.checked_neg()
+        }
+    };
+    Some(PartyTarget {
+        amount: neg(t.amount)?,
+        direction: t.direction.flip(),
+        cash: neg(t.cash)?,
+        in_kind: neg(t.in_kind)?,
+    })
 }
 
 #[cfg(test)]

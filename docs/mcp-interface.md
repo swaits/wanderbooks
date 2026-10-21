@@ -856,12 +856,15 @@ texts are at most 500 characters, no control characters.
 - `books.add_party { name, roles? }` → the party (below). Journaled as
   `party.added`.
 - `books.update_party { party, name?, display_name?, website?, address?,
-  notes?, archived? }` → the party. Give at least one field; `""` clears
-  `display_name`, `website`, `address`, or `notes`. Every field is checked
+  notes?, archived?, creditor_of? }` → the party. Give at least one field;
+  `""` clears `display_name`, `website`, `address`, or `notes`;
+  `creditor_of` (account codes or ids) replaces the party's list of the
+  liabilities the company owes it itself (below). Every field is checked
   (in order, on a rehearsal) before any is written; each is journaled as
   its own `party.updated`, in the order name, display_name, website,
-  address, notes, archived. Un-archiving is refused while another party
-  has the name.
+  address, notes, archived, then one `party.creditor_set` per account
+  added or dropped. Un-archiving is refused while another party has the
+  name.
 - `books.set_party_roles { party, add?, remove? }` → the party. Adds apply
   before removes (so a contractor's W-9 survives a swap to landlord); roles
   it already has, or lacks, are skipped; each change is journaled as
@@ -919,22 +922,66 @@ texts are at most 500 characters, no control characters.
   "require"`, any party (or the no-party mark) satisfies the check.
   Reversals carry every share. There is no "joint" party: a joint member
   transaction names both members and lets the shares derive.
-- `books.parties { role?, include_archived?, year? }` → `{ year, parties:
-  [{ party_id, name, label, roles, vendor_id?, customer_id?, w9_on_file,
-  tin_last4?, w4_on_file, archived, paid, received }] }`, by id.
-- `books.party { party, year? }` → `{ party, year, totals, entries,
-  invoices, bills, payroll }`: the facts; the calendar year's totals
-  (default this year); every entry it is on (drafts included, newest
-  first); its invoices and bills (`{ id, date, due_date, total, paid,
-  balance, status, entry_id }`); and the payroll lines naming it
+- `books.parties { role?, include_archived?, year?, basis? }` → `{ year,
+  basis, parties: [{ party_id, name, label, roles, vendor_id?,
+  customer_id?, w9_on_file, tin_last4?, w4_on_file, archived, paid,
+  received }] }`, by id. `tin_last4` is the TIN's last four when the books
+  know it: its TIN facts' (`books.set_tin`; a member's SSN for the K-1),
+  else its W-9 facts' (the two never disagree), null with neither, kept
+  after `books.purge_tin` (P3 defect 11: it read W-9 facts only, so a
+  member's showed as missing).
+- `books.party { party, year?, basis? }` → `{ party, year, totals,
+  entries, invoices, bills, payroll }`: the facts; the calendar year's
+  totals (default this year); every entry it is on (drafts included,
+  newest first); its invoices and bills (`{ id, date, due_date, total,
+  paid, balance, status, entry_id }`); and the payroll lines naming it
   (`{ run_id, date, entry_id, gross_pay, net_pay }`).
+- `basis` (both): `"cash"` (the default) or `"all"`; any other word is
+  refused (`basis is "cash" or "all"`). Echoed in the output. Not the
+  books' accounting method (`books.accounting_basis`).
 
 The party (every mutating party tool returns it): `{ party_id, name,
 label, display_name?, roles, website?, address?, notes?, archived,
 vendor_id?, customer_id?, w9?: { received_on, entity_type,
 exempt_payee_code?, fatca_code?, tin_last4, kept_at, in_vault }, w4?: { received_on,
-state, kept_at } }`. `label` is the display name, else the name; `roles`
-include vendor and customer when it has those records.
+state, kept_at }, tin?, creditor_of }`. `label` is the display name, else
+the name; `roles` include vendor and customer when it has those records.
+`creditor_of` lists, by code, the liability accounts the company owes the
+party itself on: the card it issued, the loan it made, what the members
+advanced (each member). `books.update_party { creditor_of: [codes] }`
+replaces the list (`[]` clears it), journaled as `party.creditor_set {id,
+account_id, on}`, one line per account added or dropped (the journal's
+feature `party_creditors` is declared before the first); refused,
+journaling nothing, for an account that isn't a liability, is a
+placeholder, or is payables or a payroll withholding (owed to many).
+
+**Each party's part of an entry** (`books.get_entry`, the
+`books.post_entry` preview, `books.set_entry_party`: `parties: [{ party_id,
+party, share, amount?, percent?, resolved, direction, cash, in_kind }]`,
+rules.md B-35):
+
+- `resolved`: signed as a line on the party's own account would be
+  (debit-positive): positive, the company paid it or gave it value;
+  negative, the company received from it. A reversal's is exactly its
+  original's negated, never read from its own lines.
+- `direction`: `paid`, `received` or `neither` (a promise not yet settled:
+  a bill, an invoice, a fee on the party's own card, a distribution still
+  owed; or an entry that moved nothing with anyone, like a close).
+- `cash`: what of it moved as money; `in_kind`: what moved as property.
+  Both `"0.00"` for `neither`; `resolved − cash − in_kind` is a promise,
+  counted on neither basis. All four are null exactly when the shares
+  don't resolve (`parties_error` says why).
+- What the shares split (B-35 item 3): a close, its parties' own-account
+  movement, neither; a reversal, its original's negated; an entry naming
+  only members that moves equity, what moved their capital (a
+  contribution received: the property in it, asset accounts that are
+  neither cash nor receivables, the K-1 worksheet's test, in kind and the
+  rest cash; a distribution paid: the money it paid as cash, the property
+  it gave in kind, the rest still owed, counted when it is paid); money
+  moved, the money (paid or
+  received); otherwise the parties' own-account movement (payables,
+  receivables, a liability owed to them: a bill −, an invoice +), else the
+  total debits, neither.
 
 **Totals** (`books.party` `totals`; `paid` and `received` in
 `books.parties`), from the journal:
@@ -943,24 +990,35 @@ include vendor and customer when it has those records.
   record (bills and their payments); its customer record's invoices and
   the payments received on them; and reversals of any of these. Only
   posted entries dated in the year count.
-- *Money accounts:* the `[books] cash_accounts` (every asset account but
-  receivables when none are set), and every liability account except the
-  payables and payroll withholding roles (`books.roles`). A liability
-  counts as how the company paid or was paid: a card, a member paying for
-  it, a loan.
-- `paid` / `received`: each entry's money lines, credits minus debits
-  (`ledger_core::parties::entry_flow`), with a liability paid down
-  counting once, as paid to its creditor: by cash (a reimbursement to the
-  members, a card payment) or by another liability (a member paying the
-  card from their own funds, a loan paying it off); cash raised by a
-  liability is received from the lender. A positive net was paid to the
-  party, a negative one received from it; a reversal counts against its
-  root original's side (reversing the reversal counts on that side
-  again). A bill isn't paid until its payment is; a transfer between the
-  company's own cash accounts nets to zero. An entry naming several
-  parties counts this party's resolved share only (an entry whose shares
-  don't resolve counts for none). The year is the whole calendar year;
-  the viewer's party page and directory show these same numbers.
+- *Money accounts* (B-35 item 5, P3 defect 24): the `[books]
+  cash_accounts` (every asset account but receivables when none are set),
+  the cards (liability accounts whose names say "card", not "gift card":
+  the rule the reconciliation reminders read), and the `[books]
+  financing_accounts` (what the members advanced, loans). Any other
+  liability (an accrued expense, deferred revenue, gift cards sold,
+  distributions payable) is a promise, counted when it is settled, never
+  also when it is booked. A liability owed to a party the entry names (`creditor_of`)
+  isn't money for that entry: a credit to it never counts as paying the
+  party.
+- `paid` / `received`: each entry's part for the party, added up on its
+  root original's side (a reversal subtracts there, and reversing the
+  reversal adds back): on basis `cash`, the `cash` parts; on basis `all`,
+  `cash` plus `in_kind`. A cash payment, a card charge, a member paying
+  for the company: paid to the payee then; cash paying one of the money
+  liabilities down: paid to its creditor (a reimbursement to the members,
+  a card payment to the issuer); cash raised by one: received from the
+  lender. A bill or invoice counts on neither basis (a promise is not
+  payment); a transfer between the company's own cash accounts nets to
+  zero. An entry naming several parties counts this party's part only (an
+  entry whose shares don't resolve counts for none). For a member, basis
+  `all` over the entries that name only members and move their capital
+  (and the payments of distributions declared to them) is the statement
+  of members' equity's contributions and distributions, and basis `cash`
+  their contributions is the K-1 worksheet's cash contributions (B-35
+  item 4 gives the conditions: a distribution declared and not yet paid
+  is in the statement only). The year is the whole
+  calendar year; the viewer's party page and directory show these same
+  numbers, labelled "cash basis", with the in-kind figures beside them.
 - `invoiced` / `billed`: its invoices' and bills' totals dated in the year.
   `owed` / `receivable`: its open bills' and invoices' balances now (every
   year).

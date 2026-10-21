@@ -281,7 +281,7 @@ pub fn k1_detail(
 /// largest remainder. Each part is at most its own credit.
 /// Refused when whole × credit is beyond exact arithmetic (credits near
 /// the line limit; P0 review round 3, S1).
-fn share_property(
+pub(crate) fn share_property(
     pool: Decimal,
     credits: &[Decimal],
     places: u32,

@@ -43,6 +43,7 @@ pub const KNOWN_FEATURES: &[&str] = &[
     MEMBERS_CUMULATIVE,
     FEATURE_ACCOUNT_RENAMED,
     FEATURE_REQUIRE_TAX_CATEGORY,
+    PARTY_CREDITORS,
 ];
 
 /// Feature: `period.closed` closes to members with `"rounding":
@@ -69,6 +70,10 @@ pub(crate) fn setting_feature(key: &str) -> Option<&'static str> {
         _ => None,
     }
 }
+
+/// The feature `party.creditor_set` lines need: a party named the
+/// creditor of a liability (rules.md B-35, P3 defect 24).
+pub const PARTY_CREDITORS: &str = "party_creditors";
 
 /// The line type that declares the journal format.
 pub const FORMAT_SET: &str = "journal.format_set";
@@ -119,6 +124,7 @@ pub const EVENT_TYPES: &[&str] = &[
     "open_item.raised",
     "open_item.resolved",
     "party.added",
+    "party.creditor_set",
     "party.role_set",
     "party.tin_set",
     "party.updated",

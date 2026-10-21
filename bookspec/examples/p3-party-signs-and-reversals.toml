@@ -1,0 +1,289 @@
+# P3 defect 14 (wanderbooks plan/served.md P3; audit findings F36, F37):
+# a party's part of an entry is signed as a line on the party's own
+# account, with its direction and what of it was money or property; a
+# reversal is the exact opposite of what it reverses; party totals take a
+# basis. Regression test: ledger-core tests/spec_party_totals.rs
+# defect14_shares_take_the_partys_side_and_reversals_flip. The shape:
+# bookspec/README.md.
+
+id = "p3-party-signs-and-reversals"
+title = "A party's part of an entry is signed as its own account would show it, and a reversal is the exact opposite"
+rule = """
+A party's part of an entry is debit-positive, as a line on the party's own
+account would be: positive when the company paid it or gave it value,
+negative when the company received from it. Each part has a direction
+(paid, received, neither) and a cash and an in-kind amount. An entry
+naming only members that moves equity counts what moved their capital,
+the property in it in kind. A reversal's part is exactly its original's
+negated. A bill or invoice moves nothing with the party yet (neither).
+Party totals on basis cash count the cash parts, on basis all the cash
+and in-kind parts, each on its root original's side.
+"""
+status = "CONVENTION"
+sources = [
+  "Pacioli, Summa (1494), Geijsbeek tr., ch. 36: debit is what owes, credit what is owed (wanderbooks docs/spec/sources/pacioli-1494.md)",
+  "Treas. Reg. §1.704-1(b)(2)(iv)(b)(1)-(2), (4)-(5): a partner's capital account rises by money and property contributed, falls by money and property distributed (docs/spec/sources/irs-capital-accounts.md)",
+  "Helvering v. Price, 309 U.S. 409, 412-413 (1940): a promise to pay is not payment (docs/spec/sources/helvering-v-price-1940.md)",
+  "DECISION (owner, 2026-10-20): a member's entry counts what moved their capital (wanderbooks rules.md B-35)",
+]
+tags = ["parties", "signs", "reversals", "members", "in-kind", "basis"]
+
+[setup]
+currency = "USD"
+fiscal_year_start = "01-01"
+basis = "accrual"
+rounding = "half-even"
+cash_accounts = ["1000"]
+financing_accounts = ["2100"]
+
+[[setup.accounts]]
+code = "1000"
+name = "Checking"
+type = "asset"
+
+[[setup.accounts]]
+code = "1200"
+name = "Accounts Receivable"
+type = "asset"
+
+[[setup.accounts]]
+code = "1500"
+name = "Equipment"
+type = "asset"
+
+[[setup.accounts]]
+code = "2000"
+name = "Accounts Payable"
+type = "liability"
+
+[[setup.accounts]]
+code = "2100"
+name = "Due to Members"
+type = "liability"
+
+[[setup.accounts]]
+code = "3000"
+name = "Capital — Tobin Harlow"
+type = "equity"
+
+[[setup.accounts]]
+code = "3001"
+name = "Capital — Morgan Ellis"
+type = "equity"
+
+[[setup.accounts]]
+code = "3999"
+name = "Retained Earnings"
+type = "equity"
+
+[[setup.accounts]]
+code = "4000"
+name = "Revenue"
+type = "revenue"
+
+[[setup.accounts]]
+code = "6000"
+name = "Organizational Costs"
+type = "expense"
+
+[[setup.parties]]
+name = "Tobin Harlow"
+roles = ["member"]
+
+[[setup.parties]]
+name = "Morgan Ellis"
+roles = ["member"]
+
+[[setup.parties]]
+name = "Northwind Filings"
+roles = ["vendor"]
+
+[[setup.parties]]
+name = "Riley Chen"
+roles = ["customer"]
+
+[[setup.members]]
+name = "Tobin Harlow"
+share = "0.5"
+capital_account = "3000"
+
+[[setup.members]]
+name = "Morgan Ellis"
+share = "0.5"
+capital_account = "3001"
+
+# 1. Tobin pays the filing fee for the company (through the members'
+# financing account), tagged with the vendor: paid to the vendor, money.
+[[events]]
+date = "2026-10-04"
+description = "Filing fee, paid by Tobin"
+parties = [{ party = "Northwind Filings" }]
+lines = [
+  { account = "6000", side = "debit", amount = "64.00" },
+  { account = "2100", side = "credit", amount = "64.00" },
+]
+
+# 2. Tobin's cash contribution: received, money.
+[[events]]
+date = "2026-10-05"
+description = "Tobin's contribution"
+parties = [{ party = "Tobin Harlow" }]
+lines = [
+  { account = "1000", side = "debit", amount = "400.00" },
+  { account = "3000", side = "credit", amount = "400.00" },
+]
+
+# 3. Reimbursing Tobin for the fee: paid, money (cash paying down what
+# the company owed him).
+[[events]]
+date = "2026-10-08"
+description = "Reimbursement"
+parties = [{ party = "Tobin Harlow" }]
+lines = [
+  { account = "2100", side = "debit", amount = "64.00" },
+  { account = "1000", side = "credit", amount = "64.00" },
+]
+
+# 4. A laptop Tobin contributes: received, in kind.
+[[events]]
+date = "2026-10-12"
+description = "Laptop contributed"
+parties = [{ party = "Tobin Harlow" }]
+lines = [
+  { account = "1500", side = "debit", amount = "1480.00" },
+  { account = "3000", side = "credit", amount = "1480.00" },
+]
+
+# 5. Its reversal: the exact opposite, paid, in kind.
+[[events]]
+date = "2026-10-13"
+description = "Laptop contribution reversed"
+reverses = 4
+
+# 6. The laptop again, half each, by amount.
+[[events]]
+date = "2026-10-14"
+description = "Laptop contributed jointly"
+parties = [{ party = "Tobin Harlow", amount = "740.00" }, { party = "Morgan Ellis", amount = "740.00" }]
+lines = [
+  { account = "1500", side = "debit", amount = "1480.00" },
+  { account = "3000", side = "credit", amount = "740.00" },
+  { account = "3001", side = "credit", amount = "740.00" },
+]
+
+# 7. A bill from the vendor (credit to payables, its own account): neither.
+[[events]]
+date = "2026-10-20"
+description = "Bill"
+parties = [{ party = "Northwind Filings" }]
+lines = [
+  { account = "6000", side = "debit", amount = "80.00" },
+  { account = "2000", side = "credit", amount = "80.00" },
+]
+
+# 8. The bill reversed: the exact opposite, still neither.
+[[events]]
+date = "2026-10-21"
+description = "Bill reversed"
+reverses = 7
+
+# 9. An invoice to the customer (a debit to receivables): neither.
+[[events]]
+date = "2026-10-20"
+description = "Invoice"
+parties = [{ party = "Riley Chen" }]
+lines = [
+  { account = "1200", side = "debit", amount = "120.00" },
+  { account = "4000", side = "credit", amount = "120.00" },
+]
+
+[[expect]]
+query = "party_part"
+entry = 1
+party = "Northwind Filings"
+values = { resolved = "64.00", direction = "paid", cash = "64.00", in_kind = "0.00" }
+
+[[expect]]
+query = "party_part"
+entry = 2
+party = "Tobin Harlow"
+values = { resolved = "-400.00", direction = "received", cash = "-400.00", in_kind = "0.00" }
+
+[[expect]]
+query = "party_part"
+entry = 3
+party = "Tobin Harlow"
+values = { resolved = "64.00", direction = "paid", cash = "64.00", in_kind = "0.00" }
+
+[[expect]]
+query = "party_part"
+entry = 4
+party = "Tobin Harlow"
+values = { resolved = "-1480.00", direction = "received", cash = "0.00", in_kind = "-1480.00" }
+
+[[expect]]
+query = "party_part"
+entry = 5
+party = "Tobin Harlow"
+values = { resolved = "1480.00", direction = "paid", cash = "0.00", in_kind = "1480.00" }
+
+[[expect]]
+query = "party_part"
+entry = 6
+party = "Morgan Ellis"
+values = { resolved = "-740.00", direction = "received", cash = "0.00", in_kind = "-740.00" }
+
+[[expect]]
+query = "party_part"
+entry = 7
+party = "Northwind Filings"
+values = { resolved = "-80.00", direction = "neither", cash = "0.00", in_kind = "0.00" }
+
+[[expect]]
+query = "party_part"
+entry = 8
+party = "Northwind Filings"
+values = { resolved = "80.00", direction = "neither", cash = "0.00", in_kind = "0.00" }
+
+[[expect]]
+query = "party_part"
+entry = 9
+party = "Riley Chen"
+values = { resolved = "120.00", direction = "neither", cash = "0.00", in_kind = "0.00" }
+
+# Tobin: cash in 400.00 (event 2), paid back 64.00 (event 3); in kind
+# 1,480.00 − 1,480.00 (events 4 and 5 net) + 740.00 (event 6).
+[[expect]]
+query = "party_totals"
+party = "Tobin Harlow"
+basis = "cash"
+from = "2026-01-01"
+to = "2026-12-31"
+values = { paid = "64.00", received = "400.00" }
+
+[[expect]]
+query = "party_totals"
+party = "Tobin Harlow"
+basis = "all"
+from = "2026-01-01"
+to = "2026-12-31"
+values = { paid = "64.00", received = "1140.00" }
+
+# The vendor: the fee a member paid for the company; the bill and its
+# reversal count nothing.
+[[expect]]
+query = "party_totals"
+party = "Northwind Filings"
+basis = "all"
+from = "2026-01-01"
+to = "2026-12-31"
+values = { paid = "64.00", received = "0.00" }
+
+# Basis all over Tobin's equity entries is the statement of members'
+# equity: contributions 400.00 + 740.00 (events 4 and 5 cancel).
+[[expect]]
+query = "members_equity"
+from = "2026-01-01"
+to = "2026-12-31"
+values = { "Tobin Harlow.contributions" = "1140.00", "Tobin Harlow.distributions" = "0.00" }
+

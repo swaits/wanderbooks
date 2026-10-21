@@ -172,17 +172,16 @@ fn the_last_months_of_a_span() {
 fn a_partys_part_of_a_split_entry_is_its_fraction_of_what_was_bought() {
     let f = fixture("what-for");
     let e = f.books.ledger.get_entry(f.entry).unwrap();
-    let money = money_accounts(&f.books.ledger, &[f.cash]);
+    let money = money_accounts(&f.books.ledger, &[f.cash], &[]);
     let flow = entry_flow(e, &money).unwrap();
     let dec = |c: i64| Decimal::new(c, 2);
-    assert_eq!(
-        f.books.party_what_for(e, f.sam, &flow),
-        vec![(f.rent, dec(4_200)), (f.fees, dec(1_800))]
-    );
-    assert_eq!(
-        f.books.party_what_for(e, f.riley, &flow),
-        vec![(f.rent, dec(2_800)), (f.fees, dec(1_200))]
-    );
+    let sam = f.books.party_what_for(e, f.sam);
+    let riley = f.books.party_what_for(e, f.riley);
+    assert_eq!(sam, vec![(f.rent, dec(4_200)), (f.fees, dec(1_800))]);
+    assert_eq!(riley, vec![(f.rent, dec(2_800)), (f.fees, dec(1_200))]);
+    // Together, the entry's whole breakdown.
+    let total: Decimal = sam.iter().chain(&riley).map(|(_, v)| *v).sum();
+    assert_eq!(total, flow.net);
 }
 
 /// share_of_what_for doc: the whole what-for for the whole net; nothing

@@ -1237,6 +1237,55 @@ range, `export_journal`'s period, `described`, `uncategorized_warning`,
 `handbook::period_rule`. The viewer is not mutated (owner, 2026-10-18):
 `view_model.rs` and `show.rs` cover it.
 
+## P3: parties (defects 14, 24, 11; 2026-10-20)
+
+A party's part of an entry is signed as a line on its own account, with a
+direction and its money and property; party totals take a basis; money is
+cash, cards and the financing accounts; a credit to a liability a party is
+owed itself never pays it; the directory's TIN last four comes from TIN or
+W-9 facts (rules.md B-35, B-26). Built, reviewed and checked under D-33:
+no mutation run here; what P12 must cover is at the end.
+
+| What | Where | Oracle |
+|---|---|---|
+| The audit's table (F36, F37), row by row: resolved, direction, cash, in kind; reversals the exact opposite; bills and invoices signed; totals on both bases | `ledger-core/tests/spec_party_totals.rs` `defect14_shares_take_the_partys_side_and_reversals_flip` | B-35, by hand |
+| Basis all is the members' equity statement, cash the K-1's cash contributions | `basis_all_is_the_members_equity_statement_and_cash_the_k1s`; property `member_totals_are_the_members_equity_statement` (members contributing and taking out money and property, alone and jointly, subject to a loan, through 2100 then converted, through their distributions accounts, depreciated property with money, declared to distributions payable and paid later, reversed later in the year; checked over every span from the year's start and, received less paid, over every span) | `reports::members_equity`, `k1::k1_detail` |
+| A reversed member card payment nets to zero (brief §1.4) | `defect14_a_reversed_member_card_payment_nets_to_zero` | B-9 |
+| Accruals through another liability count once (defect 24) | `defect24_an_accrual_through_another_liability_counts_once` | B-35 item 5 |
+| A credit to a party's own liability never pays it: a card fee, a distribution owed, a seller's note, property subject to a loan | `defect24_a_credit_to_a_partys_own_liability_never_pays_it`; the documented limit, pinned: `a_distribution_owed_counts_twice_until_the_members_are_named_its_creditors` | B-35 item 6; Treas. Reg. §1.704-1(b)(2)(iv)(b)(2); Helvering v. Price |
+| Review, 2026-10-21: a distribution declared to distributions payable counts once, when paid (it counted twice); a distribution of money and depreciated property splits by what moved (the money read as property); a gift card sold is received once (it was a "card": twice); a refund is received; tin_last4 never shows more than four digits | `defect24_a_distribution_declared_to_a_payable_counts_once_when_paid`, `a_distribution_of_money_and_depreciated_property_splits_by_what_moved`, `defect24_a_gift_card_sold_is_received_once`, `a_refund_is_received_from_the_vendor`, `defect11_a_partys_tin_last4_is_its_tin_facts_else_its_w9s` (SCENARIO 6) | B-35 items 3, 5; B-26 |
+| A mixed contribution splits as the K-1 does, ties to the first member | `a_members_mixed_entry_splits_as_the_k1_does` | k1 INVARIANTS 3, 4 |
+| Read from journaled facts: an archived member, a one-member company | `a_members_entry_keeps_its_reading_after_they_leave` | review R2 |
+| A close is neither; a basis is cash or all; creditor_of's checks; tin_last4's five scenarios; the kernel's cases | `a_close_tagged_with_its_members_is_neither`, `a_basis_is_cash_or_all`, `a_creditor_is_named_only_on_a_liability_with_one_owner`, `defect11_a_partys_tin_last4_is_its_tin_facts_else_its_w9s`, `party_target_cases_by_hand` | specs |
+| Properties: a reversal's target, parts and flow are the original's negated; parts sum to the target, each with its sign; a sole party's money part is the flow as before P3; tin_last4 is every source present | `a_reversal_is_the_exact_opposite`, `a_sole_partys_money_part_is_the_flow_as_before`, `tin_last4_is_every_source_present` (`PROPTEST_CASES`, default 256; 5,000 run clean) | B-35, B-9 |
+| Decimal and i64 agree on party_target and reverse_target | `kernel_bridge.rs` `party_target_agrees` | the bridge |
+| Kani: the direction is the sign, the target is odd, reverse_target an involution | `proofs.rs` `party_target_direction_is_its_sign`, `party_target_is_odd`, `reverse_target_is_an_involution` | the kernel spec |
+| The journal: party.creditor_set after its feature, declared once; refusals journal nothing; books without creditors never change; corrupt lines refused | `ledger-store/tests/party_creditors.rs` | the format gate |
+| Over the MCP: get_entry's direction, cash, in_kind; party totals by basis, echoed, others refused; basis all equals members' equity; creditor_of round trips and a card fee isn't a payment; the post_entry preview's parts are what it posts | `ledger-mcp/tests/spec_party_totals.rs` | the tool docs |
+| Defect 11 over the MCP: a member's TIN last four in the directory, a W-9's, none, after a purge | `ledger-mcp/tests/spec_vault.rs` `defect11_the_directory_shows_a_members_tin_last4` | B-26 |
+| The viewer shows the tools' numbers, labelled cash basis, with the in-kind line; its what-for reads a reversal as `parties::flow` does | `ledger-gui/tests/parties.rs` `the_party_page_shows_the_basis_and_in_kind`, `a_reversed_member_card_payment_is_nothing_on_the_issuers_page` | `activity_with`, `flow` |
+| bookspec | `bookspec/examples/p3-party-*.toml` | the same cases, by hand |
+
+**For P12 (mutation targets, none run, D-33):** `kernel::party_target`
+(each branch, the `!= 0` and `< 0` tests, the property and money clamps,
+the neither-when-nothing-counts test), `kernel::reverse_target` and
+`Direction::{flip, of}`; `shares::target` (the closing check, the reversal
+arm and its parity, members_only, the equity filter and the retained
+earnings exclusion, the property test, the own sums),
+`shares::split` (the member-order tie-break, the cash shortcut, the zero
+sign); `parties::{flow, root_original, money_accounts, card_accounts,
+MoneyAccounts::for_parties}` (the negation of what_for, the walk's
+guard, cards and financing as money, the gift-card exclusion); `activity_with` (the target before
+the split, the skip of nothing-counts, the bucket by side and basis, the
+overflow checks); `Activity::totals`; `Basis::parse`;
+`Ledger::{set_party_creditor, check_set_party_creditor, creditors_of,
+is_closing_entry}`; `Store::{set_party_creditor, ensure_feature}`; the
+server's `parse_basis`, `party_activity`, `entry_parties_out` (direction,
+cash, in_kind) and `update_party`'s creditor_of diff; the viewer's
+`party_what_for` and `share_text`. Expected equivalent:
+`Party::tin_last4`'s `or_else` order swapped (TIN facts and W-9 facts
+never disagree, parties INVARIANT 2a, enforced on replay).
+
 ## Benchmarks (baseline 2026-10-13)
 
 No budget, by decision (the owner, 2026-10-13: the books do little work

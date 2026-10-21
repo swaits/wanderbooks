@@ -1,0 +1,219 @@
+# P3 defect 14, settled in design (wanderbooks plan/served.md P3): party
+# totals count a member's entry by what moved their capital, so basis all
+# is the statement of members' equity and basis cash means what it means
+# on the K-1 worksheet. Regression tests: ledger-core
+# tests/spec_party_totals.rs a_members_mixed_entry_splits_as_the_k1_does,
+# basis_all_is_the_members_equity_statement_and_cash_the_k1s, and the
+# property member_totals_are_the_members_equity_statement. The shape:
+# bookspec/README.md.
+
+id = "p3-party-members-equity-and-k1"
+title = "A member's totals are their capital account: basis all the statement of members' equity, basis cash the K-1's cash"
+rule = """
+An entry naming only members that moves their equity counts what moved
+their capital: a contribution received, a distribution paid. The
+property in it (asset accounts that are neither cash nor receivables) is
+in kind, shared among the members in proportion to their parts, to the
+cent, leftover cents by largest remainder, ties to the member listed
+first; the rest is cash, as the K-1 worksheet counts it: money, or what a
+member paid for the company (an expense booked straight to capital, a
+debt to them converted to capital).
+"""
+status = "CHOICE"
+sources = [
+  "Treas. Reg. §1.704-1(b)(2)(iv)(b)(1)-(2), (c)(1): money and property contributed; a partnership liability a partner pays is money contributed (wanderbooks docs/spec/sources/irs-capital-accounts.md)",
+  "Partner's Instructions for Schedule K-1 (Form 1065), Item L: the capital contributed during the year (docs/spec/sources/irs-capital-accounts.md)",
+  "DECISION (owner, 2026-10-15): what a member paid for the company is cash on the K-1 (wanderbooks ledger-core k1 INVARIANT 3); DECISION (owner, 2026-10-20): a member's entry counts what moved their capital (rules.md B-35)",
+]
+tags = ["parties", "members", "k1", "members-equity", "in-kind", "rounding"]
+
+[setup]
+currency = "USD"
+fiscal_year_start = "01-01"
+basis = "accrual"
+rounding = "largest-remainder"
+cash_accounts = ["1000"]
+financing_accounts = ["2100"]
+
+[[setup.accounts]]
+code = "1000"
+name = "Checking"
+type = "asset"
+
+[[setup.accounts]]
+code = "1500"
+name = "Equipment"
+type = "asset"
+
+[[setup.accounts]]
+code = "2100"
+name = "Due to Members"
+type = "liability"
+
+[[setup.accounts]]
+code = "3000"
+name = "Capital — Tobin Harlow"
+type = "equity"
+
+[[setup.accounts]]
+code = "3001"
+name = "Capital — Morgan Ellis"
+type = "equity"
+
+[[setup.accounts]]
+code = "6050"
+name = "Domain & Hosting"
+type = "expense"
+
+[[setup.parties]]
+name = "Tobin Harlow"
+roles = ["member"]
+
+[[setup.parties]]
+name = "Morgan Ellis"
+roles = ["member"]
+
+[[setup.members]]
+name = "Tobin Harlow"
+share = "0.5"
+capital_account = "3000"
+
+[[setup.members]]
+name = "Morgan Ellis"
+share = "0.5"
+capital_account = "3001"
+
+# 1. A joint contribution of cash and property (the K-1 worksheet's
+# SCENARIO 3): 500.00 each, of it 300.00 cash and 200.00 in kind.
+[[events]]
+date = "2026-02-01"
+description = "Joint contribution, cash and equipment"
+parties = [{ party = "Morgan Ellis" }, { party = "Tobin Harlow" }]
+lines = [
+  { account = "1000", side = "debit", amount = "600.00" },
+  { account = "1500", side = "debit", amount = "400.00" },
+  { account = "3000", side = "credit", amount = "500.00" },
+  { account = "3001", side = "credit", amount = "500.00" },
+]
+
+# 2. One cent of property shared by two equal parts: the cent goes to the
+# member listed first in the company's members (Tobin), whatever the
+# order the entry names them in.
+[[events]]
+date = "2026-02-02"
+description = "A cent of property"
+parties = [{ party = "Morgan Ellis" }, { party = "Tobin Harlow" }]
+lines = [
+  { account = "1000", side = "debit", amount = "0.99" },
+  { account = "1500", side = "debit", amount = "0.01" },
+  { account = "3000", side = "credit", amount = "0.50" },
+  { account = "3001", side = "credit", amount = "0.50" },
+]
+
+# 3. An expense Morgan paid, booked straight to capital: cash.
+[[events]]
+date = "2026-02-03"
+description = "Hosting Morgan paid"
+parties = [{ party = "Morgan Ellis" }]
+lines = [
+  { account = "6050", side = "debit", amount = "50.00" },
+  { account = "3001", side = "credit", amount = "50.00" },
+]
+
+# 4. What the company owed Tobin, converted to capital: cash.
+[[events]]
+date = "2026-02-04"
+description = "Advance converted"
+parties = [{ party = "Tobin Harlow" }]
+lines = [
+  { account = "2100", side = "debit", amount = "70.00" },
+  { account = "3000", side = "credit", amount = "70.00" },
+]
+
+[[expect]]
+query = "party_part"
+entry = 1
+party = "Tobin Harlow"
+values = { resolved = "-500.00", direction = "received", cash = "-300.00", in_kind = "-200.00" }
+
+[[expect]]
+query = "party_part"
+entry = 2
+party = "Tobin Harlow"
+values = { resolved = "-0.50", direction = "received", cash = "-0.49", in_kind = "-0.01" }
+
+[[expect]]
+query = "party_part"
+entry = 2
+party = "Morgan Ellis"
+values = { resolved = "-0.50", direction = "received", cash = "-0.50", in_kind = "0.00" }
+
+[[expect]]
+query = "party_part"
+entry = 3
+party = "Morgan Ellis"
+values = { resolved = "-50.00", direction = "received", cash = "-50.00", in_kind = "0.00" }
+
+[[expect]]
+query = "party_part"
+entry = 4
+party = "Tobin Harlow"
+values = { resolved = "-70.00", direction = "received", cash = "-70.00", in_kind = "0.00" }
+
+# Tobin: cash 300.00 + 0.49 + 70.00; in kind 200.00 + 0.01.
+[[expect]]
+query = "party_totals"
+party = "Tobin Harlow"
+basis = "cash"
+from = "2026-01-01"
+to = "2026-12-31"
+values = { paid = "0.00", received = "370.49" }
+
+[[expect]]
+query = "party_totals"
+party = "Tobin Harlow"
+basis = "all"
+from = "2026-01-01"
+to = "2026-12-31"
+values = { paid = "0.00", received = "570.50" }
+
+# Morgan: cash 300.00 + 0.50 + 50.00; in kind 200.00.
+[[expect]]
+query = "party_totals"
+party = "Morgan Ellis"
+basis = "cash"
+from = "2026-01-01"
+to = "2026-12-31"
+values = { paid = "0.00", received = "350.50" }
+
+[[expect]]
+query = "party_totals"
+party = "Morgan Ellis"
+basis = "all"
+from = "2026-01-01"
+to = "2026-12-31"
+values = { paid = "0.00", received = "550.50" }
+
+[[expect]]
+query = "members_equity"
+from = "2026-01-01"
+to = "2026-12-31"
+values = { "Tobin Harlow.contributions" = "570.50", "Tobin Harlow.distributions" = "0.00" }
+
+[[expect]]
+query = "members_equity"
+from = "2026-01-01"
+to = "2026-12-31"
+values = { "Morgan Ellis.contributions" = "550.50", "Morgan Ellis.distributions" = "0.00" }
+
+[[expect]]
+query = "k1"
+from = "2026-01-01"
+to = "2026-12-31"
+values = { "Tobin Harlow.contributions_cash" = "370.49", "Tobin Harlow.contributions_property" = "200.01" }
+
+[[expect]]
+query = "k1"
+from = "2026-01-01"
+to = "2026-12-31"
+values = { "Morgan Ellis.contributions_cash" = "350.50", "Morgan Ellis.contributions_property" = "200.00" }

@@ -1256,11 +1256,33 @@ pub struct EntryPartyOut {
     pub amount: Option<String>,
     /// The percent given, for a percent share, decimal string.
     pub percent: Option<String>,
-    /// Its exact part of what the entry moved (positive: paid to it;
-    /// negative: received from it; for an entry moving no money, its part
-    /// of the total), decimal string. Null when the shares don't resolve
-    /// (see `parties_error`).
+    /// Its exact part of what the entry moved, signed as a line on the
+    /// party's own account would be (debit-positive): positive, the
+    /// company paid it or gave it value; negative, received from it. With
+    /// direction "neither", its part of the entry's movement of its own
+    /// accounts (a bill is negative, owed to it; an invoice positive), else
+    /// of the entry's total. A reversal's is exactly its original's
+    /// negated. A member's entry is what moved their capital (a property
+    /// contribution is negative, received, in kind). Decimal string. Null
+    /// when the shares don't resolve (see `parties_error`).
     pub resolved: Option<String>,
+    /// "paid", "received" or "neither": neither is a promise not yet
+    /// settled (a bill, an invoice, a fee charged on its own card, a
+    /// distribution declared and not yet paid) or an entry that moved
+    /// nothing with anyone (a close), counted in no party total. Null
+    /// exactly when `resolved` is.
+    pub direction: Option<String>,
+    /// What of `resolved` moved as money (cash, a card, the members'
+    /// financing, a loan; on a member's contribution, what the K-1
+    /// worksheet counts as cash; of a distribution, the money it paid):
+    /// what the party's totals count on basis "cash". "0.00" for direction
+    /// neither. Decimal string, null when `resolved` is.
+    pub cash: Option<String>,
+    /// What of `resolved` moved as property (contributed or distributed in
+    /// kind): basis "all" adds it. resolved − cash − in_kind is a promise
+    /// not yet paid, counted on neither basis. Decimal string, null when
+    /// `resolved` is.
+    pub in_kind: Option<String>,
 }
 
 /// Result of `books.draft_entry`.
@@ -3000,6 +3022,14 @@ pub struct UpdatePartyParams {
     /// resolves by name, and its name is free for another party). False:
     /// dealt with again (refused while another party has its name).
     pub archived: Option<bool>,
+    /// The liability accounts (codes or ids) the company owes this party
+    /// itself on: the card it issued, the loan it made, what the members
+    /// advanced (name each member). Replaces its list; [] clears it. A
+    /// credit to one never counts as paying the party (a fee on its card,
+    /// interest on its loan, a distribution still owed: a promise, counted
+    /// when paid). Liabilities only, not placeholders, payables or payroll
+    /// withholdings.
+    pub creditor_of: Option<Vec<String>>,
 }
 
 /// Parameters for `books.set_party_roles`. Give at least one role to add
@@ -3243,6 +3273,10 @@ pub struct ListPartiesParams {
     /// so year to date).
     #[schemars(description = YEAR_DOC)]
     pub year: Option<i32>,
+    /// What `paid` and `received` count: "cash" (the default: money) or
+    /// "all" (money and property contributed or distributed in kind). Not
+    /// the books' accounting method. See `books.party` totals.
+    pub basis: Option<String>,
 }
 
 /// Parameters for `books.party`.
@@ -3254,6 +3288,10 @@ pub struct PartyParams {
     /// date).
     #[schemars(description = YEAR_DOC)]
     pub year: Option<i32>,
+    /// What `paid` and `received` count: "cash" (the default: money) or
+    /// "all" (money and property contributed or distributed in kind). Not
+    /// the books' accounting method. See the totals' schema.
+    pub basis: Option<String>,
 }
 
 /// Parameters for `books.set_entry_party`.
@@ -3345,6 +3383,10 @@ pub struct PartyOut {
     pub w4: Option<W4Out>,
     /// Taxpayer-ID facts (any role), if on file: type and last four.
     pub tin: Option<TinOut>,
+    /// The liability accounts the company owes this party itself on (its
+    /// card, its loan, what the members advanced), by code: a credit to
+    /// one never counts as paying it.
+    pub creditor_of: Vec<String>,
 }
 
 /// One party in `books.parties`.
@@ -3364,16 +3406,19 @@ pub struct PartySummaryOut {
     pub customer_id: Option<u64>,
     /// W-9 facts are on file.
     pub w9_on_file: bool,
-    /// The W-9's TIN last four digits, when on file.
+    /// The TIN's last four digits when the books know it: from its TIN
+    /// facts (`books.set_tin`; a member's SSN for the K-1) or its W-9
+    /// facts, which never disagree. Null when neither is on file. Whether
+    /// the vault still holds the full number: `books.party` `tin.in_vault`.
     pub tin_last4: Option<String>,
     /// W-4 facts are on file.
     pub w4_on_file: bool,
     /// No longer dealt with.
     pub archived: bool,
-    /// Paid to the party in the year, decimal string (as `books.party`
-    /// totals).
+    /// Paid to the party in the year on `basis`, decimal string (as
+    /// `books.party` totals).
     pub paid: String,
-    /// Received from the party in the year, decimal string (as
+    /// Received from the party in the year on `basis`, decimal string (as
     /// `books.party` totals).
     pub received: String,
 }
@@ -3383,6 +3428,8 @@ pub struct PartySummaryOut {
 pub struct ListPartiesOut {
     /// The year `paid` and `received` cover.
     pub year: i32,
+    /// What `paid` and `received` count: "cash" or "all".
+    pub basis: String,
     /// Parties, by id.
     pub parties: Vec<PartySummaryOut>,
 }
@@ -3394,30 +3441,59 @@ pub struct ListPartiesOut {
 /// the payments received on them, and reversals of any of these. Only
 /// posted entries dated in the calendar year count.
 ///
-/// Each entry's money is `ledger_core::parties::entry_flow`: what left or
-/// reached the `[books] cash_accounts` (every asset account but
-/// receivables when none are set), plus what the company paid through a
-/// liability (a card, a member paying for it, a loan; not payables or
-/// payroll withholdings), with cash that pays a liability down counting
-/// once, as paid to that liability's creditor (a reimbursement to the
-/// members, a card payment to the issuer), a liability paid down by
-/// another counting the same way (a member paying the card from their own
-/// funds, a loan paying it off), and cash raised by a liability counting
-/// as received from the lender. Positive is paid to the party, negative
-/// received from it; a reversal counts against its root original's side
-/// (reversing the reversal counts on that side again). A transfer between the company's own cash accounts nets to zero.
-/// A bill is not paid until its payment is.
-/// An entry naming several parties counts each one's share of that money
-/// (its amount, its percent, or its derived share: see
-/// `books.set_entry_party` `parties`); an entry whose shares don't resolve
-/// counts for none of them.
+/// `paid` and `received` add up each entry's part for the party, as
+/// `books.get_entry` shows it (`resolved`, `direction`, `cash`,
+/// `in_kind`): on `basis` "cash" (the default) what moved as money, on
+/// "all" that plus property contributed or distributed in kind. A
+/// reversal counts on its original's side and nets it to zero. (Not the
+/// books' accounting method.)
+///
+/// Money is what left or reached the `[books] cash_accounts` (every asset
+/// account but receivables when none are set), the cards (liabilities
+/// whose names say "card", not "gift card"), and the `[books]
+/// financing_accounts` (what the members
+/// advanced, loans): a card charge or a member paying for the company is
+/// paid to the payee then; cash that pays one of these down is paid to
+/// its creditor (a reimbursement to the members, a card payment to the
+/// issuer); cash it raises is received from the lender. Any other
+/// liability is a promise (a bill, an accrual, deferred revenue): counted
+/// when it is settled, never also when it is booked. A credit to what the
+/// company owes a party itself (`books.party` `creditor_of`: a fee on its
+/// own card, interest on its own loan, a distribution still owed to a
+/// member) never counts as paying it.
+///
+/// An entry naming only members that moves equity counts what moved their
+/// capital: a contribution received, the property in it in kind (asset
+/// accounts that are neither cash nor receivables) and the rest cash, as
+/// on the K-1 worksheet; a distribution paid, the money it paid as cash
+/// and the property it gave in kind, the rest (declared to distributions
+/// payable, or credited to what the members advanced once they are named
+/// its creditors) still owed, counted when it is paid. So for a member,
+/// basis "all" over those entries and those payments is the statement of
+/// members' equity's contributions and distributions, and basis "cash"
+/// its cash contributions as the K-1 worksheet has them, but for a
+/// distribution declared and not yet paid, which is in the statement only. Known limits (record them apart): an entry
+/// that both repays a member and distributes to them counts the
+/// distribution only; a member's money that goes through the members'
+/// financing account both ways under their own name (lent, then converted
+/// to capital) counts both times, as does a distribution declared through
+/// it before the members are named its creditors; an expense a member paid
+/// booked straight to capital and tagged with the vendor isn't paid to the
+/// vendor; capital moved between members counts for neither.
+///
+/// An entry naming several parties counts each one's share (its amount,
+/// its percent, or its derived share: see `books.set_entry_party`
+/// `parties`); an entry whose shares don't resolve counts for none of
+/// them. A transfer between the company's own cash accounts nets to zero.
 /// (`ledger_core::parties::activity_with`, with the `[[company.members]]`,
 /// computes it; the viewer shows the same numbers.)
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct PartyTotalsOut {
-    /// Paid to the party, decimal string.
+    /// What `paid` and `received` count: "cash" or "all".
+    pub basis: String,
+    /// Paid to the party on `basis`, decimal string.
     pub paid: String,
-    /// Received from the party, decimal string.
+    /// Received from the party on `basis`, decimal string.
     pub received: String,
     /// Its customer record's invoices dated in the year, total, decimal
     /// string.

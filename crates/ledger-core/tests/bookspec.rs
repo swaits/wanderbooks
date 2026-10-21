@@ -5,13 +5,15 @@
 //! Each example is a setup, events and expected values worked by hand from
 //! its cited source (`bookspec/README.md` gives the shape). Every example
 //! must load, whatever it asks or whichever appendix it is in: its shape,
-//! its accounts, fixed assets, members and payees, every event (an entry,
-//! a reversal, a close or a bill, posting entry #N as event N) and every
-//! change that posts no entry (a rename, a policy). The queries the core
-//! answers (`cash_flow`, `trial_balance`, `profit_and_loss`,
-//! `vendor_1099_paid`, `entry`, `balances`, `members_equity`, `period`,
-//! `day`, `calendar_year`, `account_names`, `uncategorized_accounts`) are
-//! then checked value by value, and the commands it tries
+//! its accounts, fixed assets, parties, members and payees, every event
+//! (an entry, a reversal, a close or a bill, posting entry #N as event N,
+//! with the parties and payee it is tagged with) and every change that
+//! posts no entry (a rename, a policy). The queries the core answers
+//! (`cash_flow`, `trial_balance`, `profit_and_loss`, `vendor_1099_paid`,
+//! `entry`, `balances`, `members_equity`, `k1`, `party_part`,
+//! `party_totals`, `party_tin_last4`, `period`, `day`, `calendar_year`,
+//! `account_names`, `uncategorized_accounts`) are then checked value by
+//! value, and the commands it tries
 //! (`rename_account`, `add_account`, `set_tax_category`) accepted or
 //! refused on a copy of the books, each after the event it names (`after`)
 //! or the last; the formats appendix's (`iif_lines`, `iif_changes`) are
@@ -24,11 +26,13 @@ use std::path::{Path, PathBuf};
 
 use chrono::NaiveDate;
 use ledger_core::calendar::{PeriodDefaults, period_defaults};
+use ledger_core::parties::{Basis, MoneyAccounts};
 use ledger_core::settings::Company;
 use ledger_core::{
     AccountType, CashFlowParams, CashFlowSection, CashFlowStatement, CloseTo, Currency,
     DocumentLine, EntryId, Form1099, Ledger, LedgerError, MemberCapital, MemberClose, Money,
-    NewAsset, PaymentAccounts, ReconcilingKind, Side, VendorId, cash_flow, members_equity,
+    NewAsset, PartyId, PartyMember, PartyShare, PaymentAccounts, ReconcilingKind, Role, Share,
+    Side, TinFacts, TinType, VendorId, W9Facts, cash_flow, members_equity,
     profit_and_loss_for_period, trial_balance_as_of, vendor_1099_report_with_members,
 };
 use rust_decimal::Decimal;
@@ -71,6 +75,10 @@ struct Setup {
     investing_accounts: Vec<String>,
     #[serde(default)]
     fixed_assets: Vec<FixedAsset>,
+    /// The company's directory: parties other than a payee's vendor
+    /// record, and the payees' when the example names their roles.
+    #[serde(default)]
+    parties: Vec<PartySpec>,
     #[serde(default)]
     members: Vec<MemberSpec>,
     #[serde(default)]
@@ -124,6 +132,8 @@ struct FixedAsset {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MemberSpec {
+    /// The member's name: a party's in `setup.parties` (with the member
+    /// role) when the example asks about the member as a party.
     name: String,
     capital_account: String,
     /// Their share of income, an exact decimal fraction; every member has
@@ -131,14 +141,56 @@ struct MemberSpec {
     /// needs them.
     #[serde(default)]
     share: Option<String>,
+    /// Their distributions account (rules.md B-13), when they have one.
+    #[serde(default)]
+    distributions_account: Option<String>,
 }
 
-/// A payee marked for an information return (rules.md B-19).
+/// A payee marked for an information return from the beginning (rules.md
+/// B-19): a vendor record, the party's of that name in `setup.parties`
+/// when there is one with the vendor role.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PayeeSpec {
     name: String,
     form: String,
+}
+
+/// One party in the directory (rules.md B-26, B-35).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PartySpec {
+    name: String,
+    /// Role keys (`member`, `vendor`, `customer`, `contractor`,
+    /// `financial_institution`, ...); `vendor` and `customer` give the
+    /// party its record (one of them at most).
+    roles: Vec<String>,
+    /// The liabilities, by code, the company owes the party itself
+    /// (rules.md B-35 item 6).
+    #[serde(default)]
+    creditor_of: Vec<String>,
+    /// Its TIN facts' last four digits (an SSN's).
+    #[serde(default)]
+    tin_last4: Option<String>,
+    /// Its W-9 facts' last four digits (a 1099 role's).
+    #[serde(default)]
+    w9_tin_last4: Option<String>,
+    /// The vault's copy of the TIN purged, the facts kept (needs
+    /// `tin_last4`).
+    #[serde(default)]
+    tin_purged: bool,
+}
+
+/// A party named on an entry, with its share: an `amount`, a `percent`,
+/// or neither (derived from the entry: rules.md B-35).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ShareSpec {
+    party: String,
+    #[serde(default)]
+    amount: Option<String>,
+    #[serde(default)]
+    percent: Option<String>,
 }
 
 /// One event: an entry (`lines`), a reversal (`reverses`), a close
@@ -158,6 +210,10 @@ struct Event {
     /// The payee (in `setup.payees`) the entry paid.
     #[serde(default)]
     payee: Option<String>,
+    /// The parties (in `setup.parties`) the entry is with, and their
+    /// shares.
+    #[serde(default)]
+    parties: Vec<ShareSpec>,
 }
 
 /// A bill from `vendor` for `amount`, dated and due on the event's date:
@@ -224,8 +280,13 @@ struct Expect {
     from: Option<String>,
     to: Option<String>,
     as_of: Option<String>,
-    /// The entry an `entry` query asks about.
+    /// The entry an `entry` or `party_part` query asks about.
     entry: Option<EntryId>,
+    /// The party a `party_part`, `party_totals` or `party_tin_last4`
+    /// query asks about (in `setup.parties`).
+    party: Option<String>,
+    /// `party_totals`' basis: `"cash"` or `"all"` (rules.md B-35 item 4).
+    basis: Option<String>,
     /// The books after event N, not after the last.
     after: Option<usize>,
     /// The account a `rename_account` or `set_tax_category` command
@@ -412,15 +473,103 @@ struct Books<'a> {
     currency: Currency,
     /// The members, with their shares (zero when the example gives none).
     members: Vec<MemberCapital>,
+    /// The members who are parties (`setup.parties` with the member
+    /// role), as the settings give them to party shares and the 1099.
+    party_members: Vec<PartyMember>,
+    /// The directory's parties, by name.
+    parties: BTreeMap<String, PartyId>,
     /// The payees' vendor records, by name.
     payees: BTreeMap<String, VendorId>,
     /// The vendors bills came from, by name (a payee's record if one).
     vendors: BTreeMap<String, VendorId>,
 }
 
+/// The example's directory (`setup.parties`), by name: each party with
+/// its roles (a vendor or customer with its record), the liabilities it
+/// is the creditor of, and its TIN and W-9 facts' last four.
+fn add_parties(ex: &Example, l: &mut Ledger) -> BTreeMap<String, PartyId> {
+    let mut out = BTreeMap::new();
+    for p in &ex.setup.parties {
+        let what = format!("{} party {}", ex.id, p.name);
+        let roles: Vec<Role> = p
+            .roles
+            .iter()
+            .map(|r| Role::parse(r).unwrap_or_else(|| panic!("{what}: role {r:?}")))
+            .collect();
+        let record = |r: Role| roles.contains(&r);
+        let others: Vec<Role> = roles
+            .iter()
+            .copied()
+            .filter(|r| !matches!(r, Role::Vendor | Role::Customer))
+            .collect();
+        let id = match (record(Role::Vendor), record(Role::Customer)) {
+            (true, true) => panic!("{what}: a vendor or a customer, not both"),
+            (true, false) => {
+                let v = l
+                    .add_vendor(&p.name)
+                    .unwrap_or_else(|e| panic!("{what}: {e}"));
+                l.party_of_vendor(v).expect("a vendor's party")
+            }
+            (false, true) => {
+                let c = l
+                    .add_customer(&p.name)
+                    .unwrap_or_else(|e| panic!("{what}: {e}"));
+                l.party_of_customer(c).expect("a customer's party")
+            }
+            (false, false) => l
+                .add_party(&p.name, &others)
+                .unwrap_or_else(|e| panic!("{what}: {e}")),
+        };
+        if record(Role::Vendor) || record(Role::Customer) {
+            for r in &others {
+                l.set_party_role(id, *r, true)
+                    .unwrap_or_else(|e| panic!("{what}: {e}"));
+            }
+        }
+        for code in &p.creditor_of {
+            let account = l
+                .chart()
+                .find_by_code(code)
+                .unwrap_or_else(|| panic!("{what}: no account {code}"))
+                .id;
+            l.set_party_creditor(id, account, true)
+                .unwrap_or_else(|e| panic!("{what}: creditor of {code}: {e}"));
+        }
+        assert!(
+            !p.tin_purged || p.tin_last4.is_some(),
+            "{what}: tin_purged needs tin_last4"
+        );
+        if let Some(last4) = &p.tin_last4 {
+            let facts = TinFacts {
+                tin_type: TinType::Ssn,
+                last4: last4.clone(),
+                vault_record: (!p.tin_purged).then(|| "0".repeat(64)),
+                purged: p.tin_purged.then(|| "purged: retention ended".into()),
+            };
+            l.set_party_tin(id, Some(facts))
+                .unwrap_or_else(|e| panic!("{what}: {e}"));
+        }
+        if let Some(last4) = &p.w9_tin_last4 {
+            let facts = W9Facts {
+                received: date("2026-01-01", &what),
+                entity_type: "individual/sole proprietor".into(),
+                exempt_payee_code: None,
+                fatca_code: None,
+                tin_last4: last4.clone(),
+                kept_at: "wanderbooks vault".into(),
+                vault_record: None,
+            };
+            l.set_party_w9(id, Some(facts))
+                .unwrap_or_else(|e| panic!("{what}: {e}"));
+        }
+        assert!(out.insert(p.name.clone(), id).is_none(), "{what}: twice");
+    }
+    out
+}
+
 impl<'a> Books<'a> {
     /// The books an example sets up, before any event: its shape checked,
-    /// its accounts, fixed assets, members and payees.
+    /// its accounts, fixed assets, parties, members and payees.
     fn new(ex: &'a Example) -> Self {
         let s = &ex.setup;
         let currency = Currency::new(&s.currency).unwrap();
@@ -508,7 +657,7 @@ impl<'a> Books<'a> {
             .map(|m| MemberCapital {
                 name: m.name.clone(),
                 capital_account: id(&l, &m.capital_account),
-                distribution_account: None,
+                distribution_account: m.distributions_account.as_deref().map(|c| id(&l, c)),
                 share: m.share.as_deref().map_or(Decimal::ZERO, |x| {
                     let share = exact(x, &format!("{} {} share", ex.id, m.name));
                     assert!(share > Decimal::ZERO, "{}: {}'s share", ex.id, m.name);
@@ -520,14 +669,36 @@ impl<'a> Books<'a> {
             let total: Decimal = members.iter().map(|m| m.share).sum();
             assert_eq!(total, Decimal::ONE, "{}: the shares sum to 1", ex.id);
         }
+        let parties = add_parties(ex, &mut l);
+        // A member who is a party (by name, with the member role), as the
+        // settings' members are (settings::Company::party_members).
+        let party_members: Vec<PartyMember> = members
+            .iter()
+            .filter_map(|m| {
+                let p = l.party_by_name(&m.name)?;
+                p.roles.contains(&Role::Member).then_some(PartyMember {
+                    party: p.id,
+                    share: m.share,
+                    capital: m.capital_account,
+                    distributions: m.distribution_account,
+                })
+            })
+            .collect();
         let mut payees = BTreeMap::new();
         for p in &s.payees {
             let form = Form1099::parse(&p.form)
+                .filter(|_| p.form.starts_with("1099-"))
                 .unwrap_or_else(|| panic!("{}: payee {}: form {:?}", ex.id, p.name, p.form));
-            let v = l
-                .add_vendor(&p.name)
+            // A payee in the directory with the vendor role is that
+            // party's vendor record.
+            let v = match parties.get(&p.name).and_then(|&id| l.get_party(id)?.vendor) {
+                Some(v) => v,
+                None => l
+                    .add_vendor(&p.name)
+                    .unwrap_or_else(|e| panic!("{}: payee {}: {e}", ex.id, p.name)),
+            };
+            l.set_vendor_1099(v, Some(form), false)
                 .unwrap_or_else(|e| panic!("{}: payee {}: {e}", ex.id, p.name));
-            l.set_vendor_1099(v, Some(form), false).unwrap();
             assert!(
                 payees.insert(p.name.clone(), v).is_none(),
                 "{}: payee {} twice",
@@ -540,6 +711,8 @@ impl<'a> Books<'a> {
             l,
             currency,
             members,
+            party_members,
+            parties,
             vendors: payees.clone(),
             payees,
         }
@@ -560,6 +733,10 @@ impl<'a> Books<'a> {
         assert!(
             e.payee.is_none() || (e.reverses.is_none() && e.close.is_none() && e.bill.is_none()),
             "{ex} event {n}: a reversal takes its original's payee, a bill names its vendor, and a close has none"
+        );
+        assert!(
+            e.parties.is_empty() || e.reverses.is_none(),
+            "{ex} event {n}: a reversal takes its original's parties"
         );
         let posted = match (&e.close, e.reverses, e.lines.is_empty()) {
             (None, None, true) if e.bill.is_some() => {
@@ -674,6 +851,29 @@ impl<'a> Books<'a> {
             _ => panic!("{ex} event {n}: an event is one of lines, reverses, close or bill"),
         };
         assert_eq!(posted, n, "{ex}: event {n} must be entry #{n}");
+        if !e.parties.is_empty() {
+            let shares: Vec<PartyShare> = e
+                .parties
+                .iter()
+                .map(|sh| {
+                    let party = *self.parties.get(&sh.party).unwrap_or_else(|| {
+                        panic!("{ex} event {n}: party {:?} not in setup", sh.party)
+                    });
+                    let share = match (&sh.amount, &sh.percent) {
+                        (None, None) => Share::Derived,
+                        (Some(a), None) => Share::Amount(exact(a, ex)),
+                        (None, Some(p)) => Share::Percent(exact(p, ex)),
+                        _ => panic!("{ex} event {n}: a share is an amount or a percent"),
+                    };
+                    PartyShare { party, share }
+                })
+                .collect();
+            self.l
+                .set_entry_parties(n, &shares)
+                .unwrap_or_else(|err| panic!("{ex} event {n}: {err}"));
+        }
+        // The payee after the parties: a payee's party must be among
+        // several named (the vendor tag follows the parties).
         if let Some(p) = &e.payee {
             let v = *self
                 .payees
@@ -973,21 +1173,19 @@ fn check_profit_and_loss(ex: &Example, l: &Ledger, x: &Expect) {
     }
 }
 
-/// Check one `vendor_1099_paid` expectation: each payee's payments out of
-/// the cash (and financing) accounts from January 1 through `to`, a
-/// payment card's left out, every payee listed (rules.md B-19, B-33).
-fn check_vendor_1099_paid(
-    ex: &Example,
-    l: &Ledger,
-    payees: &BTreeMap<String, VendorId>,
-    x: &Expect,
-) {
+/// The 1099 report a `vendor_1099_paid` expectation asks for: the
+/// calendar year of `to`, from January 1 through `to`, out of the cash
+/// and financing accounts, an entry's shares resolved with the members
+/// who are parties (rules.md B-19, B-33).
+fn report_1099(b: &Books<'_>, x: &Expect) -> (NaiveDate, NaiveDate, ledger_core::Vendor1099Report) {
+    let (ex, l) = (b.ex, &b.l);
     // A calendar-year count, never the fiscal default (rules.md B-30):
     // both dates given.
     assert!(
         x.from.is_some() && x.to.is_some(),
-        "{}: vendor_1099_paid gives from and to",
-        ex.id
+        "{}: {} gives from and to",
+        ex.id,
+        x.query
     );
     let (from, to) = x.period(ex);
     let year = chrono::Datelike::year(&to);
@@ -999,25 +1197,218 @@ fn check_vendor_1099_paid(
     );
     assert!(
         !ex.setup.cash_accounts.is_empty(),
-        "{}: vendor_1099_paid needs cash_accounts (what payees are paid from)",
-        ex.id
+        "{}: {} needs cash_accounts (what payees are paid from)",
+        ex.id,
+        x.query
     );
     let sources = PaymentAccounts {
         cash: codes(l, &ex.setup.cash_accounts, &ex.id),
         financing: codes(l, &ex.setup.financing_accounts, &ex.id),
     };
-    let r = vendor_1099_report_with_members(l, year, Some(to), None, &sources, &[])
+    let r = vendor_1099_report_with_members(l, year, Some(to), None, &sources, &b.party_members)
         .unwrap_or_else(|e| panic!("{}: {e}", ex.id));
-    exactly(ex, x, &payees.keys().cloned().collect());
+    (from, to, r)
+}
+
+/// Check one `vendor_1099_paid` expectation: each payee's payments that
+/// count toward its 1099 ([`report_1099`]), a payment card's left out,
+/// every payee listed (rules.md B-19, B-33).
+fn check_vendor_1099_paid(b: &Books<'_>, x: &Expect) {
+    let ex = b.ex;
+    let (from, to, r) = report_1099(b, x);
+    exactly(ex, x, &b.payees.keys().cloned().collect());
     for (name, want) in x.figures(&ex.id) {
         let want = exact(want, &format!("{} {name}", ex.id));
         let got: Decimal = r
             .vendors
             .iter()
-            .filter(|v| v.vendor_id == payees[name])
+            .filter(|v| v.vendor_id == b.payees[name])
             .map(|v| v.paid)
             .sum();
         assert_eq!(got, want, "{} 1099 paid [{from} .. {to}]: {name}", ex.id);
+    }
+}
+
+/// The money party shares resolve against: the cash accounts (every
+/// asset account but receivables when none are named), the cards and the
+/// financing accounts (rules.md B-35 item 5).
+fn party_money(ex: &Example, l: &Ledger) -> MoneyAccounts {
+    ledger_core::parties::money_accounts(
+        l,
+        &codes(l, &ex.setup.cash_accounts, &ex.id),
+        &codes(l, &ex.setup.financing_accounts, &ex.id),
+    )
+}
+
+/// The party an expectation names.
+fn expect_party(b: &Books<'_>, x: &Expect) -> PartyId {
+    let name = x
+        .party
+        .as_deref()
+        .unwrap_or_else(|| panic!("{}: {} names its party", b.ex.id, x.query));
+    *b.parties
+        .get(name)
+        .unwrap_or_else(|| panic!("{}: party {name:?} not in setup.parties", b.ex.id))
+}
+
+/// Check one `party_part` expectation: entry N's part for the party
+/// (rules.md B-35): `resolved`, signed as a line on the party's own
+/// account (debit-positive: paid or given positive, received negative),
+/// the entry's `direction` (`paid`, `received` or `neither`), and what
+/// of it moved as money (`cash`) and as property (`in_kind`); every one
+/// given.
+fn check_party_part(b: &Books<'_>, x: &Expect) {
+    let (ex, l) = (b.ex, &b.l);
+    assert!(
+        x.from.is_none() && x.to.is_none() && x.as_of.is_none(),
+        "{}: party_part asks about one entry, no dates",
+        ex.id
+    );
+    let n = x
+        .entry
+        .unwrap_or_else(|| panic!("{}: a party_part query names its entry", ex.id));
+    let party = expect_party(b, x);
+    let r = ledger_core::shares::resolve(
+        l,
+        n,
+        l.entry_parties(n),
+        &party_money(ex, l),
+        &b.party_members,
+    )
+    .unwrap_or_else(|why| panic!("{}: entry {n}'s shares: {why}", ex.id));
+    let part = r
+        .part(party)
+        .unwrap_or_else(|| panic!("{}: entry {n} doesn't name {:?}", ex.id, x.party));
+    let keys = ["resolved", "direction", "cash", "in_kind"];
+    exactly(ex, x, &keys.iter().map(|k| k.to_string()).collect());
+    let what = |k: &str| format!("{} entry {n} {:?}: {k}", ex.id, x.party);
+    for (key, want) in x.figures(&ex.id) {
+        if key == "direction" {
+            assert_eq!(r.target.direction.key(), want, "{}", what(key));
+            continue;
+        }
+        let got = match key.as_str() {
+            "resolved" => part.amount,
+            "cash" => part.cash,
+            _ => part.in_kind,
+        };
+        assert_eq!(got, exact(want, &what(key)), "{}", what(key));
+    }
+}
+
+/// Check one `party_totals` expectation: what was `paid` to and
+/// `received` from the party from `from` through `to` on `basis` (`cash`:
+/// money; `all`: money and property in kind), each entry's part on its
+/// root original's side (rules.md B-35 item 4); both given.
+fn check_party_totals(b: &Books<'_>, x: &Expect) {
+    let (ex, l) = (b.ex, &b.l);
+    assert!(
+        x.from.is_some() && x.to.is_some(),
+        "{}: party_totals gives from and to",
+        ex.id
+    );
+    let (from, to) = x.period(ex);
+    let basis = x
+        .basis
+        .as_deref()
+        .map(|k| Basis::parse(k).unwrap_or_else(|| panic!("{}: basis {k:?}", ex.id)))
+        .unwrap_or_else(|| panic!("{}: party_totals names its basis", ex.id));
+    let party = expect_party(b, x);
+    let a = ledger_core::parties::activity_with(
+        l,
+        party,
+        (from, to),
+        &party_money(ex, l),
+        &b.party_members,
+    );
+    assert!(
+        a.unresolved.is_empty(),
+        "{}: {:?}'s entries {:?} don't resolve",
+        ex.id,
+        x.party,
+        a.unresolved
+    );
+    let (paid, received) = a.totals(basis);
+    exactly(ex, x, &["paid".to_string(), "received".to_string()].into());
+    let f = x.figures(&ex.id);
+    let what = |k: &str| {
+        format!(
+            "{} {:?} [{from} .. {to}] {}: {k}",
+            ex.id,
+            x.party,
+            basis.key()
+        )
+    };
+    assert_eq!(paid, exact(&f["paid"], &what("paid")), "{}", what("paid"));
+    assert_eq!(
+        received,
+        exact(&f["received"], &what("received")),
+        "{}",
+        what("received")
+    );
+}
+
+/// Check one `party_tin_last4` expectation: the last four of the party's
+/// TIN the books keep (its TIN facts', else its W-9's; `""` for none:
+/// rules.md B-26).
+fn check_party_tin_last4(b: &Books<'_>, x: &Expect) {
+    let ex = b.ex;
+    assert!(
+        x.from.is_none() && x.to.is_none() && x.as_of.is_none(),
+        "{}: party_tin_last4 takes no dates",
+        ex.id
+    );
+    let party = expect_party(b, x);
+    exactly(ex, x, &["tin_last4".to_string()].into());
+    let got =
+        b.l.get_party(party)
+            .and_then(|p| p.tin_last4())
+            .unwrap_or_default();
+    assert_eq!(
+        got,
+        x.figures(&ex.id)["tin_last4"],
+        "{}: {:?}'s TIN last four",
+        ex.id,
+        x.party
+    );
+}
+
+/// Check one `k1` expectation: the K-1 worksheet over the period (rules.md
+/// B-13; Schedule K-1 Item L), `"<member>.<column>"` for the columns
+/// `beginning`, `contributions_cash`, `contributions_property`,
+/// `net_income`, `distributions`, `other` and `ending`; the figures named
+/// are the example's choice. It needs `cash_accounts` (what is money
+/// rather than property).
+fn check_k1(ex: &Example, l: &Ledger, members: &[MemberCapital], x: &Expect) {
+    let (from, to) = x.period(ex);
+    assert!(
+        !members.is_empty() && members.iter().all(|m| m.share > Decimal::ZERO),
+        "{}: k1 needs the members and their shares",
+        ex.id
+    );
+    let cash = codes(l, &ex.setup.cash_accounts, &ex.id);
+    let rows = ledger_core::k1::k1_worksheet(l, from, to, members, &cash)
+        .unwrap_or_else(|e| panic!("{}: {e}", ex.id));
+    let mut got = BTreeMap::new();
+    for r in &rows {
+        for (column, v) in [
+            ("beginning", r.beginning),
+            ("contributions_cash", r.contributions_cash),
+            ("contributions_property", r.contributions_property),
+            ("net_income", r.net_income),
+            ("distributions", r.distributions),
+            ("other", r.other),
+            ("ending", r.ending),
+        ] {
+            got.insert(format!("{}.{column}", r.name), v);
+        }
+    }
+    for (key, want) in x.figures(&ex.id) {
+        let want = exact(want, &format!("{} {key}", ex.id));
+        let got = got
+            .get(key)
+            .unwrap_or_else(|| panic!("{}: k1 has no {key}", ex.id));
+        assert_eq!(*got, want, "{} K-1 [{from} .. {to}]: {key}", ex.id);
     }
 }
 
@@ -1374,7 +1765,13 @@ fn check(b: &Books<'_>, x: &Expect) -> Option<&'static str> {
             queries.join(" and ")
         );
     };
-    only(x.entry.is_some(), "entry", &["entry"]);
+    only(x.entry.is_some(), "entry", &["entry", "party_part"]);
+    only(
+        x.party.is_some(),
+        "party",
+        &["party_part", "party_totals", "party_tin_last4"],
+    );
+    only(x.basis.is_some(), "basis", &["party_totals"]);
     only(
         x.code.is_some(),
         "code",
@@ -1419,10 +1816,14 @@ fn check(b: &Books<'_>, x: &Expect) -> Option<&'static str> {
         "cash_flow" => check_cash_flow(ex, l, &b.members, x),
         "trial_balance" => check_trial_balance(ex, l, x),
         "profit_and_loss" => check_profit_and_loss(ex, l, x),
-        "vendor_1099_paid" => check_vendor_1099_paid(ex, l, &b.payees, x),
+        "vendor_1099_paid" => check_vendor_1099_paid(b, x),
         "entry" => check_entry(ex, l, x),
         "balances" => check_balances(ex, l, x),
         "members_equity" => check_members_equity(ex, l, &b.members, x),
+        "k1" => check_k1(ex, l, &b.members, x),
+        "party_part" => check_party_part(b, x),
+        "party_totals" => check_party_totals(b, x),
+        "party_tin_last4" => check_party_tin_last4(b, x),
         q => {
             let &(_, by) = FORMAT_QUERIES
                 .iter()
@@ -1508,8 +1909,8 @@ fn every_bookspec_example_holds() {
     }
     // Each query the examples use ran: the cash flow's six examples at
     // least, the as-of and 1099 examples', the members closes', the
-    // formats appendix's, and P3's default period, rename and tax
-    // category examples'.
+    // formats appendix's, and P3's default period, rename, tax category
+    // and parties examples'.
     for (q, at_least) in [
         ("cash_flow", 6),
         ("trial_balance", 2),
@@ -1517,7 +1918,11 @@ fn every_bookspec_example_holds() {
         ("vendor_1099_paid", 3),
         ("entry", 8),
         ("balances", 4),
-        ("members_equity", 5),
+        ("members_equity", 10),
+        ("k1", 2),
+        ("party_part", 27),
+        ("party_totals", 21),
+        ("party_tin_last4", 5),
         ("iif_lines", 1),
         ("iif_changes", 1),
         ("period", 6),
@@ -1840,5 +2245,55 @@ fn a_command_with_values_is_refused() {
             "category = \"other_deductions\"\naccepted = true\nvalues = { x = \"1\" }\n",
             1,
         )
+    });
+}
+
+/// An event's parties must be in the setup's directory.
+#[test]
+#[should_panic(expected = "not in setup")]
+fn a_party_not_in_the_setup_is_refused() {
+    run_edited("p3-party-signs-and-reversals.toml", |t| {
+        t.replacen(
+            "parties = [{ party = \"Tobin Harlow\" }]",
+            "parties = [{ party = \"Tobin Harlo\" }]",
+            1,
+        )
+    });
+}
+
+/// A party's part is checked for its direction as well as its figures:
+/// a contribution read as paid fails.
+#[test]
+#[should_panic(expected = "entry 2 Some(\"Tobin Harlow\"): direction")]
+fn a_party_parts_direction_is_checked() {
+    run_edited("p3-party-signs-and-reversals.toml", |t| {
+        t.replacen(
+            "resolved = \"-400.00\", direction = \"received\"",
+            "resolved = \"-400.00\", direction = \"paid\"",
+            1,
+        )
+    });
+}
+
+/// A reversal takes its original's parties: naming them again is
+/// refused, never read as a second tag.
+#[test]
+#[should_panic(expected = "takes its original's parties")]
+fn a_reversal_naming_parties_is_refused() {
+    run_edited("p3-party-signs-and-reversals.toml", |t| {
+        t.replacen(
+            "reverses = 4\n",
+            "reverses = 4\nparties = [{ party = \"Tobin Harlow\" }]\n",
+            1,
+        )
+    });
+}
+
+/// Party totals name their basis: cash and all differ for property.
+#[test]
+#[should_panic(expected = "party_totals names its basis")]
+fn party_totals_without_a_basis_are_refused() {
+    run_edited("p3-party-signs-and-reversals.toml", |t| {
+        t.replacen("basis = \"all\"\n", "", 1)
     });
 }

@@ -67,3 +67,7 @@ open Wanderbooks
 #print axioms cashflow_reversal_nets
 #print axioms Reachable.cashflow_foots
 #print axioms Reachable.cashflow_is_change_in_cash
+#print axioms reverseTarget_involutive
+#print axioms capitalTarget_odd
+#print axioms partyTarget_odd
+#print axioms sumOver_movement_reversal

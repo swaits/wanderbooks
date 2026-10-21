@@ -199,7 +199,16 @@ fn a_draft_of_decimals_largest_is_refused_where_summed() {
     let q = l
         .add_party("Beta", &[ledger_core::Role::Contractor])
         .unwrap();
-    let money = ledger_core::parties::money_accounts(&l, &[cash]);
+    let capital = l
+        .add_account("3000", "Capital", AccountType::Equity, None, false)
+        .unwrap();
+    let member = l
+        .add_party("Tobin Harlow", &[ledger_core::Role::Member])
+        .unwrap();
+    let money = ledger_core::parties::money_accounts(&l, &[cash], &[]);
+    let resolve = |l: &Ledger, e, shares: &[PartyShare]| {
+        ledger_core::shares::resolve(l, e, shares, &money, &[])
+    };
     for (dr, cr) in [(rent, cash), (rent, card), (card, cash), (cash, card)] {
         let e = l.create_entry(d(2026, 3, 1), "huge");
         for side in [Side::Debit, Side::Debit] {
@@ -211,12 +220,31 @@ fn a_draft_of_decimals_largest_is_refused_where_summed() {
             .unwrap();
         let entry = l.get_entry(e).unwrap();
         assert!(too_large(ledger_core::parties::entry_flow(entry, &money)));
-        assert!(too_large(ledger_core::shares::share_target(entry, &money)));
-        let why =
-            ledger_core::shares::resolve(entry, &[PartyShare::whole(p)], &money, &[]).unwrap_err();
+        assert!(too_large(ledger_core::shares::target(
+            &l,
+            e,
+            &[PartyShare::whole(p)],
+            &money
+        )));
+        let why = resolve(&l, e, &[PartyShare::whole(p)]).unwrap_err();
         assert!(why.contains("too large to compute"), "{why}");
         assert_eq!(l.post_entry(e).unwrap_err(), LedgerError::AmountOutOfRange);
     }
+    // A member's capital moved past exact arithmetic (rules.md B-35, case
+    // 3, B-28): the target is refused, never a panic.
+    let e = l.create_entry(d(2026, 3, 1), "huge capital");
+    for _ in 0..2 {
+        l.replay_add_line(e, cash, Side::Debit, usd(Decimal::MAX))
+            .unwrap();
+        l.replay_add_line(e, capital, Side::Credit, usd(Decimal::MAX))
+            .unwrap();
+    }
+    assert!(too_large(ledger_core::shares::target(
+        &l,
+        e,
+        &[PartyShare::whole(member)],
+        &money
+    )));
     // One line of Decimal's largest flows, and its share resolves whole.
     let e = l.create_entry(d(2026, 3, 1), "one huge");
     l.replay_add_line(e, rent, Side::Debit, usd(Decimal::MAX))
@@ -228,16 +256,17 @@ fn a_draft_of_decimals_largest_is_refused_where_summed() {
         ledger_core::parties::entry_flow(entry, &money).unwrap().net,
         Decimal::MAX
     );
+    let r = resolve(&l, e, &[PartyShare::whole(p)]).unwrap();
     assert_eq!(
-        ledger_core::shares::resolve(entry, &[PartyShare::whole(p)], &money, &[]).unwrap(),
-        [(p, Decimal::MAX)]
+        (r.parts[0].party, r.parts[0].amount, r.parts[0].cash),
+        (p, Decimal::MAX, Decimal::MAX)
     );
     // A percent of it: the product is past exact arithmetic.
     let halves = [p, q].map(|party| PartyShare {
         party,
         share: ledger_core::shares::Share::Percent(Decimal::from(50)),
     });
-    let why = ledger_core::shares::resolve(entry, &halves, &money, &[]).unwrap_err();
+    let why = resolve(&l, e, &halves).unwrap_err();
     assert!(why.contains("too large to compute"), "{why}");
 }
 

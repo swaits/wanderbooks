@@ -77,7 +77,10 @@ Rules (to vendor as B-26 with sources):
 address, notes, archived), `party.role_set {id, role, on}`,
 `party.w9_set {id, facts|null}`, `party.w4_set {id, facts|null}`,
 `party.tin_set {id, facts|null}` (TIN facts: type, last four, vault
-record, when purged), `entry.party_set {entry_id, party_id|null}`,
+record, when purged), `party.creditor_set {id, account_id, on}` (P3: the
+party is, or stops being, the creditor of a liability the company owes it
+itself; the journal declares its feature, `party_creditors`, before the
+first one), `entry.party_set {entry_id, party_id|null}`,
 `entry.parties_set {entry_id, parties: [{party_id, share}]}` (a share is
 `{"amount": "30.00"}`, `{"percent": "60"}`, or `"derived"`; `[]`
 clears). Replayed and projected like
@@ -95,9 +98,24 @@ derived. Spec: `ledger_core::shares`.
   (`set_entry_party`) is one derived share: all of it.
   `Ledger::entry_party` means "the sole party"; `entry_parties` lists
   them all.
-- **What a share is of:** the entry's `entry_flow` net (what it moved
-  with its counterparties), or its total debits when the net is zero (a
-  member contributing property moves no money but is still theirs).
+- **What a share is of** (rules.md B-35, P3 defect 14): one signed
+  target, debit-positive as a line on the parties' own account (positive:
+  the company paid or gave; negative: it received), with its direction
+  (paid, received, neither) and what of it was money and what property in
+  kind. A close: its parties' own-account movement, neither. A reversal:
+  its original's target negated, never re-read from its own lines. An
+  entry naming only members that moves equity: what moved their capital.
+  A contribution is received, the property in it in kind (the K-1
+  worksheet's test), the rest cash; a distribution is paid, the money it
+  paid cash, the property it gave in kind, the rest (declared to
+  distributions payable, or credited to what the members advanced once
+  they are named its creditors) still owed, counted when paid. Money moved: the money
+  (`parties::flow`), all cash. Otherwise its parties' own-account
+  movement (a bill −, an invoice +), else its total debits: neither,
+  counted in no total. Read from journaled facts only (the member role,
+  the chart, `creditor_of`), so leaving `[[company.members]]` never
+  changes a posted entry's reading. (Before P3 a property contribution
+  read +500.00, the sign of a payment, and its reversal the same.)
 - **Amount:** exactly that, positive, in cents; the amounts must sum to
   what the entry moved.
 - **Percent:** more than 0, at most 100, summing to exactly 100. Each part
@@ -131,19 +149,32 @@ derived. Spec: `ledger_core::shares`.
   checks only their form; the MCP server checks they resolve once the
   entry has balanced lines, and `post_entry` refuses (`party_shares`)
   until they do. Replay never consults settings.
-- **Money:** `parties::activity_with` counts each party's resolved share;
-  an entry moving no money counts nothing; an entry whose shares don't
-  resolve counts for no one (listed as unresolved). Reversals carry
-  every share, so a reversal subtracts each party's part; re-tagging
-  either one (parties, shares, or vendor) re-tags the other, so the pair
-  always nets to zero.
+- **Money:** `parties::activity_with` counts each party's part on two
+  bases (B-35 item 4): cash (its money: cash, a card, the members'
+  financing, a loan) and all (adding property contributed or distributed
+  in kind), the viewer labelling the first "cash basis". Money accounts
+  are the cash accounts, the cards and `[books] financing_accounts`; any
+  other liability is a promise, counted once, when settled (P3 defect
+  24). A party may be named the creditor of liabilities it is owed itself
+  (`creditor_of`: a card's issuer, a loan's lender, each member for what
+  the members advanced); a credit to one never counts as paying it. An
+  entry that counts nothing (a bill, an invoice, a close) is never
+  unresolved; an entry whose shares don't resolve counts for no one
+  (listed as unresolved). Reversals carry every share, so a reversal
+  subtracts each party's part; re-tagging either one (parties, shares,
+  or vendor) re-tags the other, so the pair always nets to zero.
   A reversal counts on its root original's side, so reversing the
   reversal reinstates the payment as paid (never a negative received).
+  For a member, basis all over their equity entries is the statement of
+  members' equity; basis cash their contributions is the K-1 worksheet's
+  cash contributions.
 - **One number everywhere:** `books.party`, `books.parties`, and the
-  viewer's party page and directory read cash as the server does
-  (`[books] cash_accounts`, else every asset account but receivables)
-  and count the whole calendar year, so a posted entry dated later this
-  year counts in both. The viewer shows the year up to the later of today
+  viewer's party page and directory read money as the server does
+  (`[books] cash_accounts`, else every asset account but receivables;
+  the cards; `[books] financing_accounts`) and count the whole calendar
+  year, so a posted entry dated later this year counts in both. The
+  directory's TIN last four is the TIN facts', else the W-9 facts'
+  (`Party::tin_last4`, P3 defect 11), as everywhere the books show one. The viewer shows the year up to the later of today
   and its last posted entry.
 - **For the agent:** a joint member transaction (a reimbursement on Due
   to Shareholders, a contribution or distribution from joint funds)
@@ -220,9 +251,13 @@ paid without W-9 facts; a 1099 party paid over the threshold.
 Money with a party (the owner, 2026-10-15: "how much have I spent on Apple
 versus how much did I get back"): paid out, received in, and net, for a
 chosen period (this year, last year, any year, all time), from
-`ledger_core::parties::activity`; what it was for (the non-money lines by
+`ledger_core::parties::activity_with`, labelled cash basis, with "With
+property contributed or distributed: paid $X, received $Y" under them
+when anything moved in kind; what it was for (the non-money lines by
 account); a monthly out-vs-in chart; the 1099 amount for the calendar
-year. The directory shows the same columns, sortable.
+year. An entry's page says each party's part in words ("received
+$740.00, in kind"; "paid $1,480.00 (reversal of #12)"). The directory
+shows the same columns, sortable.
 
 ## The TIN vault
 

@@ -2219,3 +2219,61 @@ fn idempotent_tools_change_nothing_when_repeated() {
         .collect();
     assert!(wrong.is_empty(), "{wrong:#?}");
 }
+
+// ------------------------------------------------- defect 11 (P3)
+
+/// Defect 11 (audit F28): `books.parties` showed a member's TIN as
+/// missing (`tin_last4: null`) because it read W-9 facts only, while
+/// `books.party` showed the TIN facts' last four. The directory's last
+/// four is the TIN facts', else the W-9 facts' (they never disagree:
+/// parties INVARIANT 2a), null with neither, and kept after a purge
+/// (the facts keep the last four).
+#[test]
+fn defect11_the_directory_shows_a_members_tin_last4() {
+    let mut m = books("defect11");
+    m.add_party("Mo", &["member"]);
+    m.add_party("Nobody In Particular", &[]);
+    m.ok(
+        "books.set_tin",
+        json!({"party": "Mo", "tin": MEMBER_SSN, "tin_type": "ssn"}),
+    );
+    assert!(
+        !m.w9(
+            "Acme Design",
+            json!({"tin_last4": "6789", "kept_at": "binder"})
+        )
+        .refused()
+    );
+    let row = |m: &mut Mcp, name: &str| -> Value {
+        let list = m.read_only("books.parties", json!({"year": 2026}));
+        list["parties"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == name)
+            .unwrap_or_else(|| panic!("{name} in {list}"))
+            .clone()
+    };
+    let mo = row(&mut m, "Mo");
+    assert_eq!(
+        (mo["tin_last4"].clone(), mo["w9_on_file"].clone()),
+        (json!("4915"), json!(false))
+    );
+    assert_eq!(
+        m.party("Mo", 2026)["party"]["tin"]["last4"],
+        mo["tin_last4"]
+    );
+    let acme = row(&mut m, "Acme Design");
+    assert_eq!(
+        (acme["tin_last4"].clone(), acme["w9_on_file"].clone()),
+        (json!("6789"), json!(true))
+    );
+    assert!(row(&mut m, "Nobody In Particular")["tin_last4"].is_null());
+    m.ok(
+        "books.purge_tin",
+        json!({"party": "Mo", "reason": "left the company", "confirmed": true}),
+    );
+    assert_eq!(row(&mut m, "Mo")["tin_last4"], "4915");
+    let list = m.read_only("books.parties", json!({}));
+    assert!(!holds_tin(list.to_string().as_bytes(), MEMBER_SSN_DIGITS));
+}

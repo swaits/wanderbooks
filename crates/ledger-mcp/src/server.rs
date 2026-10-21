@@ -2026,7 +2026,7 @@ fn party_roles(p: &ledger_core::Party) -> Vec<String> {
 }
 
 /// A party's facts for a tool's output.
-fn party_out(p: &ledger_core::Party) -> PartyOut {
+fn party_out(ledger: &Ledger, p: &ledger_core::Party) -> PartyOut {
     PartyOut {
         party_id: p.id,
         name: p.name.clone(),
@@ -2059,6 +2059,11 @@ fn party_out(p: &ledger_core::Party) -> PartyOut {
             in_vault: t.vault_record.is_some(),
             purged: t.purged.clone(),
         }),
+        creditor_of: p
+            .creditor_of
+            .iter()
+            .filter_map(|a| ledger.chart().get(*a).map(|a| a.code.clone()))
+            .collect(),
     }
 }
 
@@ -2122,34 +2127,45 @@ fn checked_sum(
 struct PartyActivity {
     /// The party's entries, drafts included.
     entries: std::collections::BTreeSet<u64>,
-    /// Paid to it in the year.
+    /// Paid to it in the year, on the basis asked.
     paid: Decimal,
-    /// Received from it in the year.
+    /// Received from it in the year, on the basis asked.
     received: Decimal,
 }
 
-/// The party's entries and the year's money paid and received
+/// A party-totals `basis` from a tool: "cash" (the default) or "all"
+/// (rules.md B-35 item 4); any other word is refused.
+fn parse_basis(basis: Option<&str>) -> Result<ledger_core::parties::Basis, String> {
+    match basis {
+        None => Ok(ledger_core::parties::Basis::default()),
+        Some(b) => ledger_core::parties::Basis::parse(b)
+            .ok_or_else(|| format!("basis is \"cash\" or \"all\", not {b:?}")),
+    }
+}
+
+/// The party's entries and the year's paid and received on `basis`
 /// (`PartyTotalsOut`): ledger_core::parties::activity_with over the
-/// calendar year, with the `[books] cash_accounts` and the members (so an
-/// entry naming several parties counts this one's share).
+/// calendar year, with the money accounts of [`share_context`] and the
+/// members (so an entry naming several parties counts this one's part).
 fn party_activity(
     store: &Store,
     party: &ledger_core::Party,
     settings: &Settings,
     year: i32,
+    basis: ledger_core::parties::Basis,
 ) -> Result<PartyActivity, String> {
     let ledger = store.ledger();
-    let cash = cash_ids(ledger, &settings.roles.cash);
     let span = (
         NaiveDate::from_ymd_opt(year, 1, 1).ok_or("year out of range")?,
         NaiveDate::from_ymd_opt(year, 12, 31).ok_or("year out of range")?,
     );
-    let members = settings.company.party_members(ledger);
-    let a = ledger_core::parties::activity_with(ledger, party.id, span, &cash, &members);
+    let (money, members) = share_context(ledger, settings);
+    let a = ledger_core::parties::activity_with(ledger, party.id, span, &money, &members);
+    let (paid, received) = a.totals(basis);
     Ok(PartyActivity {
         entries: a.entries,
-        paid: a.paid,
-        received: a.received,
+        paid,
+        received,
     })
 }
 
@@ -2175,7 +2191,8 @@ fn cash_ids(ledger: &Ledger, codes: &[String]) -> Vec<AccountId> {
 }
 
 /// What party shares resolve with ([`ledger_core::shares::resolve`]): the
-/// money accounts over the `[books] cash_accounts`, and the members.
+/// money accounts over the `[books] cash_accounts` and
+/// `financing_accounts` (with the cards), and the members.
 fn share_context(
     ledger: &Ledger,
     settings: &Settings,
@@ -2184,7 +2201,11 @@ fn share_context(
     Vec<ledger_core::PartyMember>,
 ) {
     (
-        ledger_core::parties::money_accounts(ledger, &cash_ids(ledger, &settings.roles.cash)),
+        ledger_core::parties::money_accounts(
+            ledger,
+            &cash_ids(ledger, &settings.roles.cash),
+            &cash_ids(ledger, &settings.roles.financing),
+        ),
         settings.company.party_members(ledger),
     )
 }
@@ -2252,7 +2273,7 @@ fn check_shares_resolve(
         return Ok(());
     }
     let (money, members) = share_context(ledger, settings);
-    ledger_core::shares::resolve(entry, shares, &money, &members).map(|_| ())
+    ledger_core::shares::resolve(ledger, entry_id, shares, &money, &members).map(|_| ())
 }
 
 /// Fix a posted entry's derived split among several parties: journal the
@@ -2289,17 +2310,19 @@ fn fix_derived_shares(store: &mut Store, settings: &Settings, entry_id: u64) -> 
         return Ok(());
     }
     let (money, members) = share_context(ledger, settings);
-    let Ok(parts) = ledger_core::shares::resolve(entry, shares, &money, &members) else {
+    let Ok(resolved) = ledger_core::shares::resolve(ledger, entry_id, shares, &money, &members)
+    else {
         return Ok(());
     };
-    if parts.iter().any(|(_, v)| v.is_zero()) {
+    if resolved.parts.iter().any(|p| p.amount.is_zero()) {
         return Ok(());
     }
-    let fixed: Vec<ledger_core::PartyShare> = parts
-        .into_iter()
-        .map(|(party, v)| ledger_core::PartyShare {
-            party,
-            share: ledger_core::Share::Amount(v.abs()),
+    let fixed: Vec<ledger_core::PartyShare> = resolved
+        .parts
+        .iter()
+        .map(|p| ledger_core::PartyShare {
+            party: p.party,
+            share: ledger_core::Share::Amount(p.amount.abs()),
         })
         .collect();
     store
@@ -2317,10 +2340,11 @@ fn entry_parties_out(
     let ledger = store.ledger();
     let shares = ledger.entry_parties(entry.id());
     let (accounts, members) = share_context(ledger, settings);
-    let (resolved, error) = match ledger_core::shares::resolve(entry, shares, &accounts, &members) {
-        Ok(r) => (Some(r), None),
-        Err(e) => (None, Some(e)),
-    };
+    let (resolved, error) =
+        match ledger_core::shares::resolve(ledger, entry.id(), shares, &accounts, &members) {
+            Ok(r) => (Some(r), None),
+            Err(e) => (None, Some(e)),
+        };
     let out = shares
         .iter()
         .enumerate()
@@ -2341,7 +2365,12 @@ fn entry_parties_out(
                 share: kind.to_string(),
                 amount,
                 percent,
-                resolved: resolved.as_ref().map(|r| money(r[i].1)),
+                resolved: resolved.as_ref().map(|r| money(r.parts[i].amount)),
+                direction: resolved
+                    .as_ref()
+                    .map(|r| r.target.direction.key().to_string()),
+                cash: resolved.as_ref().map(|r| money(r.parts[i].cash)),
+                in_kind: resolved.as_ref().map(|r| money(r.parts[i].in_kind)),
             }
         })
         .collect();
@@ -6906,13 +6935,13 @@ impl BooksServer {
             .add_party(&p.name, &roles)
             .map_err(|e| e.to_string())?;
         let party = store.ledger().get_party(id).expect("just added");
-        Ok(Json(party_out(party)))
+        Ok(Json(party_out(store.ledger(), party)))
     }
 
     #[tool(
         name = "books.update_party",
         title = "Update a party",
-        description = "Change a party's facts: name, display_name, website, address, notes, archived. Give only the fields to change; an empty string clears display_name, website, address, or notes. Every field is checked before any is written, so a bad one (a blank or taken name, a full TIN, over 500 characters) changes nothing; each is journaled as its own party.updated. Archive a party you no longer deal with (its history stays; it then goes by id). Returns the party.",
+        description = "Change a party's facts: name, display_name, website, address, notes, archived, creditor_of. Give only the fields to change; \"\" clears display_name, website, address or notes. creditor_of replaces the list of liabilities the company owes the party itself (its card, its loan, what the members advanced): a credit to one never counts as paying it. Every field is checked before any is written, so a bad one (a blank or taken name, a full TIN, over 500 characters, not a liability) changes nothing; each is journaled as party.updated or party.creditor_set. Archive a party you no longer deal with (its history stays; it then goes by id). Returns the party.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -6946,24 +6975,46 @@ impl BooksServer {
         if let Some(a) = p.archived {
             fields.push(F::Archived(a));
         }
-        if fields.is_empty() {
+        // creditor_of replaces the list: each account added or dropped is
+        // one change.
+        let mut creditor: Vec<(AccountId, bool)> = Vec::new();
+        if let Some(codes) = &p.creditor_of {
+            let want: std::collections::BTreeSet<AccountId> = codes
+                .iter()
+                .map(|c| resolve_account(&store, c.trim()))
+                .collect::<Result<_, _>>()?;
+            let has = &store.ledger().get_party(id).expect("resolved").creditor_of;
+            creditor.extend(want.difference(has).map(|a| (*a, true)));
+            creditor.extend(has.difference(&want).map(|a| (*a, false)));
+        }
+        if fields.is_empty() && p.creditor_of.is_none() {
             return Err(
-                "give at least one field to change: name, display_name, website, address, notes, archived"
+                "give at least one field to change: name, display_name, website, address, notes, archived, creditor_of"
                     .into(),
             );
         }
-        // Every field, in order, before any is written (INVARIANT 2).
+        // Every change, in order, before any is written (INVARIANT 2).
         let mut rehearsal = store.ledger().clone();
         for f in &fields {
             rehearsal
                 .update_party(id, f.clone())
                 .map_err(|e| e.to_string())?;
         }
+        for (a, on) in &creditor {
+            rehearsal
+                .set_party_creditor(id, *a, *on)
+                .map_err(|e| e.to_string())?;
+        }
         for f in fields {
             store.update_party(id, f).map_err(|e| e.to_string())?;
         }
+        for (a, on) in creditor {
+            store
+                .set_party_creditor(id, a, on)
+                .map_err(|e| e.to_string())?;
+        }
         let party = store.ledger().get_party(id).expect("resolved");
-        Ok(Json(party_out(party)))
+        Ok(Json(party_out(store.ledger(), party)))
     }
 
     #[tool(
@@ -7030,7 +7081,7 @@ impl BooksServer {
             store.set_party_role(id, r, on).map_err(|e| e.to_string())?;
         }
         let party = store.ledger().get_party(id).expect("resolved");
-        Ok(Json(party_out(party)))
+        Ok(Json(party_out(store.ledger(), party)))
     }
 
     /// ```text
@@ -7272,7 +7323,7 @@ impl BooksServer {
                 .map_err(|e| e.to_string())?;
         }
         let party = store.ledger().get_party(id).expect("resolved");
-        Ok(Json(party_out(party)))
+        Ok(Json(party_out(store.ledger(), party)))
     }
 
     /// ```text
@@ -7359,7 +7410,7 @@ impl BooksServer {
                 .map_err(|e| e.to_string())?;
         }
         let party = store.ledger().get_party(id).expect("resolved");
-        Ok(Json(party_out(party)))
+        Ok(Json(party_out(store.ledger(), party)))
     }
 
     /// ```text
@@ -7494,11 +7545,7 @@ impl BooksServer {
             name: party.name.clone(),
             tin_in_vault: held_tin,
             w9_file_in_vault: held_w9,
-            tin_last4: party
-                .w9
-                .as_ref()
-                .map(|f| f.tin_last4.clone())
-                .or_else(|| party.tin.as_ref().map(|t| t.last4.clone())),
+            tin_last4: party.tin_last4().map(str::to_string),
             journaled: false,
             note: format!(
                 "Confirming deletes {}{}; backups made before keep their copies. Make sure the CPA has what they need first.",
@@ -7578,14 +7625,14 @@ impl BooksServer {
         let id = resolve_party(&store, &p.party)?;
         store.set_party_w4(id, facts).map_err(|e| e.to_string())?;
         let party = store.ledger().get_party(id).expect("resolved");
-        Ok(Json(party_out(party)))
+        Ok(Json(party_out(store.ledger(), party)))
     }
 
     #[tool(
         name = "books.parties",
         title = "List parties",
         description = described(
-            "The party directory, by id: each party's name, label, roles (vendor and customer included), vendor and customer record ids, whether W-9 facts (with the TIN's last four) and W-4 facts are on file, archived, and what was paid to and received from it in the year (defined as in books.party). Filter by role; archived parties only with include_archived.",
+            "The party directory, by id: each party's name, label, roles (vendor and customer included), vendor and customer record ids, whether W-9 and W-4 facts are on file, the TIN's last four when the books know it (TIN or W-9 facts), archived, and what was paid to and received from it in the year on the basis asked: cash by default (money), or all (adds property contributed or distributed in kind); defined as in books.party, the basis echoed. Filter by role; archived parties only with include_archived.",
             ledger_core::calendar::PeriodKind::CalendarYear
         ),
         annotations(read_only_hint = true, open_world_hint = false)
@@ -7601,6 +7648,7 @@ impl BooksServer {
             .map(|r| parse_roles(&[r.to_string()]).map(|v| v[0]))
             .transpose()?;
         let year = p.year.unwrap_or_else(|| self.periods().calendar_year());
+        let basis = parse_basis(p.basis.as_deref())?;
         let settings = self.settings();
         let store = self.lock()?;
         let mut parties = Vec::new();
@@ -7611,7 +7659,7 @@ impl BooksServer {
             if role.is_some_and(|r| !party.all_roles().contains(&r)) {
                 continue;
             }
-            let act = party_activity(&store, party, &settings, year)?;
+            let act = party_activity(&store, party, &settings, year, basis)?;
             parties.push(PartySummaryOut {
                 party_id: party.id,
                 name: party.name.clone(),
@@ -7620,21 +7668,25 @@ impl BooksServer {
                 vendor_id: party.vendor,
                 customer_id: party.customer,
                 w9_on_file: party.w9.is_some(),
-                tin_last4: party.w9.as_ref().map(|w| w.tin_last4.clone()),
+                tin_last4: party.tin_last4().map(str::to_string),
                 w4_on_file: party.w4.is_some(),
                 archived: party.archived,
                 paid: money(act.paid),
                 received: money(act.received),
             });
         }
-        Ok(Json(ListPartiesOut { year, parties }))
+        Ok(Json(ListPartiesOut {
+            year,
+            basis: basis.key().to_string(),
+            parties,
+        }))
     }
 
     #[tool(
         name = "books.party",
         title = "Get a party",
         description = described(
-            "One party, by id or name: its facts and roles, vendor and customer record ids, the year's totals (paid to it, received from it, invoiced, billed, the 1099 amount for a vendor, payroll gross and net), what it is owed and owes now (open bills and invoices), every entry it is on (tagged with it or its vendor record, its invoices and their payments, and their reversals), its invoices and bills, and the payroll lines naming it. Totals come from the journal: the output's schema says exactly how.",
+            "One party, by id or name: its facts and roles, vendor and customer record ids, the year's totals (paid to it and received from it on the basis asked, cash by default or all with property in kind, the basis echoed; invoiced, billed, the 1099 amount for a vendor, payroll gross and net), what it is owed and owes now (open bills and invoices), every entry it is on (tagged with it or its vendor record, its invoices and their payments, and their reversals), its invoices and bills, and the payroll lines naming it. Totals come from the journal: the output's schema says exactly how.",
             ledger_core::calendar::PeriodKind::CalendarYear
         ),
         annotations(read_only_hint = true, open_world_hint = false)
@@ -7642,12 +7694,13 @@ impl BooksServer {
     async fn party(&self, params: Parameters<PartyParams>) -> Result<Json<PartyDetailOut>, String> {
         let p = params.0;
         let year = p.year.unwrap_or_else(|| self.periods().calendar_year());
+        let basis = parse_basis(p.basis.as_deref())?;
         let settings = self.settings();
         let store = self.lock()?;
         let ledger = store.ledger();
         let id = resolve_party(&store, &p.party)?;
         let party = ledger.get_party(id).expect("resolved");
-        let act = party_activity(&store, party, &settings, year)?;
+        let act = party_activity(&store, party, &settings, year, basis)?;
         let in_year = |d: NaiveDate| chrono::Datelike::year(&d) == year;
         let mut entries: Vec<PartyEntryOut> = act
             .entries
@@ -7704,6 +7757,7 @@ impl BooksServer {
             }
         }
         let totals = PartyTotalsOut {
+            basis: basis.key().to_string(),
             paid: money(act.paid),
             received: money(act.received),
             invoiced: money(checked_sum(
@@ -7734,7 +7788,7 @@ impl BooksServer {
             net_pay: money(net),
         };
         Ok(Json(PartyDetailOut {
-            party: party_out(party),
+            party: party_out(ledger, party),
             year,
             totals,
             entries,
@@ -7769,7 +7823,7 @@ impl BooksServer {
     #[tool(
         name = "books.set_entry_party",
         title = "Tag an entry's parties",
-        description = "Tag an entry (draft or posted) with the party it was with (id or name), or pass party null (or omit it) to clear the tag. A party with a vendor record also tags the entry's vendor, so a payment to a contractor or landlord counts in books.vendor_1099; a party without one, or clearing, clears the vendor tag. For an entry with several counterparties pass parties instead: [{party, amount?|percent?}], each share an exact amount (cents), a percent (summing to 100; leftover cents to the first party), or neither (derived: a sole party gets all; members named together get what their capital or distributions lines say, else their [[company.members]] share; once the entry is posted, a derived split among several parties is recorded as the exact amounts it resolves to, so a later change to [[company.members]] never re-splits posted history). Name both members on a joint member transaction (a reimbursement on 2100, a joint contribution) and let the shares derive; give amounts when a split is uneven. Refused: a party twice, mixed kinds of share, two parties with vendor records, and, once the entry has balanced lines, shares that don't add up to what it moved. Metadata only: amounts never change. An entry and its reversal carry the same parties: tagging either tags both, so each party's part nets to zero. Journaled as entry.party_set (one party) or entry.parties_set (parties). Returns the entry (as books.get_entry), each party's share resolved.",
+        description = "Tag an entry (draft or posted) with the party it was with (id or name), or pass party null (or omit it) to clear the tag. A party with a vendor record also tags the entry's vendor, so a payment to a contractor or landlord counts in books.vendor_1099; a party without one, or clearing, clears the vendor tag. For an entry with several counterparties pass parties instead: [{party, amount?|percent?}], each share an exact amount (cents), a percent (summing to 100; leftover cents to the first party), or neither (derived: a sole party gets all; members named together get what their capital or distributions lines say, else their [[company.members]] share; once the entry is posted, a derived split among several parties is recorded as the exact amounts it resolves to, so a later change to [[company.members]] never re-splits posted history). Name both members on a joint member transaction (a reimbursement on 2100, a joint contribution) and let the shares derive; give amounts when a split is uneven. Refused: a party twice, mixed kinds of share, two parties with vendor records, and, once the entry has balanced lines, shares that don't add up to what it moved. Metadata only: amounts never change. An entry and its reversal carry the same parties: tagging either tags both, so each party's part nets to zero. Journaled as entry.party_set (one party) or entry.parties_set (parties). Returns the entry (as books.get_entry), each party's share resolved, with its direction and what of it was money or property in kind.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,

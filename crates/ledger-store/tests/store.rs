@@ -1940,7 +1940,7 @@ fn every_figure_of(l: &ledger_core::Ledger) -> (usize, usize) {
             .map(|_| ()),
         );
     }
-    let money = ledger_core::parties::money_accounts(l, &cash);
+    let money = ledger_core::parties::money_accounts(l, &cash, &[]);
     let party_members: Vec<ledger_core::PartyMember> = l
         .parties()
         .map(|p| ledger_core::PartyMember {
@@ -1953,14 +1953,15 @@ fn every_figure_of(l: &ledger_core::Ledger) -> (usize, usize) {
     for id in 1..l.next_entry_id() {
         let Some(e) = l.get_entry(id) else { continue };
         tally(ledger_core::parties::entry_flow(e, &money).map(|_| ()));
-        tally(ledger_core::shares::share_target(e, &money).map(|_| ()));
-        let _ = ledger_core::shares::resolve(e, l.entry_parties(id), &money, &party_members);
+        tally(ledger_core::shares::target(l, id, l.entry_parties(id), &money).map(|_| ()));
+        tally(ledger_core::parties::flow(l, id, l.entry_parties(id), &money).map(|_| ()));
+        let _ = ledger_core::shares::resolve(l, id, l.entry_parties(id), &money, &party_members);
         let _ = e.validate(l.chart());
     }
     for p in l.parties() {
         for (start, end) in spans {
             let _ =
-                ledger_core::parties::activity_with(l, p.id, (start, end), &cash, &party_members);
+                ledger_core::parties::activity_with(l, p.id, (start, end), &money, &party_members);
         }
     }
     for inv in l.invoices() {

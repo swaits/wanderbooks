@@ -20,3 +20,6 @@ node = "26"
 # Mutation testing and fuzzing (docs/oracle.md).
 "cargo:cargo-mutants" = "27.1.0"
 "cargo:cargo-fuzz" = "0.13.2"
+# A compile cache shared by every jj workspace's target dir: point
+# cargo's build.rustc-wrapper at it (~/.cargo/config.toml).
+sccache = "0.18.0"

@@ -117,10 +117,21 @@ pub fn bold(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name(BOLD.into()))
 }
 
-/// Install fonts: Inter with tabular figures frozen in, so every number in
-/// the app lines up digit for digit. Phosphor icons ride along as a
-/// fallback in every family.
+/// Install fonts ([`font_definitions`]).
 pub fn install_fonts(ctx: &Context) {
+    ctx.set_fonts(font_definitions());
+}
+
+/// The viewer's fonts: Inter with tabular figures frozen in, so every
+/// number in the app lines up digit for digit; egui's own fonts and
+/// Phosphor's icons as fallbacks in every family; then the PDFs' Noto
+/// fallbacks (`ledger_import::fonts::FALLBACKS`: Chinese, Japanese,
+/// Korean, Arabic, Hebrew, Thai, Devanagari), the very bytes the PDFs use,
+/// so a name in any of those scripts shows as written, never as empty
+/// boxes, and no font is in the binary twice. (egui shapes each word,
+/// joining Arabic and setting it right to left, but doesn't reorder the
+/// words of a right-to-left phrase: they read left to right.)
+pub fn font_definitions() -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
     let add = |fonts: &mut FontDefinitions, name: &str, bytes: &'static [u8]| {
         fonts
@@ -166,7 +177,13 @@ pub fn install_fonts(ctx: &Context) {
     fonts
         .families
         .insert(FontFamily::Name(BOLD.into()), family("InterTab-Bold"));
-    ctx.set_fonts(fonts);
+    for (name, bytes) in &ledger_import::fonts::FALLBACKS {
+        add(&mut fonts, name, bytes);
+        for list in fonts.families.values_mut() {
+            list.push((*name).to_owned());
+        }
+    }
+    fonts
 }
 
 /// Apply the viewer's own style for light or dark mode (tests).
@@ -254,4 +271,67 @@ pub fn apply_scheme(ctx: &Context, scheme: &crate::schemes::Scheme) {
         style.spacing.scroll.floating = true;
         style.interaction.selectable_labels = false;
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// font_definitions: every family ends with the PDFs' Noto fallbacks,
+    /// in their order, after Inter, egui's fonts and the icons, each font
+    /// the very bytes ledger-import bundles (the same pointer: one copy in
+    /// the binary); and a name in each script shows with real glyphs in
+    /// every family the viewer uses.
+    #[test]
+    fn every_family_falls_back_to_the_noto_fonts() {
+        let defs = font_definitions();
+        let names: Vec<String> = ledger_import::fonts::FALLBACKS
+            .iter()
+            .map(|(n, _)| (*n).to_owned())
+            .collect();
+        for family in [
+            FontFamily::Proportional,
+            FontFamily::Monospace,
+            FontFamily::Name(SEMIBOLD.into()),
+            FontFamily::Name(BOLD.into()),
+        ] {
+            let list = &defs.families[&family];
+            assert!(list.len() > names.len(), "{family:?}: {list:?}");
+            assert_eq!(list[list.len() - names.len()..], names[..], "{family:?}");
+        }
+        assert!(defs.families[&FontFamily::Proportional][0] == "InterTab-Regular");
+        for (name, bytes) in &ledger_import::fonts::FALLBACKS {
+            let data: &[u8] = &defs.font_data[*name].font;
+            assert!(
+                std::ptr::eq(data, *bytes),
+                "{name} is ledger-import's own bytes, not a copy"
+            );
+        }
+        let ctx = Context::default();
+        ctx.set_fonts(defs);
+        let mut out = ctx.run_ui(egui::RawInput::default(), |_| {});
+        out.textures_delta.clear();
+        for text in [
+            "北京 東京 서울",
+            "مكتب الرياض",
+            "שלום עולם",
+            "สวัสดีครับ",
+            "नमस्ते",
+        ] {
+            for id in [
+                regular(14.0),
+                semibold(14.0),
+                bold(14.0),
+                FontId::monospace(12.5),
+            ] {
+                // Letters only: egui says a character the replacement
+                // glyph's own font draws is missing, the space in Hack.
+                let missing: Vec<char> = text
+                    .chars()
+                    .filter(|c| !c.is_whitespace() && !ctx.fonts_mut(|f| f.has_glyph(&id, *c)))
+                    .collect();
+                assert!(missing.is_empty(), "{text} in {id:?}: {missing:?}");
+            }
+        }
+    }
 }

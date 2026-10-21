@@ -4,10 +4,14 @@
 //! rows to `templates/statement.typ` as JSON data (`sys.inputs.data`) and
 //! renders the PDF. Amounts arrive already split by
 //! [`crate::report::amount_parts`] — Typst never does arithmetic on money,
-//! and labels are data, never markup. The font (Inter, SIL OFL 1.1; see
-//! `fonts/Inter-LICENSE.txt`) is bundled, so output doesn't depend on
-//! what's installed, and it is deterministic: the same statement and
-//! report metadata render to the same bytes.
+//! and labels are data, never markup. The fonts are bundled, so output
+//! doesn't depend on what's installed, and it is deterministic: the same
+//! statement and report metadata render to the same bytes. Inter sets
+//! the text; the Noto fallbacks ([`crate::fonts`]) draw what Inter can't:
+//! Chinese, Japanese, Korean, Arabic, Hebrew, Thai and Devanagari, so a
+//! vendor or an account named in them prints as written, right-to-left
+//! where it is written so, never as empty boxes. (Emoji have no font
+//! here: an emoji prints as an empty box.)
 
 use crate::report::{ReportMeta, RowKind, Statement, amount_parts};
 use std::sync::OnceLock;
@@ -42,11 +46,6 @@ pub enum PdfError {
 }
 
 static TEMPLATE: &str = include_str!("../templates/statement.typ");
-pub(crate) static INTER: [&[u8]; 3] = [
-    include_bytes!("../fonts/Inter-Regular.ttf"),
-    include_bytes!("../fonts/Inter-SemiBold.ttf"),
-    include_bytes!("../fonts/Inter-Bold.ttf"),
-];
 
 /// The engine, built once: parsing the bundled fonts is the expensive part.
 fn engine() -> &'static TypstEngine<TypstTemplateMainFile> {
@@ -54,7 +53,7 @@ fn engine() -> &'static TypstEngine<TypstTemplateMainFile> {
     ENGINE.get_or_init(|| {
         TypstEngine::builder()
             .main_file(TEMPLATE)
-            .fonts(INTER)
+            .fonts(crate::fonts::typst_fonts())
             .build()
     })
 }
@@ -124,6 +123,10 @@ fn typeset(st: &Statement, meta: &ReportMeta) -> Result<PagedDocument, PdfError>
 ///      ("#panic()", "*", "$", "[") prints as text and NEVER runs.
 ///   3. Every row reaches the page: template_data carries each row's label,
 ///      kind, and amounts split by amount_parts, in order.
+///   4. Every character prints as itself when a bundled font has it:
+///      Chinese, Japanese, Korean, Arabic, Hebrew, Thai and Devanagari
+///      from the Noto fallbacks (crate::fonts), Arabic and Hebrew right to
+///      left, never an empty box.
 /// ```
 pub fn statement_pdf(st: &Statement, meta: &ReportMeta) -> Result<Vec<u8>, PdfError> {
     let doc = typeset(st, meta)?;
@@ -220,5 +223,113 @@ mod tests {
         let doc = typeset(&st, &meta()).unwrap();
         assert!(doc.pages().len() > 1, "200 rows should span pages");
         assert!(statement_pdf(&st, &meta()).unwrap().starts_with(b"%PDF"));
+    }
+
+    /// Each text run on the pages: its text, its font's family, and its
+    /// glyphs' ids in that font (0 is the font's empty box, "notdef").
+    fn runs(doc: &PagedDocument) -> Vec<(String, String, Vec<u16>)> {
+        use typst::layout::{Frame, FrameItem};
+        fn walk(frame: &Frame, out: &mut Vec<(String, String, Vec<u16>)>) {
+            for (_, item) in frame.items() {
+                match item {
+                    FrameItem::Group(g) => walk(&g.frame, out),
+                    FrameItem::Text(t) => out.push((
+                        t.text.to_string(),
+                        t.font.font().info().family.clone(),
+                        t.glyphs.iter().map(|g| g.id).collect(),
+                    )),
+                    _ => {}
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for p in doc.pages() {
+            walk(&p.frame, &mut out);
+        }
+        out
+    }
+
+    /// INVARIANT 4: a company, an account and a vendor named in Chinese,
+    /// Japanese and Korean print in the CJK fallback, every glyph a real
+    /// one; the rest stays Inter. (With Inter alone, every one of these
+    /// was glyph 0, an empty box.)
+    #[test]
+    fn chinese_japanese_and_korean_print_as_written() {
+        let mut m = meta();
+        m.company = "北京 Trading 株式会社".to_string();
+        let mut st = profit_and_loss(&pl());
+        st.rows.push(Row {
+            kind: RowKind::Line,
+            label: "6100 東京 서울 ありがとう ＡＢＣ".into(),
+            amounts: vec![Some(Decimal::ONE)],
+            currency: false,
+            rule_above: false,
+        });
+        let runs = runs(&typeset(&st, &m).unwrap());
+        let mut seen = String::new();
+        for (text, family, glyphs) in &runs {
+            assert!(
+                !glyphs.contains(&0),
+                "{text:?} has an empty box in {family}"
+            );
+            let cjk = text.chars().any(|c| {
+                matches!(u32::from(c), 0x1100..=0x11FF | 0x3000..=0x9FFF | 0xAC00..=0xD7AF | 0xFF00..=0xFFEF)
+            });
+            let ascii = text.is_ascii();
+            if cjk {
+                assert_eq!(family, "Noto Sans CJK SC", "{text:?}");
+                seen.push_str(text);
+            } else if ascii {
+                assert_eq!(family, "Inter", "{text:?}");
+            }
+        }
+        for want in ["北京", "株式会社", "東京", "서울", "ありがとう", "ＡＢＣ"] {
+            assert!(seen.contains(want), "{want} printed: {runs:?}");
+        }
+    }
+
+    /// INVARIANT 4 for the other bundled scripts: Arabic, Hebrew, Thai and
+    /// Devanagari each print in their own Noto fallback, every glyph a
+    /// real one (the right-to-left reading is checked on the PDF itself,
+    /// `tests/spec_import.rs` `pdf_prints_every_bundled_script_as_written`).
+    #[test]
+    fn arabic_hebrew_thai_and_devanagari_print_as_written() {
+        let mut m = meta();
+        m.company = "شركة Example".to_string();
+        let mut st = profit_and_loss(&pl());
+        for label in ["مكتب", "שלום", "สวัสดี", "नमस्ते"] {
+            st.rows.push(Row {
+                kind: RowKind::Line,
+                label: label.into(),
+                amounts: vec![Some(Decimal::ONE)],
+                currency: false,
+                rule_above: false,
+            });
+        }
+        let runs = runs(&typeset(&st, &m).unwrap());
+        let family_of = |c: char| match u32::from(c) {
+            0x0600..=0x06FF => Some("Noto Sans Arabic UI"),
+            0x0590..=0x05FF => Some("Noto Sans Hebrew"),
+            0x0E00..=0x0E7F => Some("Noto Sans Thai"),
+            0x0900..=0x097F => Some("Noto Sans Devanagari"),
+            _ => None,
+        };
+        for (text, family, glyphs) in &runs {
+            assert!(
+                !glyphs.contains(&0),
+                "{text:?} has an empty box in {family}"
+            );
+            if let Some(want) = text.chars().find_map(family_of) {
+                assert_eq!(family, want, "{text:?}");
+            }
+        }
+        // Every letter printed in its script's font.
+        for c in "شركةمكتبשלוםสวัสดีनमस्ते".chars() {
+            let want = family_of(c).unwrap();
+            assert!(
+                runs.iter().any(|(t, f, _)| f == want && t.contains(c)),
+                "{c} printed in {want}: {runs:?}"
+            );
+        }
     }
 }

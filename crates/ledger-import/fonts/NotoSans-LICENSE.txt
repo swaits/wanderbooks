@@ -1,0 +1,144 @@
+Noto Sans Arabic UI, Noto Sans Hebrew, Noto Sans Thai and Noto Sans
+Devanagari, Regular (the PDFs' and the viewer's fallbacks for Arabic,
+Hebrew, Thai and Devanagari text, which Inter lacks), unmodified:
+
+  NotoSansArabicUI-Regular.ttf    Version 2.011   190,944 bytes
+    Copyright 2022 The Noto Project Authors (https://github.com/notofonts/arabic)
+    SHA-256 f4fe1866a64cba1e8b8d08a67cd29070f919edf778ca5de983c1f2a690fc953b
+  NotoSansHebrew-Regular.ttf      Version 3.001    16,836 bytes
+    Copyright 2024 The Noto Project Authors (https://github.com/notofonts/hebrew)
+    SHA-256 04272f5600d0ec816d31d0df73b23aa8d3501ea359ebe820da31c11ffcf00853
+  NotoSansThai-Regular.ttf        Version 2.002    20,960 bytes
+    Copyright 2022 The Noto Project Authors (https://github.com/notofonts/thai)
+    SHA-256 d4303fe9c63ebb72759ca8b6d2040c8ae81689f7d08d7b91c656154382b49313
+  NotoSansDevanagari-Regular.ttf  Version 2.007   184,228 bytes
+    Copyright 2022 The Noto Project Authors (https://github.com/notofonts/devanagari)
+    SHA-256 9c7d935139ea6a1e6ad9dbac4f6d27ece1e04bca8123c8888d00a0f9df4724cd
+
+Noto is a trademark of Google LLC. (These fonts name no Reserved Font
+Name.)
+
+Each is the static, unhinted Regular weight as the Noto project
+publishes it (https://github.com/notofonts/notofonts.github.io), at the
+last commit that changed it, retrieved 2026-10-20:
+
+  fonts/NotoSansArabicUI/unhinted/ttf/NotoSansArabicUI-Regular.ttf
+    commit 1ed0aaad710107ac0d6663ece26a4bb82ce6cff8
+  fonts/NotoSansHebrew/unhinted/ttf/NotoSansHebrew-Regular.ttf
+    commit 40ae54ff25c9e0ad997f62fde48297dd9dfe51c8
+  fonts/NotoSansThai/unhinted/ttf/NotoSansThai-Regular.ttf
+    commit 6da9d59fd18f429cb8dbfa87e87669204f77ddab
+  fonts/NotoSansDevanagari/unhinted/ttf/NotoSansDevanagari-Regular.ttf
+    commit 92d2ea744479d3379927f1fb5f8b0945dd0349b7
+
+  https://raw.githubusercontent.com/notofonts/notofonts.github.io/<commit>/<path>
+
+Arabic in its UI form, not Noto Sans Arabic itself (2.013): the same
+design and project, but 2.013 draws a letter's dots as marks of their
+own, which the PDFs' typesetter (Typst 0.15) writes as text runs of
+their own, each carrying the letter again, so a PDF's text (copied,
+searched, read aloud) would say "شش" for "ش" and "سلام" as "شلام"; the
+UI form, whose letters keep their dots and whose height fits a Latin
+line, reads back as written.
+
+Unhinted, not hinted: the outlines are the same, the hinting tables
+(about 180 KB across the four) serve only Windows' old rasterizer, and
+neither the PDFs nor the viewer use them. Kept whole: Arabic and
+Devanagari need their shaping tables to join and order their letters.
+
+Emoji are not bundled: a colour emoji font is about 10 MB, so an emoji
+in a name prints as an empty box in the PDFs (the viewer draws egui's
+own small emoji set).
+
+This Font Software is licensed under the SIL Open Font License,
+Version 1.1.
+
+This license is copied below, and is also available with a FAQ at:
+https://openfontlicense.org
+
+-----------------------------------------------------------
+SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007
+-----------------------------------------------------------
+
+PREAMBLE
+The goals of the Open Font License (OFL) are to stimulate worldwide
+development of collaborative font projects, to support the font
+creation efforts of academic and linguistic communities, and to
+provide a free and open framework in which fonts may be shared and
+improved in partnership with others.
+
+The OFL allows the licensed fonts to be used, studied, modified and
+redistributed freely as long as they are not sold by themselves. The
+fonts, including any derivative works, can be bundled, embedded,
+redistributed and/or sold with any software provided that any reserved
+names are not used by derivative works. The fonts and derivatives,
+however, cannot be released under any other type of license. The
+requirement for fonts to remain under this license does not apply to
+any document created using the fonts or their derivatives.
+
+DEFINITIONS
+"Font Software" refers to the set of files released by the Copyright
+Holder(s) under this license and clearly marked as such. This may
+include source files, build scripts and documentation.
+
+"Reserved Font Name" refers to any names specified as such after the
+copyright statement(s).
+
+"Original Version" refers to the collection of Font Software
+components as distributed by the Copyright Holder(s).
+
+"Modified Version" refers to any derivative made by adding to,
+deleting, or substituting -- in part or in whole -- any of the
+components of the Original Version, by changing formats or by porting
+the Font Software to a new environment.
+
+"Author" refers to any designer, engineer, programmer, technical
+writer or other person who contributed to the Font Software.
+
+PERMISSION & CONDITIONS
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of the Font Software, to use, study, copy, merge, embed,
+modify, redistribute, and sell modified and unmodified copies of the
+Font Software, subject to the following conditions:
+
+1) Neither the Font Software nor any of its individual components, in
+Original or Modified Versions, may be sold by itself.
+
+2) Original or Modified Versions of the Font Software may be bundled,
+redistributed and/or sold with any software, provided that each copy
+contains the above copyright notice and this license. These can be
+included either as stand-alone text files, human-readable headers or
+in the appropriate machine-readable metadata fields within text or
+binary files as long as those fields can be easily viewed by the user.
+
+3) No Modified Version of the Font Software may use the Reserved Font
+Name(s) unless explicit written permission is granted by the
+corresponding Copyright Holder. This restriction only applies to the
+primary font name as presented to the users.
+
+4) The name(s) of the Copyright Holder(s) or the Author(s) of the Font
+Software shall not be used to promote, endorse or advertise any
+Modified Version, except to acknowledge the contribution(s) of the
+Copyright Holder(s) and the Author(s) or with their explicit written
+permission.
+
+5) The Font Software, modified or unmodified, in part or in whole,
+must be distributed entirely under this license, and must not be
+distributed under any other license. The requirement for fonts to
+remain under this license does not apply to any document created using
+the Font Software.
+
+TERMINATION
+This license becomes null and void if any of the above conditions are
+not met.
+
+DISCLAIMER
+THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO ANY WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT
+OF COPYRIGHT, PATENT, TRADEMARK, OR OTHER RIGHT. IN NO EVENT SHALL THE
+COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL
+DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
+OTHER DEALINGS IN THE FONT SOFTWARE.

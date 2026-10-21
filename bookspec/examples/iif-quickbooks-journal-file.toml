@@ -1,0 +1,183 @@
+# The journal file QuickBooks Desktop imports (IIF), as of a day. A format,
+# not accounting: P13's appendix of interchange formats.
+#
+# wanderbooks: P3 defects 7 and 21, decision D-36 and the P3 review (the
+# file numbered transactions by their place in it, held entries dated after
+# the package's as_of, wrote '?' for every character past ASCII, and knew
+# nothing of QuickBooks' length limits, its double quote, or its rule that
+# a subaccount has its parent's type, and could declare a subaccount
+# before its parent); rules.md B-34; regression tests
+# `iif_docnum_is_the_entry_id`,
+# `iif_writes_plain_ascii_and_lists_every_change`,
+# `iif_fits_quickbooks_desktop_limits`,
+# `iif_a_subaccount_of_another_type_stands_at_the_top_level`,
+# `iif_declares_each_parent_before_its_subaccounts` (ledger-import
+# tests/spec_import.rs) and `as_of_package_iif_stops_at_as_of`
+# (ledger-package tests/package.rs).
+#
+# Setup beyond the accounts: `cash_accounts` are the bank accounts (BANK);
+# an account's QuickBooks type otherwise follows its type (asset OCASSET,
+# liability OCLIAB, equity EQUITY, revenue INC, expense EXP); an account's
+# `parent` is its parent's code. Each event is a posted entry, its id one
+# more than its index. Expected values: iif_lines gives the file's lines
+# in order, each a string of fields joined by tabs ("\t"), every line
+# ending CR LF in the file; iif_changes gives each text written
+# differently from the books, in file order (the accounts as declared:
+# by code, each after its parent; then the entries), as [what, books'
+# text, file's text], where what is "name <code>", "number" (left out of
+# ACCNUM when the file's text is empty), "top level <code>" (written
+# apart from its parent, the books' text: the parent's code) or
+# "memo <entry id>".
+
+id = "iif-quickbooks-journal-file"
+appendix = "formats"
+title = "A QuickBooks Desktop journal file as of a day"
+rule = "An IIF journal file as of a day D MUST declare every account first (NAME, ACCNTTYPE, ACCNUM), then hold one GENERAL JOURNAL transaction per posted entry dated on or before D, period closes excepted, in the order posted: a TRNS line and SPL lines, debits positive and credits negative, dated M/D/YYYY, each numbered (DOCNUM) with the entry's id; then ENDTRNS. It MUST be ASCII text, every line ending CR LF, no field holding a tab, a line break or a double quote; an account name level MUST be at most 31 characters and no two NAMEs alike, an account number at most 7 characters and no two alike (else left out), a memo at most 4,095 characters; each parent MUST be declared before its subaccounts, and a subaccount whose QuickBooks type differs from its parent's MUST be written at the top level. Each text written differently from the books MUST be reported."
+status = "AUTHORITY"
+sources = [
+  "Intuit, IIF Overview: import kit, sample files, and headers: IIF files are ASCII text, tab-separated; an account not already in the company file is created as a new bank account (docs/spec/sources/intuit-iif.md)",
+  "Intuit, IIF Import Kit, IIF Header Help !TRNS, !SPL, !ACCNT: TRNS and SPL lines then ENDTRNS; \"Debit amounts are always positive, credit amounts are always negative\"; DOCNUM is the transaction's number; a subaccount's NAME its parents' names first, joined by colons (docs/spec/sources/intuit-iif.md)",
+  "Intuit, IIF Import Kit, 2007 General Journal Entry example file: GENERAL JOURNAL, M/D/YYYY, every line ending CR LF (docs/spec/sources/intuit-iif.md)",
+  "Intuit, Character limitations for fields in QuickBooks (US, updated 8/3/2026): Account Name 31, Account Numbers 7, Memo 4,095 (docs/spec/sources/intuit-iif.md)",
+  "Intuit, Add, edit, or delete accounts in QuickBooks Desktop (updated 8/4/2026): \"The parent and subaccount must be the same account type.\" (docs/spec/sources/intuit-iif.md)",
+  "Reckon, IIF import changes a double quote to a single one by design; J. Clark (2003): QuickBooks uses double quotes as text delimiters (docs/spec/sources/intuit-iif.md; not Intuit)",
+]
+tags = ["iif", "quickbooks", "as-of", "format", "transliteration"]
+
+[setup]
+currency = "USD"
+fiscal_year_start = "01-01"
+basis = "cash"
+rounding = "half_away_from_zero"
+cash_accounts = ["1000"]
+
+[[setup.accounts]]
+code = "1090"
+name = "Bank accounts"
+type = "asset"
+
+# A bank account (BANK) under a header that is no bank (OCASSET): written
+# at the top level.
+[[setup.accounts]]
+code = "1000"
+name = "Checking"
+type = "asset"
+parent = "1090"
+
+[[setup.accounts]]
+code = "12345678"
+name = "Suspense"
+type = "expense"
+
+[[setup.accounts]]
+code = "3000"
+name = "Owner capital"
+type = "equity"
+
+[[setup.accounts]]
+code = "4000"
+name = "Sales"
+type = "revenue"
+
+[[setup.accounts]]
+code = "6000"
+name = "Café meals"
+type = "expense"
+
+# Coded before its parent: declared after it.
+[[setup.accounts]]
+code = "5900"
+name = "Snacks"
+type = "expense"
+parent = "6000"
+
+[[setup.accounts]]
+code = "6100"
+name = "Professional services and consulting fees"
+type = "expense"
+
+# 0: entry 1.
+[[events]]
+date = "2026-01-02"
+description = "Owner contribution"
+lines = [
+  { account = "1000", side = "debit", amount = "5000.00" },
+  { account = "3000", side = "credit", amount = "5000.00" },
+]
+
+# 1: entry 2. An em dash and double quotes.
+[[events]]
+date = "2026-01-15"
+description = "Lunch — \"team\""
+lines = [
+  { account = "6000", side = "debit", amount = "42.50" },
+  { account = "1000", side = "credit", amount = "42.50" },
+]
+
+# 2: entry 3. An account named past 31 characters.
+[[events]]
+date = "2026-01-20"
+description = "Consulting"
+lines = [
+  { account = "6100", side = "debit", amount = "300.00" },
+  { account = "1000", side = "credit", amount = "300.00" },
+]
+
+# 3: entry 4, dated the day itself: in.
+[[events]]
+date = "2026-02-01"
+description = "Sale"
+lines = [
+  { account = "1000", side = "debit", amount = "1000.00" },
+  { account = "4000", side = "credit", amount = "1000.00" },
+]
+
+# 4: entry 5, the day after: out.
+[[events]]
+date = "2026-02-02"
+description = "Second sale"
+lines = [
+  { account = "1000", side = "debit", amount = "250.00" },
+  { account = "4000", side = "credit", amount = "250.00" },
+]
+
+[[expect]]
+query = "iif_lines"
+as_of = "2026-02-01"
+values = [
+  "!ACCNT\tNAME\tACCNTTYPE\tACCNUM",
+  "ACCNT\tChecking\tBANK\t1000",
+  "ACCNT\tBank accounts\tOCASSET\t1090",
+  "ACCNT\tSuspense\tEXP\t",
+  "ACCNT\tOwner capital\tEQUITY\t3000",
+  "ACCNT\tSales\tINC\t4000",
+  "ACCNT\tCafe meals\tEXP\t6000",
+  "ACCNT\tCafe meals:Snacks\tEXP\t5900",
+  "ACCNT\tProfessional services and consu\tEXP\t6100",
+  "!TRNS\tTRNSID\tTRNSTYPE\tDATE\tACCNT\tCLASS\tAMOUNT\tDOCNUM\tMEMO",
+  "!SPL\tSPLID\tTRNSTYPE\tDATE\tACCNT\tCLASS\tAMOUNT\tDOCNUM\tMEMO",
+  "!ENDTRNS",
+  "TRNS\t\tGENERAL JOURNAL\t1/2/2026\tChecking\t\t5000.00\t1\tOwner contribution",
+  "SPL\t\tGENERAL JOURNAL\t1/2/2026\tOwner capital\t\t-5000.00\t1\tOwner contribution",
+  "ENDTRNS",
+  "TRNS\t\tGENERAL JOURNAL\t1/15/2026\tCafe meals\t\t42.50\t2\tLunch -- 'team'",
+  "SPL\t\tGENERAL JOURNAL\t1/15/2026\tChecking\t\t-42.50\t2\tLunch -- 'team'",
+  "ENDTRNS",
+  "TRNS\t\tGENERAL JOURNAL\t1/20/2026\tProfessional services and consu\t\t300.00\t3\tConsulting",
+  "SPL\t\tGENERAL JOURNAL\t1/20/2026\tChecking\t\t-300.00\t3\tConsulting",
+  "ENDTRNS",
+  "TRNS\t\tGENERAL JOURNAL\t2/1/2026\tChecking\t\t1000.00\t4\tSale",
+  "SPL\t\tGENERAL JOURNAL\t2/1/2026\tSales\t\t-1000.00\t4\tSale",
+  "ENDTRNS",
+]
+
+[[expect]]
+query = "iif_changes"
+as_of = "2026-02-01"
+values = [
+  ["top level 1000", "1090", ""],
+  ["number", "12345678", ""],
+  ["name 6000", "Café meals", "Cafe meals"],
+  ["name 6100", "Professional services and consulting fees", "Professional services and consu"],
+  ["memo 2", "Lunch — \"team\"", "Lunch -- 'team'"],
+]

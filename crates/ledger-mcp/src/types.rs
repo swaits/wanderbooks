@@ -1682,7 +1682,8 @@ pub struct StaleRule {
 pub struct ExportParams {
     /// "csv", "json", "xlsx", "pdf", or "iif". XLSX and PDF are
     /// base64-encoded; PDF covers profit_and_loss, balance_sheet, and
-    /// cash_flow; IIF is only valid with report "journal".
+    /// cash_flow; IIF (plain ASCII text) is only valid with report
+    /// "general_journal" (alias "journal").
     pub format: String,
     /// "journal", "trial_balance", "profit_and_loss", "balance_sheet", or
     /// "cash_flow".
@@ -1691,10 +1692,13 @@ pub struct ExportParams {
     pub start: Option<String>,
     /// Period end for profit_and_loss and cash_flow, YYYY-MM-DD.
     pub end: Option<String>,
-    /// As-of date for balance_sheet, YYYY-MM-DD.
+    /// As-of date for balance_sheet, trial_balance, fixed_asset_register,
+    /// and iif (every posted entry dated on or before it), YYYY-MM-DD.
+    /// Defaults to today.
     pub as_of: Option<String>,
-    /// Cash account codes for cash_flow. Defaults to `[books]
-    /// cash_accounts`; one or the other is required for that report.
+    /// Cash account codes for cash_flow, and for iif its BANK accounts.
+    /// Defaults to `[books] cash_accounts`; one or the other is required
+    /// for cash_flow.
     #[serde(default)]
     pub cash_accounts: Vec<String>,
     /// Liability account codes treated as financing for cash_flow.
@@ -1721,6 +1725,16 @@ pub struct ExportOut {
     /// "base64" for XLSX and PDF, otherwise absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content_encoding: Option<String>,
+    /// IIF: what the file writes differently from the books to fit
+    /// QuickBooks Desktop (plain ASCII; account names at most 31
+    /// characters a level, numbers 7, memos 4,095; no two names or numbers
+    /// alike; a subaccount of another type than its parent's at the top
+    /// level): each account's name, number and place a line, and each thing written
+    /// differently in the memos a line naming the entries it is in
+    /// (`"—" is written "--" in the memos of entries 3, 5, 9`). No full
+    /// TIN. Tell the human. Absent when there are none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2668,6 +2682,11 @@ pub struct ExportCpaPackageOut {
     /// with books.set_tin or books.set_w9.
     #[serde(default)]
     pub tin_gaps: Vec<String>,
+    /// What general-journal.iif writes differently from the books, as
+    /// `books.export` iif's `warnings` says it (the memos grouped); the
+    /// README lists them too. Absent when there are none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
     /// What to tell the human.
     pub note: String,
 }

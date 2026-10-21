@@ -28,7 +28,7 @@
 #let firm = 0.6pt + ink
 
 #set document(title: d.company + " — " + d.title, author: d.company)
-#set text(font: "Inter", size: if dense { 7pt } else { 9pt }, fill: ink, number-width: "tabular")
+#set text(font: ("Inter", "Noto Sans CJK SC", "Noto Sans Arabic UI", "Noto Sans Hebrew", "Noto Sans Thai", "Noto Sans Devanagari"), size: if dense { 7pt } else { 9pt }, fill: ink, number-width: "tabular")
 #set page(
   paper: "us-letter",
   flipped: wide,

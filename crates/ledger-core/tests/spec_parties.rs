@@ -177,7 +177,7 @@ fn has_full_tin_truth_table() {
         ("291\u{2013}12\u{2013}2846", true), // en dashes
         ("291\u{a0}12\u{a0}2846", true),     // no-break spaces
         ("12    3456789", false),            // four separators break the run: 2 + 7
-        ("571, 93, 2846", false),            // a comma is not a separator
+        ("291, 12, 2846", false),            // a comma is not a separator
         ("12\t3456789", false),              // a tab is not a space
         ("12345678", false),                 // eight digits
         ("123-45-678", false),
@@ -239,6 +239,145 @@ fn has_full_tin_ten_digits_hold_nine() {
 fn has_full_tin_unicode_digits() {
     assert!(has_full_tin("１２３４５６７８９"));
     assert!(has_full_tin("١٢٣٤٥٦٧٨٩")); // Arabic-Indic digits
+}
+
+/// Oracle: `has_full_tin` doc (P3 review round 2): past ASCII, every form
+/// of the five separators Unicode has separates (every Zs space, every
+/// Dash character, the compatibility forms of the dot, slash and
+/// underscore; `docs/spec/sources/unicode-tin-text.md`, Unicode 17.0),
+/// and invisible characters (Default_Ignorable_Code_Point) don't count
+/// toward the gap. A TIN typed in fullwidth forms, Arabic-Indic digits,
+/// with an en dash, a non-breaking hyphen, a Hebrew maqaf, any space, or
+/// with right-to-left marks around its hyphens is still a full TIN; line
+/// breaks, commas and a fourth visible separator still end a run.
+/// (Before, "１２３－４５－６７８９" passed: the fullwidth hyphen-minus wasn't
+/// a separator, nor the ideographic or thin space.)
+#[test]
+fn has_full_tin_reads_every_script_and_separator() {
+    let tins = [
+        // Fullwidth digits and hyphen-minus.
+        "\u{FF11}\u{FF12}\u{FF13}\u{FF0D}\u{FF14}\u{FF15}\u{FF0D}\u{FF16}\u{FF17}\u{FF18}\u{FF19}",
+        "291\u{FF0D}12\u{FF0D}2846", // fullwidth hyphen-minus
+        "291\u{FE63}12\u{FE63}2846", // small hyphen-minus
+        // Arabic-Indic, Extended Arabic-Indic, Devanagari (en dashes).
+        "\u{661}\u{662}\u{663}-\u{664}\u{665}-\u{666}\u{667}\u{668}\u{669}",
+        "\u{6F1}\u{6F2}\u{6F3}\u{6F4}\u{6F5}\u{6F6}\u{6F7}\u{6F8}\u{6F9}",
+        "\u{967}\u{968}\u{969}\u{2013}\u{96A}\u{96B}\u{2013}\u{96C}\u{96D}\u{96E}\u{96F}",
+        "291\u{2013}12\u{2013}2846",     // en dash
+        "291\u{2011}12\u{2011}2846",     // non-breaking hyphen
+        "291\u{2012}12\u{2012}2846",     // figure dash
+        "291\u{2015}12\u{2015}2846",     // horizontal bar
+        "291\u{5BE}12\u{5BE}2846",       // Hebrew maqaf
+        "291\u{301C}12\u{301C}2846",     // wave dash
+        "291\u{A0}12\u{A0}2846",         // no-break space
+        "291\u{3000}12\u{3000}2846",     // ideographic space
+        "291\u{2009}12\u{2009}2846",     // thin space
+        "291\u{202F}12\u{202F}2846",     // narrow no-break space
+        "291 \u{2014} 12 \u{2014} 2846", // three: space, em dash, space
+        "291\u{FF0E}12\u{FF0E}2846",     // fullwidth full stop
+        "291\u{2024}12\u{2024}2846",     // one dot leader
+        "291\u{FF0F}12\u{FF0F}2846",     // fullwidth solidus
+        "291\u{FF3F}12\u{FF3F}2846",     // fullwidth low line
+        // Zero-width spaces between every digit.
+        "2\u{200B}9\u{200B}1\u{200B}1\u{200B}2\u{200B}2\u{200B}8\u{200B}4\u{200B}6",
+        "291\u{200F}-\u{200F}12\u{200F}-\u{200F}2846", // right-to-left marks around hyphens
+        "291\u{200E}\u{200E}\u{200E}\u{200E} 12 2846", // invisible marks don't count
+        "291\u{AD}12\u{AD}2846",                       // soft hyphens
+        "291\u{2060}122846",                           // word joiner
+        "\u{FEFF}291122846",
+    ];
+    for t in tins {
+        assert!(has_full_tin(t), "has_full_tin({t:?})");
+        let masked = redact_full_tins(t);
+        assert!(!has_full_tin(&masked), "{t:?} masked: {masked:?}");
+        assert_eq!(
+            masked.chars().count(),
+            t.chars().count(),
+            "only digits change: {masked:?}"
+        );
+    }
+    assert_eq!(
+        redact_full_tins(
+            "ref \u{FF11}\u{FF12}\u{FF13}\u{FF0D}\u{FF14}\u{FF15}\u{FF0D}\u{FF16}\u{FF17}\u{FF18}\u{FF19}"
+        ),
+        "ref •••\u{FF0D}••\u{FF0D}••••"
+    );
+    assert_eq!(
+        redact_full_tins("291\u{200F}-\u{200F}12-2846 ok"),
+        "•••\u{200F}-\u{200F}••-•••• ok"
+    );
+    let not = [
+        "12\u{3000}\u{3000}\u{3000}\u{3000}3456789", // four visible separators
+        "12 \u{2014} \u{200B}-3456789",              // four, an invisible one among them
+        "291\u{2028}12\u{2028}2846",                 // line separators end a run
+        "291\u{2029}12\u{2029}2846",                 // paragraph separators
+        "291\u{85}12\u{85}2846",                     // next line
+        "291\u{FF0C}12\u{FF0C}2846",                 // fullwidth commas
+        "291\u{3001}12\u{3001}2846",                 // ideographic commas
+        "\u{FF11}\u{FF12}\u{FF13}\u{FF14}\u{FF15}\u{FF16}\u{FF17}\u{FF18}", // eight digits
+        "291\u{200B}12284",                          // eight, invisibly joined
+    ];
+    for t in not {
+        assert!(!has_full_tin(t), "has_full_tin({t:?})");
+    }
+}
+
+/// The reading before P3 review round 2, the oracle for ASCII: past it,
+/// only the no-break space and a few dashes separated, and every
+/// separator counted.
+fn has_full_tin_before(text: &str) -> bool {
+    let sep = |c: char| {
+        matches!(
+            c,
+            ' ' | '-' | '.' | '/' | '_' | '\u{a0}' | '\u{2010}'..='\u{2014}' | '\u{2212}'
+        )
+    };
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if !chars[i].is_numeric() {
+            i += 1;
+            continue;
+        }
+        let (mut digits, mut last, mut j) = (1, i, i + 1);
+        while j < chars.len() {
+            if chars[j].is_numeric() {
+                digits += 1;
+                last = j;
+                j += 1;
+                continue;
+            }
+            let gap = chars[j..].iter().take_while(|c| sep(**c)).count();
+            if (1..=3).contains(&gap) && chars.get(j + gap).is_some_and(|c| c.is_numeric()) {
+                j += gap;
+            } else {
+                break;
+            }
+        }
+        if digits >= 9 {
+            return true;
+        }
+        i = last + 1;
+    }
+    false
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(2000))]
+
+    /// `has_full_tin` reads ASCII exactly as it did (the fix only widens
+    /// what separates past ASCII), and what it found before in any text
+    /// it still finds: it only ever finds more.
+    #[test]
+    fn has_full_tin_keeps_its_ascii_reading(
+        ascii in "[0-9 ./_\t\n\r,:a-]{0,40}",
+        any in "[0-9 ./_\t\n,a\u{A0}\u{2010}-\u{2015}\u{2212}\u{FF0D}\u{3000}\u{200B}\u{200F}\u{FF10}-\u{FF19}\u{660}-\u{669}\u{2028}-]{0,40}",
+    ) {
+        prop_assert_eq!(has_full_tin(&ascii), has_full_tin_before(&ascii), "{:?}", ascii);
+        if has_full_tin_before(&any) {
+            prop_assert!(has_full_tin(&any), "{:?}", any);
+        }
+    }
 }
 
 // ---------------------------------------------------------------- check_text

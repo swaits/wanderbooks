@@ -250,6 +250,12 @@ fn the_menu_makes_the_cpa_package_with_full_tins() {
         .read_to_string(&mut readme)
         .unwrap();
     assert!(readme.starts_with("Acme LLC"), "{readme}");
+    // The QuickBooks file stops at the package's day, like every file.
+    assert!(
+        readme
+            .contains("general-journal.iif: every posted entry from the first through 2026-10-15,"),
+        "{readme}"
+    );
     // The member's K-1 row carries their full SSN, from the book's vault.
     let mut k1 = String::new();
     zip.by_name("k1-members.csv")

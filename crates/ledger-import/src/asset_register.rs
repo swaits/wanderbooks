@@ -46,7 +46,7 @@
 //! SOURCE (7-9): docs/spec/rules.md B-25;
 //! docs/spec/sources/irs-partnership-basis.md.
 
-use crate::pdf::{INTER, PdfError};
+use crate::pdf::PdfError;
 use crate::report::{ReportMeta, amount_parts, format_amount, long_date};
 use crate::xlsx::{Formats, XlsxError, footer, header, number};
 use ledger_core::TaxBasisRule;
@@ -512,7 +512,7 @@ fn engine() -> &'static TypstEngine<TypstTemplateMainFile> {
     ENGINE.get_or_init(|| {
         TypstEngine::builder()
             .main_file(TEMPLATE)
-            .fonts(INTER)
+            .fonts(crate::fonts::typst_fonts())
             .build()
     })
 }

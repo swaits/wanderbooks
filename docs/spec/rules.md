@@ -490,7 +490,8 @@ years after 2026, indexed to inflation and rounded to the nearest $100
 Attorneys' gross proceeds stay at $600 (not modeled).
 
 What counts as paid: payments made in the calendar year (§6041(a)), so a
-prepayment counts when made. The engine counts credits minus debits to the
+prepayment counts when made. A worksheet as of a day (the CPA package's,
+B-33) counts the year's payments from January 1 through that day. The engine counts credits minus debits to the
 payment sources on a vendor's tagged entries: `[books] cash_accounts` and
 `financing_accounts` (a member or lender paying on the company's behalf;
 the company is still the payer). A card charge leaves neither (1099-K); a
@@ -680,7 +681,12 @@ with `include_tins` (DECISION, the owner, 2026-10-15: for the CPA, when
 asked): a refusal that quotes its input masks any TIN in it
 (`parties::redact_full_tins`, checked by `refusals_never_echo_a_tin`),
 and a party text field refuses nine digits however they are separated
-(space, hyphen, dot, slash, underscore; `has_full_tin`). Files holding one (`books.get_w9`, `books.vendor_1099`'s
+(`has_full_tin`: up to three spaces, hyphens, dots, slashes or
+underscores between neighbors, in any script's digits; past ASCII every
+Unicode space and dash and the fullwidth and small forms count, and
+invisible characters such as a zero-width space or a right-to-left mark
+don't count toward the three: `sources/unicode-tin-text.md`, Unicode
+17.0). Files holding one (`books.get_w9`, `books.vendor_1099`'s
 `csv` with `include_tins`, and the CPA package, whose K-1 and 1099
 worksheets carry every member's and payee's TIN by default) are never
 written to a path: no tool takes one (D-29, P2 slice 6). Each is handed
@@ -1015,3 +1021,170 @@ checked to change no figure or entry; `approval_rules_off_by_default`,
 (`exports_round_trip`) and codec unit tests; `ledger-mcp`
 `tests/spec_kept.rs`; Lean `Step.record_changes_no_figure`,
 `Reachable.records`; fuzz `fuzz_settings_replay`.
+
+## B-33 A package as of a day shows the books through that day
+
+**Status:** CONVENTION (a report as of a day reports the books on that
+day: balances through it, a period's activity from the period's start
+through it; nearest authorities the accounting period, IRS Pub. 538,
+`sources/irs-periods-and-methods.md`, and the information returns'
+calendar year, `sources/irs-1099-thresholds.md`); DECISION (owner,
+2026-10-20, plan D-36: the 1099 worksheet stops at as_of too)
+
+Nothing in the CPA package made as of a day (`books.export_cpa_package`,
+the viewer's Export for CPA) reflects anything dated after it: no figure,
+entry, receipt or worksheet row. The statements and the ledgers cover
+the fiscal year containing as_of, through it; the balance sheet, the
+trial balance and the fixed asset register are as of it (the register
+only when an asset was bought by then); receipts/ holds the evidence of
+the year's entries through it; the members' equity statement and the
+K-1 worksheet, the year to date; general-journal.iif, every posted entry
+from the first through it (B-34). The 1099 worksheet counts the payments
+of as_of's calendar year from January 1 through as_of: information
+returns add up what is paid "in any calendar year" (26 U.S.C. §6041(a);
+"during such calendar year", §6041A(a)(2)), so a worksheet as of June 30
+is the year to date, and a vendor not yet at the threshold is not yet
+reportable; a December 31 package counts the whole year, as before. The
+chart of accounts and documents/ are as they stand when the package is
+made. One list of cash accounts and one of financing accounts serve the
+whole package (the request's, else the settings'): the cash flow, the
+K-1 worksheet, the IIF's bank accounts and the 1099 payments read the
+same.
+
+**Enforced:** `ledger_package::build_package` (INVARIANTS 1, 6, 7),
+`ledger_package::export_iif`, `ledger_package::vendor_1099_report` and
+`ledger_core::vendor_1099_report_with_members` (`through`).
+**Checked:** `ledger-package` `tests/package.rs`
+(`every_file_in_an_as_of_package_stops_at_as_of`: books the same through
+as_of, with and without activity after it (a 1099 payment with its
+receipt, an asset bought, a reversal of an entry dated as_of, the
+members' contributions, an earlier asset sold), make the same package
+byte for byte, every file and which files there are, with and without a
+fixed asset register, mid-year and at year end; `as_of_package_iif_stops_at_as_of`,
+`the_iif_through_as_of_at_its_edges`,
+`the_1099_worksheet_stops_at_as_of`,
+`one_list_of_cash_accounts_per_package`; the property
+`iif_ties_to_the_trial_balance_as_of`, 2,000 cases); `ledger-mcp`
+`oracle_mcp.rs` (`cpa_package_holds_the_year_and_its_evidence`); the
+bookspec examples `bookspec/examples/as-of-package-stops-at-as-of.toml`
+and `bookspec/examples/1099-worksheet-through-as-of.toml`.
+
+## B-34 The QuickBooks Desktop file (IIF): plain ASCII, every entry through as_of, closes left out
+
+**Status:** AUTHORITY (Intuit, `sources/intuit-iif.md`: IIF files are
+ASCII text, tab-separated, with no escape; an account is known by its
+NAME, a subaccount's NAME its path joined by colons; lists come before
+what uses them; DOCNUM is "the transaction's number"; the kit's 2007+
+example file ends every line CR LF; QuickBooks Desktop holds an account
+name of 31 characters, an account number of 7 and a memo of 4,095; "The
+parent and subaccount must be the same account type"; a journal entry
+to accounts receivable or payable needs a customer or vendor, and takes
+one such account a transaction); CONVENTION (a QuickBooks integrator and
+an IIF importer, same file: a longer name is cut on a chart import but not
+in a journal's lines; a double quote is a text delimiter); DECISION (owner, 2026-10-20, plan D-36: plain ASCII, what isn't
+ASCII transliterated and listed; CR LF; DOCNUM the entry's id; closing
+entries left out; every entry since the company began until the CPA
+says otherwise); Unicode Standard Annex #14 (the mandatory line breaks)
+
+1. **One transaction per posted entry dated on or before as_of**, from
+   the first, in the order posted, **except period-closing entries**:
+   QuickBooks keeps no closing entries (it works out retained earnings
+   itself; its "closing date" only locks a period), so an imported close
+   would zero its period's profit. The file's balances are the trial
+   balance as of as_of without the closes, and its income and expenses
+   each period's profit and loss; the members' shares are in the
+   package's members' equity statement and K-1 worksheet.
+   `books.export` iif takes as_of (default today), never a range.
+   Whether the file should hold only the fiscal year instead goes to the
+   CPA before the 2027 package (D-36); for the first year the two are
+   the same.
+2. **DOCNUM is the entry's id** in the books, on the TRNS and every SPL,
+   so the CPA can trace a QuickBooks transaction to its entry and its
+   receipts.
+3. **The file is ASCII and every line ends CR LF.** In a field (a NAME,
+   an ACCNUM, a MEMO) a tab or a mandatory line break (LF, VT, FF, CR,
+   NEL, U+2028, U+2029) is a space; any other control character is '?';
+   printable ASCII is itself, but a double quote, which is a single one
+   (QuickBooks reads a double quote as a text delimiter); any other
+   character is its transliteration by deunicode 1.6.0, pinned exactly
+   ("René" "Rene", "北京" "Bei Jing", "—" "--", "“" "'", "😀" "grinning";
+   a transliterated word's trailing space dropped at the end or before a
+   space), or '?' when it has none. Every other file in the package keeps
+   the books' text (the PDFs carry Inter and Noto fallbacks for Chinese,
+   Japanese, Korean, Arabic, Hebrew, Thai and Devanagari, Arabic and
+   Hebrew set right to left; no emoji font, so an emoji prints as an
+   empty box).
+4. **An account's own name**, so written, has each ':' replaced by '-'
+   (a fullwidth colon too), is trimmed ('?' if nothing is left) and cut
+   to 31 characters (QuickBooks Desktop's limit; cut by QuickBooks, the
+   ACCNT line and the transactions' would no longer match); its NAME is
+   its parents' NAMEs and its own, joined by ':'. A subaccount whose
+   QuickBooks type differs from its parent's (a bank account under a
+   header that is no bank, an asset's cost under a "Fixed assets" header)
+   is written at the top level, its own subaccounts with it: QuickBooks
+   gives a subaccount its parent's type, and the type decides where its
+   balance shows. Each parent is declared before its subaccounts, the
+   accounts otherwise in the order of their codes. Accounts whose NAMEs
+   would match ignoring case, which QuickBooks would merge, get
+   " (code)" after their own names (the name cut to make room, the code
+   written like a name, "no number" for a blank one), level by level from
+   the top and again until no two match; a match left after that (two
+   codes written alike, ignoring case, or alike in their first 30
+   characters) is refused.
+5. **ACCNUM is the account's code**, written as a field and trimmed, or
+   left blank (ACCNUM is optional; the NAME identifies the account) when
+   it is longer than 7 characters (QuickBooks Desktop's limit) or another
+   account's would be written the same, ignoring case. **A MEMO** is cut
+   to 4,095 characters (QuickBooks Desktop's limit).
+6. **Nothing changes silently.** Each account name, number or place and
+   each memo the file writes differently from the books (`Iif::changes`)
+   is said, both texts quoted and escaped, one line each, in the
+   `warnings` of `books.export` and `books.export_cpa_package` and in the
+   package README (the viewer's note counts them): each account's name,
+   number and place a line; the memos grouped by what is written
+   differently, each run of changed characters once with every entry it
+   is in (`"—" is written "--" in the memos of entries 3, 5, 9`), then
+   the memos cut. No line holds a full TIN (B-26): a run of nine digits,
+   in any script's digits and separators, is masked, and so is every
+   numeral of a text that holds one once written as a field (digits a
+   tab apart, letters deunicode writes as digits); a memo line whose
+   digits are masked says so.
+7. **No customer or vendor NAME.** Intuit's IIF help makes NAME
+   optional and states no need of it in a journal; QuickBooks Desktop
+   asks for a customer or vendor on a journal entry to accounts
+   receivable or payable, and takes one A/R or A/P account a transaction
+   (Intuit staff and help, `sources/intuit-iif.md`). Writing names would
+   need the customer and vendor lists declared as well, with names unique
+   across them. So the file names none, and the package README names the
+   entries with a line on an A/R or A/P account (`Iif::receivable_payable`),
+   so the CPA can add the name if QuickBooks asks.
+
+**Enforced:** `ledger_import::iif` (`field`, `iif_accounts`,
+`journal_to_iif`, `Iif::warnings`), `ledger_package::export_iif` and
+`build_package`, `ledger-mcp` `books.export` and
+`books.export_cpa_package`.
+**Checked:** `ledger-import` `iif.rs` unit tests (every one of the
+1,112,064 Unicode scalar values written as printable ASCII, alone and
+beside a letter, and kept by a second pass; the transliteration table
+pinned); `tests/spec_import.rs` (`iif_docnum_is_the_entry_id`,
+`iif_writes_plain_ascii_and_lists_every_change`,
+`iif_every_line_ends_cr_lf`, `iif_distinct_accounts_never_share_a_name`,
+`iif_a_subaccount_of_another_type_stands_at_the_top_level`,
+`iif_declares_each_parent_before_its_subaccounts`,
+`iif_fits_quickbooks_desktop_limits`,
+`iif_warnings_group_the_memos_by_what_is_written_differently`,
+`iif_warnings_never_hold_a_tin`,
+`iif_change_warnings_are_one_line_each`,
+`iif_keeps_a_tin_readable_to_the_package_scan`, the properties
+`iif_round_trips_random_books` and
+`iif_names_never_clash_and_every_change_is_listed`); `ledger-package`
+`tests/package.rs` (`iif_leaves_out_period_closes`,
+`the_readme_lists_what_the_iif_writes_differently`,
+`the_readme_names_the_entries_on_receivables_and_payables`,
+`the_bookspec_iif_example_matches_the_engine`, and B-33's); the bookspec
+example `bookspec/examples/iif-quickbooks-journal-file.toml` (formats
+appendix: the file line by line and its changes, derived by hand);
+`ledger-mcp` `oracle_mcp.rs`
+(`iif_declares_accounts_by_role_and_balances_every_transaction`,
+`iif_without_as_of_is_as_of_today_and_ties_to_the_trial_balance`),
+`mcp_stdio.rs` (`mcp_import_export_over_stdio`).

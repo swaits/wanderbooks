@@ -6,16 +6,18 @@
 //! GOAL: everything the CPA needs for the return in one zip, the K-1s'
 //!       and 1099s' TINs included when asked, built the same by the
 //!       server and the viewer.
-//! SOURCE: docs/mcp-interface.md; B-26; DECISION (owner, 2026-10-15):
-//!         "it needs to be in the damn CPA package."
+//! SOURCE: docs/mcp-interface.md; B-26; B-33 (as of one day); B-34 (the
+//!         IIF); DECISION (owner, 2026-10-15): "it needs to be in the damn
+//!         CPA package."
 //! INVARIANTS:
 //!   1. The statements (profit and loss, balance sheet, cash flow, members'
 //!      equity with members, tax summary, trial balance) each as PDF and
 //!      XLSX, for the fiscal year containing as_of, through as_of; the
-//!      fixed asset register when there are fixed assets; the general
-//!      ledger and journal (XLSX); the journal as IIF; the 1099 worksheet
-//!      for as_of's calendar year (or why it can't be made); with members,
-//!      the K-1 worksheet; a README first.
+//!      fixed asset register when an asset was bought by as_of; the
+//!      general ledger and journal (XLSX); the journal through as_of as
+//!      IIF; the 1099 worksheet for as_of's calendar year through as_of
+//!      (or why it can't be made); with members, the K-1 worksheet; a
+//!      README first.
 //!   2. With members, k1-members.csv has one row per member: name, party,
 //!      share, capital account, TIN and type (or last four without a TIN
 //!      source), and the K-1 worksheet's capital figures (ledger_core::k1)
@@ -32,6 +34,20 @@
 //!      Withdrawn files never.
 //!   5. Read-only (crate INVARIANT 1): the package is returned, its files
 //!      and the zip, and written nowhere.
+//!   6. As of one day (B-33): no figure, entry, receipt or worksheet row
+//!      reflects anything dated after as_of; the chart and documents/ are
+//!      as they stand when the package is made.
+//!   7. One list of cash accounts and one of financing accounts per
+//!      package: the request's, else the settings'. The cash flow, the K-1
+//!      worksheet, the IIF's BANK accounts and the 1099 worksheet's
+//!      payments all read the same.
+//!   8. Every account name, number or place and every memo
+//!      general-journal.iif writes differently from the books (it holds
+//!      plain ASCII, within QuickBooks Desktop's limits and its rule that
+//!      a subaccount has its parent's type: B-34) is in `warnings` and the
+//!      README, the memos grouped by what is written differently; the
+//!      README also names the entries with a line on accounts receivable
+//!      or payable, which the file gives no customer or vendor.
 //! ```
 
 use chrono::NaiveDate;
@@ -84,6 +100,14 @@ pub struct Package {
     pub tin_gaps: Vec<String>,
     /// The receipts in receipts/ (one per entry they are behind).
     pub receipt_count: usize,
+    /// What general-journal.iif writes differently from the books to fit
+    /// QuickBooks Desktop (INVARIANT 8), as `ledger_import::Iif::warnings`
+    /// says it: each account name and number a line, each thing written
+    /// differently in the memos a line with the entries it is in.
+    pub warnings: Vec<String>,
+    /// How many account names, numbers and memos general-journal.iif
+    /// writes differently (each one the warnings cover).
+    pub iif_changes: usize,
 }
 
 /// The package's file name for `as_of`.
@@ -112,6 +136,17 @@ pub fn build_package<B: PackageBooks + ?Sized>(
     let pdf = |st: &ledger_import::Statement| statement_pdf(st, &meta).map_err(|e| e.to_string());
     let fy = NaiveDate::parse_from_str(&fy_start, "%Y-%m-%d").map_err(|e| e.to_string())?;
     let members = report_members(company);
+    // One list of each per package (INVARIANT 7).
+    let cash_codes = if req.cash_accounts.is_empty() {
+        settings.cash_accounts
+    } else {
+        req.cash_accounts
+    };
+    let financing_codes = if req.financing_accounts.is_empty() {
+        settings.financing_accounts
+    } else {
+        req.financing_accounts
+    };
 
     // The financial statements, each as PDF and XLSX.
     let mut statements: Vec<(&str, ledger_import::Statement)> = vec![
@@ -158,11 +193,6 @@ pub fn build_package<B: PackageBooks + ?Sized>(
         statements.push(("members-equity", report::members_equity(&me)));
         // The K-1 worksheet: each member's capital account for the
         // year (Schedule K-1 Item L) and their TIN (INVARIANT 2).
-        let cash_codes = if req.cash_accounts.is_empty() {
-            settings.cash_accounts
-        } else {
-            req.cash_accounts
-        };
         let cash: Vec<AccountId> = cash_codes
             .iter()
             .filter_map(|c| ledger.chart().find_by_code(c).map(|a| a.id))
@@ -312,8 +342,9 @@ pub fn build_package<B: PackageBooks + ?Sized>(
         files.push((format!("{name}.pdf"), pdf(st)?));
         files.push((format!("{name}.xlsx"), xlsx(XlsxReport::Statement(st))?));
     }
-    // The fixed asset register, when there are fixed assets.
-    if ledger.registered_assets().next().is_some() {
+    // The fixed asset register, when an asset was bought by as_of (one
+    // bought later is not in it, so neither is an empty register).
+    if ledger.registered_assets().any(|a| a.purchase_date <= as_of) {
         let r = ledger_core::fixed_asset_register(ledger, as_of).map_err(|e| e.to_string())?;
         files.push((
             "fixed-asset-register.pdf".into(),
@@ -334,10 +365,17 @@ pub fn build_package<B: PackageBooks + ?Sized>(
         "general-journal.xlsx".into(),
         xlsx(XlsxReport::GeneralJournal(ledger, fy, as_of))?,
     ));
-    // 1099 worksheet for the calendar year of as_of.
+    // 1099 worksheet for the calendar year of as_of, through as_of
+    // (INVARIANT 6): the payments from January 1, out of the package's
+    // cash and financing accounts (INVARIANT 7).
     let year = chrono::Datelike::year(&as_of);
     let mut worksheet_1099 = false;
-    match vendor_1099_report(ledger, settings, year, None) {
+    let payments = Settings {
+        cash_accounts: cash_codes,
+        financing_accounts: financing_codes,
+        ..*settings
+    };
+    match vendor_1099_report(ledger, &payments, year, Some(as_of), None) {
         Ok(r1099) => {
             let mut w = String::from("vendor,form,w9_on_file,paid,reportable");
             if tins.is_some() {
@@ -516,13 +554,20 @@ pub fn build_package<B: PackageBooks + ?Sized>(
         files.push(k1);
     }
     let seq = books.journal_seq();
-    files.push((
-        "general-journal.iif".into(),
-        export_iif(ledger, settings.cash_accounts)?.into_bytes(),
-    ));
+    // The journal through as_of for QuickBooks, closes left out, and what
+    // it writes differently (INVARIANT 8).
+    let iif = export_iif(ledger, cash_codes, as_of)?;
+    let (warnings, iif_changes) = (iif.warnings(), iif.changes.len());
+    let receivable_payable: Vec<String> = iif
+        .receivable_payable
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    files.push(("general-journal.iif".into(), iif.text.into_bytes()));
+    let year_end = NaiveDate::from_ymd_opt(year, 12, 31) == Some(as_of);
     let include_tins = tins.is_some();
     let readme = format!(
-        "{name} — books package for the CPA\n\nFiscal year to date: {fy_start} through {as_of_s}. {basis} basis.\nKept in wanderbooks: double-entry books from an append-only, hash-chained journal ({seq} events, verified).\n\nStatements (PDF and XLSX): profit and loss, balance sheet, cash flow, {members}tax summary, trial balance.\nLedgers (XLSX): general ledger by account; general journal entry by entry.\ngeneral-journal.iif: every posted entry, for import into QuickBooks Desktop.\n{worksheet}{k1}{receipts}{tins}\nThe tax summary maps accounts to return categories; it's a worksheet, not a filing. Questions go to the owners, who can ask their bookkeeping agent to trace any number to its entries and receipts.\n",
+        "{name} — books package for the CPA\n\nFiscal year to date: {fy_start} through {as_of_s}. {basis} basis.\nKept in wanderbooks: double-entry books from an append-only, hash-chained journal ({seq} events, verified).\n\nStatements (PDF and XLSX): profit and loss, balance sheet, cash flow, {members}tax summary, trial balance.\nLedgers (XLSX): general ledger by account; general journal entry by entry.\n{iif}{worksheet}{k1}{receipts}{tins}\nThe tax summary maps accounts to return categories; it's a worksheet, not a filing. Questions go to the owners, who can ask their bookkeeping agent to trace any number to its entries and receipts.\n",
         name = company.name,
         basis = company.basis,
         members = if company.members.is_empty() {
@@ -530,9 +575,43 @@ pub fn build_package<B: PackageBooks + ?Sized>(
         } else {
             "members' equity, "
         },
+        iif = {
+            let mut t = format!(
+                "general-journal.iif: every posted entry from the first through {as_of_s}, for import into QuickBooks Desktop. Plain ASCII text (its import turns anything else into \"?\"), CR LF line endings; DOCNUM is each entry's id in these books. Period-closing entries are left out: QuickBooks keeps none and works out retained earnings itself, so an imported close would zero its period's profit; trial-balance includes them{}.\n",
+                if company.members.is_empty() {
+                    ""
+                } else {
+                    ", and the members' equity statement and the K-1 worksheet show each member's share"
+                }
+            );
+            if !receivable_payable.is_empty() {
+                t.push_str(&format!(
+                    "It names no customer or vendor on its lines to accounts receivable or payable, in {} {}: QuickBooks Desktop asks for one on a journal entry to A/R or A/P (and takes only one A/R or A/P account a transaction); add it there if QuickBooks asks.\n",
+                    if receivable_payable.len() == 1 { "entry" } else { "entries" },
+                    receivable_payable.join(", ")
+                ));
+            }
+            if !warnings.is_empty() {
+                t.push_str(&format!(
+                    "Written differently in general-journal.iif to fit QuickBooks Desktop (plain ASCII; account names at most {} characters a level, no two alike; a subaccount of another QuickBooks type than its parent's at the top level; account numbers at most {} characters, no two alike; memos at most {} characters); every other file keeps the books' text:\n",
+                    ledger_import::NAME_MAX,
+                    ledger_import::NUMBER_MAX,
+                    ledger_import::MEMO_MAX
+                ));
+                for w in &warnings {
+                    t.push_str(&format!("- {w}\n"));
+                }
+            }
+            t
+        },
         worksheet = if worksheet_1099 {
             format!(
-                "1099-worksheet-{year}.csv: cash paid per vendor marked for a 1099, against the year's threshold{}.\n",
+                "1099-worksheet-{year}.csv: cash paid per vendor marked for a 1099{}, against the year's threshold{}.\n",
+                if year_end {
+                    String::new()
+                } else {
+                    format!(" from January 1 through {as_of_s}")
+                },
                 if include_tins {
                     ", with each payee's TIN"
                 } else {
@@ -623,5 +702,7 @@ pub fn build_package<B: PackageBooks + ?Sized>(
         zip: zip_buf,
         tin_gaps,
         receipt_count,
+        warnings,
+        iif_changes,
     })
 }

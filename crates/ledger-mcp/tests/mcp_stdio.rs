@@ -1185,15 +1185,27 @@ fn mcp_import_export_over_stdio() {
 
     let chart = mcp.call(
         "books.import_chart_csv",
-        json!({"csv_text": "code,name,type,parent_code\n1000,Cash,asset,\n4000,Revenue,revenue,\n"}),
+        json!({"csv_text": "code,name,type,parent_code\n1000,Cash,asset,\n4000,Revenue,revenue,\n6010,Café 北京,expense,\n"}),
     );
-    assert_eq!(chart["count"], 2);
+    assert_eq!(chart["count"], 3);
 
+    // The IIF is plain ASCII text with CR LF line endings, inline; what it
+    // writes differently from the books is in warnings (rules.md B-34).
     let iif = mcp.call(
         "books.export",
         json!({"format": "iif", "report": "journal"}),
     );
-    assert!(iif["content"].as_str().unwrap().contains("!TRNS"));
+    let text = iif["content"].as_str().unwrap();
+    assert!(text.contains("!TRNS") && text.is_ascii() && text.ends_with("\r\n"));
+    assert!(
+        text.contains("\r\nACCNT\tCafe Bei Jing\tEXP\t6010\r\n"),
+        "{text}"
+    );
+    assert!(iif.get("content_encoding").is_none(), "{iif}");
+    assert_eq!(
+        iif["warnings"],
+        json!(["account 6010's name \"Café 北京\" is written \"Cafe Bei Jing\""])
+    );
 
     let xlsx = mcp.call(
         "books.export",

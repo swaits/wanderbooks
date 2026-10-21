@@ -1823,9 +1823,15 @@ impl Books {
             cash: self.money_cash_accounts.clone(),
             financing: self.financing_accounts.clone(),
         };
-        let r =
-            ledger_core::vendor_1099_report_with_members(l, year, None, &sources, &self.members)
-                .ok()?;
+        let r = ledger_core::vendor_1099_report_with_members(
+            l,
+            year,
+            None,
+            None,
+            &sources,
+            &self.members,
+        )
+        .ok()?;
         let line = r.vendors.iter().find(|v| v.vendor_id == vendor)?.clone();
         Some((line, r.threshold))
     }

@@ -3,7 +3,7 @@
 //! Each label carries the company name, the asset tag (its headline), what
 //! the asset is, its serial number when recorded, and a QR code holding
 //! exactly the tag. Labels are typeset by `templates/labels.typ` with the
-//! same bundled Inter fonts as [`crate::pdf`]; the labels reach Typst as
+//! same bundled fonts as [`crate::pdf`]; the labels reach Typst as
 //! JSON data (`sys.inputs.data`), never as markup. The sheet geometry comes
 //! from the label maker's own specification, vendored in
 //! `docs/spec/sources/avery-5160.md`.
@@ -38,7 +38,7 @@
 //!   - A partly used sheet with 7 labels left: skip 23.
 //! ```
 
-use crate::pdf::{INTER, PdfError};
+use crate::pdf::PdfError;
 use qrcode::render::svg;
 use qrcode::{EcLevel, QrCode};
 use std::sync::OnceLock;
@@ -145,7 +145,7 @@ fn engine() -> &'static TypstEngine<TypstTemplateMainFile> {
     ENGINE.get_or_init(|| {
         TypstEngine::builder()
             .main_file(TEMPLATE)
-            .fonts(INTER)
+            .fonts(crate::fonts::typst_fonts())
             .build()
     })
 }

@@ -700,6 +700,201 @@ fields; `Currency::allocation_places`. P3's accept counts `ledger-core` and
 `ledger-import` (R-6); the store and MCP mutants above are for the whole
 pass.
 
+## P3: the IIF and as-of (2026-10-20)
+
+Defects 7 and 21 (plan P3; the owner's decisions D-36). Rules
+`docs/spec/rules.md` B-33 (a package as of a day) and B-34 (the IIF). No
+mutation run (D-33): what P12 must cover is at the end.
+
+**Named regression tests**, each from its reproduction, on anonymized
+fixtures:
+- Defect 7, DOCNUM: `ledger-import` `tests/spec_import.rs`
+  `iif_docnum_is_the_entry_id` (a draft never posted, three entries
+  posted out of id and date order: DOCNUM 3, 2, 4 on the TRNS and every
+  SPL; the file had written 1, 2, 3).
+- Defect 7, the characters (D-36, plain ASCII):
+  `iif_writes_plain_ascii_and_lists_every_change` (accented letters,
+  Chinese, emoji, a fullwidth colon and fullwidth digits, a tab in a
+  name, controls, a decomposed accent, private use: each written form
+  exact, every change listed exactly), `iif_every_line_ends_cr_lf`,
+  `iif_change_warnings_are_one_line_each`,
+  `iif_keeps_a_tin_readable_to_the_package_scan` (an en-dash or
+  no-break-space TIN in a memo stays a TIN to the package's TIN scan),
+  `iif_distinct_accounts_never_share_a_name` (review R2: duplicate names,
+  by case, siblings, a fullwidth colon against a hyphen, two private-use
+  names; a name that is another's tagged form tagged in turn; the clash
+  left when two codes are written alike refused),
+  `iif_fits_quickbooks_desktop_limits` (Intuit's limits, found in the P3
+  review: a level past 31 characters cut, two alike once cut tagged, a
+  subaccount under its cut parent; an account number past 7 characters
+  and two written alike left out of ACCNUM; a memo past 4,095 cut; every
+  line of the warnings exact; a hand-built level past 31 refused),
+  `iif_warnings_group_the_memos_by_what_is_written_differently` (the
+  lead's call: 100 depreciation memos with an em dash make one line),
+  `iif_warnings_never_hold_a_tin` (a TIN in a memo or an account name,
+  in ASCII or fullwidth digits, never in a warning),
+  `iif_field_transliteration_exact` and `iif_paths_and_transliteration`
+  (the old expectations, "Caf? meals" among them, rewritten to the rule).
+- Defect 21, the package's IIF: `ledger-package` `tests/package.rs`
+  `as_of_package_iif_stops_at_as_of` (next year's rent was in the file;
+  now the four entries of the year, by id, tied to the trial balance),
+  `the_iif_through_as_of_at_its_edges` (an entry on as_of in, the day
+  after out, a reversal after as_of leaving its original, as of a day
+  before the first entry: the accounts and no transaction).
+- Defect 21, every file: `every_file_in_an_as_of_package_stops_at_as_of`
+  (review R4: books the same through as_of, one set with a 1099 payment,
+  its receipt and an asset bought the day after, a reversal of the entry
+  dated as_of, the members' contributions and an earlier desk sold, build
+  the same package byte for byte, every file and which files there are,
+  PDFs included, with and without TINs and receipts, with and without a
+  fixed asset register, mid-year and at year end; a package days later
+  sees the activity). Undoing any one of the as-of
+  bounds (the IIF's entries, its FIXASSET typing, the 1099 worksheet's
+  `through`, the fixed asset register's presence) fails it; checked by
+  hand.
+- D-36, the 1099 worksheet: `the_1099_worksheet_stops_at_as_of` (a
+  payment on as_of counts, the day after doesn't; a vendor under the
+  threshold so far is not yet reportable; a year-end package and the
+  tools' worksheet unchanged).
+- D-36, closes: `iif_leaves_out_period_closes` (two months closed: no
+  close written, income and expenses equal the year's profit and loss,
+  balances the trial balance without the closes).
+- Plan P3's accept, a bookspec example per regression test: the as-of
+  ones (`bookspec/examples/as-of-package-stops-at-as-of.toml`,
+  `1099-worksheet-through-as-of.toml`) and the IIF's
+  (`iif-quickbooks-journal-file.toml`, formats appendix), each expected
+  value derived by hand; `the_bookspec_iif_example_matches_the_engine`
+  reads the IIF example and checks the engine gives exactly its file and
+  changes.
+- Review R18 and the README: `one_list_of_cash_accounts_per_package`,
+  `the_readme_lists_what_the_iif_writes_differently` (the memos grouped:
+  six depreciation memos and a lunch with an em dash, one line).
+
+**Exhaustive and property tests.** `iif.rs`'s unit tests write every
+one of the 1,112,064 Unicode scalar values (alone, after a letter, before
+one) and check the field is printable ASCII without a double quote and a
+fixed point, its changed runs empty exactly when it is unchanged, and a
+level never empty, colon-free, trimmed and at most 31 characters (a
+complete check over the finite alphabet; review R15); `with_tag`'s and
+`changed_runs`' edges by hand; `the_transliteration_table_is_pinned`
+samples deunicode 1.6.0, pinned exactly in `Cargo.toml` (R14).
+Properties: `iif_round_trips_random_books` (memos mixing ASCII, Latin-1,
+dashes and quotes, every kind of line break, controls, CJK, emoji,
+combining marks, private use; DOCNUM, CR LF, the changes list exact),
+`iif_names_never_clash_and_every_change_is_listed` (random charts from a
+pool of clashing names, long names alike once cut, codes with colons,
+past 7 characters, and one alike another once trimmed; every warning
+line checked against the books and the file), `iif_ties_to_the_trial_balance_as_of` (2,000
+cases: random books with reversals and closed months, random as_of; the
+file's entries and balances against the trial balance without the
+closes).
+
+**End to end.** `ledger-mcp` `oracle_mcp.rs`:
+`iif_declares_accounts_by_role_and_balances_every_transaction` (as_of,
+DOCNUM the ids, the warnings exact: the fixture's line-broken memo and
+the engine's own "Depreciation — Laptop — 2025-03" memos, the alias, a
+range refused), `iif_without_as_of_is_as_of_today_and_ties_to_the_trial_balance`
+(review R5), `cpa_package_holds_the_year_and_its_evidence` (the IIF from
+the prior year's sale through as_of; a payment after as_of to the
+contractor left out of the 1099 worksheet; the note's count);
+`mcp_stdio.rs` (a Chinese account name over stdio: ASCII text, CR LF,
+`warnings`); `spec_mcp.rs` (iif with as_of); `ledger-gui`
+`tests/exports.rs` (the README's IIF line names the as_of).
+
+**Names in every script, in the PDFs and the viewer.** Inter has no
+Chinese, Japanese, Korean, Arabic, Hebrew, Thai or Devanagari glyphs:
+every such character printed as Inter's empty box (glyph 0), and the
+viewer drew boxes too. `ledger-import` `src/fonts.rs` now bundles the
+fallbacks, each once: a subset of Noto Sans CJK SC
+(`fonts/NotoSansCJK-LICENSE.txt` says how it was made) and Noto Sans
+Arabic UI, Hebrew, Thai and Devanagari, unmodified
+(`fonts/NotoSans-LICENSE.txt`: versions, upstream commits, SHA-256; 412,968
+bytes for the four). Arabic is the UI form because Noto Sans Arabic 2.013
+draws a letter's dots as marks of their own, which Typst writes as text
+runs of their own: its PDFs' text read "شلام" for "سلام", with letters
+doubled. No emoji font (about 10 MB): an emoji prints as an empty box in
+the PDFs. Tests: `fonts.rs`
+`every_template_names_every_fallback_in_order`; `pdf.rs`
+`chinese_japanese_and_korean_print_as_written` and
+`arabic_hebrew_thai_and_devanagari_print_as_written` (every glyph from
+its script's font, none glyph 0); `spec_import.rs`
+`pdf_keeps_chinese_japanese_and_korean_names` (the ToUnicode map) and
+`pdf_prints_every_bundled_script_as_written` (the PDF read back with
+hayro, the viewer's own reader: Arabic and Hebrew read right to left give
+the words, the lam-alef ligature included; Thai, Devanagari and Chinese
+left to right; every font embedded; failed with Noto Sans Arabic 2.013).
+The viewer registers the same `FALLBACKS` after its own fonts in every
+family (`ledger-gui` `theme.rs` `every_family_falls_back_to_the_noto_fonts`:
+the very bytes, by pointer, and a real glyph for each script's letters in
+every family) and `tests/scripts.rs`
+`account_names_in_other_scripts_show_as_written` (the Accounts page paints
+each name; with `SHOT_DIR` set, it saves `scripts.png`: looked at,
+2026-10-20). egui shapes and joins each word, right to left for Arabic
+and Hebrew, but doesn't reorder the words of a right-to-left phrase:
+"مكتب الرياض" shows its two words left to right.
+
+**TINs in any script (B-26).** `ledger_core::parties::has_full_tin`
+missed "１２３－４５－６７８９": the fullwidth hyphen-minus, the ideographic
+and thin spaces, the Hebrew maqaf and the other Unicode dashes weren't
+separators, and a zero-width space or a right-to-left mark between digits
+ended a run. Past ASCII every Zs space, every Dash character and the
+compatibility forms of the dot, slash and underscore now separate, and
+default-ignorable characters don't count (`docs/spec/sources/unicode-tin-text.md`,
+Unicode 17.0); ASCII reads as before. `spec_parties.rs`
+`has_full_tin_reads_every_script_and_separator` and the property
+`has_full_tin_keeps_its_ascii_reading` (2,000 cases: on ASCII the same
+answer as the old reading, kept in the test; elsewhere it finds at least
+what the old one did).
+
+**Second review (2026-10-20).** QuickBooks gives a subaccount its
+parent's type (Intuit): `iif_a_subaccount_of_another_type_stands_at_the_top_level`
+(a bank account under a header that is no bank, an asset's cost under
+"Fixed assets": each written at the top level, keeping its type, listed,
+its own subaccount with it, a name it then shares told apart by code);
+`check_iif` now checks every subaccount's type is its parent's and every
+parent is declared before it; `iif_declares_each_parent_before_its_subaccounts`.
+The file names no customer or vendor (Intuit states no need for an IIF
+journal; QuickBooks Desktop asks for one on A/R or A/P):
+`the_readme_names_the_entries_on_receivables_and_payables`. A memo line
+whose digits are masked says so (`iif_warnings_never_hold_a_tin`, which
+now also holds a name and a memo that are a TIN only once written, digits
+a tab apart: with `has_full_tin` reading every script, nothing else
+tested the masks' second pass). `iif_fits_quickbooks_desktop_limits` now
+holds a number of exactly 7 characters (kept) and two alike but for case
+(left out): undoing either bound of the 7 had failed no test. Each was
+checked by undoing it and seeing its test fail.
+
+The GnuCash differential (`oracle/`) compares the engine's figures and
+has no IIF and no package, so it has nothing to re-adjudicate here.
+
+Each of the review's fixes was checked by undoing it by hand and seeing
+its test fail (2026-10-20): the 31-character cut, the clash loop's
+second round, the double quote, the TIN mask, the memo cut, each reason
+a number is left out, the memo grouping, the tag's colon; and, for the
+builder's, the as_of `<=`, the register's presence, the 1099 `through`,
+the closes filter, the FIXASSET date filter and the package's cash list.
+
+**For P12:** mutation over `ledger-import` `iif.rs` (each `breaks` arm,
+the control, quote and `None` arms of `each_piece`, the deunicode
+post-mapping, `segment`'s colon, trim, cut and "?" fallback, `tag`,
+`with_tag`'s room, the clash loop's depth bound, rounds and tag,
+`journal_to_iif`'s clash and length refusals, the number rules, the memo
+cut, each `changes` comparison and its order, `warnings`' grouping,
+order and masks, `shown`, DOCNUM, `EOL`), `pdf.rs` (the fallback font),
+`ledger-package` `iif.rs` (`<=` in the as_of filter, the closes filter,
+the FIXASSET date filter) and `package.rs` (the cash and financing
+resolution, the register's presence, the 1099 `through`, the README's
+IIF line, closes sentence, warnings block and 1099 wording), and
+`ledger-core` `form1099.rs` (the `through` bound), `ledger-mcp`
+`server.rs` (the iif report, range and as_of checks, `warnings`, the
+package note), `ledger-gui` `menu.rs` (the note). From the second
+review: `iif.rs` `iif_accounts`' type filter on parents and
+`apart_from`, `parents_first`, the `AtTopLevel` change, the TIN note's
+condition and `receivable_payable`; `fonts.rs` and `theme.rs`
+`font_definitions`; the README's A/R and A/P sentence; `ledger-core`
+`parties.rs` `tin_separator`'s arms and `tin_invisible`, and the gap that
+doesn't count them.
+
 ## Benchmarks (baseline 2026-10-13)
 
 No budget, by decision (the owner, 2026-10-13: the books do little work

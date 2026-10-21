@@ -1261,7 +1261,6 @@ fn happy_path(name: &str) -> Mcp {
         ("xlsx", "balance_sheet"),
         ("pdf", "profit_and_loss"),
         ("csv", "cash_flow"),
-        ("iif", "journal"),
         ("csv", "general_ledger"),
         ("json", "members_equity"),
         ("csv", "tax_summary"),
@@ -1271,6 +1270,12 @@ fn happy_path(name: &str) -> Mcp {
             json!({"format": format, "report": report, "start": "2026-01-01", "end": "2026-12-31"}),
         );
     }
+    // The IIF takes as_of (every posted entry from the first through it),
+    // never a range.
+    m.ok(
+        "books.export",
+        json!({"format": "iif", "report": "general_journal", "as_of": "2026-12-31"}),
+    );
     m.ok(
         "books.export_cpa_package",
         json!({"as_of": "2026-12-31", "include_receipts": false, "include_tins": false}),

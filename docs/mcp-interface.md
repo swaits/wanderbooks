@@ -1131,7 +1131,8 @@ posting.
 ## Tools — export
 
 - `books.export { format, report, start?, end?, as_of?, cash_accounts?,
-  financing_accounts?, investing_accounts? }` → `{ content, content_encoding? }`.
+  financing_accounts?, investing_accounts? }` → `{ content,
+  content_encoding?, warnings? }`.
   - Reports: `profit_and_loss`, `balance_sheet`, `cash_flow` (needs
     `cash_accounts`), `trial_balance`, `members_equity` (statement of
     changes in members' equity; members from `wanderbooks.toml`; earnings
@@ -1142,11 +1143,40 @@ posting.
     balance and split, ending balance), `general_journal` (alias
     `journal`: every entry, line by line, in date order).
   - Formats: `pdf` and `xlsx` (base64) for the five statements; `xlsx`,
-    `csv`, `json` for every report; `iif` for the journal (QuickBooks
-    Desktop).
+    `csv`, `json` for every report; `iif` for `general_journal` (alias
+    `journal`), for QuickBooks Desktop.
   - Dates: period reports take `start` (default: first entry) and `end`
-    (default: today, local time); `balance_sheet` and `trial_balance`
-    take `as_of`.
+    (default: today, local time); `balance_sheet`, `trial_balance`,
+    `fixed_asset_register` and `iif` take `as_of` (default today).
+  - IIF (`docs/spec/rules.md` B-34; plan D-36): plain ASCII text, every
+    line ending CR LF, inline (no `content_encoding`): every posted entry
+    from the first through `as_of`, period-closing entries left out
+    (QuickBooks keeps none; imported, a close would zero its period's
+    profit), each transaction's DOCNUM its entry id; its BANK accounts are
+    `cash_accounts`, else the settings'. `start` or `end` is refused: the
+    file is cumulative, so QuickBooks' balances match the books'. A
+    character past ASCII is transliterated ("René" "Rene", "北京" "Bei
+    Jing", "—" "--"), a double quote is a single one (QuickBooks reads it
+    as a text delimiter), a tab or line break is a space, a control
+    character '?'. Within QuickBooks Desktop's limits (Intuit): an account
+    name level past 31 characters is cut there; accounts whose names would
+    then match get " (code)" (QuickBooks would merge them); a subaccount
+    whose QuickBooks type differs from its parent's is written at the top
+    level (QuickBooks gives a subaccount its parent's type); each parent
+    is declared before its subaccounts; an account number past 7
+    characters, or written like another's, is left out of ACCNUM; a memo
+    past 4,095 characters is cut. No line names a customer or vendor (no
+    NAME column; see the package's README). `warnings` (absent when
+    there are none) says what the file writes differently from the books,
+    for the human: each account's name, number and place a line (`account 6010's
+    name "Café meals" is written "Cafe meals"`, `account number
+    "12345678" is left out: QuickBooks Desktop holds 7 characters at
+    most`); the memos grouped, each thing written differently once with
+    every entry it is in (`"—" is written "--" in the memos of entries 3,
+    5, 9`; a run of changed characters is one thing), then the memos cut,
+    so a hundred memos with an em dash make one line. No line holds a full
+    TIN: a run of nine digits, or every numeral of a text holding one in
+    another script, is masked `•`.
   - Presentation (PDF and XLSX alike, QuickBooks-style): centered company,
     title, and period; a column-header row; "$" on subtotals and totals;
     negatives in parentheses with decimal points aligned; a rule above every
@@ -1414,8 +1444,25 @@ entries.
 
 - `books.export_cpa_package { as_of?, cash_accounts?, financing_accounts?,
   investing_accounts?, include_receipts?, include_tins? }` → `{ file,
-  tins_included, tin_gaps, note }`: the zip, `cpa-package-<as_of>.zip`,
-  handed over as `file` (a `HandedFile`, "Tools — the TIN vault").
+  tins_included, tin_gaps, warnings?, note }`: the zip,
+  `cpa-package-<as_of>.zip`, handed over as `file` (a `HandedFile`,
+  "Tools — the TIN vault").
+  **As of one day** (`docs/spec/rules.md` B-33): nothing in it reflects
+  anything dated after `as_of` (default today): no figure, entry,
+  receipt or worksheet row; the chart and `documents/` are as they stand.
+  One list of cash accounts and one of financing accounts serve the
+  whole package: the request's, else the settings'.
+  **QuickBooks file** (`general-journal.iif`, B-34): as `books.export`
+  iif makes it, through `as_of`; `warnings` says what it writes
+  differently from the books, in the same lines as `books.export` iif's
+  (account names and numbers one each, the memos grouped; every other
+  file keeps the books' text), the README lists the same lines (and
+  names the entries with a line on accounts receivable or payable, to
+  which QuickBooks Desktop may ask the CPA to add a customer or vendor),
+  and `note` ends "N account name(s), number(s), place(s) or memo(s)
+  are written differently in general-journal.iif to fit QuickBooks
+  Desktop (warnings says how; so does the README): tell the human.", N
+  counting each name, number, place and memo.
   **Receipts** (`include_receipts`, default true): `receipts/` holds every
   current file behind each posted entry of the fiscal year to date, filed
   on it or linked to it (`books.link_attachment`; a linked file counts as
@@ -1453,8 +1500,11 @@ entries.
   party is the party with the member's name (not a display name) and the
   member role, as the viewer's capital statement finds it; with none, the
   member's TIN is a gap.
-  **1099 worksheet** with TINs adds `party_id, tin_last4, tin, tin_type,
-  tin_note`. A zip with the full set, each
+  **1099 worksheet** (`1099-worksheet-<year>.csv`, `as_of`'s calendar
+  year): the payments from January 1 through `as_of` (the year to date;
+  the whole year for a December 31 package; DECISION D-36), and the
+  README says which. With TINs it adds `party_id, tin_last4, tin,
+  tin_type, tin_note`. A zip with the full set, each
   statement as PDF and XLSX: `profit-and-loss`, `balance-sheet`,
   `cash-flow` (reconciled to `cash_accounts`), `members-equity`
   (multi-member LLCs), `trial-balance`; plus `general-ledger.xlsx` and

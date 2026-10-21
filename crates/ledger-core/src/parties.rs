@@ -13,8 +13,10 @@
 //!         2026-10-15); IRS truncated TINs: Treas. Reg. §301.6109-4.
 //! INVARIANTS:
 //!   1. No party field holds a full taxpayer identification number: any
-//!      run of nine digits (single spaces or hyphens between them allowed)
-//!      is refused. A W-9's TIN is kept as its last four digits only.
+//!      run of nine digits, in any script, separated or not (`has_full_tin`:
+//!      up to three spaces, hyphens, dots, slashes or underscores, in any
+//!      of their Unicode forms, between neighbors) is refused. A W-9's TIN
+//!      is kept as its last four digits only.
 //!   2. W-9 facts need a 1099 role (contractor or landlord); W-4 facts need
 //!      the employee role. Taxpayer-ID facts (`TinFacts`: the TIN's type,
 //!      last four, and vault record) are allowed for any role: members
@@ -272,33 +274,100 @@ pub fn name_key(name: &str) -> String {
     name.trim().to_lowercase()
 }
 
-/// The characters that may sit between a TIN's digits: space, hyphen,
-/// dot, slash, underscore, and the Unicode dashes and no-break space
-/// (`291-12-2846`, `291.12.2846`, `291/12/2846`, `291 - 12 - 2846`).
+/// The characters that may sit between a TIN's digits (`291-12-2846`,
+/// `291.12.2846`, `291/12/2846`, `291 - 12 - 2846`): in ASCII a space,
+/// hyphen, dot, slash or underscore (no other, not a tab or a line
+/// break); past ASCII, every form of them Unicode has, so a TIN can't slip
+/// through typed in another script (`docs/spec/sources/unicode-tin-text.md`,
+/// Unicode 17.0): every space (general category Zs: the no-break, thin and
+/// ideographic spaces), every dash (property Dash: the hyphens, en and em
+/// dashes, minus sign, Hebrew maqaf, fullwidth and small hyphen-minus),
+/// and the characters whose compatibility form is a dot, slash or
+/// underscore (the fullwidth and small full stops, the one dot leader,
+/// the fullwidth solidus, the fullwidth and presentation low lines).
 fn tin_separator(c: char) -> bool {
+    match c {
+        ' ' | '-' | '.' | '/' | '_' => true,
+        c if c.is_ascii() => false,
+        // White_Space less the line breaks (NEL, LS, PS): the Zs spaces.
+        c if c.is_whitespace() => !matches!(c, '\u{85}' | '\u{2028}' | '\u{2029}'),
+        c => matches!(
+            c,
+            // Dash (PropList.txt), less U+002D above.
+            '\u{58A}'
+                | '\u{5BE}'
+                | '\u{1400}'
+                | '\u{1806}'
+                | '\u{2010}'..='\u{2015}'
+                | '\u{2053}'
+                | '\u{207B}'
+                | '\u{208B}'
+                | '\u{2212}'
+                | '\u{2E17}'
+                | '\u{2E1A}'
+                | '\u{2E3A}'..='\u{2E3B}'
+                | '\u{2E40}'
+                | '\u{2E5D}'
+                | '\u{301C}'
+                | '\u{3030}'
+                | '\u{30A0}'
+                | '\u{FE31}'..='\u{FE32}'
+                | '\u{FE58}'
+                | '\u{FE63}'
+                | '\u{FF0D}'
+                | '\u{10D6E}'
+                | '\u{10EAD}'
+                // NFKC '.', '/', '_' (UnicodeData.txt decompositions).
+                | '\u{2024}'
+                | '\u{FE52}'
+                | '\u{FF0E}'
+                | '\u{FF0F}'
+                | '\u{FE33}'..='\u{FE34}'
+                | '\u{FE4D}'..='\u{FE4F}'
+                | '\u{FF3F}'
+        ),
+    }
+}
+
+/// Whether `c` is invisible, so a TIN's digits read as neighbors across it
+/// however many there are (`1\u{200B}2` shows as `12`): Unicode's
+/// Default_Ignorable_Code_Point (DerivedCoreProperties.txt, 17.0): the
+/// soft hyphen, the zero-width space and joiners, the left-to-right and
+/// right-to-left marks and the other directional formatting characters,
+/// the word joiner, the byte-order mark, the variation selectors, the tags
+/// and the fillers. None is ASCII.
+fn tin_invisible(c: char) -> bool {
     matches!(
         c,
-        ' ' | '-'
-            | '.'
-            | '/'
-            | '_'
-            | '\u{a0}'
-            | '\u{2010}'
-            | '\u{2011}'
-            | '\u{2012}'
-            | '\u{2013}'
-            | '\u{2014}'
-            | '\u{2212}'
+        '\u{AD}'
+            | '\u{34F}'
+            | '\u{61C}'
+            | '\u{115F}'..='\u{1160}'
+            | '\u{17B4}'..='\u{17B5}'
+            | '\u{180B}'..='\u{180F}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{206F}'
+            | '\u{3164}'
+            | '\u{FE00}'..='\u{FE0F}'
+            | '\u{FEFF}'
+            | '\u{FFA0}'
+            | '\u{FFF0}'..='\u{FFF8}'
+            | '\u{1BCA0}'..='\u{1BCA3}'
+            | '\u{1D173}'..='\u{1D17A}'
+            | '\u{E0000}'..='\u{E0FFF}'
     )
 }
 
 /// The most separators that may sit between two of a TIN's digits
-/// (`" - "` is three).
+/// (`" - "` is three); invisible characters ([`tin_invisible`]) don't
+/// count.
 const MAX_TIN_GAP: usize = 3;
 
 /// Each run in `chars` that holds nine digits or more, as (first, last)
 /// char indices of its digits: digits with at most [`MAX_TIN_GAP`]
-/// separators ([`tin_separator`]) between neighbors.
+/// separators ([`tin_separator`]) between neighbors, and any number of
+/// invisible characters.
 fn full_tin_runs(chars: &[char]) -> Vec<(usize, usize)> {
     let mut runs = Vec::new();
     let mut i = 0;
@@ -315,11 +384,19 @@ fn full_tin_runs(chars: &[char]) -> Vec<(usize, usize)> {
                 j += 1;
                 continue;
             }
-            let gap = chars[j..].iter().take_while(|c| tin_separator(**c)).count();
-            if (1..=MAX_TIN_GAP).contains(&gap)
-                && chars.get(j + gap).is_some_and(|c| c.is_numeric())
+            let between = chars[j..]
+                .iter()
+                .take_while(|c| tin_separator(**c) || tin_invisible(**c))
+                .count();
+            let gap = chars[j..j + between]
+                .iter()
+                .filter(|c| !tin_invisible(**c))
+                .count();
+            if between > 0
+                && gap <= MAX_TIN_GAP
+                && chars.get(j + between).is_some_and(|c| c.is_numeric())
             {
-                j += gap;
+                j += between;
             } else {
                 break;
             }
@@ -333,11 +410,13 @@ fn full_tin_runs(chars: &[char]) -> Vec<(usize, usize)> {
 }
 
 /// Whether `text` holds a run of nine digits, with at most three
-/// separators (space, hyphen, dot, slash, underscore, a Unicode dash or
-/// no-break space) between neighbors: an SSN, EIN, or ITIN however it's
-/// written (`291-12-2846`, `291.12.2846`, `291 - 12 - 2846`). Any Unicode
-/// numeral counts as a digit (full-width, Arabic-Indic, ...), so a number
-/// can't slip through in another script.
+/// separators (a space, hyphen, dot, slash or underscore, in any of
+/// their Unicode forms) between neighbors, invisible
+/// characters not counted: an SSN, EIN, or ITIN however it's written
+/// (`291-12-2846`, `291.12.2846`, `291 - 12 - 2846`, `２９１－１２－２８４６`).
+/// Any Unicode numeral counts as a digit (full-width, Arabic-Indic, ...),
+/// so a number can't slip through in another script. In ASCII, exactly
+/// the space, hyphen, dot, slash and underscore separate.
 pub fn has_full_tin(text: &str) -> bool {
     let chars: Vec<char> = text.chars().collect();
     !full_tin_runs(&chars).is_empty()

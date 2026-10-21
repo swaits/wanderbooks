@@ -1565,6 +1565,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "deunicode"
+version = "1.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "339544cc9e2c4dc3fc7149fd630c5f22263a4fdf18a98afd0075784968b5cf00"
+
+[[package]]
 name = "dify"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3925,6 +3931,9 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "csv",
+ "deunicode",
+ "hayro-interpret 0.8.0",
+ "kurbo",
  "ledger-core",
  "proptest",
  "qrcode",
@@ -3985,8 +3994,10 @@ dependencies = [
  "ledger-import",
  "ledger-store",
  "ledger-vault",
+ "proptest",
  "rust_decimal",
  "tempfile",
+ "toml 1.1.8+spec-1.1.0",
  "zip 9.0.2",
 ]
 

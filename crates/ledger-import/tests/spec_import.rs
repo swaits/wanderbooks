@@ -21,9 +21,10 @@ use ledger_core::{
 use ledger_import::chart_csv::ChartCsvError;
 use ledger_import::report::{self, Member, ReportMeta, Row, RowKind, Statement, YearEarnings};
 use ledger_import::{
-    BankCsvError, BankTransaction, DateOrder, EntityType, IifAccount, IifError, QbAccountType,
-    XlsxReport, chart_template, format_amount, iif_accounts, journal_to_iif, parse_bank_csv,
-    parse_bank_csv_with, parse_chart_csv, report_to_xlsx, statement_pdf,
+    BankCsvError, BankTransaction, DateOrder, EntityType, Iif, IifAccount, IifChange, IifError,
+    IifField, LeftOut, MEMO_MAX, NAME_MAX, NUMBER_MAX, QbAccountType, XlsxReport, chart_template,
+    format_amount, iif_accounts, journal_to_iif, parse_bank_csv, parse_bank_csv_with,
+    parse_chart_csv, report_to_xlsx, statement_pdf,
 };
 use proptest::prelude::*;
 use rust_decimal::{Decimal, RoundingStrategy};
@@ -1069,18 +1070,19 @@ fn qb(a: &ledger_core::Account) -> QbAccountType {
     }
 }
 
-/// Check an IIF document against iif.rs INVARIANTS 1-4 and the layout,
+/// Check an IIF document against iif.rs INVARIANTS 1-6 and the layout,
 /// for `entries` written with `accounts`.
 fn check_iif(text: &str, accounts: &[IifAccount], entries: &[&JournalEntry]) {
-    // INVARIANT 4: ASCII only.
+    // INVARIANT 4: ASCII text, every line ending CR LF, and no other CR or
+    // LF, tab or control character but the tabs between fields.
     assert!(text.is_ascii(), "non-ASCII in IIF");
-    let lines: Vec<&str> = text
-        .split('\n')
-        .map(|l| l.strip_suffix('\r').unwrap_or(l))
-        .filter(|l| !l.is_empty())
-        .collect();
+    assert!(text.ends_with("\r\n"), "the last line ends CR LF");
+    let lines: Vec<&str> = text.strip_suffix("\r\n").unwrap().split("\r\n").collect();
     for l in &lines {
-        assert!(!l.contains('\r'), "stray CR inside a line: {l:?}");
+        assert!(
+            l.bytes().all(|b| b == b'\t' || (0x20..0x7F).contains(&b)),
+            "a control character (a bare CR or LF?) inside a line: {l:?}"
+        );
     }
     let keywords = [
         "!ACCNT", "ACCNT", "!TRNS", "!SPL", "!ENDTRNS", "TRNS", "SPL", "ENDTRNS",
@@ -1116,9 +1118,16 @@ fn check_iif(text: &str, accounts: &[IifAccount], entries: &[&JournalEntry]) {
         );
         match kw {
             "ACCNT" => {
-                // INVARIANT 1: every account precedes the transactions.
+                // INVARIANT 1: every account precedes the transactions,
+                // and its parent precedes it.
                 assert!(!seen_trns_header, "ACCNT after !TRNS");
                 let name = f[h.iter().position(|c| *c == "NAME").unwrap()];
+                if let Some((parent, _)) = name.rsplit_once(':') {
+                    assert!(
+                        declared.contains(parent),
+                        "{name:?} before its parent {parent:?}"
+                    );
+                }
                 declared.insert(name.to_string());
             }
             "TRNS" => {
@@ -1136,6 +1145,9 @@ fn check_iif(text: &str, accounts: &[IifAccount], entries: &[&JournalEntry]) {
         accounts.len(),
         "every account declared once"
     );
+    // INVARIANT 6: no two NAMEs alike, even ignoring case.
+    let lower: HashSet<String> = declared.iter().map(|n| n.to_ascii_lowercase()).collect();
+    assert_eq!(lower.len(), declared.len(), "two NAMEs alike: {declared:?}");
     let col = |kw: &str, name: &str| -> usize {
         headers[kw]
             .iter()
@@ -1154,24 +1166,41 @@ fn check_iif(text: &str, accounts: &[IifAccount], entries: &[&JournalEntry]) {
             .find(|f| f[col("ACCNT", "NAME")] == a.path)
             .unwrap_or_else(|| panic!("{} not declared", a.path));
         assert_eq!(row[col("ACCNT", "ACCNTTYPE")], a.qb_type.keyword());
-        assert_eq!(row[col("ACCNT", "ACCNUM")], a.number);
+        // INVARIANT 2: a subaccount has its parent's QuickBooks type.
+        if let Some((parent, _)) = a.path.rsplit_once(':') {
+            let p = accounts.iter().find(|p| p.path == parent).unwrap();
+            assert_eq!(p.qb_type, a.qb_type, "{:?} under {parent:?}", a.path);
+        }
+        // Its number, or none where QuickBooks can't hold it (INVARIANT 6;
+        // check_changes says which).
+        let accnum = row[col("ACCNT", "ACCNUM")];
+        assert!(
+            accnum == a.number || accnum.is_empty(),
+            "{accnum:?} for {:?}",
+            a.number
+        );
     }
     let path_of: HashMap<AccountId, &str> =
         accounts.iter().map(|a| (a.id, a.path.as_str())).collect();
     assert_eq!(txns.len(), entries.len(), "one transaction per entry");
-    for (i, (t, e)) in txns.iter().zip(entries).enumerate() {
+    for (t, e) in txns.iter().zip(entries) {
         let mut sum = Decimal::ZERO;
         let mut got: Vec<(String, Decimal)> = Vec::new();
         for (j, f) in t.iter().enumerate() {
             let kw = if j == 0 { "TRNS" } else { "SPL" };
-            // INVARIANT 3: GENERAL JOURNAL, dated M/D/YYYY.
+            // INVARIANT 3: GENERAL JOURNAL, dated M/D/YYYY, numbered with
+            // the entry's id on every line.
             assert_eq!(f[col(kw, "TRNSTYPE")], "GENERAL JOURNAL");
             let dt = e.date();
             assert_eq!(
                 f[col(kw, "DATE")],
                 format!("{}/{}/{}", dt.month(), dt.day(), dt.year())
             );
-            assert_eq!(f[col(kw, "DOCNUM")], (i + 1).to_string(), "DOCNUM from 1");
+            assert_eq!(
+                f[col(kw, "DOCNUM")],
+                e.id().to_string(),
+                "DOCNUM is the entry id"
+            );
             let acct = f[col(kw, "ACCNT")];
             // INVARIANT 1/5: every account used is declared.
             assert!(declared.contains(acct), "{acct:?} used but not declared");
@@ -1181,12 +1210,7 @@ fn check_iif(text: &str, accounts: &[IifAccount], entries: &[&JournalEntry]) {
             got.push((acct.to_string(), a));
         }
         // INVARIANT 3: debits positive, credits negative, sum zero.
-        assert_eq!(
-            sum,
-            Decimal::ZERO,
-            "transaction {} doesn't sum to zero",
-            i + 1
-        );
+        assert_eq!(sum, Decimal::ZERO, "entry {} doesn't sum to zero", e.id());
         let mut want: Vec<(String, Decimal)> = e
             .lines()
             .iter()
@@ -1202,6 +1226,245 @@ fn check_iif(text: &str, accounts: &[IifAccount], entries: &[&JournalEntry]) {
     }
 }
 
+/// Each transaction's MEMO as the file writes it, in file order.
+fn iif_memos(text: &str) -> Vec<String> {
+    let header: Vec<&str> = text
+        .split("\r\n")
+        .find(|l| l.starts_with("!TRNS\t"))
+        .unwrap()
+        .split('\t')
+        .collect();
+    let at = header.iter().position(|c| *c == "MEMO").unwrap();
+    text.split("\r\n")
+        .filter(|l| l.starts_with("TRNS\t"))
+        .map(|l| l.split('\t').nth(at).unwrap().to_string())
+        .collect()
+}
+
+/// Each account's ACCNUM as the file writes it, by NAME.
+fn iif_numbers(text: &str) -> HashMap<String, String> {
+    text.split("\r\n")
+        .filter(|l| l.starts_with("ACCNT\t"))
+        .map(|l| {
+            let f: Vec<&str> = l.split('\t').collect();
+            (f[1].to_string(), f[3].to_string())
+        })
+        .collect()
+}
+
+/// iif INVARIANTS 6 and 7 against the file: every ACCNUM is at most
+/// NUMBER_MAX characters and no other's (ignoring case), and is the
+/// account's number unless that is too long or shared, when it is blank;
+/// `changes` lists, in file order, each account whose own level or number
+/// the file writes differently from the books (a number left out with
+/// why), then each entry whose memo it writes differently, with both
+/// texts; and nothing else. Its warnings say every change, one line each.
+fn check_changes(iif: &Iif, accounts: &[IifAccount], entries: &[&JournalEntry]) {
+    let written = iif_numbers(&iif.text);
+    let mut seen: HashSet<String> = HashSet::new();
+    for n in written.values().filter(|n| !n.is_empty()) {
+        assert!(n.len() <= NUMBER_MAX, "ACCNUM {n:?} too long");
+        assert!(seen.insert(n.to_ascii_lowercase()), "ACCNUM {n:?} twice");
+    }
+    let alike = |n: &str| {
+        accounts
+            .iter()
+            .filter(|a| a.number.eq_ignore_ascii_case(n))
+            .count()
+    };
+    let mut want: Vec<IifChange> = Vec::new();
+    for a in accounts {
+        let own = a.path.rsplit(':').next().unwrap();
+        if own != a.name {
+            want.push(IifChange {
+                field: IifField::AccountName {
+                    code: a.code.clone(),
+                },
+                books: a.name.clone(),
+                written: own.to_string(),
+            });
+        }
+        if let Some((parent, parent_type)) = &a.apart_from {
+            want.push(IifChange {
+                field: IifField::AtTopLevel {
+                    code: a.code.clone(),
+                    own: a.qb_type,
+                    parent: *parent_type,
+                },
+                books: parent.clone(),
+                written: String::new(),
+            });
+        }
+        let left_out = if a.number.len() > NUMBER_MAX {
+            Some(LeftOut::TooLong)
+        } else if !a.number.is_empty() && alike(&a.number) > 1 {
+            Some(LeftOut::Shared(a.number.clone()))
+        } else {
+            None
+        };
+        let accnum = &written[&a.path];
+        match left_out {
+            Some(why) => {
+                assert_eq!(accnum, "", "{:?} left out", a.number);
+                want.push(IifChange {
+                    field: IifField::AccountNumberLeftOut { why },
+                    books: a.code.clone(),
+                    written: String::new(),
+                });
+            }
+            None => {
+                assert_eq!(accnum, &a.number);
+                if a.number != a.code {
+                    want.push(IifChange {
+                        field: IifField::AccountNumber,
+                        books: a.code.clone(),
+                        written: a.number.clone(),
+                    });
+                }
+            }
+        }
+    }
+    for (e, memo) in entries.iter().zip(iif_memos(&iif.text)) {
+        assert!(memo.len() <= MEMO_MAX, "entry {}'s memo too long", e.id());
+        if memo != e.description() {
+            want.push(IifChange {
+                field: IifField::Memo { entry: e.id() },
+                books: e.description().to_string(),
+                written: memo,
+            });
+        }
+    }
+    assert_eq!(iif.changes, want);
+    check_warnings(iif);
+}
+
+/// A string Rust's `{:?}` printed at the start of `s`, read back, and
+/// what follows it.
+fn read_quoted(s: &str) -> Option<(String, &str)> {
+    let mut chars = s.strip_prefix('"')?.char_indices();
+    let mut out = String::new();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '"' => return Some((out, &s[i + 2..])),
+            '\\' => match chars.next()?.1 {
+                'n' => out.push('\n'),
+                'r' => out.push('\r'),
+                't' => out.push('\t'),
+                '0' => out.push('\0'),
+                'u' => {
+                    let mut hex = String::new();
+                    chars.next()?; // '{'
+                    for (_, h) in chars.by_ref() {
+                        if h == '}' {
+                            break;
+                        }
+                        hex.push(h);
+                    }
+                    out.push(char::from_u32(u32::from_str_radix(&hex, 16).ok()?)?);
+                }
+                other => out.push(other),
+            },
+            c => out.push(c),
+        }
+    }
+    None
+}
+
+/// iif INVARIANT 7's warnings: one line each, never a full TIN; each
+/// account name or number change its own line, as the change prints; each
+/// memo change named in one line at least, and every memo line true of
+/// each entry it names: `"from" is written "to" in the memos of entries
+/// ...` with `from` in the books' memo and `to` in the file's, or the line
+/// of memos cut to MEMO_MAX naming exactly those cut. A line with a masked
+/// TIN-like run is taken as it is.
+fn check_warnings(iif: &Iif) {
+    let lines = iif.warnings();
+    let memos: HashMap<u64, &IifChange> = iif
+        .changes
+        .iter()
+        .filter_map(|c| match c.field {
+            IifField::Memo { entry } => Some((entry, c)),
+            _ => None,
+        })
+        .collect();
+    let mut named: HashSet<u64> = HashSet::new();
+    for l in &lines {
+        assert!(!l.chars().any(char::is_control), "one line: {l:?}");
+        assert!(!ledger_core::parties::has_full_tin(l), "a TIN in {l:?}");
+        let ids = l
+            .rsplit_once(" the memo of entry ")
+            .or_else(|| l.rsplit_once(" the memos of entries "))
+            .or_else(|| l.split_once("the memo of entry "))
+            .or_else(|| l.split_once("the memos of entries "));
+        let Some((_, ids)) = ids else {
+            continue;
+        };
+        let list: String = ids
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == ',' || *c == ' ')
+            .collect();
+        let ids: Vec<u64> = list
+            .trim_end()
+            .split(", ")
+            .map(|t| t.parse().unwrap())
+            .collect();
+        assert!(
+            !ids.is_empty() && ids.windows(2).all(|w| w[0] < w[1]),
+            "{l:?}"
+        );
+        named.extend(&ids);
+        if l.contains('\u{2022}') {
+            continue;
+        }
+        if l.starts_with("the memo") {
+            let cut: Vec<u64> = memos
+                .iter()
+                .filter(|(_, c)| c.written.len() == MEMO_MAX)
+                .map(|(e, _)| *e)
+                .collect();
+            for e in &ids {
+                assert!(cut.contains(e), "entry {e} isn't cut: {l:?}");
+            }
+            continue;
+        }
+        let (from, rest) = read_quoted(l).unwrap_or_else(|| panic!("{l:?}"));
+        let rest = rest.strip_prefix(" is written ").unwrap();
+        let (to, rest) = read_quoted(rest).unwrap();
+        assert!(rest.starts_with(" in the memo"), "{l:?}");
+        assert!(!from.is_empty() && from != to, "{l:?}");
+        for e in &ids {
+            let c = memos[e];
+            assert!(
+                c.books.contains(&from),
+                "{from:?} not in entry {e}'s {:?}",
+                c.books
+            );
+            assert!(
+                c.written.contains(&to),
+                "{to:?} not in entry {e}'s {:?}",
+                c.written
+            );
+        }
+    }
+    for c in &iif.changes {
+        match c.field {
+            IifField::Memo { entry } => {
+                assert!(
+                    named.contains(&entry),
+                    "entry {entry}'s memo isn't in {lines:?}"
+                )
+            }
+            _ => assert!(lines.contains(&c.to_string()), "{c} isn't in {lines:?}"),
+        }
+    }
+}
+
+/// Whether `s` is text INVARIANT 4 writes as itself: printable ASCII
+/// without a double quote.
+fn plain(s: &str) -> bool {
+    s.bytes().all(|b| (0x20..0x7F).contains(&b) && b != b'"')
+}
+
 /// The colon path an account should have: its own name and its parents',
 /// highest first (each with any colon replaced, so the depth is exact).
 fn depth(ledger: &Ledger, mut id: AccountId) -> usize {
@@ -1213,21 +1476,86 @@ fn depth(ledger: &Ledger, mut id: AccountId) -> usize {
     n
 }
 
+/// Text for names and memos, mixing what INVARIANT 4 keeps (ASCII), what
+/// it transliterates (Latin-1 and other letters, curly quotes, dashes, a
+/// no-break space, a fullwidth colon, Chinese, Japanese, Korean, emoji,
+/// combining marks, invisible format characters), what it writes '?'
+/// (controls, private use) and what it writes as a space (tabs and every
+/// kind of line break).
+fn any_text() -> impl Strategy<Value = String> {
+    "[A-Za-z0-9 :()#$\t\n\r\u{B}\u{C}\u{85}\u{2028}\u{2029}é—–“”’\u{A0}Ł北京서울あ😀☕\u{301}\u{200B}\u{FEFF}\u{1}\u{7F}\u{9F}\u{E000}\u{FF1A}]{0,12}"
+}
+
+/// A random chart for the name properties: account i under an earlier
+/// one or at the top, its name from a pool that makes clashes (the same
+/// name twice, differing only by case, a fullwidth colon against a
+/// hyphen, two private-use names that are both '?', Chinese against its
+/// transliteration, a name that is another's " (code)" form, names past
+/// NAME_MAX that are alike once cut, and one that is another's cut form)
+/// or from [`any_text`].
+fn chart_strategy() -> impl Strategy<Value = Vec<(String, Option<usize>)>> {
+    let name = prop_oneof![
+        proptest::sample::select(vec![
+            "Software",
+            "software",
+            "Ratio\u{FF1A}Ops",
+            "Ratio-Ops",
+            "\u{E000}",
+            "\u{E001}",
+            "北京",
+            "Bei Jing",
+            "Software (6001)",
+            " Rent ",
+            "Professional services and consulting fees",
+            "Professional services and consulting costs",
+            "Professional services and consu",
+            "Professional services an (6002)",
+        ])
+        .prop_map(String::from),
+        any_text(),
+    ];
+    proptest::collection::vec((name, any::<u64>(), any::<bool>()), 1..12).prop_map(|v| {
+        v.into_iter()
+            .enumerate()
+            .map(|(i, (n, pick, top))| {
+                let parent = (i > 0 && !top).then(|| (pick % i as u64) as usize);
+                (n, parent)
+            })
+            .collect()
+    })
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
 
-    /// iif INVARIANTS 1-4 over random books: accounts declared before the
-    /// transactions; colon paths; TRNS/SPL/ENDTRNS, GENERAL JOURNAL,
-    /// M/D/YYYY, debits positive and credits negative summing to zero;
-    /// ASCII only, no tab or line break inside a field.
+    /// iif INVARIANTS 1-7 over random books with memos of every kind:
+    /// accounts declared before the transactions, colon paths; TRNS/SPL/
+    /// ENDTRNS, GENERAL JOURNAL, M/D/YYYY, DOCNUM the entry id, debits
+    /// positive and credits negative summing to zero; ASCII lines ending CR
+    /// LF, no tab or line break inside a field; plain ASCII written as
+    /// itself; every change listed.
     #[test]
-    fn iif_round_trips_random_books((specs, oe, _) in books_strategy()) {
+    fn iif_round_trips_random_books(
+        (specs, oe, _) in books_strategy(),
+        memos in proptest::collection::vec(any_text(), 25),
+    ) {
+        let mut specs = specs;
+        for (s, m) in specs.iter_mut().zip(memos) {
+            s.memo = m;
+        }
         let b = build_books(&specs, oe);
         let accounts = iif_accounts(&b.ledger, qb);
         prop_assert_eq!(accounts.len(), b.ledger.chart().len());
         let entries: Vec<&JournalEntry> = b.ledger.posted_entries().collect();
-        let text = journal_to_iif(&accounts, &entries).unwrap();
-        check_iif(&text, &accounts, &entries);
+        let iif = journal_to_iif(&accounts, &entries).unwrap();
+        check_iif(&iif.text, &accounts, &entries);
+        check_changes(&iif, &accounts, &entries);
+        // INVARIANT 4: a memo of printable ASCII is written as itself.
+        for (e, memo) in entries.iter().zip(iif_memos(&iif.text)) {
+            if plain(e.description()) {
+                prop_assert_eq!(memo.as_str(), e.description());
+            }
+        }
         // INVARIANT 2: a subaccount's NAME is its path, parents first, one
         // colon per level, the parent's path as its prefix.
         for a in &accounts {
@@ -1241,11 +1569,87 @@ proptest! {
             }
         }
     }
+
+    /// iif INVARIANTS 2, 6 and 7 over random charts full of clashing
+    /// names: every NAME differs from every other ignoring case, has one
+    /// colon per level under its parent's NAME, and each level is the
+    /// account's own name (or that name followed by " (ACCNUM)" where it
+    /// would clash), trimmed, never empty; a clash that remains is refused,
+    /// naming accounts whose NAMEs are alike; every change is listed.
+    #[test]
+    fn iif_names_never_clash_and_every_change_is_listed(chart in chart_strategy()) {
+        let mut l = Ledger::new(Currency::USD);
+        let mut ids = Vec::new();
+        // Codes: most four digits; some with a colon (its tag can't add a
+        // level), some past NUMBER_MAX (left out of ACCNUM), and one with a
+        // space before account 2's (the same number once trimmed: both
+        // left out, and tagged alike).
+        let code_of = |i: usize| match i {
+            8 => " 6002".to_string(),
+            i if i % 5 == 3 => format!("{}:{i}", 60 + i),
+            i if i % 7 == 6 => format!("1234567{i}"),
+            i => format!("{}", 6000 + i),
+        };
+        for (i, (name, parent)) in chart.iter().enumerate() {
+            // A blank name is refused by the books; it can't reach the file.
+            let name = if name.trim().is_empty() { "x" } else { name.as_str() };
+            let parent = parent.map(|p| ids[p]);
+            ids.push(l.add_account(&code_of(i), name, AccountType::Expense, parent, false).unwrap());
+        }
+        let accounts = iif_accounts(&l, |_| QbAccountType::Expense);
+        match journal_to_iif(&accounts, &[]) {
+            Ok(iif) => {
+                check_iif(&iif.text, &accounts, &[]);
+                check_changes(&iif, &accounts, &[]);
+                for a in &accounts {
+                    let acct = l.chart().get(a.id).unwrap();
+                    prop_assert_eq!(a.path.matches(':').count(), depth(&l, a.id), "{:?}", a.path);
+                    if let Some(p) = acct.parent {
+                        let pp = &accounts.iter().find(|x| x.id == p).unwrap().path;
+                        prop_assert!(a.path.starts_with(&format!("{pp}:")), "{:?} under {:?}", a.path, pp);
+                    }
+                    let own = a.path.rsplit(':').next().unwrap();
+                    prop_assert!(!own.is_empty() && own == own.trim(), "{:?}", own);
+                    prop_assert!(own.len() <= NAME_MAX, "{:?}", own);
+                    // A plain name written as itself, cut to NAME_MAX, or
+                    // so cut to make room for its tag, unless it clashed.
+                    let name = acct.name.as_str();
+                    let tag = format!(" ({})", acct.code.trim().replace(':', "-"));
+                    if plain(name) && !name.contains(':') && name == name.trim() {
+                        let base = own.strip_suffix(tag.as_str()).unwrap_or(own);
+                        prop_assert!(
+                            own == name.get(..NAME_MAX).unwrap_or(name).trim_end()
+                                || (own.ends_with(tag.as_str()) && name.starts_with(base)),
+                            "{:?} for {:?}", own, name
+                        );
+                    }
+                }
+            }
+            Err(IifError::NameCollision { name, codes }) => {
+                // Only account 8, whose code is account 2's once trimmed,
+                // can be tagged like another.
+                let alike: Vec<&str> = accounts
+                    .iter()
+                    .filter(|a| field_eq(&a.path, &name))
+                    .map(|a| a.code.as_str())
+                    .collect();
+                prop_assert_eq!(&alike, &codes);
+                prop_assert_eq!(codes.iter().map(|c| c.trim()).collect::<HashSet<_>>().len(), 1);
+            }
+            Err(e) => prop_assert!(false, "{}", e),
+        }
+    }
+}
+
+/// Whether two NAMEs are alike to QuickBooks (ignoring ASCII case).
+fn field_eq(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b)
 }
 
 /// iif INVARIANT 2: "Reserve: Savings" under "Cash" is one level down, its
-/// own colon replaced; INVARIANT 4: common punctuation is transliterated
-/// (curly quotes, em dash), anything else becomes '?'.
+/// own colon replaced; INVARIANT 4: what isn't ASCII is transliterated
+/// (curly quotes straight and single, an em dash two hyphens, "é" "e"),
+/// and each such name is listed (INVARIANT 7).
 #[test]
 fn iif_paths_and_transliteration() {
     let b = build_books(&[], true);
@@ -1254,29 +1658,34 @@ fn iif_paths_and_transliteration() {
         let id = b.ledger.chart().find_by_code(code).unwrap().id;
         accounts.iter().find(|a| a.id == id).unwrap().path.clone()
     };
-    let reserve = path("1010");
-    assert!(reserve.starts_with("Cash:"), "{reserve:?}");
-    assert_eq!(reserve.matches(':').count(), 1, "{reserve:?}");
-    assert!(reserve.ends_with("Savings"));
+    assert_eq!(path("1010"), "Cash:Reserve- Savings");
     for a in &accounts {
-        assert!(a.path.is_ascii(), "{:?}", a.path);
+        assert!(plain(&a.path), "{:?}", a.path);
     }
-    // Curly quotes are common punctuation: transliterated, not '?'.
-    assert_eq!(path("4100"), "Interest \"income\"");
-    // The em dash too.
-    let cap = path("3000");
-    assert!(
-        cap.starts_with("Capital ") && cap.ends_with(" Ada"),
-        "{cap:?}"
+    // Curly quotes straight, and a double quote single (QuickBooks reads
+    // it as a text delimiter).
+    assert_eq!(path("4100"), "Interest 'income'");
+    assert_eq!(path("3000"), "Capital -- Ada");
+    assert_eq!(path("6010"), "Cafe meals");
+    let iif = journal_to_iif(&accounts, &[]).unwrap();
+    let changed: Vec<String> = iif.changes.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        changed,
+        [
+            "account 1010's name \"Reserve: Savings\" is written \"Reserve- Savings\"",
+            "account 3000's name \"Capital — Ada\" is written \"Capital -- Ada\"",
+            "account 3001's name \"Capital — Grace\" is written \"Capital -- Grace\"",
+            "account 3100's name \"Distributions — Ada\" is written \"Distributions -- Ada\"",
+            "account 3101's name \"Distributions — Grace\" is written \"Distributions -- Grace\"",
+            "account 4100's name \"Interest “income”\" is written \"Interest 'income'\"",
+            "account 6010's name \"Café meals\" is written \"Cafe meals\"",
+        ]
     );
-    assert!(!cap.contains('?'), "em dash became '?': {cap:?}");
-    // A letter with no ASCII form is not punctuation: '?'.
-    assert_eq!(path("6010"), "Caf? meals");
 }
 
 /// iif layout example (module docs): a two-line sale on 1/15/2026 writes
-/// TRNS Cash 1000.00 then SPL Revenue -1000.00, DOCNUM 1, memo "Sale", each
-/// line's tabs matching its header.
+/// TRNS Cash 1000.00 then SPL Revenue -1000.00, DOCNUM 1 (it is entry 1),
+/// memo "Sale", each line's tabs matching its header.
 #[test]
 fn iif_module_layout_example() {
     let mut l = Ledger::new(Currency::USD);
@@ -1287,6 +1696,7 @@ fn iif_module_layout_example() {
         .add_account("4000", "Revenue", AccountType::Revenue, None, false)
         .unwrap();
     let e = l.create_entry(d(2026, 1, 15), "Sale");
+    assert_eq!(e, 1);
     l.add_line(e, cash, Side::Debit, usd(100_000)).unwrap();
     l.add_line(e, rev, Side::Credit, usd(100_000)).unwrap();
     l.post_entry(e).unwrap();
@@ -1298,14 +1708,15 @@ fn iif_module_layout_example() {
         }
     });
     let entries: Vec<&JournalEntry> = l.posted_entries().collect();
-    let text = journal_to_iif(&accounts, &entries).unwrap();
-    let lines: Vec<&str> = text.lines().map(|l| l.trim_end_matches('\r')).collect();
+    let iif = journal_to_iif(&accounts, &entries).unwrap();
+    let lines: Vec<&str> = iif.text.lines().map(|l| l.trim_end_matches('\r')).collect();
     assert_eq!(lines[0], "!ACCNT\tNAME\tACCNTTYPE\tACCNUM");
     assert!(lines.contains(&"ACCNT\tCash\tBANK\t1000"));
     assert!(lines.contains(&"ACCNT\tRevenue\tINC\t4000"));
     assert!(lines.contains(&"TRNS\t\tGENERAL JOURNAL\t1/15/2026\tCash\t\t1000.00\t1\tSale"));
     assert!(lines.contains(&"SPL\t\tGENERAL JOURNAL\t1/15/2026\tRevenue\t\t-1000.00\t1\tSale"));
-    check_iif(&text, &accounts, &entries);
+    check_iif(&iif.text, &accounts, &entries);
+    assert!(iif.changes.is_empty());
 }
 
 /// iif INVARIANT 4: a memo holding tabs, line breaks, and non-ASCII still
@@ -1325,8 +1736,9 @@ fn iif_memo_with_tabs_and_breaks() {
     l.post_entry(e).unwrap();
     let accounts = iif_accounts(&l, |_| QbAccountType::Bank);
     let entries: Vec<&JournalEntry> = l.posted_entries().collect();
-    let text = journal_to_iif(&accounts, &entries).unwrap();
-    check_iif(&text, &accounts, &entries);
+    let iif = journal_to_iif(&accounts, &entries).unwrap();
+    check_iif(&iif.text, &accounts, &entries);
+    check_changes(&iif, &accounts, &entries);
 }
 
 /// iif INVARIANT 5: an entry whose account wasn't declared is refused,
@@ -1354,6 +1766,689 @@ fn iif_refuses_an_undeclared_account() {
             account: sales
         })
     );
+}
+
+/// A ledger with Cash 1000, Revenue 4000 and Fees 6000.
+fn small_ledger() -> (Ledger, AccountId, AccountId, AccountId) {
+    let mut l = Ledger::new(Currency::USD);
+    let cash = l
+        .add_account("1000", "Cash", AccountType::Asset, None, false)
+        .unwrap();
+    let rev = l
+        .add_account("4000", "Revenue", AccountType::Revenue, None, false)
+        .unwrap();
+    let fees = l
+        .add_account("6000", "Fees", AccountType::Expense, None, false)
+        .unwrap();
+    (l, cash, rev, fees)
+}
+
+/// Defect 7 (P3; DOCNUM was the transaction's place in the file, so a
+/// discarded draft, a post out of order or the as_of filter broke the
+/// trace from QuickBooks to the books). iif INVARIANT 3: DOCNUM is the
+/// entry's id, on the TRNS and every SPL. Entry 1 is a draft never
+/// posted; 2, 3 and 4 are posted in the order 3, 2, 4, and dated so that
+/// date order (4, 3, 2), posting order and id order all differ. The file
+/// had numbered them 1, 2, 3.
+#[test]
+fn iif_docnum_is_the_entry_id() {
+    let (mut l, cash, rev, fees) = small_ledger();
+    let draft = l.create_entry(d(2026, 1, 10), "Never posted");
+    l.add_line(draft, fees, Side::Debit, usd(500)).unwrap();
+    l.add_line(draft, cash, Side::Credit, usd(500)).unwrap();
+    let b = l.create_entry(d(2026, 3, 1), "March sale");
+    l.add_line(b, cash, Side::Debit, usd(20_000)).unwrap();
+    l.add_line(b, rev, Side::Credit, usd(20_000)).unwrap();
+    let c = l.create_entry(d(2026, 2, 1), "February sale, less a fee");
+    l.add_line(c, cash, Side::Debit, usd(9_700)).unwrap();
+    l.add_line(c, fees, Side::Debit, usd(300)).unwrap();
+    l.add_line(c, rev, Side::Credit, usd(10_000)).unwrap();
+    let e4 = l.create_entry(d(2026, 1, 20), "January fee");
+    l.add_line(e4, fees, Side::Debit, usd(1_000)).unwrap();
+    l.add_line(e4, cash, Side::Credit, usd(1_000)).unwrap();
+    assert_eq!((draft, b, c, e4), (1, 2, 3, 4));
+    for e in [c, b, e4] {
+        l.post_entry(e).unwrap();
+    }
+    let accounts = iif_accounts(&l, |_| QbAccountType::Bank);
+    let entries: Vec<&JournalEntry> = l.posted_entries().collect();
+    assert_eq!(
+        entries.iter().map(|e| e.id()).collect::<Vec<_>>(),
+        [3, 2, 4]
+    );
+    let iif = journal_to_iif(&accounts, &entries).unwrap();
+    check_iif(&iif.text, &accounts, &entries);
+    // Each record's keyword and DOCNUM, in file order.
+    let docnums: Vec<(&str, &str)> = iif
+        .text
+        .split("\r\n")
+        .filter(|l| l.starts_with("TRNS\t") || l.starts_with("SPL\t"))
+        .map(|l| {
+            let f: Vec<&str> = l.split('\t').collect();
+            (f[0], f[7])
+        })
+        .collect();
+    assert_eq!(
+        docnums,
+        [
+            ("TRNS", "3"),
+            ("SPL", "3"),
+            ("SPL", "3"),
+            ("TRNS", "2"),
+            ("SPL", "2"),
+            ("TRNS", "4"),
+            ("SPL", "4"),
+        ]
+    );
+}
+
+/// Plan D-36 (P3, defect 7): the file is plain ASCII, every name and memo
+/// past ASCII transliterated and listed. Accented letters, Chinese,
+/// emoji, a fullwidth colon and fullwidth digits, a tab inside a name,
+/// controls, a decomposed accent and a private-use character, each with
+/// its exact written form (deunicode 1.6.0's table); a memo of plain ASCII
+/// is neither changed nor listed. Before, every one of these characters
+/// was '?' (and "—" a single '-'), and nothing said so.
+#[test]
+fn iif_writes_plain_ascii_and_lists_every_change() {
+    let (mut l, cash, rev, _) = small_ledger();
+    for (code, name) in [
+        ("6010", "Café meals"),
+        ("6020", "北京 Office"),
+        ("6030", "Ratio\u{FF1A}Ops"),
+        ("6040", "Desk\trent"),
+        ("6050", "René 😀"),
+        ("６０７０", "Wide number"),
+    ] {
+        l.add_account(code, name, AccountType::Expense, None, false)
+            .unwrap();
+    }
+    let memos = [
+        "Lunch at Café “Zoë” — 北京\t☕\n",
+        "Control\u{1}char\u{7F}",
+        "Plain ASCII memo",
+        "Cafe\u{301}",
+        "\u{E000}x",
+    ];
+    for m in memos {
+        let e = l.create_entry(d(2026, 4, 1), m);
+        l.add_line(e, cash, Side::Debit, usd(100)).unwrap();
+        l.add_line(e, rev, Side::Credit, usd(100)).unwrap();
+        l.post_entry(e).unwrap();
+    }
+    let accounts = iif_accounts(&l, |_| QbAccountType::Expense);
+    let entries: Vec<&JournalEntry> = l.posted_entries().collect();
+    let iif = journal_to_iif(&accounts, &entries).unwrap();
+    check_iif(&iif.text, &accounts, &entries);
+    check_changes(&iif, &accounts, &entries);
+    let accnt: Vec<&str> = iif
+        .text
+        .split("\r\n")
+        .filter(|l| l.starts_with("ACCNT\t"))
+        .collect();
+    assert_eq!(
+        accnt,
+        [
+            "ACCNT\tCash\tEXP\t1000",
+            "ACCNT\tRevenue\tEXP\t4000",
+            "ACCNT\tFees\tEXP\t6000",
+            "ACCNT\tCafe meals\tEXP\t6010",
+            "ACCNT\tBei Jing Office\tEXP\t6020",
+            "ACCNT\tRatio-Ops\tEXP\t6030",
+            "ACCNT\tDesk rent\tEXP\t6040",
+            "ACCNT\tRene grinning\tEXP\t6050",
+            "ACCNT\tWide number\tEXP\t6070",
+        ]
+    );
+    assert_eq!(
+        iif_memos(&iif.text),
+        [
+            "Lunch at Cafe 'Zoe' -- Bei Jing coffee ",
+            "Control?char?",
+            "Plain ASCII memo",
+            "Cafe",
+            "?x",
+        ]
+    );
+    let changed: Vec<String> = iif.changes.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        changed,
+        [
+            "account 6010's name \"Café meals\" is written \"Cafe meals\"",
+            "account 6020's name \"北京 Office\" is written \"Bei Jing Office\"",
+            "account 6030's name \"Ratio：Ops\" is written \"Ratio-Ops\"",
+            "account 6040's name \"Desk\\trent\" is written \"Desk rent\"",
+            "account 6050's name \"René 😀\" is written \"Rene grinning\"",
+            "account number \"６０７０\" is written \"6070\"",
+            "entry 1's memo \"Lunch at Café “Zoë” — 北京\\t☕\\n\" is written \"Lunch at Cafe 'Zoe' -- Bei Jing coffee \"",
+            "entry 2's memo \"Control\\u{1}char\\u{7f}\" is written \"Control?char?\"",
+            "entry 4's memo \"Cafe\\u{301}\" is written \"Cafe\"",
+            "entry 5's memo \"\\u{e000}x\" is written \"?x\"",
+        ]
+    );
+}
+
+/// Plan D-36: every line of the file ends CR LF, as in Intuit's own
+/// example file (sources/intuit-iif.md), and no CR or LF stands alone.
+#[test]
+fn iif_every_line_ends_cr_lf() {
+    let (mut l, cash, rev, _) = small_ledger();
+    let e = l.create_entry(d(2026, 5, 1), "Sale\r\nsplit\rover\nlines");
+    l.add_line(e, cash, Side::Debit, usd(100)).unwrap();
+    l.add_line(e, rev, Side::Credit, usd(100)).unwrap();
+    l.post_entry(e).unwrap();
+    let accounts = iif_accounts(&l, |_| QbAccountType::Bank);
+    let entries: Vec<&JournalEntry> = l.posted_entries().collect();
+    let text = journal_to_iif(&accounts, &entries).unwrap().text;
+    let crlf = text.matches("\r\n").count();
+    assert_eq!(crlf, text.matches('\n').count(), "every LF follows a CR");
+    assert_eq!(
+        crlf,
+        text.matches('\r').count(),
+        "every CR comes before an LF"
+    );
+    // Three headers and three accounts, three more headers, TRNS, SPL,
+    // ENDTRNS.
+    assert_eq!(crlf, 1 + 3 + 3 + 3);
+    assert!(text.ends_with("ENDTRNS\r\n"));
+    assert_eq!(iif_memos(&text), ["Sale  split over lines"]);
+}
+
+/// iif INVARIANT 6 (P3 review R2): QuickBooks knows an account by its
+/// NAME, so two that would share one would be merged. Two top-level
+/// "Software", "software" by case, two "Licenses" under one parent, a
+/// fullwidth colon against a hyphen, two private-use names (both '?'):
+/// each written with " (ACCNUM)", the subaccounts of a renamed parent
+/// following it, and listed. A name that is another's tagged form is
+/// tagged in turn; a match left when the codes themselves are written
+/// alike is refused, naming both.
+#[test]
+fn iif_distinct_accounts_never_share_a_name() {
+    let mut l = Ledger::new(Currency::USD);
+    let mut add = |code: &str, name: &str, parent: Option<&str>| {
+        let p = parent.map(|c| l.chart().find_by_code(c).unwrap().id);
+        l.add_account(code, name, AccountType::Expense, p, false)
+            .unwrap();
+    };
+    add("6100", "Software", None);
+    add("6110", "Licenses", Some("6100"));
+    add("6200", "Software", None);
+    add("6210", "Licenses", Some("6200"));
+    add("6300", "software", None);
+    add("6400", "Subscriptions", None);
+    add("6410", "Licenses", Some("6400"));
+    add("6420", "Licenses", Some("6400"));
+    add("6500", "Ratio\u{FF1A}Ops", None);
+    add("6600", "Ratio-Ops", None);
+    add("6700", "\u{E000}", None);
+    add("6800", "\u{E001}", None);
+    let accounts = iif_accounts(&l, |_| QbAccountType::Expense);
+    let paths: Vec<(&str, &str)> = accounts
+        .iter()
+        .map(|a| (a.number.as_str(), a.path.as_str()))
+        .collect();
+    assert_eq!(
+        paths,
+        [
+            ("6100", "Software (6100)"),
+            ("6110", "Software (6100):Licenses"),
+            ("6200", "Software (6200)"),
+            ("6210", "Software (6200):Licenses"),
+            ("6300", "software (6300)"),
+            ("6400", "Subscriptions"),
+            ("6410", "Subscriptions:Licenses (6410)"),
+            ("6420", "Subscriptions:Licenses (6420)"),
+            ("6500", "Ratio-Ops (6500)"),
+            ("6600", "Ratio-Ops (6600)"),
+            ("6700", "? (6700)"),
+            ("6800", "? (6800)"),
+        ]
+    );
+    let iif = journal_to_iif(&accounts, &[]).unwrap();
+    check_iif(&iif.text, &accounts, &[]);
+    check_changes(&iif, &accounts, &[]);
+    assert_eq!(iif.changes.len(), 9, "{:?}", iif.changes);
+    assert_eq!(
+        iif.changes[0].to_string(),
+        "account 6100's name \"Software\" is written \"Software (6100)\""
+    );
+    // A third account already named like the first's tagged form: tagged
+    // in its turn, so no two match.
+    l.add_account("6900", "Software (6100)", AccountType::Expense, None, false)
+        .unwrap();
+    let accounts = iif_accounts(&l, |_| QbAccountType::Expense);
+    let path = |code: &str| {
+        accounts
+            .iter()
+            .find(|a| a.code == code)
+            .map(|a| a.path.clone())
+            .unwrap()
+    };
+    assert_eq!(path("6100"), "Software (6100)");
+    assert_eq!(path("6900"), "Software (6100) (6900)");
+    let iif = journal_to_iif(&accounts, &[]).unwrap();
+    check_iif(&iif.text, &accounts, &[]);
+    check_changes(&iif, &accounts, &[]);
+    // Two "Software" whose codes are written alike (a fullwidth digit):
+    // tagged alike, so the match remains, and is refused naming both.
+    let mut l = Ledger::new(Currency::USD);
+    for code in ["6100", "6\u{FF11}00"] {
+        l.add_account(code, "Software", AccountType::Expense, None, false)
+            .unwrap();
+    }
+    let accounts = iif_accounts(&l, |_| QbAccountType::Expense);
+    let err = journal_to_iif(&accounts, &[]).unwrap_err();
+    assert_eq!(
+        err,
+        IifError::NameCollision {
+            name: "Software (6100)".into(),
+            codes: vec!["6100".into(), "6\u{FF11}00".into()],
+        }
+    );
+    assert_eq!(
+        err.to_string(),
+        "accounts 6100, 6\u{FF11}00 would have the same name in QuickBooks, \"Software (6100)\": rename one"
+    );
+}
+
+/// iif INVARIANT 2 (P3 review round 2): QuickBooks gives a subaccount
+/// its parent's type ("The parent and subaccount must be the same account
+/// type", Intuit, sources/intuit-iif.md), so a bank account under a
+/// "Bank accounts" header that is no bank, or an asset's cost account
+/// under a "Fixed assets" header, would import as the wrong type or not at
+/// all. Each is written at the top level, keeping its own type, its own
+/// subaccounts with it, and listed; one that then matches a top-level
+/// account's name is told apart by its code; a subaccount of its parent's
+/// type stays under it. Before, every subaccount was written under its
+/// parent whatever their types.
+#[test]
+fn iif_a_subaccount_of_another_type_stands_at_the_top_level() {
+    let mut l = Ledger::new(Currency::USD);
+    let mut add = |code: &str, name: &str, parent: Option<&str>| {
+        let p = parent.map(|c| l.chart().find_by_code(c).unwrap().id);
+        l.add_account(code, name, AccountType::Asset, p, false)
+            .unwrap()
+    };
+    add("1000", "Bank accounts", None);
+    let checking = add("1010", "Checking", Some("1000"));
+    let sweep = add("1011", "Sweep", Some("1010"));
+    add("1020", "Petty cash", Some("1000"));
+    add("1500", "Fixed assets", None);
+    let laptop = add("1510", "Laptop", Some("1500"));
+    add("1600", "Laptop", None);
+    let e = l.create_entry(d(2026, 3, 1), "Laptop bought");
+    l.add_line(e, laptop, Side::Debit, usd(150_000)).unwrap();
+    l.add_line(e, sweep, Side::Credit, usd(100_000)).unwrap();
+    l.add_line(e, checking, Side::Credit, usd(50_000)).unwrap();
+    l.post_entry(e).unwrap();
+    let accounts = iif_accounts(&l, |a| match a.code.as_str() {
+        "1010" | "1011" => QbAccountType::Bank,
+        "1510" => QbAccountType::FixedAsset,
+        _ => QbAccountType::OtherCurrentAsset,
+    });
+    let entries: Vec<&JournalEntry> = l.posted_entries().collect();
+    let iif = journal_to_iif(&accounts, &entries).unwrap();
+    check_iif(&iif.text, &accounts, &entries);
+    check_changes(&iif, &accounts, &entries);
+    let lines: Vec<&str> = iif
+        .text
+        .split("\r\n")
+        .filter(|l| l.starts_with("ACCNT\t") || l.starts_with("TRNS\t") || l.starts_with("SPL\t"))
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            "ACCNT\tBank accounts\tOCASSET\t1000",
+            "ACCNT\tChecking\tBANK\t1010",
+            "ACCNT\tChecking:Sweep\tBANK\t1011",
+            "ACCNT\tBank accounts:Petty cash\tOCASSET\t1020",
+            "ACCNT\tFixed assets\tOCASSET\t1500",
+            "ACCNT\tLaptop (1510)\tFIXASSET\t1510",
+            "ACCNT\tLaptop (1600)\tOCASSET\t1600",
+            "TRNS\t\tGENERAL JOURNAL\t3/1/2026\tLaptop (1510)\t\t1500.00\t1\tLaptop bought",
+            "SPL\t\tGENERAL JOURNAL\t3/1/2026\tChecking:Sweep\t\t-1000.00\t1\tLaptop bought",
+            "SPL\t\tGENERAL JOURNAL\t3/1/2026\tChecking\t\t-500.00\t1\tLaptop bought",
+        ]
+    );
+    assert_eq!(
+        iif.warnings(),
+        [
+            "account 1010's name is written at the top level, not under account 1000's: QuickBooks gives a subaccount its parent's type, and it is BANK, its parent OCASSET",
+            "account 1510's name \"Laptop\" is written \"Laptop (1510)\"",
+            "account 1510's name is written at the top level, not under account 1500's: QuickBooks gives a subaccount its parent's type, and it is FIXASSET, its parent OCASSET",
+            "account 1600's name \"Laptop\" is written \"Laptop (1600)\"",
+        ]
+    );
+    assert!(iif.receivable_payable.is_empty());
+}
+
+/// iif INVARIANT 1 (P3 review round 2): QuickBooks reads a subaccount's
+/// NAME as its parent's and its own, so each parent is declared before its
+/// subaccounts, else the accounts go in the order of their codes. A parent
+/// coded after its subaccounts ("6000 Office" over "5900 Supplies" over
+/// "5800 Paper") had been declared after them.
+#[test]
+fn iif_declares_each_parent_before_its_subaccounts() {
+    let mut l = Ledger::new(Currency::USD);
+    let mut add = |code: &str, name: &str, parent: Option<&str>| {
+        let p = parent.map(|c| l.chart().find_by_code(c).unwrap().id);
+        l.add_account(code, name, AccountType::Expense, p, false)
+            .unwrap();
+    };
+    add("6000", "Office", None);
+    add("5900", "Supplies", Some("6000"));
+    add("5800", "Paper", Some("5900"));
+    add("5000", "Rent", None);
+    add("6100", "Software", None);
+    add("5950", "Toner", Some("5900"));
+    let accounts = iif_accounts(&l, |_| QbAccountType::Expense);
+    let iif = journal_to_iif(&accounts, &[]).unwrap();
+    check_iif(&iif.text, &accounts, &[]);
+    let names: Vec<&str> = iif
+        .text
+        .split("\r\n")
+        .filter_map(|l| l.strip_prefix("ACCNT\t"))
+        .map(|l| l.split('\t').next().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "Rent",
+            "Office",
+            "Office:Supplies",
+            "Office:Supplies:Paper",
+            "Office:Supplies:Toner",
+            "Software",
+        ]
+    );
+    assert!(iif.changes.is_empty());
+}
+
+/// P3 review R12: a change prints as one line, whatever the books' text
+/// holds: its line breaks and controls are escaped.
+#[test]
+fn iif_change_warnings_are_one_line_each() {
+    let (mut l, cash, rev, _) = small_ledger();
+    let e = l.create_entry(d(2026, 6, 1), "a\nb\u{1}c\u{2028}d");
+    l.add_line(e, cash, Side::Debit, usd(100)).unwrap();
+    l.add_line(e, rev, Side::Credit, usd(100)).unwrap();
+    l.post_entry(e).unwrap();
+    let accounts = iif_accounts(&l, |_| QbAccountType::Bank);
+    let entries: Vec<&JournalEntry> = l.posted_entries().collect();
+    let iif = journal_to_iif(&accounts, &entries).unwrap();
+    assert_eq!(
+        iif.changes
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        ["entry 1's memo \"a\\nb\\u{1}c\\u{2028}d\" is written \"a b?c d\""]
+    );
+}
+
+/// QuickBooks Desktop's limits (Intuit, "Character limitations for fields
+/// in QuickBooks": account name 31, account number 7, memo 4,095;
+/// sources/intuit-iif.md). iif INVARIANT 2: a level past 31 characters is
+/// cut there, and the clash check runs on the cut names, so two alike once
+/// cut are tagged with their codes (cut to make room), as is one whose cut
+/// form is another's own name; a subaccount follows its cut parent.
+/// INVARIANT 6: an account number past 7 characters, or written like
+/// another's, is left out of ACCNUM. INVARIANT 3: a memo past 4,095
+/// characters is cut. Every one listed, in the exact words.
+#[test]
+fn iif_fits_quickbooks_desktop_limits() {
+    let mut l = Ledger::new(Currency::USD);
+    let mut add = |code: &str, name: &str, parent: Option<&str>| {
+        let p = parent.map(|c| l.chart().find_by_code(c).unwrap().id);
+        l.add_account(code, name, AccountType::Expense, p, false)
+            .unwrap()
+    };
+    let fees = add("6100", "Professional services and consulting fees", None);
+    add("6110", "Legal", Some("6100"));
+    add("6200", "Professional services and consulting costs", None);
+    add("6300", "Professional services and consu", None);
+    add("6400", "Office supplies and small equipment", None);
+    add("12345678", "Suspense", None);
+    // Seven characters, the most: kept; two alike but for case: left out.
+    add("1234567", "Escrow", None);
+    add("CLR0001", "Clearing", None);
+    add("clr0001", "Clearing, old", None);
+    add("6500", "Bank fees", None);
+    add(" 6500", "Card fees", None);
+    let cash = add("1000", "Cash", None);
+    let long_memo = format!("{}\u{2014}tail", "x".repeat(MEMO_MAX - 1));
+    let e = l.create_entry(d(2026, 7, 1), &long_memo);
+    l.add_line(e, fees, Side::Debit, usd(100)).unwrap();
+    l.add_line(e, cash, Side::Credit, usd(100)).unwrap();
+    l.post_entry(e).unwrap();
+    let accounts = iif_accounts(&l, |_| QbAccountType::Expense);
+    let entries: Vec<&JournalEntry> = l.posted_entries().collect();
+    let iif = journal_to_iif(&accounts, &entries).unwrap();
+    check_iif(&iif.text, &accounts, &entries);
+    check_changes(&iif, &accounts, &entries);
+    let accnt: Vec<&str> = iif
+        .text
+        .split("\r\n")
+        .filter(|l| l.starts_with("ACCNT\t"))
+        .collect();
+    assert_eq!(
+        accnt,
+        [
+            "ACCNT\tCard fees\tEXP\t",
+            "ACCNT\tCash\tEXP\t1000",
+            "ACCNT\tEscrow\tEXP\t1234567",
+            "ACCNT\tSuspense\tEXP\t",
+            "ACCNT\tProfessional services an (6100)\tEXP\t6100",
+            "ACCNT\tProfessional services an (6100):Legal\tEXP\t6110",
+            "ACCNT\tProfessional services an (6200)\tEXP\t6200",
+            "ACCNT\tProfessional services an (6300)\tEXP\t6300",
+            "ACCNT\tOffice supplies and small equip\tEXP\t6400",
+            "ACCNT\tBank fees\tEXP\t",
+            "ACCNT\tClearing\tEXP\t",
+            "ACCNT\tClearing, old\tEXP\t",
+        ]
+    );
+    for l in &accnt {
+        let name = l.split('\t').nth(1).unwrap();
+        assert!(
+            name.split(':').all(|level| level.len() <= NAME_MAX),
+            "{name:?}"
+        );
+    }
+    let memo = &iif_memos(&iif.text)[0];
+    assert_eq!(memo.len(), MEMO_MAX);
+    assert_eq!(*memo, format!("{}-", "x".repeat(MEMO_MAX - 1)));
+    assert_eq!(
+        iif.warnings(),
+        [
+            "account number \" 6500\" is left out: another account's number would also be written \"6500\"".to_string(),
+            "account number \"12345678\" is left out: QuickBooks Desktop holds 7 characters at most".to_string(),
+            "account 6100's name \"Professional services and consulting fees\" is written \"Professional services an (6100)\"".to_string(),
+            "account 6200's name \"Professional services and consulting costs\" is written \"Professional services an (6200)\"".to_string(),
+            "account 6300's name \"Professional services and consu\" is written \"Professional services an (6300)\"".to_string(),
+            "account 6400's name \"Office supplies and small equipment\" is written \"Office supplies and small equip\"".to_string(),
+            "account number \"6500\" is left out: another account's number would also be written \"6500\"".to_string(),
+            "account number \"CLR0001\" is left out: another account's number would also be written \"CLR0001\"".to_string(),
+            "account number \"clr0001\" is left out: another account's number would also be written \"clr0001\"".to_string(),
+            format!("\"\u{2014}\" is written \"-\" in the memo of entry {e}"),
+            format!("the memo of entry {e} is cut to 4095 characters, the most QuickBooks Desktop holds"),
+        ]
+    );
+    // A NAME built some other way, a level past the limit: refused.
+    let mut bad = accounts.clone();
+    bad[1].path = "x".repeat(NAME_MAX + 1);
+    assert_eq!(
+        journal_to_iif(&bad, &[]).unwrap_err(),
+        IifError::NameTooLong {
+            code: bad[1].code.clone(),
+            name: "x".repeat(NAME_MAX + 1),
+        }
+    );
+    assert_eq!((NAME_MAX, NUMBER_MAX, MEMO_MAX), (31, 7, 4095));
+}
+
+/// The README and the export's warnings group the memos (lead's call,
+/// 2026-10-20): each thing written differently in them is one line with
+/// every entry it is in, so a hundred depreciation memos with an em dash
+/// make one line, not a hundred; a run of changed characters is one thing
+/// ("北京" is "Bei Jing"); the lines come in the order first met, the
+/// entries in order, each once; account names and numbers stay one line
+/// each, first. No change is left out.
+#[test]
+fn iif_warnings_group_the_memos_by_what_is_written_differently() {
+    let (mut l, cash, _, fees) = small_ledger();
+    l.add_account(
+        "6200",
+        "Caf\u{E9} \u{2014} north",
+        AccountType::Expense,
+        None,
+        false,
+    )
+    .unwrap();
+    let post = |l: &mut Ledger, memo: &str| {
+        let e = l.create_entry(d(2026, 2, 1), memo);
+        l.add_line(e, fees, Side::Debit, usd(100)).unwrap();
+        l.add_line(e, cash, Side::Credit, usd(100)).unwrap();
+        l.post_entry(e).unwrap();
+        e
+    };
+    let mut depreciation = Vec::new();
+    for m in 1..=100 {
+        depreciation.push(post(
+            &mut l,
+            &format!("Depreciation \u{2014} Laptop \u{2014} {m}"),
+        ));
+    }
+    let beijing = post(&mut l, "Trip to \u{5317}\u{4EAC} \u{2014} visa");
+    let plain_one = post(&mut l, "Plain memo");
+    let zoe = post(&mut l, "Lunch, \"Zo\u{EB}\"\nteam \u{5317}\u{4EAC}");
+    let accounts = iif_accounts(&l, |_| QbAccountType::Expense);
+    let entries: Vec<&JournalEntry> = l.posted_entries().collect();
+    let iif = journal_to_iif(&accounts, &entries).unwrap();
+    check_changes(&iif, &accounts, &entries);
+    assert_eq!(iif.changes.len(), 1 + 100 + 1 + 1, "one per name and memo");
+    assert!(
+        !iif.changes
+            .iter()
+            .any(|c| c.field == IifField::Memo { entry: plain_one })
+    );
+    let mut dashes = depreciation.clone();
+    dashes.push(beijing);
+    let list = |ids: &[u64]| {
+        ids.iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    assert_eq!(
+        iif.warnings(),
+        [
+            "account 6200's name \"Café — north\" is written \"Cafe -- north\"".to_string(),
+            format!(
+                "\"—\" is written \"--\" in the memos of entries {}",
+                list(&dashes)
+            ),
+            format!("\"北京\" is written \"Bei Jing\" in the memos of entries {beijing}, {zoe}"),
+            format!("\"\\\"\" is written \"'\" in the memo of entry {zoe}"),
+            // "ë", the quote and the line break are side by side: one run.
+            format!("\"ë\\\"\\n\" is written \"e' \" in the memo of entry {zoe}"),
+        ]
+    );
+}
+
+/// INVARIANT 7: no warning holds a full TIN (rules.md B-26), though entry
+/// descriptions and account names aren't checked for one: a memo's TIN
+/// written with en dashes shows only the dashes; one in fullwidth digits,
+/// one in Arabic-Indic digits, and an account name holding one, are
+/// masked, digit by digit, and a line with digits masked says so; so is
+/// the change's own line. So are a name and a memo that hold a TIN only
+/// once written (digits a tab apart, which the file writes a space apart).
+#[test]
+fn iif_warnings_never_hold_a_tin() {
+    let (mut l, cash, rev, _) = small_ledger();
+    l.add_account(
+        "6300",
+        "Loan from 123-45-6789 \u{2014} member",
+        AccountType::Liability,
+        None,
+        false,
+    )
+    .unwrap();
+    // A TIN only once written: its digits a tab apart, which the file
+    // writes a space apart.
+    l.add_account(
+        "6400",
+        "Loan 123\t45\t6789",
+        AccountType::Liability,
+        None,
+        false,
+    )
+    .unwrap();
+    for memo in [
+        "Paid SSN 123\u{2013}45\u{2013}6789",
+        "Paid \u{FF11}\u{FF12}\u{FF13}\u{FF0D}\u{FF14}\u{FF15}\u{FF0D}\u{FF16}\u{FF17}\u{FF18}\u{FF19}",
+        // Arabic-Indic digits, spaced em dashes: a TIN as the books keep it,
+        // though " -- " is too wide a gap once written.
+        "Ref \u{661}\u{662}\u{663} \u{2014} \u{664}\u{665} \u{2014} \u{666}\u{667}\u{668}\u{669}",
+        // Arabic-Indic digits a tab apart: a TIN only once written.
+        "Ref \u{661}\u{662}\u{663}\t\u{664}\u{665}\t\u{666}\u{667}\u{668}\u{669}",
+    ] {
+        let e = l.create_entry(d(2026, 6, 1), memo);
+        l.add_line(e, cash, Side::Debit, usd(100)).unwrap();
+        l.add_line(e, rev, Side::Credit, usd(100)).unwrap();
+        l.post_entry(e).unwrap();
+    }
+    let accounts = iif_accounts(&l, |_| QbAccountType::Bank);
+    let entries: Vec<&JournalEntry> = l.posted_entries().collect();
+    let iif = journal_to_iif(&accounts, &entries).unwrap();
+    check_changes(&iif, &accounts, &entries);
+    assert_eq!(
+        iif.warnings(),
+        [
+            "account 6300's name \"Loan from •••-••-•••• — member\" is written \"Loan from •••-••-•••• -- member\"",
+            "account 6400's name \"Loan •••\\t••\\t••••\" is written \"Loan ••• •• ••••\"",
+            "\"–\" is written \"-\" in the memo of entry 1",
+            "\"•••－••－••••\" is written \"•••-••-••••\" in the memo of entry 2 (digits masked: may be a TIN)",
+            "\"•••\" is written \"•••\" in the memo of entry 3 (digits masked: may be a TIN)",
+            "\"—\" is written \"--\" in the memo of entry 3",
+            "\"••\" is written \"••\" in the memo of entry 3 (digits masked: may be a TIN)",
+            "\"••••\" is written \"••••\" in the memo of entry 3 (digits masked: may be a TIN)",
+            "\"•••\\t••\\t••••\" is written \"••• •• ••••\" in the memo of entry 4 (digits masked: may be a TIN)",
+        ]
+    );
+    assert_eq!(
+        iif.changes[3].to_string(),
+        "entry 2's memo \"Paid •••－••－••••\" is written \"Paid •••-••-••••\""
+    );
+    for c in &iif.changes {
+        assert!(!ledger_core::parties::has_full_tin(&c.to_string()), "{c}");
+    }
+}
+
+/// P3 review R7: the server records a package file holding a full TIN
+/// (ledger_core::parties::has_full_tin) so it can't be filed back in. A
+/// memo's TIN separated by en dashes or no-break spaces stays a TIN in
+/// the file: they become ASCII hyphens and spaces, never '?'.
+#[test]
+fn iif_keeps_a_tin_readable_to_the_package_scan() {
+    let (mut l, cash, rev, _) = small_ledger();
+    for memo in [
+        "Paid SSN 123\u{2013}45\u{2013}6789",
+        "Paid SSN 123\u{A0}45\u{A0}6789",
+    ] {
+        assert!(ledger_core::parties::has_full_tin(memo));
+        let e = l.create_entry(d(2026, 6, 1), memo);
+        l.add_line(e, cash, Side::Debit, usd(100)).unwrap();
+        l.add_line(e, rev, Side::Credit, usd(100)).unwrap();
+        l.post_entry(e).unwrap();
+    }
+    let accounts = iif_accounts(&l, |_| QbAccountType::Bank);
+    let entries: Vec<&JournalEntry> = l.posted_entries().collect();
+    let iif = journal_to_iif(&accounts, &entries).unwrap();
+    let memos = iif_memos(&iif.text);
+    assert_eq!(memos, ["Paid SSN 123-45-6789", "Paid SSN 123 45 6789"]);
+    for m in &memos {
+        assert!(ledger_core::parties::has_full_tin(m), "{m}");
+    }
 }
 
 /// QbAccountType::keyword: the IIF ACCNTTYPE keywords the doc comments name.
@@ -2123,6 +3218,215 @@ fn pdf_each_markup_label_alone_renders() {
         );
         let bytes = statement_pdf(&st, &meta()).unwrap_or_else(|e| panic!("{m:?}: {e}"));
         assert!(bytes.starts_with(b"%PDF"));
+    }
+}
+
+/// Every FlateDecode stream of a PDF, inflated (zlib: a two-byte header,
+/// then RFC 1951), joined as text: the content, the fonts' ToUnicode maps
+/// and the object streams that hold the fonts' dictionaries.
+fn pdf_streams(pdf: &[u8]) -> String {
+    let find = |from: usize, pat: &[u8]| {
+        pdf[from..]
+            .windows(pat.len())
+            .position(|w| w == pat)
+            .map(|i| from + i)
+    };
+    let mut out = String::new();
+    let mut at = 0;
+    while let Some(s) = find(at, b"stream") {
+        let dict_from = pdf[..s].windows(3).rposition(|w| w == b"obj").unwrap_or(0);
+        let mut body = s + b"stream".len();
+        if pdf[body..].starts_with(b"\r\n") {
+            body += 2;
+        } else if pdf[body..].starts_with(b"\n") {
+            body += 1;
+        } else {
+            // "endstream" itself, or a word holding "stream".
+            at = body;
+            continue;
+        }
+        let end = find(body, b"endstream").expect("endstream");
+        let dict = String::from_utf8_lossy(&pdf[dict_from..s]);
+        if dict.contains("/FlateDecode") {
+            out.push_str(&String::from_utf8_lossy(&inflate(&pdf[body + 2..end])));
+            out.push('\n');
+        }
+        at = end + b"endstream".len();
+    }
+    out
+}
+
+/// statement_pdf INVARIANT 4: a company, an account and a vendor named in
+/// Chinese, Japanese and Korean go into the PDF's text: the CJK font is
+/// embedded, and its ToUnicode map gives back every one of their
+/// characters, so they copy, search and print as written.
+#[test]
+fn pdf_keeps_chinese_japanese_and_korean_names() {
+    let names = ["北京商贸", "東京事務所", "서울상사", "ありがとう"];
+    let st = report::statement(
+        "Profit and Loss",
+        "2026".to_string(),
+        &["Total"],
+        names
+            .iter()
+            .map(|n| Row {
+                kind: RowKind::Line,
+                label: format!("6100 {n}"),
+                amounts: vec![Some(dec("1.00"))],
+                currency: false,
+                rule_above: false,
+            })
+            .collect(),
+    );
+    let m = ReportMeta {
+        company: "株式会社 Example".into(),
+        ..meta()
+    };
+    let pdf = statement_pdf(&st, &m).unwrap();
+    let text = pdf_streams(&pdf).to_lowercase();
+    assert!(text.contains("notosanscjk"), "the CJK font is embedded");
+    for c in names.concat().chars().chain("株式会社".chars()) {
+        let hex = format!("<{:04x}>", u32::from(c));
+        assert!(text.contains(&hex), "{c} ({hex}) maps back to text");
+    }
+}
+
+/// The text a PDF draws, each line from the top of each page down, its
+/// glyphs left to right, each the text its font's ToUnicode map gives
+/// back, read with hayro (the viewer's own PDF reader): what a reader
+/// copies, searches and speaks.
+fn pdf_lines(pdf: &[u8]) -> Vec<Vec<String>> {
+    use hayro_interpret::font::GlyphRun;
+    use hayro_interpret::hayro_cmap::BfString;
+    use hayro_interpret::hayro_syntax::Pdf;
+    use hayro_interpret::{
+        BlendMode, ClipPath, Context, Device, DrawMode, DrawProps, Image, ImageDrawProps,
+        InterpreterCache, InterpreterSettings, SoftMask, interpret_page,
+    };
+    use kurbo::{Affine, BezPath, Point, Rect};
+    /// Each glyph drawn: its baseline (tenths of a point), x, and text.
+    struct Glyphs(Vec<(i64, f64, String)>);
+    impl<'a> Device<'a> for Glyphs {
+        fn draw_path(&mut self, _: &BezPath, _: DrawProps<'a>, _: &DrawMode) {}
+        fn push_clip_path(&mut self, _: &ClipPath) {}
+        fn push_transparency_group(&mut self, _: f32, _: Option<SoftMask<'a>>, _: BlendMode) {}
+        fn draw_glyph_run(&mut self, run: &GlyphRun<'_, 'a>, props: DrawProps<'a>, _: &DrawMode) {
+            for g in run.glyphs() {
+                let at = (props.transform * g.transform()) * Point::ZERO;
+                let text = match g.as_unicode() {
+                    Some(BfString::Char(c)) => c.to_string(),
+                    Some(BfString::String(s)) => s,
+                    // A mark or a ligature's second glyph: its text is
+                    // with the cluster's first.
+                    None => String::new(),
+                };
+                self.0.push(((at.y * 10.0).round() as i64, at.x, text));
+            }
+        }
+        fn draw_image(&mut self, _: Image<'a, '_>, _: ImageDrawProps<'a>) {}
+        fn pop_clip(&mut self) {}
+        fn pop_transparency_group(&mut self) {}
+    }
+    let pdf = Pdf::new(pdf.to_vec()).unwrap();
+    let cache = InterpreterCache::new();
+    let mut out = Vec::new();
+    for page in pdf.pages().iter() {
+        let mut ctx = Context::new(
+            Affine::IDENTITY,
+            Rect::new(0.0, 0.0, 1.0, 1.0),
+            &cache,
+            pdf.xref(),
+            InterpreterSettings::default(),
+        );
+        let mut glyphs = Glyphs(Vec::new());
+        interpret_page(page, &mut ctx, &mut glyphs);
+        // PDF space runs up the page: the highest baseline first.
+        let mut lines: BTreeMap<std::cmp::Reverse<i64>, Vec<(f64, String)>> = BTreeMap::new();
+        for (y, x, t) in glyphs.0 {
+            lines.entry(std::cmp::Reverse(y)).or_default().push((x, t));
+        }
+        for (_, mut line) in lines {
+            line.sort_by(|a, b| a.0.total_cmp(&b.0));
+            out.push(line.into_iter().map(|(_, t)| t).collect());
+        }
+    }
+    out
+}
+
+/// statement_pdf INVARIANT 4 (P3 review round 2): a company and accounts
+/// named in Arabic, Hebrew, Thai, Devanagari and Chinese print as written
+/// in the bundled Noto fallbacks, and the PDF's text reads back as the
+/// books keep it, Arabic and Hebrew drawn right to left, so their glyphs
+/// read from the right give the words (the Arabic shaped, its lam-alef a
+/// ligature, still reads back "سلام"; with Noto Sans Arabic 2.013, whose
+/// dots are marks Typst sets apart, it read "شلام" and doubled letters),
+/// the others left to right.
+/// Before the fallbacks, every one of these was an empty box.
+#[test]
+fn pdf_prints_every_bundled_script_as_written() {
+    let rtl = ["مكتب سلام", "שלום עולם"];
+    let ltr = ["สวัสดีครับ", "नमस्ते", "北京商贸"];
+    let st = report::statement(
+        "Profit and Loss",
+        "2026".to_string(),
+        &["Total"],
+        rtl.iter()
+            .chain(&ltr)
+            .map(|n| Row {
+                kind: RowKind::Line,
+                label: n.to_string(),
+                amounts: vec![Some(dec("1.00"))],
+                currency: false,
+                rule_above: false,
+            })
+            .collect(),
+    );
+    let m = ReportMeta {
+        company: "شركة Example".into(),
+        ..meta()
+    };
+    let pdf = statement_pdf(&st, &m).unwrap();
+    let lines = pdf_lines(&pdf);
+    let squeeze = |s: &str| s.replace(' ', "");
+    let read = |reversed: bool| -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| {
+                let mut l = l.clone();
+                if reversed {
+                    l.reverse();
+                }
+                squeeze(&l.concat())
+            })
+            .collect()
+    };
+    let (left, right) = (read(false), read(true));
+    for word in rtl.iter().chain(&["شركة"]) {
+        assert!(
+            right.iter().any(|l| l.contains(&squeeze(word))),
+            "{word} reads right to left: {lines:?}"
+        );
+        assert!(
+            !left.iter().any(|l| l.contains(&squeeze(word))),
+            "{word} isn't drawn left to right"
+        );
+    }
+    for word in ltr {
+        assert!(
+            left.iter().any(|l| l.contains(&squeeze(word))),
+            "{word} reads left to right: {lines:?}"
+        );
+    }
+    // The fonts' names (BaseFont), in the PDF's objects or its streams.
+    let fonts = format!("{}{}", String::from_utf8_lossy(&pdf), pdf_streams(&pdf)).to_lowercase();
+    for f in [
+        "notosansarabicui",
+        "notosanshebrew",
+        "notosansthai",
+        "notosansdevanagari",
+        "notosanscjk",
+    ] {
+        assert!(fonts.contains(f), "{f} is embedded");
     }
 }
 
@@ -2992,8 +4296,11 @@ fn bank_csv_day_equals_month_needs_no_order() {
     assert_eq!(txns[1].date, d(2026, 12, 12));
 }
 
-/// iif INVARIANT 4, exactly: a tab or line break becomes a space, dashes
-/// '-', curly quotes straight, a no-break space a space, anything else '?'.
+/// iif INVARIANT 4, exactly: a tab or line break is a space, and what
+/// isn't ASCII is transliterated (deunicode 1.6.0's table): the en dash
+/// and the minus sign '-', the em dash "--", curly quotes straight and
+/// single, "é" "e", a no-break space a space. (Before plan D-36 the em
+/// dash was one '-' and the "é" '?'.)
 #[test]
 fn iif_field_transliteration_exact() {
     let mut l = Ledger::new(Currency::USD);
@@ -3012,9 +4319,8 @@ fn iif_field_transliteration_exact() {
     l.post_entry(e).unwrap();
     let accounts = iif_accounts(&l, |_| QbAccountType::Bank);
     let entries: Vec<&JournalEntry> = l.posted_entries().collect();
-    let text = journal_to_iif(&accounts, &entries).unwrap();
-    let trns = text.lines().find(|l| l.starts_with("TRNS\t")).unwrap();
-    assert_eq!(trns.rsplit('\t').next(), Some("a b c  d --- \"?\" '' x y"));
+    let iif = journal_to_iif(&accounts, &entries).unwrap();
+    assert_eq!(iif_memos(&iif.text), ["a b c  d ---- 'e' '' x y"]);
 }
 
 /// The tax summary shows its cost-of-goods and not-yet-categorized

@@ -179,12 +179,20 @@ impl Job {
                 )?;
                 let (stem, ext) = crate::export::split_name(&p.file_name);
                 let path = crate::export::save(stem, ext, &p.zip)?;
-                let note = (!p.tin_gaps.is_empty()).then(|| {
-                    format!(
+                let mut notes = Vec::new();
+                if !p.tin_gaps.is_empty() {
+                    notes.push(format!(
                         "{} TIN(s) aren't in it (the README says which): ask your agent to collect them.",
                         p.tin_gaps.len()
-                    )
-                });
+                    ));
+                }
+                if p.iif_changes > 0 {
+                    notes.push(format!(
+                        "{} account name(s), number(s), place(s) or memo(s) are written differently in its QuickBooks file, to fit QuickBooks Desktop: the README says how.",
+                        p.iif_changes
+                    ));
+                }
+                let note = (!notes.is_empty()).then(|| notes.join(" "));
                 Ok((path, note))
             }
             Job::Worksheet(year) => {

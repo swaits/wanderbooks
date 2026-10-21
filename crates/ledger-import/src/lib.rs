@@ -8,12 +8,14 @@
 //! - [`pdf`]: generate PDF financial statements (CPA handoff).
 //! - [`asset_register`]: the fixed asset register as XLSX and PDF.
 //! - [`labels`]: print asset label sheets with QR codes.
+//! - [`fonts`]: the bundled fonts the PDFs and the viewer share.
 //!
 //! All money stays `Decimal`; no floats in money paths.
 
 pub mod asset_register;
 pub mod bank_csv;
 pub mod chart_csv;
+pub mod fonts;
 pub mod iif;
 pub mod labels;
 pub mod pdf;
@@ -24,7 +26,10 @@ pub mod xlsx;
 pub use asset_register::{asset_register_pdf, asset_register_xlsx};
 pub use bank_csv::{BankCsvError, BankTransaction, DateOrder, parse_bank_csv, parse_bank_csv_with};
 pub use chart_csv::{ChartRow, parse_chart_csv};
-pub use iif::{IifAccount, IifError, QbAccountType, iif_accounts, journal_to_iif};
+pub use iif::{
+    Iif, IifAccount, IifChange, IifError, IifField, LeftOut, MEMO_MAX, NAME_MAX, NUMBER_MAX,
+    QbAccountType, iif_accounts, journal_to_iif,
+};
 pub use labels::{AssetLabel, LabelSheet, asset_labels_pdf};
 pub use pdf::{PdfError, statement_pdf};
 pub use report::{Member, ReportMeta, Row, RowKind, Statement, YearEarnings, format_amount};

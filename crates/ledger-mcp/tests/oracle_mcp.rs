@@ -1223,23 +1223,57 @@ fn xlsx_and_pdf_exports_are_real_files_with_the_books_in_them() {
 /// IIF: accounts declared with QuickBooks types per the documented mapping
 /// (cash accounts BANK, 1200 AR, 2000 AP, a registered asset's accounts
 /// FIXASSET, the rest by type), then one balanced TRNS/SPL/ENDTRNS block
-/// per posted entry. Kills: export_iif's AR and AP comparisons.
+/// per posted entry dated on or before as_of, numbered (DOCNUM) with its
+/// entry id (rules.md B-33, B-34); plain ASCII text with CR LF, what it
+/// writes differently (a line break and double quotes, the engine's own em
+/// dashes) in warnings, grouped. Kills: export_iif's AR and AP comparisons.
 #[test]
 fn iif_declares_accounts_by_role_and_balances_every_transaction() {
     let dir = test_dir("iif");
     let mut s = new_store(&dir);
     rich_books(&mut s);
-    let posted = s.ledger().posted_entries().count();
+    let ledger = s.ledger().clone();
     drop(s);
     let mut m = Mcp::start(&dir, "1000000.00");
-    let iif = String::from_utf8(m.export(json!({"format": "iif", "report": "journal"}))).unwrap();
+    let out = m.ok(
+        "books.export",
+        json!({"format": "iif", "report": "journal", "as_of": END}),
+    );
+    assert!(out.get("content_encoding").is_none(), "plain text: {out}");
+    let lunch = ledger
+        .posted_entries()
+        .find(|e| e.description().starts_with("Lunch"))
+        .unwrap()
+        .id();
+    // The chart's `Meals, "client"`, its double quotes written single;
+    // then the memos, grouped by what is written differently: the lunch's
+    // double quotes and line break, and the em dashes of every
+    // depreciation memo in one line.
+    let months: Vec<String> = ledger
+        .posted_entries()
+        .filter(|e| e.description().starts_with("Depreciation"))
+        .map(|e| e.id().to_string())
+        .collect();
+    assert_eq!(months.len(), 3);
+    let warnings = vec![
+        "account 6010's name \"Meals, \\\"client\\\"\" is written \"Meals, 'client'\"".to_string(),
+        format!("\"\\\"\" is written \"'\" in the memo of entry {lunch}"),
+        format!("\"\\\"\\n\" is written \"' \" in the memo of entry {lunch}"),
+        format!(
+            "\"—\" is written \"--\" in the memos of entries {}",
+            months.join(", ")
+        ),
+    ];
+    assert_eq!(out["warnings"], json!(warnings));
+    let iif = out["content"].as_str().unwrap();
+    assert!(iif.ends_with("\r\n") && !iif.replace("\r\n", "").contains(['\r', '\n']));
 
     let mut types: HashMap<String, String> = HashMap::new();
     let mut header: Vec<&str> = Vec::new();
-    let mut blocks = 0;
+    let mut docnums: Vec<u64> = Vec::new();
     let mut sum = Decimal::ZERO;
     let mut in_trns = false;
-    for line in iif.lines() {
+    for line in iif.split("\r\n") {
         let f: Vec<&str> = line.split('\t').collect();
         match f[0] {
             "!ACCNT" => header = f.clone(),
@@ -1252,19 +1286,29 @@ fn iif_declares_accounts_by_role_and_balances_every_transaction() {
                     assert!(!in_trns, "TRNS inside a transaction");
                     in_trns = true;
                     sum = Decimal::ZERO;
+                    docnums.push(f[7].parse().unwrap());
                 }
+                assert_eq!(
+                    f[7],
+                    docnums.last().unwrap().to_string(),
+                    "DOCNUM on every line"
+                );
                 sum += dec(f[6]);
             }
             "ENDTRNS" => {
                 assert!(in_trns);
                 assert_eq!(sum, Decimal::ZERO, "an IIF transaction sums to zero");
                 in_trns = false;
-                blocks += 1;
             }
             _ => {}
         }
     }
-    assert_eq!(blocks, posted, "a transaction per posted entry");
+    let through: Vec<u64> = ledger
+        .posted_entries()
+        .filter(|e| e.date() <= d(END))
+        .map(|e| e.id())
+        .collect();
+    assert_eq!(docnums, through, "every posted entry through as_of, by id");
     for (code, ty) in [
         ("1000", "BANK"),
         ("1200", "AR"),
@@ -1283,6 +1327,69 @@ fn iif_declares_accounts_by_role_and_balances_every_transaction() {
             "account {code}'s IIF type"
         );
     }
+    // general_journal is the report's name; journal its alias (both work).
+    let alias = m.ok(
+        "books.export",
+        json!({"format": "iif", "report": "general_journal", "as_of": END}),
+    );
+    assert_eq!(alias["content"], out["content"]);
+    // The file holds everything from the first entry: a range is refused,
+    // and so is another report.
+    let why = m.refuse(
+        "books.export",
+        json!({"format": "iif", "report": "journal", "start": START, "end": END}),
+    );
+    assert!(why.contains("iif takes as_of, not start or end"), "{why}");
+    let why = m.refuse(
+        "books.export",
+        json!({"format": "iif", "report": "trial_balance"}),
+    );
+    assert!(
+        why.contains("only valid for the general_journal report"),
+        "{why}"
+    );
+}
+
+/// P3 review R5: books.export iif without as_of is as of today, like the
+/// trial balance: an entry dated later is left out, and the two exports
+/// made with no dates tie, account by account.
+#[test]
+fn iif_without_as_of_is_as_of_today_and_ties_to_the_trial_balance() {
+    let dir = test_dir("iif-today");
+    let mut s = new_store(&dir);
+    rich_books(&mut s);
+    post(
+        &mut s,
+        "2099-01-04",
+        "Far future rent",
+        &[("6000", Dr, "1234.00"), ("1000", Cr, "1234.00")],
+    );
+    drop(s);
+    let mut m = Mcp::start(&dir, "1000000.00");
+    let iif = m.export_text(json!({"format": "iif", "report": "journal"}));
+    assert!(!iif.contains("Far future rent"));
+    let mut number: HashMap<String, String> = HashMap::new();
+    let mut iif_bal: BTreeMap<String, Decimal> = BTreeMap::new();
+    for line in iif.split("\r\n") {
+        let f: Vec<&str> = line.split('\t').collect();
+        match f[0] {
+            "ACCNT" => {
+                number.insert(f[1].to_string(), f[3].to_string());
+            }
+            "TRNS" | "SPL" => *iif_bal.entry(number[f[4]].clone()).or_default() += dec(f[6]),
+            _ => {}
+        }
+    }
+    iif_bal.retain(|_, v| !v.is_zero());
+    let tb = m.export_text(json!({"format": "csv", "report": "trial_balance"}));
+    let mut tb_bal: BTreeMap<String, Decimal> = BTreeMap::new();
+    for row in csv_rows(&tb, &["code", "name", "debit", "credit"]) {
+        if row[0] != "TOTAL" {
+            tb_bal.insert(row[0].clone(), dec(&row[2]) - dec(&row[3]));
+        }
+    }
+    tb_bal.retain(|_, v| !v.is_zero());
+    assert_eq!(iif_bal, tb_bal);
 }
 
 // ------------------------------------------------- P&L by class
@@ -2767,7 +2874,9 @@ fn previews_move_balances_by_normal_side() {
 /// the receipts behind the year's posted entries (and only those), indexed
 /// with each entry's date, description, and debits; the company's
 /// documents but not loose receipts or withdrawn files; a README counting
-/// the receipts; and a 1099 worksheet equal to `vendor_1099_report`. With
+/// the receipts; a 1099 worksheet equal to `vendor_1099_report` through
+/// as_of (a payment after it to the same contractor left out); and the
+/// journal as IIF from the first entry through as_of. With
 /// include_receipts false, no evidence. Kills: export_cpa_package's
 /// receipt and document guards, the receipt count, the file-name cleaner.
 #[test]
@@ -2775,6 +2884,8 @@ fn cpa_package_holds_the_year_and_its_evidence() {
     let dir = test_dir("cpa");
     let mut s = new_store(&dir);
     let r = rich_books(&mut s);
+    // The payment after as_of went to the contractor too.
+    s.set_entry_vendor(r.after, Some(r.contractor)).unwrap();
     // Two receipts on the rent, same-length names.
     let rent_a: &[u8] = b"rent receipt A";
     let rent_b: &[u8] = b"rent receipt B";
@@ -2879,6 +2990,29 @@ fn cpa_package_holds_the_year_and_its_evidence() {
     let gj = xlsx_text(&files["general-journal.xlsx"]);
     assert!(gj.contains("Rent January") && !gj.contains("Prior-year sale"));
     assert!(!gj.contains("After mid-year"), "fiscal year to as_of only");
+    // The IIF: from the first entry (the prior year's sale) through as_of.
+    let iif = std::str::from_utf8(&files["general-journal.iif"]).unwrap();
+    assert!(iif.contains("\tPrior-year sale\r\n") && iif.contains("\tRent January\r\n"));
+    assert!(!iif.contains("After mid-year"), "through as_of only");
+    assert!(iif.contains("\tLunch, 'team' quarterly\r\n"));
+    // The meals account's double quotes, the lunch's and its line break,
+    // and the em dashes of the depreciation memos: written differently, so
+    // said, the memos grouped (four lines for one name and four memos), in
+    // warnings and the README alike.
+    let warnings: Vec<String> = out["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(warnings.len(), 4, "{out}");
+    let readme = std::str::from_utf8(&files["README.txt"]).unwrap();
+    for w in &warnings {
+        assert!(readme.contains(&format!("\n- {w}\n")), "{w} in {readme}");
+    }
+    assert!(out["note"].as_str().unwrap().ends_with(
+        " 5 account name(s), number(s), place(s) or memo(s) are written differently in general-journal.iif to fit QuickBooks Desktop (warnings says how; so does the README): tell the human."
+    ));
 
     // Receipts: exactly the two behind the rent.
     let receipt_files: Vec<&str> = names
@@ -2940,8 +3074,22 @@ fn cpa_package_holds_the_year_and_its_evidence() {
         std::str::from_utf8(&files["1099-worksheet-2025.csv"]).unwrap(),
         &["vendor", "form", "w9_on_file", "paid", "reportable"],
     );
-    let want = ledger_core::vendor_1099_report(&ledger, 2025, None).unwrap();
+    let want = ledger_core::vendor_1099_report_with_members(
+        &ledger,
+        2025,
+        Some(d(END)),
+        None,
+        &ledger_core::PaymentAccounts::default(),
+        &[],
+    )
+    .unwrap();
     assert_eq!(w.len(), want.vendors.len());
+    let contractor = w.iter().find(|row| row[0] == "Contractor").unwrap();
+    assert_eq!(
+        amt(&contractor[3]),
+        dec("900.00"),
+        "the payment after as_of is left out"
+    );
     for (row, v) in w.iter().zip(&want.vendors) {
         assert_eq!(row[0], v.name);
         assert_eq!(row[1], v.form.map(|f| f.label()).unwrap_or(""));

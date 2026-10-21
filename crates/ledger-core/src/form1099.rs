@@ -171,7 +171,7 @@ pub fn vendor_1099_report_with(
     threshold: Option<Decimal>,
     sources: &PaymentAccounts,
 ) -> Result<Vendor1099Report, LedgerError> {
-    vendor_1099_report_with_members(ledger, year, threshold, sources, &[])
+    vendor_1099_report_with_members(ledger, year, None, threshold, sources, &[])
 }
 
 /// What an entry paid out of `sources`: credits minus debits to them.
@@ -211,15 +211,16 @@ fn vendor_part(payment: Decimal, share: Decimal, target: Decimal) -> Result<Deci
     }
 }
 
-/// [`vendor_1099_report`], counting payments out of `sources`, each
-/// vendor's part of an entry with several parties resolved with `members`
-/// (the company's members, from the settings).
+/// [`vendor_1099_report`], counting payments out of `sources` made in
+/// `year` (through `through`, when given), each vendor's part of an entry
+/// with several parties resolved with `members` (the company's members,
+/// from the settings).
 ///
 /// ```text
 /// SOURCE: docs/spec/rules.md B-19 (26 U.S.C. §6041(a): payments made in
-///         the year; card payments go on 1099-K); crate::shares (an entry
-///         with several parties, each with their share; DECISION, owner,
-///         2026-10-15).
+///         the year; card payments go on 1099-K), B-33 (a worksheet as of
+///         a day); crate::shares (an entry with several parties, each with
+///         their share; DECISION, owner, 2026-10-15).
 /// DEFINITIONS:
 ///   payment(e): credits minus debits to `sources` on entry e.
 ///   money: crate::parties::money_accounts(ledger, sources.cash), what the
@@ -227,8 +228,12 @@ fn vendor_part(payment: Decimal, share: Decimal, target: Decimal) -> Result<Deci
 ///   target(e): crate::shares::share_target(e, money): the entry_flow net,
 ///     else the total debits.
 /// INVARIANTS:
-///   1. Only posted entries dated in `year` and tagged with a vendor
-///      (Ledger::entry_vendor) count, toward that vendor.
+///   1. Only posted entries dated in `year` (and, given `through`, on or
+///      before it) and tagged with a vendor (Ledger::entry_vendor) count,
+///      toward that vendor. `through` makes a worksheet as of a day: the
+///      payments from January 1 through it (§6041(a) and §6041A(a)(2)
+///      count what is paid "in any calendar year"; a CPA package as of
+///      June 30 shows the year to date, rules.md B-33).
 ///   2. An entry naming at most one party (Ledger::entry_parties): the
 ///      vendor's amount is payment(e), exactly as before shares.
 ///   3. An entry naming several parties (one of them the vendor's party,
@@ -263,6 +268,7 @@ fn vendor_part(payment: Decimal, share: Decimal, target: Decimal) -> Result<Deci
 pub fn vendor_1099_report_with_members(
     ledger: &Ledger,
     year: i32,
+    through: Option<chrono::NaiveDate>,
     threshold: Option<Decimal>,
     sources: &PaymentAccounts,
     members: &[crate::PartyMember],
@@ -275,7 +281,7 @@ pub fn vendor_1099_report_with_members(
     let mut paid: std::collections::HashMap<VendorId, Decimal> = Default::default();
     let mut unresolved = Vec::new();
     for entry in ledger.posted_entries() {
-        if entry.date().year() != year {
+        if entry.date().year() != year || through.is_some_and(|t| entry.date() > t) {
             continue;
         }
         let Some(vendor) = ledger.entry_vendor(entry.id()) else {

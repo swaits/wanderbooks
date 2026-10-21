@@ -107,12 +107,84 @@ SHA-256 of the retrieved file (`journal.zip`): `4f578d227810f5bfadde142cdab9f941
 
 Cited (not quoted): its read-me says list declarations (accounts, classes, customers, vendors, other names) come first so names land on the correct lists, and that header columns must be present even when left blank. Its `!ACCNT` rows show a subaccount written `Construction:Labor`. Its address fields that contain a comma are wrapped in double quotes (`"Anywhere, AZ 85740"`), as a spreadsheet writes tab-delimited text; the kit does not say whether QuickBooks strips those quotes.
 
+## Character limitations for fields in QuickBooks (US, updated 8/3/2026)
+Source: <https://quickbooks.intuit.com/learn-support/en-us/help-article/printing-preferences/character-limitations-fields-quickbooks/L7eIy5gE3_US_en_US>  
+Retrieved: 2026-10-20  
+SHA-256: not available (read through a fetch tool; a direct download was refused by the server)
+
+Tagged for QuickBooks Desktop (Mac Plus, Premier Plus, Pro Plus). Its one sentence of text:
+
+> Each field in your company data file has a maximum number of characters that can be entered.
+
+Cited (not quoted), from its table: Account Name 31; Account Numbers 7; Memo 4,095 (of which printed checks show about 30 to 60 and the Transaction Detail report 96); invoice number 11; customer, vendor and other names 41. It has no row for a journal entry's number, and says nothing of what QuickBooks does with longer text, on import or otherwise.
+
+The same article for the UK (`.../en-uk/help-article/printing-preferences/character-limitations-fields-quickbooks/L7eIy5gE3_GB_en_GB`, retrieved 2026-10-20) gives Account Name 31 but Account Numbers 25: a different product. The books are a US company's, so the US figures hold.
+
+## Intuit's .NET SDK reference: `Account.Name`
+Source: <https://static.developer.intuit.com/sdkdocs/qbv3doc/ippdotnetdevkitv3/html/cd41295e-8e12-8b96-1ff3-728a807fa9cd.htm>  
+Retrieved: 2026-10-20
+
+Cited (not quoted): "User recognizable name for the Account", with ValidRange "QBW: Max=31" (QuickBooks Desktop; QuickBooks Online: 100). Its `Account.AcctNum` page (`.../95a0835b-80bd-4fe1-2d7f-96ea2c372442.htm`) states no length.
+
+So the limits are Intuit's own: an account name (one level of a subaccount's NAME, as the account's own name is entered) at most 31 characters, an account number at most 7, a memo at most 4,095. The books write each within them: a longer level is cut to 31 (then no two NAMEs may match), a longer number is left out of ACCNUM (it is optional; the NAME identifies the account), a longer memo is cut to 4,095, and every one is listed (rules.md B-34).
+
+## Add, edit, or delete accounts in QuickBooks Desktop (US, updated 8/4/2026)
+Source: <https://quickbooks.intuit.com/learn-support/en-us/help-article/chart-accounts/add-edit-delete-accounts-quickbooks-desktop-mac/L95VT34uN_US_en_US>  
+Retrieved: 2026-10-20  
+SHA-256: not available (read through a fetch tool)
+
+Tagged for QuickBooks Desktop (Mac Plus, Premier Plus, Pro Plus, Accountant, Enterprise). Under "Add a subaccount", a note:
+
+> The parent and subaccount must be the same account type.
+
+So the books write a subaccount whose QuickBooks type differs from its parent's (a bank account under a header that is no bank, an asset's cost account under a "Fixed assets" header) at the top level, its own subaccounts with it, and list it (rules.md B-34). Intuit's own journal sample (`journal.zip`, above) declares `Construction:Labor` without ever declaring `Construction`, so QuickBooks makes a missing parent itself; the books declare each parent before its subaccounts all the same, so a parent keeps its own type and number rather than taking ones QuickBooks guesses.
+
+## Customer and vendor names on accounts receivable and payable
+
+Searched 2026-10-20. What Intuit says:
+
+- The IIF Import Kit's header help (`!TRNS.htm`, `!SPL.htm`, above) marks TRNSTYPE, ACCNT and AMOUNT required; NAME is "the name of the customer, vendor, payee, or employee", not marked required, with no word on accounts receivable or payable. The kit's General Journal example and the journal sample have no NAME column at all.
+- The journal sample's read-me (`journal.zip`, `General Journal IIF file read me.txt`, SHA-256 `2e45b0f7a15d78f487d510547084d401d99bda02630d10747e37e00ca56f2c52`): "A customer name attached to the spl line of a General Journal transaction will import to the vendor list and the vendor name attached to the trns line of a General Journal transaction will import to the other names list unless the names are already on the correct lists." So a NAME written without declaring the customer and vendor lists first lands on the wrong list.
+- Intuit's QuickBooks Team, answering "Can I post a journal entry to Accounts Receivable without specifying a customer name?" (Maybelle_S, QuickBooks Team badge, 12 January 2024), <https://quickbooks.intuit.com/community/reports-and-accounting-5/can-i-post-a-journal-entry-to-accounts-receivable-without-specifying-a-customer-name-64395> (retrieved 2026-10-20), about QuickBooks Desktop:
+
+  > Accounts Receivable (AR) or Accounts Payable (AP) requires a customer or vendor name assignment.
+
+- "Troubleshoot ... Warning: You Cannot Use More Than One" (US, updated 8/5/2026; QuickBooks Desktop Mac Plus, Premier Plus, Pro Plus), <https://quickbooks.intuit.com/learn-support/en-us/help-article/accounts-receivable/warning-cannot-use-one-ar-ap-account-transaction/L7xqDWcmE_US_en_US> (retrieved 2026-10-20): QuickBooks will not record a transaction with two A/R accounts, two A/P accounts, or one of each; its message:
+
+  > Warning: You cannot use more than one A/R or A/P account in the same transaction.
+
+Not Intuit, for the record: a third-party IIF vendor answering on Intuit's community (BigRedConsulting, 14 April 2020, <https://quickbooks.intuit.com/learn-support/en-us/other-questions/iif-import-error-3040/00/535675>) wrote that "a NAME is required for any AR row", about a bill, not a journal; QuickBooks Desktop sync tools quote the refusal "Transaction split lines to accounts receivable must include a customer on that split line" (Acctivate, <https://hub.acctivate.com/articles/troubleshoot/synchronization/transaction-split-lines-to-accounts-receivable-must-include-a-customer-on-that-split-line>).
+
+No Intuit source says what an IIF journal import does with an A/R or A/P line that has no NAME (refuses it, imports it, or asks). So the books write no NAME (writing names would need the customer and vendor lists declared too, with a name unique across them) and the package README names the entries with an A/R or A/P line, so the CPA can add the name in QuickBooks if it asks (rules.md B-34 rule 7).
+
+## What QuickBooks does with an over-long name (not Intuit)
+Source: Thomson Reuters, Accounting CS help, "Export payroll journal entries", <https://thomsonreuters.com/en-us/help/accounting-cs/integrate-data-with-other-applications/export-payroll-journal-entries>  
+Retrieved: 2026-10-20
+
+Cited (not quoted), a QuickBooks integrator's documentation, not Intuit's: QuickBooks limits an account's name to 31 characters; importing a chart of accounts IIF file cuts a longer name to 31, but importing a journal IIF file does not, so the journal's accounts no longer match and QuickBooks creates a new (duplicate) bank account for each it doesn't recognize. It advises names of 31 characters or fewer. This is why the books cut each level themselves: the ACCNT line and every TRNS and SPL line then carry the same name.
+
+## Double quotes in an IIF field (not Intuit)
+Intuit's own journal sample (above) wraps fields holding a comma in double quotes, as a spreadsheet writes tab-delimited text, so QuickBooks' reader treats a double quote as more than a character. Two non-Intuit sources say so outright:
+
+- Reckon, "Importing the IIF file in Reckon Accounts Business, changes the Inch “ symbol to Feet ‘ symbol", <https://help.reckon.com/article/1ap8nwl0v2-kba-5589-importing-the-iif-file-in-reckon-accounts-business-changes-the-inch-symbol-to-feet-symbol> (retrieved 2026-10-20, no date given). Cited (not quoted): Reckon Accounts Business, which imports IIF files, changes each double quote to a single one by design, because many file formats treat the double quote as a special character.
+- Jonathan Clark, interchange-users mailing list, 28 July 2003, <https://www.interchangecommerce.org/pipermail/interchange-users/2003-July/034578.html>:
+
+  > From what we can tell, QB uses double quotation marks (") as text delimiters when there are certain characters in the field.
+
+  > For imports, you will break the import if you have double quotes within your text
+
+So the books write a double quote as a single one, listed like any other change (rules.md B-34).
+
 ## Not found in any Intuit source
 
-Searched 2026-10-13 (the help articles above and every document in the IIF Import Kit and journal sample); none states:
+Searched 2026-10-13 and 2026-10-20 (the help articles above and every document in the IIF Import Kit and journal sample); none states:
 
-- an escaping mechanism for tabs, line breaks, or double quotes inside a field (no escape syntax is documented; the only safe reading is that fields must not contain tabs or line breaks);
+- an escaping mechanism for tabs, line breaks, or double quotes inside a field (no escape syntax is documented; the only safe reading is that fields must not contain tabs or line breaks, and, from the reports above, double quotes);
 - an explicit sentence that a transaction's TRNS and SPL amounts must sum to zero (every example does; the sign rule implies it);
 - the allowed number of decimal places, or whether thousands separators or currency symbols are accepted in AMOUNT;
-- the character encoding beyond "ASCII text";
-- whether a four-digit year is accepted everywhere despite the "MM/DD/YY" wording (Intuit's 2007+ example uses one).
+- the character encoding beyond "ASCII text" (so the books write plain ASCII, transliterating anything else and listing what changed: rules.md B-34, DECISION D-36);
+- whether a four-digit year is accepted everywhere despite the "MM/DD/YY" wording (Intuit's 2007+ example uses one);
+- what QuickBooks Desktop does on import with an account name, account number or memo longer than its limits (only the non-Intuit note above, for names), how many levels of subaccounts it allows, or a limit on a whole NAME with its parents;
+- how long a journal entry's number (DOCNUM) may be (the limits article has no row for it; the books' entry ids are a few digits);
+- whether QuickBooks matches account names or numbers ignoring case (the books keep no two alike even ignoring case);
+- what an IIF journal import does with a line on accounts receivable or payable that names no customer or vendor (above).

@@ -45,16 +45,20 @@ pub fn payment_accounts(ledger: &Ledger, settings: &Settings<'_>) -> ledger_core
 
 /// The 1099 report for `year`, the one every tool, the worksheet, and the
 /// CPA package use: payments out of [`payment_accounts`], an entry's
-/// shares resolved with the settings' members.
+/// shares resolved with the settings' members. Given `through`, only the
+/// payments from January 1 through it (the CPA package as of a day,
+/// rules.md B-33).
 pub fn vendor_1099_report(
     ledger: &Ledger,
     settings: &Settings<'_>,
     year: i32,
+    through: Option<chrono::NaiveDate>,
     threshold: Option<Decimal>,
 ) -> Result<ledger_core::Vendor1099Report, ledger_core::LedgerError> {
     ledger_core::vendor_1099_report_with_members(
         ledger,
         year,
+        through,
         threshold,
         &payment_accounts(ledger, settings),
         &settings.company.party_members(ledger),
@@ -128,7 +132,8 @@ pub fn vendor_1099_worksheet(
 ) -> Result<Vendor1099Worksheet, String> {
     // A year past what wanderbooks knows is refused with guidance
     // (research or ask, pass `threshold`, then update the rule).
-    let r = vendor_1099_report(ledger, settings, year, threshold).map_err(|e| e.to_string())?;
+    let r =
+        vendor_1099_report(ledger, settings, year, None, threshold).map_err(|e| e.to_string())?;
     let missing_w9 = r
         .vendors
         .iter()

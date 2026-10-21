@@ -20,7 +20,7 @@
 #let quiet = luma(90)
 
 #set document(title: d.company + " — Asset labels", author: d.company)
-#set text(font: "Inter", fill: ink, number-width: "tabular", hyphenate: false)
+#set text(font: ("Inter", "Noto Sans CJK SC", "Noto Sans Arabic UI", "Noto Sans Hebrew", "Noto Sans Thai", "Noto Sans Devanagari"), fill: ink, number-width: "tabular", hyphenate: false)
 #set par(leading: 0.28em, spacing: 0pt)
 #set page(width: g.page_width * pt1, height: g.page_height * pt1, margin: 0pt)
 

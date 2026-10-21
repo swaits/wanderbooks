@@ -557,7 +557,7 @@ fn vendor_1099_report(
     year: i32,
     threshold: Option<Decimal>,
 ) -> Result<ledger_core::Vendor1099Report, ledger_core::LedgerError> {
-    ledger_package::vendor_1099_report(ledger, &package_settings(settings), year, threshold)
+    ledger_package::vendor_1099_report(ledger, &package_settings(settings), year, None, threshold)
 }
 
 impl BooksServer {
@@ -5330,7 +5330,7 @@ impl BooksServer {
     #[tool(
         name = "books.export",
         title = "Export a report",
-        description = "Export a report. Reports: profit_and_loss, balance_sheet, cash_flow (needs cash_accounts), trial_balance (as_of), members_equity (multi-member LLC; members from the settings), general_ledger (by account: running balances, splits), general_journal (every entry in date order; alias journal), fixed_asset_register (as_of: every asset with tag, serial, cost, depreciation, book value, reconciled to the books). Formats: pdf and xlsx (base64) for the five statements and fixed_asset_register; xlsx, csv, json for every report; iif for general_journal (QuickBooks Desktop). Dates: start/end for period reports (start defaults to the first entry, end to today), as_of for balance_sheet, trial_balance, and fixed_asset_register.",
+        description = "Export a report. Reports: profit_and_loss, balance_sheet, cash_flow (needs cash_accounts), trial_balance (as_of), members_equity (multi-member LLC; members from the settings), general_ledger (by account: running balances, splits), general_journal (every entry in date order; alias journal), fixed_asset_register (as_of: every asset with tag, serial, cost, depreciation, book value, reconciled to the books). Formats: pdf and xlsx (base64) for the five statements and fixed_asset_register; xlsx, csv, json for every report; iif for general_journal (QuickBooks Desktop: plain ASCII text, CR LF; every posted entry from the first through as_of, period closes left out, DOCNUM the entry id; names, numbers and memos fit QuickBooks' limits; warnings says what is written differently from the books, memos grouped, to tell the human). Dates: start/end for period reports (start defaults to the first entry, end to today), as_of for balance_sheet, trial_balance, fixed_asset_register, and iif (default today).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn export(&self, params: Parameters<ExportParams>) -> Result<Json<ExportOut>, String> {
@@ -5343,8 +5343,30 @@ impl BooksServer {
             ));
         }
         let report = p.report.to_lowercase();
-        if format == "iif" && report != "journal" {
-            return Err("iif format is only valid for the journal report".to_string());
+        if format == "iif" {
+            if !matches!(report.as_str(), "journal" | "general_journal") {
+                return Err(
+                    "iif format is only valid for the general_journal report (alias journal)"
+                        .to_string(),
+                );
+            }
+            if p.start.is_some() || p.end.is_some() {
+                return Err("iif takes as_of, not start or end: the file holds every posted entry from the first through as_of, so QuickBooks' balances match the books'".to_string());
+            }
+            // As of today by default, like every other as-of export.
+            let as_of = match p.as_of.as_deref() {
+                Some(s) => parse_date(s)?,
+                None => today(),
+            };
+            let iif = self.export_iif(as_of, &p.cash_accounts)?;
+            let warnings = iif.warnings();
+            return Ok(Json(ExportOut {
+                format,
+                report,
+                content: iif.text,
+                content_encoding: None,
+                warnings,
+            }));
         }
         if format == "xlsx" || format == "pdf" {
             let bytes = if format == "xlsx" {
@@ -5357,15 +5379,7 @@ impl BooksServer {
                 report,
                 content: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes),
                 content_encoding: Some("base64".to_string()),
-            }));
-        }
-        if format == "iif" {
-            let content = self.export_iif()?;
-            return Ok(Json(ExportOut {
-                format,
-                report,
-                content,
-                content_encoding: None,
+                warnings: Vec::new(),
             }));
         }
         let content = match report.as_str() {
@@ -5392,6 +5406,7 @@ impl BooksServer {
             report,
             content,
             content_encoding: None,
+            warnings: Vec::new(),
         }))
     }
 
@@ -5508,15 +5523,25 @@ impl BooksServer {
         ledger_import::statement_pdf(&st, &meta).map_err(|e| e.to_string())
     }
 
-    /// Render the journal as IIF text via ledger-import, declaring every
-    /// account with its QuickBooks type: the `[books] cash_accounts` are
-    /// BANK, the receivable and payable control accounts AR and AP, a
-    /// registered asset's cost and accumulated depreciation FIXASSET, and
-    /// the rest follow their wanderbooks type (other current asset, other
-    /// current liability, equity, income, expense).
-    fn export_iif(&self) -> Result<String, String> {
+    /// The journal through `as_of` as IIF via ledger-package (the CPA
+    /// package's own general-journal.iif): the cash accounts (`cash`, else
+    /// the settings') BANK, the receivable and payable control accounts AR
+    /// and AP, the accounts of an asset bought by `as_of` FIXASSET, the
+    /// rest by their wanderbooks type; every posted entry from the first,
+    /// closes left out.
+    fn export_iif(
+        &self,
+        as_of: chrono::NaiveDate,
+        cash: &[String],
+    ) -> Result<ledger_import::Iif, String> {
         let store = self.lock()?;
-        ledger_package::export_iif(store.ledger(), &self.settings().roles.cash)
+        let settings = self.settings();
+        let cash = if cash.is_empty() {
+            settings.roles.cash.as_slice()
+        } else {
+            cash
+        };
+        ledger_package::export_iif(store.ledger(), cash, as_of)
     }
 
     // ------------------------------------------------------------------
@@ -8073,7 +8098,7 @@ impl BooksServer {
     #[tool(
         name = "books.export_cpa_package",
         title = "CPA handoff package",
-        description = "Build the CPA handoff package as a zip: the profit and loss, balance sheet, cash flow, statement of changes in members' equity (multi-member LLCs), tax summary, and trial balance, each as PDF and XLSX; the fixed asset register as PDF and XLSX when there are fixed assets; the general ledger (by account) and general journal (entry by entry) as XLSX; the journal as IIF (imports into QuickBooks Desktop); the 1099 worksheet as CSV; with members, the K-1 worksheet (k1-members.csv: per member their party, share, capital account, TIN, and beginning capital, contributions in cash and in property, share of income, distributions, and ending capital for the fiscal year to date); every receipt behind the year's entries, filed on them or linked to them (receipts/, with an index.csv tying each file to its entry) and the company's documents (documents/), unless include_receipts is false; and a README with the journal's verified hash. By default (include_tins) the K-1 and 1099 worksheets carry every member's and payee's full TIN from the TIN vault; include_tins: false, last fours only. The zip is handed over: run its download command to save it in a folder (books served by `wanderbooks mcp`; over stdio it comes back inline). Never file it into the books. A locked vault or a missing TIN doesn't stop the package: tin_gaps lists each one (collect them with books.set_tin or books.set_w9 and export again). cash_accounts (e.g. [\"1000\"]) is required: the cash flow statement reconciles to them. as_of defaults to today; period reports cover the fiscal year to date.",
+        description = "Build the CPA handoff package as a zip: the profit and loss, balance sheet, cash flow, statement of changes in members' equity (multi-member LLCs), tax summary, and trial balance, each as PDF and XLSX; the fixed asset register as PDF and XLSX when there are fixed assets; the general ledger (by account) and general journal (entry by entry) as XLSX; the journal through as_of as IIF (imports into QuickBooks Desktop; plain ASCII within its limits: warnings says what is written differently from the books, and so does the README); the 1099 worksheet as CSV (payments from January 1 through as_of); with members, the K-1 worksheet (k1-members.csv: per member their party, share, capital account, TIN, and beginning capital, contributions in cash and in property, share of income, distributions, and ending capital for the fiscal year to date); every receipt behind the year's entries, filed on them or linked to them (receipts/, with an index.csv tying each file to its entry) and the company's documents (documents/), unless include_receipts is false; and a README with the journal's verified hash. By default (include_tins) the K-1 and 1099 worksheets carry every member's and payee's full TIN from the TIN vault; include_tins: false, last fours only. The zip is handed over: run its download command to save it in a folder (books served by `wanderbooks mcp`; over stdio it comes back inline). Never file it into the books. A locked vault or a missing TIN doesn't stop the package: tin_gaps lists each one (collect them with books.set_tin or books.set_w9 and export again). cash_accounts (e.g. [\"1000\"]) is required: the cash flow statement reconciles to them. as_of defaults to today; period reports cover the fiscal year to date.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -8133,18 +8158,26 @@ impl BooksServer {
             tin_files::record(&vault_dir, &package.zip)?;
         }
         let tin_gaps = package.tin_gaps;
-        let note = match (p.include_tins, tin_gaps.len()) {
+        let mut note = match (p.include_tins, tin_gaps.len()) {
             (false, _) => "The package, with last fours only.".to_string(),
             (true, 0) => "The package, with full TINs, for the CPA.".to_string(),
             (true, n) => format!(
                 "The package, with full TINs, for the CPA. {n} TIN(s) are missing (tin_gaps): collect them with books.set_tin or books.set_w9 and export again."
             ),
         };
+        let warnings = package.warnings;
+        if package.iif_changes > 0 {
+            note.push_str(&format!(
+                " {} account name(s), number(s), place(s) or memo(s) are written differently in general-journal.iif to fit QuickBooks Desktop (warnings says how; so does the README): tell the human.",
+                package.iif_changes
+            ));
+        }
         let file = self.hand_over(&book, &package.file_name, "application/zip", package.zip)?;
         Ok(Json(ExportCpaPackageOut {
             file,
             tins_included: p.include_tins,
             tin_gaps,
+            warnings,
             note,
         }))
     }

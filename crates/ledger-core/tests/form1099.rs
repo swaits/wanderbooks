@@ -365,6 +365,7 @@ fn a_shared_payment_counts_the_vendors_share() {
         &s.l,
         2026,
         None,
+        None,
         &ledger_core::PaymentAccounts {
             cash: vec![bank],
             financing: vec![],

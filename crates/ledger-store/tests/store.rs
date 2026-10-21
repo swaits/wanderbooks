@@ -1858,8 +1858,15 @@ fn every_figure_of(l: &ledger_core::Ledger) -> (usize, usize) {
             financing: vec![],
         };
         tally(
-            ledger_core::form1099::vendor_1099_report_with_members(l, year, None, &sources, &[])
-                .map(|_| ()),
+            ledger_core::form1099::vendor_1099_report_with_members(
+                l,
+                year,
+                None,
+                None,
+                &sources,
+                &[],
+            )
+            .map(|_| ()),
         );
     }
     let money = ledger_core::parties::money_accounts(l, &cash);

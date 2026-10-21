@@ -1527,9 +1527,7 @@ mod shares {
         let cap_k = add(&mut l, "3001", AccountType::Equity);
         let exp = add(&mut l, "6050", AccountType::Expense);
         let tobin = l.add_party("Tobin Harlow", &[Role::Member]).unwrap();
-        let mo = l
-            .add_party("Morgan Ellis", &[Role::Member])
-            .unwrap();
+        let mo = l.add_party("Morgan Ellis", &[Role::Member]).unwrap();
         let acme = l.add_party("Acme", &[Role::Contractor]).unwrap();
         let half = d("0.5");
         let members = vec![
@@ -1717,11 +1715,7 @@ mod shares {
         .unwrap();
         assert_eq!(
             resolved(&b, e).unwrap(),
-            vec![
-                (b.acme, d("33.33")),
-                (b.tobin, d("33.33")),
-                (c, d("33.34"))
-            ]
+            vec![(b.acme, d("33.33")), (b.tobin, d("33.33")), (c, d("33.34"))]
         );
         b.l.set_entry_parties(
             e,
@@ -1730,11 +1724,7 @@ mod shares {
         .unwrap();
         assert_eq!(
             resolved(&b, e).unwrap(),
-            vec![
-                (b.acme, d("33.34")),
-                (b.tobin, d("33.33")),
-                (c, d("33.33"))
-            ]
+            vec![(b.acme, d("33.34")), (b.tobin, d("33.33")), (c, d("33.33"))]
         );
     }
 

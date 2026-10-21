@@ -165,14 +165,8 @@ fn party_members_find_each_members_own_party() {
     let capital = l
         .add_account("3001", "Capital — Mo", AccountType::Equity, None, false)
         .unwrap();
-    l.add_account(
-        "3000",
-        "Capital — Tobin",
-        AccountType::Equity,
-        None,
-        false,
-    )
-    .unwrap();
+    l.add_account("3000", "Capital — Tobin", AccountType::Equity, None, false)
+        .unwrap();
     let mo = l.add_party("Mo", &[Role::Member]).unwrap();
     let other = l.add_party("Pat", &[Role::Member]).unwrap();
     l.update_party(mo, PartyField::Archived(true)).unwrap();

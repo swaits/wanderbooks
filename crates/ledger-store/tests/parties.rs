@@ -794,9 +794,7 @@ mod shares {
         let dir = test_dir("shares-event");
         let (mut s, fx) = fixture(&dir);
         let a = s.add_party("Tobin Harlow", &[Role::Member]).unwrap();
-        let b = s
-            .add_party("Morgan Ellis", &[Role::Member])
-            .unwrap();
+        let b = s.add_party("Morgan Ellis", &[Role::Member]).unwrap();
         let ((), pl) = one_event(&mut s, &dir, "entry.parties_set", |s| {
             s.set_entry_parties(fx.entry, &[PartyShare::whole(a), PartyShare::whole(b)])
                 .unwrap()
@@ -904,9 +902,7 @@ mod shares {
         let dir = test_dir("shares-replay");
         let (mut s, fx) = fixture(&dir);
         let a = s.add_party("Tobin Harlow", &[Role::Member]).unwrap();
-        let b = s
-            .add_party("Morgan Ellis", &[Role::Member])
-            .unwrap();
+        let b = s.add_party("Morgan Ellis", &[Role::Member]).unwrap();
         let v = s.add_vendor("Contractor").unwrap();
         let pv = s.ledger().party_of_vendor(v).unwrap();
         s.set_entry_parties(

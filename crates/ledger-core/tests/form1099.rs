@@ -294,9 +294,7 @@ fn shared_books() -> Shared {
     let dana = l.add_vendor("Dana").unwrap();
     l.set_vendor_1099(dana, Some(Form1099::Nec), true).unwrap();
     let dana_p = l.party_of_vendor(dana).unwrap();
-    let tobin = l
-        .add_party("Tobin", &[ledger_core::Role::Member])
-        .unwrap();
+    let tobin = l.add_party("Tobin", &[ledger_core::Role::Member]).unwrap();
     Shared {
         l,
         bank,

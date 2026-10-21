@@ -105,12 +105,8 @@ fn the_company_page_shows_how_the_books_are_kept() {
         d(2026, 10, 12),
     ))
     .unwrap();
-    s.retire_convention(
-        "old-way",
-        "replaced",
-        &src("Tobin Harlow", d(2026, 10, 14)),
-    )
-    .unwrap();
+    s.retire_convention("old-way", "replaced", &src("Tobin Harlow", d(2026, 10, 14)))
+        .unwrap();
     let first = s
         .record_decision(&NewDecision {
             subject: "Materiality, first cut".into(),
@@ -214,12 +210,8 @@ fn nothing_kept_shows_no_cards() {
         d(2026, 10, 12),
     ))
     .unwrap();
-    s.retire_convention(
-        "old-way",
-        "replaced",
-        &src("Tobin Harlow", d(2026, 10, 14)),
-    )
-    .unwrap();
+    s.retire_convention("old-way", "replaced", &src("Tobin Harlow", d(2026, 10, 14)))
+        .unwrap();
     let only = s.raise_open_item(&item("Done already", None)).unwrap();
     s.resolve_open_item(only, "done", &src("Tobin Harlow", d(2026, 10, 17)))
         .unwrap();
@@ -263,8 +255,5 @@ fn books_that_keep_their_settings_say_where_facts_come_from() {
     let h = company(&dir);
     assert!(!shows(&h, "No company facts"), "the facts are there");
     assert!(shows(&h, "Fernhill Labs LLC"));
-    assert!(shows(
-        &h,
-        &format!("Tobin Harlow · {}", fmt::date(today()))
-    ));
+    assert!(shows(&h, &format!("Tobin Harlow · {}", fmt::date(today()))));
 }

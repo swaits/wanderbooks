@@ -1504,8 +1504,8 @@ fn set_tin_refusals_write_nothing() {
         ("Mo", json!(SSN), "itin"),          // not an ITIN
         ("Mo", json!(SSN), "passport"),      // no such type
         ("Mo", json!(291122846.0), "ssn"),   // a float
-        ("Nobody", json!(SSN), "ssn"),        // no such party
-        ("Acme Design", json!(SSN), "ssn"),   // W-9 says 1111
+        ("Nobody", json!(SSN), "ssn"),       // no such party
+        ("Acme Design", json!(SSN), "ssn"),  // W-9 says 1111
     ] {
         let why = m.refuse(
             "books.set_tin",

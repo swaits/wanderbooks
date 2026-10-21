@@ -541,13 +541,7 @@ open_at_start = "ask"
     #[test]
     fn what_the_file_leaves_out_is_cleared() {
         let s = imported(FERNHILL);
-        let i = import(
-            "[company]\nname = \"Fernhill Labs LLC\"\n",
-            None,
-            &s,
-            "USD",
-        )
-        .unwrap();
+        let i = import("[company]\nname = \"Fernhill Labs LLC\"\n", None, &s, "USD").unwrap();
         assert!(
             i.changes
                 .iter()

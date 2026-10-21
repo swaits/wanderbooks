@@ -1020,9 +1020,7 @@ fn member_books(tag: &str) -> MemberBooks {
     let rev = acct(&mut s, "4000", "App Revenue", AccountType::Revenue);
     let exp = acct(&mut s, "6050", "Domain & Hosting", AccountType::Expense);
     let tobin = s.add_party("Tobin Harlow", &[Role::Member]).unwrap();
-    let mo = s
-        .add_party("Morgan Ellis", &[Role::Member])
-        .unwrap();
+    let mo = s.add_party("Morgan Ellis", &[Role::Member]).unwrap();
     let both = [
         ledger_core::PartyShare::whole(tobin),
         ledger_core::PartyShare::whole(mo),
@@ -1157,10 +1155,7 @@ fn entries_list_every_party_with_its_resolved_share() {
             .collect::<Vec<_>>(),
         vec![(m.tobin, Some(cents(5_000))), (m.mo, Some(cents(5_000)))]
     );
-    assert_eq!(
-        e.party.as_deref(),
-        Some("Tobin Harlow & Morgan Ellis")
-    );
+    assert_eq!(e.party.as_deref(), Some("Tobin Harlow & Morgan Ellis"));
     // Property: net zero, shares of the total.
     let e = b.entry(m.property).unwrap();
     assert_eq!(e.parties[1].resolved, Some(cents(60_000)));
@@ -1236,9 +1231,7 @@ fn a_members_page_is_their_capital_statement() {
     assert_eq!((kinds[2].1, kinds[2].2), (K::IncomeShare, cents(35_000)));
     // Over all time: the 2025 contribution is cash (1000 is
     // [books] cash_accounts), the laptop property.
-    let all = b
-        .capital_statement(m.mo, (d(2025, 1, 1), today()))
-        .unwrap();
+    let all = b.capital_statement(m.mo, (d(2025, 1, 1), today())).unwrap();
     assert_eq!(all.opening, Decimal::ZERO);
     assert_eq!(all.contributions_cash, cents(100_000));
     assert_eq!(all.contributions_property, cents(60_000));
@@ -1284,15 +1277,14 @@ fn the_capital_statement_is_the_k1_worksheet_row() {
         let b = load(&m.dir.0);
         let chart = b.ledger.chart();
         let id = |c: &str| chart.find_by_code(c).unwrap().id;
-        let members =
-            [("Tobin Harlow", "3000"), ("Morgan Ellis", "3001")].map(|(name, code)| {
-                ledger_core::MemberCapital {
-                    name: name.into(),
-                    capital_account: id(code),
-                    distribution_account: None,
-                    share: Decimal::new(5, 1),
-                }
-            });
+        let members = [("Tobin Harlow", "3000"), ("Morgan Ellis", "3001")].map(|(name, code)| {
+            ledger_core::MemberCapital {
+                name: name.into(),
+                capital_account: id(code),
+                distribution_account: None,
+                share: Decimal::new(5, 1),
+            }
+        });
         let cash: Vec<_> = if fallback {
             let mut all: Vec<_> = ledger_core::parties::money_accounts(&b.ledger, &[])
                 .cash
@@ -1392,9 +1384,7 @@ fn the_capital_statement_counts_income_not_yet_closed() {
         (cents(175_000), cents(5_000), cents(180_000))
     );
     assert!(july.lines.is_empty());
-    let aug = b
-        .capital_statement(m.mo, (d(2026, 8, 1), today()))
-        .unwrap();
+    let aug = b.capital_statement(m.mo, (d(2026, 8, 1), today())).unwrap();
     assert_eq!(
         (aug.opening, aug.income_share, aug.closing),
         (cents(180_000), Decimal::ZERO, cents(180_000))
@@ -1472,9 +1462,7 @@ fn without_cash_accounts_the_capital_statement_reads_money_as_core_does() {
         ledger_gui::books::CapitalKind::CashContribution
     );
     assert_eq!(st.closing, cents(175_000));
-    let all = b
-        .capital_statement(m.mo, (d(2025, 1, 1), today()))
-        .unwrap();
+    let all = b.capital_statement(m.mo, (d(2025, 1, 1), today())).unwrap();
     assert_eq!(
         (all.contributions_cash, all.contributions_property),
         (cents(160_000), Decimal::ZERO)

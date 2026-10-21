@@ -1592,10 +1592,7 @@ fn under_require_several_parties_satisfy_the_policy() {
         "books.reverse_entry",
         json!({"entry_id": id, "date": "2026-07-02", "description": "undo", "confirmed": true}),
     );
-    assert_eq!(
-        m.party("Morgan Ellis", 2026)["totals"]["paid"],
-        "0.00"
-    );
+    assert_eq!(m.party("Morgan Ellis", 2026)["totals"]["paid"], "0.00");
     m.read_only("books.verify", json!({}));
 }
 

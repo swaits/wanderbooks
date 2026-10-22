@@ -301,7 +301,7 @@ impl OwnerMenu {
         };
         let mut button = egui::Button::new(text).frame(false);
         if compact {
-            button = button.min_size(vec2(32.0, 32.0));
+            button = button.min_size(vec2(32.0, ui.spacing().interact_size.y + 4.0));
         }
         let busy = self.job.is_some();
         let mut start: Option<(String, Box<dyn FnOnce() -> Outcome + Send>)> = None;

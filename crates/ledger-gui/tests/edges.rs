@@ -287,7 +287,8 @@ fn sidebar_link(h: &Harness<'_, App>, name: &str) -> egui::Rect {
 }
 
 /// A short window (owner, 2026-10-21: the links went under the status
-/// box): scrolled to its end, the last link stops above the box.
+/// box): scrolled to its end, the last link stops above the box, folded
+/// to its one line there (tests/sidenav.rs has the whole grid).
 #[test]
 fn sidebar_links_never_draw_under_the_status_box() {
     let f = fixture("sidebar-short");
@@ -301,7 +302,7 @@ fn sidebar_links_never_draw_under_the_status_box() {
         .scroll_to_me();
     h.run_steps(4);
     let journal = sidebar_link(&h, "Journal");
-    let status = h.get_by_label_contains("files verified").rect();
+    let status = h.get_by_label_contains("event ").rect();
     assert!(
         journal.bottom() <= status.top(),
         "Journal ends at {} under the status box at {}",
@@ -351,10 +352,10 @@ fn a_very_short_window_keeps_one_link() {
         h.run_steps(4);
         let first = sidebar_link(&h, "Overview");
         assert!(
-            first.height() >= 31.0 && first.bottom() <= h_px,
+            first.height() >= 23.0 && first.bottom() <= h_px,
             "{tag}: Overview at {first:?}"
         );
-        if let Some(status) = h.query_by_label_contains("files verified") {
+        if let Some(status) = h.query_by_label_contains("event ") {
             assert!(
                 first.bottom() <= status.rect().top(),
                 "{tag}: Overview ends at {} under the status box at {}",

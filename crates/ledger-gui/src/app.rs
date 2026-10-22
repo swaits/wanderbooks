@@ -284,7 +284,7 @@ impl App {
         };
         let mut button = egui::Button::new(text).frame(false);
         if compact {
-            button = button.min_size(vec2(32.0, 32.0));
+            button = button.min_size(vec2(32.0, ui.spacing().interact_size.y + 4.0));
         }
         // Open while the filter changes; closed when a scheme is chosen.
         let config = egui::containers::menu::MenuConfig::new()
@@ -605,90 +605,91 @@ impl App {
                         );
                     });
                 });
-                ui.add_space(18.0);
                 let current = self.nav.current.section();
                 let attention = books.as_ref().map(|b| b.attention.len()).unwrap_or(0);
-                // Short windows: the links scroll above the status box
-                // instead of the box drawing over them. The box's height
-                // is the one it was drawn at last frame.
-                let footer_id = egui::Id::new("sidebar_footer_h");
-                let footer_h = ui
-                    .ctx()
-                    .data(|d| d.get_temp::<f32>(footer_id))
-                    .unwrap_or(SIDEBAR_FOOTER);
+                // Short windows give way in steps (Fit): the status card
+                // folds, then the rows tighten, then the links scroll.
+                // The footer's heights are the ones it was drawn at.
+                let fold = 3.0
+                    * (ui.ctx().fonts_mut(|f| f.row_height(&theme::regular(11.5)))
+                        + ui.spacing().item_spacing.y);
+                let memo = FooterMemo::load(ui, "sidebar");
+                let heights = memo.heights(SIDEBAR_FOOTER, fold, SIDEBAR_TIGHTEN);
+                let fit = fit(ui.available_height(), heights, &SIDEBAR_ROWS, slack(ui));
+                ui.add_space(if fit.tight {
+                    HEAD_GAP_TIGHT
+                } else {
+                    SIDEBAR_ROWS.head_gap
+                });
+                let footer_h = heights[fit.form()];
                 // At least one link always shows; below that the footer
                 // gives way (footer_layout).
-                let links_h = (ui.available_height() - footer_h - FOOTER_GAP).max(32.0);
-                egui::ScrollArea::vertical()
-                    .id_salt("sidebar_links")
-                    .max_height(links_h)
-                    .show(ui, |ui| {
-                        for s in Section::ALL {
-                            let on = s == current;
-                            let (rect, resp) = ui.allocate_exact_size(
-                                vec2(ui.available_width(), 32.0),
-                                Sense::click(),
-                            );
-                            // Named for assistive tech (and the tests).
-                            resp.widget_info(|| {
-                                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, s.title())
-                            });
-                            if on {
-                                ui.painter()
-                                    .rect_filled(rect, CornerRadius::same(8), p.surface);
-                                ui.painter().rect_stroke(
-                                    rect,
-                                    CornerRadius::same(8),
-                                    Stroke::new(1.0, p.border),
-                                    egui::StrokeKind::Inside,
-                                );
-                            } else if resp.hovered() {
-                                ui.painter()
-                                    .rect_filled(rect, CornerRadius::same(8), p.hover);
-                            }
-                            let color = if on { p.text } else { p.muted };
-                            ui.painter().text(
-                                rect.left_center() + vec2(10.0, 0.0),
-                                egui::Align2::LEFT_CENTER,
-                                s.icon(),
-                                egui::FontId::proportional(16.0),
-                                if on { p.accent } else { p.muted },
-                            );
-                            ui.painter().text(
-                                rect.left_center() + vec2(36.0, 0.0),
-                                egui::Align2::LEFT_CENTER,
-                                s.title(),
-                                if on {
-                                    theme::semibold(13.5)
-                                } else {
-                                    theme::regular(13.5)
-                                },
-                                color,
-                            );
-                            if s == Section::Overview && attention > 0 {
-                                let badge = egui::Rect::from_center_size(
-                                    rect.right_center() - vec2(18.0, 0.0),
-                                    vec2(22.0, 18.0),
-                                );
-                                ui.painter().rect_filled(
-                                    badge,
-                                    CornerRadius::same(9),
-                                    p.warning_soft,
-                                );
-                                ui.painter().text(
-                                    badge.center(),
-                                    egui::Align2::CENTER_CENTER,
-                                    attention.to_string(),
-                                    theme::semibold(11.0),
-                                    p.warning,
-                                );
-                            }
-                            if resp.clicked() {
-                                self.nav.go(s.home());
-                            }
-                        }
+                let links_h = (ui.available_height() - footer_h - FOOTER_GAP).max(fit.row);
+                let nav = &mut self.nav;
+                links(ui, "sidebar", fit, links_h, current, |ui, s| {
+                    let on = s == current;
+                    let (rect, resp) =
+                        ui.allocate_exact_size(vec2(ui.available_width(), fit.row), Sense::click());
+                    // Named for assistive tech (and the tests).
+                    resp.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, s.title())
                     });
+                    if on {
+                        ui.painter()
+                            .rect_filled(rect, CornerRadius::same(8), p.surface);
+                        ui.painter().rect_stroke(
+                            rect,
+                            CornerRadius::same(8),
+                            Stroke::new(1.0, p.border),
+                            egui::StrokeKind::Inside,
+                        );
+                    } else if resp.hovered() {
+                        ui.painter()
+                            .rect_filled(rect, CornerRadius::same(8), p.hover);
+                    }
+                    let color = if on { p.text } else { p.muted };
+                    ui.painter().text(
+                        rect.left_center() + vec2(10.0, 0.0),
+                        egui::Align2::LEFT_CENTER,
+                        s.icon(),
+                        egui::FontId::proportional(16.0),
+                        if on { p.accent } else { p.muted },
+                    );
+                    ui.painter().text(
+                        rect.left_center() + vec2(36.0, 0.0),
+                        egui::Align2::LEFT_CENTER,
+                        s.title(),
+                        if on {
+                            theme::semibold(13.5)
+                        } else {
+                            theme::regular(13.5)
+                        },
+                        color,
+                    );
+                    if s == Section::Overview && attention > 0 {
+                        let badge = egui::Rect::from_center_size(
+                            rect.right_center() - vec2(18.0, 0.0),
+                            vec2(22.0, 18.0),
+                        );
+                        ui.painter()
+                            .rect_filled(badge, CornerRadius::same(9), p.warning_soft);
+                        ui.painter().text(
+                            badge.center(),
+                            egui::Align2::CENTER_CENTER,
+                            attention.to_string(),
+                            theme::semibold(11.0),
+                            p.warning,
+                        );
+                    }
+                    if resp.clicked() {
+                        nav.go(s.home());
+                    }
+                    resp
+                });
                 let footer = footer_layout(ui, footer_h, Align::Min, |ui| {
+                    if fit.tight {
+                        tighten(ui);
+                    }
                     self.scheme_menu(ui, false);
                     if let Some(b) = &books {
                         ui.add_space(2.0);
@@ -702,10 +703,11 @@ impl App {
                             b,
                             ui.input(|i| i.time) - self.updated_at,
                             self.loader.is_some() || self.live_label,
+                            fit.folded,
                         );
                     }
                 });
-                remember_footer(ui, footer_id, footer.response.rect.height(), footer_h);
+                memo.measured(ui, "sidebar", fit.form(), footer.response.rect);
             });
     }
 
@@ -740,64 +742,64 @@ impl App {
                 );
                 ui.interact(r, ui.id().with("logo"), Sense::hover())
                     .on_hover_text(format!("{name} · Books"));
-                ui.add_space(18.0);
                 let current = self.nav.current.section();
                 let attention = books.as_ref().map(|b| b.attention.len()).unwrap_or(0);
-                let footer_id = egui::Id::new("rail_footer_h");
-                let footer_h = ui
-                    .ctx()
-                    .data(|d| d.get_temp::<f32>(footer_id))
-                    .unwrap_or(RAIL_FOOTER);
-                let links_h = (ui.available_height() - footer_h - FOOTER_GAP).max(36.0);
-                egui::ScrollArea::vertical()
-                    .id_salt("rail_links")
-                    .max_height(links_h)
-                    .show(ui, |ui| {
-                        for s in Section::ALL {
-                            let on = s == current;
-                            let (rect, resp) = ui.allocate_exact_size(
-                                vec2(ui.available_width(), 36.0),
-                                Sense::click(),
-                            );
-                            resp.widget_info(|| {
-                                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, s.title())
-                            });
-                            if on {
-                                ui.painter()
-                                    .rect_filled(rect, CornerRadius::same(8), p.surface);
-                                ui.painter().rect_stroke(
-                                    rect,
-                                    CornerRadius::same(8),
-                                    Stroke::new(1.0, p.border),
-                                    egui::StrokeKind::Inside,
-                                );
-                            } else if resp.hovered() {
-                                ui.painter()
-                                    .rect_filled(rect, CornerRadius::same(8), p.hover);
-                            }
-                            ui.painter().text(
-                                rect.center(),
-                                egui::Align2::CENTER_CENTER,
-                                s.icon(),
-                                egui::FontId::proportional(18.0),
-                                if on { p.accent } else { p.muted },
-                            );
-                            let tip = if s == Section::Overview && attention > 0 {
-                                ui.painter().circle_filled(
-                                    rect.center() + vec2(9.0, -8.0),
-                                    4.0,
-                                    p.warning,
-                                );
-                                format!("{} · {attention} need attention", s.title())
-                            } else {
-                                s.title().to_string()
-                            };
-                            if resp.on_hover_text(tip).clicked() {
-                                self.nav.go(s.home());
-                            }
-                        }
+                // As the sidebar's, with no card to fold.
+                let memo = FooterMemo::load(ui, "rail");
+                let heights = memo.heights(RAIL_FOOTER, 0.0, RAIL_TIGHTEN);
+                let fit = fit(ui.available_height(), heights, &RAIL_ROWS, slack(ui));
+                ui.add_space(if fit.tight {
+                    HEAD_GAP_TIGHT
+                } else {
+                    RAIL_ROWS.head_gap
+                });
+                let footer_h = heights[fit.form()];
+                let links_h = (ui.available_height() - footer_h - FOOTER_GAP).max(fit.row);
+                let nav = &mut self.nav;
+                links(ui, "rail", fit, links_h, current, |ui, s| {
+                    let on = s == current;
+                    let (rect, resp) =
+                        ui.allocate_exact_size(vec2(ui.available_width(), fit.row), Sense::click());
+                    resp.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, s.title())
                     });
+                    if on {
+                        ui.painter()
+                            .rect_filled(rect, CornerRadius::same(8), p.surface);
+                        ui.painter().rect_stroke(
+                            rect,
+                            CornerRadius::same(8),
+                            Stroke::new(1.0, p.border),
+                            egui::StrokeKind::Inside,
+                        );
+                    } else if resp.hovered() {
+                        ui.painter()
+                            .rect_filled(rect, CornerRadius::same(8), p.hover);
+                    }
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        s.icon(),
+                        egui::FontId::proportional(18.0),
+                        if on { p.accent } else { p.muted },
+                    );
+                    let tip = if s == Section::Overview && attention > 0 {
+                        ui.painter()
+                            .circle_filled(rect.center() + vec2(9.0, -8.0), 4.0, p.warning);
+                        format!("{} · {attention} need attention", s.title())
+                    } else {
+                        s.title().to_string()
+                    };
+                    let resp = resp.on_hover_text(tip);
+                    if resp.clicked() {
+                        nav.go(s.home());
+                    }
+                    resp
+                });
                 let footer = footer_layout(ui, footer_h, Align::Center, |ui| {
+                    if fit.tight {
+                        tighten(ui);
+                    }
                     self.scheme_menu(ui, true);
                     if let Some(b) = &books {
                         self.menu.ui(ui, b, true);
@@ -808,7 +810,10 @@ impl App {
                         let live = self.loader.is_some() || self.live_label;
                         let checks = checks(b);
                         let ok = checks.iter().all(|c| c.0);
-                        let (r, resp) = ui.allocate_exact_size(vec2(32.0, 32.0), Sense::hover());
+                        let (r, resp) = ui.allocate_exact_size(
+                            vec2(32.0, ui.spacing().interact_size.y + 4.0),
+                            Sense::hover(),
+                        );
                         if ok {
                             let pulse = (ui.input(|i| i.time) - self.updated_at < 2.0) as u8 as f32;
                             ui.painter().circle_filled(
@@ -843,7 +848,7 @@ impl App {
                         resp.on_hover_text(tip);
                     }
                 });
-                remember_footer(ui, footer_id, footer.response.rect.height(), footer_h);
+                memo.measured(ui, "rail", fit.form(), footer.response.rect);
             });
     }
 
@@ -977,18 +982,360 @@ impl App {
 
 /// Width of the icon rail.
 const RAIL_W: f32 = 60.0;
-/// Height kept clear under the sidebar's links for the status box and the
-/// theme toggle before the footer is first measured; the rail's
-/// equivalent. After the first frame the footer's drawn height is used
-/// ([`remember_footer`]).
+/// The footer's height (the status box and the menus under the sidebar's
+/// links; the rail's equivalent) before it is first measured. After the
+/// first frame its drawn heights are used ([`FooterMemo`]).
 const SIDEBAR_FOOTER: f32 = 172.0;
 const RAIL_FOOTER: f32 = 84.0;
+/// How much shorter the footer is tightened ([`tighten`]), before it is
+/// measured so.
+const SIDEBAR_TIGHTEN: f32 = 36.0;
+const RAIL_TIGHTEN: f32 = 36.0;
 
 /// Space kept between the last link and the footer.
 const FOOTER_GAP: f32 = 8.0;
 
-/// Keep the footer's drawn height for the next frame's links, and draw
-/// again at once when it changed (the first frame, a check appearing).
+/// Tightened: the space between links, and under the header.
+const GAP_MIN: f32 = 2.0;
+const HEAD_GAP_TIGHT: f32 = 8.0;
+
+/// A panel's links: how many, their height and spacing, the least height
+/// they tighten to, the gap above them, and whether its status card folds.
+struct Rows {
+    n: usize,
+    row: f32,
+    gap: f32,
+    row_min: f32,
+    head_gap: f32,
+    foldable: bool,
+}
+
+impl Rows {
+    fn height(&self, row: f32, gap: f32) -> f32 {
+        let n = self.n as f32;
+        n * row + (n - 1.0) * gap
+    }
+}
+
+const SIDEBAR_ROWS: Rows = Rows {
+    n: Section::ALL.len(),
+    row: 32.0,
+    gap: 6.0,
+    row_min: 24.0,
+    head_gap: 18.0,
+    foldable: true,
+};
+
+const RAIL_ROWS: Rows = Rows {
+    n: Section::ALL.len(),
+    row: 36.0,
+    gap: 6.0,
+    // As low as the sidebar's: at 28 the rail scrolled in the owner's
+    // window (review, 2026-10-22).
+    row_min: 24.0,
+    head_gap: 18.0,
+    foldable: false,
+};
+
+/// How a panel's links and footer share the window's height (owner,
+/// 2026-10-22: at 1479x519 half the links hid behind the status box).
+/// Each step is taken only when the one before isn't enough, so where
+/// everything fits nothing changes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Fit {
+    /// 1. The status card folded to its summary line.
+    folded: bool,
+    /// 2. The rows tightened: the footer's menus, the gap under the
+    ///    header, and the links' spacing, then their height.
+    tight: bool,
+    row: f32,
+    gap: f32,
+    /// 3. Even tight they don't fit: the links scroll.
+    scroll: bool,
+}
+
+impl Fit {
+    /// Which of the footer's three forms it draws: full, folded, tight.
+    fn form(&self) -> usize {
+        if self.tight {
+            2
+        } else if self.folded {
+            1
+        } else {
+            0
+        }
+    }
+}
+
+/// The fit for `avail` points under the header, the footer being
+/// `footer` high in each form ([`Fit::form`]), overrunning by `slack`
+/// points ([`slack`]) taken as fitting.
+fn fit(avail: f32, footer: [f32; 3], g: &Rows, slack: f32) -> Fit {
+    let full = g.height(g.row, g.gap);
+    let at_ease = Fit {
+        folded: false,
+        tight: false,
+        row: g.row,
+        gap: g.gap,
+        scroll: false,
+    };
+    // The links fit when what they overrun is under half a pixel
+    // (`slack`, points), which no one sees: at 1.25 the rows' sum runs a
+    // hair over whole points, and without it the card folded where main
+    // drew everything (review, 2026-10-22).
+    let fits = |footer: f32| avail - g.head_gap - FOOTER_GAP - footer + slack >= full;
+    if fits(footer[0]) {
+        return at_ease;
+    }
+    if g.foldable && fits(footer[1]) {
+        return Fit {
+            folded: true,
+            ..at_ease
+        };
+    }
+    let tight = Fit {
+        folded: g.foldable,
+        tight: true,
+        ..at_ease
+    };
+    let room = avail - HEAD_GAP_TIGHT - FOOTER_GAP - footer[2];
+    let n = g.n as f32;
+    // The space between the links gives first, then the links.
+    let gap = ((room - n * g.row) / (n - 1.0)).floor();
+    if gap >= GAP_MIN {
+        return Fit {
+            gap: gap.min(g.gap),
+            ..tight
+        };
+    }
+    let row = ((room - (n - 1.0) * GAP_MIN) / n).floor();
+    if row >= g.row_min {
+        return Fit {
+            row: row.min(g.row),
+            gap: GAP_MIN,
+            ..tight
+        };
+    }
+    Fit {
+        row: g.row_min,
+        gap: GAP_MIN,
+        scroll: true,
+        ..tight
+    }
+}
+
+/// Half a pixel, in points: links overrunning their room by less are
+/// drawn whole, with no cue.
+fn slack(ui: &Ui) -> f32 {
+    0.5 / ui.ctx().pixels_per_point()
+}
+
+/// The footer's height in each form, as last drawn; a form not drawn yet
+/// is estimated from one that was.
+#[derive(Clone, Copy, Debug, Default)]
+struct FooterMemo([Option<f32>; 3]);
+
+impl FooterMemo {
+    fn id(key: &str) -> egui::Id {
+        egui::Id::new((key, "footer_memo"))
+    }
+
+    fn load(ui: &Ui, key: &str) -> FooterMemo {
+        ui.ctx()
+            .data(|d| d.get_temp(Self::id(key)))
+            .unwrap_or_default()
+    }
+
+    /// Each form's height: `guess` full before anything was drawn, a
+    /// form not drawn `fold` (the card's checks) and `tighten` shorter
+    /// than the one before it.
+    fn heights(&self, guess: f32, fold: f32, tighten: f32) -> [f32; 3] {
+        let off = [0.0, -fold, -fold - tighten];
+        let anchor = (0..3)
+            .find_map(|i| self.0[i].map(|h| h - off[i]))
+            .unwrap_or(guess);
+        std::array::from_fn(|i| self.0[i].unwrap_or(anchor + off[i]))
+    }
+
+    /// Keep form `form`'s drawn height for the next frame (the footer's
+    /// content changing moves every form alike), the footer's rect for
+    /// the tests, and draw again at once when it changed.
+    fn measured(mut self, ui: &Ui, key: &str, form: usize, rect: egui::Rect) {
+        let h = rect.height();
+        let changed = match self.0[form] {
+            Some(old) if (old - h).abs() <= 0.5 => false,
+            Some(old) => {
+                for v in self.0.iter_mut().flatten() {
+                    *v += h - old;
+                }
+                true
+            }
+            None => {
+                self.0[form] = Some(h);
+                true
+            }
+        };
+        ui.ctx().data_mut(|d| {
+            d.insert_temp(Self::id(key), self);
+            d.insert_temp(egui::Id::new(format!("{key}_footer_rect")), rect);
+            d.insert_temp(egui::Id::new(format!("{key}_footer_h")), h);
+        });
+        if changed {
+            ui.ctx().request_repaint();
+        }
+    }
+}
+
+/// The footer's menus tightened, as the links are.
+fn tighten(ui: &mut Ui) {
+    let s = ui.spacing_mut();
+    s.item_spacing.y = GAP_MIN;
+    s.interact_size.y = 22.0;
+    s.button_padding.y = 2.0;
+}
+
+/// Height of the fade over a clipped edge of the links.
+const FADE: f32 = 28.0;
+
+/// A panel's links, `row` draws one: at most `max_h` high, scrolling
+/// when they don't fit, then with a fade and a chevron at each clipped
+/// edge, and the current page's link scrolled into view whenever the
+/// page changes. What it drew is kept for the tests
+/// (`{key}_links_view`, `{key}_links_scroll`).
+fn links(
+    ui: &mut Ui,
+    key: &str,
+    fit: Fit,
+    max_h: f32,
+    current: Section,
+    mut row: impl FnMut(&mut Ui, Section) -> egui::Response,
+) {
+    // Last frame's page, viewport height and scrolling: the current link
+    // is scrolled into view when they change while the links scroll.
+    let shown_id = egui::Id::new((key, "links_shown"));
+    let shown = ui
+        .ctx()
+        .data(|d| d.get_temp::<(Section, i32, bool)>(shown_id));
+    let now = (current, max_h.round() as i32);
+    let reveal = fit.scroll && shown != Some((now.0, now.1, true));
+    let out = egui::ScrollArea::vertical()
+        .id_salt(format!("{key}_links"))
+        .max_height(max_h)
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = fit.gap;
+            for s in Section::ALL {
+                let resp = row(ui, s);
+                if reveal && s == current {
+                    resp.scroll_to_me(Some(Align::Center));
+                }
+            }
+        });
+    let view = out.inner_rect;
+    let content = out.content_size.y;
+    let offset = out.state.offset.y;
+    let scrolls = content > view.height() + slack(ui);
+    ui.ctx().data_mut(|d| {
+        d.insert_temp(shown_id, (now.0, now.1, scrolls));
+        d.insert_temp(egui::Id::new(format!("{key}_links_view")), view);
+        d.insert_temp(egui::Id::new(format!("{key}_links_scroll")), scrolls);
+    });
+    if !scrolls {
+        return;
+    }
+    let p = pal(ui.ctx());
+    let painter = ui.painter().with_clip_rect(view);
+    let above = offset > 0.5;
+    let below = offset + view.height() < content - 0.5;
+    for (clipped, down) in [(above, false), (below, true)] {
+        if !clipped {
+            continue;
+        }
+        let h = FADE.min(view.height() / 2.0);
+        let (band, edge_y) = if down {
+            (
+                egui::Rect::from_min_max(egui::pos2(view.left(), view.bottom() - h), view.max),
+                view.bottom() - 8.0,
+            )
+        } else {
+            (
+                egui::Rect::from_min_max(view.min, egui::pos2(view.right(), view.top() + h)),
+                view.top() + 8.0,
+            )
+        };
+        let (top, bottom) = if down {
+            (egui::Color32::TRANSPARENT, p.sidebar)
+        } else {
+            (p.sidebar, egui::Color32::TRANSPARENT)
+        };
+        let mut mesh = egui::Mesh::default();
+        mesh.colored_vertex(band.left_top(), top);
+        mesh.colored_vertex(band.right_top(), top);
+        mesh.colored_vertex(band.left_bottom(), bottom);
+        mesh.colored_vertex(band.right_bottom(), bottom);
+        mesh.add_triangle(0, 1, 2);
+        mesh.add_triangle(1, 3, 2);
+        painter.add(egui::Shape::mesh(mesh));
+        // The sidebar's at the edge's right end, clear of the links'
+        // names. The rail's has no room beside its icons (there it read
+        // as a caret on one): centred on the edge, on a pill of its own
+        // that covers the faded icon under it.
+        let narrow = view.width() < 80.0;
+        let chevron = if narrow {
+            egui::Rect::from_center_size(
+                egui::pos2(
+                    view.center().x,
+                    if down {
+                        view.bottom() - 7.0
+                    } else {
+                        view.top() + 7.0
+                    },
+                ),
+                vec2(26.0, 14.0),
+            )
+        } else {
+            egui::Rect::from_center_size(egui::pos2(view.right() - 14.0, edge_y), vec2(24.0, 16.0))
+        };
+        let label = if down {
+            "More links below"
+        } else {
+            "More links above"
+        };
+        let resp = ui
+            .interact(chevron, ui.id().with((key, down)), Sense::click())
+            .on_hover_text(label);
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+        if narrow {
+            painter.rect(
+                chevron,
+                CornerRadius::same(7),
+                if resp.hovered() { p.hover } else { p.sidebar },
+                Stroke::new(1.0, p.border),
+                egui::StrokeKind::Inside,
+            );
+        }
+        painter.text(
+            chevron.center(),
+            egui::Align2::CENTER_CENTER,
+            if down {
+                icon::CARET_DOWN
+            } else {
+                icon::CARET_UP
+            },
+            egui::FontId::proportional(if narrow { 11.0 } else { 14.0 }),
+            if resp.hovered() { p.text } else { p.muted },
+        );
+        if resp.clicked() {
+            // A page of links on, keeping one link of the last in view.
+            let step = (view.height() - fit.row - fit.gap).max(fit.row);
+            let mut state = out.state;
+            state.offset.y = (offset + if down { step } else { -step })
+                .clamp(0.0, (content - view.height()).max(0.0));
+            state.store(ui.ctx(), out.id);
+            ui.ctx().request_repaint();
+        }
+    }
+}
+
 /// The sidebar's footer, bottom up: on the panel's floor when it fits
 /// under the links, else right under them, running off the bottom of the
 /// window, so it gives way and never draws over a link.
@@ -1006,14 +1353,13 @@ fn footer_layout<R>(
     }
 }
 
-fn remember_footer(ui: &Ui, id: egui::Id, drawn: f32, used: f32) {
-    if (drawn - used).abs() > 0.5 {
-        ui.ctx().data_mut(|d| d.insert_temp(id, drawn));
-        ui.ctx().request_repaint();
+/// The status card: whether the books are live, their newest event, and
+/// the integrity checks. Folded (a short window), one line, the checks
+/// in its tooltip.
+fn live_status(ui: &mut Ui, b: &Books, since_update: f64, live: bool, folded: bool) {
+    if folded {
+        return folded_status(ui, b, since_update, live);
     }
-}
-
-fn live_status(ui: &mut Ui, b: &Books, since_update: f64, live: bool) {
     let p = pal(ui.ctx());
     Frame::new()
         .fill(p.surface)
@@ -1062,6 +1408,176 @@ fn live_status(ui: &mut Ui, b: &Books, since_update: f64, live: bool) {
                 }
             }
         });
+}
+
+/// The status card folded to its summary line ("● Live · event 559 ·
+/// ✓ verified", or the check that failed), the three checks on hover
+/// and the card's copy menu on a right click. The line is the fullest
+/// of [`summaries`] that fits the card, so it is never cut off: a failed
+/// check's name outranks the event and the word "Live" (review,
+/// 2026-10-22: cut to "⊘ Datab…" it hid what failed).
+fn folded_status(ui: &mut Ui, b: &Books, since_update: f64, live: bool) {
+    let p = pal(ui.ctx());
+    let checks = checks(b);
+    let failed: Vec<&str> = checks
+        .iter()
+        .filter(|c| !c.0)
+        .map(|c| c.1.as_str())
+        .collect();
+    let status = if live { "Live" } else { "Snapshot" };
+    let event = format!("· event {}", b.seq());
+    // The card's inner width: the panel's less the frame's margins.
+    let room = ui.available_width() - 2.0 * 10.0 - 2.0;
+    let gap = 5.0;
+    let width = |s: &Summary| {
+        let w = |text: &str, font: egui::FontId| {
+            ui.fonts_mut(|f| f.layout_no_wrap(text.to_string(), font, p.text).size().x)
+        };
+        let mut x = 8.0 + gap + w(s.verdict(), theme::regular(12.0));
+        if s.status {
+            x += gap + w(status, theme::semibold(12.0));
+        }
+        if s.event {
+            x += gap + w(&event, theme::regular(12.0));
+        }
+        x
+    };
+    let all = summaries(&failed);
+    let line = all
+        .iter()
+        .find(|s| width(s) <= room)
+        .unwrap_or_else(|| all.last().expect("a summary"));
+    let color = if failed.is_empty() {
+        p.muted
+    } else {
+        p.negative
+    };
+    let card = Frame::new()
+        .fill(p.surface)
+        .stroke(Stroke::new(1.0, p.border))
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(Margin::same(10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                let (r, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
+                let pulse = (since_update < 2.0) as u8 as f32;
+                let dot = if live { p.positive } else { p.faint };
+                ui.painter().circle_filled(r.center(), 4.0 + pulse, dot);
+                if line.status {
+                    ui.label(RichText::new(status).font(theme::semibold(12.0)));
+                }
+                if line.event {
+                    ui.label(
+                        RichText::new(&event)
+                            .font(theme::regular(12.0))
+                            .color(p.muted),
+                    );
+                }
+                ui.label(
+                    RichText::new(line.verdict())
+                        .font(theme::regular(12.0))
+                        .color(color),
+                );
+            });
+        });
+    let resp = ui.interact(
+        card.response.rect,
+        ui.id().with("folded_status"),
+        Sense::click(),
+    );
+    resp.on_hover_ui(|ui| {
+        if !(line.status && line.event) {
+            ui.label(
+                RichText::new(format!("{status} {event}"))
+                    .font(theme::regular(11.5))
+                    .color(p.muted),
+            );
+        }
+        for (ok, text, _) in &checks {
+            let (glyph, color) = if *ok {
+                (icon::SEAL_CHECK, p.muted)
+            } else {
+                (icon::WARNING_CIRCLE, p.negative)
+            };
+            ui.label(
+                RichText::new(format!("{glyph} {text}"))
+                    .font(theme::regular(11.5))
+                    .color(color),
+            );
+        }
+    })
+    .context_menu(|ui| {
+        crate::widgets::copy_item(ui, "Copy journal head", &b.head);
+        crate::widgets::copy_item(ui, "Copy data folder", &b.data_dir.display().to_string());
+    });
+}
+
+/// One way to say the folded card's line: whether it names the status
+/// ("Live") and the event, and its verdict.
+#[derive(Clone, Debug, PartialEq)]
+struct Summary {
+    status: bool,
+    event: bool,
+    verdict: String,
+}
+
+impl Summary {
+    /// The verdict as drawn: right after the dot it needs no "·".
+    fn verdict(&self) -> &str {
+        if self.status {
+            &self.verdict
+        } else {
+            self.verdict.trim_start_matches("· ")
+        }
+    }
+}
+
+/// The folded card's lines, fullest first, given the checks that
+/// `failed`. All passing, the event outranks the word "verified" (the
+/// seal says it). A failure is named before anything else is kept: the
+/// event goes first, then "Live" (the dot's colour says it), and only
+/// then is the name shortened to a count. Whatever the line leaves out
+/// its tooltip says.
+fn summaries(failed: &[&str]) -> Vec<Summary> {
+    let s = |status, event, verdict: String| Summary {
+        status,
+        event,
+        verdict,
+    };
+    match failed {
+        [] => {
+            let full = format!("· {} verified", icon::SEAL_CHECK);
+            let seal = format!("· {}", icon::SEAL_CHECK);
+            vec![
+                s(true, true, full.clone()),
+                s(true, true, seal.clone()),
+                s(true, false, full),
+                s(true, false, seal.clone()),
+                s(false, false, seal),
+            ]
+        }
+        names => {
+            let named = format!("· {} {}", icon::WARNING_CIRCLE, names.join(", "));
+            let counted = match names.len() {
+                1 => format!("· {} check failed", icon::WARNING_CIRCLE),
+                n => format!("· {} {n} checks failed", icon::WARNING_CIRCLE),
+            };
+            let short = match names.len() {
+                1 => format!("· {} failed", icon::WARNING_CIRCLE),
+                n => format!("· {} {n} failed", icon::WARNING_CIRCLE),
+            };
+            vec![
+                s(true, true, named.clone()),
+                s(true, false, named.clone()),
+                s(false, false, named),
+                s(true, false, counted.clone()),
+                s(false, false, counted),
+                s(false, false, short),
+            ]
+        }
+    }
 }
 
 /// The integrity checks the sidebar shows: (ok, label, explanation).
@@ -1182,6 +1698,110 @@ mod tests {
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
         move |k| map.get(k).cloned()
+    }
+
+    /// The footer's heights in the owner's window (measured 2026-10-22).
+    const FOOTER: [f32; 3] = [219.0, 147.0, 112.0];
+
+    #[test]
+    fn a_window_that_fits_everything_changes_nothing() {
+        let f = fit(900.0, FOOTER, &SIDEBAR_ROWS, 0.5);
+        assert_eq!(
+            (f.folded, f.tight, f.row, f.gap, f.scroll),
+            (false, false, 32.0, 6.0, false)
+        );
+    }
+
+    #[test]
+    fn the_sidebar_gives_way_in_order() {
+        // Card folds first.
+        let f = fit(18.0 + 450.0 + 8.0 + 147.0, FOOTER, &SIDEBAR_ROWS, 0.5);
+        assert!(f.folded && !f.tight && f.row == 32.0 && f.gap == 6.0);
+        // Then the spacing goes, before the rows.
+        let f = fit(8.0 + 410.0 + 8.0 + 112.0, FOOTER, &SIDEBAR_ROWS, 0.5);
+        assert!(f.folded && f.tight && f.row == 32.0 && f.gap < 6.0 && f.gap >= GAP_MIN);
+        // Then the rows, down to their least.
+        let f = fit(8.0 + 330.0 + 8.0 + 112.0, FOOTER, &SIDEBAR_ROWS, 0.5);
+        assert!(f.tight && !f.scroll && f.gap == GAP_MIN && f.row < 32.0 && f.row >= 24.0);
+        // Then they scroll.
+        let f = fit(300.0, FOOTER, &SIDEBAR_ROWS, 0.5);
+        assert!(f.scroll && f.row == 24.0 && f.gap == GAP_MIN);
+    }
+
+    #[test]
+    fn whatever_fit_is_chosen_the_links_fit_unless_they_scroll() {
+        for g in [&SIDEBAR_ROWS, &RAIL_ROWS] {
+            let foot = if g.foldable {
+                FOOTER
+            } else {
+                [150.0, 150.0, 120.0]
+            };
+            let mut last = (0, f32::INFINITY);
+            for tenths in (1000..12000).rev() {
+                let avail = tenths as f32 / 10.0;
+                let f = fit(avail, foot, g, 0.5);
+                let head = if f.tight { HEAD_GAP_TIGHT } else { g.head_gap };
+                let need = head + g.height(f.row, f.gap) + FOOTER_GAP + foot[f.form()];
+                // Within the scroll area's rounding (fit).
+                assert!(f.scroll || need <= avail + 0.5, "{avail}: {f:?}");
+                assert!(f.row >= g.row_min && f.row <= g.row && f.gap >= GAP_MIN);
+                // Shorter windows never step back.
+                let step = (f.form() + f.scroll as usize, f.row + f.gap);
+                assert!(step.0 >= last.0, "{avail}: {f:?}");
+                assert!(step.0 > last.0 || step.1 <= last.1, "{avail}: {f:?}");
+                last = step;
+            }
+        }
+    }
+
+    #[test]
+    fn a_folded_card_names_a_failure_before_keeping_anything_else() {
+        let lines = summaries(&["Database differs"]);
+        // Every line says it failed; the name goes only after the event
+        // and the word "Live" have.
+        assert!(
+            lines
+                .iter()
+                .all(|l| l.verdict.contains(icon::WARNING_CIRCLE))
+        );
+        let named = lines
+            .iter()
+            .take_while(|l| l.verdict.contains("Database differs"))
+            .count();
+        assert_eq!(named, 3);
+        assert!(!lines[named - 1].status && !lines[named - 1].event);
+        assert!(lines[named..].iter().all(|l| l.verdict.contains("failed")));
+        // Passing, the line is never a failure's and keeps its seal.
+        let ok = summaries(&[]);
+        assert!(
+            ok.iter().all(|l| l.verdict.contains(icon::SEAL_CHECK)
+                && !l.verdict.contains(icon::WARNING_CIRCLE))
+        );
+        assert_eq!(
+            ok[0],
+            Summary {
+                status: true,
+                event: true,
+                verdict: format!("· {} verified", icon::SEAL_CHECK),
+            }
+        );
+        assert!(
+            summaries(&["a", "b"])
+                .last()
+                .unwrap()
+                .verdict
+                .contains("2 failed")
+        );
+    }
+
+    #[test]
+    fn an_unmeasured_footer_form_is_reckoned_from_a_measured_one() {
+        let m = FooterMemo([None, Some(150.0), None]);
+        assert_eq!(m.heights(172.0, 70.0, 36.0), [220.0, 150.0, 114.0]);
+        assert_eq!(
+            FooterMemo::default().heights(172.0, 70.0, 36.0),
+            [172.0, 102.0, 66.0]
+        );
     }
 
     #[test]

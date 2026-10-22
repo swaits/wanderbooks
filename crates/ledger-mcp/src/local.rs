@@ -41,8 +41,8 @@
 //!      bound to its token when opened, and forgotten when it ends, is
 //!      found gone, or its token is revoked or replaced; past MAX_SESSIONS
 //!      bindings a new session is refused (an initialize), never a binding
-//!      dropped. Tokens are made, listed and revoked only through
-//!      the admin socket.
+//!      dropped. Tokens are made, listed, checked (by a
+//!      SHA-256, never a text) and revoked only through the admin socket.
 //!   9. A file's bytes come in only by `PUT /b/{id}/u/{upload}` and go
 //!      out only by `GET /b/{id}/a/{attachment}` (a stored file) and `GET
 //!      /b/{id}/x/{export}` (a file the books made, D-29) (plan 4.7), each
@@ -254,7 +254,7 @@ impl Books {
         let Some(presented) = presented else {
             return Err((
                 crate::access::UNAUTHORIZED,
-                "these books need a token: the human makes one with `wanderbooks token create`"
+                "these books need a token, and this request carried none: the human makes one with `wanderbooks token create` (if one was made, `wanderbooks token check` says whether this computer's keyring still gives it)"
                     .into(),
             ));
         };
@@ -468,6 +468,15 @@ impl Books {
                 Ok(Response::Tokens(
                     p.tokens().iter().map(admin::TokenInfo::from).collect(),
                 ))
+            }),
+            Request::TokenCheck { book, name, sha256 } => self.with_principals(|p| {
+                let live = p.tokens().iter().find(|t| t.book == book && t.name == name);
+                // A hash, not a secret: compared as it is.
+                let matches = live.is_some_and(|t| t.sha256.eq_ignore_ascii_case(&sha256));
+                Ok(Response::TokenChecked {
+                    live: live.map(admin::TokenInfo::from),
+                    matches,
+                })
             }),
             Request::TokenRevoke { book, name, id } => {
                 let book = match BookId::parse(&book) {
@@ -2950,6 +2959,30 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert_eq!(bound(&books), ["s-other"]);
+    }
+
+    /// A token check answers by the SHA-256 asked, for the books and name
+    /// asked alone.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_token_check_says_whether_the_text_is_the_live_one() {
+        let home = tempfile::tempdir().unwrap();
+        let books = books_in(home.path());
+        create(&books, "acme");
+        let (old_id, old) = token(&books, "acme", "agent");
+        let (new_id, new) = token(&books, "acme", "agent");
+        assert_ne!(old_id, new_id);
+        let check = |book: &str, name: &str, text: &str| match books.admin(Request::TokenCheck {
+            book: book.into(),
+            name: name.into(),
+            sha256: ledger_store::journal::sha256_hex(text.as_bytes()),
+        }) {
+            Response::TokenChecked { live, matches } => (live.map(|t| t.id), matches),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(check("acme", "agent", &new), (Some(new_id.clone()), true));
+        assert_eq!(check("acme", "agent", &old), (Some(new_id), false));
+        assert_eq!(check("acme", "other", &new), (None, false));
+        assert_eq!(check("beta", "agent", &new), (None, false));
     }
 
     /// An MCP request to `acme` with `bearer`, on `session` if given.

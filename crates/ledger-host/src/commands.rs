@@ -22,10 +22,12 @@
 //!   3. Adoption and restoring are previewed first and go ahead only on a
 //!      yes at the terminal, or --yes; a vault beside the books must be
 //!      named (or --no-vault given): it is never silently left behind.
-//!   4. A token made is kept in the keyring before anything is said of it,
-//!      and its text is printed only by `token print`; one that can't be
-//!      kept is revoked again. A token revoked is forgotten by the keyring
-//!      too. `connect` makes the books' agent token only when the keyring
+//!   4. A token made is kept in the keyring, and read back from it as
+//!      kept, before anything is said of it, and its text is printed only
+//!      by `token print`; one that can't be kept (or read back) is revoked
+//!      again. A token revoked is forgotten by the keyring too. `token
+//!      check` says whether the keyring's token is the books' live one,
+//!      by its SHA-256 alone, never its text. `connect` makes the books' agent token only when the keyring
 //!      has none, replacing the server's (no one could be using it: the
 //!      bridge reads its token from this keyring).
 //!   5. The viewer's hold lets go only when the owner closes the books;
@@ -1238,7 +1240,16 @@ fn make_token(
     };
     let root = run_dir.parent().unwrap_or(&run_dir).to_path_buf();
     let account = crate::tokens::Account::new(&root, book, name);
-    let kept = crate::tokens::keeper(&run_dir, &common.knobs).set(&account, &text);
+    // Kept, and read back as kept: else taken back (INVARIANT 4).
+    let keeper = crate::tokens::keeper(&run_dir, &common.knobs);
+    let kept = keeper
+        .set(&account, &text)
+        .map_err(String::from)
+        .and_then(|()| match keeper.get(&account) {
+            Ok(Some(back)) if back == *text => Ok(()),
+            Ok(_) => Err("it didn't give back the token it was given to keep".to_string()),
+            Err(e) => Err(e.to_string()),
+        });
     drop(text);
     if let Err(why) = kept {
         let undone = with_server(
@@ -1960,6 +1971,7 @@ fn token_usage(prog: &str) {
     eprintln!("usage: {prog} create --book ID [--name NAME] [--scopes LIST] [--replace]");
     eprintln!("       {prog} list");
     eprintln!("       {prog} revoke --book ID [--name NAME]");
+    eprintln!("       {prog} check --book ID [--name NAME]");
     eprintln!("       {prog} print --book ID [--name NAME]");
     eprintln!("  create  make an agent's token for the books ID and keep it in this");
     eprintln!("          computer's keyring, where `wanderbooks mcp --book ID` finds it");
@@ -1967,10 +1979,12 @@ fn token_usage(prog: &str) {
     eprintln!("          given; --replace ends a token of the same name)");
     eprintln!("  list    the tokens there are (never their text)");
     eprintln!("  revoke  end a token, at once, and forget it here");
+    eprintln!("  check   whether the token kept here is the books' live one (never");
+    eprintln!("          its text: exit 0 if it is)");
     eprintln!("  print   the token's text, for a client that sends it itself");
 }
 
-/// `wanderbooks token create|list|revoke|print`.
+/// `wanderbooks token create|list|revoke|check|print`.
 pub fn token(
     prog: &str,
     args: impl IntoIterator<Item = String>,
@@ -2102,6 +2116,71 @@ pub fn token(
                 other => Err(fail(format!("the books server answered oddly: {other:?}"))),
             }
         }
+        ["check"] => {
+            let book = need_book()?;
+            let opener = Opener::new(common.root.as_deref(), common.knobs, Kind::Cli, None)
+                .map_err(|e| fail(e.to_string()))?;
+            let run_dir = opener.run_dir().to_path_buf();
+            let root = run_dir.parent().unwrap_or(&run_dir).to_path_buf();
+            let account = crate::tokens::Account::new(&root, &book, &name);
+            // Its SHA-256 alone leaves here (INVARIANT 4).
+            let kept = crate::tokens::keeper(&run_dir, &common.knobs)
+                .get(&account)
+                .map_err(|e| {
+                    fail(format!(
+                        "this computer's keyring couldn't give the token {name:?} of the books {book}: {e}"
+                    ))
+                })?
+                .map(|text| {
+                    let text = zeroize::Zeroizing::new(text);
+                    ledger_store::journal::sha256_hex(text.as_bytes())
+                });
+            let request = Request::TokenCheck {
+                book: book.clone(),
+                name: name.clone(),
+                sha256: kept.clone().unwrap_or_default(),
+            };
+            let (live, matches) = match with_server(&common, request).map_err(fail)? {
+                Response::TokenChecked { live, matches } => (live, matches),
+                Response::Refused(why) => {
+                    return Err(fail(format!(
+                        "the books server didn't take the check (one older than this command, perhaps): {why}"
+                    )));
+                }
+                other => return Err(fail(format!("the books server answered oddly: {other:?}"))),
+            };
+            let named = if name == crate::tokens::DEFAULT_NAME {
+                String::new()
+            } else {
+                format!(" --name {name}")
+            };
+            let remake = format!("`wanderbooks token create --book {book}{named} --replace`");
+            let said = match (kept.is_some(), live, matches) {
+                (true, Some(t), true) => {
+                    println!(
+                        "The token {name:?} of the books {book} kept in this computer's keyring is the live one (made {}).",
+                        t.created
+                    );
+                    return Ok(());
+                }
+                (true, Some(t), false) => format!(
+                    "This computer's keyring holds a token {name:?} for the books {book} that isn't the live one (made {}): {remake} makes one and keeps it here; then reconnect the agent.",
+                    t.created
+                ),
+                (true, None, _) => format!(
+                    "This computer's keyring holds a token {name:?} for the books {book} that they no longer have (it was revoked): `wanderbooks token create --book {book}{named}` makes one."
+                ),
+                (false, Some(t), _) => format!(
+                    "This computer's keyring keeps no token {name:?} for the books {book}, though they have a live one (made {}): {remake} makes one kept here.",
+                    t.created
+                ),
+                (false, None, _) => format!(
+                    "There is no token {name:?} for the books {book}: `wanderbooks token create --book {book}{named}` makes one."
+                ),
+            };
+            println!("{said}");
+            Err(exit(1))
+        }
         ["print"] => {
             let book = need_book()?;
             let opener = Opener::new(common.root.as_deref(), common.knobs, Kind::Cli, None)
@@ -2117,7 +2196,7 @@ pub fn token(
                 Ok(None) => Err(fail(format!(
                     "this computer keeps no token {name:?} for the books {book}: `wanderbooks token create --book {book}` makes one"
                 ))),
-                Err(why) => Err(fail(why)),
+                Err(why) => Err(fail(why.into())),
             }
         }
         _ => {

@@ -26,7 +26,7 @@
 //!      comments are in the preview.
 //!   6. A token's text is in exactly one answer, TokenCreated, to the
 //!      request that made it; nothing else carries it (auth.rs
-//!      INVARIANT 1).
+//!      INVARIANT 1): a check (TokenCheck) asks by the text's SHA-256.
 //!   7. A format upgrade is asked with the owner passphrase, which the
 //!      server checks before anything is done (plan 3.9, D-39); no answer
 //!      carries it, and Debug never shows it.
@@ -144,6 +144,17 @@ pub enum Request {
     },
     /// The live tokens.
     TokenList,
+    /// Whether a token kept elsewhere (this computer's keyring) is the
+    /// live one of its books and name: asked by its SHA-256 alone, never
+    /// its text (INVARIANT 6).
+    TokenCheck {
+        /// Its books.
+        book: String,
+        /// Its name.
+        name: String,
+        /// The hex SHA-256 of the text kept.
+        sha256: String,
+    },
     /// The owner's go-ahead for the format upgrade of books waiting for
     /// one (plan 3.9, D-39): a verified backup with the keys, then this
     /// version's journal format declared. The host sends it, for the
@@ -455,6 +466,15 @@ pub enum Response {
     Tokens(Vec<TokenInfo>),
     /// A token ended.
     TokenRevoked(TokenInfo),
+    /// What a token check found: the books' live token of that name, if
+    /// any, and whether the text asked about is it.
+    TokenChecked {
+        /// The live token of that books and name.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        live: Option<TokenInfo>,
+        /// The text asked about is that live token's.
+        matches: bool,
+    },
     /// A format upgrade made (or none needed).
     FormatUpgraded(FormatUpgraded),
     /// Refused, with why (no path in the data root: INVARIANT 3).
@@ -497,7 +517,7 @@ pub fn call_within(
     let not_sent = |why: String| CallError::NotSent(why);
     // A list changes nothing: its only question is whether it answered.
     let look = match request {
-        Request::List | Request::TokenList => None,
+        Request::List | Request::TokenList | Request::TokenCheck { .. } => None,
         Request::Create { .. } | Request::Adopt { .. } | Request::Restore { .. } => {
             Some("`wanderbooks books list` shows the books there are")
         }
@@ -793,6 +813,24 @@ mod tests {
         assert!(shown.contains("text: TokenText(…)"), "{shown}");
         let r: Envelope = serde_json::from_value(json!({"proto": 1, "op": "token_list"})).unwrap();
         assert_eq!(r.request, Request::TokenList);
+        let r: Envelope = serde_json::from_value(json!({"proto": 1, "op": "token_check",
+            "book": "acme", "name": "agent", "sha256": "ab"}))
+        .unwrap();
+        assert_eq!(
+            r.request,
+            Request::TokenCheck {
+                book: "acme".into(),
+                name: "agent".into(),
+                sha256: "ab".into()
+            }
+        );
+        assert!(
+            serde_json::from_value::<Envelope>(
+                json!({"proto": 1, "op": "token_check", "book": "acme", "name": "agent", "text": "wb_x"})
+            )
+            .is_err(),
+            "a check carries no text"
+        );
         assert!(
             serde_json::from_value::<Envelope>(
                 json!({"proto": 1, "op": "token_revoke", "book": "acme"})

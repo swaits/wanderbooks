@@ -491,6 +491,29 @@ recorded once with refusals, a damaged token log refusing every agent),
 `open_while_held.rs` (the bridge picking up a token made mid-session),
 `setup.rs` (the passphrase prompts, at a real terminal).
 
+**One keyring item per token (2026-10-22).** On the live books a
+reconnected bridge got no token from a keyring that couldn't be read,
+was told to "make a token", and after `token create --replace` ran on a
+token the keyring no longer gave while `download` read a revoked one.
+The test keyring is now a folder per collection that a test can lock,
+make unreachable, or plant a second item in (tokens.rs INVARIANT 4), and
+the keeping and reading logic is shared with the OS keyring's.
+`tokens.rs` unit tests (two items are said, never one of them given;
+keeping removes every item first and reads back; a keyring that keeps
+something else is refused; locked or unreachable is an error, never no
+token), `bridge.rs` `a_keyring_that_cant_be_read_is_said_never_make_a_token`
+and `each_new_session_reads_the_keyring_again` (against the scripted
+server), `local.rs` `a_token_check_says_whether_the_text_is_the_live_one`,
+`admin.rs` (`token_check` carries a hash, never a text), and
+`open_while_held.rs`
+`token_check_one_item_per_token_and_a_keyring_that_cant_be_read` (`token
+check`'s every state end to end, a planted second item refused by
+`check` and by the bridge and repaired by `--replace`, a bridge with an
+unreachable keyring told so, a token the keyring can't keep revoked
+again). The real Secret Service stays behind the ignored
+`os_keyring_keeps_and_forgets`: tests never touch this computer's
+keyring.
+
 **Slice 5, files in and out.** Uploads by hash and size, exports handed
 over by the server (`ledger-store` `uploads.rs`, `exports.rs`; `ledger-mcp`
 `tools/files.rs`; `wanderbooks upload`/`download`): unit tests (expiry,

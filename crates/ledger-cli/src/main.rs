@@ -20,7 +20,7 @@ fn print_usage() {
     );
     eprintln!("       wanderbooks connect claude|codex --book ID");
     eprintln!(
-        "       wanderbooks token create --book ID | list | revoke --book ID | print --book ID"
+        "       wanderbooks token create --book ID | list | revoke --book ID | check --book ID | print --book ID"
     );
     eprintln!("       wanderbooks mcp --book ID [--token NAME]");
     eprintln!("       wanderbooks passphrase");

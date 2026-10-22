@@ -2802,3 +2802,111 @@ fn connect_makes_anew_a_token_the_keyring_lost_and_says_when_an_agent_refuses() 
         "{err}"
     );
 }
+
+/// tokens.rs INVARIANT 4, commands.rs INVARIANT 4, bridge.rs INVARIANT
+/// 11: `token check` says whether the keyring's token is the books' live
+/// one, never its text; a second keyring item for one token is said, and
+/// `create --replace` keeps one again; a token the keyring can't keep is
+/// revoked again; and a bridge that can't read the keyring says so, not
+/// "make a token".
+#[test]
+fn token_check_one_item_per_token_and_a_keyring_that_cant_be_read() {
+    let home = Home::new("tokencheck");
+    let out = home.books(&["create", "acme"]);
+    assert!(out.status.success(), "{out:?}");
+    let token = |args: &[&str]| {
+        let out = home
+            .cmd("token")
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        let said = (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).to_string(),
+            String::from_utf8_lossy(&out.stderr).to_string(),
+        );
+        assert!(
+            !said.1.contains("wb_") && !said.2.contains("wb_"),
+            "{said:?}"
+        );
+        said
+    };
+    let check = || token(&["check", "--book", "acme"]);
+    let (code, said, _) = check();
+    assert_eq!(code, Some(1));
+    assert!(said.contains("There is no token \"agent\""), "{said}");
+    let (code, _, err) = token(&["create", "--book", "acme"]);
+    assert_eq!(code, Some(0), "{err}");
+    let (code, said, _) = check();
+    assert_eq!(code, Some(0), "{said}");
+    assert!(said.contains("is the live one"), "{said}");
+    // The one item kept, in the test keyring's default collection.
+    let keyring = home.run_dir().join("test-keyring");
+    let item = std::fs::read_dir(keyring.join("default"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect::<Vec<_>>();
+    assert_eq!(item.len(), 1);
+    let item = item[0].clone();
+    let file_name = item.file_name().unwrap().to_owned();
+    // A second item for it, in another collection: said, none used.
+    let login = keyring.join("login");
+    std::fs::create_dir_all(&login).unwrap();
+    std::fs::write(login.join(&file_name), "wb_stale").unwrap();
+    let (code, _, err) = check();
+    assert_eq!(code, Some(1));
+    assert!(
+        err.contains("2 items") && err.contains("token create --book acme --replace"),
+        "{err}"
+    );
+    let mut a = Agent::start(&home, "acme");
+    a.initialize();
+    let err = a.call("books.start", json!({})).unwrap_err();
+    assert!(err.contains("2 items"), "{err}");
+    // Kept again: one item, the live one, and the session goes on.
+    let (code, _, err) = token(&["create", "--book", "acme", "--replace"]);
+    assert_eq!(code, Some(0), "{err}");
+    assert!(!login.join(&file_name).exists());
+    let (code, said, _) = check();
+    assert_eq!(code, Some(0), "{said}");
+    a.call("books.start", json!({})).unwrap();
+    assert!(a.end().is_some());
+    // The keyring holding a token replaced since: not the live one.
+    let old = std::fs::read_to_string(&item).unwrap();
+    let (code, _, _) = token(&["create", "--book", "acme", "--replace"]);
+    assert_eq!(code, Some(0));
+    std::fs::write(&item, &old).unwrap();
+    let (code, said, _) = check();
+    assert_eq!(code, Some(1));
+    assert!(
+        said.contains("isn't the live one") && said.contains("--replace"),
+        "{said}"
+    );
+    // A keyring that can't be reached: a bridge with no token says so,
+    // never "make a token"; and a token made then is revoked again.
+    std::fs::remove_file(&item).unwrap();
+    let unreachable = keyring.join("unreachable");
+    std::fs::write(&unreachable, "").unwrap();
+    let mut b = Agent::start(&home, "acme");
+    b.initialize();
+    let err = b.call("books.start", json!({})).unwrap_err();
+    assert!(
+        err.contains("keyring is locked or unreachable") && err.contains("token itself is fine"),
+        "{err}"
+    );
+    assert!(!err.contains("token create"), "{err}");
+    assert!(b.end().is_some());
+    let (code, _, err) = check();
+    assert_eq!(code, Some(1));
+    assert!(err.contains("can't be reached"), "{err}");
+    let (code, _, err) = token(&["create", "--book", "acme", "--replace"]);
+    assert_eq!(code, Some(1));
+    assert!(
+        err.contains("couldn't keep it") && err.contains("revoked again"),
+        "{err}"
+    );
+    std::fs::remove_file(&unreachable).unwrap();
+    let (_, listed, _) = token(&["list"]);
+    assert!(listed.contains("No tokens yet"), "{listed}");
+}

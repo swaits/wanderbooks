@@ -653,7 +653,13 @@ fn a_tall_sidebar_is_unchanged() {
             "the sidebar's shapes at 1440x920 changed"
         );
     }
-    // Pixels too, where this machine can render (CI has no GPU).
+    // Pixels too, only on the machine that blessed them (SIDENAV_PIXELS=1):
+    // another renderer rasterizes the same shapes differently (CI's
+    // software renderer differs in antialiasing), so the shapes above are
+    // the check everywhere and the pixels a local one.
+    if !bless && std::env::var("SIDENAV_PIXELS").is_err() {
+        return;
+    }
     let png = dir.join("sidenav-1440x920.png");
     match h.render() {
         Ok(img) => {

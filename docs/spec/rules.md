@@ -2606,7 +2606,36 @@ book capital reconciles to tax capital:
 - Property contributed enters at its §723 basis (B-25): the member's
   share of the property's book value less their share of its built-in
   gain or loss at contribution, shared within the entry as its book value
-  is (B-13). Property contributed with no basis in the books (no
+  is (B-13). To the cent, these shares (and those of property without a
+  basis, of a prepaid at book, and of property distributed) run
+  cumulatively, D-38's rule (the owner, 2026-10-22): each member's
+  running share is the largest-remainder rounding of their exact running
+  share (ties to the member listed first), less what earlier entries
+  gave them, so it is never a cent from exact, and tied odd cents
+  alternate rather than all going to one member (three equal odd-cent
+  properties at 50/50 leave the members a cent apart, never three). How
+  the count runs differs from the closes': a close splits by the
+  members' shares among all the members, so its count starts afresh when
+  members or shares change; here each entry splits by its own amounts
+  (each member's property in it, or what each took) among the members
+  with a part in it. So there is one count for each set of members with
+  a part in an entry, and it never restarts: shares don't enter it, and
+  a member outside the set is never moved by it (Item L's capital
+  contributed is the basis of the property that member contributed, so
+  a member who contributed nothing in an entry takes none of its
+  cents). The count takes every posted entry from the books' first in
+  date order (ties in posting order), whatever span the worksheet is
+  for, and an entry's reversal takes the original's split back out of
+  the count, each member exactly their part: an entry's cents are the
+  same in every span it is in, and next year's beginning is this year's
+  ending to the cent. The book property each member contributed in an
+  entry (B-13's share of the entry's property among the members'
+  credits) stays split entry by entry, ties to the member listed first:
+  each member's property there must stay within their own credit in the
+  entry, which a running true-up could break; its odd cents arise only
+  in an entry part cash and part property whose credits don't divide
+  the property evenly.
+  Property contributed with no basis in the books (no
   registered asset linked to the entry holds a contribution basis for it)
   is open. Property contributed to a prepaid account (the balance
   account of a prepaid-expense schedule: a service contract the member
@@ -2638,7 +2667,14 @@ book capital reconciles to tax capital:
 
 **Enforced:** `ledger_core::tax_capital::tax_basis_capital`;
 `ledger-package` `k1_tax` (`k1-tax-basis-capital.csv` in the CPA
-package). **Checked:** `ledger-core` `tests/tax_capital.rs`;
+package); the odd cents, `ledger_core::tax_capital::RunningSplit` on
+`kernel::apportion_cumulative`. **Checked:** `ledger-core`
+`tests/tax_capital.rs` (`tied_odd_cents_of_property_basis_run_cumulatively`,
+`a_member_outside_an_entry_never_takes_its_cents`,
+`an_entrys_odd_cent_is_the_same_in_every_span`,
+`the_split_runs_in_date_order`, the law
+`a_running_split_never_drifts_a_cent`), the unit tests in
+`src/tax_capital.rs`, `bookspec/examples/partnership-k1-tax-basis-odd-cents.toml`;
 `ledger-package` `tests/package.rs`
 (`the_k1_worksheet_reports_tax_basis_capital`), `tests/p3_seams.rs`
 (`depreciation_is_one_figure_everywhere`,

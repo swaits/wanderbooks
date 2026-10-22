@@ -3281,8 +3281,8 @@ fn every_bookspec_example_holds() {
         ("register_row", 5),
         ("register_totals", 1),
         ("asset_basis", 6),
-        ("k1_tax_basis", 2),
-        ("k1_reconciliation", 1),
+        ("k1_tax_basis", 4),
+        ("k1_reconciliation", 2),
         ("project", 6),
     ] {
         let n = checked.get(q).copied().unwrap_or(0);

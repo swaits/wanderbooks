@@ -171,67 +171,29 @@ pub fn k1_detail(
     let places = ledger.base_currency().allocation_places();
     let closings = ledger.closing_entry_ids();
     let cancelled = crate::reports::cancelled_in_span(ledger, start, end);
-    let property_account = |id: AccountId| is_property_account(ledger, cash, id);
-    let sum = |e: &crate::JournalEntry, side: Side, account: AccountId| -> Decimal {
-        e.lines()
-            .iter()
-            .filter(|l| l.side == side && l.account == account)
-            .map(|l| l.amount.amount)
-            .sum()
-    };
     let mut lines = Vec::new();
     for e in ledger
         .posted_entries()
         .filter(|e| e.date() >= start && e.date() <= end && !cancelled.contains(&e.id()))
     {
-        let line = |member, kind, amount| K1Line {
-            member,
-            entry: e.id(),
-            kind,
-            amount,
-        };
         if closings.contains(&e.id()) {
             for (i, m) in members.iter().enumerate() {
                 let effect: Decimal = std::iter::once(m.capital_account)
                     .chain(m.distribution_account)
-                    .map(|a| sum(e, Side::Credit, a) - sum(e, Side::Debit, a))
+                    .map(|a| side_sum(e, Side::Credit, a) - side_sum(e, Side::Debit, a))
                     .sum();
                 if !effect.is_zero() {
-                    lines.push(line(i, K1Kind::IncomeClose, effect));
+                    lines.push(K1Line {
+                        member: i,
+                        entry: e.id(),
+                        kind: K1Kind::IncomeClose,
+                        amount: effect,
+                    });
                 }
             }
             continue;
         }
-        let pool: Decimal = e
-            .lines()
-            .iter()
-            .filter(|l| l.side == Side::Debit && property_account(l.account))
-            .map(|l| l.amount.amount)
-            .sum();
-        // Contributions are credits to capital (members_equity's).
-        let credits: Vec<Decimal> = members
-            .iter()
-            .map(|m| sum(e, Side::Credit, m.capital_account))
-            .collect();
-        let takes = share_property(pool, &credits, places)?;
-        for (i, m) in members.iter().enumerate() {
-            let (credit, take) = (credits[i], takes[i]);
-            if !(credit - take).is_zero() {
-                lines.push(line(i, K1Kind::CashContribution, credit - take));
-            }
-            if !take.is_zero() {
-                lines.push(line(i, K1Kind::PropertyContribution, take));
-            }
-            // Distributions: debits to capital, net debits to the
-            // distributions account (members_equity's).
-            let taken = sum(e, Side::Debit, m.capital_account)
-                + m.distribution_account.map_or(Decimal::ZERO, |d| {
-                    sum(e, Side::Debit, d) - sum(e, Side::Credit, d)
-                });
-            if !taken.is_zero() {
-                lines.push(line(i, K1Kind::Distribution, -taken));
-            }
-        }
+        lines.extend(entry_lines(ledger, e, members, cash, places)?);
     }
     let total = |i: usize, k: K1Kind| -> Decimal {
         lines
@@ -264,6 +226,68 @@ pub fn k1_detail(
         })
         .collect();
     Ok(K1Detail { rows, lines })
+}
+
+/// Σ of an entry's lines on `account`, on `side`.
+fn side_sum(e: &crate::JournalEntry, side: Side, account: AccountId) -> Decimal {
+    e.lines()
+        .iter()
+        .filter(|l| l.side == side && l.account == account)
+        .map(|l| l.amount.amount)
+        .sum()
+}
+
+/// One entry's contribution and distribution lines, as [`k1_detail`]
+/// gives them for an entry that is not a period's closing entry
+/// (INVARIANTS 3-5): they depend on the entry alone, never on the span,
+/// so the tax-basis worksheet (crate::tax_capital) reads every entry's
+/// the same way whatever span it is asked for. `places` is the base
+/// currency's Currency::allocation_places.
+pub(crate) fn entry_lines(
+    ledger: &Ledger,
+    e: &crate::JournalEntry,
+    members: &[MemberCapital],
+    cash: &[AccountId],
+    places: u32,
+) -> Result<Vec<K1Line>, LedgerError> {
+    let line = |member, kind, amount| K1Line {
+        member,
+        entry: e.id(),
+        kind,
+        amount,
+    };
+    let pool: Decimal = e
+        .lines()
+        .iter()
+        .filter(|l| l.side == Side::Debit && is_property_account(ledger, cash, l.account))
+        .map(|l| l.amount.amount)
+        .sum();
+    // Contributions are credits to capital (members_equity's).
+    let credits: Vec<Decimal> = members
+        .iter()
+        .map(|m| side_sum(e, Side::Credit, m.capital_account))
+        .collect();
+    let takes = share_property(pool, &credits, places)?;
+    let mut lines = Vec::new();
+    for (i, m) in members.iter().enumerate() {
+        let (credit, take) = (credits[i], takes[i]);
+        if !(credit - take).is_zero() {
+            lines.push(line(i, K1Kind::CashContribution, credit - take));
+        }
+        if !take.is_zero() {
+            lines.push(line(i, K1Kind::PropertyContribution, take));
+        }
+        // Distributions: debits to capital, net debits to the
+        // distributions account (members_equity's).
+        let taken = side_sum(e, Side::Debit, m.capital_account)
+            + m.distribution_account.map_or(Decimal::ZERO, |d| {
+                side_sum(e, Side::Debit, d) - side_sum(e, Side::Credit, d)
+            });
+        if !taken.is_zero() {
+            lines.push(line(i, K1Kind::Distribution, -taken));
+        }
+    }
+    Ok(lines)
 }
 
 /// Whether an account holds property (INVARIANT 3): an asset account that

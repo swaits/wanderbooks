@@ -1,0 +1,167 @@
+# B-36 with D-38: the tax-basis K-1's odd cents run cumulatively.
+id = "partnership-k1-tax-basis-odd-cents"
+title = "Tax-basis capital: odd cents of contributed property's basis split cumulatively"
+rule = "Within each contribution, the property's built-in gain or loss (value less adjusted tax basis) is shared among the members as its book value is; to the cent, each member's running share from the books' first entry MUST be the largest-remainder rounding of their exact running share (ties to the member listed first), less what earlier entries gave them, so no member's share is ever a cent from exact and tied odd cents alternate instead of piling up on one member."
+status = "CHOICE"
+sources = [
+  "Instructions for Form 1065 (2025), Item L, Tax-basis method: Capital contributed during the year",
+  "26 U.S.C. §723",
+  "Treas. Reg. §1.704-1(b)(2)(iv)(b)",
+  "DECISION D-38 (owner, 2026-10-20): odd cents everywhere alike, cumulative largest remainder; applied to the tax-basis K-1 by the owner, 2026-10-22 (wanderbooks rules.md B-36, B-13)",
+]
+tags = ["partnerships", "k1", "tax-basis", "rounding"]
+
+[setup]
+currency = "USD"
+fiscal_year_start = "01-01"
+basis = "accrual"
+rounding = "largest-remainder"
+cash_accounts = ["1000"]
+
+[[setup.accounts]]
+code = "1000"
+name = "Bank"
+type = "asset"
+
+[[setup.accounts]]
+code = "1500"
+name = "Equipment"
+type = "asset"
+
+[[setup.accounts]]
+code = "1510"
+name = "Accumulated Depreciation"
+type = "asset"
+
+[[setup.accounts]]
+code = "3000"
+name = "Capital, Tobin Harlow"
+type = "equity"
+
+[[setup.accounts]]
+code = "3001"
+name = "Capital, Morgan Ellis"
+type = "equity"
+
+[[setup.accounts]]
+code = "6200"
+name = "Depreciation Expense"
+type = "expense"
+
+[[setup.members]]
+name = "Tobin Harlow"
+capital_account = "3000"
+share = "0.5"
+
+[[setup.members]]
+name = "Morgan Ellis"
+capital_account = "3001"
+share = "0.5"
+
+# Three items the members contribute jointly, each from personal use and
+# each worth less than its adjusted basis by an odd number of cents.
+[[setup.assets]]
+id = "monitor"
+description = "Monitor"
+cost = "400.00"
+salvage = "0.00"
+life_months = 24
+in_service = "2026-01-01"
+method = "straight_line"
+cost_account = "1500"
+accumulated_account = "1510"
+expense_account = "6200"
+acquired_by = 1
+basis = { rule = "personal_use_conversion", contributor_adjusted_basis = "412.37", fmv_at_contribution = "400.00", sec704c_method = "traditional" }
+
+[[setup.assets]]
+id = "chair"
+description = "Chair"
+cost = "250.00"
+salvage = "0.00"
+life_months = 24
+in_service = "2026-06-01"
+method = "straight_line"
+cost_account = "1500"
+accumulated_account = "1510"
+expense_account = "6200"
+acquired_by = 2
+basis = { rule = "personal_use_conversion", contributor_adjusted_basis = "263.41", fmv_at_contribution = "250.00", sec704c_method = "traditional" }
+
+[[setup.assets]]
+id = "desk"
+description = "Desk"
+cost = "600.00"
+salvage = "0.00"
+life_months = 24
+in_service = "2026-11-01"
+method = "straight_line"
+cost_account = "1500"
+accumulated_account = "1510"
+expense_account = "6200"
+acquired_by = 3
+basis = { rule = "personal_use_conversion", contributor_adjusted_basis = "655.91", fmv_at_contribution = "600.00", sec704c_method = "traditional" }
+
+[[events]]
+date = "2026-01-01"
+description = "Monitor contributed jointly, at its value"
+lines = [
+  { account = "1500", side = "debit", amount = "400.00" },
+  { account = "3000", side = "credit", amount = "200.00" },
+  { account = "3001", side = "credit", amount = "200.00" },
+]
+
+[[events]]
+date = "2026-06-01"
+description = "Chair contributed jointly, at its value"
+lines = [
+  { account = "1500", side = "debit", amount = "250.00" },
+  { account = "3000", side = "credit", amount = "125.00" },
+  { account = "3001", side = "credit", amount = "125.00" },
+]
+
+[[events]]
+date = "2026-11-01"
+description = "Desk contributed jointly, at its value"
+lines = [
+  { account = "1500", side = "debit", amount = "600.00" },
+  { account = "3000", side = "credit", amount = "300.00" },
+  { account = "3001", side = "credit", amount = "300.00" },
+]
+
+# By hand, the built-in loss shared as it runs (exact shares in brackets):
+#   Monitor, -12.37: running -12.37 (-6.185 each); rounded toward zero
+#     -6.18 each, a cent short, the remainders tie, the cent to Tobin:
+#     Tobin -6.19, Morgan -6.18.
+#   Chair, -13.41: running -25.78 (-12.89 each, exact): Tobin -12.89 less
+#     -6.19 given = -6.70; Morgan -12.89 less -6.18 = -6.71.
+#   Desk, -55.91: running -81.69 (-40.845 each): tied again, to Tobin:
+#     Tobin -40.85 less -12.89 = -27.96; Morgan -40.84 less -12.89 =
+#     -27.95.
+# Year: built-in loss Tobin -40.85, Morgan -40.84; book property 625.00
+# each; tax property 625.00 + 40.85 = 665.85 and 625.00 + 40.84 = 665.84,
+# a cent apart. Shared entry by entry (each entry's tied cent to Tobin)
+# it was -40.86 / -40.83: 665.86 against 665.83, three cents apart.
+[[expect]]
+query = "k1_tax_basis"
+from = "2026-01-01"
+to = "2026-12-31"
+values = { "Tobin Harlow.contributions_property" = "665.85", "Tobin Harlow.known_ending" = "665.85", "Morgan Ellis.contributions_property" = "665.84", "Morgan Ellis.known_ending" = "665.84" }
+
+[[expect]]
+query = "k1_reconciliation"
+from = "2026-01-01"
+to = "2026-12-31"
+values = { "Tobin Harlow.beginning" = "0.00", "Tobin Harlow.built_in_gain_704c" = "-40.85", "Tobin Harlow.property_without_basis" = "0.00", "Tobin Harlow.property_distributed" = "0.00", "Tobin Harlow.total" = "-40.85", "Morgan Ellis.beginning" = "0.00", "Morgan Ellis.built_in_gain_704c" = "-40.84", "Morgan Ellis.property_without_basis" = "0.00", "Morgan Ellis.property_distributed" = "0.00", "Morgan Ellis.total" = "-40.84" }
+
+# From June the count runs on from January: the beginning is January to
+# May's ending, open (the monitor's tax depreciation is the preparer's),
+# known so far Tobin 200.00 + 6.19 = 206.19, Morgan 206.18; the span
+# takes the chair's and the desk's parts, -6.70 - 27.96 = -34.66 and
+# -6.71 - 27.95 = -34.66: tax property 425.00 + 34.66 = 459.66 each, the
+# ending the year's.
+[[expect]]
+query = "k1_tax_basis"
+from = "2026-06-01"
+to = "2026-12-31"
+values = { "Tobin Harlow.beginning" = "open", "Tobin Harlow.known_beginning" = "206.19", "Tobin Harlow.contributions_property" = "459.66", "Tobin Harlow.known_ending" = "665.85", "Morgan Ellis.beginning" = "open", "Morgan Ellis.known_beginning" = "206.18", "Morgan Ellis.contributions_property" = "459.66", "Morgan Ellis.known_ending" = "665.84" }

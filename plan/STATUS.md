@@ -189,9 +189,25 @@ its invoices. The handbook's caveat is gone for books with the feature.
   (`wanderbooks books upgrade`, D-39) their invoices and bills still take
   none (the handbook says so).
 - Raised by the cutover review (private change log, "Open points"):
-  ties in the per-entry member split of the tax-basis K-1 all go to the
-  first member (the owner, 2026-10-22: nothing is posted until the
-  year-end close, three weeks off, so it waits).
+  its three points are done. The third (2026-10-22, B-36 with D-38): the
+  tax-basis K-1's odd cents of property basis no longer all go to the
+  first member; they run cumulatively, D-38's largest remainder, one
+  count per set of members with a part in an entry, in date order
+  whatever the span, a reversal taking its original back out
+  (`tax_capital::RunningSplit`, `entry_parts`; tests
+  `tied_odd_cents_of_property_basis_run_cumulatively`,
+  `a_member_outside_an_entry_never_takes_its_cents`,
+  `an_entrys_odd_cent_is_the_same_in_every_span`,
+  `the_split_runs_in_date_order`, the law
+  `a_running_split_never_drifts_a_cent`; bookspec
+  `partnership-k1-tax-basis-odd-cents`). Left as it was, and said in
+  B-36: the book property each member contributed in an entry is still
+  split entry by entry, ties to the first member (each member's property
+  must stay within their own credit in the entry); its odd cents arise
+  only in an entry part cash and part property whose credits don't
+  divide the property evenly. Whether the first company's three-cent
+  gap between its members came wholly from the basis split is to be
+  checked on its books when the K-1 is next run, at the year-end close.
   Its second point is done (2026-10-22, B-14 rule 5): a payment to a
   government (ASC 230-10-45-17(c), "Cash payments to governments for
   taxes, duties, fines, and other fees or penalties") is other operating

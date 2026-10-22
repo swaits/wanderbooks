@@ -267,6 +267,20 @@ The P3 odd cent (defect 17; rules.md B-13; D-10, D-38) adds three laws:
       `Apportion.allocW_cumulative_drift` (the two together): any number of
       members, any amounts
     - property `members_capital_never_drifts_a_cent_from_their_share`
+    - the tax-basis K-1's running split (B-36 with D-38, 2026-10-22),
+      whose splits each carry their own weights, so the exact running
+      share is a sum of quotients and Decimal's division can leave it a
+      hair under the cent it is (`tax_capital::RunningSplit` takes it to
+      ten places first): property `a_running_split_never_drifts_a_cent`
+      (`ledger-core/tests/tax_capital.rs`, checked against the
+      largest-remainder rounding of exact integer shares, and a loss
+      against its gain); its kernel step is `apportion_cumulative`,
+      proved above. The worksheet keeps one per set of members with a
+      part in an entry, in date order whatever the span
+      (`tax_capital::entry_parts`; tests
+      `a_member_outside_an_entry_never_takes_its_cents`,
+      `an_entrys_odd_cent_is_the_same_in_every_span`,
+      `the_split_runs_in_date_order`)
 22. **A member's capital on a day never moves when its period is closed.**
     The statement of members' equity gives each member, of the earnings not
     yet closed, what the count's next close would give them; closing moves

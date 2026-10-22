@@ -23,10 +23,19 @@
 //!      basis. Within an entry, the property's built-in gain (its value at
 //!      contribution less its §723 basis, Asset::basis_figures) and the
 //!      book amount of property without a basis in the books are shared
-//!      among the members as its book value is (by their property in it,
-//!      to the cent, odd cents by largest remainder, ties to the earlier
-//!      member), so a member's tax property = book property − their share
-//!      of the built-in gain − their share of the property without a basis.
+//!      among the members as its book value is (by their property in it),
+//!      to the cent by a running split from the books' first entry
+//!      ([`RunningSplit`], D-38's rule: each member's running share is
+//!      the largest-remainder rounding of their exact running share, so
+//!      it is never a cent from it and tied odd cents alternate rather
+//!      than all going to the earlier member), so a member's tax property
+//!      = book property − their share of the built-in gain − their share
+//!      of the property without a basis. Property distributed is shared
+//!      among the members by what each took, the same running way. The
+//!      running split is kept per set of members with a part in the entry,
+//!      in date order whatever the span (`entry_parts`): a member never
+//!      takes a cent of an entry they had no part in, and an entry's cents
+//!      are the same in every span it is in.
 //!   3. A figure the books can't know is never guessed: its line carries
 //!      `known`, the part the books have, and `open`, each missing item
 //!      with the book amount it replaces. A line with no open item is the
@@ -314,53 +323,393 @@ pub fn tax_basis_capital(
     cash: &[AccountId],
 ) -> Result<TaxCapital, LedgerError> {
     // Beginning: the same worksheet from the books' first entry to the day
-    // before, whose ending is this span's beginning.
+    // before, whose ending is this span's beginning. The odd cents of
+    // every entry through `end`, whatever the span (INVARIANT 2).
+    let parts = entry_parts(ledger, end, members, cash)?;
     let first = ledger.posted_entries().map(|e| e.date()).min();
     let prior = match (first, start.pred_opt()) {
         (Some(first), Some(before)) if first <= before => {
-            Some(span(ledger, first, before, members, cash, None)?)
+            Some(span(ledger, first, before, members, cash, None, &parts)?)
         }
         _ => None,
     };
-    span(ledger, start, end, members, cash, prior.as_ref())
+    span(ledger, start, end, members, cash, prior.as_ref(), &parts)
 }
 
 fn too_large() -> LedgerError {
     LedgerError::TooLargeToCompute("a member's tax-basis capital".into())
 }
 
-/// `whole` shared in proportion to `weights` (non-negative), to the cent:
-/// each part rounded toward zero, leftover cents by largest remainder,
-/// ties to the earlier part; a negative whole is shared as its magnitude
-/// and negated. All zero when the weights sum to zero.
-fn share(whole: Decimal, weights: &[Decimal]) -> Result<Vec<Decimal>, LedgerError> {
-    use rust_decimal::RoundingStrategy::ToZero;
-    let total = weights
-        .iter()
-        .try_fold(Decimal::ZERO, |t, w| t.checked_add(*w))
-        .ok_or_else(too_large)?;
-    if whole.is_zero() || total <= Decimal::ZERO {
-        return Ok(vec![Decimal::ZERO; weights.len()]);
-    }
-    let magnitude = whole.abs();
-    let exact: Vec<Decimal> = weights
-        .iter()
-        .map(|w| magnitude.checked_mul(*w).and_then(|x| x.checked_div(total)))
-        .collect::<Option<_>>()
-        .ok_or_else(too_large)?;
-    let mut parts: Vec<Decimal> = exact
-        .iter()
-        .map(|x| x.round_dp_with_strategy(2, ToZero))
-        .collect();
-    let remainders: Vec<Decimal> = exact.iter().zip(&parts).map(|(x, p)| x - p).collect();
-    crate::kernel::apportion(magnitude, &mut parts, &remainders, Decimal::new(1, 2))
-        .ok_or_else(too_large)?;
-    if whole < Decimal::ZERO {
-        for p in &mut parts {
-            *p = -*p;
+/// A running split of amounts among members, one split at a time, each
+/// by its own weights (B-36, the odd cent as D-38 settles it): each
+/// member's running total is rounded afresh from their exact running
+/// total, so it never drifts a cent from it, and tied cents don't pile up
+/// on one member. The worksheet keeps one per set of members with weight
+/// (`entry_parts`), so in its use every member of a split has weight.
+///
+/// ```text
+/// GOAL: no member's share of the property's built-in gain, of the
+///       property without a basis, of the prepaid at book or of property
+///       distributed is a cent or more from their exact share, however
+///       many entries it is summed over; three equal odd-cent properties
+///       contributed 50/50 leave the members one cent apart, never three.
+/// SOURCE: rules.md B-36 (shared within each entry as its book value is),
+///         B-13 (cent rounding by largest remainder: DECISION, owner
+///         2026-10-13); DECISION D-38 (owner, 2026-10-20: odd cents
+///         everywhere alike, cumulative largest remainder), here for the
+///         tax basis by the owner's ask, 2026-10-22 (kernel::
+///         apportion_cumulative, the members closes' rule).
+/// INVARIANTS:
+///   1. The parts of each split sum to its whole exactly.
+///   2. A member's exact running total is Σ whole × weight / Σ weights
+///      over every split so far; their running total (Σ of their parts)
+///      is the largest-remainder rounding to the cent of the exact running
+///      totals (ties to the earlier member), so it is within a cent of
+///      exact, strictly. A negative running whole is rounded as its
+///      magnitude and negated; a running whole of zero is rounded by the
+///      sign of the whole just split. So a run of losses mirrors the run
+///      of gains with every whole negated, part for part.
+///   3. A split can move a member who has no weight in it by a cent: the
+///      true-up that keeps their running total one rounding. The
+///      worksheet never gives one such a split: it keeps a running split
+///      per set of members with weight.
+///   4. The exact shares are Decimal quotients (28 significant digits),
+///      so a running total of thirds can come out a hair under the cent
+///      it truly is (399.93 as 399.9299…9): each exact running total is
+///      taken to EXACT_PLACES (10) decimal places before it is rounded to
+///      the cent, far finer than any remainder that decides a cent and far
+///      coarser than the quotients' error. Should the floors still come
+///      out a cent per member short, refuse (TooLargeToCompute), never
+///      guess.
+///   5. unsplit takes a split back out (an entry's reversal): the running
+///      wholes and exact totals are as before it, and each member's
+///      running total is less exactly the part that split gave them.
+/// SCENARIOS:
+///   1. IF −0.01 is split 50/50 three times:
+///      - SHOULD give −0.01 / 0.00, then 0.00 / −0.01, then −0.01 / 0.00:
+///        running −0.02 / −0.01
+///      BECAUSE the exact running totals are −0.005, −0.01, −0.015 each.
+///   2. IF the weights sum to zero, or the whole is zero:
+///      - SHOULD give zeros, the running totals as they were.
+///   3. IF 0.01 is split 1:1, then −0.01 1:0 (running 0.00, exact
+///      −0.005 / 0.005):
+///      - SHOULD give 0.01 / 0.00, then −0.02 / 0.01 (running −0.01 /
+///        0.01, rounded as a loss), and the run with each whole negated
+///        −0.01 / 0.00, then 0.02 / −0.01
+///      BECAUSE a loss mirrors a gain (INVARIANT 2); the member with no
+///      weight moves (INVARIANT 3), which the worksheet never asks.
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunningSplit {
+    /// Each member's exact running total.
+    exact: Vec<Decimal>,
+    /// Each member's running total, to the cent.
+    given: Vec<Decimal>,
+    /// Σ wholes split so far.
+    total: Decimal,
+}
+
+impl RunningSplit {
+    /// A split among `n` members, nothing split yet.
+    pub fn new(n: usize) -> Self {
+        Self {
+            exact: vec![Decimal::ZERO; n],
+            given: vec![Decimal::ZERO; n],
+            total: Decimal::ZERO,
         }
     }
-    Ok(parts)
+
+    /// Each member's running total, to the cent (INVARIANT 2).
+    pub fn running(&self) -> &[Decimal] {
+        &self.given
+    }
+
+    /// Σ weights, or None when they are all zero (nothing to split by).
+    fn weight_sum(&self, weights: &[Decimal]) -> Result<Option<Decimal>, LedgerError> {
+        let n = self.given.len();
+        if weights.len() != n {
+            return Err(LedgerError::InvalidMembers(format!(
+                "{} weights for {n} members",
+                weights.len()
+            )));
+        }
+        let sum = weights
+            .iter()
+            .try_fold(Decimal::ZERO, |t, w| t.checked_add(*w))
+            .ok_or_else(too_large)?;
+        Ok((sum > Decimal::ZERO).then_some(sum))
+    }
+
+    /// `whole × weight / sum`, the exact share of one member.
+    fn share(whole: Decimal, weight: Decimal, sum: Decimal) -> Result<Decimal, LedgerError> {
+        whole
+            .checked_mul(weight)
+            .and_then(|p| p.checked_div(sum))
+            .ok_or_else(too_large)
+    }
+
+    /// Split `whole` (to the cent) by `weights` (non-negative, one per
+    /// member): each member's part, so that their running total is the
+    /// rounding of their exact running total (INVARIANTS 1-4).
+    pub fn split(
+        &mut self,
+        whole: Decimal,
+        weights: &[Decimal],
+    ) -> Result<Vec<Decimal>, LedgerError> {
+        use rust_decimal::RoundingStrategy::ToNegativeInfinity;
+        let n = self.given.len();
+        let Some(sum) = self.weight_sum(weights)? else {
+            return Ok(vec![Decimal::ZERO; n]);
+        };
+        if whole.is_zero() {
+            return Ok(vec![Decimal::ZERO; n]);
+        }
+        let mut exact = self.exact.clone();
+        for (x, w) in exact.iter_mut().zip(weights) {
+            *x = x
+                .checked_add(Self::share(whole, *w, sum)?)
+                .ok_or_else(too_large)?;
+        }
+        let total = self.total.checked_add(whole).ok_or_else(too_large)?;
+        // A loss is rounded as its magnitude, then negated; at a running
+        // whole of zero, by the sign of this whole (INVARIANT 2).
+        let sign = if total < Decimal::ZERO || (total.is_zero() && whole < Decimal::ZERO) {
+            Decimal::NEGATIVE_ONE
+        } else {
+            Decimal::ONE
+        };
+        // Each exact running total to EXACT_PLACES (INVARIANT 4), then
+        // rounded down to the cent, what rounding took its remainder.
+        let snapped: Vec<Decimal> = exact
+            .iter()
+            .map(|x| (x * sign).round_dp(EXACT_PLACES))
+            .collect();
+        let mut parts: Vec<Decimal> = snapped
+            .iter()
+            .map(|x| x.round_dp_with_strategy(2, ToNegativeInfinity))
+            .collect();
+        let remainders: Vec<Decimal> = snapped.iter().zip(&parts).map(|(x, p)| x - p).collect();
+        let given: Vec<Decimal> = self.given.iter().map(|g| g * sign).collect();
+        crate::kernel::apportion_cumulative(
+            total * sign,
+            &mut parts,
+            &remainders,
+            Decimal::new(1, 2),
+            &given,
+        )
+        .ok_or_else(too_large)?;
+        for (p, g) in parts.iter_mut().zip(self.given.iter_mut()) {
+            *p *= sign;
+            *g = g.checked_add(*p).ok_or_else(too_large)?;
+        }
+        self.exact = exact;
+        self.total = total;
+        Ok(parts)
+    }
+
+    /// Take back out a split [`Self::split`] gave `parts` for, from the
+    /// same `whole` and `weights` (INVARIANT 5): what an entry's reversal
+    /// does to the running split, so the pair leaves the later splits as
+    /// they would be without it.
+    pub fn unsplit(
+        &mut self,
+        whole: Decimal,
+        weights: &[Decimal],
+        parts: &[Decimal],
+    ) -> Result<(), LedgerError> {
+        let n = self.given.len();
+        let Some(sum) = self.weight_sum(weights)? else {
+            return Ok(());
+        };
+        if whole.is_zero() {
+            return Ok(());
+        }
+        if parts.len() != n {
+            return Err(LedgerError::InvalidMembers(format!(
+                "{} parts for {n} members",
+                parts.len()
+            )));
+        }
+        let mut exact = self.exact.clone();
+        let mut given = self.given.clone();
+        for i in 0..n {
+            exact[i] = exact[i]
+                .checked_sub(Self::share(whole, weights[i], sum)?)
+                .ok_or_else(too_large)?;
+            given[i] = given[i].checked_sub(parts[i]).ok_or_else(too_large)?;
+        }
+        self.total = self.total.checked_sub(whole).ok_or_else(too_large)?;
+        self.exact = exact;
+        self.given = given;
+        Ok(())
+    }
+}
+
+/// The decimal places a member's exact running total is taken to before
+/// it is rounded to the cent ([`RunningSplit`] INVARIANT 4).
+const EXACT_PLACES: u32 = 10;
+
+/// The four amounts an entry's members share (B-36): the property's
+/// built-in gain, its property without a basis, its prepaid at book (each
+/// by the members' property in it) and the property it distributes (by
+/// what each took).
+const BUILT_IN_GAIN: usize = 0;
+const WITHOUT_BASIS: usize = 1;
+const PREPAID: usize = 2;
+const DISTRIBUTED: usize = 3;
+
+/// One entry's parts of the four amounts, per member; an empty list is
+/// zeros.
+#[derive(Clone, Debug, Default)]
+struct EntryParts([Vec<Decimal>; 4]);
+
+impl EntryParts {
+    fn get(&self, amount: usize, member: usize) -> Decimal {
+        self.0[amount].get(member).copied().unwrap_or(Decimal::ZERO)
+    }
+}
+
+/// One amount an entry splits: which, the whole, each member's weight.
+type Whole = (usize, Decimal, Vec<Decimal>);
+
+/// What one split put into a running split, to take it back out: the
+/// amount, the members with weight, the whole, their weights and parts.
+type Taken = (usize, Vec<usize>, Decimal, Vec<Decimal>, Vec<Decimal>);
+
+/// The amounts `e` splits ([`Whole`]), from its K-1 lines.
+fn entry_wholes(
+    ledger: &Ledger,
+    e: &crate::JournalEntry,
+    lines: &[crate::k1::K1Line],
+    n: usize,
+    cash: &[AccountId],
+) -> Result<Vec<Whole>, LedgerError> {
+    let by_member = |kind| -> Vec<Decimal> {
+        (0..n)
+            .map(|i| {
+                lines
+                    .iter()
+                    .filter(|l| l.member == i && l.kind == kind)
+                    .map(|l| l.amount)
+                    .sum()
+            })
+            .collect()
+    };
+    let mut out = Vec::new();
+    let takes = by_member(K1Kind::PropertyContribution);
+    if takes.iter().any(|t| !t.is_zero()) {
+        let p = entry_property(ledger, e, cash)?;
+        out.push((BUILT_IN_GAIN, p.built_in_gain, takes.clone()));
+        out.push((WITHOUT_BASIS, p.without_basis, takes.clone()));
+        out.push((PREPAID, p.prepaid, takes));
+    }
+    // Distributions are negative lines; weights are what each took.
+    let taken: Vec<Decimal> = by_member(K1Kind::Distribution)
+        .into_iter()
+        .map(|d| -d)
+        .collect();
+    if taken.iter().any(|t| *t > Decimal::ZERO) {
+        let property = e
+            .lines()
+            .iter()
+            .filter(|l| {
+                l.side == Side::Credit && crate::k1::is_property_account(ledger, cash, l.account)
+            })
+            .try_fold(Decimal::ZERO, |t, l| t.checked_add(l.amount.amount))
+            .ok_or_else(too_large)?;
+        let total_taken = taken
+            .iter()
+            .try_fold(Decimal::ZERO, |t, x| t.checked_add(*x))
+            .ok_or_else(too_large)?;
+        let property = property.min(total_taken);
+        if property > Decimal::ZERO {
+            out.push((DISTRIBUTED, property, taken));
+        }
+    }
+    Ok(out)
+}
+
+/// Every entry's parts of the amounts it splits (B-36 with D-38), from
+/// the books' first entry through `end`, whatever span the worksheet is
+/// asked for, so an entry's cents are the same in every span it is in.
+///
+/// ```text
+/// GOAL: odd cents that run (RunningSplit) and never touch a member who
+///       has no part in the entry, nor change with the span asked for.
+/// SOURCE: rules.md B-36; DECISION D-38; Form 1065 Item L (a partner's
+///         capital contributed is the basis of the property that partner
+///         contributed).
+/// INVARIANTS:
+///   1. The entries are taken in date order, ties in posting order,
+///      every posted entry through `end` but the periods' closing
+///      entries, with no regard to the span: the reversed ones too.
+///   2. One running split per amount and per set of members with weight
+///      in the entry (members with property in it, or who took): a split
+///      never moves a member outside its set (RunningSplit INVARIANT 3
+///      never arises), and a set's count never restarts, since its
+///      weights are each entry's own amounts, not the members' shares.
+///   3. An entry that reverses one already split takes that split back
+///      out of its count (RunningSplit::unsplit), each member exactly
+///      their part: the pair leaves every later entry's cents as they
+///      would be without it. Its own parts (it reads as the contrary
+///      kind, a distribution for a contribution) are split on its own,
+///      largest remainder, ties to the earlier member.
+/// ```
+fn entry_parts(
+    ledger: &Ledger,
+    end: NaiveDate,
+    members: &[MemberCapital],
+    cash: &[AccountId],
+) -> Result<std::collections::BTreeMap<EntryId, EntryParts>, LedgerError> {
+    use std::collections::BTreeMap;
+    let n = members.len();
+    let places = ledger.base_currency().allocation_places();
+    let closings = ledger.closing_entry_ids();
+    let mut walk: Vec<&crate::JournalEntry> = ledger
+        .posted_entries()
+        .filter(|e| e.date() <= end && !closings.contains(&e.id()))
+        .collect();
+    walk.sort_by_key(|e| e.date());
+    let mut counts: BTreeMap<(usize, Vec<usize>), RunningSplit> = BTreeMap::new();
+    let mut taken_in: BTreeMap<EntryId, Vec<Taken>> = BTreeMap::new();
+    let mut out = BTreeMap::new();
+    for e in walk {
+        let lines = crate::k1::entry_lines(ledger, e, members, cash, places)?;
+        let wholes = entry_wholes(ledger, e, &lines, n, cash)?;
+        let mut parts = EntryParts::default();
+        if let Some(back) = e.reversal_of().and_then(|o| taken_in.remove(&o)) {
+            for (amount, set, whole, weights, given) in back {
+                counts
+                    .get_mut(&(amount, set))
+                    .expect("a split taken in has its count")
+                    .unsplit(whole, &weights, &given)?;
+            }
+            for (amount, whole, weights) in wholes {
+                parts.0[amount] = RunningSplit::new(n).split(whole, &weights)?;
+            }
+        } else {
+            let mut taken = Vec::new();
+            for (amount, whole, weights) in wholes {
+                let set: Vec<usize> = (0..n).filter(|&i| !weights[i].is_zero()).collect();
+                let sub: Vec<Decimal> = set.iter().map(|&i| weights[i]).collect();
+                let sub_parts = counts
+                    .entry((amount, set.clone()))
+                    .or_insert_with(|| RunningSplit::new(set.len()))
+                    .split(whole, &sub)?;
+                let mut full = vec![Decimal::ZERO; n];
+                for (k, &i) in set.iter().enumerate() {
+                    full[i] = sub_parts[k];
+                }
+                parts.0[amount] = full;
+                taken.push((amount, set, whole, sub, sub_parts));
+            }
+            if !taken.is_empty() {
+                taken_in.insert(e.id(), taken);
+            }
+        }
+        out.insert(e.id(), parts);
+    }
+    Ok(out)
 }
 
 /// What one contribution entry's property is on the tax basis.
@@ -448,6 +797,7 @@ fn span(
     members: &[MemberCapital],
     cash: &[AccountId],
     prior: Option<&TaxCapital>,
+    parts: &std::collections::BTreeMap<EntryId, EntryParts>,
 ) -> Result<TaxCapital, LedgerError> {
     let detail = k1_detail(ledger, start, end, members, cash)?;
     let n = members.len();
@@ -478,21 +828,27 @@ fn span(
                 })
                 .collect()
         };
+        let none = EntryParts::default();
+        let part = parts.get(&id).unwrap_or(&none);
         let takes = lines(K1Kind::PropertyContribution);
         if takes.iter().any(|t| !t.is_zero()) {
             let p = entry_property(ledger, e, cash)?;
-            let g = share(p.built_in_gain, &takes)?;
-            let w = share(p.without_basis, &takes)?;
-            let pp = share(p.prepaid, &takes)?;
+            // Only the members with property in the entry have a part of
+            // it (entry_parts INVARIANT 2).
             for i in (0..n).filter(|&i| !takes[i].is_zero()) {
-                if !pp[i].is_zero() {
+                let (g, w, pp) = (
+                    part.get(BUILT_IN_GAIN, i),
+                    part.get(WITHOUT_BASIS, i),
+                    part.get(PREPAID, i),
+                );
+                if !pp.is_zero() {
                     prop_notes[i].push(Note::PrepaidAtBook {
                         entry: id,
-                        book: pp[i],
+                        book: pp,
                     });
                 }
-                big[i] = big[i].checked_add(g[i]).ok_or_else(too_large)?;
-                without[i] = without[i].checked_add(w[i]).ok_or_else(too_large)?;
+                big[i] = big[i].checked_add(g).ok_or_else(too_large)?;
+                without[i] = without[i].checked_add(w).ok_or_else(too_large)?;
                 if let Some((linked, property)) = p.mismatch {
                     prop_open[i].push(Open::LinkedValueExceedsEntry {
                         entry: id,
@@ -500,43 +856,17 @@ fn span(
                         property,
                     });
                 }
-                if !w[i].is_zero() {
-                    prop_open[i].push(Open::PropertyBasis {
-                        entry: id,
-                        book: w[i],
-                    });
+                if !w.is_zero() {
+                    prop_open[i].push(Open::PropertyBasis { entry: id, book: w });
                 }
             }
         }
-        // Distributions are negative lines; weights are what each took.
-        let taken: Vec<Decimal> = lines(K1Kind::Distribution)
-            .into_iter()
-            .map(|d| -d)
-            .collect();
-        if taken.iter().any(|t| *t > Decimal::ZERO) {
-            let property = e
-                .lines()
-                .iter()
-                .filter(|l| {
-                    l.side == Side::Credit
-                        && crate::k1::is_property_account(ledger, cash, l.account)
-                })
-                .try_fold(Decimal::ZERO, |t, l| t.checked_add(l.amount.amount))
-                .ok_or_else(too_large)?;
-            let total_taken = taken
-                .iter()
-                .try_fold(Decimal::ZERO, |t, x| t.checked_add(*x))
-                .ok_or_else(too_large)?;
-            let property = property.min(total_taken);
-            if property > Decimal::ZERO {
-                let parts = share(property, &taken)?;
-                for i in (0..n).filter(|&i| !parts[i].is_zero()) {
-                    distributed[i] = distributed[i].checked_add(parts[i]).ok_or_else(too_large)?;
-                    dist_open[i].push(Open::PropertyDistribution {
-                        entry: id,
-                        book: parts[i],
-                    });
-                }
+        // Property distributed, by what each took.
+        for i in 0..n {
+            let book = part.get(DISTRIBUTED, i);
+            if !book.is_zero() {
+                distributed[i] = distributed[i].checked_add(book).ok_or_else(too_large)?;
+                dist_open[i].push(Open::PropertyDistribution { entry: id, book });
             }
         }
     }
@@ -681,25 +1011,131 @@ mod tests {
         Decimal::from_str(s).unwrap()
     }
 
-    /// share: proportional, to the cent, largest remainder ties to the
-    /// first; negative wholes negated; zero weights give zeros.
+    fn split(r: &mut RunningSplit, whole: &str, weights: &[&str]) -> Vec<Decimal> {
+        let w: Vec<Decimal> = weights.iter().map(|x| d(x)).collect();
+        r.split(d(whole), &w).unwrap()
+    }
+
+    /// RunningSplit: one split is proportional, to the cent, largest
+    /// remainder ties to the first; a negative whole mirrors a positive
+    /// one; zero weights give zeros; weights that don't pair are refused.
     #[test]
-    fn share_is_exact_and_signed() {
+    fn one_split_is_exact_and_signed() {
+        let mut r = RunningSplit::new(2);
         assert_eq!(
-            share(d("-1021.37"), &[d("525"), d("525")]).unwrap(),
+            split(&mut r, "-1021.37", &["525", "525"]),
             vec![d("-510.69"), d("-510.68")]
         );
+        let mut r = RunningSplit::new(2);
         assert_eq!(
-            share(d("36"), &[d("525"), d("525")]).unwrap(),
+            split(&mut r, "36", &["525", "525"]),
             vec![d("18.00"), d("18.00")]
         );
+        let mut r = RunningSplit::new(2);
+        assert_eq!(split(&mut r, "10", &["0", "0"]), vec![d("0"), d("0")]);
+        assert_eq!(r.running(), &[d("0"), d("0")]);
+        let mut r = RunningSplit::new(2);
         assert_eq!(
-            share(d("10"), &[d("0"), d("0")]).unwrap(),
-            vec![d("0"), d("0")]
-        );
-        assert_eq!(
-            share(d("0.01"), &[d("1"), d("2")]).unwrap(),
+            split(&mut r, "0.01", &["1", "2"]),
             vec![d("0.00"), d("0.01")]
         );
+        assert!(r.split(d("1"), &[d("1")]).is_err());
+    }
+
+    /// RunningSplit scenario 1: three odd cents 50/50 alternate, so the
+    /// members end one cent apart, never three.
+    #[test]
+    fn tied_odd_cents_alternate() {
+        let mut r = RunningSplit::new(2);
+        assert_eq!(
+            split(&mut r, "-0.01", &["1", "1"]),
+            vec![d("-0.01"), d("0.00")]
+        );
+        assert_eq!(
+            split(&mut r, "-0.01", &["1", "1"]),
+            vec![d("0.00"), d("-0.01")]
+        );
+        assert_eq!(
+            split(&mut r, "-0.01", &["1", "1"]),
+            vec![d("-0.01"), d("0.00")]
+        );
+        assert_eq!(r.running(), &[d("-0.02"), d("-0.01")]);
+    }
+
+    /// RunningSplit INVARIANT 3: a member with no weight in a split takes
+    /// back the cent their running total no longer earns.
+    #[test]
+    fn a_member_outside_a_split_is_trued_up() {
+        let mut r = RunningSplit::new(3);
+        // A and B 50/50 of 0.01: exact 0.005 each, the cent to A.
+        assert_eq!(
+            split(&mut r, "0.01", &["1", "1", "0"]),
+            vec![d("0.01"), d("0"), d("0")]
+        );
+        // B and C 1:3 of 0.02: exact 0.005 / 0.01 / 0.015 of 0.03; A and
+        // C tie on remainders, the odd cent stays with A.
+        assert_eq!(
+            split(&mut r, "0.02", &["0", "1", "3"]),
+            vec![d("0"), d("0.01"), d("0.01")]
+        );
+        // B and C 2:1 of 0.01: exact 0.005 / 0.01667 / 0.01833 of 0.04;
+        // C's and B's remainders now beat A's, so A gives the cent back.
+        assert_eq!(
+            split(&mut r, "0.01", &["0", "2", "1"]),
+            vec![d("-0.01"), d("0.01"), d("0.01")]
+        );
+        assert_eq!(r.running(), &[d("0"), d("0.02"), d("0.02")]);
+    }
+
+    /// RunningSplit scenario 3, INVARIANT 2: at a running whole of zero
+    /// the rounding takes the sign of the whole just split, so a run of
+    /// losses mirrors its run of gains part for part (P4 review: rounded
+    /// as a gain at zero, the negated run ended 0.01 / −0.01, moving the
+    /// member with no weight).
+    #[test]
+    fn a_loss_mirrors_a_gain_at_zero() {
+        let mut gain = RunningSplit::new(2);
+        let mut loss = RunningSplit::new(2);
+        for (whole, weights, want) in [
+            ("0.01", ["1", "1"], ["0.01", "0"]),
+            ("-0.01", ["1", "0"], ["-0.02", "0.01"]),
+        ] {
+            let g = split(&mut gain, whole, &weights);
+            let l = split(&mut loss, &format!("{}", -d(whole)), &weights);
+            assert_eq!(g, vec![d(want[0]), d(want[1])]);
+            assert_eq!(l, g.iter().map(|x| -x).collect::<Vec<_>>());
+        }
+        assert_eq!(gain.running(), &[d("-0.01"), d("0.01")]);
+        assert_eq!(loss.running(), &[d("0.01"), d("-0.01")]);
+    }
+
+    /// RunningSplit INVARIANT 5: a split taken back out leaves the next
+    /// split as if it never was.
+    #[test]
+    fn unsplit_takes_a_split_back_out() {
+        let mut r = RunningSplit::new(2);
+        let parts = split(&mut r, "-12.37", &["1", "1"]);
+        assert_eq!(parts, vec![d("-6.19"), d("-6.18")]);
+        r.unsplit(d("-12.37"), &[d("1"), d("1")], &parts).unwrap();
+        assert_eq!(r, RunningSplit::new(2));
+        assert_eq!(
+            split(&mut r, "-55.91", &["1", "1"]),
+            vec![d("-27.96"), d("-27.95")]
+        );
+        assert!(r.unsplit(d("1"), &[d("1")], &parts).is_err());
+        assert!(r.unsplit(d("1"), &[d("1"), d("1")], &[d("1")]).is_err());
+    }
+
+    /// RunningSplit INVARIANT 4: thirds summed in Decimal come out a hair
+    /// under the cents they are (399.93 and 791.11); taken to ten places
+    /// they are those cents, and the split goes through.
+    #[test]
+    fn thirds_summed_are_the_cents_they_are() {
+        let mut r = RunningSplit::new(2);
+        split(&mut r, "283.43", &["4", "2"]);
+        split(&mut r, "274.68", &["0", "1"]);
+        split(&mut r, "824.32", &["2", "4"]);
+        split(&mut r, "-191.39", &["1", "2"]);
+        assert_eq!(r.running(), &[d("399.93"), d("791.11")]);
     }
 }

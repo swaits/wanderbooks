@@ -14,11 +14,12 @@ use std::str::FromStr;
 
 use chrono::NaiveDate;
 use ledger_core::reports::MemberCapital;
-use ledger_core::tax_capital::{Note, Open, Reconciliation, tax_basis_capital};
+use ledger_core::tax_capital::{Note, Open, Reconciliation, RunningSplit, tax_basis_capital};
 use ledger_core::{
     AccountId, AccountType, AssetBasis, AssetId, BasisRule, Currency, EntryId, Ledger, Money,
     NewAsset, NewSchedule, ScheduleConvention, ScheduleKind, Sec704cMethod, Side,
 };
+use proptest::prelude::*;
 use rust_decimal::Decimal;
 
 fn d(s: &str) -> Decimal {
@@ -97,10 +98,22 @@ fn members(b: &Books) -> [MemberCapital; 2] {
 
 /// A device two members contribute, in service 2026-01-01 over 24 months.
 fn device(b: &mut Books, name: &str, fmv: &str, adjusted: &str, entry: EntryId) -> AssetId {
+    device_on(b, name, fmv, adjusted, entry, date(2026, 1, 1))
+}
+
+/// A device two members contribute, in service `on` over 24 months.
+fn device_on(
+    b: &mut Books,
+    name: &str,
+    fmv: &str,
+    adjusted: &str,
+    entry: EntryId,
+    on: NaiveDate,
+) -> AssetId {
     let id =
         b.l.register_asset(NewAsset {
             description: name.into(),
-            in_service_date: date(2026, 1, 1),
+            in_service_date: on,
             cost: usd(fmv),
             salvage_value: usd("0.00"),
             useful_life_months: 24,
@@ -733,4 +746,396 @@ fn unequal_contributors_and_a_member_with_none() {
     assert_eq!(none.contributions_property.tax(), Some(d("0")));
     assert_eq!(none.ending.known, d("0"));
     assert_eq!(none.reconciliation, Reconciliation::default());
+}
+
+/// The odd cent on the tax basis runs (B-36 with D-38; owner, 2026-10-22):
+/// three devices contributed 50/50, each worth less than its basis by an
+/// odd number of cents, the built-in gain shared cumulatively, so the
+/// members' tax property ends one cent apart, never three. By hand:
+/// - 2026-01-01 a monitor, 400.00 (basis 412.37, gain −12.37): exact
+///   −6.185 each, the tied cent to Tobin: −6.19 / −6.18;
+/// - 2026-06-01 a chair, 250.00 (basis 263.41, gain −13.41): running
+///   −25.78, exact −12.89 each: −6.70 / −6.71;
+/// - 2026-11-01 a desk, 600.00 (basis 655.91, gain −55.91): running
+///   −81.69, exact −40.845 each, the tied cent to Tobin: −27.96 / −27.95.
+///
+/// Running built-in gain −40.85 / −40.84; book property 625.00 each, tax
+/// 665.85 / 665.84. Shared entry by entry, Tobin took all three tied
+/// cents: 665.86 / 665.83. From June: book 425.00 each; gain −34.66 each
+/// (−6.70 − 27.96, −6.71 − 27.95), tax 459.66 each, on a beginning of
+/// 206.19 / 206.18, ending at the year's figures.
+#[test]
+fn tied_odd_cents_of_property_basis_run_cumulatively() {
+    let mut b = books();
+    let (equipment, tobin, morgan, cash) = (b.equipment, b.tobin, b.morgan, b.cash);
+    for (on, name, fmv, adjusted, half) in [
+        (date(2026, 1, 1), "Monitor", "400.00", "412.37", "200.00"),
+        (date(2026, 6, 1), "Chair", "250.00", "263.41", "125.00"),
+        (date(2026, 11, 1), "Desk", "600.00", "655.91", "300.00"),
+    ] {
+        let e = post(
+            &mut b.l,
+            on,
+            &[
+                (equipment, Side::Debit, fmv),
+                (tobin, Side::Credit, half),
+                (morgan, Side::Credit, half),
+            ],
+        );
+        device_on(&mut b, name, fmv, adjusted, e, on);
+    }
+    let ms = members(&b);
+    let year = tax_basis_capital(&b.l, date(2026, 1, 1), date(2026, 12, 31), &ms, &[cash]).unwrap();
+    let from_june =
+        tax_basis_capital(&b.l, date(2026, 6, 1), date(2026, 12, 31), &ms, &[cash]).unwrap();
+    for (i, (tax, big, beginning)) in [
+        ("665.85", "-40.85", "206.19"),
+        ("665.84", "-40.84", "206.18"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let row = &year.rows[i];
+        assert_eq!(row.book.contributions_property, d("625.00"));
+        assert_eq!(row.contributions_property.tax(), Some(d(tax)));
+        assert_eq!(row.reconciliation.built_in_gain_704c, d(big));
+        assert_eq!(row.ending.known, d(tax));
+        let june = &from_june.rows[i];
+        assert_eq!(june.beginning.known, d(beginning));
+        assert_eq!(june.book.contributions_property, d("425.00"));
+        assert_eq!(june.contributions_property.tax(), Some(d("459.66")));
+        assert_eq!(june.reconciliation.built_in_gain_704c, d("-34.66"));
+        assert_eq!(june.ending.known, row.ending.known, "the spans chain");
+    }
+}
+
+/// A third member, Avery Quinn, beside Tobin and Morgan (made up), with
+/// shares 0.5 / 0.3 / 0.2.
+fn three_members(b: &mut Books) -> (AccountId, [MemberCapital; 3]) {
+    let third =
+        b.l.add_account(
+            "3002",
+            "Capital, Avery Quinn",
+            AccountType::Equity,
+            None,
+            false,
+        )
+        .unwrap();
+    let [t, m] = members(b);
+    (
+        third,
+        [
+            MemberCapital {
+                share: d("0.5"),
+                ..t
+            },
+            MemberCapital {
+                share: d("0.3"),
+                ..m
+            },
+            MemberCapital {
+                name: "Avery Quinn".into(),
+                capital_account: third,
+                distribution_account: None,
+                share: d("0.2"),
+            },
+        ],
+    )
+}
+
+/// A member never takes a cent of an entry they had no part in (B-36,
+/// Form 1065 Item L: capital contributed is the basis of the property
+/// that member contributed; P4 review, 2026-10-22). Three members; by
+/// hand, each set of contributing members its own running split:
+/// - 2026-01-01 Tobin and Morgan, 50.00 each of a 100.00 device (basis
+///   100.01, gain −0.01): −0.01 / 0.00, the tied cent to Tobin;
+/// - 2026-02-01 Morgan and Avery, 25.00 / 75.00 of a 100.00 device
+///   (basis 100.02, gain −0.02): exact −0.005 / −0.015, the tied cent to
+///   Morgan: −0.01 / −0.01;
+/// - 2027-01-01 Morgan and Avery, 60.00 / 30.00 of a 90.00 device (basis
+///   90.01, gain −0.01): Morgan and Avery's count runs −0.03, exact
+///   −0.011667 / −0.018333, rounded −0.01 / −0.02: 0.00 / −0.01.
+///
+/// 2027: Tobin nothing at all; Morgan 60.00 at tax, Avery 30.01, together
+/// the device's §723 basis 90.01. One running split for all three
+/// members instead (the first cut) gives Tobin, who put in nothing in
+/// 2027, −0.01 of tax property and +0.01 of built-in gain, Morgan and
+/// Avery 60.01 / 30.01, more than the basis.
+#[test]
+fn a_member_outside_an_entry_never_takes_its_cents() {
+    let mut b = books();
+    let (equipment, tobin, morgan, cash) = (b.equipment, b.tobin, b.morgan, b.cash);
+    let (avery, ms) = three_members(&mut b);
+    for (on, value, basis, credits) in [
+        (
+            date(2026, 1, 1),
+            "100.00",
+            "100.01",
+            [(tobin, "50.00"), (morgan, "50.00")],
+        ),
+        (
+            date(2026, 2, 1),
+            "100.00",
+            "100.02",
+            [(morgan, "25.00"), (avery, "75.00")],
+        ),
+        (
+            date(2027, 1, 1),
+            "90.00",
+            "90.01",
+            [(morgan, "60.00"), (avery, "30.00")],
+        ),
+    ] {
+        let e = post(
+            &mut b.l,
+            on,
+            &[
+                (equipment, Side::Debit, value),
+                (credits[0].0, Side::Credit, credits[0].1),
+                (credits[1].0, Side::Credit, credits[1].1),
+            ],
+        );
+        device_on(&mut b, "Device", value, basis, e, on);
+    }
+    let year = |y| tax_basis_capital(&b.l, date(y, 1, 1), date(y, 12, 31), &ms, &[cash]).unwrap();
+    let (y26, y27) = (year(2026), year(2027));
+    // Each year's built-in shares sum to its entries' gains, and the tax
+    // property to their bases.
+    for (tc, gain, basis) in [(&y26, "-0.03", "200.03"), (&y27, "-0.01", "90.01")] {
+        let big: Decimal = tc
+            .rows
+            .iter()
+            .map(|r| r.reconciliation.built_in_gain_704c)
+            .sum();
+        assert_eq!(big, d(gain));
+        let tax: Decimal = tc
+            .rows
+            .iter()
+            .map(|r| r.contributions_property.tax().unwrap())
+            .sum();
+        assert_eq!(tax, d(basis));
+    }
+    for (row, (book, tax, big)) in y26.rows.iter().zip([
+        ("50.00", "50.01", "-0.01"),
+        ("75.00", "75.01", "-0.01"),
+        ("75.00", "75.01", "-0.01"),
+    ]) {
+        assert_eq!(
+            row.book.contributions_property,
+            d(book),
+            "{}",
+            row.book.name
+        );
+        assert_eq!(row.contributions_property.tax(), Some(d(tax)));
+        assert_eq!(row.reconciliation.built_in_gain_704c, d(big));
+    }
+    for (row, (book, tax, big)) in y27.rows.iter().zip([
+        ("0", "0", "0"),
+        ("60.00", "60.00", "0"),
+        ("30.00", "30.01", "-0.01"),
+    ]) {
+        assert_eq!(
+            row.book.contributions_property,
+            d(book),
+            "{}",
+            row.book.name
+        );
+        assert_eq!(row.contributions_property.tax(), Some(d(tax)));
+        assert_eq!(row.reconciliation.built_in_gain_704c, d(big));
+    }
+    let t = &y27.rows[0].contributions_property;
+    assert!(t.open.is_empty() && t.notes.is_empty(), "{t:?}");
+}
+
+/// An entry's odd cent is the same whatever span the worksheet is asked
+/// for (B-36; P4 review, 2026-10-22). Tobin and Morgan, 50/50: a monitor
+/// contributed 2026-01-01 (400.00, basis 412.37, gain −12.37), reversed
+/// 2026-07-01; a desk contributed 2026-11-01 (600.00, basis 655.91, gain
+/// −55.91). The reversal takes the monitor's split back out of the count,
+/// so the desk is split as if the monitor never was: exact −27.955 each,
+/// the tied cent to Tobin, −27.96 / −27.95, in every span. The first cut
+/// carried the count span by span: from June the monitor was split in the
+/// span before and its reversal read as a distribution, so the desk's
+/// cent went to Morgan there and to Tobin in the others.
+#[test]
+fn an_entrys_odd_cent_is_the_same_in_every_span() {
+    let mut b = books();
+    let (equipment, tobin, morgan, cash) = (b.equipment, b.tobin, b.morgan, b.cash);
+    let mut entries = Vec::new();
+    for (on, name, fmv, adjusted, half) in [
+        (date(2026, 1, 1), "Monitor", "400.00", "412.37", "200.00"),
+        (date(2026, 11, 1), "Desk", "600.00", "655.91", "300.00"),
+    ] {
+        let e = post(
+            &mut b.l,
+            on,
+            &[
+                (equipment, Side::Debit, fmv),
+                (tobin, Side::Credit, half),
+                (morgan, Side::Credit, half),
+            ],
+        );
+        device_on(&mut b, name, fmv, adjusted, e, on);
+        entries.push(e);
+    }
+    b.l.reverse_entry(entries[0], date(2026, 7, 1), "monitor back")
+        .unwrap();
+    let ms = members(&b);
+    for start in [
+        date(2026, 1, 1),
+        date(2026, 6, 1),
+        date(2026, 8, 1),
+        date(2026, 10, 1),
+    ] {
+        let tc = tax_basis_capital(&b.l, start, date(2026, 12, 31), &ms, &[cash]).unwrap();
+        let big: Vec<Decimal> = tc
+            .rows
+            .iter()
+            .map(|r| r.reconciliation.built_in_gain_704c)
+            .collect();
+        assert_eq!(big, vec![d("-27.96"), d("-27.95")], "from {start}");
+    }
+}
+
+/// The running split takes the entries in date order, whatever order
+/// they were posted in, so next year's beginning is this year's ending
+/// to the cent (B-36). Tobin and Morgan, 50/50: a chair dated 2027-03-01
+/// (250.00, basis 263.41) posted first, then a monitor dated 2026-01-01
+/// (400.00, basis 412.37). The monitor comes first: −6.19 / −6.18, then
+/// the chair −6.70 / −6.71. Taken in posting order the 2027 worksheet
+/// would split the chair first and the monitor −6.18 / −6.19 in its
+/// beginning, a cent from the 2026 worksheet's ending.
+#[test]
+fn the_split_runs_in_date_order() {
+    let mut b = books();
+    let (equipment, tobin, morgan, cash) = (b.equipment, b.tobin, b.morgan, b.cash);
+    for (on, name, fmv, adjusted, half) in [
+        (date(2027, 3, 1), "Chair", "250.00", "263.41", "125.00"),
+        (date(2026, 1, 1), "Monitor", "400.00", "412.37", "200.00"),
+    ] {
+        let e = post(
+            &mut b.l,
+            on,
+            &[
+                (equipment, Side::Debit, fmv),
+                (tobin, Side::Credit, half),
+                (morgan, Side::Credit, half),
+            ],
+        );
+        device_on(&mut b, name, fmv, adjusted, e, on);
+    }
+    let ms = members(&b);
+    let year = |y| tax_basis_capital(&b.l, date(y, 1, 1), date(y, 12, 31), &ms, &[cash]).unwrap();
+    let (y26, y27) = (year(2026), year(2027));
+    for (i, (big26, big27)) in [("-6.19", "-6.70"), ("-6.18", "-6.71")]
+        .into_iter()
+        .enumerate()
+    {
+        assert_eq!(y26.rows[i].reconciliation.built_in_gain_704c, d(big26));
+        assert_eq!(y27.rows[i].reconciliation.built_in_gain_704c, d(big27));
+        assert_eq!(y27.rows[i].beginning.known, y26.rows[i].ending.known);
+    }
+}
+
+/// lcm(1..=16): every sum of up to four weights of 0..=4 divides it. It
+/// is under 10^8, so two exact running totals that differ at all differ
+/// by more than RunningSplit's ten places can blur (INVARIANT 4).
+const LCM: i128 = 720_720;
+
+/// The largest-remainder rounding to the cent of exact running totals
+/// `exact` (in cents × LCM) summing to `total` cents, ties to the earlier
+/// member, a negative total (or a zero one after a negative whole,
+/// `negative`) rounded as its magnitude and negated: RunningSplit
+/// INVARIANT 2 in integers.
+fn largest_remainder(exact: &[i128], total: i128, negative: bool) -> Vec<i128> {
+    let sign = if total < 0 || (total == 0 && negative) {
+        -1
+    } else {
+        1
+    };
+    let floors: Vec<i128> = exact.iter().map(|x| (sign * x).div_euclid(LCM)).collect();
+    let rems: Vec<i128> = exact.iter().map(|x| (sign * x).rem_euclid(LCM)).collect();
+    let short = sign * total - floors.iter().sum::<i128>();
+    assert!((0..=exact.len() as i128).contains(&short));
+    let rank = |i: usize| {
+        (0..rems.len())
+            .filter(|&j| rems[j] > rems[i] || (rems[j] == rems[i] && j < i))
+            .count() as i128
+    };
+    (0..exact.len())
+        .map(|i| sign * (floors[i] + i128::from(rank(i) < short)))
+        .collect()
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(5000))]
+
+    /// Law: RunningSplit INVARIANTS 1 and 2 (B-36 with D-38): for any run
+    /// of splits, wholes of either sign to the cent (a third of them a few
+    /// cents, so the running whole often comes back to zero) and each its own
+    /// weights among up to four members (small ratios, scaled by a cent
+    /// amount up to ten million, so the quotients are a cent amount's),
+    /// each split's parts sum to its whole, the running totals sum to
+    /// everything split, every member's running total is the
+    /// largest-remainder rounding of the exact running totals, ties to the
+    /// earlier member (so never a cent from exact), checked in exact
+    /// integers, and the run with every whole negated gives every part
+    /// negated.
+    #[test]
+    fn a_running_split_never_drifts_a_cent(
+        n in 1usize..=4,
+        splits in prop::collection::vec(
+            (
+                prop_oneof![-3i64..=3, -100_000i64..=100_000, -1_000_000_000_000i64..=1_000_000_000_000],
+                prop::collection::vec(0u8..=4, 4),
+                prop_oneof![Just(1i64), 1i64..=1_000_000_000],
+            ),
+            1..24,
+        ),
+    ) {
+        let mut r = RunningSplit::new(n);
+        let mut mirror = RunningSplit::new(n);
+        let mut exact = vec![0i128; n];
+        let mut total = 0i128;
+        for (whole, weights, scale) in &splits {
+            let w = &weights[..n];
+            let sum: i128 = w.iter().map(|&x| i128::from(x)).sum();
+            let ws: Vec<Decimal> = w
+                .iter()
+                .map(|&x| Decimal::new(i64::from(x) * scale, 2))
+                .collect();
+            let parts = r.split(Decimal::new(*whole, 2), &ws).unwrap();
+            let negated = mirror.split(Decimal::new(-*whole, 2), &ws).unwrap();
+            prop_assert_eq!(parts.len(), n);
+            prop_assert_eq!(
+                negated,
+                parts.iter().map(|p| -p).collect::<Vec<_>>(),
+                "a loss mirrors a gain"
+            );
+            let split: Decimal = parts.iter().sum();
+            if sum == 0 || *whole == 0 {
+                prop_assert_eq!(split, Decimal::ZERO);
+                continue;
+            }
+            prop_assert_eq!(split, Decimal::new(*whole, 2));
+            total += i128::from(*whole);
+            for (x, &wi) in exact.iter_mut().zip(w) {
+                *x += i128::from(*whole) * i128::from(wi) * (LCM / sum);
+            }
+            let running: Decimal = r.running().iter().sum();
+            prop_assert_eq!(running, Decimal::from_i128_with_scale(total, 2));
+            let want = largest_remainder(&exact, total, *whole < 0);
+            for (i, (&running, &exact)) in r.running().iter().zip(&exact).enumerate() {
+                let cents = (running * Decimal::ONE_HUNDRED).normalize();
+                prop_assert_eq!(cents.scale(), 0, "a running total to the cent");
+                let cents = i128::try_from(cents).unwrap();
+                prop_assert_eq!(cents, want[i], "member {}: the largest-remainder rounding", i);
+                prop_assert!(
+                    (cents * LCM - exact).abs() < LCM,
+                    "member {} at {} against exact {}/{}",
+                    i, cents, exact, LCM
+                );
+            }
+        }
+    }
 }

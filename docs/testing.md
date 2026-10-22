@@ -1611,7 +1611,40 @@ basis. Mutation runs wait for P12 (D-33); none was run.
   worth less than basis, one more, one equal; the plan at book with its
   note; the gain property's disposal flagged with its built-in gain),
   property subject to a liability (negative tax property), and three
-  members with unequal shares, one contributing nothing);
+  members with unequal shares, one contributing nothing; and, from the
+  owner's ask of 2026-10-22 (B-36 with D-38), three odd-cent devices
+  contributed 50/50 whose built-in loss runs cumulatively, a cent apart
+  for the year and from June on a beginning carried from January
+  (`tied_odd_cents_of_property_basis_run_cumulatively`; it fails with
+  the per-entry split, 665.86 / 665.83), and the law
+  `a_running_split_never_drifts_a_cent` (5,000 cases, up to four
+  members, two dozen splits each with its own weights, small ratios
+  scaled by a cent amount up to ten million, wholes to ten billion
+  either sign, a third of them a few cents so the running whole often
+  returns to zero: each split sums to its whole, the running totals to
+  everything split, each member's running total is the
+  largest-remainder rounding of the exact running totals, ties to the
+  first, so never a cent from exact, checked in integers, and the run
+  with every whole negated gives every part negated; it found the
+  Decimal thirds case `RunningSplit` now takes to ten places, kept as a
+  regression and as the unit test `thirds_summed_are_the_cents_they_are`;
+  with ties given to the later member it fails on the rounding, and
+  with a zero running whole rounded as a gain it fails on the mirror);
+  from the P4 review (2026-10-22), three worksheet tests:
+  `a_member_outside_an_entry_never_takes_its_cents` (three members, a
+  later entry by two of them: the third's line is nothing at all, and
+  each year's built-in shares and tax property sum to its entries'; it
+  fails with one count for all members, the first cut, which gave the
+  third −0.01 of tax property), `an_entrys_odd_cent_is_the_same_in_every_span`
+  (a reversed contribution across the span's start: the desk's cent is
+  the same from January, June, August and October; it fails with the
+  count carried span by span, and with the reversal not taken back
+  out), and `the_split_runs_in_date_order` (a 2027 entry posted before a
+  2026 one: next year's beginning is this year's ending; it fails with
+  the count in posting order); the unit tests in `src/tax_capital.rs`
+  (one split, tied cents alternating, a member outside a split trued
+  up, a loss mirroring a gain at a running whole of zero, a split taken
+  back out);
   `spec_asset_basis.rs` `a_duplicated_run_line_is_carried_once`; `properties.rs`
   `prop_basis_figures_laws` (5,000 cases); `kernel_bridge.rs`
   `basis_figures_agree`; Kani `basis_figures_laws` (`src/proofs.rs`, 83
@@ -1670,7 +1703,10 @@ reversal test; `check_depreciation_run`'s arms; the register filter
 `check_journaled` and `check_legacy_journaled` arms; the acquisition and
 in-service date refusals; the disposal floor; the MCP `aliased` logic
 (both given and differing); `asset_basis_from_journal` (newer vs corrupt);
-the projection loader's two key sets; `tax_capital::share` and
+the projection loader's two key sets; `tax_capital::RunningSplit` (the
+sign, its zero case, the snap to ten places, `unsplit`),
+`tax_capital::entry_parts` (the member set, the date order, the
+reversal's take-back) and
 `entry_property` (the mismatch branch, the unknown sum), the open-item
 conditions (`in_service`, the disposal window), and the reconciliation's
 signs.

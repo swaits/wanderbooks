@@ -2787,11 +2787,30 @@ async fn while_closing_the_door_stays_open_refusing_as_requests_come() {
         .unwrap();
     assert_eq!(r.status().as_u16(), 404);
     assert_eq!(r.text().await.unwrap(), "not found");
+    // A books route arriving just before the close: what LINGER counts
+    // from (a route for no books is not one, so without this the close
+    // could find none in the last LINGER and rightly shut at once).
+    let r = http
+        .post("http://localhost/b/nobody/mcp")
+        .header("content-type", "application/json")
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 404);
     drop(server.child.stdin.take());
-    let (mut first, mut last) = (None, None);
-    let started = Instant::now();
-    loop {
-        assert!(started.elapsed() < Duration::from_secs(60), "never shut");
+    let dropped = Instant::now();
+    let mut first = None;
+    // The longest wait between two requests sent since the close began:
+    // the door stays open only while they come within LINGER (500 ms), up
+    // to LINGER_MAX (3 s). A client starved past LINGER on a loaded machine
+    // may rightly see it shut sooner, so the 3 s holds only when none was.
+    let (mut sent, mut widest) = (dropped, Duration::ZERO);
+    let shut = loop {
+        assert!(dropped.elapsed() < Duration::from_secs(60), "never shut");
+        let now = Instant::now();
+        widest = widest.max(now - sent);
+        sent = now;
         let Ok(r) = http
             .post("http://localhost/b/nobody/mcp")
             .header("content-type", "application/json")
@@ -2799,24 +2818,29 @@ async fn while_closing_the_door_stays_open_refusing_as_requests_come() {
             .send()
             .await
         else {
-            break;
+            break Instant::now();
         };
         let status = r.status().as_u16();
         let text = r.text().await.unwrap_or_default();
         if text.contains("closing") {
             assert_eq!(status, 503, "{text}");
             first.get_or_insert_with(Instant::now);
-            last = Some(Instant::now());
         } else {
             // Not found, until closing; never again after.
             assert!(first.is_none(), "after closing: {status} {text}");
             assert_eq!(status, 404, "{text}");
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    let open = shut - dropped;
+    // Never before LINGER has passed with no request (the last came just
+    // before the close began, above).
+    assert!(open >= Duration::from_millis(500), "{open:?}");
+    if widest < Duration::from_millis(400) {
+        // Requests kept coming: refused as closing, and open to LINGER_MAX.
+        assert!(first.is_some(), "never refused as closing ({widest:?})");
+        assert!(open >= Duration::from_millis(2500), "{open:?} {widest:?}");
     }
-    let first = first.expect("never refused as closing");
-    let open = last.unwrap() - first;
-    assert!(open >= Duration::from_millis(2500), "{open:?}");
     let status = tokio::task::spawn_blocking(move || wait_exit(&mut server.child, 30))
         .await
         .unwrap();

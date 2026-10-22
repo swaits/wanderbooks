@@ -246,7 +246,13 @@ pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
     let client_class = s.add_project(
         "Client work",
         &ledger_core::ProjectFacts {
-            description: Some("Design work for the studio's clients".into()),
+            // Its invoices can't be tagged to it: an invoice posts one
+            // untagged revenue line (Ledger::create_invoice takes no
+            // class), so only the contractors it pays show here, said so.
+            description: Some(
+                "Design work for the studio's clients. Only its contractors are tagged to it: an invoice can't carry a project yet, so what the clients pay shows on the profit and loss, not here."
+                    .into(),
+            ),
             kind: Some(ledger_core::ProjectKind::Client),
             ..Default::default()
         },

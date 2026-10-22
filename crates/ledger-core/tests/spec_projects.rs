@@ -510,6 +510,9 @@ fn closing_entries_are_left_out_of_project_figures() {
     let f = project_figures(&b.l, c, d(2025, 1, 1), d(2025, 12, 31)).unwrap();
     assert_eq!(f.period.total_revenue, cents(40_000));
     assert_eq!(f.to_date.revenue, cents(40_000));
+    // The close's lines aren't counted as tagged ones either.
+    assert_eq!((f.to_date.revenue_lines, f.to_date.expenses_lines), (1, 0));
+    assert_eq!(f.period_lines, 1);
 }
 
 #[test]
@@ -530,6 +533,23 @@ fn a_reversal_nets_a_project_to_zero() {
     assert!(t.expenses.is_zero());
     let entries = project_entries(&b.l, c);
     assert_eq!(entries, vec![(r, cents(180_000)), (e, cents(-180_000))]);
+    // Nothing left on an account, but two lines tagged: it breaks even,
+    // it isn't untagged (rules.md B-37 item 7).
+    assert!(t.expenses_by_account.is_empty());
+    assert_eq!((t.revenue_lines, t.expenses_lines), (0, 2));
+    assert!(t.any_tagged());
+    let f = project_figures(&b.l, c, d(2026, 1, 1), d(2026, 12, 31)).unwrap();
+    assert_eq!(f.period_lines, 2);
+    // A period before both: nothing there, both still to date.
+    let f = project_figures(&b.l, c, d(2026, 1, 1), d(2026, 2, 28)).unwrap();
+    assert_eq!(f.period_lines, 0);
+    assert!(!f.to_date.any_tagged(), "to date through the period's end");
+    let bare = b.l.add_class("Bare").unwrap();
+    assert!(
+        !project_to_date(&b.l, bare, d(2026, 12, 31))
+            .unwrap()
+            .any_tagged()
+    );
 }
 
 #[test]
@@ -630,4 +650,65 @@ fn differs_from_names_projects() {
     let before = a.l.clone();
     a.l.set_project(c, "Harbor", on_spec()).unwrap();
     assert_eq!(a.l.differs_from(&before), vec!["projects"]);
+}
+
+/// rules.md B-37 item 7: the margin is the contribution's share of
+/// revenue, one place, half to even, and none without revenue.
+#[test]
+fn contribution_margin_is_one_place_and_none_without_revenue() {
+    use ledger_core::contribution_margin_pct as pct;
+    assert_eq!(
+        pct(cents(320_000), cents(500_000)).unwrap().to_string(),
+        "64.0"
+    );
+    assert_eq!(pct(cents(100), cents(100)).unwrap().to_string(), "100.0");
+    assert_eq!(pct(cents(-300), cents(200)).unwrap().to_string(), "-150.0");
+    // Half to even: 1.25% to 1.2, 1.35% to 1.4.
+    assert_eq!(pct(cents(125), cents(10_000)).unwrap().to_string(), "1.2");
+    assert_eq!(pct(cents(135), cents(10_000)).unwrap().to_string(), "1.4");
+    assert_eq!(pct(cents(-500), Decimal::ZERO), None);
+    assert_eq!(pct(cents(500), cents(-500)), None, "refunds only");
+    assert_eq!(pct(Decimal::MAX, cents(1)), None, "never panics");
+}
+
+/// rules.md B-37 item 7: each month's net to date opens on the lines
+/// before the months (a deposit last year) and ends on the net to date;
+/// a reimbursement credited above its cost leaves the expense below zero.
+#[test]
+fn months_net_to_date_runs_from_before_the_months() {
+    let mut b = books();
+    let c = b.l.add_class("Zeta site").unwrap();
+    b.post(d(2025, 12, 10), b.cash, b.revenue, 50_000, Some((c, false)));
+    b.post(
+        d(2026, 2, 9),
+        b.contractors,
+        b.cash,
+        20_000,
+        Some((c, true)),
+    );
+    // The client reimburses more than the cost, credited to it.
+    b.post(
+        d(2026, 3, 1),
+        b.cash,
+        b.contractors,
+        30_000,
+        Some((c, false)),
+    );
+    let f = project_figures(&b.l, c, d(2026, 1, 1), d(2026, 3, 31)).unwrap();
+    assert_eq!(
+        f.months_net_to_date,
+        vec![cents(50_000), cents(30_000), cents(60_000)]
+    );
+    assert_eq!(f.to_date.net(), cents(60_000));
+    assert_eq!(f.to_date.expenses, cents(-10_000));
+    assert_eq!(f.to_date.expenses_by_account.len(), 1);
+    assert_eq!(f.to_date.expenses_by_account[0].amount, cents(-10_000));
+    assert_eq!(f.to_date.margin_pct().unwrap().to_string(), "120.0");
+    assert_eq!(f.period_margin_pct(), None, "no revenue in the period");
+    // No entries at all: nothing to date, no margin, every month zero.
+    let empty = b.l.add_class("Empty").unwrap();
+    let f = project_figures(&b.l, empty, d(2026, 1, 1), d(2026, 3, 31)).unwrap();
+    assert!(f.to_date.revenue_by_account.is_empty() && f.to_date.expenses_by_account.is_empty());
+    assert_eq!(f.to_date.margin_pct(), None);
+    assert_eq!(f.months_net_to_date, vec![Decimal::ZERO; 3]);
 }

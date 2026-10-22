@@ -667,6 +667,89 @@ fn project_to_date_counts_lines_before_the_period() {
     assert_eq!(zeta["to_date"]["net"], "3200.00");
 }
 
+/// The snapshot's figures (rules.md B-37 item 7), as the viewer shows
+/// them: net is the contribution before overhead, margin_pct its share
+/// of revenue, to_date.by_account the direct costs by category, and each
+/// month's net_to_date the running net, the last being to_date's.
+#[test]
+fn project_snapshot_margin_by_account_and_running_net() {
+    let (mut m, _, _) = studio("snapshot");
+    let z = m.read_only(
+        "books.project",
+        json!({"project": "Zeta site", "start": "2026-01-01", "end": "2026-12-31"}),
+    );
+    // The period: 4,500 earned, 1,800 spent: 2,700, 60.0% of revenue.
+    assert_eq!(z["period"]["net"], "2700.00");
+    assert_eq!(z["period"]["margin_pct"], "60.0");
+    // To date, the December deposit too: 3,200 of 5,000, 64.0%.
+    assert_eq!(z["to_date"]["net"], "3200.00");
+    assert_eq!(z["to_date"]["margin_pct"], "64.0");
+    let accounts: Vec<(&str, &str, &str)> = z["to_date"]["by_account"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| {
+            (
+                a["code"].as_str().unwrap(),
+                a["type"].as_str().unwrap(),
+                a["amount"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        accounts,
+        [
+            ("4000", "revenue", "5000.00"),
+            ("6000", "expense", "1800.00")
+        ]
+    );
+    let running: Vec<&str> = z["period"]["by_month"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["net_to_date"].as_str().unwrap())
+        .collect();
+    assert_eq!(running.len(), 12);
+    // January opens on the December deposit; March adds the milestone
+    // less the contractor; the year ends on the net to date.
+    assert_eq!(&running[..3], ["500.00", "500.00", "3200.00"]);
+    assert_eq!(running[11], z["to_date"]["net"].as_str().unwrap());
+    // On spec, repaid in part: a loss for the year, margin below zero.
+    let h = m.read_only(
+        "books.project",
+        json!({"project": "Harbor app", "start": "2026-01-01", "end": "2026-12-31"}),
+    );
+    assert_eq!(h["period"]["net"], "-460.00");
+    assert_eq!(h["period"]["margin_pct"], "-46.0");
+    // No revenue yet: no margin.
+    let h = m.read_only(
+        "books.project",
+        json!({"project": "Harbor app", "start": "2026-01-01", "end": "2026-04-30"}),
+    );
+    assert_eq!(h["to_date"]["margin_pct"], Value::Null);
+    assert_eq!(h["period"]["margin_pct"], Value::Null);
+    assert_eq!(
+        h["to_date"]["by_account"][0]["amount"], "1460.00",
+        "the devices, an asset, count nothing"
+    );
+    // Nothing tagged: books.project still carries to_date.by_account,
+    // empty, and no margin.
+    m.ok(
+        "books.add_project",
+        json!({"name": "Quiet one", "kind": "internal"}),
+    );
+    let q = m.read_only("books.project", json!({"project": "Quiet one"}));
+    assert_eq!(q["to_date"]["by_account"], json!([]), "{q}");
+    assert_eq!(q["period"]["by_account"], json!([]), "{q}");
+    assert_eq!(q["to_date"]["margin_pct"], Value::Null);
+    // The list carries the margin, not the accounts.
+    let list = m.read_only("books.projects", json!({}));
+    for p in list["projects"].as_array().unwrap() {
+        assert!(p["to_date"].get("margin_pct").is_some(), "{p}");
+        assert!(p["to_date"].get("by_account").is_none(), "{p}");
+    }
+}
+
 #[test]
 fn on_spec_project_shows_unrecovered_cost_and_others_null() {
     let (mut m, _, _) = studio("unrecovered");

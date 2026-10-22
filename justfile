@@ -34,7 +34,7 @@ server-only:
     fi
     echo "server-only build: no window libraries"
 
-# Test books go in the system temp dir (often RAM). Every test's dir is
+# Test books go in the system temp dir: TMPDIR, else /tmp. Every test's dir is
 # removed when the test ends, pass or panic (a guard dropped on unwind;
 # until 2026-10-17 many were removed only on pass, or never: 117,000 piled
 # up). A run killed mid-test (a mutant's timeout, ^C) runs no destructor,
@@ -145,6 +145,10 @@ miri:
 
 # Where cargo-mutants copies and builds the tree for each mutant (several
 # GB per job): the user's cache on disk, never /tmp, which is often RAM.
+# The tests it runs honor the same TMPDIR (every test's books go in
+# std::env::temp_dir(), so TMPDIR); until 2026-10-22 a forced
+# `[env] TMPDIR = "/tmp"` in .cargo/config.toml kept them in /tmp for
+# speed, which also overrode a TMPDIR set for any cargo test.
 # A mutant only needs some test to fail, so proptest doesn't shrink.
 #
 # Every mutation recipe takes a shard, "k/n" (default: all of it), so CI

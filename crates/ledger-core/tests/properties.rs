@@ -1002,6 +1002,95 @@ proptest! {
         prop_assert_eq!(exp_sum + untagged_exp, all.total_expenses);
     }
 
+    /// rules.md B-37 item 7: the snapshot's contribution is
+    /// project_to_date's net, revenue less direct costs, whatever the
+    /// tags and sides (a refund debits revenue, a reimbursement credits an
+    /// expense below zero): the accounts sum to the totals, each month's
+    /// net to date is project_to_date through its end (the last is the
+    /// net to date), and a margin exists exactly when revenue is above
+    /// zero, with the contribution's sign.
+    #[test]
+    fn prop_project_contribution_is_the_net_to_date(
+        entries in prop::collection::vec(
+            (0u32..400, 1i64..1_000_000, 0u32..4, any::<bool>(), 0u32..3, 0u32..3),
+            0..20,
+        ),
+        from in 0u32..400,
+        len in 0u32..400,
+    ) {
+        let base = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        let mut l = Ledger::new(Currency::USD);
+        let cash = l.add_account("1000", "Cash", AccountType::Asset, None, false).unwrap();
+        let rev = l.add_account("4000", "Revenue", AccountType::Revenue, None, false).unwrap();
+        let exp = l.add_account("6000", "Costs", AccountType::Expense, None, false).unwrap();
+        let soft = l.add_account("6100", "Software", AccountType::Expense, None, false).unwrap();
+        let classes: Vec<u32> = (0..2).map(|i| l.add_class(&format!("P{i}")).unwrap()).collect();
+        let accounts = [cash, rev, exp, soft];
+        // Each tagged revenue or expense line: (date, class).
+        let mut tagged = Vec::new();
+        for (day, c, other, debit_first, tag_a, tag_b) in entries {
+            let date = base + chrono::Days::new(u64::from(day));
+            let e = l.create_entry(date, "e");
+            let amt = Money::new(Decimal::new(c, 2), Currency::USD);
+            let other = accounts[other as usize];
+            let (dr, cr) = if debit_first { (other, cash) } else { (cash, other) };
+            l.add_line(e, dr, Side::Debit, amt).unwrap();
+            l.add_line(e, cr, Side::Credit, amt).unwrap();
+            for (i, t) in [tag_a, tag_b].into_iter().enumerate() {
+                if let Some(&k) = classes.get(t as usize) {
+                    l.set_line_class(e, i, Some(k)).unwrap();
+                    if [dr, cr][i] != cash {
+                        tagged.push((date, k));
+                    }
+                }
+            }
+            l.post_entry(e).unwrap();
+        }
+        let start = base + chrono::Days::new(u64::from(from));
+        let end = start + chrono::Days::new(u64::from(len));
+        for &k in &classes {
+            let t = ledger_core::project_to_date(&l, k, end).unwrap();
+            let lines = |v: &[ledger_core::StatementLine]| v.iter().map(|x| x.amount).sum::<Decimal>();
+            prop_assert_eq!(lines(&t.revenue_by_account), t.revenue);
+            prop_assert_eq!(lines(&t.expenses_by_account), t.expenses);
+            prop_assert_eq!(t.net(), t.revenue - t.expenses);
+            match t.margin_pct() {
+                None => prop_assert!(t.revenue <= Decimal::ZERO),
+                Some(m) => {
+                    prop_assert!(t.revenue > Decimal::ZERO);
+                    prop_assert_eq!(m.scale(), 1);
+                    // Its sign is the contribution's (a tiny one rounds to 0.0).
+                    if t.net() >= Decimal::ZERO {
+                        prop_assert!(m >= Decimal::ZERO);
+                    } else {
+                        prop_assert!(m <= Decimal::ZERO);
+                    }
+                }
+            }
+            // Whether anything is tagged counts lines, even ones netting
+            // to zero, never accounts left with a balance.
+            let count = |from: NaiveDate| {
+                tagged.iter().filter(|(d, c)| *c == k && *d >= from && *d <= end).count()
+            };
+            prop_assert_eq!(t.revenue_lines + t.expenses_lines, count(NaiveDate::MIN));
+            let f = ledger_core::project_figures(&l, k, start, end).unwrap();
+            prop_assert_eq!(f.period_lines, count(start));
+            prop_assert_eq!(&f.to_date, &t);
+            prop_assert_eq!(f.months_net_to_date.len(), f.months.len());
+            for (m, running) in f.months.iter().zip(&f.months_net_to_date) {
+                let at = ledger_core::project_to_date(&l, k, m.end).unwrap();
+                prop_assert_eq!(*running, at.net());
+            }
+            if let Some(last) = f.months_net_to_date.last() {
+                prop_assert_eq!(*last, t.net());
+            }
+            prop_assert_eq!(
+                f.period_margin_pct(),
+                ledger_core::contribution_margin_pct(f.period.net_income(), f.period.total_revenue)
+            );
+        }
+    }
+
     /// rules.md B-37 item 3: project_entries codes its own signs, so the
     /// posted entries' project amounts must sum to project_to_date's net
     /// (with no entry dated after the day), whatever the tags, the sides,

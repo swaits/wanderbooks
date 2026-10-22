@@ -105,6 +105,7 @@ fn screenshots() {
         .and_then(|p| p.parse().ok())
         .unwrap_or_else(|| project_named("Tidepool app"));
     let project_client = project_named("Client work");
+    let project_templates = project_named("Templates");
     drop(loaded);
     let routes: Vec<(&str, Route)> = vec![
         ("overview", Route::Overview),
@@ -141,6 +142,7 @@ fn screenshots() {
         ("projects", Route::Projects),
         ("project", Route::Project(project)),
         ("project-client", Route::Project(project_client)),
+        ("project-templates", Route::Project(project_templates)),
         ("document", Route::Document(last_doc)),
         ("document-linked", Route::Document(linked_doc)),
         ("reconciliation", Route::Reconciliation(reconciliation)),

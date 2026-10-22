@@ -100,8 +100,28 @@ fn to_date_out(t: &ledger_core::ProjectToDate) -> ToDateOut {
         revenue: money(t.revenue),
         expenses: money(t.expenses),
         net: money(t.net()),
+        margin_pct: t.margin_pct().map(|m| m.to_string()),
         unrecovered_cost: t.unrecovered_cost.map(money),
+        by_account: None,
     }
+}
+
+/// Statement lines for a tool's output: revenue, then expenses.
+fn accounts_out(
+    revenue: &[ledger_core::StatementLine],
+    expenses: &[ledger_core::StatementLine],
+) -> Vec<ProjectAccountOut> {
+    let account = |l: &ledger_core::StatementLine, t: &str| ProjectAccountOut {
+        code: l.code.clone(),
+        name: l.name.clone(),
+        account_type: t.to_string(),
+        amount: money(l.amount),
+    };
+    revenue
+        .iter()
+        .map(|l| account(l, "revenue"))
+        .chain(expenses.iter().map(|l| account(l, "expense")))
+        .collect()
 }
 
 /// An optional date from a tool: "" clears it.
@@ -260,7 +280,7 @@ impl BooksServer {
     #[tool(
         name = "books.projects",
         title = "Projects",
-        description = "Every project (every class, with its facts), by name: status, kind, party, dates, and its figures to date (every posted line tagged to it through today in the company's time zone, closes left out): revenue, expenses, net, and for an on_spec project its unrecovered cost. status filters to one status.",
+        description = "Every project (every class, with its facts), by name: status, kind, party, dates, and its figures to date (every posted line tagged to it through today in the company's time zone, closes left out): revenue, expenses, net (contribution before overhead), margin_pct, and for an on_spec project its unrecovered cost. status filters to one status.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn projects(
@@ -293,7 +313,7 @@ impl BooksServer {
         name = "books.project",
         title = "Get a project",
         description = described(
-            "One project, by id or name: its facts, party and decisions, the documents linked to it, and every entry with a line tagged to it (date, description, project amount, receipts). For the period: revenue, expenses, net, by account and by month. To date (every tagged line through end): the same totals and, for an on_spec project, its unrecovered cost, the 'if repaid' figure, never a receivable. Only revenue and expense lines count.",
+            "One project, by id or name: facts, party, decisions, linked documents, and every entry with a line tagged to it. For the period: revenue, expenses, net (contribution before overhead: untagged costs aren't counted), margin_pct, by account, by month (with net_to_date). To date (every tagged line through end): the same totals, by account, and for on_spec the unrecovered cost, the 'if repaid' figure, never a receivable. Only revenue and expense lines count.",
             ledger_core::calendar::PeriodKind::Statement
         ),
         annotations(read_only_hint = true, open_world_hint = false)
@@ -309,29 +329,19 @@ impl BooksServer {
         let id = resolve_class(&store, &p.project)?;
         let fig =
             ledger_core::project_figures(ledger, id, start, end).map_err(|e| e.to_string())?;
-        let account = |l: &ledger_core::StatementLine, t: &str| ProjectAccountOut {
-            code: l.code.clone(),
-            name: l.name.clone(),
-            account_type: t.to_string(),
-            amount: money(l.amount),
-        };
-        let by_account = fig
-            .period
-            .revenue
-            .iter()
-            .map(|l| account(l, "revenue"))
-            .chain(fig.period.expenses.iter().map(|l| account(l, "expense")))
-            .collect();
+        let by_account = accounts_out(&fig.period.revenue, &fig.period.expenses);
         let by_month = fig
             .months
             .iter()
-            .map(|m| ProjectMonthOut {
+            .zip(&fig.months_net_to_date)
+            .map(|(m, to_date)| ProjectMonthOut {
                 month: m.start.format("%Y-%m").to_string(),
                 start: m.start.to_string(),
                 end: m.end.to_string(),
                 revenue: money(m.revenue),
                 expenses: money(m.expenses),
                 net: money(m.net()),
+                net_to_date: money(*to_date),
             })
             .collect();
         let mut entries = Vec::new();
@@ -378,10 +388,17 @@ impl BooksServer {
                 revenue: money(fig.period.total_revenue),
                 expenses: money(fig.period.total_expenses),
                 net: money(fig.period.net_income()),
+                margin_pct: fig.period_margin_pct().map(|m| m.to_string()),
                 by_account,
                 by_month,
             },
-            to_date: to_date_out(&fig.to_date),
+            to_date: ToDateOut {
+                by_account: Some(accounts_out(
+                    &fig.to_date.revenue_by_account,
+                    &fig.to_date.expenses_by_account,
+                )),
+                ..to_date_out(&fig.to_date)
+            },
             entries,
             documents,
             decisions,

@@ -27,6 +27,7 @@ base64 = "0.22"
 chrono = "0.4"
 libc = "0.2"
 reqwest = "0.13"
+rust_decimal = "1"
 rmcp = { version = "3", features = ["client", "transport-streamable-http-client-reqwest"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 ledger-core = { path = "../ledger-core" }

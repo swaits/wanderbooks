@@ -2545,7 +2545,7 @@ package). **Checked:** `ledger-core` `tests/tax_capital.rs`;
 a class as a project ... Projects are entities too and can have name,
 description, whatever other metadata you think they should have"; the
 convention `link-to-projects` in the books: "whenever applicable, we link
-things to [projects]"); CONVENTION (job costing, item 3); AUTHORITY (on
+things to [projects]"); CONVENTION (job costing, item 3; the snapshot, item 7: a presentation choice from management accounting, not GAAP); AUTHORITY (on
 spec, item 4: ASC 450-30-25-1; ASC 340-40-25-5 with B-22;
 `sources/fasb-asc.md`, both quoted through Deloitte's DART roadmaps and
 not yet re-read in the ASC basic view: an open item)
@@ -2599,11 +2599,39 @@ not yet re-read in the ASC basic view: an open item)
    so when one is tagged.
 6. Omitted dates mean what B-30 says (`books.project`'s period); to date
    is always stated as such, beside it.
+7. **Snapshot (a presentation choice, not GAAP).** A project's net is
+   shown as its *contribution before overhead*: its revenue less its
+   direct costs (every expense line tagged to it), with no company
+   overhead allocated, since item 3 allocates none. The owner's label is
+   "contribution"; what it means is revenue less the costs traceable to
+   the project, fixed and variable alike (the books don't split costs by
+   behavior), before the common costs no project causes. That is
+   Garrison, Noreen and Brewer's *segment margin* (*Managerial
+   Accounting*, segment reporting: a segment's sales less its variable
+   expenses and its traceable fixed expenses, the defining source here),
+   who warn against allocating common costs to judge a segment. It is
+   not Horngren's *contribution margin* (revenue less variable costs
+   only; Horngren, Datar and Rajan, *Cost Accounting: A Managerial
+   Emphasis*), which the books can't compute and the viewer doesn't
+   claim; "contribution" here is only the everyday sense, what the
+   project contributes toward overhead. So a project in the black can
+   still leave the company in the red. Its margin ("contribution
+   margin" on the page, `margin_pct` in the tools) is that contribution
+   as a percent of revenue, one place, half to even, and none without
+   revenue (zero or less). "In the black" is a contribution above zero,
+   "in the red" below, "break-even" lines tagged that net to zero (a
+   cost and its reversal). The running net by month is the net to date
+   through each month's end; its last is the net to date. No GAAP
+   standard defines or requires these figures (ASC 280's segment
+   reporting is for public entities' operating segments, not projects);
+   they come from item 3's, one function the tools and the viewer share.
 
 **Enforced:** `ledger_core::classes::{ProjectFacts, ProjectStatus,
 ProjectKind}`, `Ledger::{check_set_project, set_project,
 replay_set_project, projects_of_party}`, `reports::{project_figures,
-project_to_date, project_entries}`, `kernel::unrecovered_cost`;
+project_to_date, project_entries, contribution_margin_pct}`,
+`ProjectToDate::{net, margin_pct, any_tagged}`, `ProjectFigures::{months_net_to_date,
+period_margin_pct, period_lines}`, `kernel::unrecovered_cost`;
 `Store::{add_project, set_project, subject_feature}` (feature
 `projects`); `books.add_project`, `books.update_project`,
 `books.projects`, `books.project`; the viewer's Projects pages.
@@ -2612,4 +2640,5 @@ project_to_date, project_entries}`, `kernel::unrecovered_cost`;
 `tests/projects.rs`; bookspec `projects-net-is-its-tagged-lines` and
 `projects-on-spec-costs-are-expenses`; Kani `unrecovered_cost_laws`;
 proptests `prop_project_nets_partition_the_pnl`,
-`prop_project_set_round_trips`.
+`prop_project_set_round_trips`, `prop_project_contribution_is_the_net_to_date`
+(core) and `prop_snapshot_contribution_is_the_net_to_date` (viewer).

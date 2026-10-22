@@ -1917,6 +1917,117 @@ balance-sheet zero; `project_set_of` (newer vs corrupt);
 feature check; the decision `projects` omit-when-empty;
 `late_tag_note`'s `is_over`; `remember_footer`'s threshold.
 
+## P3: the project snapshot (2026-10-22)
+
+The owner's ask: a "mini financial snapshot" of one project on its page,
+overhead left out, so it shows at a glance whether the project is in the
+black or the red, with charts (rules.md B-37 item 7: contribution before
+overhead, revenue less every traced cost, a segment margin in Garrison's
+sense; a presentation choice, not GAAP). Every figure is ledger-core's:
+`ProjectToDate::{net, margin_pct, any_tagged, revenue_by_account,
+expenses_by_account, revenue_lines, expenses_lines}`,
+`ProjectFigures::{months_net_to_date, period_margin_pct, period_lines}`
+and `contribution_margin_pct`, which `books.project` and
+`books.projects` now return too (`margin_pct`, `to_date.by_account`,
+`by_month[].net_to_date`). No mutation run (P12, D-33; none on the GUI);
+each test below was checked by breaking what it guards and watching it
+fail.
+
+- **ledger-core:** `tests/spec_projects.rs`
+  `contribution_margin_is_one_place_and_none_without_revenue` (64.0,
+  100.0, -150.0, half to even at 1.25 and 1.35, none at zero or negative
+  revenue, none, not a panic, on overflow),
+  `months_net_to_date_runs_from_before_the_months` (opens on last year's
+  deposit; a reimbursement above its cost leaves the expense below zero;
+  no entries: every month zero, no margin),
+  `a_reversal_nets_a_project_to_zero` (no account left, two lines
+  counted: tagged, breaking even; a period before both counts none) and
+  `closing_entries_are_left_out_of_project_figures` (a close's lines
+  aren't counted); `properties.rs`
+  `prop_project_contribution_is_the_net_to_date` (random tags, sides,
+  refunds and reimbursements over two expense accounts and a random
+  period: the accounts sum to the totals, the contribution is revenue
+  less expenses, each month's net to date is `project_to_date` through
+  its end and the last is the net to date, the counted lines are the
+  tagged revenue and expense lines to date and in the period, a margin
+  exists exactly when revenue is above zero and has the contribution's
+  sign, and `project_figures`' to-date is `project_to_date`'s).
+  `project_figures` takes the net before its first month from to date
+  less the months (one scan fewer); the proptest pins it.
+- **ledger-mcp:** `tests/spec_projects.rs`
+  `project_snapshot_margin_by_account_and_running_net` (the period's and
+  to date's margin_pct, to_date.by_account, the 12 months' net_to_date
+  opening on the December deposit and ending on to_date.net, a loss's
+  negative margin, null without revenue, a project with nothing tagged
+  still carrying `to_date.by_account: []`, and books.projects carrying
+  the margin but not the accounts). `books.project`'s description stays
+  under 700 characters (`tool_descriptions_fit_700_characters`).
+- **viewer and server on one book:** ledger-cli
+  `tests/projects_parity.rs`
+  `a_projects_snapshot_is_the_same_in_the_viewer_and_from_the_server`
+  (`wanderbooks dev-stdio`'s `books.project` against the viewer's
+  `page_figures` and `Snap` on the same books: to date's revenue,
+  expenses, net, margin_pct, unrecovered cost and by_account, every
+  month's figures and net_to_date over the chart's span, and the fiscal
+  year's; with a refund, a reversal and overhead; gui builds only).
+- **ledger-gui:** `tests/projects.rs`
+  `a_profitable_projects_snapshot_is_ledger_cores` (and the Contribution
+  tile's hover note is `CONTRIBUTION_NOTE`),
+  `a_loss_making_project_is_in_the_red` (costs largest first: the
+  higher-coded account is the larger),
+  `an_on_spec_projects_snapshot_has_its_unrecovered_cost` (each tile's
+  own value, read under its label, equal to `Snap::to_date` of
+  `project_to_date`, the pill, the margin shown only with revenue,
+  overhead never counted),
+  `no_revenue_means_no_margin`,
+  `a_project_with_no_entries_has_nothing_tagged_yet`,
+  `a_cost_repaid_exactly_breaks_even` (no account left: break-even, not
+  "nothing tagged", on the page and the list),
+  `a_reimbursement_above_its_cost_leaves_costs_below_zero`,
+  `a_project_started_this_month_charts_one_month`,
+  `the_chart_runs_from_the_start_or_first_entry_and_caps` (the earlier of
+  start and first entry, a start after today, 24 months at most),
+  `the_running_net_is_each_months_net_to_date` (sweeping the pointer over
+  the bars and over the net's own strip shows each month's
+  `months_net_to_date`, in order),
+  `the_fiscal_year_switch_shows_the_default_period` (B-30's omitted dates,
+  as `books.project`, with fiscal-year costs unlike to date's; the pill
+  stays to date; switching writes nothing to the journal),
+  `a_fiscal_year_with_nothing_says_so`,
+  `the_list_cues_in_the_black_and_in_the_red` (each net painted in its
+  cue's color, never the names', still alphabetical), and the proptest
+  `prop_snapshot_contribution_is_the_net_to_date` (reversals too: a
+  reversed tagged line is tagged and breaks even); the earlier tests take
+  the new labels (Revenue, Contribution, Contribution margin). With
+  `SHOT_DIR` set each snapshot case is saved as a PNG; run them one at a
+  time then (`SHOT_DIR=... cargo test -p ledger-gui --test projects --
+  --test-threads 1`: rendering from tests run in parallel crashed with
+  SIGSEGV, 2026-10-22; without `SHOT_DIR` nothing renders and they run
+  side by side). `screens.rs` gains `project-templates`
+  (the demo's profitable project). Shots:
+  `~/.cache/wanderbooks/shots-p3-snapshot/` (`light/`, `dark/`, `w900/`,
+  `tests/`).
+- **Every test honors TMPDIR.** `.cargo/config.toml` forced `[env]
+  TMPDIR = "/tmp"` for every cargo-run test (for `just mutants*`' speed),
+  so a TMPDIR set to keep tests off a small RAM /tmp was overridden;
+  it is gone. Every test makes its dirs with `std::env::temp_dir()` or
+  `tempfile` (both TMPDIR), and the binaries tests spawn with a cleared
+  environment write no temp files. A socket under a long TMPDIR is longer
+  than a socket address holds: every test connects through
+  `ledger_store::root::SocketPath`, as the servers bind (`raw_admin` in
+  `local_server.rs` didn't, and failed with TMPDIR under
+  `~/.cache/wanderbooks/p3-snapshot-tmp`). ledger-gui's `exports.rs`
+  downloads folder, shared by its tests, is removed as the binary exits
+  (`atexit`; `wb-*`, so `sweep-test-tmp` catches a killed run). Checked
+  by running `just check` with TMPDIR under `~/.cache/wanderbooks` and
+  finding no new test dir in /tmp. Mutation runs (`just mutants*`) now
+  put test books under that TMPDIR too, on disk: slower per mutant than
+  /tmp was; none is running (P12 paused).
+
+**For P12 (mutation targets):** `contribution_margin_pct`'s `<=` and
+rounding strategy; `project_figures`' opening net and running sum;
+`profit_and_loss_counted`'s counts; `Standing::of`'s order.
+
 ## Benchmarks (baseline 2026-10-13)
 
 No budget, by decision (the owner, 2026-10-13: the books do little work

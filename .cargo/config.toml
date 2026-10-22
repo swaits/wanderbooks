@@ -1,7 +1,0 @@
-# Test books (a few KB each, every journal append synced) go in the system
-# temp dir, /tmp, even when TMPDIR points elsewhere: `just mutants*` sets
-# TMPDIR to ~/.cache for cargo-mutants' multi-GB tree copies, and cargo
-# passes [env] to the tests it runs, not to cargo-mutants itself. On disk
-# the synced appends made each mutant's tests several times slower.
-[env]
-TMPDIR = { value = "/tmp", force = true }

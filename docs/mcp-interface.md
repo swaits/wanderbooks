@@ -2076,24 +2076,34 @@ until the owner upgrades them.
   record with nothing new journals nothing. A rename changes the label
   every report prints, nothing else (not destructive, as a party's name).
 - `books.projects { status? }` (books:read) → `{ through, projects: [{ ...project,
-  to_date: { through, revenue, expenses, net, unrecovered_cost } }] }`: every
+  to_date: { through, revenue, expenses, net, margin_pct, unrecovered_cost } }] }`: every
   project (every class), by name ignoring capitals; `to_date` counts every
   posted revenue and expense line tagged to it through today in the
-  company's time zone, closing entries left out; `unrecovered_cost` only
+  company's time zone, closing entries left out; `net` is its
+  contribution before overhead (B-37 item 7: revenue less every cost
+  tagged to it, fixed and variable alike, no company overhead allocated:
+  a segment margin in Garrison's sense, not a variable-cost contribution
+  margin); `margin_pct` is net as a percent of revenue to one place, half
+  to even ("64.0"), null when revenue is zero or less; `unrecovered_cost` only
   for an on-spec project (else null): expenses less revenue, never below
   zero.
 - `books.project { project, start?, end? }` (books:read; omitted dates: the fiscal
   year to date, B-30, as every period report) → `{ project, period: {
-  start, end, revenue, expenses, net, by_account: [{ code, name, type
+  start, end, revenue, expenses, net, margin_pct, by_account: [{ code, name, type
   ("revenue" | "expense"), amount }], by_month: [{ month ("YYYY-MM"),
-  start, end, revenue, expenses, net }] }, to_date (as above, through
-  end), entries: [{ entry_id, date, description, status, project_amount,
+  start, end, revenue, expenses, net, net_to_date }] }, to_date (as above, through
+  end, plus `by_account` to date, as the period's: its revenue accounts,
+  then its direct costs by expense account; always present here, `[]`
+  when nothing tagged nets to anything, and absent from
+  `books.projects`), entries: [{ entry_id, date, description, status, project_amount,
   total, reversal_of?, receipts: [attachment_id] }], documents: [as
   books.list_receipts], decisions: [as books.decisions] }`. The figures
   are `ledger_core::project_figures`'s, the viewer's: only revenue and
   expense lines count (a tagged asset purchase is listed with its entries,
   its project amount zero); `by_month` holds the period's last 240 months
-  at most. `to_date` always counts every tagged line through `end`,
+  at most, each month's `net_to_date` the running net through its end
+  (every tagged line from the first day the books keep: the last month's
+  is `to_date.net`). `to_date` always counts every tagged line through `end`,
   whatever the project's dates: job-to-date beside the period. The on-spec
   `unrecovered_cost` is the "if repaid" figure, never a receivable (ASC
   450-30-25-1). Entries are newest first, drafts included; decisions

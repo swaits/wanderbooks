@@ -89,9 +89,9 @@ pub use reports::{
     AssetRegister, AssetRegisterRow, BalanceSheet, BalanceSheetStatement, ClassProfitAndLoss,
     GeneralLedger, LedgerAccount, LedgerPosting, MemberCapital, MemberEquityColumn,
     MembersEquityStatement, ProfitAndLoss, ProfitAndLossStatement, ProjectFigures, ProjectToDate,
-    StatementLine, TrialBalance, TrialBalanceLine, balance_sheet_as_of, fixed_asset_register,
-    general_ledger, members_equity, profit_and_loss_for_period, project_entries, project_figures,
-    project_to_date, trial_balance_as_of,
+    StatementLine, TrialBalance, TrialBalanceLine, balance_sheet_as_of, contribution_margin_pct,
+    fixed_asset_register, general_ledger, members_equity, profit_and_loss_for_period,
+    project_entries, project_figures, project_to_date, trial_balance_as_of,
 };
 pub use schedules::{
     AmortizationSchedule, Frequency, NewRecurring, NewSchedule, RecurringEntry, RecurringId,

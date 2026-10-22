@@ -569,10 +569,17 @@ fn the_admin_socket_refuses_bad_requests_plainly() {
     assert!(server.close().success());
 }
 
-/// Send `line` to the admin socket as is; the answer's text.
+/// Send `line` to the admin socket as is; the answer's text. Connects
+/// through `SocketPath`, as the server binds: under a long TMPDIR the
+/// socket's path is longer than a socket address holds (SUN_LEN).
 fn raw_admin(sock: &Path, line: &str) -> String {
     use std::io::{Read, Write};
-    let mut s = std::os::unix::net::UnixStream::connect(sock).unwrap();
+    let short = ledger_store::root::SocketPath::new(
+        sock.parent().unwrap(),
+        sock.file_name().unwrap().to_str().unwrap(),
+    )
+    .unwrap();
+    let mut s = std::os::unix::net::UnixStream::connect(short.path()).unwrap();
     s.write_all(line.as_bytes()).unwrap();
     s.shutdown(std::net::Shutdown::Write).unwrap();
     let mut out = String::new();

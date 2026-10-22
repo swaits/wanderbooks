@@ -3435,12 +3435,23 @@ pub struct ToDateOut {
     pub revenue: String,
     /// Tagged expenses, decimal string.
     pub expenses: String,
-    /// Revenue less expenses, decimal string.
+    /// Revenue less expenses, decimal string: its contribution before
+    /// overhead (untagged company costs aren't counted).
     pub net: String,
+    /// Net as a percent of revenue, one place ("64.0"); null without
+    /// revenue (zero or less). Net is revenue less every cost traced to
+    /// the project, fixed and variable alike (a segment margin), not a
+    /// variable-cost contribution margin.
+    pub margin_pct: Option<String>,
     /// On spec only: expenses less revenue, never below zero (what it
     /// would take to be repaid in full; a figure, never a receivable).
     /// Null for any other kind.
     pub unrecovered_cost: Option<String>,
+    /// `books.project` only, always there (`[]` when nothing tagged nets
+    /// to anything): revenue accounts, then expense accounts (its direct
+    /// costs by category), by code, to date. Absent from `books.projects`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by_account: Option<Vec<ProjectAccountOut>>,
 }
 
 /// Parameters for `books.projects`.
@@ -3512,6 +3523,9 @@ pub struct ProjectMonthOut {
     pub expenses: String,
     /// Revenue less expenses, decimal string.
     pub net: String,
+    /// Net to date through its end (every tagged line from the first day
+    /// the books keep): the running net toward or away from break-even.
+    pub net_to_date: String,
 }
 
 /// A project's figures for the period asked.
@@ -3525,8 +3539,12 @@ pub struct ProjectPeriodOut {
     pub revenue: String,
     /// Tagged expenses, decimal string.
     pub expenses: String,
-    /// Revenue less expenses, decimal string.
+    /// Revenue less expenses, decimal string: its contribution before
+    /// overhead.
     pub net: String,
+    /// Net as a percent of revenue, one place; null without revenue
+    /// (as to date's: every traced cost, not only variable ones).
+    pub margin_pct: Option<String>,
     /// Revenue accounts, then expense accounts, by code.
     pub by_account: Vec<ProjectAccountOut>,
     /// By calendar month (the period's last 240 months at most).

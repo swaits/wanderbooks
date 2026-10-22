@@ -250,19 +250,45 @@ pub fn bar_chart(
     series: &[(&str, Color32)],
     height: f32,
 ) -> Option<usize> {
-    bars(ui, groups, series, height, true)
+    bars(ui, groups, series, None, height, true)
 }
 
 /// [`bar_chart`] that opens nothing: hovering shows each group's figures,
 /// and the pointer stays an arrow, since no page shows those figures.
 pub fn bar_chart_view(ui: &mut Ui, groups: &[BarGroup], series: &[(&str, Color32)], height: f32) {
-    bars(ui, groups, series, height, false);
+    bars(ui, groups, series, None, height, false);
 }
+
+/// A line under a [`bar_chart_view`]'s bars: one value per group, marked
+/// at each group's center (e.g. a running net toward break-even), in a
+/// strip of its own with its own scale and a $0 rule, so a running total
+/// many times one group's figures doesn't flatten the bars.
+pub struct Overlay<'a> {
+    pub name: &'a str,
+    pub color: Color32,
+    pub values: &'a [Decimal],
+}
+
+/// [`bar_chart_view`] with an [`Overlay`] line in a strip under the bars
+/// ([`LINE_STRIP`] taller); its value joins each group's hover figures.
+pub fn bar_chart_view_with_line(
+    ui: &mut Ui,
+    groups: &[BarGroup],
+    series: &[(&str, Color32)],
+    line: &Overlay<'_>,
+    height: f32,
+) {
+    bars(ui, groups, series, Some(line), height, false);
+}
+
+/// How much taller an [`Overlay`] makes a bar chart: its strip.
+pub const LINE_STRIP: f32 = 84.0;
 
 fn bars(
     ui: &mut Ui,
     groups: &[BarGroup],
     series: &[(&str, Color32)],
+    line: Option<&Overlay<'_>>,
     height: f32,
     clickable: bool,
 ) -> Option<usize> {
@@ -278,17 +304,32 @@ fn bars(
             );
             ui.add_space(8.0);
         }
+        if let Some(l) = line {
+            let (r, _) = ui.allocate_exact_size(vec2(16.0, 10.0), Sense::hover());
+            ui.painter().line_segment(
+                [r.left_center(), r.right_center()],
+                Stroke::new(2.0, l.color),
+            );
+            ui.painter().circle_filled(r.center(), 3.0, l.color);
+            ui.label(
+                egui::RichText::new(l.name)
+                    .font(theme::regular(12.0))
+                    .color(p.muted),
+            );
+        }
     });
     let sense = if clickable {
         Sense::click()
     } else {
         Sense::hover()
     };
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), height), sense);
+    let strip_h = if line.is_some() { LINE_STRIP } else { 0.0 };
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), height + strip_h), sense);
     let painter = ui.painter_at(rect);
     if groups.is_empty() {
         return None;
     }
+    // The bars' scale is the bars' own; the line has its strip's.
     let all: Vec<f64> = groups
         .iter()
         .flat_map(|g| g.values.iter().map(|v| f(*v)))
@@ -297,7 +338,17 @@ fn bars(
     let hi = all.iter().cloned().fold(0.0f64, f64::max).max(lo + 1.0);
     let ts = ticks(lo, hi, 4);
     let (lo, hi) = (ts[0].min(lo), ts[ts.len() - 1].max(hi));
-    let plot = Rect::from_min_max(rect.min + vec2(52.0, 6.0), rect.max - vec2(4.0, 22.0));
+    let plot = Rect::from_min_max(
+        rect.min + vec2(52.0, 6.0),
+        pos2(rect.max.x - 4.0, rect.min.y + height - 22.0),
+    );
+    let strip = line.map(|_| {
+        Rect::from_min_max(
+            pos2(plot.left(), plot.bottom() + 24.0),
+            pos2(plot.right(), plot.bottom() + strip_h - 4.0),
+        )
+    });
+    let bottom = strip.map_or(plot.bottom(), |s| s.bottom());
     let y = |v: f64| plot.bottom() - ((v - lo) / (hi - lo)) as f32 * plot.height();
     for t in &ts {
         let yy = y(*t);
@@ -319,13 +370,57 @@ fn bars(
     let mut clicked = None;
     let hover = resp.hover_pos();
     let mut drawn_year: Option<i32> = None;
+    let mut tip: Option<(egui::Pos2, String, String)> = None;
+    // The line goes over the hover band and under the tooltip, on its
+    // own scale with room above and below (its markers never sit on the
+    // strip's edge), and a dashed $0: break-even.
+    let mut overlay = Vec::new();
+    if let (Some(l), Some(s)) = (line, strip) {
+        let vals: Vec<f64> = l.values.iter().take(groups.len()).map(|v| f(*v)).collect();
+        let lo = vals.iter().cloned().fold(0.0f64, f64::min);
+        let hi = vals.iter().cloned().fold(0.0f64, f64::max).max(lo + 1.0);
+        let pad = (hi - lo) * 0.12;
+        let (lo, hi) = (lo - pad, hi + pad);
+        let sy = |v: f64| s.bottom() - ((v - lo) / (hi - lo)) as f32 * s.height();
+        let zero = sy(0.0);
+        overlay.extend(egui::Shape::dashed_line(
+            &[pos2(s.left(), zero), pos2(s.right(), zero)],
+            Stroke::new(1.0, p.faint),
+            4.0,
+            3.0,
+        ));
+        let label = |v: f64, at: f32| {
+            let g = painter.layout_no_wrap(money_label(v), theme::regular(11.0), p.faint);
+            let r = Align2::RIGHT_CENTER.anchor_size(pos2(s.left() - 8.0, at), g.size());
+            egui::Shape::galley(r.min, g, p.faint)
+        };
+        overlay.push(label(0.0, zero));
+        let (vmin, vmax) = (
+            vals.iter().cloned().fold(0.0f64, f64::min),
+            vals.iter().cloned().fold(0.0f64, f64::max),
+        );
+        for v in [vmax, vmin] {
+            if v != 0.0 && (sy(v) - zero).abs() >= 12.0 {
+                overlay.push(label(v, sy(v)));
+            }
+        }
+        let pts: Vec<egui::Pos2> = vals
+            .iter()
+            .enumerate()
+            .map(|(gi, v)| pos2(plot.left() + gw * (gi as f32 + 0.5), sy(*v)))
+            .collect();
+        overlay.push(egui::Shape::line(pts.clone(), Stroke::new(2.0, l.color)));
+        for pt in pts {
+            overlay.push(egui::Shape::circle_filled(pt, 3.0, l.color));
+        }
+    }
     for (gi, g) in groups.iter().enumerate() {
         let full = match g.year {
             Some(y) => format!("{} {:02}", g.label, y.rem_euclid(100)),
             None => g.label.clone(),
         };
         let gx = plot.left() + gw * gi as f32;
-        let grect = Rect::from_min_max(pos2(gx, plot.top()), pos2(gx + gw, plot.bottom()));
+        let grect = Rect::from_min_max(pos2(gx, plot.top()), pos2(gx + gw, bottom));
         let hovered = hover.is_some_and(|h| grect.contains(h));
         if hovered {
             painter.rect_filled(grect, CornerRadius::same(6), p.hover);
@@ -358,7 +453,7 @@ fn bars(
             let new_year = g.year.is_some() && g.year != drawn_year;
             drawn_year = g.year.or(drawn_year);
             painter.text(
-                pos2(gx + gw / 2.0, plot.bottom() + 6.0),
+                pos2(gx + gw / 2.0, bottom + 6.0),
                 Align2::CENTER_TOP,
                 if new_year { &full } else { &g.label },
                 theme::regular(11.0),
@@ -366,22 +461,17 @@ fn bars(
             );
         }
         if hovered {
-            let lines: Vec<String> = series
+            let mut lines: Vec<String> = series
                 .iter()
                 .zip(&g.values)
                 .map(|((name, _), v)| format!("{name}: {}", fmt::dollars(*v)))
                 .collect();
-            tooltip(
-                &painter,
-                pos2(gx + gw / 2.0, plot.top()),
-                &full,
-                &lines.join("\n"),
-                p.surface,
-                p.border,
-                p.text,
-                p.muted,
-                rect,
-            );
+            if let Some(l) = line
+                && let Some(v) = l.values.get(gi)
+            {
+                lines.push(format!("{}: {}", l.name, fmt::dollars(*v)));
+            }
+            tip = Some((pos2(gx + gw / 2.0, plot.top()), full, lines.join("\n")));
             if clickable {
                 if resp.clicked() {
                     clicked = Some(gi);
@@ -389,6 +479,12 @@ fn bars(
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }
         }
+    }
+    painter.extend(overlay);
+    if let Some((at, title, body)) = tip {
+        tooltip(
+            &painter, at, &title, &body, p.surface, p.border, p.text, p.muted, rect,
+        );
     }
     clicked
 }

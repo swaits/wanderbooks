@@ -22,18 +22,36 @@ use std::path::{Path, PathBuf};
 const SSN: &str = "620-37-1111";
 
 /// This test binary's downloads folder: its own, never the human's.
+static DOWNLOADS: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+unsafe extern "C" {
+    /// The C library's: runs `f` as the process exits, which libtest's
+    /// main does pass or fail (it returns, or calls `exit`).
+    safe fn atexit(f: extern "C" fn()) -> std::ffi::c_int;
+}
+
+/// Removes the downloads folder as the test binary exits: its files hold
+/// (made-up) TINs, and every test's dir is removed when it ends (the
+/// justfile's sweep-test-tmp catches a run killed first: it is `wb-*`).
+extern "C" fn remove_downloads() {
+    if let Some(d) = DOWNLOADS.get() {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
+
 fn downloads() -> PathBuf {
-    static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-    DIR.get_or_init(|| {
-        let d = tempfile::Builder::new()
-            .prefix("wb-gui-downloads-")
-            .tempdir()
-            .unwrap()
-            .keep();
-        ledger_gui::export::set_downloads_dir(d.clone());
-        d
-    })
-    .clone()
+    DOWNLOADS
+        .get_or_init(|| {
+            let d = tempfile::Builder::new()
+                .prefix("wb-gui-downloads-")
+                .tempdir()
+                .unwrap()
+                .keep();
+            assert_eq!(atexit(remove_downloads), 0, "atexit refused");
+            ledger_gui::export::set_downloads_dir(d.clone());
+            d
+        })
+        .clone()
 }
 
 /// A fresh folder in the downloads folder for one test (tests run side by

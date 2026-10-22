@@ -328,7 +328,7 @@ pub fn balance_sheet(ledger: &Ledger) -> Result<BalanceSheet, LedgerError> {
 }
 
 /// One account's line on a financial statement.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StatementLine {
     /// Account code, e.g. `"6000"`.
     pub code: String,
@@ -470,6 +470,18 @@ pub fn profit_and_loss_for_period(
     end: NaiveDate,
     class_id: Option<ClassId>,
 ) -> Result<ProfitAndLossStatement, LedgerError> {
+    Ok(profit_and_loss_counted(ledger, start, end, class_id)?.0)
+}
+
+/// [`profit_and_loss_for_period`], and with a class how many revenue and
+/// expense lines it counted, (revenue, expense): lines netting to zero
+/// leave no statement line but are counted (with no class: (0, 0)).
+fn profit_and_loss_counted(
+    ledger: &Ledger,
+    start: NaiveDate,
+    end: NaiveDate,
+    class_id: Option<ClassId>,
+) -> Result<(ProfitAndLossStatement, (usize, usize)), LedgerError> {
     if end < start {
         return Err(LedgerError::InvalidDateRange {
             start: start.to_string(),
@@ -477,11 +489,21 @@ pub fn profit_and_loss_for_period(
         });
     }
     let closings = ledger.closing_entry_ids();
+    let counts = std::cell::Cell::new((0usize, 0usize));
     let lines = statement_lines(ledger, &|entry, line| {
-        entry.date() >= start
+        let counted = entry.date() >= start
             && entry.date() <= end
             && !closings.contains(&entry.id())
-            && class_id.is_none_or(|c| line.class_id == Some(c))
+            && class_id.is_none_or(|c| line.class_id == Some(c));
+        if counted && class_id.is_some() {
+            let (r, x) = counts.get();
+            match ledger.chart().get(line.account).map(|a| a.account_type) {
+                Some(AccountType::Revenue) => counts.set((r + 1, x)),
+                Some(AccountType::Expense) => counts.set((r, x + 1)),
+                _ => {}
+            }
+        }
+        counted
     })?;
     let mut revenue = Vec::new();
     let mut expenses = Vec::new();
@@ -494,14 +516,17 @@ pub fn profit_and_loss_for_period(
     }
     let total_revenue = revenue.iter().map(|l| l.amount).sum();
     let total_expenses = expenses.iter().map(|l| l.amount).sum();
-    Ok(ProfitAndLossStatement {
-        start,
-        end,
-        revenue,
-        expenses,
-        total_revenue,
-        total_expenses,
-    })
+    Ok((
+        ProfitAndLossStatement {
+            start,
+            end,
+            revenue,
+            expenses,
+            total_revenue,
+            total_expenses,
+        },
+        counts.get(),
+    ))
 }
 
 /// A project's figures (rules.md B-37 item 3): the period's statement and
@@ -512,8 +537,25 @@ pub struct ProjectFigures {
     pub period: ProfitAndLossStatement,
     /// The period by calendar month: its last [`PROJECT_MONTHS`] at most.
     pub months: Vec<crate::analysis::IntervalPnl>,
+    /// Each month's net to date: every tagged line from the first day
+    /// the books keep through that month's last day in the period (the
+    /// running net the months move toward or away from break-even; the
+    /// last is `to_date`'s net). One per month in `months`.
+    pub months_net_to_date: Vec<Decimal>,
+    /// How many posted revenue and expense lines tagged to it fall in
+    /// the period (closing entries left out): whether anything is tagged
+    /// there, even lines that net to zero (a cost and its reversal).
+    pub period_lines: usize,
     /// Every tagged line through the period's end.
     pub to_date: ProjectToDate,
+}
+
+impl ProjectFigures {
+    /// The period's contribution margin: [`contribution_margin_pct`] of
+    /// its net and revenue.
+    pub fn period_margin_pct(&self) -> Option<Decimal> {
+        contribution_margin_pct(self.period.net_income(), self.period.total_revenue)
+    }
 }
 
 /// A project's figures to date: every posted revenue and expense line
@@ -529,13 +571,67 @@ pub struct ProjectToDate {
     /// On spec only: expenses less revenue, never below zero (the "if
     /// repaid" figure, never a receivable). `None` for any other kind.
     pub unrecovered_cost: Option<Decimal>,
+    /// Its tagged revenue by account, by code.
+    pub revenue_by_account: Vec<StatementLine>,
+    /// Its tagged expenses by account, by code: its direct costs by
+    /// category (an account credited above its cost, a reimbursement,
+    /// is negative).
+    pub expenses_by_account: Vec<StatementLine>,
+    /// How many posted revenue lines are tagged to it through `through`
+    /// (closing entries left out), even ones netting to zero: an account
+    /// whose lines cancel out isn't in `revenue_by_account`.
+    pub revenue_lines: usize,
+    /// How many posted expense lines, likewise (a cost and its reversal,
+    /// or a cost reimbursed exactly, are two lines and no account).
+    pub expenses_lines: usize,
 }
 
 impl ProjectToDate {
-    /// Revenue less expenses.
+    /// Revenue less expenses: the project's contribution before overhead
+    /// (rules.md B-37 item 7), since only its own tagged lines count.
     pub fn net(&self) -> Decimal {
         self.revenue - self.expenses
     }
+
+    /// Its contribution margin to date: [`contribution_margin_pct`] of
+    /// its net and revenue.
+    pub fn margin_pct(&self) -> Option<Decimal> {
+        contribution_margin_pct(self.net(), self.revenue)
+    }
+
+    /// Whether any revenue or expense line is tagged to it, netting to
+    /// zero or not.
+    pub fn any_tagged(&self) -> bool {
+        self.revenue_lines + self.expenses_lines > 0
+    }
+}
+
+/// Contribution as a percent of revenue, to one place (half to even), or
+/// `None` without revenue to divide by (rules.md B-37 item 7).
+///
+/// ```text
+/// GOAL: one margin the tools and the viewer print alike.
+/// SOURCE: docs/spec/rules.md B-37 item 7 (revenue less the costs traced
+///         to the project, fixed and variable alike: Garrison's segment
+///         margin, as a ratio; not Horngren's variable-cost contribution
+///         margin; a presentation choice, not GAAP).
+/// INVARIANTS:
+///   1. None when revenue <= 0: a margin on no (or negative) revenue
+///      means nothing.
+///   2. Otherwise contribution / revenue * 100, rounded to one place,
+///      half to even, always printed with that place ("100.0").
+///   3. NEVER panics: None when the quotient can't be represented.
+/// ```
+pub fn contribution_margin_pct(contribution: Decimal, revenue: Decimal) -> Option<Decimal> {
+    if revenue <= Decimal::ZERO {
+        return None;
+    }
+    let mut x = contribution
+        .checked_div(revenue)?
+        .checked_mul(Decimal::ONE_HUNDRED)?
+        .round_dp_with_strategy(1, rust_decimal::RoundingStrategy::MidpointNearestEven);
+    x.rescale(1);
+    Some(x)
 }
 
 /// The most months [`ProjectFigures::months`] holds: the period's last.
@@ -555,6 +651,9 @@ pub const PROJECT_MONTHS: u32 = 240;
 ///      months are its last PROJECT_MONTHS.
 ///   3. to_date counts every tagged line through `end`, from the first
 ///      day the books keep, whatever the project's own dates.
+///   4. months_net_to_date[i] is the net to date through months[i].end:
+///      the net before the first month plus the months' nets so far; the
+///      last equals to_date's net.
 /// SCENARIOS:
 ///   1. IF the class doesn't exist: SHOULD refuse (UnknownClass).
 ///   2. IF `start` is after `end`: SHOULD refuse.
@@ -568,7 +667,7 @@ pub fn project_figures(
     if ledger.get_class(id).is_none() {
         return Err(LedgerError::UnknownClass(id));
     }
-    let period = profit_and_loss_for_period(ledger, start, end, Some(id))?;
+    let (period, (r, x)) = profit_and_loss_counted(ledger, start, end, Some(id))?;
     // The last PROJECT_MONTHS months at most: a span across the calendar
     // is a hundred thousand months, each a statement.
     let months_from = chrono::Datelike::with_day(&end, 1)
@@ -582,9 +681,25 @@ pub fn project_figures(
         Some(id),
     )?;
     let to_date = project_to_date(ledger, id, end)?;
+    // The net before the first month: to date less the months, which run
+    // through `end` too (one scan fewer than a to date through the day
+    // before them).
+    let mut running = months
+        .iter()
+        .try_fold(to_date.net(), |t, m| t.checked_sub(m.net()))
+        .ok_or(LedgerError::AmountOutOfRange)?;
+    let mut months_net_to_date = Vec::with_capacity(months.len());
+    for m in &months {
+        running = running
+            .checked_add(m.net())
+            .ok_or(LedgerError::AmountOutOfRange)?;
+        months_net_to_date.push(running);
+    }
     Ok(ProjectFigures {
         period,
         months,
+        months_net_to_date,
+        period_lines: r + x,
         to_date,
     })
 }
@@ -601,7 +716,8 @@ pub fn project_to_date(
         .project_facts(id)
         .ok_or(LedgerError::UnknownClass(id))?;
     let start = crate::calendar::FIRST_DAY.min(through);
-    let pl = profit_and_loss_for_period(ledger, start, through, Some(id))?;
+    let (pl, (revenue_lines, expenses_lines)) =
+        profit_and_loss_counted(ledger, start, through, Some(id))?;
     let unrecovered_cost = match facts.kind {
         Some(crate::classes::ProjectKind::OnSpec) => Some(
             crate::kernel::unrecovered_cost(pl.total_revenue, pl.total_expenses)
@@ -614,6 +730,10 @@ pub fn project_to_date(
         revenue: pl.total_revenue,
         expenses: pl.total_expenses,
         unrecovered_cost,
+        revenue_by_account: pl.revenue,
+        expenses_by_account: pl.expenses,
+        revenue_lines,
+        expenses_lines,
     })
 }
 

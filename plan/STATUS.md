@@ -1,6 +1,6 @@
-# STATUS — 2026-10-21: "Served" P0, P1 and P2 live; P3 built and landed, its cutover pending
+# STATUS — 2026-10-22: "Served" P0 to P3 live, with Projects
 
-## Now: Served (plan/served.md), P0, P1 and P2 live; P3 on main
+## Now: Served (plan/served.md), P0 to P3 live; P4 next
 
 The 2026-10-16 audit of the first company's books (62 verified findings,
 20 engine defects) and the design discussion that followed produced
@@ -88,8 +88,7 @@ folder's `legacy/`. Agents connect with `wanderbooks connect`, the viewer is
 books data. The before-check found defect 21 again (the IIF ignores
 `as_of`).
 
-**P3 (engine correctness): built and landed on `main`, the cutover
-pending.** Every defect group of plan P3 is on `main` (`2c5b5a7`), each
+**P3 (engine correctness): live since 2026-10-22.** Every defect group of plan P3 is on `main` (`2c5b5a7`), each
 built from its brief, reviewed until a round came back clean, and with
 its regression tests written as bookspec examples (51 in
 `bookspec/examples/`, every one checked by `cargo test`): the odd cent
@@ -142,16 +141,41 @@ report's notes were cut to one line (the fixed asset register's lost its
 explanation of the tax columns; they wrap now), and the Accounts page
 listed accounts in the order they were added, not by code.
 
-**Before P3 is live (the lead):** the cutover on the first company's
-books: reinstall from `main`, the format upgrade with the owner's go-ahead
-(D-39), `books.verify`, the P3 change log adjudicated against the P2
-goldens (cash flow, the odd cent's true-up, depreciation by days), the
-books fully categorized and then `policy.require_tax_category = refuse`
-(P3, "Settled in design"), and the D-40/D-41 records. The installed
-server still lacks P3's tools (`books.add_instrument` and the rest) until
-then.
+**The P3 cutover (2026-10-22).** The first company's books were reinstalled
+from `main` (`3eda95e`: P3, its four reviews, Projects with its snapshot,
+and the keyring fix). Before the owner's go-ahead, every report was compared
+with the P2 goldens at four dates: the statements, ledger, journal,
+members' equity, K-1 worksheet and tax summary identical; the cash flow,
+asset register, IIF, 1099 worksheet, README and the new tax-basis K-1 file
+different, each difference adjudicated twice in the private change log
+with every changed figure recomputed, none unexplained. The owner ran
+`wanderbooks books upgrade` (a verified backup first); after it the
+packages were byte-identical to before it, `books.verify` ok, both backups
+whole by a restore preview. Then the P3 facts were recorded: the devices'
+values and §723 bases with the traditional method (D-41), every vendor's
+1099 decision (D-40), the payment methods with every member- and
+card-paid entry tagged, the creditors of 2050 and 2100, and
+`policy.require_tax_category = refuse`.
+
+**Projects (2026-10-22, live with P3).** A project is a class with facts
+(B-37), four tools, and a project page in the viewer opening on a
+snapshot: revenue, direct costs, contribution before overhead and its
+margin, in the black or red, the on-spec cost unrecovered, by month with
+the net to date, and costs by category. The sidebar measures its footer.
+
+**The keyring (2026-10-22).** One keyring item per token, read back when
+made; the bridge says a locked keyring instead of "make a token"; `token
+check` tells a kept token live, revoked, missing or duplicated.
 
 **Still open after P3 (each for the phase named, or the lead):**
+- Invoices and bills take no project: a client project's invoiced revenue
+  can't count toward it (a format-gated field on `invoice.created` and
+  `bill.created`; the owner to decide).
+- Raised by the cutover review (private change log, "Open points"): the
+  IIF leaves its CLASS field empty although entries carry projects; a
+  state filing fee is classed as cash paid to suppliers where ASC
+  230-10-45-17(c) suggests other operating payments; ties in the per-entry
+  member split all go to the first member.
 - The viewer recomputes a long-life asset's whole schedule every frame
   (`ledger-gui` `pages/assets.rs` `schedule`, called from the asset
   page's draw; defect 22's note: slow, never wrong).

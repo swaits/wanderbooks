@@ -1931,6 +1931,13 @@ pub struct EntryLineOut {
     pub side: String,
     /// Amount, decimal string.
     pub amount: String,
+    /// The project (class) id the line is tagged with, if any (books.add_line
+    /// class, an invoice's or bill's line class).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub class_id: Option<u32>,
+    /// That project's name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
 }
 
 /// Result of `books.get_entry`: the full entry with lines and receipts.
@@ -3063,6 +3070,15 @@ pub struct DocumentLineParam {
     pub description: String,
     /// Line amount, decimal string.
     pub amount: String,
+    /// The one project (name or id, as books.projects lists them) the
+    /// line's revenue (an invoice's) or cost (a bill's) belongs to, or
+    /// none. Several projects are several lines, each with its own amount,
+    /// never a percentage; a shared cost names none (the allocation
+    /// convention's own entries reach the projects). The posted
+    /// entry's revenue or expense line for it carries the tag; the
+    /// receivable or payable line never does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class: Option<String>,
 }
 
 /// Parameters for `books.create_invoice` / `books.create_bill`.
@@ -3091,6 +3107,11 @@ pub struct CreateDocumentOut {
     /// (Revenue 4000, General Expenses 6999) has no tax category yet.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// One per finished or abandoned project a line names, as
+    /// `books.add_line`'s `note`, and on an invoice one per on-spec
+    /// project a line names (is there now an agreement?): tagged anyway.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }
 
 /// Parameters for `books.receive_payment` / `books.pay_bill`.

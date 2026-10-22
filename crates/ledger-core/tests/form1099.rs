@@ -154,6 +154,7 @@ fn books() -> Ledger {
             vec![DocumentLine {
                 description: "Design work".into(),
                 amount: dec("1500"),
+                class_id: None,
             }],
         )
         .unwrap();

@@ -10,6 +10,7 @@ use crate::theme::{self, pal};
 use crate::widgets;
 use egui::{CornerRadius, Margin, RichText, Stroke, Ui, vec2};
 use egui_phosphor::regular as icon;
+use ledger_core::arap::DocumentLine;
 use ledger_core::{EntryStatus, Side};
 use ledger_store::Attachment;
 use rust_decimal::Decimal;
@@ -231,26 +232,18 @@ pub fn detail(ui: &mut Ui, b: &Books, e: &EntryInfo, shell: &mut Shell<'_>) {
                             ui.allocate_ui(vec2(w, 22.0), |ui| {
                                 ui.set_width(w);
                                 ui.horizontal(|ui| {
-                                    let r = widgets::link_truncated(
-                                        ui,
-                                        RichText::new(b.account_label(line.account))
-                                            .font(theme::regular(13.5)),
-                                    );
+                                    let tag = project_tag(line.class_id, &class_names);
+                                    let (r, project) = name_and_tag(ui, tag.as_ref(), |ui| {
+                                        widgets::link_truncated(
+                                            ui,
+                                            RichText::new(b.account_label(line.account))
+                                                .font(theme::regular(13.5)),
+                                        )
+                                    });
                                     if r.clicked() {
                                         shell.go(Route::Account(line.account));
                                     }
-                                    if let Some((cid, c)) = line
-                                        .class_id
-                                        .and_then(|c| class_names.get(&c).map(|n| (c, n)))
-                                        && widgets::link(
-                                            ui,
-                                            RichText::new(format!("{} {c}", icon::TAG))
-                                                .font(theme::regular(11.5))
-                                                .color(p.muted),
-                                        )
-                                        .on_hover_text("Open this project")
-                                        .clicked()
-                                    {
+                                    if let Some(cid) = project {
                                         shell.go(Route::Project(cid));
                                     }
                                     if let (Some(cur), Some(fa)) =
@@ -307,6 +300,14 @@ pub fn detail(ui: &mut Ui, b: &Books, e: &EntryInfo, shell: &mut Shell<'_>) {
                     });
                 });
             ui.add_space(18.0);
+
+            // The invoice or bill it records: its lines as the document
+            // gives them, each project a link (rules.md B-37 item 8).
+            if let Some(doc) = document_of(b, e.id) {
+                section(ui, &doc.title);
+                document_lines(ui, &doc, &class_names, total_w, amt_w, shell);
+                ui.add_space(18.0);
+            }
 
             // Receipts and documents: filed on it, linked to it, or linked
             // to the invoice, bill, or payroll run it records; a withdrawn
@@ -404,6 +405,144 @@ pub fn detail(ui: &mut Ui, b: &Books, e: &EntryInfo, shell: &mut Shell<'_>) {
                 ui.add_space(4.0);
             }
         });
+}
+
+/// The invoice or bill an entry records: its name and due date, and its
+/// lines.
+pub struct DocumentOf<'a> {
+    /// "Invoice 3, due Oct 1, 2026".
+    pub title: String,
+    /// Its lines, as journaled.
+    pub lines: &'a [DocumentLine],
+}
+
+/// The invoice or bill whose entry is `entry`, if it records one.
+pub fn document_of(b: &Books, entry: ledger_core::EntryId) -> Option<DocumentOf<'_>> {
+    let due = |what: &str, id: u64, due: chrono::NaiveDate| {
+        format!("{what} {id}, due {}", fmt::date(due))
+    };
+    b.ledger
+        .invoices()
+        .into_iter()
+        .find(|i| i.entry_id == entry)
+        .map(|i| DocumentOf {
+            title: due("Invoice", i.id, i.due_date),
+            lines: &i.lines,
+        })
+        .or_else(|| {
+            b.ledger
+                .bills()
+                .into_iter()
+                .find(|x| x.entry_id == entry)
+                .map(|x| DocumentOf {
+                    title: due("Bill", x.id, x.due_date),
+                    lines: &x.lines,
+                })
+        })
+}
+
+/// A document's lines: each description, its project (a link that opens
+/// it), and its amount.
+fn document_lines(
+    ui: &mut Ui,
+    doc: &DocumentOf<'_>,
+    class_names: &std::collections::HashMap<u32, String>,
+    total_w: f32,
+    amt_w: f32,
+    shell: &mut Shell<'_>,
+) {
+    let p = pal(ui.ctx());
+    egui::Frame::new()
+        .stroke(Stroke::new(1.0, p.border))
+        .corner_radius(CornerRadius::same(10))
+        .inner_margin(Margin::symmetric(12, 8))
+        .show(ui, |ui| {
+            ui.set_width(total_w - 26.0);
+            ui.horizontal(|ui| {
+                let w = ui.available_width() - amt_w - 8.0;
+                let (r, _) = ui.allocate_exact_size(vec2(w, 18.0), egui::Sense::hover());
+                ui.painter().text(
+                    r.left_center(),
+                    egui::Align2::LEFT_CENTER,
+                    "Line",
+                    theme::regular(12.0),
+                    p.muted,
+                );
+                widgets::amount_cell(ui, "Amount", amt_w, p.muted, false, false);
+            });
+            for line in doc.lines {
+                ui.horizontal(|ui| {
+                    let w = ui.available_width() - amt_w - 8.0;
+                    ui.allocate_ui(vec2(w, 22.0), |ui| {
+                        ui.set_width(w);
+                        ui.horizontal(|ui| {
+                            let tag = project_tag(line.class_id, class_names);
+                            let (_, project) = name_and_tag(ui, tag.as_ref(), |ui| {
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(&line.description).font(theme::regular(13.5)),
+                                    )
+                                    .truncate(),
+                                )
+                            });
+                            if let Some(cid) = project {
+                                shell.go(Route::Project(cid));
+                            }
+                        });
+                    });
+                    widgets::amount_cell(ui, &fmt::money(line.amount), amt_w, p.text, false, false);
+                });
+            }
+        });
+}
+
+/// A line's project tag: its id and the text it shows.
+fn project_tag(
+    class: Option<u32>,
+    class_names: &std::collections::HashMap<u32, String>,
+) -> Option<(u32, String)> {
+    let c = class?;
+    class_names
+        .get(&c)
+        .map(|n| (c, format!("{} {n}", icon::TAG)))
+}
+
+/// `name` (a truncating label), then `tag` as a link that opens its
+/// project: the project, when clicked. The tag's width (at most half the
+/// cell, cut with an ellipsis past it) is kept back from the name, so a
+/// tagged line never grows past its cell.
+fn name_and_tag(
+    ui: &mut Ui,
+    tag: Option<&(u32, String)>,
+    name: impl FnOnce(&mut Ui) -> egui::Response,
+) -> (egui::Response, Option<u32>) {
+    let p = pal(ui.ctx());
+    let avail = ui.available_width();
+    let gap = ui.spacing().item_spacing.x;
+    let tag_w = tag.map_or(0.0, |(_, t)| {
+        ui.painter()
+            .layout_no_wrap(t.clone(), theme::regular(11.5), p.muted)
+            .size()
+            .x
+            .min(avail / 2.0)
+    });
+    let room = if tag.is_some() { tag_w + gap } else { 0.0 };
+    let r = ui
+        .allocate_ui(vec2((avail - room).max(0.0), 22.0), name)
+        .inner;
+    let go = tag.and_then(|(cid, t)| {
+        ui.allocate_ui(vec2(tag_w, 22.0), |ui| {
+            widgets::link_truncated(
+                ui,
+                RichText::new(t).font(theme::regular(11.5)).color(p.muted),
+            )
+        })
+        .inner
+        .on_hover_text("Open this project")
+        .clicked()
+        .then_some(*cid)
+    });
+    (r, go)
 }
 
 pub fn section(ui: &mut Ui, title: &str) {
@@ -588,7 +727,66 @@ pub fn share_text(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{Build, d, find, old_books, render};
+    use crate::test_support::{Build, d, find, old_books, render, render_at};
+
+    /// A tagged line keeps its project tag inside its cell, in a narrow
+    /// pane too: the name is cut to leave the tag room, so the amounts
+    /// stay in their columns (an invoice's revenue line and its document
+    /// line, each tagged; rules.md B-37 item 8).
+    #[test]
+    fn a_tagged_line_keeps_its_amounts_in_their_column() {
+        use ledger_core::arap::DocumentLine;
+        let mut b = Build::new("entry-tag-room");
+        let project =
+            b.s.add_project(
+                "A project with a rather long name indeed",
+                &ledger_core::ProjectFacts::default(),
+            )
+            .unwrap();
+        b.s.add_account(
+            "4000",
+            "Revenue from design services and consulting",
+            ledger_core::AccountType::Revenue,
+            None,
+            false,
+        )
+        .unwrap();
+        let c = b.s.add_customer("Cedar").unwrap();
+        let inv =
+            b.s.create_invoice(
+                c,
+                d(2026, 3, 2),
+                d(2026, 4, 1),
+                vec![DocumentLine {
+                    description: "Brand identity, website and a long tail of revisions".into(),
+                    amount: Decimal::new(123_456, 2),
+                    class_id: Some(project),
+                }],
+            )
+            .unwrap();
+        let entry = b.s.ledger().get_invoice(inv).unwrap().entry_id;
+        let (_dir, books) = b.books();
+        let texts = render_at(books, Route::Entry(entry), 1000.0);
+        // The amount: the receivable's debit, the revenue's credit, both
+        // totals, the document line's; every one ends at a column's edge,
+        // the credits at one, the debits at another.
+        let pane = find(&texts, "LINES").pos.x;
+        let mut edges: Vec<i32> = texts
+            .iter()
+            .filter(|t| t.text == fmt::money(Decimal::new(123_456, 2)) && t.pos.x > pane)
+            .map(|t| (t.pos.x + t.width).round() as i32)
+            .collect();
+        assert_eq!(edges.len(), 5, "{edges:?}");
+        edges.sort_unstable();
+        edges.dedup();
+        assert_eq!(
+            edges.len(),
+            2,
+            "the debit column and the credit column: {edges:?}"
+        );
+        let tag = format!("{} A project with a rather long name indeed", icon::TAG);
+        assert_eq!(texts.iter().filter(|t| t.text == tag).count(), 2);
+    }
 
     /// An entry's totals line: "Balanced" when its debits equal its
     /// credits, "Out of balance" when they don't, "Too large to total"

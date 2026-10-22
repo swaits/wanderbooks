@@ -30,6 +30,10 @@
 //!      control or format characters, no line breaks), cut on a
 //!      character; a company with no name (empty, or the settings'
 //!      default name) is "a new company" (plan/served.md 4.1).
+//!   6. A section says an invoice's or bill's lines take a project only
+//!      for books that declared the journal feature
+//!      `document_line_projects`; for the rest, that they wait for their
+//!      format upgrade (rules.md B-27, B-37 item 8).
 //! ```
 
 use crate::settings::Settings;
@@ -119,12 +123,22 @@ pub fn title(markdown: &str) -> &str {
 /// reading order.
 pub const ALL: &str = "all";
 
-/// The section `id` (or [`ALL`]), rendered for these settings and the
-/// books' base currency (None: no such section).
-pub fn section(id: &str, settings: &Settings, currency: &str) -> Option<String> {
+/// The section `id` (or [`ALL`]), rendered for these settings, the
+/// books' base currency, and whether they declared the journal feature
+/// `document_line_projects` (None: no such section).
+pub fn section(
+    id: &str,
+    settings: &Settings,
+    currency: &str,
+    document_line_projects: bool,
+) -> Option<String> {
     let render = |md: &str| {
         md.replace("{evidence_rule}", &evidence_rule(settings, currency))
             .replace("{period_rule}", &period_rule())
+            .replace(
+                "{document_projects}",
+                document_projects_rule(document_line_projects),
+            )
     };
     if id == ALL {
         let parts: Vec<String> = SECTIONS.iter().map(|(_, md)| render(md)).collect();
@@ -145,6 +159,17 @@ pub fn period_rule() -> String {
         PeriodKind::Statement.describe(),
         PeriodKind::AsOf.describe()
     )
+}
+
+/// How an invoice's or bill's lines reach a project (rules.md B-37 item
+/// 8), for books that declared the journal feature
+/// `document_line_projects` or not yet (INVARIANT 6).
+pub fn document_projects_rule(declared: bool) -> &'static str {
+    if declared {
+        "Tag an invoice's or bill's lines the same way (books.create_invoice and books.create_bill take class on each line): its revenue or cost counts toward the project, and it stays an invoice or bill in the agings; its payments take no project. Each line names one project or none: a document spanning several projects is one line per project, each with its own amount, never a percentage; a cost truly shared among projects names none on the document and reaches them only as entries of their own under the company's monthly allocation convention, when books.conventions has one. An invoice line naming an on-spec project returns a note: ask the human whether there is now an agreement, since a hoped-for payment is no receivable."
+    } else {
+        "An invoice or a bill takes no project in these books until their format upgrade (books.start's format_upgrade): link its document to the project, and when its lines must count, book it as a hand-built entry instead (books.draft_entry, books.add_line class), which then is no invoice or bill in the agings: ask the human which matters more."
+    }
 }
 
 /// The receipt rule in force (INVARIANT 2).
@@ -478,22 +503,65 @@ mod tests {
             assert!(ids.insert(*id), "duplicate section {id}");
             assert!(md.starts_with("# "), "{id} has no title");
             assert!(!title(md).is_empty());
-            let text = section(id, &s, "USD").unwrap();
+            let text = section(id, &s, "USD", true).unwrap();
             assert!(!text.contains("{evidence_rule}"), "{id}");
             assert!(!text.contains("{period_rule}"), "{id}");
+            assert!(!text.contains("{document_projects}"), "{id}");
         }
         // The default period, in the descriptions' own words (B-30).
         assert!(
-            section("tracing-figures", &s, "USD")
+            section("tracing-figures", &s, "USD", true)
                 .unwrap()
                 .contains(ledger_core::calendar::PeriodKind::Statement.describe())
         );
         assert!(
-            section("evidence-and-receipts", &s, "USD")
+            section("evidence-and-receipts", &s, "USD", true)
                 .unwrap()
                 .contains("every entry needs at least one receipt")
         );
-        assert!(section("nope", &s, "USD").is_none());
+        assert!(section("nope", &s, "USD", true).is_none());
+    }
+
+    /// INVARIANT 6: the projects section tells books that declared
+    /// document_line_projects to tag an invoice's or bill's lines, and the
+    /// rest that it waits for their format upgrade; no other section
+    /// changes.
+    #[test]
+    fn document_projects_follow_the_books_feature() {
+        let s = settings("Co", Decimal::ZERO);
+        let with = section("projects", &s, "USD", true).unwrap();
+        let without = section("projects", &s, "USD", false).unwrap();
+        assert!(
+            with.contains("books.create_invoice and books.create_bill take class on each line")
+        );
+        assert!(!with.contains("takes no project"));
+        // The owner's decision (B-37 item 8, D-43): one project or none a
+        // line, no percentage split, a shared cost by the allocation
+        // convention.
+        assert!(with.contains("Each line names one project or none"));
+        assert!(with.contains("never a percentage"));
+        assert!(with.contains("monthly allocation convention, when books.conventions has one"));
+        assert!(with.contains("ask the human whether there is now an agreement"));
+        // No sentence may let the agent split a shared cost across a
+        // document's lines (D-43).
+        for text in [&with, &without] {
+            assert!(!text.contains("split a shared cost across lines"), "{text}");
+            assert!(text.contains("is never split on an invoice, a bill or an entry"));
+            assert!(
+                text.contains(
+                    "when books.conventions has none, leave it untagged and ask the human"
+                )
+            );
+        }
+        assert!(without.contains("takes no project in these books until their format upgrade"));
+        assert!(!without.contains("take class on each line"));
+        for (id, _) in SECTIONS.iter().filter(|(id, _)| *id != "projects") {
+            assert_eq!(
+                section(id, &s, "USD", true),
+                section(id, &s, "USD", false),
+                "{id}"
+            );
+        }
     }
 
     /// A section's title is its heading's text, as the index and the
@@ -514,10 +582,10 @@ mod tests {
     #[test]
     fn the_whole_handbook_is_every_section_in_order() {
         let s = settings("Co", Decimal::new(2500, 2));
-        let all = section(ALL, &s, "USD").unwrap();
+        let all = section(ALL, &s, "USD", true).unwrap();
         let mut at = 0;
         for (id, _) in SECTIONS {
-            let one = section(id, &s, "USD").unwrap();
+            let one = section(id, &s, "USD", true).unwrap();
             let found = all[at..]
                 .find(&one)
                 .unwrap_or_else(|| panic!("{id} missing or out of order"));

@@ -197,6 +197,19 @@ pub(crate) fn render(
     (texts, p)
 }
 
+/// [`render`] in a window `width` points wide (a narrow one squeezes the
+/// detail pane).
+pub(crate) fn render_at(books: Books, route: Route, width: f32) -> Vec<Painted> {
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(width, 2400.0))
+        .build_eframe(|cc| App::with_books(&cc.egui_ctx, books, false, route));
+    h.run_steps(4);
+    let ctx = h.ctx.clone();
+    h.state_mut().settle(&ctx);
+    h.run_steps(4);
+    painted(h.output())
+}
+
 /// [`render`], with the filled rectangles too.
 pub(crate) fn render_all(
     books: Books,

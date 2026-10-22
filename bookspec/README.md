@@ -64,9 +64,9 @@ operating = "0.00"
 ```
 
 Events count from 1: the first `[[events]]` is event 1. An event is an
-entry (`lines`), a reversal (`reverses`), a close (`close`, below) or a
-bill (`bill`, below), each posting one entry; or one of the books'
-commands that post what is due (`run_depreciation`, `dispose_asset`,
+entry (`lines`), a reversal (`reverses`), a close (`close`, below), a
+bill or an invoice (`bill`, `invoice`, below), each posting one entry;
+or one of the books' commands that post what is due (`run_depreciation`, `dispose_asset`,
 `run_schedules`, below), which post as many entries as are due, none
 included; or a schedule's registration (`register_schedule`), which
 posts none: exactly one of them. A key that names an event (`reverses =
@@ -77,10 +77,11 @@ posts one entry, event N's is entry #N. A change that posts no entry (a
 rename, a policy) is a `[[changes]]` entry instead (below). A key the
 shape doesn't have is refused too, never ignored.
 
-An entry, a reversal, a close, a bill and a disposal are dated (`date`);
-the other commands date their own entries (a run its month's end) and
-take no date. An entry, a reversal, a close and a bill are described
-(`description`); a command describes its own entries and takes none.
+An entry, a reversal, a close, a bill, an invoice and a disposal are
+dated (`date`); the other commands date their own entries (a run its
+month's end) and take no date. An entry, a reversal, a close, a bill and
+an invoice are described (`description`); a command describes its own
+entries and takes none.
 
 The books are the engine's own (`ledger_store::Store`, in a directory of
 their own): each event is the command the books take it by, journaled as
@@ -238,7 +239,8 @@ the side gives the direction.
   original's tags.
 - `payee` on an event: the payee (by name, one of `setup.payees`) the
   entry paid. Only on an entry (`lines`): a reversal takes its
-  original's, a bill names its vendor, a close and a command have none.
+  original's, a bill names its vendor, an invoice its customer, a close
+  and a command have none.
 - `parties = [{ party, amount? }, { party, percent? }, ...]` on an event:
   the parties (by name, in `setup.parties`) the entry is with, each with
   its share: an `amount` (an exact decimal string), a `percent`, or
@@ -258,12 +260,24 @@ the side gives the direction.
   splits that close's net on its own instead (books from an engine that
   rounded each close by itself). A close must have something to close: it
   posts one entry like any other event.
-- `bill = { vendor, amount }` as an event: a bill from `vendor` (a name;
-  a payee's record if one has it) for `amount`, dated and due on the
-  event's date. It posts one entry: General Expenses (6999) debited and
-  Accounts Payable (2000) credited, each account created with that fixed
-  name when first needed, as the books create a control role's account
-  (B-32).
+- `bill = { vendor, amount }` or `bill = { vendor, lines = [{ amount,
+  description?, project? }, ...] }` as an event: a bill from `vendor` (a
+  name; a payee's record if one has it) for `amount` (one line, described
+  as the event) or its `lines` (exactly one of them; a line's description
+  is the event's when left out), dated and due on the event's date. It
+  posts one entry: General Expenses (6999) debited and Accounts Payable
+  (2000) credited, each account created with that fixed name when first
+  needed, as the books create a control role's account (B-32). A line's
+  `project` (a `setup.projects` name) puts its cost on that project: the
+  entry's expense side is one line per project named, the untagged lines'
+  as one, the payable line never tagged (B-37 item 8).
+- `invoice = { customer, amount }` or `invoice = { customer, lines = [...]
+  }` as an event: an invoice to `customer` (a name, its record added when
+  first named), as a bill is (the same `lines`), dated and due on the
+  event's date. It posts one entry: Accounts Receivable (1200) debited and
+  Revenue (4000) credited, each created with that fixed name when first
+  needed; a line's `project` puts its revenue on that project, the
+  receivable line never tagged (B-37 item 8).
 - `run_depreciation = { asset, period }` as an event: the asset's run for
   `period` (`"YYYY-MM"`), which posts what the schedule says is due
   through the month's end and the books don't carry, dated then: a

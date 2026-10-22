@@ -1252,3 +1252,166 @@ proptest::proptest! {
         proptest::prop_assert_eq!(s.standing, want);
     }
 }
+
+/// rules.md B-37 item 8: an invoice's or bill's page (its entry's) lists
+/// the document's lines, each project a link that opens it; an untagged
+/// line has none. The entry's own lines show the tagged revenue or cost
+/// line too.
+#[test]
+fn an_invoice_and_a_bill_show_each_lines_project() {
+    use ledger_core::arap::DocumentLine;
+    let dir = TempDir(std::env::temp_dir().join(format!(
+        "ledger-gui-projects-documents-{}",
+        std::process::id()
+    )));
+    let _ = std::fs::remove_dir_all(&dir.0);
+    let mut s = Store::create(&dir.0.join("books-data"), Currency::USD).unwrap();
+    s.add_account("1000", "Cash", AccountType::Asset, None, false)
+        .unwrap();
+    let zeta = s
+        .add_project(
+            "Zeta site",
+            &ProjectFacts {
+                kind: Some(ProjectKind::Client),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let harbor = s.add_class("Harbor app").unwrap();
+    let c = s.add_customer("Cedar Client").unwrap();
+    let v = s.add_vendor("Dana Illustration").unwrap();
+    let line = |what: &str, c: i64, class| DocumentLine {
+        description: what.into(),
+        amount: cents(c),
+        class_id: class,
+    };
+    let inv = s
+        .create_invoice(
+            c,
+            d(2026, 3, 2),
+            d(2026, 4, 1),
+            vec![
+                line("Design", 300_000, Some(zeta)),
+                line("Rush fee", 10_000, None),
+            ],
+        )
+        .unwrap();
+    let bill = s
+        .create_bill(
+            v,
+            d(2026, 3, 9),
+            d(2026, 4, 8),
+            vec![
+                line("Illustration", 120_000, Some(harbor)),
+                line("Postage", 5_000, None),
+            ],
+        )
+        .unwrap();
+    let inv_entry = s.ledger().get_invoice(inv).unwrap().entry_id;
+    let bill_entry = s.ledger().get_bill(bill).unwrap().entry_id;
+    drop(s);
+    let tag = |name: &str| format!("{} {name}", egui_phosphor::regular::TAG);
+    for (entry, title, kept, untagged, project, id, shot_name) in [
+        (
+            inv_entry,
+            "INVOICE 1, DUE APR 1, 2026",
+            "Design",
+            "Rush fee",
+            "Zeta site",
+            zeta,
+            "invoice-lines",
+        ),
+        (
+            bill_entry,
+            "BILL 1, DUE APR 8, 2026",
+            "Illustration",
+            "Postage",
+            "Harbor app",
+            harbor,
+            "bill-lines",
+        ),
+    ] {
+        let books = load(&dir);
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(1440.0, 1400.0))
+            .build_eframe(move |cc| {
+                App::with_books(&cc.egui_ctx, books, false, Route::Entry(entry))
+            });
+        h.run_steps(3);
+        shot(&mut h, shot_name);
+        h.get_by_label(title);
+        h.get_by_label(kept);
+        h.get_by_label(untagged);
+        // The entry's tagged line and the document's line: two links, one
+        // project; the untagged lines, none.
+        assert_eq!(h.query_all_by_label(&tag(project)).count(), 2, "{title}");
+        // The two links and the history's "tagged project" event: nothing
+        // else wears a tag, so the untagged lines have none.
+        assert_eq!(
+            h.query_all_by_label_contains(egui_phosphor::regular::TAG)
+                .count(),
+            3,
+            "{title}"
+        );
+        assert_eq!(
+            h.query_all_by_label_contains(&format!("tagged project {project}"))
+                .count(),
+            1,
+            "{title}"
+        );
+        // The document's line, the lower of the two, opens the project.
+        h.query_all_by_label(&tag(project))
+            .max_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+            .unwrap()
+            .click();
+        h.run_steps(3);
+        assert_eq!(h.state_mut().route(), &Route::Project(id), "{title}");
+    }
+}
+
+/// The demo's "Client work" project carries every client invoice (rules.md
+/// B-37 item 8): its revenue to date is the invoices' total, its direct
+/// costs the contractors tagged to it.
+#[test]
+fn the_demos_client_work_counts_every_client_invoice() {
+    let dir = TempDir(
+        std::env::temp_dir().join(format!("ledger-gui-projects-demo-{}", std::process::id())),
+    );
+    let _ = std::fs::remove_dir_all(&dir.0);
+    let today = d(2026, 10, 12);
+    ledger_gui::demo::build(&dir.0, today).unwrap();
+    let b = data::load_once(&Source {
+        data_dir: dir.0.join("books-data"),
+        today: Some(today),
+    })
+    .unwrap();
+    let l = &b.ledger;
+    let client = l.find_class_by_name("Client work").unwrap().id;
+    let invoices = l.invoices();
+    assert!(!invoices.is_empty());
+    assert!(
+        invoices
+            .iter()
+            .all(|i| i.lines.iter().all(|x| x.class_id == Some(client))),
+        "every client invoice is tagged"
+    );
+    let invoiced: Decimal = invoices.iter().map(|i| i.total().unwrap()).sum();
+    let t = ledger_core::project_to_date(l, client, today).unwrap();
+    assert_eq!(t.revenue, invoiced);
+    let tagged_costs: Decimal = l
+        .posted_entries()
+        .flat_map(|e| e.lines().iter())
+        .filter(|x| x.class_id == Some(client))
+        .filter(|x| {
+            l.chart()
+                .get(x.account)
+                .is_some_and(|a| a.account_type == AccountType::Expense)
+        })
+        .map(|x| match x.side {
+            Side::Debit => x.amount.amount,
+            Side::Credit => -x.amount.amount,
+        })
+        .sum();
+    assert_eq!(t.expenses, tagged_costs);
+    assert!(t.expenses > Decimal::ZERO && t.net() > Decimal::ZERO);
+}

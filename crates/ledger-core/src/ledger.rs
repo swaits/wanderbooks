@@ -4900,6 +4900,30 @@ impl Ledger {
         self.add_control_account(c).expect("fresh code cannot fail")
     }
 
+    /// A document's revenue or expense side on its draft `entry`: one line
+    /// on `account` per part ([`arap::document_parts`]), each tagged with
+    /// its project (a project the books don't have: UnknownClass, and the
+    /// caller's `atomically` leaves the books unchanged).
+    fn add_document_parts(
+        &mut self,
+        entry: EntryId,
+        account: AccountId,
+        side: Side,
+        parts: &[(Option<ClassId>, Decimal)],
+    ) -> Result<(), LedgerError> {
+        for &(class, amount) in parts {
+            self.add_line(entry, account, side, Money::new(amount, self.base_currency))?;
+            if class.is_some() {
+                let last = self
+                    .get_entry(entry)
+                    .map_or(0, |e| e.lines().len())
+                    .saturating_sub(1);
+                self.set_line_class(entry, last, class)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Create a sales invoice. Auto-posts: Dr `1200` Accounts Receivable,
     /// Cr `4000` Revenue. The invoice date must not fall in a closed period.
     ///
@@ -4910,13 +4934,17 @@ impl Ledger {
     ///         control accounts: Ledger::check_controls.
     /// INVARIANTS:
     ///   1. MUST post one balanced entry: Dr 1200 receivables, Cr 4000 revenue,
-    ///      for the sum of the lines, dated the invoice date.
+    ///      for the sum of the lines, dated the invoice date: one revenue
+    ///      line per project the lines name, the untagged lines' as one
+    ///      (arap::document_parts), each tagged with its project; the
+    ///      receivable line never (rules.md B-37 item 8).
     ///   2. The invoice MUST start open, with nothing paid.
     ///   3. A refusal MUST leave the books unchanged.
     /// SCENARIOS:
     ///   1. IF the customer is unknown, a line amount isn't positive, the due
-    ///      date is before the invoice date, or the date is in a closed
-    ///      period: SHOULD refuse.
+    ///      date is before the invoice date, a line names a project the
+    ///      books don't have, or the date is in a closed period: SHOULD
+    ///      refuse.
     /// ```
     pub fn create_invoice(
         &mut self,
@@ -4945,13 +4973,18 @@ impl Ledger {
             return Err(LedgerError::ClosedPeriod(pid, date.to_string()));
         }
         let total: Decimal = lines.iter().map(|l| l.amount).sum();
+        let parts = arap::document_parts(&lines, "the invoice")?;
         self.check_controls(&[RECEIVABLES, REVENUE])?;
         let ar = self.ensure_control(&RECEIVABLES);
         let revenue = self.ensure_control(&REVENUE);
         let entry = self.create_entry(date, &format!("Invoice {}", self.next_invoice_id));
-        let money = Money::new(total, self.base_currency);
-        self.add_line(entry, ar, Side::Debit, money)?;
-        self.add_line(entry, revenue, Side::Credit, money)?;
+        self.add_line(
+            entry,
+            ar,
+            Side::Debit,
+            Money::new(total, self.base_currency),
+        )?;
+        self.add_document_parts(entry, revenue, Side::Credit, &parts)?;
         self.post_entry(entry)?;
         let id = self.next_invoice_id;
         self.next_invoice_id += 1;
@@ -4983,12 +5016,15 @@ impl Ledger {
     /// INVARIANTS:
     ///   1. MUST post one balanced entry: Dr 6999 general expenses, Cr 2000
     ///      payables, for the sum of the lines, dated the bill date, tagged
-    ///      with the vendor (1099s).
+    ///      with the vendor (1099s): one expense line per project the lines
+    ///      name, the untagged lines' as one (arap::document_parts), each
+    ///      tagged with its project; the payable line never (rules.md B-37
+    ///      item 8).
     ///   2. A refusal MUST leave the books unchanged.
     /// SCENARIOS:
     ///   1. IF the vendor is unknown, a line amount isn't positive, the due date
-    ///      is before the bill date, or the date is in a closed period: SHOULD
-    ///      refuse.
+    ///      is before the bill date, a line names a project the books don't
+    ///      have, or the date is in a closed period: SHOULD refuse.
     /// ```
     pub fn create_bill(
         &mut self,
@@ -5017,13 +5053,18 @@ impl Ledger {
             return Err(LedgerError::ClosedPeriod(pid, date.to_string()));
         }
         let total: Decimal = lines.iter().map(|l| l.amount).sum();
+        let parts = arap::document_parts(&lines, "the bill")?;
         self.check_controls(&[GENERAL_EXPENSES, PAYABLES])?;
         let expense = self.ensure_control(&GENERAL_EXPENSES);
         let ap = self.ensure_control(&PAYABLES);
         let entry = self.create_entry(date, &format!("Bill {}", self.next_bill_id));
-        let money = Money::new(total, self.base_currency);
-        self.add_line(entry, expense, Side::Debit, money)?;
-        self.add_line(entry, ap, Side::Credit, money)?;
+        self.add_document_parts(entry, expense, Side::Debit, &parts)?;
+        self.add_line(
+            entry,
+            ap,
+            Side::Credit,
+            Money::new(total, self.base_currency),
+        )?;
         self.post_entry(entry)?;
         let id = self.next_bill_id;
         self.next_bill_id += 1;

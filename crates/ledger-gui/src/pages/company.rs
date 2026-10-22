@@ -802,6 +802,7 @@ mod tests {
             vec![DocumentLine {
                 description: "work".into(),
                 amount: cents(c),
+                class_id: None,
             }]
         };
         let acme = b.s.add_customer("Acme").unwrap();

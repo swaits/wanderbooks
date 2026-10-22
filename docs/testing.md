@@ -2028,6 +2028,116 @@ fail.
 rounding strategy; `project_figures`' opening net and running sum;
 `profit_and_loss_counted`'s counts; `Standing::of`'s order.
 
+## Invoices and bills take a project (2026-10-22)
+
+rules.md B-37 item 8: each invoice and bill line takes an optional project
+(`books.create_invoice` / `books.create_bill` `class`); the entry's revenue
+or expense side is one line per project (`arap::document_parts`), the
+receivable or payable and the payments untagged; journaled as the line's
+`class_id` behind the new feature `document_line_projects` (B-27).
+
+- **ledger-core:** `tests/spec_document_projects.rs`
+  (`an_invoices_revenue_is_one_line_per_project_and_the_receivable_none`,
+  `a_bills_cost_is_one_line_per_project_and_the_payable_none`,
+  `an_untagged_document_posts_as_before`,
+  `a_line_naming_an_unknown_project_is_refused_whole`,
+  `a_finished_project_still_takes_an_invoice`,
+  `tags_move_only_the_project_figures` (twin books, tagged and not: the
+  P&L, the 1099 worksheet and a party's activity identical; the projects
+  with the untagged lines partition the P&L),
+  `document_parts_refuse_past_exact_arithmetic`,
+  `reversing_a_tagged_document_takes_its_projects_to_zero` (a partial
+  payment moves no project figure; the reversal carries each line's
+  project, so every project nets to zero), and the proptest
+  `prop_document_parts_partition_the_total`); bookspec
+  `projects-invoice-and-bill-lines-count-by-project` (the loader gains an
+  `invoice` event and a document's `lines` with `project`; loader tests
+  `a_document_line_naming_an_unknown_project_is_refused`,
+  `a_document_with_an_amount_and_lines_is_refused`,
+  `an_invoice_lines_project_is_what_the_project_counts`).
+- **ledger-store:** `tests/document_projects.rs`
+  (`a_tagged_invoice_journals_each_projects_line_and_replays`: the exact
+  lines, then verify, reopen and the viewer's snapshot;
+  `a_tagged_bill_tags_its_expense_lines_never_the_payable`;
+  `an_untagged_document_journals_as_before`: no `class_id` anywhere;
+  `a_document_naming_a_project_waits_for_the_feature`: books with
+  `projects` but not this feature refuse, journaling nothing, not even
+  the control accounts; `old_invoices_and_bills_replay_unchanged`: an
+  earlier version's journal opens, verifies, writes nothing;
+  `a_document_lines_class_id_that_isnt_an_id_is_corrupt`;
+  `a_reversed_tagged_invoice_replays_with_its_projects_at_zero`: one
+  `entry.reversed`, its replay tagged as live); `format.rs`
+  `document_line_projects_is_its_own_feature`.
+- **ledger-mcp:** `tests/spec_projects.rs`
+  (`invoice_and_bill_lines_count_toward_their_projects`: by name, id and
+  any capitals; `books.get_entry`'s line `project` and `class_id`;
+  payments untagged;
+  `books.project`, `profit_and_loss_by_class`, `vendor_1099` and
+  `books.party` totals; `a_document_naming_an_unknown_project_is_refused_whole`,
+  `a_document_for_a_finished_project_says_so`,
+  `an_invoice_for_an_on_spec_project_asks_about_an_agreement` (an
+  invoice's note, a bill's none),
+  `books_without_the_feature_refuse_a_tagged_document` with the
+  handbook's text both ways, by `books.handbook` and as the
+  `books://handbook/projects` resource); `handbook.rs`
+  `document_projects_follow_the_books_feature` (no sentence lets a shared
+  cost be split on a document; the allocation convention only when
+  `books.conventions` has one).
+- **ledger-gui:** `tests/projects.rs`
+  (`an_invoice_and_a_bill_show_each_lines_project`: each document line's
+  project a link that opens it, untagged lines bare;
+  `the_demos_client_work_counts_every_client_invoice`);
+  `pages::entry::tests::a_tagged_line_keeps_its_amounts_in_their_column`
+  (in a narrow pane a tagged line's name is cut to leave its tag room:
+  looking at the demo's invoice page at 1,100 points found the tag pushing
+  the credit column past the pane, a fault every tagged entry had);
+  `tests/screens.rs` shoots an invoice's and a bill's page.
+- **ledger-cli:** `tests/projects_parity.rs`
+  (`invoiced_and_billed_project_figures_are_the_same_in_the_viewer_and_from_the_server`:
+  made through the server's tools, read by both, the month lists the same
+  length and not empty); `tests/format_upgrade.rs`
+  `books_p2_served_cut_over_whole` refuses a tagged invoice and bill
+  before consent and takes them after.
+- **fuzz:** `fuzz_store_replay` can now declare features (this one
+  among them), so a document line's `class_id` reaches replay under a
+  declared format.
+
+**Broken to confirm (each restored):** the core's revenue/expense line
+left untagged (core 4 and store 3 tests fail); `document_parts` one part
+per line (4 core, the proptest among them); the store's feature check
+dropped (store gate test, MCP `books_without_the_feature_...`, CLI
+`books_p2_served_cut_over_whole`); `document_line_json` without
+`class_id` (3 store); `parse_document_lines` ignoring it (4 store, the
+corrupt-id test among them); the `entry.line_class_set` not journaled (3
+store, by verify); the MCP ignoring a line's `class` (4 MCP); no late-tag
+notes (1 MCP); the handbook ungated (the handbook unit test and 1 MCP);
+the handbook's rule without the owner's decision of D-43 (one project or
+none a line, no percentage, a shared cost by the allocation convention:
+the handbook unit test);
+`books.get_entry` without `project` (2 MCP, the CLI parity test); the
+viewer's document lines dropped, or their project not a link (the GUI
+tests); no room kept back for the tag (the narrow-pane test); the demo's invoices untagged (the demo test); the bookspec loader
+dropping a line's project (`every_bookspec_example_holds`). After
+review: the projects handbook's old "split a shared cost across lines"
+sentence restored, or the convention made unconditional (the handbook
+unit test); no on-spec note, or one on a bill too (the on-spec MCP test);
+the handbook resource served as if the feature were declared
+(`books_without_the_feature_...`); `books.get_entry`'s `class_id`
+dropped (`invoice_and_bill_lines_...`); the server's months cut short
+(the parity test, which `zip` alone let pass); a reversal's line tags
+dropped (the core and store reversal tests); the bookspec's Harbor made
+on spec again (`every_bookspec_example_holds`). A separate
+up-front unknown-class check in the core was removed: equivalent to
+`set_line_class`'s own refusal inside `atomically`.
+
+**For P12 (mutation targets):** `document_parts` (the first-appearance
+order, the `contains` test); `add_document_parts`' tag index;
+`ensure_document_lines`' `any`; `document_line_json`'s `if let`;
+`parse_document_lines`' arms (null, absent, out of `u32`);
+`document_notes`' dedup and its `invoice` flag; `on_spec_invoice_note`'s
+kind test; `document_projects_rule`'s branch; the viewer's
+`document_of` (invoice before bill).
+
 ## Benchmarks (baseline 2026-10-13)
 
 No budget, by decision (the owner, 2026-10-13: the books do little work

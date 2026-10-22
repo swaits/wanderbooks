@@ -1709,6 +1709,7 @@ mod tests {
             vec![DocumentLine {
                 description: "work".into(),
                 amount: cents(c),
+                class_id: None,
             }]
         };
         // Owed, not yet due; owed, due today; paid, past due; owed, past

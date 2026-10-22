@@ -978,6 +978,7 @@ fn doc(amount: u64) -> Vec<ledger_core::DocumentLine> {
     vec![ledger_core::DocumentLine {
         description: "work".into(),
         amount: Decimal::from(amount),
+        class_id: None,
     }]
 }
 

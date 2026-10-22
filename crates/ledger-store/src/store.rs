@@ -2816,10 +2816,7 @@ impl Store {
     }
 
     /// Journal an auto-posted two-line entry (debit one account, credit
-    /// another for the same amount) through the standard entry.created /
-    /// entry.line_added / entry.posted flow. Returns the predicted entry id
-    /// and the journaled lines; the caller mutates the ledger afterwards
-    /// and applies the lines to SQLite.
+    /// another for the same amount): [`Self::journal_auto_lines`].
     fn journal_auto_entry(
         &mut self,
         date: NaiveDate,
@@ -2828,9 +2825,31 @@ impl Store {
         credit_account: AccountId,
         amount: Decimal,
     ) -> Result<(EntryId, Vec<JournalLine>), StoreError> {
+        self.journal_auto_lines(
+            date,
+            description,
+            &[
+                (debit_account, Side::Debit, amount, None),
+                (credit_account, Side::Credit, amount, None),
+            ],
+        )
+    }
+
+    /// Journal an auto-posted entry of `lines` (account, side, amount,
+    /// project) through the standard entry.created / entry.line_added /
+    /// entry.posted flow, a tagged line's `entry.line_class_set` right
+    /// after its `entry.line_added` (as `books.add_line` journals one).
+    /// Returns the predicted entry id and the journaled lines; the caller
+    /// mutates the ledger afterwards and applies the lines to SQLite.
+    fn journal_auto_lines(
+        &mut self,
+        date: NaiveDate,
+        description: &str,
+        lines: &[(AccountId, Side, Decimal, Option<ClassId>)],
+    ) -> Result<(EntryId, Vec<JournalLine>), StoreError> {
         let entry_id = self.ledger.next_entry_id();
         let base = self.base_currency;
-        let mut journaled = Vec::with_capacity(4);
+        let mut journaled = Vec::with_capacity(lines.len() * 2 + 2);
         journaled.push(self.append_journal(
             "entry.created",
             json!({
@@ -2839,7 +2858,7 @@ impl Store {
                 "description": description,
             }),
         )?);
-        for (account, side) in [(debit_account, Side::Debit), (credit_account, Side::Credit)] {
+        for (index, &(account, side, amount, class)) in lines.iter().enumerate() {
             journaled.push(self.append_journal(
                 "entry.line_added",
                 json!({
@@ -2853,7 +2872,30 @@ impl Store {
                     "currency": base.code(),
                 }),
             )?);
+            if let Some(class) = class {
+                journaled.push(self.append_journal(
+                    "entry.line_class_set",
+                    json!({
+                        "entry_id": entry_id,
+                        "line_index": index as u64,
+                        "class_id": class,
+                    }),
+                )?);
+            }
         }
+        let posted: Vec<Value> = lines
+            .iter()
+            .map(|&(account, side, amount, class_id)| {
+                journal_line_json(&ledger_core::JournalLine {
+                    account,
+                    side,
+                    amount: Money::new(amount, base),
+                    foreign_currency: None,
+                    foreign_amount: None,
+                    class_id,
+                })
+            })
+            .collect();
         journaled.push(self.append_journal(
             "entry.posted",
             json!({
@@ -2861,13 +2903,20 @@ impl Store {
                 "date": date.to_string(),
                 "description": description,
                 "reversal_of": Option::<u64>::None,
-                "lines": [
-                    plain_line_json(debit_account, Side::Debit, Money::new(amount, base)),
-                    plain_line_json(credit_account, Side::Credit, Money::new(amount, base)),
-                ],
+                "lines": posted,
             }),
         )?);
         Ok((entry_id, journaled))
+    }
+
+    /// The feature a document's lines need (rules.md B-27): a line naming
+    /// a project is `document_line_projects`'s; a document naming none is
+    /// written as every version before it wrote one.
+    fn ensure_document_lines(&self, lines: &[DocumentLine]) -> Result<(), StoreError> {
+        if lines.iter().any(|l| l.class_id.is_some()) {
+            self.ensure_feature(crate::format::DOCUMENT_LINE_PROJECTS)?;
+        }
+        Ok(())
     }
 
     /// Add a customer. Journaled as `customer.added`.
@@ -2927,13 +2976,19 @@ impl Store {
         if let Some(pid) = self.ledger.closed_period_containing(date) {
             return Err(LedgerError::ClosedPeriod(pid, date.to_string()).into());
         }
+        self.ensure_document_lines(&lines)?;
         let ar = self.ensure_control_account(&ledger_core::RECEIVABLES)?;
         let revenue = self.ensure_control_account(&ledger_core::REVENUE)?;
         let invoice_id = self.ledger.next_invoice_id();
         let total: Decimal = lines.iter().map(|l| l.amount).sum();
         let description = format!("Invoice {invoice_id}");
-        let (entry_id, mut journaled) =
-            self.journal_auto_entry(date, &description, ar, revenue, total)?;
+        let mut posting = vec![(ar, Side::Debit, total, None)];
+        posting.extend(
+            arap::document_parts(&lines, "the invoice")?
+                .into_iter()
+                .map(|(class, amount)| (revenue, Side::Credit, amount, class)),
+        );
+        let (entry_id, mut journaled) = self.journal_auto_lines(date, &description, &posting)?;
         let doc_lines: Vec<Value> = lines.iter().map(document_line_json).collect();
         journaled.push(self.append_journal(
             "invoice.created",
@@ -2987,13 +3042,18 @@ impl Store {
         if let Some(pid) = self.ledger.closed_period_containing(date) {
             return Err(LedgerError::ClosedPeriod(pid, date.to_string()).into());
         }
+        self.ensure_document_lines(&lines)?;
         let expense = self.ensure_control_account(&ledger_core::GENERAL_EXPENSES)?;
         let ap = self.ensure_control_account(&ledger_core::PAYABLES)?;
         let bill_id = self.ledger.next_bill_id();
         let total: Decimal = lines.iter().map(|l| l.amount).sum();
         let description = format!("Bill {bill_id}");
-        let (entry_id, mut journaled) =
-            self.journal_auto_entry(date, &description, expense, ap, total)?;
+        let mut posting: Vec<_> = arap::document_parts(&lines, "the bill")?
+            .into_iter()
+            .map(|(class, amount)| (expense, Side::Debit, amount, class))
+            .collect();
+        posting.push((ap, Side::Credit, total, None));
+        let (entry_id, mut journaled) = self.journal_auto_lines(date, &description, &posting)?;
         let doc_lines: Vec<Value> = lines.iter().map(document_line_json).collect();
         journaled.push(self.append_journal(
             "bill.created",
@@ -5422,10 +5482,16 @@ fn plain_line_json(account: AccountId, side: Side, amount: Money) -> Value {
 /// One invoice/bill document line as journal JSON. Amounts are decimal
 /// strings, never floats.
 fn document_line_json(l: &DocumentLine) -> Value {
-    json!({
+    let mut v = json!({
         "description": l.description,
         "amount": l.amount.to_string(),
-    })
+    });
+    // Its project, behind the feature document_line_projects (rules.md
+    // B-27, B-37 item 8); a line naming none is written as before it.
+    if let Some(c) = l.class_id {
+        v["class_id"] = json!(c);
+    }
+    v
 }
 
 /// Parse the `lines` array of an invoice/bill journal payload back into
@@ -5442,6 +5508,18 @@ fn parse_document_lines(p: &Value) -> Result<Vec<DocumentLine>, StoreError> {
                 amount: get_str(l, "amount")?
                     .parse()
                     .map_err(|_| StoreError::JournalCorrupt("bad line amount".into()))?,
+                // Absent (every document before document_line_projects)
+                // or null: no project.
+                class_id: match l.get("class_id") {
+                    None | Some(Value::Null) => None,
+                    Some(c) => Some(
+                        c.as_u64()
+                            .and_then(|c| ClassId::try_from(c).ok())
+                            .ok_or_else(|| {
+                                StoreError::JournalCorrupt("bad document line class_id".into())
+                            })?,
+                    ),
+                },
             })
         })
         .collect()

@@ -37,7 +37,7 @@ No other statuses.
 | A/R invoices + payments + aging | Business → Invoices | done | R-FUTURE-5 |
 | A/P bills + payments + aging | Business → Bills | done | R-FUTURE-5 |
 | Payroll runs (accounting only, no tax tables) + tax remittance | Payroll | done | — |
-| Tracking classes (divisional P&L) | Class tracking | done | — |
+| Tracking classes (divisional P&L) | Class tracking | done | invoice and bill lines take a class too (projects, rules.md B-37 item 8; QBO/Xero class or tracking per line) |
 | CPA handoff package (TB + GL xlsx, P&L + BS pdf, zip) | Reports → export | done | — |
 | Budgets | Budgets | todo | R-FUTURE-6 (declined as bloat) |
 | Scheduled transactions (recurring entries → drafts) | Scheduled txns / Recurring transactions | partial | hand-verified fixture incl. month-end dates; drafts only, by design |

@@ -89,6 +89,13 @@ pub struct DocumentLine {
     pub description: String,
     /// Line amount (positive).
     pub amount: Decimal,
+    /// The project (a class) the line's revenue or cost belongs to, if
+    /// any (rules.md B-37): the posted entry's revenue or expense line for
+    /// it carries the tag; the receivable or payable line never does.
+    /// Documents journaled before the `document_line_projects` feature
+    /// have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class_id: Option<crate::ClassId>,
 }
 
 /// A sales invoice: we billed a customer.
@@ -121,6 +128,44 @@ pub fn document_total(lines: &[DocumentLine], what: &str) -> Result<Decimal, Led
         .iter()
         .try_fold(Decimal::ZERO, |sum, l| sum.checked_add(l.amount))
         .ok_or_else(|| LedgerError::TooLargeToCompute(format!("{what}'s total")))
+}
+
+/// The revenue (an invoice's) or expense (a bill's) side of a document's
+/// entry: one part per project the lines name, in the order each first
+/// appears, the untagged lines together as one part (`None`), each the
+/// sum of its lines ([`document_total`]).
+///
+/// ```text
+/// GOAL: a document's lines count toward their projects, and a document
+///       whose lines name none posts exactly as before.
+/// SOURCE: docs/spec/rules.md B-37 item 3 (job costing: the revenue and
+///         direct costs identified with one job) and item 8 (an
+///         invoice's or bill's line names its project).
+/// INVARIANTS:
+///   1. The parts sum to the document's total (conservation), and each
+///      line is in exactly one part.
+///   2. No two parts name the same project; no part is empty.
+///   3. Lines naming no project make one part, so an untagged document is
+///      one part: the one line every document posted before projects.
+///   4. NEVER panics: TooLargeToCompute past exact arithmetic.
+/// ```
+pub fn document_parts(
+    lines: &[DocumentLine],
+    what: &str,
+) -> Result<Vec<(Option<crate::ClassId>, Decimal)>, LedgerError> {
+    let mut keys: Vec<Option<crate::ClassId>> = Vec::new();
+    for l in lines {
+        if !keys.contains(&l.class_id) {
+            keys.push(l.class_id);
+        }
+    }
+    keys.into_iter()
+        .map(|k| {
+            let part: Vec<DocumentLine> =
+                lines.iter().filter(|l| l.class_id == k).cloned().collect();
+            Ok((k, document_total(&part, what)?))
+        })
+        .collect()
 }
 
 /// What is still owed on a document: its total less what was paid.
@@ -350,6 +395,7 @@ mod tests {
                 vec![DocumentLine {
                     description: "Widgets".to_string(),
                     amount: "1000.00".parse().unwrap(),
+                    class_id: None,
                 }],
             )
             .unwrap();
@@ -399,6 +445,7 @@ mod tests {
                 vec![DocumentLine {
                     description: "Paper".to_string(),
                     amount: "250.00".parse().unwrap(),
+                    class_id: None,
                 }],
             )
             .unwrap();
@@ -440,6 +487,7 @@ mod tests {
                 vec![DocumentLine {
                     description: "X".to_string(),
                     amount: "100.00".parse().unwrap(),
+                    class_id: None,
                 }],
             )
             .unwrap();
@@ -517,6 +565,7 @@ mod tests {
             vec![DocumentLine {
                 description: "A".to_string(),
                 amount: "100.00".parse().unwrap(),
+                class_id: None,
             }],
         )
         .unwrap();
@@ -528,6 +577,7 @@ mod tests {
             vec![DocumentLine {
                 description: "B".to_string(),
                 amount: "200.00".parse().unwrap(),
+                class_id: None,
             }],
         )
         .unwrap();
@@ -557,6 +607,7 @@ mod tests {
             vec![DocumentLine {
                 description: "X".to_string(),
                 amount: "100.00".parse().unwrap(),
+                class_id: None,
             }],
         );
         assert!(matches!(err, Err(LedgerError::ClosedPeriod(_, _))));

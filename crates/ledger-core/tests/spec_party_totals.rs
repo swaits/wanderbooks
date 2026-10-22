@@ -465,6 +465,7 @@ fn audit() -> Audit {
             vec![DocumentLine {
                 description: "filing".into(),
                 amount: d("80.00"),
+                class_id: None,
             }],
         )
         .unwrap();
@@ -482,6 +483,7 @@ fn audit() -> Audit {
             vec![DocumentLine {
                 description: "consulting".into(),
                 amount: d("120.00"),
+                class_id: None,
             }],
         )
         .unwrap();

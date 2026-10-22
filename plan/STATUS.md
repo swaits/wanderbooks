@@ -167,10 +167,27 @@ the net to date, and costs by category. The sidebar measures its footer.
 made; the bridge says a locked keyring instead of "make a token"; `token
 check` tells a kept token live, revoked, missing or duplicated.
 
+**Invoices and bills take a project (2026-10-22).** Each line of
+`books.create_invoice` and `books.create_bill` takes an optional `class`
+(a project, by id or name): the entry's revenue or expense side is one
+line per project, the untagged lines' as one, the receivable or payable
+line and the payments never tagged (rules.md B-37 item 8), so a client
+project's invoiced revenue and a contractor's billed cost count in its
+figures, the P&L by class, and its snapshot; the P&L, the 1099 worksheet
+and party totals don't move. Journaled as the line's `class_id` behind a
+new feature, `document_line_projects` (not `projects`, which the live
+books already declared); a document naming none is journaled byte for
+byte as before. Late-tag notes as `books.add_line`'s; `books.get_entry`
+shows a line's project; the viewer's invoice and bill pages list the
+document's lines, each project a link; the demo's "Client work" carries
+its invoices. The handbook's caveat is gone for books with the feature.
+
 **Still open after P3 (each for the phase named, or the lead):**
-- Invoices and bills take no project: a client project's invoiced revenue
-  can't count toward it (a format-gated field on `invoice.created` and
-  `bill.created`; the owner to decide).
+- Invoices and bills take a project now (above), behind the new journal
+  feature `document_line_projects`: the first company's books declared
+  `projects` but not it, so until the owner's next format upgrade
+  (`wanderbooks books upgrade`, D-39) their invoices and bills still take
+  none (the handbook says so).
 - Raised by the cutover review (private change log, "Open points"): the
   IIF leaves its CLASS field empty although entries carry projects; a
   state filing fee is classed as cash paid to suppliers where ASC

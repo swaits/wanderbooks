@@ -1585,7 +1585,12 @@ value at contribution and the §704(c) method, B-25) and `projects` (a
 `project.set`, a new event type: a class's project facts; an
 `attachment.linked` to the subject kind `project`, which an older version
 would call corrupt; a `decision.recorded` with `projects`, which an older
-version would drop silently: B-37). A command asks for
+version would drop silently: B-37). After P3: `document_line_projects`
+(an `invoice.created` or `bill.created` line carrying `class_id`, its
+project, B-37 item 8; an older version would restore the document without
+it, silently). It is a feature of its own, not part of `projects`: books
+that declared `projects` before it existed wait for their owner's next
+upgrade before a document's line names a project. A command asks for
 the feature it needs (`Store::ensure_feature`) before its first journaled
 line, and only when the line it is about to write uses it, so a write
 refused for waiting on the upgrade journals nothing, never an entry
@@ -2545,8 +2550,12 @@ package). **Checked:** `ledger-core` `tests/tax_capital.rs`;
 a class as a project ... Projects are entities too and can have name,
 description, whatever other metadata you think they should have"; the
 convention `link-to-projects` in the books: "whenever applicable, we link
-things to [projects]"); CONVENTION (job costing, item 3; the snapshot, item 7: a presentation choice from management accounting, not GAAP); AUTHORITY (on
-spec, item 4: ASC 450-30-25-1; ASC 340-40-25-5 with B-22;
+things to [projects]"); DECISION (the owner, 2026-10-22, plan D-43: an invoice's or bill's
+lines take a project, each line one or none, item 8); CONVENTION (job
+costing, items 3 and 8; the snapshot, item 7: a presentation choice from
+management accounting, not GAAP); AUTHORITY (on
+spec, item 4: ASC 450-30-25-1; ASC 340-40-25-5 with B-22; directly
+related costs, item 8: ASC 340-40-25-7;
 `sources/fasb-asc.md`, both quoted through Deloitte's DART roadmaps and
 not yet re-read in the ASC basic view: an open item)
 
@@ -2582,8 +2591,10 @@ not yet re-read in the ASC basic view: an open item)
    such line through the day, from the first day the books keep, whatever
    the project's dates. A tagged balance-sheet line counts nothing (an
    asset bought for it counts as it is depreciated or expensed, tagged
-   then). No cost is allocated: a shared cost counts only as split across
-   lines when it is entered. The projects with the untagged lines
+   then). The books allocate no cost: a shared cost counts toward
+   projects only as allocation entries of their own, made by the
+   company's allocation convention (item 8). The projects with the
+   untagged lines
    partition the P&L. By month, the period's last 240 months at most.
 4. **On spec.** Work done hoping to be paid: its costs are expenses when
    incurred (B-22; ASC 340-40-25-5 makes a cost of an anticipated
@@ -2595,8 +2606,9 @@ not yet re-read in the ASC basic view: an open item)
    same). Its unrecovered cost, "if repaid", is expenses less revenue to
    date, never below zero: a figure, never an asset.
 5. **Status.** Finished and abandoned projects still take lines (a late
-   cost, a final invoice); `books.add_line` and `books.record_payout` say
-   so when one is tagged.
+   cost, a final invoice); `books.add_line`, `books.record_payout`,
+   `books.create_invoice` and `books.create_bill` say so when one is
+   tagged.
 6. Omitted dates mean what B-30 says (`books.project`'s period); to date
    is always stated as such, beside it.
 7. **Snapshot (a presentation choice, not GAAP).** A project's net is
@@ -2625,6 +2637,52 @@ not yet re-read in the ASC basic view: an open item)
    standard defines or requires these figures (ASC 280's segment
    reporting is for public entities' operating segments, not projects);
    they come from item 3's, one function the tools and the viewer share.
+8. **Invoices and bills (the owner's decision, 2026-10-22, D-43).** Each
+   line of an invoice or bill names one project or none. A document that
+   spans N projects is N lines, each with its own amount; there is no
+   percentage split, so every figure is exact, as entered, with nothing
+   to round. A cost truly shared among projects is not split on the
+   document: its line names none, and it reaches the projects, if at
+   all, only as allocation entries of their own, on the stated basis of
+   the company's monthly allocation convention when `books.conventions`
+   has one; without one the line stays untagged and the agent asks the
+   human. The reasoning: job costing (item 3) charges a job the costs
+   traceable to it, its direct costs, whole, and reaches a shared
+   (indirect) cost only by an allocation on a stated basis, never by
+   guessing at the document. ASC 340-40-25-7 counts as relating
+   directly to a contract (25-5(a)) both the costs traceable to it
+   (direct labor and materials, costs explicitly chargeable to the
+   customer, costs incurred only because of the contract, such as
+   subcontractors: 25-7(a), (b), (d), (e)) and allocations of costs that
+   relate directly to the contract or its activities (25-7(c)); 25-8
+   sends general and administrative costs to expense unless the contract
+   makes them chargeable to the customer (`sources/fasb-asc.md`). The
+   books carry the first kind whole on the document's line and the
+   second as entries under the allocation convention on its basis;
+   neither is a percentage on the document, and 25-7(c) is what the
+   allocation convention models. An invoice line naming an on-spec
+   project (item 4) is taken, and the tools ask whether there is now an
+   agreement: on spec, a hoped-for payment is no receivable until it is
+   received. Its revenue (an
+   invoice's) or cost (a bill's) then counts toward the project exactly
+   as a tagged line of a hand-built entry does: the document's entry
+   posts one revenue (expense) line per project its lines name, in the
+   order each is first named, each the sum of that project's lines, and
+   the untagged lines' sum as one line (`arap::document_parts`), so a
+   document naming none posts exactly the one line every document posted
+   before. The receivable (payable) line is never tagged: it is a
+   balance-sheet line (item 3 counts it nothing), and so are the
+   payments (`books.receive_payment`, `books.pay_bill`: cash against the
+   receivable or payable), which take no project. Nothing else moves: the
+   P&L, the 1099 worksheet (B-19: payments made) and a party's totals
+   (B-35: what moved the money) read the same with or without the
+   projects; only the projects' figures and the P&L by class differ. A
+   line naming a finished or abandoned project is taken, and the tools
+   say so (item 5); one naming a project the books don't have is refused,
+   the document whole. Journaled as the line's `class_id` in
+   `invoice.created` or `bill.created` and an `entry.line_class_set` right
+   after its revenue or expense line's `entry.line_added`, behind the
+   journal feature `document_line_projects` (B-27).
 
 **Enforced:** `ledger_core::classes::{ProjectFacts, ProjectStatus,
 ProjectKind}`, `Ledger::{check_set_project, set_project,
@@ -2632,13 +2690,22 @@ replay_set_project, projects_of_party}`, `reports::{project_figures,
 project_to_date, project_entries, contribution_margin_pct}`,
 `ProjectToDate::{net, margin_pct, any_tagged}`, `ProjectFigures::{months_net_to_date,
 period_margin_pct, period_lines}`, `kernel::unrecovered_cost`;
-`Store::{add_project, set_project, subject_feature}` (feature
-`projects`); `books.add_project`, `books.update_project`,
-`books.projects`, `books.project`; the viewer's Projects pages.
-**Checked:** `ledger-core` `tests/spec_projects.rs`, `ledger-store`
-`tests/projects.rs`, `ledger-mcp` `tests/spec_projects.rs`, `ledger-gui`
-`tests/projects.rs`; bookspec `projects-net-is-its-tagged-lines` and
-`projects-on-spec-costs-are-expenses`; Kani `unrecovered_cost_laws`;
+`arap::document_parts`, `Ledger::{create_invoice, create_bill}` (item
+8); `Store::{add_project, set_project, subject_feature}` (feature
+`projects`), `Store::{create_invoice, create_bill}` (feature
+`document_line_projects`); `books.add_project`, `books.update_project`,
+`books.projects`, `books.project`, `books.create_invoice` and
+`books.create_bill` (`class` on a line); the viewer's Projects pages and
+an invoice's or bill's page (each line's project).
+**Checked:** `ledger-core` `tests/spec_projects.rs` and
+`tests/spec_document_projects.rs`, `ledger-store` `tests/projects.rs` and
+`tests/document_projects.rs`, `ledger-mcp` `tests/spec_projects.rs`,
+`ledger-gui` `tests/projects.rs`, `ledger-cli` `tests/projects_parity.rs`
+and `tests/format_upgrade.rs` (`books_p2_served_cut_over_whole`); bookspec
+`projects-net-is-its-tagged-lines`,
+`projects-on-spec-costs-are-expenses` and
+`projects-invoice-and-bill-lines-count-by-project`; proptest
+`prop_document_parts_partition_the_total`; Kani `unrecovered_cost_laws`;
 proptests `prop_project_nets_partition_the_pnl`,
 `prop_project_set_round_trips`, `prop_project_contribution_is_the_net_to_date`
 (core) and `prop_snapshot_contribution_is_the_net_to_date` (viewer).

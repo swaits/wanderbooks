@@ -505,7 +505,9 @@ every tool over every book in ledger-store's `tests/fixtures/old-books`.
   schedule); and a reversal of a depreciation run or a schedule month's
   posting (or of a reversal in its chain) dated before that entry's own
   date (a correction comes after what it corrects, B-9).
-- `books.get_entry { entry_id }` → full entry with lines, receipts, and
+- `books.get_entry { entry_id }` → full entry with lines (each `{
+  account_id, code, name, side, amount, class_id?, project? }`: a tagged
+  line's project, its id and name), receipts, and
   its `vendor`, `party_id`, and `party` (the party's label, when it names
   exactly one) tags, `parties` / `parties_error` as in the `post_entry`
   preview, and `no_party_reason` when it is marked as having no
@@ -1980,19 +1982,46 @@ accounting only: the caller supplies every figure), tax filing.
 - `books.add_vendor { name }` → `{ id, party_id }`. Both link the record to
   a party ("Tools — parties").
 - `books.create_invoice { party_id, date, due_date, lines: [{ description,
-  amount }] }` → `{ id, total, entry_id, warnings? }`. Auto-posts Dr
-  `1200` Accounts Receivable / Cr `4000` Revenue. `warnings` names a
-  revenue account it created with no tax category (rules.md B-32).
-  `party_id` is the customer's `id` from `books.add_customer`, not its
-  `party_id`.
+  amount, class? }] }` → `{ id, total, entry_id, warnings?, notes? }`.
+  Auto-posts Dr `1200` Accounts Receivable / Cr `4000` Revenue. `warnings`
+  names a revenue account it created with no tax category (rules.md
+  B-32). `party_id` is the customer's `id` from `books.add_customer`, not
+  its `party_id`. A line's `class` (a project: name or id, resolved as
+  `books.add_line`'s) puts its revenue on that project (rules.md B-37 item
+  8, the owner's decision D-43): one project or none per line, several
+  projects as several lines each with its own amount, never a percentage
+  (a cost truly shared names none: it reaches the projects only as
+  entries of their own under the company's monthly allocation convention,
+  when `books.conventions` has one, and otherwise stays untagged while the
+  agent asks the human). The entry's revenue side is one line per project named, in the
+  order each is first named, the untagged lines' as one (a document
+  naming none posts the one revenue line it always did); the receivable
+  line is never tagged. Every project is resolved before anything is
+  written (an unknown one is refused, the document whole). `notes`: one
+  per finished or abandoned project named, as `books.add_line`'s `note`,
+  and one per on-spec project named, asking whether there is now an
+  agreement (on spec, a hoped-for payment is no receivable until
+  received: B-37 item 4) (tagged anyway). Books that haven't declared the journal feature
+  `document_line_projects` (B-27; the live books until their owner's next
+  upgrade, D-39) refuse a line naming a project with
+  `format_upgrade_pending`, journaling nothing; a document naming none is
+  taken as before.
 - `books.create_bill { party_id, date, due_date, lines }` → `{ id, total,
-  entry_id, warnings? }`. Auto-posts Dr `6999` General Expenses / Cr
-  `2000` Accounts Payable; `warnings` as for invoices. `party_id` is the
-  vendor's `id` from `books.add_vendor`, not its `party_id`.
+  entry_id, warnings?, notes? }`. Auto-posts Dr `6999` General Expenses /
+  Cr `2000` Accounts Payable; `warnings` as for invoices. `party_id` is
+  the vendor's `id` from `books.add_vendor`, not its `party_id`. A line's
+  `class` puts its cost on that project, as an invoice's its revenue: one
+  expense line per project, the untagged lines' as one, the payable line
+  never tagged; `notes` as for invoices, but none for an on-spec project
+  (a cost of on-spec work is an expense like any other); the feature as
+  for invoices.
 - `books.receive_payment { document_id, date, amount, cash_account }` →
-  `{ entry_id, remaining, status }`. Posts Dr Cash / Cr A/R.
+  `{ entry_id, remaining, status }`. Posts Dr Cash / Cr A/R, neither line
+  tagged with a project (balance-sheet only: the invoice's lines carry
+  its projects).
 - `books.pay_bill { document_id, date, amount, cash_account }` →
-  `{ entry_id, remaining, status }`. Posts Dr A/P / Cr Cash.
+  `{ entry_id, remaining, status }`. Posts Dr A/P / Cr Cash, neither line
+  tagged with a project.
 - `books.ar_aging { as_of? }` → `{ as_of, rows: [{ name, current, days_30,
   days_60, days_90, days_90_plus, total }] }` (`as_of` omitted: today).
 - `books.ap_aging { as_of? }` → same, per vendor (`as_of` omitted: today).
@@ -2121,14 +2150,11 @@ until the owner upgrades them.
 - `books.record_payout` lines and adjustments take optional `class` (a
   project); its result gains `notes`, one per finished or abandoned
   project tagged, as `books.add_line`'s `note`.
-- An invoice or a bill takes no project yet: `books.create_invoice` and
-  `books.create_bill` post their entry at once with untagged lines, and
-  only a draft's lines take a class (`books.add_line`'s `class`). Link the document to the
-  project (`books.link_attachment` subject kind `project`); when its lines
-  must count in the project's figures, book it as a hand-built entry
-  (`books.draft_entry` + `books.add_line` class) instead, which then is
-  no invoice or bill in the agings (an open item: tagged document
-  lines).
+- An invoice's or bill's lines take a project too (`books.create_invoice`
+  and `books.create_bill`, `class` on a line, rules.md B-37 item 8), in
+  books that declared the journal feature `document_line_projects`; the
+  handbook's projects section says which these books are. Their payments
+  take none.
 - `books.profit_and_loss_by_class { start?, end?, class? }` (omitted dates:
   the fiscal year to date, as every period report) → per-class revenue,
   expenses, net income, plus an unclassified row (only that class's row

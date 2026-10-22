@@ -1913,6 +1913,7 @@ fn one_line(amount: &str) -> Vec<DocumentLine> {
     vec![DocumentLine {
         description: "consulting".into(),
         amount: dec(amount),
+        class_id: None,
     }]
 }
 
@@ -2796,6 +2797,7 @@ fn a_new_account_named_like_a_sibling_or_holding_a_tin_is_refused() {
         vec![DocumentLine {
             description: "work".into(),
             amount: dec("100.00"),
+            class_id: None,
         }],
     )
     .unwrap();

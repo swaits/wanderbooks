@@ -321,6 +321,7 @@ fn every_subject(s: &mut Store, fx: &Fx) -> Vec<Subject> {
             vec![DocumentLine {
                 description: "App".into(),
                 amount: dec("100.00"),
+                class_id: None,
             }],
         )
         .unwrap();
@@ -333,6 +334,7 @@ fn every_subject(s: &mut Store, fx: &Fx) -> Vec<Subject> {
             vec![DocumentLine {
                 description: "Design".into(),
                 amount: dec("200.00"),
+                class_id: None,
             }],
         )
         .unwrap();

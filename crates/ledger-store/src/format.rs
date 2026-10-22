@@ -60,6 +60,7 @@ pub const KNOWN_FEATURES: &[&str] = &[
     DISPOSAL_BEFORE_SERVICE,
     DEPRECIATION_CATCH_UP,
     PROJECTS,
+    DOCUMENT_LINE_PROJECTS,
 ];
 
 /// Feature: `period.closed` closes to members with `"rounding":
@@ -154,6 +155,13 @@ pub const ASSET_BASIS: &str = "asset_basis";
 /// `decision.recorded` with `projects` (an older version would drop them
 /// silently).
 pub const PROJECTS: &str = "projects";
+
+/// Feature: an `invoice.created` or `bill.created` line naming its project
+/// (`class_id`, rules.md B-37 item 8). An older version would restore the
+/// document without its lines' projects, silently. Its own feature, not
+/// `projects`': books that consented to projects before it existed must
+/// consent again before a document names one.
+pub const DOCUMENT_LINE_PROJECTS: &str = "document_line_projects";
 
 /// The line type that declares the journal format.
 pub const FORMAT_SET: &str = "journal.format_set";
@@ -739,6 +747,44 @@ mod tests {
                 .declaration(2, &[SCHEDULE_CONVENTION, MONTH_REPOSTING])
                 .unwrap(),
             json!({"format": 2, "features": ["month_reposting", "schedule_convention"]})
+        );
+    }
+
+    /// The version the live books run (every feature through `projects`)
+    /// stops at a declaration of `document_line_projects` as newer, never
+    /// restoring an invoice or bill without its lines' projects; and books
+    /// that declared `projects` alone still wait for it (B-27, D-39).
+    #[test]
+    fn document_line_projects_is_its_own_feature() {
+        assert!(KNOWN_FEATURES.contains(&DOCUMENT_LINE_PROJECTS));
+        assert_ne!(DOCUMENT_LINE_PROJECTS, PROJECTS);
+        let before: Vec<&str> = KNOWN_FEATURES
+            .iter()
+            .copied()
+            .filter(|f| *f != DOCUMENT_LINE_PROJECTS)
+            .collect();
+        let l = line(
+            FORMAT_SET,
+            json!({"format": 2, "features": [PROJECTS, DOCUMENT_LINE_PROJECTS]}),
+        );
+        match declared_knowing(&l, &before) {
+            Err(StoreError::NewerJournal { need, .. }) => {
+                assert_eq!(need, "journal features document_line_projects")
+            }
+            other => panic!("expected NewerJournal, got {other:?}"),
+        }
+        let with_projects = JournalFormat {
+            format: 2,
+            features: before.iter().map(|f| f.to_string()).collect(),
+        };
+        assert!(matches!(
+            with_projects.require_feature(DOCUMENT_LINE_PROJECTS),
+            Err(StoreError::FormatUpgradePending { .. })
+        ));
+        let up = with_projects.upgrade().expect("waits for it");
+        assert_eq!(
+            up.adds(),
+            vec!["the journal feature document_line_projects"]
         );
     }
 

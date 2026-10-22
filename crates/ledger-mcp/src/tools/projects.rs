@@ -161,6 +161,21 @@ pub(super) fn late_tag_note(ledger: &Ledger, id: ClassId) -> Option<String> {
     ))
 }
 
+/// The note `books.create_invoice` gives for a line naming an on-spec
+/// project (rules.md B-37 items 4 and 8): on spec, a hoped-for payment is
+/// no receivable and no income until received, so an invoice for one
+/// means there is now an agreement, or it shouldn't be an invoice.
+pub(super) fn on_spec_invoice_note(ledger: &Ledger, id: ClassId) -> Option<String> {
+    let f = ledger.project_facts(id)?;
+    if f.kind != Some(ProjectKind::OnSpec) {
+        return None;
+    }
+    let name = &ledger.get_class(id)?.name;
+    Some(format!(
+        "project {name} is on spec: an invoice books a receivable and income, so is there now an agreement to be paid? If so, update its kind (books.update_project); if not, tell the human: on spec, a hoped-for payment is recorded only when received"
+    ))
+}
+
 #[tool_router(router = projects_router, vis = "pub(super)")]
 impl BooksServer {
     #[tool(

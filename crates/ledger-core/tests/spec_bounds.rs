@@ -141,6 +141,7 @@ fn dates_outside_the_calendar_are_refused_everywhere() {
     let line = vec![DocumentLine {
         description: "work".into(),
         amount: Decimal::ONE,
+        class_id: None,
     }];
     assert_eq!(
         b.ledger
@@ -219,6 +220,7 @@ fn replayed_dates_outside_the_calendar_are_accepted() {
     let line = vec![DocumentLine {
         description: "work".into(),
         amount: Decimal::ONE,
+        class_id: None,
     }];
     b.ledger
         .replay_invoice(1, customer, NaiveDate::MIN, NaiveDate::MAX, line.clone(), 1)
@@ -326,10 +328,12 @@ fn amounts_larger_than_a_line_are_refused_everywhere() {
             DocumentLine {
                 description: "a".into(),
                 amount: a,
+                class_id: None,
             },
             DocumentLine {
                 description: "b".into(),
                 amount: Decimal::ONE,
+                class_id: None,
             },
         ]
     };
@@ -617,6 +621,7 @@ fn replayed_payments_are_as_journaled() {
             vec![DocumentLine {
                 description: "work".into(),
                 amount: Decimal::new(10000, 2),
+                class_id: None,
             }],
         )
         .unwrap();

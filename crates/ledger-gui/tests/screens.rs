@@ -106,8 +106,17 @@ fn screenshots() {
         .unwrap_or_else(|| project_named("Tidepool app"));
     let project_client = project_named("Client work");
     let project_templates = project_named("Templates");
+    // An invoice whose lines name a project (else the first), and the
+    // first bill: their entries' pages show the document's lines.
+    let invoices = loaded.ledger.invoices();
+    let invoice = invoices
+        .iter()
+        .find(|i| i.lines.iter().any(|l| l.class_id.is_some()))
+        .or(invoices.first())
+        .map(|i| i.entry_id);
+    let bill = loaded.ledger.bills().first().map(|b| b.entry_id);
     drop(loaded);
-    let routes: Vec<(&str, Route)> = vec![
+    let mut routes: Vec<(&str, Route)> = vec![
         ("overview", Route::Overview),
         ("transactions", Route::Transactions),
         (
@@ -152,6 +161,8 @@ fn screenshots() {
         ("company", Route::Company),
         ("journal", Route::Journal),
     ];
+    routes.extend(invoice.map(|e| ("invoice", Route::Entry(e))));
+    routes.extend(bill.map(|e| ("bill", Route::Entry(e))));
     for (name, route) in routes {
         if only
             .as_deref()

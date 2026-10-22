@@ -794,6 +794,16 @@ impl BooksServer {
         self.live().current()
     }
 
+    /// Whether the books declared the journal feature
+    /// `document_line_projects` (the handbook's projects section says how
+    /// an invoice's or bill's lines reach a project by it).
+    fn document_line_projects(&self) -> bool {
+        self.lock().is_ok_and(|s| {
+            s.journal_format()
+                .has_feature(ledger_store::format::DOCUMENT_LINE_PROJECTS)
+        })
+    }
+
     /// The books' base currency code, e.g. "USD".
     fn currency(&self) -> &str {
         self.store.currency.code()
@@ -2636,6 +2646,54 @@ fn resolve_class(store: &Store, class: &str) -> Result<u32, String> {
     }
 }
 
+/// An invoice's or bill's lines as the tool takes them: each amount
+/// parsed and each project resolved ([`resolve_class`]) before anything is
+/// written.
+fn document_lines(
+    store: &Store,
+    lines: Vec<DocumentLineParam>,
+) -> Result<Vec<DocumentLine>, String> {
+    lines
+        .into_iter()
+        .map(|l| {
+            Ok(DocumentLine {
+                description: l.description,
+                amount: parse_amount(&l.amount)?,
+                class_id: l
+                    .class
+                    .as_deref()
+                    .map(|c| resolve_class(store, c))
+                    .transpose()?,
+            })
+        })
+        .collect()
+}
+
+/// A document's notes, each project once, in the order first named: its
+/// late-tag note ([`projects::late_tag_note`]) for a finished or abandoned
+/// project, and on an invoice ([`projects::on_spec_invoice_note`]) one for
+/// an on-spec project (rules.md B-37 items 4, 5 and 8).
+fn document_notes(
+    ledger: &ledger_core::Ledger,
+    lines: &[DocumentLine],
+    invoice: bool,
+) -> Vec<String> {
+    let mut named: Vec<u32> = Vec::new();
+    for c in lines.iter().filter_map(|l| l.class_id) {
+        if !named.contains(&c) {
+            named.push(c);
+        }
+    }
+    let mut notes = Vec::new();
+    for c in named {
+        notes.extend(projects::late_tag_note(ledger, c));
+        if invoice {
+            notes.extend(projects::on_spec_invoice_note(ledger, c));
+        }
+    }
+    notes
+}
+
 /// Preview lines with resulting balances for raw (account, side, amount) lines.
 fn preview_lines_for(
     store: &Store,
@@ -2967,10 +3025,12 @@ impl BooksServer {
         params: Parameters<HandbookParams>,
     ) -> Result<Json<HandbookOut>, String> {
         let settings = self.settings();
+        let declared = self.document_line_projects();
         let sections = handbook::SECTIONS
             .iter()
             .map(|(id, _)| {
-                let text = handbook::section(id, &settings, self.currency()).unwrap_or_default();
+                let text =
+                    handbook::section(id, &settings, self.currency(), declared).unwrap_or_default();
                 HandbookSectionOut {
                     id: id.to_string(),
                     title: handbook::title(&text).to_string(),
@@ -2982,7 +3042,7 @@ impl BooksServer {
         let section = match params.0.section.as_deref().map(str::trim) {
             None => None,
             Some(id) => {
-                let text = handbook::section(id, &settings, self.currency()).ok_or_else(|| {
+                let text = handbook::section(id, &settings, self.currency(), declared).ok_or_else(|| {
                     let ids: Vec<&str> = handbook::SECTIONS.iter().map(|(id, _)| *id).collect();
                     format!(
                         "no handbook section {id:?}: the sections are {}, or \"{}\" for all of them",
@@ -4119,6 +4179,11 @@ impl BooksServer {
                         Side::Credit => "credit".to_string(),
                     },
                     amount: money(l.amount.amount),
+                    class_id: l.class_id,
+                    project: l
+                        .class_id
+                        .and_then(|c| store.ledger().get_class(c))
+                        .map(|c| c.name.clone()),
                 }
             })
             .collect();
@@ -8489,7 +8554,7 @@ impl BooksServer {
     #[tool(
         name = "books.create_invoice",
         title = "Create and post an invoice",
-        description = "Create a sales invoice. Auto-posts Dr Accounts Receivable / Cr Revenue. Lines are {description, amount} with decimal-string amounts.",
+        description = "Create a sales invoice. Auto-posts Dr Accounts Receivable / Cr Revenue. Lines are {description, amount, class?} with decimal-string amounts; class (a project: name or id, books.projects) tags that line's revenue: one revenue line per project, the untagged lines' as one; the receivable line is never tagged. Its result gains notes for a finished, abandoned or on-spec project (on spec: is there now an agreement?), tagged anyway.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -8502,16 +8567,7 @@ impl BooksServer {
     ) -> Result<Json<CreateDocumentOut>, String> {
         let p = params.0;
         let mut store = self.lock()?;
-        let lines: Vec<DocumentLine> = p
-            .lines
-            .into_iter()
-            .map(|l| {
-                Ok(DocumentLine {
-                    description: l.description,
-                    amount: parse_amount(&l.amount)?,
-                })
-            })
-            .collect::<Result<_, String>>()?;
+        let lines = document_lines(&store, p.lines)?;
         let first_new = store.ledger().next_account_id();
         let id = store
             .create_invoice(
@@ -8530,13 +8586,14 @@ impl BooksServer {
             total: inv.total().map_err(|e| e.to_string())?.to_string(),
             entry_id: inv.entry_id,
             warnings: created_uncategorized(store.ledger(), first_new),
+            notes: document_notes(store.ledger(), &inv.lines, true),
         }))
     }
 
     #[tool(
         name = "books.create_bill",
         title = "Create and post a bill",
-        description = "Create a vendor bill. Auto-posts Dr General Expenses / Cr Accounts Payable. Lines are {description, amount} with decimal-string amounts.",
+        description = "Create a vendor bill. Auto-posts Dr General Expenses / Cr Accounts Payable. Lines are {description, amount, class?} with decimal-string amounts; class (a project: name or id, books.projects) tags that line's cost: one expense line per project, the untagged lines' as one; the payable line is never tagged. Its result gains notes for a finished or abandoned project, tagged anyway.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -8549,16 +8606,7 @@ impl BooksServer {
     ) -> Result<Json<CreateDocumentOut>, String> {
         let p = params.0;
         let mut store = self.lock()?;
-        let lines: Vec<DocumentLine> = p
-            .lines
-            .into_iter()
-            .map(|l| {
-                Ok(DocumentLine {
-                    description: l.description,
-                    amount: parse_amount(&l.amount)?,
-                })
-            })
-            .collect::<Result<_, String>>()?;
+        let lines = document_lines(&store, p.lines)?;
         let first_new = store.ledger().next_account_id();
         let id = store
             .create_bill(
@@ -8577,6 +8625,7 @@ impl BooksServer {
             total: bill.total().map_err(|e| e.to_string())?.to_string(),
             entry_id: bill.entry_id,
             warnings: created_uncategorized(store.ledger(), first_new),
+            notes: document_notes(store.ledger(), &bill.lines, false),
         }))
     }
 
@@ -9926,8 +9975,13 @@ impl BooksServer {
             }
             _ if path.starts_with(&format!("{}/", handbook::URI)) => {
                 let id = &path[handbook::URI.len() + 1..];
-                handbook::section(id, &self.settings(), self.currency())
-                    .ok_or_else(|| format!("unknown handbook section: {id}"))
+                handbook::section(
+                    id,
+                    &self.settings(),
+                    self.currency(),
+                    self.document_line_projects(),
+                )
+                .ok_or_else(|| format!("unknown handbook section: {id}"))
             }
             _ if path.starts_with("books://receipts/") => {
                 let id: u64 = path
@@ -11212,10 +11266,12 @@ mod tests {
                 handbook::connect_text(&settings, "USD"),
             ));
             for (id, _) in handbook::SECTIONS {
-                texts.push((
-                    format!("handbook {id}"),
-                    handbook::section(id, &settings, "USD").unwrap(),
-                ));
+                for declared in [true, false] {
+                    texts.push((
+                        format!("handbook {id}"),
+                        handbook::section(id, &settings, "USD", declared).unwrap(),
+                    ));
+                }
             }
         }
         // Every tool the text names is one there is.

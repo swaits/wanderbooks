@@ -256,6 +256,7 @@ fn origins_and_parties() {
         vec![DocumentLine {
             description: "x".into(),
             amount: Decimal::new(a, 2),
+            class_id: None,
         }]
     };
     let inv = s
@@ -637,6 +638,7 @@ fn more_origins_and_parties() {
         vec![DocumentLine {
             description: "x".into(),
             amount: Decimal::new(a, 2),
+            class_id: None,
         }]
     };
     s.create_invoice(cust, today, today + Days::new(30), line(10_000))

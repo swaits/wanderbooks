@@ -292,6 +292,7 @@ fn documents_and_aging_are_exact_or_refused() {
     let line = |a: Decimal| DocumentLine {
         description: "x".into(),
         amount: a,
+        class_id: None,
     };
     let fine = vec![
         line(Decimal::new(1, 11)),

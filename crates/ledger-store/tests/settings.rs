@@ -349,6 +349,7 @@ fn approvals_cover_every_post() {
     let line = |n: i64| ledger_core::DocumentLine {
         description: "work".into(),
         amount: Decimal::from(n),
+        class_id: None,
     };
     assert!(matches!(
         s.create_bill(v, d(2026, 10, 1), d(2026, 10, 31), vec![line(600)]),

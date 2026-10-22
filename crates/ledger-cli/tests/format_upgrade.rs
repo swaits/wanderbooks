@@ -643,7 +643,8 @@ fn copy_private(from: &Path, to: &Path) {
 ///      database is never written; what P2 can read is written, and every
 ///      write P2 would refuse or misread is refused, journaling nothing
 ///      (a setting key, a tax category, a depreciation catch-up, a members
-///      close counted from the count's start).
+///      close counted from the count's start, an invoice's or bill's line
+///      naming its project).
 ///   2. The consent backup holds the books exactly as they were, keys and
 ///      vault too; the upgrade is one line after P2's, byte for byte.
 ///   3. After it: the same figures, and every refused write is made; the
@@ -699,8 +700,23 @@ fn books_p2_served_cut_over_whole() {
         )
         .unwrap()["period_id"]
         .clone();
+    // A project by name alone is a plain class, which P2 reads.
+    a.call("books.add_project", json!({"name": "Lighthouse"}))
+        .unwrap();
     let waiting = journal(&dir);
     let refused: Vec<(&str, Value)> = vec![
+        // An invoice's or bill's line naming its project
+        // (document_line_projects, rules.md B-37 item 8).
+        (
+            "books.create_invoice",
+            json!({"party_id": 1, "date": "2026-02-10", "due_date": "2026-03-12",
+                   "lines": [{"description": "Design", "amount": "500.00", "class": "Lighthouse"}]}),
+        ),
+        (
+            "books.create_bill",
+            json!({"party_id": 1, "date": "2026-02-11", "due_date": "2026-03-13",
+                   "lines": [{"description": "Drafting", "amount": "120.00", "class": "Lighthouse"}]}),
+        ),
         (
             "books.set_setting",
             json!({"decided_by": "Avery Quill",

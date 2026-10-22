@@ -246,11 +246,11 @@ pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
     let client_class = s.add_project(
         "Client work",
         &ledger_core::ProjectFacts {
-            // Its invoices can't be tagged to it: an invoice posts one
-            // untagged revenue line (Ledger::create_invoice takes no
-            // class), so only the contractors it pays show here, said so.
+            // Its invoices' lines and the contractors it pays are tagged
+            // to it (rules.md B-37 item 8), so its snapshot is its
+            // revenue less its direct costs.
             description: Some(
-                "Design work for the studio's clients. Only its contractors are tagged to it: an invoice can't carry a project yet, so what the clients pay shows on the profit and loss, not here."
+                "Design work for the studio's clients: every client invoice, and the contractors who work on it."
                     .into(),
             ),
             kind: Some(ledger_core::ProjectKind::Client),
@@ -763,12 +763,9 @@ pub fn build(dir: &Path, today: NaiveDate) -> Result<(), StoreError> {
                     ][rng.pick(5) as usize]
                         .into(),
                     amount: amt,
+                    class_id: Some(client_class),
                 }],
             )?;
-            let entry = s.ledger().get_invoice(inv).map(|i| i.entry_id);
-            if let Some(e) = entry {
-                let _ = e;
-            }
             open_invoices.push((inv, date, amt));
         }
         // Collect invoices 20-50 days out; leave the latest ones open and one overdue.

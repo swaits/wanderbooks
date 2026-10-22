@@ -2085,6 +2085,7 @@ fn a_bill_payment_carries_its_bills_split() {
         vec![ledger_core::DocumentLine {
             description: "Equipment and supplies".into(),
             amount: x("1700.00"),
+            class_id: None,
         }],
         entry,
     )
@@ -2509,6 +2510,7 @@ fn a_reversed_bill_payment_leaves_the_purchase_unpaid() {
         vec![ledger_core::DocumentLine {
             description: "Equipment".into(),
             amount: x("1000.00"),
+            class_id: None,
         }],
         entry,
     )

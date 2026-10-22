@@ -36,6 +36,7 @@ fn line(desc: &str, amount: &str) -> DocumentLine {
     DocumentLine {
         description: desc.to_string(),
         amount: dec(amount),
+        class_id: None,
     }
 }
 
@@ -380,7 +381,7 @@ proptest! {
     ) {
         let lines: Vec<DocumentLine> = amts
             .iter()
-            .map(|c| DocumentLine { description: "l".into(), amount: cents(*c) })
+            .map(|c| DocumentLine { description: "l".into(), amount: cents(*c), class_id: None })
             .collect();
         let ok = !amts.is_empty() && amts.iter().all(|c| *c > 0);
         prop_assert_eq!(validate_lines(&lines).is_ok(), ok);
@@ -1083,6 +1084,7 @@ fn doc_lines(doc: &Doc) -> Vec<DocumentLine> {
         .map(|c| DocumentLine {
             description: "item".into(),
             amount: cents(*c),
+            class_id: None,
         })
         .collect()
 }

@@ -63,10 +63,16 @@ const FIELDS: &[&str] = &[
     "status", "party_id", "started_on", "ended_on", "links", "notes", "projects",
 ];
 
+/// Journal features a `journal.format_set` may declare.
+const FEATURES: &[&str] = &[
+    "projects", "document_line_projects", "payment_instruments", "month_reposting",
+    "a_feature_from_the_future",
+];
+
 /// A value replay might plausibly see: small ids, amounts as decimal
 /// strings, dates, sides, currencies, account types, nested objects.
 fn value(u: &mut Unstructured, depth: u32) -> arbitrary::Result<Value> {
-    Ok(match u.int_in_range(0..=12)? {
+    Ok(match u.int_in_range(0..=13)? {
         0 => json!(u.int_in_range(0u64..=6)?),
         1 => json!(format!("{}.{:02}", u.int_in_range(0u32..=5000)?, u.int_in_range(0u32..=99)?)),
         2 => json!(format!("2026-{:02}-{:02}", u.int_in_range(1u32..=12)?, u.int_in_range(1u32..=28)?)),
@@ -83,6 +89,16 @@ fn value(u: &mut Unstructured, depth: u32) -> arbitrary::Result<Value> {
         10 if depth < 2 => object(u, depth + 1)?,
         // 1099 decisions and payment methods (plan P3).
         11 => json!(*u.choose(&["nec", "misc", "not_reportable", "corporation", "business_card", "member_card", "0042"])?),
+        // A declaration's features: some this version knows (projects,
+        // the invoice and bill lines' projects) and one it doesn't.
+        12 => {
+            let n = u.int_in_range(0..=3)?;
+            Value::Array(
+                (0..n)
+                    .map(|_| u.choose(FEATURES).map(|f| json!(*f)))
+                    .collect::<arbitrary::Result<_>>()?,
+            )
+        }
         _ => json!(String::arbitrary(u)?),
     })
 }

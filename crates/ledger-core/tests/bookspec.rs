@@ -358,6 +358,8 @@ struct Event {
     #[serde(default)]
     bill: Option<BillSpec>,
     #[serde(default)]
+    invoice: Option<InvoiceSpec>,
+    #[serde(default)]
     run_depreciation: Option<RunSpec>,
     #[serde(default)]
     dispose_asset: Option<DisposeSpec>,
@@ -411,15 +413,48 @@ struct RunSchedulesSpec {
     through: String,
 }
 
-/// A bill from `vendor` for `amount`, dated and due on the event's date:
-/// Dr General Expenses (6999), Cr Accounts Payable (2000), each created
-/// with its fixed name when first needed, as the engine creates a control
-/// role's account (rules.md B-32).
+/// A bill from `vendor`, dated and due on the event's date, for `amount`
+/// (one line, the event's description) or its `lines`, exactly one of
+/// them: Dr General Expenses (6999), Cr Accounts Payable (2000), each
+/// created with its fixed name when first needed, as the engine creates a
+/// control role's account (rules.md B-32); a line naming a project puts
+/// its cost on that project's expense line (B-37 item 8).
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BillSpec {
     vendor: String,
+    #[serde(default)]
+    amount: Option<String>,
+    #[serde(default)]
+    lines: Vec<DocumentLineSpec>,
+}
+
+/// An invoice to `customer` (a name; added when first named), dated and
+/// due on the event's date, for `amount` or its `lines`, exactly one of
+/// them: Dr Accounts Receivable (1200), Cr Revenue (4000), each created
+/// with its fixed name when first needed (B-32); a line naming a project
+/// puts its revenue on that project's revenue line (B-37 item 8).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InvoiceSpec {
+    customer: String,
+    #[serde(default)]
+    amount: Option<String>,
+    #[serde(default)]
+    lines: Vec<DocumentLineSpec>,
+}
+
+/// One line of an invoice or a bill: its amount, what it is (the event's
+/// description when left out) and the project (a `setup.projects` name)
+/// it belongs to.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DocumentLineSpec {
     amount: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    project: Option<String>,
 }
 
 /// A change to the books that posts no entry, made right after event
@@ -731,6 +766,8 @@ struct Books<'a> {
     payees: BTreeMap<String, VendorId>,
     /// The vendors bills came from, by name (a payee's record if one).
     vendors: BTreeMap<String, VendorId>,
+    /// The customers invoices went to, by name.
+    customers: BTreeMap<String, u64>,
     /// The payment methods, by label.
     instruments: BTreeMap<String, InstrumentId>,
     /// The fixed assets of `setup.assets`, by id.
@@ -1181,6 +1218,7 @@ impl<'a> Books<'a> {
             party_members,
             parties,
             vendors: payees.clone(),
+            customers: BTreeMap::new(),
             payees,
             instruments,
             assets,
@@ -1241,6 +1279,7 @@ impl<'a> Books<'a> {
             ("reverses", e.reverses.is_some()),
             ("close", e.close.is_some()),
             ("bill", e.bill.is_some()),
+            ("invoice", e.invoice.is_some()),
             ("run_depreciation", e.run_depreciation.is_some()),
             ("dispose_asset", e.dispose_asset.is_some()),
             ("run_schedules", e.run_schedules.is_some()),
@@ -1249,13 +1288,13 @@ impl<'a> Books<'a> {
         let kind = match kinds.iter().filter(|(_, given)| *given).collect::<Vec<_>>()[..] {
             [(kind, _)] => *kind,
             _ => panic!(
-                "{ex} event {n}: an event is one of lines, reverses, close, bill, run_depreciation, dispose_asset, run_schedules or register_schedule"
+                "{ex} event {n}: an event is one of lines, reverses, close, bill, invoice, run_depreciation, dispose_asset, run_schedules or register_schedule"
             ),
         };
         // An entry of the example's own words: dated and described. A
         // disposal is dated; the other commands date their own entries,
         // and every command describes its own.
-        let own = matches!(kind, "lines" | "reverses" | "close" | "bill");
+        let own = matches!(kind, "lines" | "reverses" | "close" | "bill" | "invoice");
         assert_eq!(
             e.date.is_some(),
             own || kind == "dispose_asset",
@@ -1278,7 +1317,7 @@ impl<'a> Books<'a> {
         );
         assert!(
             e.payee.is_none() || kind == "lines",
-            "{ex} event {n}: a payee is an entry's: a reversal takes its original's, a bill names its vendor, a close and a command have none"
+            "{ex} event {n}: a payee is an entry's: a reversal takes its original's, a bill names its vendor, an invoice its customer, a close and a command have none"
         );
         assert!(
             (e.parties.is_empty() && e.instrument.is_none()) || kind != "reverses",
@@ -1289,7 +1328,7 @@ impl<'a> Books<'a> {
             "{ex} event {n}: {kind} is tagged with no parties or payment method"
         );
         assert!(
-            e.refused.is_none() || !matches!(kind, "lines" | "close" | "bill"),
+            e.refused.is_none() || !matches!(kind, "lines" | "close" | "bill" | "invoice"),
             "{ex} event {n}: refused is for a reversal or a command, which the books take whole or not at all"
         );
         let what = format!("{ex} event {n}");
@@ -1376,6 +1415,43 @@ impl<'a> Books<'a> {
         }
     }
 
+    /// An invoice's or bill's lines: `amount` (one line, described as the
+    /// event) or `lines`, exactly one; each project a `setup.projects`
+    /// name.
+    fn document_lines(
+        &self,
+        amount: &Option<String>,
+        lines: &[DocumentLineSpec],
+        description: &str,
+        what: &str,
+    ) -> Vec<DocumentLine> {
+        let positive = |s: &str| {
+            let a = exact(s, what);
+            assert!(a > Decimal::ZERO, "{what}: amounts are positive");
+            a
+        };
+        match (amount, lines) {
+            (Some(a), []) => vec![DocumentLine {
+                description: description.to_string(),
+                amount: positive(a),
+                class_id: None,
+            }],
+            (None, [_, ..]) => lines
+                .iter()
+                .map(|l| DocumentLine {
+                    description: l.description.clone().unwrap_or_else(|| description.into()),
+                    amount: positive(&l.amount),
+                    class_id: l.project.as_ref().map(|p| {
+                        *self.projects.get(p).unwrap_or_else(|| {
+                            panic!("{what}: project {p:?} not in setup.projects")
+                        })
+                    }),
+                })
+                .collect(),
+            _ => panic!("{what}: a document has an amount or lines, exactly one"),
+        }
+    }
+
     /// Event `n`'s command, given to the books (`kind`, as [`Self::apply`]
     /// found it): whatever it posts is posted, or the books refuse it.
     fn take(
@@ -1459,7 +1535,7 @@ impl<'a> Books<'a> {
             }
             "bill" => {
                 let b = e.bill.as_ref().expect("checked: a bill");
-                let amount = money(&b.amount);
+                let lines = self.document_lines(&b.amount, &b.lines, description, what);
                 let vendor = match self.vendors.get(&b.vendor) {
                     Some(&v) => v,
                     None => {
@@ -1468,12 +1544,23 @@ impl<'a> Books<'a> {
                         v
                     }
                 };
-                let lines = vec![DocumentLine {
-                    description: description.to_string(),
-                    amount,
-                }];
                 self.store
                     .create_bill(vendor, day(), day(), lines)
+                    .map(|_| ())
+            }
+            "invoice" => {
+                let i = e.invoice.as_ref().expect("checked: an invoice");
+                let lines = self.document_lines(&i.amount, &i.lines, description, what);
+                let customer = match self.customers.get(&i.customer) {
+                    Some(&c) => c,
+                    None => {
+                        let c = self.store.add_customer(&i.customer)?;
+                        self.customers.insert(i.customer.clone(), c);
+                        c
+                    }
+                };
+                self.store
+                    .create_invoice(customer, day(), day(), lines)
                     .map(|_| ())
             }
             "run_depreciation" => {
@@ -3750,4 +3837,47 @@ fn a_project_query_leaving_a_value_out_is_refused() {
     run_edited("projects-on-spec-costs-are-expenses.toml", |t| {
         t.replacen("unrecovered_cost = \"1460.00\"\n", "", 1)
     });
+}
+
+/// An invoice's line naming a project the setup doesn't have is refused.
+#[test]
+#[should_panic(expected = "project \"Gamma\" not in setup.projects")]
+fn a_document_line_naming_an_unknown_project_is_refused() {
+    run_edited(
+        "projects-invoice-and-bill-lines-count-by-project.toml",
+        |t| t.replacen("project = \"Harbor\" }", "project = \"Gamma\" }", 1),
+    );
+}
+
+/// A document has an amount or lines, exactly one.
+#[test]
+#[should_panic(expected = "a document has an amount or lines, exactly one")]
+fn a_document_with_an_amount_and_lines_is_refused() {
+    run_edited(
+        "projects-invoice-and-bill-lines-count-by-project.toml",
+        |t| {
+            t.replacen(
+                "invoice = { customer = \"Cedar Client\", lines",
+                "invoice = { customer = \"Cedar Client\", amount = \"1.00\", lines",
+                1,
+            )
+        },
+    );
+}
+
+/// An invoice's projects count: the example fails when a line's project
+/// moves (Zeta's figures are no longer the ones worked by hand).
+#[test]
+#[should_panic(expected = "projects-invoice-and-bill-lines-count-by-project project \"Zeta\"")]
+fn an_invoice_lines_project_is_what_the_project_counts() {
+    run_edited(
+        "projects-invoice-and-bill-lines-count-by-project.toml",
+        |t| {
+            t.replacen(
+                "{ description = \"Revisions\", amount = \"500.00\", project = \"Zeta\" }",
+                "{ description = \"Revisions\", amount = \"500.00\", project = \"Harbor\" }",
+                1,
+            )
+        },
+    );
 }

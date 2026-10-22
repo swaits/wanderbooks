@@ -74,6 +74,7 @@ fn doc(c: i64) -> Vec<DocumentLine> {
     vec![DocumentLine {
         description: "work".into(),
         amount: cents(c),
+        class_id: None,
     }]
 }
 

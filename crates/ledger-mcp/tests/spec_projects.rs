@@ -1200,3 +1200,390 @@ fn a_digit_name_that_shadows_an_id_says_what_to_pass() {
     );
     assert_eq!(files["subject"]["label"], "project 1 Éclair");
 }
+
+// ------------------------------------------------- invoices and bills
+
+/// [`books`] as the live books stand until their owner consents again:
+/// this version's format without `document_line_projects` (they declared
+/// `projects`).
+fn books_before_document_projects(name: &str) -> Mcp {
+    let dir = test_dir(name);
+    let mut format = ledger_store::format::current();
+    format
+        .features
+        .retain(|f| f != ledger_store::format::DOCUMENT_LINE_PROJECTS);
+    ledger_store::Store::create_in_format(
+        &dir.join("books-data"),
+        ledger_core::Currency::USD,
+        &format,
+    )
+    .unwrap();
+    let toml = books_toml(&dir, "Spec Co", "");
+    let mut m = Mcp::start(&dir, &toml);
+    m.accounts(CHART);
+    m.books_dir = Some(dir);
+    m
+}
+
+impl Mcp {
+    /// Each line of the entry as books.get_entry shows it: (code, side,
+    /// amount, project).
+    fn entry_lines(&mut self, entry: u64) -> Vec<(String, String, String, Option<String>)> {
+        self.read_only("books.get_entry", json!({"entry_id": entry}))["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| {
+                (
+                    l["code"].as_str().unwrap().to_string(),
+                    l["side"].as_str().unwrap().to_string(),
+                    l["amount"].as_str().unwrap().to_string(),
+                    l["project"].as_str().map(str::to_string),
+                )
+            })
+            .collect()
+    }
+
+    /// Each line's `class_id` as books.get_entry shows it (absent: None).
+    fn entry_class_ids(&mut self, entry: u64) -> Vec<Option<u64>> {
+        let lines = self.read_only("books.get_entry", json!({"entry_id": entry}))["lines"].clone();
+        lines
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| {
+                assert!(
+                    l.get("class_id").is_none_or(|c| !c.is_null()),
+                    "an untagged line omits class_id: {l}"
+                );
+                l["class_id"].as_u64()
+            })
+            .collect()
+    }
+
+    /// The projects handbook section served as a resource.
+    fn handbook_resource(&mut self) -> String {
+        let r = self.rpc(
+            "resources/read",
+            json!({"uri": "books://handbook/projects"}),
+        );
+        r["result"]["contents"][0]["text"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{r}"))
+            .to_string()
+    }
+}
+
+fn l4(
+    code: &str,
+    side: &str,
+    amount: &str,
+    project: Option<&str>,
+) -> (String, String, String, Option<String>) {
+    (
+        code.into(),
+        side.into(),
+        amount.into(),
+        project.map(str::to_string),
+    )
+}
+
+/// rules.md B-37 item 8: each invoice and bill line takes a project (by
+/// name or id); the entry's revenue or expense side is one line per
+/// project, the untagged lines' as one, the receivable or payable line
+/// and the payments untagged; books.project, profit_and_loss_by_class,
+/// the 1099 worksheet and the party's totals all read them.
+#[test]
+fn invoice_and_bill_lines_count_toward_their_projects() {
+    let mut m = books("doc-lines");
+    let zeta = m.ok(
+        "books.add_project",
+        json!({"name": "Zeta site", "kind": "client"}),
+    )["id"]
+        .as_u64()
+        .unwrap();
+    let harbor = m.ok(
+        "books.add_project",
+        json!({"name": "Harbor app", "kind": "client"}),
+    )["id"]
+        .as_u64()
+        .unwrap();
+    let cedar = m.ok("books.add_customer", json!({"name": "Cedar Client"}))["id"].clone();
+    let dana = m.ok("books.add_vendor", json!({"name": "Dana Illustration"}));
+    let (dana_vendor, dana_party) = (dana["id"].clone(), dana["party_id"].clone());
+    m.ok(
+        "books.set_vendor_1099",
+        json!({"vendor": "Dana Illustration", "form_1099": "nec", "decided_by": "Tobin Harlow", "decided_on": "2026-01-01"}),
+    );
+    let inv = m.ok(
+        "books.create_invoice",
+        json!({"party_id": cedar, "date": "2026-03-02", "due_date": "2026-04-01", "lines": [
+            {"description": "Design", "amount": "3000.00", "class": "Zeta site"},
+            {"description": "Hosting", "amount": "200.00", "class": harbor.to_string()},
+            {"description": "Rush fee", "amount": "100.00"},
+            {"description": "Revisions", "amount": "500.00", "class": " zeta SITE "},
+        ]}),
+    );
+    assert_eq!(inv["total"], "3800.00");
+    assert!(inv.get("notes").is_none(), "{inv}");
+    let inv_entry = inv["entry_id"].as_u64().unwrap();
+    assert_eq!(
+        m.entry_lines(inv_entry),
+        vec![
+            l4("1200", "debit", "3800.00", None),
+            l4("4000", "credit", "3500.00", Some("Zeta site")),
+            l4("4000", "credit", "200.00", Some("Harbor app")),
+            l4("4000", "credit", "100.00", None),
+        ]
+    );
+    // books.get_entry's class_id is the project's id on a tagged line and
+    // absent on the others.
+    assert_eq!(
+        m.entry_class_ids(inv_entry),
+        vec![None, Some(zeta), Some(harbor), None]
+    );
+    let bill = m.ok(
+        "books.create_bill",
+        json!({"party_id": dana_vendor, "date": "2026-03-09", "due_date": "2026-04-08", "lines": [
+            {"description": "Illustration", "amount": "1200.00", "class": "Zeta site"},
+            {"description": "Postage", "amount": "50.00"},
+        ]}),
+    );
+    let bill_entry = bill["entry_id"].as_u64().unwrap();
+    assert_eq!(
+        m.entry_lines(bill_entry),
+        vec![
+            l4("6999", "debit", "1200.00", Some("Zeta site")),
+            l4("6999", "debit", "50.00", None),
+            l4("2000", "credit", "1250.00", None),
+        ]
+    );
+    assert_eq!(m.entry_class_ids(bill_entry), vec![Some(zeta), None, None]);
+    // Payments are balance-sheet only: no project.
+    let got = m.ok(
+        "books.receive_payment",
+        json!({"document_id": inv["id"], "date": "2026-03-20", "amount": "3800.00", "cash_account": "1000"}),
+    );
+    let paid = m.ok(
+        "books.pay_bill",
+        json!({"document_id": bill["id"], "date": "2026-03-30", "amount": "1250.00", "cash_account": "1000"}),
+    );
+    for e in [&got["entry_id"], &paid["entry_id"]] {
+        let e = e.as_u64().unwrap();
+        assert!(m.entry_lines(e).iter().all(|l| l.3.is_none()), "entry {e}");
+    }
+    // The project's figures, and the class P&L, to the cent.
+    let year = json!({"start": "2026-01-01", "end": "2026-12-31"});
+    let mut a = year.clone();
+    a["project"] = json!("Zeta site");
+    let z = m.read_only("books.project", a);
+    assert_eq!(
+        (
+            &z["period"]["revenue"],
+            &z["period"]["expenses"],
+            &z["period"]["net"]
+        ),
+        (&json!("3500.00"), &json!("1200.00"), &json!("2300.00"))
+    );
+    assert_eq!(z["to_date"]["net"], "2300.00");
+    assert_eq!(z["period"]["by_month"][2]["net"], "2300.00");
+    let entries: Vec<u64> = z["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["entry_id"].as_u64().unwrap())
+        .collect();
+    assert_eq!(entries, vec![bill_entry, inv_entry]);
+    let by_class = m.read_only("books.profit_and_loss_by_class", year.clone());
+    let row = |name: &str| {
+        by_class["classes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["class"] == name)
+            .unwrap_or_else(|| panic!("{name}: {by_class}"))
+            .clone()
+    };
+    assert_eq!(row("Zeta site")["net_income"], "2300.00");
+    assert_eq!(row("Harbor app")["net_income"], "200.00");
+    // The 1099 worksheet and the party's totals follow the money: the
+    // bill's payment, 1,250.00, whatever its lines' projects.
+    let w = m.read_only("books.vendor_1099", json!({"year": 2026}));
+    let dana_line = w["vendors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["name"] == "Dana Illustration")
+        .unwrap()
+        .clone();
+    assert_eq!(dana_line["paid"], "1250.00");
+    let p = m.read_only(
+        "books.party",
+        json!({"party": dana_party.to_string(), "year": 2026}),
+    );
+    assert_eq!(p["totals"]["paid"], "1250.00", "{p}");
+    assert_eq!(p["totals"]["amount_1099"], "1250.00", "{p}");
+}
+
+#[test]
+fn a_document_naming_an_unknown_project_is_refused_whole() {
+    let mut m = books("doc-unknown");
+    m.ok("books.add_project", json!({"name": "Zeta site"}));
+    let cedar = m.ok("books.add_customer", json!({"name": "Cedar"}))["id"].clone();
+    let v = m.ok("books.add_vendor", json!({"name": "Dana"}))["id"].clone();
+    for (tool, party) in [("books.create_invoice", &cedar), ("books.create_bill", &v)] {
+        let why = m.refuse(
+            tool,
+            json!({"party_id": party, "date": "2026-03-02", "due_date": "2026-04-01", "lines": [
+                {"description": "a", "amount": "10.00", "class": "Zeta site"},
+                {"description": "b", "amount": "10.00", "class": "Nowhere"},
+            ]}),
+        );
+        assert!(why.contains("unknown project \"Nowhere\""), "{tool}: {why}");
+    }
+}
+
+#[test]
+fn a_document_for_a_finished_project_says_so() {
+    let mut m = books("doc-late");
+    m.ok(
+        "books.add_project",
+        json!({"name": "Harbor", "status": "finished", "ended_on": "2026-09-30"}),
+    );
+    m.ok(
+        "books.add_project",
+        json!({"name": "Dock", "status": "abandoned"}),
+    );
+    let cedar = m.ok("books.add_customer", json!({"name": "Cedar"}))["id"].clone();
+    let out = m.ok(
+        "books.create_invoice",
+        json!({"party_id": cedar, "date": "2026-10-05", "due_date": "2026-11-04", "lines": [
+            {"description": "Final", "amount": "10.00", "class": "Harbor"},
+            {"description": "Again", "amount": "10.00", "class": "harbor"},
+            {"description": "Old", "amount": "10.00", "class": "Dock"},
+        ]}),
+    );
+    let notes: Vec<&str> = out["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n.as_str().unwrap())
+        .collect();
+    assert_eq!(notes.len(), 2, "{notes:?}");
+    assert!(
+        notes[0].contains("Harbor is finished (ended 2026-09-30)"),
+        "{notes:?}"
+    );
+    assert!(notes[1].contains("Dock is abandoned"), "{notes:?}");
+    // Tagged anyway.
+    let e = out["entry_id"].as_u64().unwrap();
+    assert_eq!(
+        m.entry_lines(e)[1],
+        l4("4000", "credit", "20.00", Some("Harbor"))
+    );
+}
+
+/// B-37 items 4 and 8: an invoice line naming an on-spec project is taken
+/// and its result asks whether there is now an agreement (a hoped-for
+/// payment is no receivable); a bill's cost for one is an expense like any
+/// other, so a bill gets no such note.
+#[test]
+fn an_invoice_for_an_on_spec_project_asks_about_an_agreement() {
+    let mut m = books("doc-on-spec");
+    m.ok(
+        "books.add_project",
+        json!({"name": "Kestrel", "kind": "on_spec"}),
+    );
+    m.ok(
+        "books.add_project",
+        json!({"name": "Zeta", "kind": "client"}),
+    );
+    let cedar = m.ok("books.add_customer", json!({"name": "Cedar"}))["id"].clone();
+    let v = m.ok("books.add_vendor", json!({"name": "Dana"}))["id"].clone();
+    let out = m.ok(
+        "books.create_invoice",
+        json!({"party_id": cedar, "date": "2026-10-05", "due_date": "2026-11-04", "lines": [
+            {"description": "Build", "amount": "10.00", "class": "Kestrel"},
+            {"description": "More", "amount": "5.00", "class": "kestrel"},
+            {"description": "Site", "amount": "7.00", "class": "Zeta"},
+        ]}),
+    );
+    let notes = out["notes"].as_array().unwrap();
+    assert_eq!(notes.len(), 1, "{out}");
+    let note = notes[0].as_str().unwrap();
+    assert!(
+        note.contains("project Kestrel is on spec") && note.contains("is there now an agreement"),
+        "{note}"
+    );
+    let e = out["entry_id"].as_u64().unwrap();
+    assert_eq!(
+        m.entry_lines(e)[1],
+        l4("4000", "credit", "15.00", Some("Kestrel"))
+    );
+    let bill = m.ok(
+        "books.create_bill",
+        json!({"party_id": v, "date": "2026-10-05", "due_date": "2026-11-04", "lines": [
+            {"description": "Icons", "amount": "10.00", "class": "Kestrel"},
+        ]}),
+    );
+    assert!(bill.get("notes").is_none(), "{bill}");
+}
+
+/// D-39: books that declared `projects` but not
+/// `document_line_projects` refuse a document naming a project, journaling
+/// nothing, and take one naming none; the handbook tells them so.
+#[test]
+fn books_without_the_feature_refuse_a_tagged_document() {
+    let mut m = books_before_document_projects("doc-gate");
+    m.ok(
+        "books.add_project",
+        json!({"name": "Zeta site", "kind": "client"}),
+    );
+    let cedar = m.ok("books.add_customer", json!({"name": "Cedar"}))["id"].clone();
+    let v = m.ok("books.add_vendor", json!({"name": "Dana"}))["id"].clone();
+    let head = m.journal();
+    for (tool, party) in [("books.create_invoice", &cedar), ("books.create_bill", &v)] {
+        let why = m.refuse(
+            tool,
+            json!({"party_id": party, "date": "2026-03-02", "due_date": "2026-04-01", "lines": [
+                {"description": "a", "amount": "10.00", "class": "Zeta site"},
+            ]}),
+        );
+        assert!(
+            why.starts_with("format_upgrade_pending:") && why.contains("document_line_projects"),
+            "{tool}: {why}"
+        );
+    }
+    assert_eq!(m.journal(), head, "nothing journaled");
+    m.ok(
+        "books.create_invoice",
+        json!({"party_id": cedar, "date": "2026-03-02", "due_date": "2026-04-01", "lines": [
+            {"description": "a", "amount": "10.00"},
+        ]}),
+    );
+    let text = m.read_only("books.handbook", json!({"section": "projects"}))["section"]["text"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        text.contains("takes no project in these books until their format upgrade"),
+        "{text}"
+    );
+    // The same section read as a resource tells the same books the same.
+    let served = m.handbook_resource();
+    assert!(
+        served.contains("takes no project in these books until their format upgrade"),
+        "{served}"
+    );
+    assert!(!served.contains("take class on each line"), "{served}");
+    let mut fresh = books("doc-gate-fresh");
+    let served = fresh.handbook_resource();
+    assert!(served.contains("take class on each line"), "{served}");
+    assert!(!served.contains("takes no project"), "{served}");
+    let text = fresh.read_only("books.handbook", json!({"section": "projects"}))["section"]["text"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(text.contains("take class on each line"), "{text}");
+    assert!(!text.contains("takes no project"), "{text}");
+}

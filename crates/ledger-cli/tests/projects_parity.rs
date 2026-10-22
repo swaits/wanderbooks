@@ -257,3 +257,140 @@ fn a_projects_snapshot_is_the_same_in_the_viewer_and_from_the_server() {
     );
     assert_eq!(period["net"], "-722.22", "a refund and costs, no sale");
 }
+
+/// rules.md B-37 item 8: a project's invoiced revenue and billed costs,
+/// made through the books server's own tools, read the same in the viewer
+/// (its snapshot, and the invoice's and bill's pages: each line's
+/// project) and from the server (books.project, books.get_entry).
+#[test]
+fn invoiced_and_billed_project_figures_are_the_same_in_the_viewer_and_from_the_server() {
+    let dir = tempfile::Builder::new()
+        .prefix("wb-projects-parity-docs-")
+        .tempdir()
+        .unwrap();
+    let data = dir.path().join("books-data");
+    std::fs::write(
+        dir.path().join("wanderbooks.toml"),
+        "[company]\nname = \"Fernhill Labs\"\nfiscal_year_start = \"01-01\"\n\
+         [books]\nreceipt_threshold = \"1000000.00\"\ncash_accounts = [\"1000\"]\n",
+    )
+    .unwrap();
+    let today = d(2026, 10, 15);
+    {
+        let mut st = ledger_store::Store::create(&data, Currency::USD).unwrap();
+        st.add_account("1000", "Cash", AccountType::Asset, None, false)
+            .unwrap();
+    }
+    let mut server = Server::start(&data);
+    server.tool(
+        "books.add_project",
+        json!({"name": "Kestrel", "kind": "client", "started_on": "2026-01-05"}),
+    );
+    server.tool("books.add_project", json!({"name": "Heron"}));
+    let cedar = server.tool("books.add_customer", json!({"name": "Cedar Client"}))["id"].clone();
+    let dana = server.tool("books.add_vendor", json!({"name": "Dana Illustration"}))["id"].clone();
+    let doc = |party: &Value, date: &str, lines: Value| json!({"party_id": party, "date": date, "due_date": date, "lines": lines});
+    let inv = server.tool(
+        "books.create_invoice",
+        doc(
+            &cedar,
+            "2026-02-02",
+            json!([
+                {"description": "Discovery", "amount": "1500.00", "class": "Kestrel"},
+                {"description": "Heron sketches", "amount": "250.00", "class": "Heron"},
+                {"description": "Travel", "amount": "80.00"},
+            ]),
+        ),
+    );
+    let inv2 = server.tool(
+        "books.create_invoice",
+        doc(
+            &cedar,
+            "2026-05-04",
+            json!([{"description": "Build", "amount": "4321.09", "class": "kestrel"}]),
+        ),
+    );
+    let bill = server.tool(
+        "books.create_bill",
+        doc(
+            &dana,
+            "2026-03-09",
+            json!([
+                {"description": "Illustration", "amount": "987.65", "class": "Kestrel"},
+                {"description": "Postage", "amount": "12.00"},
+            ]),
+        ),
+    );
+    server.tool(
+        "books.receive_payment",
+        json!({"document_id": inv["id"], "date": "2026-02-20", "amount": "1830.00", "cash_account": "1000"}),
+    );
+    let b = data::load_once(&Source {
+        data_dir: data.clone(),
+        today: Some(today),
+    })
+    .unwrap();
+    let id = b.ledger.find_class_by_name("Kestrel").unwrap().id;
+    let page = page_figures(&b, id, Some(d(2026, 1, 5)), false);
+    let t = page.to_date.as_ref().unwrap();
+    let snap = Snap::to_date(t);
+    let p = server.tool(
+        "books.project",
+        json!({"project": "Kestrel", "start": "2026-01-01", "end": today.to_string()}),
+    );
+    let to = &p["to_date"];
+    assert_eq!(to["revenue"], s(snap.revenue));
+    assert_eq!(to["expenses"], s(snap.expenses));
+    assert_eq!(to["net"], s(snap.contribution));
+    assert_eq!(
+        to["margin_pct"],
+        snap.margin_pct
+            .map_or(Value::Null, |m| json!(m.to_string()))
+    );
+    // By hand: 1,500.00 + 4,321.09 invoiced, 987.65 billed.
+    assert_eq!(
+        (
+            to["revenue"].as_str(),
+            to["expenses"].as_str(),
+            to["net"].as_str()
+        ),
+        (Some("5821.09"), Some("987.65"), Some("4833.44"))
+    );
+    let ((_, _), months) = page.months.as_ref().unwrap();
+    let by_month = p["period"]["by_month"].as_array().unwrap();
+    assert!(!by_month.is_empty(), "{p}");
+    assert_eq!(by_month.len(), months.months.len());
+    for (m, ours) in by_month.iter().zip(&months.months) {
+        assert_eq!(m["month"], ours.start.format("%Y-%m").to_string());
+        assert_eq!(m["revenue"], s(ours.revenue), "{m}");
+        assert_eq!(m["expenses"], s(ours.expenses), "{m}");
+    }
+    // Each document's lines: the viewer's page names the project the
+    // server's entry line carries.
+    for out in [&inv, &inv2, &bill] {
+        let entry = out["entry_id"].as_u64().unwrap();
+        let doc = ledger_gui::pages::entry::document_of(&b, entry).unwrap();
+        let viewer: Vec<Option<String>> = {
+            let mut seen: Vec<Option<String>> = Vec::new();
+            for l in doc.lines {
+                let name = l
+                    .class_id
+                    .and_then(|c| b.ledger.get_class(c))
+                    .map(|c| c.name.clone());
+                if !seen.contains(&name) {
+                    seen.push(name);
+                }
+            }
+            seen
+        };
+        let served = server.tool("books.get_entry", json!({"entry_id": entry}));
+        let served: Vec<Option<String>> = served["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|l| l["code"] == "4000" || l["code"] == "6999")
+            .map(|l| l["project"].as_str().map(str::to_string))
+            .collect();
+        assert_eq!(viewer, served, "entry {entry}");
+    }
+}

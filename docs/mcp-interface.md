@@ -552,7 +552,13 @@ every tool over every book in ledger-store's `tests/fixtures/old-books`.
     and kind: `{ entry, date, label, kind, amount, on_behalf?, accounts,
     reverses?, class? }`; every transaction is listed (D-35), each under its
     kind. An entry's interest is its own operating class, (b) or (e), apart
-    from the rest of its operating cash. What a member or a lender paid or
+    from the rest of its operating cash. A payment to a party with the
+    `government_agency` or `tax_agency` role is `other_payments`, (g),
+    on any account (rules.md B-14 rule 5; payroll remittances excepted);
+    one shared between such a party and a supplier gives two operating
+    lines for the one entry, `other_payments` and
+    `to_suppliers_and_employees`, split by the parties' shares and
+    summing to the payment. What a member or a lender paid or
     received for the company with no cash account moving is cash borrowed
     (or contributed) and spent, on the entry's date (D-42, rules.md B-14
     rule 11): an expense a member paid personally through Due to Members
@@ -1192,7 +1198,11 @@ refused, never guessed.
 `payout_platform`, `tax_agency`, `government_agency` (regulators and
 registries that don't tax: a division of corporations, a licensing board),
 `financial_institution`, `landlord`.
-Vendor and customer follow the records and are never set by hand.
+Vendor and customer follow the records and are never set by hand. A
+`tax_agency` or `government_agency` payee also classes the company's
+payments to it on the cash flow statement: other operating cash
+payments, never cash paid to suppliers (`books.cash_flow`, rules.md B-14
+rule 5).
 
 **Rules the engine enforces** (each refusal changes nothing, the journal
 byte for byte): no party field holds a full TIN (a run of nine digits,

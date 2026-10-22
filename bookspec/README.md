@@ -406,6 +406,7 @@ the 1st, among others).
 | `<section>.<N>` | event N's entry's cash in that section (`financing.4`) |
 | `<section>.<N>.on_behalf` | of it, what a member or a lender paid or received for the company, no cash account moving (constructive receipt and disbursement) |
 | `<section>.count` | how many entries the section lists |
+| `class.<a..g>` | an operating class's total, by ASC 230-10-45-25's letter: (a) from customers, (b) interest and dividends received, (c) other receipts, (d) paid to suppliers and employees, (e) interest paid, (f) income taxes paid, (g) other payments; given one, every class the statement has must be given |
 | `noncash.<N>` | event N's entry's noncash investing and financing disclosure |
 | `noncash.count` | how many entries are disclosed |
 | `reconciliation.depreciation` | depreciation added back |

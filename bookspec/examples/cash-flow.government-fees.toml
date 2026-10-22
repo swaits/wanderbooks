@@ -1,0 +1,184 @@
+# A payment to a government is not a supplier's, whatever account it is
+# booked to: the payee decides (and so does a taxes-and-licenses account).
+#
+# wanderbooks: the P3 cutover review's open point 2 (a state's LLC filing
+# fee, booked to an organization-costs account, read as cash paid to
+# suppliers); rules.md B-14 rule 5; regression tests
+# `a_payment_to_a_government_is_other_operating`,
+# `a_government_payee_moves_a_fee_on_any_account`,
+# `a_shared_government_payment_splits_to_the_cent`,
+# `operating_classes_follow_asc_230_10_45_25` (ledger-core
+# tests/spec_cash_flow.rs).
+
+id = "cash-flow.government-fees"
+title = "Fees paid to a government are other operating payments, not cash paid to suppliers"
+rule = "In a statement of cash flows by the direct method, an operating cash payment to a government for taxes, duties, fines or other fees or penalties MUST NOT be reported as cash paid to suppliers and employees: it MUST be reported among other operating cash payments (income taxes apart), whether the payee is a government or the account is one for taxes and licenses. A payment to a supplier on the same account MUST stay cash paid to suppliers, and a payment shared between a government and a supplier MUST be split by their shares."
+status = "AUTHORITY"
+sources = [
+  "ASC 230-10-45-17(b): \"Cash payments to other suppliers and employees for other goods or services\"; 45-17(c): \"Cash payments to governments for taxes, duties, fines, and other fees or penalties\" (EY Financial reporting developments, Statement of cash flows, July 2026, p. 43; docs/spec/sources/fasb-asc.md)",
+  "ASC 230-10-45-22: \"a reporting entity shall determine each separately identifiable source or each separately identifiable use within the cash receipts and cash payments on the basis of the nature of the underlying cash flows\" (EY p. 44)",
+  "ASC 230-10-45-25: the classes reported at a minimum, (d) cash paid to employees and other suppliers, (f) income taxes paid, (g) other operating cash payments (EY p. 8)",
+]
+tags = ["cash", "book", "us", "cash-flow", "operating-classes"]
+
+[setup]
+currency = "USD"
+fiscal_year_start = "01-01"
+basis = "cash"
+rounding = "half-even"
+cash_accounts = ["1000"]
+
+[[setup.accounts]]
+code = "1000"
+name = "Checking"
+type = "asset"
+
+[[setup.accounts]]
+code = "3000"
+name = "Capital"
+type = "equity"
+
+# Formation costs: a state's filing fee and a lawyer's bill both land here.
+[[setup.accounts]]
+code = "6000"
+name = "Organization costs"
+type = "expense"
+tax_category = "organization_startup"
+
+[[setup.accounts]]
+code = "6400"
+name = "Office supplies"
+type = "expense"
+tax_category = "office_expense"
+
+[[setup.accounts]]
+code = "6700"
+name = "Taxes and licenses"
+type = "expense"
+tax_category = "taxes_licenses"
+
+[[setup.parties]]
+name = "Department of Commerce, Corporations Division"
+roles = ["government_agency"]
+
+[[setup.parties]]
+name = "Department of Revenue"
+roles = ["tax_agency"]
+
+[[setup.parties]]
+name = "Ashgrove Legal LLP"
+roles = ["vendor"]
+
+[[setup.parties]]
+name = "Paper Goods Co."
+roles = ["vendor"]
+
+[[setup.parties]]
+name = "Northgate Registered Agents"
+roles = ["vendor"]
+
+# Event 1.
+[[events]]
+date = "2026-01-05"
+description = "Opening contribution"
+lines = [
+  { account = "1000", side = "debit", amount = "2000.00" },
+  { account = "3000", side = "credit", amount = "2000.00" },
+]
+
+# Event 2: the state's fee to file the company, on the formation account.
+[[events]]
+date = "2026-02-02"
+description = "Certificate of organization filing fee"
+lines = [
+  { account = "6000", side = "debit", amount = "75.00" },
+  { account = "1000", side = "credit", amount = "75.00" },
+]
+parties = [{ party = "Department of Commerce, Corporations Division" }]
+
+# Event 3: the lawyer's bill for the operating agreement, the same account.
+[[events]]
+date = "2026-02-03"
+description = "Operating agreement"
+lines = [
+  { account = "6000", side = "debit", amount = "350.00" },
+  { account = "1000", side = "credit", amount = "350.00" },
+]
+parties = [{ party = "Ashgrove Legal LLP" }]
+
+# Event 4: a business license, on the taxes-and-licenses account, no
+# party named.
+[[events]]
+date = "2026-02-10"
+description = "City business license"
+lines = [
+  { account = "6700", side = "debit", amount = "40.00" },
+  { account = "1000", side = "credit", amount = "40.00" },
+]
+
+# Event 5: a late-filing penalty paid to the tax agency, on supplies by
+# mistake: still the government's.
+[[events]]
+date = "2026-02-12"
+description = "Late filing penalty"
+lines = [
+  { account = "6400", side = "debit", amount = "15.00" },
+  { account = "1000", side = "credit", amount = "15.00" },
+]
+parties = [{ party = "Department of Revenue" }]
+
+# Event 6: paper and toner.
+[[events]]
+date = "2026-02-20"
+description = "Paper and toner"
+lines = [
+  { account = "6400", side = "debit", amount = "62.50" },
+  { account = "1000", side = "credit", amount = "62.50" },
+]
+parties = [{ party = "Paper Goods Co." }]
+
+# Event 7: an annual report filed through a registered agent, one
+# payment: 37.00 of it the state's fee, 100.00 the agent's service.
+[[events]]
+date = "2026-02-25"
+description = "Annual report through the registered agent"
+lines = [
+  { account = "6000", side = "debit", amount = "137.00" },
+  { account = "1000", side = "credit", amount = "137.00" },
+]
+parties = [
+  { party = "Department of Commerce, Corporations Division", amount = "37.00" },
+  { party = "Northgate Registered Agents", amount = "100.00" },
+]
+
+# By hand: February's payments are 75.00 + 350.00 + 40.00 + 15.00 + 62.50
+# + 137.00 = 679.50, all operating. To governments (45-17(c)), other
+# operating cash payments (g): the filing fee (a government agency is its
+# payee), the license (its account is taxes and licenses), the penalty (a
+# tax agency is its payee) and the state's part of the annual report
+# (separately identifiable by its share, 45-22) = 75.00 + 40.00 + 15.00 +
+# 37.00 = 167.00. To suppliers (45-17(b)), (d): the lawyer, the paper and
+# the agent's part = 350.00 + 62.50 + 100.00 = 512.50. Cash 2,000.00 to
+# 1,320.50.
+[[expect]]
+query = "cash_flow"
+from = "2026-02-01"
+to = "2026-02-28"
+
+[expect.values]
+operating = "-679.50"
+investing = "0.00"
+financing = "0.00"
+net_change = "-679.50"
+cash_beginning = "2000.00"
+cash_ending = "1320.50"
+difference = "0.00"
+"operating.2" = "-75.00"
+"operating.3" = "-350.00"
+"operating.4" = "-40.00"
+"operating.5" = "-15.00"
+"operating.6" = "-62.50"
+"operating.7" = "-137.00"
+"operating.count" = "6"
+"class.d" = "-512.50"
+"class.g" = "-167.00"

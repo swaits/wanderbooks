@@ -188,11 +188,46 @@ its invoices. The handbook's caveat is gone for books with the feature.
   `projects` but not it, so until the owner's next format upgrade
   (`wanderbooks books upgrade`, D-39) their invoices and bills still take
   none (the handbook says so).
-- Raised by the cutover review (private change log, "Open points"): a
-  state filing fee is classed as cash paid to suppliers where ASC
-  230-10-45-17(c) suggests other operating payments; ties in the per-entry
-  member split all go to the first member (the owner, 2026-10-22: nothing
-  is posted until the year-end close, three weeks off, so it waits).
+- Raised by the cutover review (private change log, "Open points"):
+  ties in the per-entry member split of the tax-basis K-1 all go to the
+  first member (the owner, 2026-10-22: nothing is posted until the
+  year-end close, three weeks off, so it waits).
+  Its second point is done (2026-10-22, B-14 rule 5): a payment to a
+  government (ASC 230-10-45-17(c), "Cash payments to governments for
+  taxes, duties, fines, and other fees or penalties") is other operating
+  cash payments, (g), never cash paid to suppliers, decided by its payee
+  (a party with the government or tax agency role) on any account, as
+  well as by a `taxes_licenses` account as before; a payment shared with
+  a supplier is split by the parties' shares (45-22); payroll
+  remittances from the payroll payables stay (d) as before; a government
+  selling goods or services is a supplier (add it as a vendor). The
+  first company's state filing fee, booked to its organization-costs
+  account, moves from "Cash paid to suppliers and employees" to "Other
+  operating cash payments" at every date (no total changes), provided
+  (1) its entry names the state's agency with the `government_agency`
+  role (check with `books.party`, give the role with
+  `books.set_party_roles` if not), and (2) the fee's own entry is the
+  one whose cash the statement lists: paid from the bank; charged to a
+  card that is a lender's credit (the `financing_accounts` setting, D-42,
+  borrowed and spent); or paid by a member personally through the
+  members' account (Due to Shareholders) while that account is in
+  `financing_accounts` (B-14 rule 11: borrowed from the member and spent
+  on the fee's date, the operating part classed (g) with its
+  `on_behalf`, and split the same way when shared:
+  `a_shared_government_payment_a_member_paid_splits_both_ways`). The
+  first company's fee was paid the last way (the books home's goldens
+  change log, entry #1), so check its members' account is a financing
+  account. Charged to a card, or paid through a members' account, that
+  is an operating payable, its cash leaves in the later payment (to the
+  bank, or the member's reimbursement), whose payee is not the state,
+  and it stays with suppliers: check how it was paid (`books.get_entry`).
+  Expected golden change: once this ships, the cash-flow snapshots in the
+  books home's `goldens/` (each cutover's) differ from a fresh
+  run on two operating lines, "Cash paid to suppliers and employees"
+  smaller and "Other operating cash payments" larger by the fee, every
+  section total, net change and cash balance the same. That is this
+  rule, not a regression: diff the class lines against it at the next
+  cutover and refresh the snapshot then.
   Its first point is done (2026-10-22, B-34 rule 8): the IIF writes each
   line's project in CLASS, the projects declared first in a `!CLASS`
   list, their names held to QuickBooks' 31 characters, no two alike, and

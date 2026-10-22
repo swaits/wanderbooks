@@ -104,10 +104,27 @@ Quotes are short; the rest is paraphrase.
   dividends received. 45-16(c): all other operating receipts. → rule 5,
   rule 4's exception.
 - **230-10-45-17** (EY pp. 43-44): operating outflows: payments for goods
-  for resale (a), to "other suppliers and employees" (b), to governments
-  for taxes, duties, fines and other fees (c), interest to lenders and
+  for resale (a), "Cash payments to other suppliers and employees for
+  other goods or services" (b), "Cash payments to governments for taxes,
+  duties, fines, and other fees or penalties" (c), interest to lenders and
   other creditors (d), and others ((e), (ee), (f)). (Income taxes fall
-  under (c); 45-25 names them a class.)
+  under (c); 45-25 names them a class.) Quotes (b) and (c) checked
+  2026-10-22 against EY's guide as retrieved that day (SHA-256
+  `de9224a9e3ec7ef771e7ee076f99471ee727308c3dedb2df20ea1ee4e285fbdb`,
+  page 43). → rule 5: a payment to a government, decided by its payee or
+  a taxes-and-licenses account, is (g), not (d).
+- **230-10-45-22, 45-22A** (EY pp. 44-45, the same copy): a receipt or
+  payment with "aspects of more than one class of cash flows" is
+  classed first by specific guidance; without it, "a reporting entity
+  shall determine each separately identifiable source or each separately
+  identifiable use within the cash receipts and cash payments on the
+  basis of the nature of the underlying cash flows" and classify each
+  "in financing, investing, or operating activities"; only what "cannot
+  be separated by source or use" goes by the predominant source or use
+  (45-22A). → rule 5: a payment shared between a government and a
+  supplier is split by the parties' resolved shares, each part classed
+  by its payee (the paragraph names the three activities; reading it for
+  45-25's classes too is a CONVENTION).
 - **230-10-45-8, 45-9** (EY p. 12): only items whose "turnover is quick,
   the amounts are large, and the maturities are short" (original maturity
   "three months or less"; amounts due on demand count) may be reported

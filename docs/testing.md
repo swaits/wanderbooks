@@ -2178,6 +2178,48 @@ and the property. The property found (seed in
 name yield to a changed one ("Café" twice beside "Cafe (1)" and "Cafe (1)
 (1)"); the cap is gone, a tag that changes nothing is skipped instead.
 
+**Point 2, payments to governments** (rules.md B-14 rule 5): `ledger-core`
+`tests/spec_cash_flow.rs` `a_payment_to_a_government_is_other_operating`
+(a filing fee on an organization-costs account paid to a government
+agency, and a penalty on supplies paid to a tax agency, are (g); the
+same account paid to a lawyer, or with no payee named, stays (d); its
+reversal next month keeps (g); a refund from the state stays (c)),
+`a_government_payee_moves_a_fee_on_any_account` (a `taxes_licenses`
+license with no party is still (g); a payment shared half and half
+between a government and a printer is split, 50.00 (g) and 50.00 (d),
+and named to the government alone is all (g)),
+`a_shared_government_payment_splits_to_the_cent` (a third by percent of
+100.01 is 33.34 (g) and 66.67 (d), shares by amount split as given, the
+reversal mirrors to the cent), `a_payroll_remittance_to_a_tax_agency_stays_pay`
+(withheld taxes remitted from a payable holding its payroll role, and pay
+on a `salaries_wages` account, stay (d) with the tax agency named; the
+employer's tax on its own expense account is (g)) and
+`a_government_selling_services_is_a_supplier` (postage to a payee with
+the vendor role stays (d); given `government_agency`, it reads (g), the
+limit the handbook guards); from the P4 review (2026-10-22),
+`a_reversal_takes_its_originals_payee` (a state's fee and its reversal
+next month are (g) both; tagging the reversal tags the chain, so both
+move to (d), and untagged both stay (d): the books keep a chain's
+parties one, Ledger::set_entry_parties INVARIANT 5, so reading the
+reversal's own parties instead of the chain root's is an equivalent
+mutant) and `a_shared_government_payment_a_member_paid_splits_both_ways`
+(a state-and-agent payment a member paid, 37.00 of 137.00 by amount and
+a third of 100.01 by percent: each operating part carries its own
+on_behalf, financing the whole; it fails with the on-behalf part left
+unsplit); `src/cashflow.rs` `tests`
+`a_government_part_rounds_half_to_even` and the proptest
+`a_government_part_sums_and_mirrors` (the two parts sum to the payment,
+the government's within half a cent of exact, a reversal mirrors);
+the bookspec example `cash-flow.government-fees.toml`, every figure
+derived by hand, including a shared annual-report payment, read through
+the new `class.<a..g>` key (bookspec README). Broken to confirm: without
+the payee check the five spec tests fail and the example; without the
+split for mixed payees the two shared-payment tests and the example
+(class.d -549.50) fail; without the payroll exclusion the payroll test
+fails; rounding toward zero fails both `cashflow::tests`; without the
+tax-category route `operating_classes_follow_asc_230_10_45_25`, the
+second test and the example fail.
+
 ## Benchmarks (baseline 2026-10-13)
 
 No budget, by decision (the owner, 2026-10-13: the books do little work

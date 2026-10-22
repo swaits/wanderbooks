@@ -1722,6 +1722,18 @@ fn cash_flow_value(
                         .sum(),
                 );
             }
+            if head == "class" {
+                // `class.<a..g>`: the operating class's total (ASC
+                // 230-10-45-25's letters).
+                let c = operating_class(tail)?;
+                return Some(
+                    cf.operating_by_class()
+                        .into_iter()
+                        .filter(|(k, _)| *k == c)
+                        .map(|(_, a)| a)
+                        .sum(),
+                );
+            }
             if head == "reconciliation" {
                 let (kind, account) = match tail.split_once('.') {
                     Some((k, a)) => (k, Some(a)),
@@ -1765,6 +1777,21 @@ fn cash_flow_value(
                 .map(|l| if on_behalf { l.on_behalf } else { l.amount })
                 .sum()
         }
+    })
+}
+
+/// The operating class ASC 230-10-45-25's letter names.
+fn operating_class(letter: &str) -> Option<ledger_core::OperatingClass> {
+    use ledger_core::OperatingClass::*;
+    Some(match letter {
+        "a" => FromCustomers,
+        "b" => InterestAndDividendsReceived,
+        "c" => OtherReceipts,
+        "d" => ToSuppliersAndEmployees,
+        "e" => InterestPaid,
+        "f" => IncomeTaxesPaid,
+        "g" => OtherPayments,
+        _ => return None,
     })
 }
 
@@ -1823,6 +1850,20 @@ fn check_cash_flow(b: &Books<'_>, x: &Expect) {
                 Decimal::from(listed.len() as u64),
                 exact(n, &ex.id),
                 "{}: {section}.count against the entries listed",
+                ex.id
+            );
+        }
+    }
+    // Class keys given: every class the statement has is one.
+    if values.keys().any(|k| k.starts_with("class.")) {
+        for (c, amount) in cf.operating_by_class() {
+            let letter = ["a", "b", "c", "d", "e", "f", "g"]
+                .into_iter()
+                .find(|l| operating_class(l) == Some(c))
+                .unwrap();
+            assert!(
+                values.contains_key(&format!("class.{letter}")),
+                "{}: the statement has class.{letter} ({amount}), the example doesn't",
                 ex.id
             );
         }
@@ -3205,13 +3246,13 @@ fn every_bookspec_example_holds() {
             *checked.entry(q).or_insert(0) += 1;
         }
     }
-    // Each query the examples use ran: the cash flow's six examples at
+    // Each query the examples use ran: the cash flow's seven examples at
     // least, the as-of and 1099 examples', the members closes', the
     // formats appendix's, and P3's default period, rename, tax category,
     // parties, 1099, depreciation, schedules, asset basis and K-1 tax-basis
     // examples'.
     for (q, at_least) in [
-        ("cash_flow", 6),
+        ("cash_flow", 7),
         ("trial_balance", 2),
         ("profit_and_loss", 2),
         ("vendor_1099_paid", 4),

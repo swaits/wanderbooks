@@ -3231,3 +3231,422 @@ fn a_disposals_depreciation_credit_back_is_depreciation() {
     );
     assert_eq!(cf.cash_from_investing, x("975.00"));
 }
+
+/// rules.md B-14 rule 5 (the P3 cutover review's open point 2): ASC
+/// 230-10-45-17(c), "Cash payments to governments for taxes, duties,
+/// fines, and other fees or penalties", is not 45-17(b)'s "Cash payments
+/// to other suppliers and employees": a state's filing fee booked to an
+/// organization-costs account (tax category `organization_startup`), its
+/// payee a government agency, is (g), other operating cash payments, not
+/// (d). So is a penalty paid to a tax agency on any account. The same
+/// account paid to a lawyer stays (d), and so does a fee with no payee
+/// named (nothing says it went to a government). A reversal in the next
+/// period takes its original's class (rule 6), and a refund from a
+/// government is a receipt, untouched: (c).
+#[test]
+fn a_payment_to_a_government_is_other_operating() {
+    let mut b = funded();
+    let org = b.acct("6050", "Organization costs", AccountType::Expense);
+    b.l.set_account_tax(org, Some("organization_startup"), None)
+        .unwrap();
+    let state =
+        b.l.add_party(
+            "Department of Commerce, Corporations Division",
+            &[ledger_core::Role::GovernmentAgency],
+        )
+        .unwrap();
+    let revenue =
+        b.l.add_party("Department of Revenue", &[ledger_core::Role::TaxAgency])
+            .unwrap();
+    let lawyer = b.l.add_vendor("Ashgrove Legal LLP").unwrap();
+    let lawyer = b.l.party_of_vendor(lawyer).unwrap();
+    let pay = |b: &mut Books, day, desc: &str, acct: &str, amount| {
+        b.post(
+            d(2026, 2, day),
+            desc,
+            &[(acct, DR, amount), ("1000", CR, amount)],
+        )
+    };
+    let fee = pay(&mut b, 2, "Filing fee", "6050", "75.00");
+    b.l.set_entry_party(fee, Some(state)).unwrap();
+    let legal = pay(&mut b, 3, "Operating agreement", "6050", "350.00");
+    b.l.set_entry_party(legal, Some(lawyer)).unwrap();
+    let unnamed = pay(&mut b, 4, "Fee, payee not named", "6050", "20.00");
+    let penalty = pay(&mut b, 5, "Late filing penalty", "6000", "15.00");
+    b.l.set_entry_party(penalty, Some(revenue)).unwrap();
+    let refund = b.post(
+        d(2026, 2, 6),
+        "Fee refunded",
+        &[("1000", DR, "10.00"), ("6050", CR, "10.00")],
+    );
+    b.l.set_entry_party(refund, Some(state)).unwrap();
+    let cf = feb(&b, &[], &[]);
+    let class = |e| cf.operating.iter().find(|l| l.entry == e).unwrap().class;
+    use OperatingClass::*;
+    assert_eq!(class(fee), Some(OtherPayments));
+    assert_eq!(class(penalty), Some(OtherPayments));
+    assert_eq!(class(legal), Some(ToSuppliersAndEmployees));
+    assert_eq!(class(unnamed), Some(ToSuppliersAndEmployees));
+    assert_eq!(class(refund), Some(OtherReceipts));
+    assert_eq!(
+        cf.operating_by_class(),
+        [
+            (OtherReceipts, x("10.00")),
+            (ToSuppliersAndEmployees, x("-370.00")),
+            (OtherPayments, x("-90.00")),
+        ]
+    );
+    // Reversed in March: the fee's class, its own sign.
+    let back = b.reverse(fee, d(2026, 3, 2));
+    let march = b.cf(d(2026, 3, 1), d(2026, 3, 31), &["1000"], &[], &[]);
+    foots(&march);
+    let line = march.operating.iter().find(|l| l.entry == back).unwrap();
+    assert_eq!((line.class, line.amount), (Some(OtherPayments), x("75.00")));
+}
+
+/// rules.md B-14 rule 5: the payee decides on any account, and the tax
+/// category still does without one: a license on `taxes_licenses` with no
+/// party is (g). An entry naming a government and a supplier together
+/// (half each) is split by their shares, as ASC 230-10-45-22 has each
+/// separately identifiable use classed by its nature: half (g), half (d).
+/// Named the city alone, the whole payment is the government's.
+#[test]
+fn a_government_payee_moves_a_fee_on_any_account() {
+    let mut b = funded();
+    let fees = b.acct("6700", "Taxes and licenses", AccountType::Expense);
+    b.l.set_account_tax(fees, Some("taxes_licenses"), None)
+        .unwrap();
+    let city =
+        b.l.add_party("City Treasurer", &[ledger_core::Role::GovernmentAgency])
+            .unwrap();
+    let printer = b.l.add_vendor("Print Shop").unwrap();
+    let printer = b.l.party_of_vendor(printer).unwrap();
+    let pay = |b: &mut Books, day, desc: &str, acct: &str, amount| {
+        b.post(
+            d(2026, 2, day),
+            desc,
+            &[(acct, DR, amount), ("1000", CR, amount)],
+        )
+    };
+    let license = pay(&mut b, 2, "Business license", "6700", "40.00");
+    let shared = pay(&mut b, 3, "Permit and signage", "6000", "100.00");
+    let half = |party| ledger_core::PartyShare {
+        party,
+        share: ledger_core::Share::Percent(x("50")),
+    };
+    b.l.set_entry_parties(shared, &[half(city), half(printer)])
+        .unwrap();
+    let cf = feb(&b, &[], &[]);
+    let classes = |cf: &CashFlowStatement, e| {
+        cf.operating
+            .iter()
+            .filter(|l| l.entry == e)
+            .map(|l| (l.class.unwrap(), l.amount))
+            .collect::<Vec<_>>()
+    };
+    use OperatingClass::*;
+    assert_eq!(classes(&cf, license), [(OtherPayments, x("-40.00"))]);
+    assert_eq!(
+        classes(&cf, shared),
+        [
+            (ToSuppliersAndEmployees, x("-50.00")),
+            (OtherPayments, x("-50.00"))
+        ]
+    );
+    // Named the city alone, the same payment is the government's.
+    b.l.set_entry_party(shared, Some(city)).unwrap();
+    let cf = feb(&b, &[], &[]);
+    assert_eq!(classes(&cf, shared), [(OtherPayments, x("-100.00"))]);
+}
+
+/// rules.md B-14 rule 5: a split by shares that leaves an odd cent rounds
+/// the government's part half to even, the supplier's the rest, so the
+/// line still sums to the payment; its reversal next month mirrors it to
+/// the cent. Fixed amounts split as given.
+#[test]
+fn a_shared_government_payment_splits_to_the_cent() {
+    let mut b = funded();
+    let state =
+        b.l.add_party(
+            "Department of Commerce",
+            &[ledger_core::Role::GovernmentAgency],
+        )
+        .unwrap();
+    let agent = b.l.add_vendor("Registered Agents Co.").unwrap();
+    let agent = b.l.party_of_vendor(agent).unwrap();
+    let pay = |b: &mut Books, day, amount| {
+        b.post(
+            d(2026, 2, day),
+            "Filing through an agent",
+            &[("6000", DR, amount), ("1000", CR, amount)],
+        )
+    };
+    let share = |party, share| ledger_core::PartyShare { party, share };
+    use ledger_core::Share::{Amount, Percent};
+    // A third to the state: 100.01 / 3 = 33.336..., 33.34 to the state.
+    let third = pay(&mut b, 2, "100.01");
+    b.l.set_entry_parties(
+        third,
+        &[
+            share(state, Percent(x("33.333333333333333333333333333"))),
+            share(agent, Percent(x("66.666666666666666666666666667"))),
+        ],
+    )
+    .unwrap();
+    // 37.00 of 137.00 to the state, as amounts.
+    let fixed = pay(&mut b, 3, "137.00");
+    b.l.set_entry_parties(
+        fixed,
+        &[
+            share(state, Amount(x("37.00"))),
+            share(agent, Amount(x("100.00"))),
+        ],
+    )
+    .unwrap();
+    let cf = feb(&b, &[], &[]);
+    let classes = |cf: &CashFlowStatement, e| {
+        cf.operating
+            .iter()
+            .filter(|l| l.entry == e)
+            .map(|l| (l.class.unwrap(), l.amount))
+            .collect::<Vec<_>>()
+    };
+    use OperatingClass::*;
+    assert_eq!(
+        classes(&cf, third),
+        [
+            (ToSuppliersAndEmployees, x("-66.67")),
+            (OtherPayments, x("-33.34"))
+        ]
+    );
+    assert_eq!(
+        classes(&cf, fixed),
+        [
+            (ToSuppliersAndEmployees, x("-100.00")),
+            (OtherPayments, x("-37.00"))
+        ]
+    );
+    let back = b.reverse(third, d(2026, 3, 2));
+    let march = b.cf(d(2026, 3, 1), d(2026, 3, 31), &["1000"], &[], &[]);
+    foots(&march);
+    assert_eq!(
+        classes(&march, back),
+        [
+            (ToSuppliersAndEmployees, x("66.67")),
+            (OtherPayments, x("33.34"))
+        ]
+    );
+}
+
+/// rules.md B-14 rule 5: a reversal takes its original's payee, so the
+/// pair always lands in one class and nets. A state's fee paid in
+/// February and reversed in March: (g) both. The books keep a reversal
+/// chain's parties one (Ledger::set_entry_parties INVARIANT 5): tagging
+/// the reversal to the agent tags the fee too, and both move to (d);
+/// untagging it untags both, still (d). (So the cash flow reading the
+/// reversal's own parties rather than its chain root's can't differ: the
+/// P4 review's mutant is equivalent.)
+#[test]
+fn a_reversal_takes_its_originals_payee() {
+    let mut b = funded();
+    let state =
+        b.l.add_party(
+            "Department of Commerce",
+            &[ledger_core::Role::GovernmentAgency],
+        )
+        .unwrap();
+    let agent = b.l.add_vendor("Registered Agents Co.").unwrap();
+    let agent = b.l.party_of_vendor(agent).unwrap();
+    let fee = b.post(
+        d(2026, 2, 2),
+        "Filing fee",
+        &[("6000", DR, "75.00"), ("1000", CR, "75.00")],
+    );
+    b.l.set_entry_party(fee, Some(state)).unwrap();
+    let back = b.reverse(fee, d(2026, 3, 2));
+    let classes = |b: &Books| {
+        let class = |month: u32, e| {
+            let last = if month == 2 { 28 } else { 31 };
+            let cf = b.cf(d(2026, month, 1), d(2026, month, last), &["1000"], &[], &[]);
+            foots(&cf);
+            cf.operating
+                .iter()
+                .filter(|l| l.entry == e)
+                .map(|l| (l.class.unwrap(), l.amount))
+                .collect::<Vec<_>>()
+        };
+        (class(2, fee), class(3, back))
+    };
+    use OperatingClass::*;
+    let both = |class| (vec![(class, x("-75.00"))], vec![(class, x("75.00"))]);
+    assert_eq!(classes(&b), both(OtherPayments));
+    b.l.set_entry_party(back, Some(agent)).unwrap();
+    assert_eq!(b.l.entry_party(fee), Some(agent), "the chain is tagged");
+    assert_eq!(classes(&b), both(ToSuppliersAndEmployees));
+    b.l.set_entry_party(back, None).unwrap();
+    assert!(b.l.entry_parties(fee).is_empty());
+    assert_eq!(classes(&b), both(ToSuppliersAndEmployees));
+}
+
+/// rules.md B-14 rules 5 and 11: a payment shared between a state and an
+/// agent that a member paid personally (Dr 6000 137.00 / Cr 2100, the
+/// members' financing account) is borrowed and spent, and its spending is
+/// split by the parties' shares as a bank payment's is, the part no bank
+/// account moved (`on_behalf`) with it: other operating −37.00, all on
+/// behalf; to suppliers −100.00, all on behalf; financing +137.00. A
+/// third to the state of 100.01 paid the same way: −33.34 and −66.67,
+/// each on behalf.
+#[test]
+fn a_shared_government_payment_a_member_paid_splits_both_ways() {
+    let mut b = funded();
+    let state =
+        b.l.add_party(
+            "Department of Commerce",
+            &[ledger_core::Role::GovernmentAgency],
+        )
+        .unwrap();
+    let agent = b.l.add_vendor("Registered Agents Co.").unwrap();
+    let agent = b.l.party_of_vendor(agent).unwrap();
+    let share = |party, share| ledger_core::PartyShare { party, share };
+    use ledger_core::Share::{Amount, Percent};
+    let fixed = b.post(
+        d(2026, 2, 3),
+        "Annual report through an agent, paid by Member A",
+        &[("6000", DR, "137.00"), ("2100", CR, "137.00")],
+    );
+    b.l.set_entry_parties(
+        fixed,
+        &[
+            share(state, Amount(x("37.00"))),
+            share(agent, Amount(x("100.00"))),
+        ],
+    )
+    .unwrap();
+    let third = b.post(
+        d(2026, 2, 4),
+        "Filing through an agent, paid by Member A",
+        &[("6000", DR, "100.01"), ("2100", CR, "100.01")],
+    );
+    b.l.set_entry_parties(
+        third,
+        &[
+            share(state, Percent(x("33.333333333333333333333333333"))),
+            share(agent, Percent(x("66.666666666666666666666666667"))),
+        ],
+    )
+    .unwrap();
+    let cf = feb(&b, &["2100"], &[]);
+    let lines = |e| {
+        cf.operating
+            .iter()
+            .filter(|l| l.entry == e)
+            .map(|l| (l.class.unwrap(), l.amount, l.on_behalf))
+            .collect::<Vec<_>>()
+    };
+    use OperatingClass::*;
+    assert_eq!(
+        lines(fixed),
+        [
+            (ToSuppliersAndEmployees, x("-100.00"), x("-100.00")),
+            (OtherPayments, x("-37.00"), x("-37.00"))
+        ]
+    );
+    assert_eq!(
+        lines(third),
+        [
+            (ToSuppliersAndEmployees, x("-66.67"), x("-66.67")),
+            (OtherPayments, x("-33.34"), x("-33.34"))
+        ]
+    );
+    assert_eq!(
+        em(&cf.financing),
+        [(fixed, x("137.00")), (third, x("100.01"))]
+    );
+    assert_eq!(cf.net_change_in_cash, Decimal::ZERO);
+}
+
+/// rules.md B-14 rule 5 (CONVENTION): payroll keeps its structure. Taxes
+/// withheld from employees and remitted to the tax agency are the
+/// employees' pay (45-17(b), "Cash payments to other suppliers and
+/// employees"), and the payroll payables mix them with the employer's
+/// own taxes, so a remittance from them stays (d) though its payee is a
+/// tax agency; so does pay on a wages tax category. The employer's payroll
+/// tax paid on its own expense account is a tax: (g).
+#[test]
+fn a_payroll_remittance_to_a_tax_agency_stays_pay() {
+    let mut b = funded();
+    let wages = b.acct("6160", "Salaries", AccountType::Expense);
+    b.l.assign_role("salary_expense", Some(wages)).unwrap();
+    b.acct("6110", "Payroll Tax Expense", AccountType::Expense);
+    // The withholding payable at a code of the chart's own, given its
+    // role.
+    let withheld = b.acct("2210", "Withholding payable", AccountType::Liability);
+    b.l.assign_role("federal_withholding", Some(withheld))
+        .unwrap();
+    let bonus = b.acct("6150", "Bonuses", AccountType::Expense);
+    b.l.set_account_tax(bonus, Some("salaries_wages"), None)
+        .unwrap();
+    let irs =
+        b.l.add_party("Internal Revenue Service", &[ledger_core::Role::TaxAgency])
+            .unwrap();
+    b.post(
+        d(2026, 1, 31),
+        "January payroll",
+        &[
+            ("6160", DR, "1000.00"),
+            ("2210", CR, "200.00"),
+            ("1000", CR, "800.00"),
+        ],
+    );
+    let remit = b.post(
+        d(2026, 2, 3),
+        "Remit withheld taxes",
+        &[("2210", DR, "200.00"), ("1000", CR, "200.00")],
+    );
+    b.l.set_entry_party(remit, Some(irs)).unwrap();
+    let garnish = b.post(
+        d(2026, 2, 4),
+        "Bonus paid to a levy",
+        &[("6150", DR, "30.00"), ("1000", CR, "30.00")],
+    );
+    b.l.set_entry_party(garnish, Some(irs)).unwrap();
+    let employer = b.post(
+        d(2026, 2, 5),
+        "Employer FUTA",
+        &[("6110", DR, "42.00"), ("1000", CR, "42.00")],
+    );
+    b.l.set_entry_party(employer, Some(irs)).unwrap();
+    let cf = feb(&b, &[], &[]);
+    let class = |e| cf.operating.iter().find(|l| l.entry == e).unwrap().class;
+    use OperatingClass::*;
+    assert_eq!(class(remit), Some(ToSuppliersAndEmployees));
+    assert_eq!(class(garnish), Some(ToSuppliersAndEmployees));
+    assert_eq!(class(employer), Some(OtherPayments));
+}
+
+/// rules.md B-14 rule 5: a government selling goods or services is a
+/// supplier (45-17(b), "for other goods or services"), not 45-17(c)'s
+/// taxes, fees or penalties: the post office named with the `vendor`
+/// role, postage stays (d). The roles decide, so a post office given the
+/// `government_agency` role would read as (g): the handbook says not to.
+#[test]
+fn a_government_selling_services_is_a_supplier() {
+    let mut b = funded();
+    b.acct("6120", "Postage", AccountType::Expense);
+    let usps = b.l.add_vendor("Postal Service").unwrap();
+    let usps = b.l.party_of_vendor(usps).unwrap();
+    let stamps = b.post(
+        d(2026, 2, 4),
+        "Stamps",
+        &[("6120", DR, "30.00"), ("1000", CR, "30.00")],
+    );
+    b.l.set_entry_party(stamps, Some(usps)).unwrap();
+    let cf = feb(&b, &[], &[]);
+    let line = cf.operating.iter().find(|l| l.entry == stamps).unwrap();
+    assert_eq!(line.class, Some(OperatingClass::ToSuppliersAndEmployees));
+    b.l.set_party_role(usps, ledger_core::Role::GovernmentAgency, true)
+        .unwrap();
+    let cf = feb(&b, &[], &[]);
+    let line = cf.operating.iter().find(|l| l.entry == stamps).unwrap();
+    assert_eq!(line.class, Some(OperatingClass::OtherPayments));
+}

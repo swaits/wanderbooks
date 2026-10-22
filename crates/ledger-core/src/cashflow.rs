@@ -759,6 +759,9 @@ struct Roles<'a> {
     declared: BTreeSet<AccountId>,
     /// The registered fixed assets' depreciation expense accounts (rule 8).
     depreciation: BTreeSet<AccountId>,
+    /// What moves money with a party, for resolving an entry's party
+    /// shares to amounts (rule 5's payments to governments).
+    money: crate::parties::MoneyAccounts,
 }
 
 impl<'a> Roles<'a> {
@@ -830,6 +833,11 @@ impl<'a> Roles<'a> {
             receivables: ledger.role_account(&crate::RECEIVABLES),
             member_of,
             members: params.members.iter().map(|m| m.name.clone()).collect(),
+            money: crate::parties::money_accounts(
+                ledger,
+                &params.cash_accounts,
+                &params.financing_accounts,
+            ),
         })
     }
 
@@ -1546,7 +1554,9 @@ fn label(ledger: &Ledger, a: &Analysed<'_>) -> String {
 /// Rule 5: the class of one kind of an entry's operating cash, from the
 /// direction of its root's cash: interest received or paid by its own
 /// lines (whatever else the entry settles); everything else by the
-/// structure of the entry's other operating lines.
+/// structure of the entry's other operating lines. A payment's part that
+/// went to a government is then taken out by its payee
+/// (`government_part`).
 fn class_of(
     roles: &Roles<'_>,
     a: &Analysed<'_>,
@@ -1564,19 +1574,7 @@ fn class_of(
         (Bucket::InterestPaid, true) => return Ok(OperatingClass::OtherReceipts),
         _ => {}
     }
-    let mut ops: Vec<&Account> = Vec::new();
-    for p in a.parts.iter().filter(|p| {
-        p.flow == Flow::Operating
-            && matches!(
-                p.bucket,
-                Bucket::Operating
-                    | Bucket::Receivables
-                    | Bucket::Income
-                    | Bucket::GuaranteedPayments
-            )
-    }) {
-        ops.push(roles.account(p.account)?);
-    }
+    let ops = operating_accounts(roles, a)?;
     let receivable = |x: &Account| Some(x.id) == roles.receivables;
     Ok(if receipt {
         let customer = roles
@@ -1599,9 +1597,11 @@ fn class_of(
             .iter()
             .all(|x| x.tax_category.as_deref() == Some("taxes_licenses"))
     {
-        // Taxes and fees paid to governments are not suppliers' (ASC
-        // 230-10-45-17(c) apart from 45-17(b)); 45-25 names only income
-        // taxes, (f), so the rest are (g).
+        // "Cash payments to governments for taxes, duties, fines, and
+        // other fees or penalties" (ASC 230-10-45-17(c)) are not "cash
+        // payments to other suppliers" (45-17(b)): the account (taxes and
+        // licenses) says so here, the payee in `government_part`; 45-25
+        // names only income taxes, (f), so the rest are (g).
         OperatingClass::OtherPayments
     } else if ops.iter().any(|x| match x.account_type {
         AccountType::Expense | AccountType::Liability => true,
@@ -1612,6 +1612,112 @@ fn class_of(
     } else {
         OperatingClass::OtherPayments
     })
+}
+
+/// Rule 5: the accounts of an entry's other operating lines (not
+/// interest), whose structure classes its operating cash.
+fn operating_accounts<'a>(
+    roles: &Roles<'a>,
+    a: &Analysed<'_>,
+) -> Result<Vec<&'a Account>, LedgerError> {
+    let mut ops: Vec<&Account> = Vec::new();
+    for p in a.parts.iter().filter(|p| {
+        p.flow == Flow::Operating
+            && matches!(
+                p.bucket,
+                Bucket::Operating
+                    | Bucket::Receivables
+                    | Bucket::Income
+                    | Bucket::GuaranteedPayments
+            )
+    }) {
+        ops.push(roles.account(p.account)?);
+    }
+    Ok(ops)
+}
+
+/// Tax categories of pay: wages, officers' pay, benefits, pensions.
+const PAY: [&str; 4] = [
+    "salaries_wages",
+    "officer_compensation",
+    "employee_benefits",
+    "pension_profit_sharing",
+];
+
+/// Rule 5: of an operating payment the structure put in another class,
+/// what went to a government, as (the government's size, everyone
+/// else's), from the entry's party shares (its chain root's: a reversal
+/// takes its original's). A party is a government if it has the
+/// `government_agency` or `tax_agency` role. None when nothing did: no
+/// party named, none a government, or the shares don't resolve to
+/// amounts (then the whole payment keeps its structure's class).
+///
+/// Payroll keeps its structure (CONVENTION): an entry with a line on a
+/// payroll payable or wage account (their control roles) or on a pay tax
+/// category is pay to employees, 45-17(b), whoever is named; withheld
+/// taxes remitted are the employees' pay, and the payables mix them with
+/// the employer's taxes.
+fn government_part(
+    roles: &Roles<'_>,
+    a: &Analysed<'_>,
+) -> Result<Option<(Decimal, Decimal)>, LedgerError> {
+    let shares = roles.ledger.entry_parties(a.basis.id());
+    let government = |party| {
+        roles.ledger.get_party(party).is_some_and(|p| {
+            let r = p.all_roles();
+            r.contains(&crate::Role::GovernmentAgency) || r.contains(&crate::Role::TaxAgency)
+        })
+    };
+    if !shares.iter().any(|s| government(s.party)) {
+        return Ok(None);
+    }
+    let payroll: Vec<AccountId> = std::iter::once(&crate::PAYROLL[0])
+        .chain(&crate::PAYROLL[2..])
+        .filter_map(|c| roles.ledger.role_account(c))
+        .collect();
+    if operating_accounts(roles, a)?.iter().any(|x| {
+        payroll.contains(&x.id) || x.tax_category.as_deref().is_some_and(|c| PAY.contains(&c))
+    }) {
+        return Ok(None);
+    }
+    if shares.iter().all(|s| government(s.party)) {
+        return Ok(Some((Decimal::ONE, Decimal::ZERO)));
+    }
+    let Ok(resolved) =
+        crate::shares::resolve(roles.ledger, a.basis.id(), shares, &roles.money, &[])
+    else {
+        return Ok(None);
+    };
+    let (mut ours, mut theirs) = (Decimal::ZERO, Decimal::ZERO);
+    for p in &resolved.parts {
+        let side = if government(p.party) {
+            &mut ours
+        } else {
+            &mut theirs
+        };
+        *side = add(*side, p.amount.abs(), "an entry's party shares")?;
+    }
+    Ok((!ours.is_zero()).then_some((ours, theirs)))
+}
+
+/// Rule 5: `amount` split as `ours` to `theirs`, the government's part
+/// rounded half to even to the base currency's places, the rest the
+/// other's: the two always sum to `amount`.
+fn split_part(
+    amount: Decimal,
+    (ours, theirs): (Decimal, Decimal),
+    places: u32,
+) -> Result<(Decimal, Decimal), LedgerError> {
+    let whole = add(ours, theirs, "an entry's party shares")?;
+    let part = amount
+        .checked_mul(ours)
+        .and_then(|x| x.checked_div(whole))
+        .ok_or_else(|| too_large("a payment's government part"))?
+        .round_dp_with_strategy(places, rust_decimal::RoundingStrategy::MidpointNearestEven);
+    let rest = amount
+        .checked_sub(part)
+        .ok_or_else(|| too_large("a payment's government part"))?;
+    Ok((part, rest))
 }
 
 /// The codes of the accounts in some parts, sorted, once each.
@@ -1718,6 +1824,7 @@ pub fn cash_flow(
         }
     }
     let paired = pairs(&kept);
+    let places = ledger.base_currency().allocation_places();
 
     // Rule 5: the body, one line per entry, section and kind.
     type Sorted = (KindOrder, NaiveDate, EntryId, CashFlowLine);
@@ -1741,45 +1848,70 @@ pub fn cash_flow(
             } in &a.kinds[k]
             {
                 let inflow = (*amount > Decimal::ZERO) != a.flip;
-                let (order, kind, class) = if *section == CashFlowSection::Operating {
+                // The kind's cash, by caption: one piece, or two when a
+                // payment went partly to a government (rule 5).
+                let mut pieces = Vec::new();
+                if *section == CashFlowSection::Operating {
                     let class = class_of(&roles, a, bucket, inflow)?;
-                    (
-                        (class.order(), 0, String::new()),
-                        class.label().to_string(),
-                        Some(class),
-                    )
+                    let interest =
+                        matches!(bucket, Bucket::InterestReceived | Bucket::InterestPaid);
+                    let split = if class == OperatingClass::ToSuppliersAndEmployees && !interest {
+                        government_part(&roles, a)?
+                    } else {
+                        None
+                    };
+                    let mut push = |class: OperatingClass, cash, behalf| {
+                        pieces.push((
+                            (class.order(), 0, String::new()),
+                            class.label().to_string(),
+                            Some(class),
+                            cash,
+                            behalf,
+                        ));
+                    };
+                    match split {
+                        Some(sizes) => {
+                            let (cash, rest) = split_part(*amount, sizes, places)?;
+                            let (behalf, behalf_rest) = split_part(*on_behalf, sizes, places)?;
+                            push(OperatingClass::OtherPayments, cash, behalf);
+                            push(class, rest, behalf_rest);
+                        }
+                        None => push(class, *amount, *on_behalf),
+                    }
                 } else {
                     let (order, kind) = roles.kind(bucket, inflow);
-                    (order, kind, None)
-                };
+                    pieces.push((order, kind, None, *amount, *on_behalf));
+                }
                 let accounts = codes(
                     &roles,
                     a.parts
                         .iter()
                         .filter(|p| p.flow == Flow::SECTIONS[k] && p.bucket == *bucket),
                 )?;
-                if let Some((_, _, _, same)) =
-                    mine.iter_mut().find(|m| m.0 == order && m.3.kind == kind)
-                {
-                    same.amount = add(same.amount, *amount, "an entry's line")?;
-                    same.on_behalf = add(same.on_behalf, *on_behalf, "an entry's line")?;
-                    same.accounts.extend(accounts);
-                    same.accounts.sort();
-                    same.accounts.dedup();
-                    continue;
+                for (order, kind, class, amount, on_behalf) in pieces {
+                    if let Some((_, _, _, same)) =
+                        mine.iter_mut().find(|m| m.0 == order && m.3.kind == kind)
+                    {
+                        same.amount = add(same.amount, amount, "an entry's line")?;
+                        same.on_behalf = add(same.on_behalf, on_behalf, "an entry's line")?;
+                        same.accounts.extend(accounts.iter().cloned());
+                        same.accounts.sort();
+                        same.accounts.dedup();
+                        continue;
+                    }
+                    let line = CashFlowLine {
+                        entry: a.entry.id(),
+                        date: a.entry.date(),
+                        label: label(ledger, a),
+                        kind,
+                        amount,
+                        on_behalf,
+                        accounts: accounts.clone(),
+                        reverses: a.entry.reversal_of(),
+                        class,
+                    };
+                    mine.push((order, a.entry.date(), a.entry.id(), line));
                 }
-                let line = CashFlowLine {
-                    entry: a.entry.id(),
-                    date: a.entry.date(),
-                    label: label(ledger, a),
-                    kind,
-                    amount: *amount,
-                    on_behalf: *on_behalf,
-                    accounts,
-                    reverses: a.entry.reversal_of(),
-                    class,
-                };
-                mine.push((order, a.entry.date(), a.entry.id(), line));
             }
             body[k].extend(mine.into_iter().filter(|m| !m.3.amount.is_zero()));
         }
@@ -2149,4 +2281,47 @@ fn warnings(
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn x(s: &str) -> Decimal {
+        s.parse().unwrap()
+    }
+
+    /// Rule 5's split of a payment between a government and the rest:
+    /// the government's part rounded half to even, the rest exact, a
+    /// whole government payment untouched.
+    #[test]
+    fn a_government_part_rounds_half_to_even() {
+        let split =
+            |a: &str, ours: &str, theirs: &str| split_part(x(a), (x(ours), x(theirs)), 2).unwrap();
+        assert_eq!(split("-10.00", "1", "2"), (x("-3.33"), x("-6.67")));
+        assert_eq!(split("-10.00", "2", "1"), (x("-6.67"), x("-3.33")));
+        // 0.025 and 0.035: to the even cent.
+        assert_eq!(split("-0.05", "1", "1"), (x("-0.02"), x("-0.03")));
+        assert_eq!(split("0.07", "1", "1"), (x("0.04"), x("0.03")));
+        assert_eq!(split("-37.00", "1", "0"), (x("-37.00"), x("0")));
+    }
+
+    proptest::proptest! {
+        /// Rule 5: the two parts always sum to the payment, the
+        /// government's within half a cent of its exact share, a payment
+        /// and its reversal split as mirrors.
+        #[test]
+        fn a_government_part_sums_and_mirrors(
+            cents in -10_000_000i64..10_000_000, ours in 1i64..1_000_000, theirs in 0i64..1_000_000,
+        ) {
+            let amount = Decimal::new(cents, 2);
+            let sizes = (Decimal::new(ours, 2), Decimal::new(theirs, 2));
+            let (part, rest) = split_part(amount, sizes, 2).unwrap();
+            proptest::prop_assert_eq!(part + rest, amount);
+            let exact = amount * sizes.0 / (sizes.0 + sizes.1);
+            proptest::prop_assert!((part - exact).abs() <= Decimal::new(5, 3));
+            let (back, back_rest) = split_part(-amount, sizes, 2).unwrap();
+            proptest::prop_assert_eq!((back, back_rest), (-part, -rest));
+        }
+    }
 }

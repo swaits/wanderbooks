@@ -444,10 +444,63 @@ in public sources that reproduce the Codification, `sources/fasb-asc.md`):
    operating cash, by its other operating lines: a receipt is (a) if a
    line is revenue or the receivables control, or the entry's party is a
    customer, else (c); a payment is (g) if every such line is on an
-   account whose tax category is `taxes_licenses` (payments to
-   governments for taxes and fees are 45-17(c), apart from suppliers'
-   45-17(b); 45-25 names only income taxes, (f)), else (d) if a line is
-   an expense, a liability or a non-receivables asset, else (g). (Interest paid back out
+   account whose tax category is `taxes_licenses`, else (d) if a line is
+   an expense, a liability or a non-receivables asset, else (g); then,
+   of a payment that is (d), what went to a government is (g): the
+   entry names a party with the `government_agency` or `tax_agency`
+   role (its chain root's parties, for a reversal), on any account. ASC
+   230-10-45-17 lists "Cash payments to governments for taxes, duties,
+   fines, and other fees or penalties" (c) apart from "Cash payments to
+   other suppliers and employees for other goods or services" (b) (EY FRD
+   p. 43, which reproduces the paragraph), and 45-25 names only income
+   taxes, (f), among them, so the rest are other operating cash payments.
+   The payee decides because the account need not: a state's filing fee
+   for forming the company is an organization cost (tax category
+   `organization_startup`), still paid to a government. Every party a
+   government: the whole payment is (g). A government and others named
+   together: the payment is split by their resolved shares (B-35), the
+   government's part (g), the rest (d), because 45-22 has "each
+   separately identifiable source or each separately identifiable use"
+   classed "on the basis of the nature of the underlying cash flows" (EY
+   p. 44; it speaks of the three activities, read here for the classes
+   too, CONVENTION), and the shares identify each part; the government's
+   part is the payment × its share ÷ the whole, rounded half to even to
+   the base currency's places, the rest exact, so the two always sum to
+   the payment and a reversal mirrors them (CONVENTION). Shares that
+   don't resolve leave the whole payment (d). Not a government's: a
+   government selling goods or services (postage, a park's entry fee) is
+   45-17(b)'s supplier "for other goods or services", so such a payee
+   is added as a vendor (the `vendor` role, books.add_vendor), never
+   given `government_agency` (the books can't tell what a payment
+   bought; the role says it). Payroll keeps its
+   structure (CONVENTION): an entry with a line on the salary expense or
+   a payroll payable control account (B-23's roles: `salary_expense`,
+   `federal_withholding`, `state_withholding`, `social_security_payable`,
+   `medicare_payable`, `other_deductions_payable`), or on an account of
+   a pay tax category (`salaries_wages`, `officer_compensation`,
+   `employee_benefits`, `pension_profit_sharing`), stays (d) whoever it
+   names, because taxes withheld and remitted are the employees' pay
+   (45-17(b), "to ... employees") and the payables mix them with the
+   employer's own taxes, which the remittance can't tell apart; the
+   employer's payroll tax paid on its own expense account is a tax, (g).
+   As before this change, a remittance from the payables is (d); a
+   payroll liability kept at a code of the chart's own needs its role
+   (books.assign_role) to be read so. P3 cutover review, open point 2,
+   2026-10-22: before, only the tax category counted, so a filing fee on
+   an organization-costs account read as cash paid to suppliers
+   (`a_payment_to_a_government_is_other_operating`,
+   `a_government_payee_moves_a_fee_on_any_account`,
+   `a_shared_government_payment_splits_to_the_cent`,
+   `a_payroll_remittance_to_a_tax_agency_stays_pay`,
+   `a_government_selling_services_is_a_supplier`,
+   `a_reversal_takes_its_originals_payee`,
+   `a_shared_government_payment_a_member_paid_splits_both_ways`, all in
+   ledger-core `tests/spec_cash_flow.rs`;
+   `a_government_part_rounds_half_to_even` and
+   `a_government_part_sums_and_mirrors` in ledger-core
+   `cashflow::tests`; bookspec `cash-flow.government-fees`). A
+   government's payment a member paid on the company's behalf (rule 11)
+   is classed and split the same way, its `on_behalf` part with it. (Interest paid back out
    is (g); interest refunded to the company, (c).) The operating cash is
    split among these kinds as a section's among its kinds (rule 3), in
    the order: the rest, interest received, interest paid (CONVENTION).
@@ -665,7 +718,8 @@ shapes), `prop_pure_entries_sections_are_movements`; regressions
 `defect1_reversed_contributions_foot_regression`,
 `defect1_two_member_llc_first_year_regression`,
 `defect1_two_member_llc_as_of_march_18_regression` (and bookspec
-`cash-flow.*`, `cash-flow.paid-on-the-companys-behalf` for rule 11);
+`cash-flow.*`, `cash-flow.paid-on-the-companys-behalf` for rule 11,
+`cash-flow.government-fees` for rule 5's governments);
 `disposal_proceeds_all_investing`,
 `an_expense_a_member_paid_is_borrowed_and_spent`,
 `reimbursing_a_member_is_a_repayment_of_borrowing`,
@@ -679,6 +733,13 @@ shapes), `prop_pure_entries_sections_are_movements`; regressions
 `interest_and_guaranteed_payments_charged_to_a_creditor_stay_noncash`,
 `a_fee_withheld_from_a_loan_follows_its_account`,
 `odd_shapes_foot_and_net`, `operating_classes_follow_asc_230_10_45_25`,
+`a_payment_to_a_government_is_other_operating`,
+`a_government_payee_moves_a_fee_on_any_account`,
+`a_shared_government_payment_splits_to_the_cent`,
+`a_payroll_remittance_to_a_tax_agency_stays_pay`,
+`a_government_selling_services_is_a_supplier`,
+`a_reversal_takes_its_originals_payee`,
+`a_shared_government_payment_a_member_paid_splits_both_ways`,
 `a_reversal_of_a_reversal_is_shown_and_foots`,
 `a_reversal_three_levels_down_is_labelled_a_reversal`,
 `operating_cash_is_classed_kind_by_kind`,

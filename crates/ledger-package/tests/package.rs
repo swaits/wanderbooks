@@ -5,7 +5,8 @@
 use chrono::NaiveDate;
 use ledger_core::settings::{Company, Member};
 use ledger_core::{
-    AccountType, Currency, Form1099, Ledger, Money, PartyId, Role, Side, TinFacts, TinType,
+    AccountType, Currency, DocumentLine, Form1099, Ledger, Money, PartyId, Role, Side, TinFacts,
+    TinType,
 };
 use ledger_package::{
     Package, PackageBooks, PackageRequest, Settings, build_package, vendor_1099_csv,
@@ -1700,6 +1701,131 @@ fn one_list_of_cash_accounts_per_package() {
     assert_eq!(text(&plain, "1099-worksheet-2026.csv"), tool(&cash));
 }
 
+/// rules.md B-34 rule 8 (P3 cutover review, open point 1): the
+/// package's QuickBooks file declares every project as a class and
+/// carries each line's project in CLASS; a project name written
+/// differently is listed in the warnings and the README, whose IIF line
+/// says what CLASS is; books with no project write no class list and the
+/// README says nothing of classes.
+#[test]
+fn the_package_iif_carries_each_lines_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut s, _) = plain_books(dir.path());
+    let company = company(false);
+    let cash = cash();
+    let before = build_package(&s, &settings(&company, &cash), &request(false, None)).unwrap();
+    assert!(!text(&before, "general-journal.iif").contains("CLASS\tNAME"));
+    assert!(!text(&before, "README.txt").contains("CLASS"));
+    let kiln = s.add_class("Kiln: rebuild").unwrap();
+    s.add_class("Glaze tests").unwrap();
+    let e = s.create_entry(d("2026-04-03"), "Fire brick").unwrap();
+    s.add_line(e, id_of(&s, "6000"), Side::Debit, usd("80.00"))
+        .unwrap();
+    s.add_line(e, id_of(&s, "1000"), Side::Credit, usd("80.00"))
+        .unwrap();
+    s.set_line_class(e, 0, Some(kiln)).unwrap();
+    s.post_entry(e).unwrap();
+    let p = build_package(&s, &settings(&company, &cash), &request(false, None)).unwrap();
+    let iif = text(&p, "general-journal.iif");
+    let classes = iif.find("!CLASS\tNAME\r\nCLASS\tKiln- rebuild\r\nCLASS\tGlaze tests\r\n");
+    assert!(
+        classes.is_some_and(
+            |at| at < iif.find("!TRNS").unwrap() && at > iif.rfind("\nACCNT\t").unwrap()
+        ),
+        "{iif}"
+    );
+    let line = |acct: &str| {
+        iif.lines()
+            .find(|l| l.contains(&format!("\t{e}\t")) && l.contains(acct))
+            .unwrap()
+            .to_string()
+    };
+    assert!(
+        line("\tRent\t").contains("\tRent\tKiln- rebuild\t80.00\t"),
+        "{iif}"
+    );
+    assert!(
+        line("\tChecking\t").contains("\tChecking\t\t-80.00\t"),
+        "{iif}"
+    );
+    let said = format!("class {kiln}'s name \"Kiln: rebuild\" is written \"Kiln- rebuild\"");
+    assert!(p.warnings.contains(&said), "{:?}", p.warnings);
+    let readme = text(&p, "README.txt");
+    assert!(readme.contains(&format!("- {said}\n")), "{readme}");
+    assert!(
+        readme.contains(
+            "; CLASS is each line's project, the projects declared first as QuickBooks classes."
+        ),
+        "{readme}"
+    );
+}
+
+/// rules.md B-34 rule 8 with B-37 item 8: an invoice's or a bill's
+/// lines carry their projects into CLASS through the entry they post,
+/// the revenue or expense line of each project tagged, an untagged
+/// part and the receivable or payable line left without a class.
+#[test]
+fn the_package_iif_carries_an_invoices_and_a_bills_projects() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut s, _) = plain_books(dir.path());
+    let kiln = s.add_class("Kiln").unwrap();
+    let glaze = s.add_class("Glaze tests").unwrap();
+    let line = |description: &str, amount: &str, class_id| DocumentLine {
+        description: description.into(),
+        amount: Decimal::from_str(amount).unwrap(),
+        class_id,
+    };
+    let customer = s.add_customer("Potter").unwrap();
+    s.create_invoice(
+        customer,
+        d("2026-04-10"),
+        d("2026-05-10"),
+        vec![
+            line("Firing", "100.00", Some(kiln)),
+            line("Studio time", "50.00", None),
+        ],
+    )
+    .unwrap();
+    let vendor = s.add_vendor("Clay Co").unwrap();
+    s.create_bill(
+        vendor,
+        d("2026-04-11"),
+        d("2026-05-11"),
+        vec![line("Glaze", "30.00", Some(glaze))],
+    )
+    .unwrap();
+    let company = company(false);
+    let cash = cash();
+    let p = build_package(&s, &settings(&company, &cash), &request(false, None)).unwrap();
+    let iif = text(&p, "general-journal.iif");
+    assert!(
+        iif.contains("!CLASS\tNAME\r\nCLASS\tKiln\r\nCLASS\tGlaze tests\r\n"),
+        "{iif}"
+    );
+    let lines = |acct: &str| -> Vec<&str> {
+        let mut found: Vec<&str> = iif
+            .lines()
+            .filter(|l| {
+                (l.starts_with("TRNS\t") || l.starts_with("SPL\t"))
+                    && l.contains(&format!("\t{acct}\t"))
+            })
+            .collect();
+        found.sort_unstable();
+        found
+    };
+    let carries = |acct: &str, class: &str, amount: &str| {
+        lines(acct)
+            .iter()
+            .any(|l| l.contains(&format!("\t{acct}\t{class}\t{amount}\t")))
+    };
+    assert_eq!(lines("Revenue").len(), 2, "{iif}");
+    assert!(carries("Revenue", "Kiln", "-100.00"), "{iif}");
+    assert!(carries("Revenue", "", "-50.00"), "{iif}");
+    assert!(carries("Accounts Receivable", "", "150.00"), "{iif}");
+    assert!(carries("General Expenses", "Glaze tests", "30.00"), "{iif}");
+    assert!(carries("Accounts Payable", "", "-30.00"), "{iif}");
+}
+
 /// Plan D-36 (P3, defect 7): general-journal.iif is plain ASCII, and
 /// everything it writes differently is in the package's warnings and the
 /// README: each account name a line; the memos grouped by what is written
@@ -1754,7 +1880,7 @@ fn the_readme_lists_what_the_iif_writes_differently() {
     assert_eq!(p.iif_changes, 1 + 1 + 6, "the name, the lunch, six months");
     let readme = text(&p, "README.txt");
     let mut block = String::from(
-        "Written differently in general-journal.iif to fit QuickBooks Desktop (plain ASCII; account names at most 31 characters a level, no two alike; a subaccount of another QuickBooks type than its parent's at the top level; account numbers at most 7 characters, no two alike; memos at most 4095 characters); every other file keeps the books' text:\n",
+        "Written differently in general-journal.iif to fit QuickBooks Desktop (plain ASCII; account names at most 31 characters a level, no two alike; a subaccount of another QuickBooks type than its parent's at the top level; account numbers at most 7 characters, no two alike; class (project) names at most 31 characters, no two alike; memos at most 4095 characters); every other file keeps the books' text:\n",
     );
     for w in &want {
         block.push_str(&format!("- {w}\n"));
@@ -2023,6 +2149,16 @@ fn the_bookspec_iif_example_matches_the_engine() {
         )
         .unwrap();
     }
+    // Project N is class N (the example's header).
+    for (i, p) in spec["setup"]["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+    {
+        let class = l.add_class(p["name"].as_str().unwrap()).unwrap();
+        assert_eq!(class, i as u32 + 1, "project N is class N");
+    }
     for (i, e) in spec["events"].as_array().unwrap().iter().enumerate() {
         let id = l.create_entry(
             d(e["date"].as_str().unwrap()),
@@ -2033,7 +2169,7 @@ fn the_bookspec_iif_example_matches_the_engine() {
             i as u64 + 1,
             "an event's entry id is its index plus one"
         );
-        for line in e["lines"].as_array().unwrap() {
+        for (n, line) in e["lines"].as_array().unwrap().iter().enumerate() {
             let account = l
                 .chart()
                 .find_by_code(line["account"].as_str().unwrap())
@@ -2045,6 +2181,10 @@ fn the_bookspec_iif_example_matches_the_engine() {
             };
             l.add_line(id, account, side, usd(line["amount"].as_str().unwrap()))
                 .unwrap();
+            if let Some(p) = line.get("project") {
+                let class = l.find_class_by_name(p.as_str().unwrap()).unwrap().id;
+                l.set_line_class(id, n, Some(class)).unwrap();
+            }
         }
         l.post_entry(id).unwrap();
     }
@@ -2084,6 +2224,9 @@ fn the_bookspec_iif_example_matches_the_engine() {
                             }
                             ledger_import::IifField::AtTopLevel { code, .. } => {
                                 format!("top level {code}")
+                            }
+                            ledger_import::IifField::ClassName { class } => {
+                                format!("class {class}")
                             }
                         };
                         vec![what, c.books.clone(), c.written.clone()]

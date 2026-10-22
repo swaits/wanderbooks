@@ -18,6 +18,8 @@
 //!      closing entries (it works out retained earnings itself), so an
 //!      imported close would zero its period's profit. The file's
 //!      balances are the trial balance as of as_of without the closes.
+//!   3. Every class (project) in the books is declared, and each line
+//!      carries its class (rules.md B-34 rule 8).
 //! ```
 
 use chrono::NaiveDate;
@@ -29,14 +31,15 @@ use ledger_core::{AccountId, AccountType, Ledger};
 /// payable control accounts AR and AP, the cost and accumulated
 /// depreciation accounts of an asset bought by `as_of` FIXASSET, and the
 /// rest follow their wanderbooks type (other current asset, other current
-/// liability, equity, income, expense). Returns the file and every text it
-/// writes differently from the books.
+/// liability, equity, income, expense), and every class with each line's
+/// class in CLASS. Returns the file and every text it writes differently
+/// from the books.
 pub fn export_iif(
     ledger: &Ledger,
     cash_codes: &[String],
     as_of: NaiveDate,
 ) -> Result<ledger_import::Iif, String> {
-    use ledger_import::{QbAccountType as Qb, iif_accounts, journal_to_iif};
+    use ledger_import::{QbAccountType as Qb, iif_accounts, iif_classes, journal_to_iif};
     let fixed: std::collections::HashSet<AccountId> = ledger
         .registered_assets()
         .filter(|a| ledger.asset_acquired_date(a.id).is_some_and(|d| d <= as_of))
@@ -68,5 +71,5 @@ pub fn export_iif(
         .posted_entries()
         .filter(|e| e.date() <= as_of && !closes.contains(&e.id()))
         .collect();
-    journal_to_iif(&accounts, &entries).map_err(|e| e.to_string())
+    journal_to_iif(&accounts, &iif_classes(ledger), &entries).map_err(|e| e.to_string())
 }

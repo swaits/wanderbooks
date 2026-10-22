@@ -2138,6 +2138,46 @@ order, the `contains` test); `add_document_parts`' tag index;
 kind test; `document_projects_rule`'s branch; the viewer's
 `document_of` (invoice before bill).
 
+## After P3: the cutover review's open points 1 and 2 (2026-10-22)
+
+The P3 cutover review's open points 1 (the IIF left CLASS empty) and 2
+(a state filing fee read as cash paid to suppliers). Point 3 (ties in
+the tax-basis member split) waits for the owner: nothing is posted
+before the year-end close. No mutation run (D-33).
+
+**Point 1, the IIF's classes** (rules.md B-34 rule 8): `ledger-import`
+`tests/spec_import.rs`
+`iif_writes_each_lines_class_and_declares_the_classes_first` (the file
+exact: the `!CLASS` list after the accounts, before `!TRNS`, every class
+declared, each line's class in CLASS, empty where it has none; no list
+without classes),
+`iif_class_names_fit_quickbooks_and_every_change_is_listed` (a colon and
+an accent, a name past 31 characters, two alike once cut, two alike
+ignoring case, one another's tagged form, a padded name: each written
+form exact, every change listed and said),
+`iif_class_names_written_as_the_books_have_them_are_kept` (review of
+the follow-ups, finding 4: "Café" beside "Cafe" and "Cafe (1)" is
+tagged twice and the two own names kept; own names alike, or changed
+names alike, each tagged once; with "Cafe (1) (1)" too, tagged a third
+time; a name a tag can't change, cut and ending in its own id, stands
+and the own name it meets is tagged),
+`iif_refuses_an_undeclared_or_unfit_class`, and the property
+`iif_class_names_never_clash` (256 cases of random and clashing names,
+old books' duplicates included, "Café" and its twins among them; a name
+written as the books have it, no other own name alike, is kept); `check_iif` now takes CLASS lines and
+`check_iif_classes` checks every TRNS and SPL line's class. `ledger-package`
+`tests/package.rs` `the_package_iif_carries_each_lines_project` (the
+package's file, warnings and README) and the bookspec example
+`iif-quickbooks-journal-file.toml`, now with two projects (one carried,
+one only declared). Broken to confirm: writing CLASS empty again fails
+the two exact-file tests, the package test and the bookspec example;
+dropping the " (id)" tag fails the names test and the property;
+tagging every name that meets (no yielding) fails the kept-names test
+and the property. The property found (seed in
+`spec_import.proptest-regressions`) that a cap of two tags made an own
+name yield to a changed one ("Café" twice beside "Cafe (1)" and "Cafe (1)
+(1)"); the cap is gone, a tag that changes nothing is skipped instead.
+
 ## Benchmarks (baseline 2026-10-13)
 
 No budget, by decision (the owner, 2026-10-13: the books do little work

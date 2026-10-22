@@ -188,11 +188,23 @@ its invoices. The handbook's caveat is gone for books with the feature.
   `projects` but not it, so until the owner's next format upgrade
   (`wanderbooks books upgrade`, D-39) their invoices and bills still take
   none (the handbook says so).
-- Raised by the cutover review (private change log, "Open points"): the
-  IIF leaves its CLASS field empty although entries carry projects; a
+- Raised by the cutover review (private change log, "Open points"): a
   state filing fee is classed as cash paid to suppliers where ASC
   230-10-45-17(c) suggests other operating payments; ties in the per-entry
-  member split all go to the first member.
+  member split all go to the first member (the owner, 2026-10-22: nothing
+  is posted until the year-end close, three weeks off, so it waits).
+  Its first point is done (2026-10-22, B-34 rule 8): the IIF writes each
+  line's project in CLASS, the projects declared first in a `!CLASS`
+  list, their names held to QuickBooks' 31 characters, no two alike, and
+  listed in the README when written differently (tests
+  `iif_writes_each_lines_class_and_declares_the_classes_first`,
+  `iif_class_names_fit_quickbooks_and_every_change_is_listed`,
+  `iif_class_names_written_as_the_books_have_them_are_kept`,
+  `iif_refuses_an_undeclared_or_unfit_class`, the property
+  `iif_class_names_never_clash`, `the_package_iif_carries_each_lines_project`;
+  bookspec `iif-quickbooks-journal-file`). The first company's
+  package changes at its next build: its project-tagged lines carry
+  the class, and the class list is new.
 - The viewer recomputes a long-life asset's whole schedule every frame
   (`ledger-gui` `pages/assets.rs` `schedule`, called from the asset
   page's draw; defect 22's note: slow, never wrong).

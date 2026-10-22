@@ -21,10 +21,10 @@ use ledger_core::{
 use ledger_import::chart_csv::ChartCsvError;
 use ledger_import::report::{self, Member, ReportMeta, Row, RowKind, Statement, YearEarnings};
 use ledger_import::{
-    BankCsvError, BankTransaction, DateOrder, EntityType, Iif, IifAccount, IifChange, IifError,
-    IifField, LeftOut, MEMO_MAX, NAME_MAX, NUMBER_MAX, QbAccountType, XlsxReport, chart_template,
-    format_amount, iif_accounts, journal_to_iif, parse_bank_csv, parse_bank_csv_with,
-    parse_chart_csv, report_to_xlsx, statement_pdf,
+    BankCsvError, BankTransaction, DateOrder, EntityType, Iif, IifAccount, IifChange, IifClass,
+    IifError, IifField, LeftOut, MEMO_MAX, NAME_MAX, NUMBER_MAX, QbAccountType, XlsxReport,
+    chart_template, format_amount, iif_accounts, iif_classes, journal_to_iif, parse_bank_csv,
+    parse_bank_csv_with, parse_chart_csv, report_to_xlsx, statement_pdf,
 };
 use proptest::prelude::*;
 use rust_decimal::{Decimal, RoundingStrategy};
@@ -1121,7 +1121,7 @@ fn check_iif(text: &str, accounts: &[IifAccount], entries: &[&JournalEntry]) {
         );
     }
     let keywords = [
-        "!ACCNT", "ACCNT", "!TRNS", "!SPL", "!ENDTRNS", "TRNS", "SPL", "ENDTRNS",
+        "!ACCNT", "ACCNT", "!CLASS", "CLASS", "!TRNS", "!SPL", "!ENDTRNS", "TRNS", "SPL", "ENDTRNS",
     ];
     let mut headers: HashMap<&str, Vec<&str>> = HashMap::new();
     let mut declared: HashSet<String> = HashSet::new();
@@ -1165,6 +1165,12 @@ fn check_iif(text: &str, accounts: &[IifAccount], entries: &[&JournalEntry]) {
                     );
                 }
                 declared.insert(name.to_string());
+            }
+            // INVARIANT 9: the classes, after the accounts, before the
+            // transactions (check_iif_classes checks the rest).
+            "CLASS" => {
+                assert!(!seen_trns_header, "CLASS after !TRNS");
+                assert!(headers.contains_key("ACCNT"), "CLASS before the accounts");
             }
             "TRNS" => {
                 assert!(current.is_none(), "TRNS inside a transaction");
@@ -1583,7 +1589,7 @@ proptest! {
         let accounts = iif_accounts(&b.ledger, qb);
         prop_assert_eq!(accounts.len(), b.ledger.chart().len());
         let entries: Vec<&JournalEntry> = b.ledger.posted_entries().collect();
-        let iif = journal_to_iif(&accounts, &entries).unwrap();
+        let iif = journal_to_iif(&accounts, &[], &entries).unwrap();
         check_iif(&iif.text, &accounts, &entries);
         check_changes(&iif, &accounts, &entries);
         // INVARIANT 4: a memo of printable ASCII is written as itself.
@@ -1636,7 +1642,7 @@ proptest! {
             ids.push(l.replay_add_account(&code_of(i), name, AccountType::Expense, parent, false).unwrap());
         }
         let accounts = iif_accounts(&l, |_| QbAccountType::Expense);
-        match journal_to_iif(&accounts, &[]) {
+        match journal_to_iif(&accounts, &[], &[]) {
             Ok(iif) => {
                 check_iif(&iif.text, &accounts, &[]);
                 check_changes(&iif, &accounts, &[]);
@@ -1706,7 +1712,7 @@ fn iif_paths_and_transliteration() {
     assert_eq!(path("4100"), "Interest 'income'");
     assert_eq!(path("3000"), "Capital -- Ada");
     assert_eq!(path("6010"), "Cafe meals");
-    let iif = journal_to_iif(&accounts, &[]).unwrap();
+    let iif = journal_to_iif(&accounts, &[], &[]).unwrap();
     let changed: Vec<String> = iif.changes.iter().map(ToString::to_string).collect();
     assert_eq!(
         changed,
@@ -1747,7 +1753,7 @@ fn iif_module_layout_example() {
         }
     });
     let entries: Vec<&JournalEntry> = l.posted_entries().collect();
-    let iif = journal_to_iif(&accounts, &entries).unwrap();
+    let iif = journal_to_iif(&accounts, &[], &entries).unwrap();
     let lines: Vec<&str> = iif.text.lines().map(|l| l.trim_end_matches('\r')).collect();
     assert_eq!(lines[0], "!ACCNT\tNAME\tACCNTTYPE\tACCNUM");
     assert!(lines.contains(&"ACCNT\tCash\tBANK\t1000"));
@@ -1775,7 +1781,7 @@ fn iif_memo_with_tabs_and_breaks() {
     l.post_entry(e).unwrap();
     let accounts = iif_accounts(&l, |_| QbAccountType::Bank);
     let entries: Vec<&JournalEntry> = l.posted_entries().collect();
-    let iif = journal_to_iif(&accounts, &entries).unwrap();
+    let iif = journal_to_iif(&accounts, &[], &entries).unwrap();
     check_iif(&iif.text, &accounts, &entries);
     check_changes(&iif, &accounts, &entries);
 }
@@ -1799,7 +1805,7 @@ fn iif_refuses_an_undeclared_account() {
     let entries: Vec<&JournalEntry> = b.ledger.posted_entries().collect();
     let eid: EntryId = entries[0].id();
     assert_eq!(
-        journal_to_iif(&accounts, &entries),
+        journal_to_iif(&accounts, &[], &entries),
         Err(IifError::UndeclaredAccount {
             entry: eid,
             account: sales
@@ -1855,7 +1861,7 @@ fn iif_docnum_is_the_entry_id() {
         entries.iter().map(|e| e.id()).collect::<Vec<_>>(),
         [3, 2, 4]
     );
-    let iif = journal_to_iif(&accounts, &entries).unwrap();
+    let iif = journal_to_iif(&accounts, &[], &entries).unwrap();
     check_iif(&iif.text, &accounts, &entries);
     // Each record's keyword and DOCNUM, in file order.
     let docnums: Vec<(&str, &str)> = iif
@@ -1919,7 +1925,7 @@ fn iif_writes_plain_ascii_and_lists_every_change() {
     }
     let accounts = iif_accounts(&l, |_| QbAccountType::Expense);
     let entries: Vec<&JournalEntry> = l.posted_entries().collect();
-    let iif = journal_to_iif(&accounts, &entries).unwrap();
+    let iif = journal_to_iif(&accounts, &[], &entries).unwrap();
     check_iif(&iif.text, &accounts, &entries);
     check_changes(&iif, &accounts, &entries);
     let accnt: Vec<&str> = iif
@@ -1980,7 +1986,7 @@ fn iif_every_line_ends_cr_lf() {
     l.post_entry(e).unwrap();
     let accounts = iif_accounts(&l, |_| QbAccountType::Bank);
     let entries: Vec<&JournalEntry> = l.posted_entries().collect();
-    let text = journal_to_iif(&accounts, &entries).unwrap().text;
+    let text = journal_to_iif(&accounts, &[], &entries).unwrap().text;
     let crlf = text.matches("\r\n").count();
     assert_eq!(crlf, text.matches('\n').count(), "every LF follows a CR");
     assert_eq!(
@@ -2048,7 +2054,7 @@ fn iif_distinct_accounts_never_share_a_name() {
             ("6800", "? (6800)"),
         ]
     );
-    let iif = journal_to_iif(&accounts, &[]).unwrap();
+    let iif = journal_to_iif(&accounts, &[], &[]).unwrap();
     check_iif(&iif.text, &accounts, &[]);
     check_changes(&iif, &accounts, &[]);
     assert_eq!(iif.changes.len(), 9, "{:?}", iif.changes);
@@ -2070,7 +2076,7 @@ fn iif_distinct_accounts_never_share_a_name() {
     };
     assert_eq!(path("6100"), "Software (6100)");
     assert_eq!(path("6900"), "Software (6100) (6900)");
-    let iif = journal_to_iif(&accounts, &[]).unwrap();
+    let iif = journal_to_iif(&accounts, &[], &[]).unwrap();
     check_iif(&iif.text, &accounts, &[]);
     check_changes(&iif, &accounts, &[]);
     // Two "Software" whose codes are written alike (a fullwidth digit):
@@ -2081,7 +2087,7 @@ fn iif_distinct_accounts_never_share_a_name() {
             .unwrap();
     }
     let accounts = iif_accounts(&l, |_| QbAccountType::Expense);
-    let err = journal_to_iif(&accounts, &[]).unwrap_err();
+    let err = journal_to_iif(&accounts, &[], &[]).unwrap_err();
     assert_eq!(
         err,
         IifError::NameCollision {
@@ -2131,7 +2137,7 @@ fn iif_a_subaccount_of_another_type_stands_at_the_top_level() {
         _ => QbAccountType::OtherCurrentAsset,
     });
     let entries: Vec<&JournalEntry> = l.posted_entries().collect();
-    let iif = journal_to_iif(&accounts, &entries).unwrap();
+    let iif = journal_to_iif(&accounts, &[], &entries).unwrap();
     check_iif(&iif.text, &accounts, &entries);
     check_changes(&iif, &accounts, &entries);
     let lines: Vec<&str> = iif
@@ -2186,7 +2192,7 @@ fn iif_declares_each_parent_before_its_subaccounts() {
     add("6100", "Software", None);
     add("5950", "Toner", Some("5900"));
     let accounts = iif_accounts(&l, |_| QbAccountType::Expense);
-    let iif = journal_to_iif(&accounts, &[]).unwrap();
+    let iif = journal_to_iif(&accounts, &[], &[]).unwrap();
     check_iif(&iif.text, &accounts, &[]);
     let names: Vec<&str> = iif
         .text
@@ -2219,7 +2225,7 @@ fn iif_change_warnings_are_one_line_each() {
     l.post_entry(e).unwrap();
     let accounts = iif_accounts(&l, |_| QbAccountType::Bank);
     let entries: Vec<&JournalEntry> = l.posted_entries().collect();
-    let iif = journal_to_iif(&accounts, &entries).unwrap();
+    let iif = journal_to_iif(&accounts, &[], &entries).unwrap();
     assert_eq!(
         iif.changes
             .iter()
@@ -2266,7 +2272,7 @@ fn iif_fits_quickbooks_desktop_limits() {
     l.post_entry(e).unwrap();
     let accounts = iif_accounts(&l, |_| QbAccountType::Expense);
     let entries: Vec<&JournalEntry> = l.posted_entries().collect();
-    let iif = journal_to_iif(&accounts, &entries).unwrap();
+    let iif = journal_to_iif(&accounts, &[], &entries).unwrap();
     check_iif(&iif.text, &accounts, &entries);
     check_changes(&iif, &accounts, &entries);
     let accnt: Vec<&str> = iif
@@ -2321,7 +2327,7 @@ fn iif_fits_quickbooks_desktop_limits() {
     let mut bad = accounts.clone();
     bad[1].path = "x".repeat(NAME_MAX + 1);
     assert_eq!(
-        journal_to_iif(&bad, &[]).unwrap_err(),
+        journal_to_iif(&bad, &[], &[]).unwrap_err(),
         IifError::NameTooLong {
             code: bad[1].code.clone(),
             name: "x".repeat(NAME_MAX + 1),
@@ -2367,7 +2373,7 @@ fn iif_warnings_group_the_memos_by_what_is_written_differently() {
     let zoe = post(&mut l, "Lunch, \"Zo\u{EB}\"\nteam \u{5317}\u{4EAC}");
     let accounts = iif_accounts(&l, |_| QbAccountType::Expense);
     let entries: Vec<&JournalEntry> = l.posted_entries().collect();
-    let iif = journal_to_iif(&accounts, &entries).unwrap();
+    let iif = journal_to_iif(&accounts, &[], &entries).unwrap();
     check_changes(&iif, &accounts, &entries);
     assert_eq!(iif.changes.len(), 1 + 100 + 1 + 1, "one per name and memo");
     assert!(
@@ -2446,7 +2452,7 @@ fn iif_warnings_never_hold_a_tin() {
     }
     let accounts = iif_accounts(&l, |_| QbAccountType::Bank);
     let entries: Vec<&JournalEntry> = l.posted_entries().collect();
-    let iif = journal_to_iif(&accounts, &entries).unwrap();
+    let iif = journal_to_iif(&accounts, &[], &entries).unwrap();
     check_changes(&iif, &accounts, &entries);
     assert_eq!(
         iif.warnings(),
@@ -2490,7 +2496,7 @@ fn iif_keeps_a_tin_readable_to_the_package_scan() {
     }
     let accounts = iif_accounts(&l, |_| QbAccountType::Bank);
     let entries: Vec<&JournalEntry> = l.posted_entries().collect();
-    let iif = journal_to_iif(&accounts, &entries).unwrap();
+    let iif = journal_to_iif(&accounts, &[], &entries).unwrap();
     let memos = iif_memos(&iif.text);
     assert_eq!(memos, ["Paid SSN 123-45-6789", "Paid SSN 123 45 6789"]);
     for m in &memos {
@@ -4433,7 +4439,7 @@ fn iif_field_transliteration_exact() {
     l.post_entry(e).unwrap();
     let accounts = iif_accounts(&l, |_| QbAccountType::Bank);
     let entries: Vec<&JournalEntry> = l.posted_entries().collect();
-    let iif = journal_to_iif(&accounts, &entries).unwrap();
+    let iif = journal_to_iif(&accounts, &[], &entries).unwrap();
     assert_eq!(iif_memos(&iif.text), ["a b c  d ---- 'e' '' x y"]);
 }
 
@@ -4839,4 +4845,417 @@ fn asset_register_xlsx_empty() {
     assert_eq!(number_cell(&c, (7, 5)), Decimal::ZERO);
     assert_eq!(text_cell(&c, (12, 0)), "Difference (unregistered cost)");
     assert_eq!(number_cell(&c, (12, 5)), dec("999.00"));
+}
+
+// ---------------------------------------------------------------------------
+// iif INVARIANT 9: classes (projects)
+// ---------------------------------------------------------------------------
+
+/// iif INVARIANT 9 against the file: when there are classes, a `!CLASS`
+/// list with a NAME column after the accounts and before `!TRNS`, one
+/// CLASS row per class in the order given, each NAME the class's written
+/// name, one level (no colon) of 1 to NAME_MAX printable ASCII
+/// characters, no two alike ignoring case; when there are none, no list.
+/// Every TRNS and SPL line's CLASS is its line's class as written, or
+/// empty for a line with none (the lines matched by account and amount).
+fn check_iif_classes(text: &str, classes: &[IifClass], entries: &[&JournalEntry]) {
+    let lines: Vec<&str> = text.split("\r\n").collect();
+    let at = |kw: &str| lines.iter().position(|l| l.split('\t').next() == Some(kw));
+    let rows: Vec<&str> = lines
+        .iter()
+        .filter_map(|l| l.strip_prefix("CLASS\t"))
+        .collect();
+    if classes.is_empty() {
+        assert_eq!(at("!CLASS"), None, "no classes, no list");
+        assert!(rows.is_empty());
+    } else {
+        let header = at("!CLASS").expect("a !CLASS list");
+        assert_eq!(lines[header], "!CLASS\tNAME");
+        assert!(at("ACCNT").is_none_or(|a| a < header), "the accounts first");
+        assert!(header < at("!TRNS").unwrap(), "the classes before !TRNS");
+        let names: Vec<&str> = classes.iter().map(|c| c.written.as_str()).collect();
+        assert_eq!(rows, names, "one row per class, in order");
+        for n in &rows {
+            assert!(plain(n) && !n.contains(':'), "{n:?}");
+            assert!(
+                !n.is_empty() && n.len() <= NAME_MAX && *n == n.trim(),
+                "{n:?}"
+            );
+        }
+        let lower: HashSet<String> = rows.iter().map(|n| n.to_ascii_lowercase()).collect();
+        assert_eq!(lower.len(), rows.len(), "two class NAMEs alike: {rows:?}");
+    }
+    let written: HashMap<ledger_core::ClassId, &str> =
+        classes.iter().map(|c| (c.id, c.written.as_str())).collect();
+    let header: Vec<&str> = lines
+        .iter()
+        .find(|l| l.starts_with("!TRNS\t"))
+        .unwrap()
+        .split('\t')
+        .collect();
+    let (class_at, amount_at, doc_at) = (
+        header.iter().position(|c| *c == "CLASS").unwrap(),
+        header.iter().position(|c| *c == "AMOUNT").unwrap(),
+        header.iter().position(|c| *c == "DOCNUM").unwrap(),
+    );
+    for e in entries {
+        let mut got: Vec<(String, String)> = lines
+            .iter()
+            .map(|l| l.split('\t').collect::<Vec<_>>())
+            .filter(|f| (f[0] == "TRNS" || f[0] == "SPL") && f[doc_at] == e.id().to_string())
+            .map(|f| (f[amount_at].to_string(), f[class_at].to_string()))
+            .collect();
+        let mut want: Vec<(String, String)> = e
+            .lines()
+            .iter()
+            .map(|l| {
+                let a = l.amount.amount;
+                let signed = if l.side == Side::Debit { a } else { -a };
+                (
+                    format!("{signed:.2}"),
+                    l.class_id.map_or("", |c| written[&c]).to_string(),
+                )
+            })
+            .collect();
+        got.sort();
+        want.sort();
+        assert_eq!(got, want, "entry {}'s classes", e.id());
+    }
+}
+
+/// Books with two classes and a sale whose revenue line is one of them.
+fn class_books() -> (Ledger, EntryId) {
+    let mut l = Ledger::new(Currency::USD);
+    let cash = l
+        .add_account("1000", "Cash", AccountType::Asset, None, false)
+        .unwrap();
+    let rev = l
+        .add_account("4000", "Revenue", AccountType::Revenue, None, false)
+        .unwrap();
+    let rebrand = l.add_class("Fern & Field rebrand").unwrap();
+    l.add_class("Archive").unwrap();
+    let id = l.create_entry(d(2026, 1, 15), "Sale");
+    let m = Money::new(dec("1000.00"), Currency::USD);
+    l.add_line(id, cash, Side::Debit, m).unwrap();
+    l.add_line(id, rev, Side::Credit, m).unwrap();
+    l.set_line_class(id, 1, Some(rebrand)).unwrap();
+    l.post_entry(id).unwrap();
+    (l, id)
+}
+
+/// iif INVARIANT 9, the layout of the module's doc: every class declared
+/// in a `!CLASS` list after the accounts and before the transactions
+/// (the kit's list declarations example; "Only the NAME column is
+/// required", its `!CLASS` header help), and each line's class in its
+/// CLASS field, empty where the line has none. A name written as itself
+/// is no change.
+#[test]
+fn iif_writes_each_lines_class_and_declares_the_classes_first() {
+    let (l, id) = class_books();
+    let accounts = iif_accounts(&l, |a| match a.account_type {
+        AccountType::Asset => QbAccountType::Bank,
+        _ => QbAccountType::Income,
+    });
+    let classes = iif_classes(&l);
+    let entries = [l.get_entry(id).unwrap()];
+    let iif = journal_to_iif(&accounts, &classes, &entries).unwrap();
+    assert_eq!(
+        iif.text,
+        "!ACCNT\tNAME\tACCNTTYPE\tACCNUM\r\n\
+         ACCNT\tCash\tBANK\t1000\r\n\
+         ACCNT\tRevenue\tINC\t4000\r\n\
+         !CLASS\tNAME\r\n\
+         CLASS\tFern & Field rebrand\r\n\
+         CLASS\tArchive\r\n\
+         !TRNS\tTRNSID\tTRNSTYPE\tDATE\tACCNT\tCLASS\tAMOUNT\tDOCNUM\tMEMO\r\n\
+         !SPL\tSPLID\tTRNSTYPE\tDATE\tACCNT\tCLASS\tAMOUNT\tDOCNUM\tMEMO\r\n\
+         !ENDTRNS\r\n\
+         TRNS\t\tGENERAL JOURNAL\t1/15/2026\tCash\t\t1000.00\t1\tSale\r\n\
+         SPL\t\tGENERAL JOURNAL\t1/15/2026\tRevenue\tFern & Field rebrand\t-1000.00\t1\tSale\r\n\
+         ENDTRNS\r\n"
+    );
+    assert!(iif.changes.is_empty() && iif.warnings().is_empty());
+    check_iif(&iif.text, &accounts, &entries);
+    check_iif_classes(&iif.text, &classes, &entries);
+    // No classes, no list: the file books without classes always had.
+    let plain_books = journal_to_iif(&accounts, &[], &[]).unwrap();
+    assert!(
+        !plain_books
+            .text
+            .split("\r\n")
+            .any(|l| l.starts_with("CLASS") || l.starts_with("!CLASS")),
+        "{}",
+        plain_books.text
+    );
+}
+
+/// iif INVARIANT 9: a class's NAME is written as an account's own level
+/// is (B-34 rules 3, 4): plain ASCII, a colon a '-' (a colon starts a
+/// subclass, the `!CLASS` header help), trimmed, at most NAME_MAX; names
+/// alike ignoring case once written get " (id)", round after round, as
+/// accounts get their codes; and each name written differently is a
+/// change, said in the warnings one line each.
+#[test]
+fn iif_class_names_fit_quickbooks_and_every_change_is_listed() {
+    let mut l = Ledger::new(Currency::USD);
+    let cash = l
+        .add_account("1000", "Cash", AccountType::Asset, None, false)
+        .unwrap();
+    let exp = l
+        .add_account("6000", "Costs", AccountType::Expense, None, false)
+        .unwrap();
+    // Replayed, as old books may hold them (replay never checks): two
+    // names alike ignoring case, and one that is another's tagged form.
+    let names = [
+        "Café: Rebrand",                              // 0
+        "Professional services and consulting fees",  // 1
+        "Professional services and consulting costs", // 2
+        "Chess set",                                  // 3
+        "CHESS SET",                                  // 4
+        "Chess set (3)",                              // 5
+        " Kiln ",                                     // 6
+    ];
+    let first = l.next_class_id();
+    for (i, n) in names.iter().enumerate() {
+        l.replay_class(first + i as u32, n.to_string()).unwrap();
+    }
+    let id = |i: usize| first + i as u32;
+    let classes = iif_classes(&l);
+    let written: Vec<&str> = classes.iter().map(|c| c.written.as_str()).collect();
+    let cut = "Professional services and consu";
+    assert_eq!(cut.len(), NAME_MAX);
+    let tagged = |base: &str, i: usize| {
+        let suffix = format!(" ({})", id(i));
+        format!("{}{suffix}", base[..NAME_MAX - suffix.len()].trim_end())
+    };
+    assert_eq!(
+        written,
+        [
+            "Cafe- Rebrand".to_string(),
+            tagged(cut, 1),
+            tagged(cut, 2),
+            // Alike "Chess set (3)" only when the first class's id is 3:
+            // then the tagged one yields again, the books' own name kept.
+            if id(3) == 3 {
+                format!("Chess set (3) ({})", id(3))
+            } else {
+                format!("Chess set ({})", id(3))
+            },
+            format!("CHESS SET ({})", id(4)),
+            "Chess set (3)".to_string(),
+            "Kiln".to_string(),
+        ]
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+    );
+    let e = l.create_entry(d(2026, 2, 1), "Glaze");
+    let m = Money::new(dec("12.00"), Currency::USD);
+    l.add_line(e, exp, Side::Debit, m).unwrap();
+    l.add_line(e, cash, Side::Credit, m).unwrap();
+    l.set_line_class(e, 0, Some(id(0))).unwrap();
+    l.post_entry(e).unwrap();
+    let accounts = iif_accounts(&l, |_| QbAccountType::Expense);
+    let entries = [l.get_entry(e).unwrap()];
+    let iif = journal_to_iif(&accounts, &classes, &entries).unwrap();
+    check_iif(&iif.text, &accounts, &entries);
+    check_iif_classes(&iif.text, &classes, &entries);
+    let want: Vec<IifChange> = classes
+        .iter()
+        .zip(names)
+        .filter(|(c, n)| c.written != *n)
+        .map(|(c, n)| IifChange {
+            field: IifField::ClassName { class: c.id },
+            books: n.to_string(),
+            written: c.written.clone(),
+        })
+        .collect();
+    assert_eq!(iif.changes, want);
+    let lines = iif.warnings();
+    assert!(lines.contains(&format!(
+        "class {}'s name \"Café: Rebrand\" is written \"Cafe- Rebrand\"",
+        id(0)
+    )));
+    assert_eq!(lines.len(), want.len(), "{lines:?}");
+}
+
+/// iif INVARIANT 9 (review of the P4 follow-ups, finding 4): a name
+/// written exactly as the books have it keeps it unless another class's
+/// own name is the same ignoring case. "Café" (transliterated onto
+/// "Cafe") yields to "Cafe", and its tagged "Cafe (1)" yields again to a
+/// class named "Cafe (1)": both kept, the changed one tagged twice. Two
+/// own names alike ignoring case both yield; two changed names alike are
+/// tagged once each. A changed name keeps yielding as often as it meets
+/// an own name (found by `iif_class_names_never_clash`: two "Café"
+/// beside "Cafe (1)" and "Cafe (1) (1)" once tagged the last, an own
+/// name, for want of a third tag); one a tag can't change (cut to
+/// NAME_MAX, ending in its own id) stands, and the own name it meets is
+/// tagged instead.
+#[test]
+fn iif_class_names_written_as_the_books_have_them_are_kept() {
+    let mut l = Ledger::new(Currency::USD);
+    for (id, n) in [
+        (1, "Café"),
+        (2, "Cafe"),
+        (3, "Cafe (1)"),
+        (4, "Kiln"),
+        (5, "KILN"),
+        (6, "Ros\u{E9}"),
+        (7, "Ros\u{E8}"),
+    ] {
+        l.replay_class(id, n.to_string()).unwrap();
+    }
+    let classes = iif_classes(&l);
+    let written: Vec<&str> = classes.iter().map(|c| c.written.as_str()).collect();
+    assert_eq!(
+        written,
+        [
+            "Cafe (1) (1)",
+            "Cafe",
+            "Cafe (1)",
+            "Kiln (4)",
+            "KILN (5)",
+            "Rose (6)",
+            "Rose (7)"
+        ]
+    );
+    let iif = journal_to_iif(&[], &classes, &[]).unwrap();
+    check_iif_classes(&iif.text, &classes, &[]);
+
+    let written_for = |names: &[String]| {
+        let mut l = Ledger::new(Currency::USD);
+        for (i, n) in names.iter().enumerate() {
+            l.replay_class(i as u32 + 1, n.clone()).unwrap();
+        }
+        let classes = iif_classes(&l);
+        let iif = journal_to_iif(&[], &classes, &[]).unwrap();
+        check_iif_classes(&iif.text, &classes, &[]);
+        classes.into_iter().map(|c| c.written).collect::<Vec<_>>()
+    };
+    let names = ["Café", "Cafe (1)", "Cafe (1) (1)", "Café"].map(String::from);
+    assert_eq!(
+        written_for(&names),
+        ["Cafe (1) (1) (1)", "Cafe (1)", "Cafe (1) (1)", "Cafe (4)"]
+    );
+    let x = |n: usize| "X".repeat(n);
+    let names = [
+        x(NAME_MAX + 9),
+        format!("{} (1)", x(NAME_MAX - 4)),
+        x(NAME_MAX),
+    ];
+    assert_eq!(
+        written_for(&names),
+        [
+            format!("{} (1)", x(NAME_MAX - 4)),
+            format!("{} (2)", x(NAME_MAX - 4)),
+            x(NAME_MAX)
+        ]
+    );
+}
+
+/// iif INVARIANT 9's refusals: a line whose class wasn't declared, two
+/// classes written alike (ignoring case), and a class NAME that isn't one
+/// level of 1 to NAME_MAX characters (each impossible from iif_classes,
+/// so only a list built some other way meets them).
+#[test]
+fn iif_refuses_an_undeclared_or_unfit_class() {
+    let (l, id) = class_books();
+    let accounts = iif_accounts(&l, |_| QbAccountType::Bank);
+    let entries = [l.get_entry(id).unwrap()];
+    let rebrand = l.find_class_by_name("Fern & Field rebrand").unwrap().id;
+    assert_eq!(
+        journal_to_iif(&accounts, &[], &entries).unwrap_err(),
+        IifError::UndeclaredClass {
+            entry: id,
+            class: rebrand
+        }
+    );
+    let class = |id: u32, written: &str| IifClass {
+        id,
+        written: written.to_string(),
+        name: written.to_string(),
+    };
+    assert_eq!(
+        journal_to_iif(&accounts, &[class(1, "Rebrand"), class(2, "REBRAND")], &[]).unwrap_err(),
+        IifError::ClassNameCollision {
+            name: "Rebrand".into(),
+            classes: vec![1, 2]
+        }
+    );
+    for bad in ["A:B", "", &"x".repeat(NAME_MAX + 1), " Kiln"] {
+        assert!(
+            matches!(
+                journal_to_iif(&accounts, &[class(1, bad)], &[]),
+                Err(IifError::ClassNameInvalid { class: 1, .. })
+            ),
+            "{bad:?}"
+        );
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// iif INVARIANT 9 over random names (old books' duplicates
+    /// included): every class is written, one level of 1 to NAME_MAX
+    /// printable ASCII characters, no two alike ignoring case; a plain
+    /// name is itself (cut to NAME_MAX) or so cut to make room for its
+    /// " (id)"; the file is accepted, and lists exactly the names written
+    /// differently.
+    #[test]
+    fn iif_class_names_never_clash(names in proptest::collection::vec(prop_oneof![
+        proptest::sample::select(vec![
+            "Rebrand", "rebrand", "Rebrand (1)", "Rebrand (2)", "A\u{FF1A}B", "A-B", "北京",
+            "Bei Jing", "\u{E000}", "\u{E001}", "Café", "Cafe", "Cafe (1)", "Cafe (1) (1)",
+            "Professional services and consulting fees",
+            "Professional services and consulting costs",
+        ]).prop_map(String::from),
+        any_text(),
+    ], 0..10)) {
+        let mut l = Ledger::new(Currency::USD);
+        for (i, n) in names.iter().enumerate() {
+            l.replay_class(i as u32 + 1, n.clone()).unwrap();
+        }
+        let classes = iif_classes(&l);
+        prop_assert_eq!(classes.len(), names.len());
+        let iif = journal_to_iif(&[], &classes, &[]).unwrap();
+        check_iif_classes(&iif.text, &classes, &[]);
+        let mut want = Vec::new();
+        // A name written as the books have it, no other such name alike.
+        let exact = |n: &String| {
+            plain(n) && !n.contains(':') && n == n.trim() && !n.is_empty() && n.len() <= NAME_MAX
+        };
+        for (c, n) in classes.iter().zip(&names) {
+            let tag = format!(" ({})", c.id);
+            if plain(n) && !n.contains(':') && n == n.trim() && !n.is_empty() {
+                let mut bases = vec![c.written.as_str()];
+                while let Some(b) = bases.last().unwrap().strip_suffix(tag.as_str()) {
+                    bases.push(b);
+                }
+                prop_assert!(
+                    c.written == n.get(..NAME_MAX).unwrap_or(n).trim_end()
+                        || (c.written.ends_with(tag.as_str())
+                            && bases[1..].iter().any(|b| n.starts_with(b))),
+                    "{:?} for {:?}", c.written, n
+                );
+            }
+            if exact(n)
+                && names
+                    .iter()
+                    .filter(|m| exact(m) && m.eq_ignore_ascii_case(n))
+                    .count()
+                    == 1
+            {
+                prop_assert_eq!(&c.written, n, "an exact name, alone of its kind");
+            }
+            if c.written != *n {
+                want.push(IifChange {
+                    field: IifField::ClassName { class: c.id },
+                    books: n.clone(),
+                    written: c.written.clone(),
+                });
+            }
+        }
+        prop_assert_eq!(&iif.changes, &want);
+    }
 }

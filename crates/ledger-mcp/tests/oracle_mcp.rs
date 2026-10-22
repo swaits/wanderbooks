@@ -3586,7 +3586,7 @@ fn cpa_package_holds_the_year_and_its_evidence() {
         assert!(readme.contains(&format!("\n- {w}\n")), "{w} in {readme}");
     }
     assert!(out["note"].as_str().unwrap().ends_with(
-        " 5 account name(s), number(s), place(s) or memo(s) are written differently in general-journal.iif to fit QuickBooks Desktop (warnings says how; so does the README): tell the human."
+        " 5 account or class name(s), number(s), place(s) or memo(s) are written differently in general-journal.iif to fit QuickBooks Desktop (warnings says how; so does the README): tell the human."
     ));
 
     // Receipts: exactly the two behind the rent.

@@ -79,6 +79,31 @@ SHA-256 of `IIF Import Kit/IIF Header Help/!ACCNT.htm`: `91b5cbcc90b3b251b467448
 
 Cited (not quoted): a subaccount's NAME includes its parents' names, highest level first. Accounts are identified by NAME; the account number (`ACCNUM`) is a separate, optional column.
 
+### IIF Header Help: Class list (CLASS)
+Retrieved: 2026-10-22 (the kit above, unchanged: same SHA-256)  
+SHA-256 of `IIF Import Kit/IIF Header Help/!CLASS.htm`: `de8a89aac069946583ed1fec7b9042162343b5b34146fb456d17851bccca0ff8`
+
+Cited (not quoted, but for the lines below): the Class list's keyword is CLASS; of its columns (NAME, and TIMESTAMP and REFNUM in export files only) the page says:
+
+> Only the NAME column is required.
+
+> If the class is a subclass of another class, the name includes the name of the parent classes, beginning with the highest level class. If you are creating an import file, use a colon (:) to separate subclass names.
+
+So a class's NAME, like an account's, is one level per colon: the books, whose classes have no parents, write a colon in a class's name as '-', as in an account's (rules.md B-34 rule 8). The page states no length limit and nothing about case.
+
+### IIF Example Files: list declarations
+SHA-256 of `IIF Import Kit/IIF Example Files/QB 2007 & Enterprise 7.0 and later/Import First - List Declarations (Not Version Specific).iif` (the same bytes in each version's folder): `13c730b23bcb8c142621b04206e3628241d83051442c9b14ea2416d21163439c`
+
+Cited (not quoted): a file named "Import First", declaring the lists (accounts, classes, names) that the transaction examples use; its class rows, transcribed (each `→` one tab; the trailing empty fields left out):
+
+```text
+!CLASS→NAME→REFNUM→TIMESTAMP→HIDDEN→DELCOUNT
+CLASS→Class Name→2→1154540261→N→0
+CLASS→Owner→1→1154540254→N→0
+```
+
+The kit's `2004 Deposit (Income).iif` (`IIF Example Files/QB 2004 & Enterprise 4.0/Deposit/`) (SHA-256 `82a5d0efbdeb9440a81e48fa1675355e37d2d78650a026c87caa640d0955ffdf`) names the declared class "Class Name" in the CLASS column of its SPL line, its TRNS line's left empty: a line's class is the one it names, per line. So a class is declared in a `!CLASS` list before the transactions that name it, as accounts are (the Import Manual and `journal.zip`'s read-me, above and below: lists first, or default types are assumed). The books write the one required column, NAME.
+
 ### IIF Example Files: QB 2007 & Enterprise 7.0 and later, General Journal Entry
 SHA-256 of `IIF Import Kit/IIF Example Files/QB 2007 & Enterprise 7.0 and later/Journal Entry/2007 General Journal Entry.iif`: `78917e0f848f38b55f0f1bbde16ef19b9144132a2b21f11831ff29b2ba549879`
 
@@ -156,6 +181,29 @@ Searched 2026-10-20. What Intuit says:
 Not Intuit, for the record: a third-party IIF vendor answering on Intuit's community (BigRedConsulting, 14 April 2020, <https://quickbooks.intuit.com/learn-support/en-us/other-questions/iif-import-error-3040/00/535675>) wrote that "a NAME is required for any AR row", about a bill, not a journal; QuickBooks Desktop sync tools quote the refusal "Transaction split lines to accounts receivable must include a customer on that split line" (Acctivate, <https://hub.acctivate.com/articles/troubleshoot/synchronization/transaction-split-lines-to-accounts-receivable-must-include-a-customer-on-that-split-line>).
 
 No Intuit source says what an IIF journal import does with an A/R or A/P line that has no NAME (refuses it, imports it, or asks). So the books write no NAME (writing names would need the customer and vendor lists declared too, with a name unique across them) and the package README names the entries with an A/R or A/P line, so the CPA can add the name in QuickBooks if it asks (rules.md B-34 rule 7).
+
+## How long a class's name may be
+
+Searched 2026-10-22. Intuit's limits article (above) has no row for a class; its `!CLASS` header help states none. Intuit's .NET SDK reference gives QuickBooks Desktop ("QBW") 31 characters for the names of its other lists (`Account.Name`, above; `Item.Name`, `Term.Name`, `JobType.Name`, `CustomerType.Name`), but for a class its only page, `Department.Name` (<https://static.developer.intuit.com/sdkdocs/qbv3doc/ippdotnetdevkitv3/html/d658b447-b3f9-26f1-3a65-e213cfe3c379.htm>, retrieved 2026-10-22, SHA-256 of the retrieved page `9a33e3cbed97cea28558c8530b6d4950b54346ab8f8581897f1a333b072b026d`), describes "User recognizable name for the Class" with "QBW: 1024": a page for departments (a QuickBooks Online list) whose wording names classes, so not taken as Desktop's class limit.
+
+### Intuit's qbXML Onscreen Reference: `ClassAdd`
+Source: the QuickBooks Desktop SDK's Onscreen Reference (OSR), <https://static.developer.intuit.com/qbSDK-current/common/newosr/index.html>, whose `ClassAdd` request page is drawn from <https://static.developer.intuit.com/qbSDK-current/common/newosr/qbsdk/json/ClassAddRq.json>  
+Retrieved: 2026-10-22  
+SHA-256 of the retrieved `ClassAddRq.json`: `760505a11638ccdb3ea30a9714fa02651509660291ae4eff09e20d4942a310de`
+
+The request's `Name` element (required, a string, `"xmlNameHtml" : "Class-Name.html"`) carries the OSR's length limits per edition:
+
+> "maxCA" : 31, ... "maxUK" : 31, "maxAU" : 31, ... "maxDT" : 31, ... "maxOE" : 100
+
+So 31 characters for a class's name in every QuickBooks Desktop edition the OSR covers (the US desktop, Canada, the UK and Australia), 100 only in Online Edition ("OE"). The same reference's `AccountAddRq.json` (retrieved the same day, SHA-256 `856c64ea3aeea8229692f98cdcfe32278cc9070c56bff7eed74d9e53702c3a40`) gives an account's `Name` the same figures (31 in each Desktop edition, "maxOE" : 100), matching the limits article's Account Name 31 and the .NET reference's "QBW: Max=31", so the fields read as Desktop's own limits.
+
+Not Intuit, for the record: Conductor's QuickBooks Desktop API reference (a service over QuickBooks Desktop's own SDK, which mirrors the OSR), "Create a class", <https://docs.conductor.is/api-ref/qbd/classes/create.md>, retrieved 2026-10-22, SHA-256 of the retrieved file `8588c0ffaa7d5082abd0329734a00ee42179894109ec7572a66d7f844e908d89`, of a class's `name`:
+
+> The case-insensitive name of this class. Not guaranteed to be unique because it does not include the names of its hierarchical parent objects like `fullName` does.
+
+> Maximum length: 31 characters.
+
+So the books hold a class's NAME to 31 characters, as an account's own level (Intuit's own limit for a class, above), and keep no two alike ignoring case (Conductor: case-insensitive; rules.md B-34 rule 8).
 
 ## What QuickBooks does with an over-long name (not Intuit)
 Source: Thomson Reuters, Accounting CS help, "Export payroll journal entries", <https://thomsonreuters.com/en-us/help/accounting-cs/integrate-data-with-other-applications/export-payroll-journal-entries>  

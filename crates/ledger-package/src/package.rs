@@ -576,7 +576,12 @@ pub fn build_package<B: PackageBooks + ?Sized>(
         },
         iif = {
             let mut t = format!(
-                "general-journal.iif: every posted entry from the first through {as_of_s}, for import into QuickBooks Desktop. Plain ASCII text (its import turns anything else into \"?\"), CR LF line endings; DOCNUM is each entry's id in these books. Period-closing entries are left out: QuickBooks keeps none and works out retained earnings itself, so an imported close would zero its period's profit; trial-balance includes them{}.\n",
+                "general-journal.iif: every posted entry from the first through {as_of_s}, for import into QuickBooks Desktop. Plain ASCII text (its import turns anything else into \"?\"), CR LF line endings; DOCNUM is each entry's id in these books{}. Period-closing entries are left out: QuickBooks keeps none and works out retained earnings itself, so an imported close would zero its period's profit; trial-balance includes them{}.\n",
+                if ledger.list_classes().is_empty() {
+                    ""
+                } else {
+                    "; CLASS is each line's project, the projects declared first as QuickBooks classes"
+                },
                 if company.members.is_empty() {
                     ""
                 } else {
@@ -592,9 +597,10 @@ pub fn build_package<B: PackageBooks + ?Sized>(
             }
             if !warnings.is_empty() {
                 t.push_str(&format!(
-                    "Written differently in general-journal.iif to fit QuickBooks Desktop (plain ASCII; account names at most {} characters a level, no two alike; a subaccount of another QuickBooks type than its parent's at the top level; account numbers at most {} characters, no two alike; memos at most {} characters); every other file keeps the books' text:\n",
+                    "Written differently in general-journal.iif to fit QuickBooks Desktop (plain ASCII; account names at most {} characters a level, no two alike; a subaccount of another QuickBooks type than its parent's at the top level; account numbers at most {} characters, no two alike; class (project) names at most {} characters, no two alike; memos at most {} characters); every other file keeps the books' text:\n",
                     ledger_import::NAME_MAX,
                     ledger_import::NUMBER_MAX,
+                    ledger_import::NAME_MAX,
                     ledger_import::MEMO_MAX
                 ));
                 for w in &warnings {

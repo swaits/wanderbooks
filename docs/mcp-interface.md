@@ -1718,10 +1718,19 @@ posting.
     level (QuickBooks gives a subaccount its parent's type); each parent
     is declared before its subaccounts; an account number past 7
     characters, or written like another's, is left out of ACCNUM; a memo
-    past 4,095 characters is cut. No line names a customer or vendor (no
+    past 4,095 characters is cut. Each line's class (project) is in
+    CLASS, every class declared first in a `!CLASS` list (none: no list),
+    its name written as an account's own name level is (plain ASCII, a
+    colon '-', at most 31 characters; classes whose names would then match
+    get " (id)", a name already written differently from the books (made
+    safe or tagged) yielding first, so a class's own name stands wherever
+    it can: "Café" beside "Cafe" is written "Cafe (1)" and "Cafe" is
+    kept, rules.md B-34 rule 8). No line names a customer or vendor (no
     NAME column; see the package's README). `warnings` (absent when
     there are none) says what the file writes differently from the books,
-    for the human: each account's name, number and place a line (`account 6010's
+    for the human: each account's name, number and place and each
+    class's name a line (`class 2's name "Café rebrand" is written "Cafe
+    rebrand"`, `account 6010's
     name "Café meals" is written "Cafe meals"`, `account number
     "12345678" is left out: QuickBooks Desktop holds 7 characters at
     most`); the memos grouped, each thing written differently once with
@@ -2176,14 +2185,15 @@ until the owner upgrades them.
   **QuickBooks file** (`general-journal.iif`, B-34): as `books.export`
   iif makes it, through `as_of`; `warnings` says what it writes
   differently from the books, in the same lines as `books.export` iif's
-  (account names and numbers one each, the memos grouped; every other
-  file keeps the books' text), the README lists the same lines (and
-  names the entries with a line on accounts receivable or payable, to
-  which QuickBooks Desktop may ask the CPA to add a customer or vendor),
-  and, when the file writes anything differently, `note` ends "N account name(s), number(s), place(s) or memo(s)
-  are written differently in general-journal.iif to fit QuickBooks
-  Desktop (warnings says how; so does the README): tell the human.", N
-  counting each name, number, place and memo.
+  (account and class names and account numbers one each, the memos
+  grouped; every other file keeps the books' text), the README lists the
+  same lines (and names the entries with a line on accounts receivable or
+  payable, to which QuickBooks Desktop may ask the CPA to add a customer
+  or vendor), and, when the file writes anything differently, `note` ends
+  "N account or class name(s), number(s), place(s) or memo(s) are written
+  differently in general-journal.iif to fit QuickBooks Desktop (warnings
+  says how; so does the README): tell the human.", N counting each name,
+  number, place and memo.
   **Receipts** (`include_receipts`, default true): `receipts/` holds every
   current file behind each posted entry of the fiscal year to date, filed
   on it or linked to it (`books.link_attachment`; a linked file counts as

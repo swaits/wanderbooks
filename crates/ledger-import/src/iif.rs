@@ -10,7 +10,11 @@
 //!         rules.md B-34; Intuit's "Character limitations for fields in
 //!         QuickBooks" (account name 31, account number 7, memo 4,095);
 //!         DECISION (owner, 2026-10-20, plan D-36: plain ASCII,
-//!         transliterated and listed; CR LF line endings).
+//!         transliterated and listed; CR LF line endings); the kit's
+//!         `!CLASS` header help and its list declarations example (a
+//!         class's NAME; lists before transactions); a class name of 31
+//!         characters at most (Intuit's qbXML Onscreen Reference,
+//!         `ClassAdd` Name).
 //! INVARIANTS:
 //!   1. Accounts MUST be declared first (`!ACCNT`: NAME, ACCNTTYPE, ACCNUM),
 //!      each after its parent, BECAUSE QuickBooks creates an unknown
@@ -59,6 +63,20 @@
 //!      and takes one such account a transaction (Intuit staff and help;
 //!      sources/intuit-iif.md). [`Iif::receivable_payable`] lists the
 //!      entries with such a line, for the human to be told.
+//!   9. Each line's class (a project) MUST be in its CLASS field, and the
+//!      classes declared first (`!CLASS`: NAME), after the accounts and
+//!      before the transactions, BECAUSE the kit puts every list before
+//!      what uses it (a name it doesn't know lands on the wrong list or
+//!      takes a default). A class's NAME is written as an account's own
+//!      level is (INVARIANTS 2, 4: plain ASCII, a colon a '-' since a
+//!      colon starts a subclass, trimmed, at most [`NAME_MAX`]); classes
+//!      whose NAMEs would match ignoring case get " (their id)" until none
+//!      does, as accounts get their codes, except that the names already
+//!      written differently yield first (another id each time need be): a name
+//!      written as the books have it is kept unless another class's own
+//!      name is the same ignoring case. NEVER write a line whose class
+//!      wasn't declared: refuse instead. Books with no class write no
+//!      `!CLASS` list, as before.
 //! ```
 //!
 //! Layout (each `→` is a tab; every line ends CR LF):
@@ -66,20 +84,23 @@
 //! ```text
 //! !ACCNT→NAME→ACCNTTYPE→ACCNUM
 //! ACCNT→Cash→BANK→1000
+//! !CLASS→NAME
+//! CLASS→Fern & Field rebrand
 //! !TRNS→TRNSID→TRNSTYPE→DATE→ACCNT→CLASS→AMOUNT→DOCNUM→MEMO
 //! !SPL→SPLID→TRNSTYPE→DATE→ACCNT→CLASS→AMOUNT→DOCNUM→MEMO
 //! !ENDTRNS
 //! TRNS→→GENERAL JOURNAL→1/15/2026→Cash→→1000.00→1→Sale
-//! SPL→→GENERAL JOURNAL→1/15/2026→Revenue→→-1000.00→1→Sale
+//! SPL→→GENERAL JOURNAL→1/15/2026→Revenue→Fern & Field rebrand→-1000.00→1→Sale
 //! ENDTRNS
 //! ```
 //!
-//! (DOCNUM 1: the sale is entry 1 in its books.)
+//! (DOCNUM 1: the sale is entry 1 in its books; its revenue line carries
+//! the project.)
 
 use chrono::Datelike;
 use deunicode::AsciiChars;
 use ledger_core::parties::{has_full_tin, redact_full_tins};
-use ledger_core::{AccountId, EntryId, JournalEntry, Ledger, Side};
+use ledger_core::{AccountId, ClassId, EntryId, JournalEntry, Ledger, Side};
 use rust_decimal::Decimal;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
@@ -188,14 +209,27 @@ pub struct IifAccount {
     pub apart_from: Option<(String, QbAccountType)>,
 }
 
+/// One class (a project) as QuickBooks will know it, and as the books keep
+/// it (INVARIANT 9).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IifClass {
+    /// The wanderbooks class.
+    pub id: ClassId,
+    /// Its NAME in the file, already made safe for IIF ([`iif_classes`]
+    /// builds these).
+    pub written: String,
+    /// Its name as the books keep it (for [`Iif::changes`]).
+    pub name: String,
+}
+
 /// What [`journal_to_iif`] writes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Iif {
     /// The file: ASCII text, every line ending CR LF.
     pub text: String,
     /// Each account name, number or place and each memo the file writes
-    /// differently from the books (INVARIANT 7), in file order: the
-    /// accounts as given, then the entries as given.
+    /// differently from the books (INVARIANTS 7, 9), in file order: the
+    /// accounts as given, then the classes, then the entries as given.
     pub changes: Vec<IifChange>,
     /// The entries with a line on an accounts receivable or accounts
     /// payable account, in file order: the file names no customer or
@@ -241,6 +275,12 @@ pub enum IifField {
         own: QbAccountType,
         /// Its parent's.
         parent: QbAccountType,
+    },
+    /// A class's name (a project's): its NAME in the `!CLASS` list and
+    /// the CLASS field (INVARIANT 9).
+    ClassName {
+        /// The class's id in the books.
+        class: ClassId,
     },
     /// An entry's memo: its description in the books.
     Memo {
@@ -292,6 +332,9 @@ impl fmt::Display for IifChange {
                 own.keyword(),
                 parent.keyword()
             ),
+            IifField::ClassName { class } => {
+                format!("class {class}'s name {books:?} is written {written:?}")
+            }
             IifField::Memo { entry } => {
                 format!("entry {entry}'s memo {books:?} is written {written:?}")
             }
@@ -423,6 +466,38 @@ pub enum IifError {
         /// The accounts' codes in the books.
         codes: Vec<String>,
     },
+    /// An entry's line has a class that wasn't declared (INVARIANT 9).
+    #[error("entry {entry} uses class {class}, which isn't in the class list")]
+    UndeclaredClass {
+        /// The entry.
+        entry: u64,
+        /// The class.
+        class: ClassId,
+    },
+    /// Two or more classes would have one name in QuickBooks
+    /// (INVARIANT 9; [`iif_classes`] never builds them).
+    #[error(
+        "classes {} would have the same name in QuickBooks, {name:?}: rename one",
+        .classes.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
+    )]
+    ClassNameCollision {
+        /// The name, as the file would write it.
+        name: String,
+        /// The classes' ids in the books.
+        classes: Vec<ClassId>,
+    },
+    /// A class's NAME is empty, holds a colon, or is longer than
+    /// QuickBooks Desktop holds (INVARIANT 9; [`iif_classes`] never builds
+    /// one).
+    #[error(
+        "class {class}'s name in QuickBooks, {name:?}, isn't one level of 1 to {NAME_MAX} characters"
+    )]
+    ClassNameInvalid {
+        /// The class's id in the books.
+        class: ClassId,
+        /// The NAME, as the file would write it.
+        name: String,
+    },
     /// An account's NAME has a level longer than QuickBooks Desktop holds
     /// (INVARIANT 2; [`iif_accounts`] never builds one).
     #[error(
@@ -548,6 +623,68 @@ pub fn iif_accounts(
     parents_first(out, &parents)
 }
 
+/// Every class (project) in the books as QuickBooks will know it, in id
+/// order (INVARIANT 9): its name made safe as an account's own level is
+/// (plain ASCII, a colon a '-', trimmed, "?" if nothing is left, cut to
+/// [`NAME_MAX`]), and the classes whose NAMEs would match ignoring ASCII
+/// case given " (id)" after their names (cut to make room), round after
+/// round until none matches. Where they meet, the names already written
+/// differently from the books (made safe, or tagged) yield first, so a
+/// name written exactly as the books have it keeps it unless another
+/// class's own name is the same ignoring case: "Café" beside "Cafe" is
+/// "Cafe (1)", "Cafe" stays, and if a class is named "Cafe (1)" too, the
+/// changed one is tagged again, "Cafe (1) (1)"; two "Rebrand" classes
+/// are "Rebrand (2)" and "Rebrand (5)", and a third named "Rebrand (2)"
+/// keeps its name while the tagged one becomes "Rebrand (2) (2)"; a
+/// changed name meeting own names again and again is tagged again and
+/// again ("Café" beside "Cafe", "Cafe (1)" and "Cafe (1) (1)" is "Cafe
+/// (1) (1) (1)"). A tag that changes nothing (a name already cut to
+/// [`NAME_MAX`] and ending in its own " (id)") is not made: that name
+/// stands and the others meeting it are tagged. Each tag lengthens a
+/// name or leaves it at [`NAME_MAX`] ending in its own id, after which it
+/// is never tagged again; two names so ended differ by their ids. So
+/// every round that finds two alike tags one, and the rounds end with no
+/// two NAMEs alike.
+pub fn iif_classes(ledger: &Ledger) -> Vec<IifClass> {
+    let classes = ledger.list_classes();
+    let own: Vec<String> = classes.iter().map(|c| segment(&c.name)).collect();
+    let mut written = own.clone();
+    loop {
+        let mut by_name: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        for (i, w) in written.iter().enumerate() {
+            by_name.entry(w.to_ascii_lowercase()).or_default().push(i);
+        }
+        let mut more = false;
+        for alike in by_name.into_values().filter(|ix| ix.len() > 1) {
+            let can: Vec<usize> = alike
+                .into_iter()
+                .filter(|&i| with_tag(&written[i], &classes[i].id.to_string()) != written[i])
+                .collect();
+            let yielding: Vec<usize> = can
+                .iter()
+                .copied()
+                .filter(|&i| written[i] != classes[i].name)
+                .collect();
+            for i in if yielding.is_empty() { can } else { yielding } {
+                written[i] = with_tag(&written[i], &classes[i].id.to_string());
+                more = true;
+            }
+        }
+        if !more {
+            break;
+        }
+    }
+    classes
+        .iter()
+        .zip(written)
+        .map(|(c, written)| IifClass {
+            id: c.id,
+            written,
+            name: c.name.clone(),
+        })
+        .collect()
+}
+
 /// `accounts`, in the order given but each after its parent (INVARIANT 1:
 /// a subaccount's NAME names its parent, which QuickBooks must know
 /// first): the first account whose parent is already placed (or that has
@@ -584,14 +721,19 @@ fn parents_first(
     order.into_iter().filter_map(|i| slots[i].take()).collect()
 }
 
-/// Render posted entries as IIF: the accounts declared first, then one
-/// transaction per entry in the order given, each numbered (DOCNUM) with
-/// its entry id; every text the file writes differently from the books,
+/// Render posted entries as IIF: the accounts declared first, then the
+/// classes (none: no class list), then one transaction per entry in the
+/// order given, each numbered (DOCNUM) with its entry id and each line's
+/// class in CLASS; every text the file writes differently from the books,
 /// and the entries with a line on accounts receivable or payable
-/// (INVARIANTS 1-8). Refused when an entry uses an account `accounts`
-/// lacks, two accounts would have one name, or a name has a level too long
-/// for QuickBooks.
-pub fn journal_to_iif(accounts: &[IifAccount], entries: &[&JournalEntry]) -> Result<Iif, IifError> {
+/// (INVARIANTS 1-9). Refused when an entry uses an account `accounts`
+/// lacks or a class `classes` lacks, two accounts or two classes would
+/// have one name, or a name has a level too long for QuickBooks.
+pub fn journal_to_iif(
+    accounts: &[IifAccount],
+    classes: &[IifClass],
+    entries: &[&JournalEntry],
+) -> Result<Iif, IifError> {
     // Made safe again: it changes nothing iif_accounts built, and an
     // account built some other way can't break the file.
     let paths: Vec<String> = accounts.iter().map(|a| field(&a.path)).collect();
@@ -636,6 +778,40 @@ pub fn journal_to_iif(accounts: &[IifAccount], entries: &[&JournalEntry]) -> Res
     {
         *uses.entry(n.to_ascii_lowercase()).or_default() += 1;
     }
+    // INVARIANT 9's names: made safe again (it changes nothing
+    // iif_classes built), one level each, no two alike.
+    let class_names: Vec<String> = classes.iter().map(|c| field(&c.written)).collect();
+    if let Some((c, name)) = classes.iter().zip(&class_names).find(|(_, n)| {
+        n.is_empty() || n.len() > NAME_MAX || n.contains(':') || n.trim() != n.as_str()
+    }) {
+        return Err(IifError::ClassNameInvalid {
+            class: c.id,
+            name: name.clone(),
+        });
+    }
+    let mut by_class_name: BTreeMap<String, Vec<ClassId>> = BTreeMap::new();
+    for (c, name) in classes.iter().zip(&class_names) {
+        by_class_name
+            .entry(name.to_ascii_lowercase())
+            .or_default()
+            .push(c.id);
+    }
+    if let Some((lower, ids)) = by_class_name.iter().find(|(_, ids)| ids.len() > 1) {
+        let name = class_names
+            .iter()
+            .find(|n| n.to_ascii_lowercase() == *lower)
+            .cloned()
+            .unwrap_or_default();
+        return Err(IifError::ClassNameCollision {
+            name,
+            classes: ids.clone(),
+        });
+    }
+    let class_of: HashMap<ClassId, &str> = classes
+        .iter()
+        .zip(&class_names)
+        .map(|(c, n)| (c.id, n.as_str()))
+        .collect();
     let by_id: HashMap<AccountId, (&str, QbAccountType)> = accounts
         .iter()
         .zip(&paths)
@@ -695,6 +871,19 @@ pub fn journal_to_iif(accounts: &[IifAccount], entries: &[&JournalEntry]) -> Res
             });
         }
     }
+    if !classes.is_empty() {
+        out.push_str(&format!("!CLASS\tNAME{EOL}"));
+        for (c, name) in classes.iter().zip(&class_names) {
+            out.push_str(&format!("CLASS\t{name}{EOL}"));
+            if *name != c.name {
+                changes.push(IifChange {
+                    field: IifField::ClassName { class: c.id },
+                    books: c.name.clone(),
+                    written: name.clone(),
+                });
+            }
+        }
+    }
     out.push_str(&format!(
         "!TRNS\tTRNSID\tTRNSTYPE\tDATE\tACCNT\tCLASS\tAMOUNT\tDOCNUM\tMEMO{EOL}"
     ));
@@ -736,9 +925,16 @@ pub fn journal_to_iif(accounts: &[IifAccount], entries: &[&JournalEntry]) -> Res
                 qb_type,
                 QbAccountType::AccountsReceivable | QbAccountType::AccountsPayable
             );
+            let class = match line.class_id {
+                None => "",
+                Some(c) => class_of.get(&c).ok_or(IifError::UndeclaredClass {
+                    entry: entry.id(),
+                    class: c,
+                })?,
+            };
             let keyword = if n == 0 { "TRNS" } else { "SPL" };
             out.push_str(&format!(
-                "{keyword}\t\tGENERAL JOURNAL\t{date}\t{account}\t\t{}\t{docnum}\t{memo}{EOL}",
+                "{keyword}\t\tGENERAL JOURNAL\t{date}\t{account}\t{class}\t{}\t{docnum}\t{memo}{EOL}",
                 format_amount(signed(line.side, line.amount.amount)),
             ));
         }
@@ -911,7 +1107,7 @@ mod tests {
             AccountType::Asset => QbAccountType::Bank,
             _ => QbAccountType::Income,
         });
-        let iif = journal_to_iif(&accounts, &[ledger.get_entry(id).unwrap()]).unwrap();
+        let iif = journal_to_iif(&accounts, &[], &[ledger.get_entry(id).unwrap()]).unwrap();
         assert_eq!(
             iif.text,
             "!ACCNT\tNAME\tACCNTTYPE\tACCNUM\r\n\

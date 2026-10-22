@@ -2134,7 +2134,7 @@ bookspec examples `bookspec/examples/as-of-package-stops-at-as-of.toml`
 and `bookspec/examples/1099-worksheet-through-as-of.toml` (`ledger-core`
 `tests/bookspec.rs`).
 
-## B-34 The QuickBooks Desktop file (IIF): plain ASCII, every entry through as_of, closes left out
+## B-34 The QuickBooks Desktop file (IIF): plain ASCII, every entry through as_of, closes left out, classes carried
 
 **Status:** AUTHORITY (Intuit, `sources/intuit-iif.md`: IIF files are
 ASCII text, tab-separated, with no escape; an account is known by its
@@ -2144,9 +2144,16 @@ example file ends every line CR LF; QuickBooks Desktop holds an account
 name of 31 characters, an account number of 7 and a memo of 4,095; "The
 parent and subaccount must be the same account type"; a journal entry
 to accounts receivable or payable needs a customer or vendor, and takes
-one such account a transaction); CONVENTION (a QuickBooks integrator and
-an IIF importer, same file: a longer name is cut on a chart import but not
-in a journal's lines; a double quote is a text delimiter); DECISION (owner, 2026-10-20, plan D-36: plain ASCII, what isn't
+one such account a transaction; a class list's keyword is CLASS, "Only
+the NAME column is required", a subclass's NAME its parents' first,
+joined by colons, and the kit declares its classes before the
+transactions that name them, line by line in CLASS; Intuit's qbXML
+Onscreen Reference, `ClassAdd`: a class's Name at most 31 characters in
+QuickBooks Desktop, as an account's); CONVENTION (a
+QuickBooks integrator and an IIF importer, same file: a longer name is
+cut on a chart import but not in a journal's lines; a double quote is a
+text delimiter; Conductor's QuickBooks Desktop API: a class's name
+case-insensitive, so no two alike ignoring case); DECISION (owner, 2026-10-20, plan D-36: plain ASCII, what isn't
 ASCII transliterated and listed; CR LF; DOCNUM the entry's id; closing
 entries left out; every entry since the company began until the CPA
 says otherwise); Unicode Standard Annex #14 (the mandatory line breaks)
@@ -2223,9 +2230,35 @@ says otherwise); Unicode Standard Annex #14 (the mandatory line breaks)
    across them. So the file names none, and the package README names the
    entries with a line on an A/R or A/P account (`Iif::receivable_payable`),
    so the CPA can add the name if QuickBooks asks.
+8. **Each line's class (project, B-37) is its CLASS**, and every class in
+   the books is declared in a `!CLASS` list (NAME) after the accounts and
+   before the transactions, as the kit declares its lists; books with no
+   class write no list. A class's NAME is written as an account's own
+   name is (rules 3 and 4: plain ASCII, a ':' a '-' since a colon starts
+   a subclass, trimmed, '?' if nothing is left, cut to 31 characters);
+   classes whose NAMEs would match ignoring case get " (id)" after their
+   names (the name cut to make room), round after round until none does,
+   as accounts get " (code)", except that among names that match, those
+   already written differently from the books (made safe, or tagged)
+   yield first, another " (id)" each time need be (CONVENTION: the CPA sees
+   the books' own names wherever they can stand): a class's name
+   written exactly as the books have it is kept unless another class's
+   own name is the same ignoring case (classes 1 "Café", 2 "Cafe" and 3
+   "Cafe (1)": "Cafe (1) (1)", the other two kept; review of the P4 follow-ups, finding 4,
+   2026-10-22: before, all three were renamed; and a fourth "Cafe (1) (1)"
+   makes class 1 "Cafe (1) (1) (1)", where a cap of two tags once renamed
+   class 4 instead). A tag that would change nothing (a name cut to 31
+   characters, ending in its own " (id)") isn't made: the name it meets
+   is tagged instead. Each class name written differently is
+   listed with rule 6's (`class 2's name "Café rebrand" is written "Cafe
+   rebrand"`), and the package README's "written differently" paragraph
+   says class names are held to 31 characters, no two alike. A line
+   whose class isn't declared is refused, never written classless. Before
+   2026-10-22 the file left CLASS empty on every line and the README
+   didn't say so (the P3 cutover review's open point 1).
 
 **Enforced:** `ledger_import::iif` (`field`, `iif_accounts`,
-`journal_to_iif`, `Iif::warnings`), `ledger_package::export_iif` and
+`iif_classes`, `journal_to_iif`, `Iif::warnings`), `ledger_package::export_iif` and
 `build_package`, `ledger-mcp` `books.export` and
 `books.export_cpa_package`.
 **Checked:** `ledger-import` `iif.rs` unit tests (every one of the
@@ -2240,12 +2273,18 @@ pinned); `tests/spec_import.rs` (`iif_docnum_is_the_entry_id`,
 `iif_warnings_group_the_memos_by_what_is_written_differently`,
 `iif_warnings_never_hold_a_tin`,
 `iif_change_warnings_are_one_line_each`,
-`iif_keeps_a_tin_readable_to_the_package_scan`, the properties
-`iif_round_trips_random_books` and
-`iif_names_never_clash_and_every_change_is_listed`); `ledger-package`
+`iif_keeps_a_tin_readable_to_the_package_scan`,
+`iif_writes_each_lines_class_and_declares_the_classes_first`,
+`iif_class_names_fit_quickbooks_and_every_change_is_listed`,
+`iif_class_names_written_as_the_books_have_them_are_kept`,
+`iif_refuses_an_undeclared_or_unfit_class`, the properties
+`iif_round_trips_random_books`,
+`iif_names_never_clash_and_every_change_is_listed` and
+`iif_class_names_never_clash`); `ledger-package`
 `tests/package.rs` (`iif_leaves_out_period_closes`,
 `the_readme_lists_what_the_iif_writes_differently`,
 `the_readme_names_the_entries_on_receivables_and_payables`,
+`the_package_iif_carries_each_lines_project`,
 `the_bookspec_iif_example_matches_the_engine`, and B-33's); the bookspec
 example `bookspec/examples/iif-quickbooks-journal-file.toml` (formats
 appendix: the file line by line and its changes, derived by hand);

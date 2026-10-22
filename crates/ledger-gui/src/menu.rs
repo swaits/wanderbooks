@@ -188,7 +188,7 @@ impl Job {
                 }
                 if p.iif_changes > 0 {
                     notes.push(format!(
-                        "{} account name(s), number(s), place(s) or memo(s) are written differently in its QuickBooks file, to fit QuickBooks Desktop: the README says how.",
+                        "{} account or class name(s), number(s), place(s) or memo(s) are written differently in its QuickBooks file, to fit QuickBooks Desktop: the README says how.",
                         p.iif_changes
                     ));
                 }

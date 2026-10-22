@@ -5,3 +5,5 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 32fa871fdd86d0ed0796633bcaab87af1143b4541818db7017872dd006fee657 # shrinks to (specs, oe, end_off) = ([EntrySpec { day: 0, accts: [7, 14], k: 1, debits: [100, 100, 100], seeds: [0, 6482613244230351999, 7089996084298427956], memo: "6—#" }], false, 156)
+cc 6c74a7c399820c00cd4d81ca1a0b2497c99a7393b07fd1d3896d522232313ef2 # shrinks to names = ["A-B", "A：B"]
+cc d1ab0ff4c1d81d642a16125bc80ea5bfa02e7a015ead08aa0f9f37ed9dd82838 # shrinks to names = ["Café", "Cafe (1)", "Cafe (1) (1)", "Café"]

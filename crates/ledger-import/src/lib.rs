@@ -27,8 +27,8 @@ pub use asset_register::{asset_register_pdf, asset_register_xlsx};
 pub use bank_csv::{BankCsvError, BankTransaction, DateOrder, parse_bank_csv, parse_bank_csv_with};
 pub use chart_csv::{ChartRow, parse_chart_csv};
 pub use iif::{
-    Iif, IifAccount, IifChange, IifError, IifField, LeftOut, MEMO_MAX, NAME_MAX, NUMBER_MAX,
-    QbAccountType, iif_accounts, journal_to_iif,
+    Iif, IifAccount, IifChange, IifClass, IifError, IifField, LeftOut, MEMO_MAX, NAME_MAX,
+    NUMBER_MAX, QbAccountType, iif_accounts, iif_classes, journal_to_iif,
 };
 pub use labels::{AssetLabel, LabelSheet, asset_labels_pdf};
 pub use pdf::{PdfError, statement_pdf};

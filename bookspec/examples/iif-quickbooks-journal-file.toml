@@ -6,43 +6,50 @@
 # the package's as_of, wrote '?' for every character past ASCII, and knew
 # nothing of QuickBooks' length limits, its double quote, or its rule that
 # a subaccount has its parent's type, and could declare a subaccount
-# before its parent); rules.md B-34; regression tests
+# before its parent; and the cutover review: it left CLASS empty though
+# lines carry projects); rules.md B-34; regression tests
 # `iif_docnum_is_the_entry_id`,
 # `iif_writes_plain_ascii_and_lists_every_change`,
 # `iif_fits_quickbooks_desktop_limits`,
 # `iif_a_subaccount_of_another_type_stands_at_the_top_level`,
-# `iif_declares_each_parent_before_its_subaccounts` (ledger-import
+# `iif_declares_each_parent_before_its_subaccounts`,
+# `iif_writes_each_lines_class_and_declares_the_classes_first`,
+# `iif_class_names_fit_quickbooks_and_every_change_is_listed` (ledger-import
 # tests/spec_import.rs) and `as_of_package_iif_stops_at_as_of`
 # (ledger-package tests/package.rs).
 #
 # Setup beyond the accounts: `cash_accounts` are the bank accounts (BANK);
 # an account's QuickBooks type otherwise follows its type (asset OCASSET,
 # liability OCLIAB, equity EQUITY, revenue INC, expense EXP); an account's
-# `parent` is its parent's code. Event N is entry N (bookspec/README.md).
+# `parent` is its parent's code; project N in `setup.projects` is class N
+# (the books number classes from 1). Event N is entry N (bookspec/README.md).
 # Expected values: iif_lines gives the file's lines in order, each a
 # string of fields joined by tabs ("\t"), every line ending CR LF in the
 # file; iif_changes gives each text written differently from the books,
 # in file order (the accounts as declared: by code, each after its
-# parent; then the entries), as [what, books' text, file's text], where
-# what is "name <code>", "number" (left out of ACCNUM when the file's
-# text is empty), "top level <code>" (written apart from its parent, the
-# books' text: the parent's code) or "memo <entry id>".
+# parent; then the classes; then the entries), as [what, books' text,
+# file's text], where what is "name <code>", "number" (left out of ACCNUM
+# when the file's text is empty), "top level <code>" (written apart from
+# its parent, the books' text: the parent's code), "class <id>" (a
+# project's name) or "memo <entry id>".
 
 id = "iif-quickbooks-journal-file"
 appendix = "formats"
 title = "A QuickBooks Desktop journal file as of a day"
-rule = "An IIF journal file as of a day D MUST declare every account first (NAME, ACCNTTYPE, ACCNUM), then hold one GENERAL JOURNAL transaction per posted entry dated on or before D, period closes excepted, in the order posted: a TRNS line and SPL lines, debits positive and credits negative, dated M/D/YYYY, each numbered (DOCNUM) with the entry's id; then ENDTRNS. It MUST be ASCII text, every line ending CR LF, no field holding a tab, a line break or a double quote; an account name level MUST be at most 31 characters and no two NAMEs alike, an account number at most 7 characters and no two alike (else left out), a memo at most 4,095 characters; each parent MUST be declared before its subaccounts, and a subaccount whose QuickBooks type differs from its parent's MUST be written at the top level. Each text written differently from the books MUST be reported."
+rule = "An IIF journal file as of a day D MUST declare every account first (NAME, ACCNTTYPE, ACCNUM), then hold one GENERAL JOURNAL transaction per posted entry dated on or before D, period closes excepted, in the order posted: a TRNS line and SPL lines, debits positive and credits negative, dated M/D/YYYY, each numbered (DOCNUM) with the entry's id; then ENDTRNS. It MUST be ASCII text, every line ending CR LF, no field holding a tab, a line break or a double quote; an account name level MUST be at most 31 characters and no two NAMEs alike, an account number at most 7 characters and no two alike (else left out), a memo at most 4,095 characters; each parent MUST be declared before its subaccounts, and a subaccount whose QuickBooks type differs from its parent's MUST be written at the top level. Every project MUST be declared as a class (NAME, one level of at most 31 characters, no two alike) after the accounts and before the transactions, and each line's project MUST be its CLASS. Each text written differently from the books MUST be reported."
 status = "CHOICE"
 sources = [
   "Intuit, IIF Overview: import kit, sample files, and headers: IIF files are ASCII text, tab-separated; an account not already in the company file is created as a new bank account (docs/spec/sources/intuit-iif.md)",
   "Intuit, IIF Import Kit, IIF Header Help !TRNS, !SPL, !ACCNT: TRNS and SPL lines then ENDTRNS; \"Debit amounts are always positive, credit amounts are always negative\"; DOCNUM is the transaction's number; a subaccount's NAME its parents' names first, joined by colons (docs/spec/sources/intuit-iif.md)",
   "Intuit, IIF Import Kit, 2007 General Journal Entry example file: GENERAL JOURNAL, M/D/YYYY, every line ending CR LF (docs/spec/sources/intuit-iif.md)",
   "Intuit, Character limitations for fields in QuickBooks (US, updated 8/3/2026): Account Name 31, Account Numbers 7, Memo 4,095 (docs/spec/sources/intuit-iif.md)",
+  "Intuit, IIF Import Kit, IIF Header Help !CLASS: \"Only the NAME column is required\"; a subclass's NAME its parents' names first, colons between; the kit's list declarations example declares !CLASS before any transaction (docs/spec/sources/intuit-iif.md)",
+  "Conductor, QuickBooks Desktop API reference, Create a class: a class's name, \"Maximum length: 31 characters\", case-insensitive (docs/spec/sources/intuit-iif.md; not Intuit: Intuit states no class limit)",
   "Intuit, Add, edit, or delete accounts in QuickBooks Desktop (updated 8/4/2026): \"The parent and subaccount must be the same account type.\" (docs/spec/sources/intuit-iif.md)",
   "Reckon, IIF import changes a double quote to a single one by design; J. Clark (2003): QuickBooks uses double quotes as text delimiters (docs/spec/sources/intuit-iif.md; not Intuit)",
   "DECISION D-36 (owner, 2026-10-20): plain ASCII, what isn't ASCII transliterated and listed; CR LF; DOCNUM the entry's id; closes left out (wanderbooks plan/served.md; rules.md B-34)",
 ]
-tags = ["iif", "quickbooks", "as-of", "format", "transliteration"]
+tags = ["iif", "quickbooks", "as-of", "format", "transliteration", "projects"]
 
 [setup]
 currency = "USD"
@@ -96,6 +103,14 @@ code = "6100"
 name = "Professional services and consulting fees"
 type = "expense"
 
+# Class 1: a colon and an em dash, written "-" and "--".
+[[setup.projects]]
+name = "Café: lunch — rebrand"
+
+# Class 2: declared though no line carries it, as every account is.
+[[setup.projects]]
+name = "Glaze tests"
+
 # Entry 1.
 [[events]]
 date = "2026-01-02"
@@ -105,12 +120,12 @@ lines = [
   { account = "3000", side = "credit", amount = "5000.00" },
 ]
 
-# Entry 2. An em dash and double quotes.
+# Entry 2. An em dash and double quotes; the meal is project 1's.
 [[events]]
 date = "2026-01-15"
 description = "Lunch — \"team\""
 lines = [
-  { account = "6000", side = "debit", amount = "42.50" },
+  { account = "6000", side = "debit", amount = "42.50", project = "Café: lunch — rebrand" },
   { account = "1000", side = "credit", amount = "42.50" },
 ]
 
@@ -154,13 +169,16 @@ values = [
   "ACCNT\tCafe meals\tEXP\t6000",
   "ACCNT\tCafe meals:Snacks\tEXP\t5900",
   "ACCNT\tProfessional services and consu\tEXP\t6100",
+  "!CLASS\tNAME",
+  "CLASS\tCafe- lunch -- rebrand",
+  "CLASS\tGlaze tests",
   "!TRNS\tTRNSID\tTRNSTYPE\tDATE\tACCNT\tCLASS\tAMOUNT\tDOCNUM\tMEMO",
   "!SPL\tSPLID\tTRNSTYPE\tDATE\tACCNT\tCLASS\tAMOUNT\tDOCNUM\tMEMO",
   "!ENDTRNS",
   "TRNS\t\tGENERAL JOURNAL\t1/2/2026\tChecking\t\t5000.00\t1\tOwner contribution",
   "SPL\t\tGENERAL JOURNAL\t1/2/2026\tOwner capital\t\t-5000.00\t1\tOwner contribution",
   "ENDTRNS",
-  "TRNS\t\tGENERAL JOURNAL\t1/15/2026\tCafe meals\t\t42.50\t2\tLunch -- 'team'",
+  "TRNS\t\tGENERAL JOURNAL\t1/15/2026\tCafe meals\tCafe- lunch -- rebrand\t42.50\t2\tLunch -- 'team'",
   "SPL\t\tGENERAL JOURNAL\t1/15/2026\tChecking\t\t-42.50\t2\tLunch -- 'team'",
   "ENDTRNS",
   "TRNS\t\tGENERAL JOURNAL\t1/20/2026\tProfessional services and consu\t\t300.00\t3\tConsulting",
@@ -179,5 +197,6 @@ values = [
   ["number", "12345678", ""],
   ["name 6000", "Café meals", "Cafe meals"],
   ["name 6100", "Professional services and consulting fees", "Professional services and consu"],
+  ["class 1", "Café: lunch — rebrand", "Cafe- lunch -- rebrand"],
   ["memo 2", "Lunch — \"team\"", "Lunch -- 'team'"],
 ]

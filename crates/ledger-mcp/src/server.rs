@@ -9205,7 +9205,7 @@ impl BooksServer {
         let warnings = package.warnings;
         if package.iif_changes > 0 {
             note.push_str(&format!(
-                " {} account name(s), number(s), place(s) or memo(s) are written differently in general-journal.iif to fit QuickBooks Desktop (warnings says how; so does the README): tell the human.",
+                " {} account or class name(s), number(s), place(s) or memo(s) are written differently in general-journal.iif to fit QuickBooks Desktop (warnings says how; so does the README): tell the human.",
                 package.iif_changes
             ));
         }

@@ -121,3 +121,100 @@ fn the_documents_page_draws_text_tiles() {
     shot(&mut h, "text-tiles");
     assert_eq!(h.state_mut().route(), &Route::Documents);
 }
+
+/// A PNG `w` by `h` pixels.
+fn png(w: u32, h: u32) -> Vec<u8> {
+    let img = image::RgbaImage::from_pixel(w, h, image::Rgba([40, 90, 160, 255]));
+    let mut out = Vec::new();
+    image::DynamicImage::ImageRgba8(img)
+        .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+        .unwrap();
+    out
+}
+
+/// receipts.rs: every file's thumbnail is started when the books load,
+/// before its page is opened; it is kept on disk as `<sha>.png`, at most
+/// 560 pixels wide (a smaller picture is never scaled up), and the next
+/// launch draws what was kept instead of the file.
+#[test]
+fn thumbnails_are_drawn_at_load_and_kept_by_hash() {
+    let dir = TempDir::new("thumbs");
+    let mut s = Store::create(&dir.0.join("books-data"), Currency::USD).unwrap();
+    // The second of what filing gives is the file's SHA-256.
+    let (_, big_sha, _) = s
+        .file_document("photo", "wide.png", "image/png", &png(1200, 600), None)
+        .unwrap();
+    let (_, small_sha, _) = s
+        .file_document("photo", "small.png", "image/png", &png(300, 200), None)
+        .unwrap();
+    drop(s);
+    let thumbs = dir.0.join("thumbs");
+    // The overview, not the documents page: the thumbnails come anyway.
+    let mut h = open(&dir, Route::Overview);
+    h.state_mut().keep_thumbs_in(thumbs.clone());
+    let ctx = h.ctx.clone();
+    h.state_mut().settle(&ctx);
+    h.run_steps(2);
+    assert_eq!(h.state().thumb_size(&big_sha), Some([560, 280]));
+    assert_eq!(h.state().thumb_size(&small_sha), Some([300, 200]));
+    let kept = thumbs.join(format!("{big_sha}.png"));
+    let img = image::open(&kept).unwrap();
+    assert_eq!((img.width(), img.height()), (560, 280));
+    assert!(thumbs.join(format!("{small_sha}.png")).exists());
+    // What was kept is what the next launch draws.
+    std::fs::write(&kept, png(7, 5)).unwrap();
+    let mut h = open(&dir, Route::Documents);
+    h.state_mut().keep_thumbs_in(thumbs.clone());
+    let ctx = h.ctx.clone();
+    h.state_mut().settle(&ctx);
+    assert_eq!(h.state().thumb_size(&big_sha), Some([7, 5]));
+}
+
+/// receipts.rs: a long picture's thumbnail is its top, at most 420
+/// pixels tall; a picture past a texture's side opens scaled to fit
+/// rather than crash the viewer; a file whose blob is gone shows as an
+/// error even with its thumbnail kept.
+#[test]
+fn long_and_huge_pictures_are_cut_or_scaled_and_a_lost_file_is_an_error() {
+    let dir = TempDir::new("long");
+    let mut s = Store::create(&dir.0.join("books-data"), Currency::USD).unwrap();
+    let (_, long_sha, _) = s
+        .file_document("photo", "long.png", "image/png", &png(400, 9000), None)
+        .unwrap();
+    let (huge, huge_sha, _) = s
+        .file_document("photo", "huge.png", "image/png", &png(9000, 300), None)
+        .unwrap();
+    drop(s);
+    let thumbs = dir.0.join("thumbs");
+    let mut h = open(&dir, Route::Document(huge));
+    h.state_mut().keep_thumbs_in(thumbs.clone());
+    let ctx = h.ctx.clone();
+    h.state_mut().settle(&ctx);
+    h.run_steps(2);
+    assert_eq!(h.state().thumb_size(&long_sha), Some([400, 420]));
+    assert_eq!(h.state().thumb_size(&huge_sha), Some([560, 18]));
+    assert!(h.query_by_label_contains("Can't show").is_none());
+    // The blob gone: the kept thumbnail is not shown in its place.
+    let blob = walk(&dir.0.join("books-data"), &long_sha).expect("the blob's file");
+    std::fs::remove_file(blob).unwrap();
+    let mut h = open(&dir, Route::Documents);
+    h.state_mut().keep_thumbs_in(thumbs);
+    let ctx = h.ctx.clone();
+    h.state_mut().settle(&ctx);
+    assert_eq!(h.state().thumb_size(&long_sha), None);
+}
+
+/// The file under `dir` named `name`.
+fn walk(dir: &std::path::Path, name: &str) -> Option<PathBuf> {
+    for e in std::fs::read_dir(dir).ok()?.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            if let Some(f) = walk(&p, name) {
+                return Some(f);
+            }
+        } else if p.file_name().and_then(|n| n.to_str()) == Some(name) {
+            return Some(p);
+        }
+    }
+    None
+}

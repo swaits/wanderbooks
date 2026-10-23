@@ -163,6 +163,7 @@ impl App {
         );
         let mut app = Self::bare(&cc.egui_ctx, scheme);
         app.filter = filter;
+        app.receipts.thumb_dir = crate::receipts::thumb_dir();
         app.loader = Some(Loader::spawn(source, cc.egui_ctx.clone()));
         app
     }
@@ -170,6 +171,7 @@ impl App {
     /// An app showing fixed books (tests and screenshots).
     pub fn with_books(ctx: &egui::Context, books: Books, dark: bool, start: Route) -> Self {
         let mut app = Self::bare(ctx, schemes::own(dark));
+        app.receipts.prefetch(&books);
         app.books = Some(Arc::new(books));
         app.nav = Nav::new(start);
         app
@@ -367,6 +369,22 @@ impl App {
             Some(v) => self.choose(ui.ctx(), v),
             None => self.preview(ui.ctx(), open.is_some(), hovered),
         }
+    }
+
+    /// Keep thumbnails on disk in `dir` (the live viewer keeps them in
+    /// the user's cache directory, `wanderbooks/thumbs`); tests point it
+    /// at their own.
+    pub fn keep_thumbs_in(&mut self, dir: std::path::PathBuf) {
+        self.receipts.thumb_dir = Some(dir);
+        self.receipts.forget_thumbs();
+        if let Some(b) = self.books.clone() {
+            self.receipts.prefetch(&b);
+        }
+    }
+
+    /// The size in pixels of a file's thumbnail, once drawn (tests).
+    pub fn thumb_size(&self, sha: &str) -> Option<[usize; 2]> {
+        self.receipts.thumb_size(sha)
     }
 
     /// Block until every receipt on screen has rendered (screenshots).
@@ -1622,6 +1640,7 @@ impl eframe::App for App {
                     if self.books.is_some() {
                         self.updated_at = ui.input(|i| i.time);
                     }
+                    self.receipts.prefetch(&b);
                     self.books = Some(b);
                     self.error = None;
                 }

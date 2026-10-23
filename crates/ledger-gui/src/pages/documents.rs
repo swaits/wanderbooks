@@ -140,7 +140,10 @@ fn tile(
     let thumb = egui::Rect::from_min_size(rect.min + vec2(10.0, 10.0), vec2(w - 20.0, 170.0));
     ui.painter()
         .rect_filled(thumb, CornerRadius::same(6), p.hover);
-    match shell.receipts.get(&a.blob_sha, &a.mime_type, b.blob_root()) {
+    match shell
+        .receipts
+        .thumb(&a.blob_sha, &a.mime_type, b.blob_root())
+    {
         Render::Ready(pages) => {
             if let Some(tex) = pages.first() {
                 // Top of the first page, filling the width.

@@ -993,6 +993,649 @@ The first company keeps working between phases.
 
 **Accept:** legacy fixtures open; the first company has 0 unexplained drafts.
 
+### P4b: Receivables and payables, first class (D-45)
+
+**Status:** decided 2026-10-23 (D-45); slice S1 next. The owner's answers below override any text later in this section that says otherwise.
+
+**The owner's answers (2026-10-23, through the question tool):**
+1. **Preview, then confirm** for invoices and bills, as for entries; an abandoned preview uses up no number.
+2. **Numbers: `INV-0001`, running**: the owner's prefix and a running number, with a one-time starting number; never reused; a void keeps its number.
+3. **Payment methods: any.** The owner: "Full ACH, payment link, QR code, whatever whatever. Companies accept payments in SO MANY ways, we should support anything." So `invoicing.payment_methods` is a list, each method `{kind, label, lines, link?, qr?}`: `kind` one of `ach`, `wire`, `link` (a card or processor pay page), `check` (a mailing address), `p2p` (Zelle, Venmo, PayPal, Cash App: a handle), `crypto`, `other`; the PDF prints each with its label and lines, and a QR code (drawn in Rust as an SVG, placed as an image: Typst does no network fetch) for any method with `qr: true` and a link or text to encode. The settings holding bank details are exempt from the nine-digit TIN check, by key, as the D-U-N-S number already is.
+4. **The books never send, receive or charge; they record.** The owner: "Wanderbooks just does books. Nothing else. ... it's more likely my agent (who talks to wanderbooks MCP) doing the sending and receiving and payment capture ... We took the same approach on payroll. Wanderbooks is NOT getting into that hellscape (just like the tax hellscape). That's for external tools. But the agent talking to the books MCP can coordinate all that and give the books what it needs." So: `books.mark_sent` records who sent it (the owner or a named delegate, such as an agent), the channel (email, portal, post, other), the recipients, when, and the channel's own reference (a message id); a payment records its processor and reference (a Stripe charge id, a bank trace) and, when the processor kept a fee, the fee: Accounts Receivable is credited the gross amount, the fee goes to its expense account (payment-processing fees) and the deposit account gets the net, the same gross presentation payouts already use. The mailto link stays as a convenience for a human sender.
+5. **The rest as recommended:** bad debts by direct write-off (IRC §166; Treas. Reg. §§1.166-2, 1.166-3); hand entries to 1200 and 2000 refused (B-23); the issued PDF stored at issue; discounts by the gross method; the bills posted to 6999 fixed by reclassifying entries; every bill line names its account; two upgrades (after S1, and after S7); overpayments refused, customer credits later; each party gets an email and default terms, copied onto each document at issue.
+
+
+**Owner's ask (2026-10-23):** "we kinda need stronger invoice support. Like make it a first class citizen. It could even spit out PDF invoices, track when they're sent, money received against, etc.. and maybe there's some accounting term for the opposite, like if we receive an invoice (we have to pay someone else) we need to pay it on its specific listed payment terms, tracking all that."
+
+#### P4b.1 In plain language
+
+Today an invoice keeps its own copy of "how much was paid" and "is it paid". That copy goes out of step with the ledger:
+- If you reverse an invoice, a bill or a payment, the document doesn't notice.
+- A reversed payment still counts as paid.
+- A reversed invoice still shows on the aging report.
+- After a wrong payment is reversed, the right one is refused as an overpayment.
+
+The fix is that a document stops storing figures. Every ledger line that touches Accounts Receivable or Accounts Payable is tagged with the document it belongs to. A document's balance is the sum of its tagged lines that still stand. Reversals, voids, bounced payments and write-offs then come out right without extra code. The receivables and payables accounts always equal their documents, by construction.
+
+On top of that come:
+- invoice numbers, payment terms and due dates;
+- a PDF of the invoice, kept exactly as it was sent;
+- a record of when it was sent;
+- bills coded to their real accounts, with the vendor's invoice number;
+- a "what to pay this week" list that follows each vendor's terms;
+- payments that settle several documents at once;
+- early-payment discounts, voids and bad-debt write-offs.
+
+**Terms, each explained once:**
+- **Accrual basis.** Income counts when it is earned and expenses when they are incurred, not when cash moves. Sources: IRS Pub. 538, "Accrual Method"; the all-events test in Treas. Reg. §1.451-1(a) for income and §1.461-1(a)(2) for expenses, with economic performance under §1.461-4. The company files on this basis (`books.accounting_basis`).
+  - Income is earned when the work is delivered (ASC 606-10-25-23), not when the invoice is written. An invoice normally carries the date the work was done.
+  - If you bill ahead of the work, the line goes to 2400 Deferred Revenue (a "contract liability", ASC 606-10-45-2). A B-16 schedule then recognizes it as revenue as the work is done.
+- **Invoice; accounts receivable (A/R, account 1200).** An invoice is the bill we send a customer. Until it is paid, the money owed is an asset called a receivable: "an entity's right to consideration that is unconditional" (ASC 606-10-45-4). ASC 310-10 covers how receivables are presented. Expected credit losses on receivables are ASC 326-20.
+- **Bill; accounts payable (A/P, account 2000).** This is the term for "an invoice someone sends us". What we owe on bills is a liability. It comes off the books only when (a) we pay it or (b) the creditor legally releases us (ASC 405-20-40-1). So a bill is never "written off". It is paid, credited by the vendor, or voided as an error.
+- **Control account; subledger.** 1200 and 2000 are control accounts: each balance must equal the total of the open documents behind it (rules.md B-23). The list of those documents is the subledger. The first thing a CPA checks is that the aging report ties to the trial balance.
+- **Aging.** Open balances grouped by days past due: Current, 1-30, 31-60, 61-90, 90+ (B-18; ASC 326-20-55-37/38 is illustrative). Due today counts as Current.
+- **Payment terms:**
+  - "Due on receipt": due on the document date.
+  - "Net 30": due 30 days after the document date.
+  - "Net 15 EOM": due 15 days after the end of the document's month.
+  - "2/10 net 30": 2% off if paid within 10 days, otherwise the full amount in 30. The 2% is an early-payment (cash) discount.
+  - For goods with no agreed terms, payment is due when and where the buyer receives them (UCC §2-310(a)). UCC Article 2 does not govern services such as this studio's; for services the contract sets the terms. Sending an invoice late does not move its due date here.
+- **Gross method (discounts).** The document is booked at its full price, and a discount is booked only when it is actually taken. For a discount we offer, ASC 606-10-32-5 to 32-9 strictly treat an expected discount as variable consideration, estimated when revenue is recognized. At this company's size the difference is immaterial; it is a stated simplification, not ASC 606's own treatment.
+- **Void.** The document should never have existed: a duplicate, or the wrong customer. It is voided by reversing its entry (B-9). It keeps its number, marked VOID, so a gap in the number series always has a reason.
+- **Credit memo; vendor credit.** A document that lowers a valid invoice or bill without cash moving: a price concession or an allowance. This is a later slice.
+- **Bad debt (write-off).** An invoice that will not be collected.
+  - Tax: IRC §166(a). The debt must be wholly or partly worthless on "all pertinent evidence" (Treas. Reg. §1.166-2(a)). A partial write-off is deductible only to the extent charged off on the books (§1.166-3(a)).
+  - It is allowed only because the accrual basis already counted the income (§1.166-1(e)).
+  - A later recovery is income again (IRC §111, the tax benefit rule; §1.166-1(f)).
+  - It is reported on Form 1065 line 12, "Bad debts". The tax category `bad_debts` already exists.
+  - GAAP prefers an allowance estimated ahead of time (ASC 326-20). For small, immaterial receivables a CPA accepts the direct write-off and notes it.
+- **"Paid in full" checks (UCC §3-311, accord and satisfaction).** Cashing a check plainly marked as full payment of a genuinely disputed amount can settle the whole claim. The payment tool warns before recording one.
+- **Records.** IRS Pub. 583 lists invoices among the supporting documents to keep. Rev. Proc. 98-25 requires electronic records to keep their audit trail. This is why the PDF as issued is filed with its hash, and why voids keep their numbers.
+
+**What a CPA expects** (this list goes into the handbook):
+- A/R and A/P agings at each month-end and year-end that tie to 1200 and 2000. Here they tie by construction, and the tie is shown.
+- Invoice numbers unique and sequential, voids visible, none deleted.
+- Every bill coded to its real expense or asset account (the Form 1065 lines, B-32), never a catch-all, with the vendor's invoice attached. No bill paid twice.
+- Payments matched to documents. Card payments identified, because they are excluded from 1099-NEC (Treas. Reg. §1.6041-1(a)(1)(iv); D-40).
+- Write-offs carrying a reason and evidence of collection attempts.
+- Customer deposits shown as liabilities, not netted inside A/R.
+- Schedule L line 2a (trade receivables) and line 15 (accounts payable) taken straight from the control accounts.
+- Approvals and three-way matching (purchase order, receipt, invoice) are deliberately not adopted for a two-member LLC (light governance). The handbook says so, so the CPA knows it is a choice.
+
+#### P4b.2 Verified gaps
+
+1. **Reversing a document's entry leaves the document unchanged.** `reverse_entry_steps` (ledger.rs ~1805) carries the class, vendor, instrument, party and schedule tags. It never touches `invoices`, `bills`, `invoice_payments` or `bill_payments`.
+2. **Payments count after reversal.** `paid_by` (ledger.rs ~5457-5468) filters by date only. Nothing ever lowers `amount_paid`. `replay_invoice_payment` and `replay_bill_payment` rebuild the same wrong figure.
+3. **Re-payment is blocked.** The stored `amount_paid` feeds the Overpayment check in `receive_payment` (~5165). After a wrong payment is reversed, the right one is refused.
+4. **Aging never checks whether an entry stands.** `ar_aging` and `ap_aging` (~5418-5510) never call `in_effect`. `in_effect` (~1761) has no date, so it cannot answer "as of D".
+5. **Hand entries to 1200 and 2000 are allowed.** `check_line_account` refuses only placeholder accounts, so B-23 is stated but not enforced. `receive_payment`'s `cash_account` may even be 1200 itself.
+6. **Every bill posts to 6999** (`create_bill_steps`, ~5057). The cash flow statement's rule 12 says it is empty "until a bill can carry an equipment line" (cashflow.rs ~1033). `bill_splits` says "A reversed payment still counts" (~1084).
+7. **Missing fields.** Documents have no number, terms, bill-to snapshot, vendor invoice number, memo, sent record or void. A party has an address but no email.
+8. **Misnamed parameter.** `CreateDocumentParams.party_id` holds a customer or vendor id, not a party id.
+9. **No payment method.** Payment tools take no `instrument`, so a card-paid bill needs a second call to be tagged for D-40.
+10. **The viewer's party card** marks "late" from the stored balance, and clicking a row opens the entry, not the document.
+
+**What already exists and is reused:**
+- `Subject::Invoice` and `Subject::Bill` are attachment subjects (store.rs, `enum Subject`).
+- PDFs are typeset with Typst in `ledger-import/src/pdf.rs` (typst 0.15.1, `templates/*.typ`, bundled fonts, labels passed as data, amounts split by `report::amount_parts`, deterministic bytes).
+- `ledger-package::PackageBooks` is the shared read-only builder for the server and the viewer.
+- Files go out through exports plus `wanderbooks download` (D-29).
+- Replay of `entry.reversed` calls `Ledger::reverse_entry` again. Anything `reverse_entry` derives is therefore rebuilt on replay with no new event.
+
+**Account codes in the chart template.** Already taken: 4100 Refunds and Allowances (tax category `returns_allowances`), 4900 Interest Income, 6800 Taxes and Licenses, 2400 Deferred Revenue. Free: 6990, 6995, 2300, 1250.
+
+#### P4b.3 The core mechanism: documents read their figures from tagged ledger lines
+
+**Tags.** A new side map lives in `Ledger`, like `cleared` and the class tags:
+
+```rust
+pub enum DocRef { Invoice(InvoiceId), Bill(BillId) }
+pub enum Movement { Origin, Payment, Discount, WriteOff, Adopted, RoleMove }
+pub struct DocTag { pub doc: DocRef, pub movement: Movement }
+// Ledger.line_docs: HashMap<(EntryId, usize), DocTag>
+```
+
+The kernel's `JournalLine` and its hash are untouched. How tags get set:
+- Live, only the document commands write tags, in the same `atomically` step that posts the entry.
+- On replay, tags come from existing events, with no format change:
+  - `invoice.created` and `bill.created` tag the one control-role line of the entry just replayed. The role is resolved as it stood at that point in the journal, not as it stands today.
+  - `invoice.payment_received` and `bill.paid` tag the payment entry's control line.
+  - When several payment events name one entry (a multi-document payment, P4b.7), the i-th event tags the i-th control line in line order. Its amount must match that line.
+  - An entry with no control line, or with lines that cannot be matched, stays untagged and is listed by the control check. Replay never refuses it (B-28).
+- `reverse_entry_steps` copies each line's tag onto its mirror, exactly as it copies `class_id`.
+
+**Standing as of a date (new code).**
+- `Ledger::stands_on(entry, as_of) -> bool`: the entry is posted, dated on or before `as_of`, and an even number of the reversals in its chain dated on or before `as_of` follow it.
+- `in_effect(e)` becomes `stands_on(e, NaiveDate::MAX)`.
+- Under P4 a reversal is first a draft. Only posted reversals count.
+
+**Derived figures.** These are pure functions with GOAL/INVARIANTS blocks. Signs: a debit to A/R counts plus for an invoice; a credit to A/P counts plus for a bill.
+- `outstanding(d, D)`: the signed sum of the lines tagged `d`, over entries that stand on `D`.
+- `paid(d, D)`, `discounted(d, D)`, `written_off(d, D)`: the same sum restricted to one movement.
+- `Ledger::invoice_state(id, as_of)` and `bill_state(id, as_of)` return `DocState { total, paid, discounted, written_off, outstanding, status, overdue_days }`.
+- **Status as of D:**
+  - **Void** if the origin entry does not stand.
+  - else **Written off** if outstanding is 0 and written_off > 0;
+  - else **Paid** if outstanding is 0;
+  - else **Partial** if outstanding < total;
+  - else **Open**.
+  - The breakdown is always shown, so "Written off" on a half-paid invoice still says what was paid.
+  - "Overdue" (outstanding > 0 and D past the due date) and "Sent" are flags, not states.
+
+**Stored fields removed on purpose.** `Invoice.amount_paid`, `Invoice.status`, `invoice_payments` and `bill_payments` stop being state. Removing the pub fields breaks the build wherever they are read, so the compiler finds every reader:
+- the GUI: `books.rs`, `cash.rs`, `company.rs`, `parties.rs`, `attention.rs`;
+- the MCP outputs;
+- `cashflow.rs` `bill_splits`;
+- party totals (B-35), the 1099 worksheet, the snapshot, the SQLite projection, the IIF export.
+
+**Bounds.** One function, `check_item_bounds(&Ledger after, touched) -> Result`. It runs inside `atomically` from every document command and from `check_reversal`, and only on the documents the step touches. At every date in date order, not only at the end, it requires 0 ≤ outstanding ≤ total. This makes the following impossible:
+- voiding a document while a payment stands;
+- overpaying;
+- reversing an origin entry under a payment.
+
+Reversing a payment, a discount or a write-off is always allowed. It reopens the document.
+
+**Control guard.** A line on an account holding the `receivables` or `payables` role, or a later control role, must carry a tag, or the posting is refused with `LedgerError::UntaggedControlLine { account, entry, line }`. The remedy names `books.create_invoice`, `books.receive_payment`, `books.create_bill`, `books.pay_bill` and `books.void_document`.
+- The guard sits in `Ledger`, so MCP, GUI, recurring runs and templates cannot bypass it.
+- `books.add_line` and `books.draft_entry` refuse earlier with the same remedy. `books.create_recurring` refuses a template naming a control account.
+- **Exemption:** the mirror line of a reversal of an untagged legacy line. Reversing an old hand entry is how it gets cleaned up.
+- Replay never refuses (B-28).
+
+**The identity.** For each control account A and every date D:
+
+`GL(A, D) = Σ_docs outstanding(d, D) + unattached(A, D)`
+
+Both sides sum the same lines, so this is an identity, not a reconciliation. `unattached` is the legacy untagged lines that still stand. No command adds to it. It changes only when a legacy line is reversed or adopted (P4b.10).
+
+**Dating rules.**
+- A payment, discount or write-off is never dated before its document (the existing `PaymentBeforeDocument`).
+- A reversal of a document-owned entry is never dated before the original. This settles the open B-9 question for documents.
+- Every date must fall outside closed periods (B-12). A void of an invoice from a closed period is dated in an open period. The P&L effect lands there, which is acceptable for an immaterial error (ASC 250). Such voids are listed in the CPA package README.
+
+**Payment accounts.** The deposit or payer account must be a postable asset or liability that holds no role: a bank account, a card payable, or the member payable under D-42. It is never a control, revenue or expense account.
+
+#### P4b.4 Data model (ledger-core `arap.rs`; split into an `arap/` module if it grows)
+
+```rust
+pub enum TermsKind { DueOnReceipt, Net(u16), NetEom(u16), Custom /* due_date given */ }
+pub struct EarlyDiscount { pub percent: Decimal /* 0<p<100, ≤2 dp */, pub days: u16 /* < net */ }
+pub struct Terms { pub kind: TermsKind, pub discount: Option<EarlyDiscount>, pub text: String /* as printed */ }
+// Terms::due_date(date) -> Result<NaiveDate>; Terms::discount_by(date) -> Option<NaiveDate>
+// Terms::max_discount(total) = total × percent / 100, exact (never rounded by the engine)
+
+pub struct Snapshot { pub name: String, pub address: Option<String>, pub email: Option<String> }
+
+pub struct DocumentLine {               // existing + optional fields
+    description, amount, class_id,      // one project per line (D-43)
+    pub account: Option<AccountId>,     // None = the role account (legacy: what it posted to)
+    pub quantity: Option<Decimal>, pub unit_price: Option<Decimal>, // both or neither; q×u == amount exactly
+}
+
+pub struct Invoice { id, customer_id, date, due_date, lines, entry_id,
+    pub number: Option<String>,          // snapshot at issue; None = legacy, shown "Invoice {id}"
+    pub terms: Option<Terms>, pub bill_to: Option<Snapshot>, pub seller: Option<Snapshot>,
+    pub customer_ref: Option<String>,    // customer's PO
+    pub memo: Option<String>,
+    pub issued_pdf: Option<AttachmentId>,
+    pub sends: Vec<Sent> }
+
+pub struct Bill { id, vendor_id, date, due_date, lines, entry_id,
+    pub vendor_ref: Option<String>,      // the vendor's invoice number
+    pub received_on: Option<NaiveDate>, pub terms: Option<Terms>, pub memo: Option<String> }
+
+pub struct Sent { pub on: NaiveDate, pub via: SentVia /* Email|Mail|Portal|Hand|Other */,
+    pub to: Vec<String>, pub kind: SendKind /* Original|Reminder */, pub note: Option<String> }
+```
+
+**Line accounts.** One check, `check_document_line_account(kind, account)`, refuses role accounts, placeholders and cash accounts.
+- An invoice line takes Revenue (default: the `revenue` role) or a liability that holds no role (2400 Deferred Revenue; sales tax payable if ever needed).
+- A bill line takes Expense, or an asset that is not cash and holds no role (1500 Equipment, which feeds cash-flow rule 12 and asset registration under B-15 and D-35; 1300 Prepaid, which feeds a B-16 schedule).
+- `document_parts` groups by `(account, class)`. A document whose lines name neither posts exactly as before.
+
+**Numbers.**
+- An invoice number is `number_prefix + zero-padded n`, with prefix default "INV-".
+- `n` is `invoicing.first_number` plus the count of numbered invoices before this one. It is stored on the invoice at issue and never changes, even if the prefix later does.
+- `invoicing.first_number` may be set only before the first numbered invoice.
+- Numbers are never reused. Voids keep theirs.
+
+**Duplicate bills.** `(vendor, vendor_ref)` must be unique among bills that stand. The comparison ignores case, spaces and hyphens. A duplicate is refused unless the call gives a `duplicate_reason`, which is journaled.
+
+**Party.** Gains `email` and `default_terms`. The customer side means the terms we grant; the vendor side, the terms they give us. The TIN scan covers the new fields (`has_full_tin`).
+
+**New roles,** created on demand like the existing ones and checked by `check_controls`. The codes are free in the template; the slice re-checks them against the live chart through the MCP.
+
+| Role | Default | Type | Tax category | Used for |
+|---|---|---|---|---|
+| `bad_debts` | 6990 Bad Debt Expense | Expense | `bad_debts` (1065 line 12) | write-offs |
+| `purchase_discounts` | 6995 Purchase Discounts | Expense (credit balance) | `other_deductions` | discounts taken on bills |
+| `sales_allowances` | 4100 Refunds and Allowances (existing) | Revenue (debit balance) | `returns_allowances` (1065 line 1b) | discounts given; credit memos later |
+
+**Settings** (typed registry, journaled, gated by `setting_feature`):
+- `invoicing.number_prefix`, `invoicing.first_number`;
+- `invoicing.default_terms` (Net 30);
+- `invoicing.payment_instructions`. This is the second key exempt from the nine-digit refusal, beside `company.duns` (settings.rs INVARIANT 4), because an ABA routing number is nine digits. The exemption covers that key only.
+- `invoicing.footer`, `invoicing.reminder_days` (14), `invoicing.paper` (Letter or A4), `bills.remind_days` (7).
+
+The seller snapshot comes from `company.name` and `company.address`. The EIN is never printed; customers get it from a W-9.
+
+#### P4b.5 State machines
+
+**Invoice.**
+
+```
+(preview) --issue (confirmed)--> Open --payment < outstanding--> Partial --payment = outstanding--> Paid
+Open/Partial --write_off(≤ outstanding)--> Written off (when outstanding reaches 0)
+Paid/Partial/Written off --reverse a payment, discount or write-off--> the state its new balance gives
+Open --void (reverse the origin; only with nothing else standing)--> Void --reverse the void--> Open (B-10)
+flags: sent (≥1 Sent), overdue (outstanding > 0 and as_of > due_date, America/Denver today, D-13)
+```
+
+**Bill.** The same states, without write-off; a vendor's release is a later vendor credit. The flags are `due_soon` (within `bills.remind_days`), `discount_open` (as_of ≤ discount_by) and overdue.
+
+**Payment.** Recorded, then Voided by reversing its entry. Every document it settled reopens together, because the reversal mirrors every tagged line.
+
+**No stored draft.** Each create tool previews without `confirmed`: the posting, the number it will take, the due date, warnings, and a draft PDF stamped DRAFT. With `confirmed` (and P4's `preview_token` once that lands) it posts. See decision 1.
+
+#### P4b.6 Postings for every transition ([d] = tagged with the document)
+
+| Transition | Debit | Credit |
+|---|---|---|
+| Issue invoice | 1200 [d, Origin], total | each (account, project) part: the line account (default the `revenue` role; 2400 when billed ahead of the work) |
+| Record bill | each (account, project) part: expense, equipment or prepaid, with the vendor tag | 2000 [d, Origin], total |
+| Receive payment, one or several invoices | the deposit account, Σ cash; `sales_allowances` for any discount given | 1200 [d_i, Payment], cash_i, one line per invoice; 1200 [d_i, Discount] for each discount |
+| Pay bill, one or several bills | 2000 [d_i, Payment] cash_i; 2000 [d_i, Discount] discount_i | the payer account (bank, card or member payable), Σ cash; `purchase_discounts`, Σ discounts |
+| Void invoice or bill | the mirror of the origin entry (`reverse_entry`) | |
+| Void (bounce) a payment | the mirror of the payment entry; a bank fee is its own entry | |
+| Write off an invoice | `bad_debts` 6990, the amount (≤ outstanding; partial allowed, §1.166-3) | 1200 [d, WriteOff] |
+| Recovery | reverse the write-off, dated now so the recovery lands in the year it happens (§111), then receive the payment | |
+| Adopt a legacy line | no entry: the tag is added to the existing line | |
+| Move a control role | per document: new account [d, RoleMove] / old account [d, RoleMove], or the mirror; then the role is assigned | |
+| Record sent; change memo or references | no entry | |
+
+**Rules for every entry:**
+- It carries its party tag and the payment `instrument`, written in the same call through the existing entry-instrument event (D-40, gap 9).
+- The vendor tag for 1099s is unchanged. Only cash movements count toward a 1099, so discounts and write-offs never count as paid.
+- `exact`: cash plus discounts equals the applications, to the cent.
+- A multi-document payment covers one party only.
+- A discount is at most `max_discount` and dated on or before `discount_by`. A late discount, which a vendor may honor, needs a `discount_reason`. The engine never rounds; the caller gives the vendor's exact cents.
+
+#### P4b.7 Journal events and format features
+
+The pattern is unchanged. The entry's own `entry.created`, `entry.line_added` and `entry.posted` lines come first, then the document event, then the attachment events. Replay derives the posting from the document event and checks it line by line against the entry just replayed (`ReplayMismatch`). On every open, this proves the document owns its entry.
+
+| Feature (KNOWN_FEATURES) | Slice | Lines it marks | What an older version would misread |
+|---|---|---|---|
+| `document_standing` | S1 | an `invoice.payment_received` or `bill.paid` accepted only because an earlier payment, or the document's own standing, changed through a reversal | it replays the payment on top of the reversed one: paid above total, silently |
+| `documents_v2` | S4 | `invoice.created` and `bill.created` carrying `number`, `terms`, `bill_to`, `seller`, `customer_ref`, `memo`, `vendor_ref`, `received_on`, `issued_pdf`, `duplicate_reason`, and lines with `account`, `quantity` or `unit_price`; `party.updated` with `email` or `default_terms`; `settings.set` of the `invoicing.*` and `bills.*` keys | it drops the line accounts, so the parts would post to 4000 and 6999 |
+| `invoice_sent` | S5 | `invoice.sent {invoice_id, on, via, to[], kind, note?}` (new type) | (it refuses an unknown type) |
+| `settlements` | S6 | a `discount` on `invoice.payment_received` or `bill.paid` | it drops the discount, so the balance is wrong |
+| `write_offs` | S7 | `invoice.written_off {invoice_id, entry_id, date, amount, reason}` (new type) | (it refuses an unknown type) |
+| `control_lines` | S7 | `control_line.adopted {entry_id, line, doc, record_id, due_date, terms?, reason}` and `role.balance_moved {role, from, to, entries[]}` (new types) | (it refuses an unknown type) |
+
+**What needs no feature:**
+- A void writes no event. It is `entry.reversed` of the origin entry, and the reason is in the reversal's description.
+- A multi-document payment is several existing-shape payment events naming one entry, with the ordinal rule (P4b.3). Tests pin that the older replay, party totals, the 1099 worksheet, cash flow and the projection each count it once.
+- A document with none of the new fields is journaled byte for byte as before (the `document_line_projects` pattern).
+
+**Projection.** The SQLite schema gains tables for documents, document lines, line tags and sends. `projection_rows`, `compare_projections` and `Ledger::differs_from` cover them. Every new event type gets a replay arm and a projection arm (tests/format.rs checks both).
+
+**Upgrades.** Each feature is declared at the owner's format upgrade (D-39: his go-ahead after a verified backup, with no passphrase). Until then, a write that needs a feature is refused with the upgrade remedy. Everything else in that slice still works. Decision 11 batches the upgrades.
+
+#### P4b.8 MCP tools
+
+Every description stays within 700 characters (I-12). Amounts are decimal strings. A document is referred to as "INV-0007", "invoice:7" or "bill:12". Mutating tools carry `destructiveHint`, preview without `confirmed`, and take `preview_token` once P4 lands.
+
+**Changed tools:**
+
+- **`books.create_invoice`**
+  - Arguments: `{customer (customer id, party id or name), date, terms? | due_date?, lines[{description, amount, quantity?, unit_price?, account?, class?}], customer_ref?, memo?, bill_to?, confirmed?}`.
+  - On confirm it numbers the invoice, takes the snapshots, renders the PDF, files it and posts, all in one store call (P4b.11). The entry carries its own evidence when it posts, so the P4 evidence gate (I-5) passes.
+  - Output: `{id, number, total, due_date, terms, entry_id, pdf{attachment_id, sha256, download}, mailto, warnings, notes}`.
+  - When a line uses a liability account, the result notes that revenue is recognized when the work is done.
+  - `party_id` stays as a deprecated alias for one release (gap 8).
+- **`books.create_bill`**
+  - Arguments: `{vendor, date, received_on?, vendor_ref, terms? | due_date?, lines[{description, amount, account, class?}], memo?, upload_id? | attachment_id?, duplicate_reason?, confirmed?}`.
+  - It files the vendor's invoice in the same call. Under `documents_v2`, `account` is required on every line (decision 9).
+  - Output adds `discount_by?` and `max_discount?`.
+- **`books.receive_payment`**
+  - Arguments: `{date, amount, deposit_to, instrument?, reference?, invoice | applications[{invoice, amount, discount?}], paid_in_full_marking?, confirmed?}`.
+  - It refuses an overpayment, showing the excess (decision 12), and warns under UCC §3-311.
+  - Output: `{entry_id, documents[{number, outstanding, status}]}`.
+- **`books.pay_bill`**
+  - Arguments: `{date, amount, paid_from, instrument?, reference?, bill | applications[{bill, amount, discount?, discount_reason?}], confirmed?}`.
+- **`books.reverse_entry`**
+  - On an entry a document owns, it runs the bounds check and refuses with the remedy ("reverse payment entry N first").
+  - Output adds `document{ref, status}`.
+- **`books.ar_aging` / `books.ap_aging`**
+  - Correct as of a date. Gain `detail?` (one row per document) and `control{account, balance, documents_total, unattached[], difference}`.
+- **`books.add_line`, `books.draft_entry`, `books.create_recurring`** refuse control-account lines (P4b.3).
+- **`books.update_party`** gains `email` and `default_terms`.
+- **`books.assign_role`** gains `move_balance` (S7).
+
+**New tools:**
+
+- **`books.void_document {document, date, reason, confirmed?}`**: `reverse_entry` of the origin entry, with the guards, described as "Void INV-0007: reason". Plain `books.reverse_entry` gives the same result.
+- **`books.documents {kind: invoices|bills, status?: open|overdue|paid|void|written_off|all, party?, due_by?, as_of?}`**
+  - Rows: `{number|vendor_ref, party, date, due_date, terms, total, paid, outstanding, status, days_overdue, discount_by?, last_sent?, has_pdf}`.
+  - Footer: bucket totals and the control tie-out.
+- **`books.document {ref, as_of?, pdf?: issued|current}`**
+  - Returns the header, lines with account and project, the state and its breakdown, and a timeline: issued, each send, each payment, discount and write-off (struck through when reversed), the void, with links to the entries. Also attachments and the mailto link.
+  - `pdf` returns a download. "issued" is the filed copy. "current" is rendered on demand and journals nothing: it stamps PAID, VOID or BALANCE DUE and lists payments.
+- **`books.bills_due {through?}`**: bills to pay on their terms, ordered by due date, with discount deadlines, `max_discount`, and the amount needed by each date.
+- **`books.control_check {as_of?}`**: for each control account, the GL balance, the documents total, the unattached lines (listed) and the difference. A difference other than the listed unattached lines is an engine error. It is also run by `books.verify` (which reports and never fails), the digest and Needs attention.
+- **`books.mark_sent {invoice, on?, via?, to?[], kind?, note?}`** (S5). `to` defaults to the bill-to email.
+- **`books.write_off_invoice {invoice, date, amount?, reason, confirmed?}`** (S7). It needs evidence of worthlessness (collection attempts, correspondence, a bankruptcy notice; §1.166-2), attached in the same call. It is refused on cash-basis books (§1.166-1(e)).
+- **`books.adopt_control_line {entry, line, as: invoice|bill, party, due_date, terms?, reason}`** (S7). It turns a legacy hand line into a document over that line, with no new entry.
+
+**Agent guidance.**
+- `books.start`'s next steps and Needs attention list: overdue invoices, invoices never sent (after 2 days), overdue invoices not reminded within `reminder_days`, bills due within 7 days, discounts ending within 3 days, bills missing `vendor_ref`, unattached control lines, and bill lines on 6999.
+- The handbook gains an "Invoices and bills" procedure:
+  1. Invoice: preview, confirm, download the PDF, the owner or a delegate sends it, mark it sent.
+  2. Collect.
+  3. Pay bills on their terms.
+  4. Void, write-off or reverse a payment: when to use which.
+  5. The month-end tie-out.
+  6. The CPA list from P4b.1.
+
+#### P4b.9 Sent tracking and email
+
+The books never send mail (D-17 stays deferred; the owner or a delegate sends, answer 4 above).
+1. `create_invoice` returns a download and a `mailto:` link. The recipient, subject ("Invoice INV-0007 from {company}") and body are URL-encoded, and the body is capped at about 1,800 characters.
+2. A mailto link cannot carry an attachment, so the agent says which file to attach.
+3. The human sends the invoice and tells the agent. The agent calls `books.mark_sent`. Several sends are allowed (reminders).
+4. A send changes no figure.
+
+The sent date does not move the due date (P4b.1, terms).
+
+#### P4b.10 Aging and the control check
+
+- `ar_aging` and `ap_aging` bucket `outstanding(d, D)` by the due date (`arap::aging_bucket`, unchanged). Documents dated after D, and documents with outstanding 0, are left out. The buckets partition Σ outstanding exactly (B-18).
+- The CPA package gains `ar_aging.csv` and `ap_aging.csv`, each with a tie-out line. Its README states the B-23 agreement, the direct write-off method and the gross discount method.
+- `books.export` gains `ar_aging` and `ap_aging` in csv, xlsx and pdf.
+
+#### P4b.11 The PDF invoice
+
+**Code.**
+- `ledger-import/templates/invoice.typ` and `ledger-import/src/invoice_pdf.rs::invoice_pdf(&InvoiceDoc, &DocMeta) -> Result<Vec<u8>, PdfError>`. It uses the same `OnceLock` engine, the bundled Inter and Noto fonts, and data passed through `sys.inputs.data`.
+- `ledger-package::invoice_document(&impl PackageBooks, InvoiceId, version)` builds the data. The server and the viewer call this one function, so the same books give the same bytes.
+
+**Contents.**
+- The seller snapshot: name, address, email or website.
+- "INVOICE", the number, the issue date, the due date, the terms text, the early-discount line, and the customer's PO.
+- The bill-to snapshot.
+- The lines: description, quantity × unit price when given, amount. Projects, accounts and internal ids are never printed.
+- The total. In the "current" version only: payments, discounts and written-off amounts, and the balance due.
+- Payment instructions, memo and footer.
+- A DRAFT, VOID or PAID stamp.
+- No EIN or TIN.
+
+**Issued copy.**
+- On confirm, the PDF is rendered before anything is journaled. A Typst failure leaves the books unchanged.
+- It is filed in the same store call as the invoice: `receipt.attached` linked to the entry, plus `attachment.linked` to `Subject::Invoice`. The attachment id goes into `invoice.created`'s `issued_pdf`, and its sha256 into the attachment event. Nothing is found by guessing.
+- A legacy invoice has no issued copy. Its "current" render prints the party's details today and says "Re-created on DATE from the books; not the copy sent".
+
+**Invariants.**
+1. Deterministic: same data and same version, same bytes. There is no creation timestamp. `typst`, `typst-pdf` and `typst-layout` are pinned exactly, and a golden-sha test guards the output. An upgrade may change new renders, but never the filed issued copy.
+2. Every string is data, never markup, so `#import`, `]` and `$` print literally.
+3. Every line and every total reaches the page through `amount_parts`, and Typst does no arithmetic on money. The printed total equals Σ lines equals the entry's control line.
+
+#### P4b.12 Viewer (read only, D-28)
+
+- **"Money in" and "Money out" pages.**
+  - Open documents by due date, with a whole-row click.
+  - Overdue rows marked "12 days late".
+  - A Sent column ("Oct 3 to ap@…" or "Not sent"); on bills, a discount-deadline column.
+  - Filter chips (Open, Overdue, Paid, Void, All).
+  - Bucket totals and a tie-out badge: "Agrees with 1200", or "Differs by $X: entries N, M".
+- **Document pages** (`Route::Invoice(id)` and `Route::Bill(id)`).
+  - Header and status chip; lines with account and project links.
+  - The timeline, with reversed items struck through and linked to their reversals.
+  - Send history, and attachments with Open and Save.
+  - "Save invoice PDF", for the issued or the current version, rendered by `ledger-package`.
+  - "Email…" opens the mailto link and changes nothing.
+- **The party card** opens the document page and computes "late" from the derived state (gap 10).
+- **Overview:** "Owed to you: $X (Y overdue)" and "You owe: $Z (W due this week)". `books.show` gains `invoice` and `bill` targets.
+- **Checks.** Render the pages and look at the screenshots (in ~/.cache/wanderbooks) before calling them ready, then rebuild the release viewer. No mutation runs on the GUI.
+
+#### P4b.13 Invariants (spec blocks; new rules B-38 to B-41)
+
+```text
+GOAL: invoices and bills are the subledgers of the receivables and payables
+      control accounts; every figure about a document is read from the
+      ledger lines tagged with it.
+SOURCE: rules.md B-8, B-9, B-10, B-18, B-23, B-28, new B-38; ASC 310-10,
+        ASC 405-20-40-1, ASC 606-10-45-4.
+INVARIANTS:
+  1. For every control account A and date D:
+     GL(A, D) = Σ_docs outstanding(d, D) + unattached(A, D).
+     No command adds an untagged control line; unattached changes only by
+     reversing or adopting a legacy line.
+  2. 0 ≤ outstanding(d, D) ≤ total(d) at every D for every document written
+     under these rules, whatever sequence of creates, payments, discounts,
+     reversals, voids and write-offs ran; replay accepts what was written.
+  3. Reversing a tagged entry changes outstanding by exactly the opposite
+     of its tagged lines, from the reversal's date; reversing that
+     reversal restores it.
+  4. DocState is a pure function of (journal, as_of): Store, Snapshot and
+     the viewer give identical states, balances and aging.
+  5. Aging as of D partitions Σ outstanding(·, D) exactly.
+  6. Every refusal leaves the books and the journal unchanged; NEVER panics.
+SCENARIOS:
+  1. Invoice 100, payment 100, payment reversed: Open, outstanding 100, A/R 100.
+  2. Invoice reversed with nothing paid: Void, not in aging, number kept.
+  3. Void with a payment standing: SHOULD refuse, naming the payment.
+  4. As of a date between a payment and its reversal: counted as paid.
+  5. Wrong payment reversed, right one recorded: accepted (feature
+     document_standing declared first).
+  6. Hand Dr 1200 / Cr 4000: SHOULD refuse with the remedy tools named;
+     reversing a legacy hand line on 1200: accepted, unattached shrinks.
+  7. Half paid, rest written off: Written off, breakdown 50 paid / 50 written off.
+  8. receive_payment deposit_to = 1200 or 4000: SHOULD refuse.
+```
+
+```text
+GOAL: terms give one due date and one discount date, exactly.
+SOURCE: new B-39 (CONVENTION: standard trade-terms notation; UCC §2-310(a)
+        for goods; for services, the contract).
+INVARIANTS:
+  1. Net n = date + n; Net n EOM = last day of date's month + n; due on
+     receipt = date; Custom = the given date. Always ≥ date, in the
+     calendar (B-28); days 0..=3650.
+  2. discount_by = date + d < due_date; a taken discount ≤ total × p / 100,
+     the caller's exact cents; after discount_by only with a reason.
+SCENARIOS: 2026-01-31 net 30 → 2026-03-02; 2026-10-23 net 15 EOM →
+  2026-11-15; leap day; 9999-12 bound refused, not panicking.
+```
+
+```text
+GOAL: an invoice number names one invoice forever; the copy sent is kept;
+      a vendor invoice is entered once.
+SOURCE: new B-40 (Pub. 583; Rev. Proc. 98-25; CONVENTION: sequential
+        numbers, voids kept; duplicate-payment control).
+INVARIANTS:
+  1. Numbers unique, in issue order, never reused.
+  2. Number, snapshots, terms and lines never change after issue.
+  3. The issued PDF is filed in the issuing call; its sha256 is journaled.
+  4. (vendor, normalized vendor_ref) unique among standing bills unless a
+     duplicate_reason is journaled.
+  5. Sends never change a figure.
+```
+
+```text
+GOAL: write off what won't be collected, as the tax rules require.
+SOURCE: new B-41 (IRC §166(a), §111; Treas. Reg. §1.166-1(e),(f), -2(a),
+        -3(a); ASC 326-20; DECISION: direct write-off).
+INVARIANTS:
+  1. amount ≤ outstanding; Dr bad_debts / Cr A/R [d, WriteOff].
+  2. Its reversal reinstates; bills are never written off (ASC 405-20-40-1).
+  3. Refused on cash-basis books.
+```
+
+Each new rule keeps the CONVENTION label until its sources are vendored in docs/spec/sources with a SHA-256. B-18 (standing-aware aging) and B-23 (enforcement and tie-out) are amended. B-37 item 8 gains line accounts.
+
+#### P4b.14 Migration of existing books
+
+1. **Before S1 is installed** (through the MCP only, never the data root), capture into `goldens/p4-arap-before/`:
+   - `books.ar_aging` and `books.ap_aging` at each golden date;
+   - `books.party` for every party with documents;
+   - `books.trial_balance` and `books.cash_flow`.
+
+   Also search entries on 1200 and 2000, recurring templates, and conventions that name either account. The guard would refuse those at their next run.
+2. **No journal line is rewritten (B-8).** S1 derives tags on replay.
+   - Figures change only for documents whose origin or payment entry has a reversal in its chain, plus the cash flow `bill_splits`.
+   - The balance sheet and P&L don't move, because the GL already holds the reversals.
+   - Every difference against the goldens is adjudicated cent by cent in the private change log, as P3 did, before the goldens are refreshed.
+3. **Out-of-bounds legacy states replay as written.** One example is a voided invoice with a payment still standing. It shows in Needs attention with the remedy: reverse the payment.
+4. **Unattached hand lines on 1200 or 2000** are listed by `books.control_check`. For each one, the owner chooses:
+   - (a) reverse it and re-enter it as a document while its period is open;
+   - (b) adopt it (S7);
+   - (c) leave it, with a recorded decision and a note in the CPA README.
+5. **Legacy documents** keep "Invoice {id}". Terms are Custom with their due dates, there is no snapshot, and line accounts are None (the role accounts they posted to). New numbers continue from `invoicing.first_number`, which defaults to after the highest legacy id, so the series stays gap-free.
+6. **Bills on 6999** are reclassified by ordinary entries (Dr the right account / Cr 6999), each citing the bill's receipt (decision 8). Neither account is a control account, so this is allowed, and no document changes.
+7. **Older-rule fixtures** (reversed payments, reversed invoices, a hand line on 1200, a multi-payment entry, a role reassigned mid-stream) are added to `books_written_under_older_rules_still_open`.
+8. **After each install:** `books.verify`, `books.control_check`, then a cent-exact goldens comparison saved to `goldens/p4-arap-sN/`.
+
+#### P4b.15 Tests
+
+**ledger-core** (unit tests and `tests/spec_documents.rs`, one test per scenario above):
+- `reversing_a_payment_reopens_the_invoice`
+- `a_voided_invoice_never_ages`
+- `aging_as_of_ignores_a_later_reversal`
+- `a_corrected_payment_after_reversing_the_wrong_one`
+- `void_refused_while_paid`
+- `hand_line_on_control_refused`
+- `reversing_a_legacy_hand_line_is_allowed`
+- `deposit_account_must_be_cash_like`
+- `half_paid_rest_written_off_is_written_off`
+- `bill_lines_post_to_their_accounts`
+- `qty_times_price_must_equal_amount`
+- `terms_derive_due_dates`
+- `discount_bounds_and_late_reason`
+- `duplicate_vendor_ref_refused`
+- `write_off_refused_on_cash_basis`
+- `reversal_before_original_refused_for_documents`
+
+**proptest:**
+- `subledger_equals_control`: random sequences of create, pay (single and multi), discount, write-off, void, reverse-any-entry and hand-entry attempts. After every step, at every date: the identity, the bounds, and replay equal to live.
+- `status_is_a_function_of_journal_and_date`
+- `reversal_twice_restores_state`
+- `due_date_monotone`
+- `document_parts_partition_the_total` over (account, project).
+- `fuzz_op_sequence` gains the new ops.
+
+**Kani:**
+- `terms_due_date_laws`: no overflow, never before the date, EOM at month ends.
+- `discount_max_exact`
+- `bounds_check_matches_definition`
+
+**Lean:**
+- `Step.document` (every control line tagged) and the reversal step copying tags.
+- Theorems `control_agrees` (GL = Σ docs + unattached, with unattached fixed by every new step) and `bounds_preserved`, per I-13.
+
+**ledger-store:**
+- `legacy_documents_replay_with_tags`
+- `legacy_reversal_now_counts` (golden)
+- `role_reassigned_mid_stream_tags_the_role_then`
+- `document_posting_mismatch_is_replay_mismatch`
+- `older_version_stops_at_each_feature`
+- `multi_payment_entry_replays_without_a_feature`
+- `no_new_fields_journals_byte_for_byte`
+- projection parity
+
+**ledger-import / ledger-package:**
+- `invoice_pdf_is_deterministic` (golden sha)
+- `invoice_pdf_prints_what_it_should` (hayro reads back the number, dates, totals, bill-to and instructions; CJK and RTL names; no ids or projects)
+- `labels_are_data`
+- `two_hundred_lines_paginate`
+- `viewer_and_server_make_the_same_pdf` (Store vs Snapshot through `PackageBooks`)
+- the CPA package aging CSVs tie.
+
+**ledger-cli/tests** (D-44: a real server through the `local_server.rs` harness):
+- `documents.rs`:
+  - `an_invoice_from_issue_to_paid`: preview journals nothing; confirm; the PDF's sha matches the attachment; mark sent; partial payment; bounce; pay; Paid. The aging ties to the trial balance at each date.
+  - `one_payment_settles_two_invoices`
+  - `void_refused_then_allowed`
+  - `a_hand_entry_to_receivables_is_refused`
+  - `bill_on_terms_with_discount`
+  - `duplicate_vendor_invoice_refused`
+  - `card_paid_bill_is_not_1099_nec`
+  - `equipment_bill_payment_is_investing_cash`
+  - `bills_due_orders_by_due_and_discount`
+  - `write_off_then_recovery`
+  - `move_receivables_role_keeps_documents`
+- `documents_parity.rs`: the viewer's figures equal the server's to the cent (like `projects_parity.rs`).
+- `format_upgrade.rs` gains each feature's refusal-then-consent path.
+- `hostile_args` cases: huge terms, injection strings, nine digits in an email.
+
+**bookspec (P13):** `ar-subledger-ties-to-control`, `arap-reversed-payment-reopens`, `arap-void-is-a-reversal`, `payment-terms-due-date`, `bad-debt-direct-write-off`, `arap-hand-control-posting-refused`.
+
+**docs/testing.md** lists what P12 must mutate (D-33).
+
+#### P4b.16 Slices (each lands on main when checked: review until clean, `just check`, `just prove`, zero clippy warnings, push)
+
+1. **S1: the defect fix (urgent).**
+   - `stands_on`; line tags derived on replay and written by today's commands, and copied on reversal.
+   - Derived `DocState`, with `amount_paid`, `status` and the payment lists removed as fields. Every reader moves, including `bill_splits`, party totals and the 1099 worksheet.
+   - Only standing entries count, as of a date, in aging and payments.
+   - `check_item_bounds` on reversal and payment, and the reversal-date rule.
+   - **`books.void_document`**, and the guarded `books.reverse_entry`.
+   - **The control guard** (refusing hand entries, with the reversal-mirror exemption) on add_line, draft_entry and recurring.
+   - The deposit and payer account checks.
+   - **`books.control_check`**, wired into aging, verify, the digest and Needs attention.
+   - `instrument` and `reference` on the payment tools.
+   - The GUI party-card fix.
+   - Feature `document_standing`. Re-payment after a reversal waits for the owner's go-ahead; everything else works at once.
+   - Lean `control_agrees`; goldens captured first, then adjudicated.
+2. **S2: read tools and viewer pages** (no format change). `books.documents` and `books.document` (timeline), the Money in and Money out pages, the document pages, the Overview cards, and attention items for overdue and due-soon documents.
+3. **S3: the PDF** (no format change). `invoice_pdf`, the template, `ledger-package::invoice_document`, the "current" version and the legacy re-created copy, the viewer's Save PDF and mailto link, and the pinned Typst with its golden test.
+4. **S4: `documents_v2`.**
+   - Numbers, terms, line accounts, quantity and unit price.
+   - Snapshots, PO and memo; `vendor_ref` and `received_on` with the duplicate guard.
+   - Party email and default terms; the invoicing settings, with the payment-instructions exemption.
+   - Preview and confirm on the create tools; the issued PDF filed in the issuing call; `create_bill` with its file; the `customer` and `vendor` parameters, with the alias.
+   - The handbook procedure.
+5. **S5: sent tracking (`invoice_sent`).** `books.mark_sent`, and the unsent and reminder attention items.
+6. **S6: paying on terms (`settlements`).** Multi-document payments, discounts with the `purchase_discounts` and `sales_allowances` roles, `books.bills_due`, the late-discount reason, the aging exports and the CPA package CSVs, and Kani `discount_max_exact`.
+7. **S7: bad debts and legacy lines (`write_offs`, `control_lines`).** `books.write_off_invoice` with the `bad_debts` role, `books.adopt_control_line`, `books.assign_role move_balance`, B-41, and Lean `bounds_preserved`. Until S7, moving a control role that has a balance stays impossible: B-23's old path, a hand entry, is now refused.
+8. **Later, each a small design of its own:**
+   - customer deposits and credits in their own liability account (2300 Customer Deposits and Credits; ASC 606-10-45-2), with the vendor mirror (1250);
+   - credit memos (to 4100, 1065 line 1b);
+   - vendor credits and legal releases. A release of a valid debt is cancellation-of-debt income (IRC §61(a)(11)), with the exclusions applied at partner level (§108(d)(6)), flagged for the CPA. A billing correction is not income, because no debt existed in that amount.
+   - customer statements (PDF);
+   - recurring invoices;
+   - a cash-basis P&L view;
+   - sales tax (ask the CPA first: Utah taxes some software and digital products, Utah Code §59-12-103).
+
+**Sources to vendor before B-38 to B-41 become AUTHORITY:**
+- ASC 606-10-25-23, 45-2, 45-4, 32-5 to 32-9
+- ASC 405-20-40-1
+- ASC 310-10
+- ASC 326-20 (incl. 55-37/38)
+- IRC §§61(a)(11), 108(d)(6), 111, 166
+- Treas. Reg. §§1.166-1(e),(f), 1.166-2, 1.166-3, 1.451-1(a), 1.461-1(a), 1.461-4, 1.6041-1(a)(1)(iv)
+- Rev. Proc. 98-25
+- UCC §§2-310, 3-311
+- Form 1065 instructions for lines 1b and 12, and Schedule L lines 2a and 15
+
+Until vendored, they go on the Open list in `docs/spec/README.md`.
+
+#### P4b.17 Risks
+
+- **Golden figures will change.** Aging, open balances and the cash flow `bill_splits` change wherever existing books hold a reversal of an invoice, bill or payment entry. Each change is adjudicated, never refreshed silently. Whether any exist is unknown until the MCP check.
+- **The control guard will refuse old habits.** Any recurring template, convention or agent routine that writes to 1200 or 2000 by hand will be refused. Check through the MCP before installing S1.
+- **The guard must not block real document posting.** It sits in `Ledger`, but document commands post control lines themselves. The tag must be set inside the same atomic step, and the reversal-mirror exemption must not widen into a bypass.
+- **Removing the stored fields touches every reader at once:** the GUI, MCP, cash flow, party totals, the 1099 worksheet, the projection and IIF. It must land whole in S1.
+- **Multi-document payments use the ordinal rule.** Several payment events naming one entry depend on line order. Every reader that assumed one document per payment entry must be tested against double-counting.
+- **Bounds checked at every date cost more.** Limit the check to the documents a step touches.
+- **The upgrades and their prompts.** Six features need D-39 go-aheads, and too many prompts wear the owner down (decision 11). Until each go-ahead, the slice's writes refuse with the upgrade remedy, and the handbook must say so.
+- **PDF bytes depend on pinned versions.** Typst and font upgrades change new renders. The filed issued copy stays the record. Template injection must stay impossible (strings are data).
+- **The payment-instructions exemption must not spread.** It is one named key, like `company.duns`. The inbound file scan still runs on everything filed.
+- **Revenue can be dated too early.** An invoice dated before the work would overstate revenue (ASC 606-10-25-23). The agent must ask when the work happens and use 2400 for advance billing.
+- **Equipment on a bill must be registered.** A bill line coded to equipment must raise "register the asset" (B-15), or the asset is missing from the register.
+- **The tool budget.** About 7 new tools and several extended descriptions must fit I-12, and eight descriptions are already over it.
+- **The mailto flow cannot attach the PDF.** A forgotten attachment cannot be detected; sent tracking and reminders only mitigate it.
+- **Tax judgments stay with the CPA.** Write-offs, deposit timing (§1.451-8) and vendor releases are tax judgments. The tools flag them for the CPA and do not present them as settled.
+
 ### P5: Agent surface complete (B, guidance)
 
 **Scope:**
@@ -1337,6 +1980,7 @@ The owner decisions of 2026-10-16 (at the top of this document) replace the form
 | D-41 | The contributed devices' tax basis (P3, defect 13; owner, 2026-10-20) | **Depreciable basis is the lower of fair market value and the member's adjusted basis at conversion** (Treas. Reg. §1.168(i)-4(b); Pub. 946, property changed from personal use): for the four contributed devices, the CPA to confirm at year end. **§704(c) method: traditional**, recorded now and confirmed with the CPA before the first Form 1065 (for members filing jointly every method gives the household the same tax). **The four devices' values on 2026-10-15 are the books' amounts**, citing the entries that recorded them (figures in the company's private change log). **New P3 item: the K-1 worksheet reports tax-basis capital** (Form 1065 instructions, Item L, since 2020), the contributed property at its §723 carryover basis, beside the book figures. |
 | D-42 | A member paying for the company, on the cash flow statement (P3, defect 1; owner, 2026-10-20, revising D-35's first point after the review found ASC 230 silent on a payment a third party makes on the entity's behalf) | **Constructive receipt and disbursement:** when a member (or a lender) pays a company expense or purchase directly, the statement shows a financing inflow (borrowed from the member) and the operating or investing outflow, on that date; paying the member back is a financing outflow. Source: ASC 230 does not address it; practice fills the gap by substance (Deloitte DART Roadmap 7.2 with AICPA TQA 1300.16 and the SEC staff's view; PwC, BDO and EY guides alike), the way a CPA would present it; KPMG accepts noncash only for equipment a lender pays for. Property a member contributes that it already owned stays noncash (ASC 230-10-50-4: no cash moved). Total cash is the same either way; the first company's figures are in its private P3 change log. |
 | D-43 | Invoices and bills take a project, line by line (owner, 2026-10-22) | **Each line of an invoice or bill takes one project or none.** A document that spans N projects is N lines, each with its own amount; no percentage split, so every figure is exact. A cost truly shared among projects names none on the document and reaches projects only as allocation entries of their own under the company's monthly allocation convention, when the books have one (otherwise it stays untagged and the agent asks the human). Reasoning: job costing charges a job its traceable (direct) costs whole and reaches shared costs only by allocation on a stated basis. ASC 340-40-25-7 counts as directly related both the costs traceable to a contract (25-7(a), (b), (d), (e)) and allocations of costs that relate directly to it (25-7(c)); 25-8 expenses general and administrative costs unless chargeable to the customer. The books carry a traceable cost whole on the document's line and an allocated cost as entries under the allocation convention on its basis; neither is a percentage on the document. Behind its own journal feature, `document_line_projects`, so books that declared `projects` wait for the owner's next upgrade (rules.md B-37 item 8, B-27). |
+| D-45 | Receivables and payables, first class (P4b; owner, 2026-10-23: "we kinda need stronger invoice support. Like make it a first class citizen") | **A document's figures come from its tagged ledger lines that still stand**: every line on 1200 or 2000 carries its document; paid, outstanding and status are derived, so a reversal, void or write-off is right by construction and the control accounts always equal their documents (B-23). **Hand entries to 1200 and 2000 are refused.** Invoices: numbered `INV-0001` running, previewed then confirmed, terms and due dates, the issued PDF filed at issue, any payment methods printed (ACH, wire, links, QR codes, check, P2P handles, crypto, other). Bills: the vendor's number, terms, every line on its own account, paid on terms with early-payment discounts by the gross method. **The books never send, receive or charge** (as for payroll and taxes): the owner or a delegate (an agent) does, and the books record the send (who, channel, recipients, reference) and the payment (processor, reference, fee: gross to the receivable, fee to expense, net deposited). Bad debts by direct write-off (IRC §166). The slices and the owner's answers are in P4b. |
 
 ### 10.2 Deferred
 
